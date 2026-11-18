@@ -30,6 +30,7 @@ import warp as wp
 
 from newton._src.core.types import MAXVAL
 from newton._src.geometry.kernels import triangle_closest_point
+from newton._src.geometry.sdf_planar_recovery import MeshRecoveryData, active_recovery_contact
 from newton._src.geometry.soft_contacts_mesh import _soft_contact_force_enabled, _SoftContactFilterData
 from newton._src.math import orthonormal_basis, quat_velocity
 from newton._src.sim import JointType
@@ -4092,6 +4093,10 @@ def step_body_body_contact_C0_lambda(
     lambda_retention: float,
     inv_dt_sq: float,
     contact_material_ke: wp.array[float],
+    normal_alpha: float,
+    recovery: MeshRecoveryData,
+    contact_generation: wp.array[int],
+    step_start_q: wp.array[wp.transform],
     contact_normal_rho: wp.array[float],
     contact_C0: wp.array[wp.vec3],
     contact_lambda: wp.array[wp.vec3],
@@ -4130,7 +4135,26 @@ def step_body_body_contact_C0_lambda(
     a1 = wp.transform_point(body_q[b1], anchor1_local) if b1 >= 0 else anchor1_local
     d_surf = a1 - a0
     C0_t = -(d_surf - n * wp.dot(n, d_surf))
-    contact_C0[i] = n * C0_n + C0_t
+    normal_bias = normal_alpha * C0_n
+    if recovery.keys.shape[0] > 0:
+        pose0 = body_q[b0] if b0 >= 0 else wp.transform_identity()
+        pose1 = body_q[b1] if b1 >= 0 else wp.transform_identity()
+        slot = active_recovery_contact(recovery, contact_generation[0], s0, s1, pose0, pose1, n)
+        if slot < -1:
+            contact_C0[i] = wp.vec3()
+            contact_lambda[i] = wp.vec3()
+            return
+        if slot >= 0:
+            # Mid-iteration detection may refresh the manifold several times
+            # per step. Measure the target from the same initial state.
+            start0 = wp.transform_point(step_start_q[b0], p0) if b0 >= 0 else p0
+            start1 = wp.transform_point(step_start_q[b1], p1) if b1 >= 0 else p1
+            initial = -contact_surface_separation(start0, start1, n, rigid_contact_margin0[i], rigid_contact_margin1[i])
+            target = wp.min(recovery.contacts[slot].thickness / 32.0, wp.max(initial, 0.0) / 8.0)
+            normal_bias = initial - target
+    # Store the normal stabilization once. Primal, dual, and readback must
+    # all use the same residual throughout this projection.
+    contact_C0[i] = n * normal_bias + C0_t
 
     # Resolve rho before using it to validate retained history.
     normal_support = _contact_conditioning_scale(
@@ -4531,9 +4555,7 @@ def create_accumulate_body_body_contacts_per_body():
             lam_n = wp.dot(lam_vec, contact_normal)
             C0_vec = contact_C0[contact_idx]
             C0_n = wp.dot(contact_normal, C0_vec)
-            # C0 stabilization: normal uses C_n - alpha*C0_n;
-            # tangent caches (1 - alpha)*C0_t for the later tangential update.
-            C_eff = C_n - stab_alpha * C0_n
+            C_eff = C_n - C0_n
             friction_c0 = (1.0 - stab_alpha) * (C0_vec - contact_normal * C0_n)
 
             if C_n <= _SMALL_LENGTH_EPS and lam_n <= 0.0:
@@ -4694,9 +4716,7 @@ def _evaluate_body_body_contact_slot(
     lam_n = wp.dot(lam_vec, contact_normal)
     C0_vec = contact_C0[contact_idx]
     C0_n = wp.dot(contact_normal, C0_vec)
-    # C0 stabilization: normal uses C_n - alpha*C0_n;
-    # tangent caches (1 - alpha)*C0_t for the later tangential update.
-    C_eff = C_n - stab_alpha * C0_n
+    C_eff = C_n - C0_n
     friction_c0 = (1.0 - stab_alpha) * (C0_vec - contact_normal * C0_n)
 
     normal_primal_k, lambda_n_eff = _material_force_terms(normal_solve_weight, material_k, lam_n)
@@ -6288,7 +6308,7 @@ def create_update_duals_body_body_contacts():
 
         C0_vec = contact_C0[idx]
         C0_n = wp.dot(n, C0_vec)
-        C_stab_n = C_n_raw - stab_alpha * C0_n
+        C_stab_n = C_n_raw - C0_n
         C0_t_vec = C0_vec - n * C0_n
 
         # Bypass C0 stabilization on separation so normal support releases fully.

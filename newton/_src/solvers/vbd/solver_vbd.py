@@ -17,6 +17,7 @@ from ...core._warnings import _external_warning_stacklevel
 from ...core.types import override
 from ...exceptions import NewtonDeprecationWarning
 from ...geometry import ParticleFlags
+from ...geometry.sdf_planar_recovery import MeshRecoveryData
 from ...geometry.soft_contacts_mesh import _make_soft_contact_filter_data
 from ...geometry.tri_mesh_collision import (
     TriMeshCollisionDetector,
@@ -900,6 +901,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             collision_frequency=collision_frequency,
             collision_frequency_type=collision_frequency_type,
         )
+        self._empty_mesh_recovery = MeshRecoveryData()
         # The solver's warm-start setting is authoritative for an owned pipeline:
         # multiplier restores ride the pipeline's matched contact indices, so
         # history without matching silently cold-starts every refresh (k times per
@@ -3666,6 +3668,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         body_q: wp.array[wp.transform],
         dt: float,
         lambda_retention: float,
+        step_start_q: wp.array[wp.transform],
     ) -> None:
         """Update rigid-contact C0, conditioning, and lambda state."""
         if not self._integrates_rigid_bodies or contacts.rigid_contact_max == 0:
@@ -3696,6 +3699,12 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 lambda_retention,
                 1.0 / (dt * dt),
                 self.body_body_contact_material_ke,
+                self.rigid_contact_alpha,
+                contacts._mesh_recovery_contacts.data
+                if contacts._mesh_recovery_contacts
+                else self._empty_mesh_recovery,
+                contacts.contact_generation,
+                step_start_q,
             ],
             outputs=[
                 self.body_body_contact_normal_rho,
@@ -3766,6 +3775,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     state_in.body_q,
                     dt,
                     self.rigid_avbd_gamma,
+                    state_in.body_q,
                 )
 
             # Accumulate joint_f into body wrenches (scratch buffer avoids mutating user state).
@@ -5115,7 +5125,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         )
         if rigid_due:
             self._refresh_rigid_contact_state(contacts, refresh=True, restore_history=preserve_history)
-            self._step_body_body_contact_frame(contacts, collision_state.body_q, dt, 1.0)
+            self._step_body_body_contact_frame(contacts, collision_state.body_q, dt, 1.0, self.body_q_prev)
             self._refresh_body_particle_contact_state(contacts, refresh=True)
 
     def _validate_dat_collision_schedules(self) -> None:

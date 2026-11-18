@@ -38,6 +38,11 @@ from ..geometry.flags import MeshProperties, ShapeFlags
 from ..geometry.kernels import create_soft_contacts
 from ..geometry.narrow_phase import NarrowPhase
 from ..geometry.sdf_hydroelastic import HydroelasticSDF
+from ..geometry.sdf_planar_recovery import (
+    MeshRecoveryContacts,
+    MeshRecoveryData,
+    reset_mesh_recovery,
+)
 from ..geometry.soft_contacts_heightfield import _HEIGHTFIELD_CELLS_PER_TASK, launch_soft_heightfield_contacts
 from ..geometry.soft_contacts_mesh import (
     MeshContactData,
@@ -455,6 +460,7 @@ def compute_shape_aabbs(
     contact_generation: wp.array[wp.int32],
     broad_phase_pair_count: wp.array[wp.int32],
     num_contact_counters: int,
+    recovery: MeshRecoveryData,
     # outputs
     aabb_lower: wp.array[wp.vec3],
     aabb_upper: wp.array[wp.vec3],
@@ -480,6 +486,9 @@ def compute_shape_aabbs(
             g = g + 1
         contact_generation[0] = g
         broad_phase_pair_count[0] = 0
+        if recovery.keys.shape[0] > 0:
+            reset_mesh_recovery(recovery)
+            recovery.generation[0] = g
 
     # Empty variant rows have their collision flags cleared; give them an empty AABB because broad
     # phases include every row that could hold a colliding variant shape.
@@ -2071,6 +2080,9 @@ class CollisionPipeline:
             shape_aabb_upper = wp.zeros(shape_count, dtype=wp.vec3, device=device)
 
         self.model = model
+        self._empty_mesh_recovery = MeshRecoveryData()
+        self._mesh_recovery_pair_max = None
+        self._mesh_recovery_skipped = None
         self.shape_count = shape_count
         self.device = device
         self.reduce_contacts = reduce_contacts
@@ -2254,6 +2266,7 @@ class CollisionPipeline:
                 plane_mask = route_rows & (route_types == int(GeoType.PLANE))
                 mesh_sdf_pair_mask = mesh_mask | heightfield_mask
                 planar_sdf_mask = np.zeros(len(route_types), dtype=bool)
+                recovery_shape_mask = np.zeros(len(route_types), dtype=bool)
                 has_meshes = bool(np.any(mesh_mask))
                 has_heightfields = bool(np.any(heightfield_mask))
                 if (
@@ -2272,6 +2285,7 @@ class CollisionPipeline:
                         (route_types != int(GeoType.HFIELD))
                         & ((route_types == int(GeoType.MESH)) | (shape_edge_range[:, 1] > 0))
                     )
+                    recovery_shape_mask = mesh_sdf_shapes & (shape_sdf_index >= 0)
                     coarse_textures = getattr(model, "_texture_sdf_coarse_textures", None)
                     if coarse_textures is not None and len(coarse_textures) > 0:
                         has_texture_sdf = np.array(
@@ -2313,6 +2327,15 @@ class CollisionPipeline:
                 heightfield_capacity = heightfield_mask[:shape_count_routed]
                 plane_capacity = plane_mask[:shape_count_routed]
                 planar_sdf_capacity = capacity(planar_sdf_mask)
+                if model._texture_sdf_data is not None:
+                    # Ordinary mesh pairs may include BVH-only meshes. Only pairs with
+                    # two mesh SDFs can ever produce a thin-wall recovery contact.
+                    textured_mesh = capacity(recovery_shape_mask)
+                    if explicit_pairs_host is not None:
+                        a, b = explicit_pairs_host.T
+                        self._mesh_recovery_pair_max = int(np.count_nonzero(textured_mesh[a] & textured_mesh[b]))
+                    else:
+                        self._mesh_recovery_pair_max = _compute_per_world_mask_pair_max(model, textured_mesh)
                 if self.broad_phase_mode == "explicit" and self.shape_pairs_filtered is not None:
                     # Explicit pair types are fixed at pipeline construction, including
                     # intentional cross-world pairs, so size only the stages they can reach.
@@ -2685,6 +2708,25 @@ class CollisionPipeline:
         self._reduces_body_pairs = (
             body_pair_reduction is not None and self.narrow_phase.group_contact_reducer is not None
         )
+        pair_capacity = self.narrow_phase.max_mesh_mesh_pairs
+        if self._mesh_recovery_pair_max is not None:
+            pair_capacity = min(pair_capacity, self._mesh_recovery_pair_max)
+        texture_data = model._texture_sdf_data
+        self._mesh_recovery_pair_max = 0
+        if (
+            texture_data is not None
+            and texture_data.shape[0] > 0
+            and pair_capacity > 0
+            and self.narrow_phase.shape_pairs_mesh_mesh is not None
+            and type(self.narrow_phase).launch_custom_write is NarrowPhase.launch_custom_write
+            and not self._reduces_body_pairs
+            and not self.requires_grad
+            and self.rigid_contact_max > 0
+        ):
+            self._mesh_recovery_pair_max = pair_capacity
+            self._mesh_recovery_skipped = wp.empty(
+                self.narrow_phase.max_mesh_mesh_pairs, dtype=wp.bool, device=self.device
+            )
 
         # Soft (cloth) self-contact: disabled until init_soft_self_contact() creates
         # the shared detector (re-pointed per Contacts buffer; see
@@ -2829,6 +2871,7 @@ class CollisionPipeline:
         )
         contacts._contact_matching_mode = self.contact_matching
         contacts._rigid_contact_body_pair_reduced = self._reduces_body_pairs
+        self._prepare_mesh_recovery(contacts)
         if self._soft_mesh_contact_data is not None:
             allocate_soft_mesh_contact_buffers(contacts)
             contacts._soft_contact_mesh_data = self._soft_mesh_contact_data
@@ -3053,6 +3096,15 @@ class CollisionPipeline:
             device=model.device,
         )
 
+    def _prepare_mesh_recovery(self, contacts):
+        if self._mesh_recovery_pair_max and contacts.rigid_contact_max > 0:
+            capacity = 2 * min(self._mesh_recovery_pair_max, contacts.rigid_contact_max)
+            storage = contacts._mesh_recovery_contacts
+            if storage is None or storage.table.capacity < capacity:
+                contacts._mesh_recovery_contacts = MeshRecoveryContacts(capacity, self.device)
+            return contacts._mesh_recovery_contacts
+        return None
+
     def collide(
         self,
         state: State,
@@ -3175,6 +3227,8 @@ class CollisionPipeline:
 
         # Compute AABBs for all shapes, zero counters, bump generation.
         # Fuses contacts.clear() + broad_phase_pair_count.zero_() + AABB update.
+        recovery_contacts = self._prepare_mesh_recovery(contacts)
+        recovery = recovery_contacts.data if recovery_contacts is not None else self._empty_mesh_recovery
         wp.launch(
             kernel=compute_shape_aabbs,
             dim=model.shape_count,
@@ -3196,6 +3250,7 @@ class CollisionPipeline:
                 contacts.contact_generation,
                 self.broad_phase_pair_count,
                 contacts.contact_counters.shape[0],
+                recovery,
             ],
             outputs=[
                 self.narrow_phase.shape_aabb_lower,
@@ -3335,6 +3390,13 @@ class CollisionPipeline:
         # Run narrow phase with custom contact writer (writes directly to Contacts format)
         narrow_phase_extension_kwargs = {}
         if type(self.narrow_phase).launch_custom_write is NarrowPhase.launch_custom_write:
+            if recovery_contacts is not None and self._mesh_recovery_skipped is not None:
+                narrow_phase_extension_kwargs.update(
+                    mesh_recovery=recovery,
+                    recovered_pairs=self._mesh_recovery_skipped,
+                    shape_body=model.shape_body,
+                    body_q=state.body_q,
+                )
             narrow_phase_extension_kwargs.update(
                 mesh_edge_centers=model._mesh_edge_centers,
                 mesh_edge_halves=model._mesh_edge_halves,

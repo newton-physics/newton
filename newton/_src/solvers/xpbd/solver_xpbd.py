@@ -9,6 +9,7 @@ import warp as wp
 
 from ...core.types import override
 from ...exceptions import NewtonDeprecationWarning
+from ...geometry.sdf_planar_recovery import MeshRecoveryData
 from ...sim import Contacts, Control, JointType, Model, ModelFlags, State, StateFlags
 from ...sim.joint_mimic import has_supported_joint_mimics
 from ..coupled.interface import CouplingInterface
@@ -253,6 +254,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
             # reserve space for the particle hash grid
             with wp.ScopedDevice(model.device):
                 model.particle_grid.reserve(model.particle_count)
+        self._empty_mesh_recovery = MeshRecoveryData()
 
     @property
     def compute_body_velocity_from_position_delta(self) -> bool:
@@ -506,6 +508,9 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
         body_qd_pre_solve = None
         body_deltas = None
 
+        contact_recovery = self._empty_mesh_recovery
+        if contacts is not None and contacts._mesh_recovery_contacts is not None:
+            contact_recovery = contacts._mesh_recovery_contacts.data
         rigid_contact_inv_weight = None
         restitution_contact_active = None
         restitution_manifold_key = None
@@ -842,6 +847,8 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                                     contacts.rigid_contact_margin1,
                                     contacts.rigid_contact_shape0,
                                     contacts.rigid_contact_shape1,
+                                    contact_recovery,
+                                    contacts.contact_generation,
                                 ],
                                 outputs=[restitution_contact_active],
                                 device=model.device,
@@ -874,6 +881,8 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                                 model.shape_material_mu_rolling,
                                 self.rigid_contact_relaxation,
                                 dt,
+                                contact_recovery,
+                                contacts.contact_generation,
                             ],
                             outputs=[
                                 body_deltas,

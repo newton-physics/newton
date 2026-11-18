@@ -24,6 +24,7 @@ from ...core._warnings import _external_warning_stacklevel
 from ...core.types import MAXVAL, Axis, override, vec5, vec10
 from ...exceptions import NewtonDeprecationWarning, NewtonWarning
 from ...geometry import GeoType, Mesh, ParticleFlags, ShapeFlags
+from ...geometry.sdf_planar_recovery import MeshRecoveryData
 from ...sim import (
     BodyFlags,
     Contacts,
@@ -5152,6 +5153,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             ):
                 raise ValueError("use_speculative_contacts=True requires Euler or implicitfast integration.")
             self._allocate_speculative_contact_buffers()
+        self._empty_mesh_recovery = MeshRecoveryData()
         if (
             not use_mujoco_contacts
             and self.mj_model.opt.integrator == mujoco.mjtIntegrator.mjINT_RK4
@@ -5365,9 +5367,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 # reflects only the current step (d.overflow uses |= accumulation).
                 self.mjw_data.overflow.zero_()
                 self._mujoco_warp_step()
-                self._update_newton_state(
-                    self.model, state_out, self.mjw_data, state_prev=state_in, observables=observables
-                )
                 if observables is not None and observables.is_requested(self.ObservableKind.OVERFLOW):
                     # Pipeline overflow is relevant only when Newton supplies collision input.
                     newton_contacts = int(not self.mjw_model.opt.run_collision_detection and contacts is not None)
@@ -5405,7 +5404,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         observable_contacts,
                         observables.contact_f,
                         preserve_geometry=not self.mjw_model.opt.run_collision_detection,
+                        source_body_q=state_in.body_q,
                     )
+                self._update_newton_state(
+                    self.model, state_out, self.mjw_data, state_prev=state_in, observables=observables
+                )
         self._step += 1
 
     @override
@@ -5898,6 +5901,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         bodies_per_world = self.model.body_count // self.model.world_count
         mujoco_attrs = getattr(model, "mujoco", None)
         shape_mjc_solref_mode = getattr(mujoco_attrs, "solref_mode", None) if mujoco_attrs is not None else None
+        recovery = (
+            contacts._mesh_recovery_contacts.data
+            if contacts._mesh_recovery_contacts is not None
+            else self._empty_mesh_recovery
+        )
         wp.launch(
             convert_newton_contacts_to_mjwarp_kernel,
             dim=(launch_dim,),
@@ -5960,6 +5968,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 contacts.contact_generation,
                 self._last_contact_generation,
                 self._contact_tid_to_cid,
+                recovery,
+                self.mjw_model.opt.timestep,
             ],
             device=model.device,
             block_dim=block_dim,
@@ -5980,6 +5990,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self._last_nacon_count,
                 contacts.contact_generation,
                 self._last_contact_generation,
+                recovery,
             ],
             device=model.device,
         )
@@ -7049,6 +7060,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         contact_f: wp.array[wp.spatial_vector] | None,
         *,
         preserve_geometry: bool = False,
+        source_body_q: wp.array[wp.transform] | None = None,
         warning_stacklevel: int = 4,
     ) -> None:
         """Export MuJoCo geometry, or map forces to unchanged Newton collision rows."""
@@ -7092,6 +7104,15 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     mj_data.xquat,
                     mj_data.njmax,
                     self._contact_tid_to_cid if preserve_geometry else None,
+                    source_body_q if preserve_geometry else None,
+                    self.model.shape_body,
+                    self.model.body_com,
+                    contacts.contact_generation,
+                    (
+                        contacts._mesh_recovery_contacts.data
+                        if preserve_geometry and contacts._mesh_recovery_contacts is not None
+                        else self._empty_mesh_recovery
+                    ),
                 ],
                 outputs=[
                     contacts.rigid_contact_count,

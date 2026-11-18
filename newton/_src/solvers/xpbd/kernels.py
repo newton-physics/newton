@@ -4,6 +4,7 @@
 import warp as wp
 
 from ...geometry import ParticleFlags
+from ...geometry.sdf_planar_recovery import MeshRecoveryData, active_recovery_contact
 from ...math import (
     vec_abs,
     vec_leaky_max,
@@ -2558,6 +2559,8 @@ def _solve_body_contact_positions(
     deltas: wp.array[wp.spatial_vector],
     contact_inv_weight: wp.array[float],
     contact_impulse: wp.array[wp.spatial_vector],
+    recovery: MeshRecoveryData,
+    contact_generation: wp.array[int],
     tid: int,
 ):
 
@@ -2586,11 +2589,22 @@ def _solve_body_contact_positions(
     if body_b >= 0:
         X_wb_b = body_q[body_b]
 
+    recovery_slot = active_recovery_contact(
+        recovery,
+        contact_generation[0],
+        shape_a,
+        shape_b,
+        X_wb_a,
+        X_wb_b,
+        contact_normal[tid],
+    )
+    if recovery_slot < -1:
+        return
+
     # compute body position in world space
+    n = contact_normal[tid]
     bx_a = wp.transform_point(X_wb_a, contact_point0[tid])
     bx_b = wp.transform_point(X_wb_b, contact_point1[tid])
-
-    n = contact_normal[tid]
     d = contact_surface_separation(bx_a, bx_b, n, contact_thickness0[tid], contact_thickness1[tid])
 
     if d >= 0.0:
@@ -2659,8 +2673,18 @@ def _solve_body_contact_positions(
         if body_b >= 0:
             wp.atomic_add(contact_inv_weight, body_b, 1.0)
 
+    correction = d
+    if recovery_slot >= 0:
+        va = wp.vec3(0.0)
+        vb = wp.vec3(0.0)
+        if body_a >= 0:
+            va = velocity_at_point(body_qd[body_a], r_a)
+        if body_b >= 0:
+            vb = velocity_at_point(body_qd[body_b], r_b)
+        target = wp.min(recovery.contacts[recovery_slot].thickness / 32.0, -d / 8.0)
+        correction = wp.max(d, wp.min(0.0, wp.dot(n, vb - va) * dt - target))
     lambda_n = compute_contact_constraint_delta(
-        d, X_wb_a, X_wb_b, m_inv_a, m_inv_b, I_inv_a, I_inv_b, -n, n, angular_a, angular_b, relaxation, dt
+        correction, X_wb_a, X_wb_b, m_inv_a, m_inv_b, I_inv_a, I_inv_b, -n, n, angular_a, angular_b, relaxation, dt
     )
 
     lin_delta_a = -n * lambda_n
@@ -2794,6 +2818,8 @@ def solve_body_contact_positions(
     shape_material_mu_rolling: wp.array[float],
     relaxation: float,
     dt: float,
+    recovery: MeshRecoveryData,
+    contact_generation: wp.array[int],
     deltas: wp.array[wp.spatial_vector],
     contact_inv_weight: wp.array[float],
     contact_impulse: wp.array[wp.spatial_vector],
@@ -2829,6 +2855,8 @@ def solve_body_contact_positions(
         deltas,
         contact_inv_weight,
         contact_impulse,
+        recovery,
+        contact_generation,
         tid,
     )
 

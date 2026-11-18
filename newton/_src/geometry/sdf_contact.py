@@ -1487,6 +1487,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
         _shape_voxel_resolution: wp.array[wp.vec3i],
         shape_pairs_mesh_mesh: wp.array[wp.vec2i],
         shape_pairs_mesh_mesh_count: wp.array[int],
+        recovered_pairs: wp.array[wp.bool],
         shape_heightfield_index: wp.array[wp.int32],
         heightfield_data: wp.array[HeightfieldData],
         heightfield_elevations: wp.array[wp.float32],
@@ -1511,6 +1512,8 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
 
         # Strided loop over pairs
         for pair_idx in range(block_id, pair_count, total_num_blocks):
+            if recovered_pairs.shape[0] > 0 and recovered_pairs[pair_idx]:
+                continue
             pair_encoded = shape_pairs_mesh_mesh[pair_idx]
             shape_a = pair_encoded[0]
             shape_b = pair_encoded[1]
@@ -1973,6 +1976,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
         shape_voxel_resolution: wp.array[wp.vec3i],
         shape_pairs_mesh_mesh: wp.array[wp.vec2i],
         shape_pairs_mesh_mesh_count: wp.array[int],
+        recovered_pairs: wp.array[wp.bool],
         shape_heightfield_index: wp.array[wp.int32],
         heightfield_data: wp.array[HeightfieldData],
         heightfield_elevations: wp.array[wp.float32],
@@ -2015,6 +2019,8 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                 else:
                     hi = mid
             pair_idx = int(lo)
+            if recovered_pairs.shape[0] > 0 and recovered_pairs[pair_idx]:
+                continue
             pair_block_start = block_offsets[pair_idx]
             block_in_pair = combo_idx - pair_block_start
             blocks_for_pair = block_offsets[pair_idx + 1] - pair_block_start

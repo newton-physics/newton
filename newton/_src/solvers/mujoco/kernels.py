@@ -11,6 +11,12 @@ import warp as wp
 
 from ...core.types import vec5
 from ...geometry.inertia import _eig_inertia
+from ...geometry.sdf_planar_recovery import (
+    MeshRecoveryData,
+    active_recovery_contact,
+    find_recovery_contact,
+    has_recovery_contacts,
+)
 from ...sim import BodyFlags, JointTargetMode, JointType
 from ...sim.articulation import eval_joint_motion
 from ...sim.contacts import contact_surface_point, contact_surface_separation
@@ -405,6 +411,16 @@ def eval_mujoco_coupling_effective_mass_block_kernel(
     out_inertia[tid] = inertia
 
 
+@wp.func
+def _recovery_solref(thickness: float, depth: float, dt: float, solimp: vec5) -> wp.vec2:
+    """Limit the positional recovery target independently of the contact distance."""
+    imp_max = wp.clamp(solimp[1], 0.0001, 0.9999)
+    target_speed = wp.min(thickness / 32.0, depth / 8.0) / dt
+    damping = 1.0 / dt
+    stiffness = damping * target_speed / depth * imp_max
+    return wp.vec2(-stiffness, -damping * imp_max)
+
+
 # Kernel functions
 # fast math only approximates div/sqrt here; keep transcendentals out of this kernel
 @wp.kernel(module="unique", module_options={"fast_math": True})
@@ -468,6 +484,8 @@ def convert_newton_contacts_to_mjwarp_kernel(
     contact_generation: wp.array[wp.int32],
     last_contact_generation: wp.array[wp.int32],
     tid_to_cid: wp.array[wp.int32],
+    recovery: MeshRecoveryData,
+    world_timestep: wp.array[float],
 ):
     # nacon_out is scratch storage, initialized to zero by the solver and
     # reset by _sync_nacon_count after each pass.
@@ -485,7 +503,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
 
     gen = contact_generation[0]
     last_gen = last_contact_generation[0]
-    needs_full = gen != last_gen
+    needs_full = gen != last_gen or has_recovery_contacts(recovery, gen)
 
     if needs_full:
         # ── FULL PATH ────────────────────────────────────────────────────
@@ -541,6 +559,19 @@ def convert_newton_contacts_to_mjwarp_kernel(
             X_wb_a = body_q[body_a]
         if body_b >= 0:
             X_wb_b = body_q[body_b]
+
+        recovery_slot = active_recovery_contact(
+            recovery,
+            gen,
+            shape_a,
+            shape_b,
+            X_wb_a,
+            X_wb_b,
+            rigid_contact_normal[tid],
+        )
+        if recovery_slot < -1:
+            tid_to_cid[tid] = -1
+            return
 
         # Strip artificial shape margins from Newton offsets before computing MuJoCo's geometry-surface anchor.
         offset_scale_a = safe_div(rigid_contact_margin0[tid] - shape_margin[shape_a], rigid_contact_margin0[tid])
@@ -687,6 +718,10 @@ def convert_newton_contacts_to_mjwarp_kernel(
                     dampratio = 1.0
                 solref = wp.vec2(timeconst, dampratio)
 
+        if recovery_slot >= 0 and dist < margin:
+            dt = world_timestep[worldid % world_timestep.shape[0]]
+            solref = _recovery_solref(recovery.contacts[recovery_slot].thickness, margin - dist, dt, solimp)
+
         cid = wp.atomic_add(nacon_out, 0, 1)
         if cid >= naconmax:
             tid_to_cid[tid] = -1
@@ -784,10 +819,11 @@ def _sync_nacon_count(
     last_nacon_count: wp.array[wp.int32],
     contact_generation: wp.array[wp.int32],
     last_contact_generation: wp.array[wp.int32],
+    recovery: MeshRecoveryData,
 ):
     """Publish the compacted count and reset scratch storage for the next pass."""
     gen = contact_generation[0]
-    if gen == last_contact_generation[0]:
+    if gen == last_contact_generation[0] and not has_recovery_contacts(recovery, gen):
         nacon[0] = last_nacon_count[0]
     else:
         nacon[0] = contact_count[0]
@@ -1404,6 +1440,11 @@ def create_convert_mjw_contacts_to_newton_kernel():
         mj_xquat: wp.array2d[wp.quatf],
         njmax: int,
         newton_to_mjw: wp.array[wp.int32],
+        newton_body_q: wp.array[wp.transform],
+        newton_shape_body: wp.array[int],
+        newton_body_com: wp.array[wp.vec3],
+        newton_contact_generation: wp.array[int],
+        recovery: MeshRecoveryData,
         # outputs
         rigid_contact_count: wp.array[wp.int32],
         rigid_contact_shape0: wp.array[wp.int32],
@@ -1473,7 +1514,7 @@ def create_convert_mjw_contacts_to_newton_kernel():
 
         if contact_force:
             # Negate: contact_force_fn returns force on geom2; Newton stores force on shape0 (geom1).
-            contact_force[output_idx] = -wp.static(_import_contact_force_fn())(
+            wrench = -wp.static(_import_contact_force_fn())(
                 mj_opt_cone,
                 mj_contact_frame,
                 mj_contact_friction,
@@ -1487,6 +1528,21 @@ def create_convert_mjw_contacts_to_newton_kernel():
                 contact_idx,
                 True,
             )
+            if newton_to_mjw and newton_body_q:
+                a = rigid_contact_shape0[output_idx]
+                b = rigid_contact_shape1[output_idx]
+                if find_recovery_contact(recovery, newton_contact_generation[0], a, b) >= 0:
+                    # Newton reports the wrench about body0's COM, or the
+                    # world origin for a shape attached to the world.
+                    body_a = newton_shape_body[a]
+                    reference = wp.vec3()
+                    if body_a >= 0:
+                        reference = wp.transform_point(newton_body_q[body_a], newton_body_com[body_a])
+                    shift = mj_contact_pos[contact_idx] - reference
+                    force = wp.spatial_top(wrench)
+                    torque = wp.spatial_bottom(wrench) + wp.cross(shift, force)
+                    wrench = wp.spatial_vector(force, torque)
+            contact_force[output_idx] = wrench
 
     return convert_mjw_contacts_to_newton_kernel
 

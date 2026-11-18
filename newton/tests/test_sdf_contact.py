@@ -20,7 +20,14 @@ from newton._src.geometry.sdf_contact import (
 )
 from newton._src.geometry.sdf_texture import TextureSDFData
 from newton._src.utils.heightfield import HeightfieldData
-from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
+from newton.sensors import SensorContact
+from newton.tests.unittest_utils import (
+    MUJOCO_MODULES,
+    add_function_test,
+    get_cuda_test_devices,
+    get_test_devices,
+    requires,
+)
 
 
 @wp.func
@@ -368,6 +375,90 @@ def test_flat_witness_metric(test, device):
             np.testing.assert_allclose(np.abs(output.numpy()[0]), expected, atol=1.0e-6)
 
 
+def test_planar_mesh_recovery_under_load(test, device, *, reduce_contacts=True, mujoco=False, vbd_stale=False):
+    """Expose the outward contact and recover from a loaded thin-wall overlap."""
+    with wp.ScopedDevice(device):
+        wall = newton.Mesh.create_box(0.0005, 0.015, 0.015, duplicate_vertices=False)
+        probe = newton.Mesh.create_capsule(0.004, 0.0, segments=16)
+        for mesh in (wall, probe):
+            mesh.build_sdf(
+                target_voxel_size=0.000125,
+                narrow_band_range=(-0.002, 0.002),
+                margin=0.002,
+            )
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        cfg = builder.ShapeConfig(gap=0.0002, margin=0.0, density=0.0, ke=1.0e6, kd=150.0)
+        builder.add_shape_mesh(-1, mesh=wall, xform=wp.transform(wp.vec3(0.0005, 0.0, 0.0)), cfg=cfg)
+        body = builder.add_body(mass=0.05, inertia=wp.mat33(np.eye(3) * 1.0e-6))
+        builder.add_shape_mesh(body, mesh=probe, cfg=cfg)
+        if vbd_stale:
+            builder.color()
+        model = builder.finalize()
+        pipeline = newton.CollisionPipeline(
+            model, broad_phase="nxn", deterministic=True, reduce_contacts=reduce_contacts, rigid_contact_max=128
+        )
+        contacts = pipeline.contacts()
+        state, next_state = model.state(), model.state()
+        if mujoco:
+            solver = newton.solvers.SolverMuJoCo(model, use_mujoco_contacts=False)
+        elif vbd_stale:
+            # The ordinary manifold's full stabilization must still allow
+            # a bounded correction of the verified deep overlap.
+            solver = newton.solvers.SolverVBD(model, iterations=4, rigid_avbd_contact_alpha=1.0)
+        else:
+            solver = newton.solvers.SolverXPBD(model, iterations=4)
+        control = model.control()
+        sensor = SensorContact(model, sensing_bodies=[body], request_contact_attributes=False)
+        observables = solver.observables(contacts=contacts, kinds=sensor.solver_observable_kinds)
+        dt = 1.0 / 1440.0
+
+        pipeline.collide(state, contacts)
+        count = int(contacts.rigid_contact_count.numpy()[0])
+        test.assertEqual(count, 1)
+        normal = contacts.rigid_contact_normal.numpy()[0]
+        if contacts.rigid_contact_shape0.numpy()[0] != 0:
+            normal = -normal
+        np.testing.assert_allclose(normal, [-1.0, 0.0, 0.0], atol=1.0e-5)
+        # At the initial identity body pose, both witnesses are in world coordinates.
+        midpoint_x = 0.5 * (contacts.rigid_contact_point0.numpy()[0, 0] + contacts.rigid_contact_point1.numpy()[0, 0])
+        test.assertAlmostEqual(float(midpoint_x), 0.002, delta=1.0e-6)
+
+        if vbd_stale:
+            # First project a live row, then hold it as the probe slides past
+            # the verified footprint. The deep public separation persists.
+            model.shape_material_mu.zero_()
+            state.body_qd.fill_(wp.spatial_vector(0.0, 0.1, 0.0, 0.0, 0.0, 0.0))
+            solver.step(state, next_state, control, contacts, dt, observables=observables)
+            first_speed = float(next_state.body_qd.numpy()[body, 0])
+            test.assertLess(first_speed, -0.01)
+            test.assertGreater(float(solver.body_body_contact_normal_rho.numpy()[0]), 0.0)
+            test.assertGreater(np.linalg.norm(solver.body_body_contact_lambda.numpy()[0]), 0.0)
+            solver.step(next_state, state, control, contacts, dt, observables=observables)
+            test.assertAlmostEqual(float(state.body_qd.numpy()[body, 0]), first_speed, delta=1.0e-5)
+            np.testing.assert_array_equal(solver.body_body_contact_lambda.numpy()[0], 0.0)
+            np.testing.assert_array_equal(observables.contact_f.numpy()[0], 0.0)
+            return
+
+        # Give the bounded outward correction time to reach the entry face.
+        for i in range(300 if mujoco else 150):
+            if i:
+                pipeline.collide(state, contacts)
+            state.body_f.fill_(wp.spatial_vector(20.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+            solver.step(state, next_state, control, contacts, dt, observables=observables)
+            state, next_state = next_state, state
+            if not i:
+                # One step must begin recovery without turning a four-mm
+                # geometric correction into a high outward velocity.
+                speed = float(state.body_qd.numpy()[body, 0])
+                test.assertGreater(speed, -0.1)
+                test.assertLess(speed, 0.0)
+                sensor.update(state, contacts, observables=observables)
+                test.assertLess(float(sensor.total_force.numpy()[0, 0]), -1.0)
+                np.testing.assert_allclose(sensor.total_force_friction.numpy(), 0.0, atol=1.0e-4)
+        depth = float(state.body_q.numpy()[body, 0]) + 0.004
+        test.assertLess(abs(depth), 0.0005)
+
+
 class TestSDFContact(unittest.TestCase):
     def test_nonconvex_edge_keeps_endpoint_minima(self):
         """Keep deeper endpoint minima despite a shallower interior well."""
@@ -483,6 +574,33 @@ add_function_test(
     test_mesh_sdf_normal_at_slab_midplane,
     devices=get_cuda_test_devices(),
     reverse_winding=True,
+)
+add_function_test(
+    TestSDFContact,
+    "test_planar_mesh_recovery_with_xpbd",
+    test_planar_mesh_recovery_under_load,
+    devices=get_cuda_test_devices(),
+)
+add_function_test(
+    TestSDFContact,
+    "test_planar_mesh_recovery_with_xpbd_unreduced",
+    test_planar_mesh_recovery_under_load,
+    devices=get_cuda_test_devices(),
+    reduce_contacts=False,
+)
+add_function_test(
+    TestSDFContact,
+    "test_held_deep_contact_retires_in_vbd",
+    test_planar_mesh_recovery_under_load,
+    devices=get_cuda_test_devices(),
+    vbd_stale=True,
+)
+add_function_test(
+    TestSDFContact,
+    "test_planar_mesh_recovery_with_mujoco_warp",
+    requires(*MUJOCO_MODULES)(test_planar_mesh_recovery_under_load),
+    devices=get_cuda_test_devices(),
+    mujoco=True,
 )
 add_function_test(
     TestSDFContact,

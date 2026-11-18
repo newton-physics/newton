@@ -77,6 +77,7 @@ from ..geometry.sdf_contact import (
     create_narrow_phase_process_mesh_mesh_contacts_kernel,
 )
 from ..geometry.sdf_hydroelastic import HydroelasticSDF
+from ..geometry.sdf_planar_recovery import MeshRecoveryData, get_compute_planar_recovery_contacts
 from ..geometry.sdf_texture import TextureSDFData
 from ..geometry.simplex_solver import create_solve_closest_distance
 from ..geometry.support_function import (
@@ -2746,6 +2747,7 @@ class NarrowPhase:
             writer_func = contact_writer_warp_func
         # With group reduction, primitive and convex contacts are staged; its export calls the writer.
         contact_func = writer_func if _group_reduction is None else stage_contact_in_reducer
+        self._mesh_recovery_kernel = get_compute_planar_recovery_contacts(writer_func)
 
         # CPU kernels currently observe ``wp.block_dim() == 1`` regardless
         # of the plain ``wp.launch(..., block_dim=N)`` parameter (Warp
@@ -3311,6 +3313,8 @@ class NarrowPhase:
         max_speculative_extension: float = 0.0,
         body_q: wp.array[wp.transform] | None = None,
         shape_body: wp.array[wp.int32] | None = None,
+        mesh_recovery: MeshRecoveryData | None = None,
+        recovered_pairs: wp.array[wp.bool] | None = None,
         writer_data: Any,
         device: Devicelike | None = None,  # Device to launch on
     ) -> None:
@@ -3380,6 +3384,8 @@ class NarrowPhase:
             max_speculative_extension: Maximum speculative clearance [m].
             body_q: Body poses, required with group reduction (cells are measured from a body).
             shape_body: Per-shape body index, required with group reduction.
+            mesh_recovery: Optional solver metadata for verified thin-wall exits.
+            recovered_pairs: Scratch mask of mesh pairs already written by recovery.
             writer_data: Custom struct instance for contact writing (type must match the custom writer function)
             device: Device to launch on
         """
@@ -3778,6 +3784,39 @@ class NarrowPhase:
                 shape_edge_range = self._empty_edge_range
 
             if self.mesh_mesh_contacts_kernel is not None and self.max_mesh_mesh_pairs > 0:
+                if mesh_recovery is not None:
+                    work_device = wp.get_device(device)
+                    budget = 32 * work_device.sm_count if work_device.is_cuda else self.total_num_threads
+                    threads = min(self.max_mesh_mesh_pairs, budget)
+                    wp.launch(
+                        self._mesh_recovery_kernel,
+                        dim=threads,
+                        inputs=[
+                            self.shape_pairs_mesh_mesh,
+                            self.shape_pairs_mesh_mesh_count,
+                            shape_data,
+                            shape_transform,
+                            shape_source,
+                            shape_mesh_properties,
+                            mesh_boundary_flags,
+                            shape_mesh_boundary_start,
+                            shape_sdf_index,
+                            texture_sdf_data,
+                            shape_collision_aabb_lower,
+                            shape_collision_aabb_upper,
+                            self.shape_aabb_lower,
+                            self.shape_aabb_upper,
+                            shape_body,
+                            body_q,
+                            mesh_recovery,
+                            writer_data,
+                            recovered_pairs,
+                            threads,
+                        ],
+                        device=device,
+                        record_tape=False,
+                        block_dim=8 if work_device.is_cuda else 1,
+                    )
                 mesh_mesh_contacts_kernel = (
                     self.mesh_mesh_contacts_kernel_precomputed
                     if has_precomputed_edge_data
@@ -3823,6 +3862,7 @@ class NarrowPhase:
                             shape_voxel_resolution,
                             self.shape_pairs_mesh_mesh,
                             self.shape_pairs_mesh_mesh_count,
+                            recovered_pairs,
                             shape_heightfield_index,
                             heightfield_data,
                             heightfield_elevations,
@@ -3863,6 +3903,7 @@ class NarrowPhase:
                             shape_voxel_resolution,
                             self.shape_pairs_mesh_mesh,
                             self.shape_pairs_mesh_mesh_count,
+                            recovered_pairs,
                             shape_heightfield_index,
                             heightfield_data,
                             heightfield_elevations,

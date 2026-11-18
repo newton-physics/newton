@@ -1095,6 +1095,22 @@ Two approaches available:
 2. **SDF-based** (recommended): Uses precomputed signed distance fields for fast queries.
    For mesh shapes, call ``mesh.build_sdf(...)`` once and reuse the mesh.
 
+When a rounded, closed mesh probe straddles a thin wall, Newton can publish a
+single contact on the shorter exit path. Both shapes need an SDF. A mesh
+query verifies the two locally planar wall faces and the swept probe footprint.
+Broad contact patches, ambiguous exits, and nearby features that intrude on the
+footprint use the ordinary manifold. The same fallback applies when the probe
+has more than 4,096 vertices or the swept query visits more than 128 wall
+triangles. A complete crossing can leave the shapes
+separated, so no discrete overlap remains to recover.
+
+Solvers and :class:`~sensors.SensorContact` read the same two surface witnesses
+and separation normal from the contact buffer. XPBD and VBD bound positional
+correction while the probe is deeply embedded. MuJoCo Warp with Newton contacts temporarily
+uses recovery stiffness and damping to limit its separation speed, then resumes
+the ordinary contact material response. Hydroelastic pairs follow the
+pressure-based contact model.
+
 .. warning::
    If SDF is not precomputed, mesh-mesh contacts fall back to on-the-fly BVH distance queries
    which are **significantly slower**. For production use with complex meshes, precompute and
