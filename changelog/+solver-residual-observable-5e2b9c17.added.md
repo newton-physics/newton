@@ -1,0 +1,1 @@
+Add the standard `SolverBase.ObservableKind.SOLVER_RESIDUAL` observable, a per-world convergence residual, and support it in `SolverKamino` as the largest terminal residual relative to its stopping tolerance.

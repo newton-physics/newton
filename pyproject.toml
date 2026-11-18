@@ -14,7 +14,6 @@ classifiers = [
     "Intended Audience :: Science/Research",
     "Natural Language :: English",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -26,12 +25,17 @@ classifiers = [
 ]
 description = "A GPU-accelerated physics engine for robotics simulation"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "warp-lang>=1.17.0",
 ]
 
 [project.optional-dependencies]
+
+# Optional hardware-accelerated camera traversal.
+optix = [
+    "warp-optix~=0.3.0; python_version == '3.12' and (sys_platform == 'linux' or sys_platform == 'win32') and (platform_machine == 'x86_64' or platform_machine == 'AMD64')",
+]
 
 # Core simulation dependencies
 sim = [
@@ -60,10 +64,9 @@ importers = [
     "pycollada>=0.9",              # transitive dependency of trimesh for COLLADA (.dae) mesh support
     "Pillow>=11.3.0",
     "resolve-robotics-uri-py>=0.5.1",  # for resolving file://, package://, and model:// URIs
-    "open3d>=0.20.0; (sys_platform != 'darwin' or platform_machine == 'arm64') and (sys_platform != 'win32' or platform_machine != 'ARM64')",  # no Intel macOS or Windows ARM64 wheels
 
     # USD core libraries
-    "usd-core>=25.5,<26.9 ; platform_machine != 'aarch64' and python_version < '3.15' and (sys_platform != 'win32' or platform_machine != 'ARM64')",
+    "usd-core>=25.5,<26.12 ; platform_machine != 'aarch64' and python_version < '3.15' and (sys_platform != 'win32' or platform_machine != 'ARM64')",
     "usd-exchange>=2.3.0,<4 ; platform_machine == 'aarch64' and python_version < '3.14'",
 
     # Newton USD Schemas
@@ -115,6 +118,7 @@ dev = [
     "newton[examples]",      # includes examples, which pulls in sim and visualization
     "coverage[toml]>=7.8.0", # for code coverage testing
     "viser>=1.1.1",          # exercise browser viewer interactions in CPU and GPU CI
+    "newton[remesh]",        # Open3D and pyfqmr, so the remeshing tests run
 ]
 
 # Documentation dependencies
@@ -204,6 +208,7 @@ select = [
     "PLW", # pylint warning
     "UP",  # pyupgrade
     "RUF",  # ruff-specific rules
+    "TID251",  # banned APIs
     "TID253",  # banned module-level imports
     "T201",  # print; library code logs instead
 ]
@@ -234,6 +239,11 @@ extend-immutable-calls = ["newton.solvers.SolverBase.Observables.field"]
 "!newton/_src/**/*" = ["T201"]
 "newton/_src/**/tests/**/*" = ["T201"]
 "newton/_src/solvers/kamino/examples/**/*" = ["T201"]
+# TID251 (banned APIs) only applies to tests
+"!newton/tests/**/*" = ["TID251"]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"importlib.util.find_spec".msg = "Declare optional test dependencies with newton.tests.unittest_utils.requires() or has_module(), which also catch broken installs."
 
 [tool.ruff.lint.flake8-tidy-imports]
 banned-module-level-imports = [
@@ -264,6 +274,7 @@ banned-module-level-imports = [
     "torch",
     "trimesh",
     "viser",
+    "yaml",
 ]
 
 [tool.ruff.lint.pydocstyle]

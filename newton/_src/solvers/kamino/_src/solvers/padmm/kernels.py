@@ -14,6 +14,7 @@ from ...core.math import FLOAT32_EPS, FLOAT32_MAX
 from ..common import (
     apply_dual_preconditioner_to_solution as _apply_dual_preconditioner_to_solution,
 )
+from ..common import tolerance_scaled_residual
 from ..common import (
     warmstart_contact_constraints as _warmstart_contact_constraints,
 )
@@ -67,6 +68,7 @@ __all__ = [
     "_warmstart_desaxce_correction",
     "_warmstart_joint_constraints",
     "_warmstart_limit_constraints",
+    "_write_padmm_world_residual",
     "make_collect_solver_info_kernel",
     "make_collect_solver_info_kernel_sparse",
     "make_desaxce_correction_and_velocity_bias_kernel",
@@ -1960,3 +1962,24 @@ def _compute_solution_vectors(
 
     # Update constraint reactions: lambda = y
     solver_lambdas[thread_offset] = y
+
+
+@wp.kernel
+def _write_padmm_world_residual(
+    # Inputs:
+    solver_config: wp.array[PADMMConfigStruct],
+    solver_status: wp.array[PADMMStatus],
+    # Outputs:
+    world_residual: wp.array[wp.float32],
+):
+    """Write the largest terminal residual of each world relative to its stopping tolerance."""
+    wid = wp.tid()
+    config = solver_config[wid]
+    status = solver_status[wid]
+    world_residual[wid] = wp.max(
+        wp.max(
+            tolerance_scaled_residual(status.r_p, config.primal_tolerance),
+            tolerance_scaled_residual(status.r_d, config.dual_tolerance),
+        ),
+        tolerance_scaled_residual(status.r_c, config.compl_tolerance),
+    )

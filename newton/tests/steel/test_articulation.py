@@ -242,15 +242,15 @@ def test_connect_survives_foreign_joint_between_tree_and_loop(test, device):
 
 
 def test_unsupported_loop_joints_are_rejected(test, device):
-    """Reject loop joints other than BALL and REVOLUTE, and closures between two dynamic articulations."""
+    """Reject loop joints other than BALL, REVOLUTE and FIXED, and closures between two dynamic articulations."""
     b = _build_four_bar()
     _expect_one_warning(
         test,
-        newton.exceptions.NewtonWarning,
+        newton.NewtonWarning,
         "another joint already connects these bodies",
-        lambda: b.add_joint_fixed(parent=1, child=2),
+        lambda: b.add_joint_prismatic(parent=1, child=2),
     )
-    with test.assertRaisesRegex(NotImplementedError, "only BALL and REVOLUTE loop-closing joints"):
+    with test.assertRaisesRegex(NotImplementedError, "only BALL, REVOLUTE and FIXED loop-closing joints"):
         SolverSteel(b.finalize(device=device))
 
     b = newton.ModelBuilder(up_axis=newton.Axis.Z)
@@ -495,7 +495,7 @@ def test_imported_connect_equality_is_enforced(test, device):
             # The converted CONNECT becomes a BALL loop joint parallel to the hinge.
             _expect_one_warning(
                 test,
-                newton.exceptions.NewtonWarning,
+                newton.NewtonWarning,
                 "another joint already connects these bodies",
                 functools.partial(b.add_mjcf, mjcf, convert_mjc_equality_constraints=True),
             )
@@ -768,6 +768,130 @@ def test_disabled_tree_joint_is_reported(test, device):
         SolverSteel(model)
 
 
+def test_imported_weld_equality_holds_the_authored_pose(test, device):
+    """Hold a tilted body where an imported MuJoCo WELD authors it instead of snapping it to the world axes."""
+    mjcf = """
+    <mujoco>
+      <worldbody>
+        <body name="paddle" pos="0 0 1" euler="0 45 0">
+          <joint name="hinge" type="hinge" axis="0 1 0"/>
+          <geom type="box" pos="0.3 0 0" size="0.3 0.05 0.05"/>
+        </body>
+      </worldbody>
+      <equality><weld body1="paddle"/></equality>
+    </mujoco>
+    """
+    b = newton.ModelBuilder()
+    # The converted WELD becomes a FIXED loop joint parallel to the hinge.
+    _expect_one_warning(
+        test, newton.NewtonWarning, "another joint already connects these bodies", lambda: b.add_mjcf(mjcf)
+    )
+    model = b.finalize(device=device)
+    solver = SolverSteel(model, iterations=16)
+    test.assertEqual(solver._connect_count, 1)
+    state_0, state_1, control = model.state(), model.state(), model.control()
+    q_start = state_0.body_q.numpy()[0, 3:].copy()
+    for _ in range(30):
+        solver.step(state_0, state_1, control, None, 1.0 / 240.0)
+        state_0, state_1 = state_1, state_0
+    test.assertLess(abs(float(state_0.joint_q.numpy()[0])), 1.0e-3)
+    test.assertGreater(abs(float(state_0.body_q.numpy()[0, 3:] @ q_start)), 1.0 - 1.0e-6)
+
+
+def test_imported_weld_with_zero_torquescale_leaves_rotation_free(test, device):
+    """Pin only the anchor of a MuJoCo weld with torquescale 0, so a paddle welded at its hinge swings freely."""
+    mjcf = """
+    <mujoco>
+      <worldbody>
+        <body name="paddle" pos="0 0 1" euler="0 45 0">
+          <joint name="hinge" type="hinge" axis="0 1 0"/>
+          <geom type="box" pos="0.3 0 0" size="0.3 0.05 0.05"/>
+        </body>
+      </worldbody>
+      <equality><weld body1="paddle" anchor="0 0 1" torquescale="0"/></equality>
+    </mujoco>
+    """
+    b = newton.ModelBuilder()
+    # The BALL loop joint parallels the hinge.
+    with test.assertLogs("newton", level="WARNING") as logs:
+        _expect_one_warning(test, newton.NewtonWarning, "another joint already connects", lambda: b.add_mjcf(mjcf))
+    test.assertTrue(any("torquescale=0" in line for line in logs.output))
+    model = b.finalize(device=device)
+    solver = SolverSteel(model, iterations=16)
+    test.assertEqual(solver._connect_count, 1)
+    test.assertEqual(int(solver._connect_rows_np[0]), 3)
+
+    # Reference: a compound pendulum about the hinge, theta'' = m g r_x(theta) / I_pivot, integrated with RK4.
+    dt, steps = 1.0 / 240.0, 30
+    m = float(model.body_mass.numpy()[0])
+    q0 = wp.quat(*model.body_q.numpy()[0, 3:])
+    r0 = np.array(wp.quat_rotate(q0, wp.vec3(*model.body_com.numpy()[0])))
+    i_pivot = float(model.body_inertia.numpy()[0][1, 1]) + m * (r0[0] ** 2 + r0[2] ** 2)
+
+    def accel(th):
+        return m * 9.81 * (np.cos(th) * r0[0] + np.sin(th) * r0[2]) / i_pivot
+
+    th, w, h = 0.0, 0.0, dt / 20
+    for _ in range(20 * steps):
+        k1 = (w, accel(th))
+        k2 = (w + 0.5 * h * k1[1], accel(th + 0.5 * h * k1[0]))
+        k3 = (w + 0.5 * h * k2[1], accel(th + 0.5 * h * k2[0]))
+        k4 = (w + h * k3[1], accel(th + h * k3[0]))
+        th += h * (k1[0] + 2 * k2[0] + 2 * k3[0] + k4[0]) / 6
+        w += h * (k1[1] + 2 * k2[1] + 2 * k3[1] + k4[1]) / 6
+
+    state_0, state_1, control = model.state(), model.state(), model.control()
+    for _ in range(steps):
+        solver.step(state_0, state_1, control, None, dt)
+        state_0, state_1 = state_1, state_0
+    swing = float(state_0.joint_q.numpy()[0])
+    test.assertGreater(abs(th), 0.1)
+    # Semi-implicit Euler leads the exact swing by about one step, (N + 1) / N = 3.3 % for N = 30.
+    test.assertAlmostEqual(swing, th, delta=0.05 * abs(th))
+
+
+def test_imported_weld_with_unnormalized_relpose_holds_the_same_pose(test, device):
+    """Normalize an imported weld's relpose quaternion, so a scaled one gives the same frames and held pose."""
+    mjcf = """
+    <mujoco>
+      <worldbody>
+        <body name="paddle" pos="0 0 1" euler="0 45 0">
+          <joint name="hinge" type="hinge" axis="0 1 0"/>
+          <geom type="box" pos="0.3 0 0" size="0.3 0.05 0.05"/>
+        </body>
+      </worldbody>
+      <equality><weld body1="paddle" anchor="0 0 1" relpose="0 0 0 {quat}"/></equality>
+    </mujoco>
+    """
+    held = {}
+    for label, quat in (("unit", "0.9238795 0 -0.3826834 0"), ("scaled", "1.847759 0 -0.7653668 0")):
+        b = newton.ModelBuilder()
+        newton.solvers.SolverMuJoCo.register_custom_attributes(b)
+        # The FIXED loop joint parallels the hinge.
+        _expect_one_warning(
+            test,
+            newton.NewtonWarning,
+            "another joint already connects",
+            lambda b=b, quat=quat: b.add_mjcf(mjcf.format(quat=quat)),
+        )
+        model = b.finalize(device=device)
+        solver = SolverSteel(model, iterations=16)
+        state_0, state_1, control = model.state(), model.state(), model.control()
+        for _ in range(30):
+            solver.step(state_0, state_1, control, None, 1.0 / 240.0)
+            state_0, state_1 = state_1, state_0
+        held[label] = (
+            model.joint_X_p.numpy()[1],
+            model.joint_X_c.numpy()[1],
+            model.mujoco.equality_constraint_relpose.numpy()[0],
+            state_0.body_q.numpy()[0],
+        )
+    for unit, scaled in zip(held["unit"], held["scaled"], strict=True):
+        np.testing.assert_allclose(scaled, unit, atol=1.0e-6)
+    # The relpose is the authored pose, so the weld holds the paddle against gravity at its 45 degree tilt.
+    test.assertGreater(abs(float(held["unit"][3][3:] @ model.body_q.numpy()[0, 3:])), 1.0 - 1.0e-6)
+
+
 def _expect_one_warning(test, category, pattern, call):
     """Return ``call()``, requiring it to emit exactly one warning, of ``category`` and matching ``pattern``."""
     with warnings.catch_warnings(record=True) as caught:
@@ -864,7 +988,7 @@ def test_open_world_closure_pulls_at_child_anchor(test, device):
     # The child anchor is the load's center of mass; the world anchor sits 5 cm to the side.
     _expect_one_warning(
         test,
-        newton.exceptions.NewtonWarning,
+        newton.NewtonWarning,
         "another joint already connects these bodies",
         lambda: b.add_joint_ball(
             parent=-1, child=load, parent_xform=wp.transform(wp.vec3(0.05, 0.0, 1.0), wp.quat_identity())
@@ -902,7 +1026,7 @@ def test_open_closure_from_fixed_root_pulls_at_child_anchor(test, device):
     # The child anchor is the load's center of mass; the root anchor is 5 cm away and out of the rod's reach.
     _expect_one_warning(
         test,
-        newton.exceptions.NewtonWarning,
+        newton.NewtonWarning,
         "another joint already connects these bodies",
         lambda: b.add_joint_ball(
             parent=root, child=load, parent_xform=wp.transform(wp.vec3(0.03, 0.04, -0.2), wp.quat_identity())
@@ -942,7 +1066,7 @@ def test_open_closure_from_kinematic_root_pulls_at_child_anchor(test, device):
     # The root's free joint keeps response DOFs, but they are kinematic, so only the load takes the impulse.
     _expect_one_warning(
         test,
-        newton.exceptions.NewtonWarning,
+        newton.NewtonWarning,
         "another joint already connects these bodies",
         lambda: b.add_joint_ball(
             parent=root, child=load, parent_xform=wp.transform(wp.vec3(0.03, 0.04, -0.2), wp.quat_identity())
@@ -994,6 +1118,9 @@ for _name in (
     "test_unsupported_loop_joints_are_rejected",
     "test_closure_row_overflow_is_reported",
     "test_imported_connect_equality_is_enforced",
+    "test_imported_weld_equality_holds_the_authored_pose",
+    "test_imported_weld_with_zero_torquescale_leaves_rotation_free",
+    "test_imported_weld_with_unnormalized_relpose_holds_the_same_pose",
     "test_open_closure_on_floating_base_conserves_angular_momentum",
     "test_open_world_closure_pulls_at_child_anchor",
     "test_open_closure_from_fixed_root_pulls_at_child_anchor",
@@ -1418,7 +1545,7 @@ def test_rows_remain_allocated(test, device):
 def test_prescribed_parent_closure_warns_and_falls_back(test, device):
     """Disable elimination for the whole solver when a closure has a kinematic or world parent."""
     b, _, _, _ = _build_carried_load()
-    with test.assertWarnsRegex(newton.exceptions.NewtonWarning, "kinematic or world parent.*whole solver"):
+    with test.assertWarnsRegex(newton.NewtonWarning, "kinematic or world parent.*whole solver"):
         solver = SolverSteel(b.finalize(device=device), enable_bilateral_preelimination=True)
     test.assertFalse(solver._preelim_active)
     test.assertEqual(solver._connect_count, 3)
@@ -1434,7 +1561,7 @@ def test_prescribed_parent_closure_warns_and_falls_back(test, device):
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=r".*another joint already connects these bodies")
         b.add_joint_ball(-1, load, parent_xform=wp.transform(wp.vec3(1.0, 0.0, 0.5), wp.quat_identity()))
-    with test.assertWarnsRegex(newton.exceptions.NewtonWarning, "whole solver"):
+    with test.assertWarnsRegex(newton.NewtonWarning, "whole solver"):
         mixed = SolverSteel(b.finalize(device=device), enable_bilateral_preelimination=True)
     test.assertFalse(mixed._preelim_active)
     test.assertEqual(mixed._preelim_count, 0)
@@ -1529,7 +1656,7 @@ def test_propagation_keeps_iterative_mimic_rows(test, device):
     model = builder.finalize(device=device)
     for solve_mode in ("serial", "colored"):
         with test.subTest(solve_mode=solve_mode):
-            with test.assertWarnsRegex(newton.exceptions.NewtonWarning, "propagation"):
+            with test.assertWarnsRegex(newton.NewtonWarning, "propagation"):
                 solver = SolverSteel(
                     model,
                     solve_mode=solve_mode,
@@ -2166,7 +2293,7 @@ def test_springs_skip_unsupported_joint_types(test, device, solve_mode="serial")
     sprung[qd_start[joints[2]]] = True
     sprung[: qd_start[loop_joint]] = True
     with warnings.catch_warnings():
-        warnings.simplefilter("ignore", newton.exceptions.NewtonWarning)
+        warnings.simplefilter("ignore", newton.NewtonWarning)
         solver = SolverSteel(model, solve_mode=solve_mode)
         np.testing.assert_array_equal(solver._passive_spring_stiffness.numpy(), np.where(sprung, 5.0, 0.0))
         model.joint_stiffness.fill_(7.0)
@@ -3675,7 +3802,7 @@ def _build_world_hinged_swing(test, closure, start_angle=0.6):
     else:
         add_loop_joint = functools.partial(b.add_joint_ball, parent=-1, child=body, parent_xform=x_p, child_xform=x_c)
     joint = _expect_one_warning(
-        test, newton.exceptions.NewtonWarning, "another joint already connects these bodies", add_loop_joint
+        test, newton.NewtonWarning, "another joint already connects these bodies", add_loop_joint
     )
     return b, joint
 
@@ -3879,11 +4006,11 @@ def test_revolute_loop_warns_about_ignored_limits_and_drives(test, device):
         builder, joint = _build_world_hinged_swing(test, "revolute")
         dof = builder.joint_qd_start[joint]
         builder.joint_limit_lower[dof], builder.joint_limit_upper[dof] = lower, upper
-        with test.assertWarnsRegex(newton.exceptions.NewtonWarning, "loop-closing REVOLUTE joint .* limits"):
+        with test.assertWarnsRegex(newton.NewtonWarning, "loop-closing REVOLUTE joint .* limits"):
             SolverSteel(builder.finalize(device=device))
     builder, joint = _build_world_hinged_swing(test, "revolute")
     builder.joint_target_ke[builder.joint_qd_start[joint]] = 10.0
-    with test.assertWarnsRegex(newton.exceptions.NewtonWarning, "loop-closing REVOLUTE joint .* drive gains"):
+    with test.assertWarnsRegex(newton.NewtonWarning, "loop-closing REVOLUTE joint .* drive gains"):
         SolverSteel(builder.finalize(device=device))
     for name, attribute, value in (
         ("damping", "joint_damping", 100.0),
@@ -3892,16 +4019,14 @@ def test_revolute_loop_warns_about_ignored_limits_and_drives(test, device):
     ):
         builder, joint = _build_world_hinged_swing(test, "revolute")
         getattr(builder, attribute)[builder.joint_qd_start[joint]] = value
-        with test.assertWarnsRegex(newton.exceptions.NewtonWarning, f"loop-closing REVOLUTE joint .* {name}"):
+        with test.assertWarnsRegex(newton.NewtonWarning, f"loop-closing REVOLUTE joint .* {name}"):
             SolverSteel(builder.finalize(device=device))
     builder, joint = _build_world_hinged_swing(test, "revolute")
     builder.joint_axis[builder.joint_qd_start[joint]] = (0.0, 0.0, 0.0)
-    with test.assertWarnsRegex(
-        newton.exceptions.NewtonWarning, "loop-closing REVOLUTE joint .* zero or non-finite axis"
-    ):
+    with test.assertWarnsRegex(newton.NewtonWarning, "loop-closing REVOLUTE joint .* zero or non-finite axis"):
         SolverSteel(builder.finalize(device=device))
     with warnings.catch_warnings():
-        warnings.simplefilter("error", newton.exceptions.NewtonWarning)
+        warnings.simplefilter("error", newton.NewtonWarning)
         SolverSteel(_build_world_hinged_swing(test, "revolute")[0].finalize(device=device))
 
 
@@ -3909,7 +4034,7 @@ def test_revolute_loop_warns_about_edits_it_ignores(test, device):
     """Warn on an eager notification after an edit to a zero or NaN axis or to damping of a loop-closing REVOLUTE joint."""
     model = _build_world_hinged_swing(test, "revolute")[0].finalize(device=device)
     with warnings.catch_warnings():
-        warnings.simplefilter("error", newton.exceptions.NewtonWarning)
+        warnings.simplefilter("error", newton.NewtonWarning)
         solver = SolverSteel(model)
         solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES | newton.ModelFlags.JOINT_DOF_PROPERTIES)
     dof = int(model.joint_qd_start.numpy()[1])
@@ -3917,14 +4042,12 @@ def test_revolute_loop_warns_about_edits_it_ignores(test, device):
     for bad_axis in ((0.0, 0.0, 0.0), (np.nan, 0.0, 0.0)):
         axis[dof] = bad_axis
         model.joint_axis.assign(axis)
-        with test.assertWarnsRegex(
-            newton.exceptions.NewtonWarning, "loop-closing REVOLUTE joint 1 has a zero or non-finite axis"
-        ):
+        with test.assertWarnsRegex(newton.NewtonWarning, "loop-closing REVOLUTE joint 1 has a zero or non-finite axis"):
             solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES)
     damping = model.joint_damping.numpy()
     damping[dof] = 100.0
     model.joint_damping.assign(damping)
-    with test.assertWarnsRegex(newton.exceptions.NewtonWarning, "loop-closing REVOLUTE joint 1 has damping"):
+    with test.assertWarnsRegex(newton.NewtonWarning, "loop-closing REVOLUTE joint 1 has damping"):
         solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
 
 
@@ -3944,14 +4067,12 @@ def test_revolute_loop_dof_gets_no_drive_or_velocity_limit_rows(test, device):
             builder.joint_target_ke[loop_dof] = 50.0
             builder.joint_target_kd[loop_dof] = 1.0
             builder.joint_target_q[builder.joint_q_start[joint]] = 0.3
-            context = test.assertWarnsRegex(
-                newton.exceptions.NewtonWarning, "loop-closing REVOLUTE joint .* drive gains"
-            )
+            context = test.assertWarnsRegex(newton.NewtonWarning, "loop-closing REVOLUTE joint .* drive gains")
         else:
             context = warnings.catch_warnings()
         with context:
             if not gain:
-                warnings.simplefilter("error", newton.exceptions.NewtonWarning)
+                warnings.simplefilter("error", newton.NewtonWarning)
             _, _, poses, solver = _run_closure(builder, joint, device, steps=100, solve_mode="serial", **solver_options)
         return poses, int(solver._constraint_count.numpy()[0])
 
@@ -3979,7 +4100,7 @@ def test_revolute_loop_realigns_to_the_nearer_axis_direction(test, device):
     flipped = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), float(np.radians(179.0)))
     joint = _expect_one_warning(
         test,
-        newton.exceptions.NewtonWarning,
+        newton.NewtonWarning,
         "another joint already connects these bodies",
         functools.partial(
             b.add_joint_revolute,
@@ -4026,7 +4147,7 @@ def test_revolute_loop_from_fixed_root_matches_world_parent(test, device):
         )
         if parent == root:
             joint = _expect_one_warning(
-                test, newton.exceptions.NewtonWarning, "another joint already connects these bodies", add_loop_joint
+                test, newton.NewtonWarning, "another joint already connects these bodies", add_loop_joint
             )
         else:
             joint = add_loop_joint()

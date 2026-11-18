@@ -308,10 +308,11 @@ def _add_equality_constraint(
             ``EqType.WELD``, ``EqType.JOINT``, or ``EqType.TENDON``).
         body1: Index of the first body (-1 for world).
         body2: Index of the second body (-1 for world).
-        anchor: Anchor point on body1. Defaults to the origin.
+        anchor: Anchor point on body1 for connect, or on body2 for weld. Defaults to the origin.
         torquescale: Angular residual scale for weld. Defaults to ``1.0`` for
             ``EqType.WELD`` and ``0.0`` otherwise.
-        relpose: Relative pose of body2 for weld. Defaults to the identity transform.
+        relpose: For weld, the position in body1's frame where the anchor is held, and body2's
+            orientation in body1's frame. Defaults to the identity transform.
         joint1: Index of the first joint for joint coupling.
         joint2: Index of the second joint for joint coupling.
         polycoef: Five polynomial coefficients for ``EqType.JOINT`` and
@@ -515,8 +516,9 @@ def add_equality_weld(
         builder: Model builder receiving the constraint.
         body1: First body index, or ``-1`` for the world.
         body2: Second body index, or ``-1`` for the world.
-        relpose: Relative pose of the second body in the first body's frame.
-            If omitted, preserve the bodies' initial relative pose.
+        relpose: The position in the first body's frame where the second body's origin is held,
+            and the second body's orientation in the first body's frame. If omitted, preserve the
+            bodies' initial relative pose.
         torquescale: Angular residual length scale [m].
         label: Optional constraint label.
         enabled: Whether the constraint is active.

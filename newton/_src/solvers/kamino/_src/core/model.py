@@ -526,7 +526,8 @@ class ModelKamino:
     gravity: wp.array[wp.vec3] | None = None
     """
     Per-world gravity vector [m/s²], aliasing :attr:`newton.Model.gravity`.
-    Shape of ``(num_worlds,)`` or ``(num_worlds + 1,)`` when the final entry holds global-world gravity.
+    Shape of ``(num_worlds + 1,)``; the final entry holds global-world gravity. When
+    world 0 simulates global world ``-1``, shape ``(1,)`` aliasing the global entry.
     """
 
     bodies: RigidBodiesModel | None = None
@@ -787,9 +788,14 @@ class ModelKamino:
 
         # Normalize conversion-only grouping metadata for single-world models.
         conversion_model = model
+        gravity = model.gravity
         if model.world_count == 1:
             conversion_model = ModelView(model, "kamino_worlds")
-            has_dedicated_global_gravity = model.gravity.shape[0] > model.world_count
+            # Without bodies in world 0, as in models built without explicit worlds, Kamino world 0
+            # simulates global world -1 and aliases its gravity entry.
+            global_world_bodies = model.body_count > 0 and not np.any(model.body_world.numpy() == 0)
+            if global_world_bodies:
+                gravity = model.gravity[model.world_count :]
             for attr, start_attr in (
                 ("body_world", "body_world_start"),
                 ("joint_world", "joint_world_start"),
@@ -798,8 +804,8 @@ class ModelKamino:
                 arr = getattr(model, attr)
                 arr_np = arr.numpy()
                 if np.any(arr_np < 0):
-                    # Preserve body -1 only when it selects a dedicated global gravity entry.
-                    if attr != "body_world" or not has_dedicated_global_gravity:
+                    # Otherwise preserve body -1, which selects the global gravity entry.
+                    if attr != "body_world" or global_world_bodies:
                         arr_np = arr_np.copy()
                         arr_np[arr_np < 0] = 0
                         setattr(conversion_model, attr, wp.array(arr_np, dtype=wp.int32, device=model.device))
@@ -869,7 +875,7 @@ class ModelKamino:
             size=model_size,
             info=model_info,
             time=model_time,
-            gravity=model.gravity,
+            gravity=gravity,
             bodies=model_bodies,
             joints=model_joints,
             geoms=model_geoms,

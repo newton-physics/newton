@@ -70,8 +70,8 @@ Contact reduction
    ``CollisionPipeline(reduce_contacts=...)`` controls the mesh/heightfield
    reduction every solver consumes. The opt-in
    ``CollisionPipeline(body_pair_reduction=...)`` reduction changes which contacts
-   the solver sees and is supported by :class:`newton.solvers.SolverSteel`
-   only. Keep it off unless it lowers the
+   the solver sees and applies to built-in solvers consuming Newton contacts,
+   like mesh/SDF reduction. Keep it off unless it lowers the
    measured step time, and check tipping and yaw behavior when it is on.
 
 Contact material
@@ -111,6 +111,17 @@ Collision frequency
    frequent updates. See :ref:`collision-frequency-in-the-simulation-loop` for
    loop patterns.
 
+   For rigid contacts with fast motion, consider the experimental
+   :class:`CollisionSubstepScheduler` instead of a fixed collision interval.
+   It preserves velocity-guided speculative contacts and refreshes them based on
+   observed shape velocity changes, travel, and the maximum refresh interval.
+   Rotating shapes and observed velocity changes require one-substep prediction
+   horizons; gravity and impacts may require checks every substep. It preserves
+   every solver substep.
+   See :ref:`tuning-adaptive-collision-detection` for
+   configuration, solver requirements, overflow diagnostics, and the limits of
+   this alternative to full continuous collision detection.
+
 Solver-Specific Knobs
 ---------------------
 
@@ -149,18 +160,14 @@ repository examples spend tuning effort, not a shared solver API.
        use armature, joint friction, effort limits, or velocity limits.
        Examples mostly tune ``iterations`` and ``rigid_contact_relaxation``.
    * - :class:`~newton.solvers.SolverVBD`
-     - ``iterations``, ``rigid_compliant_alm``, ``friction_epsilon``,
+     - ``iterations``, ``friction_epsilon``,
        ``dat_conservative_bound_relaxation``,
        ``rigid_avbd_alpha``,
        ``rigid_avbd_joint_alpha``, ``rigid_avbd_contact_alpha``,
-       ``rigid_avbd_beta``, ``rigid_avbd_linear_beta``,
-       ``rigid_avbd_angular_beta``, ``rigid_avbd_gamma``,
-       ``rigid_contact_hard``, ``rigid_contact_history``,
-       ``rigid_contact_k_start``,
+       ``rigid_avbd_gamma``, ``rigid_contact_history``,
        ``rigid_body_contact_buffer_size``,
        ``rigid_body_particle_contact_buffer_size``,
        ``rigid_joint_linear_ke``, ``rigid_joint_angular_ke``,
-       ``rigid_joint_linear_k_start``, ``rigid_joint_angular_k_start``,
        ``rigid_joint_linear_kd``, ``rigid_joint_angular_kd``,
        ``integrate_with_external_rigid_solver``,
        ``particle_enable_self_contact``, ``particle_self_contact_margin``,
@@ -174,17 +181,13 @@ repository examples spend tuning effort, not a shared solver API.
        ``particle_edge_parallel_epsilon``, ``particle_enable_tile_solve``,
        ``particle_topological_contact_filter_threshold``,
        ``particle_rest_shape_contact_exclusion_radius``.
-     - ``rigid_compliant_alm`` (default ``True``) selects the recommended unified
-       finite-material compliant ALM formulation for rigid contacts, structural
-       joints, drives, and limits. Authored stiffness determines physical
-       compliance; :class:`~newton.solvers.SolverVBD` selects the numerical ALM
-       conditioning parameters internally. Pass ``False`` to retain the
-       deprecated legacy AVBD path during its migration window.
-       ``rigid_contact_hard`` selects contact behavior only on that legacy path.
-
-       Deprecated penalty-ramping controls do not affect compliant-ALM rigid constraints.
-       Rigid simulations relying on those controls or on legacy hard constraints may
-       require stiffness retuning when enabling compliant ALM. Alpha remains an
+     - Rigid contacts, structural joints, drives, and limits use the unified
+       finite-material compliant ALM formulation. Authored stiffness determines
+       physical compliance; :class:`~newton.solvers.SolverVBD` selects the
+       numerical ALM conditioning parameters internally. The legacy AVBD path
+       (``rigid_compliant_alm=False``) and its penalty-ramping and hard/soft
+       controls were removed after their 1.6 deprecation; rigid simulations
+       that relied on them may require stiffness retuning. Alpha remains an
        advanced stabilization override.
 
        Optional numeric contact warm-starting with
@@ -206,8 +209,7 @@ repository examples spend tuning effort, not a shared solver API.
        contact buffers and filters, ``collision_frequency`` / ``collision_frequency_type``,
        ``particle_enable_tile_solve``, ``rigid_body_contact_buffer_size``,
        ``rigid_body_particle_contact_buffer_size``, and
-       ``rigid_contact_history``. ``rigid_avbd_contact_alpha`` remains available
-       under compliant ALM as an advanced stabilization override.
+       ``rigid_contact_history``.
 
        ``rigid_soft_enable_dat=True`` requires a solver-owned
        :class:`~newton.CollisionPipeline` with a positive minimum rigid-soft
@@ -237,6 +239,7 @@ repository examples spend tuning effort, not a shared solver API.
        ``propagation_constraint_max``, ``warn_constraint_overflow``, ``drive_mode``,
        ``fuse_joint_velocity_limits``, ``enable_bilateral_preelimination``,
        ``bilateral_preelimination_include_mimics``, ``friction_anchor_beta``,
+       ``reuse_kinematics``,
        ``contact_regularization``, ``velocity_iterations``,
        ``contact_warmstart``, ``restitution_velocity_threshold``,
        ``contact_friction_scale``, ``contact_friction_position_iterations``,
@@ -251,14 +254,15 @@ repository examples spend tuning effort, not a shared solver API.
        ``propagation_color_order``,
        ``contact_shared_anchor``, ``contact_friction_shared_anchor``,
        ``row_watermark``, ``row_schedule``, ``use_parallel_streams``,
-       ``double_buffer``, ``friction_mode``.
+       ``double_buffer``, ``friction_mode``, ``nesterov_momentum``.
      - Experimental. The solve is matrix-free; ``solve_mode`` selects its
        Gauss-Seidel sweep order: ``"serial"`` (the default) sweeps each world's rows
        in order, ``"colored"`` solves the propagation contact rows in parallel
        batches (see below). On CPU both modes run world-serial portable kernels;
        contact torsion, contact compliance, joint friction, the non-default
-       ``friction_mode`` values and sleeping with ``solve_mode="colored"`` require
-       CUDA. The spellings ``solve_mode="matrix_free"`` and ``"split"`` (whose dense
+       ``friction_mode`` values, ``nesterov_momentum`` and sleeping with
+       ``solve_mode="colored"`` require CUDA. The spellings
+       ``solve_mode="matrix_free"`` and ``"split"`` (whose dense
        Delassus solve was removed) and ``articulated_contact_response="propagation_colored"``
        are deprecated and map to the new options with a warning.
        Joint limits are enforced only with ``enable_joint_limits=True`` (off by
@@ -287,6 +291,15 @@ repository examples spend tuning effort, not a shared solver API.
        :class:`~newton.CollisionPipeline`) reuses the previous step's
        impulses. ``contact_gap_gate`` and ``contact_speculative_scale`` bound
        the work and the closing allowance of speculative contacts.
+       The opt-in ``nesterov_momentum`` accelerates the serial sweep with
+       Nesterov momentum and restart, which can reduce the ``iterations``
+       needed on stacks, large mass ratios and long chains. Velocity-limit rows
+       are not extrapolated, so measure convergence on the scene before
+       lowering ``iterations``. It requires
+       ``articulated_contact_response="immediate"`` and
+       ``row_schedule="interleaved"``, and every world then runs the general
+       sweep with dense factors; the specialized sparse-factor, diagonal,
+       articulation-local and paired-factor solves are skipped.
        Experimental contact torsion adds spin friction to the contacts of
        articulated bodies whose shapes carry a positive
        ``steel:min_torsional_patch_radius`` (imported from
@@ -330,7 +343,7 @@ repository examples spend tuning effort, not a shared solver API.
        (:ref:`passive-joint-springs`) act explicitly on REVOLUTE, PRISMATIC and
        D6 DOFs, so a stiff spring needs roughly
        ``dt * sqrt(stiffness / m_eff) < 2``, unlike the implicit drives.
-       Mimic joints and loop-closing BALL and REVOLUTE
+       Mimic joints and loop-closing BALL, REVOLUTE, and FIXED
        joints are bilateral rows that converge with ``iterations`` like the
        other rows; ``enable_bilateral_preelimination`` eliminates them before
        the sweep with a regularized Schur complement, which keeps closed chains
@@ -339,12 +352,23 @@ repository examples spend tuning effort, not a shared solver API.
        disables elimination for the whole solver with a warning. On CUDA,
        branched articulations of one shared
        topology select sparse mass factors automatically from the model's
-       structure when contacts use hard point friction
-       (``friction_anchor_beta=0``), not from a performance estimate
-       (depending on the topology and the world count they can be faster or
-       markedly slower);
+       structure when contacts use hard point friction or persistent friction
+       patches and the configuration meets the conditions in the
+       :class:`~newton.solvers.SolverSteel` docstring, not from a performance
+       estimate (depending on the topology and the world count they can be
+       faster or markedly slower); warm-started contacts
+       (``contact_warmstart=True``), a finite ``contact_friction_gap_max``,
+       ``nesterov_momentum`` and shapes with a positive restitution coefficient
+       keep the dense factors;
        ``parallel_tree`` traverses independent tree branches in parallel and is
-       worth measuring on broad trees such as hands. The
+       worth measuring on broad trees such as hands. The opt-in
+       ``reuse_kinematics`` (off by default) carries the kinematics a step
+       publishes into the next step on CUDA when none of the restrictions in
+       the option's docstring apply (gradients, joint velocity limits, sleeping,
+       the parallel tree, a FREE or DISTANCE joint that is not its
+       articulation's first joint); the attribute reports whether it runs, and a
+       caller that writes joint or body state in place between steps then calls
+       ``notify_state_changed`` or ``reset`` with a world mask. The
        experimental ``enable_sleeping`` freezes settled, supported islands of
        articulations and skips their rows and dynamics until a force, state
        change, contact with a moving body or a tangentially moving mesh
@@ -504,8 +528,9 @@ A similar force-space spring-damper check is useful for contact stiffness when
 the active solver interprets :attr:`~Model.shape_material_ke` and
 :attr:`~Model.shape_material_kd` as contact stiffness and damping. This check is
 most direct for penalty-style contacts. Solver-specific mappings, such as
-MuJoCo contact parameters and VBD AVBD ramping or contact history, can change
-the practical meaning of stiffness and damping. Define:
+MuJoCo contact parameters, can change the interpretation of stiffness and
+damping. In VBD, finite ALM iterations and contact-history warm-starting
+affect the observed response. Define:
 
 .. list-table::
    :header-rows: 1
