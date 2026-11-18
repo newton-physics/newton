@@ -226,16 +226,18 @@ def test_mesh_mesh_contact_at_pair_gap(test, device):
                     test.assertEqual(count > 0, separation <= 0.125)
 
 
-def test_mesh_sdf_normal_at_slab_midplane(test, device, *, reverse_winding=False, probe_sdf=False):
+def test_mesh_sdf_normal_at_slab_midplane(test, device, *, reverse_winding=False, probe_sdf=False, coarse=False):
     """Recover toward a slab face when the stored distance has a flat gradient."""
     with wp.ScopedDevice(device):
-        half_thickness = 0.0009765625
+        half_thickness = 0.0146484375 if coarse else 0.0009765625
         slab = newton.Mesh.create_box(half_thickness, 0.03125, 0.03125, duplicate_vertices=False)
         if reverse_winding:
             slab.indices = slab.indices.reshape(-1, 3)[:, [0, 2, 1]].flatten()
+        # A narrow band leaves the thick slab's midplane on the coarse grid.
+        narrow_band = 0.000244140625 if coarse else 0.001953125
         slab.build_sdf(
             target_voxel_size=0.000244140625,
-            narrow_band_range=(-0.001953125, 0.001953125),
+            narrow_band_range=(-narrow_band, narrow_band),
             margin=0.001953125,
         )
         # A triangle on the medial plane lies well away from the slab edges.
@@ -252,7 +254,7 @@ def test_mesh_sdf_normal_at_slab_midplane(test, device, *, reverse_winding=False
         )
         if probe_sdf:
             probe.build_sdf(target_voxel_size=0.000244140625)
-        scales = ((1.0, 1.0, 1.0),) if reverse_winding or probe_sdf else ((1.0, 1.0, 1.0), (2.0, 0.75, 1.25))
+        scales = ((1.0, 1.0, 1.0),) if reverse_winding or probe_sdf or coarse else ((1.0, 1.0, 1.0), (2.0, 0.75, 1.25))
         for scale in scales:
             builder = newton.ModelBuilder()
             cfg = builder.ShapeConfig(density=0.0, margin=0.0, gap=0.00025)
@@ -281,7 +283,10 @@ def test_mesh_sdf_normal_at_slab_midplane(test, device, *, reverse_winding=False
                     # distance under nonuniform scale. A recovered witness
                     # must reach the actual mesh face.
                     face_error = np.abs(np.abs(slab_points[:, 0]) - scale[0] * half_thickness)
-                    test.assertLess(float(face_error.min()), 2.0e-6)
+                    if coarse:
+                        np.testing.assert_allclose(face_error, 0.0, atol=2.0e-6)
+                    else:
+                        test.assertLess(float(face_error.min()), 2.0e-6)
 
 
 class TestSDFContact(unittest.TestCase):
@@ -378,6 +383,13 @@ add_function_test(
     "test_mesh_sdf_normal_at_slab_midplane",
     test_mesh_sdf_normal_at_slab_midplane,
     devices=get_cuda_test_devices(),
+)
+add_function_test(
+    TestSDFContact,
+    "test_mesh_sdf_normal_at_coarse_slab_midplane",
+    test_mesh_sdf_normal_at_slab_midplane,
+    devices=get_cuda_test_devices(),
+    coarse=True,
 )
 add_function_test(
     TestSDFContact,

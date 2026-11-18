@@ -11,6 +11,7 @@ from ..geometry.sdf_texture import (
     TextureSDFData,
     _texture_sample_sdf_hw_clamped,
     _texture_sample_sdf_hw_pair,
+    _texture_sdf_cell_radius,
     texture_sample_sdf_grad_only_hw,
     texture_sample_sdf_hw,
 )
@@ -498,13 +499,14 @@ def sample_sdf_grad_using_mesh(
 @wp.func
 def _recover_flat_texture_contact(
     mesh_id: wp.uint64,
+    texture: TextureSDFData,
     point: wp.vec3,
+    point_unscaled: wp.vec3,
     distance: float,
     direction: wp.vec3,
     mesh_scale: wp.vec3,
     inv_sdf_scale: wp.vec3,
     texture_distance: float,
-    tolerance: float,
     sign_method: int,
     boundary_flags: wp.array[wp.uint8],
     boundary_start: int,
@@ -513,6 +515,9 @@ def _recover_flat_texture_contact(
     if mesh_id == wp.uint64(0):
         return distance, direction
 
+    # A coarse interior cell can underestimate depth by much more than a
+    # fine voxel. Bound the witness by the grid actually used at the sample.
+    tolerance = _texture_sdf_cell_radius(texture, point_unscaled)
     inv_scale, _ = safe_sdf_scale_inverse(mesh_scale)
     point_local = wp.cw_mul(point, inv_scale)
     texture_to_mesh_scale = wp.cw_div(inv_scale, inv_sdf_scale)
@@ -1823,13 +1828,14 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                 ):
                                     dist, direction = _recover_flat_texture_contact(
                                         mesh_id_sdf,
+                                        texture_sdf,
                                         point,
+                                        point_unscaled,
                                         dist,
                                         direction,
                                         mesh_scale_sdf,
                                         inv_sdf_scale,
                                         dist_unscaled,
-                                        texture_voxel_radius,
                                         sdf_mesh_query_type,
                                         mesh_boundary_flags,
                                         sdf_boundary_start,
@@ -2308,13 +2314,14 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                 ):
                                     dist, direction = _recover_flat_texture_contact(
                                         mesh_id_sdf,
+                                        texture_sdf,
                                         point,
+                                        point_unscaled,
                                         dist,
                                         direction,
                                         mesh_scale_sdf,
                                         inv_sdf_scale,
                                         dist_unscaled,
-                                        texture_voxel_radius,
                                         sdf_mesh_query_type,
                                         mesh_boundary_flags,
                                         sdf_boundary_start,
