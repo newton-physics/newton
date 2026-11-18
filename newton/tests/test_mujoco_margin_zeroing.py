@@ -92,7 +92,9 @@ class TestMuJoCoMarginZeroing(unittest.TestCase):
                             use_mujoco_cpu=use_cpu,
                             enable_multiccd=(multiccd == "enable"),
                         )
-                    self.assertEqual(solver.mj_model.opt.disableflags, native.opt.disableflags)
+                    # SolverMuJoCo always turns MuJoCo's own parent filter off; Newton's filter pairs replace it.
+                    filter_parent = int(mujoco.mjtDisableBit.mjDSBL_FILTERPARENT)
+                    self.assertEqual(solver.mj_model.opt.disableflags & ~filter_parent, native.opt.disableflags)
                     geom_names = [
                         model.shape_label[shape].rsplit("/", 1)[-1]
                         for shape in solver.mjc_geom_to_newton_shape.numpy()[0]

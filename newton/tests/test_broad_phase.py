@@ -2540,6 +2540,44 @@ class TestBroadPhase(unittest.TestCase):
         self.assertTrue(has_sphere_b_ground, "SAP: Sphere B (large margin) should overlap ground")
         self.assertFalse(has_sphere_a_ground, "SAP: Sphere A (small margin) should NOT overlap ground")
 
+    def test_sap_conditional_capture_retains_overlapping_pairs(self):
+        """Capture SAP without allocating scan storage inside a conditional body."""
+        device = wp.get_device()
+        if not device.is_cuda or not wp.is_conditional_graph_supported():
+            self.skipTest("Conditional graph capture requires a supported CUDA device")
+        if not hasattr(wp.utils, "array_scan_temp_storage_size"):
+            self.skipTest("Conditional SAP capture requires Warp scan storage support")
+
+        count = 128
+        centers = np.zeros((count, 3), dtype=np.float32)
+        centers[:, 0] = np.arange(count) // 2
+        lower = wp.array(centers - 0.1, dtype=wp.vec3, device=device)
+        upper = wp.array(centers + 0.1, dtype=wp.vec3, device=device)
+        groups = wp.ones(count, dtype=wp.int32, device=device)
+        worlds = wp.zeros(count, dtype=wp.int32, device=device)
+        pairs = wp.empty(count // 2, dtype=wp.vec2i, device=device)
+        pair_count = wp.zeros(1, dtype=wp.int32, device=device)
+        enabled = wp.ones(1, dtype=wp.int32, device=device)
+        broad_phase = BroadPhaseSAP(worlds, device=device)
+
+        def launch():
+            broad_phase.launch(lower, upper, None, groups, worlds, count, pairs, pair_count, device=device)
+
+        launch()
+        pair_count.zero_()
+        with wp.ScopedCapture(device=device) as capture:
+            wp.capture_if(enabled, on_true=launch)
+        for _ in range(2):
+            wp.capture_launch(capture.graph)
+            actual_count = int(pair_count.numpy()[0])
+            self.assertEqual(actual_count, count // 2)
+            actual_pairs = {tuple(pair) for pair in pairs.numpy()[:actual_count]}
+            self.assertEqual(actual_pairs, {(i, i + 1) for i in range(0, count, 2)})
+        enabled.zero_()
+        pair_count.zero_()
+        wp.capture_launch(capture.graph)
+        self.assertEqual(int(pair_count.numpy()[0]), 0)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2, failfast=True)

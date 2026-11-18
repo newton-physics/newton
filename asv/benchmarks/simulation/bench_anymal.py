@@ -5,7 +5,6 @@ import os
 import sys
 
 import warp as wp
-from asv_runner.benchmarks.mark import skip_benchmark_if
 
 wp.config.enable_backward = False
 wp.config.log_level = wp.LOG_WARNING
@@ -51,24 +50,6 @@ def _validate_workload(workload):
         )
 
 
-class FastExampleAnymalPretrained:
-    repeat = 3
-    number = 1
-
-    def setup(self):
-        self.num_frames = _NUM_FRAMES
-        self.example = _create_example(self.num_frames)
-        # Keep one-time device work out of the samples.
-        self.example.step()
-        wp.synchronize_device()
-
-    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
-    def time_simulate(self):
-        for _ in range(self.num_frames):
-            self.example.step()
-        wp.synchronize_device()
-
-
 class FastMetricsExampleAnymalPretrained(_SimulationMetricTracksUnparameterized):
     num_frames = _NUM_FRAMES
     samples = 3
@@ -93,7 +74,6 @@ if __name__ == "__main__":
     from newton.utils import run_benchmark
 
     benchmark_list = {
-        "FastExampleAnymalPretrained": FastExampleAnymalPretrained,
         "FastMetricsExampleAnymalPretrained": FastMetricsExampleAnymalPretrained,
     }
 
