@@ -37,8 +37,6 @@ def _import_contact_force_fn():
 vec10 = wp.types.vector(length=10, dtype=wp.float32)
 vec12 = wp.types.vector(length=12, dtype=wp.float32)
 
-CONTACT_TYPE_CONSTRAINT = 1
-
 
 # Utility functions
 @wp.func
@@ -109,8 +107,6 @@ def write_contact(
     contact_geom_out: wp.array[wp.vec2i],
     contact_efc_address_out: wp.array2d[int],
     contact_worldid_out: wp.array[int],
-    contact_type_out: wp.array[int],
-    contact_geomcollisionid_out: wp.array[int],
 ):
     # See function write_contact in mujoco_warp, file collision_primitive.py
 
@@ -120,9 +116,6 @@ def write_contact(
     contact_frame_out[cid] = frame_in
     contact_geom_out[cid] = geoms_in
     contact_worldid_out[cid] = worldid_in
-    contact_type_out[cid] = CONTACT_TYPE_CONSTRAINT
-    # Injected Newton contacts do not carry MuJoCo collision-sensor metadata.
-    contact_geomcollisionid_out[cid] = 0
     contact_includemargin_out[cid] = margin_in
     contact_dim_out[cid] = condim_in
     contact_friction_out[cid] = friction_in
@@ -457,7 +450,6 @@ def convert_newton_contacts_to_mjwarp_kernel(
     geom_friction: wp.array2d[wp.vec3],
     geom_margin: wp.array2d[float],
     geom_gap: wp.array2d[float],
-    ngeom: int,
     nxn_pairid: wp.array[wp.vec2i],
     pair_dim: wp.array[int],
     pair_solref: wp.array2d[wp.vec2],
@@ -505,8 +497,6 @@ def convert_newton_contacts_to_mjwarp_kernel(
     contact_geom_out: wp.array[wp.vec2i],
     contact_efc_address_out: wp.array2d[int],
     contact_worldid_out: wp.array[int],
-    contact_type_out: wp.array[int],
-    contact_geomcollisionid_out: wp.array[int],
     # Fast-path generation tracking
     contact_generation: wp.array[wp.int32],
     last_contact_generation: wp.array[wp.int32],
@@ -612,10 +602,9 @@ def convert_newton_contacts_to_mjwarp_kernel(
         geoms = wp.vec2i(geom_a, geom_b)
         geom_lo = wp.min(geom_a, geom_b)
         geom_hi = wp.max(geom_a, geom_b)
-        if geom_lo == geom_hi:
-            tid_to_cid[tid] = -1
-            return
-        pairid = nxn_pairid[upper_tri_index(ngeom, geom_lo, geom_hi)][0]
+        pairid = -1
+        if geom_lo != geom_hi:
+            pairid = nxn_pairid[upper_tri_index(geom_condim.shape[0], geom_lo, geom_hi)][0]
 
         worldid = body_a // bodies_per_world
         if body_a < 0:
@@ -780,8 +769,6 @@ def convert_newton_contacts_to_mjwarp_kernel(
             contact_geom_out=contact_geom_out,
             contact_efc_address_out=contact_efc_address_out,
             contact_worldid_out=contact_worldid_out,
-            contact_type_out=contact_type_out,
-            contact_geomcollisionid_out=contact_geomcollisionid_out,
         )
     else:
         # ── FAST PATH ────────────────────────────────────────────────────

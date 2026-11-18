@@ -5918,7 +5918,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.mjw_model.geom_friction,
                 self.mjw_model.geom_margin,
                 self.mjw_model.geom_gap,
-                self.mj_model.ngeom,
                 self.mjw_model.nxn_pairid,
                 self.mjw_model.pair_dim,
                 self.mjw_model.pair_solref,
@@ -5966,8 +5965,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.mjw_data.contact.geom,
                 self.mjw_data.contact.efc_address,
                 self.mjw_data.contact.worldid,
-                self.mjw_data.contact.type,
-                self.mjw_data.contact.geomcollisionid,
                 # Fast-path generation tracking
                 contacts.contact_generation,
                 self._last_contact_generation,

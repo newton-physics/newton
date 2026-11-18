@@ -1128,7 +1128,6 @@ This only changes contacts that Newton's collision pipeline already
 emits. An explicit MuJoCo pair does not create a Newton collision
 candidate, so pair-only contacts and pair margins wider than Newton's
 detection range still require matching Newton collision configuration.
-MuJoCo collision sensors do not consume these injected contacts.
 
 
 Multi-world support

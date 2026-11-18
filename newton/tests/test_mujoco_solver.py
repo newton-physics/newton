@@ -10045,8 +10045,6 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
             contacts = collision_pipeline.contacts()
         collision_pipeline.collide(state_in, contacts)
         solver = SolverMuJoCo(model, use_mujoco_contacts=False, nconmax=64, njmax=256, iterations=1)
-        solver.mjw_data.contact.type.zero_()
-        solver.mjw_data.contact.geomcollisionid.fill_(-1)
         return solver, state_in, state_out, control, contacts
 
     @classmethod
@@ -10070,12 +10068,7 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
         self.assertGreater(contact_count, 0)
         contact = solver.mjw_data.contact
 
-        np.testing.assert_array_equal(contact.type.numpy()[:contact_count], np.ones(contact_count, dtype=np.int32))
         np.testing.assert_array_equal(contact.dim.numpy()[:contact_count], np.full(contact_count, 3, dtype=np.int32))
-        np.testing.assert_array_equal(
-            contact.geomcollisionid.numpy()[:contact_count],
-            np.zeros(contact_count, dtype=np.int32),
-        )
         np.testing.assert_allclose(contact.dist.numpy()[:contact_count], -0.005, atol=1.0e-6)
         np.testing.assert_allclose(contact.includemargin.numpy()[:contact_count], 0.003, atol=1.0e-7)
         np.testing.assert_allclose(
