@@ -2135,7 +2135,7 @@ class TestSCCSolver(NewtonTestCase):
         layout = response_calls[0]
         dim, njc = test.problem.data.dim.numpy(), test.problem.data.njc.numpy()
         self.assertTrue(np.any((njc > 0) & (dim > njc)))
-        np.testing.assert_array_equal(layout["offsets"], state.projected_mio.numpy() + njc)
+        np.testing.assert_array_equal(layout["offsets"], njc)
         np.testing.assert_array_equal(layout["strides"], dim)
         np.testing.assert_array_equal(layout["columns"], dim - njc)
 
@@ -2168,9 +2168,10 @@ class TestSCCSolver(NewtonTestCase):
                 a * scale[o : o + n, None] * scale[None, o : o + n]
                 for a, o, n in zip(matrices, (0, 8), njc[:2], strict=True)
             ]
-            matrix = wp.array(
-                np.concatenate([*(a.ravel() for a in normalized), [0.0]]).astype(np.float32), device=device
-            )
+            matrix_rows = np.zeros(info.matrix_shape, dtype=np.float32)
+            for world, a in enumerate(normalized):
+                matrix_rows[world, : a.size] = a.ravel()
+            matrix = wp.array(matrix_rows, device=device)
             state = SCCState()
             state.bilateral_response_mio = i32(offsets)
             state.bilateral_response_stride = i32(capacity)
@@ -2179,7 +2180,7 @@ class TestSCCSolver(NewtonTestCase):
             state.bilateral_response_factor = wp.zeros(33, device=device)
             state.bilateral_response = wp.zeros(33, device=device)
             sparse_factor.allocate_response(state, 3, device)
-            problem = SimpleNamespace(data=SimpleNamespace(dim=i32([10, 6, 0]), njc=i32(njc), mio=i32([0, 100, 136])))
+            problem = SimpleNamespace(data=SimpleNamespace(dim=i32([10, 6, 0]), njc=i32(njc)))
             for ordering in ("meca", "rcm"):
                 solver = LDLBlockSparseSolver(
                     operator=DenseLinearOperatorData(info=info, mat=matrix),
