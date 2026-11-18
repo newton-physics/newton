@@ -44,9 +44,9 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
     After constructing `Model` and `State` objects this time-integrator
     may be used to advance the simulation state forward in time.
 
-    Semi-implicit time integration is a variational integrator that
-    preserves energy, however it not unconditionally stable, and requires a time-step
-    small enough to support the required stiffness and damping forces.
+    Semi-implicit time integration requires a time step small enough for the
+    stiffness and damping forces in the model. By default, rigid body integration
+    damps angular velocity. Set ``angular_damping=0.0`` to disable this damping.
 
     See: https://en.wikipedia.org/wiki/Semi-implicit_Euler_method
 
