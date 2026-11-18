@@ -98,6 +98,55 @@ class TestBenchmarkMetrics(unittest.TestCase):
         self.assertAlmostEqual(metrics.p95_frame_time_ms, 40.0)
         self.assertAlmostEqual(metrics.gpu_memory_mib, 8.0)
 
+    def test_collect_simulation_metrics_times_same_frames_with_reset(self):
+        """Verify reset and rebuilt workloads time the same frames."""
+
+        class FakeDevice:
+            free_memory = 0
+
+        class FakeWorkload:
+            sim_dt = 0.01
+            sim_substeps = 1
+            benchmark_time = 0.0
+            frame = 0
+
+            def step(self):
+                self.benchmark_time += 0.01
+                self.frame += 1
+
+            def reset(self):
+                self.frame = 0
+
+        def collect_timed_frames(reset_workload):
+            workloads = []
+            timed_frames = []
+
+            def create_workload():
+                workloads.append(FakeWorkload())
+                return workloads[-1]
+
+            def timer():
+                timed_frames.append(workloads[-1].frame)
+                return float(len(timed_frames))
+
+            with (
+                patch("benchmark_metrics.wp.get_device", return_value=FakeDevice()),
+                patch("benchmark_metrics.wp.synchronize_device"),
+            ):
+                collect_simulation_metrics(
+                    create_workload=create_workload,
+                    world_count=1,
+                    num_frames=2,
+                    samples=2,
+                    timer=timer,
+                    reset_workload=reset_workload,
+                )
+            return len(workloads), timed_frames
+
+        # The timer reads the frame count before and after each timed frame.
+        self.assertEqual(collect_timed_frames(None), (2, [1, 2, 2, 3] * 2))
+        self.assertEqual(collect_timed_frames(FakeWorkload.reset), (1, [1, 2, 2, 3] * 2))
+
     def test_collect_simulation_metrics_with_synchronization(self):
         """Verify synchronized wall timing drives collected metrics."""
         workloads = []

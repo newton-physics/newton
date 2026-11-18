@@ -123,9 +123,9 @@ def collect_simulation_metrics(
     """Collect simulation metrics using internal or synchronized wall timing.
 
     With *reset_workload*, later samples reset the first workload instead of
-    rebuilding it, which dominates the runtime of large workloads. Each new
-    workload first steps one untimed frame, which absorbs one-time work such
-    as graph instantiation and module loading.
+    rebuilding it, which dominates the runtime of large workloads. Each sample
+    first steps one untimed frame, which absorbs one-time work such as graph
+    instantiation and module loading, so *num_frames* + 1 frames are simulated.
     """
     frame_times = []
     experience_frame_times = []
@@ -141,16 +141,16 @@ def collect_simulation_metrics(
     for sample_index in range(samples):
         if workload is None or reset_workload is None:
             workload = create_workload()
-            workload.step()
-        if reset_workload is not None:
+        else:
             reset_workload(workload)
-            wp.synchronize_device()
         if sim_dt is None:
             sim_dt = workload.sim_dt
             sim_substeps = workload.sim_substeps
         elif workload.sim_dt != sim_dt or workload.sim_substeps != sim_substeps:
             raise ValueError("simulation parameters changed between samples")
 
+        # Untimed after a reset too, so both paths time the same frames.
+        workload.step()
         if synchronize is not None:
             synchronize()
         for _ in range(num_frames):

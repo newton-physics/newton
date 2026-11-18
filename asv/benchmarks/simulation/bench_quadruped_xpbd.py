@@ -32,7 +32,7 @@ def _create_example(num_frames, world_count):
 
 
 class FastMetricsExampleQuadrupedXPBD(_SimulationMetricTracksUnparameterized):
-    version = "2"  # One untimed frame precedes the samples.
+    version = "2"  # Each sample starts with one untimed frame.
     num_frames = 1000
     samples = 1
     world_count = 200

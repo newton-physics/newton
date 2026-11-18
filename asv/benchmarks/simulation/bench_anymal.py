@@ -51,8 +51,8 @@ def _validate_workload(workload):
 
 
 class FastMetricsExampleAnymalPretrained(_SimulationMetricTracksUnparameterized):
-    version = "2"  # One untimed frame precedes the samples.
-    num_frames = _NUM_FRAMES
+    version = "2"  # Each sample starts with one untimed frame.
+    num_frames = _NUM_FRAMES - 1  # The untimed frame completes the validated trajectory.
     samples = 3
     world_count = 1
 
