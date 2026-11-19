@@ -86,7 +86,6 @@ from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_convex
 from ..math import quat_between_vectors_robust
 from ..usd.schema_resolver import SchemaResolver
 from ..utils import compute_world_offsets, tree_joint_mask
-from ..utils.deprecation import RemovedAttribute
 from ..utils.mesh import MeshAdjacency, split_mesh_components
 from .body_variants import (
     _BodyVariants,
@@ -4022,11 +4021,6 @@ class ModelBuilder:
         The number of articulations in the model.
         """
         return len(self.articulation_start)
-
-    # Tombstones so that assigning the 1.3-era names fails loudly instead of
-    # creating an unused instance attribute whose targets are never applied.
-    joint_target_pos = RemovedAttribute("joint_target_q", removed_in="1.5")
-    joint_target_vel = RemovedAttribute("joint_target_qd", removed_in="1.5")
 
     @property
     def joint_twist_lower(self) -> list[float]:
