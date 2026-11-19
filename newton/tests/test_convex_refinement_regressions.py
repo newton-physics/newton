@@ -32,6 +32,7 @@ def _contacts(
     swap=False,
     split=False,
     margin=0.0,
+    gap=1.0e-3,
     triangle=False,
     hull_box=False,
     ground=None,
@@ -44,7 +45,7 @@ def _contacts(
     ground = wp.transform_identity() if ground is None else ground
     builder = newton.ModelBuilder()
     body = builder.add_body(xform=pose, mass=1.0, inertia=wp.mat33(np.eye(3)))
-    cfg = builder.ShapeConfig(margin=margin, gap=1.0e-3, density=0.0)
+    cfg = builder.ShapeConfig(margin=margin, gap=gap, density=0.0)
     mesh = newton.Mesh(vertices, np.asarray(indices, dtype=np.int32).ravel(), compute_inertia=False)
     box_index = -1
     for box in (False, True) if swap else (True, False):
@@ -98,6 +99,7 @@ def test_refinement_signed_separation(test, device):
     planes = ConvexHull((corners[:, None] - partner[None, :]).reshape(-1, 3)).equations
     plane = planes[np.argmax(planes[:, 3])]
     expected_normal, gap = plane[:3], plane[3]
+    shape_gap, margin = 1.0e-3, 1.0e-5
     for split, swap, shift in product(
         (False, True) if device.is_cuda else (False,), (False, True), (0.0, -gap, -2.0 * gap)
     ):
@@ -113,7 +115,8 @@ def test_refinement_signed_separation(test, device):
                 scale,
                 swap=swap,
                 split=split,
-                margin=1.0e-5,
+                margin=margin,
+                gap=shape_gap,
             )
             test.assertTrue(np.all(np.isfinite(normals)))
             # Check actual shape surfaces independently of the reported normal/depth.
@@ -128,11 +131,15 @@ def test_refinement_signed_separation(test, device):
             np.testing.assert_allclose(np.linalg.norm(normals, axis=1), 1.0, atol=1.0e-5)
             test.assertGreater(float(np.min(normals @ expected_normal)), 0.99)
             depths = np.sum((pa - pb) * normals, axis=1)
-            np.testing.assert_allclose(depths, -(gap + shift), atol=1.0e-5)
+            # A tilted hull can contribute neighboring vertices within the contact gap.
+            # The Minkowski reference gives the depth of its closest witness.
+            np.testing.assert_allclose(pa - pb, depths[:, None] * normals, atol=surface_tolerance)
+            test.assertGreaterEqual(float(np.min(depths)), -2.0 * (shape_gap + margin) - surface_tolerance)
+            np.testing.assert_allclose(np.max(depths), -(gap + shift), atol=1.0e-5)
             if shift == 0.0:
                 test.assertTrue(np.all(depths < 0.0))
             elif shift == -2.0 * gap:
-                test.assertTrue(np.all(depths > 0.0))
+                test.assertGreater(float(np.max(depths)), 0.0)
 
     # A near-touching box-hull pair can have a valid portal but an uncertified
     # GJK shortcut. Keep the portal witnesses and depth when that query fails.
