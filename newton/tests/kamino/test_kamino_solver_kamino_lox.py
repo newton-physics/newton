@@ -17,7 +17,8 @@ from newton._src.solvers.kamino._src.integrators.euler import _integrate_semi_im
 from newton._src.solvers.kamino._src.integrators.moreau import _integrate_moreau_jean_second_inplace
 from newton._src.solvers.kamino._src.solver_kamino_impl import SolverKaminoImpl
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
-from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino import setup_test_output, setup_tests, test_context
+from newton.tests.unittest_utils import NewtonTestCase
 from newton.tests.utils.basics import (
     build_box_on_plane,
     build_boxes_fourbar,
@@ -430,8 +431,9 @@ def _joint_angular_error(
     return float(np.linalg.norm(np.cross(np.asarray((1.0, 0.0, 0.0)), follower_axis)))
 
 
-class _LOXTestCase(unittest.TestCase):
+class _LOXTestCase(NewtonTestCase):
     def setUp(self):
+        setup_test_output(self)
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
