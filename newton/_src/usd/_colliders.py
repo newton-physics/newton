@@ -88,7 +88,7 @@ def _parse_colliders(
     incoming_world_xform: wp.transform,
     usd_axis_to_axis: dict[UsdPhysics.Axis, Axis],
     imported_rigid_collider_groups: dict[str, tuple[str, ...]],
-    solref_contact_paths: dict[str, frozenset[str]],
+    solref_contact_shapes: dict[int, frozenset[str]],
     ignore_paths: list[str],
     load_visual_shapes: bool,
     hide_collision_shapes: bool,
@@ -519,8 +519,8 @@ def _parse_colliders(
                 path_shape_map[path] = shape_id
                 path_shape_scale[path] = scale
                 imported_rigid_collider_groups[path] = collision_groups
-                if collider_properties.solref_contact_keys:
-                    solref_contact_paths[path] = collider_properties.solref_contact_keys
+                if collider_properties.solref_contact_keys and shape_id >= 0:
+                    solref_contact_shapes[shape_id] = collider_properties.solref_contact_keys
 
                 # Restore the real collision margin when shell thickness was substituted.
                 # TODO: Consider adding a dedicated shell_thickness field to ShapeConfig
@@ -557,6 +557,7 @@ def _parse_colliders(
         drawn = [s for s in shape_ids if s in approximated_viewport_shapes] if load_visual_shapes else []
         for shape_id in drawn:
             builder.shape_flags[shape_id] |= int(ShapeFlags.VISIBLE)
+        first_new_shape = builder.shape_count
         if drawn:
             builder.approximate_meshes(
                 method=remeshing_method, shape_indices=drawn, keep_visual_shapes=True, **dict(remeshing_kwargs)
@@ -570,14 +571,19 @@ def _parse_colliders(
             builder.approximate_meshes(
                 method=remeshing_method, shape_indices=rest, keep_visual_shapes=False, **dict(remeshing_kwargs)
             )
+        # Convex-decomposition parts copy their source shape's gains. Only shapes this
+        # approximation just added can be parts, so an authored collider that happens to
+        # use the part naming scheme is never matched.
+        part_sources = {f"{builder.shape_label[s]}_convex_": s for s in shape_ids if s in solref_contact_shapes}
+        if part_sources:
+            for shape in range(first_new_shape, builder.shape_count):
+                prefix, separator, index = builder.shape_label[shape].rpartition("_convex_")
+                source = part_sources.get(prefix + separator) if index.isdigit() else None
+                if source is not None:
+                    solref_contact_shapes[shape] = solref_contact_shapes[source]
 
 
-def _scale_solref_contact_gains(
-    builder: ModelBuilder,
-    solref_contact_paths: dict[str, frozenset[str]],
-    path_shape_map: dict[str, int],
-    first_shape: int,
-) -> None:
+def _scale_solref_contact_gains(builder: ModelBuilder, solref_contact_shapes: dict[int, frozenset[str]]) -> None:
     """Convert solref-derived shape contact gains to force space.
 
     ``mjc:solref`` yields per-unit-mass gains (k [1/s^2], b [1/s]), while
@@ -588,24 +594,17 @@ def _scale_solref_contact_gains(
     the other modes it rebuilds solref from ke/kd, so the values stay unchanged, as
     do static shapes, which have no body mass.
 
+    Call this once body ownership and masses are final, i.e. after fixed joints are collapsed.
+
     Args:
         builder: Builder holding the imported shapes.
-        solref_contact_paths: Collider prim path to the contact keys taken from its ``mjc:solref``.
-        path_shape_map: Collider prim path to shape index.
-        first_shape: Index of the first shape added by this import.
+        solref_contact_shapes: Shape index to the contact keys taken from the shape's ``mjc:solref``.
     """
     solref_mode = builder.custom_attributes.get("mujoco:solref_mode")
-    if not solref_contact_paths or solref_mode is None:
+    if not solref_contact_shapes or solref_mode is None:
         return
 
-    shape_keys = {path_shape_map[path]: keys for path, keys in solref_contact_paths.items() if path in path_shape_map}
-    # Convex-decomposition parts copy their source shape's gains before masses are resolved.
-    for shape in range(first_shape, builder.shape_count):
-        source_path, separator, _ = builder.shape_label[shape].rpartition("_convex_")
-        if separator and source_path in solref_contact_paths:
-            shape_keys[shape] = solref_contact_paths[source_path]
-
-    for shape, keys in shape_keys.items():
+    for shape, keys in solref_contact_shapes.items():
         body = builder.shape_body[shape]
         if body < 0 or int(solref_mode.values.get(shape, solref_mode.default)) != SOLREF_MODE_RAW:
             continue

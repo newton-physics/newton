@@ -8641,6 +8641,39 @@ def Xform "Articulation" (
         self.assertAlmostEqual(builder_unregistered.shape_material_kd[pad], 200.0, places=3)
 
     @requires("pxr.Usd")
+    def test_contact_response_solref_uses_collapsed_body_mass(self):
+        """Test a shape on a fixed-joint child is scaled by the mass of the body it collapses into."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        for path, mass in (("/World/Hand", 0.985), ("/World/Finger", 0.015)):
+            body = UsdGeom.Xform.Define(stage, path)
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            UsdPhysics.MassAPI.Apply(body.GetPrim()).CreateMassAttr(mass)
+            box = UsdGeom.Cube.Define(stage, f"{path}/Box")
+            box.CreateSizeAttr(0.02)
+            UsdPhysics.CollisionAPI.Apply(box.GetPrim())
+        pad = stage.GetPrimAtPath("/World/Finger/Box")
+        pad.CreateAttribute("mjc:solref", Sdf.ValueTypeNames.DoubleArray).Set([0.01, 1.0])
+        joint = UsdPhysics.FixedJoint.Define(stage, "/World/Weld")
+        joint.CreateBody0Rel().SetTargets(["/World/Hand"])
+        joint.CreateBody1Rel().SetTargets(["/World/Finger"])
+
+        resolvers = [usd.SchemaResolverNewton(), usd.SchemaResolverMjc()]
+        for collapse, expected_mass in ((False, 0.015), (True, 1.0)):
+            builder = newton.ModelBuilder()
+            SolverMuJoCo.register_custom_attributes(builder)
+            result = builder.add_usd(stage, schema_resolvers=resolvers, collapse_fixed_joints=collapse)
+            shape = result["path_shape_map"]["/World/Finger/Box"]
+            self.assertAlmostEqual(builder.body_mass[builder.shape_body[shape]], expected_mass, places=5)
+            self.assertAlmostEqual(builder.shape_material_ke[shape], expected_mass * 1.0e4, places=1)
+            self.assertAlmostEqual(builder.shape_material_kd[shape], expected_mass * 200.0, places=3)
+
+    @requires("pxr.Usd")
     def test_contact_response_solref_scales_convex_decomposition_parts(self):
         """Test convex-decomposition parts get the same mass-scaled ke/kd as their source shape."""
         from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
@@ -8685,6 +8718,12 @@ def Xform "Articulation" (
                 )
             return set(shape_indices)
 
+        # An authored collider that merely uses the part naming scheme is not a part: its gains
+        # come from the builder defaults and must stay unscaled.
+        lookalike = UsdGeom.Cube.Define(stage, "/Body/Mesh_convex_7")
+        lookalike.CreateSizeAttr(0.02)
+        UsdPhysics.CollisionAPI.Apply(lookalike.GetPrim())
+
         with mock.patch.object(builder, "approximate_meshes", side_effect=add_convex_part):
             result = builder.add_usd(stage, schema_resolvers=[usd.SchemaResolverNewton(), usd.SchemaResolverMjc()])
 
@@ -8693,6 +8732,9 @@ def Xform "Articulation" (
         for shape in (source, part):
             self.assertAlmostEqual(builder.shape_material_ke[shape], 0.5 * 1.0e4, places=1)
             self.assertAlmostEqual(builder.shape_material_kd[shape], 0.5 * 200.0, places=3)
+        lookalike_shape = result["path_shape_map"]["/Body/Mesh_convex_7"]
+        self.assertAlmostEqual(builder.shape_material_ke[lookalike_shape], builder.default_shape_cfg.ke, places=3)
+        self.assertAlmostEqual(builder.shape_material_kd[lookalike_shape], builder.default_shape_cfg.kd, places=3)
 
     @requires("pxr.Usd")
     def test_mimic_constraint_parsing(self):

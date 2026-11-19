@@ -487,7 +487,8 @@ API:
 
 On USD import, a shape that takes ``shape_material_ke`` /
 ``shape_material_kd`` from its own ``mjc:solref`` and is in
-``SOLREF_MODE_RAW`` stores them multiplied by the mass of its body.
+``SOLREF_MODE_RAW`` stores them multiplied by the mass of its body (the
+surviving body when fixed joints are collapsed).
 ``mjc:solref`` gives per-unit-mass gains (``1/s^2`` and ``1/s``); the body mass
 is a resting-contact estimate of the effective mass that turns them into the
 force-space gains other solvers expect. :class:`~newton.solvers.SolverMuJoCo`

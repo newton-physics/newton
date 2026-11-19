@@ -1945,10 +1945,9 @@ def parse_usd(
     # all rigid shapes exist. Preserve the builder default on every imported shape so callers can
     # still disable collisions with zero or a shared negative group.
     imported_rigid_collider_groups: dict[str, tuple[str, ...]] = {}
-    # Colliders whose ke/kd came from their own mjc:solref; converted to force space below,
-    # once body masses are resolved.
-    solref_contact_paths: dict[str, frozenset[str]] = {}
-    first_collider_shape = builder.shape_count
+    # Shapes whose ke/kd came from their own mjc:solref; converted to force space once body
+    # ownership and masses are final.
+    solref_contact_shapes: dict[int, frozenset[str]] = {}
 
     _parse_colliders(
         builder=builder,
@@ -1968,7 +1967,7 @@ def parse_usd(
         incoming_world_xform=incoming_world_xform,
         usd_axis_to_axis=usd_axis_to_axis,
         imported_rigid_collider_groups=imported_rigid_collider_groups,
-        solref_contact_paths=solref_contact_paths,
+        solref_contact_shapes=solref_contact_shapes,
         ignore_paths=ignore_paths,
         load_visual_shapes=load_visual_shapes,
         hide_collision_shapes=hide_collision_shapes,
@@ -2211,8 +2210,6 @@ def parse_usd(
                         NewtonWarning,
                         stacklevel=2,
                     )
-
-    _scale_solref_contact_gains(builder, solref_contact_paths, path_shape_map, first_collider_shape)
 
     # add joints to floating bodies (bodies not connected as children to any joint)
     new_bodies = list(path_body_map.values())
@@ -2740,6 +2737,10 @@ def parse_usd(
             )
             if old_label is not None and old_label in new_label_to_idx:
                 path_joint_map[path] = new_label_to_idx[old_label]
+
+    # Collapsing keeps shape indices and moves shapes onto the surviving bodies, so the body
+    # mass used here is the one the shape is simulated with.
+    _scale_solref_contact_gains(builder, solref_contact_shapes)
 
     initialize_free_joint_velocities()
 
