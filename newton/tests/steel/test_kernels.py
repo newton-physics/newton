@@ -559,6 +559,10 @@ def test_equality_link_must_name_the_projected_constraint(test, device):
                     SolverSteel(model, solve_mode="serial")
             elif supported:
                 test.assertEqual(SolverSteel(model, solve_mode="serial")._mimic_count, 1)
+                # A DoF selector that names another joint's DoF is not honored, so the row is rejected.
+                model.mujoco.equality_constraint_joint1_dof.fill_(0)
+                with test.assertRaisesRegex(NotImplementedError, "equality"):
+                    SolverSteel(model, solve_mode="serial")
             else:
                 with test.assertRaisesRegex(NotImplementedError, "equality"):
                     SolverSteel(model, solve_mode="serial")

@@ -471,7 +471,7 @@ motion; see :ref:`passive-joint-springs` for details.
      - :class:`~newton.solvers.SolverKamino`
    * - Equality constraints (CONNECT, WELD, JOINT)
      - |no|
-     - |no|
+     - |yes| :sup:`15`
      - |no|
      - |no|
      - |yes|
@@ -507,6 +507,7 @@ motion; see :ref:`passive-joint-springs` for details.
 | :sup:`13` Steel enforces each mimic relationship within one articulation as one bilateral constraint row per follower coordinate; mimics of BALL, FREE, and DISTANCE joints and mimics across articulations are rejected. MuJoCo joint equalities (``model.mujoco.equality_constraint_*`` rows of type ``JOINT``) between two REVOLUTE or PRISMATIC joints of one articulation are enforced the same way, using their constant and linear ``polycoef`` terms. It also enforces loop-closing BALL joints as point constraints, loop-closing REVOLUTE joints as point constraints plus two hinge-axis constraints, and loop-closing FIXED joints as point constraints plus three rotation constraints. The propagation contact response (``articulated_contact_response="propagation"``) rejects loop-closing joints and solves mimic rows iteratively.
 | :sup:`14` See :ref:`Particle-body attachments` for authoring and semantics. Attachments spanning two
   solvers are coupled by :class:`~newton.solvers.experimental.coupled.SolverCoupledADMM` instead.
+| :sup:`15` Steel enforces JOINT equalities between two REVOLUTE or PRISMATIC joints of one articulation, using their constant and linear ``polycoef`` terms, and CONNECT and WELD equalities through the loop joints the MJCF and USD importers convert them to. It rejects any other enabled equality row.
 
 .. _Particle-body attachments:
 

@@ -429,6 +429,10 @@ def _joint_equality_rows(model: Model) -> np.ndarray:
     articulation = model.joint_articulation.numpy()
     follower, leader = np.where(rows, joint1, 0), np.where(rows, joint2, 0)
     rows &= scalar[follower] & scalar[leader]
+    # A DoF selector may only name the scalar joint's own DoF.
+    joint_qd_start = model.joint_qd_start.numpy()
+    for selector, joint in ((field("joint1_dof"), follower), (field("joint2_dof"), leader)):
+        rows &= (selector < 0) | (selector == joint_qd_start[joint])
     rows &= (articulation[follower] >= 0) & (articulation[follower] == articulation[leader])
     return np.flatnonzero(rows).astype(np.int32)
 
