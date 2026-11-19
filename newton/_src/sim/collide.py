@@ -60,7 +60,6 @@ from ..sim.shape_contact_pairs import (
     _shape_contact_pair_override,
 )
 from ..sim.state import State
-from ..utils.deprecation import RemovedAttribute
 
 if TYPE_CHECKING:
     from ..solvers.coupled.model_view import ModelView
@@ -2723,9 +2722,6 @@ class CollisionPipeline:
     def soft_contact_max(self) -> int:
         """Maximum soft contact buffer capacity used by this pipeline."""
         return self._soft_contact_max
-
-    # Tombstone so that assigning the old name fails instead of being ignored.
-    soft_contact_margin = RemovedAttribute("soft_contact_gap", removed_in="1.9")
 
     @property
     def soft_contact_pair_count(self) -> int:
