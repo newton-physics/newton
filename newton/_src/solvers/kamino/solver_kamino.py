@@ -883,6 +883,8 @@ class SolverKamino(SolverBase, CouplingInterface):
             include_shape_contact_pairs=include_shape_contact_pairs,
             kinematic_only_immovable=config.dynamics_solver == "lox",
         )
+        if config.use_fk_solver and self._model_kamino.joints.d6_axes.size:
+            raise ValueError("General D6 joints require use_fk_solver=False.")
 
         # Store for which joints the limits are finite. This is used to validate that finiteness of limits is not changed at runtime.
         q_min = self._model_kamino.joints.q_j_min.numpy()
@@ -1812,6 +1814,7 @@ class SolverKamino(SolverBase, CouplingInterface):
         axis_joint = violations[self._kamino.StructuralUpdateViolation.NONORTHONORMAL_AXES]
         gimbal_handedness_joint = violations[self._kamino.StructuralUpdateViolation.GIMBAL_HANDEDNESS]
         cartesian_handedness_joint = violations[self._kamino.StructuralUpdateViolation.CARTESIAN_HANDEDNESS]
+        cylindrical_axes_joint = violations[self._kamino.StructuralUpdateViolation.CYLINDRICAL_AXES]
         immovability_flip_body = violations[self._kamino.StructuralUpdateViolation.IMMOVABILITY_FLIP]
         friction_joint = violations[self._kamino.StructuralUpdateViolation.FRICTION_CTS]
         effort_joint = violations[self._kamino.StructuralUpdateViolation.EFFORT_CTS]
@@ -1863,7 +1866,8 @@ class SolverKamino(SolverBase, CouplingInterface):
             raise ValueError(
                 f"Invalid joint configuration for SolverKamino:\n"
                 f"  - joint {joint} ({self.model.joint_label[joint]!r}): "
-                "universal, Cartesian, and gimbal axes must be unit length and orthogonal"
+                "universal, Cartesian, and gimbal axes must be unit length and orthogonal. "
+                "D6 linear and angular bases must each be orthonormal."
             )
 
         if gimbal_handedness_joint != sentinel:
@@ -1879,8 +1883,15 @@ class SolverKamino(SolverBase, CouplingInterface):
             raise ValueError(
                 f"Invalid joint configuration for SolverKamino:\n"
                 f"  - joint {joint} ({self.model.joint_label[joint]!r}): "
-                "three translational axes must form a right-handed set, unlike those of a USD D6 joint "
-                "whose physics:body1 is the world"
+                "Changing the handedness of this Cartesian basis requires recreating SolverKamino."
+            )
+
+        if cylindrical_axes_joint != sentinel:
+            joint = int(cylindrical_axes_joint)
+            raise ValueError(
+                f"Changing the common axis of cylindrical joint {joint} "
+                f"({self.model.joint_label[joint]!r}) into distinct linear and angular axes "
+                "requires recreating SolverKamino."
             )
 
         if immovability_flip_body != sentinel:

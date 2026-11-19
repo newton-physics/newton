@@ -314,7 +314,7 @@ constraints, using a compliant augmented-Lagrangian (ALM) formulation.
      - |yes|
      - |yes|
      - |yes|
-     - |no|
+     - |yes| :sup:`3`
    * - ROD
      - |no|
      - |no|
@@ -326,6 +326,7 @@ constraints, using a compliant augmented-Lagrangian (ALM) formulation.
 
 | :sup:`1` DISTANCE joints are treated as FREE (no distance constraint enforcement).
 | :sup:`2` See :ref:`kamino-rod-joints` for the supported rod joint properties.
+| :sup:`3` See :ref:`kamino-d6-joints` for the supported D6 axis and forward-kinematics configurations.
 
 **Joint properties**
 
