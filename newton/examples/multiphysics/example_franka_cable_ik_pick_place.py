@@ -443,7 +443,7 @@ class Example:
         self.targets = poses[:, 1:]
         self.key_times = np.cumsum(poses[:, 0])
         # The release starts when the first keyframe after the grasp opens the fingers.
-        release_index = next(i for i in range(3, len(poses)) if poses[i, 8] == GRIP_OPEN)
+        release_index = next(i for i in range(3, len(poses)) if poses[i, 8] == np.float32(GRIP_OPEN))
         self.release_time = float(self.key_times[release_index - 1])
 
     def update_ik_targets(self):
@@ -534,7 +534,9 @@ class Example:
 
         # After release the cable drops onto the ground plane and comes to rest there. Its
         # centerline rests one radius above the surface, and its xy extent (padded by the
-        # placement tolerance) still spans the place target.
+        # placement tolerance) still spans the place target. The drop bends the cable, so
+        # this is a coarse landed-at-the-target check; the 1 cm placement accuracy is
+        # verified before release in test_post_step.
         target_xy = np.asarray(self.place_target_xy, dtype=np.float32)
         z_min = self.surface_z + 0.5 * self.payload_radius
         z_max = self.surface_z + 3.0 * self.payload_radius
