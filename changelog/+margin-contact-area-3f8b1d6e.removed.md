@@ -1,1 +1,1 @@
-Remove `HydroelasticSDF.Config.margin_contact_area`, deprecated in Newton 1.6; passing or assigning it now raises. Delete the setting: speculative hydroelastic contacts keep the activation area of its default, 0.01 m², which can no longer be changed.
+Remove `HydroelasticSDF.Config.margin_contact_area`, deprecated in Newton 1.6. Delete the setting: speculative hydroelastic contacts keep the activation area of its default, 0.01 m², which can no longer be changed.

@@ -43,7 +43,6 @@ from ..exceptions import NewtonWarning
 from ..sim.builder import ShapeFlags
 from ..sim.model import Model
 from ..sim.shape_contact_pairs import _shape_contact_pairs_for_mask
-from ..utils.deprecation import UnavailableAttribute
 from .collision_core import sat_box_intersection
 from .contact_data import ContactData
 from .contact_reduction import get_slot
@@ -464,10 +463,6 @@ class HydroelasticSDF:
         friction moment per normal bin is preserved between reduced and
         unreduced contacts. Automatically enables ``anchor_contact``.
         Only active when reduce_contacts is True."""
-        margin_contact_area = UnavailableAttribute(
-            "HydroelasticSDF.Config.margin_contact_area was removed in Newton 1.9; "
-            "speculative contacts use a fixed activation area."
-        )
         pressure_func: Any = None
         """Optional Warp function defining ``pressure = f(signed_depth, shape_idx, data)``.
 
