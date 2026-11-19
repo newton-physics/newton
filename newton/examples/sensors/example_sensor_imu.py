@@ -119,7 +119,7 @@ class Example:
         # finalize model
         self.model = builder.finalize()
 
-        self.imu = newton.sensors.SensorIMU(self.model, self.imu_sites, request_state_attributes=False)
+        self.imu = newton.sensors.SensorIMU(self.model, self.imu_sites)
 
         if self.solver_type == "kamino":
             solver_config = newton.solvers.SolverKamino.Config.from_model(

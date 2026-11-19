@@ -31,6 +31,7 @@ from newton._src.solvers.kamino._src.kinematics.jacobians import (
 )
 from newton._src.solvers.kamino._src.kinematics.joints import compute_joints_data
 from newton._src.solvers.kamino._src.kinematics.limits import LimitsKamino
+from newton._src.solvers.kamino._src.linalg.core import DenseSquareMultiLinearInfo
 from newton.tests.utils.basics import build_boxes_fourbar, make_basics_heterogeneous_builder
 
 from .print import (
@@ -46,8 +47,10 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "make_containers",
+    "make_dense_matrix_storage",
     "make_generalized_mass_matrices",
     "make_inverse_generalized_mass_matrices",
+    "make_row_storage",
     "make_test_problem",
     "make_test_problem_fourbar",
     "update_containers",
@@ -59,6 +62,25 @@ __all__ = [
 ###
 
 wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
+
+
+def make_dense_matrix_storage(
+    info: DenseSquareMultiLinearInfo, matrices: list[np.ndarray], fill_value: float = 0.0
+) -> np.ndarray:
+    """Pack each active matrix into its padded storage row."""
+    storage = np.full(info.matrix_shape, fill_value, dtype=np.float32)
+    for block, matrix in enumerate(matrices):
+        storage[block, : matrix.size] = matrix.ravel()
+    return storage
+
+
+def make_row_storage(flat: np.ndarray, offsets: list[int] | np.ndarray, sizes: list[int] | np.ndarray) -> np.ndarray:
+    """Copy flat per-block matrix data into one zero-padded row per block."""
+    sizes = np.asarray(sizes, dtype=np.int64)
+    rows = np.zeros((sizes.size, max(1, int(sizes.max(initial=0)))), dtype=np.asarray(flat).dtype)
+    for block, (offset, size) in enumerate(zip(offsets, sizes, strict=True)):
+        rows[block, :size] = flat[offset : offset + size]
+    return rows
 
 
 ###

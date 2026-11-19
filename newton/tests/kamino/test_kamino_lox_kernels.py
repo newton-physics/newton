@@ -9,6 +9,7 @@ import numpy as np
 import warp as wp
 from warp.fem.linalg import symmetric_eigenvalues_qr
 
+import newton
 from newton._src.solvers.kamino._src.core.types import mat36f, mat66f, vec6f
 from newton._src.solvers.kamino._src.solvers.lox.contact import (
     SpatialContactStatus,
@@ -24,7 +25,8 @@ from newton._src.solvers.kamino._src.solvers.lox.contact import (
     spatial_contact_delassus,
 )
 from newton._src.solvers.kamino._src.solvers.lox.system_kernels import normalize_symmetric_matrix
-from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino import setup_test_output, setup_tests, test_context
+from newton.tests.unittest_utils import NewtonTestCase
 
 
 @wp.kernel
@@ -71,8 +73,9 @@ def _evaluate_normal_law(parameters: wp.array2d[wp.float32], result: wp.array2d[
     result[i, 4] = free_velocity + mechanical_delassus * impulse
 
 
-class TestLOXContact(unittest.TestCase):
+class TestLOXContact(NewtonTestCase):
     def setUp(self):
+        setup_test_output(self)
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
@@ -214,8 +217,9 @@ class TestLOXContact(unittest.TestCase):
         self.assertLess(np.linalg.norm(residual[0]), 1.0e-6)
 
 
-class TestLOXContactLaw(unittest.TestCase):
+class TestLOXContactLaw(NewtonTestCase):
     def setUp(self):
+        setup_test_output(self)
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
@@ -330,8 +334,9 @@ def _prepare_assembled(
     valid[i] = wp.int32(prepared)
 
 
-class TestLOXSpatialContact(unittest.TestCase):
+class TestLOXSpatialContact(NewtonTestCase):
     def setUp(self):
+        setup_test_output(self)
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
@@ -572,8 +577,9 @@ def _compute_normalized_eigenvalues(matrix: wp.array[mat66f], eigenvalues: wp.ar
     eigenvalues[i] = scale * values
 
 
-class TestLOXSymmetricEigenvalues(unittest.TestCase):
+class TestLOXSymmetricEigenvalues(NewtonTestCase):
     def setUp(self):
+        setup_test_output(self)
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
@@ -611,6 +617,7 @@ class TestLOXSymmetricEigenvalues(unittest.TestCase):
 
 if __name__ == "__main__":
     # Test setup
+    newton.utils.setup_console_logging()
     setup_tests()
 
     # Run all tests

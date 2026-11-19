@@ -15,7 +15,7 @@ import newton._src.solvers.kamino.config as kamino_config
 from newton._src.solvers.kamino._src.linalg.factorize.llt_blocked_rcm import make_llt_blocked_rcm_solve_kernel
 from newton._src.solvers.kamino._src.solvers.scc.response import make_response_kernel
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
-from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino import setup_test_output, setup_tests, test_context
 from newton.tests.kamino.utils.solver_configs import (
     KAMINO_CONFIGS,
     PADMM_CONFIG_NAMES,
@@ -25,6 +25,7 @@ from newton.tests.kamino.utils.solver_configs import (
     make_padmm_sparse_fused_config,
     make_single_iteration_config,
 )
+from newton.tests.unittest_utils import NewtonTestCase
 
 _BODY_MASS = 1.0
 _BODY_PRINCIPAL_INERTIA = 1.0
@@ -225,9 +226,10 @@ def _run_hold_and_breakaway_test(
                     test_case.assertTrue(np.all(direction * velocities[1:, world] > 0.0))
 
 
-class TestSolverKaminoJointFriction(unittest.TestCase):
+class TestSolverKaminoJointFriction(NewtonTestCase):
     def setUp(self):
         """Initialize the shared public Kamino test context."""
+        setup_test_output(self)
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
 
@@ -458,9 +460,10 @@ class TestSolverKaminoJointFriction(unittest.TestCase):
         np.testing.assert_array_equal(sparse_jacobians._J_cts.bsm.dims.numpy()[:, 0], expected_rows)
 
 
-class TestSolverKaminoJointFrictionWarmstart(unittest.TestCase):
+class TestSolverKaminoJointFrictionWarmstart(NewtonTestCase):
     def setUp(self):
         """Initialize the shared public Kamino test context."""
+        setup_test_output(self)
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
 
@@ -512,9 +515,10 @@ class TestSolverKaminoJointFrictionWarmstart(unittest.TestCase):
                             self.assertLess(warm_residual, cold_residual)
 
 
-class TestSolverKaminoJointFrictionHoldAndBreakaway(unittest.TestCase):
+class TestSolverKaminoJointFrictionHoldAndBreakaway(NewtonTestCase):
     def setUp(self):
         """Initialize the shared public Kamino test context."""
+        setup_test_output(self)
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
 
@@ -534,9 +538,10 @@ class TestSolverKaminoJointFrictionHoldAndBreakaway(unittest.TestCase):
                 _run_hold_and_breakaway_test(self, config_name, config)
 
 
-class TestSolverKaminoJointFrictionLimitStopsMotion(unittest.TestCase):
+class TestSolverKaminoJointFrictionLimitStopsMotion(NewtonTestCase):
     def setUp(self):
         """Initialize the shared public Kamino test context."""
+        setup_test_output(self)
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
 
@@ -613,9 +618,10 @@ class TestSolverKaminoJointFrictionLimitStopsMotion(unittest.TestCase):
                 )
 
 
-class TestSolverKaminoJointFrictionSpinDown(unittest.TestCase):
+class TestSolverKaminoJointFrictionSpinDown(NewtonTestCase):
     def setUp(self):
         """Initialize the shared public Kamino test context."""
+        setup_test_output(self)
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
 
@@ -635,7 +641,7 @@ class TestSolverKaminoJointFrictionSpinDown(unittest.TestCase):
                 _run_spin_down_test(self, config_name, config)
 
 
-class TestSolverKaminoJointFrictionDominantArmature(unittest.TestCase):
+class TestSolverKaminoJointFrictionDominantArmature(NewtonTestCase):
     """
     Friction and armature act on the same joint DoF. With ``armature / I = 1e5`` the body-space
     friction and armature impulses nearly cancel, so a small relative error in either produces a
@@ -644,6 +650,7 @@ class TestSolverKaminoJointFrictionDominantArmature(unittest.TestCase):
 
     def setUp(self):
         """Initialize the shared public Kamino test context."""
+        setup_test_output(self)
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
 
@@ -684,5 +691,6 @@ class TestSolverKaminoJointFrictionDominantArmature(unittest.TestCase):
 
 
 if __name__ == "__main__":
+    newton.utils.setup_console_logging()
     setup_tests()
     unittest.main(verbosity=2)
