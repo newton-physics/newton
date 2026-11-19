@@ -13,6 +13,7 @@ import warp as wp
 
 import newton
 from newton import Axis, JointTargetMode, ModelBuilder
+from newton._src.solvers.kamino._src.core.joints import JOINT_TAUMAX
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.geometry.contacts import ContactsKamino
 from newton._src.solvers.kamino._src.kinematics.constraints import make_unilateral_constraints_info
@@ -23,15 +24,15 @@ from newton._src.solvers.kamino._src.kinematics.jacobians import (
 )
 from newton._src.solvers.kamino._src.kinematics.limits import LimitsKamino
 from newton._src.solvers.kamino._src.linalg.core import dense_matrix_layout
-from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
-from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino import setup_test_output, setup_tests, test_context
 from newton.tests.kamino.utils.extract import extract_cts_jacobians, extract_dofs_jacobians
 from newton.tests.kamino.utils.make import (
     make_test_problem,
     make_test_problem_fourbar,
     make_test_problem_heterogeneous,
 )
+from newton.tests.unittest_utils import NewtonTestCase
 from newton.tests.utils.basics import build_boxes_fourbar, make_basics_heterogeneous_builder
 
 logger = logging.getLogger(__name__)
@@ -48,7 +49,7 @@ wp.set_module_options({"enable_backward": False})
 ###
 
 
-class TestKinematicsDenseSystemJacobians(unittest.TestCase):
+class TestKinematicsDenseSystemJacobians(NewtonTestCase):
     def setUp(self):
         # Configs
         if not test_context.setup_done:
@@ -56,17 +57,7 @@ class TestKinematicsDenseSystemJacobians(unittest.TestCase):
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose  # Set to True for verbose output
 
-        # Set debug-level logging to print verbose test output to console
-        if self.verbose:
-            set_log_level(logging.DEBUG)
-            logger.debug("\n")  # Add newline before test output for better readability
-        else:
-            reset_log_level()
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
+        setup_test_output(self, verbose=self.verbose)
 
     def test_01_allocate_single_dense_system_jacobians_only_joints(self):
         # Construct the model description
@@ -441,7 +432,10 @@ class TestKinematicsDenseSystemJacobians(unittest.TestCase):
             logger.debug("[world='%d']: J_dofs:\n%s", w, J_dofs[w])
 
 
-class TestSparseBoundedRowTopology(unittest.TestCase):
+class TestSparseBoundedRowTopology(NewtonTestCase):
+    def setUp(self):
+        setup_test_output(self)
+
     def test_mixed_friction_effort_row_offsets(self):
         """Map mixed bounded rows to the correct sparse blocks across worlds."""
         builder = ModelBuilder()
@@ -508,26 +502,17 @@ class TestSparseBoundedRowTopology(unittest.TestCase):
         self.assertEqual(checked, set(range(model.size.sum_of_num_bounded_joint_cts)))
 
 
-class TestKinematicsSparseSystemJacobians(unittest.TestCase):
+class TestKinematicsSparseSystemJacobians(NewtonTestCase):
     def setUp(self):
         # Configs
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose  # Set to True for verbose output
+
+        setup_test_output(self, verbose=self.verbose)
+
         self.epsilon = 1e-6  # Threshold for sparse-dense comparison test
-
-        # Set debug-level logging to print verbose test output to console
-        if self.verbose:
-            set_log_level(logging.DEBUG)
-            logger.debug("\n")  # Add newline before test output for better readability
-        else:
-            reset_log_level()
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
 
     ###
     # Helpers
@@ -1137,6 +1122,11 @@ class TestKinematicsSparseSystemJacobians(unittest.TestCase):
         builder = make_basics_heterogeneous_builder(dynamic_joints=True, implicit_pd=True)
         builder.joint_friction = [0.1] * builder.joint_dof_count
         builder.joint_effort_limit = [2.0] * builder.joint_dof_count
+        for j, joint_type in enumerate(builder.joint_type):
+            if joint_type == newton.JointType.FREE:
+                for dof in range(builder.joint_qd_start[j], builder.joint_qd_start[j] + 6):
+                    builder.joint_friction[dof] = 0.0
+                    builder.joint_effort_limit[dof] = JOINT_TAUMAX
         model, data, _state, limits, contacts = make_test_problem(
             model=ModelKamino.from_newton(builder.finalize(device=self.default_device)),
             max_world_contacts=12,

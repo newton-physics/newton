@@ -280,7 +280,7 @@ def parse_usd(
             regardless of whether visual shapes exist on the same body. Note that
             ``hide_collision_shapes=True`` still suppresses the VISIBLE flag for
             colliders on bodies with visual-only geometry. Default is False.
-        parse_mujoco_options: Whether MuJoCo solver options from the PhysicsScene should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
+        parse_mujoco_options: Whether MuJoCo solver options from the PhysicsScene should be parsed. If False, solver options are not loaded and custom attributes retain their default values; the scene's ``mjc:flag:filterparent``, which sets ``collision_filter_parent`` on imported joints that do not author ``physics:collisionEnabled``, is then ignored as well. Default is True.
         convert_mjc_equality_constraints: Whether MuJoCo equality schemas should be converted to Newton loop
             joints or mimic constraints while preserving MuJoCo equality metadata for SolverMuJoCo. A weld
             becomes a FIXED loop joint, or a BALL loop joint when its ``torquescale`` is 0 (see "Link-break welds
@@ -305,6 +305,8 @@ def parse_usd(
             :attr:`~newton.JointTargetMode.POSITION` if stiffness > 0, :attr:`~newton.JointTargetMode.VELOCITY` if only
             damping > 0, :attr:`~newton.JointTargetMode.EFFORT` if a drive is present but both gains are zero
             (direct torque control), or :attr:`~newton.JointTargetMode.NONE` if no drive/actuation is applied.
+            A USD ``MjcActuator`` in MuJoCo's position or velocity shape on a DOF whose drive has both gains zero sets
+            the mode from its own gains instead of :attr:`~newton.JointTargetMode.EFFORT`, and a warning is logged.
         legacy_margin_gap: If True, restore pre-MuJoCo-3.9 import behavior
             where ``shape_margin`` is computed as ``mjc_margin - mjc_gap``.
             Use for USD files authored against MuJoCo <= 3.8. Defaults to
@@ -1206,6 +1208,9 @@ def parse_usd(
             verbose=verbose,
         )
 
+    # PhysicsScene ``mjc:flag:filterparent``; resolved below once the scene prim is known.
+    scene_filter_parent = True
+
     def parse_joint(
         joint_desc: UsdPhysics.JointDesc,
         incoming_xform: wp.transform | None = None,
@@ -1239,6 +1244,7 @@ def parse_usd(
             _should_write_solreflimit_mode=_should_write_solreflimit_mode,
             _should_write_solreflimit_gain_baseline=_should_write_solreflimit_gain_baseline,
             resolve_joint_parent_child=resolve_joint_parent_child,
+            scene_filter_parent=scene_filter_parent,
         )
 
     def parse_merged_joints(
@@ -1271,6 +1277,7 @@ def parse_usd(
             _should_write_solreflimit_mode=_should_write_solreflimit_mode,
             _should_write_solreflimit_gain_baseline=_should_write_solreflimit_gain_baseline,
             resolve_joint_parent_child=resolve_joint_parent_child,
+            scene_filter_parent=scene_filter_parent,
         )
 
     # Looking for and parsing the attributes on PhysicsScene prims
@@ -1297,6 +1304,13 @@ def parse_usd(
         # Storing Physics Scene attributes
         for a in physics_scene_prim.GetAttributes():
             scene_attributes[a.GetName()] = a.Get()
+
+        # Like the MJCF flag, mjc:flag:filterparent changes the Newton model (the joints' parent
+        # filter) rather than a solver option, and follows the same parse_mujoco_options gate.
+        if parse_mujoco_options:
+            filter_parent_attr = physics_scene_prim.GetAttribute("mjc:flag:filterparent")
+            if filter_parent_attr and filter_parent_attr.HasAuthoredValue():
+                scene_filter_parent = bool(filter_parent_attr.Get())
 
         # Parse custom attribute declarations from PhysicsScene prim
         # This must happen before processing any other prims
@@ -3094,6 +3108,13 @@ def parse_usd(
             return attr.default if value is None else value
 
         converted = 0
+        # DOFs whose target mode was already set by an MjcActuator row in this
+        # loop, so a position + velocity pair on one DOF is not mistaken for a
+        # UsdPhysics drive.
+        mjc_target_dofs: set[int] = set()
+        # DOFs whose MjcActuator gains were merged into a UsdPhysics drive's,
+        # reported once after all rows are merged.
+        drive_merged_dofs: dict[int, str] = {}
 
         for row in range(mjc_actuator_count):
             target_path = _row("mujoco:actuator_target_label", row)
@@ -3135,6 +3156,24 @@ def parse_usd(
                 continue
 
             current_mode = builder.joint_target_mode[dof]
+            if current_mode == int(JointTargetMode.EFFORT):
+                # A UsdPhysics drive with zero stiffness and damping set EFFORT.
+                # SolverMuJoCo builds no joint-target actuator for EFFORT, so
+                # keeping it would drop the authored MjcActuator. The drive adds
+                # no gains, so the MjcActuator's gains define the target mode.
+                # The drive's targets and maxForce were already applied to the
+                # DOF and are kept, as for a drive with gains.
+                logger.warning(
+                    "Joint '%s' has a UsdPhysics drive with zero stiffness and damping and an MjcActuator; "
+                    "the MjcActuator's gains are used instead of EFFORT mode. The drive's targets and "
+                    "maxForce still apply.",
+                    target_path,
+                )
+                builder.joint_target_mode[dof] = int(JointTargetMode.NONE)
+                current_mode = int(JointTargetMode.NONE)
+            if dof not in mjc_target_dofs and current_mode != int(JointTargetMode.NONE):
+                drive_merged_dofs[dof] = target_path
+            mjc_target_dofs.add(dof)
             if is_position:
                 builder.joint_target_ke[dof] = kp
                 if current_mode == int(JointTargetMode.VELOCITY):
@@ -3159,6 +3198,16 @@ def parse_usd(
             )
 
             converted += 1
+
+        for dof, joint_path in drive_merged_dofs.items():
+            logger.warning(
+                "Joint '%s' has both a UsdPhysics drive and an MjcActuator; using mode %s, ke=%g, kd=%g. "
+                "Remove one of them to use the other alone.",
+                joint_path,
+                JointTargetMode(builder.joint_target_mode[dof]).name,
+                builder.joint_target_ke[dof],
+                builder.joint_target_kd[dof],
+            )
 
         if verbose and converted > 0:
             logger.info("Mapped %s MuJoCo USD actuator(s) to joint targets", converted)
