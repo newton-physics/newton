@@ -44,14 +44,12 @@ MESH_SDF_CACHE_DIR = Path(tempfile.gettempdir()) / "newton_sdf_cache"
 SHAPE_CFG = newton.ModelBuilder.ShapeConfig(
     margin=0.0,
     mu=0.01,
-    # Hydroelastic supplies the per-contact stiffness for the nut/bolt pair, so
-    # ``ke``/``kd`` reach only the non-hydroelastic contacts. At the 1e10 ``kh``
-    # default the thread contacts resolve over a ~95 ms solref time constant --
-    # roughly 45 substeps -- and the nut sits visibly cocked under MuJoCo. XPBD
-    # projects positions and is insensitive to this either way.
+    # At the 1e10 ``kh`` default the thread contacts resolve over a ~95 ms
+    # solref time constant -- roughly 45 substeps -- and the nut sits visibly
+    # cocked under MuJoCo. XPBD projects positions and is insensitive to this.
     kh=1e11,  # Hydroelastic contact stiffness
     ke=1e7,
-    kd=1e4,
+    kd=0.0,  # Preserve the previous zero hydroelastic damping.
     gap=0.0,
     density=8000.0,
     mu_torsional=0.0,
