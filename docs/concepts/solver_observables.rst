@@ -489,10 +489,8 @@ container, and pass it through the step:
 
 .. code-block:: python
 
-   imu = newton.sensors.SensorIMU(model, sites="imu_*", request_state_attributes=False)
-   contact_sensor = newton.sensors.SensorContact(
-       model, sensing_shapes="foot_*", request_contact_attributes=False
-   )
+   imu = newton.sensors.SensorIMU(model, sites="imu_*")
+   contact_sensor = newton.sensors.SensorContact(model, sensing_shapes="foot_*")
 
    kinds = imu.solver_observable_kinds | contact_sensor.solver_observable_kinds
    # Use contacts from a pipeline configured with a compatible capacity.
@@ -611,8 +609,7 @@ by the iterations.
 
 Soft self-contact forces are not exported. :class:`~newton.sensors.SensorContact` reads the
 rigid-contact rows, so it reports VBD's body-body contacts, but it does not read the soft rows.
-Construct it with ``request_contact_attributes=False`` and pass the container as
-``sensor.update(state_out, contacts, observables=observables)``.
+Pass the container as ``sensor.update(state_out, contacts, observables=observables)``.
 
 .. testcode::
 
@@ -704,12 +701,10 @@ The following compatibility paths remain available for a deprecation period:
 The request methods and legacy force export via ``update_contacts()`` emit
 :class:`DeprecationWarning`. MuJoCo and Kamino keep geometry-only ``update_contacts()``
 supported without a warning when ``contacts.force`` is ``None``.
-``SensorIMU`` and ``SensorContact`` retain their legacy
-``request_state_attributes=True`` and ``request_contact_attributes=True`` defaults
-during the deprecation period; explicitly pass ``False`` when using solver observables.
-Setting either option to ``True`` is deprecated in Newton 1.7 and emits one
-sensor-specific warning at the caller's location. Passing ``False`` does not
-emit a warning or request legacy fields.
+``SensorIMU`` and ``SensorContact`` read solver observables by default.
+Setting ``request_state_attributes=True`` or ``request_contact_attributes=True``
+is deprecated in Newton 1.7 and emits one sensor-specific warning at the caller's
+location. Omit both arguments; they will be removed together with the legacy fields.
 
 ``Contacts.EXTENDED_ATTRIBUTES`` and direct ``requested_attributes={"force"}``
 remain compatibility APIs. New integrations should not allocate

@@ -18,6 +18,7 @@ from typing import Any
 import warp as wp
 from warp.fem.linalg import symmetric_eigenvalues_qr
 
+from ...core.joints import JointDoFType
 from ...core.math import compute_gyroscopic_torque
 from ...core.types import mat36f, mat66f, vec6f, vec6i
 
@@ -29,6 +30,7 @@ __all__ = [
     "ProjectionWeights",
     "_assemble_body_inertial_systems",
     "_assemble_joint_rows",
+    "_assemble_rod_geometric_stiffness",
     "_build_candidate_right_hand_side",
     "_compute_free_body_blocks",
     "_compute_patch_weights",
@@ -314,6 +316,23 @@ def _matrix_index(
 
 
 @wp.func
+def block_matrix(
+    matrix: wp.array2d[wp.float32],
+    single_body_matrix: wp.array2d[wp.float32],
+    block: wp.int32,
+) -> wp.array[wp.float32]:
+    """Return the row-major entries of the matrix of a factor block.
+
+    The multi-body blocks come first and hold one row of ``matrix`` each, so ``matrix.shape[0]`` counts
+    them. Each single-body block after them holds one row of ``single_body_matrix``, of ``6 x 6`` entries.
+    """
+    multi_body_count = matrix.shape[0]
+    if block < multi_body_count:
+        return matrix[block]
+    return single_body_matrix[block - multi_body_count]
+
+
+@wp.func
 def _body_matrix_rows(
     vector_offset: wp.int32,
     inverse_permutation: wp.array[wp.int32],
@@ -398,6 +417,7 @@ def _assemble_body_inertial_systems(
     inverse_permutation: wp.array[wp.int32],
     # Outputs:
     matrix: wp.array2d[wp.float32],
+    single_body_matrix: wp.array2d[wp.float32],
     right_hand_side: wp.array[wp.float32],
 ):
     """Write the inertial terms of each body and clear the off-diagonal blocks of its body edges.
@@ -431,18 +451,19 @@ def _assemble_body_inertial_systems(
     right_hand_side[vector_offset + 6 * local_body + axis] = _select_axis(contribution.right_hand_side, axis)
 
     # The six threads of a body write contiguous columns of each matrix row
+    entries = block_matrix(matrix, single_body_matrix, block)
     rows = _body_matrix_rows(vector_offset, inverse_permutation, local_body, dimension)
     col = _body_matrix_row(vector_offset, inverse_permutation, local_body, axis, dimension)
     for row in range(6):
         value = _select_axis(contribution.matrix[row], axis)
-        matrix[block, _matrix_index(dimension, rows[row], col)] = value
+        entries[_matrix_index(dimension, rows[row], col)] = value
     for edge in range(body_edge_offset[bid], body_edge_offset[bid + 1]):
         neighbor = body_local[body_edge_neighbor[edge]]
         neighbor_rows = _body_matrix_rows(vector_offset, inverse_permutation, neighbor, dimension)
         neighbor_col = _body_matrix_row(vector_offset, inverse_permutation, neighbor, axis, dimension)
         for row in range(6):
-            matrix[block, _matrix_index(dimension, rows[row], neighbor_col)] = 0.0
-            matrix[block, _matrix_index(dimension, neighbor_rows[row], col)] = 0.0
+            entries[_matrix_index(dimension, rows[row], neighbor_col)] = 0.0
+            entries[_matrix_index(dimension, neighbor_rows[row], col)] = 0.0
 
 
 @wp.kernel
@@ -479,6 +500,7 @@ def _assemble_joint_rows(
     structural_penalty: wp.array[wp.float32],
     structural_body_impulse: wp.array[vec6f],
     matrix: wp.array2d[wp.float32],
+    single_body_matrix: wp.array2d[wp.float32],
     right_hand_side: wp.array[wp.float32],
 ):
     """Assemble the dynamic rows and the frozen penalty terms of the structural rows of each joint.
@@ -605,12 +627,127 @@ def _assemble_joint_rows(
     wp.atomic_add(right_hand_side, vector_offset + 6 * bid_local + axis, right_hand_side_entry)
     col = _body_matrix_row(vector_offset, inverse_permutation, bid_local, axis, dimension)
     rows = _body_matrix_rows(vector_offset, inverse_permutation, bid_local, dimension)
+    entries = block_matrix(matrix, single_body_matrix, block)
     for row in range(6):
-        wp.atomic_add(matrix, block, _matrix_index(dimension, rows[row], col), body_row[row])
+        wp.atomic_add(entries, _matrix_index(dimension, rows[row], col), body_row[row])
     if other_local >= 0:
         other_rows = _body_matrix_rows(vector_offset, inverse_permutation, other_local, dimension)
         for row in range(6):
-            wp.atomic_add(matrix, block, _matrix_index(dimension, other_rows[row], col), cross_row[row])
+            wp.atomic_add(entries, _matrix_index(dimension, other_rows[row], col), cross_row[row])
+
+
+@wp.func
+def _compute_point_geometric_stiffness(force: wp.vec3f, arm: wp.vec3f) -> wp.mat33f:
+    """Return the rotational geometric stiffness of the tension of a point force.
+
+    A force ``force`` along the arm ``arm`` from the center of mass has the rotational stiffness
+    ``(force . arm) (I - arm arm^T / |arm|^2)``, the stiffness of a pendulum hanging from the point. The
+    component of the force along the arm sets this stiffness, which is positive semidefinite when the
+    force pulls the point away from the center of mass.
+    """
+    tension = wp.max(wp.dot(force, arm), 0.0)
+    length_sq = wp.dot(arm, arm)
+    if tension <= 0.0 or length_sq <= 0.0:
+        return wp.mat33f(0.0)
+    return tension * (wp.identity(n=3, dtype=wp.float32) - wp.outer(arm, arm) / length_sq)
+
+
+@wp.kernel
+def _assemble_rod_geometric_stiffness(
+    # Inputs:
+    dimensions: wp.array[wp.int32],
+    vector_offsets: wp.array[wp.int32],
+    joint_world: wp.array[wp.int32],
+    joint_dof_type: wp.array[wp.int32],
+    joint_dofs_offset: wp.array[wp.int32],
+    joint_coords_offset: wp.array[wp.int32],
+    joint_body_a: wp.array[wp.int32],
+    joint_body_b: wp.array[wp.int32],
+    joint_q: wp.array[wp.float32],
+    joint_q_rest: wp.array[wp.float32],
+    joint_pose: wp.array[wp.transformf],
+    body_pose: wp.array[wp.transformf],
+    body_block: wp.array[wp.int32],
+    body_local: wp.array[wp.int32],
+    prescribed_twist: wp.array[vec6f],
+    model_time_dt: wp.array[wp.float32],
+    dynamic_offset: wp.array[wp.int32],
+    dynamic_count: wp.array[wp.int32],
+    dynamic_dof: wp.array[wp.int32],
+    dynamic_jacobian_a: wp.array[vec6f],
+    dynamic_jacobian_b: wp.array[vec6f],
+    dynamic_effective_inertia: wp.array[wp.float32],
+    dynamic_free_velocity: wp.array[wp.float32],
+    inverse_permutation: wp.array[wp.int32],
+    # Outputs:
+    matrix: wp.array2d[wp.float32],
+    single_body_matrix: wp.array2d[wp.float32],
+):
+    """Add the rotational geometric stiffness of the stretch and shear rows of each stretched rod joint.
+
+    The stretch and shear rows of a rod act at its follower anchor, and their elastic force at the beginning of
+    the step ``effective_inertia * free_velocity / h``, taken at the prescribed twists of the bodies outside
+    the system as in :func:`_assemble_joint_rows`, turns with the arm of each body. When the rod is
+    longer than its rest length, each dynamic body adds ``h^2`` times the stiffness of the tension of this
+    force to its angular block, see :func:`_compute_point_geometric_stiffness`. The right-hand side holds
+    the elastic force already, so the matrix term completes the linearization of the rows about the
+    beginning of the step.
+    """
+    jid, side = wp.tid()
+    if joint_dof_type[jid] != JointDoFType.ROD:
+        return
+    stretch_coord = joint_coords_offset[jid] + 2
+    if joint_q[stretch_coord] <= joint_q_rest[stretch_coord]:
+        return
+    bid_a = joint_body_a[jid]
+    bid_b = joint_body_b[jid]
+    bid = wp.where(side == 0, bid_a, bid_b)
+    if bid < 0 or bid >= body_block.shape[0]:
+        return
+    block = body_block[bid]
+    bid_local = body_local[bid]
+    wid = joint_world[jid]
+    if block < 0 or bid_local < 0 or wid < 0 or block >= dimensions.shape[0]:
+        return
+    dt = model_time_dt[wid]
+    if dt <= 0.0:
+        return
+
+    # The rows are linearized about zero dynamic twists and the prescribed twists of the other bodies
+    a_twist = vec6f(0.0)
+    b_twist = vec6f(0.0)
+    if prescribed_twist and bid_a >= 0 and body_local[bid_a] < 0:
+        a_twist = prescribed_twist[bid_a]
+    if prescribed_twist and bid_b >= 0 and body_local[bid_b] < 0:
+        b_twist = prescribed_twist[bid_b]
+
+    # Sum the elastic force of the stretch and shear rows on the body
+    force = wp.vec3f(0.0)
+    dofs_offset = joint_dofs_offset[jid]
+    dynamic_start = dynamic_offset[jid]
+    for row in range(dynamic_start, dynamic_start + dynamic_count[jid]):
+        if dynamic_dof[row] - dofs_offset >= 3:
+            continue
+        a_jacobian = dynamic_jacobian_a[row]
+        b_jacobian = dynamic_jacobian_b[row]
+        velocity = dynamic_free_velocity[row] - wp.dot(a_jacobian, a_twist) - wp.dot(b_jacobian, b_twist)
+        jacobian = wp.where(side == 0, a_jacobian, b_jacobian)
+        row_force = dynamic_effective_inertia[row] * velocity / dt
+        force += row_force * wp.vec3f(jacobian[0], jacobian[1], jacobian[2])
+
+    # The stretch and shear rows act at the follower anchor, at the anchor separation from the joint frame
+    coords_offset = joint_coords_offset[jid]
+    anchor_separation = wp.vec3f(joint_q[coords_offset], joint_q[coords_offset + 1], joint_q[coords_offset + 2])
+    anchor = wp.transform_point(joint_pose[jid], anchor_separation)
+    arm = anchor - wp.transform_get_translation(body_pose[bid])
+    stiffness = dt * dt * _compute_point_geometric_stiffness(force, arm)
+
+    dimension = dimensions[block]
+    rows = _body_matrix_rows(vector_offsets[block], inverse_permutation, bid_local, dimension)
+    entries = block_matrix(matrix, single_body_matrix, block)
+    for row in range(3):
+        for col in range(3):
+            wp.atomic_add(entries, _matrix_index(dimension, rows[3 + row], rows[3 + col]), stiffness[row, col])
 
 
 @wp.func
@@ -738,6 +875,7 @@ def _compute_free_body_blocks(
     vector_offsets: wp.array[wp.int32],
     inverse_permutation: wp.array[wp.int32],
     matrix: wp.array2d[wp.float32],
+    single_body_matrix: wp.array2d[wp.float32],
     incidence_offset: wp.array[wp.int32],
     incidence_kind: wp.array[wp.int32],
     incidence_row: wp.array[wp.int32],
@@ -769,7 +907,7 @@ def _compute_free_body_blocks(
     if block < 0:
         return
     rows = _body_matrix_rows(vector_offsets[block], inverse_permutation, body_local[bid], dimensions[block])
-    result = _read_body_block(matrix[block], dimensions[block], rows, rows)
+    result = _read_body_block(block_matrix(matrix, single_body_matrix, block), dimensions[block], rows, rows)
     diagonal = 0.5 * (result + wp.transpose(result))
     _store_lower_mat66(diagonal_block, bid, diagonal)
     lower, valid = _cholesky_mat66(diagonal)
@@ -1052,6 +1190,7 @@ def make_patch_schur_kernel(woodbury: bool):
         vector_offsets: wp.array[wp.int32],
         inverse_permutation: wp.array[wp.int32],
         matrix: wp.array2d[wp.float32],
+        single_body_matrix: wp.array2d[wp.float32],
         body_weight_enabled: wp.array[wp.int32],
         diagonal_block: wp.array2d[wp.float32],
         diagonal_lower: wp.array2d[wp.float32],
@@ -1122,6 +1261,7 @@ def make_patch_schur_kernel(woodbury: bool):
         dimension = dimensions[block]
         vector_offset = vector_offsets[block]
         rows = _body_matrix_rows(vector_offset, inverse_permutation, body_local[bid], dimension)
+        entries = block_matrix(matrix, single_body_matrix, block)
         pinned = _load_symmetric_mat66(diagonal_block, bid)
         for entry in range(neighbor_offset[bid], neighbor_offset[bid + 1]):
             neighbor = neighbor_body[entry]
@@ -1130,7 +1270,7 @@ def make_patch_schur_kernel(woodbury: bool):
             neighbor_lower = _load_lower_mat66(diagonal_lower, neighbor)
             neighbor_rows = _body_matrix_rows(vector_offset, inverse_permutation, body_local[neighbor], dimension)
             # Y = L_j^-1 A_ji, then A_ij A_jj^-1 A_ji = Y^T Y
-            coupling = _read_body_block(matrix[block], dimension, neighbor_rows, rows)
+            coupling = _read_body_block(entries, dimension, neighbor_rows, rows)
             solved = _solve_lower_mat66(neighbor_lower, coupling)
             pinned -= wp.transpose(solved) @ solved
         _store_lower_mat66(pinned_schur, bid, 0.5 * (pinned + wp.transpose(pinned)))
@@ -1155,6 +1295,7 @@ def _compute_patch_weights(
     matrix_weight_scale: wp.float32,
     # Outputs:
     matrix: wp.array2d[wp.float32],
+    single_body_matrix: wp.array2d[wp.float32],
     weight: wp.array[mat66f],
     inverse_weight: wp.array[mat66f],
     single_body_inverse: wp.array[mat66f],
@@ -1192,9 +1333,10 @@ def _compute_patch_weights(
         weighted = _load_symmetric_mat66(diagonal_block, bid) + matrix_weight_scale * mean
         if write_matrix:
             rows = _body_matrix_rows(vector_offsets[block], inverse_permutation, body_local[bid], dimension)
+            entries = block_matrix(matrix, single_body_matrix, block)
             for row in range(6):
                 for col in range(6):
-                    matrix[block, _matrix_index(dimension, rows[row], rows[col])] = weighted[row, col]
+                    entries[_matrix_index(dimension, rows[row], rows[col])] = weighted[row, col]
         if dimension == 6:
             inverse_block, _valid = _invert_spd_mat66(weighted)
             single_body_inverse[bid] = inverse_block
@@ -1303,6 +1445,7 @@ def _invert_single_body_blocks(
     body_local: wp.array[wp.int32],
     dimensions: wp.array[wp.int32],
     matrix: wp.array2d[wp.float32],
+    single_body_matrix: wp.array2d[wp.float32],
     # Outputs:
     single_body_inverse: wp.array[mat66f],
 ):
@@ -1314,8 +1457,8 @@ def _invert_single_body_blocks(
     rows = vec6i()
     for axis in range(6):
         rows[axis] = 6 * body_local[bid] + axis
-    block_matrix = _read_body_block(matrix[block], 6, rows, rows)
-    inverse_block, _valid = _invert_spd_mat66(0.5 * (block_matrix + wp.transpose(block_matrix)))
+    body_matrix = _read_body_block(block_matrix(matrix, single_body_matrix, block), 6, rows, rows)
+    inverse_block, _valid = _invert_spd_mat66(0.5 * (body_matrix + wp.transpose(body_matrix)))
     single_body_inverse[bid] = inverse_block
 
 
