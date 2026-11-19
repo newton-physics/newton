@@ -43,6 +43,7 @@ from .implicit_mpm_model import ImplicitMPMModel
 from .particle_surface_colliders import extrapolate_surface_sdf_into_colliders
 from .rasterized_collisions import (
     Collider,
+    PicContactMotion,
     build_rigidity_operator,
     collider_distance_reflect,
     interpolate_collider_normals,
@@ -85,6 +86,7 @@ from .implicit_mpm_solver_kernels import (
     gimp_domain_corners,
     gimp_half_size,
     gimp_store_point_stress,
+    inertial_delassus_scale,
     integrate_active_fraction,
     integrate_elastic_parameters,
     integrate_fraction,
@@ -2405,13 +2407,20 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             if self.collider_basis[:3] == "pic" and self.collider_basis[3:].isdigit():
                 contact_pic = self._scratchpad.contact_pic if self.gimp else pic
                 if contact_pic is not None:
+                    motion = PicContactMotion()
+                    motion.flags = self._mpm_model.particle_flags
+                    motion.positions = state_in.particle_q
+                    motion.velocities = state_in.particle_qd
+                    motion.radii = self._mpm_model.particle_radius
+                    motion.world = model.particle_world
+                    motion.gravity = model.gravity
+                    motion.forces = state_in.particle_f
+                    motion.inv_mass = model.particle_inv_mass
                     prioritize_pic_contacts(
                         contact_pic,
                         int(self.collider_basis[3:]),
                         self._particle_environment,
-                        state_in.particle_q,
-                        state_in.particle_qd,
-                        self._mpm_model.particle_radius,
+                        motion,
                         self._mpm_model.collider,
                         state_in.body_q,
                         state_in.body_qd,
@@ -3988,11 +3997,16 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
     ):
         mpm_model = self._mpm_model
 
-        # A full cell's inertial Delassus scale, dt^2 / (rho dx^2) for the densest material, sets the
-        # rheology regularization; a unit density keeps it positive without positive-density material
-        max_density = mpm_model.max_particle_density if mpm_model.max_particle_density > 0.0 else 1.0
-        delassus_scale = dt * dt / (self.voxel_size * self.voxel_size * max_density)
-        scratch.delassus_scale = wp.full(shape=(1,), value=delassus_scale, dtype=float)
+        # A full cell's inertial Delassus scale, dt^2 / (rho dx^2) for the densest material of each
+        # environment, sets that environment's rheology regularization
+        densities = mpm_model.environment_max_particle_density
+        scratch.delassus_scale = wp.empty(shape=densities.shape, dtype=float)
+        wp.launch(
+            inertial_delassus_scale,
+            dim=densities.shape,
+            inputs=[densities, dt * dt / (self.voxel_size * self.voxel_size)],
+            outputs=[scratch.delassus_scale],
+        )
 
         with self._timer("Strain-node particle volumes"):
             fem.integrate(

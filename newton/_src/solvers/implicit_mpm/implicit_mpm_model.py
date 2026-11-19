@@ -369,7 +369,7 @@ class ImplicitMPMModel:
         - ``particle_radius``, ``particle_volume``, and ``particle_density``,
           from ``model.particle_radius`` and ``model.particle_mass``.
         - Cached extrema (``min_young_modulus``, ``max_hardening``,
-          ``max_particle_radius``, ``max_particle_density``) and feature
+          ``max_particle_radius``, ``environment_max_particle_density``) and feature
           flags (``has_viscosity``, ``has_dilatancy``) used to toggle code
           paths without rescanning every step.
         """
@@ -433,9 +433,15 @@ class ImplicitMPMModel:
         material_particle_volume[~material_active] = 0.0
         self.material_particle_volume = wp.array(material_particle_volume, dtype=float, device=model.device)
 
-        # Kinematic particles have zero density and stay out of the maximum
+        # Densest material of each independent environment (all particles share one without separate worlds);
+        # kinematic particles have zero density and stay out of the maximum
         material_density = self.particle_density.numpy()[material_active]
-        self.max_particle_density = float(np.max(material_density, initial=0.0))
+        environment_max_density = np.zeros(model.world_count if self._separate_worlds else 1, dtype=np.float32)
+        if self._separate_worlds:
+            np.maximum.at(environment_max_density, model.particle_world.numpy()[material_active], material_density)
+        else:
+            environment_max_density[0] = np.max(material_density, initial=0.0)
+        self.environment_max_particle_density = wp.array(environment_max_density, dtype=float, device=model.device)
 
         if np.any(material_active):
             self.min_young_modulus = float(np.min(self.material_parameters.young_modulus.numpy()[material_active]))

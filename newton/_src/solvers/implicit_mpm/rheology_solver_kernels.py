@@ -177,6 +177,7 @@ def compute_delassus_diagonal(
     mass_multiplicity: wp.array2d[float],
     majorize: bool,
     delassus_scale: wp.array[float],
+    environment_offsets: wp.array[int],
     delassus_rotation: wp.array[mat55],
     delassus_diagonal: wp.array[vec6],
 ):
@@ -188,7 +189,8 @@ def compute_delassus_diagonal(
     Empty ``mass_multiplicity`` uses unit weights (GS); otherwise use the
     supplied per-batch weights (Jacobi or batched GS).
 
-    ``delassus_scale[0]`` is a full cell's inertial Delassus scale dt^2 / (rho dx^2);
+    ``delassus_scale`` holds a full cell's inertial Delassus scale dt^2 / (rho dx^2)
+    for each environment delimited by ``environment_offsets`` (a single one when empty);
     the proximal regularization is a fixed fraction of it, which makes it independent
     of units and time step.
     """
@@ -224,7 +226,10 @@ def compute_delassus_diagonal(
         b_v2 = _symmetric_part_op(b_val, wp.vec3(0.0, 0.0, 1.0))
         diag_block += inv_frac * wp.outer(b_v2, b_v2)
 
-    reg = _DELASSUS_SCALED_REG * delassus_scale[0]
+    environment = int(0)
+    if environment_offsets.shape[0] > 0:
+        environment = wp.clamp(wp.lower_bound(environment_offsets, tau_i + 1) - 1, 0, delassus_scale.shape[0] - 1)
+    reg = _DELASSUS_SCALED_REG * delassus_scale[environment]
     diag_block += reg * wp.identity(n=6, dtype=float)
 
     coupling = vec6(0.0)

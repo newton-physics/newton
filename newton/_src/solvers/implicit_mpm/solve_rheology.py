@@ -709,7 +709,7 @@ class _DelassusOperator:
     ):
         self.rheology = rheology
         self.momentum = momentum
-        # One-element inertial scale [1/Pa] of the proximal regularization
+        # Per-environment inertial scale [1/Pa] of the proximal regularization
         self.delassus_scale = delassus_scale
 
         self.delassus_rotation = fem.borrow_temporary(temporary_store, shape=self.size, dtype=mat55)
@@ -798,6 +798,7 @@ class _DelassusOperator:
                 mult,
                 majorize,
                 self.delassus_scale,
+                self.rheology.strain_environment_offsets,
             ],
             outputs=[
                 self.delassus_rotation,
@@ -2282,9 +2283,11 @@ def solve_rheology(
             yield parameters, coloring data, and output stress/strain arrays.
         collision: :class:`CollisionData` containing collider matrices, friction,
             adhesion, normals, velocities, rigidity operator, and impulse arrays.
-        delassus_scale: One-element device array holding a full cell's inertial
-            Delassus scale dt^2 / (rho dx^2) [1/Pa]; the proximal regularization of
-            the Delassus diagonal blocks is a fixed fraction of it.
+        delassus_scale: Device array holding a full cell's inertial Delassus scale
+            dt^2 / (rho dx^2) [1/Pa] for each environment of
+            ``rheology.strain_environment_offsets``, or one value for a single shared
+            solve; the proximal regularization of the Delassus diagonal blocks is a
+            fixed fraction of it.
         jacobi_warmstart_smoother_iterations: Number of Jacobi smoother
             iterations to run before the main Gauss-Seidel solve (ignored
             for Jacobi solver).

@@ -423,7 +423,9 @@ def test_delassus_majorizer(test, device):
             wp.empty((0, 0), dtype=float),
         ]
         outputs = [rotation, diagonal]
-        wp.launch(compute_delassus_diagonal, count, inputs=[*inputs, True, wp.ones(1, dtype=float)], outputs=outputs)
+        wp.launch(
+            compute_delassus_diagonal, count, inputs=[*inputs, True, wp.ones(1, dtype=float), None], outputs=outputs
+        )
         for i, (d, R) in enumerate(zip(diagonal.numpy(), rotation.numpy(), strict=True)):
             with test.subTest(block=i):
                 test.assertTrue(np.isfinite(d).all() and (d > 0).all())
@@ -1145,7 +1147,7 @@ def test_multiworld_fixed_pic_matches_independent(test, device):
 
 
 def test_multiworld_nonlinear_convergence_is_independent(test, device):
-    """Preserve a world's converged state when another world needs more iterations."""
+    """Preserve a world's converged state when another world needs more iterations or holds denser material."""
     spacing = 1.25e-3
     local_builder = newton.ModelBuilder()
     SolverImplicitMPM.register_custom_attributes(local_builder)
@@ -1174,12 +1176,16 @@ def test_multiworld_nonlinear_convergence_is_independent(test, device):
 
     for mode in ("gs", "jacobi"):
         results = []
-        for friction in (0.5, 0.0):
+        for friction, density_scale in ((0.5, 1.0), (0.0, 8.0)):
             model = builder.finalize(device=device)
             starts = model.particle_world_start.numpy()
             material_friction = model.mpm.friction.numpy()
             material_friction[starts[2] : starts[3]] = friction
             model.mpm.friction.assign(material_friction)
+            mass = model.particle_mass.numpy()
+            mass[starts[2] : starts[3]] *= density_scale
+            model.particle_mass.assign(mass)
+            model.particle_inv_mass.assign(1.0 / mass)
             config = SolverImplicitMPM.Config(
                 voxel_size=2.5e-3,
                 grid_type="fixed",

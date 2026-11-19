@@ -233,6 +233,66 @@ def test_contact_shielding_keeps_binding_contacts(test, device):
             test.assertEqual(active[np.argmax(positions[:, 2])], not shielded)
 
 
+def test_capped_contacts_rank_eligible_particles(test, device):
+    """Give the contact slots of a full "pic2" cell to the particles that can touch the floor this step.
+
+    Inactive particles rank last, after particles outside the contact band, and approach counts the step's applied
+    forces: a particle at rest that a force pushes into the floor outranks particles falling from beyond the band.
+    """
+    with wp.ScopedDevice(device):
+        # (position, velocity, radius, active, force) per particle; all share the cell spanning z in [0.05, 0.15]
+        inactive_resting = [((x, 0.52, 0.06), (0.0, 0.0, 0.0), 0.07, False, 0.0) for x in (0.51, 0.53)]
+        out_of_band = [((x, 0.52, 0.145), (0.0, 0.0, -5.0), 0.001, True, 0.0) for x in (0.51, 0.53)]
+        for others, particle in (
+            (inactive_resting, ((0.52, 0.52, 0.12), (0.0, 0.0, -10.0), 0.03, True, 0.0)),
+            (out_of_band, ((0.52, 0.52, 0.06), (0.0, 0.0, 0.0), 0.05, True, 500.0)),
+        ):
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+            SolverImplicitMPM.register_custom_attributes(builder)
+            builder.add_ground_plane()
+            forces = []
+            for position, velocity, radius, active, force in (*others, particle):
+                flags = newton.ParticleFlags.ACTIVE if active else 0
+                builder.add_particle(pos=position, vel=velocity, mass=1.0, radius=radius, flags=flags)
+                forces.append((0.0, 0.0, -force))
+            model = builder.finalize(device=device)
+            solver = SolverImplicitMPM(
+                model, config=_config(0.1, collider_basis="pic2", collider_contact_shielding=False)
+            )
+            contacts = _capture_contacts(solver)
+            state = model.state()
+            state.particle_f.assign(np.array(forces, dtype=np.float32))
+            solver.step(state, state, None, None, 0.01)
+            positions, normals, _gaps, _offsets = contacts[0]
+            node = np.flatnonzero(np.linalg.norm(positions - particle[0], axis=1) < 1.0e-6)
+            test.assertEqual(len(node), 1)
+            test.assertGreater(np.linalg.norm(normals[node[0]]), 0.5)
+
+
+def test_sdf_gradient_gap_at_convex_edge(test, device):
+    """Keep reconstructed particle contact gaps within the closest-point distance near a convex box edge."""
+    with wp.ScopedDevice(device):
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        SolverImplicitMPM.register_custom_attributes(builder)
+        radius = 0.02
+        # The box edge runs along z at x = y = 0.5, and the particle moves diagonally toward it
+        builder.add_particle(pos=(0.48, 0.48, 0.5), vel=(2.0, 2.0, 0.0), mass=1.0, radius=radius)
+        builder.add_shape_box(
+            -1, xform=wp.transform(wp.vec3(1.0, 1.0, 0.5), wp.quat_identity()), hx=0.5, hy=0.5, hz=2.0
+        )
+        model = builder.finalize(device=device)
+        solver = SolverImplicitMPM(model, config=_config(0.1, collider_normal_from_sdf_gradient=True))
+        contacts = _capture_contacts(solver)
+        state = model.state()
+        solver.step(state, state, None, None, 0.01)
+        _positions, normals, gaps, _offsets = contacts[0]
+        test.assertGreater(np.linalg.norm(normals[0]), 0.5)
+        test.assertLessEqual(gaps[0], 0.02 * np.sqrt(2.0) - radius + 1.0e-5)
+        # The particle surface stays outside the box
+        x, y = state.particle_q.numpy()[0, :2]
+        test.assertGreaterEqual(np.hypot(max(0.5 - x, 0.0), max(0.5 - y, 0.0)), radius - 1.0e-4)
+
+
 def _make_volume_solver(device, recovery_time, *, target=1.0):
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     SolverImplicitMPM.register_custom_attributes(builder)
@@ -440,6 +500,8 @@ for function in (
     test_sdf_gradient_normals_particle_contacts,
     test_sdf_gradient_blocks_nearest_face_at_corner,
     test_contact_shielding_keeps_binding_contacts,
+    test_capped_contacts_rank_eligible_particles,
+    test_sdf_gradient_gap_at_convex_edge,
     test_volume_recovery_truncated,
     test_volume_recovery_offsets,
     test_density_offset_bounded_in_p1d_modes,

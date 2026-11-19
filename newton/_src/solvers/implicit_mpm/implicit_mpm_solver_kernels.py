@@ -104,6 +104,21 @@ def integrate_mass(
     return phi(s) * density * inv_cell_volume
 
 
+@wp.kernel
+def inertial_delassus_scale(
+    densities: wp.array[float],
+    dt_sq_over_dx_sq: float,
+    scale: wp.array[float],
+):
+    """Inertial Delassus scale dt^2 / (rho dx^2) of a full cell [1/Pa] for each density; a unit density keeps it
+    positive without positive-density material."""
+    i = wp.tid()
+    density = densities[i]
+    if density <= 0.0:
+        density = 1.0
+    scale[i] = dt_sq_over_dx_sq / density
+
+
 @fem.integrand
 def integrate_velocity(
     s: fem.Sample,

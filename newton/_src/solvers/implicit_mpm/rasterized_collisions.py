@@ -620,39 +620,64 @@ def point_contact_radii(
 
 # A capped "picN" collider basis keeps the first N particles of each cell. Ordering them by contact priority first
 # keeps resting contacts (deepest first), then approaching ones by time to impact, then separating ones, then
-# particles out of collider range.
+# particles that cannot activate a contact this step: outside the contact band or out of collider range, and last
+# inactive particles.
+
+
+@wp.struct
+class PicContactMotion:
+    """Particle state that ranks the contacts of a capped particle collider basis."""
+
+    flags: wp.array[wp.int32]
+    positions: wp.array[wp.vec3]
+    velocities: wp.array[wp.vec3]
+    radii: wp.array[float]
+    world: wp.array[wp.int32]
+    gravity: wp.array[wp.vec3]
+    forces: wp.array[wp.vec3]
+    inv_mass: wp.array[float]
 
 
 @wp.func
 def _pic_contact_priority(
     p: int,
     particle_environment: wp.array[int],
-    positions: wp.array[wp.vec3],
-    velocities: wp.array[wp.vec3],
-    radii: wp.array[float],
+    motion: PicContactMotion,
     collider: Collider,
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
     dt: float,
     voxel_size: float,
+    contact_gap: float,
 ):
     """Contact priority as (tier, value), lower first: resting by depth, approaching by time to impact,
-    separating by gap, then out of collider range."""
+    separating by gap, then particles without a contact this step, then inactive particles."""
+    if (motion.flags[p] & newton.ParticleFlags.ACTIVE) == 0:
+        return wp.vec2(4.0, 0.0)
     environment_index = int(_ALL_COLLIDER_WORLDS)
     if particle_environment:
         environment_index = particle_environment[p]
     sdf, normal, collider_velocity, collider_id, _material_id = collision_sdf(
-        positions[p], environment_index, collider, body_q, body_qd, body_q, dt
+        motion.positions[p], environment_index, collider, body_q, body_qd, body_q, dt
     )
     if collider_id == _NULL_COLLIDER_ID or sdf >= _INFINITY:
         return wp.vec2(3.0, 0.0)
-    gap = sdf - radii[p]
+    radius = motion.radii[p]
+    gap = sdf - radius
+    stop = wp.max(_PIC_COLLIDER_ACTIVATION_DISTANCE * voxel_size - radius, 0.0)
+    # Same band as the contact activation in rasterize_collider_kernel
+    if gap >= wp.max(contact_gap, stop):
+        return wp.vec2(3.0, gap)
     if gap <= 0.0:
         return wp.vec2(0.0, gap)
-    approach = -wp.dot(velocities[p] - collider_velocity, normal)
+    # Free velocity at the end of the step, before contacts and stresses act
+    acceleration = motion.gravity[motion.world[p]]
+    if motion.forces:
+        acceleration += motion.forces[p] * motion.inv_mass[p]
+    free_velocity = motion.velocities[p] + dt * acceleration
+    approach = -wp.dot(free_velocity - collider_velocity, normal)
     if approach <= 0.0:
         return wp.vec2(2.0, gap)
-    stop = wp.max(0.25 * voxel_size - radii[p], 0.0)
     return wp.vec2(1.0, wp.max(gap - stop, 0.0) / approach)
 
 
@@ -669,14 +694,13 @@ def _pic_select_contacts(
     fraction: wp.array[float],
     coords: wp.array[fem.Coords],
     particle_environment: wp.array[int],
-    positions: wp.array[wp.vec3],
-    velocities: wp.array[wp.vec3],
-    radii: wp.array[float],
+    motion: PicContactMotion,
     collider: Collider,
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
     dt: float,
     voxel_size: float,
+    contact_gap: float,
     keys: wp.array[wp.vec2],
 ):
     # One thread per cell. Cells within the cap keep their order; fuller cells move their max_per_cell
@@ -688,7 +712,7 @@ def _pic_select_contacts(
         return
     for j in range(begin, end):
         keys[j] = _pic_contact_priority(
-            indices[j], particle_environment, positions, velocities, radii, collider, body_q, body_qd, dt, voxel_size
+            indices[j], particle_environment, motion, collider, body_q, body_qd, dt, voxel_size, contact_gap
         )
     for i in range(begin, begin + max_per_cell):
         best = i
@@ -715,9 +739,7 @@ def prioritize_pic_contacts(
     pic: fem.PicQuadrature,
     max_per_cell: int,
     particle_environment: wp.array[int] | None,
-    positions: wp.array[wp.vec3],
-    velocities: wp.array[wp.vec3],
-    radii: wp.array[float],
+    motion: PicContactMotion,
     collider: Collider,
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
@@ -725,7 +747,11 @@ def prioritize_pic_contacts(
     voxel_size: float,
     temporary_store: fem.TemporaryStore,
 ):
-    """Move the ``max_per_cell`` highest-priority particles of each over-full cell of ``pic`` to the front. ``particle_environment`` selects each particle's collider world, or None for all."""
+    """Move the ``max_per_cell`` highest-priority particles of each over-full cell of ``pic`` to the front.
+
+    ``particle_environment`` selects each particle's collider world, or None for all. ``motion`` holds the particle
+    state and the forces of the step, which give each particle's free velocity.
+    """
     indices = pic._cell_particle_indices
     offsets = pic._cell_particle_offsets
     device = indices.device
@@ -740,14 +766,13 @@ def prioritize_pic_contacts(
             pic._cell_particle_fraction,
             pic._cell_particle_coords,
             particle_environment,
-            positions,
-            velocities,
-            radii,
+            motion,
             collider,
             body_q,
             body_qd,
             dt,
             voxel_size,
+            particle_contact_gap(voxel_size),
             keys,
         ],
         device=device,
@@ -1246,7 +1271,8 @@ def normalize_gradient(
     node_radii: wp.array[float],
 ):
     """Replace each contact's normal with its normalized distance gradient, and its gap with ``values`` when given,
-    moving the speculative approach velocity from the old normal and gap to the new ones."""
+    up to the closest-point gap, moving the speculative approach velocity from the old normal and gap to the new
+    ones."""
     i = wp.tid()
     g = gradient[i]
     # Contacts without a reconstructed gradient keep their closest-point normal
@@ -1264,8 +1290,10 @@ def normalize_gradient(
     sdf_old = sdf[i]
     sdf_new = sdf_old
     if values:
+        # The closest-point distance bounds the free travel in every direction, so it caps the reconstructed
+        # gap, which interpolation raises near convex edges and corners
         if values[i] < _INFINITY:
-            sdf_new = values[i] - radius
+            sdf_new = wp.min(values[i] - radius, sdf_old)
     if dt > 0.0:
         velocity[i] += (wp.max(sdf_old - stop, 0.0) / dt) * previous_normal - (
             wp.max(sdf_new - stop, 0.0) / dt
@@ -1406,7 +1434,8 @@ def interpolate_collider_normals(
     """Replace collider normals with the normalized ``distance_gradients``.
 
     The gradients come from :func:`collider_distance_reflect`. With ``distance_values``, point (particle)
-    contacts also take the reconstructed distances as their gaps; grid contacts keep their exact gaps.
+    contacts also take the reconstructed distances as their gaps, up to their closest-point gaps; grid contacts keep
+    their exact gaps.
 
     Args:
         collider_distance_field: Per-node signed-distance field (gaps updated in place with ``distance_values``).
@@ -1417,7 +1446,8 @@ def interpolate_collider_normals(
         stop_distance: Distance [m] where speculative contacts stop approaching, as in
             :func:`rasterize_collider`.
         node_radii: Per-node radius of point contacts, as in :func:`rasterize_collider`, or ``None``.
-        distance_values: Per-node reconstructed distances [m] replacing the gaps of point contacts, or ``None``.
+        distance_values: Per-node reconstructed distances [m] replacing the gaps of point contacts when smaller,
+            or ``None``.
     """
     wp.launch(
         normalize_gradient,
