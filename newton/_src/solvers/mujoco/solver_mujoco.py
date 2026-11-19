@@ -4869,10 +4869,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         The control kernel uses this to read the current world's child-anchor rotation from
         ``joint_X_c[world * joints_per_world + jnt % joints_per_world]``.
         Shape ``[nu]``, dtype ``int32``."""
-        self._mjc_actuator_effort_limited: wp.array[wp.int32] | None = None
+        self._mjc_actuator_effort_limited: wp.array2d[wp.int32] | None = None
         """``1`` for BALL-joint actuators whose force range follows ``joint_effort_limit`` at runtime
-        (MuJoCo force-limits the actuator and the range was not authored in MJCF), ``0`` otherwise.
-        Shape ``[nu]``, dtype ``int32``."""
+        (MuJoCo force-limits the actuator and that world did not author the range), ``0`` otherwise.
+        Shape ``[world_count, nu]``, dtype ``int32``."""
         self.mjc_eq_to_newton_eq: wp.array2d[wp.int32] | None = None
         """Mapping from MuJoCo [world, eq] to Newton equality constraint index.
 
@@ -9414,7 +9414,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         )
 
         actuator_custom_attr_idx = np.full(len(mjc_actuator_ctrl_source_list), -1, dtype=np.int32)
-        actuator_effort_limited = np.zeros(len(mjc_actuator_ctrl_source_list), dtype=np.int32)
+        # Ball actuators follow joint_effort_limit in each world unless that world authored the force range.
+        actuator_effort_limited = np.zeros((model.world_count, len(mjc_actuator_ctrl_source_list)), dtype=np.int32)
+        jt_has_forcerange_rows = get_custom_attribute("actuator_has_forcerange")
+        actuators_per_world = max(model.custom_frequency_counts.get("mujoco:actuator", 0) // model.world_count, 1)
         for actuator, (ctrl_source, newton_idx) in enumerate(
             zip(mjc_actuator_ctrl_source_list, mjc_actuator_to_newton_idx_list, strict=True)
         ):
@@ -9427,9 +9430,15 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 info = joint_target_ranges.get((dof, is_position))
                 if info is not None:
                     actuator_custom_attr_idx[actuator] = info["actuator_idx"]
-                # Ball actuators follow joint_effort_limit unless MJCF authored the force range.
-                if ball_joint >= 0 and (info is None or not info["has_forcerange"]):
-                    actuator_effort_limited[actuator] = 1
+                if ball_joint >= 0:
+                    for world in range(model.world_count):
+                        row = world * actuators_per_world + actuator_custom_attr_idx[actuator]
+                        authored = (
+                            actuator_custom_attr_idx[actuator] >= 0
+                            and jt_has_forcerange_rows is not None
+                            and bool(jt_has_forcerange_rows[row])
+                        )
+                        actuator_effort_limited[world, actuator] = 0 if authored else 1
             elif newton_idx >= 0:
                 actuator_custom_attr_idx[actuator] = newton_idx
 
@@ -9495,7 +9504,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self.mj_model = spec.compile()
         if mjc_actuator_ctrl_source_list:
             # A force range has no effect on an actuator MuJoCo compiled without a force limit.
-            actuator_effort_limited &= self.mj_model.actuator_forcelimited
+            actuator_effort_limited &= self.mj_model.actuator_forcelimited[None, :]
             self._mjc_actuator_effort_limited = wp.array(actuator_effort_limited, dtype=wp.int32, device=model.device)
         self._canonical_bvh_aabb = self.mj_model.bvh_aabb.copy()
         self._canonical_body_ipos = self.mj_model.body_ipos.copy()
