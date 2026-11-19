@@ -8,7 +8,7 @@ import logging
 import math
 import os
 import warnings
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any, overload
 
 import numpy as np
@@ -200,33 +200,6 @@ def get_float(prim: Usd.Prim, name: str, default: float | None = None) -> float 
     if np.isfinite(val):
         return val
     return default
-
-
-def get_float_with_fallback(prims: Iterable[Usd.Prim], name: str, default: float = 0.0) -> float:
-    """
-    Get a float attribute value from the first prim in a list that has it defined.
-
-    Args:
-        prims: An iterable of USD prims to query in order.
-        name: The name of the float attribute to retrieve.
-        default: The default value to return if no prim has the attribute.
-
-    Returns:
-        The float attribute value from the first prim that has a finite value,
-        otherwise the default value.
-    """
-    ret = default
-    for prim in prims:
-        if not prim:
-            continue
-        attr = prim.GetAttribute(name)
-        if not attr or not attr.HasAuthoredValue():
-            continue
-        val = attr.Get()
-        if np.isfinite(val):
-            ret = val
-            break
-    return ret
 
 
 @overload

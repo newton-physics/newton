@@ -17,12 +17,13 @@ from typing import TYPE_CHECKING, Any, Literal
 import numpy as np
 import warp as wp
 
-from ...core.types import override
+from ...core.types import MAXVAL, override
 from ...exceptions import NewtonDeprecationWarning
 from ...geometry.types import GeoType
 from ...sim import (
     Contacts,
     Control,
+    JointTargetMode,
     JointType,
     Model,
     ModelBuilder,
@@ -865,6 +866,9 @@ class SolverKamino(SolverBase, CouplingInterface):
 
         # Validate solver-specific model compatibility after resolving the selected backend.
         self._validate_model_compatibility(model, self._config)
+        self._rod_joints = (
+            np.flatnonzero(model.joint_type.numpy() == JointType.ROD) if model.joint_count > 0 else np.empty(0, int)
+        )
 
         # Create a Kamino model from the Newton model
         collision_config = config.collision_detector
@@ -1358,6 +1362,7 @@ class SolverKamino(SolverBase, CouplingInterface):
         Args:
             flags: Bitmask of :class:`~newton.ModelFlags` or custom ``int`` bits indicating which properties changed.
         """
+        self._validate_rod_joint_properties(flags)
         self._validate_structural_invariants(flags)
         self._solver_kamino.validate_model_changed(flags)
 
@@ -1585,7 +1590,8 @@ class SolverKamino(SolverBase, CouplingInterface):
         - springs
         - triangles, edges, tetrahedra
         - muscles
-        - distance or rod joints
+        - distance joints, and rod joints with the FK solver, or with
+          armature, joint damping, joint friction, finite limits, or target modes
         - bodies with singular inertial properties that are attached to movable bodies for non-LOX backends
 
         Args:
@@ -1613,14 +1619,18 @@ class SolverKamino(SolverBase, CouplingInterface):
         # Check for unsupported joint types
         if model.joint_count > 0:
             joint_type_np = model.joint_type.numpy()
+            rod_joints = np.flatnonzero(joint_type_np == JointType.ROD)
+            supports_rods = not config.use_fk_solver
             unsupported_joint_types = {
                 name: count
                 for name, count in (
                     ("DISTANCE", int(np.count_nonzero(joint_type_np == JointType.DISTANCE))),
-                    ("ROD", int(np.count_nonzero(joint_type_np == JointType.ROD))),
+                    ("ROD", 0 if supports_rods else rod_joints.size),
                 )
                 if count > 0
             }
+            if supports_rods and rod_joints.size > 0:
+                unsupported_features.extend(SolverKamino._find_unsupported_rod_joint_properties(model, rod_joints))
             if len(unsupported_joint_types) > 0:
                 joint_desc = [f"{name} ({count} instances)" for name, count in unsupported_joint_types.items()]
                 unsupported_features.append("joint types: " + ", ".join(joint_desc))
@@ -1641,6 +1651,45 @@ class SolverKamino(SolverBase, CouplingInterface):
             for feature in unsupported_features:
                 error_msg += "\n  - " + feature
             raise ValueError(error_msg)
+
+    def _validate_rod_joint_properties(self, flags: ModelFlags | int) -> None:
+        """Raise if a runtime edit gives a rod joint DoF properties that Kamino does not model.
+
+        Raises:
+            ValueError: If a rod joint DoF has an unsupported property after the edit.
+        """
+        dof_flags = (
+            ModelFlags.JOINT_DOF_PROPERTIES
+            | ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+            | ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES
+        )
+        if self._rod_joints.size == 0 or not flags & dof_flags:
+            return
+        unsupported = SolverKamino._find_unsupported_rod_joint_properties(self.model, self._rod_joints)
+        if len(unsupported) > 0:
+            raise ValueError("SolverKamino does not support " + ", ".join(unsupported) + ".")
+
+    @staticmethod
+    def _find_unsupported_rod_joint_properties(model: Model, rod_joints: np.ndarray) -> list[str]:
+        """Finds the joint DoF properties that Kamino does not model on rod joints.
+
+        Rod DoFs carry only the stiffness and damping of the rod strains, so they require zero
+        armature, joint damping, and joint friction, unbounded limits, and no target mode.
+        """
+        qd_start = model.joint_qd_start.numpy()
+        rod_dofs = np.concatenate([np.arange(qd_start[joint], qd_start[joint + 1]) for joint in rod_joints])
+        unsupported = [
+            f"rod joints with nonzero {name}"
+            for name in ("joint_armature", "joint_damping", "joint_friction")
+            if np.any(getattr(model, name).numpy()[rod_dofs] != 0.0)
+        ]
+        lower = model.joint_limit_lower.numpy()[rod_dofs]
+        upper = model.joint_limit_upper.numpy()[rod_dofs]
+        if np.any(lower > -MAXVAL) or np.any(upper < MAXVAL):
+            unsupported.append("rod joints with finite joint limits")
+        if np.any(model.joint_target_mode.numpy()[rod_dofs] != int(JointTargetMode.NONE)):
+            unsupported.append("rod joints with a target mode other than JointTargetMode.NONE")
+        return unsupported
 
     @staticmethod
     def _find_unsupported_singular_inertia_bodies(model: Model) -> list[str]:
