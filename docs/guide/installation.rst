@@ -73,6 +73,13 @@ such as ``examples``, require it too. RHEL 9 and Amazon Linux 2023 ship GLIBC
 2.34, so on x86-64 they can install ``importers`` and ``examples`` but not
 ``remesh`` or ``dev``.
 
+**Python 3.14**
+
+Python 3.14 supports the simulation, importers, examples, and notebook extras
+on Linux x86-64 and ARM64, Windows x86-64, and macOS ARM64. On Linux ARM64,
+Newton uses USD Core 26.11 for Python 3.14; earlier Python versions use USD
+Exchange. Windows ARM64 retains the optional-feature limitations below.
+
 **Linux aarch64 (ARM64)**
 
 The standard Warp 1.17 wheel omits ``sm_52``, ``sm_60``, ``sm_61``, and
@@ -86,7 +93,7 @@ toolkit; see `Warp's CUDA 12.9 ARM64 limitation
 Windows on ARM64 requires Warp 1.19 or newer. Several
 optional dependencies do not publish Windows ARM64 packages, so the extras skip
 them on this platform. Most notably, :class:`~newton.solvers.SolverMuJoCo` and
-USD import and export are unavailable because ``mujoco`` and ``usd-core`` cannot
+USD import and export are unavailable because ``mujoco-core`` and ``usd-core`` cannot
 be installed. The platform markers in ``pyproject.toml`` list all skipped
 packages. The ``torch-cu12``, ``torch-cu13``, ``rtx``, ``docs``, and
 ``notebook`` extras cannot be installed because PyTorch provides no CUDA
