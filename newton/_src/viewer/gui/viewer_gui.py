@@ -839,6 +839,8 @@ class ViewerGui:
                 )
         elif symbol == pyglet.window.key.ESCAPE and close_fn is not None:
             self.close_console()
+            # Release the GUI renderer before close_fn destroys the window's GL context.
+            self.ui.shutdown()
             close_fn()
 
     def handle_key_release(self, symbol: int) -> None:

@@ -69,6 +69,8 @@ class TestViewerUI(unittest.TestCase):
         # Exercise ImGui state without an OpenGL renderer or window.
         self.ui = ImGuiBackend.__new__(ImGuiBackend)
         self.ui._workspace_style = True
+        self.ui._context = context
+        self.ui.key_press_filter = None
         self.ui.imgui = imgui
         self.ui.giz = imguizmo.im_guizmo
         self.ui.io = imgui.get_io()
@@ -294,6 +296,25 @@ class TestViewerUI(unittest.TestCase):
                     finally:
                         self.ui.imgui.end_frame()
 
+    def test_modifier_reset_on_focus_loss(self) -> None:
+        """Forget a modifier key whose release was missed while the window was unfocused."""
+        import_pyglet_window(shadow_window=False)
+        from pyglet.window import key
+
+        self.ui.window = mock.MagicMock()
+        self.ui._attach_input()
+        handlers = self.ui.window.push_handlers.call_args.kwargs
+        self.ui.io.config_input_trickle_event_queue = False
+
+        handlers["on_key_press"](key.LCTRL, 0)
+        handlers["on_deactivate"]()
+        self.ui.io.clear_input_keys()
+        handlers["on_key_press"](key.RCTRL, 0)
+        handlers["on_key_release"](key.RCTRL, 0)
+        self.ui.begin_frame()
+        self.ui.imgui.end_frame()
+        self.assertFalse(self.ui.io.key_ctrl)
+
     def test_dpi_scaling(self) -> None:
         """Keep style sizes stable on reapplication and restore them at scale one."""
         imgui = self.ui.imgui
@@ -496,6 +517,7 @@ class TestViewerGuiRecovery(unittest.TestCase):
         gui._loading_splash_active = False
         # Exercise the real backend's stack snapshots and recovery without OpenGL.
         gui.ui = ImGuiBackend.__new__(ImGuiBackend)
+        gui.ui._context = context
         gui.ui.is_available = True
         gui.ui.imgui = imgui
         gui.ui.io = io
@@ -845,6 +867,7 @@ class TestViewerGLShouldStep(unittest.TestCase):
         popup = True
         gui.ui = SimpleNamespace(
             is_available=True,
+            shutdown=lambda: None,
             io=SimpleNamespace(want_capture_keyboard=False, want_text_input=False),
             imgui=SimpleNamespace(
                 is_popup_open=lambda *_: popup,
@@ -1928,6 +1951,7 @@ class TestViewerGizmos(unittest.TestCase):
         self.gui._frame_key_down = self.gui._follow_held = self.gui._follow_latched = False
         self.gui._follow_center = None
         self.gui.ui = ImGuiBackend.__new__(ImGuiBackend)
+        self.gui.ui._context = context
         self.gui.ui.is_available = True
         self.gui.ui.imgui = imgui
         self.gui.ui.io = self.io

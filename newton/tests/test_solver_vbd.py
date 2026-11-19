@@ -5755,8 +5755,9 @@ def _two_particle_tile_solve_matches_legacy_bits(test, device):
             model.soft_mesh_adjacency_device,
             forces_device,
             hessians_device,
+            None,  # particle_world
         ],
-        outputs=[legacy_displacements],
+        outputs=[legacy_displacements, None],
         device=device,
     )
     wp.launch(
@@ -5771,8 +5772,9 @@ def _two_particle_tile_solve_matches_legacy_bits(test, device):
             model.soft_mesh_adjacency_device,
             forces_device,
             hessians_device,
+            None,  # particle_world
         ],
-        outputs=[packed_displacements],
+        outputs=[packed_displacements, None],
         device=device,
     )
     legacy_bits = legacy_displacements.numpy().view(np.uint32)
@@ -5924,8 +5926,9 @@ def _tet_only_tile_solve_matches_legacy_bits(test, device):
             model.soft_mesh_adjacency_device,
             forces_device,
             hessians_device,
+            None,  # particle_world
         ],
-        outputs=[legacy_displacements],
+        outputs=[legacy_displacements, None],
         device=device,
     )
     wp.launch(
@@ -5954,8 +5957,9 @@ def _tet_only_tile_solve_matches_legacy_bits(test, device):
             model.soft_mesh_adjacency_device,
             forces_device,
             hessians_device,
+            None,  # particle_world
         ],
-        outputs=[specialized_displacements],
+        outputs=[specialized_displacements, None],
         device=device,
     )
 
@@ -8190,9 +8194,9 @@ def test_rigid_dat_graph_capture_replays_match_eager(test, device):
     host branching; all of it must be capturable. Two identical sphere-drop scenes are
     warmed up eagerly, then one keeps stepping eagerly while the other replays a graph
     of the same two-substep sequence. The solver is not run-to-run deterministic
-    (contact ordering; two eager runs differ by ~1e-3 m on this scene), so the replay
-    must stay finite and penetration-free and agree with the eager run within an
-    envelope well above that spread, instead of bit for bit.
+    (soft-contact ordering), and the impact amplifies that rounding noise several
+    times per frame, up to ~1e-2 m once the sphere has stopped. The runs are
+    therefore compared late in the impact, while the noise is still below 1e-6 m.
     """
 
     def make_scene():
@@ -8212,7 +8216,7 @@ def test_rigid_dat_graph_capture_replays_match_eager(test, device):
         return solver, state_a, state_b, body
 
     dt = 1.0 / 60.0
-    frames = 20
+    frames = 8
     eager_solver, e0, e1, body = make_scene()
     graph_solver, g0, g1, _ = make_scene()
     for solver, s0, s1 in ((eager_solver, e0, e1), (graph_solver, g0, g1)):
@@ -8236,7 +8240,7 @@ def test_rigid_dat_graph_capture_replays_match_eager(test, device):
     bq_eager, bq_graph = e0.body_q.numpy(), g0.body_q.numpy()
     test.assertTrue(np.isfinite(q_graph).all() and np.isfinite(bq_graph).all())
     test.assertLess(float(bq_graph[body][2]), body_z_before, "graph replays must advance the simulation")
-    envelope = 1.0e-2  # ~6x the measured eager run-to-run spread on this scene
+    envelope = 1.0e-4  # eager runs differ from each other by less than 1e-6 here
     np.testing.assert_allclose(q_graph, q_eager, rtol=0.0, atol=envelope)
     np.testing.assert_allclose(bq_graph, bq_eager, rtol=0.0, atol=envelope)
     for name, q, bq in (("eager", q_eager, bq_eager), ("replayed", q_graph, bq_graph)):
@@ -9095,6 +9099,111 @@ add_function_test(
     devices=cuda_devices,
 )
 
+
+def _vbd_world_residual(
+    model, iterations: int, use_contacts: bool, nan_particle: bool = False, with_history: bool = False
+):
+    """Step ``model`` a few times and return the final per-world VBD residual.
+
+    With ``with_history``, also request the per-iteration history and return
+    ``(residual, history)``.
+    """
+    solver = newton.solvers.SolverVBD(model, iterations=iterations)
+    kinds = {solver.ObservableKind.SOLVER_RESIDUAL}
+    if with_history:
+        kinds.add(solver.ObservableKind.SOLVER_RESIDUAL_HISTORY)
+    observables = solver.observables(kinds)
+    pipeline = newton.CollisionPipeline(model) if use_contacts else None
+    contacts = pipeline.contacts() if use_contacts else None
+    state_0, state_1 = model.state(), model.state()
+    if nan_particle:
+        particle_q = state_0.particle_q.numpy()
+        particle_q[-1] = np.nan
+        state_0.particle_q.assign(particle_q)
+    control = model.control()
+    for _ in range(5):
+        if use_contacts:
+            pipeline.collide(state_0, contacts)
+        solver.step(state_0, state_1, control, contacts, 1.0 / 240.0, observables=observables)
+        state_0, state_1 = state_1, state_0
+    if with_history:
+        return observables.solver_residual.numpy(), observables.solver_residual_history.numpy()
+    return observables.solver_residual.numpy()
+
+
+def test_solver_residual_decreases_with_iterations(test, device):
+    """Report per-world stationarity residuals that shrink with more VBD iterations.
+
+    A cloth built without worlds is global and reports in the final entry, and a
+    NaN particle reports infinity instead of being dropped by the maximum. The
+    per-iteration history ends with the reported residual and rejects a changed
+    iteration count. A two-world rigid stack on a shared static ground reports in
+    its local entries.
+    """
+    with wp.ScopedDevice(device):
+        cloth_builder = newton.ModelBuilder()
+        cloth_builder.add_cloth_grid(
+            pos=wp.vec3(0.0, 0.0, 1.0),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0, 0.0, 0.0),
+            dim_x=6,
+            dim_y=6,
+            cell_x=0.05,
+            cell_y=0.05,
+            mass=0.01,
+            fix_left=True,
+            tri_ke=1.0e3,
+            tri_ka=1.0e3,
+        )
+        cloth_builder.color()
+        cloth = cloth_builder.finalize(device=device)
+
+        stack_source = newton.ModelBuilder()
+        for i in range(2):
+            body = stack_source.add_body(xform=wp.transform((0.0, 0.0, 0.1 + 0.21 * i), wp.quat_identity()))
+            stack_source.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+        stack_builder = newton.ModelBuilder()
+        stack_builder.add_ground_plane()
+        stack_builder.replicate(stack_source, copy_count=2)
+        stack_builder.color()
+        stack = stack_builder.finalize(device=device)
+
+    few = _vbd_world_residual(cloth, 2, use_contacts=False)
+    many, history = _vbd_world_residual(cloth, 10, use_contacts=False, with_history=True)
+    test.assertEqual(few.shape, (cloth.world_count + 1,))
+    test.assertEqual(few[0], 0.0)
+    test.assertGreater(few[-1], 0.0)
+    test.assertLess(many[-1], 0.1 * few[-1])
+    test.assertEqual(history.shape, (10, cloth.world_count + 1))
+    np.testing.assert_array_equal(history[-1], many)
+    test.assertGreater(history[0, -1], history[-1, -1])
+    test.assertEqual(_vbd_world_residual(cloth, 2, use_contacts=False, nan_particle=True)[-1], np.inf)
+
+    solver = newton.solvers.SolverVBD(cloth, iterations=2)
+    observables = solver.observables({solver.ObservableKind.SOLVER_RESIDUAL_HISTORY})
+    solver.iterations = 3
+    state = cloth.state()
+    with test.assertRaisesRegex(ValueError, "solver_residual_history has 2 rows"):
+        solver.step(state, cloth.state(), cloth.control(), None, 1.0 / 240.0, observables=observables)
+
+    few = _vbd_world_residual(stack, 2, use_contacts=True)
+    many = _vbd_world_residual(stack, 10, use_contacts=True)
+    test.assertEqual(few.shape, (3,))
+    test.assertEqual(few[-1], 0.0)
+    test.assertTrue(np.all(few[:2] > 0.0))
+    test.assertLess(many[:2].max(), 0.1 * few[:2].min())
+
+
+class TestVBDSolverResidual(unittest.TestCase):
+    pass
+
+
+add_function_test(
+    TestVBDSolverResidual,
+    "test_solver_residual_decreases_with_iterations",
+    test_solver_residual_decreases_with_iterations,
+    devices=devices,
+)
 
 if __name__ == "__main__":
     unittest.main(verbosity=2, failfast=True)

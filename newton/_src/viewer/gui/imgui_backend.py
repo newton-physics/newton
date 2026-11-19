@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 import os
+import string
 from time import perf_counter
 from typing import TYPE_CHECKING
 
@@ -19,6 +20,71 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+# pyglet key name -> Dear ImGui key name
+_KEY_NAMES = {
+    "TAB": "tab",
+    "BACKSPACE": "backspace",
+    "RETURN": "enter",
+    "ESCAPE": "escape",
+    "INSERT": "insert",
+    "DELETE": "delete",
+    "SPACE": "space",
+    "LEFT": "left_arrow",
+    "RIGHT": "right_arrow",
+    "UP": "up_arrow",
+    "DOWN": "down_arrow",
+    "PAGEUP": "page_up",
+    "PAGEDOWN": "page_down",
+    "HOME": "home",
+    "END": "end",
+    "NUM_ENTER": "keypad_enter",
+    "NUM_DECIMAL": "keypad_decimal",
+    "NUM_DIVIDE": "keypad_divide",
+    "NUM_MULTIPLY": "keypad_multiply",
+    "NUM_SUBTRACT": "keypad_subtract",
+    "NUM_ADD": "keypad_add",
+    "LCTRL": "left_ctrl",
+    "RCTRL": "right_ctrl",
+    "LSHIFT": "left_shift",
+    "RSHIFT": "right_shift",
+    "LALT": "left_alt",
+    "RALT": "right_alt",
+    "LCOMMAND": "left_super",
+    "RCOMMAND": "right_super",
+    "GRAVE": "grave_accent",
+    "MINUS": "minus",
+    "EQUAL": "equal",
+    "BRACKETLEFT": "left_bracket",
+    "BRACKETRIGHT": "right_bracket",
+    "BACKSLASH": "backslash",
+    "SEMICOLON": "semicolon",
+    "APOSTROPHE": "apostrophe",
+    "COMMA": "comma",
+    "PERIOD": "period",
+    "SLASH": "slash",
+    "PRINT": "print_screen",
+    "PAUSE": "pause",
+    "CAPSLOCK": "caps_lock",
+    "NUMLOCK": "num_lock",
+    "SCROLLLOCK": "scroll_lock",
+    **{f"F{i}": f"f{i}" for i in range(1, 13)},
+    **{f"_{i}": f"_{i}" for i in range(10)},
+    **{f"NUM_{i}": f"keypad{i}" for i in range(10)},
+    **{letter: letter.lower() for letter in string.ascii_uppercase},
+}
+_MODIFIER_NAMES = {"ctrl": "mod_ctrl", "shift": "mod_shift", "alt": "mod_alt", "super": "mod_super"}
+# Dear ImGui cursor name -> pyglet window cursor name
+_CURSOR_NAMES = {
+    "arrow": "CURSOR_DEFAULT",
+    "text_input": "CURSOR_TEXT",
+    "resize_all": "CURSOR_SIZE",
+    "resize_ns": "CURSOR_SIZE_UP_DOWN",
+    "resize_ew": "CURSOR_SIZE_LEFT_RIGHT",
+    "resize_nesw": "CURSOR_SIZE_DOWN_LEFT",
+    "resize_nwse": "CURSOR_SIZE_DOWN_RIGHT",
+    "hand": "CURSOR_HAND",
+}
 
 
 class ImGuiBackend:
@@ -54,33 +120,24 @@ class ImGuiBackend:
                 imguizmo,
             )
 
-            from .imgui_renderer import ImGuiRenderer  # noqa: PLC0415 - requires the optional GUI and a GL context
-
             self.imgui = imgui
             self.giz = imguizmo.im_guizmo
             self.is_available = True
-        except ImportError:
+        except ImportError as e:
             self.is_available = False
-            logger.warning("imgui_bundle not found. Install with: pip install imgui-bundle")
+            logger.warning(
+                'Viewer GUI is unavailable: %s. Install its dependencies with `pip install "newton[examples]"`.', e
+            )
             return
 
         self.window = window
-        self.imgui.create_context()
-        try:
-            # Create without callbacks so we can fix the scroll handler first
-            self.impl = ImGuiRenderer(self.window, attach_callbacks=False)
-        except Exception as e:
-            # Unlikely to happen since RendererGL already sets PYOPENGL_PLATFORM=glx
-            # on Wayland, but just in case the auto-detection missed the session type.
-            if "no valid context" in str(e).lower() or "no current context" in str(e).lower():
-                raise RuntimeError(
-                    "Failed to initialize the OpenGL UI renderer. "
-                    "If you are on Wayland, try setting the environment variable:\n\n"
-                    "  PYOPENGL_PLATFORM=glx uv run -m newton.examples <example>\n"
-                ) from e
-            raise
-
+        # The native renderer binds to one context, and create_context() keeps an earlier viewer's current.
+        self._context = self.imgui.create_context()
+        self.imgui.set_current_context(self._context)
         self.io = self.imgui.get_io()
+        # Dear ImGui's native renderer, so the GUI needs no Python OpenGL bindings besides pyglet's.
+        if not self.imgui.backends.opengl3_init("#version 330"):
+            raise RuntimeError("Failed to initialize the OpenGL UI renderer.")
         self.icon_atlas = IconAtlas(self.imgui)
         self.number_font = None
         if workspace_style:
@@ -104,42 +161,7 @@ class ImGuiBackend:
         # Menus, tabs and property editors should support Tab/arrow navigation
         # and Escape dismissal just like their native desktop counterparts.
         self.io.config_flags |= self.imgui.ConfigFlags_.nav_enable_keyboard
-
-        # Fix inverted scroll direction in the pyglet imgui backend before
-        # attaching callbacks so pyglet captures the corrected handler.
-        # The replacement must be named "on_mouse_scroll" because pyglet
-        # matches handlers by __name__.
-        io = self.io
-
-        def on_mouse_scroll(x, y, scroll_x, scroll_y):
-            io.add_mouse_wheel_event(scroll_x, scroll_y)
-
-        self.impl.on_mouse_scroll = on_mouse_scroll
-        backend_key_press = self.impl.on_key_press
-
-        def on_key_press(symbol: int, modifiers: int) -> bool | None:
-            from pyglet import event
-            from pyglet.window import key
-
-            if self.key_press_filter is None or not self.key_press_filter(symbol, modifiers):
-                backend_key_press(symbol, modifiers)
-            # Pyglet's default Escape handler closes the window even when the
-            # viewer callback defers to an editor or popup. Stop propagation
-            # after forwarding the cancellation key to ImGui.
-            if symbol == key.ESCAPE and (
-                io.want_text_input or self.imgui.is_popup_open("", self.imgui.PopupFlags_.any_popup)
-            ):
-                return event.EVENT_HANDLED
-
-        self.impl.on_key_press = on_key_press
-
-        # Button transitions belong to press/release events. The backend also
-        # sends a press on every drag motion, which restarts cancelled drags.
-        def on_mouse_drag(x, y, dx, dy, buttons, modifiers):
-            io.add_mouse_pos_event(x, io.display_size.y - y)
-
-        self.impl.on_mouse_drag = on_mouse_drag
-        self.impl._attach_callbacks(self.window)
+        self._attach_input()
 
         # Set up proper DPI scaling for high-DPI displays.
         #
@@ -155,6 +177,88 @@ class ImGuiBackend:
 
         # Reset to ImGui defaults, apply the dark theme, then scale style and fonts.
         self._apply_dpi_scaling()
+
+    def _attach_input(self) -> None:
+        """Forward pyglet window input to Dear ImGui."""
+        from pyglet.event import EVENT_HANDLED
+        from pyglet.window import key, mouse
+
+        imgui, io, window = self.imgui, self.io, self.window
+        io.backend_flags |= imgui.BackendFlags_.has_mouse_cursors
+        keys = {getattr(key, name): getattr(imgui.Key, value) for name, value in _KEY_NAMES.items()}
+        modifiers = {
+            getattr(imgui.Key, f"{side}_{name}"): getattr(imgui.Key, modifier)
+            for name, modifier in _MODIFIER_NAMES.items()
+            for side in ("left", "right")
+        }
+        buttons = {mouse.LEFT: 0, mouse.RIGHT: 1, mouse.MIDDLE: 2}
+        self._cursors = {
+            int(getattr(imgui.MouseCursor_, name)): getattr(window, cursor) for name, cursor in _CURSOR_NAMES.items()
+        }
+        self._cursor: int | None = None
+        held_modifiers = set()
+
+        def on_key(symbol, down):
+            imgui_key = keys.get(symbol)
+            if imgui_key is not None:
+                io.add_key_event(imgui_key, down)
+                modifier = modifiers.get(imgui_key)
+                if modifier is not None:
+                    # The modifier stays down while either of its keys is held.
+                    (held_modifiers.add if down else held_modifiers.discard)(imgui_key)
+                    io.add_key_event(modifier, any(modifiers[held] == modifier for held in held_modifiers))
+
+        def on_mouse_button(button, down):
+            if button in buttons:
+                io.add_mouse_button_event(buttons[button], down)
+
+        def on_text(text):
+            for char in text:
+                io.add_input_character(ord(char))
+
+        def on_mouse_position(x, y, *_):
+            io.add_mouse_pos_event(x, io.display_size.y - y)
+
+        def on_key_press(symbol: int, modifiers: int) -> bool | None:
+            if self.key_press_filter is None or not self.key_press_filter(symbol, modifiers):
+                on_key(symbol, True)
+            # Pyglet's default Escape handler closes the window even when the
+            # viewer callback defers to an editor or popup. Stop propagation
+            # after forwarding the cancellation key to ImGui.
+            if symbol == key.ESCAPE and (io.want_text_input or imgui.is_popup_open("", imgui.PopupFlags_.any_popup)):
+                return EVENT_HANDLED
+            return None
+
+        window.push_handlers(
+            on_key_press=on_key_press,
+            on_key_release=lambda symbol, _modifiers: on_key(symbol, False),
+            # A key released while unfocused reports no release.
+            on_deactivate=held_modifiers.clear,
+            on_text=on_text,
+            on_mouse_motion=on_mouse_position,
+            # Button transitions belong to press/release; a press on every drag motion restarts cancelled drags.
+            on_mouse_drag=on_mouse_position,
+            on_mouse_press=lambda _x, _y, button, _modifiers: on_mouse_button(button, True),
+            on_mouse_release=lambda _x, _y, button, _modifiers: on_mouse_button(button, False),
+            on_mouse_scroll=lambda _x, _y, scroll_x, scroll_y: io.add_mouse_wheel_event(scroll_x, scroll_y),
+            on_resize=lambda _width, _height: self._refresh_io_metrics(),
+            # Release the renderer while the window still has its GL context.
+            on_close=self.shutdown,
+        )
+
+    def _update_mouse_cursor(self) -> None:
+        """Show the cursor shape Dear ImGui asks for, such as a resize arrow."""
+        if self.io.config_flags & self.imgui.ConfigFlags_.no_mouse_cursor_change:
+            return
+        cursor = int(self.imgui.get_mouse_cursor())
+        if cursor == self._cursor:
+            return
+        self._cursor = cursor
+        visible = cursor != int(self.imgui.MouseCursor_.none)
+        self.window.set_mouse_visible(visible)
+        if visible:
+            shape = self._cursors.get(cursor, self.window.CURSOR_DEFAULT)
+            self.window.set_mouse_cursor(self.window.get_system_mouse_cursor(shape))
 
     def _refresh_io_metrics(self) -> None:
         """Sync ``io.display_size`` and ``io.display_framebuffer_scale`` with
@@ -243,52 +347,13 @@ class ImGuiBackend:
 
         # Reset every size before scaling, including newer ImGui properties
         # that the palette setup does not customize (e.g. separator text).
-        self.imgui.get_current_context().style = self.imgui.Style()
+        self.imgui.set_current_context(self._context)
+        self._context.style = self.imgui.Style()
         self._setup_dark_style()
         style = self.imgui.get_style()
         if self.dpi_scale != 1.0:
             style.scale_all_sizes(self.dpi_scale)
         style.font_scale_dpi = self.dpi_scale
-
-    def _setup_grey_style(self):
-        """Apply the unscaled alternate gray ImGui style when the backend is available."""
-        if not self.is_available:
-            return
-
-        style = self.imgui.get_style()
-
-        # Style properties
-        style.alpha = 1.0
-        # style.disabled_alpha = 0.5
-        style.window_padding = (13.0, 10.0)
-        style.window_rounding = 0.0
-        style.window_border_size = 1.0
-        style.window_min_size = (32.0, 32.0)
-        style.window_title_align = (0.5, 0.5)
-        style.window_menu_button_position = self.imgui.Dir_.right
-        style.child_rounding = 3.0
-        style.child_border_size = 1.0
-        style.popup_rounding = 5.0
-        style.popup_border_size = 1.0
-        style.frame_padding = (20.0, 8.100000381469727)
-        style.frame_rounding = 2.0
-        style.frame_border_size = 0.0
-        style.item_spacing = (3.0, 3.0)
-        style.item_inner_spacing = (3.0, 8.0)
-        style.cell_padding = (6.0, 14.10000038146973)
-        style.indent_spacing = 0.0
-        style.columns_min_spacing = 10.0
-        style.scrollbar_size = 10.0
-        style.scrollbar_rounding = 2.0
-        style.grab_min_size = 12.10000038146973
-        style.grab_rounding = 1.0
-        style.tab_rounding = 2.0
-        style.tab_border_size = 0.0
-        style.color_button_position = self.imgui.Dir_.right
-        style.button_text_align = (0.5, 0.5)
-        style.selectable_text_align = (0.0, 0.0)
-
-        theme.apply_palette(self.imgui, theme.GREY_PALETTE)
 
     def _setup_legacy_style(self) -> None:
         """Apply the original viewer palette and spacing without workspace customization."""
@@ -381,8 +446,9 @@ class ImGuiBackend:
         """Discard pending input and release widgets without completing a click."""
         self.io.clear_events_queue()
         self.io.clear_input_mouse()
+        self.imgui.set_current_context(self._context)
         self.imgui.internal.clear_active_id()
-        self.imgui.get_current_context().want_capture_mouse_next_frame = -1
+        self._context.want_capture_mouse_next_frame = -1
         self.io.want_capture_mouse = False
 
     def begin_frame(self) -> None:
@@ -390,13 +456,11 @@ class ImGuiBackend:
         if not self.is_available:
             return
 
-        # Pyglet's process_inputs() only sets timing, but treats clock.tick()
-        # durations as timestamps. Input uses callbacks; avoid ticking the
-        # shared Pyglet clock again here.
         now = perf_counter()
         self.io.delta_time = max(now - self._frame_time, 1e-6) if self._frame_time is not None else 1.0 / 60.0
         self._frame_time = now
 
+        self.imgui.set_current_context(self._context)
         self.imgui.new_frame()
         self._frame_recovery_state = self.imgui.internal.ErrorRecoveryState()
         self.imgui.internal.error_recovery_store_state(self._frame_recovery_state)
@@ -461,7 +525,10 @@ class ImGuiBackend:
         if not self.is_available:
             return
 
-        self.impl.render(self.imgui.get_draw_data())
+        self.imgui.set_current_context(self._context)
+        self.imgui.backends.opengl3_new_frame()
+        self.imgui.backends.opengl3_render_draw_data(self.imgui.get_draw_data())
+        self._update_mouse_cursor()
 
     def is_capturing_mouse(self):
         """Return the raw ImGui mouse-capture request, or False without a GUI backend."""
@@ -586,6 +653,11 @@ class ImGuiBackend:
         if not self.is_available:
             return
 
-        self.icon_atlas.close()
-        self.impl.shutdown()
         self.is_available = False
+        if getattr(self.window, "context", None) is None:
+            return  # the window is gone, and its GL objects with it
+        self.window.switch_to()
+        self.icon_atlas.close()
+        self.imgui.set_current_context(self._context)
+        self.imgui.backends.opengl3_shutdown()
+        self.imgui.destroy_context(self._context)

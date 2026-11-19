@@ -362,10 +362,6 @@ class BvhResources:
                     self._add_detector(tree, value, name)
                 context = getattr(value, "_render_context", None)
                 triangle_attr = "_triangle_mesh"
-                # The deprecated tiled camera still owns a separate surface BVH.
-                if context is None and getattr(value, "model", None) is self.model:
-                    context = getattr(value, "_SensorTiledCamera__render_context", None)
-                    triangle_attr = "triangle_mesh"
                 if context is not None and getattr(context, "_model", self.model) is self.model:
                     if getattr(context, triangle_attr, None) is not None:
                         node = ("bvh", (name, "surface"))

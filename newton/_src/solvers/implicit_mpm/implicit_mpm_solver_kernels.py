@@ -352,17 +352,6 @@ def integrate_particle_stress(
 
 
 @wp.kernel
-def average_yield_parameters(
-    yield_parameters_int: wp.array[YieldParamVec],
-    particle_volume: wp.array[float],
-    yield_parameters_avg: wp.array[YieldParamVec],
-):
-    i = wp.tid()
-    pvol = particle_volume[i]
-    yield_parameters_avg[i] = wp.max(YieldParamVec(0.0), yield_parameters_int[i] / wp.max(pvol, EPSILON))
-
-
-@wp.kernel
 def average_elastic_parameters(
     elastic_parameters_int: wp.array[wp.vec3],
     particle_volume: wp.array[float],
@@ -969,14 +958,6 @@ def compute_bounds(
 
 
 @wp.kernel
-def clamp_coordinates(
-    coords: wp.array[wp.vec3],
-):
-    i = wp.tid()
-    coords[i] = wp.min(wp.max(coords[i], wp.vec3(0.0)), wp.vec3(1.0))
-
-
-@wp.kernel
 def build_active_particle_mask(
     particle_q: wp.array[wp.vec3],
     particle_flags: wp.array[wp.int32],
@@ -1558,7 +1539,9 @@ def scatter_point_dof_values(
     nid = wp.tid()
     sid = space_node_indices[nid]
     if sid != fem.NULL_NODE_INDEX:
-        particle_values[cell_particle_indices[sid]] = dof_values[nid]
+        particle = cell_particle_indices[sid]
+        if particle >= 0:
+            particle_values[particle] = dof_values[nid]
 
 
 @wp.kernel
@@ -1571,8 +1554,11 @@ def gather_point_dof_values(
     """Load point-basis values from their particles; point nodes are cell-sorted particle positions."""
     nid = wp.tid()
     sid = space_node_indices[nid]
+    particle = -1
     if sid != fem.NULL_NODE_INDEX:
-        dof_values[nid] = particle_values[cell_particle_indices[sid]]
+        particle = cell_particle_indices[sid]
+    if particle >= 0:
+        dof_values[nid] = particle_values[particle]
     else:
         dof_values[nid] = dof_values.dtype(0.0)
 

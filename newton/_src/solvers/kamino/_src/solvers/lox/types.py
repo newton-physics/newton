@@ -14,7 +14,13 @@ import warp as wp
 
 from ......core.types import override
 from ...core.types import mat36f, mat66f, to_warp_int32_array, vec6f
-from ...linalg.core import DenseSquareMultiLinearInfo, prefix_offsets, segment_local_indices
+from ...linalg.core import (
+    DenseSquareMultiLinearInfo,
+    dense_matrix_layout,
+    prefix_offsets,
+    segment_local_indices,
+    validate_dense_matrix_shape,
+)
 from .contact import mat55f, vec5f
 from .spatial_warmstart import WarmstarterAngularContacts
 
@@ -885,14 +891,16 @@ class ProjectionData:
 class LOXSystemData:
     """Arrays of the batched smooth body system.
 
-    Bodies stay in model order, while the dense matrices and vectors are packed by
-    factor block.
+    The multi-body factor blocks come first and hold one row of :attr:`matrix` each, sized for the largest
+    of them. The single-body blocks after them hold one row of :attr:`single_body_matrix` each, so free
+    bodies take ``6 x 6`` entries whatever the size of the articulations. Vectors are packed by factor block.
 
     Args:
         body_block: Factor block of each body, or ``-1`` for a prescribed body.
         body_local: Index of each body within its factor block, or ``-1``.
         body_vector_index: First entry of each body in the packed system vectors, or ``-1``.
         info: Dense layout of the factor blocks.
+        num_multi_body_blocks: Number of leading factor blocks of several bodies.
         device: Device of the arrays.
     """
 
@@ -902,6 +910,7 @@ class LOXSystemData:
         body_local: np.ndarray,
         body_vector_index: np.ndarray,
         info: DenseSquareMultiLinearInfo,
+        num_multi_body_blocks: int,
         device: wp.DeviceLike,
     ):
         num_bodies = len(body_block)
@@ -913,10 +922,18 @@ class LOXSystemData:
         """First entry of each body in the packed system vectors, or ``-1``."""
         self.info = info
         """Dense layout of the factor blocks."""
-        self.matrix = wp.zeros(info.total_mat_size, dtype=wp.float32, device=device)
-        """Dense matrix of each factor block: the smooth matrix ``A`` once assembled, then ``A + alpha W``
-        once the consensus fraction ``alpha`` of the splitting weights is added. Captured steps assemble
-        into the matrix of the factorization, in its row order."""
+        multi_body_sizes = [dimension * dimension for dimension in info.dimensions[:num_multi_body_blocks]]
+        matrix_shape = dense_matrix_layout(multi_body_sizes)
+        validate_dense_matrix_shape(matrix_shape, wp.float32)
+        self.matrix = wp.zeros(matrix_shape, dtype=wp.float32, device=device)
+        """Dense matrix of each multi-body factor block: the smooth matrix ``A`` once assembled, then
+        ``A + alpha W`` once the consensus fraction ``alpha`` of the splitting weights is added. Captured
+        steps assemble into the matrix of the factorization, in its row order."""
+        self.single_body_matrix = wp.zeros(
+            (info.num_blocks - num_multi_body_blocks, 36), dtype=wp.float32, device=device
+        )
+        """Row-major ``6 x 6`` matrix of each single-body factor block, after the multi-body blocks, see
+        :attr:`matrix`."""
         self.right_hand_side = wp.zeros(info.total_vec_size, dtype=wp.float32, device=device)
         """Smooth right-hand side ``f``, frozen during the iterations."""
         self.candidate_right_hand_side = wp.zeros(info.total_vec_size, dtype=wp.float32, device=device)
@@ -961,6 +978,8 @@ class LOXResiduals:
         bodies are unweighted unless incident to a unilateral row, so ``p = v`` there and the check
         would only tighten the structural solve to velocity level.
         """
+        self.r_total = wp.zeros(num_worlds, dtype=wp.float32, device=device)
+        """Largest scaled residual of each world at its last convergence check; at most one when converged."""
         self.r_primal = wp.zeros(num_worlds, dtype=wp.float32, device=device)
         """Largest consensus gap ``|W (v - p)|`` [N·s or N·m·s] of each world at its last iteration."""
         self.r_dual = wp.zeros(num_worlds, dtype=wp.float32, device=device)
