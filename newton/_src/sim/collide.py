@@ -3446,7 +3446,6 @@ class CollisionPipeline:
                 match_index_out=contacts.rigid_contact_match_index,
                 buffer_id=self._contact_matcher.buffer_id(contacts),
                 match_generation_out=contacts.rigid_contact_match_generation,
-                tiebreak_keys=self._contact_sorter.sorted_tiebreak_keys_view,
                 device=self.device,
             )
         elif contacts.rigid_contact_match_index is not None:

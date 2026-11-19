@@ -1009,10 +1009,6 @@ def _check_sorter_pair_pass_matches_packed_order(test, device):
 
     packed_sorted = packed_sorter.sorted_keys_view.numpy()[:count]
     np.testing.assert_array_equal(pair_sorter.sorted_keys_view.numpy()[:count], packed_sorted >> sub_bits)
-    np.testing.assert_array_equal(
-        pair_sorter.sorted_tiebreak_keys_view.numpy()[:count], packed_sorted & ((1 << sub_bits) - 1)
-    )
-    np.testing.assert_array_equal(packed_sorter.sorted_tiebreak_keys_view.numpy()[:count], packed_sorted)
 
     # The simple layout reads the shape pair from ``contact_pair``.
     pairs = wp.array(np.stack((shape0, shape1), axis=1), dtype=wp.vec2i, device=device)
@@ -1031,8 +1027,8 @@ def _check_sorter_pair_pass_matches_packed_order(test, device):
     np.testing.assert_array_equal(positions.numpy()[:count, 0], order)
 
 
-def test_pair_key_claim_ties_use_sub_keys(test, device):
-    """With bare pair keys, contacts of one pair competing for a previous row are told apart by their sub-keys."""
+def test_pair_key_claim_ties_use_sorted_rows(test, device):
+    """Keep claims injective even when sorted contacts share a pair key or fingerprint."""
     with wp.ScopedDevice(device):
         matcher = ContactMatcher(
             capacity=2,
@@ -1050,7 +1046,7 @@ def test_pair_key_claim_ties_use_sub_keys(test, device):
         matcher._prev_normal.assign(np.array([[0.0, 0.0, 1.0]] * 2, dtype=np.float32))
         matcher._prev_count.assign(np.array([1], dtype=np.int32))
 
-        def match(tiebreak_keys):
+        def match():
             # Two new contacts of the same pair, equally far from the previous one.
             points = wp.array([[-0.001, 0.0, 0.0], [0.001, 0.0, 0.0]], dtype=wp.vec3, device=device)
             match_index = wp.full(2, MATCH_NOT_FOUND, dtype=wp.int32, device=device)
@@ -1067,15 +1063,12 @@ def test_pair_key_claim_ties_use_sub_keys(test, device):
                 match_index_out=match_index,
                 buffer_id=1,
                 match_generation_out=wp.zeros(1, dtype=wp.int32, device=device),
-                tiebreak_keys=tiebreak_keys,
                 device=device,
             )
             return match_index.numpy()
 
-        # Distinct sorted sub-keys: exactly one contact keeps the row, the smaller sub-key at equal distance.
-        np.testing.assert_array_equal(match(wp.array([2, 5], dtype=wp.int64, device=device)), (0, MATCH_BROKEN))
-        # Without them both contacts carry the same claim id and both keep the row.
-        np.testing.assert_array_equal(match(None), (0, 0))
+        # Equal keys still identify distinct sorted rows; only the first wins at equal distance.
+        np.testing.assert_array_equal(match(), (0, MATCH_BROKEN))
 
 
 def _build_multi_contact_scene(device):
@@ -1706,8 +1699,8 @@ add_function_test(
 )
 add_function_test(
     TestContactMatching,
-    "test_pair_key_claim_ties_use_sub_keys",
-    test_pair_key_claim_ties_use_sub_keys,
+    "test_pair_key_claim_ties_use_sorted_rows",
+    test_pair_key_claim_ties_use_sorted_rows,
     devices=devices,
 )
 add_function_test(

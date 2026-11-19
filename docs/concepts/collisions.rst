@@ -2631,7 +2631,8 @@ fit at most ``2**20`` shapes in one key.  Above that, the key holds only the
 sub-key and the sort adds a second stable radix pass on a ``(shape_a, shape_b)``
 pair key, which gives the same contact order for one more radix sort per
 frame; contact matching then searches pair ranges on the pair key and breaks
-ties on the sub-key.  A deterministic :class:`~newton.geometry.NarrowPhase`
+ties by sorted row index, following sub-key order within each pair. A
+deterministic :class:`~newton.geometry.NarrowPhase`
 built without ``shape_aabb_lower``/``shape_aabb_upper`` doesn't know the shape
 count, so it uses 20-bit shape fields and raises at launch for more than
 ``2**20`` shapes.
