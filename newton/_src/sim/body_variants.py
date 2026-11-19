@@ -75,22 +75,6 @@ class _VariantSet:
     variants: tuple[_Variant, ...]
     """The variants, indexed by variant id."""
 
-    def shifted_material_ids(self, offset: int) -> _VariantSet:
-        """Translate material IDs when copying the set to another builder."""
-        if offset == 0:
-            return self
-        variants = []
-        for variant in self.variants:
-            shapes = []
-            for shape in variant.shapes:
-                shifted_shape = shape
-                material_id = shape.values["shape_material_id"]
-                if material_id >= 0:
-                    shifted_shape = replace(shape, values={**shape.values, "shape_material_id": material_id + offset})
-                shapes.append(shifted_shape)
-            variants.append(replace(variant, shapes=tuple(shapes)))
-        return _VariantSet(tuple(variants))
-
     @functools.cached_property
     def role_counts(self) -> tuple[int, ...]:
         """Rows per role in :data:`_VARIANT_ROW_ROLES`: the most shapes of that role in any variant."""
@@ -135,6 +119,8 @@ class _BodyVariants:
     """First of the body's contiguous variant shape rows."""
     initial: int
     """Variant selected in the finalized model."""
+    material_offset: int = 0
+    """Offset from the shared shapes' material IDs to this body's registry."""
 
     def shifted(self, shape_offset: int) -> _BodyVariants:
         return replace(self, row_start=self.row_start + shape_offset)
@@ -437,6 +423,14 @@ class _VariantShapeRows:
         m._body_variant_first = wp.array(body_first, dtype=wp.int32, device=device)
         m._body_variant_rows = wp.array(body_rows, dtype=wp.vec2i, device=device)
         m._body_variant_inertia_start = wp.array(body_inertia_start, dtype=wp.int32, device=device)
+        m._body_variant_material_offset = wp.array(
+            [
+                builder._body_variants[body].material_offset if body in builder._body_variants else 0
+                for body in range(builder.body_count)
+            ],
+            dtype=wp.int32,
+            device=device,
+        )
         m._variant_mass = wp.array(masses, dtype=wp.float32, device=device)
         m._variant_com = wp.array(np.asarray(coms, dtype=np.float32).reshape(-1, 3), dtype=wp.vec3, device=device)
         m._variant_inertia = wp.array(

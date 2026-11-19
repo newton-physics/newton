@@ -84,6 +84,40 @@ class TestBodyVariants(unittest.TestCase):
         np.testing.assert_array_equal(model._material_pair_friction.keys.numpy(), [(2 << 32) | 2, (3 << 32) | 3])
         np.testing.assert_array_equal(model._material_pair_friction.mu.numpy(), [0.25, 0.5])
 
+        # Repeated merges keep distinct material registries but share the
+        # geometry and variant rows, including through another merge.
+        repeated = newton.ModelBuilder()
+        repeated.add_material("scene")
+        repeated.add_world(env)
+        repeated.add_world(env)
+        nested = newton.ModelBuilder()
+        nested.add_material("outer")
+        nested.add_world(repeated)
+        model = nested.finalize(device=wp.get_device())
+        self.assertEqual(model._variant_shape_count, 3)
+        _select(model, [1, 0])
+        np.testing.assert_array_equal(model.shape_material_id.numpy()[:3], [4, 4, 6])
+        _select(model, [0, 1])
+        np.testing.assert_array_equal(model.shape_material_id.numpy()[[0, 2, 3]], [3, 7, 7])
+        if model.device.is_cuda:
+            choices = wp.array([1, 0], dtype=wp.int32, device=model.device)
+            with wp.ScopedCapture(device=model.device) as capture:
+                model.select_body_variants(choices)
+            wp.capture_launch(capture.graph)
+            np.testing.assert_array_equal(model.shape_material_id.numpy()[:3], [4, 4, 6])
+
+        # A registered material does not require duplicating sets whose
+        # shapes all use the default material sentinel.
+        plain = newton.ModelBuilder()
+        plain.add_material("unused")
+        plain.add_body_variants(plain.add_body(), [_variant("cube")])
+        repeated = newton.ModelBuilder()
+        repeated.add_world(plain)
+        repeated.add_world(plain)
+        model = repeated.finalize(device="cpu")
+        self.assertEqual(model._variant_shape_count, 1)
+        np.testing.assert_array_equal(model.shape_material_id.numpy(), [-1, -1])
+
     def test_finalize_tables_and_initial_selection(self):
         cube, spheres = _variant("cube"), _variant("spheres")
         env = newton.ModelBuilder()

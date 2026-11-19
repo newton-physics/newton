@@ -25,7 +25,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from copy import copy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import IntEnum
 
 import numpy as np
@@ -126,8 +126,8 @@ class MaterialDescriptor(Descriptor):
     which are actually dependent on the pairwise interactions of the material with others.
 
     Attributes:
-        name: The name of the material.
-        uid: The unique identifier (UUID) of the material.
+        name: The name of the material. Read-only after registration.
+        uid: The unique identifier (UUID) of the material. Read-only after registration.
         restitution: The coefficient of restitution, according to the Newtonian impact model.
             Defaults to the global default of ``0.0``.
         static_friction: The coefficient of static friction, according to the Coulomb friction model.
@@ -143,6 +143,14 @@ class MaterialDescriptor(Descriptor):
     ###
     # Attributes
     ###
+
+    _registered: bool = field(default=False, init=False, repr=False, compare=False)
+    """Whether a manager has registered this descriptor's identity."""
+
+    def __setattr__(self, name, value):
+        if name in ("name", "uid") and self._registered:
+            raise AttributeError(f"Cannot change {name} of a registered material.")
+        super().__setattr__(name, value)
 
     restitution: float = DEFAULT_RESTITUTION
     """
@@ -642,6 +650,7 @@ class MaterialManager:
         self._materials[0] = material
         self._material_indices[material.name] = 0
         self._material_uids.add(material.uid)
+        material._registered = True
 
     @property
     def default_pair(self) -> MaterialPairProperties:
@@ -686,6 +695,7 @@ class MaterialManager:
         self._materials.append(material)
         self._material_indices[material.name] = material.mid
         self._material_uids.add(material.uid)
+        material._registered = True
         logger.debug("Registered new material:\n%s", material)
         return material.mid
 

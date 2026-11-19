@@ -81,6 +81,22 @@ class TestMaterials(NewtonTestCase):
         np.testing.assert_array_equal(pairs.keys.numpy(), [0, (1 << 32) | 256, (2 << 32) | 3])
         np.testing.assert_allclose(pairs.dynamic_friction.numpy(), [DEFAULT_FRICTION, 0.25, 0.5])
 
+    def test_registered_material_identity_is_read_only(self):
+        """Reject identity changes after registration while allowing property updates."""
+        material = MaterialDescriptor("original")
+        material.name = "renamed_before_registration"
+        manager = MaterialManager(material)
+        for field, value in (("name", "renamed"), ("uid", MaterialDescriptor("other").uid)):
+            with self.subTest(field=field):
+                with self.assertRaisesRegex(AttributeError, "registered material"):
+                    setattr(material, field, value)
+        material.dynamic_friction = 0.2
+        self.assertEqual(manager.index(material.name), 0)
+        manager.configure_pair(material.name, material.name, MaterialPairProperties(dynamic_friction=0.3))
+        manager.default = MaterialDescriptor("replacement")
+        self.assertFalse(manager.has_material("renamed_before_registration"))
+        self.assertEqual(manager.index("replacement"), 0)
+
     def test_00_default_material_properties(self):
         # Create a default-constructed surface material
         material = MaterialDescriptor(name="default")

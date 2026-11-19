@@ -194,6 +194,27 @@ def _copy_variant_shape_kernel(
 
 
 @wp.kernel(enable_backward=False)
+def _copy_variant_material_kernel(
+    variants: wp.array[wp.int32],
+    bodies: wp.array[wp.int32],
+    body_variant_count: wp.array[wp.int32],
+    body_variant_rows: wp.array[wp.vec2i],
+    shape_variant_shape: wp.array[wp.int32],
+    variant_values: wp.array[wp.int32],
+    material_offset: wp.array[wp.int32],
+    values: wp.array[wp.int32],
+):
+    i, row = wp.tid()
+    body, _variant, shape = _variant_row(i, row, variants, bodies, body_variant_count, body_variant_rows)
+    if body < 0 or shape < 0:
+        return
+    variant_shape = shape_variant_shape[shape]
+    if variant_shape >= 0:
+        material = variant_values[variant_shape]
+        values[shape] = material + material_offset[body] if material >= 0 else -1
+
+
+@wp.kernel(enable_backward=False)
 def _copy_variant_shape_bounds_kernel(
     variants: wp.array[wp.int32],
     bodies: wp.array[wp.int32],
@@ -567,6 +588,7 @@ class Model:
         "_body_variant_first": AttributeSpec(AttributeFrequency.BODY),
         "_body_variant_rows": AttributeSpec(AttributeFrequency.BODY),
         "_body_variant_inertia_start": AttributeSpec(AttributeFrequency.BODY),
+        "_body_variant_material_offset": AttributeSpec(AttributeFrequency.BODY),
         "_shape_variant_row": AttributeSpec(AttributeFrequency.SHAPE),
         "_shape_variant_shape": AttributeSpec(AttributeFrequency.SHAPE),
         # shapes
@@ -1475,6 +1497,8 @@ class Model:
         """First variant row and row count of each body, shape [body_count, 2], int."""
         self._body_variant_inertia_start: wp.array[wp.int32] | None = None
         """Start of each body's validated mass properties in ``_variant_mass/com/inertia``, shape [body_count], int."""
+        self._body_variant_material_offset: wp.array[wp.int32] | None = None
+        """Material registry offset for each body's shared variant shapes, shape [body_count], int."""
         self._variant_set_labels: list[list[str]] = []
         """Variant labels of each variant set."""
         self._variant_row_shape_start: wp.array[wp.int32] | None = None
@@ -3121,13 +3145,13 @@ class Model:
             if name != "shape_material_id" or self.shape_material_id is not None
         ]
         copies.extend(self._variant_shape_custom.values())
-        key = tuple(id(array) for pair in copies for array in pair)
+        key = (id(self._body_variant_material_offset), *(id(array) for pair in copies for array in pair))
         if self._variant_copy_cache is not None and self._variant_copy_cache[0] == key:
             return self._variant_copy_cache[1]
         empty = wp.empty(0, dtype=wp.int32, device=self.device)
         launches = [
             wp.launch(
-                _copy_variant_shape_kernel,
+                _copy_variant_material_kernel if values is self.shape_material_id else _copy_variant_shape_kernel,
                 dim=(1, 1),
                 inputs=[
                     empty,
@@ -3136,6 +3160,7 @@ class Model:
                     self._body_variant_rows,
                     self._shape_variant_shape,
                     variant_values,
+                    *([self._body_variant_material_offset] if values is self.shape_material_id else []),
                 ],
                 outputs=[values],
                 device=self.device,

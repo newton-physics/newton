@@ -2439,7 +2439,7 @@ Example:
 .. _Material pair friction:
 
 Material pair friction
-~~~~~~~~~~~~~~~~~~~~~~
+^^^^^^^^^^^^^^^^^^^^^^
 
 .. experimental::
 

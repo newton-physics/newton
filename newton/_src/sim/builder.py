@@ -4453,7 +4453,6 @@ class ModelBuilder:
                 for target, vector in zip(targets, transformed.tolist(), strict=True):
                     values[target] = tuple(vector)
 
-        variant_sets = {}
         for body_start, shape_start in zip(body_starts, shape_starts, strict=True):
             for body, shapes in builder.body_shapes.items():
                 translated_shapes = [shape + int(shape_start) for shape in shapes]
@@ -4465,10 +4464,7 @@ class ModelBuilder:
             for body, body_variants in builder._body_variants.items():
                 shifted = body_variants.shifted(int(shape_start))
                 if material_offset:
-                    variant_set = body_variants.variant_set
-                    if variant_set not in variant_sets:
-                        variant_sets[variant_set] = variant_set.shifted_material_ids(material_offset)
-                    shifted = replace(shifted, variant_set=variant_sets[variant_set])
+                    shifted = replace(shifted, material_offset=shifted.material_offset + material_offset)
                 self._body_variants[body + int(body_start)] = shifted
 
         joint_starts = starts("joint")
