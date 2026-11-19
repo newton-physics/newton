@@ -76,8 +76,13 @@ from newton._src.solvers.kamino._src.solvers.scc.types import SCCConfigStruct, S
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
 from newton.tests.kamino import expect_contact_capacity_warning, setup_tests, test_context
 from newton.tests.kamino.test_kamino_solvers_padmm import TestSetup
-from newton.tests.kamino.utils.extract import extract_delassus, extract_problem_vector
-from newton.tests.kamino.utils.make import make_containers, make_test_problem_fourbar, update_containers
+from newton.tests.kamino.utils.extract import extract_delassus, extract_problem_vector, get_matrix_block
+from newton.tests.kamino.utils.make import (
+    make_containers,
+    make_row_storage,
+    make_test_problem_fourbar,
+    update_containers,
+)
 from newton.tests.unittest_utils import MODULE_LOAD_OUTPUT_RE, NewtonTestCase, requires
 from newton.tests.utils import basics, testing
 
@@ -458,7 +463,7 @@ class TestSCCSolver(NewtonTestCase):
         self.assertIsNone(default_config.scc.use_schur_complement)
         self.assertEqual(default_config.scc.tangential_warmstart_scale, 0.97)
         self.assertEqual(default_config.scc.bilateral_solve_interval, 1)
-        self.assertEqual(default_config.scc.bilateral_solver_type, "LLTB")
+        self.assertEqual(default_config.scc.bilateral_solver_type, "LLTBRCM")
         self.assertEqual(default_config.scc.bilateral_solver_kwargs, {})
 
         dense_config = SolverKamino.Config(
@@ -831,15 +836,47 @@ class TestSCCSolver(NewtonTestCase):
         state_in = model.state()
         state_out = model.state()
         solver.step(state_in, state_out, control=None, contacts=None, dt=1e-3)
-        body_q = state_out.body_q.numpy()
-        body_qd = state_out.body_qd.numpy()
-        self.assertTrue(np.all(np.isfinite(body_q)))
-        self.assertTrue(np.all(np.isfinite(body_qd)))
+        self.assertTrue(np.all(np.isfinite(state_out.body_q.numpy())))
+        self.assertTrue(np.all(np.isfinite(state_out.body_qd.numpy())))
         self.assertIsInstance(solver._solver_kamino.solver_fd, SCCSolver)
         self.assertIsInstance(solver._solver_kamino.solver_fd._bilateral_solver, LDLBlockSparseSolver)
         self.assertIsNone(solver._solver_kamino.solver_fd.data.bilateral_operator.mat)
         self.assertFalse(solver._solver_kamino.config.dynamics.preconditioning)
         self.assertIsNotNone(solver._solver_kamino.solver_fd.data.info)
+
+        for sparse, metrics in ((False, False), (False, True), (True, False), (True, True)):
+            with self.subTest(sparse=sparse, metrics=metrics):
+                config = SolverKamino.Config(
+                    dynamics_solver="scc",
+                    scc=kamino_config.SCCSolverConfig(
+                        max_alternating_iterations=500,
+                        inequality_sweeps_per_iteration=1,
+                        tolerance=1e-5,
+                    ),
+                    collect_solver_info=True,
+                    sparse_dynamics=sparse,
+                    sparse_jacobian=sparse,
+                    compute_solution_metrics=metrics,
+                )
+                solver = SolverKamino(model, config=config)
+                state_in = model.state()
+                state_out = model.state()
+                solver.step(state_in, state_out, control=None, contacts=None, dt=1e-3)
+                body_q = state_out.body_q.numpy()
+                body_qd = state_out.body_qd.numpy()
+                self.assertTrue(np.all(np.isfinite(body_q)))
+                self.assertTrue(np.all(np.isfinite(body_qd)))
+                self.assertIsInstance(solver._solver_kamino.solver_fd, SCCSolver)
+                self.assertFalse(solver._solver_kamino.config.dynamics.preconditioning)
+                self.assertIsNotNone(solver._solver_kamino.solver_fd.data.info)
+
+                if not sparse:
+                    self.assertIsNone(solver._solver_kamino.problem_fd.delassus._solver)
+                self.assertIsNotNone(solver._solver_kamino.solver_fd._bilateral_solver)
+                if metrics:
+                    values = solver._solver_kamino.metrics.data
+                    for name in ("r_eom", "r_v_plus", "r_ncp_primal", "r_ncp_dual", "r_ncp_compl", "r_vi_natmap"):
+                        self.assertTrue(np.isfinite(getattr(values, name).numpy()).all(), name)
 
     def test_02a_public_solver_reset_accepts_global_mask_slot(self):
         """Accept a global reset slot as a no-op for Kamino state."""
@@ -1549,6 +1586,51 @@ class TestSCCSolver(NewtonTestCase):
         np.testing.assert_array_equal(fallback.data.state.bilateral_active_dim.numpy(), joint_dims)
         np.testing.assert_allclose(fallback.data.solution.lambdas.numpy(), expected, atol=2e-5, rtol=2e-5)
 
+    def test_03d1b_sparse_scc_rcm_honors_per_world_bilateral_intervals(self):
+        """Restrict bilateral re-solves to each world's interval with the default RCM solver."""
+        builder = newton.ModelBuilder()
+        builder.replicate(builder=basics.build_boxes_hinged(), copy_count=2)
+        model = ModelKamino.from_newton(builder.finalize(device=self.device))
+        model, data, state, limits, detector, jacobians = make_containers(
+            model=model,
+            max_world_contacts=8,
+            sparse=True,
+        )
+        update_containers(model=model, data=data, state=state, limits=limits, detector=detector, jacobians=jacobians)
+        problem = _make_sparse_dual_problem(model, data, limits, detector.contacts, jacobians)
+        configs = [
+            kamino_config.SCCSolverConfig(max_alternating_iterations=3, bilateral_solve_interval=1),
+            kamino_config.SCCSolverConfig(max_alternating_iterations=3, bilateral_solve_interval=99),
+        ]
+        self.assertEqual(configs[0].bilateral_solver_type, "LLTBRCM")
+        solver = SCCSolver(
+            model=model,
+            data=data,
+            limits=limits,
+            contacts=detector.contacts,
+            jacobians=jacobians,
+            problem=problem,
+            config=configs,
+            warmstart=WarmStartMode.NONE,
+        )
+        self.assertIsInstance(solver._bilateral_solver, LLTBlockedRCMSolver)
+        active_dim_updates = []
+        set_bilateral_active_dim = solver._sparse_path.set_bilateral_active_dim
+
+        def record_bilateral_active_dim(problem: DualProblem, block_iteration: int) -> None:
+            set_bilateral_active_dim(problem, block_iteration)
+            active_dim_updates.append((block_iteration, solver.data.state.bilateral_active_dim.numpy().copy()))
+
+        solver._sparse_path.set_bilateral_active_dim = record_bilateral_active_dim
+        solver.coldstart()
+        solver.solve(problem)
+        joint_dims = problem.data.njc.numpy()
+        self.assertEqual([block_iteration for block_iteration, _ in active_dim_updates], [0, 1, -1])
+        np.testing.assert_array_equal(active_dim_updates[0][1], np.array([joint_dims[0], 0], dtype=np.int32))
+        np.testing.assert_array_equal(active_dim_updates[1][1], active_dim_updates[0][1])
+        np.testing.assert_array_equal(active_dim_updates[2][1], joint_dims)
+        self.assertTrue(np.all(np.isfinite(solver.data.solution.lambdas.numpy())))
+
     def test_03d2_scc_direct_block_finishes_with_bilateral_solve(self):
         """Recover a consistent bilateral solution after fused inequality iterations."""
         builder = basics.build_boxes_hinged()
@@ -1596,8 +1678,8 @@ class TestSCCSolver(NewtonTestCase):
         self.assertLess(float(status["r_b"]), 1e-6)
 
         ncts = int(problem.data.dim.numpy()[0])
-        original = problem.data.D.numpy()[: ncts * ncts].reshape(ncts, ncts)
-        projected = solver.data.state.projected_D.numpy()[: ncts * ncts].reshape(ncts, ncts)
+        original = get_matrix_block(0, problem.data.D.numpy(), [ncts])
+        projected = get_matrix_block(0, solver.data.state.projected_D.numpy(), [ncts])
         self.assertGreater(float(np.max(np.abs(projected[njc:, njc:] - original[njc:, njc:]))), 1e-6)
 
     @unittest.skipUnless(wp.get_cuda_device_count(), "requires CUDA device")
@@ -2010,7 +2092,7 @@ class TestSCCSolver(NewtonTestCase):
 
     def test_03i_scc_coldstart_is_repeatable(self):
         """Repeat cold starts without clearing overwritten Schur workspace."""
-        for sparse, schur in ((False, False), (True, False), (True, True)):
+        for sparse, schur in ((False, False), (False, True), (True, False), (True, True)):
             with self.subTest(sparse=sparse, schur=schur):
                 test = TestSetup(
                     builder_fn=basics.build_boxes_hinged,
@@ -2038,9 +2120,9 @@ class TestSCCSolver(NewtonTestCase):
                 if schur:
                     state = solver.data.state
                     response_arrays = (
-                        state.bilateral_coupling,
-                        state.bilateral_response_factor,
-                        state.bilateral_response,
+                        (state.bilateral_coupling, state.bilateral_response_factor, state.bilateral_response)
+                        if sparse
+                        else (state.projected_D,)
                     )
                     before_reset = tuple(array.numpy().copy() for array in response_arrays)
                 solver.reset()
@@ -2098,7 +2180,7 @@ class TestSCCSolver(NewtonTestCase):
         layout = response_calls[0]
         dim, njc = test.problem.data.dim.numpy(), test.problem.data.njc.numpy()
         self.assertTrue(np.any((njc > 0) & (dim > njc)))
-        np.testing.assert_array_equal(layout["offsets"], state.projected_mio.numpy() + njc)
+        np.testing.assert_array_equal(layout["offsets"], njc)
         np.testing.assert_array_equal(layout["strides"], dim)
         np.testing.assert_array_equal(layout["columns"], dim - njc)
 
@@ -2131,9 +2213,10 @@ class TestSCCSolver(NewtonTestCase):
                 a * scale[o : o + n, None] * scale[None, o : o + n]
                 for a, o, n in zip(matrices, (0, 8), njc[:2], strict=True)
             ]
-            matrix = wp.array(
-                np.concatenate([*(a.ravel() for a in normalized), [0.0]]).astype(np.float32), device=device
-            )
+            matrix_rows = np.zeros(info.matrix_shape, dtype=np.float32)
+            for world, a in enumerate(normalized):
+                matrix_rows[world, : a.size] = a.ravel()
+            matrix = wp.array(matrix_rows, device=device)
             state = SCCState()
             state.bilateral_response_mio = i32(offsets)
             state.bilateral_response_stride = i32(capacity)
@@ -2142,7 +2225,7 @@ class TestSCCSolver(NewtonTestCase):
             state.bilateral_response_factor = wp.zeros(33, device=device)
             state.bilateral_response = wp.zeros(33, device=device)
             sparse_factor.allocate_response(state, 3, device)
-            problem = SimpleNamespace(data=SimpleNamespace(dim=i32([10, 6, 0]), njc=i32(njc), mio=i32([0, 100, 136])))
+            problem = SimpleNamespace(data=SimpleNamespace(dim=i32([10, 6, 0]), njc=i32(njc)))
             for ordering in ("meca", "rcm"):
                 solver = LDLBlockSparseSolver(
                     operator=DenseLinearOperatorData(info=info, mat=matrix),
@@ -2335,18 +2418,21 @@ class TestSCCSolver(NewtonTestCase):
         self.assertIsInstance(solver._solver_kamino.solver_fd, SCCSolver)
 
     def test_08a_public_solver_heterogeneous_contact_rollout_with_scc(self):
-        """Use LDL for heterogeneous dense and sparse SCC rollouts."""
+        """Exercise bilateral backends in heterogeneous dense and sparse SCC rollouts."""
         builder = newton.ModelBuilder()
         SolverKamino.register_custom_attributes(builder)
         basics.make_basics_heterogeneous_builder(builder=builder, ground=True)
         model = builder.finalize(device=self.device, skip_validation_joints=True)
 
-        for sparse, ordering in product((False, True), ("meca", "rcm")):
-            with self.subTest(sparse=sparse, ordering=ordering):
+        for sparse, (bilateral_solver_type, ordering) in product(
+            (False, True), (("LLTB", None), ("LLTBRCM", None), ("LDL", "meca"), ("LDL", "rcm"))
+        ):
+            with self.subTest(sparse=sparse, bilateral_solver_type=bilateral_solver_type, ordering=ordering):
                 config = SolverKamino.Config(
                     dynamics_solver="scc",
                     scc=kamino_config.SCCSolverConfig(
-                        bilateral_solver_type="LDL", bilateral_solver_kwargs={"ordering": ordering}
+                        bilateral_solver_type=bilateral_solver_type,
+                        bilateral_solver_kwargs={"ordering": ordering} if ordering else {},
                     ),
                     sparse_dynamics=sparse,
                     sparse_jacobian=True,
@@ -2379,15 +2465,23 @@ class TestSCCSolver(NewtonTestCase):
                 self.assertTrue(np.all(np.isfinite(status["r_d"])))
                 self.assertLess(float(np.max(np.abs(state_in.body_qd.numpy()))), 100.0)
                 self.assertIsInstance(scc_solver, SCCSolver)
-                self.assertIsInstance(scc_solver._bilateral_solver, LDLBlockSparseSolver)
-                self.assertEqual(scc_solver._bilateral_solver.ordering, ordering)
+                backend_type = {
+                    "LLTB": LLTBlockedSolver,
+                    "LLTBRCM": LLTBlockedRCMSolver,
+                    "LDL": LDLBlockSparseSolver,
+                }[bilateral_solver_type]
+                self.assertIsInstance(scc_solver._bilateral_solver, backend_type)
+                if ordering is not None:
+                    self.assertEqual(scc_solver._bilateral_solver.ordering, ordering)
                 joint_dims = solver._solver_kamino._model.info.num_joint_bilateral_cts.numpy()
                 self.assertTrue(np.any(joint_dims == 0))
                 self.assertTrue(np.any(joint_dims > 0))
-                np.testing.assert_array_equal(
-                    scc_solver.data.bilateral_operator.info.dimensions,
-                    np.maximum(joint_dims, 1),
-                )
+                if bilateral_solver_type != "LLTBRCM":
+                    # LLTB pads joint-free worlds to one row; LLTBRCM uses a shared capacity stride.
+                    np.testing.assert_array_equal(
+                        scc_solver.data.bilateral_operator.info.dimensions,
+                        np.maximum(joint_dims, 1),
+                    )
                 self.assertEqual(config.sparse_dynamics, sparse)
                 self.assertTrue(config.sparse_jacobian)
 
@@ -3901,11 +3995,10 @@ class TestSCCSolver(NewtonTestCase):
             inputs=[
                 i32([4]),
                 i32([2]),
-                i32([0]),
                 i32([2]),
                 i32([0]),
                 wp.array(scaling, dtype=wp.float32, device=self.device),
-                wp.array(factor.ravel(), dtype=wp.float32, device=self.device),
+                wp.array(factor.reshape(1, -1), dtype=wp.float32, device=self.device),
                 i32(permutation),
                 True,
                 i32([0]),
@@ -4631,10 +4724,11 @@ class TestSCCSolver(NewtonTestCase):
         workspace = wp.zeros(len(couplings), dtype=wp.float32, device=self.device)
         response = wp.zeros_like(workspace)
         row_start = wp.zeros(len(scaling), dtype=wp.int32, device=self.device)
+        factor_rows = f32(make_row_storage(np.asarray(factors), matrix_offsets, np.square(joint_counts)))
         wp.launch(
             _find_bilateral_factor_row_start,
             dim=(5, max(joint_counts)),
-            inputs=[joints, i32(matrix_offsets), joints, i32(vector_offsets), f32(factors), row_start],
+            inputs=[joints, joints, i32(vector_offsets), factor_rows, row_start],
             device=self.device,
         )
         expected_starts = []
@@ -4648,11 +4742,10 @@ class TestSCCSolver(NewtonTestCase):
             inputs=[
                 dims,
                 joints,
-                i32(matrix_offsets),
                 joints,
                 i32(vector_offsets),
                 f32(scaling),
-                f32(factors),
+                factor_rows,
                 i32(permutations),
                 True,
                 offsets,

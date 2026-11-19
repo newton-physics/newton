@@ -56,13 +56,12 @@ def joint_block_pattern(model, capacities):
 def _dense_values(
     dim: wp.array[wp.int32],
     njc: wp.array[wp.int32],
-    mio: wp.array[wp.int32],
     vio: wp.array[wp.int32],
     worlds: wp.array[wp.int32],
     rows: wp.array2d[wp.int32],
     block_i: wp.array[wp.int32],
     block_j: wp.array[wp.int32],
-    matrix: wp.array[wp.float32],
+    matrix_storage: wp.array2d[wp.float32],
     scale: wp.array[wp.float32],
     values: wp.array3d[wp.float32],
 ):
@@ -74,10 +73,11 @@ def _dense_values(
     n = njc[world]
     value = wp.float32(0.0)
     if row >= 0 and col >= 0 and row < n and col < n:
-        stride, start = dim[world], mio[world]
-        pr = wp.sqrt(1.0 / (wp.abs(matrix[start + row * stride + row]) + FLOAT32_EPS))
-        pc = wp.sqrt(1.0 / (wp.abs(matrix[start + col * stride + col]) + FLOAT32_EPS))
-        value = pr * matrix[start + row * stride + col] * pc
+        matrix = matrix_storage[world]
+        stride = dim[world]
+        pr = wp.sqrt(1.0 / (wp.abs(matrix[row * stride + row]) + FLOAT32_EPS))
+        pc = wp.sqrt(1.0 / (wp.abs(matrix[col * stride + col]) + FLOAT32_EPS))
+        value = pr * matrix[row * stride + col] * pc
         if row == col:
             value += BILATERAL_DIAGONAL_FLOOR
             scale[vio[world] + row] = pr
@@ -94,7 +94,6 @@ def factor_dense(solver, problem, scale):
         inputs=[
             problem.data.dim,
             problem.data.njc,
-            problem.data.mio,
             solver.operator.info.vio,
             solver.worlds,
             solver.rows,
@@ -218,8 +217,29 @@ def factor_sparse(path, problem):
     solver.factorize_values()
 
 
+@wp.func
+def _write_response_layout(
+    world: int,
+    origin: int,
+    stride: int,
+    nu: int,
+    whitened: bool,
+    origins: wp.array[wp.int32],
+    strides: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    full_columns: wp.array[wp.int32],
+    whitened_columns: wp.array[wp.int32],
+):
+    """Record where each world's response columns start and which passes must solve them."""
+    origins[world] = origin
+    strides[world] = stride
+    columns[world] = nu
+    full_columns[world] = 0 if whitened else nu
+    whitened_columns[world] = nu if whitened else 0
+
+
 @wp.kernel
-def _prepare_response(
+def _prepare_sparse_response(
     dim: wp.array[wp.int32],
     njc: wp.array[wp.int32],
     vio: wp.array[wp.int32],
@@ -227,8 +247,6 @@ def _prepare_response(
     capacity: wp.array[wp.int32],
     scale: wp.array[wp.float32],
     source: wp.array[wp.float32],
-    dense: bool,
-    source_mio: wp.array[wp.int32],
     compact: bool,
     origins: wp.array[wp.int32],
     strides: wp.array[wp.int32],
@@ -239,7 +257,6 @@ def _prepare_response(
 ):
     """Scale bilateral coupling columns and select the columns each response pass must solve.
 
-    Dense responses start at the first unilateral column of the projected operator.
     Worlds using compact Schur keep only the whitened forward columns, so they skip
     the full-response diagonal and backward passes.
     """
@@ -248,26 +265,46 @@ def _prepare_response(
     stride = capacity[world]
     origin = offsets[world]
     whitened = False
-    if dense:
-        stride = dim[world]
-        origin += n
-    elif compact and _compact_schur_fits(n, nu, stride):
+    if compact and _compact_schur_fits(n, nu, stride):
         stride = nu
         whitened = True
     if row == 0 and column == 0:
-        origins[world] = origin
-        strides[world] = stride
-        columns[world] = nu
-        full_columns[world] = 0 if whitened else nu
-        whitened_columns[world] = nu if whitened else 0
+        _write_response_layout(
+            world, origin, stride, nu, whitened, origins, strides, columns, full_columns, whitened_columns
+        )
     if row >= n or column >= nu:
         return
-    value = wp.float32(0.0)
-    if dense:
-        value = source[source_mio[world] + row * stride + n + column]
-    else:
-        value = source[origin + row * stride + column]
-    result[origin + row * stride + column] = scale[vio[world] + row] * value
+    index = origin + row * stride + column
+    result[index] = scale[vio[world] + row] * source[index]
+
+
+@wp.kernel
+def _prepare_dense_response(
+    dim: wp.array[wp.int32],
+    njc: wp.array[wp.int32],
+    vio: wp.array[wp.int32],
+    scale: wp.array[wp.float32],
+    source_storage: wp.array2d[wp.float32],
+    origins: wp.array[wp.int32],
+    strides: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    full_columns: wp.array[wp.int32],
+    whitened_columns: wp.array[wp.int32],
+    result_storage: wp.array2d[wp.float32],
+):
+    """Scale the bilateral-unilateral coupling block into the projected operator row.
+
+    Responses start at the first unilateral column and share the operator's row stride.
+    """
+    world, row, column = wp.tid()
+    n, stride = njc[world], dim[world]
+    nu = stride - n
+    if row == 0 and column == 0:
+        _write_response_layout(world, n, stride, nu, False, origins, strides, columns, full_columns, whitened_columns)
+    if row >= n or column >= nu:
+        return
+    index = n + row * stride + column
+    result_storage[world, index] = scale[vio[world] + row] * source_storage[world, index]
 
 
 @wp.kernel
@@ -319,7 +356,7 @@ def response_sparse(path, problem, compact):
     max_columns = max(path.unilateral_strides_host, default=0)
     dims = (path.size.num_worlds, max(1, path.size.max_of_num_bilateral_joint_cts), max(1, max_columns))
     wp.launch(
-        _prepare_response,
+        _prepare_sparse_response,
         dim=dims,
         inputs=[
             problem.data.dim,
@@ -329,8 +366,6 @@ def response_sparse(path, problem, compact):
             state.bilateral_response_stride,
             state.bilateral_preconditioner,
             state.bilateral_coupling,
-            False,
-            problem.data.mio,
             compact,
             state.bilateral_response_origin,
             state.bilateral_response_active_stride,
@@ -382,19 +417,14 @@ def response_dense(owner, problem):
     solver, state = owner._bilateral_solver, owner.data.state
     max_columns = owner._max_unilateral_rows
     wp.launch(
-        _prepare_response,
+        _prepare_dense_response,
         dim=(owner.size.num_worlds, max(1, owner.size.max_of_num_bilateral_joint_cts), max(1, max_columns)),
         inputs=[
             problem.data.dim,
             problem.data.njc,
             solver.operator.info.vio,
-            state.projected_mio,
-            problem.data.dim,
             state.bilateral_preconditioner,
             problem.data.D,
-            True,
-            problem.data.mio,
-            False,
             state.bilateral_response_origin,
             state.bilateral_response_active_stride,
             state.bilateral_response_columns,
