@@ -65,7 +65,15 @@ class Example:
         ground_cfg = builder.ShapeConfig(ke=1.0e5, kd=100.0, mu=0.5, mu_torsional=0.005, mu_rolling=0.005)
         builder.add_ground_plane(cfg=ground_cfg)
         self.rows = (0.9, 0.4, 0.0, -0.5, -0.9)
-        labels = ("Sliding", "Torsion on", "Torsion off", "Rolling on", "Rolling off")
+        labels = (
+            "2. Sliding",
+            "3. Torsion ON",
+            "4. Torsion OFF",
+            "5. Rolling resistance ON",
+            "6. Rolling resistance OFF",
+        )
+        # Display colors group the comparisons; they are independent of solver color groups.
+        colors = ((0.2, 0.65, 0.9), (0.65, 0.35, 0.8), (0.78, 0.68, 0.85), (0.15, 0.7, 0.5), (0.65, 0.82, 0.75))
         for index, y in enumerate(self.rows):
             is_box = index == 0
             half_height = 0.05 if is_box else self.radius
@@ -79,10 +87,10 @@ class Example:
             )
             if is_box:
                 cfg.density = 1.0 / (0.2 * 0.2 * 0.1)
-                builder.add_shape_box(body, hx=0.1, hy=0.1, hz=half_height, cfg=cfg)
+                builder.add_shape_box(body, hx=0.1, hy=0.1, hz=half_height, cfg=cfg, color=colors[index])
             else:
                 cfg.density = 1.0 / (4.0 / 3.0 * math.pi * self.radius**3)
-                builder.add_shape_sphere(body, radius=self.radius, cfg=cfg)
+                builder.add_shape_sphere(body, radius=self.radius, cfg=cfg, color=colors[index])
 
         # Holding lanes. The 1 kg sphere has axle-like inertia along x: its moment about
         # the axle is one thirtieth of a solid sphere's, the other two are unchanged.
@@ -94,9 +102,9 @@ class Example:
             mass=1.0,
             inertia=wp.mat33(np.diag([moment / 30.0, moment, moment])),
             lock_inertia=True,
-            label="Directional response: axle sphere",
+            label="7. Directional response: axle sphere",
         )
-        builder.add_shape_sphere(self.axle, radius=self.radius, cfg=hold_cfg)
+        builder.add_shape_sphere(self.axle, radius=self.radius, cfg=hold_cfg, color=(0.9, 0.75, 0.2))
         slope = math.radians(20.0)
         self.ramp_normal = np.array([math.sin(slope), 0.0, math.cos(slope)])
         self.downhill = np.array([math.cos(slope), 0.0, -math.sin(slope)])
@@ -107,12 +115,13 @@ class Example:
         )
         hold_cfg.density = 1.0 / (0.2 * 0.2 * 0.1)
         self.stack = []
+        stack_colors = ((0.65, 0.2, 0.15), (0.85, 0.4, 0.3), (0.95, 0.65, 0.5))
         for level in range(3):
             body = builder.add_body(
                 xform=wp.transform(ramp_top + (0.05 + 0.1 * level) * self.ramp_normal, tilt),
-                label=f"Same-color ramp stack {level + 1}",
+                label=f"1. Ramp stack: box {level + 1}",
             )
-            builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.05, cfg=hold_cfg)
+            builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.05, cfg=hold_cfg, color=stack_colors[level])
             self.stack.append(body)
 
         builder.color()
@@ -125,6 +134,10 @@ class Example:
         self.push = wp.zeros(self.model.body_count, dtype=wp.spatial_vector)
         self.viewer.set_model(self.model)
         self.viewer.set_camera(wp.vec3(1.4, -3.3, 2.5), -34.0, 120.0)
+        # Visual-only dividers group sliding, torsion, rolling and directional holding.
+        boundaries = (1.95, 0.65, -0.25, -1.15, -1.65)
+        self.lane_starts = wp.array([(-1.0, y, 0.005) for y in boundaries], dtype=wp.vec3)
+        self.lane_ends = wp.array([(1.1, y, 0.005) for y in boundaries], dtype=wp.vec3)
 
         # Acquire stationary normal support before applying the measured motion.
         for _ in range(6):
@@ -184,6 +197,7 @@ class Example:
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
+        self.viewer.log_lines("test_groups", self.lane_starts, self.lane_ends, (0.35, 0.4, 0.45), width=0.003)
         body_q = self.state_0.body_q.numpy()
         _, travel = self._reference()
         starts, ends = [], []
@@ -234,10 +248,16 @@ class Example:
 
     def gui(self, ui):
         """Identify the controls and display the two holding measures."""
-        ui.text("Sliding: braking accuracy control")
-        ui.text("Torsion and rolling: enabled / disabled pairs")
-        ui.text("Axle sphere: directional response, isotropic material")
-        ui.text("Ramp stack: sliding convergence, shared body color")
+        ui.text("From the ramp toward the yellow sphere:")
+        ui.text("1. Red boxes: friction holds the ramp stack")
+        ui.text("2. Blue box: sliding friction slows and stops it")
+        ui.text("3 / 4. Purple spheres: torsion ON / OFF")
+        ui.text("   ON stops spinning; pale OFF keeps spinning")
+        ui.text("5 / 6. Green spheres: rolling resistance ON / OFF")
+        ui.text("   ON stops rolling; pale OFF keeps rolling")
+        ui.text("7. Yellow sphere: holds against a diagonal push")
+        ui.text("   Directional inertia, isotropic material friction")
+        ui.text("Ramp boxes share the same solver color group")
         ui.text("White lines: references; orange spokes: rotation")
         axle_bound, stack_creep = self._holding_displacement(self.state_0.body_q.numpy())
         ui.separator()
