@@ -604,54 +604,14 @@ def loss_land_end_kernel(
 # ------------------------------------------------------------------------------
 
 
-def _quat_rot_np(q, v):
-    """Rotate v by quaternion (xyzw order)."""
-    qx, qy, qz = q[:3]
-    t = 2.0 * np.cross(np.array([qx, qy, qz]), v)
-    return v + q[3] * t + np.cross(np.array([qx, qy, qz]), t)
+def _up_z(body_q):
+    """Up-axis z component of a body transform row (1 upright, -1 inverted)."""
+    return float(wp.quat_rotate(wp.quat(body_q[3:7]), wp.vec3(0.0, 0.0, 1.0))[2])
 
 
-def _quat_mul(a, b):
-    """Hamilton product of two (x, y, z, w) quaternions."""
-    ax, ay, az, aw = a
-    bx, by, bz, bw = b
-    return np.array(
-        [
-            aw * bx + ax * bw + ay * bz - az * by,
-            aw * by - ax * bz + ay * bw + az * bx,
-            aw * bz + ax * by - ay * bx + az * bw,
-            aw * bw - ax * bx - ay * by - az * bz,
-        ]
-    )
-
-
-def _quat_conj(a):
-    """Conjugate of a (x, y, z, w) quaternion."""
-    return np.array([-a[0], -a[1], -a[2], a[3]])
-
-
-def _rotvec_incr(q_prev, q_cur):
-    """Rotation-vector increment between two quaternions. The jump replay
-    integrates pitch from ORIENTATION deltas rather than angular velocity x
-    dt - the two estimates differ slightly and the round score prices the
-    accumulated pitch."""
-    dq = _quat_mul(q_cur, _quat_conj(q_prev))
-    v = dq[:3]
-    n = float(np.linalg.norm(v))
-    if n < 1e-12:
-        return np.zeros(3)
-    return 2.0 * float(np.arctan2(n, dq[3])) * v / n
-
-
-def _tilt_of(b):
-    """Tilt angle (radians) of a body quaternion away from upright."""
-    qx, qy = float(b[3]), float(b[4])
-    return float(np.arccos(np.clip(1.0 - 2.0 * (qx * qx + qy * qy), -1.0, 1.0)))
-
-
-def _up_z_of_np(b):
-    """Up-axis z component of a body quaternion (1 upright, -1 inverted)."""
-    return 1.0 - 2.0 * (float(b[3]) ** 2 + float(b[4]) ** 2)
+def _tilt_of(body_q):
+    """Tilt angle (radians) of a body transform row away from upright."""
+    return float(np.arccos(np.clip(_up_z(body_q), -1.0, 1.0)))
 
 
 def _load_snapshot(st, snap):
@@ -867,7 +827,7 @@ class Example:
             else:
                 continue
             for p in pts:
-                knee_pts_local.append(_quat_rot_np(sq, p) + spos)
+                knee_pts_local.append(wp.transform_point(wp.transform(spos, sq), wp.vec3(p)))
                 knee_pts_body.append(b)
         self.knee_pts_body_arr = wp.array(knee_pts_body, dtype=wp.int32)
         self.knee_pts_local_arr = wp.array(np.array(knee_pts_local, dtype=np.float32), dtype=wp.vec3)
@@ -877,11 +837,11 @@ class Example:
 
         # paw points: the four foot spheres' lowest points (center - radius)
         paw_pts = [
-            (int(shape_body[i]), shape_xf[i][:3].copy(), float(shape_scale[i][0])) for i in sorted(self.foot_shapes)
+            (int(shape_body[i]), wp.vec3(shape_xf[i][:3]), float(shape_scale[i][0])) for i in sorted(self.foot_shapes)
         ]
         self.paw_pts_py = paw_pts
         self.paw_body_arr = wp.array([p[0] for p in paw_pts], dtype=wp.int32)
-        self.paw_center_arr = wp.array(np.array([p[1] for p in paw_pts], dtype=np.float32), dtype=wp.vec3)
+        self.paw_center_arr = wp.array([p[1] for p in paw_pts], dtype=wp.vec3)
         self.paw_r_arr = wp.array([p[2] for p in paw_pts], dtype=wp.float32)
         self.n_paw = len(paw_pts)
         if self.n_paw != PAWS:
@@ -975,7 +935,7 @@ class Example:
         min_p = float("inf")
         for b, c, r in self.paw_pts_py:
             xf = body_q_np[b]
-            pz = float(_quat_rot_np(xf[3:], c)[2]) + float(xf[2]) - r
+            pz = wp.transform_point(wp.transform(xf[:3], xf[3:]), c)[2] - r
             min_p = min(min_p, pz)
         return float(out.min()), min_p
 
@@ -1288,7 +1248,7 @@ class Example:
         2 grounded steps AND descending near ground). Returns (td_snap or
         None, report)."""
         ro.loss(amps, snap)
-        q_prev = snap[2][0][3:].copy()
+        q_prev = wp.quat(snap[2][0][3:])
         pitch_cum = 0.0
         airborne_steps = 0
         foot_steps = 0
@@ -1305,9 +1265,9 @@ class Example:
             m = self._state_metrics(bqd[0], st.body_qd.numpy()[0])
             # pitch from orientation deltas, NOT angular-velocity
             # integration (the two estimates differ slightly)
-            drv = _rotvec_incr(q_prev, bqd[0][3:])
-            q_prev = bqd[0][3:].copy()
-            pitch_cum += float(drv[1])
+            q_cur = wp.quat(bqd[0][3:])
+            pitch_cum += float(newton.math.quat_velocity(q_cur, q_prev, 1.0)[1])
+            q_prev = q_cur
             min_k, mp = self._min_zs(bqd)
             rep["apex"] = max(rep["apex"], m["z"])
             rep["paw_min"] = min(rep["paw_min"], mp)
@@ -1353,7 +1313,7 @@ class Example:
         max_p = float("-inf")
         for b, c, r in self.paw_pts_py:
             xf = body_q_np[b]
-            z = float(_quat_rot_np(xf[3:], c)[2]) + float(xf[2]) - r
+            z = wp.transform_point(wp.transform(xf[:3], xf[3:]), c)[2] - r
             if z > max_p:
                 max_p = z
         return max_p
@@ -1390,7 +1350,7 @@ class Example:
         rep["final_tilt_deg"] = float(np.degrees(m["tilt"]))
         rep["final_vz"] = m["vz"]
         rep["final_w"] = m["w"]
-        rep["final_up_z"] = _up_z_of_np(bqd[0])
+        rep["final_up_z"] = _up_z(bqd[0])
         rep["settled"] = bool(
             rep["final_tilt_deg"] <= 15.0
             and abs(rep["final_vz"]) <= 0.15
