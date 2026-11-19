@@ -589,13 +589,15 @@ def test_planar_mesh_recovery_under_load(test, device, *, reduce_contacts=True, 
             return
 
         if mujoco:
-            # Reuse one compacted slot across substeps as its certificate
-            # becomes stale and valid again, without refreshing the manifold.
+            # Drop the stale row and republish it when the held certificate
+            # becomes valid again, without refreshing the manifold.
             for lateral, active in ((0.0, True), (0.02, False), (0.0, True)):
                 state.body_q.fill_(wp.transform(wp.vec3(0.0, lateral, 0.0), wp.quat_identity()))
                 solver._convert_contacts_to_mjwarp(model, state, contacts)
-                test.assertEqual(int(solver.mjw_data.nacon.numpy()[0]), 1)
-                test.assertEqual(bool(solver.mjw_data.contact.type.numpy()[0]), active)
+                test.assertEqual(int(solver.mjw_data.nacon.numpy()[0]), int(active))
+                test.assertEqual(int(solver._contact_tid_to_cid.numpy()[0]), 0 if active else -1)
+                if active:
+                    test.assertTrue(bool(solver.mjw_data.contact.type.numpy()[0]))
 
         # Give the bounded outward correction time to reach the entry face.
         for i in range(200 if mujoco else 136):
