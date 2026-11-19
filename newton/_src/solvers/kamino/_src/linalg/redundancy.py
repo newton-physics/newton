@@ -628,8 +628,8 @@ def _make_check_kernel():
                     K = diagonal[wid, h] + _row_shift(diagonal[wid, h], shifted[wid, h])
                     value = wp.sqrt(wp.max(K, FLOAT32_EPS)) * V_i[h] * inv_norm
                 X_i[h, k - h * columns] = value
-            if tid < columns:
-                column_rows[wid, tid] = -1
+            for c in range(tid, columns, threads):
+                column_rows[wid, c] = -1
             _sync_threads()
             if tid == 0:
                 k = wp.int32(0)
@@ -663,13 +663,13 @@ def _make_check_kernel():
             # NOTE: The Schur complement is the residual of a ridge regression of the row on the other rows, with
             # the coefficients -u_o / u_s of the column u of the inverse, penalized by the shifts of the other rows.
             independent = wp.int32(0)
-            if tid >= 1 and tid < columns:
-                i = column_rows[wid, tid]
+            for c in range(1 + tid, columns, threads):
+                i = column_rows[wid, c]
                 if i >= 0:
                     d = wp.max(diagonal[wid, i], FLOAT32_EPS)
-                    residual = (1.0 / X_i[i, tid] - d) / d
+                    residual = (1.0 / X_i[i, c] - d) / d
                     if not (residual <= _SHIFTED_ROW_MARGIN * threshold):
-                        independent = 1
+                        independent += 1
             failed += wp.tile_sum(wp.tile(independent))[0]
 
         # The kept rows are dependent if the smallest eigenvalue is small, or much smaller than its reference
@@ -751,7 +751,8 @@ def _make_factor_check_kernel(permuted: bool):
         padded = ((n + tile - 1) // tile) * tile
         stride = ld[wid]
         D = D_storage[wid]
-        L_i = wp.array(ptr=get_float32_array_offset_ptr(L[wid], 0), shape=(stride, stride), dtype=wp.float32)
+        # NOTE: The rows beyond the dimension are out of bounds, and loaded as zeros by the triangular solves
+        L_i = wp.array(ptr=get_float32_array_offset_ptr(L[wid], 0), shape=(n, stride), dtype=wp.float32)
         X_i = X[wid]
         V_i = V[wid]
 
@@ -783,8 +784,8 @@ def _make_factor_check_kernel(permuted: bool):
                     o = original_row(perm, vstart, h)
                     value = wp.sqrt(wp.max(D[o * (n + 1)], FLOAT32_EPS)) * V_i[h] * inv_norm
                 X_i[h, k - h * columns] = value
-            if tid < columns:
-                column_rows[wid, tid] = -1
+            for c in range(tid, columns, threads):
+                column_rows[wid, c] = -1
             _sync_threads()
             if tid == 0:
                 k = wp.int32(0)
@@ -826,23 +827,23 @@ def _make_factor_check_kernel(permuted: bool):
             # with the coefficients -u_o / u_s of the column u of the inverse. The penalty of the coefficients
             # by the regularization of the other block rows is removed, but not by the shifts.
             independent = wp.int32(0)
-            if tid >= 1 and tid < columns:
-                i = column_rows[wid, tid]
+            for c in range(1 + tid, columns, threads):
+                i = column_rows[wid, c]
                 if i >= 0:
-                    u_s = X_i[factor_row(inverse_perm, vstart, offset + i), tid]
+                    u_s = X_i[factor_row(inverse_perm, vstart, offset + i), c]
                     penalty = wp.float32(0.0)
                     for h in range(n):
                         j = original_row(perm, vstart, h) - offset
                         if j >= 0 and j < rows and j != i:
                             d = diagonal[wid, j]
-                            u_o = X_i[h, tid]
+                            u_o = X_i[h, c]
                             penalty += u_o * u_o * (D[(offset + j) * (n + 1)] - d - _row_shift(d, shifted[wid, j]))
                     o = offset + i
                     d = diagonal[wid, i]
                     schur = 1.0 / u_s - penalty / (u_s * u_s)
                     residual = (schur - (D[o * (n + 1)] - d)) / wp.max(d, FLOAT32_EPS)
                     if not (residual <= _SHIFTED_ROW_MARGIN * threshold):
-                        independent = 1
+                        independent += 1
             failed += wp.tile_sum(wp.tile(independent))[0]
 
         # The kept rows are dependent if the unregularized eigenvalue is small, or much smaller than its reference
