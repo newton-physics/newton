@@ -436,7 +436,24 @@ class TestMuJoCoEntityAuthoring(unittest.TestCase):
         np.testing.assert_array_equal(model.mujoco.pair_geom2.numpy(), [shape1])
         np.testing.assert_array_equal(model.mujoco.pair_condim.numpy(), [4])
         np.testing.assert_allclose(model.mujoco.pair_friction.numpy(), [[0.8, 0.7, 0.01, 0.02, 0.03]])
-        np.testing.assert_array_equal(model.mujoco.pair_solreffriction.numpy(), [[0.0, 0.0]])
+
+    @requires(*MUJOCO_MODULES)
+    def test_contact_pair_defaults_match_mujoco(self):
+        """Keep both copies of the pair defaults equal to MuJoCo's."""
+        reference = newton.solvers.SolverMuJoCo.import_mujoco()[0].MjSpec().add_pair()
+        builder = newton.ModelBuilder()
+        newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
+        shape0 = builder.add_shape_box(body=-1, hx=0.1, hy=0.1, hz=0.1)
+        shape1 = builder.add_shape_sphere(body=-1, radius=0.1)
+        mujoco.add_contact_pair(builder, shape0, shape1)
+        model = builder.finalize()
+
+        for field in ("condim", "solref", "solreffriction", "solimp", "margin", "gap", "friction"):
+            expected = getattr(reference, field)
+            with self.subTest(field=field):
+                registered = builder.custom_attributes[f"mujoco:pair_{field}"].default
+                np.testing.assert_allclose(registered, expected, rtol=1e-6)
+                np.testing.assert_allclose(getattr(model.mujoco, f"pair_{field}").numpy()[0], expected, rtol=1e-6)
 
     def test_reject_contact_pair_across_worlds(self):
         """Reject contact pairs whose shapes belong to another world."""
