@@ -1121,59 +1121,30 @@ def make_solve_short_strain_row(has_rotation: bool):
         row_yield = yield_params[tau_i]
         row_volume = strain_node_volume[tau_i]
         tau = rhs[tau_i]
-        node0, weight0 = _strain_row_entry(rows, row, 0)
-        node1, weight1 = _strain_row_entry(rows, row, 1)
-        node2, weight2 = _strain_row_entry(rows, row, 2)
-        node3, weight3 = _strain_row_entry(rows, row, 3)
-        node4, weight4 = _strain_row_entry(rows, row, 4)
-        node5, weight5 = _strain_row_entry(rows, row, 5)
-        node6, weight6 = _strain_row_entry(rows, row, 6)
-        node7, weight7 = _strain_row_entry(rows, row, 7)
-        inverse_mass0 = inv_mass[node0]
-        inverse_mass1 = inv_mass[node1]
-        inverse_mass2 = inv_mass[node2]
-        inverse_mass3 = inv_mass[node3]
-        inverse_mass4 = inv_mass[node4]
-        inverse_mass5 = inv_mass[node5]
-        inverse_mass6 = inv_mass[node6]
-        inverse_mass7 = inv_mass[node7]
-        velocity0 = velocity[node0]
-        velocity1 = velocity[node1]
-        velocity2 = velocity[node2]
-        velocity3 = velocity[node3]
-        velocity4 = velocity[node4]
-        velocity5 = velocity[node5]
-        velocity6 = velocity[node6]
-        velocity7 = velocity[node7]
-        tau += _symmetric_part_op(weight0, velocity0)
-        tau += _symmetric_part_op(weight1, velocity1)
-        tau += _symmetric_part_op(weight2, velocity2)
-        tau += _symmetric_part_op(weight3, velocity3)
-        tau += _symmetric_part_op(weight4, velocity4)
-        tau += _symmetric_part_op(weight5, velocity5)
-        tau += _symmetric_part_op(weight6, velocity6)
-        tau += _symmetric_part_op(weight7, velocity7)
+        nodes = _Index8()
+        weights = _Vectors8()
+        inverse_masses = _Scalar8()
+        velocities = _Vectors8()
+        for k in range(8):
+            node, weight = _strain_row_entry(rows, row, k)
+            nodes[k] = node
+            weights[k] = weight
+        for k in range(8):
+            inverse_masses[k] = inv_mass[nodes[k]]
+        for k in range(8):
+            velocities[k] = velocity[nodes[k]]
+        for k in range(8):
+            tau += _symmetric_part_op(weights[k], velocities[k])
         ds = wp.static(make_solve_local_stress_values(False, False, has_rotation))(
             tau, row_stress, row_diagonal, row_rotation, row_yield, row_volume
         )
         stress[tau_i] += ds
         delta[tau_i] = ds
-        delta_velocity0 = _symmetric_part_transposed_op(weight0, ds)
-        delta_velocity1 = _symmetric_part_transposed_op(weight1, ds)
-        delta_velocity2 = _symmetric_part_transposed_op(weight2, ds)
-        delta_velocity3 = _symmetric_part_transposed_op(weight3, ds)
-        delta_velocity4 = _symmetric_part_transposed_op(weight4, ds)
-        delta_velocity5 = _symmetric_part_transposed_op(weight5, ds)
-        delta_velocity6 = _symmetric_part_transposed_op(weight6, ds)
-        delta_velocity7 = _symmetric_part_transposed_op(weight7, ds)
-        velocity[node0] += inverse_mass0 * delta_velocity0
-        velocity[node1] += inverse_mass1 * delta_velocity1
-        velocity[node2] += inverse_mass2 * delta_velocity2
-        velocity[node3] += inverse_mass3 * delta_velocity3
-        velocity[node4] += inverse_mass4 * delta_velocity4
-        velocity[node5] += inverse_mass5 * delta_velocity5
-        velocity[node6] += inverse_mass6 * delta_velocity6
-        velocity[node7] += inverse_mass7 * delta_velocity7
+        delta_velocities = _Vectors8()
+        for k in range(8):
+            delta_velocities[k] = _symmetric_part_transposed_op(weights[k], ds)
+        for k in range(8):
+            velocity[nodes[k]] += inverse_masses[k] * delta_velocities[k]
 
     return solve_short_strain_row_impl
 
