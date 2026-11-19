@@ -1264,6 +1264,8 @@ def test_deterministic_hydroelastic_speculative_contacts(test, device):
 def test_hydroelastic_margin_gap_bands(test, device, reduce_contacts):
     """Generate penetrating, speculative, and absent hydroelastic contacts."""
     model, state, body_b = _build_margin_gap_boxes(device)
+    model.shape_material_ke.assign([1000.0, 2000.0])
+    model.shape_material_kd.assign([3.0, 14.0])
     config = HydroelasticSDF.Config(
         reduce_contacts=reduce_contacts,
         pre_prune_contacts=reduce_contacts,
@@ -1316,6 +1318,10 @@ def test_hydroelastic_margin_gap_bands(test, device, reduce_contacts):
         test.assertTrue(np.all(distances <= gap_sum + tolerance))
         stiffness = contacts.rigid_contact_stiffness.numpy()[: len(distances)]
         test.assertTrue(np.all(stiffness > 0.0))
+        damping = contacts.rigid_contact_damping.numpy()[: len(distances)]
+        # Reconstructed distances can round across zero at the boundary.
+        np.testing.assert_allclose(damping[distances < -1.0e-6], 0.01 * stiffness[distances < -1.0e-6], rtol=2.0e-6)
+        np.testing.assert_array_equal(damping[distances > 1.0e-6], 0.0)
         if expected_distance >= 0.0:
             test.assertTrue(np.all(distances >= -tolerance))
             if expected_distance > tolerance:
@@ -1335,6 +1341,7 @@ def test_hydroelastic_margin_gap_bands(test, device, reduce_contacts):
 def test_hydroelastic_zero_gap_omits_speculative_contacts(test, device, reduce_contacts):
     """Omit positive-separation hydroelastic contacts when both gaps are zero."""
     model, state, body_b = _build_margin_gap_boxes(device, gaps=(0.0, 0.0))
+    model.shape_material_kd.zero_()
     pipeline = newton.CollisionPipeline(
         model,
         broad_phase="explicit",
@@ -1369,6 +1376,7 @@ def test_hydroelastic_zero_gap_omits_speculative_contacts(test, device, reduce_c
     distances = _get_contact_distances(contacts, model, state)
     test.assertGreater(len(distances), 0)
     test.assertTrue(np.all(distances < 0.0))
+    np.testing.assert_array_equal(contacts.rigid_contact_damping.numpy()[: len(distances)], 0.0)
 
 
 def test_hydroelastic_margin_contact_area_is_deprecated(test, device, reduce_contacts):
@@ -2320,6 +2328,7 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
             sdf_narrow_band_range=(-0.1, 0.1),
             gap=0.01,
             kh=kh_val,
+            kd=0.0,  # Keep the original undamped setup for the stiffness check.
             density=0.0,
         )
 

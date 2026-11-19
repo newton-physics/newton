@@ -514,9 +514,10 @@ USD assets cannot select this mode directly. For imported shapes, set
 Use MuJoCo-Warp with Newton contacts (``use_mujoco_contacts=False``),
 ``cone="elliptic"``, and Euler, implicit, or implicitfast integration. Recreate the solver and CUDA
 graphs after changing which shapes select this mode. Default, raw, and mixed
-pairs keep their existing response. Other solver settings use the existing
-contact mapping. Existing force-space hydroelastic pairs change response and
-may need retuning.
+pairs keep the existing solver mapping. Generated hydroelastic damping changes
+for all pairs; see :ref:`hydroelastic damping <hydroelastic-contact-damping>`.
+Other solver settings use the existing contact mapping. Existing force-space
+hydroelastic pairs change response and may need retuning.
 
 This mode takes normal stiffness from contact geometry and the pressure law
 (``kh`` for the default law), so ``ke`` does not tune it. It chooses normal
