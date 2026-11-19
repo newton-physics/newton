@@ -22,7 +22,7 @@ from ..exceptions import NewtonDeprecationWarning, NewtonWarning
 from ..geometry.deformable_visual import DeformableVisualMesh, _DeformableVisualSkinBatches
 from ..geometry.flags import ShapeFlags
 from ..geometry.inertia import _inverse_inertia_wp
-from ..utils.deprecation import RemovedAttribute, warn_deprecation
+from ..utils.deprecation import RemovedAttribute, UnavailableAttribute, warn_deprecation
 from ..utils.mesh import MeshAdjacency, MeshAdjacencyData
 from .contacts import Contacts
 from .control import Control
@@ -2121,6 +2121,14 @@ class Model:
 
     joint_target_pos = RemovedAttribute("joint_target_q", removed_in="1.5")
     joint_target_vel = RemovedAttribute("joint_target_qd", removed_in="1.5")
+
+    # Reject writes to removed limits, which would otherwise create unused attributes.
+    joint_twist_lower = UnavailableAttribute(
+        "Model.joint_twist_lower was removed in Newton 1.9. Set per-DOF limits with ModelBuilder.JointDofConfig."
+    )
+    joint_twist_upper = UnavailableAttribute(
+        "Model.joint_twist_upper was removed in Newton 1.9. Set per-DOF limits with ModelBuilder.JointDofConfig."
+    )
 
     @property
     def mesh_edge_indices(self) -> wp.array[wp.vec2i] | None:
