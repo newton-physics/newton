@@ -399,7 +399,8 @@ def _add_unscaled_penalty_to_delassus(
     # Inputs:
     problem_dim: wp.array[wp.int32],
     problem_vio: wp.array[wp.int32],
-    solver_penalty: wp.array[PADMMPenalty],
+    solver_config: wp.array[PADMMConfigStruct],
+    solver_state_sigma: wp.array[wp.vec2f],
     solver_state_rho_scale: wp.array[wp.float32],
     # Outputs:
     D_storage: wp.array2d[wp.float32],
@@ -413,9 +414,10 @@ def _add_unscaled_penalty_to_delassus(
     if tid >= ncts:
         return
 
-    # Complete the regularization of the scaled rows to the uniform `sigma = eta + rho`
+    # Complete the regularization of the scaled rows to the uniform `sigma`
+    sigma = solver_state_sigma[wid][0]
     unscaled = 1.0 - solver_state_rho_scale[problem_vio[wid] + tid]
-    D[ncts * tid + tid] += unscaled * solver_penalty[wid].rho
+    D[ncts * tid + tid] += unscaled * (sigma - solver_config[wid].eta)
 
 
 @wp.kernel
@@ -797,16 +799,18 @@ def _project_to_feasible_cone(
 
 
 @wp.func
-def _get_delassus_regularization(sparse: wp.bool, sigma: wp.vec2f, eta: wp.float32, rho: wp.float32) -> wp.float32:
+def _get_delassus_regularization(
+    sparse: wp.bool, sigma: wp.vec2f, eta: wp.float32, rho: wp.float32, rho_scale: wp.float32
+) -> wp.float32:
     """
-    Returns the proximal regularization held by the Delassus operator in the current iteration.
+    Returns the proximal regularization held by the Delassus operator on a row in the current iteration.
 
-    The dense matrix holds the regularization `sigma` set before the iterations,
-    while the sparse operator is updated with the current ALM penalty.
+    The dense matrix holds the regularization `sigma` set before the iterations, with the penalty `sigma - eta`
+    scaled by `rho_scale`, while the sparse operator is updated with the current scaled ALM penalty.
     """
     if sparse:
-        return eta + rho
-    return sigma[0]
+        return eta + rho * rho_scale
+    return sigma[0] - (1.0 - rho_scale) * (sigma[0] - eta)
 
 
 @wp.func
@@ -924,7 +928,9 @@ def make_update_dual_variables_and_compute_primal_dual_residuals(
         # Compute the dual residual using the ADMM-specific shortcut
         r_d = (1.0 / P_i) * (eta * (x - x_p) + rho * (y - y_p))
         if wp.static(delassus_dual_residual):
-            sigma = _get_delassus_regularization(problem_sparse, solver_sigma[wid], eta, rho_w) - (rho_w - rho)
+            sigma = _get_delassus_regularization(
+                problem_sparse, solver_sigma[wid], eta, rho_w, solver_rho_scale[thread_offset]
+            )
             r_d = _compute_delassus_dual_residual(
                 status.iterations, P_i, sigma, solver_v[thread_offset], x, solver_Dx_p, thread_offset, r_d
             )
@@ -1036,7 +1042,7 @@ def _make_project_dual_convergence_accel_kernel(reduction_size: int, delassus_du
         rho = pen.rho
         inv_rho = 1.0 / rho
         eta = config.eta
-        sigma = _get_delassus_regularization(problem_sparse, solver_state_sigma[wid], eta, rho)
+        sigma = _get_delassus_regularization(problem_sparse, solver_state_sigma[wid], eta, rho, 1.0)
 
         r_p_local = wp.float32(0.0)
         r_d_local = wp.float32(0.0)
@@ -1132,7 +1138,13 @@ def _make_project_dual_convergence_accel_kernel(reduction_size: int, delassus_du
                         r_d = _compute_delassus_dual_residual(
                             status.iterations,
                             p_i,
-                            sigma - (rho - rho_i),
+                            _get_delassus_regularization(
+                                problem_sparse,
+                                solver_state_sigma[wid],
+                                eta,
+                                rho,
+                                solver_state_rho_scale[thread_offset],
+                            ),
                             solver_state_v[thread_offset],
                             x,
                             solver_state_Dx_p,
@@ -1583,6 +1595,7 @@ def make_collect_solver_info_kernel(use_acceleration: bool):
         problem_P: wp.array[wp.float32],
         problem_bound_lower: wp.array[wp.float32],
         problem_bound_upper: wp.array[wp.float32],
+        solver_config: wp.array[PADMMConfigStruct],
         solver_state_sigma: wp.array[wp.vec2f],
         solver_state_rho_scale: wp.array[wp.float32],
         solver_state_s: wp.array[wp.float32],
@@ -1667,10 +1680,11 @@ def make_collect_solver_info_kernel(use_acceleration: bool):
         # Compute the post-event constraint-space velocity from the current solution: v_plus = v_f + D @ lambda
         # NOTE: The diagonal of `D` lacks the unscaled share of the penalty, see `_update_delassus_proximal_regularization`
         compute_gemv(ncts, vio, sigma[0], problem_P, problem_D, solver_state_y, problem_v_f, solver_info_v_plus)
+        rho = sigma[0] - solver_config[wid].eta
         for i in range(ncts):
             v_i = vio + i
             unscaled = 1.0 - solver_state_rho_scale[v_i]
-            solver_info_v_plus[v_i] += unscaled * penalty.rho * solver_state_y[v_i] / problem_P[v_i]
+            solver_info_v_plus[v_i] += unscaled * rho * solver_state_y[v_i] / problem_P[v_i]
 
         # Compute the De Saxce correction for each contact as: s = G(v_plus)
         compute_desaxce_corrections(nc, cio, vio, ccgo, problem_mu, solver_info_v_plus, solver_info_s)

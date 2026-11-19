@@ -558,7 +558,13 @@ class PADMMSolver:
             wp.launch(
                 kernel=_add_unscaled_penalty_to_delassus,
                 dim=(self._size.num_worlds, self._size.max_of_max_total_cts),
-                inputs=[problem.data.dim, problem.data.vio, self._data.penalty, self._data.state.rho_scale],
+                inputs=[
+                    problem.data.dim,
+                    problem.data.vio,
+                    self._data.config,
+                    self._data.state.sigma,
+                    self._data.state.rho_scale,
+                ],
                 outputs=[problem.data.D],
                 device=self._device,
             )
@@ -1595,6 +1601,7 @@ class PADMMSolver:
                     problem.data.P,
                     problem.data.bound_lower,
                     problem.data.bound_upper,
+                    self._data.config,
                     self._data.state.sigma,
                     self._data.state.rho_scale,
                     self._data.state.s,

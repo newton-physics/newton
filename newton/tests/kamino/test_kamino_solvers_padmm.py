@@ -1203,45 +1203,51 @@ class TestPADMMNullspaceRobustness(unittest.TestCase):
             ),
         }
         num_iterations = 5
-        for name, make_test in builders.items():
-            for sparse in (False, True):
-                for use_acceleration in (False, True):
-                    for penalty in ("fixed", "balanced"):
-                        with self.subTest(
-                            model=name, sparse=sparse, use_acceleration=use_acceleration, penalty=penalty
-                        ):
-                            # Run the solver for two consecutive iteration counts from the same cold start
-                            x, r_d = [], []
-                            for max_iterations in (num_iterations - 1, num_iterations):
-                                test = make_test(sparse)
-                                config = PADMMSolver.Config(
-                                    dual_residual_mode="delassus",
-                                    detect_redundant_kinematics=False,
-                                    unpenalized_bilateral_rows=False,
-                                    max_iterations=max_iterations,
-                                    penalty_update_method=penalty,
-                                    penalty_update_freq=1,
-                                )
-                                solver = PADMMSolver(model=test.model, config=config, use_acceleration=use_acceleration)
-                                test.build()
-                                D = extract_delassus(test.problem.delassus, only_active_dims=True)
-                                P = extract_problem_vector(
-                                    test.problem.delassus, test.problem.data.P.numpy(), only_active_dims=True
-                                )
-                                solver.coldstart()
-                                solver.solve(problem=test.problem)
-                                x.append(
-                                    extract_problem_vector(
-                                        test.problem.delassus, solver.data.state.x.numpy(), only_active_dims=True
-                                    )
-                                )
-                                r_d.append(solver.data.status.numpy()["r_d"])
+        cases = [
+            (name, sparse, use_acceleration, penalty, unpenalized)
+            for name in builders
+            for sparse in (False, True)
+            for use_acceleration in (False, True)
+            for penalty in ("fixed", "balanced")
+            for unpenalized in ((False, True) if name == "fourbar" else (False,))
+        ]
+        for name, sparse, use_acceleration, penalty, unpenalized in cases:
+            make_test = builders[name]
+            with self.subTest(
+                model=name, sparse=sparse, use_acceleration=use_acceleration, penalty=penalty, unpenalized=unpenalized
+            ):
+                # Run the solver for two consecutive iteration counts from the same cold start
+                x, r_d = [], []
+                for max_iterations in (num_iterations - 1, num_iterations):
+                    test = make_test(sparse)
+                    config = PADMMSolver.Config(
+                        dual_residual_mode="delassus",
+                        detect_redundant_kinematics=False,
+                        unpenalized_bilateral_rows=unpenalized,
+                        max_iterations=max_iterations,
+                        penalty_update_method=penalty,
+                        penalty_update_freq=1,
+                    )
+                    solver = PADMMSolver(model=test.model, config=config, use_acceleration=use_acceleration)
+                    test.build()
+                    D = [D.copy() for D in extract_delassus(test.problem.delassus, only_active_dims=True)]
+                    P = extract_problem_vector(
+                        test.problem.delassus, test.problem.data.P.numpy(), only_active_dims=True
+                    )
+                    solver.coldstart()
+                    solver.solve(problem=test.problem)
+                    x.append(
+                        extract_problem_vector(
+                            test.problem.delassus, solver.data.state.x.numpy(), only_active_dims=True
+                        )
+                    )
+                    r_d.append(solver.data.status.numpy()["r_d"])
 
-                            # Compare with the explicit Delassus product of the last change of preconditioned iterates
-                            for w in range(len(D)):
-                                dx = (x[1][w].astype(np.float64) - x[0][w]) / P[w]
-                                r_d_ref = np.abs((D[w] @ dx) / P[w]).max()
-                                np.testing.assert_allclose(r_d[1][w], r_d_ref, rtol=1e-2, atol=1e-6)
+                # Compare with the explicit Delassus product of the last change of preconditioned iterates
+                for w in range(len(D)):
+                    dx = (x[1][w].astype(np.float64) - x[0][w]) / P[w]
+                    r_d_ref = np.abs((D[w] @ dx) / P[w]).max()
+                    np.testing.assert_allclose(r_d[1][w], r_d_ref, rtol=1e-2, atol=1e-6)
 
     def test_01_delassus_dual_residual_converges_with_null_leakage(self):
         """The Delassus-weighted dual residual converges despite a free velocity leaking into the Delassus null space."""
@@ -1313,7 +1319,7 @@ class TestPADMMNullspaceRobustness(unittest.TestCase):
             config = PADMMSolver.Config(max_iterations=1)
             solver = PADMMSolver(model=test.model, config=config, problem=test.problem)
             test.build()
-            D = extract_delassus(test.problem.delassus, only_active_dims=True)
+            D = [D.copy() for D in extract_delassus(test.problem.delassus, only_active_dims=True)]
             solver.coldstart()
             solver.solve(problem=test.problem)
             detection = solver._redundant_joints
@@ -1381,6 +1387,8 @@ class TestPADMMNullspaceRobustness(unittest.TestCase):
             (True, ConjugateResidualSolver),
             (True, ConjugateResidualSolverFused),
         ):
+            if linear_solver is ConjugateResidualSolverFused and not self.default_device.is_cuda:
+                continue
             with self.subTest(sparse=sparse, linear_solver=linear_solver.__name__):
                 status, v_plus, lambdas, shifted = {}, {}, {}, {}
                 for reuse in (False, True):
@@ -1393,10 +1401,10 @@ class TestPADMMNullspaceRobustness(unittest.TestCase):
                         test.build()
                         solver.coldstart()
                         solver.solve(problem=test.problem)
-                    status[reuse] = solver.data.status.numpy()[0]
-                    v_plus[reuse] = solver.data.solution.v_plus.numpy()
-                    lambdas[reuse] = solver.data.solution.lambdas.numpy()
-                    shifted[reuse] = solver._redundant_joints.shifted.numpy()
+                    status[reuse] = solver.data.status.numpy()[0].copy()
+                    v_plus[reuse] = solver.data.solution.v_plus.numpy().copy()
+                    lambdas[reuse] = solver.data.solution.lambdas.numpy().copy()
+                    shifted[reuse] = solver._redundant_joints.shifted.numpy().copy()
                     if reuse:
                         self.assertEqual(int(solver._redundant_joints.pivot_rows.numpy().sum()), 0)
 
