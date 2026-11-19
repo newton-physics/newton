@@ -1,0 +1,1 @@
+Internal refactor: MJCF collision-mask domains merge through generic shape-reference remapping; the internal domain labels may change value but remain distinct per import.
