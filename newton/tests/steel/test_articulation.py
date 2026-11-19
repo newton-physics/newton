@@ -1845,6 +1845,16 @@ def test_joint_equality_tracks_leader(test, device):
     test.assertAlmostEqual(q[1], 0.1 - 0.5 * q[0], delta=0.02)
 
 
+def test_joint_equality_replaces_joint_mimic(test, device):
+    """Enforce a joint equality in place of the joint-owned mimic of its follower, as in SolverMuJoCo."""
+    builder, j_leader, j_follower = _build_two_revolute_chain(coef0=0.0, coef1=1.0)
+    newton.solvers.mujoco.add_equality_joint(builder, j_follower, j_leader, polycoef=(0.1, -0.5))
+    solver, q = _run_model(builder.finalize(device=device), leader_target=0.6, steps=600)
+    test.assertEqual(solver._mimic_count, 1)
+    test.assertEqual(solver._mimic_equality.numpy().tolist(), [0])
+    test.assertAlmostEqual(q[1], 0.1 - 0.5 * q[0], delta=0.02)
+
+
 def test_runtime_coefficient_change(test, device):
     """Read joint-owned coefficients every step, also from a captured graph."""
     builder, _, follower = _build_two_revolute_chain(0.0, 1.0)
@@ -1950,6 +1960,7 @@ for _name in (
 for _name in (
     "test_identity_mimic_tracks_leader",
     "test_joint_equality_tracks_leader",
+    "test_joint_equality_replaces_joint_mimic",
     "test_runtime_coefficient_change",
     "test_mimic_row_is_assembled",
     "test_replicated_mimics_have_articulation_local_ranges",

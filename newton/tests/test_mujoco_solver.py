@@ -10628,6 +10628,18 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         self.assertEqual(solver.mj_model.eq_type[0], SolverMuJoCo._mujoco.mjtEq.mjEQ_JOINT)
         self.assertEqual(solver.mj_model.eq_type[1], SolverMuJoCo._mujoco.mjtEq.mjEQ_JOINT)
 
+        # An equality on the mimic's own follower takes its place instead of doubling it.
+        _add_equality_constraint(
+            builder,
+            constraint_type=newton.solvers.SolverMuJoCo.EqType.JOINT,
+            joint1=j2,
+            joint2=j1,
+            polycoef=[0.1, -0.5, 0.0, 0.0, 0.0],
+        )
+        solver = SolverMuJoCo(builder.finalize(), iterations=1, disable_contacts=True, kinematic_switchable_roots=False)
+        self.assertEqual(solver.mj_model.neq, 2)
+        np.testing.assert_allclose(solver.mj_model.eq_data[1, :2], [0.1, -0.5], rtol=1e-6)
+
     def test_mimic_joint_simulation(self):
         """Test that a mimic joint tracks its reference during simulation."""
         # Use coef1=2.0 so the relationship is non-trivial: j2 = 2.0 * j1

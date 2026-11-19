@@ -721,7 +721,8 @@ array; slot layout depends on the constraint type.
        offset / multiplier in :attr:`~newton.Model.joint_mimic_coeffs` to
        polynomial coefficients. Revolute, prismatic, and D6 joints are
        supported. Multi-axis D6 relationships produce one equality per
-       matching pair of scalar axes.
+       matching pair of scalar axes. A ``JOINT`` equality between two
+       scalar joints takes the place of the mimic of its ``joint1``.
 
 Newton's core API does not expose equality constraints as a dedicated
 builder call. Construct them with the

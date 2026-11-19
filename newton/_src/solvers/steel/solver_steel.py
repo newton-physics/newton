@@ -1454,7 +1454,7 @@ class SolverSteel(SolverBase, CouplingInterface):
       between two REVOLUTE or PRISMATIC joints of one articulation: one bilateral row
       enforces ``q_joint1 = polycoef[0] + polycoef[1] * q_joint2``. The coefficients and the
       row's enabled flag are read every step; higher-order ``polycoef`` terms are not
-      enforced.
+      enforced. Such an equality takes the place of the mimic of its ``joint1``.
     - Loop-closing BALL, REVOLUTE and FIXED joints (joints outside the articulation tree whose
       child belongs to an articulation): three bilateral rows pin the joint's parent and
       child anchors together, a REVOLUTE closure adds two rows that keep the child's
@@ -4045,7 +4045,8 @@ class SolverSteel(SolverBase, CouplingInterface):
 
         Rows come from the MuJoCo joint equalities that :func:`_joint_equality_rows` accepts
         and from joint-owned mimics (:attr:`~newton.Model.joint_mimic_joint`, one row per
-        follower coordinate). Both joints of a row must belong to the same articulation and
+        follower coordinate). An equality takes the place of its follower's joint-owned mimic,
+        as in :class:`~newton.solvers.SolverMuJoCo`. Both joints of a row must belong to the same articulation and
         have distinct DOFs. Unsupported joint-owned mimics raise :class:`NotImplementedError`.
         Coefficients and the equalities' enabled flags are read every step; an equality
         contributes its constant and linear ``polycoef`` terms. All buffers are allocated
@@ -4097,10 +4098,12 @@ class SolverSteel(SolverBase, CouplingInterface):
             equality.append(source[0])
             owner.append(source[1])
 
+        equality_followers = set()
         if equality_rows.size:
             mujoco = model.mujoco
             eq_joint1 = mujoco.equality_constraint_joint1.numpy()
             eq_joint2 = mujoco.equality_constraint_joint2.numpy()
+            equality_followers = set(eq_joint1[equality_rows].tolist())
             higher_order = np.any(mujoco.equality_constraint_polycoef.numpy()[equality_rows, 2:] != 0.0, axis=1)
             if np.any(higher_order):
                 warnings.warn(
@@ -4124,6 +4127,8 @@ class SolverSteel(SolverBase, CouplingInterface):
         joint_qd_end = np.append(joint_qd_start[1:], model.joint_dof_count)
         joint_q_end = np.append(joint_q_start[1:], model.joint_coord_count)
         for follower in np.flatnonzero(joint_mimic >= 0).tolist():
+            if follower in equality_followers:
+                continue
             leader = int(joint_mimic[follower])
             for joint in (follower, leader):
                 if joint_q_end[joint] - joint_q_start[joint] != joint_qd_end[joint] - joint_qd_start[joint]:

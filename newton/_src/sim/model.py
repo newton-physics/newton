@@ -378,6 +378,12 @@ class Model:
         """Attribute frequency follows the number of tetrahedra (see :attr:`~newton.Model.tet_count`)."""
         SPRING = 13
         """Attribute frequency follows the number of springs (see :attr:`~newton.Model.spring_count`)."""
+        CONSTRAINT_MIMIC = 14
+        """Attribute frequency of the removed mimic constraints; it has no entries.
+
+        .. deprecated:: 1.9
+            Mimic constraints were removed; see :meth:`~newton.ModelBuilder.set_joint_mimic`.
+        """
         WORLD = 15
         """Attribute frequency follows the number of worlds plus the global world.
 
@@ -2040,6 +2046,7 @@ class Model:
         "joint_coord": AttributeFrequency.JOINT_COORD,
         "joint_constraint": AttributeFrequency.JOINT_CONSTRAINT,
         "articulation": AttributeFrequency.ARTICULATION,
+        "constraint_mimic": AttributeFrequency.CONSTRAINT_MIMIC,  # deprecated
         "particle": AttributeFrequency.PARTICLE,
         "edge": AttributeFrequency.EDGE,
         "triangle": AttributeFrequency.TRIANGLE,
@@ -2800,6 +2807,8 @@ class Model:
             Model.AttributeFrequency.CONTACT_SOFT,
         ):
             self._get_contact_capacity()
+        if frequency == Model.AttributeFrequency.CONSTRAINT_MIMIC:
+            return 0  # deprecated frequency of the removed mimic constraints
         count_attr = Model._ATTRIBUTE_FREQUENCY_COUNT_ATTRS.get(frequency)
         if count_attr is None:
             raise ValueError(f"Unsupported attribute frequency: {frequency!r}")

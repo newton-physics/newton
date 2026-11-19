@@ -7718,8 +7718,23 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             selected_constraints = np.arange(model.mujoco.equality_constraint_count, dtype=np.int32)
             selected_particles = np.arange(len(particle_world))
 
+        # A JOINT equality between two scalar joints is its follower's constraint; the follower's
+        # joint-owned mimic is not added on top of it.
+        equality_followers = set()
+        if eq_constraint_type is not None and eq_constraint_joint1 is not None and eq_constraint_joint2 is not None:
+            scalar = joint_dof_dim.sum(axis=1) == 1
+            for i in selected_constraints:
+                follower, reference = int(eq_constraint_joint1[i]), int(eq_constraint_joint2[i])
+                if eq_constraint_type[i] == _EqType.JOINT and follower >= 0 and reference >= 0:
+                    if scalar[follower] and scalar[reference]:
+                        equality_followers.add(follower)
         selected_joint_mimics = np.asarray(
-            [joint for joint in selected_joints if joint_mimic_joint[joint] >= 0], dtype=np.int32
+            [
+                joint
+                for joint in selected_joints
+                if joint_mimic_joint[joint] >= 0 and int(joint) not in equality_followers
+            ],
+            dtype=np.int32,
         )
 
         # Classify joints outside articulations as standalone roots or loop closures. Imported MJCF

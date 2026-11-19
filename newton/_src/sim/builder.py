@@ -2885,6 +2885,15 @@ class ModelBuilder:
             raise ValueError(
                 "Contact frequencies are only supported by SolverBase.Observables, not builder custom attributes."
             )
+        if Model.AttributeFrequency.CONSTRAINT_MIMIC in (attribute.frequency, attribute.references) or (
+            attribute.references == "constraint_mimic"
+        ):
+            warnings.warn(
+                "Model.AttributeFrequency.CONSTRAINT_MIMIC and the 'constraint_mimic' reference are deprecated in "
+                "Newton 1.9: mimic constraints were removed, so such an attribute has no entries.",
+                NewtonDeprecationWarning,
+                stacklevel=_external_warning_stacklevel(),
+            )
         key = attribute.key
 
         existing = self.custom_attributes.get(key)
@@ -4659,6 +4668,7 @@ class ModelBuilder:
                 counts[key] = count
             elif key in cls._BUILDER_GROUP_REFERENCES:
                 counts[key] = len(getattr(builder, f"{key}_label"))
+        counts["constraint_mimic"] = 0  # deprecated frequency of the removed mimic constraints
         return counts
 
     @staticmethod
