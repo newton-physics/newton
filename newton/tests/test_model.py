@@ -120,7 +120,8 @@ class TestModelAttributeSpecs(unittest.TestCase):
         model = newton.ModelBuilder().finalize(device="cpu")
         frequency = newton.Model.AttributeFrequency
         self.assertEqual(len(frequency.__members__), len(frequency), "Attribute frequencies must have distinct values.")
-        expected_count_frequencies = set(frequency).difference({frequency.ONCE})
+        # The deprecated frequency of the removed mimic constraints has no entries to count.
+        expected_count_frequencies = set(frequency).difference({frequency.ONCE, frequency.CONSTRAINT_MIMIC})
         actual_count_frequencies = set(model._ATTRIBUTE_FREQUENCY_COUNT_ATTRS)
         self.assertEqual(
             actual_count_frequencies,
