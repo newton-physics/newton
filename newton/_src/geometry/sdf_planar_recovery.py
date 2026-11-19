@@ -13,6 +13,9 @@ from .flags import MeshProperties
 from .hashtable import HASHTABLE_EMPTY_KEY, HashTable, hashtable_find, hashtable_insert
 from .sdf_texture import TextureSDFData, texture_sample_sdf_hw
 
+# A crowded table falls back to ordinary mesh contacts, with bounded lookup work.
+_RECOVERY_MAX_PROBES = wp.constant(32)
+
 
 @wp.struct
 class PlanarExit:
@@ -361,11 +364,17 @@ def _pair_key(a: int, b: int) -> wp.uint64:
 
 @wp.func
 def pair_was_recovered(data: MeshRecoveryData, pair: wp.vec2i) -> bool:
-    return (
-        data.keys.shape[0] > 0
-        and data.active_slots[data.keys.shape[0]] > 0
-        and hashtable_find(_pair_key(pair[0], pair[1]), data.keys) >= 0
-    )
+    if data.keys.shape[0] == 0 or data.active_slots[data.keys.shape[0]] == 0:
+        return False
+    return _find_published_recovery(data, pair[0], pair[1]) >= 0
+
+
+@wp.func
+def _find_published_recovery(data: MeshRecoveryData, a: int, b: int) -> int:
+    slot = hashtable_find(_pair_key(a, b), data.keys, _RECOVERY_MAX_PROBES)
+    if slot >= 0 and data.contacts[slot].thickness > 0.0:
+        return slot
+    return -1
 
 
 @wp.func
@@ -377,7 +386,7 @@ def has_recovery_contacts(data: MeshRecoveryData, generation: int) -> bool:
 def find_recovery_contact(data: MeshRecoveryData, generation: int, a: int, b: int) -> int:
     if a < 0 or b < 0 or not has_recovery_contacts(data, generation):
         return -1
-    return hashtable_find(_pair_key(a, b), data.keys)
+    return _find_published_recovery(data, a, b)
 
 
 @wp.func
@@ -544,7 +553,7 @@ def get_compute_planar_recovery_contacts(writer_func):
             if not hit.valid:
                 continue
             key = _pair_key(a, b)
-            slot, inserted = hashtable_insert(key, recovery.keys, recovery.active_slots)
+            slot, inserted = hashtable_insert(key, recovery.keys, recovery.active_slots, _RECOVERY_MAX_PROBES)
             if not inserted:
                 continue
 
@@ -576,10 +585,9 @@ def get_compute_planar_recovery_contacts(writer_func):
             canonical.contact_distance = -hit.depth
             canonical.margin_a = shape_data[a][3]
             canonical.margin_b = shape_data[b][3]
-            if writer_func(canonical, writer_data, -1):
-                recovery.contacts[slot] = contact
-            else:
-                # Preserve the probe chain without suppressing ordinary contacts for an unstored row.
-                recovery.keys[slot] = key | (wp.uint64(1) << wp.uint64(63))
+            if not writer_func(canonical, writer_data, -1):
+                # Keep the claim for deduplication, but allow the ordinary manifold.
+                contact.thickness = 0.0
+            recovery.contacts[slot] = contact
 
     return compute_planar_recovery_contacts

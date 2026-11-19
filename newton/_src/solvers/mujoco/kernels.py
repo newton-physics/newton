@@ -508,9 +508,8 @@ def convert_newton_contacts_to_mjwarp_kernel(
 
     gen = contact_generation[0]
     last_gen = last_contact_generation[0]
-    # Adhesion and body-transmission actuators consume the packed contact
-    # table independently of the constraint type. Remove stale rows from
-    # that table when either feature is enabled.
+    # An expired recovery row must release its slot even when the detection
+    # generation is held. Actuators also consume the packed table directly.
     if gen != last_gen or (compact_stale and has_recovery_contacts(recovery, gen)):
         # ── FULL PATH ────────────────────────────────────────────────────
         # Runs on the first substep after collision detection.  Identical to

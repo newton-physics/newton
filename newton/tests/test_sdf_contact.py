@@ -617,7 +617,37 @@ def test_planar_mesh_recovery_under_load(test, device, *, reduce_contacts=True, 
         test.assertLess(abs(depth), 0.0005)
 
 
-def test_mujoco_stale_contact_at_capacity(test, device):
+def test_planar_recovery_sticky_handoff(test, device):
+    """Keep current ordinary witnesses when they match expired recovery geometry."""
+    with wp.ScopedDevice(device):
+        wall, probe = test.loaded_wall_and_probe(device)
+        builder = newton.ModelBuilder()
+        cfg = builder.ShapeConfig(gap=0.0002, margin=0.0, density=0.0)
+        builder.add_shape_mesh(-1, mesh=wall, xform=wp.transform(wp.vec3(0.0005, 0.0, 0.0)), cfg=cfg)
+        body = builder.add_body(mass=0.05, inertia=wp.mat33(np.eye(3) * 1.0e-6))
+        builder.add_shape_mesh(body, mesh=probe, cfg=cfg)
+        model = builder.finalize()
+        pipeline = newton.CollisionPipeline(model, contact_matching="sticky", rigid_contact_max=128)
+        contacts, state = pipeline.contacts(), model.state()
+        pipeline.collide(state, contacts)
+        test.assertEqual(int(contacts.rigid_contact_count.numpy()[0]), 1)
+
+        state.body_q.assign([wp.transform(wp.vec3(-0.00399, 0.0003, 0.0))])
+        pipeline.collide(state, contacts)
+        count = int(contacts.rigid_contact_count.numpy()[0])
+        test.assertGreater(count, 1)
+        matched = np.flatnonzero(contacts.rigid_contact_match_index.numpy()[:count] == 0)
+        test.assertEqual(len(matched), 1)
+        row = matched[0]
+        wall_points = (
+            contacts.rigid_contact_point0
+            if contacts.rigid_contact_shape0.numpy()[row] == 0
+            else contacts.rigid_contact_point1
+        )
+        test.assertAlmostEqual(float(wall_points.numpy()[row, 1]), 0.0003, delta=1.0e-6)
+
+
+def test_mujoco_stale_contact_at_capacity(test, device, *, body_actuator):
     """A stale wall row must leave the one solver slot available to the sphere."""
     with wp.ScopedDevice(device):
         wall, probe = test.loaded_wall_and_probe(device)
@@ -626,7 +656,8 @@ def test_mujoco_stale_contact_at_capacity(test, device):
         builder.add_shape_mesh(-1, mesh=wall, xform=wp.transform(wp.vec3(0.0005, 0.0, 0.0)), cfg=cfg)
         probe_body = builder.add_body(mass=0.05)
         builder.add_shape_mesh(probe_body, mesh=probe, cfg=cfg)
-        newton.solvers.mujoco.add_actuator_motor(builder, newton.solvers.mujoco.ActuatorTarget.body(probe_body))
+        if body_actuator:
+            newton.solvers.mujoco.add_actuator_motor(builder, newton.solvers.mujoco.ActuatorTarget.body(probe_body))
         plane = builder.add_ground_plane()
         ball = builder.add_body(xform=wp.transform(wp.vec3(1.0, 0.0, 0.049)))
         sphere = builder.add_shape_sphere(ball, radius=0.05)
@@ -677,7 +708,8 @@ def test_planar_recovery_overflow(test, device):
         test.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), contacts.rigid_contact_max)
         stored = int(contacts.rigid_contact_shape1.numpy()[0])
         recovery = contacts._mesh_recovery_contacts
-        test.assertEqual({1, 2}.intersection(recovery.keys.numpy()), {stored})
+        published = recovery.contacts.numpy()["thickness"] > 0.0
+        test.assertEqual({1, 2}.intersection(recovery.keys.numpy()[published]), {stored})
 
         # Entering a marginal overlap directly or from a deep overlap must
         # produce the same number of recovery rows, including on overflow.
@@ -686,7 +718,8 @@ def test_planar_recovery_overflow(test, device):
         pipeline.collide(state, fresh)
         pipeline.collide(state, contacts)
         for data in (recovery, fresh._mesh_recovery_contacts):
-            test.assertEqual(len({1, 2}.intersection(data.keys.numpy())), 1)
+            published = data.contacts.numpy()["thickness"] > 0.0
+            test.assertEqual(len({1, 2}.intersection(data.keys.numpy()[published])), 1)
 
         # Leave 10 micrometres of overlap against the 1 mm wall.
         state.body_q.fill_(wp.transform(wp.vec3(-0.00399, 0.0, 0.0), wp.quat_identity()))
@@ -974,10 +1007,25 @@ add_function_test(
 )
 add_function_test(
     TestSDFContact,
+    "test_planar_recovery_sticky_handoff",
+    test_planar_recovery_sticky_handoff,
+    devices=get_cuda_test_devices(),
+)
+add_function_test(
+    TestSDFContact,
     "test_mujoco_stale_contact_at_capacity",
     requires(*MUJOCO_MODULES)(test_mujoco_stale_contact_at_capacity),
     devices=get_cuda_test_devices(),
     check_output=False,  # The second step intentionally reports a solver-capacity overflow.
+    body_actuator=False,
+)
+add_function_test(
+    TestSDFContact,
+    "test_mujoco_stale_contact_at_capacity_with_body_actuator",
+    requires(*MUJOCO_MODULES)(test_mujoco_stale_contact_at_capacity),
+    devices=get_cuda_test_devices(),
+    check_output=False,
+    body_actuator=True,
 )
 add_function_test(
     TestSDFContact,

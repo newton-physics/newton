@@ -102,7 +102,7 @@ import warp as wp
 from ..core.reset import reset_world_selected
 from ..core.types import Devicelike
 from .contact_sort import SORT_KEY_SENTINEL
-from .sdf_planar_recovery import MeshRecoveryData, pair_was_recovered
+from .sdf_planar_recovery import MeshRecoveryData, empty_mesh_recovery, pair_was_recovered
 
 if TYPE_CHECKING:
     from .contact_sort import ContactSorter
@@ -431,6 +431,7 @@ class _SaveStateData:
     src_normal: wp.array[wp.vec3]
     src_count: wp.array[wp.int32]
     src_generation: wp.array[wp.int32]
+    recovery: MeshRecoveryData
     buffer_id: int
 
     body_q: wp.array[wp.transform]
@@ -443,6 +444,7 @@ class _SaveStateData:
     dst_point1_body: wp.array[wp.vec3]
     dst_offset0_body: wp.array[wp.vec3]
     dst_offset1_body: wp.array[wp.vec3]
+    dst_recovered: wp.array[wp.bool]
     dst_claim: wp.array[wp.int64]
     dst_prev_was_matched: wp.array[wp.int32]
     dst_count: wp.array[wp.int32]
@@ -497,6 +499,7 @@ def _save_sorted_state_kernel(data: _SaveStateData, reset_world_mask: wp.array[w
             data.dst_point1_body[i] = p1
             data.dst_offset0_body[i] = data.src_offset0[i]
             data.dst_offset1_body[i] = data.src_offset1[i]
+            data.dst_recovered[i] = pair_was_recovered(data.recovery, wp.vec2i(data.src_shape0[i], data.src_shape1[i]))
 
 
 # ------------------------------------------------------------------
@@ -532,6 +535,7 @@ class _ReplayData:
     prev_offset0: wp.array[wp.vec3]
     prev_offset1: wp.array[wp.vec3]
     prev_normal: wp.array[wp.vec3]
+    prev_recovered: wp.array[wp.bool]
 
     point0: wp.array[wp.vec3]
     point1: wp.array[wp.vec3]
@@ -555,8 +559,8 @@ def _replay_matched_kernel(data: _ReplayData):
     if idx < wp.int32(0):
         return  # MATCH_NOT_FOUND or MATCH_BROKEN -- keep new-frame data.
 
-    if pair_was_recovered(data.recovery, wp.vec2i(data.shape0[tid], data.shape1[tid])):
-        return  # The recovery proof applies to the freshly generated witnesses and normal.
+    if data.prev_recovered[idx] or pair_was_recovered(data.recovery, wp.vec2i(data.shape0[tid], data.shape1[tid])):
+        return  # A recovery certificate applies only to its own frame's geometry.
     body0 = data.shape_body[data.shape0[tid]]
     body1 = data.shape_body[data.shape1[tid]]
     p0_world = data.point0[tid]
@@ -744,11 +748,13 @@ class ContactMatcher:
                 self._prev_point1 = wp.zeros(capacity, dtype=wp.vec3)
                 self._prev_offset0 = wp.zeros(capacity, dtype=wp.vec3)
                 self._prev_offset1 = wp.zeros(capacity, dtype=wp.vec3)
+                self._prev_recovered = wp.empty(capacity, dtype=wp.bool)
             else:
                 self._prev_point0 = None
                 self._prev_point1 = None
                 self._prev_offset0 = None
                 self._prev_offset1 = None
+                self._prev_recovered = None
 
     # ------------------------------------------------------------------
     # Properties
@@ -923,6 +929,7 @@ class ContactMatcher:
         contact_generation: wp.array[wp.int32],
         sorted_offset0: wp.array[wp.vec3] | None = None,
         sorted_offset1: wp.array[wp.vec3] | None = None,
+        recovery: MeshRecoveryData | None = None,
         device: Devicelike = None,
     ) -> None:
         """Save current frame's sorted contacts for next-frame matching.
@@ -952,6 +959,7 @@ class ContactMatcher:
             contact_generation: That buffer's single-element contact generation.
             sorted_offset0, sorted_offset1: Required when sticky is enabled;
                 ignored otherwise.
+            recovery: Recovery certificates for the current contact frame.
             device: Device to launch on.
         """
         data = _SaveStateData()
@@ -963,6 +971,7 @@ class ContactMatcher:
         data.src_normal = sorted_normal
         data.src_count = contact_count
         data.src_generation = contact_generation
+        data.recovery = recovery or empty_mesh_recovery(sorted_keys.device.alias)
         data.buffer_id = int(buffer_id)
         data.body_q = body_q
         data.shape_body = shape_body
@@ -972,6 +981,7 @@ class ContactMatcher:
         data.dst_count = self._prev_count
         data.dst_frame = self._prev_frame
         data.dst_claim = self._prev_claim
+        data.dst_recovered = self._prev_recovered
 
         data.dst_prev_was_matched = self._prev_was_matched
         data.has_report = 1 if self._has_report else 0
@@ -1056,6 +1066,7 @@ class ContactMatcher:
         data.prev_offset0 = self._prev_offset0
         data.prev_offset1 = self._prev_offset1
         data.prev_normal = self._prev_normal
+        data.prev_recovered = self._prev_recovered
         data.point0 = point0
         data.point1 = point1
         data.offset0 = offset0

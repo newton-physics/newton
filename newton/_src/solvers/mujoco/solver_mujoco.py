@@ -5144,7 +5144,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             # first run inside a CUDA graph that is discarded without replay.
             self._create_inverse_shape_mapping()
             map_size = self.mjw_data.naconmax
-            if self._compact_stale_contacts:
+            if self._compact_stale_contacts or (
+                model._texture_sdf_data is not None and model._texture_sdf_data.shape[0] > 0
+            ):
                 source_size = model.rigid_contact_max
                 map_size = max(map_size, _estimate_rigid_contact_max(model) if source_size is None else source_size)
             self._contact_tid_to_cid = wp.full(map_size, -1, dtype=wp.int32, device=self.device)
@@ -5397,7 +5399,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         inputs=[
                             rigid_contact_count,
                             rigid_contact_max,
-                            self._last_nacon_count if self._compact_stale_contacts else rigid_contact_count,
+                            self._last_nacon_count
+                            if self._compact_stale_contacts
+                            or (newton_contacts and contacts._mesh_recovery_contacts is not None)
+                            else rigid_contact_count,
                             self.mjw_data.naconmax,
                             newton_contacts,
                             self.mjw_data.overflow,
@@ -5880,7 +5885,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 f"than {naconmax} contacts are actually generated. "
                 f"Pass nconmax>={contacts.rigid_contact_max} to SolverMuJoCo to size for the worst case."
             )
-        compact_stale = self._compact_stale_contacts
+        recovery_contacts = contacts._mesh_recovery_contacts
+        compact_stale = self._compact_stale_contacts or recovery_contacts is not None
         # A stale row can precede an eligible row beyond the solver's capacity.
         launch_dim = contacts.rigid_contact_max if compact_stale else min(contacts.rigid_contact_max, naconmax)
         if launch_dim > self._contact_tid_to_cid.shape[0]:
@@ -5910,7 +5916,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         bodies_per_world = self.model.body_count // self.model.world_count
         mujoco_attrs = getattr(model, "mujoco", None)
         shape_mjc_solref_mode = getattr(mujoco_attrs, "solref_mode", None) if mujoco_attrs is not None else None
-        recovery_contacts = getattr(contacts, "_mesh_recovery_contacts", None)
         recovery = recovery_contacts or self._empty_mesh_recovery
         wp.launch(
             convert_newton_contacts_to_mjwarp_kernel,

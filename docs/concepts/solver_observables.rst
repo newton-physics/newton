@@ -435,8 +435,8 @@ The bit layout is:
    * - 17
      - :attr:`~newton.solvers.SolverMuJoCo.OverflowBits.SOLVER_NCONMAX`
      - Newton contacts exceeded the solver's shared ``naconmax`` capacity.
-       For adhesion and body-transmission actuators, the solver counts
-       the rows that remain after filtering.
+       When the solver packs eligible rows, expired thin-wall recovery
+       contacts do not count toward this limit.
 
 The Newton flags describe shared contact buffers and are repeated in every
 world's mask when the global count exceeds capacity. They do not identify which

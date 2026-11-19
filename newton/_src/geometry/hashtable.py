@@ -66,6 +66,7 @@ def _hashtable_hash(key: wp.uint64, capacity_mask: int) -> int:
 def hashtable_find(
     key: wp.uint64,
     keys: wp.array[wp.uint64],
+    max_probes: int = 2147483647,
 ) -> int:
     """Find a key and return its entry index (read-only lookup).
 
@@ -75,6 +76,7 @@ def hashtable_find(
     Args:
         key: The uint64 key to find
         keys: The hash table keys array (length must be power of two)
+        max_probes: Maximum number of slots to examine.
 
     Returns:
         Entry index (>= 0) if found, -1 if not found
@@ -83,8 +85,7 @@ def hashtable_find(
     capacity_mask = capacity - 1
     idx = _hashtable_hash(key, capacity_mask)
 
-    # Linear probing with a maximum of 'capacity' attempts
-    for _i in range(capacity):
+    for _i in range(wp.min(capacity, max_probes)):
         # Read to check if key exists
         stored_key = keys[idx]
 
@@ -99,7 +100,6 @@ def hashtable_find(
         # Collision with different key - linear probe to next slot
         idx = (idx + 1) & capacity_mask
 
-    # Searched entire table without finding key
     return -1
 
 
@@ -108,6 +108,7 @@ def hashtable_insert(
     key: wp.uint64,
     keys: wp.array[wp.uint64],
     active_slots: wp.array[wp.int32],
+    max_probes: int = 2147483647,
 ) -> tuple[int, bool]:
     """Find or insert a key and return the entry index.
 
@@ -119,16 +120,16 @@ def hashtable_insert(
         keys: The hash table keys array (length must be power of two)
         active_slots: Array of size (capacity + 1) tracking active entry indices.
                       active_slots[capacity] is the count of active entries.
+        max_probes: Maximum number of slots to examine.
 
     Returns:
-        Entry index (or -1 when full) and whether this worker inserted it
+        Entry index (or -1 when no slot is reached) and whether this worker inserted it.
     """
     capacity = keys.shape[0]
     capacity_mask = capacity - 1
     idx = _hashtable_hash(key, capacity_mask)
 
-    # Linear probing with a maximum of 'capacity' attempts
-    for _i in range(capacity):
+    for _i in range(wp.min(capacity, max_probes)):
         # Read first to check if key exists (keys only transition EMPTY -> KEY)
         stored_key = keys[idx]
 
@@ -155,7 +156,6 @@ def hashtable_insert(
         # Collision with different key - linear probe to next slot
         idx = (idx + 1) & capacity_mask
 
-    # Table is full
     return -1, False
 
 

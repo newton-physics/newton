@@ -3625,6 +3625,7 @@ class CollisionPipeline:
                 shape_body=model.shape_body,
                 buffer_id=self._contact_matcher.buffer_id(contacts),
                 contact_generation=contacts.contact_generation,
+                recovery=recovery,
                 device=self.device,
                 **sticky_offsets,
             )

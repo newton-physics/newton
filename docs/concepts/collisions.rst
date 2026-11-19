@@ -1118,9 +1118,9 @@ Between updates, translation and rotation may reuse a recovery contact only
 while the entire swept probe remains inside the verified corridor.
 Broad contact patches, ambiguous exits, and nearby features that intrude on the
 footprint use the ordinary manifold. The same fallback applies when the probe
-has more than 4,096 vertices or the swept query visits more than 128 wall
-triangles. A complete crossing can leave the shapes
-separated, so no discrete overlap remains to recover.
+has more than 4,096 vertices, the swept query visits more than 128 wall
+triangles, or the recovery table reaches its probe limit. A complete crossing
+can leave the shapes separated, so no discrete overlap remains to recover.
 
 Solvers and :class:`~sensors.SensorContact` read the same two surface witnesses
 and separation normal from the contact buffer. XPBD and VBD bound positional
