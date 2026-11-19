@@ -134,9 +134,6 @@ to add new models.
 Usage
 -----
 
-External actuators
-^^^^^^^^^^^^^^^^^^
-
 Actuators are registered during model construction with
 :meth:`~newton.ModelBuilder.add_actuator` and are instantiated automatically
 when the model is finalized:
@@ -967,7 +964,7 @@ USD
 the `newton-usd-schemas <https://github.com/newton-physics/newton-usd-schemas>`__
 package. These become external actuators in ``model.actuators`` after
 finalization and require explicit stepping before the physics solver, as
-shown in `External actuators`_. Imported batteries must also be stepped after
+shown in `Usage`_. Imported batteries must also be stepped after
 the actuators. Standard USD joint drives instead run inside ``solver.step()``;
 see :ref:`the stepping guidance above <actuator-stepping>`.
 
