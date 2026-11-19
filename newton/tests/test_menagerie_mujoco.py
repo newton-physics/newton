@@ -1977,8 +1977,10 @@ class TestMenagerieNativeMJCF(TestMenagerieMJCF):
 
     def _align_models(self, newton_solver: SolverMuJoCo, native_mjw_model: Any, mj_model: Any) -> None:
         """Recompute reference constants on GPU, as SolverMuJoCo does."""
-        _mujoco_warp.set_const_fixed(native_mjw_model, self._native_mjw_data)
-        _mujoco_warp.set_const_0(native_mjw_model, self._native_mjw_data)
+        groups = _mujoco_warp.SetConstGroup
+        _mujoco_warp.set_const(
+            native_mjw_model, self._native_mjw_data, groups=groups.FIXED | groups.KIN0 | groups.INERT0
+        )
 
     def _compare_inertia(self, newton_mjw: Any, native_mjw: Any) -> None:
         """Compare physical inertia despite different principal-axis frames."""

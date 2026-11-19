@@ -8,6 +8,7 @@ import unittest
 import numpy as np
 import warp as wp
 
+import newton
 from newton._src.solvers.kamino._src.linalg.factorize.llt_blocked_rcm import make_llt_blocked_rcm_solve_kernel
 from newton._src.solvers.kamino._src.solvers.scc.kernels import (
     _solve_bilateral_unilateral_response_compact,
@@ -21,10 +22,15 @@ from newton._src.solvers.kamino._src.solvers.scc.response import (
 from newton._src.solvers.kamino._src.solvers.scc.sparse_kernels import (
     _assemble_compact_unilateral_schur_tiled,
 )
+from newton.tests.kamino import setup_test_output, setup_tests
 from newton.tests.kamino.utils.make import make_row_storage
+from newton.tests.unittest_utils import NewtonTestCase
 
 
-class TestKaminoBlockedResponse(unittest.TestCase):
+class TestKaminoBlockedResponse(NewtonTestCase):
+    def setUp(self):
+        setup_test_output(self)
+
     def test_dense_reference(self):
         """Verify partial tiles, permuted scaling, zero tiles, and guarded output."""
         if not wp.get_cuda_device_count():
@@ -193,7 +199,10 @@ class TestKaminoBlockedResponse(unittest.TestCase):
                 np.testing.assert_allclose(x.numpy(), expected_x, rtol=2e-6, atol=2e-6)
 
 
-class TestCooperativeResponse(unittest.TestCase):
+class TestCooperativeResponse(NewtonTestCase):
+    def setUp(self):
+        setup_test_output(self)
+
     def test_unpermuted_compact_response(self):
         """Match dense elimination without permutation and with an inactive column."""
         if not wp.get_cuda_device_count():
@@ -250,7 +259,10 @@ def _assert_bits_equal(a, b):
     np.testing.assert_array_equal(a.copy().view(np.uint32), b.copy().view(np.uint32))
 
 
-class TestSplitResponse(unittest.TestCase):
+class TestSplitResponse(NewtonTestCase):
+    def setUp(self):
+        setup_test_output(self)
+
     def test_captured_capacity_boundaries(self):
         """Preserve response accuracy and fallback bits across changing compact capacity."""
         device = wp.get_device()
@@ -410,3 +422,9 @@ class TestSplitResponse(unittest.TestCase):
             np.testing.assert_array_equal(sb[gap_mask], -123.0)
             np.testing.assert_array_equal(q[1].numpy(), expected_q)
             np.testing.assert_array_equal(q[0].numpy(), expected_q)
+
+
+if __name__ == "__main__":
+    newton.utils.setup_console_logging()
+    setup_tests()
+    unittest.main()

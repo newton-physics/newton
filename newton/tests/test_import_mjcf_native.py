@@ -104,13 +104,7 @@ class TestImportMjcfNative(unittest.TestCase):
         reference = mujoco.MjModel.from_xml_string(xml)
         builder = newton.ModelBuilder()
         builder.add_mjcf_native(xml, ctrl_direct=True, **kwargs)
-        expected_warning = (
-            self.assertWarnsRegex(newton.NewtonWarning, "does not support actuator armature")
-            if np.any(reference.actuator_armature)
-            else nullcontext()
-        )
-        with expected_warning:
-            solver = SolverMuJoCo(builder.finalize(), disable_contacts=True, kinematic_switchable_roots=False)
+        solver = SolverMuJoCo(builder.finalize(), disable_contacts=True, kinematic_switchable_roots=False)
         for field in fields:
             with self.subTest(field=field):
                 expected = getattr(reference, field)
@@ -1121,12 +1115,19 @@ class TestImportMjcfNative(unittest.TestCase):
                 <geom type="box" size=".1 .2 .3" mass="1"/></body></worldbody>
             <tendon><fixed name="t" stiffness="0 {poly} 0" damping="0 {poly} 0">
                 <joint joint="j" coef="1"/></fixed></tendon>
-            <actuator><general joint="j" damping=".3 .2 .1" delay="{delay}" nsample="4" interp="{interp}"/>
-                <general tendon="t" damping=".1 .3 .2"/></actuator></mujoco>"""
+            <actuator><general joint="j" damping=".3 .2 .1" gear="{gear}" armature=".02" delay="{delay}" nsample="4" interp="{interp}"/>
+                <general tendon="t" damping=".1 .3 .2" armature=".03"/></actuator></mujoco>"""
         builder = newton.ModelBuilder()
         references = []
         for poly, speed, adhesion, delay, interp in ((0, 0, 0, 0.0015, "zoh"), (7, 4, 0.5, 0.0025, "cubic")):
-            source = xml.format(poly=poly, speed=speed, adhesion=adhesion, delay=delay, interp=interp)
+            source = xml.format(
+                poly=poly,
+                speed=speed,
+                adhesion=adhesion,
+                delay=delay,
+                interp=interp,
+                gear=1 + bool(poly),
+            )
             builder.begin_world()
             builder.add_mjcf_native(source, ctrl_direct=True)
             builder.end_world()
@@ -1136,12 +1137,22 @@ class TestImportMjcfNative(unittest.TestCase):
             data.qvel[:] = 0.4
             references.append((reference, data))
         solver = SolverMuJoCo(builder.finalize(), separate_worlds=True, disable_contacts=True)
-        for field in ("geom_surfacevel", "geom_adhesion", "actuator_delay", "actuator_history"):
+        for field in (
+            "geom_surfacevel",
+            "geom_adhesion",
+            "actuator_delay",
+            "actuator_history",
+            "dof_dampingpoly",
+            "tendon_dampingpoly",
+            "actuator_gear",
+        ):
             with self.subTest(field=field):
                 np.testing.assert_allclose(
                     getattr(solver.mjw_model, field).numpy(),
                     np.stack([getattr(m, field) for m, _ in references]),
                 )
+        for field in ("actuator_damping", "actuator_dampingpoly", "actuator_armature"):
+            np.testing.assert_allclose(getattr(solver.mjw_model, field).numpy(), getattr(references[0][0], field)[None])
         self.assertTrue(solver.mjw_model.flg_adhesion)
         solver.mjw_data.qpos.assign(np.stack([d.qpos for _, d in references]))
         solver.mjw_data.qvel.fill_(0.4)
@@ -1223,7 +1234,7 @@ class TestImportMjcfNative(unittest.TestCase):
         payload = '<body pos=".2 0 .3"><geom size=".1" mass="2"/></body>'
         for direct, cpu in ((False, False), (True, False), (False, True)):
             with self.subTest(direct=direct, cpu=cpu):
-                armature = 0.02 if cpu else 0
+                armature = 0.02
                 builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
                 builder.add_mjcf_native(xml.format(limits="-1 2", payload="", armature=armature), ctrl_direct=direct)
                 builder.add_mjcf_native(f"<mujoco><worldbody>{payload}</worldbody></mujoco>", parent_body=3)

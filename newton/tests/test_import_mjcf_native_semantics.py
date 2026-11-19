@@ -958,8 +958,6 @@ class TestImportMjcfNativeSemantics(unittest.TestCase):
                     solver.mjc_actuator_to_newton_actuator_idx.numpy(), [-1, 2, 1, 3, 3, 3, 0]
                 )
                 np.testing.assert_array_equal(solver.mj_model.actuator_group, [0, 1, 2, 2, 2, 2, 3])
-                if disabled and not cpu:
-                    continue
                 control = model.control()
                 control.joint_target_q.assign([1, 1, *wp.quat_from_axis_angle(wp.normalize(wp.vec3(1, 1, 1)), 0.3)])
                 control.joint_target_qd.assign([0, 0.5, 0, 0, 0])
@@ -968,7 +966,7 @@ class TestImportMjcfNativeSemantics(unittest.TestCase):
                 newton.eval_fk(model, state.joint_q, state.joint_qd, state)
                 observables = solver.observables(kinds={solver.ObservableKind.QFRC_ACTUATOR})
                 solver.step(state, model.state(), control, None, dt=0.001, observables=observables)
-                expected = [5, 6, 0, 0, 0] if disabled else [5, 7.5, *([1.2 / np.sqrt(3)] * 3)]
+                expected = [5, 6, 0, 0, 0] if disabled and cpu else [5, 7.5, *([1.2 / np.sqrt(3)] * 3)]
                 np.testing.assert_allclose(observables.qfrc_actuator.numpy().reshape(-1), expected, atol=1e-6)
 
     def test_inherited_ranges_finalize_per_world(self):

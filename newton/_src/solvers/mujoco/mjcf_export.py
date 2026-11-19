@@ -153,9 +153,6 @@ def _publish_native_world_parameters(model, native, mjw_model, joint_dofs, geom_
             output = getattr(mjw_model, field)
             compiled = output.numpy().copy()
             target = compiled[..., 1] if field == "actuator_history" else compiled
-            if field in ("dof_dampingpoly", "tendon_dampingpoly"):
-                # put_model folds actuator damping into these coefficients.
-                values = values + compiled - getattr(native, field)[None]
             target[valid] = values[valid]
             output.assign(compiled)
             if field in ("geom_adhesion", "pair_adhesion"):
