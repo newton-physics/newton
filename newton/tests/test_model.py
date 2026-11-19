@@ -1221,13 +1221,9 @@ class TestModelMesh(unittest.TestCase):
             mesh = builder.shape_source[shape]
             self.assertEqual(len(mesh.vertices), mesh.maxhullvert)
 
+    @requires("coacd")
     def test_mesh_approximation_coacd_is_repeatable(self):
         """Decompose a nonconvex mesh with CoACD repeatedly and get identical hulls."""
-        try:
-            import coacd  # noqa: F401
-        except ImportError:
-            self.skipTest("Requires coacd")
-
         # A torus is nonconvex, so CoACD's parallel tree search has several cuts to choose from.
         rings, sides = 32, 12
         u, v = np.meshgrid(

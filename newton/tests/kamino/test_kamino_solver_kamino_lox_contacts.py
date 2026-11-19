@@ -10,7 +10,8 @@ import warp as wp
 
 import newton
 from newton.solvers import SolverKamino
-from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino import setup_test_output, setup_tests, test_context
+from newton.tests.unittest_utils import NewtonTestCase
 
 ROLLING = newton.ShapeFrictionMode.ROLLING
 
@@ -29,8 +30,9 @@ _PROJECTION_SCHEDULES = {
 }
 
 
-class TestSolverKaminoLOXContacts(unittest.TestCase):
+class TestSolverKaminoLOXContacts(NewtonTestCase):
     def setUp(self):
+        setup_test_output(self)
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)

@@ -2125,19 +2125,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     c0 = int(jc_start[j])
                     joint_material_k_np[c0] = structural_linear_ke
                     joint_kd_np[c0] = self.rigid_joint_linear_kd
-                elif jt[j] == JointType.FIXED:
-                    c0 = int(jc_start[j])
-                    joint_material_k_np[c0 + 0] = structural_linear_ke
-                    joint_kd_np[c0 + 0] = self.rigid_joint_linear_kd
-                    joint_material_k_np[c0 + 1] = structural_angular_ke
-                    joint_kd_np[c0 + 1] = self.rigid_joint_angular_kd
-                elif jt[j] == JointType.REVOLUTE:
-                    c0 = int(jc_start[j])
-                    joint_material_k_np[c0 + 0] = structural_linear_ke
-                    joint_kd_np[c0 + 0] = self.rigid_joint_linear_kd
-                    joint_material_k_np[c0 + 1] = structural_angular_ke
-                    joint_kd_np[c0 + 1] = self.rigid_joint_angular_kd
-                elif jt[j] == JointType.PRISMATIC:
+                elif jt[j] in (JointType.FIXED, JointType.REVOLUTE, JointType.PRISMATIC):
                     c0 = int(jc_start[j])
                     joint_material_k_np[c0 + 0] = structural_linear_ke
                     joint_kd_np[c0 + 0] = self.rigid_joint_linear_kd
@@ -2153,8 +2141,6 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     if ac < 3:
                         joint_material_k_np[c0 + 1] = structural_angular_ke
                         joint_kd_np[c0 + 1] = self.rigid_joint_angular_kd
-                else:
-                    pass
 
             material_k = wp.array(joint_material_k_np, dtype=float, device=self.device)
             rho = wp.array(joint_rho_np, dtype=float, device=self.device)

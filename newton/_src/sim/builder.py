@@ -1273,7 +1273,7 @@ class ModelBuilder:
         :attr:`gap`, plus :attr:`margin` for hydroelastic shapes, when
         ``None``. Hydroelastic padding must cover ``margin + gap``. Rejected
         on ``MESH`` / ``CONVEX_MESH`` shapes — pass ``margin`` to
-        :meth:`~newton.geometry.Mesh.build_sdf` instead."""
+        :meth:`~newton.Mesh.build_sdf` instead."""
 
         def configure_sdf(
             self,
@@ -1706,15 +1706,15 @@ class ModelBuilder:
         """Name of the attribute in the URDF definition. If None, the attribute name is used."""
 
         usd_value_transformer: Callable[[Any, dict[str, Any]], Any] | None = None
-        """Transformer function that converts a USD attribute value to a valid Warp dtype. If undefined, the generic converter from :func:`newton.usd.convert_warp_value` is used. Receives a context dict with the following keys:
+        """Transformer function that converts a USD attribute value to a valid Warp dtype. If undefined, the generic converter from :func:`newton.usd.value_to_warp` is used. Receives a context dict with the following keys:
         - ``"prim"``: The USD prim to query.
         - ``"attr"``: The :class:`~newton.ModelBuilder.CustomAttribute` object to get the value for."""
 
         mjcf_value_transformer: Callable[[str, dict[str, Any] | None], Any] | None = None
-        """Transformer function that converts a MJCF attribute value string to a valid Warp dtype. If undefined, the generic converter from :func:`newton.utils.parse_warp_value_from_string` is used. Receives an optional context dict with parsing-time information (e.g., use_degrees, joint_type)."""
+        """Transformer function that converts a MJCF attribute value string to a valid Warp dtype. If undefined, the generic converter from :func:`newton.utils.string_to_warp` is used. Receives an optional context dict with parsing-time information (e.g., use_degrees, joint_type)."""
 
         urdf_value_transformer: Callable[[str, dict[str, Any] | None], Any] | None = None
-        """Transformer function that converts a URDF attribute value string to a valid Warp dtype. If undefined, the generic converter from :func:`newton.utils.parse_warp_value_from_string` is used. Receives an optional context dict with parsing-time information."""
+        """Transformer function that converts a URDF attribute value string to a valid Warp dtype. If undefined, the generic converter from :func:`newton.utils.string_to_warp` is used. Receives an optional context dict with parsing-time information."""
 
         reference_value_transformer: Callable[[list[Any], dict[str, Any]], list[Any]] | None = None
         """Batch transformer for entity references copied by :meth:`ModelBuilder.add_builder`.
@@ -5577,7 +5577,7 @@ class ModelBuilder:
         """
         Parses MuJoCo XML (MJCF) file and adds the bodies and joints to the given ModelBuilder.
         MuJoCo-specific custom attributes are registered on the builder automatically.
-        Importing ``<dcmotor>`` actuators requires the optional ``mujoco`` package
+        Importing ``<dcmotor>`` actuators requires the optional ``mujoco-core`` package
         (included in ``newton[sim]``) to resolve native defaults, and raises
         :class:`ImportError` if it is unavailable. Other MJCF import remains independent of MuJoCo.
 

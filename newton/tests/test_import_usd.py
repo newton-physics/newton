@@ -14174,13 +14174,9 @@ def Xform "World"
         finally:
             os.unlink(path)
 
+    @requires("meshio")
     def test_tetmesh_save_load_vtk(self):
         """Test TetMesh round-trip save/load via .vtk (meshio)."""
-
-        try:
-            import meshio  # noqa: F401
-        except ImportError:
-            self.skipTest("meshio not installed")
 
         vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 1]], dtype=np.float32)
         tet_indices = np.array([0, 1, 2, 3, 1, 2, 3, 4], dtype=np.int32)
@@ -14515,6 +14511,7 @@ def Xform "World"
         finally:
             os.unlink(path)
 
+    @requires("trimesh")
     def test_mesh_create_from_file_glb_scene_transforms(self):
         """Test Mesh.create_from_file applies glTF scene-graph node transforms.
 
@@ -14523,10 +14520,7 @@ def Xform "World"
         compose those transforms, otherwise all parts collapse onto the
         origin as overlapping local geometry.
         """
-        try:
-            import trimesh
-        except ImportError:
-            self.skipTest("trimesh not installed")
+        import trimesh
 
         scene = trimesh.Scene()
         part = trimesh.creation.box(extents=[2.0, 2.0, 2.0])

@@ -1913,6 +1913,68 @@ def test_collider_face_materials(test, device):
     np.testing.assert_allclose(shape_solver.collider_materials(0)["adhesion"].numpy(), 7.0)
 
 
+def test_point_warmstart_unbinned_particles(test, device):
+    """Preserve particle history and zero unused point nodes during warm starts."""
+    with wp.ScopedDevice(device):
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        SolverImplicitMPM.register_custom_attributes(builder)
+        # Reverse the active particles' cell order and park the last two outside active cells.
+        for i, x in enumerate((0.125, 0.025, 0.325, 0.425)):
+            builder.add_particle(
+                pos=(x, 0.025, 0.025),
+                vel=(0.0, 0.0, 0.0),
+                mass=0.01,
+                radius=0.025,
+                flags=newton.ParticleFlags.ACTIVE if i < 2 else 0,
+            )
+        model = builder.finalize(device=device)
+        config = _make_mpm_config(grid_type="fixed")
+        config.separate_worlds = False
+        config.grid_padding = 1
+        config.max_active_cell_count = 2
+        config.collider_basis = "pic2"
+        config.strain_basis = "pic2"
+        config.warmstart_mode = "particles"
+        solver, _ = _step_mpm(model, config, step_count=2)
+        scratch = solver._scratchpad
+        history = solver._last_step_data
+        pic = scratch.collision_pic
+        fields = (
+            ("impulse", scratch.impulse_field, history.ws_impulse_field),
+            ("stress", scratch.stress_field, history.ws_stress_field),
+        )
+        references = []
+        for name, field, saved in fields:
+            space_nodes = field.space_partition.space_node_indices().numpy()
+            particles = pic.cell_particle_indices.numpy()[space_nodes]
+            valid = particles >= 0
+            test.assertEqual(np.count_nonzero(valid), 2)
+            test.assertEqual(np.count_nonzero(~valid), 2)
+            np.testing.assert_array_equal(np.sort(particles[valid]), [0, 1])
+            values = (
+                np.arange(saved.dof_values.numpy().size, dtype=np.float32).reshape(saved.dof_values.numpy().shape) + 1.0
+            )
+            saved.dof_values.assign(values)
+            field.dof_values.fill_(field.dof_values.dtype(-7.0))
+            references.append((name, field, saved, particles, valid, values))
+
+        solver._warmstart_fields(history, scratch, pic)
+        for name, field, _saved, particles, valid, values in references:
+            with test.subTest(field=name, transfer="gather"):
+                expected = np.zeros_like(field.dof_values.numpy())
+                expected[valid] = values[particles[valid]]
+                np.testing.assert_array_equal(field.dof_values.numpy(), expected)
+            # Poison unused slots too: scatter must not write them to the last particle.
+            field.dof_values.fill_(field.dof_values.dtype(42.0))
+
+        solver._save_for_next_warmstart(scratch, pic, history)
+        for name, _field, saved, particles, valid, values in references:
+            with test.subTest(field=name, transfer="scatter"):
+                expected = values.copy()
+                expected[particles[valid]] = 42.0
+                np.testing.assert_array_equal(saved.dof_values.numpy(), expected)
+
+
 def test_single_world_global_particles_supported(test, device):
     """Verify single world global particles supported."""
     initial_plastic_volume_strain = 0.975
@@ -3233,6 +3295,9 @@ class TestImplicitMPM(unittest.TestCase):
 
 
 add_function_test(TestImplicitMPM, "test_stress_virtual_work", test_stress_virtual_work, devices=devices)
+add_function_test(
+    TestImplicitMPM, "test_point_warmstart_unbinned_particles", test_point_warmstart_unbinned_particles, devices=devices
+)
 add_function_test(TestImplicitMPM, "test_delassus_majorizer", test_delassus_majorizer, devices=devices)
 add_function_test(TestImplicitMPM, "test_coupled_iteration_bound", test_coupled_iteration_bound, devices=devices)
 add_function_test(TestImplicitMPM, "test_reconstruction_factors", test_reconstruction_factors, devices=devices)
