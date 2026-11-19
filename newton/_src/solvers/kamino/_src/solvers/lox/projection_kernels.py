@@ -443,6 +443,14 @@ def _project_contact_row(
     reaction_old = reaction[cid]
     local_delassus = delassus[cid]
     velocity = _contact_law_velocity(cid, velocity, reaction_old, local_delassus, bias, normal_compliance, restitution)
+    if weights.contact_proximal_target:
+        # During the first splitting iterations, the proximal term R (lambda - c) pulls toward the target c
+        if weights.iteration_count[weights.contact_world[cid]] < weights.proximal_iterations:
+            target = weights.contact_proximal_target[cid]
+            for axis in range(3):
+                velocity[axis] += (
+                    weights.proximal_weight * local_delassus[axis, axis] * (reaction_old[axis] - target[axis])
+                )
     # An unloaded contact that is not approaching stays unloaded.
     if _is_zero_vec3(reaction_old) and velocity[2] >= 0.0:
         return
@@ -840,13 +848,18 @@ def _prepare_spatial_contacts(
     normal_compliance: wp.array[wp.float32],
     occupancy: wp.array2d[wp.int32],
     inverse_weight: wp.array[mat66f],
+    regularization: wp.float32,
     # Outputs:
     delassus: wp.array[mat66f],
     eigenvectors: wp.array[mat55f],
     eigenvalues: wp.array[vec5f],
     world_failed: wp.array[wp.bool],
 ):
-    """Prepare the mass-split compliant metric and its Schur spectrum."""
+    """Prepare the mass-split compliant metric and its Schur spectrum.
+
+    The diagonal of the metric is scaled by ``1 + regularization``. The row solve computes its
+    free velocity with this same metric, so the scaling forms a proximal term of the local solve only.
+    """
     cid = wp.tid()
     wid = contact_world[cid]
     if contact_local[cid] >= world_contact_count[wid]:
@@ -867,6 +880,8 @@ def _prepare_spatial_contacts(
         _split_inverse_weight(bid_b, color, inverse_weight, occupancy),
     )
     metric[0, 0] += _contact_normal_compliance(cid, normal_compliance)
+    for axis in range(6):
+        metric[axis, axis] *= 1.0 + regularization
     delassus[cid] = metric
     contact_eigenvectors, contact_eigenvalues, valid = prepare_spatial_contact(
         metric, pack_spatial_friction(cid, friction, angular_friction)
@@ -1731,3 +1746,40 @@ def make_iteration_residuals_kernel(spatial: bool):
             atomic_max_nonnegative(world_lagged_residual, wid, lagged_max)
 
     return reduce_iteration_residuals
+
+
+@wp.kernel
+def _regularize_contact_solve_blocks(
+    # Inputs:
+    contact_world: wp.array[wp.int32],
+    contact_local: wp.array[wp.int32],
+    world_contact_count: wp.array[wp.int32],
+    regularization: wp.float32,
+    # Outputs:
+    delassus: wp.array[wp.mat33f],
+):
+    """Scale the diagonal of the local contact solve blocks by ``1 + regularization``.
+
+    The blocks only form the left-hand side of the local solves; the contact law velocity
+    keeps the mechanical response, so the fixed point remains the hard contact solution.
+    """
+    cid = wp.tid()
+    if contact_local[cid] >= world_contact_count[contact_world[cid]]:
+        return
+    block = delassus[cid]
+    for row in range(3):
+        block[row, row] *= 1.0 + regularization
+    delassus[cid] = block
+
+
+@wp.kernel
+def _scale_contact_reactions(
+    # Inputs:
+    reaction: wp.array[wp.vec3f],
+    scale: wp.float32,
+    # Outputs:
+    target: wp.array[wp.vec3f],
+):
+    """Set the proximal target of each contact to its scaled warm-start reaction."""
+    cid = wp.tid()
+    target[cid] = scale * reaction[cid]

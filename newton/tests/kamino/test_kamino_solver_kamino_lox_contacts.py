@@ -23,6 +23,7 @@ _PROJECTION_SCHEDULES = {
     "jacobi": {"gauss_seidel_max_colors": 1, "projection_acceleration": "none"},
     "gauss_seidel": {"gauss_seidel_max_colors": 4, "projection_acceleration": "none"},
     "apgd": {"gauss_seidel_max_colors": 1, "projection_acceleration": "apgd"},
+    "gauss_seidel_apgd": {"gauss_seidel_max_colors": 4, "projection_acceleration": "apgd"},
     "jacobi_anderson": {"gauss_seidel_max_colors": 1, "projection_acceleration": "anderson"},
     "gauss_seidel_anderson": {"gauss_seidel_max_colors": 4, "projection_acceleration": "anderson"},
 }
@@ -116,6 +117,31 @@ class TestSolverKaminoLOXContacts(NewtonTestCase):
         np.testing.assert_array_equal(solver.status.numpy()["failed"], 0)
         self.assertTrue(np.isfinite(state_out.body_qd.numpy()).all())
         return state_out
+
+    def test_proximal_contacts_preserve_hard_contact_solution(self):
+        """Damp finite contact updates while retaining the converged hard-contact velocity."""
+        for spatial in (False, True):
+            with self.subTest(spatial=spatial):
+                first_velocities = []
+                for regularization in (0.0, 1.0):
+                    for iterations in (1, 100):
+                        model = self._sphere(velocity=(0.0, 0.0, -1.0, 0.0, 0.0, 0.0), rolling=0.01)
+                        solver = self._solver(
+                            model,
+                            contact_spatial_friction=spatial,
+                            contact_proximal_regularization=regularization,
+                            contact_proximal_warmstart_scale=1.0,
+                            projected_twist_fraction=1.0,
+                            fixed_iterations=True,
+                            max_iterations=iterations,
+                            projection_sweeps_per_iteration=1,
+                        )
+                        velocity = float(self._step(model, solver).body_qd.numpy()[0, 2])
+                        if iterations == 1:
+                            first_velocities.append(velocity)
+                        else:
+                            self.assertAlmostEqual(velocity, 0.0, delta=2.0e-5)
+                self.assertLess(first_velocities[1], first_velocities[0] - 0.1)
 
     def test_compliance_static_deflection(self):
         """Maintain the analytic spring deflection under gravity."""

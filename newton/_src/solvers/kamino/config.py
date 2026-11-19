@@ -1416,6 +1416,27 @@ class LOXSolverConfig:
     ``constraints.contact_compliance``, which also falls back to shape materials.
     """
 
+    contact_proximal_regularization: float = 0.01
+    """Relative proximal regularization of the local contact solves [dimensionless].
+
+    The local solve of each rigid and spatial contact uses its Delassus block with the
+    diagonal scaled by ``1 + contact_proximal_regularization``, so each local update moves by the
+    least weighted change. The contact law keeps the mechanical response, so converged solutions
+    satisfy the hard contact law. Zero disables the proximal terms, including the proximal warm start.
+    """
+
+    contact_proximal_warmstart_scale: float = 0.9
+    """Scale of the warm-start contact reactions that the first iterations are pulled toward, in [0, 1].
+
+    Applies to the rigid contacts without spatial friction, which carry a per-contact warm start.
+    The iterations start from the full contact warm start. During the first
+    ``max(1, max_iterations // 8)`` splitting iterations, the local contact solves center their
+    proximal term on this scale times the warm-start reaction, which steers the impulses of
+    redundant contacts toward a smaller, more even distribution. The later iterations keep the
+    proximal term of :attr:`contact_proximal_regularization` centered on the current iterate, so
+    converged solutions satisfy the hard contact law.
+    """
+
     contact_implicit_restitution: bool = False
     """Whether each local contact solve decides the restitution of a speculative impact implicitly.
 
@@ -1600,6 +1621,19 @@ class LOXSolverConfig:
         ):
             raise ValueError(
                 f"Invalid projected_twist_fraction: {self.projected_twist_fraction}. Must be in range [0, 1]."
+            )
+        if not np.isfinite(self.contact_proximal_regularization) or self.contact_proximal_regularization < 0.0:
+            raise ValueError(
+                f"Invalid contact_proximal_regularization: {self.contact_proximal_regularization}. Must be non-negative."
+            )
+        if (
+            not np.isfinite(self.contact_proximal_warmstart_scale)
+            or self.contact_proximal_warmstart_scale < 0.0
+            or self.contact_proximal_warmstart_scale > 1.0
+        ):
+            raise ValueError(
+                f"Invalid contact_proximal_warmstart_scale: {self.contact_proximal_warmstart_scale}. "
+                "Must be in range [0, 1]."
             )
         if (
             not np.isfinite(self.joint_warmstart_scale)
