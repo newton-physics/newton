@@ -7,7 +7,6 @@ import ctypes
 import enum
 import re
 import time
-import warnings
 from collections.abc import Callable, Sequence
 from importlib import metadata
 from typing import Any, Literal
@@ -18,8 +17,6 @@ import warp as wp
 import newton as nt
 
 from ..core.types import Axis, override
-from ..exceptions import NewtonDeprecationWarning
-from ..utils.deprecation import deprecate_nonkeyword_arguments
 from ..utils.render import copy_rgb_frame_uint8
 from .camera import Camera
 from .gl.frame_cache import FrameCache
@@ -2066,13 +2063,11 @@ class ViewerGL(ViewerBase):
                 self.gui.on_rendering_paused()
 
     @override
-    @deprecate_nonkeyword_arguments
     def get_frame(
         self,
         *,
         output: wp.array3d[wp.uint8] | None = None,
         render_ui: bool = False,
-        target_image: wp.array3d[wp.uint8] | None = None,
     ) -> wp.array3d[wp.uint8]:
         """
         Retrieve the last rendered frame.
@@ -2081,16 +2076,11 @@ class ViewerGL(ViewerBase):
         CUDA-OpenGL interoperability, while CPU viewers read the PBO into host
         memory.
 
-        .. deprecated:: 1.7
-            ``target_image`` and passing optional arguments positionally are
-            deprecated. Use ``get_frame(output=..., render_ui=...)`` instead.
-
         Args:
             output:
                 Optional pre-allocated Warp array with shape `(height, width, 3)`
                 and dtype `wp.uint8`. If `None`, a new array will be created.
             render_ui: Whether to render the UI.
-            target_image: Deprecated alias for ``output``.
 
         Returns:
             wp.array: RGB image data on the viewer device with shape
@@ -2099,19 +2089,8 @@ class ViewerGL(ViewerBase):
                 If supplied, returns ``output``.
 
         Raises:
-            TypeError: Both ``output`` and ``target_image`` are supplied.
             RuntimeError: Rendering is paused before an image has been displayed.
         """
-        if target_image is not None:
-            if output is not None:
-                raise TypeError("Specify only one of `output` and `target_image`")
-            warnings.warn(
-                "ViewerGL.get_frame(target_image=...) is deprecated as of Newton 1.7; use output=... instead.",
-                NewtonDeprecationWarning,
-                stacklevel=3,
-            )
-            output = target_image
-
         if self.is_rendering_paused() and not self._has_rendered_frame:
             raise RuntimeError("Frame capture requires at least one displayed frame")
 

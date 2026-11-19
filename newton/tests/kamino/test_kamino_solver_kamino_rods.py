@@ -11,7 +11,8 @@ import warp as wp
 
 import newton
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
-from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino import setup_test_output, setup_tests, test_context
+from newton.tests.unittest_utils import NewtonTestCase
 
 _TIME_STEP = 0.01
 _ROD_BACKENDS = ("lox", "scc", "padmm")
@@ -146,11 +147,13 @@ def _run_rod_cases(cases: list[dict[str, float | str]], device: wp.DeviceLike, b
     return state_next.body_qd.numpy()
 
 
-class TestSolverKaminoRods(unittest.TestCase):
+class TestSolverKaminoRods(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
+
+        setup_test_output(self)
 
     def _step_rod(
         self, model: newton.Model, backend: str, body_q=None, body_qd=None, control: newton.Control | None = None
@@ -480,4 +483,6 @@ class TestSolverKaminoRods(unittest.TestCase):
 
 
 if __name__ == "__main__":
+    newton.utils.setup_console_logging()
+    setup_tests()
     unittest.main(verbosity=2)
