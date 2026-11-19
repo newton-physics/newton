@@ -286,13 +286,13 @@ class ProjectionSchedule:
         weights.inverse_weight = inverse_weight
         weights.box_response = p.box_rows.response
         weights.contact_response = p.contact_rows.response
+        regularization = self.contact_proximal_regularization
+        weights.proximal_weight = regularization / (1.0 + regularization)
         if self.contact_proximal_target is not None:
             weights.contact_world = p.contact_rows.world
             weights.contact_proximal_target = self.contact_proximal_target
             weights.iteration_count = self.iteration_count
             weights.proximal_iterations = self.contact_proximal_target_iterations
-            regularization = self.contact_proximal_regularization
-            weights.proximal_weight = regularization / (1.0 + regularization)
         return weights
 
     def _prepare_blocks(self, inverse_weight, occupancy, box_color, contact_color, smoothing_occupancy, world_failed):

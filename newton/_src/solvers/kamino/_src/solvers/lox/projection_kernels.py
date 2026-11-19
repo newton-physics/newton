@@ -282,6 +282,7 @@ def _contact_law_velocity(
     bias: wp.array[wp.vec3f],
     normal_compliance: wp.array[wp.float32],
     restitution: wp.array[wp.vec4f],
+    proximal_weight: wp.float32 = 0.0,
 ) -> wp.vec3f:
     """Add the compliance and in-kernel restitution terms to a biased contact velocity.
 
@@ -289,10 +290,11 @@ def _contact_law_velocity(
         cid: Contact row.
         velocity: Biased contact velocity ``J v + bias``.
         reaction: Current normal-last contact impulse.
-        delassus: Local Delassus block, including the normal compliance.
+        delassus: Local Delassus block, including normal compliance and proximal regularization.
         bias: Velocity bias of each contact.
         normal_compliance: Impulse-space normal compliance [1/kg] of each contact, or ``None``.
         restitution: In-kernel restitution inputs of each contact, or ``None``.
+        proximal_weight: Proximal fraction of the local diagonal, or zero for an unregularized block.
 
     Returns:
         The velocity whose hard Coulomb law is the contact law of the row.
@@ -302,6 +304,7 @@ def _contact_law_velocity(
     result[2] += _contact_normal_compliance(cid, normal_compliance) * reaction[2]
     if restitution:
         free_normal = result[2] - bias[cid][2] - (delassus @ reaction)[2]
+        free_normal += proximal_weight * delassus[2, 2] * reaction[2]
         result[2] -= _contact_restitution_target(cid, free_normal, restitution)
     return result
 
@@ -442,7 +445,9 @@ def _project_contact_row(
     velocity = bias[cid] + velocity
     reaction_old = reaction[cid]
     local_delassus = delassus[cid]
-    velocity = _contact_law_velocity(cid, velocity, reaction_old, local_delassus, bias, normal_compliance, restitution)
+    velocity = _contact_law_velocity(
+        cid, velocity, reaction_old, local_delassus, bias, normal_compliance, restitution, weights.proximal_weight
+    )
     if weights.contact_proximal_target:
         # During the first splitting iterations, the proximal term R (lambda - c) pulls toward the target c
         if weights.iteration_count[weights.contact_world[cid]] < weights.proximal_iterations:
@@ -527,7 +532,11 @@ def _project_spatial_contact_row(
         contact_jacobian_b = jacobian_b[cid]
         velocity += spatial_body_velocity(contact_jacobian_b, contact_frame, 1.0, projected_twist[bid_b])
     free_velocity = velocity - mechanical @ old
-    free_velocity[0] += _normal_target_bias(cid, free_velocity[0], bias, restitution)
+    free_normal = free_velocity[0]
+    if restitution:
+        # The solve keeps its proximal center, but restitution uses the mechanical trial.
+        free_normal += weights.proximal_weight * metric[0, 0] * old[0]
+    free_velocity[0] += _normal_target_bias(cid, free_normal, bias, restitution)
     reaction_new, status = solve_spatial_contact(
         metric,
         eigenvectors[cid],

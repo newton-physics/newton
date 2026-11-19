@@ -183,6 +183,61 @@ class TestSolverKaminoLOXContacts(NewtonTestCase):
                 state = self._step(model, solver)
                 self.assertAlmostEqual(float(state.body_qd.numpy()[0, 2]), expected, delta=2.0e-4)
 
+    def test_proximal_restitution_keeps_speculative_boundary(self):
+        """Select restitution from the mechanical trial even with a nonzero warm-start impulse."""
+        for spatial in (False, True):
+            for regularization in (0.0, 0.01):
+                model = self._sphere(
+                    gap=0.01,
+                    gravity=0.0,
+                    velocity=(0.0, 0.0, -2.0, 0.0, 0.0, 0.0),
+                    restitution=0.5,
+                    rolling=0.01,
+                )
+                solver = self._solver(
+                    model,
+                    contact_implicit_restitution=True,
+                    contact_spatial_friction=spatial,
+                    contact_proximal_regularization=regularization,
+                )
+                self._step(model, solver)
+                native = solver._solver_kamino.solver_fd
+                projection = native._projection
+                state = native._data.state
+                rows = native._problem.data.contact_rows
+                # Exercise a local projection with a frozen gap and a unit warm-start impulse.
+                # Both trials stay within 0.005 m/s of the gap-closing boundary (-1 m/s).
+                state.iteration_count.fill_(native._config.max_iterations)
+                schedules = (False, True) if self.default_device.is_cuda else (False,)
+                for by_world in schedules:
+                    projection._by_world = by_world
+                    for free_velocity in (-0.995, -1.005):
+                        with self.subTest(
+                            spatial=spatial,
+                            regularization=regularization,
+                            by_world=by_world,
+                            free_velocity=free_velocity,
+                        ):
+                            rows.reaction.fill_(wp.vec3f(0.0, 0.0, 1.0))
+                            if rows.angular_reaction is not None:
+                                rows.angular_reaction.zero_()
+                            state.world_active.fill_(True)
+                            state.world_failed.zero_()
+                            twist = wp.array(
+                                [[0.0, 0.0, free_velocity, 0.0, 0.0, 0.0]],
+                                dtype=state.projected_twist.dtype,
+                                device=model.device,
+                            )
+                            projection.project(
+                                1, False, state.world_active, state.world_failed, native._model.bodies.wid, twist
+                            )
+                            np.testing.assert_array_equal(state.world_failed.numpy(), False)
+                            velocity = float(twist.numpy()[0, 2])
+                            if free_velocity > -1.0:
+                                self.assertLess(velocity, -0.9)
+                            else:
+                                self.assertGreater(velocity, 0.9)
+
     def test_failed_world_recovers_after_reset(self):
         """Fail only the world whose twists become non-finite, and keep it failed with a finite input until a
         reset recovers it."""
