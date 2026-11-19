@@ -5,6 +5,7 @@
 
 import logging
 import unittest
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -23,14 +24,14 @@ from newton._src.solvers.kamino._src.solvers.padmm.math import (
     project_to_coulomb_cone,
     project_to_coulomb_dual_cone,
 )
-from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
-from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino import setup_test_output, setup_tests, test_context
 from newton.tests.kamino.utils.extract import (
     extract_delassus,
     extract_info_vectors,
     extract_problem_vector,
 )
 from newton.tests.kamino.utils.make import make_containers, update_containers
+from newton.tests.unittest_utils import NewtonTestCase
 from newton.tests.utils import basics
 
 logger = logging.getLogger(__name__)
@@ -459,30 +460,21 @@ def save_solver_info(solver: PADMMSolver, path: str | None = None):
 ###
 
 
-class TestPADMMSolver(unittest.TestCase):
+class TestPADMMSolver(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.verbose = test_context.verbose  # Set to True for detailed output
+
+        setup_test_output(self, verbose=self.verbose)
+
         self.savefig = test_context.verbose  # Set to True to generate solver info plots
         self.default_device = wp.get_device(test_context.device)
-        self.output_path = test_context.output_path / "test_solvers_padmm"
+        self.output_path = Path(__file__).parent / "output" / "test_solvers_padmm"
 
         # Create output directory if saving figures
         if self.savefig:
             self.output_path.mkdir(parents=True, exist_ok=True)
-
-        # Set debug-level logging to print verbose test output to console
-        if self.verbose:
-            set_log_level(logging.DEBUG)
-            logger.debug("\n")  # Add newline before test output for better readability
-        else:
-            reset_log_level()
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
 
     def test_00_make_padmm_default(self):
         """

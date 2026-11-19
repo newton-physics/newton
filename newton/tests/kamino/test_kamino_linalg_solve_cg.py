@@ -25,33 +25,25 @@ from newton._src.solvers.kamino._src.linalg.sparse_matrix import (
     dense_to_block_sparse_copy_values,
 )
 from newton._src.solvers.kamino._src.linalg.utils.rand import random_spd_matrix
-from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
-from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino import setup_test_output, setup_tests, test_context
 from newton.tests.kamino.utils.extract import get_vector_block
 from newton.tests.kamino.utils.make import make_dense_matrix_storage
 from newton.tests.kamino.utils.print import debug_print_error_stats
 from newton.tests.kamino.utils.rand import RandomProblemLLT
+from newton.tests.unittest_utils import NewtonTestCase
 
 logger = logging.getLogger(__name__)
 
 
-class TestLinalgConjugate(unittest.TestCase):
+class TestLinalgConjugate(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.verbose = test_context.verbose  # Set to True for verbose output
+
+        setup_test_output(self, verbose=self.verbose)
+
         self.seed = 42
-
-        # Set debug-level logging to print verbose test output to console
-        if self.verbose:
-            set_log_level(logging.DEBUG)
-            logger.debug("\n")  # Add newline before test output for better readability
-        else:
-            reset_log_level()
-
-    def tearDown(self):
-        if self.verbose:
-            reset_log_level()
 
     def _test_solve(self, solver_cls, problem_params, device):
         problem = RandomProblemLLT(

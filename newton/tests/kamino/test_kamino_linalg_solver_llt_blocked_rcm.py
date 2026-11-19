@@ -13,12 +13,12 @@ import newton
 from newton._src.solvers.kamino._src.linalg.core import DenseLinearOperatorData, DenseSquareMultiLinearInfo
 from newton._src.solvers.kamino._src.linalg.factorize import rcm_batch
 from newton._src.solvers.kamino._src.linalg.factorize.llt_blocked_rcm_solver import LLTBlockedRCMSolver
-from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
-from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino import setup_test_output, setup_tests, test_context
 from newton.tests.kamino.utils.extract import get_matrix_block, get_vector_block
 from newton.tests.kamino.utils.make import make_dense_matrix_storage
 from newton.tests.kamino.utils.print import debug_print_error_stats
 from newton.tests.kamino.utils.rand import RandomProblemLLT
+from newton.tests.unittest_utils import NewtonTestCase
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 ###
 
 
-class TestLinAlgLLTBlockedRCMSolver(unittest.TestCase):
+class TestLinAlgLLTBlockedRCMSolver(NewtonTestCase):
     def setUp(self):
         # Configs
         if not test_context.setup_done:
@@ -36,17 +36,7 @@ class TestLinAlgLLTBlockedRCMSolver(unittest.TestCase):
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose  # Set to True for verbose output
 
-        # Set debug-level logging to print verbose test output to console
-        if self.verbose:
-            set_log_level(logging.DEBUG)
-            logger.debug("\n")  # Add newline before test output for better readability
-        else:
-            reset_log_level()
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
+        setup_test_output(self, verbose=self.verbose)
 
     def test_00_make_default_solver(self):
         """

@@ -74,7 +74,7 @@ from newton._src.solvers.kamino._src.solvers.scc.sparse_kernels import (
 )
 from newton._src.solvers.kamino._src.solvers.scc.types import SCCConfigStruct, SCCState, convert_config_to_struct
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
-from newton.tests.kamino import expect_contact_capacity_warning, setup_tests, test_context
+from newton.tests.kamino import expect_contact_capacity_warning, setup_test_output, setup_tests, test_context
 from newton.tests.kamino.test_kamino_solvers_padmm import TestSetup
 from newton.tests.kamino.utils.extract import extract_delassus, extract_problem_vector, get_matrix_block
 from newton.tests.kamino.utils.make import (
@@ -83,7 +83,7 @@ from newton.tests.kamino.utils.make import (
     make_test_problem_fourbar,
     update_containers,
 )
-from newton.tests.unittest_utils import MODULE_LOAD_OUTPUT_RE, NewtonTestCase, requires
+from newton.tests.unittest_utils import NewtonTestCase, requires
 from newton.tests.utils import basics, testing
 
 
@@ -402,14 +402,7 @@ class TestSCCSolver(NewtonTestCase):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.device = wp.get_device(test_context.device)
-        self.allowOutputRegex(MODULE_LOAD_OUTPUT_RE, stream="stdout")
-        # Any DR Legs regression can be first to populate a cold asset cache.
-        self.allowOutputRegex(
-            r"Cloning https://github\.com/newton-physics/newton-assets\.git "
-            r"\(ref: 261cd1f429619d8ef4f546bd788ab9dea906b5e1\)\.\.\.\n"
-            r"Successfully downloaded folder to: [^\n]+[/\\]disneyresearch\n?",
-            stream="stdout",
-        )
+        setup_test_output(self)
 
     def test_00_sparse_projection_is_allocated_only_for_schur(self):
         """Allocate the large sparse response workspace only for Schur solves."""
@@ -4830,4 +4823,5 @@ class TestSCCSolver(NewtonTestCase):
 
 if __name__ == "__main__":
     newton.utils.setup_console_logging()
+    setup_tests()
     unittest.main()
