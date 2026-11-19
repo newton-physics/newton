@@ -15,7 +15,6 @@ import numpy as np
 import warp as wp
 
 from ..core import quat_between_axes
-from ..core._warnings import _external_warning_stacklevel
 from ..core.types import Axis, AxisType, Sequence, Transform, vec10
 from ..exceptions import NewtonWarning
 from ..geometry import GeoType, Mesh, ShapeFlags, compute_inertia_shape
@@ -36,9 +35,7 @@ from ..solvers.mujoco.equality import _add_equality_constraint
 from ..solvers.mujoco.solver_mujoco import SolverMuJoCo
 from ..solvers.mujoco.utils import (
     mjc_add_equality_loop_joint,
-    mjc_add_equality_mimic,
     mjc_parse_polycoef,
-    mjc_polycoef_has_higher_order,
     solref_invalid_mask,
 )
 from ..usd.schemas import solref_to_stiffness_damping
@@ -657,14 +654,12 @@ def parse_mjcf(
         collapse_massless_fixed_root: If True, collapse only the massless fixed-joint chain below an imported free root body. Ignored when ``collapse_fixed_joints`` is True.
         verbose: If True, log additional information about parsing the MJCF.
         skip_equality_constraints: Whether <equality> tags should be parsed. If True, equality constraints are ignored.
-        convert_mjc_equality_constraints: Whether MuJoCo equality constraints should be converted to Newton loop
-            joints or mimic constraints while preserving MuJoCo equality metadata for SolverMuJoCo. A weld
-            becomes a FIXED loop joint, or a BALL loop joint when its ``torquescale`` is 0 (see "Link-break welds
-            and MuJoCo welds" in the articulation docs). If False, equality constraints are preserved in the
+        convert_mjc_equality_constraints: Whether MuJoCo CONNECT and WELD equality constraints should be converted to
+            Newton loop joints while preserving MuJoCo equality metadata for SolverMuJoCo. A weld becomes a FIXED
+            loop joint, or a BALL loop joint when its ``torquescale`` is 0 (see "Link-break welds and MuJoCo
+            welds" in the articulation docs). If False, they are preserved only in the
             ``mujoco:equality_constraint`` custom-attribute namespace and finalize under
-            ``model.mujoco.equality_constraint_*``. Joint equalities that omit ``joint2`` or target a multi-DoF
-            joint (such as joints sharing a body) are preserved this way even when True, with a
-            :class:`~newton.NewtonWarning`; only SolverMuJoCo enforces them.
+            ``model.mujoco.equality_constraint_*``. Joint equalities are always preserved this way.
         convert_3d_hinge_to_ball_joints: If True, series of three hinge joints are converted to a single ball joint.
             Nonzero scalar spring rest coordinates cannot be preserved by this conversion; it warns and uses
             an identity rest orientation. Default is False.
@@ -3379,7 +3374,6 @@ def parse_mjcf(
                             common["name"],
                         )
 
-        mujoco_only_joint_equalities = []
         for joint in equality.findall("joint"):
             attribs = resolve_element_attrib(joint, "equality")
             common = parse_common_attributes(attribs)
@@ -3415,55 +3409,16 @@ def parse_mjcf(
                 s1 = scale if sanitize_name(joint1_name) in mjcf_slide_joint_names else 1.0
                 s2 = scale if joint2_name and sanitize_name(joint2_name) in mjcf_slide_joint_names else 1.0
                 polycoef_values = [c * s1 / s2**k for k, c in enumerate(polycoef_values)]
-                # Newton mimic constraints couple two whole scalar joints; other
-                # endpoints stay MuJoCo equality rows resolved per DoF.
-                scalar_pair = joint2_idx >= 0 and all(
-                    sum(builder.joint_dof_dim[index]) == 1 for index in (joint1_idx, joint2_idx)
+                _add_equality_constraint(
+                    builder,
+                    constraint_type=EqType.JOINT,
+                    joint1=joint1_idx,
+                    joint2=joint2_idx,
+                    polycoef=polycoef_values,
+                    label=equality_label(common),
+                    enabled=common["active"],
+                    custom_attributes=custom_attrs,
                 )
-
-                if convert_mjc_equality_constraints and scalar_pair:
-                    if mjc_polycoef_has_higher_order(polycoef_values):
-                        warnings.warn(
-                            f"Joint equality '{common['name']}' uses higher-order polycoef terms. "
-                            "They are preserved for SolverMuJoCo, but generic Newton mimic constraints use "
-                            "only coef0/coef1.",
-                            NewtonWarning,
-                            stacklevel=2,
-                        )
-                    mjc_add_equality_mimic(
-                        builder,
-                        joint1_idx,
-                        joint2_idx,
-                        polycoef_values,
-                        equality_label(common),
-                        common["active"],
-                        custom_attrs,
-                    )
-                else:
-                    if convert_mjc_equality_constraints:
-                        mujoco_only_joint_equalities.append(common["name"] or f"joint1={joint1_name}")
-                    _add_equality_constraint(
-                        builder,
-                        constraint_type=EqType.JOINT,
-                        joint1=joint1_idx,
-                        joint2=joint2_idx,
-                        polycoef=polycoef_values,
-                        label=equality_label(common),
-                        enabled=common["active"],
-                        custom_attributes=custom_attrs,
-                    )
-
-        if mujoco_only_joint_equalities:
-            shown = ", ".join(mujoco_only_joint_equalities[:5])
-            if len(mujoco_only_joint_equalities) > 5:
-                shown += ", ..."
-            warnings.warn(
-                f"{len(mujoco_only_joint_equalities)} joint equalities omit joint2 or target a multi-DoF joint, "
-                f"such as joints sharing a body ({shown}), so they stay MuJoCo equality constraints instead of "
-                "mimic constraints. SolverMuJoCo enforces them; other solvers ignore them.",
-                NewtonWarning,
-                stacklevel=_external_warning_stacklevel(),
-            )
 
         # Tendon equalities are parsed after tendons by parse_tendon_equality_constraints().
         # TODO: add support for equality constraint type "flex" once Newton supports it

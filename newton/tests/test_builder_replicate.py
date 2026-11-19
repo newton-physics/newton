@@ -66,9 +66,6 @@ class TestModelBuilderReplicate(unittest.TestCase):
         )
         builder.add_shape_box(body=fixed, hx=0.1, hy=0.1, hz=0.1, label="fixed_shape")
         builder.add_shape_collision_filter_pair(root_shape, child_shape)
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            builder.add_constraint_mimic(child_joint, root_joint, coef0=0.25, coef1=-1.0, label="mimic")
 
         builder.add_custom_frequency(ModelBuilder.CustomFrequency(name="thing", namespace="test"))
         builder.add_custom_attribute(

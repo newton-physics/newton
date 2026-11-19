@@ -3906,76 +3906,6 @@ class TestModelJoints(unittest.TestCase):
 
         self.assertIn("DFS topological order", str(cm.warning))
 
-    def test_mimic_constraint_programmatic(self):
-        """Test programmatic creation of mimic constraints."""
-        builder = newton.ModelBuilder()
-
-        # Create three links without implicit FREE joints.
-        b0 = builder.add_link()
-        b1 = builder.add_link()
-        b2 = builder.add_link()
-
-        j1 = builder.add_joint_revolute(
-            parent=-1,
-            child=b0,
-            axis=(0, 0, 1),
-            label="j1",
-        )
-        j2 = builder.add_joint_revolute(
-            parent=-1,
-            child=b1,
-            axis=(0, 0, 1),
-            label="j2",
-        )
-        j3 = builder.add_joint_revolute(
-            parent=-1,
-            child=b2,
-            axis=(0, 0, 1),
-            label="j3",
-        )
-        builder.add_articulation([j1])
-        builder.add_articulation([j2])
-        builder.add_articulation([j3])
-
-        # Add mimic constraints
-        with self.assertWarnsRegex(DeprecationWarning, "set_joint_mimic"):
-            _c1 = builder.add_constraint_mimic(
-                joint0=j2,
-                joint1=j1,
-                coef0=-0.25,
-                coef1=1.5,
-                label="mimic1",
-            )
-        with self.assertWarnsRegex(DeprecationWarning, "set_joint_mimic"):
-            _c2 = builder.add_constraint_mimic(
-                joint0=j3,
-                joint1=j1,
-                coef0=0.0,
-                coef1=-1.0,
-                enabled=False,
-                label="mimic2",
-            )
-
-        model = builder.finalize()
-
-        self.assertEqual(model.constraint_mimic_count, 2)
-
-        # Check first constraint
-        self.assertEqual(model.constraint_mimic_joint0.numpy()[0], j2)
-        self.assertEqual(model.constraint_mimic_joint1.numpy()[0], j1)
-        self.assertAlmostEqual(model.constraint_mimic_coef0.numpy()[0], -0.25)
-        self.assertAlmostEqual(model.constraint_mimic_coef1.numpy()[0], 1.5)
-        self.assertTrue(model.constraint_mimic_enabled.numpy()[0])
-        self.assertEqual(model.constraint_mimic_label[0], "mimic1")
-
-        # Check second constraint
-        self.assertEqual(model.constraint_mimic_joint0.numpy()[1], j3)
-        self.assertEqual(model.constraint_mimic_joint1.numpy()[1], j1)
-        self.assertAlmostEqual(model.constraint_mimic_coef0.numpy()[1], 0.0)
-        self.assertAlmostEqual(model.constraint_mimic_coef1.numpy()[1], -1.0)
-        self.assertFalse(model.constraint_mimic_enabled.numpy()[1])
-        self.assertEqual(model.constraint_mimic_label[1], "mimic2")
-
     def test_joint_mimic_metadata_and_evaluation(self):
         """Verify joint-owned mimic metadata evaluates scalar coordinates."""
         builder = newton.ModelBuilder()
@@ -3998,7 +3928,6 @@ class TestModelJoints(unittest.TestCase):
             model.joint_mimic_coeffs.numpy(),
             [(0.0, 1.0), (0.5, 2.0)],
         )
-        self.assertEqual(model.constraint_mimic_count, 0)
 
         state_in = model.state()
         state_out = model.state()

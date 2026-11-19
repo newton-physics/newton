@@ -6747,13 +6747,11 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
         legacy_solver = SolverMuJoCo(legacy_model)
 
         converted_builder = newton.ModelBuilder()
-        with self.assertWarnsRegex(UserWarning, "higher-order polycoef"):
-            converted_builder.add_mjcf(mjcf)
+        converted_builder.add_mjcf(mjcf)
         converted_model = converted_builder.finalize()
         converted_solver = SolverMuJoCo(converted_model)
 
         self.assertEqual(converted_model.mujoco.equality_constraint_count, 3)
-        self.assertEqual(converted_model.constraint_mimic_count, 1)
         np.testing.assert_array_equal(
             converted_model.mujoco.equality_constraint_type.numpy(),
             np.array(
@@ -6770,7 +6768,7 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
                 [
                     int(MjcEqualityTargetKind.JOINT),
                     int(MjcEqualityTargetKind.JOINT),
-                    int(MjcEqualityTargetKind.MIMIC),
+                    int(MjcEqualityTargetKind.NONE),
                 ]
             ),
         )
@@ -7018,12 +7016,10 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
 """
 
         builder = newton.ModelBuilder()
-        with self.assertWarnsRegex(UserWarning, "higher-order polycoef"):
-            parse_mjcf(builder, mjcf)
+        parse_mjcf(builder, mjcf)
         model = builder.finalize()
 
         self.assertEqual(model.mujoco.equality_constraint_count, 3)
-        self.assertEqual(model.constraint_mimic_count, 1)
         self.assertTrue(hasattr(model, "mujoco"))
         self.assertTrue(hasattr(model.mujoco, "equality_constraint_target_kind"))
         self.assertTrue(hasattr(model.mujoco, "equality_constraint_target"))
@@ -7033,7 +7029,7 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
                 [
                     int(MjcEqualityTargetKind.JOINT),
                     int(MjcEqualityTargetKind.JOINT),
-                    int(MjcEqualityTargetKind.MIMIC),
+                    int(MjcEqualityTargetKind.NONE),
                 ]
             ),
         )
@@ -7928,10 +7924,8 @@ class TestMjcfJointEqualityEndpoints(unittest.TestCase):
         """Hold joint1 at the constant term, with its solver parameters, when joint2 is omitted."""
         joint = '<joint name="hip-lock" type="hinge" axis="1 0 0"/>'
         equality = '<joint joint1="hip-lock" polycoef="0.3 0 0 0 0" solref="0.01 1" solimp="0.8 0.9 0.01 0.5 2"/>'
-        with self.assertWarnsRegex(newton.NewtonWarning, "stay MuJoCo equality constraints"):
-            native, converted, model = self._convert(self._mjcf(joint, equality))
+        native, converted, _ = self._convert(self._mjcf(joint, equality))
 
-        self.assertEqual(model.constraint_mimic_count, 0)
         self.assertEqual(list(converted.eq_obj2id), [-1])
         self._assert_matches_native(native, converted)
 
@@ -7946,9 +7940,7 @@ class TestMjcfJointEqualityEndpoints(unittest.TestCase):
                             "".join(_EQUALITY_TEST_JOINTS[name] for name in joints),
                             f'<joint joint1="{joint1}" joint2="{joint2}" polycoef="0.05 0.5 0 0 0"/>',
                         )
-                        with self.assertWarnsRegex(newton.NewtonWarning, f"joint1={joint1}"):
-                            native, converted, model = self._convert(mjcf)
-                        self.assertEqual(model.constraint_mimic_count, 0)
+                        native, converted, _ = self._convert(mjcf)
                         # Combined joints apply slides before hinges, so a hinge declared
                         # before a slide changes the kinematics independently of the equality.
                         slide_after_hinge = joints.index("s1") > 0 if "s1" in joints else False
@@ -7957,11 +7949,8 @@ class TestMjcfJointEqualityEndpoints(unittest.TestCase):
     @requires(*MUJOCO_MODULES)
     def test_partial_polycoef_keeps_mujoco_defaults(self):
         """Fill omitted joint polycoef terms from MuJoCo's ``0 1 0 0 0`` default instead of zero."""
-        native, converted, model = self._convert(
-            self._two_body_mjcf('<joint joint1="h1" joint2="h2" polycoef="0.05"/>')
-        )
+        native, converted, _ = self._convert(self._two_body_mjcf('<joint joint1="h1" joint2="h2" polycoef="0.05"/>'))
         np.testing.assert_allclose(native.eq_data[0, :5], [0.05, 1.0, 0.0, 0.0, 0.0])
-        self.assertEqual(model.constraint_mimic_count, 1)
         self._assert_matches_native(native, converted)
 
     @requires(*MUJOCO_MODULES)
@@ -7989,19 +7978,11 @@ class TestMjcfJointEqualityEndpoints(unittest.TestCase):
 </worldbody><equality>{equality}</equality></mujoco>"""
                 builder = newton.ModelBuilder()
                 SolverMuJoCo.register_custom_attributes(builder)
-                # One-ended rows stay MuJoCo-only; the quadratic term is beyond a Newton mimic.
-                warning = "higher-order polycoef" if 'joint2="' in equality else "omit joint2"
-                with self.assertWarnsRegex(newton.NewtonWarning, warning):
-                    builder.add_mjcf(mjcf, scale=scale)
+                builder.add_mjcf(mjcf, scale=scale)
                 model = builder.finalize(device="cpu")
                 solver = SolverMuJoCo(model, use_mujoco_cpu=True, kinematic_switchable_roots=False)
                 np.testing.assert_allclose(solver.mj_model.eq_data[0, :5], expected, rtol=1e-6)
-                if 'joint2="' in equality:
-                    self.assertEqual(model.constraint_mimic_count, 1)
-                    np.testing.assert_allclose(model.constraint_mimic_coef0.numpy(), [expected[0]], rtol=1e-6)
-                    np.testing.assert_allclose(model.constraint_mimic_coef1.numpy(), [expected[1]], rtol=1e-6)
-                else:
-                    self.assertEqual(model.constraint_mimic_count, 0)
+                np.testing.assert_allclose(model.mujoco.equality_constraint_polycoef.numpy()[0], expected, rtol=1e-6)
 
     @requires(*MUJOCO_MODULES)
     def test_dof_selector_without_joint_raises(self):
@@ -8125,8 +8106,7 @@ class TestMjcfJointEqualityEndpoints(unittest.TestCase):
             for world in range(2):
                 joint1, joint2 = world1_pair if world == 1 else ("h1", "h2")
                 builder.begin_world()
-                with self.assertWarnsRegex(newton.NewtonWarning, "multi-DoF joint"):
-                    builder.add_mjcf(self._mjcf(joints, f'<joint joint1="{joint1}" joint2="{joint2}"/>'))
+                builder.add_mjcf(self._mjcf(joints, f'<joint joint1="{joint1}" joint2="{joint2}"/>'))
                 builder.end_world()
             model = builder.finalize()
             with self.subTest(world1_pair=world1_pair):

@@ -62,7 +62,7 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
           and :attr:`~newton.Model.joint_target_mode` are not supported.
         - Joint-owned mimic relationships are enforced as penalty springs for PRISMATIC, REVOLUTE, and D6 joints.
           Their stability and accuracy depend on ``joint_mimic_ke``, ``joint_mimic_kd``, and the simulation time step.
-          Equality constraints and the deprecated sparse mimic constraints are not supported.
+          Equality constraints are not supported.
 
         See :ref:`Joint feature support` for the full comparison across solvers.
 

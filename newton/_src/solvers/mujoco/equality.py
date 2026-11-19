@@ -33,7 +33,6 @@ class MjcEqualityTargetKind(IntEnum):
 
     NONE = 0  # Pure equality row; no projected Newton object, target is -1.
     JOINT = 1  # Target is a Newton joint, used by converted CONNECT/WELD loop joints.
-    MIMIC = 2  # Target is a Newton mimic constraint, used by converted JOINT equalities.
 
 
 def equality_loop_joint_mask(target_kind: Any, target: Any, joint_count: int) -> np.ndarray:
@@ -238,9 +237,9 @@ def _register_equality_constraint_attributes(builder: ModelBuilder) -> None:
             namespace="mujoco",
         )
     )
-    # ``target_kind`` / ``target`` link a row to the native entity it was projected onto (loop
-    # joint or mimic) for solver portability; converted MJCF/USD equalities set them, while pure
-    # equality rows keep ``MjcEqualityTargetKind.NONE`` / ``-1``.
+    # ``target_kind`` / ``target`` link a row to the loop joint it was projected onto for solver
+    # portability; converted MJCF/USD equalities set them, while pure equality rows keep
+    # ``MjcEqualityTargetKind.NONE`` / ``-1``.
     builder.add_custom_attribute(
         ca(
             name="equality_constraint_target_kind",

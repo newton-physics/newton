@@ -2376,7 +2376,6 @@ class TestMimicConstraints(unittest.TestCase):
         leader_idx = model.joint_label.index("mimic_test/leader_joint")
         follower_idx = model.joint_label.index("mimic_test/follower_joint")
 
-        self.assertEqual(model.constraint_mimic_count, 0)
         self.assertEqual(model.joint_mimic_joint.numpy()[follower_idx], leader_idx)
         np.testing.assert_allclose(model.joint_mimic_coeffs.numpy()[follower_idx], (0.5, 2.0))
 
@@ -2448,7 +2447,6 @@ class TestMimicConstraints(unittest.TestCase):
             builder.add_urdf(urdf, joint_ordering=None)
 
         # No mimic relationship should be created because the follower joint was skipped.
-        self.assertEqual(len(builder.constraint_mimic_joint0), 0)
         self.assertTrue(all(reference == -1 for reference in builder.joint_mimic_joint))
 
 

@@ -425,10 +425,9 @@ def test_unconverted_equality_constraints_raise(test, device):
     """Reject an enabled MuJoCo equality row instead of letting the body fall through it."""
     with test.assertRaisesRegex(NotImplementedError, r"equality_constraint rows \[0\]"):
         SolverSteel(_build_box_with_equality(device, enabled=True))
-    # A link to a projected entity that does not exist does not make the row enforced.
-    for target_kind in (1, 2):
-        with test.assertRaisesRegex(NotImplementedError, "equality"):
-            SolverSteel(_build_box_with_equality(device, enabled=True, target_kind=target_kind, target=7))
+    # A link to a projected joint that does not exist does not make the row enforced.
+    with test.assertRaisesRegex(NotImplementedError, "equality"):
+        SolverSteel(_build_box_with_equality(device, enabled=True, target_kind=1, target=7))
 
     # Imported equalities are converted to Newton loop joints by default; those rows are
     # enforced through the loop joint (see the loop-closure tests). Unconverted, they raise.
@@ -533,8 +532,8 @@ def test_equality_link_must_name_the_projected_constraint(test, device):
             with test.assertRaisesRegex(NotImplementedError, "loop-closing"):
                 SolverSteel(build_pendulum_with_connect(eq_type, joint_kind, False, torquescale))
 
-    # A JOINT row linking a mimic between other joints is likewise unenforced; the importer's
-    # own projection is enforced through its mimic constraint.
+    # A JOINT row between two scalar joints of one articulation is enforced directly; one that
+    # omits joint2 is not.
     mjcf = """
     <mujoco>
       <worldbody>
@@ -544,32 +543,25 @@ def test_equality_link_must_name_the_projected_constraint(test, device):
           <body name="b" pos="0.3 0 0">
             <joint name="jb" type="hinge" axis="0 1 0"/>
             <geom type="box" size="0.1 0.1 0.1"/>
-            <body name="c" pos="0.3 0 0">
-              <joint name="jc" type="hinge" axis="0 1 0"/>
-              <geom type="box" size="0.1 0.1 0.1"/>
-            </body>
           </body>
         </body>
       </worldbody>
-      <equality><joint joint1="jb" joint2="ja"/></equality>
+      <equality><joint joint1="jb"{joint2}/></equality>
     </mujoco>
     """
-    for swap in (False, True):
-        with test.subTest(mimic_joints_swapped=swap):
+    for joint2, supported in ((' joint2="ja"', True), (' joint2="ja" polycoef="0 1 0.5"', True), ("", False)):
+        with test.subTest(joint2=joint2):
             builder = newton.ModelBuilder()
-            builder.add_mjcf(mjcf)
+            builder.add_mjcf(mjcf.format(joint2=joint2))
             model = builder.finalize(device=device)
-            test.assertEqual(int(model.mujoco.equality_constraint_target_kind.numpy()[0]), 2)
-            if swap:
-                joint0 = model.constraint_mimic_joint0.numpy()
-                joint1 = model.constraint_mimic_joint1.numpy()
-                model.constraint_mimic_joint0.assign(joint1)
-                model.constraint_mimic_joint1.assign(joint0)
-            if swap:
+            if "polycoef" in joint2:
+                with test.assertWarnsRegex(newton.NewtonWarning, "higher-order polycoef"):
+                    SolverSteel(model, solve_mode="serial")
+            elif supported:
+                test.assertEqual(SolverSteel(model, solve_mode="serial")._mimic_count, 1)
+            else:
                 with test.assertRaisesRegex(NotImplementedError, "equality"):
                     SolverSteel(model, solve_mode="serial")
-            else:
-                SolverSteel(model, solve_mode="serial")
 
 
 def test_enabling_equality_constraint_at_runtime_raises(test, device):

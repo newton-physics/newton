@@ -3146,42 +3146,6 @@ def update_eq_data_and_active_kernel(
 
 
 @wp.kernel
-def update_mimic_eq_data_and_active_kernel(
-    mjc_eq_to_newton_mimic: wp.array2d[wp.int32],
-    # Newton mimic constraint data
-    constraint_mimic_coef0: wp.array[wp.float32],
-    constraint_mimic_coef1: wp.array[wp.float32],
-    constraint_mimic_enabled: wp.array[wp.bool],
-    # outputs
-    eq_data_out: wp.array2d[vec12],
-    eq_active_out: wp.array2d[wp.bool],
-):
-    """Update MuJoCo equality constraint data and active status from Newton mimic constraint properties.
-
-    Iterates over MuJoCo equality constraints [world, eq], looks up Newton mimic constraint,
-    and copies:
-    - eq_data: polycoef = [coef0, coef1, 0, 0, 0] for Newton mimic constraints
-    - eq_active from constraint_mimic_enabled
-    """
-    world, mjc_eq = wp.tid()
-    newton_mimic = mjc_eq_to_newton_mimic[world, mjc_eq]
-    if newton_mimic < 0:
-        return
-
-    data = eq_data_out[world, mjc_eq]
-
-    # polycoef: data[0] + data[1]*q2 - q1 = 0  =>  q1 = coef0 + coef1*q2
-    data[0] = constraint_mimic_coef0[newton_mimic]
-    data[1] = constraint_mimic_coef1[newton_mimic]
-    data[2] = 0.0
-    data[3] = 0.0
-    data[4] = 0.0
-
-    eq_data_out[world, mjc_eq] = data
-    eq_active_out[world, mjc_eq] = constraint_mimic_enabled[newton_mimic]
-
-
-@wp.kernel
 def update_joint_mimic_eq_data_kernel(
     mjc_eq_to_newton_joint_mimic: wp.array2d[wp.int32],
     joint_mimic_coeffs: wp.array[wp.vec2],
