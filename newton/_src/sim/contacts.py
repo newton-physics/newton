@@ -9,7 +9,6 @@ import warp as wp
 from warp import DeviceLike as Devicelike
 
 from ..geometry.tri_mesh_collision import TriMeshCollisionInfo, build_tri_mesh_collision_info
-from ..utils.deprecation import RemovedAttribute, UnavailableAttribute
 
 GENERATION_SENTINEL = -1
 """Value reserved as an impossible generation; the increment kernel skips it."""
@@ -561,20 +560,6 @@ class Contacts:
         Returns the device on which the contact buffers are allocated.
         """
         return self.rigid_contact_count.device
-
-    rigid_contact_diff_distance = UnavailableAttribute(
-        "Contacts.rigid_contact_diff_distance was removed in Newton 1.9; allocate an output array and "
-        "pass it as out_distance to newton.eval_rigid_contact_kinematics()."
-    )
-    rigid_contact_diff_normal = RemovedAttribute("rigid_contact_normal", removed_in="1.9")
-    rigid_contact_diff_point0_world = UnavailableAttribute(
-        "Contacts.rigid_contact_diff_point0_world was removed in Newton 1.9; allocate an output array and "
-        "pass it as out_point0_world to newton.eval_rigid_contact_kinematics()."
-    )
-    rigid_contact_diff_point1_world = UnavailableAttribute(
-        "Contacts.rigid_contact_diff_point1_world was removed in Newton 1.9; allocate an output array and "
-        "pass it as out_point1_world to newton.eval_rigid_contact_kinematics()."
-    )
 
     @property
     def contact_matching_mode(self) -> Literal["disabled", "latest", "sticky"]:
