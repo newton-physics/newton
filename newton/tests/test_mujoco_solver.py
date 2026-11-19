@@ -10178,7 +10178,7 @@ class TestMuJoCoSolverUpdateFlags(unittest.TestCase):
         names = [
             name
             for name, spec in model.attribute_specs.items()
-            if spec.update_flags and name not in self.NOT_CONSUMED | self.NOT_PERTURBED
+            if spec.update_flags and not spec.deprecated and name not in self.NOT_CONSUMED | self.NOT_PERTURBED
         ]
         self.assertGreater(len(names), 60)
         for name in names:

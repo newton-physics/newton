@@ -215,6 +215,12 @@ class TestModelAttributeSpecs(unittest.TestCase):
                 self.assertEqual(result, expected)
                 if expected is not None:
                     self.assertIs(type(result), type(expected))
+        # A deprecated alias reports its target's flags without warning.
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            self.assertEqual(
+                model.get_attribute_update_flags("mujoco:dof_passive_stiffness"), flags.JOINT_DOF_FORCE_PROPERTIES
+            )
         # State, control, and contacts attributes are not covered.
         for name in ("user:missing", "user:heat", "body_qdd", "rigid_contact_normal"):
             with self.subTest(missing=name):

@@ -3666,7 +3666,9 @@ class Model:
                     f"Attribute '{name}' is assigned to {spec.assignment.name}; only model attributes report update flags"
                 )
         else:
-            namespace, _, attribute = name.rpartition(":")
+            # Check a deprecated alias through its target so the query does not warn.
+            target = spec.alias_of if spec is not None and spec.alias_of is not None else name
+            namespace, _, attribute = target.rpartition(":")
             owner = getattr(self, namespace, None) if namespace else self
             if owner is None or not hasattr(owner, attribute):
                 raise KeyError(f"No model attribute '{name}' exists")
