@@ -86,7 +86,7 @@ from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_convex
 from ..math import quat_between_vectors_robust
 from ..usd.schema_resolver import SchemaResolver
 from ..utils import compute_world_offsets, tree_joint_mask
-from ..utils.deprecation import RemovedAttribute, UnavailableAttribute
+from ..utils.deprecation import RemovedAttribute
 from ..utils.mesh import MeshAdjacency, split_mesh_components
 from .body_variants import (
     _BodyVariants,
@@ -4018,14 +4018,6 @@ class ModelBuilder:
     # creating an unused instance attribute whose targets are never applied.
     joint_target_pos = RemovedAttribute("joint_target_q", removed_in="1.5")
     joint_target_vel = RemovedAttribute("joint_target_qd", removed_in="1.5")
-
-    # Reject writes to removed limits, which would otherwise create unused attributes.
-    joint_twist_lower = UnavailableAttribute(
-        "ModelBuilder.joint_twist_lower was removed in Newton 1.9. Set per-DOF limits with ModelBuilder.JointDofConfig."
-    )
-    joint_twist_upper = UnavailableAttribute(
-        "ModelBuilder.joint_twist_upper was removed in Newton 1.9. Set per-DOF limits with ModelBuilder.JointDofConfig."
-    )
 
     @staticmethod
     def _quat_from_axis_targets(t_x: float, t_y: float, t_z: float) -> tuple[float, float, float, float]:

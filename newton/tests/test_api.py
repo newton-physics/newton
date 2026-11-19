@@ -90,19 +90,6 @@ def _check_builder_method_matches_importer_function_signature(func, method):
 
 
 class TestApi(unittest.TestCase):
-    def test_removed_joint_twist_limits_reject_assignment(self):
-        """Reject writes to removed joint twist limits on builders and models."""
-        import newton  # noqa: PLC0415
-
-        builder = newton.ModelBuilder()
-        model = builder.finalize(device="cpu")
-        for owner, value in ((builder, [0.0]), (model, model.joint_limit_lower)):
-            for name in ("joint_twist_lower", "joint_twist_upper"):
-                with self.subTest(owner=type(owner).__name__, name=name):
-                    self.assertFalse(hasattr(owner, name))
-                    with self.assertRaisesRegex(AttributeError, rf"{name} was removed in Newton 1\.9"):
-                        setattr(owner, name, value)
-
     def test_joint_target_layout_flag_removed(self):
         """Expose coordinate-shaped position targets without a layout switch."""
         import newton  # noqa: PLC0415
