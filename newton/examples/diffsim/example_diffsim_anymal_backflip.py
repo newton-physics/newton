@@ -37,9 +37,9 @@ Gradients flow through SolverFeatherstone AND the differentiable contact
 pipeline (soft_contact_gap margin). Every phase uses the same optimizer:
 steepest descent on the tape gradient with a backtracking line search over
 a fixed list of step lengths (``_descent``). Takeoff and touchdown over
-contact are chaotic, so when the flip or the landing misses its gate, the
-chain is retried from a slightly deeper crouch warm start
-(``CHAIN_ATTEMPTS``).
+contact are chaotic, so when the crouch, the flip or the landing misses its
+gate, the chain is retried from a slightly shallower or deeper crouch warm
+start (``CR_WARM_SCALES``).
 
 Each phase window is a ``Rollout``: its states, controls and contact buffers
 are allocated once, and on CUDA the forward pass and the forward + backward
@@ -50,7 +50,8 @@ accepted. Together with the solver's tile-based mass-matrix assembly
 (``use_tile_gemm=True``) a full run of all three skills takes a few minutes
 on a single GPU. ``--test`` skips the optimization entirely and runs only the
 gradient check (seconds); ``--rec`` saves the optimized playback to a
-ViewerFile recording.
+ViewerFile recording. The optimization advances a little every frame, so
+an interactive viewer stays live (and can pause it) while it runs.
 
 Writing differentiable loss kernels: Warp does not replay dynamic
 (runtime-bound) loops in the backward pass (see "Dynamic Loops" in Warp's
@@ -79,6 +80,7 @@ Runs:
 """
 
 import os
+import time
 
 import numpy as np
 import warp as wp
@@ -130,8 +132,11 @@ CR_N = 300
 CR_PREVIEW = 100
 CR_N_EXT = CR_N + CR_PREVIEW
 CR_ITERS = 64
-CHAIN_ATTEMPTS = 3  # chain attempts when the flip or the landing misses its gate
-CR_RETRY_SCALE = 0.02  # each retry starts the crouch 2% deeper
+STEP_BUDGET_S = 0.05  # optimization time per viewer frame (keeps the window responsive)
+REPLAY_YIELD_EVERY = 100  # replays hand control back to the viewer every this many steps
+# crouch warm-start scale per chain attempt, alternating around the default;
+# the next one is tried when the crouch, the flip or the landing misses its gate
+CR_WARM_SCALES = (1.0, 0.98, 1.02, 0.96, 1.04, 0.94)
 CR_RADII = (0.2, 0.1, 0.05, 0.02, 0.01, 0.005, 0.002, 0.001)
 CR_NP = 8  # cosine amps (4 channels) + ramp times (4 channels)
 CR_T_REF = 249.0
@@ -767,6 +772,12 @@ class Example:
         self.args = args
         self.frame = 0
         self.chain_done = False
+        self._chain = None  # the run_chain() generator, advanced by step()
+        # runs that stop after a fixed frame count have no window to keep
+        # responsive and must not stop mid-optimization
+        self._finish_in_one_frame = isinstance(viewer, (newton.viewer.ViewerNull, newton.viewer.ViewerUSD)) or bool(
+            getattr(args, "headless", False)
+        )
         self.playback = []  # (phase, snapshot) frames of the final run
         self.result = {}
 
@@ -1184,12 +1195,16 @@ class Example:
         first one that lowers the loss. It stops once no step length helps.
         Trying the large steps first every iteration (instead of shrinking a
         trust radius on each rejection) keeps the search from stalling on
-        the kinks that contact events put into these losses."""
+        the kinks that contact events put into these losses.
+
+        A generator: it yields after every rollout so ``step()`` can hand
+        control back to the viewer, and returns the optimized amplitudes."""
         amps = np.clip(np.asarray(amps_init, dtype=np.float64), lo, hi)
         L_init = ro.loss(amps, snap)
         L = L_init
         accepts = 0
         for it in range(iters):
+            yield
             _, g = ro.loss_and_grad(amps, snap)
             ng = float(np.linalg.norm(g))
             if not np.isfinite(ng) or ng < 1e-14:
@@ -1198,6 +1213,7 @@ class Example:
             d = -g / ng
             moved = False
             for r in radii:
+                yield
                 trial = np.clip(amps + r * d, lo, hi)
                 L_trial = ro.loss(trial, snap)
                 if np.isfinite(L_trial) and L_trial < L - 1e-4 * abs(L):
@@ -1217,6 +1233,8 @@ class Example:
     # A replay re-runs the window's forward pass and reads the resulting
     # trajectory back from the rollout buffers. Contacts at step t are the
     # ones collided at the start of that step: ro.contacts[t // COLLIDE_EVERY].
+    # Replays are generators like ``_descent`` (they yield every
+    # REPLAY_YIELD_EVERY steps) and return their results.
 
     def _crouch_replay(self, ro, amps):
         """Replay the crouch phase for the given amplitudes; returns the end snapshot and metrics."""
@@ -1224,6 +1242,8 @@ class Example:
         snap_end = None
         rep = {"min_foot_rows": 10**9, "knee_front_min": 1e9, "knee_hind_min": 1e9, "push_margin": 1e9}
         for t in range(CR_N_EXT):
+            if t % REPLAY_YIELD_EVERY == 0:
+                yield
             rows = self._foot_row_count(ro.contacts[t // COLLIDE_EVERY])
             rep["min_foot_rows"] = min(rep["min_foot_rows"], rows)
             st = ro.states[t + 1]
@@ -1277,6 +1297,8 @@ class Example:
         rep = {"apex": -1e9, "paw_min": 1e9, "blew_up": False, "knee_margin_min": 1e9, "min_foot_rows": 10**9}
         airborne = False
         for t in range(N_B):
+            if t % REPLAY_YIELD_EVERY == 0:
+                yield
             rows = self._foot_row_count(ro.contacts[t // COLLIDE_EVERY])
             st = ro.states[t + 1]
             bqd = st.body_q.numpy()
@@ -1347,6 +1369,8 @@ class Example:
         m = None
         bqd = None
         for t in range(N_C):
+            if t % REPLAY_YIELD_EVERY == 0:
+                yield
             rows = self._foot_row_count(ro.contacts[t // COLLIDE_EVERY])
             st = ro.states[t + 1]
             bqd = st.body_q.numpy()
@@ -1380,18 +1404,20 @@ class Example:
     def run_chain(self):
         """Phase A -> B -> C. Prints progress; stores the final result.
 
+        A generator that yields after every rollout (see ``step()``).
+
         Contact makes the takeoff and the landing chaotic: two crouches that
         differ only in the last decimals can launch measurably different
         spins (the push is torque-saturated, so the jump amplitudes cannot
         undo that), and some touchdowns are much harder to catch than
-        others. When an attempt misses the flip or the landing gate, the
-        chain is retried from a slightly deeper crouch warm start, and the
-        best attempt is kept."""
+        others. When an attempt misses a gate, the chain is retried from
+        the next crouch warm start in ``CR_WARM_SCALES``, and the best
+        attempt is kept."""
         best = None
-        for attempt in range(CHAIN_ATTEMPTS):
+        for attempt, scale in enumerate(CR_WARM_SCALES):
             if attempt:
-                print(f"== retrying the chain from a deeper crouch (attempt {attempt + 1}) ==", flush=True)
-            res = self._attempt(CR_WARM * (1.0 + CR_RETRY_SCALE * attempt))
+                print(f"== retrying the chain, crouch warm start x{scale:g} (attempt {attempt + 1}) ==", flush=True)
+            res = yield from self._attempt(CR_WARM * scale)
             if best is None or res["score"] > best["score"]:
                 best = res
             if res["crouch_ok"] and res["flip_ok"] and res["land_ok"]:
@@ -1406,26 +1432,32 @@ class Example:
         )
 
     def _attempt(self, crouch_warm):
-        """One A -> B -> C attempt; returns its gates, score, result and playback."""
-        crouch_ok, crouch_snap = self._phase_a(crouch_warm)
-        td_snap, rep_b = self._phase_b(crouch_snap)
-        res = {"crouch_ok": crouch_ok, "flip_ok": False, "land_ok": False, "playback": self.playback}
+        """One A -> B -> C attempt; returns its gates, score, result and playback.
+
+        Each phase runs only when the previous one passed its gate, so a
+        missed gate costs little before the next attempt. The score ranks
+        attempts by the number of gates passed, then by the flip error."""
+        res = {"crouch_ok": False, "flip_ok": False, "land_ok": False, "playback": [], "score": (0, -np.inf)}
+        res["crouch_ok"], crouch_snap = yield from self._phase_a(crouch_warm)
+        res["result"] = {"crouch_ok": res["crouch_ok"], "jump_ok": False}
+        if not res["crouch_ok"]:
+            return res
+        td_snap, rep_b = yield from self._phase_b(crouch_snap)
+        res["playback"] = self.playback
         if td_snap is None:
             print("  phase B never achieved a clean touchdown - skipping phase C", flush=True)
-            res["result"] = {"crouch_ok": crouch_ok, "jump_ok": False}
-            res["score"] = (0, 0, 0.0)
+            res["score"] = (1, -np.inf)
             return res
         flip_err = abs(rep_b["td_pitch_deg"] - FLIP_SIGN * 360.0)
         res["flip_ok"] = flip_err <= 10.0 and rep_b["td_tilt_deg"] <= 10.0
+        res["result"] = {"crouch_ok": True, "jump_ok": True, "td_pitch_deg": rep_b["td_pitch_deg"]}
+        res["score"] = (1 + int(res["flip_ok"]), -flip_err)
         if not res["flip_ok"]:
-            # a missed flip is retried before spending time on its landing
-            res["result"] = {"crouch_ok": crouch_ok, "jump_ok": True, "td_pitch_deg": rep_b["td_pitch_deg"]}
-            res["score"] = (0, 1, -flip_err)
             return res
-        rep_c = self._phase_c(td_snap, rep_b["td_step"])
+        rep_c = yield from self._phase_c(td_snap, rep_b["td_step"])
         res["land_ok"] = rep_c["settled"]
         res["result"] = {
-            "crouch_ok": crouch_ok,
+            "crouch_ok": True,
             "jump_ok": True,
             "td_pitch_deg": rep_b["td_pitch_deg"],
             "td_tilt_deg": rep_b["td_tilt_deg"],
@@ -1433,7 +1465,7 @@ class Example:
             "land_bounce": float(rep_c["bounce"]),
             "land_paw_lift": float(rep_c["paw_lift_max"]),
         }
-        res["score"] = (int(res["land_ok"]), 2, -flip_err)
+        res["score"] = (2 + int(res["land_ok"]), -flip_err)
         return res
 
     def _phase_a(self, warm):
@@ -1441,8 +1473,8 @@ class Example:
         the ``warm`` amplitudes; returns (gates passed, crouch-end snapshot)."""
         print("== phase A: crouch ==", flush=True)
         ro = Rollout(self, "crouch", CR_N_EXT, CR_NP)
-        amps = self._descent("crouch", ro, self.snap, warm, CR_AMP_LO, CR_AMP_HI, CR_ITERS, CR_RADII)
-        end_snap, rep = self._crouch_replay(ro, amps)
+        amps = yield from self._descent("crouch", ro, self.snap, warm, CR_AMP_LO, CR_AMP_HI, CR_ITERS, CR_RADII)
+        end_snap, rep = yield from self._crouch_replay(ro, amps)
         ok = (
             rep["z_end"] <= 0.375
             and rep["tilt_end_deg"] < 20.0
@@ -1466,9 +1498,9 @@ class Example:
         ro = Rollout(self, "jump", N_B, NSEG_B * 2)
         lo = np.full(NSEG_B * 2, B_AMP_LO)
         hi = np.full(NSEG_B * 2, B_AMP_HI)
-        amps = self._descent("jump", ro, crouch_snap, np.zeros(NSEG_B * 2), lo, hi, JB_ITERS, JB_RADII)
+        amps = yield from self._descent("jump", ro, crouch_snap, np.zeros(NSEG_B * 2), lo, hi, JB_ITERS, JB_RADII)
         self.playback = []  # the flight frames; phase C appends the landing
-        td_snap, rep = self._jump_replay(ro, amps, crouch_snap, record=True)
+        td_snap, rep = yield from self._jump_replay(ro, amps, crouch_snap, record=True)
         print(
             f"  => jump: apex={rep['apex']:.3f}  pitch_end={rep['pitch_end_deg']:.1f}deg  "
             f"td={'YES' if td_snap is not None else 'NO'}"
@@ -1496,7 +1528,9 @@ class Example:
             amps = LAND_INIT
             if n_short:
                 ro_short = Rollout(self, "land", n_short, LAND_NPAR)
-                amps = self._descent(f"land-{n_short}", ro_short, td_snap, amps, LAND_LO, LAND_HI, LC_ITERS, LC_RADII)
+                amps = yield from self._descent(
+                    f"land-{n_short}", ro_short, td_snap, amps, LAND_LO, LAND_HI, LC_ITERS, LC_RADII
+                )
                 del ro_short
                 # hold the pose of the last knot inside the short window for
                 # the rest of the landing, instead of springing back to the
@@ -1505,15 +1539,15 @@ class Example:
                 amps = amps.reshape(12, PROF_N_KNOTS - 1)
                 amps[:, last + 1 :] = amps[:, last : last + 1]
                 amps = amps.reshape(-1)
-            amps = self._descent("land", ro, td_snap, amps, LAND_LO, LAND_HI, LC_ITERS, LC_RADII)
-            rep = self._land_replay(ro, amps, td_snap)
+            amps = yield from self._descent("land", ro, td_snap, amps, LAND_LO, LAND_HI, LC_ITERS, LC_RADII)
+            rep = yield from self._land_replay(ro, amps, td_snap)
             score = (rep["settled"], -rep["bounce"])
             if best is None or score > best[0]:
                 best = (score, amps)
             if rep["settled"]:
                 break
             print("  landing did not settle - retrying with the next curriculum window", flush=True)
-        rep = self._land_replay(ro, best[1], td_snap, record=True, frame_offset=td_step)
+        rep = yield from self._land_replay(ro, best[1], td_snap, record=True, frame_offset=td_step)
         print(
             f"  => landing: z={rep['final_z']:.3f} tilt={rep['final_tilt_deg']:.1f}deg "
             f"bounce={rep['bounce']:.4f} pawlift={rep['paw_lift_max']:.3f} "
@@ -1525,12 +1559,22 @@ class Example:
     # ---------------- runner interface ----------------
 
     def step(self):
-        """Framework hook: run the full optimization once (skipped when done or in --test mode)."""
+        """Framework hook: advance the optimization (skipped when done or in --test mode).
+
+        Each frame runs rollouts for about ``STEP_BUDGET_S`` and then returns,
+        so an interactive viewer keeps rendering (the current playback, or
+        the settled stance) and can pause the optimization. Viewers that stop
+        after a fixed number of frames finish it in a single frame."""
         if self.chain_done or self.args.test:
             # --test runs ONLY the gradient check (test_final); the full
             # optimization is the interactive run's purpose
             return
-        self.run_chain()
+        if self._chain is None:
+            self._chain = self.run_chain()
+        start = time.perf_counter()
+        for _ in self._chain:
+            if not self._finish_in_one_frame and time.perf_counter() - start >= STEP_BUDGET_S:
+                return
 
     def _rec_close(self):
         """Write one full playback pass to the recording and close it; safe to call repeatedly.
