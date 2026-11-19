@@ -1656,6 +1656,11 @@ def parse_mjcf(
             if incoming_xform is not None:
                 tf = incoming_xform * tf
 
+            if "fromto" in geom_attrib and geom_type in {"box", "ellipsoid"}:
+                # MuJoCo spans the segment along local Z and uses size[0] for both cross-section axes.
+                tf, geom_half_length = parse_fromto_transform(geom_attrib, incoming_xform)
+                geom_size = np.array([geom_size[0], geom_size[0], geom_half_length], dtype=np.float32)
+
             geom_density = parse_float(geom_attrib, "density", density)
             geom_mass_explicit = None
             explicit_mass_handled = False

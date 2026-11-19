@@ -7254,6 +7254,34 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
         self.assertAlmostEqual(geom_xform[1], 5.0, places=5)
         self.assertAlmostEqual(geom_xform[2], 0.0, places=5)
 
+    @requires(*MUJOCO_MODULES)
+    def test_geom_fromto_box_ellipsoid_matches_native_mujoco(self):
+        """Box and ellipsoid geoms with fromto span the segment like native MuJoCo."""
+        import mujoco
+
+        for geom_type in ("box", "ellipsoid"):
+            for size in ("0.05", "0.05 0.07"):
+                with self.subTest(geom_type=geom_type, size=size):
+                    mjcf = f"""<mujoco model="fromto_shape">
+    <worldbody>
+        <geom name="g" type="{geom_type}" fromto="0.1 0.2 0.3  0.4 0.6 0.8" size="{size}"/>
+    </worldbody>
+</mujoco>"""
+                    mj_model = mujoco.MjModel.from_xml_string(mjcf)
+
+                    builder = newton.ModelBuilder()
+                    builder.add_mjcf(mjcf)
+                    idx = builder.shape_label.index("fromto_shape/worldbody/g")
+
+                    xform = builder.shape_transform[idx]
+                    quat = wp.quat(*xform[3:7])
+                    mj_quat = wp.quat(*mj_model.geom_quat[0][[1, 2, 3, 0]])
+                    np.testing.assert_allclose(xform[:3], mj_model.geom_pos[0], atol=1e-6)
+                    np.testing.assert_allclose(
+                        np.array(wp.quat_to_matrix(quat)), np.array(wp.quat_to_matrix(mj_quat)), atol=1e-5
+                    )
+                    np.testing.assert_allclose(builder.shape_scale[idx], mj_model.geom_size[0], atol=1e-6)
+
     def test_actuator_mode_inference_from_actuator_type(self):
         """Test that JointTargetMode is correctly inferred from MJCF actuator types."""
         from newton._src.sim.enums import JointTargetMode  # noqa: PLC0415
