@@ -33,7 +33,6 @@ from .kernels import (
     solve_joint_mimics,
     solve_particle_particle_contacts,
     solve_particle_shape_contacts,
-    # solve_simple_body_joints,
     solve_springs,
     solve_tetrahedra,
     update_body_velocities,
