@@ -902,6 +902,77 @@ class TestMuJoCoEntityAuthoring(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "two distinct joints"):
             mujoco.add_equality_joint(builder, joint, joint)
 
+    @requires(*MUJOCO_MODULES)
+    def test_exported_actuator_equality_names_and_site_mapping(self):
+        """Export actuator/equality labels as MuJoCo names and expose mjc_site_to_newton_shape."""
+        blueprint = newton.ModelBuilder()
+        body0, joint0 = _add_revolute(blueprint, "hinge0")
+        body1, joint1 = _add_revolute(blueprint, "hinge1")
+        site0 = blueprint.add_site(body0, label="tip-0")
+        site1 = blueprint.add_site(body1, label="tip-1")
+        tendon = mujoco.add_tendon_spatial(
+            blueprint,
+            [mujoco.TendonWrapSite(site0), mujoco.TendonWrapSite(site1)],
+            label="spatial-tendon",
+        )
+        muscle_prm = (0.75, 1.05, -1.0, 200.0, 0.5, 1.6, 1.5, 1.3, 1.2, 0.0)
+        mujoco.add_actuator_general(
+            blueprint,
+            mujoco.ActuatorTarget.tendon(tendon),
+            dyntype="muscle",
+            gaintype="muscle",
+            biastype="muscle",
+            dynprm=(0.01, 0.04),
+            gainprm=muscle_prm,
+            biasprm=muscle_prm,
+            custom_attributes={"mujoco:actuator_lengthrange": wp.vec2(0.05, 0.25)},
+            label="flexor-muscle",
+        )
+        mujoco.add_actuator_motor(blueprint, mujoco.ActuatorTarget.joint(joint0), gear=(2.0,), label="flexor-muscle")
+        mujoco.add_actuator_motor(blueprint, mujoco.ActuatorTarget.joint(joint1), gear=(1.0,))
+        mujoco.add_equality_joint(blueprint, joint0, joint1, polycoef=(0.0, 1.0), label="couple-hinges")
+        mujoco.add_equality_connect(blueprint, body0, body1, anchor=(0.0, 0.0, 0.0), label="couple-hinges")
+
+        builder = newton.ModelBuilder()
+        builder.replicate(blueprint, 2)
+        model = builder.finalize(device="cpu")
+
+        solver = newton.solvers.SolverMuJoCo(
+            model,
+            use_mujoco_cpu=False,
+            separate_worlds=True,
+            disable_contacts=True,
+            kinematic_switchable_roots=False,
+        )
+        mj_model = solver.mj_model
+
+        actuator_names = [mj_model.actuator(i).name for i in range(mj_model.nu)]
+        self.assertEqual(actuator_names, ["flexor-muscle", "flexor-muscle_1", ""])
+
+        equality_names = [mj_model.equality(i).name for i in range(mj_model.neq)]
+        self.assertEqual(equality_names, ["couple-hinges", "couple-hinges_1"])
+
+        self.assertIsNotNone(solver.mjc_site_to_newton_shape)
+        self.assertEqual(solver.mjc_site_to_newton_shape.shape, (2, 2))
+        shapes_per_world = model.shape_count // 2
+        np.testing.assert_array_equal(
+            solver.mjc_site_to_newton_shape.numpy(),
+            [[site0, site1], [site0 + shapes_per_world, site1 + shapes_per_world]],
+        )
+        self.assertIsNotNone(solver.mjc_tendon_to_newton_tendon)
+        np.testing.assert_array_equal(solver.mjc_tendon_to_newton_tendon.numpy(), [[0], [1]])
+
+        # Also check that mjc_tendon_to_newton_tendon is initialized to None when ntendon == 0.
+        no_tendon_builder = newton.ModelBuilder()
+        _add_revolute(no_tendon_builder, "solo")
+        no_tendon_solver = newton.solvers.SolverMuJoCo(
+            no_tendon_builder.finalize(device="cpu"),
+            use_mujoco_cpu=True,
+            disable_contacts=True,
+            kinematic_switchable_roots=False,
+        )
+        self.assertIsNone(no_tendon_solver.mjc_tendon_to_newton_tendon)
+
 
 if __name__ == "__main__":
     unittest.main()
