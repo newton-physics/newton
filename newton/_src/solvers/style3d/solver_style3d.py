@@ -570,17 +570,18 @@ class SolverStyle3D(SolverBase):
 
         The solver performs non-linear projective dynamics iterations in internal
         buffers with optional collision handling. Final positions and velocities
-        for the selected dynamics are written to ``state_out``. Kinematic and
-        zero-mass body outputs remain owned by the caller.
+        for the selected dynamics are written to ``state_out``. With affine body
+        dynamics enabled, kinematic body poses and velocities are copied unchanged
+        from ``state_in``, including zero-mass kinematic bodies. Other zero-mass
+        body outputs and bodies outside the selected dynamics remain caller-owned.
 
         With affine body dynamics enabled, kinematic bodies predict their contact
         poses from ``state_in.body_q`` and ``state_in.body_qd`` alone, including
         zero-mass kinematic bodies. Gravity, forces, and torques do not affect
-        this prediction. The caller must supply velocities that reproduce the
-        prescribed end pose over ``dt``, including the normalized Euler quaternion
-        update. The external driver owns the corresponding ``state_out`` body
-        poses and velocities. See
-        :ref:`style3d-externally-driven-bodies` for the integration contract.
+        this prediction. Predicted poses are used only for contacts and are not
+        written to ``state_out``. The external driver supplies the prescribed
+        input poses and consistent velocities before each step. See
+        :ref:`style3d-externally-driven-bodies` for the prediction rules.
 
         Args:
             state_in: Input :class:`newton.State`.
@@ -794,7 +795,7 @@ class SolverStyle3D(SolverBase):
         if self.collision is not None:
             self.collision.frame_end(particle_q, particle_qd, dt)
 
-        self._from_internal_state(state_out, dt)
+        self._from_internal_state(state_in, state_out, dt)
 
     def _matrix_free_multiply(self, x: wp.array[wp.vec3]) -> wp.array[wp.vec3]:
         """Return the matrix-free contribution to A x, excluding the assembled base matrix."""
@@ -927,14 +928,14 @@ class SolverStyle3D(SolverBase):
                 state, self._x[self._particle_count :], self._x_inertia[self._particle_count :], dt
             )
 
-    def _from_internal_state(self, state: State, dt: float):
-        """Write solved positions and velocities to the output state."""
+    def _from_internal_state(self, state_in: State, state_out: State, dt: float):
+        """Write solved states and pass through kinematic states for selected dynamics."""
         if self._particle_count > 0:
-            wp.copy(state.particle_q, self._x, count=self._particle_count)
-            wp.copy(state.particle_qd, self._v, count=self._particle_count)
+            wp.copy(state_out.particle_q, self._x, count=self._particle_count)
+            wp.copy(state_out.particle_qd, self._v, count=self._particle_count)
         if self._affine_body_count > 0:
             self._affine_body.from_internal_state(
-                state, self._x[self._particle_count :], self._v[self._particle_count :], dt
+                state_in, state_out, self._x[self._particle_count :], self._v[self._particle_count :], dt
             )
 
     def _update_drag_info(self, index: int, pos: wp.vec3, bary_coord: wp.vec3):

@@ -206,6 +206,8 @@ def body_to_affine_kernel(
 def affine_to_body_kernel(
     x: wp.array[wp.vec3],
     v: wp.array[wp.vec3],
+    body_q_in: wp.array[wp.transform],
+    body_qd_in: wp.array[wp.spatial_vector],
     body_com: wp.array[wp.vec3],
     body_inertia: wp.array[wp.mat33],
     dt: float,
@@ -217,7 +219,13 @@ def affine_to_body_kernel(
 ):
     body = wp.tid()
 
-    # Bodies outside the ABD solve are owned by another solver or caller.
+    # Preserve prescribed state across buffer swaps, including zero-mass bodies.
+    if (body_flags[body] & BodyFlags.KINEMATIC) != 0:
+        body_q[body] = body_q_in[body]
+        body_qd[body] = body_qd_in[body]
+        return
+
+    # Other bodies outside the ABD solve remain owned by another solver or caller.
     if body_mass[body] <= 0.0 or (body_flags[body] & BodyFlags.DYNAMIC) == 0:
         return
 
@@ -331,14 +339,18 @@ class AffineBody:
             device=self.model.device,
         )
 
-    def from_internal_state(self, state_out: State, x: wp.array[wp.vec3], v: wp.array[wp.vec3], dt: float) -> None:
-        """Fit the rigid states for bodies updated by the ABD solve."""
+    def from_internal_state(
+        self, state_in: State, state_out: State, x: wp.array[wp.vec3], v: wp.array[wp.vec3], dt: float
+    ) -> None:
+        """Fit solved rigid states and copy prescribed kinematic states unchanged."""
         wp.launch(
             affine_to_body_kernel,
             dim=self.model.body_count,
             inputs=[
                 x,
                 v,
+                state_in.body_q,
+                state_in.body_qd,
                 self.model.body_com,
                 self.model.body_inertia,
                 dt,

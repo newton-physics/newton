@@ -654,6 +654,9 @@ def test_affine_body_linear_system(test, device):
                 input_poses = state_in.body_q.numpy().copy()
                 input_velocities = state_in.body_qd.numpy().copy()
                 rigid_solver.integrate_bodies(model, state_in, state_ref, dt)
+                # Kinematic output must be copied from input, not left stale after a swap.
+                state_out.body_q[1:2].fill_(wp.transform_identity())
+                state_out.body_qd[1:2].fill_(wp.spatial_vector(17.0))
 
                 # With no PCG iterations, the nonzero inertia RHS must not advance the body.
                 config.linear_iterations = 0
@@ -711,9 +714,9 @@ def test_affine_body_linear_system(test, device):
                 if wp.get_device(device).is_cuda and frame == 1:
                     with wp.ScopedCapture(device=device) as capture:
                         solver.step(state_in, state_out, control, contacts, dt)
-                    # Reset only the simulated body; other outputs are caller-owned.
-                    state_out.body_q[:1].fill_(wp.transform_identity())
-                    state_out.body_qd[:1].zero_()
+                    # Both dynamic and kinematic outputs must be written during replay.
+                    state_out.body_q[:2].fill_(wp.transform_identity())
+                    state_out.body_qd[:2].zero_()
                     wp.capture_launch(capture.graph)
                 np.testing.assert_allclose(
                     solver._x.numpy()[offset : offset + 4], solver._x_inertia.numpy()[offset : offset + 4], atol=2e-6
@@ -959,8 +962,8 @@ def test_rigid_contact_linear_system(test, device):
                 state_in.body_qd.assign(np.array([[0.0] * 6, velocity], dtype=np.float32))
                 model.gravity.fill_(wp.vec3(1.0, -2.0, -3.0))
                 state_in.body_f.fill_(wp.spatial_vector(0.7, -0.3, 0.5, -0.2, 0.4, 0.3))
-                state_out.body_q.assign(state_in.body_q)
-                state_out.body_qd.assign(state_in.body_qd)
+                state_out.body_q.fill_(wp.transform_identity())
+                state_out.body_qd.fill_(wp.spatial_vector(17.0))
             config.linear_iterations = 0
             solver.step(state_in, state_out, None, contacts, dt)
             initial = solver._x.numpy().astype(np.float64)
@@ -1113,8 +1116,8 @@ def test_soft_contact_linear_system(test, device):
             )
             model.particle_flags.fill_(0 if mode == "pinned" else int(newton.ParticleFlags.ACTIVE))
             state_in.body_qd.fill_(wp.spatial_vector(0.0, 0.0, 0.2 if kinematic else 0.0, 0.0, 0.0, 0.0))
-            state_out.body_q.assign(state_in.body_q)
-            state_out.body_qd.assign(state_in.body_qd)
+            state_out.body_q.fill_(wp.transform_identity())
+            state_out.body_qd.fill_(wp.spatial_vector(17.0))
             contacts.soft_contact_shape.fill_(1 if mode == "static" else 0)
             contacts.soft_contact_body_pos.fill_(point_world if mode == "static" else wp.vec3(local_point))
             surface = wp.vec3(5.0 if mode == "slip" else 0.01, 0.0, -0.03 if mode == "separating" else 0.03)
@@ -1128,6 +1131,8 @@ def test_soft_contact_linear_system(test, device):
             if kinematic:
                 current[4, 2] += 0.2 * dt
                 np.testing.assert_allclose(target[4:], current[4:], atol=2e-6)
+                np.testing.assert_array_equal(state_out.body_q.numpy(), state_in.body_q.numpy())
+                np.testing.assert_array_equal(state_out.body_qd.numpy(), state_in.body_qd.numpy())
             if mode == "static":
                 w[1:] = 0.0
                 relative = current[0] - np.array(point_world)
@@ -1352,12 +1357,12 @@ def test_affine_body_state_conversion(test, device):
                 np.testing.assert_allclose(inertial_coordinates[i], next_coordinates, atol=2e-6)
 
             wp.launch(_advance_affine_coordinates, dim=len(x), inputs=[x, x_inertia, v, dt], device=device)
-            affine_body.from_internal_state(state_out, x, v, dt)
+            affine_body.from_internal_state(state_in, state_out, x, v, dt)
             if wp.get_device(device).is_cuda:
                 with wp.ScopedCapture(device=device) as capture:
                     affine_body.to_internal_state(state_in, x, x_inertia, dt)
                     wp.launch(_advance_affine_coordinates, dim=len(x), inputs=[x, x_inertia, v, dt], device=device)
-                    affine_body.from_internal_state(state_out, x, v, dt)
+                    affine_body.from_internal_state(state_in, state_out, x, v, dt)
                 state_out.body_q.fill_(wp.transform_identity())
                 state_out.body_qd.fill_(wp.spatial_vector(0.0))
                 inactive_pose = state_out.body_q.numpy()[2].copy()
@@ -1422,7 +1427,7 @@ def test_affine_body_state_conversion(test, device):
     v.assign(coordinate_velocities.reshape(-1, 3))
     inactive_pose = state_out.body_q.numpy()[2].copy()
     inactive_velocity = state_out.body_qd.numpy()[2].copy()
-    affine_body.from_internal_state(state_out, x, v, dt)
+    affine_body.from_internal_state(state_in, state_out, x, v, dt)
     for i, (actual, (position, rotation)) in enumerate(zip(state_out.body_q.numpy(), expected_poses, strict=True)):
         if i == 2:
             np.testing.assert_array_equal(actual, inactive_pose)

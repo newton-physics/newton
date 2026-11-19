@@ -77,9 +77,11 @@ convergence for the scene by increasing this count until the contact response
 stabilizes.
 
 Bodies with positive mass and :attr:`~newton.BodyFlags.DYNAMIC` are advanced.
-Kinematic and zero-mass bodies remain prescribed; their output poses and
-velocities are owned by the caller. Changes to model particle and body flags
-are read at the start of each step.
+With ``Dynamics.AFFINE_BODY`` or ``Dynamics.ALL``, kinematic body poses and
+velocities are copied unchanged from ``state_in`` to ``state_out``, including
+zero-mass kinematic bodies. Other zero-mass body outputs remain caller-owned.
+``Dynamics.DEFORMABLE`` and ``Dynamics.NONE`` leave all body outputs untouched.
+Changes to model particle and body flags are read at the start of each step.
 
 .. _style3d-externally-driven-bodies:
 
@@ -88,10 +90,13 @@ Externally driven bodies
 
 With ``Dynamics.AFFINE_BODY`` or ``Dynamics.ALL``, a
 :attr:`~newton.BodyFlags.KINEMATIC` body participates in contact prediction
-regardless of mass, while its output pose and velocity remain owned by the
-external driver.
-The caller must supply ``state_in`` so that Style3D's rigid-body predictor
-reproduces the body's externally prescribed end-of-substep pose, within
+regardless of mass. Its input pose and velocity pass through unchanged to
+``state_out``; the solver does not advance its output pose from its velocity.
+The external driver supplies the prescribed pose and velocity in ``state_in``
+before each step, after any state-buffer swap.
+
+For consistent contact prediction, the supplied velocity must make the predictor
+reproduce the body's externally prescribed end-of-substep pose, within
 numerical precision. This requirement applies to both translation and
 rotation, using the same ``dt`` as :meth:`~newton.solvers.SolverStyle3D.step`.
 
@@ -116,10 +121,10 @@ Dynamic bodies retain semi-implicit rigid-body prediction with gravity, forces,
 torques, and the gyroscopic term.
 
 Contacts use this predicted pose to compute separation, damping, and friction
-against the externally driven body. The external driver must write consistent
-final poses and velocities to ``state_out`` before that state is consumed or
-swapped. A mismatch between the predicted and prescribed end pose makes the
-contact response inconsistent with the body's actual motion. Zero-mass bodies
+against the externally driven body. This prediction is internal to the contact
+solve; it does not replace the prescribed input pose copied to ``state_out``.
+A mismatch between the prediction and the externally driven trajectory makes
+the contact response inconsistent with the body's actual motion. Zero-mass bodies
 without :attr:`~newton.BodyFlags.KINEMATIC` use their input pose as a fixed
 contact boundary for the substep.
 
