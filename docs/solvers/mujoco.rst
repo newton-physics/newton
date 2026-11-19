@@ -866,9 +866,11 @@ Hydroelastic material response
 
 Both shapes must have ``ShapeConfig.is_hydroelastic=True`` and force-space
 ``mujoco.solref_mode=0`` to use this mapping. Missing modes, ``RAW``,
-``MJCF_DEFAULT``, and mixed pairs keep the existing response.
+``MJCF_DEFAULT``, and mixed pairs keep the existing parameter mapping.
 ``ShapeConfig.kh`` controls stiffness; damping comes from
-``Contacts.rigid_contact_damping``.
+``Contacts.rigid_contact_damping``. The collision pipeline now computes this
+from each shape's ``kd / ke`` for all hydroelastic pairs. See
+:ref:`hydroelastic damping <hydroelastic-contact-damping>` for tuning and migration.
 
 Register the MuJoCo attributes before adding or importing shapes:
 

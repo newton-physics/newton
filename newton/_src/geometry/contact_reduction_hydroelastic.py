@@ -334,6 +334,24 @@ def _register_voxel_contact(
 
 
 @wp.func
+def _hydroelastic_damping(
+    stiffness: float,
+    shape_ke: wp.array[wp.float32],
+    shape_kd: wp.array[wp.float32],
+    a: int,
+    b: int,
+) -> float:
+    """Scale contact stiffness by the two shapes' relaxation times."""
+    tau = float(0.0)
+    if shape_ke and shape_kd:
+        if shape_ke[a] > 0.0:
+            tau += wp.max(shape_kd[a], 0.0) / shape_ke[a]
+        if shape_ke[b] > 0.0:
+            tau += wp.max(shape_kd[b], 0.0) / shape_ke[b]
+    return stiffness * tau
+
+
+@wp.func
 def export_hydroelastic_contact_to_buffer(
     shape_a: int,
     shape_b: int,
@@ -1049,6 +1067,8 @@ def create_export_hydroelastic_reduced_contacts_kernel(
         contact_area: wp.array[wp.float32],
         contact_pressure: wp.array[wp.float32],
         shape_material_k_hydro: wp.array[wp.float32],
+        shape_material_ke: wp.array[wp.float32],
+        shape_material_kd: wp.array[wp.float32],
         contact_nbin_entry: wp.array[wp.int32],
         # Pre-accumulated total depth of winning contacts per normal bin
         total_depth_reduced: wp.array[wp.float32],
@@ -1410,6 +1430,10 @@ def create_export_hydroelastic_reduced_contacts_kernel(
                 contact_data.shape_b = shape_b
                 contact_data.gap_sum = gap_sum
                 contact_data.contact_stiffness = c_stiffness
+                if depth < 0.0:
+                    contact_data.contact_damping = _hydroelastic_damping(
+                        c_stiffness, shape_material_ke, shape_material_kd, shape_a, shape_b
+                    )
                 contact_data.contact_friction_scale = wp.float32(c_friction_scale)
                 if wp.static(deterministic_sort_keys):
                     # Both copies contribute to the force-preserving denominator
@@ -1443,6 +1467,9 @@ def create_export_hydroelastic_reduced_contacts_kernel(
                 contact_data.shape_b = shape_b_first
                 contact_data.gap_sum = gap_sum
                 contact_data.contact_stiffness = shared_stiffness
+                contact_data.contact_damping = _hydroelastic_damping(
+                    shared_stiffness, shape_material_ke, shape_material_kd, shape_a_first, shape_b_first
+                )
                 contact_data.contact_friction_scale = wp.float32(anchor_friction_scale)
                 bin_id = int((ht_keys[entry_idx] >> wp.uint64(55)) & wp.uint64(0xFF))
                 contact_data.sort_sub_key = 0x400000 | bin_id
@@ -1777,6 +1804,9 @@ class HydroelasticContactReduction:
         shape_transform: wp.array,
         writer_data: Any,
         grid_size: int,
+        *,
+        shape_material_ke: wp.array[wp.float32] | None = None,
+        shape_material_kd: wp.array[wp.float32] | None = None,
     ):
         """Export reduced contacts using the writer function.
 
@@ -1788,6 +1818,8 @@ class HydroelasticContactReduction:
 
         Args:
             shape_material_k_hydro: Per-shape hydroelastic material stiffness (dtype: float).
+            shape_material_ke: Shape stiffness [N/m], paired with ``shape_material_kd`` for damping.
+            shape_material_kd: Shape damping [N s/m]. Omitting either array generates zero damping.
             shape_gap: Per-shape contact gap (detection threshold) (dtype: float).
             shape_transform: Per-shape world transforms (dtype: wp.transform).
             writer_data: Data struct for the writer function.
@@ -1868,6 +1900,8 @@ class HydroelasticContactReduction:
                 self.reducer.contact_area,
                 self.reducer.contact_pressure,
                 shape_material_k_hydro,
+                shape_material_ke,
+                shape_material_kd,
                 self.reducer.contact_nbin_entry,
                 self.reducer.total_depth_reduced,
                 self.reducer.total_normal_reduced,
@@ -1894,6 +1928,9 @@ class HydroelasticContactReduction:
         shape_gap: wp.array,
         writer_data: Any,
         grid_size: int,
+        *,
+        shape_material_ke: wp.array[wp.float32] | None = None,
+        shape_material_kd: wp.array[wp.float32] | None = None,
     ):
         """Convenience method to reduce and export in one call.
 
@@ -1901,6 +1938,8 @@ class HydroelasticContactReduction:
 
         Args:
             shape_material_k_hydro: Per-shape hydroelastic material stiffness (dtype: float).
+            shape_material_ke: Shape stiffness [N/m], paired with ``shape_material_kd`` for damping.
+            shape_material_kd: Shape damping [N s/m]. Omitting either array generates zero damping.
             shape_transform: Per-shape world transforms (dtype: wp.transform).
             shape_collision_aabb_lower: Per-shape local AABB lower bounds (dtype: wp.vec3).
             shape_collision_aabb_upper: Per-shape local AABB upper bounds (dtype: wp.vec3).
@@ -1917,4 +1956,12 @@ class HydroelasticContactReduction:
             shape_voxel_resolution,
             grid_size,
         )
-        self.export(shape_material_k_hydro, shape_gap, shape_transform, writer_data, grid_size)
+        self.export(
+            shape_material_k_hydro,
+            shape_gap,
+            shape_transform,
+            writer_data,
+            grid_size,
+            shape_material_ke=shape_material_ke,
+            shape_material_kd=shape_material_kd,
+        )
