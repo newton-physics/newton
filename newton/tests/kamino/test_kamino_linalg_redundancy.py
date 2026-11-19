@@ -3,6 +3,7 @@
 
 """Unit tests for the RedundantRowShift class from linalg/redundancy.py"""
 
+import math
 import unittest
 
 import numpy as np
@@ -115,7 +116,7 @@ class TestRedundantRowShift(NewtonTestCase):
         setup_test_output(self)
 
     def test_00_shifts_redundant_rows(self):
-        """Exactly the redundant rows of the block are shifted by their diagonal, as in the float64 reference."""
+        """Check that only the redundant rows are shifted by their diagonal, as in the float64 reference."""
         problem = RedundantProblem(
             dims=[12, 20, 30], offsets=[0, 3, 5], num_rows=[8, 12, 20], num_redundant=[2, 0, 5], device=self.device
         )
@@ -137,7 +138,7 @@ class TestRedundantRowShift(NewtonTestCase):
             np.testing.assert_allclose(difference, np.diag(change), rtol=1e-6, atol=0.0)
 
     def test_01_shifted_system_solves_original(self):
-        """Consistent systems with the shifted matrix carry no impulse on the shifted rows and solve the original."""
+        """Check that consistent shifted systems carry no impulse on the shifted rows and solve the original systems."""
         problem = RedundantProblem(
             dims=[16, 24], offsets=[2, 0], num_rows=[10, 18], num_redundant=[3, 4], device=self.device
         )
@@ -156,7 +157,7 @@ class TestRedundantRowShift(NewtonTestCase):
             self.assertLess(np.abs(x[rows]).max(), 1e-3 * np.abs(x).max())
 
     def test_02_full_rank_block_is_unchanged(self):
-        """A full-rank block, or an empty one, is left unchanged."""
+        """Check that a full-rank block, or an empty one, is left unchanged."""
         problem = RedundantProblem(
             dims=[10, 8], offsets=[1, 0], num_rows=[6, 0], num_redundant=[0, 0], device=self.device
         )
@@ -166,14 +167,17 @@ class TestRedundantRowShift(NewtonTestCase):
         self.assertEqual(int(shift.shifted.numpy().sum()), 0)
 
     def test_03_shared_and_global_triangles(self):
-        """Small and large blocks, eliminated in shared and global memory on CUDA, match the float64 reference."""
-        for rows, shared in ((40, True), (260, False)):
+        """Check that small and large blocks, eliminated in shared and global memory, match the float64 reference."""
+        # Size the large block beyond the shared memory of the device
+        device = wp.get_device(self.device)
+        large = max(260, math.isqrt(device.max_shared_memory_per_block // 2) + 1) if device.is_cuda else 260
+        for rows, shared in ((40, True), (large, False)):
             with self.subTest(rows=rows):
                 problem = RedundantProblem(
                     dims=[rows + 20], offsets=[10], num_rows=[rows], num_redundant=[6], device=self.device
                 )
                 shift = RedundantRowShift(1, rows, threshold=1e-5, check=True, device=self.device)
-                self.assertEqual(shift.shared_triangle, shared and wp.get_device(self.device).is_cuda)
+                self.assertEqual(shift.shared_triangle, shared and device.is_cuda)
                 problem.detect(shift)
                 block = slice(10, 10 + rows)
                 expected = reference_shifted_rows(problem.matrices[0][block, block], 1e-5)
@@ -185,7 +189,7 @@ class TestRedundantRowShift(NewtonTestCase):
                 np.testing.assert_array_equal(shift.shifted.numpy()[0].astype(bool), expected)
 
     def test_04_graph_capture(self):
-        """The shifts are recomputed from the current matrices when replaying a captured graph."""
+        """Check that the shifts are recomputed from the current matrices when replaying a captured graph."""
         if not wp.get_device(self.device).is_cuda:
             self.skipTest("Requires a CUDA device")
         problem = RedundantProblem(dims=[12], offsets=[0], num_rows=[8], num_redundant=[2], device=self.device)
@@ -230,11 +234,11 @@ class TestRedundantRowCheck(NewtonTestCase):
         return pivot_rows > 0
 
     def test_00_valid_rows_pass(self):
-        """The rows shifted by the elimination pass the check."""
+        """Check that the rows shifted by the elimination pass the check."""
         np.testing.assert_array_equal(self.check(self.reference), [False] * 3)
 
     def test_01_dependent_kept_rows_fail(self):
-        """Keeping a redundant row makes the kept rows dependent and fails the check."""
+        """Check that keeping a redundant row makes the kept rows dependent and fails the check."""
         rng = np.random.default_rng(1)
         for trial in range(5):
             with self.subTest(trial=trial):
@@ -244,7 +248,7 @@ class TestRedundantRowCheck(NewtonTestCase):
                 np.testing.assert_array_equal(self.check(flags), [True] * 3)
 
     def test_02_independent_shifted_rows_fail(self):
-        """Shifting a kept row, which is independent of the other kept rows, fails the check."""
+        """Check that shifting a kept row, which is independent of the other kept rows, fails the check."""
         rng = np.random.default_rng(2)
         for trial in range(5):
             with self.subTest(trial=trial):
@@ -255,7 +259,7 @@ class TestRedundantRowCheck(NewtonTestCase):
                 np.testing.assert_array_equal(self.check(flags), [True] * 3)
 
     def test_03_eliminate_failed_worlds(self):
-        """Only the worlds failing the check are eliminated again, which restores their shifts."""
+        """Check that only the worlds failing the check are eliminated again, which restores their shifts."""
         problem = self.problem
         flags = self.reference.copy()
         flags[1, np.flatnonzero(flags[1])[0]] = 0
@@ -273,7 +277,7 @@ class TestRedundantRowCheck(NewtonTestCase):
             np.testing.assert_allclose(difference, np.diag(change), rtol=1e-6, atol=0.0)
 
     def test_04_never_eliminated_worlds_fail(self):
-        """The worlds never eliminated, or reset, fail the check."""
+        """Check that the worlds never eliminated, or reset, fail the check."""
         self.shift.reset()
         np.testing.assert_array_equal(self.check(self.reference), [True] * 3)
         self.problem.detect(self.shift)
@@ -282,7 +286,7 @@ class TestRedundantRowCheck(NewtonTestCase):
         np.testing.assert_array_equal(self.check(self.reference), [False, True, False])
 
     def test_05_coupling_with_other_rows(self):
-        """The check only depends on the block, not on its coupling with the other rows."""
+        """Check that the result only depends on the block, not on its coupling with the other rows."""
         self.problem = RedundantProblem(
             dims=[40], offsets=[4], num_rows=[24], num_redundant=[4], device=self.device, coupling=1e-3
         )
@@ -295,7 +299,7 @@ class TestRedundantRowCheck(NewtonTestCase):
         self.assertTrue(self.check(flags)[0])
 
     def test_06_reference_of_unchanged_rows(self):
-        """Valid rows failing the check pass the next checks, until they become dependent."""
+        """Check that valid rows failing the check pass the next checks, until they become dependent."""
         rows = 24
         problem = RedundantProblem(dims=[rows], offsets=[0], num_rows=[rows], num_redundant=[0], device=self.device)
         shift = RedundantRowShift(1, rows, threshold=1e-5, check=True, device=self.device)
@@ -368,13 +372,13 @@ class TestRedundantRowFactorCheck(NewtonTestCase):
         return pivot_rows > 0
 
     def test_00_valid_rows_pass(self):
-        """The rows shifted by the elimination pass the check, with and without a permutation of the factors."""
+        """Check that the rows shifted by the elimination pass the check, with and without permuted factors."""
         for permuted in (False, True):
             with self.subTest(permuted=permuted):
                 np.testing.assert_array_equal(self.check(self.reference, permuted), [False] * 3)
 
     def test_01_dependent_kept_rows_fail(self):
-        """Keeping a redundant row makes the kept rows dependent and fails the check."""
+        """Check that keeping a redundant row makes the kept rows dependent and fails the check."""
         rng = np.random.default_rng(1)
         for permuted in (False, True):
             with self.subTest(permuted=permuted):
@@ -384,7 +388,7 @@ class TestRedundantRowFactorCheck(NewtonTestCase):
                 np.testing.assert_array_equal(self.check(flags, permuted), [True] * 3)
 
     def test_02_independent_shifted_rows_fail(self):
-        """Shifting a kept row, which is independent of the other kept rows, fails the check."""
+        """Check that shifting a kept row, which is independent of the other kept rows, fails the check."""
         rng = np.random.default_rng(2)
         for permuted in (False, True):
             with self.subTest(permuted=permuted):
@@ -395,7 +399,7 @@ class TestRedundantRowFactorCheck(NewtonTestCase):
                 np.testing.assert_array_equal(self.check(flags, permuted), [True] * 3)
 
     def test_03_eliminate_failed_worlds(self):
-        """Only the worlds failing the check are eliminated again, which restores their shifts."""
+        """Check that only the worlds failing the check are eliminated again, which restores their shifts."""
         problem = self.problem
         flags = self.reference.copy()
         flags[1, np.flatnonzero(flags[1])[0]] = 0
@@ -412,7 +416,7 @@ class TestRedundantRowFactorCheck(NewtonTestCase):
         np.testing.assert_allclose(difference, expected, rtol=1e-6, atol=0.0)
 
     def test_04_reference_of_unchanged_rows(self):
-        """Valid rows failing the check because of the other rows pass the next checks, until they become dependent."""
+        """Check that valid rows failing due to the other rows pass the next checks, until they become dependent."""
         self.problem = RedundantProblem(
             dims=[40], offsets=[4], num_rows=[24], num_redundant=[4], device=self.device, coupling=1e-2
         )
@@ -444,7 +448,7 @@ class TestRedundantRowFactorCheck(NewtonTestCase):
                 self.assertTrue(self.check(reference, permuted, eta=1e-6)[0])
 
     def test_05_padded_factor_stride(self):
-        """The check ignores the padding of factors stored with a row stride larger than their dimension."""
+        """Check that the padding of factors stored with a row stride larger than their dimension is ignored."""
         rng = np.random.default_rng(2)
         flags = self.reference.copy()
         for w in range(3):
