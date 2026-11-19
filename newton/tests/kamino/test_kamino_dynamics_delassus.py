@@ -21,6 +21,7 @@ from newton._src.solvers.kamino._src.kinematics.constraints import get_max_const
 from newton._src.solvers.kamino._src.kinematics.jacobians import SparseSystemJacobians
 from newton._src.solvers.kamino._src.kinematics.limits import LimitsKamino
 from newton._src.solvers.kamino._src.linalg import LLTSequentialSolver
+from newton._src.solvers.kamino._src.linalg.core import dense_matrix_layout
 from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
 from newton.tests.kamino import setup_tests, test_context
 from newton.tests.kamino.utils.extract import (
@@ -63,7 +64,6 @@ def check_delassus_allocations(
     )
     D_maxdims = [int(delassus_maxdim_np[i]) for i in range(num_worlds)]
     D_sizes = [D_maxdims[i] * D_maxdims[i] for i in range(num_worlds)]
-    D_sizes_sum = sum(D_sizes)
 
     for i in range(num_worlds):
         fixture.assertEqual(
@@ -78,14 +78,12 @@ def check_delassus_allocations(
     # Check Delassus operator data sizes
     fixture.assertEqual(delassus.info.maxdim.size, num_worlds)
     fixture.assertEqual(delassus.info.dim.size, num_worlds)
-    fixture.assertEqual(delassus.info.mio.size, num_worlds)
     fixture.assertEqual(delassus.info.vio.size, num_worlds)
-    fixture.assertEqual(delassus.D.size, D_sizes_sum)
+    fixture.assertEqual(delassus.D.shape, dense_matrix_layout(D_sizes))
 
     # Check if the factorizer info data to the same as the Delassus info data
     fixture.assertEqual(delassus.info.maxdim.ptr, delassus.solver.operator.info.maxdim.ptr)
     fixture.assertEqual(delassus.info.dim.ptr, delassus.solver.operator.info.dim.ptr)
-    fixture.assertEqual(delassus.info.mio.ptr, delassus.solver.operator.info.mio.ptr)
     fixture.assertEqual(delassus.info.vio.ptr, delassus.solver.operator.info.vio.ptr)
 
 
@@ -95,7 +93,6 @@ def debug_print_delassus_info(delassus: DelassusOperator) -> None:
         return
     logger.debug("delassus.info.maxdim: %s", delassus.info.maxdim)
     logger.debug("delassus.info.dim: %s", delassus.info.dim)
-    logger.debug("delassus.info.mio: %s", delassus.info.mio)
     logger.debug("delassus.info.vio: %s", delassus.info.vio)
     logger.debug("delassus.D: %s", delassus.D)
 
@@ -113,13 +110,14 @@ def _allocation_patches(error):
 class TestDelassusSizing(unittest.TestCase):
     def test_accept_dense_delassus_at_int32_limit(self):
         """Allow a dense buffer at the int32 limit to reach allocation without reserving its memory."""
+        dimensions = [23170] * 4 + [296, 20, 5, 2, 1, 1]
         model = ModelKamino(
             _device="cpu",
-            size=SizeKamino(num_worlds=4),
+            size=SizeKamino(num_worlds=len(dimensions)),
             info=ModelKaminoInfo(
-                num_worlds=4,
-                num_joint_bilateral_cts=wp.array([32767, 32767, 362, 5], dtype=wp.int32, device="cpu"),
-                num_joint_bounded_cts=wp.array([0, 0, 0, 0], dtype=wp.int32, device="cpu"),
+                num_worlds=len(dimensions),
+                num_joint_bilateral_cts=wp.array(dimensions, dtype=wp.int32, device="cpu"),
+                num_joint_bounded_cts=wp.array([0] * len(dimensions), dtype=wp.int32, device="cpu"),
             ),
         )
         delassus = DelassusOperator()
@@ -142,12 +140,12 @@ class TestDelassusSizing(unittest.TestCase):
         self.assertIsInstance(counts[0], int)
         self.assertEqual(counts[0] ** 2, 237169)
 
-    def test_reject_oversized_dense_delassus_before_allocation(self):
-        """Reject both negative and positive int32 wraparound before allocating a dense buffer."""
+    def test_oversized_dense_delassus_uses_world_rows(self):
+        """Check the allocation shape without reserving a large dense buffer."""
+        self.assertEqual(dense_matrix_layout([2**28] * 8), (8, 2**28))
         cases = (
             (16384, 487, 3885776896),
             (20000, 487, 4743380000),
-            (1, 46341, 2147488281),
         )
         for num_worlds, num_constraints, expected_size in cases:
             with self.subTest(num_worlds=num_worlds, num_constraints=num_constraints):
@@ -161,19 +159,35 @@ class TestDelassusSizing(unittest.TestCase):
                     ),
                 )
                 delassus = DelassusOperator()
-                with patch.multiple(wp, **_allocation_patches(AssertionError("Dense buffer allocation attempted"))):
-                    with self.assertRaisesRegex(OverflowError, "Kamino.*dense Delassus") as error:
+                allocators = _allocation_patches(MemoryError("Reached dense buffer allocation"))
+                with patch.multiple(wp, **allocators):
+                    with self.assertRaisesRegex(MemoryError, "Reached dense buffer allocation"):
                         delassus.finalize(model=model, data=DataKamino())
                 self.assertEqual(delassus.num_maxsize, expected_size)
-                for guidance in (
-                    "2147483647",
-                    "worlds",
-                    "max_contacts_per_world",
-                    "sparse_dynamics=True",
-                    "sparse_jacobian=True",
-                    "iterative",
-                ):
-                    self.assertIn(guidance, str(error.exception))
+                self.assertEqual(
+                    allocators["zeros"].call_args.kwargs["shape"],
+                    dense_matrix_layout([num_constraints**2] * num_worlds),
+                )
+
+    def test_reject_unrepresentable_world_row_stride(self):
+        for dimensions in ([32767, 32767, 362, 6], [23171] * 4, [46341]):
+            with self.subTest(dimensions=dimensions):
+                count = len(dimensions)
+                model = ModelKamino(
+                    _device="cpu",
+                    size=SizeKamino(num_worlds=count),
+                    info=ModelKaminoInfo(
+                        num_worlds=count,
+                        num_joint_bilateral_cts=wp.array(dimensions, dtype=wp.int32, device="cpu"),
+                        num_joint_bounded_cts=wp.array([0] * count, dtype=wp.int32, device="cpu"),
+                    ),
+                )
+                allocators = _allocation_patches(MemoryError("Reached dense buffer allocation"))
+                with patch.multiple(wp, **allocators):
+                    with self.assertRaisesRegex(ValueError, "row stride"):
+                        DelassusOperator().finalize(model=model, data=DataKamino())
+                for allocator in allocators.values():
+                    allocator.assert_not_called()
 
 
 class TestDelassusOperator(unittest.TestCase):
@@ -795,6 +809,8 @@ class TestDelassusOperator(unittest.TestCase):
 
         # Update the containers once, then build both Jacobians from the same collision-detection pass.
         update_containers(model, data, state, limits, detector)
+        jacobians_dense.data.J_cts_data.fill_(7.0)
+        jacobians_dense.data.J_dofs_data.fill_(7.0)
         jacobians_dense.build(model=model, data=data, limits=limits.data, contacts=detector.contacts.data)
         jacobians_sparse.build(model=model, data=data, limits=limits.data, contacts=detector.contacts.data)
 
@@ -815,6 +831,8 @@ class TestDelassusOperator(unittest.TestCase):
         )
 
         # Build the Delassus operator from the current data
+        delassus_dense.D.fill_(7.0)
+        delassus_sparse.D.fill_(7.0)
         delassus_dense.build(model=model, data=data, jacobians=jacobians_dense, reset_to_zero=True)
         delassus_sparse.build(model=model, data=data, jacobians=jacobians_sparse, reset_to_zero=True)
 
@@ -822,11 +840,14 @@ class TestDelassusOperator(unittest.TestCase):
         active_dims = extract_active_constraint_dims(data)
 
         # Extract Delassus data as numpy arrays
+        storage_dense, storage_sparse = delassus_dense.D.numpy(), delassus_sparse.D.numpy()
         D_dense_np = extract_delassus(delassus_dense, only_active_dims=True)
         D_sparse_np = extract_delassus(delassus_sparse, only_active_dims=True)
 
         # For each world, compare the Delassus matrix
         for w in range(delassus_dense.num_worlds):
+            for storage in (storage_dense, storage_sparse):
+                np.testing.assert_array_equal(storage[w, active_dims[w] ** 2 :], 7.0)
             # Compare the computed Delassus matrix with the one from the dual problem
             logger.debug("[%s]: D_dense_np (shape=%s):\n%s", w, D_dense_np[w].shape, D_dense_np[w])
             logger.debug("[%s]: D_sparse_np (shape=%s):\n%s", w, D_sparse_np[w].shape, D_sparse_np[w])
@@ -989,11 +1010,14 @@ class TestDelassusOperatorSparse(unittest.TestCase):
         data: DataKamino,
         delassus: BlockSparseMatrixFreeDelassusOperator,
         jacobians: SparseSystemJacobians,
+        *,
+        capture_first_product: bool = False,
     ):
         """Checks the different matrix-vector products provided by the sparse Delassus operator."""
         rng = np.random.default_rng(seed=self.seed)
 
         def run_check(use_regularization: bool, use_preconditioner: bool, mask_worlds: bool):
+            nonlocal capture_first_product
             delassus_sizes = data.info.num_total_cts.numpy()
             jac_row_start = jacobians._J_cts.bsm.row_start.numpy()
 
@@ -1049,7 +1073,16 @@ class TestDelassusOperatorSparse(unittest.TestCase):
             world_mask = wp.from_numpy(mask_np, dtype=wp.bool, device=self.default_device)
 
             # Compute different products (simple matvec, gemv, and gemv with beta = 0.0)
-            delassus.matvec(input_vec, output_vec_matmul, world_mask)
+            if capture_first_product and self.default_device.is_cuda and wp.is_conditional_graph_supported():
+                # The first regularized application must work inside a conditional
+                # body without a warmup that could hide lazy placeholder allocations.
+                condition = wp.ones(1, dtype=wp.int32, device=self.default_device)
+                with wp.ScopedCapture(device=self.default_device) as capture:
+                    wp.capture_if(condition, lambda: delassus.matvec(input_vec, output_vec_matmul, world_mask))
+                wp.capture_launch(capture.graph)
+            else:
+                delassus.matvec(input_vec, output_vec_matmul, world_mask)
+            capture_first_product = False
             delassus.gemv(input_vec, output_vec_gemv, world_mask, alpha, beta)
             delassus.gemv(input_vec, output_vec_gemv_zero, world_mask, alpha, 0.0)
 
@@ -1473,6 +1506,7 @@ class TestDelassusOperatorSparse(unittest.TestCase):
         self._check_delassus_diagonal(model, data, delassus, jacobians)
 
     def test_10_delassus_operator_vector_product(self):
+        """Compare sparse products to dense references, including first use in a conditional graph."""
         # Model constants
         max_world_contacts = 12
 
@@ -1500,7 +1534,7 @@ class TestDelassusOperatorSparse(unittest.TestCase):
         )
 
         # Check that the Delassus operator represents the actual Delassus matrix
-        self._check_delassus_matrix_vector_product(model, data, delassus, jacobians)
+        self._check_delassus_matrix_vector_product(model, data, delassus, jacobians, capture_first_product=True)
 
     def test_11_homogeneous_delassus_operator_vector_product(self):
         # Model constants
@@ -1582,6 +1616,33 @@ class TestDelassusOperatorSparse(unittest.TestCase):
         values.zero_()
         delassus._set_raw_transpose_enabled(False)
         self._check_delassus_matrix_vector_product(model, data, delassus, jacobians)
+
+    def test_14_matvec_inside_conditional_graph_body(self):
+        """Apply the operator first inside a conditional graph body, where allocation is not allowed."""
+        if not self.default_device.is_cuda or not wp.is_conditional_graph_supported():
+            self.skipTest("Conditional CUDA graphs are required")
+        builder = make_basics_heterogeneous_builder(dynamic_joints=self.dynamic_joints, implicit_pd=self.dynamic_joints)
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
+        model, data, state, limits, detector, jacobians = make_containers(
+            model=model, max_world_contacts=12, sparse=True
+        )
+        update_containers(model=model, data=data, state=state, limits=limits, detector=detector, jacobians=jacobians)
+        delassus = BlockSparseMatrixFreeDelassusOperator(
+            model=model, data=data, limits=limits, contacts=detector.contacts, jacobians=jacobians
+        )
+        delassus.update()
+        size = model.size.sum_of_max_total_cts
+        x = wp.ones(size, dtype=wp.float32, device=self.default_device)
+        y = wp.zeros(size, dtype=wp.float32, device=self.default_device)
+        mask = wp.ones(model.size.num_worlds, dtype=wp.bool, device=self.default_device)
+        condition = wp.ones(1, dtype=wp.int32, device=self.default_device)
+        with wp.ScopedCapture(device=self.default_device) as capture:
+            wp.capture_if(condition, on_true=lambda: delassus.matvec(x, y, mask))
+        wp.capture_launch(capture.graph)
+        expected = wp.zeros_like(y)
+        delassus.matvec(x, expected, mask)
+        # Graph and direct launches may accumulate float32 atomics in different orders.
+        np.testing.assert_allclose(y.numpy(), expected.numpy(), rtol=1e-4, atol=1e-3)
 
 
 ###

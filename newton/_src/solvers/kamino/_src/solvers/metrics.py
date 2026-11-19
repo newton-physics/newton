@@ -466,7 +466,6 @@ class SolutionMetricsData:
 def compute_v_plus(
     dim: wp.int32,
     vio: wp.int32,
-    mio: wp.int32,
     sigma: wp.float32,
     P: wp.array[wp.float32],
     D_p: wp.array[wp.float32],
@@ -485,19 +484,15 @@ def compute_v_plus(
     of constraint reactions (i.e. Lagrange multipliers), and `I_n`
     is the identity matrix of size `n x n`.
 
-    The preconditioned Delassus matrix `D_p` is stored using row-major order in a
-    flat array with allocation size `maxdim x maxdim`, starting from the matrix
-    index offset `mio`. The active dimensions of the `D_p` are `dim x dim`, where
-    `dim` is the number of active rows and columns.
+    `D_p` is one world's matrix row, containing the active `dim x dim` matrix
+    in row-major order.
 
     The vectors `v_f_p, lambdas, v_plus` are stored in flat arrays
     with dimensions `dim`, starting from the vector index offset `vio`.
 
     Args:
-        maxdim: The maximum dimension of the matrix `A`.
         dim: The active dimension of the matrix `A` and the vectors `x, b, c`.
         vio: The vector index offset (i.e. start index) for the vectors `x, b, c`.
-        mio: The matrix index offset (i.e. start index) for the matrix `A`.
         D_p: Input preconditioned Delassus matrix stored in row-major order.
         v_f_p: Input preconditioned unconstrained constraint-space velocity vector.
         lambdas: Input constraint reactions (i.e. Lagrange multipliers) vector.
@@ -507,7 +502,7 @@ def compute_v_plus(
     lambdas_j = float(0.0)
     for i in range(dim):
         v_i = vio + i
-        m_i = mio + dim * i
+        m_i = dim * i
         v_f_p_i = v_f_p[v_i]
         inv_P_i = 1.0 / P[v_i]
         lambdas_i = lambdas[v_i]
@@ -788,8 +783,7 @@ def _compute_joint_kinematics_residual_dense(
     model_joint_bid_B: wp.array[wp.int32],
     model_joint_bid_F: wp.array[wp.int32],
     data_bodies_u_i: wp.array[wp.spatial_vectorf],
-    jacobian_cts_offset: wp.array[wp.int32],
-    jacobian_cts_data: wp.array[wp.float32],
+    jacobian_cts_data_storage: wp.array2d[wp.float32],
     # Outputs:
     metric_r_kinematics: wp.array[wp.float32],
     metric_r_kinematics_argmax: wp.array[wp.int64],
@@ -799,6 +793,7 @@ def _compute_joint_kinematics_residual_dense(
 
     # Retrieve the world index of the joint
     wid = model_joint_wid[jid]
+    jacobian_cts_data = jacobian_cts_data_storage[wid]
 
     # Retrieve the body indices of the joint
     # NOTE: these indices are w.r.t the model
@@ -815,21 +810,20 @@ def _compute_joint_kinematics_residual_dense(
     bio = model_info_bodies_offset[wid]
     nbd = 6 * (model_info_bodies_offset[wid + 1] - bio)
     kgo = model_info_joint_kinematic_cts_group_offset[wid]
-    mio = jacobian_cts_offset[wid]
 
     # Compute the per-joint constraint Jacobian matrix-vector product
     j_v_j = wp.spatial_vectorf(0.0)
     u_i_F = data_bodies_u_i[bid_F_j]
     dio_F = 6 * (bid_F_j - bio)
     for j in range(num_cts_j):
-        mio_j = mio + nbd * (cts_offset_j + j) + dio_F
+        mio_j = nbd * (cts_offset_j + j) + dio_F
         for i in range(6):
             j_v_j[j] += jacobian_cts_data[mio_j + i] * u_i_F[i]
     if bid_B_j >= 0:
         u_i_B = data_bodies_u_i[bid_B_j]
         dio_B = 6 * (bid_B_j - bio)
         for j in range(num_cts_j):
-            mio_j = mio + nbd * (cts_offset_j + j) + dio_B
+            mio_j = nbd * (cts_offset_j + j) + dio_B
             for i in range(6):
                 j_v_j[j] += jacobian_cts_data[mio_j + i] * u_i_B[i]
 
@@ -1018,10 +1012,9 @@ def _compute_dual_problem_metrics(
     problem_ccgo: wp.array[wp.int32],
     problem_dim: wp.array[wp.int32],
     problem_vio: wp.array[wp.int32],
-    problem_mio: wp.array[wp.int32],
     problem_mu: wp.array[wp.float32],
     problem_v_f: wp.array[wp.float32],
-    problem_D: wp.array[wp.float32],
+    problem_D_storage: wp.array2d[wp.float32],
     problem_P: wp.array[wp.float32],
     problem_bound_lower: wp.array[wp.float32],
     problem_bound_upper: wp.array[wp.float32],
@@ -1048,6 +1041,7 @@ def _compute_dual_problem_metrics(
 ):
     # Retrieve the thread index as the world index
     wid = wp.tid()
+    problem_D = problem_D_storage[wid]
 
     # Retrieve the world-specific data
     nbc = problem_nbc[wid]
@@ -1060,7 +1054,6 @@ def _compute_dual_problem_metrics(
     lcgo = problem_lcgo[wid]
     ccgo = problem_ccgo[wid]
     vio = problem_vio[wid]
-    mio = problem_mio[wid]
     sigma = solution_sigma[wid]
 
     # Compute additional info
@@ -1068,7 +1061,7 @@ def _compute_dual_problem_metrics(
 
     # Compute the post-event constraint-space velocity from the current solution: v_plus = v_f + D @ lambda
     # NOTE: We assume the dual problem linear terms `D` and `v_f` have already been preconditioned in-place using `P`
-    compute_v_plus(ncts, vio, mio, sigma[0], problem_P, problem_D, problem_v_f, solution_lambdas, buffer_v)
+    compute_v_plus(ncts, vio, sigma[0], problem_P, problem_D, problem_v_f, solution_lambdas, buffer_v)
 
     # Compute the post-event constraint-space velocity error as: r_v_plus = || v_plus_est - v_plus_true ||_inf
     r_v_plus, r_v_plus_argmax = compute_vector_difference_infnorm(ncts, vio, solution_v_plus, buffer_v)
@@ -1669,7 +1662,6 @@ class SolutionMetrics:
                         model.joints.bid_B,
                         model.joints.bid_F,
                         data.bodies.u_i,
-                        jacobians.data.J_cts_offsets,
                         jacobians.data.J_cts_data,
                         # Outputs:
                         self._data.r_kinematics,
@@ -1797,7 +1789,6 @@ class SolutionMetrics:
                     problem.data.ccgo,
                     problem.data.dim,
                     problem.data.vio,
-                    problem.data.mio,
                     problem.data.mu,
                     problem.data.v_f,
                     problem.data.D,

@@ -730,10 +730,34 @@ add_example_test(
 )
 add_example_test(
     TestCableExamples,
+    name="cable.example_cable_twist",
+    devices=cuda_test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 20, "solver": "kamino"},
+    test_suffix="kamino",
+)
+add_example_test(
+    TestCableExamples,
     name="cable.example_cable_y_junction",
     devices=test_devices,
     use_viewer=True,
     test_options={"num-frames": 20},
+)
+add_example_test(
+    TestCableExamples,
+    name="cable.example_cable_y_junction",
+    devices=cuda_test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 20, "solver": "kamino"},
+    test_suffix="kamino",
+)
+add_example_test(
+    TestCableExamples,
+    name="cable.example_cable_y_junction",
+    devices=cuda_test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 20, "solver": "kamino", "kamino-backend": "scc"},
+    test_suffix="kamino_scc",
 )
 add_example_batch(
     TestCableExamples,
@@ -765,6 +789,22 @@ add_example_test(
     devices=test_devices,
     use_viewer=True,
     test_options={"num-frames": 120},
+)
+add_example_test(
+    TestCableExamples,
+    name="cable.example_cable_initial_rest_pose",
+    devices=cuda_test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 120, "solver": "kamino"},
+    test_suffix="kamino",
+)
+add_example_test(
+    TestCableExamples,
+    name="cable.example_cable_initial_rest_pose",
+    devices=cuda_test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 120, "solver": "kamino", "kamino-backend": "padmm"},
+    test_suffix="kamino_padmm",
 )
 add_example_test(
     TestCableExamples,
@@ -928,7 +968,21 @@ add_example_test(
 
 
 class TestRobotExamples(unittest.TestCase):
-    pass
+    def test_g1_kamino_velocity_validation(self):
+        """Reject moving bodies even when Warp extracts a lambda from source."""
+        from newton.examples.robot.example_robot_g1 import Example  # noqa: PLC0415
+
+        example = Example.__new__(Example)
+        example.solver_type = "kamino"
+        example.model = SimpleNamespace(body_count=1, body_label=["moving_body"])
+        example.state_0 = SimpleNamespace(
+            body_q=wp.array([[0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]], dtype=wp.transform, device="cpu"),
+            body_qd=wp.array([[0.0, 0.0, 0.0, 0.0, 0.0, 0.2]], dtype=wp.spatial_vector, device="cpu"),
+        )
+        with self.assertRaisesRegex(ValueError, "all body velocities are small"):
+            example.test_final()
+        example.state_0.body_qd.zero_()
+        example.test_final()
 
 
 @requires("pxr.Usd")
@@ -1013,9 +1067,22 @@ add_example_test(
     TestRobotExamples,
     name="robot.example_robot_g1",
     devices=cuda_test_devices,
-    test_options={"requires": ("pxr.Usd",), "num-frames": 500, "world-count": 4, "solver": "kamino"},
     use_viewer=True,
     test_suffix="kamino",
+    variants=[
+        {
+            "test_suffix": f"kamino_{backend}_{ordering or 'default'}",
+            "test_options": {
+                "requires": ("pxr.Usd",),
+                "num-frames": 500,
+                "world-count": 4,
+                "solver": "kamino",
+                "bilateral-solver-type": backend,
+                **({"ldl-ordering": ordering} if ordering else {}),
+            },
+        }
+        for backend, ordering in (("LLTBRCM", None), ("LDL", "meca"))
+    ],
 )
 add_example_test(
     TestRobotExamples,
@@ -1028,9 +1095,22 @@ add_example_test(
     TestRobotExamples,
     name="robot.example_robot_h1",
     devices=cuda_test_devices,
-    test_options={"requires": ("pxr.Usd",), "num-frames": 500, "world-count": 4, "solver": "kamino"},
     use_viewer=True,
     test_suffix="kamino",
+    variants=[
+        {
+            "test_suffix": f"kamino_{backend}_{ordering or 'default'}",
+            "test_options": {
+                "requires": ("pxr.Usd",),
+                "num-frames": 500,
+                "world-count": 4,
+                "solver": "kamino",
+                "bilateral-solver-type": backend,
+                **({"ldl-ordering": ordering} if ordering else {}),
+            },
+        }
+        for backend, ordering in (("LLTBRCM", None), ("LDL", "rcm"))
+    ],
 )
 add_example_test(
     TestRobotExamples,
@@ -1223,6 +1303,14 @@ add_example_test(
     name="mujoco.example_mujoco_sleeping",
     devices=cuda_test_devices,
     test_options={"requires": MUJOCO_MODULES, "stack-count": 2, "num-frames": 300},
+    use_viewer=True,
+)
+
+add_example_test(
+    TestMuJoCoExamples,
+    name="mujoco.example_mujoco_flex",
+    devices=cuda_test_devices,
+    test_options={"requires": MUJOCO_MODULES, "world-count": 2, "num-frames": 200},
     use_viewer=True,
 )
 
@@ -1677,7 +1765,8 @@ add_contact_example_test(
 add_contact_example_test(
     name="contacts.example_nut_bolt_hydro",
     devices=cuda_test_devices,
-    test_options={"requires": ("trimesh",), "num-frames": 120, "world-count": 1, "solver": "kamino"},
+    # The nut starts threading at a run-dependent frame and has passed 45 degrees by frame 140 at the latest.
+    test_options={"requires": ("trimesh",), "num-frames": 240, "world-count": 1, "solver": "kamino"},
     use_viewer=True,
     test_suffix="kamino",
     expect_output_regexes=[
@@ -1935,7 +2024,17 @@ add_example_test(
     TestKaminoExamples,
     name="kamino.example_kamino_basic_fourbar",
     devices=cuda_test_devices,
-    test_options={"requires": ("pxr.Usd",), "num-frames": 120},
+    # Cover both orderings for dense PADMM on one representative closed loop.
+    variants=[
+        {"test_options": {"requires": ("pxr.Usd",), "num-frames": 120}},
+        *[
+            {
+                "test_suffix": f"ldl_{ordering}",
+                "test_options": {"requires": ("pxr.Usd",), "num-frames": 120, "ldl": True, "ldl-ordering": ordering},
+            }
+            for ordering in ("meca", "rcm")
+        ],
+    ],
     use_viewer=True,
 )
 add_example_test(
@@ -1956,7 +2055,19 @@ add_example_test(
     TestKaminoExamples,
     name="kamino.example_kamino_robot_dr_legs",
     devices=cuda_test_devices,
-    test_options={"requires": ("git", "pxr.Usd"), "num-frames": 120},
+    variants=[
+        {"test_options": {"requires": ("git", "pxr.Usd"), "num-frames": 120}},
+        {
+            "test_suffix": "scc_ldl_meca",
+            "test_options": {
+                "requires": ("git", "pxr.Usd"),
+                "num-frames": 120,
+                "dynamics-solver": "scc",
+                "use-kamino-contacts": True,
+                "ldl": True,
+            },
+        },
+    ],
     use_viewer=True,
 )
 add_example_test(

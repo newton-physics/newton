@@ -92,9 +92,11 @@ class TestViewerViserInteraction(unittest.TestCase):
         """Send a GUI update through the same path used by the browser."""
         self.send("GuiUpdateMessage", uuid=handle._impl.uuid, updates={"value": value})
 
-    def make_model(self, device="cpu"):
+    def make_model(self, device="cpu", *, static_box=False):
         """Create two colored bodies with different shapes and a ground plane."""
         builder = newton.ModelBuilder()
+        if static_box:
+            builder.add_shape_box(-1, hx=0.2, hy=0.2, hz=0.2)
         body = builder.add_body(xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()))
         builder.add_shape_box(body, hx=0.2, hy=0.2, hz=0.2)
         body = builder.add_body(xform=wp.transform((1.0, 0.0, 1.0), wp.quat_identity()))
@@ -124,7 +126,7 @@ class TestViewerViserInteraction(unittest.TestCase):
 
     def test_hidden_shapes_preserve_colors(self):
         """Restore colored rigid geometry after toggling visual and collision layers."""
-        model = self.make_model()
+        model = self.make_model(static_box=True)
         state = model.state()
         self.viewer.log_state(state)
         original = {
@@ -134,6 +136,26 @@ class TestViewerViserInteraction(unittest.TestCase):
         }
         handles = {name: self.viewer._scene_handles[name] for name in original}
         self.assertTrue(original)
+        from newton._src.viewer.viewer_viser import to_numpy  # noqa: PLC0415
+
+        positions = {name: handle.batched_positions.copy() for name, handle in handles.items()}
+        static_names = {batch.name for batch in self.viewer._shape_instances.values() if batch.static}
+        self.assertTrue(static_names.intersection(handles))
+        body_q = state.body_q.numpy().copy()
+        body_q[:, 0] += 1.0
+        state.body_q.assign(body_q)
+        with mock.patch("newton._src.viewer.viewer_viser.to_numpy", wraps=to_numpy) as transfer:
+            self.viewer.log_state(state)
+        transforms = [call.args[0] for call in transfer.call_args_list if call.args[0].dtype == wp.transform]
+        self.assertEqual(sum(len(array) for array in transforms), model.body_count)
+        for name, position in positions.items():
+            offset = (0.0, 0.0, 0.0) if name in static_names else (1.0, 0.0, 0.0)
+            np.testing.assert_allclose(handles[name].batched_positions, position + offset)
+        positions = {name: handle.batched_positions.copy() for name, handle in handles.items()}
+        self.viewer.set_layer_transform(self.viewer.layer.layer_id, (3.0, 0.0, 0.0))
+        self.viewer.log_state(state)
+        for name, position in positions.items():
+            np.testing.assert_allclose(handles[name].batched_positions, np.add(position, (3.0, 0.0, 0.0)))
         self.viewer.show_visual = False
         self.viewer.show_collision = False
         self.viewer.log_state(state)
@@ -142,6 +164,27 @@ class TestViewerViserInteraction(unittest.TestCase):
         for name, colors in original.items():
             self.assertIs(self.viewer._scene_handles[name], handles[name])
             np.testing.assert_array_equal(self.viewer._scene_handles[name].batched_colors, colors)
+
+    def test_missing_shape_appearance_uses_fallbacks(self):
+        """Preserve fallback appearance when either model appearance array is absent."""
+        builder = newton.ModelBuilder()
+        builder.add_shape_box(-1, hx=0.2, hy=0.2, hz=0.2)
+        model = builder.finalize(device="cpu")
+        colors, opacities = model.shape_color, model.shape_opacity
+        colors.assign([(0.2, 0.4, 0.8)])
+        opacities.assign([0.4])
+        for missing_color, missing_opacity in ((True, False), (False, True), (True, True)):
+            with self.subTest(missing_color=missing_color, missing_opacity=missing_opacity):
+                model.shape_color = None if missing_color else colors
+                model.shape_opacity = None if missing_opacity else opacities
+                self.viewer.set_model(model)
+                expected_colors = (self.viewer.model_shape_color.numpy() * 255).astype(np.uint8)
+                expected_opacities = self.viewer.model_shape_opacity.numpy().copy()
+                for _ in range(2):
+                    self.viewer.log_state(model.state())
+                    handle = next(h for h in self.viewer._scene_handles.values() if hasattr(h, "batched_colors"))
+                    np.testing.assert_array_equal(handle.batched_colors, expected_colors)
+                    np.testing.assert_allclose(handle.batched_opacities, expected_opacities)
 
     def test_revealed_collision_shapes_use_current_colors(self):
         """Keep model colors when collision batches first appear or change while hidden."""
@@ -537,6 +580,7 @@ class TestViewerViserInteraction(unittest.TestCase):
         for x in (0.0, 2.0):
             body = builder.add_body(xform=wp.transform((x, 0.0, 0.0), wp.quat_identity()))
             builder.add_shape_mesh(body, mesh=mesh)
+        builder.add_shape_box(-1, hx=0.2, hy=0.2, hz=0.2)
         model = builder.finalize(device="cpu")
         self.viewer.set_model(model)
         state = model.state()
@@ -559,11 +603,19 @@ class TestViewerViserInteraction(unittest.TestCase):
                 self.assertIs(handle.glb_data, payload)
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            model.shape_opacity.assign((0.4, 0.8))
+            model.shape_opacity.assign((0.4, 0.8, 0.3))
+            model.shape_color.fill_(wp.vec3(0.2, 0.4, 0.8))
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", newton.NewtonWarning)
+                with self.assertRaisesRegex(newton.NewtonWarning, "varying per-instance opacity"):
+                    self.viewer.log_state(state)
             for _ in range(3):
                 self.viewer.log_state(state)
             self.assertEqual(len(caught), 1)
             self.assertIn("varying per-instance opacity", str(caught[0].message))
+        box = next(h for h in self.viewer._scene_handles.values() if hasattr(h, "batched_colors"))
+        np.testing.assert_array_equal(box.batched_colors, [[51, 102, 204]])
+        np.testing.assert_allclose(box.batched_opacities, [0.3])
 
     def test_scalar_plot_real_protocol(self):
         """Send only committed finite samples to Viser's real plot serializer."""

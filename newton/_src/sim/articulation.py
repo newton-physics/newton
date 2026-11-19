@@ -733,47 +733,6 @@ def eval_fk(
     )
 
 
-@wp.kernel
-def compute_shape_world_transforms(
-    shape_transform: wp.array[wp.transform],
-    shape_body: wp.array[int],
-    body_q: wp.array[wp.transform],
-    # outputs
-    shape_world_transform: wp.array[wp.transform],
-):
-    """Compute world-space transforms for shapes by concatenating local shape
-    transforms with body transforms.
-
-    Args:
-        shape_transform: Local shape transforms in body frame,
-            shape [shape_count, 7]
-        shape_body: Body index for each shape, shape [shape_count]
-        body_q: Body transforms in world frame, shape [body_count, 7]
-        shape_world_transform: Output world transforms for shapes,
-            shape [shape_count, 7]
-    """
-    shape_idx = wp.tid()
-
-    # Get the local shape transform
-    X_bs = shape_transform[shape_idx]
-
-    # Get the body index for this shape
-    body_idx = shape_body[shape_idx]
-
-    # If shape is attached to a body (body_idx >= 0), concatenate transforms
-    if body_idx >= 0:
-        # Get the body transform in world space
-        X_wb = body_q[body_idx]
-
-        # Concatenate: world_transform = body_transform * shape_transform
-        X_ws = wp.transform_multiply(X_wb, X_bs)
-        shape_world_transform[shape_idx] = X_ws
-    else:
-        # Shape is not attached to a body (static shape), use local
-        # transform as world transform
-        shape_world_transform[shape_idx] = X_bs
-
-
 @wp.func
 def reconstruct_angular_q_qd(q_pc: wp.quat, w_err: wp.vec3, X_wp: wp.transform, axis: wp.vec3):
     """
@@ -1435,38 +1394,6 @@ def eval_jacobian(
     )
 
     return J
-
-
-@wp.func
-def transform_spatial_inertia(t: wp.transform, I: wp.spatial_matrix):
-    """Transform a spatial inertia tensor to a new coordinate frame.
-
-    Note: This is duplicated from featherstone/kernels.py to avoid circular imports.
-    """
-    t_inv = wp.transform_inverse(t)
-
-    q = wp.transform_get_rotation(t_inv)
-    p = wp.transform_get_translation(t_inv)
-
-    r1 = wp.quat_rotate(q, wp.vec3(1.0, 0.0, 0.0))
-    r2 = wp.quat_rotate(q, wp.vec3(0.0, 1.0, 0.0))
-    r3 = wp.quat_rotate(q, wp.vec3(0.0, 0.0, 1.0))
-
-    R = wp.matrix_from_cols(r1, r2, r3)
-    S = wp.skew(p) @ R
-
-    # fmt: off
-    T = wp.spatial_matrix(
-        R[0, 0], R[0, 1], R[0, 2], S[0, 0], S[0, 1], S[0, 2],
-        R[1, 0], R[1, 1], R[1, 2], S[1, 0], S[1, 1], S[1, 2],
-        R[2, 0], R[2, 1], R[2, 2], S[2, 0], S[2, 1], S[2, 2],
-        0.0, 0.0, 0.0, R[0, 0], R[0, 1], R[0, 2],
-        0.0, 0.0, 0.0, R[1, 0], R[1, 1], R[1, 2],
-        0.0, 0.0, 0.0, R[2, 0], R[2, 1], R[2, 2],
-    )
-    # fmt: on
-
-    return wp.mul(wp.mul(wp.transpose(T), I), T)
 
 
 @wp.kernel

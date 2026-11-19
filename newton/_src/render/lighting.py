@@ -7,16 +7,18 @@ from typing import TYPE_CHECKING
 
 import warp as wp
 
-from ...core import MAXVAL
+from ..core import MAXVAL
 from . import raytrace
-from .types import RenderConfig
+from .types import RenderConfig, RenderState
 
 if TYPE_CHECKING:
-    from .render_context import RenderContext
+    from ..geometry.optix import OptixShapes
 
 
-def create_compute_lighting_function(config: RenderConfig, state: RenderContext.RenderState) -> wp.Function:
-    raytrace_first_hit = raytrace.create_first_hit_function(config, state)
+def create_compute_lighting_function(
+    config: RenderConfig, state: RenderState, optix: OptixShapes | None = None
+) -> wp.Function:
+    raytrace_first_hit = raytrace.create_first_hit_function(config, state, optix)
 
     @wp.func
     def compute_lighting(

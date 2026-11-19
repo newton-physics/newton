@@ -4440,9 +4440,8 @@ def Xform "NotPSD" (
         self.assertTrue(np.any(np.isclose(gravcomp, 0.5)))
         self.assertTrue(np.any(np.isclose(gravcomp, 0.0)))
 
-    @requires("pxr.Usd")
-    def test_joint_stiffness_damping(self):
-        """Verify joint stiffness and damping are parsed correctly from USD."""
+    def _make_joint_stiffness_damping_model(self):
+        """Build the shared USD joint-gains fixture."""
         from pxr import Usd
 
         usd_content = """#usda 1.0
@@ -4521,6 +4520,7 @@ def Xform "Articulation" (
         float physics:upperLimit = 30
         float drive:angular:physics:stiffness = 5000.0
         float drive:angular:physics:damping = 1000.0
+        uniform double[] mjc:springdamper = [0.2, 1.5]
     }
 
     def Xform "Body3" (
@@ -4563,8 +4563,12 @@ def Xform "Articulation" (
         # mjc:damping resolves through SchemaResolverMjc into joint_damping;
         # mjc:stiffness resolves into core joint_stiffness.
         builder.add_usd(stage, schema_resolvers=[usd.SchemaResolverNewton(), usd.SchemaResolverMjc()])
-        model = builder.finalize()
+        return builder.finalize()
 
+    @requires("pxr.Usd")
+    def test_joint_stiffness_damping(self):
+        """Verify joint stiffness and damping are parsed correctly from USD."""
+        model = self._make_joint_stiffness_damping_model()
         self.assertTrue(hasattr(model, "mujoco"))
         self.assertFalse(hasattr(model.mujoco, "dof_passive_damping"))
 
@@ -4601,6 +4605,36 @@ def Xform "Articulation" (
             self.assertAlmostEqual(joint_damping[dof_idx], expected["damping"], places=4)
             self.assertAlmostEqual(joint_target_ke[dof_idx], expected["target_ke"], places=1)
             self.assertAlmostEqual(joint_target_kd[dof_idx], expected["target_kd"], places=1)
+
+        springdamper = model.mujoco.dof_springdamper.numpy()
+        expected_springdamper = np.zeros_like(springdamper)
+        expected_springdamper[joint_qd_start[joint_names.index("/Articulation/Joint2")]] = [0.2, 1.5]
+        np.testing.assert_allclose(springdamper, expected_springdamper)
+
+    @requires("pxr.Usd", *MUJOCO_MODULES)
+    def test_usd_springdamper_core_gains(self):
+        """Resolve the authored USD springdamper to the same gains as native MuJoCo."""
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        model = self._make_joint_stiffness_damping_model()
+        with tempfile.TemporaryDirectory() as directory:
+            filename = f"{directory}/model.xml"
+            solver = SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True, save_to_mjcf=filename)
+            native_spec = mujoco.MjSpec.from_file(filename)
+        dof = model.joint_qd_start.numpy()[model.joint_label.index("/Articulation/Joint2")]
+        joint = np.flatnonzero(solver.mjc_jnt_to_newton_dof.numpy()[0] == dof)[0]
+        native_spec.joints[joint].springdamper[:] = [0.2, 1.5]
+        native = native_spec.compile()
+        np.testing.assert_allclose(
+            [model.joint_stiffness.numpy()[dof], solver.mj_model.jnt_stiffness[joint]],
+            native.jnt_stiffness[joint],
+            rtol=2e-5,
+        )
+        mjc_dof = native.jnt_dofadr[joint]
+        np.testing.assert_allclose(
+            [model.joint_damping.numpy()[dof], solver.mj_model.dof_damping[mjc_dof]],
+            native.dof_damping[mjc_dof],
+            rtol=2e-5,
+        )
 
     @requires("pxr.Usd")
     def test_joint_damping_respects_schema_resolver_priority(self):
@@ -7011,6 +7045,112 @@ def Xform "Articulation" (
                     )
 
     @requires("pxr.Usd")
+    def test_disabled_rigid_bodies_match_parsed_collider_ownership(self):
+        """Load a disabled rigid body only while the parser still assigns it colliders.
+
+        OpenUSD 26.11 treats ``physics:rigidBodyEnabled = false`` as if ``RigidBodyAPI`` were
+        not applied, so a disabled body's colliders move to the nearest enabled ancestor body or
+        become static. Its visuals and sites must follow its colliders, and every loaded body
+        must own exactly the colliders its mass comes from.
+        """
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        def define_body(path, enabled, collider_mass=None, *, visual_and_site=False):
+            body = UsdGeom.Xform.Define(stage, path)
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim()).CreateRigidBodyEnabledAttr().Set(enabled)
+            if collider_mass is not None:
+                collider = UsdGeom.Cube.Define(stage, f"{path}/Collider")
+                collider.CreateSizeAttr().Set(0.2)
+                UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
+                UsdPhysics.MassAPI.Apply(collider.GetPrim()).CreateMassAttr().Set(collider_mass)
+            if visual_and_site:
+                UsdGeom.Cube.Define(stage, f"{path}/Visual").CreateSizeAttr().Set(0.1)
+                site = UsdGeom.Sphere.Define(stage, f"{path}/Site")
+                site.CreateRadiusAttr().Set(0.01)
+                site.GetPrim().AddAppliedSchema("NewtonSiteAPI")
+
+        define_body("/World/Disabled", False, 1.0, visual_and_site=True)
+        define_body("/World/Outer", True, 2.0)
+        define_body("/World/Outer/Inner", False, 3.0, visual_and_site=True)
+        define_body("/World/Empty", True)
+        define_body("/World/Empty/Inner", False, 4.0)
+
+        def owned_by(owner, *paths):
+            return dict.fromkeys(paths, owner)
+
+        if Usd.GetVersion() >= (0, 26, 11):
+            ancestor_owned = (
+                {"/World/Outer": 5.0, "/World/Empty": 4.0},
+                {
+                    **owned_by(None, "/World/Disabled/Collider", "/World/Disabled/Visual", "/World/Disabled/Site"),
+                    **owned_by(
+                        "/World/Outer",
+                        "/World/Outer/Collider",
+                        "/World/Outer/Inner/Collider",
+                        "/World/Outer/Inner/Visual",
+                        "/World/Outer/Inner/Site",
+                    ),
+                    **owned_by("/World/Empty", "/World/Empty/Inner/Collider"),
+                },
+            )
+            expected = {False: ancestor_owned, True: ancestor_owned}
+        else:
+            expected = {
+                False: (
+                    {
+                        "/World/Disabled": 1.0,
+                        "/World/Outer": 2.0,
+                        "/World/Outer/Inner": 3.0,
+                        "/World/Empty": 0.0,
+                        "/World/Empty/Inner": 4.0,
+                    },
+                    {
+                        **owned_by(
+                            "/World/Disabled",
+                            "/World/Disabled/Collider",
+                            "/World/Disabled/Visual",
+                            "/World/Disabled/Site",
+                        ),
+                        **owned_by("/World/Outer", "/World/Outer/Collider"),
+                        **owned_by(
+                            "/World/Outer/Inner",
+                            "/World/Outer/Inner/Collider",
+                            "/World/Outer/Inner/Visual",
+                            "/World/Outer/Inner/Site",
+                        ),
+                        **owned_by("/World/Empty/Inner", "/World/Empty/Inner/Collider"),
+                    },
+                ),
+                # Skipped bodies keep their colliders as static shapes but not their visuals or sites.
+                True: (
+                    {"/World/Outer": 2.0, "/World/Empty": 0.0},
+                    {
+                        **owned_by(None, "/World/Disabled/Collider", "/World/Outer/Inner/Collider"),
+                        **owned_by(None, "/World/Empty/Inner/Collider"),
+                        **owned_by("/World/Outer", "/World/Outer/Collider"),
+                    },
+                ),
+            }
+
+        for only_enabled, (expected_masses, expected_owners) in expected.items():
+            with self.subTest(only_load_enabled_rigid_bodies=only_enabled):
+                builder = newton.ModelBuilder()
+                result = builder.add_usd(stage, only_load_enabled_rigid_bodies=only_enabled)
+                masses = {path: builder.body_mass[body] for path, body in result["path_body_map"].items()}
+                self.assertEqual(set(masses), set(expected_masses))
+                for path, mass in expected_masses.items():
+                    self.assertAlmostEqual(masses[path], mass, places=5, msg=path)
+                owners = {
+                    label: builder.body_label[body] if body >= 0 else None
+                    for label, body in zip(builder.shape_label, builder.shape_body, strict=True)
+                }
+                self.assertEqual(owners, expected_owners)
+
+    @requires("pxr.Usd")
     def test_collider_massapi_aggregates_material_density_sibling(self):
         """Combine collider MassAPI mass with sibling material density."""
         from pxr import Usd, UsdGeom, UsdPhysics, UsdShade
@@ -7933,6 +8073,41 @@ def Xform "Articulation" (
             np.testing.assert_allclose(
                 np.diag(inertia), [expected_i] * 3, atol=1e-5, rtol=1e-5, err_msg=f"Body {name} inertia"
             )
+
+    @requires("pxr.Usd")
+    def test_massapi_authored_mass_scales_recorded_collider_inertia(self):
+        """Scale recorded collider inertia from the recorded mass when only body mass is authored.
+
+        A disabled collider with MassAPI routes the body through the recorded-collider fallback.
+        Its inertia reflects the enabled 0.2 [m] cube's authored 2 [kg], not the 8 [kg] that
+        default density gives the shape, so the authored 10 [kg] must rescale it from 2 [kg].
+        """
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        body = UsdGeom.Xform.Define(stage, "/World/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+        UsdPhysics.MassAPI.Apply(body.GetPrim()).CreateMassAttr().Set(10.0)
+        for name, mass, enabled in (("Collider", 2.0, True), ("DisabledCollider", 1.0, False)):
+            collider = UsdGeom.Cube.Define(stage, f"/World/Body/{name}")
+            collider.CreateSizeAttr().Set(0.2)
+            UsdPhysics.CollisionAPI.Apply(collider.GetPrim()).CreateCollisionEnabledAttr().Set(enabled)
+            UsdPhysics.MassAPI.Apply(collider.GetPrim()).CreateMassAttr().Set(mass)
+            if not enabled:
+                collider.AddTranslateOp().Set(Gf.Vec3d(0.4, 0.0, 0.0))
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+        body_idx = result["path_body_map"]["/World/Body"]
+
+        self.assertAlmostEqual(builder.body_mass[body_idx], 10.0, places=5)
+        inertia = np.array(builder.body_inertia[body_idx]).reshape(3, 3)
+        expected_i = (1.0 / 6.0) * 10.0 * 0.2**2
+        np.testing.assert_allclose(inertia, np.diag([expected_i] * 3), atol=1e-6, rtol=1e-5)
 
     @requires("pxr.Usd")
     def test_massapi_partial_body_applies_axis_rotation_in_compute_callback(self):
@@ -14923,6 +15098,84 @@ class TestUsdMaterialColorSpaces(unittest.TestCase):
                     self.assertIsNone(material_props[key])
                 else:
                     np.testing.assert_allclose(material_props[key], expected, atol=1e-6, rtol=1e-6)
+
+    @requires("pxr.Usd")
+    def test_uniform_display_primvars_resolve_per_face(self):
+        """Resolve uniform display primvars per face, clamping or dropping invalid values."""
+        from pxr import Sdf, Usd, UsdGeom, UsdShade, Vt
+
+        from newton._src.usd.utils import resolve_material_properties_for_prim  # noqa: PLC0415
+
+        srgb = color_linear_to_srgb
+        uniform, vertex = UsdGeom.Tokens.uniform, UsdGeom.Tokens.vertex
+        color_path = "/World/Mesh.primvars:displayColor"
+        opacity_path = "/World/Mesh.primvars:displayOpacity"
+        nan = float("nan")
+        two_colors = [(0.2, 0.4, 0.6), (0.6, 0.4, 0.2)]
+        # (name, interpolation, displayColor, displayOpacity, bind, color, opacity, expected logs)
+        cases = (
+            ("per_face", uniform, two_colors, [0.25, 0.75], False,
+             [srgb((0.2, 0.4, 0.6)), srgb((0.6, 0.4, 0.2))], [0.25, 0.75], ()),
+            ("out_of_range", uniform, [(1.5, 0.4, 0.6), (0.6, 0.4, 0.2)], [0.25, 1.5], False,
+             [srgb((1.0, 0.4, 0.6)), srgb((0.6, 0.4, 0.2))], [0.25, 1.0],
+             (f"{color_path}: clamping 1 of 2 imported face colors to [0, 1].",
+              f"{opacity_path}: clamping 1 of 2 imported face opacities to [0, 1].")),
+            ("non_finite", uniform, [(nan, 0.4, 0.6), (0.6, 0.4, 0.2)], [0.25, 0.75], False,
+             [(nan, nan, nan), srgb((0.6, 0.4, 0.2))], [0.25, 0.75],
+             (f"{color_path}: ignoring imported face colors: 1 of 2 are non-finite; those faces use the default.",)),
+            ("all_non_finite", uniform, [(nan, 0.4, 0.6), (nan, 0.4, 0.2)], [0.25, 0.75], False,
+             None, [0.25, 0.75], (f"{color_path}: ignoring imported face colors: all 2 are non-finite.",)),
+            # Both indexed to one value: the fallbacks are the flattened first values, not the first authored ones.
+            ("single_value", uniform, two_colors, [0.25, 0.75], False, srgb((0.6, 0.4, 0.2)), 0.75,
+             (f"{color_path}: uniform primvar length 1 does not match 2 faces",
+              f"{opacity_path}: uniform primvar length 1 does not match 2 faces")),
+            ("wrong_count", uniform, [*two_colors, (0.1, 0.1, 0.1)], [0.25, 0.75, 0.5], False,
+             srgb((0.2, 0.4, 0.6)), 0.25,
+             (f"{color_path}: uniform primvar length 3 does not match 2 faces",
+              f"{opacity_path}: uniform primvar length 3 does not match 2 faces")),
+            ("vertex_stays_scalar", vertex, [*two_colors, *two_colors], [0.25, 0.75, 0.25, 0.75], False,
+             srgb((0.2, 0.4, 0.6)), 0.25, (f"{opacity_path}: opacity data contains 4 values",)),
+            ("material_color_wins", uniform, two_colors, [0.25, 0.75], True,
+             srgb((0.8, 0.2, 0.1)), [0.25, 0.75], ()),
+        )  # fmt: skip
+        for name, interpolation, colors, opacities, bind, expected_color, expected_opacity, messages in cases:
+            with self.subTest(name=name):
+                stage = Usd.Stage.CreateInMemory()
+                mesh = UsdGeom.Mesh.Define(stage, "/World/Mesh")
+                mesh.CreatePointsAttr().Set([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0), (0.0, 1.0, 0.0)])
+                mesh.CreateFaceVertexCountsAttr().Set([3, 3])
+                mesh.CreateFaceVertexIndicesAttr().Set([0, 1, 2, 0, 2, 3])
+                primvars = UsdGeom.PrimvarsAPI(mesh)
+                color = primvars.CreatePrimvar("displayColor", Sdf.ValueTypeNames.Color3fArray, interpolation)
+                color.Set(colors)
+                opacity = primvars.CreatePrimvar("displayOpacity", Sdf.ValueTypeNames.FloatArray, interpolation)
+                opacity.Set(opacities)
+                if name == "single_value":
+                    color.SetIndices(Vt.IntArray([1]))
+                    opacity.SetIndices(Vt.IntArray([1]))
+                if bind:
+                    material = UsdShade.Material.Define(stage, "/World/Looks/Material")
+                    shader = UsdShade.Shader.Define(stage, "/World/Looks/Material/PreviewSurface")
+                    shader.CreateIdAttr("UsdPreviewSurface")
+                    shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set((0.8, 0.2, 0.1))
+                    material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+                    UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(material)
+
+                if not messages:
+                    with self.assertNoLogs("newton", level="WARNING"):
+                        props = resolve_material_properties_for_prim(mesh.GetPrim(), face_count=2)
+                else:
+                    with self.assertLogs("newton", level="WARNING") as caught:
+                        props = resolve_material_properties_for_prim(mesh.GetPrim(), face_count=2)
+                    self.assertEqual(len(caught.output), len(messages), caught.output)
+                    for message in messages:
+                        self.assertIn(message, "\n".join(caught.output))
+
+                if expected_color is None:
+                    self.assertIsNone(props["color"])
+                else:
+                    np.testing.assert_allclose(props["color"], expected_color, atol=1e-6, rtol=1e-6)
+                np.testing.assert_allclose(props["opacity"], expected_opacity, atol=1e-6, rtol=1e-6)
 
     @requires("pxr.Usd")
     def test_ancestor_binding_overrides_unapplied_mesh_binding(self):
