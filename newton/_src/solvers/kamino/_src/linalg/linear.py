@@ -724,6 +724,10 @@ class LLTBlockedSolver(DirectSolver[ScalarType, IndexType]):
             A=A,
             L=self._L,
         )
+        self._retry_failed_factors(A, self._operator.info.dim)
+
+    def _retry_failed_factors(self, A: wp.array2d[ScalarType], dim: wp.array[wp.int32]) -> None:
+        """Refactorizes the blocks of nonzero dimension in ``dim`` with a non-finite pivot, if enabled."""
         if self._failed_pivot_shift > 0.0:
             # Round-off can break near-singular blocks; refactorize only those,
             # since the per-block kernel exits immediately for zero dimensions.
@@ -733,7 +737,7 @@ class LLTBlockedSolver(DirectSolver[ScalarType, IndexType]):
             wp.launch(
                 factorize.flag_failed_llt_factors,
                 dim=retry_shape,
-                inputs=[info.dim, info.dim, self._L, self._retry_dim],
+                inputs=[dim, info.dim, self._L, self._retry_dim],
                 device=self._device,
             )
             wp.launch(
@@ -816,6 +820,7 @@ class LLTBlockedSolver(DirectSolver[ScalarType, IndexType]):
             A=A,
             L=self._L,
         )
+        self._retry_failed_factors(A, dim)
 
 
 ###

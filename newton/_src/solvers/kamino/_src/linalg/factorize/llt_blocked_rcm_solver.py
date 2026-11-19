@@ -343,6 +343,7 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
             block_dim=self._factorize_block_dim,
             device=self._device,
         )
+        self._retry_failed_factors(dim)
 
     ###
     # Implementation
@@ -672,15 +673,20 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
                 device=self._device,
                 clear_skipped=clear_skipped,
             )
+        self._retry_failed_factors(info.dim)
+
+    def _retry_failed_factors(self, dim: wp.array[wp.int32]) -> None:
+        """Refactorizes the blocks of nonzero dimension in ``dim`` with a non-finite pivot, if enabled."""
         if self._failed_pivot_shift > 0.0:
             # Round-off can break near-singular blocks; refactorize only those,
             # since the per-block kernel exits immediately for zero dimensions.
+            num_blocks = self._operator.info.num_blocks
             self._retry_dim.zero_()
             retry_shape = (num_blocks, self._max_dim)
             wp.launch(
                 flag_failed_llt_factors,
                 dim=retry_shape,
-                inputs=[info.dim, self._stride(), self._L, self._retry_dim],
+                inputs=[dim, self._stride(), self._L, self._retry_dim],
                 device=self._device,
             )
             wp.launch(
