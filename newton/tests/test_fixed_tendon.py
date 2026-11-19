@@ -4,6 +4,7 @@
 import unittest
 from enum import IntEnum
 
+import numpy as np
 import warp as wp
 
 import newton
@@ -277,6 +278,120 @@ class TestMujocoFixedTendon(unittest.TestCase):
 
     def test_lower_tendon_limit_breach_from_above(self):
         self.run_test_mujoco_fixed_tendon_limit_behavior(self.LimitBreachType.LOWER_LIMIT_FROM_ABOVE)
+
+    def test_mjcf_fixed_tendon_hyphenated_and_combined_joints(self):
+        """Fixed tendons resolve hyphenated MJCF joint names and individual DOFs of merged joints."""
+        import mujoco
+
+        mjcf = """<mujoco model="combined_fixed_tendon">
+          <option timestep="0.002" gravity="0 0 -9.81" integrator="Euler"/>
+          <worldbody>
+            <body name="finger" pos="0 0 0.5">
+              <joint name="mcp-flex" type="hinge" axis="0 1 0" damping="0.1"/>
+              <joint name="mcp_abd" type="hinge" axis="1 0 0" damping="0.1"/>
+              <geom type="capsule" size="0.03 0.1" mass="0.5"/>
+              <body name="distal" pos="0 0 -0.2">
+                <joint name="dip_slide" type="slide" axis="0 0 1" damping="0.2"/>
+                <joint name="dip-hinge" type="hinge" axis="0 1 0" damping="0.1"/>
+                <geom type="capsule" size="0.025 0.08" mass="0.3"/>
+              </body>
+            </body>
+          </worldbody>
+          <tendon>
+            <fixed name="synergy-tendon" stiffness="2.0" damping="0.5" springlength="0.0">
+              <joint joint="mcp_abd" coef="-0.5"/>
+              <joint joint="mcp-flex" coef="1.2"/>
+              <joint joint="dip-hinge" coef="-0.8"/>
+              <joint joint="dip_slide" coef="2.0"/>
+            </fixed>
+          </tendon>
+          <actuator>
+            <motor name="synergy-drive" tendon="synergy-tendon" gear="1.5"/>
+          </actuator>
+        </mujoco>"""
+
+        ref_model = mujoco.MjModel.from_xml_string(mjcf)
+        ref_data = mujoco.MjData(ref_model)
+        q0 = [0.25, -0.15, 0.04, -0.35]
+        ref_data.qpos[:] = q0
+        ref_data.ctrl[:] = [0.6]
+        for _ in range(20):
+            mujoco.mj_step(ref_model, ref_data)
+
+        for use_mujoco_cpu in (True, False):
+            world_count = 1 if use_mujoco_cpu else 2
+            with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
+                blueprint = newton.ModelBuilder()
+                blueprint.add_mjcf(mjcf, ctrl_direct=True)
+                builder = newton.ModelBuilder()
+                builder.replicate(blueprint, world_count)
+                model = builder.finalize(device="cpu" if use_mujoco_cpu else None)
+
+                solver = SolverMuJoCo(
+                    model,
+                    use_mujoco_cpu=use_mujoco_cpu,
+                    separate_worlds=True,
+                    disable_contacts=True,
+                    kinematic_switchable_roots=False,
+                )
+                self.assertEqual(solver.mj_model.ntendon, 1)
+                self.assertEqual(solver.mj_model.nwrap, 4)
+
+                state_in = model.state()
+                state_out = model.state()
+                control = model.control()
+                state_in.joint_q.assign(q0 * world_count)
+                newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
+                control.mujoco.ctrl.assign([0.6] * world_count)
+
+                dt = float(ref_model.opt.timestep)
+                for _ in range(20):
+                    solver.step(state_in=state_in, state_out=state_out, control=control, contacts=None, dt=dt)
+                    state_in, state_out = state_out, state_in
+
+                q_np = state_in.joint_q.numpy().reshape(world_count, 4)
+                for w in range(world_count):
+                    np.testing.assert_allclose(q_np[w], ref_data.qpos, atol=1e-4, rtol=1e-4)
+
+        # Corrupted DOF selector pointing outside its joint raises ValueError.
+        bad_builder = newton.ModelBuilder()
+        bad_builder.add_mjcf(mjcf, ctrl_direct=True)
+        bad_builder.custom_attributes["mujoco:tendon_joint_dof"].values[0] = 3
+        bad_model = bad_builder.finalize(device="cpu")
+        with self.assertRaisesRegex(ValueError, "does not belong to joint"):
+            SolverMuJoCo(bad_model, use_mujoco_cpu=True, kinematic_switchable_roots=False)
+
+        # Heterogeneous per-world DOF selectors on the same combined joint raise ValueError.
+        het_blueprint = newton.ModelBuilder()
+        het_blueprint.add_mjcf(mjcf, ctrl_direct=True)
+        het_builder = newton.ModelBuilder()
+        het_builder.replicate(het_blueprint, 2)
+        # World 1 entry 0 selects mcp-flex (local DOF 0 -> global 4) instead of mcp_abd (local DOF 1 -> global 5).
+        het_builder.custom_attributes["mujoco:tendon_joint_dof"].values[4] = 4
+        het_model = het_builder.finalize(device="cpu")
+        with self.assertRaisesRegex(ValueError, "homogeneous worlds"):
+            SolverMuJoCo(het_model, use_mujoco_cpu=False, separate_worlds=True, kinematic_switchable_roots=False)
+
+        # Converted 3-hinge ball joints cannot participate in MuJoCo fixed tendons and warn cleanly.
+        ball_mjcf = """<mujoco>
+          <worldbody>
+            <body name="b">
+              <joint name="rx" type="hinge" axis="1 0 0"/>
+              <joint name="ry" type="hinge" axis="0 1 0"/>
+              <joint name="rz" type="hinge" axis="0 0 1"/>
+              <geom type="sphere" size="0.1"/>
+            </body>
+          </worldbody>
+          <tendon>
+            <fixed name="t"><joint joint="ry" coef="1.0"/></fixed>
+          </tendon>
+        </mujoco>"""
+        ball_builder = newton.ModelBuilder()
+        ball_builder.add_mjcf(ball_mjcf, convert_3d_hinge_to_ball_joints=True)
+        ball_model = ball_builder.finalize(device="cpu")
+        with self.assertWarnsRegex(UserWarning, "unsupported type BALL"):
+            ball_solver = SolverMuJoCo(ball_model, use_mujoco_cpu=True, kinematic_switchable_roots=False)
+        self.assertEqual(ball_solver.mj_model.ntendon, 0)
 
 
 if __name__ == "__main__":

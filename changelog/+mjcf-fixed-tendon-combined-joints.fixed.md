@@ -1,0 +1,1 @@
+Fix `ModelBuilder.add_mjcf()` and `SolverMuJoCo` dropping `<fixed>` tendons whose `<joint>` entries reference hyphenated joint names or scalar MJCF joints merged onto a multi-DOF body (`JointType.D6`).

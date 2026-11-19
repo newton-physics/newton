@@ -3739,6 +3739,7 @@ def parse_mjcf(
         "tendon_joint_adr",
         "tendon_joint_num",
         "tendon_joint",
+        "tendon_joint_dof",
         "tendon_coef",
         "tendon_wrap_adr",
         "tendon_wrap_num",
@@ -3779,8 +3780,9 @@ def parse_mjcf(
                         logger.warning("<joint> in tendon '%s' missing joint attribute, skipping", tendon_name)
                     continue
 
-                # Look up joint index by name
-                joint_idx = joint_name_to_idx.get(joint_name)
+                # Sanitize name to match how joints are indexed in the builder
+                joint_key = sanitize_name(joint_name)
+                joint_idx = joint_name_to_idx.get(joint_key)
                 if joint_idx is None:
                     if verbose:
                         logger.warning(
@@ -3788,8 +3790,9 @@ def parse_mjcf(
                         )
                     continue
 
+                dof_idx = mjcf_joint_name_to_dof.get(joint_key, -1)
                 coef = float(coef_str)
-                joint_entries.append((joint_idx, coef))
+                joint_entries.append((joint_idx, dof_idx, coef))
 
             if not joint_entries:
                 if verbose:
@@ -3804,13 +3807,14 @@ def parse_mjcf(
             joint_start = len(tendon_joint_attr.values) if tendon_joint_attr and tendon_joint_attr.values else 0
 
             # Add joints to the joint arrays
-            for joint_idx, coef in joint_entries:
-                builder.add_custom_values(
-                    **{
-                        "mujoco:tendon_joint": joint_idx,
-                        "mujoco:tendon_coef": coef,
-                    }
-                )
+            for joint_idx, dof_idx, coef in joint_entries:
+                joint_row: dict[str, Any] = {
+                    "mujoco:tendon_joint": joint_idx,
+                    "mujoco:tendon_coef": coef,
+                }
+                if "mujoco:tendon_joint_dof" in builder.custom_attributes:
+                    joint_row["mujoco:tendon_joint_dof"] = dof_idx
+                builder.add_custom_values(**joint_row)
 
             # Build values dict for tendon-level attributes
             tendon_values: dict[str, Any] = {

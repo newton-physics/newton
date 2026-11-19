@@ -1106,6 +1106,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         return [
             {
                 "mujoco:tendon_joint": joint_idx,
+                "mujoco:tendon_joint_dof": -1,
                 "mujoco:tendon_coef": coef,
             }
             for joint_idx, coef in joint_entries
@@ -3374,6 +3375,16 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
+                name="tendon_joint_dof",
+                frequency="mujoco:tendon_joint",
+                dtype=wp.int32,
+                default=-1,
+                namespace="mujoco",
+                references="joint_dof",  # Offset by DOF count during merge
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
                 name="tendon_joint_articulation",
                 frequency="mujoco:tendon_joint",
                 dtype=wp.int32,
@@ -3840,6 +3851,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     "All joint-level attributes must have the same number of elements."
                 )
             joint_entry_count = next(iter(unique_joint_lengths))
+            dof_attr = getattr(mujoco_attrs, "tendon_joint_dof", None)
+            if dof_attr is not None and len(dof_attr) not in (0, joint_entry_count):
+                joint_lengths["tendon_joint_dof"] = len(dof_attr)
+                raise ValueError(
+                    f"MuJoCo tendon joint attributes have inconsistent lengths: {joint_lengths}. "
+                    "All joint-level attributes must have the same number of elements."
+                )
 
         # Wrap path attributes for spatial tendons
         wrap_attr_names = ["tendon_wrap_type", "tendon_wrap_shape", "tendon_wrap_sidesite", "tendon_wrap_prm"]
@@ -3869,6 +3887,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         shape_mapping: dict[int, str],
         site_mapping: dict[int, str],
         template_world: int,
+        joint_axis_mapping: dict[int, list[str]] | None = None,
     ) -> tuple[list[int], list[str]]:
         """
         Initialize MuJoCo fixed and spatial tendons from custom attributes.
@@ -3883,6 +3902,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             shape_mapping: Mapping from Newton shape index to MuJoCo geom name.
             site_mapping: Mapping from Newton shape index (sites) to MuJoCo site name.
             template_world: The world index to use as the template (typically first_group).
+            joint_axis_mapping: Optional mapping from Newton joint index to per-axis MuJoCo joint names.
 
         Returns:
             tuple[list[int], list[str]]: Tuple of (Newton tendon indices, MuJoCo tendon names).
@@ -3936,6 +3956,16 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         tendon_joint_adr = mujoco_attrs.tendon_joint_adr.numpy()
         tendon_joint_num = mujoco_attrs.tendon_joint_num.numpy()
         tendon_joint = mujoco_attrs.tendon_joint.numpy() if joint_entry_count > 0 else None
+        tendon_joint_dof_attr = getattr(mujoco_attrs, "tendon_joint_dof", None)
+        tendon_joint_dof = (
+            tendon_joint_dof_attr.numpy()
+            if (
+                tendon_joint_dof_attr is not None
+                and joint_entry_count > 0
+                and len(tendon_joint_dof_attr) == joint_entry_count
+            )
+            else None
+        )
         tendon_coef = mujoco_attrs.tendon_coef.numpy() if joint_entry_count > 0 else None
 
         # Spatial tendon wrap path arrays
@@ -3947,6 +3977,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         tendon_wrap_prm_np = mujoco_attrs.tendon_wrap_prm.numpy() if wrap_entry_count > 0 else None
 
         model_joint_type_np = model.joint_type.numpy()
+        model_joint_qd_start_np = model.joint_qd_start.numpy()
 
         # Track which Newton tendon indices are added to MuJoCo and their names
         selected_tendons: list[int] = []
@@ -3996,22 +4027,48 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     if tendon_joint is None or tendon_coef is None:
                         break
                     newton_joint = int(tendon_joint[j])
+                    dof = int(tendon_joint_dof[j]) if tendon_joint_dof is not None else -1
                     coef = float(tendon_coef[j])
-                    if newton_joint < 0:
+                    if newton_joint < 0 or newton_joint >= len(model_joint_type_np):
                         warnings.warn(
                             f"Skipping joint entry {j} for tendon {i}: invalid joint index {newton_joint}.",
                             NewtonWarning,
                             stacklevel=2,
                         )
                         continue
-                    if model_joint_type_np[newton_joint] == JointType.D6:
-                        warnings.warn(
-                            f"Skipping joint entry {j} for tendon {i}: invalid D6 joint type {newton_joint}.",
-                            NewtonWarning,
-                            stacklevel=2,
-                        )
-                        continue
-                    joint_name = joint_mapping.get(newton_joint)
+                    jtype = int(model_joint_type_np[newton_joint])
+                    if dof >= 0:
+                        if jtype in (JointType.BALL, JointType.FREE, JointType.FIXED):
+                            warnings.warn(
+                                f"Skipping joint entry {j} for tendon {i}: joint {newton_joint} has unsupported "
+                                f"type {JointType(jtype).name} for fixed tendons (expected scalar hinge or slide).",
+                                NewtonWarning,
+                                stacklevel=2,
+                            )
+                            continue
+                        first_dof = int(model_joint_qd_start_np[newton_joint])
+                        dof_count = int(model_joint_qd_start_np[newton_joint + 1]) - first_dof
+                        if not first_dof <= dof < first_dof + dof_count:
+                            raise ValueError(
+                                f"Fixed tendon {i} joint entry {j} selects DoF {dof}, which does not belong to "
+                                f"joint '{model.joint_label[newton_joint]}'."
+                            )
+                        axis_names = joint_axis_mapping.get(newton_joint) if joint_axis_mapping is not None else None
+                        if axis_names is not None:
+                            joint_name = axis_names[dof - first_dof]
+                        elif dof_count == 1:
+                            joint_name = joint_mapping.get(newton_joint)
+                        else:
+                            joint_name = None
+                    else:
+                        if jtype == JointType.D6:
+                            warnings.warn(
+                                f"Skipping joint entry {j} for tendon {i}: invalid D6 joint type {newton_joint}.",
+                                NewtonWarning,
+                                stacklevel=2,
+                            )
+                            continue
+                        joint_name = joint_mapping.get(newton_joint)
                     if joint_name is None:
                         warnings.warn(
                             f"Skipping joint entry {j} for tendon {i}: Newton joint {newton_joint} "
@@ -9306,7 +9363,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         particle_bodies = self._init_flexes(model, spec, shape_mapping, selected_particles)
 
         selected_tendons, mjc_tendon_names = self._init_tendons(
-            model, spec, joint_mapping, shape_mapping, site_mapping, first_world
+            model,
+            spec,
+            joint_mapping,
+            shape_mapping,
+            site_mapping,
+            first_world,
+            joint_axis_mapping=joint_axis_mapping,
         )
 
         tendon_name_mapping = dict(zip(selected_tendons, mjc_tendon_names, strict=True))
@@ -12173,3 +12236,59 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         f"world 0 references tendon {tendon_refs[0, c]}, "
                         f"but other worlds reference {tendon_refs[1:, c].tolist()}."
                     )
+
+        mujoco_attrs = getattr(model, "mujoco", None)
+        tendon_world_attr = getattr(mujoco_attrs, "tendon_world", None)
+        tendon_joint_attr = getattr(mujoco_attrs, "tendon_joint", None)
+        if (
+            world_count > 1
+            and tendon_world_attr is not None
+            and tendon_joint_attr is not None
+            and len(tendon_joint_attr)
+        ):
+            tw_np = tendon_world_attr.numpy()
+            ttype_attr = getattr(mujoco_attrs, "tendon_type", None)
+            ttype_np = ttype_attr.numpy() if ttype_attr is not None else np.zeros(len(tw_np), dtype=np.int32)
+            t_adr_np = mujoco_attrs.tendon_joint_adr.numpy()
+            t_num_np = mujoco_attrs.tendon_joint_num.numpy()
+            t_jnt_np = tendon_joint_attr.numpy()
+            t_dof_attr = getattr(mujoco_attrs, "tendon_joint_dof", None)
+            t_dof_np = (
+                t_dof_attr.numpy()
+                if (t_dof_attr is not None and len(t_dof_attr) == len(t_jnt_np))
+                else np.full(len(t_jnt_np), -1, dtype=np.int32)
+            )
+            dofs_per_world = model.joint_dof_count // world_count
+            per_world_wraps: list[list[tuple[int, int]]] = [[] for _ in range(world_count)]
+            for t_idx in range(len(tw_np)):
+                tw = int(tw_np[t_idx])
+                if tw < 0 or int(ttype_np[t_idx]) != 0:
+                    continue
+                start = int(t_adr_np[t_idx])
+                count = int(t_num_np[t_idx])
+                if start < 0 or count <= 0 or start + count > len(t_jnt_np):
+                    continue
+                for j_idx in range(start, start + count):
+                    nj = int(t_jnt_np[j_idx])
+                    dof = int(t_dof_np[j_idx])
+                    if nj >= 0 and joints_per_world > 0 and nj // joints_per_world != tw:
+                        raise ValueError(
+                            f"Fixed tendon {t_idx} joint entry {j_idx} of world {tw} references joint {nj} "
+                            "of another world."
+                        )
+                    if dof >= 0 and dofs_per_world > 0 and dof // dofs_per_world != tw:
+                        raise ValueError(
+                            f"Fixed tendon {t_idx} joint entry {j_idx} of world {tw} references DoF {dof} "
+                            "of another world."
+                        )
+                    if 0 <= tw < world_count:
+                        local_j = nj % joints_per_world if (nj >= 0 and joints_per_world > 0) else nj
+                        local_d = dof % dofs_per_world if (dof >= 0 and dofs_per_world > 0) else -1
+                        per_world_wraps[tw].append((local_j, local_d))
+            if any(per_world_wraps):
+                for w in range(1, world_count):
+                    if per_world_wraps[w] != per_world_wraps[0]:
+                        raise ValueError(
+                            "SolverMuJoCo requires homogeneous worlds. "
+                            f"Fixed tendon joint/DoF targets in world {w} differ from world 0."
+                        )

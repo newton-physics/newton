@@ -187,7 +187,13 @@ def add_tendon_fixed(
     row = _prepare_custom_frequency_row(builder, "mujoco:tendon", values, custom_attributes)
 
     for joint, coef in entries:
-        builder.add_custom_values(**{"mujoco:tendon_joint": joint, "mujoco:tendon_coef": coef})
+        builder.add_custom_values(
+            **{
+                "mujoco:tendon_joint": joint,
+                "mujoco:tendon_joint_dof": -1,
+                "mujoco:tendon_coef": coef,
+            }
+        )
     return builder.add_custom_values(**row)["mujoco:tendon_world"]
 
 
