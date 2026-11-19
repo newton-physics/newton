@@ -22,9 +22,9 @@ from newton._src.solvers.kamino._src.kinematics.joints import (
     select_gimbal_coords,
 )
 from newton.solvers import SolverKamino, SolverMuJoCo
-from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino import setup_test_output, setup_tests, test_context
 from newton.tests.kamino.utils.extract import extract_cts_jacobians, extract_dofs_jacobians
-from newton.tests.unittest_utils import MUJOCO_MODULES, requires
+from newton.tests.unittest_utils import MUJOCO_MODULES, NewtonTestCase, requires
 
 _RH_AXES = (newton.Axis.X, newton.Axis.Y, newton.Axis.Z)
 _LH_AXES = (newton.Axis.X, newton.Axis.Z, newton.Axis.Y)
@@ -242,16 +242,14 @@ def _run(
     )
 
 
-class TestGimbal(unittest.TestCase):
+class TestGimbal(NewtonTestCase):
     """Verify the rotational D6 representation."""
 
     def setUp(self):
+        setup_test_output(self)
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
-
-    def tearDown(self):
-        self.default_device = None
 
     def test_rotational_d6_converts_to_gimbal(self):
         """Convert a three-angular-axis D6 joint to GIMBAL."""
@@ -501,10 +499,11 @@ class TestGimbal(unittest.TestCase):
 
 @unittest.skipUnless(wp.get_cuda_device_count(), "requires CUDA device")
 @requires(*MUJOCO_MODULES)
-class TestGimbalMJWarp(unittest.TestCase):
+class TestGimbalMJWarp(NewtonTestCase):
     """Compare Kamino and MJWarp through the public Newton state layout."""
 
     def setUp(self):
+        setup_test_output(self)
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)

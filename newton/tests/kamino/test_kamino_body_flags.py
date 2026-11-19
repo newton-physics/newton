@@ -30,8 +30,8 @@ from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
 from newton.solvers import SolverMuJoCo
 from newton.solvers.experimental.coupled import SolverCoupledProxy
-from newton.tests.kamino import setup_tests, test_context
-from newton.tests.unittest_utils import MUJOCO_MODULES, requires
+from newton.tests.kamino import setup_test_output, setup_tests, test_context
+from newton.tests.unittest_utils import MUJOCO_MODULES, NewtonTestCase, requires
 
 ###
 # Test helpers
@@ -140,10 +140,11 @@ def _mark_proxy(model, indices: list[int], name: str = "test") -> ModelView:
 ###
 
 
-class TestKaminoBodyFlags(unittest.TestCase):
+class TestKaminoBodyFlags(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
+        setup_test_output(self)
         self.default_device = wp.get_device(test_context.device)
 
     def test_padmm_preserves_immovable_joint_anchor(self):
@@ -168,7 +169,7 @@ class TestKaminoBodyFlags(unittest.TestCase):
                         dynamics_solver="padmm",
                         integrator=integrator,
                         sparse_jacobian=sparse_jacobian,
-                        use_collision_detector=False,
+                        use_collision_detector=integrator == "moreau",
                     )
                     solver = SolverKamino(model, config=config)
                     np.testing.assert_array_equal(solver._model_kamino.joints.num_kinematic_cts.numpy(), [0, 5])

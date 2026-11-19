@@ -1,0 +1,1 @@
+Remove `SolverMuJoCo.render_mujoco_viewer()` and `SolverMuJoCo.close_mujoco_viewer()`. Install `mujoco-core[rendering]` and use `mujoco.viewer.launch_passive(solver.mj_model, solver.mj_data)` directly; on the MuJoCo Warp backend, call `mujoco_warp.get_data_into(solver.mj_data, solver.mj_model, solver.mjw_data)` before each `viewer.sync()`.
