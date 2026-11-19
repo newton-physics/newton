@@ -257,11 +257,14 @@ def _warn_if_mujoco_versions_mismatch(mujoco: Any, mujoco_warp: Any) -> None:
 
 
 def _installed_version(package: str, module: Any) -> str | None:
+    # The legacy ``mujoco`` distribution installs over the files of ``mujoco-core``, whose metadata stays behind.
+    module_version = getattr(module, "__version__", None)
+    if module_version is not None:
+        return str(module_version)
     try:
         return importlib_metadata.version(package)
     except importlib_metadata.PackageNotFoundError:
-        module_version = getattr(module, "__version__", None)
-        return str(module_version) if module_version is not None else None
+        return None
 
 
 def _version_satisfies(installed_version: str, specifier: str) -> bool:
@@ -4694,7 +4697,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 flags map ``RUN_TO_RUN`` to ``DeterminismType.ALL`` before
                 model-constant initialization. This requests the backend's
                 available deterministic operations, not an end-to-end guarantee.
-                In MuJoCo Warp 4.0.0, contact and constraint sorting are still
+                MuJoCo Warp's contact and constraint sorting are still
                 unimplemented hooks; enabling their flags does not sort rows.
                 With Newton contacts, separately enable deterministic ordering on
                 :class:`newton.CollisionPipeline`. Neither setting guarantees

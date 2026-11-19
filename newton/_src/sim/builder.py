@@ -1266,7 +1266,7 @@ class ModelBuilder:
         :attr:`gap`, plus :attr:`margin` for hydroelastic shapes, when
         ``None``. Hydroelastic padding must cover ``margin + gap``. Rejected
         on ``MESH`` / ``CONVEX_MESH`` shapes — pass ``margin`` to
-        :meth:`~newton.geometry.Mesh.build_sdf` instead."""
+        :meth:`~newton.Mesh.build_sdf` instead."""
 
         def configure_sdf(
             self,
@@ -1693,15 +1693,15 @@ class ModelBuilder:
         """Name of the attribute in the URDF definition. If None, the attribute name is used."""
 
         usd_value_transformer: Callable[[Any, dict[str, Any]], Any] | None = None
-        """Transformer function that converts a USD attribute value to a valid Warp dtype. If undefined, the generic converter from :func:`newton.usd.convert_warp_value` is used. Receives a context dict with the following keys:
+        """Transformer function that converts a USD attribute value to a valid Warp dtype. If undefined, the generic converter from :func:`newton.usd.value_to_warp` is used. Receives a context dict with the following keys:
         - ``"prim"``: The USD prim to query.
         - ``"attr"``: The :class:`~newton.ModelBuilder.CustomAttribute` object to get the value for."""
 
         mjcf_value_transformer: Callable[[str, dict[str, Any] | None], Any] | None = None
-        """Transformer function that converts a MJCF attribute value string to a valid Warp dtype. If undefined, the generic converter from :func:`newton.utils.parse_warp_value_from_string` is used. Receives an optional context dict with parsing-time information (e.g., use_degrees, joint_type)."""
+        """Transformer function that converts a MJCF attribute value string to a valid Warp dtype. If undefined, the generic converter from :func:`newton.utils.string_to_warp` is used. Receives an optional context dict with parsing-time information (e.g., use_degrees, joint_type)."""
 
         urdf_value_transformer: Callable[[str, dict[str, Any] | None], Any] | None = None
-        """Transformer function that converts a URDF attribute value string to a valid Warp dtype. If undefined, the generic converter from :func:`newton.utils.parse_warp_value_from_string` is used. Receives an optional context dict with parsing-time information."""
+        """Transformer function that converts a URDF attribute value string to a valid Warp dtype. If undefined, the generic converter from :func:`newton.utils.string_to_warp` is used. Receives an optional context dict with parsing-time information."""
 
         reference_value_transformer: Callable[[list[Any], dict[str, Any]], list[Any]] | None = None
         """Batch transformer for entity references copied by :meth:`ModelBuilder.add_builder`.
@@ -5346,6 +5346,8 @@ class ModelBuilder:
                 :attr:`~newton.JointTargetMode.POSITION` if stiffness > 0, :attr:`~newton.JointTargetMode.VELOCITY` if only
                 damping > 0, :attr:`~newton.JointTargetMode.EFFORT` if a drive is present but both gains are zero
                 (direct torque control), or :attr:`~newton.JointTargetMode.NONE` if no drive/actuation is applied.
+                A USD ``MjcActuator`` in MuJoCo's position or velocity shape on a DOF whose drive has both gains zero sets
+                the mode from its own gains instead of :attr:`~newton.JointTargetMode.EFFORT`, and a warning is logged.
             legacy_margin_gap: If True, restore pre-MuJoCo-3.9 import behavior
                 where ``shape_margin`` is computed as ``mjc_margin - mjc_gap``.
                 Use for USD files authored against MuJoCo <= 3.8. Defaults to
