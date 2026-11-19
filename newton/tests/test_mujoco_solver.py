@@ -35,7 +35,12 @@ from newton._src.solvers.mujoco.enums import (
 )
 from newton._src.solvers.mujoco.equality import _add_equality_constraint
 from newton._src.solvers.mujoco.geometry import build_shape_layout, compile_layout_collision_masks
-from newton._src.solvers.mujoco.kernels import convert_solref, update_body_inertia_kernel
+from newton._src.solvers.mujoco.kernels import (
+    convert_solref,
+    quat_rotate_inv_normalized,
+    quat_rotate_normalized,
+    update_body_inertia_kernel,
+)
 from newton._src.solvers.mujoco.utils import MJC_OBJ_BODY, MJC_OBJ_JOINT, MjcEqualityTargetKind
 from newton.examples import get_asset
 from newton.solvers import SolverMuJoCo
@@ -43,9 +48,19 @@ from newton.tests.unittest_utils import (
     MUJOCO_MODULES,
     assert_np_equal,
     count_initial_contacts,
+    get_test_devices,
     patch_sys_module,
     requires,
 )
+
+
+@wp.kernel
+def _quat_rotate_normalized_kernel(
+    q: wp.array[wp.quat], v: wp.array[wp.vec3], rotated: wp.array[wp.vec3], rotated_inv: wp.array[wp.vec3]
+):
+    i = wp.tid()
+    rotated[i] = quat_rotate_normalized(q[i], v[i])
+    rotated_inv[i] = quat_rotate_inv_normalized(q[i], v[i])
 
 
 def _add_deprecated_mimic_constraint(
@@ -7035,6 +7050,49 @@ class TestMuJoCoKernels(unittest.TestCase):
         w, x, y, z = quaternion.numpy()[0, 0]
         frame = np.array(wp.quat_to_matrix(wp.quat(x, y, z, w))).reshape(3, 3)
         np.testing.assert_allclose(frame @ np.diag(principal.numpy()[0, 0]) @ frame.T, inertia, rtol=1e-5, atol=1e-23)
+
+    def test_quat_rotate_normalized_rounds_once(self):
+        """Match the float64 rotation by ``q / |q|`` to within one float32 rounding.
+
+        A rotation evaluated in float32 is off by several ulp, which is what
+        accumulates when :class:`SolverMuJoCo` syncs FREE and BALL joints every step.
+        """
+        rng = np.random.default_rng(0)
+        count = 2048
+        unit = rng.normal(size=(count, 4)).astype(np.float32)
+        unit /= np.linalg.norm(unit, axis=1, keepdims=True)
+        q = np.concatenate(
+            [
+                unit,
+                unit * np.float32(1.0 + 3.0e-5),  # near unit norm
+                unit * np.float32(0.5),  # far from unit norm
+                np.tile(np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32), (count, 1)),
+                np.zeros((count, 4), dtype=np.float32),  # no rotation instead of NaN
+            ]
+        )
+        v = (rng.normal(size=(len(q), 3)) * 10.0 ** rng.uniform(-3.0, 3.0, size=(len(q), 1))).astype(np.float32)
+
+        qd, vd = q.astype(np.float64), v.astype(np.float64)
+        norm_sq = np.sum(qd * qd, axis=1, keepdims=True)
+        scale = np.divide(2.0, norm_sq, out=np.zeros_like(norm_sq), where=norm_sq > 0.0)
+        for device in get_test_devices():
+            with self.subTest(device=str(device)):
+                rotated = wp.empty(len(q), dtype=wp.vec3, device=device)
+                rotated_inv = wp.empty(len(q), dtype=wp.vec3, device=device)
+                wp.launch(
+                    _quat_rotate_normalized_kernel,
+                    dim=len(q),
+                    inputs=[wp.array(q, dtype=wp.quat, device=device), wp.array(v, dtype=wp.vec3, device=device)],
+                    outputs=[rotated, rotated_inv],
+                    device=device,
+                )
+                for sign, result in ((1.0, rotated), (-1.0, rotated_inv)):
+                    u, w = sign * qd[:, :3], qd[:, 3:]
+                    uv = np.cross(u, vd)
+                    expected = vd + scale * (w * uv + np.cross(u, uv))
+                    ulp = np.spacing(np.abs(expected).max(axis=1, keepdims=True).astype(np.float32))
+                    error = np.abs(result.numpy().astype(np.float64) - expected) / ulp
+                    self.assertLessEqual(error.max(), 0.51)
 
 
 @requires(*MUJOCO_MODULES)
