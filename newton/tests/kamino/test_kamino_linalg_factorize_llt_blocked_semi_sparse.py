@@ -12,21 +12,19 @@ import newton
 from newton._src.solvers.kamino._src.linalg.factorize.llt_blocked_semi_sparse import (
     SemiSparseBlockCholeskySolverBatched,
 )
-from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino import setup_test_output, setup_tests, test_context
+from newton.tests.unittest_utils import NewtonTestCase
 
 
-class TestSemiSparseBlockCholeskySolverBatched(unittest.TestCase):
+class TestSemiSparseBlockCholeskySolverBatched(NewtonTestCase):
     """Verify semi-sparse blocked Cholesky solves."""
 
     def setUp(self):
         """Initialize the shared Kamino test device."""
+        setup_test_output(self)
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.device = wp.get_device(test_context.device)
-
-    def tearDown(self):
-        """Release the test device reference."""
-        self.device = None
 
     def test_solve_handles_multiple_rhs(self):
         """Solve every requested RHS using one shared factorization per batch."""
