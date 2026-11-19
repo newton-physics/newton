@@ -24,7 +24,7 @@ from .constants import (
     SOLREF_MODE_MJCF_DEFAULT,
     SOLREF_MODE_RAW,
 )
-from .enums import EqType
+from .enums import EqType, _JointType
 
 
 def _import_contact_force_fn():
@@ -2231,7 +2231,7 @@ def update_kinematic_weld_reference_kernel(
     anchor = wp.vec3(0.0)
     pos = wp.vec3(0.0)
     rot = wp.quat_identity()
-    if jnt_type[jnt] == 0:  # mjJNT_FREE
+    if jnt_type[jnt] == _JointType.FREE:
         adr = jnt_qposadr[jnt]
         pos = wp.vec3(q[adr], q[adr + 1], q[adr + 2])
         rot = wp.normalize(wp.quat(q[adr + 4], q[adr + 5], q[adr + 6], q[adr + 3]))
@@ -2244,13 +2244,13 @@ def update_kinematic_weld_reference_kernel(
             adr = jnt_qposadr[j]
             local_pos = jnt_pos[world % jnt_pos.shape[0], j]
             x_anchor = wp.quat_rotate(rot, local_pos) + pos
-            if jnt_type[j] == 1:  # mjJNT_BALL
+            if jnt_type[j] == _JointType.BALL:
                 rot = rot * wp.normalize(wp.quat(q[adr + 1], q[adr + 2], q[adr + 3], q[adr]))
                 pos = x_anchor - wp.quat_rotate(rot, local_pos)
             else:
                 axis = jnt_axis[world % jnt_axis.shape[0], j]
                 angle = q[adr] - qpos0[world % qpos0.shape[0], adr]
-                if jnt_type[j] == 2:  # mjJNT_SLIDE
+                if jnt_type[j] == _JointType.SLIDE:
                     pos = pos + wp.quat_rotate(rot, axis) * angle
                 else:
                     rot = rot * wp.quat_from_axis_angle(axis, angle)
@@ -2317,7 +2317,7 @@ def update_jnt_properties_kernel(
         jnt_margin[world, mjc_jnt] = limit_margin[newton_dof]
 
     ref = float(0.0)
-    if jnt_type[mjc_jnt] >= 2:  # mjJNT_SLIDE or mjJNT_HINGE
+    if jnt_type[mjc_jnt] >= _JointType.SLIDE:
         ref = qpos0[world, jnt_qposadr[mjc_jnt]]
     jnt_range[world, mjc_jnt] = wp.vec2(joint_limit_lower[newton_dof] + ref, joint_limit_upper[newton_dof] + ref)
     # update joint actuator force range (effort limit)
@@ -2337,7 +2337,7 @@ def update_jnt_reference_kernel(
     """Shift scalar joint limits to a new reference without changing their relative bounds."""
     world, jnt = wp.tid()
     dof = mjc_jnt_to_newton_dof[world, jnt]
-    if dof < 0 or jnt_type[jnt] < 2:
+    if dof < 0 or jnt_type[jnt] < _JointType.SLIDE:
         return
     ref = float(0.0)
     if dof_ref:
@@ -2383,7 +2383,7 @@ def update_joint_transforms_kernel(
 
     # Skip free joints
     jtype = mjc_jnt_type[mjc_jnt]
-    if jtype == 0:  # mjJNT_FREE
+    if jtype == _JointType.FREE:
         return
 
     # Get transforms from Newton (indexed by Newton joint)
@@ -2399,7 +2399,7 @@ def update_joint_transforms_kernel(
     body_quat[world, mjc_body] = quat_xyzw_to_wxyz(tf.q)
 
     # Only hinge and slide joints use a motion axis.
-    if newton_dof >= 0 and jtype >= 2:
+    if newton_dof >= 0 and jtype >= _JointType.SLIDE:
         axis = newton_joint_axis[newton_dof]
         jnt_axis[world, mjc_jnt] = wp.quat_rotate(child_xform.q, axis)
     jnt_pos[world, mjc_jnt] = child_xform.p
