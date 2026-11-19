@@ -30,7 +30,7 @@ import warp as wp
 import newton
 
 from ..core.types import Axis, override
-from ..exceptions import NewtonDeprecationWarning, NewtonWarning
+from ..exceptions import NewtonWarning
 from ..utils.mesh import compute_vertex_normals
 
 try:
@@ -1039,16 +1039,26 @@ void main() {
         with ovstage.PathDictionary(stage) as paths:
             path_list = paths.create_path_list_from_strings(list(prim_paths))
             try:
+                indices_by_path = {}
+                for index, path in enumerate(paths.get_paths(path_list)):
+                    indices_by_path.setdefault(path, []).append(index)
                 token = paths.intern_token("omni:fabric:worldMatrix")
                 with stage.query_from_path_list(path_list) as query:
                     with stage.read_attributes(query, [token], ordinal_range) as read:
                         read.wait()
                         group = read.fetch_next()
                         while group is not None:
-                            rows = np.from_dlpack(group.dlpack(0)).reshape(-1, 4, 4)
-                            for local in range(group.prim_count):
-                                out[group.prim_index(local)] = rows[local]
-                            stage.release_group(group)
+                            try:
+                                # OVStage 0.4 stores each attribute's data in a column.
+                                column = group.columns[0] if hasattr(group, "columns") else group
+                                rows = np.from_dlpack(column.dlpack(0)).reshape(-1, 4, 4)
+                                # Prim indices refer to the group's list, which may differ from the query.
+                                group_paths = paths.get_paths(group.prim_list)
+                                for local in range(group.prim_count):
+                                    path = group_paths[group.prim_index(local)]
+                                    out[indices_by_path[path]] = rows[column.data_row_index(local)]
+                            finally:
+                                stage.release_group(group)
                             group = read.fetch_next()
             finally:
                 paths.destroy_path_list(path_list)
@@ -2296,7 +2306,9 @@ void main() {
 
         semantic = ovstage.AttributeSemantic.MATRIX if is_matrix else 0
         if isinstance(values, (list, tuple)) and values and isinstance(values[0], str):
-            values = np.asarray([self._ovstage_paths.intern_token(value) for value in values], dtype=np.uint64)
+            tokens = [self._ovstage_paths.intern_token(value) for value in values]
+            # OVStage 0.4 uses typed tokens; tensor payloads still carry raw uint64 IDs.
+            values = np.asarray([getattr(token, "raw_id", token) for token in tokens], dtype=np.uint64)
             semantic = ovstage.AttributeSemantic.TOKEN_ID
 
         query = self._get_ovstage_query(prim_paths)
@@ -2632,12 +2644,12 @@ void main() {
                 self._runtime_material_paths.add(material_path)
         self._apply_ovstage_population_changes()
         for mesh_path, material_path, uvs in updates:
-            target = self._runtime_prim_paths[material_path]
+            target = self._ovstage_paths.intern_path(self._runtime_prim_paths[material_path])
             self._ovstage.write_attribute(
                 self._get_ovstage_query([mesh_path]),
                 "material:binding",
                 ordinal=self._ovstage_ordinal,
-                tensors=np.array([self._ovstage_paths.intern_path(target)], dtype=np.uint64),
+                tensors=np.array([getattr(target, "raw_id", target)], dtype=np.uint64),
                 is_array=True,
                 semantic=ovstage.AttributeSemantic.RELATIONSHIP_PATH_ID,
             ).wait()
@@ -2968,42 +2980,6 @@ void main() {
                     return pixels
 
         raise RuntimeError("Frame capture could not find the LdrColor render output")
-
-    def save_screenshot(self, path: str) -> None:
-        """Save the last rendered frame to an image file.
-
-        .. deprecated:: 1.7
-            Use :meth:`get_frame` and an image library instead, for example
-            ``PIL.Image.fromarray(viewer.get_frame().numpy()).save(path)``.
-
-        The file format is inferred from the extension (e.g. ``.png``, ``.jpg``).
-        Call this after at least one completed frame has been rendered (e.g.
-        after the simulation loop). Works in headless mode. While rendering is
-        paused, capture returns the frozen image.
-
-        Args:
-            path: Output image filename.
-
-        Raises:
-            RuntimeError: No completed image exists, or the renderer has no
-                color output.
-        """
-        warnings.warn(
-            "ViewerRTX.save_screenshot() is deprecated in Newton 1.7; "
-            "use get_frame().numpy() and an image library such as Pillow to save the image instead.",
-            NewtonDeprecationWarning,
-            stacklevel=2,
-        )
-        from PIL import Image
-
-        pixels = self._capture_screenshot_pixels()
-        pil_img = Image.fromarray(pixels)
-        ext = os.path.splitext(path)[1].lower()
-        if ext in {".jpg", ".JPG", ".jpeg", ".JPEG"}:
-            pil_img = pil_img.convert("RGB")
-            pil_img.save(path, quality=92)
-        else:
-            pil_img.save(path)
 
     # ----------------------------------------------------------- viewer API
 

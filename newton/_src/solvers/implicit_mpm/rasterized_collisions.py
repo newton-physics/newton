@@ -391,19 +391,6 @@ def environment_from_offsets(index: int, offsets: wp.array[int]):
     return wp.lower_bound(offsets, index + 1) - 1
 
 
-@wp.kernel
-def collider_volumes_kernel(
-    cell_volume: float,
-    collider_ids: wp.array[int],
-    node_volumes: wp.array[float],
-    volumes: wp.array[float],
-):
-    i = wp.tid()
-    collider_id = collider_ids[i]
-    if collider_id >= 0:
-        wp.atomic_add(volumes, collider_id, node_volumes[i] * cell_volume)
-
-
 @wp.func
 def collider_is_dynamic(collider_id: int, collider: Collider, body_mass: wp.array[float]):
     if collider_id < 0:

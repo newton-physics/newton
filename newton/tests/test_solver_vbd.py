@@ -9169,9 +9169,9 @@ def test_rigid_dat_graph_capture_replays_match_eager(test, device):
     host branching; all of it must be capturable. Two identical sphere-drop scenes are
     warmed up eagerly, then one keeps stepping eagerly while the other replays a graph
     of the same two-substep sequence. The solver is not run-to-run deterministic
-    (contact ordering; two eager runs differ by ~1e-3 m on this scene), so the replay
-    must stay finite and penetration-free and agree with the eager run within an
-    envelope well above that spread, instead of bit for bit.
+    (soft-contact ordering), and the impact amplifies that rounding noise several
+    times per frame, up to ~1e-2 m once the sphere has stopped. The runs are
+    therefore compared late in the impact, while the noise is still below 1e-6 m.
     """
 
     def make_scene():
@@ -9191,7 +9191,7 @@ def test_rigid_dat_graph_capture_replays_match_eager(test, device):
         return solver, state_a, state_b, body
 
     dt = 1.0 / 60.0
-    frames = 20
+    frames = 8
     eager_solver, e0, e1, body = make_scene()
     graph_solver, g0, g1, _ = make_scene()
     for solver, s0, s1 in ((eager_solver, e0, e1), (graph_solver, g0, g1)):
@@ -9215,7 +9215,7 @@ def test_rigid_dat_graph_capture_replays_match_eager(test, device):
     bq_eager, bq_graph = e0.body_q.numpy(), g0.body_q.numpy()
     test.assertTrue(np.isfinite(q_graph).all() and np.isfinite(bq_graph).all())
     test.assertLess(float(bq_graph[body][2]), body_z_before, "graph replays must advance the simulation")
-    envelope = 1.0e-2  # ~6x the measured eager run-to-run spread on this scene
+    envelope = 1.0e-4  # eager runs differ from each other by less than 1e-6 here
     np.testing.assert_allclose(q_graph, q_eager, rtol=0.0, atol=envelope)
     np.testing.assert_allclose(bq_graph, bq_eager, rtol=0.0, atol=envelope)
     for name, q, bq in (("eager", q_eager, bq_eager), ("replayed", q_graph, bq_graph)):
