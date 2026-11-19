@@ -1,1 +1,1 @@
-Populate `mujoco:joint_dof_label` during `ModelBuilder.add_mjcf()` with unsanitized per-DOF source joint paths (matching USD import), preserving individual MJCF joint names when multiple joints on a body are merged into one Newton joint.
+Populate `mujoco:joint_dof_label` during `ModelBuilder.add_mjcf()` by combining each body's sanitized label path with its unsanitized source MJCF joint name (matching USD import), preserving individual joint names when multiple joints on a body are merged into one Newton joint.
