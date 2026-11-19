@@ -22,6 +22,7 @@ from .llt import LLTBlockedRCMTraversalSolver
 from .system_kernels import (
     _assemble_body_inertial_systems,
     _assemble_joint_rows,
+    _assemble_rod_geometric_stiffness,
     _build_candidate_right_hand_side,
     _invert_single_body_blocks,
     _solve_single_body_blocks,
@@ -59,11 +60,13 @@ _WIDE_TILE_MAX_BLOCKS_PER_SM = 4
 class LOXSystem:
     """Batched dense smooth body systems over independent body components.
 
-    World-level bookkeeping remains in model body order. The dense matrices and
-    vectors are packed by ``body_components`` so disconnected articulations can
-    be factorized independently. Once the factorization has ordered the rows of
-    each block, the matrices are assembled directly in that order. When every
-    body is prescribed, the system holds one empty placeholder block.
+    World-level bookkeeping remains in model body order. Each body component has
+    one dense matrix and a packed vector block, so disconnected articulations
+    can be factorized independently. The components of several bodies hold one
+    matrix row each, sized for the largest of them; the single bodies hold compact
+    ``6 x 6`` matrices. Once the factorization has ordered the rows of each block,
+    the matrices are assembled directly in that order. When every body is
+    prescribed, the system holds one empty placeholder block.
     The arrays live in :class:`LOXSystemData`, exposed as :attr:`data`.
     """
 
@@ -129,7 +132,7 @@ class LOXSystem:
         info.finalize(dimensions=storage_dimensions, dtype=wp.float32, itype=wp.int32, device=self.device)
         if active_dimensions != storage_dimensions:
             info.dim = wp.array(active_dimensions, dtype=wp.int32, device=self.device)
-        self._data = LOXSystemData(body_block, body_local, body_vector_index, info, self.device)
+        self._data = LOXSystemData(body_block, body_local, body_vector_index, info, self.num_sparse_blocks, self.device)
 
         # The first body of each edge between two dynamic bodies clears the off-diagonal blocks of the edge
         # before an assembly, see :func:`.system_kernels._assemble_body_inertial_systems`
@@ -142,8 +145,7 @@ class LOXSystem:
         self.linear_solver: LLTBlockedRCMTraversalSolver | None = None
         """Sparse LLT of the multi-body blocks, or ``None`` when every block holds a single body."""
         if self.num_sparse_blocks > 0:
-            # The totals of the sparse prefix cover the single-body blocks, so that captured steps
-            # assemble every block into the matrix of the factorization.
+            # The vector total of the sparse prefix covers the packed vectors of every block.
             sparse_info = DenseSquareMultiLinearInfo()
             sparse_info.finalize(
                 dimensions=storage_dimensions[: self.num_sparse_blocks],
@@ -153,7 +155,6 @@ class LOXSystem:
             )
             if active_dimensions != storage_dimensions:
                 sparse_info.dim = wp.array(active_dimensions, dtype=wp.int32, device=self.device)
-            sparse_info.total_mat_size = info.total_mat_size
             sparse_info.total_vec_size = info.total_vec_size
             # Batches that fill the device take small tiles, which skip most of the zero
             # blocks of a tree-like body graph, and one warp per world, which matches the
@@ -192,10 +193,18 @@ class LOXSystem:
         return self._data
 
     @property
-    def matrix(self) -> wp.array[wp.float32]:
-        """Matrix that the assembly writes: :attr:`LOXSystemData.matrix`, or the matrix of the factorization
-        during :meth:`assemble_and_factorize`."""
+    def matrix(self) -> wp.array2d[wp.float32]:
+        """Matrices of the multi-body blocks that the assembly writes: :attr:`LOXSystemData.matrix`, or the
+        matrix of the factorization during :meth:`assemble_and_factorize`."""
         return self._matrix
+
+    @property
+    def single_body_matrix(self) -> wp.array2d[wp.float32]:
+        """Matrices of the single-body blocks: :attr:`LOXSystemData.single_body_matrix`.
+
+        Every assembly writes them, including the captured assembly into the factorization.
+        """
+        return self._data.single_body_matrix
 
     @property
     def inverse_permutation(self) -> wp.array[wp.int32] | None:
@@ -241,7 +250,7 @@ class LOXSystem:
         """Assemble body inertia and explicit-force terms, and clear the other matrix entries of the assembly.
 
         The body terms write the whole diagonal block of each body and clear the off-diagonal blocks of the
-        body edges, which hold every matrix entry that :meth:`add_joint_rows` adds to. The packed matrix holds
+        body edges, which hold every matrix entry that :meth:`add_joint_rows` adds to. The matrix holds
         zeros elsewhere from its allocation, and the factorization copies them into its ordered matrix with
         each new row order.
         """
@@ -253,7 +262,6 @@ class LOXSystem:
                 self._data.body_block,
                 self._data.body_local,
                 self._data.info.dim,
-                self._data.info.mio,
                 self._data.info.vio,
                 self._body_edge_offset,
                 self._body_edge_neighbor,
@@ -266,7 +274,7 @@ class LOXSystem:
                 time_step,
                 self._inverse_permutation,
             ],
-            outputs=[self._matrix, self._data.right_hand_side],
+            outputs=[self._matrix, self._data.single_body_matrix, self._data.right_hand_side],
             device=self.device,
         )
 
@@ -322,7 +330,6 @@ class LOXSystem:
             dim=(joint_count, 12),
             inputs=[
                 self._data.info.dim,
-                self._data.info.mio,
                 self._data.info.vio,
                 joint_world,
                 joint_body_a,
@@ -350,7 +357,88 @@ class LOXSystem:
                 joint_rotation_dead_zone,
                 self._inverse_permutation,
             ],
-            outputs=[structural_rows.penalty, structural_rows.body_impulse, self._matrix, self._data.right_hand_side],
+            outputs=[
+                structural_rows.penalty,
+                structural_rows.body_impulse,
+                self._matrix,
+                self._data.single_body_matrix,
+                self._data.right_hand_side,
+            ],
+            device=self.device,
+        )
+
+    def add_rod_geometric_stiffness(
+        self,
+        joint_world: wp.array[wp.int32],
+        joint_dof_type: wp.array[wp.int32],
+        joint_dofs_offset: wp.array[wp.int32],
+        joint_coords_offset: wp.array[wp.int32],
+        joint_body_a: wp.array[wp.int32],
+        joint_body_b: wp.array[wp.int32],
+        joint_q: wp.array[wp.float32],
+        joint_q_rest: wp.array[wp.float32],
+        joint_pose: wp.array[wp.transformf],
+        body_pose: wp.array[wp.transformf],
+        dynamic_rows: DynamicRows,
+        time_step: wp.array[wp.float32],
+        prescribed_twist: wp.array[vec6f] | None = None,
+    ) -> None:
+        """Add the rotational geometric stiffness of the stretch and shear rows of the stretched rod joints.
+
+        :meth:`add_joint_rows` adds the Gauss-Newton term ``effective_inertia J^T J`` of each row. The
+        elastic force of the stretch and shear rows of a rod also turns with the arm from each body's center
+        of mass to the follower anchor. For each rod longer than its rest length, this adds the stiffness of the
+        tension of that force to the angular block of the body, see
+        :func:`.system_kernels._assemble_rod_geometric_stiffness`.
+
+        Args:
+            joint_world: World of each joint.
+            joint_dof_type: DoF type of each joint.
+            joint_dofs_offset: First DoF of each joint.
+            joint_coords_offset: First coordinate of each joint.
+            joint_body_a: Body A of each joint, or ``-1``.
+            joint_body_b: Body B of each joint.
+            joint_q: Joint coordinates.
+            joint_q_rest: Rest joint coordinates, holding the structural rest pose of the rods.
+            joint_pose: World pose of each joint frame.
+            body_pose: World pose of each body's center of mass.
+            dynamic_rows: Dynamic rows, with their Jacobians, effective inertias and free velocities.
+            time_step: Time step of each world [s].
+            prescribed_twist: Twist of each body outside the system, or ``None`` for zero twists.
+        """
+        joint_count = joint_world.shape[0]
+        if joint_count == 0 or dynamic_rows.count == 0:
+            return
+        wp.launch(
+            _assemble_rod_geometric_stiffness,
+            dim=(joint_count, 2),
+            inputs=[
+                self._data.info.dim,
+                self._data.info.vio,
+                joint_world,
+                joint_dof_type,
+                joint_dofs_offset,
+                joint_coords_offset,
+                joint_body_a,
+                joint_body_b,
+                joint_q,
+                joint_q_rest,
+                joint_pose,
+                body_pose,
+                self._data.body_block,
+                self._data.body_local,
+                prescribed_twist,
+                time_step,
+                dynamic_rows.joint_offset,
+                dynamic_rows.joint_count,
+                dynamic_rows.dof_index,
+                dynamic_rows.jacobian_a,
+                dynamic_rows.jacobian_b,
+                dynamic_rows.effective_inertia,
+                dynamic_rows.free_velocity,
+                self._inverse_permutation,
+            ],
+            outputs=[self._matrix, self._data.single_body_matrix],
             device=self.device,
         )
 
@@ -364,8 +452,8 @@ class LOXSystem:
                     self._data.body_block,
                     self._data.body_local,
                     self._data.info.dim,
-                    self._data.info.mio,
                     self._data.matrix,
+                    self._data.single_body_matrix,
                 ],
                 outputs=[self._data.single_body_inverse],
                 device=self.device,
@@ -384,7 +472,7 @@ class LOXSystem:
             assemble()
             return
 
-        def assemble_into(matrix: wp.array[wp.float32], inverse_permutation: wp.array[wp.int32] | None) -> None:
+        def assemble_into(matrix: wp.array2d[wp.float32], inverse_permutation: wp.array[wp.int32] | None) -> None:
             self._matrix = matrix
             self._inverse_permutation = inverse_permutation
             try:

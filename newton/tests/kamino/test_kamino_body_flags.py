@@ -12,7 +12,7 @@ bodies like any other body. This module exercises the resulting behavior end-to-
 - integrator/PADMM stability with kinematic bodies (isolated and connected),
 - ``notify_model_changed`` propagation and rejection of runtime KINEMATIC flips,
 - non-mutation of the underlying Newton model arrays,
-- piles resting on PROXY bodies coupled from MuJoCo, with the DVI and LOX backends.
+- piles resting on PROXY bodies coupled from MuJoCo, with the SCC and LOX backends.
 """
 
 from __future__ import annotations
@@ -30,7 +30,8 @@ from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
 from newton.solvers import SolverMuJoCo
 from newton.solvers.experimental.coupled import SolverCoupledProxy
-from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino import setup_test_output, setup_tests, test_context
+from newton.tests.unittest_utils import MUJOCO_MODULES, NewtonTestCase, requires
 
 ###
 # Test helpers
@@ -139,10 +140,11 @@ def _mark_proxy(model, indices: list[int], name: str = "test") -> ModelView:
 ###
 
 
-class TestKaminoBodyFlags(unittest.TestCase):
+class TestKaminoBodyFlags(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
+        setup_test_output(self)
         self.default_device = wp.get_device(test_context.device)
 
     def test_padmm_preserves_immovable_joint_anchor(self):
@@ -167,7 +169,7 @@ class TestKaminoBodyFlags(unittest.TestCase):
                         dynamics_solver="padmm",
                         integrator=integrator,
                         sparse_jacobian=sparse_jacobian,
-                        use_collision_detector=False,
+                        use_collision_detector=integrator == "moreau",
                     )
                     solver = SolverKamino(model, config=config)
                     np.testing.assert_array_equal(solver._model_kamino.joints.num_kinematic_cts.numpy(), [0, 5])
@@ -186,7 +188,7 @@ class TestKaminoBodyFlags(unittest.TestCase):
                     self.assertTrue(np.all(np.isfinite(body_q)))
                     self.assertTrue(np.all(np.isfinite(body_qd)))
 
-    def test_sparse_dvi_masks_kinematic_inverse_mass(self):
+    def test_sparse_scc_masks_kinematic_inverse_mass(self):
         """Zero the Kamino-side inverse mass of a kinematic body."""
         builder, anchor, _, _ = _build_two_body_articulation(is_kinematic_parent=True, add_fixed_root=False)
         builder.joint_q[-1] = 0.5 * np.pi
@@ -194,7 +196,7 @@ class TestKaminoBodyFlags(unittest.TestCase):
 
         config = SolverKamino.Config.from_model(
             model,
-            dynamics_solver="dvi",
+            dynamics_solver="scc",
             sparse_dynamics=True,
             sparse_jacobian=True,
             use_collision_detector=False,
@@ -508,6 +510,7 @@ class TestKaminoBodyFlags(unittest.TestCase):
         np.testing.assert_array_equal(kamino_model.bodies.is_immovable.numpy(), [0, 0])
         self.assertGreater(int(kamino_model.joints.num_kinematic_cts.numpy().sum()), 0)
 
+    @requires(*MUJOCO_MODULES)
     def test_piles_rest_on_mujoco_proxies(self):
         """Keep piles of MuJoCo and Kamino cubes at rest when Kamino is the proxy destination.
 
@@ -517,7 +520,7 @@ class TestKaminoBodyFlags(unittest.TestCase):
         and inertia after Kamino is built, and Kamino reads them from the view.
         """
         configs = {
-            "dvi": SolverKamino.Config(dynamics_solver="dvi"),
+            "scc": SolverKamino.Config(dynamics_solver="scc"),
             "lox": SolverKamino.Config(
                 dynamics_solver="lox",
                 lox=kamino_config.LOXSolverConfig(max_iterations=25, projection_sweeps_per_iteration=5),
@@ -643,6 +646,7 @@ class TestKaminoBodyFlags(unittest.TestCase):
 
 if __name__ == "__main__":
     # Test setup
+    newton.utils.setup_console_logging()
     setup_tests()
 
     # Run all tests

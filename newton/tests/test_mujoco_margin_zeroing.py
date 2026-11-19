@@ -17,8 +17,10 @@ import numpy as np
 import newton
 from newton import ModelFlags
 from newton.solvers import SolverMuJoCo
+from newton.tests.unittest_utils import MUJOCO_MODULES, requires
 
 
+@requires(*MUJOCO_MODULES)
 class TestMuJoCoMarginZeroing(unittest.TestCase):
     """Verify SolverMuJoCo margin handling for NATIVECCD compatibility."""
 
@@ -84,7 +86,9 @@ class TestMuJoCoMarginZeroing(unittest.TestCase):
                 with warnings.catch_warnings():
                     warnings.simplefilter("error")
                     solver = SolverMuJoCo(model, use_mujoco_cpu=True)
-                self.assertEqual(solver.mj_model.opt.disableflags, native.opt.disableflags)
+                # SolverMuJoCo always turns MuJoCo's own parent filter off; Newton's filter pairs replace it.
+                filter_parent = int(mujoco.mjtDisableBit.mjDSBL_FILTERPARENT)
+                self.assertEqual(solver.mj_model.opt.disableflags & ~filter_parent, native.opt.disableflags)
                 # Match each compiled geom to the native geom it was imported from.
                 geom_names = [
                     model.shape_label[shape].rsplit("/", 1)[-1] for shape in solver.mjc_geom_to_newton_shape.numpy()[0]

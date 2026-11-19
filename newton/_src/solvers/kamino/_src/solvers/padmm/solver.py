@@ -42,6 +42,7 @@ from .kernels import (
     _warmstart_desaxce_correction,
     _warmstart_joint_constraints,
     _warmstart_limit_constraints,
+    _write_padmm_world_residual,
     make_collect_solver_info_kernel,
     make_collect_solver_info_kernel_sparse,
     make_desaxce_correction_and_velocity_bias_kernel,
@@ -390,6 +391,24 @@ class PADMMSolver:
             device=self.device,
         )
 
+    def write_world_residual(self, world_residual: wp.array[wp.float32]) -> None:
+        """Write the terminal residual of each world relative to its stopping tolerances.
+
+        The value is ``max(r_p / primal_tolerance, r_d / dual_tolerance, r_c / compl_tolerance)``
+        of the latest solve, so values at most one satisfy every tolerance. With a
+        zero tolerance, a zero residual contributes zero and any other infinity.
+
+        Args:
+            world_residual: Output array with at least ``num_worlds`` entries.
+        """
+        wp.launch(
+            _write_padmm_world_residual,
+            dim=self._size.num_worlds,
+            inputs=[self.data.config, self.data.status],
+            outputs=[world_residual],
+            device=self._device,
+        )
+
     def solve(self, problem: DualProblem):
         """
         Solves the given dual problem using PADMM.
@@ -561,7 +580,6 @@ class PADMMSolver:
                 inputs=[
                     # Inputs:
                     problem.data.dim,
-                    problem.data.mio,
                     self._data.status,
                     self._data.state.sigma,
                     # Outputs:
@@ -1374,7 +1392,6 @@ class PADMMSolver:
                     problem.data.ccgo,
                     problem.data.dim,
                     problem.data.vio,
-                    problem.data.mio,
                     problem.data.mu,
                     problem.data.v_f,
                     problem.data.D,

@@ -9,6 +9,7 @@ import unittest
 import numpy as np
 import warp as wp
 
+import newton
 from newton import ModelBuilder
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.geometry import (
@@ -19,9 +20,9 @@ from newton._src.solvers.kamino._src.geometry.detector import (
     _estimate_fallback_world_max_contacts,
     _resolve_contact_capacity,
 )
-from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
-from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino import setup_test_output, setup_tests, test_context
 from newton.tests.kamino.test_kamino_geometry_primitive import check_contacts
+from newton.tests.unittest_utils import NewtonTestCase
 from newton.tests.utils import basics
 
 logger = logging.getLogger(__name__)
@@ -31,24 +32,14 @@ logger = logging.getLogger(__name__)
 ###
 
 
-class TestCollisionDetectorConfig(unittest.TestCase):
+class TestCollisionDetectorConfig(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.verbose = test_context.verbose  # Set to True for detailed output
         self.default_device = wp.get_device(test_context.device)
 
-        # Set debug-level logging to print verbose test output to console
-        if self.verbose:
-            set_log_level(logging.DEBUG)
-            logger.debug("\n")  # Add newline before test output for better readability
-        else:
-            reset_log_level()
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
+        setup_test_output(self, verbose=self.verbose)
 
     def test_00_make_default(self):
         """Test making default collision detector config."""
@@ -65,28 +56,19 @@ class TestCollisionDetectorConfig(unittest.TestCase):
         self.assertEqual(config.bvtype, "aabb")
 
 
-class TestGeometryCollisionDetector(unittest.TestCase):
+class TestGeometryCollisionDetector(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose  # Set to True for detailed output
 
-        # Set debug-level logging to print verbose test output to console
-        if self.verbose:
-            set_log_level(logging.DEBUG)
-        else:
-            reset_log_level()
+        setup_test_output(self, verbose=self.verbose)
 
         self.build_func = basics.build_boxes_nunchaku
         self.expected_contacts = 9  # NOTE: specialized to build_boxes_nunchaku
         logger.debug("build_func: %s", self.build_func.__name__)
         logger.debug("expected_contacts: %s", self.expected_contacts)
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
 
     def test_01_primitive_pipeline(self):
         """
@@ -217,11 +199,13 @@ class TestGeometryCollisionDetector(unittest.TestCase):
         self.assertEqual(detector.world_max_contacts, model.geoms.world_minimum_contacts)
 
 
-class TestCollisionDetectorContactCapacity(unittest.TestCase):
+class TestCollisionDetectorContactCapacity(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
+
+        setup_test_output(self)
 
     def test_00_cap_world_contacts_at_total(self):
         """Verify proportional capping preserves the configured model total."""
@@ -259,6 +243,7 @@ class TestCollisionDetectorContactCapacity(unittest.TestCase):
 
 if __name__ == "__main__":
     # Test setup
+    newton.utils.setup_console_logging()
     setup_tests()
 
     # Run all tests

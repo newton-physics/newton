@@ -73,6 +73,7 @@ from ..geometry.inertia import (
     _INERTIA_ABS_FLOOR,
     _INERTIA_REL_TOL,
     _inverse_inertia,
+    _validate_hollow_thickness,
     compute_body_inverses_kernel,
     validate_and_correct_inertia_kernel,
     verify_and_correct_inertia,
@@ -84,7 +85,7 @@ from ..geometry.types import Heightfield, _normalize_texture_input
 from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_convex_hull, remesh_mesh
 from ..math import quat_between_vectors_robust
 from ..usd.schema_resolver import SchemaResolver
-from ..utils import compute_world_offsets
+from ..utils import compute_world_offsets, tree_joint_mask
 from ..utils.deprecation import RemovedAttribute
 from ..utils.mesh import MeshAdjacency, split_mesh_components
 from .body_variants import (
@@ -128,6 +129,16 @@ else:
     UsdStage = Any
 
 logger = logging.getLogger(__name__)
+
+
+class _BodyFrameOriginUnset:
+    """Mark an omitted deprecated ``add_rod`` body-frame origin."""
+
+    def __repr__(self) -> str:
+        return "_DEPRECATED_BODY_FRAME_ORIGIN_UNSET"
+
+
+_DEPRECATED_BODY_FRAME_ORIGIN_UNSET: Any = _BodyFrameOriginUnset()
 
 
 def _convex_hull_interior_point(vertices: np.ndarray, indices: np.ndarray | None) -> np.ndarray:
@@ -813,6 +824,7 @@ class ModelBuilder:
             references=Model.AttributeFrequency.JOINT_CONSTRAINT,
             compaction_policy="start",
         ),
+        "shape_collision_filter_parent": Model.AttributeSpec(Model.AttributeFrequency.SHAPE),
         "shape_sdf_narrow_band_range": Model.AttributeSpec(Model.AttributeFrequency.SHAPE),
         "shape_sdf_max_resolution": Model.AttributeSpec(Model.AttributeFrequency.SHAPE),
         "shape_force_sdf": Model.AttributeSpec(Model.AttributeFrequency.SHAPE),
@@ -878,15 +890,6 @@ class ModelBuilder:
         if color is None:
             return None
         return (float(color[0]), float(color[1]), float(color[2]))
-
-    @staticmethod
-    def _resolve_rod_body_frame_origin(
-        method_name: str,
-        body_frame_origin: Literal["start", "com"],
-    ) -> Literal["start", "com"]:
-        if body_frame_origin not in ("start", "com"):
-            raise ValueError(f"{method_name}: body_frame_origin must be 'start' or 'com', got {body_frame_origin!r}")
-        return body_frame_origin
 
     @staticmethod
     def _rod_segment_direction(start: Vec3, end: Vec3) -> tuple[wp.vec3, float]:
@@ -1206,7 +1209,10 @@ class ModelBuilder:
         collision_group: int = 1
         """The collision group ID for the shape. Defaults to 1 (default group). Set to 0 to disable collisions for this shape."""
         collision_filter_parent: bool = True
-        """Whether to inherit collision filtering from the parent. Defaults to True."""
+        """Whether the shape takes part in parent-child collision filtering. A filtering joint of its body
+        (``collision_filter_parent=True``) then filters the shape against the shapes of the body on the joint's
+        other side and of that body's weld group, whichever of the joint and the shape is added first.
+        ``False`` keeps the shape colliding with them. Defaults to True."""
         has_shape_collision: bool = True
         """Whether the shape can collide with other shapes. Defaults to True."""
         has_particle_collision: bool = True
@@ -1260,7 +1266,7 @@ class ModelBuilder:
         :attr:`gap`, plus :attr:`margin` for hydroelastic shapes, when
         ``None``. Hydroelastic padding must cover ``margin + gap``. Rejected
         on ``MESH`` / ``CONVEX_MESH`` shapes — pass ``margin`` to
-        :meth:`~newton.geometry.Mesh.build_sdf` instead."""
+        :meth:`~newton.Mesh.build_sdf` instead."""
 
         def configure_sdf(
             self,
@@ -1687,15 +1693,15 @@ class ModelBuilder:
         """Name of the attribute in the URDF definition. If None, the attribute name is used."""
 
         usd_value_transformer: Callable[[Any, dict[str, Any]], Any] | None = None
-        """Transformer function that converts a USD attribute value to a valid Warp dtype. If undefined, the generic converter from :func:`newton.usd.convert_warp_value` is used. Receives a context dict with the following keys:
+        """Transformer function that converts a USD attribute value to a valid Warp dtype. If undefined, the generic converter from :func:`newton.usd.value_to_warp` is used. Receives a context dict with the following keys:
         - ``"prim"``: The USD prim to query.
         - ``"attr"``: The :class:`~newton.ModelBuilder.CustomAttribute` object to get the value for."""
 
         mjcf_value_transformer: Callable[[str, dict[str, Any] | None], Any] | None = None
-        """Transformer function that converts a MJCF attribute value string to a valid Warp dtype. If undefined, the generic converter from :func:`newton.utils.parse_warp_value_from_string` is used. Receives an optional context dict with parsing-time information (e.g., use_degrees, joint_type)."""
+        """Transformer function that converts a MJCF attribute value string to a valid Warp dtype. If undefined, the generic converter from :func:`newton.utils.string_to_warp` is used. Receives an optional context dict with parsing-time information (e.g., use_degrees, joint_type)."""
 
         urdf_value_transformer: Callable[[str, dict[str, Any] | None], Any] | None = None
-        """Transformer function that converts a URDF attribute value string to a valid Warp dtype. If undefined, the generic converter from :func:`newton.utils.parse_warp_value_from_string` is used. Receives an optional context dict with parsing-time information."""
+        """Transformer function that converts a URDF attribute value string to a valid Warp dtype. If undefined, the generic converter from :func:`newton.utils.string_to_warp` is used. Receives an optional context dict with parsing-time information."""
 
         reference_value_transformer: Callable[[list[Any], dict[str, Any]], list[Any]] | None = None
         """Batch transformer for entity references copied by :meth:`ModelBuilder.add_builder`.
@@ -2224,6 +2230,9 @@ class ModelBuilder:
         self.shape_sdf_padding: list[float | None] = []
         """Per-shape SDF generation margins [m] retained until :meth:`finalize <ModelBuilder.finalize>`.
         When ``None``, :attr:`shape_gap` is used for primitive texture SDF generation."""
+        self.shape_collision_filter_parent: list[bool] = []
+        """Per-shape :attr:`ShapeConfig.collision_filter_parent` flags. Builder-only: a shape that opted out
+        takes no part in parent-child collision filtering."""
         # Mesh SDF storage (texture SDF arrays created at finalize)
 
         # filtering to ignore certain collision pairs
@@ -2816,6 +2825,10 @@ class ModelBuilder:
         if parent == -1:
             return joint_type == JointType.FIXED
         return True
+
+    def _shape_filters_parent(self, shape: int) -> bool:
+        """Whether a shape takes part in parent-child filtering: it collides and its config did not opt out."""
+        return bool(self.shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES) and self.shape_collision_filter_parent[shape]
 
     @staticmethod
     def _custom_attribute_specs_match(existing: CustomAttribute, incoming: CustomAttribute) -> bool:
@@ -4206,7 +4219,8 @@ class ModelBuilder:
                 self._merge_builder_copies(builder, worlds, xforms, label_prefixes, array_backed=True)
 
             if separate_worlds:
-                self.world_gravity.extend(builder._gravity_as_vector() for _ in range(copy_count))
+                gravity = tuple(builder._gravity_as_vector())
+                self.world_gravity.extend(wp.vec3(*gravity) for _ in range(copy_count))
                 self.world_count += copy_count
             else:
                 self._adopt_builder_gravity(builder)
@@ -4604,18 +4618,24 @@ class ModelBuilder:
         self.joint_constraint_count += copy_count * counts["joint_constraint"]
 
         custom_attributes = self._prepare_builder_custom_attributes(builder)
+        kinds = tuple(counts)
+        offset_rows = np.stack([starts(kind) for kind in kinds], axis=1).tolist()
+        has_actuators = bool(builder.actuator_entries)
+        has_batteries = bool(builder.battery_entries)
         for copy_index, world in enumerate(worlds.tolist()):
-            entity_offsets = {kind: int(starts(kind)[copy_index]) for kind in counts}
+            entity_offsets = dict(zip(kinds, offset_rows[copy_index], strict=True))
             self._merge_builder_custom_attributes(
                 builder, entity_offsets, world, label_prefixes[copy_index], custom_attributes
             )
-            self._merge_builder_actuators(
-                builder,
-                int(joint_dof_starts[copy_index]),
-                int(joint_coord_starts[copy_index]),
-                entity_offsets["actuator"],
-            )
-            self._merge_builder_batteries(builder, entity_offsets["actuator"], world)
+            if has_actuators:
+                self._merge_builder_actuators(
+                    builder,
+                    int(joint_dof_starts[copy_index]),
+                    int(joint_coord_starts[copy_index]),
+                    entity_offsets["actuator"],
+                )
+            if has_batteries:
+                self._merge_builder_batteries(builder, entity_offsets["actuator"], world)
         self.actuator_count += copy_count * counts["actuator"]
 
     def _model_value_key(self, attribute: CustomAttribute) -> int:
@@ -5274,7 +5294,7 @@ class ModelBuilder:
                         - ``body_idx``
                         - ❌ Error: FREE joints require world frame
 
-            only_load_enabled_rigid_bodies: If True, only rigid bodies which do not have `physics:rigidBodyEnabled` set to False are loaded.
+            only_load_enabled_rigid_bodies: If True, only rigid bodies which do not have `physics:rigidBodyEnabled` set to False are loaded. With OpenUSD 26.11 or newer, disabled rigid bodies are never loaded, since OpenUSD assigns their colliders and joints to the nearest enabled ancestor body.
             only_load_enabled_joints: If True, only joints which do not have `physics:jointEnabled` set to False are loaded.
             joint_drive_gains_scaling: The default scaling of the PD control gains (stiffness and damping), if not set in the PhysicsScene with as "newton:joint_drive_gains_scaling".
             verbose: If True, log additional information about the parsed USD file. Default is False.
@@ -5301,7 +5321,7 @@ class ModelBuilder:
                 regardless of whether visual shapes exist on the same body. Note that
                 ``hide_collision_shapes=True`` still suppresses the VISIBLE flag for
                 colliders on bodies with visual-only geometry. Default is False.
-            parse_mujoco_options: Whether MuJoCo solver options from the PhysicsScene should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
+            parse_mujoco_options: Whether MuJoCo solver options from the PhysicsScene should be parsed. If False, solver options are not loaded and custom attributes retain their default values; the scene's ``mjc:flag:filterparent``, which sets ``collision_filter_parent`` on imported joints that do not author ``physics:collisionEnabled``, is then ignored as well. Default is True.
             convert_mjc_equality_constraints: Whether MuJoCo equality schemas should be converted to Newton loop
                 joints or mimic constraints while preserving MuJoCo equality metadata for SolverMuJoCo. A weld
                 becomes a FIXED loop joint, or a BALL loop joint when its ``torquescale`` is 0 (see "Link-break welds
@@ -5326,6 +5346,8 @@ class ModelBuilder:
                 :attr:`~newton.JointTargetMode.POSITION` if stiffness > 0, :attr:`~newton.JointTargetMode.VELOCITY` if only
                 damping > 0, :attr:`~newton.JointTargetMode.EFFORT` if a drive is present but both gains are zero
                 (direct torque control), or :attr:`~newton.JointTargetMode.NONE` if no drive/actuation is applied.
+                A USD ``MjcActuator`` in MuJoCo's position or velocity shape on a DOF whose drive has both gains zero sets
+                the mode from its own gains instead of :attr:`~newton.JointTargetMode.EFFORT`, and a warning is logged.
             legacy_margin_gap: If True, restore pre-MuJoCo-3.9 import behavior
                 where ``shape_margin`` is computed as ``mjc_margin - mjc_gap``.
                 Use for USD files authored against MuJoCo <= 3.8. Defaults to
@@ -5540,7 +5562,7 @@ class ModelBuilder:
         """
         Parses MuJoCo XML (MJCF) file and adds the bodies and joints to the given ModelBuilder.
         MuJoCo-specific custom attributes are registered on the builder automatically.
-        Importing ``<dcmotor>`` actuators requires the optional ``mujoco`` package
+        Importing ``<dcmotor>`` actuators requires the optional ``mujoco-core`` package
         (included in ``newton[sim]``) to resolve native defaults, and raises
         :class:`ImportError` if it is unavailable. Other MJCF import remains independent of MuJoCo.
 
@@ -5636,7 +5658,7 @@ class ModelBuilder:
             parse_meshes: Whether geometries of type `"mesh"` should be parsed. If False, geometries of type `"mesh"` are ignored.
             parse_sites: Whether sites (non-colliding reference points) should be parsed. If False, sites are ignored.
             parse_visuals: Whether visual geometries (non-collision shapes) should be loaded. If False, visual shapes are not loaded (different from `hide_visuals` which loads but hides them). Default is True.
-            parse_mujoco_options: Whether solver options from the MJCF `<option>` tag should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
+            parse_mujoco_options: Whether solver options from the MJCF `<option>` tag should be parsed. If False, solver options are not loaded and custom attributes retain their default values; the ``gravity`` and ``filterparent`` flags, which change the Newton model rather than a solver option, are then ignored as well. Default is True.
             up_axis: The up axis of the MuJoCo scene. The default is Z up.
             ignore_names: A list of regular expressions. Bodies and joints with a name matching one of the regular expressions will be ignored.
             ignore_classes: A list of regular expressions. Bodies and joints with a class matching one of the regular expressions will be ignored.
@@ -5645,7 +5667,10 @@ class ModelBuilder:
             no_class_as_colliders: If True, geometries without a class are parsed as collision geometries. If False, geometries without a class are parsed as visual geometries.
             force_show_colliders: If True, the collision shapes are always shown, even if there are visual shapes.
                 Collider planes in MJCF groups 0-2 remain visible even when this is False.
-            enable_self_collisions: If True, self-collisions are enabled.
+            enable_self_collisions: If True, self-collisions are enabled. ``<option><flag filterparent="disable"/>``
+                additionally lets parent and child bodies collide by importing their joints with
+                ``collision_filter_parent=False``; ``enable_self_collisions=False`` still disables every collision
+                between the imported shapes.
             ignore_inertial_definitions: If True, the inertial parameters defined in the MJCF are ignored and the inertia is calculated from the shape geometry.
             collapse_fixed_joints: If True, fixed joints are removed and the respective bodies are merged.
             collapse_massless_fixed_root: If True, collapse only the massless fixed-joint chain below an imported free root body. Ignored when ``collapse_fixed_joints`` is True.
@@ -5668,10 +5693,18 @@ class ModelBuilder:
                 See :ref:`custom_attributes` for details on custom attributes. If False (default), position/velocity
                 actuators use :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.JOINT_TARGET` mode where control comes
                 from :attr:`newton.Control.joint_target_q` and :attr:`newton.Control.joint_target_qd`.
-                For position-only drives using ``dampratio``, constructing
+                A scalar ``gear`` on a one-DOF (hinge or slide) position/velocity actuator is folded into the
+                joint-target drive, so the targets stay in joint units: the actuator is imported with unit gear, ``kp``,
+                ``kv``, ``damping`` and ``armature`` are scaled by ``gear**2``, ``forcerange`` by ``gear`` and ``ctrlrange``
+                by ``1 / gear`` (bounds swapped for a negative ``gear``). Position/velocity actuators whose gear cannot be
+                folded (a gear on a multi-DOF joint, a vector gear or a zero gear) are imported as
+                :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.CTRL_DIRECT` so that MuJoCo applies the gear.
+                For position-only joint-target drives using ``dampratio``, constructing
                 :class:`~newton.solvers.SolverMuJoCo` initializes zero entries in
                 :attr:`newton.Model.joint_target_kd` with the resolved damping coefficients.
                 Subsequent damping edits use ``joint_target_kd`` as usual.
+                This does not apply to ``CTRL_DIRECT`` actuators: their gains stay in the MuJoCo actuator (in actuator
+                units), and ``joint_target_kd`` is neither written nor read for them.
             path_resolver: Callback to resolve file paths. Takes (base_dir, file_path) and returns a resolved path. For <include> elements, can return either a file path or XML content directly. For asset elements (mesh, texture, etc.), must return an absolute file path. By default, assets are searched relative to the main model with the compiler asset directory, then relative to the included file without that directory prefix, and finally relative to the included file with it. Custom resolvers receive the authoring file's directory and the file path with that file's compiler asset directory prefix.
             legacy_margin_gap: If True, restore pre-MuJoCo-3.9 import behavior
                 where ``shape_margin`` is computed as ``mj_margin - mj_gap``.
@@ -5950,7 +5983,8 @@ class ModelBuilder:
                 reference = Model._normalize_attribute_reference(reference)
 
             freq_key = attr.frequency
-            if isinstance(freq_key, str):
+            is_custom_frequency = isinstance(freq_key, str)
+            if is_custom_frequency:
                 index_offset = custom_frequency_offsets.get(freq_key, 0)
             elif attr.frequency == Model.AttributeFrequency.ONCE:
                 index_offset = 0
@@ -6088,7 +6122,7 @@ class ModelBuilder:
                             source_counts = self._builder_merge_counts(builder)
                         count = (
                             builder._custom_frequency_counts.get(freq_key, 0)
-                            if isinstance(freq_key, str)
+                            if is_custom_frequency
                             else source_counts.get(self._builder_frequency_key(freq_key), 0)
                         )
                     source_values = attr._values_with_defaults(count)
@@ -6101,15 +6135,17 @@ class ModelBuilder:
                     source_key = -1 if -1 in source_values else min(attr.values or source_values)
                     value = source_values[source_key]
                     enum_values[index_offset] = transform_enum_value(source_key, value) if needs_remap else value
-            elif not isinstance(freq_key, str):
-                enum_values = {
-                    index_offset + idx: transform_enum_value(idx, value) if needs_remap else value
-                    for idx, value in source_values.items()
-                }
+            elif not is_custom_frequency:
+                if needs_remap:
+                    enum_values = {
+                        index_offset + idx: transform_enum_value(idx, value) for idx, value in source_values.items()
+                    }
+                else:
+                    enum_values = {index_offset + idx: value for idx, value in source_values.items()}
 
             merged = self.custom_attributes.get(full_key)
             if merged is None:
-                if isinstance(freq_key, str):
+                if is_custom_frequency:
                     mapped_values = [None] * index_offset
                     if needs_remap:
                         mapped_values.extend(
@@ -6132,9 +6168,9 @@ class ModelBuilder:
                 )
 
             if merged.values is None:
-                merged.values = [] if isinstance(freq_key, str) else {}
+                merged.values = [] if is_custom_frequency else {}
 
-            if isinstance(freq_key, str):
+            if is_custom_frequency:
                 if len(merged.values) < index_offset:
                     merged.values.extend([None] * (index_offset - len(merged.values)))
                 if needs_remap:
@@ -6908,10 +6944,10 @@ class ModelBuilder:
 
         if collision_filter_parent:
             for child_shape in self.body_shapes[child]:
-                if not self.shape_flags[child_shape] & ShapeFlags.COLLIDE_SHAPES:
+                if not self._shape_filters_parent(child_shape):
                     continue
                 for parent_shape in self.body_shapes[parent]:
-                    if not self.shape_flags[parent_shape] & ShapeFlags.COLLIDE_SHAPES:
+                    if not self._shape_filters_parent(parent_shape):
                         continue
                     self.add_shape_collision_filter_pair(parent_shape, child_shape)
 
@@ -9257,6 +9293,29 @@ class ModelBuilder:
             else:
                 self.joint_children[p].append((c, i))
 
+        # Merging moves shapes onto a surviving body and re-parents the joints below the removed
+        # bodies, so the direct pairs that add_joint() and add_shape() added no longer cover every
+        # pair of bodies a filtering joint now connects. Complete them for the joints touching a
+        # body that absorbed others; bodies merged into the world filter nothing, as in MuJoCo.
+        merge_targets = {body_remap[target] for target in body_merged_parent.values() if target >= 0}
+        if merge_targets:
+            filter_pairs = set(self._shape_collision_filter_pairs)
+            for joint, (parent, child) in enumerate(zip(self.joint_parent, self.joint_child, strict=True)):
+                if parent < 0 or not self.joint_collision_filter_parent[joint]:
+                    continue
+                if parent not in merge_targets and child not in merge_targets:
+                    continue
+                for parent_shape in self.body_shapes[parent]:
+                    if not self._shape_filters_parent(parent_shape):
+                        continue
+                    for child_shape in self.body_shapes[child]:
+                        if not self._shape_filters_parent(child_shape):
+                            continue
+                        pair = (min(parent_shape, child_shape), max(parent_shape, child_shape))
+                        if pair not in filter_pairs:
+                            filter_pairs.add(pair)
+                            self.add_shape_collision_filter_pair(*pair)
+
         # Warning filters may raise, so finish rebuilding all references before emitting these.
         for label in removed_curve_labels:
             warnings.warn(
@@ -9509,6 +9568,7 @@ class ModelBuilder:
         self.shape_force_sdf.append(cfg.force_sdf)
         self.shape_sdf_texture_format.append(cfg.sdf_texture_format)
         self.shape_sdf_padding.append(cfg.sdf_padding)
+        self.shape_collision_filter_parent.append(cfg.collision_filter_parent)
 
         if cfg.has_shape_collision and cfg.collision_filter_parent:
             self._add_joint_collision_filter_pairs(shape, body)
@@ -9529,19 +9589,25 @@ class ModelBuilder:
         return shape
 
     def _add_joint_collision_filter_pairs(self, shape: int, body: int) -> None:
-        """Filter a colliding shape against the shapes of bodies joined to ``body``."""
+        """Filter a shape against the shapes of bodies joined to ``body`` by filtering joints.
+
+        Shapes that do not collide or opted out of parent filtering (see
+        :meth:`_shape_filters_parent`) are skipped on both sides.
+        """
+        if not self._shape_filters_parent(shape):
+            return
         for parent_body, joint_idx in self.joint_parents.get(body, ()):
             if not self.joint_collision_filter_parent[joint_idx]:
                 continue
             for parent_shape in self.body_shapes[parent_body]:
-                if not self.shape_flags[parent_shape] & ShapeFlags.COLLIDE_SHAPES:
+                if not self._shape_filters_parent(parent_shape):
                     continue
                 self.add_shape_collision_filter_pair(parent_shape, shape)
         for child_body, joint_idx in self.joint_children.get(body, ()):
             if not self.joint_collision_filter_parent[joint_idx]:
                 continue
             for child_shape in self.body_shapes[child_body]:
-                if not self.shape_flags[child_shape] & ShapeFlags.COLLIDE_SHAPES:
+                if not self._shape_filters_parent(child_shape):
                     continue
                 self.add_shape_collision_filter_pair(shape, child_shape)
 
@@ -10591,7 +10657,9 @@ class ModelBuilder:
                         cfg.density = 0.0  # do not add extra mass / inertia
                         cfg.gap = self.shape_gap[shape]
                         cfg.collision_group = self.shape_collision_group[shape]
-                        cfg.collision_filter_parent = False
+                        # The parts take part in parent filtering like their source shape. add_shape then
+                        # adds their direct parent-child pairs again; finalize() dedupes the pairs.
+                        cfg.collision_filter_parent = self.shape_collision_filter_parent[shape]
                         parts = part_meshes.get(hash_m)
                         if parts is None:
                             parts = [
@@ -10746,6 +10814,7 @@ class ModelBuilder:
         rod: Rod,
         *,
         cfg: ShapeConfig | None,
+        total_mass: float | None,
         stretch_stiffness: float | None,
         stretch_damping: float | None,
         shear_stiffness: float | None,
@@ -10758,7 +10827,7 @@ class ModelBuilder:
         wrap_in_articulation: bool,
         junction_collision_filter: bool,
         color: Vec3 | None,
-        body_frame_origin: Literal["start", "com"],
+        warn_deprecated_body_frame_origin: bool = False,
     ) -> tuple[list[int], list[int]]:
         """Add a Rod object through the established chain or graph path."""
         radius = rod._resolve_radius()
@@ -10772,7 +10841,6 @@ class ModelBuilder:
             bend_stiffness=bend_stiffness,
             twist_stiffness=twist_stiffness,
         )
-        body_frame_origin = self._resolve_rod_body_frame_origin("add_rod", body_frame_origin)
 
         rod_points, rod_edges, rod_frames = rod._normalize_and_validate_geometry()
         rest_positions, rest_quaternions = rod._normalize_and_validate_rest_geometry(rod_points, rod_edges)
@@ -10818,6 +10886,7 @@ class ModelBuilder:
                 quaternions=rod_quaternions,
                 radius=radius,
                 cfg=cfg,
+                total_mass=total_mass,
                 stretch_stiffness=stretch_stiffness,
                 stretch_damping=stretch_damping,
                 shear_stiffness=shear_stiffness,
@@ -10830,7 +10899,7 @@ class ModelBuilder:
                 label=label,
                 wrap_in_articulation=wrap_in_articulation,
                 color=color,
-                body_frame_origin=body_frame_origin,
+                warn_deprecated_body_frame_origin=warn_deprecated_body_frame_origin,
             )
         else:
             link_bodies, link_joints = self._add_rod_graph(
@@ -10840,6 +10909,7 @@ class ModelBuilder:
                 edges=[(int(edge[0]), int(edge[1])) for edge in rod_edges],
                 radius=radius,
                 cfg=cfg,
+                total_mass=total_mass,
                 stretch_stiffness=stretch_stiffness,
                 stretch_damping=stretch_damping,
                 shear_stiffness=shear_stiffness,
@@ -10853,7 +10923,7 @@ class ModelBuilder:
                 quaternions=rod_quaternions,
                 junction_collision_filter=junction_collision_filter,
                 color=color,
-                body_frame_origin=body_frame_origin,
+                warn_deprecated_body_frame_origin=warn_deprecated_body_frame_origin,
             )
 
         # Material rigidities are discretized using structural-rest lengths.
@@ -10884,6 +10954,7 @@ class ModelBuilder:
         rest_straight: bool = False,
         radius: float,
         cfg: ShapeConfig | None,
+        total_mass: float | None,
         stretch_stiffness: float | None,
         stretch_damping: float | None,
         shear_stiffness: float | None,
@@ -10896,7 +10967,7 @@ class ModelBuilder:
         label: str | None,
         wrap_in_articulation: bool,
         color: Vec3 | None,
-        body_frame_origin: Literal["start", "com"],
+        warn_deprecated_body_frame_origin: bool = False,
     ) -> tuple[list[int], list[int]]:
         """Add an ordered point chain through the established graph path."""
         if cfg is None:
@@ -10930,6 +11001,7 @@ class ModelBuilder:
             rest_node_positions=rest_positions_wp if rest_positions is not None else None,
             radius=radius,
             cfg=cfg,
+            total_mass=total_mass,
             stretch_stiffness=stretch_stiffness,
             stretch_damping=stretch_damping,
             shear_stiffness=shear_stiffness,
@@ -10944,7 +11016,7 @@ class ModelBuilder:
             rest_quaternions=rest_quaternions,
             junction_collision_filter=True,
             color=color,
-            body_frame_origin=body_frame_origin,
+            warn_deprecated_body_frame_origin=warn_deprecated_body_frame_origin,
         )
 
         # For closed loops, add one extra loop-closing rod joint that is intentionally
@@ -10973,12 +11045,8 @@ class ModelBuilder:
                 if L_first <= min_segment_length:
                     L_first = min_segment_length
 
-                if body_frame_origin == "com":
-                    parent_xform = wp.transform(wp.vec3(0.0, 0.0, 0.5 * L_last), wp.quat_identity())
-                    child_xform = wp.transform(wp.vec3(0.0, 0.0, -0.5 * L_first), wp.quat_identity())
-                else:
-                    parent_xform = wp.transform(wp.vec3(0.0, 0.0, L_last), wp.quat_identity())
-                    child_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
+                parent_xform = wp.transform(wp.vec3(0.0, 0.0, 0.5 * L_last), wp.quat_identity())
+                child_xform = wp.transform(wp.vec3(0.0, 0.0, -0.5 * L_first), wp.quat_identity())
 
                 def _closed_rest_quaternion(segment: int) -> wp.quat:
                     rest_dir, _ = self._rod_segment_direction(
@@ -11045,6 +11113,7 @@ class ModelBuilder:
         *,
         rod: Rod,
         cfg: ShapeConfig | None = None,
+        total_mass: float | None = None,
         stretch_stiffness: float | None = None,
         stretch_damping: float | None = None,
         shear_stiffness: float | None = None,
@@ -11056,7 +11125,7 @@ class ModelBuilder:
         label: str | None = None,
         wrap_in_articulation: bool = True,
         color: Vec3 | None = None,
-        body_frame_origin: Literal["start", "com"] = "com",
+        body_frame_origin: Literal["com"] = _DEPRECATED_BODY_FRAME_ORIGIN_UNSET,
         junction_collision_filter: bool = True,
     ) -> tuple[list[int], list[int]]:
         """Adds a rod composed of capsule bodies connected by rod joints.
@@ -11076,6 +11145,11 @@ class ModelBuilder:
         Args:
             rod: Initial/rest geometry, frame, topology, and constitutive-data source.
             cfg: Shape configuration for the capsules. If None, :attr:`default_shape_cfg` is used.
+            total_mass: Optional total rod mass [kg], distributed in proportion to each segment's
+                rest volume (equivalently, rest length for the uniform cross section).
+                Overrides ``cfg.density``. Must be finite and nonnegative; zero sets every
+                segment's mass and inertia to zero without setting the kinematic body flag.
+                If None, mass is derived from density.
             stretch_stiffness: Per-joint rod stretch stiffness, stored directly as ``target_ke`` [N/m].
                 If None, it is derived locally from Rod material or section rigidity;
                 otherwise it defaults to 1.0e5.
@@ -11106,17 +11180,14 @@ class ModelBuilder:
                 See the Articulations section below.
             color: Optional display RGB color with values in ``[0, 1]`` applied to all generated
                 capsule shapes. If None, the rod uses the default rod color.
-            body_frame_origin: Body-frame placement for each generated capsule. ``"start"`` places
-                the origin at the local start of the rest-sized capsule, with the COM/shape
-                offset by half its rest length. The world-space origin equals the initial
-                segment start only when initial and rest lengths match. ``"com"`` places
-                the body origin at the initial segment midpoint so the
-                body origin and COM coincide. Defaults to ``"com"``.
+            body_frame_origin: Deprecated; omit it. Explicit ``"com"`` uses the default
+                body origin at the initial segment midpoint and emits a
+                :class:`~newton.NewtonDeprecationWarning`. The ``"start"``
+                origin, deprecated in 1.8, has been removed and raises
+                :class:`ValueError`; for manually authored body-local anchors, subtract
+                the old ``body_com`` offset.
 
-                .. deprecated:: 1.8
-                    ``"start"`` emits a :class:`~newton.NewtonDeprecationWarning`.
-                    Use ``"com"`` instead. For manually authored body-local anchors,
-                    subtract the old ``body_com`` offset.
+                .. deprecated:: 1.9
             junction_collision_filter: Whether to suppress self-collisions
                 between incident, non-jointed segments at graph junctions.
                 Has no effect for an ordered chain.
@@ -11147,7 +11218,11 @@ class ModelBuilder:
                 non-finite or too-short edges, or invalid frame alignment.
             ValueError: If the structural-rest centerline of a closed chain does not close.
             ValueError: If the Rod uses ``rest_straight`` with explicit rest inputs or a graph.
-            ValueError: If ``body_frame_origin`` is not ``"start"`` or ``"com"``.
+            ValueError: If ``body_frame_origin`` is passed with a value other than ``"com"``.
+            ValueError: If ``total_mass`` is negative or non-finite.
+            ValueError: If a hollow rod with positive assigned mass has a negative or non-finite
+                wall thickness ``cfg.margin``, or one at least as large as the stored radius.
+                A positive ``total_mass`` also requires nonzero hollow wall thickness.
             ValueError: If automatic section-rigidity discretization is requested
                 for branching topology or for a wrapped explicit cycle.
 
@@ -11162,22 +11237,35 @@ class ModelBuilder:
               arguments override the derived value per mode.
             - Each segment is implemented as a capsule primitive. ``half_height`` is the half-length of
               the cylindrical centerline, excluding the hemispherical caps.
-            - With ``body_frame_origin="start"``, the body origin is at the local start of the rest-sized
-              capsule centerline. The COM and shape are at local ``(0, 0, half_height)``, and the other
-              centerline endpoint is at ``(0, 0, 2 * half_height)``. These offsets use rest lengths; the
-              world-space body origin equals the initial segment start only when the initial and rest lengths match.
-            - With ``body_frame_origin="com"``, the body origin and COM coincide at the segment
-              midpoint, and centerline endpoints are at local ``(0, 0, -half_height)`` and
-              ``(0, 0, half_height)``.
+            - Density-based mass is ``cfg.density * area * rest_length`` per segment, excluding the
+              overlapping caps. ``area`` is the circular cross section ``pi * radius**2``, as in USD
+              cable import, or for hollow rods the tube wall of thickness ``cfg.margin``.
+            - Inertia uses the solid-cylinder or open-tube tensor at each segment's assigned mass
+              and rest length, as in USD cable import for solid sections. Collision geometry and
+              the caller's ``cfg`` are unchanged.
+            - The body origin and COM coincide at the segment midpoint, and centerline endpoints are at
+              local ``(0, 0, -half_height)`` and ``(0, 0, half_height)``.
         """
         if not isinstance(rod, Rod):
             raise TypeError(f"add_rod: rod must be a Rod, got {type(rod).__name__}")
+        if body_frame_origin is not _DEPRECATED_BODY_FRAME_ORIGIN_UNSET:
+            if body_frame_origin == "start":
+                raise ValueError(
+                    'add_rod: body_frame_origin="start" was deprecated in Newton 1.8 and has been removed. '
+                    'Omit the argument to use the "com" origin. For manually authored body-local anchors, '
+                    "subtract the old body_com offset."
+                )
+            if body_frame_origin != "com":
+                raise ValueError(
+                    f"add_rod: body_frame_origin={body_frame_origin!r} is not supported; omit the argument."
+                )
 
         start_body = self.body_count
         start_joint = self.joint_count
         result = self._add_rod_object(
             rod,
             cfg=cfg,
+            total_mass=total_mass,
             stretch_stiffness=stretch_stiffness,
             stretch_damping=stretch_damping,
             shear_stiffness=shear_stiffness,
@@ -11190,10 +11278,31 @@ class ModelBuilder:
             wrap_in_articulation=wrap_in_articulation,
             junction_collision_filter=junction_collision_filter,
             color=color,
-            body_frame_origin=body_frame_origin,
+            warn_deprecated_body_frame_origin=body_frame_origin is not _DEPRECATED_BODY_FRAME_ORIGIN_UNSET,
         )
         self._record_curve_deformable_object(label, (start_body, self.body_count), (start_joint, self.joint_count))
         return result
+
+    def _set_rod_segment_mass(self, body: int, mass: float) -> None:
+        """Assign mass and cylinder or open-tube inertia to a generated single-capsule rod segment."""
+        inertia = wp.mat33(0.0)
+        if mass > 0.0:
+            shape = self.body_shapes[body][0]
+            scale = self.shape_scale[shape]
+            radius, half_height = float(scale[0]), float(scale[1])
+            inner_radius = 0.0
+            if not self.shape_is_solid[shape]:
+                thickness = _validate_hollow_thickness("capsule", self.shape_margin[shape], (("radius", radius),))
+                inner_radius = radius - thickness
+            # Use assigned mass directly: subtracting shell tensors loses precision for thin walls.
+            radial_sum = radius * radius + inner_radius * inner_radius
+            transverse = mass * (radial_sum / 4.0 + half_height * half_height / 3.0)
+            axial = mass * radial_sum / 2.0
+            inertia = wp.mat33(transverse, 0.0, 0.0, 0.0, transverse, 0.0, 0.0, 0.0, axial)
+        self.body_mass[body] = mass
+        self.body_inv_mass[body] = 1.0 / mass if mass > 0.0 else 0.0
+        self.body_inertia[body] = inertia
+        self.body_inv_inertia[body] = _inverse_inertia(inertia) if mass > 0.0 else wp.mat33(0.0)
 
     def _add_rod_graph(
         self,
@@ -11204,6 +11313,7 @@ class ModelBuilder:
         rest_quaternions: list[Quat] | np.ndarray | None = None,
         radius: float,
         cfg: ShapeConfig | None,
+        total_mass: float | None = None,
         stretch_stiffness: float | None,
         stretch_damping: float | None,
         shear_stiffness: float | None,
@@ -11217,13 +11327,15 @@ class ModelBuilder:
         quaternions: list[Quat] | None,
         junction_collision_filter: bool,
         color: Vec3 | None,
-        body_frame_origin: Literal["start", "com"],
         articulation_root_node: int | None = None,
         articulation_root_joint_factory: Callable[[int, Transform], int] | None = None,
+        warn_deprecated_body_frame_origin: bool = False,
     ) -> tuple[list[int], list[int]]:
         """Build a rod graph, optionally using an importer-provided articulation root joint."""
         if cfg is None:
             cfg = self.default_shape_cfg
+        if total_mass is not None and (not math.isfinite(total_mass) or total_mass < 0.0):
+            raise ValueError("add_rod: total_mass must be finite and >= 0")
 
         # Stretch defaults to the cable/rod axial stiffness used by VBD examples.
         stretch_stiffness = 1.0e5 if stretch_stiffness is None else stretch_stiffness
@@ -11240,7 +11352,6 @@ class ModelBuilder:
             bend_stiffness=bend_stiffness,
             twist_stiffness=twist_stiffness,
         )
-        body_frame_origin = self._resolve_rod_body_frame_origin("add_rod", body_frame_origin)
         if len(node_positions) < 2:
             raise ValueError("add_rod: node_positions must contain at least 2 nodes")
         if len(edges) < 1:
@@ -11292,10 +11403,9 @@ class ModelBuilder:
         edge_v: list[int] = []
         edge_len: list[float] = []
         edge_rest_q: list[wp.quat] = []
-        edge_body_data: list[tuple[wp.transform, wp.vec3, wp.transform]] = []
+        edge_body_q: list[wp.transform] = []
         edge_bodies: list[int] = []
         rod_color = color if color is not None else ModelBuilder._DEFAULT_ROD_COLOR
-        use_com_origin = body_frame_origin == "com"
 
         # Validate all edge geometry and frames before adding bodies.
         for e_idx, (u, v) in enumerate(edges):
@@ -11356,24 +11466,13 @@ class ModelBuilder:
                 q_rest = q
             edge_rest_q.append(q_rest)
 
-            half_height = 0.5 * rest_seg_length
+            # Place the body origin at the initial segment center so origin and COM coincide.
             initial_center = wp.vec3(*(0.5 * (float(p0[i]) + float(p1[i])) for i in range(3)))
-
-            if use_com_origin:
-                # Place the body origin at the segment center so origin and COM coincide.
-                body_q = wp.transform(initial_center, q)
-                com_offset = wp.vec3(0.0)
-                capsule_xform = wp.transform()
-            else:
-                body_origin = wp.vec3(*(float(initial_center[i]) - float(seg_dir[i]) * half_height for i in range(3)))
-                body_q = wp.transform(body_origin, q)
-                com_offset = wp.vec3(0.0, 0.0, half_height)
-                capsule_xform = wp.transform(wp.vec3(0.0, 0.0, half_height), wp.quat_identity())
 
             edge_u.append(u)
             edge_v.append(v)
             edge_len.append(rest_seg_length)
-            edge_body_data.append((body_q, com_offset, capsule_xform))
+            edge_body_q.append(wp.transform(initial_center, q))
 
             node_incidence[u].append(e_idx)
             node_incidence[v].append(e_idx)
@@ -11383,32 +11482,47 @@ class ModelBuilder:
             shape_label = f"{label}_edge_capsule_0" if label else f"shape_{self.shape_count}"
             cfg._validate_site(shape_label)
 
+        # Assigned rod mass replaces the primitive contribution; leave the caller's config intact.
+        segment_cfg = replace(cfg, density=0.0)
+        # Resolve mass per rest length in Python precision, including NumPy scalar inputs.
+        linear_density = (
+            float(total_mass) / sum(edge_len) if total_mass is not None else float(cfg.density) * math.pi * radius**2
+        )
+        if linear_density > 0.0 and not cfg.is_solid:
+            if total_mass is not None and cfg.margin == 0.0:
+                raise ValueError("add_rod: positive total_mass requires positive hollow wall thickness")
+            # Validate the stored float32 radius before adding bodies; zero thickness warns and leaves zero mass.
+            _validate_hollow_thickness("capsule", cfg.margin, (("radius", np.float32(radius)),))
+            if total_mass is None:
+                # Hollow density mass covers the tube wall of thickness ``cfg.margin``.
+                thickness_ratio = float(cfg.margin) / radius
+                linear_density *= thickness_ratio * (2.0 - thickness_ratio)
+
         # Warn after validation but before mutating the builder.
-        if body_frame_origin == "start":
+        if warn_deprecated_body_frame_origin:
             warnings.warn(
-                'add_rod(body_frame_origin="start") is deprecated as of Newton 1.8. '
-                'Use the default "com" origin. For manually authored body-local anchors, '
-                "subtract the old body_com offset.",
+                'add_rod(body_frame_origin="com") is deprecated as of Newton 1.9 and has no effect; '
+                "omit the argument. Rod body frames are always centered at the segment midpoint.",
                 NewtonDeprecationWarning,
                 stacklevel=_external_warning_stacklevel(),
             )
 
         # Create all edge bodies first.
-        for e_idx, (body_q, com_offset, capsule_xform) in enumerate(edge_body_data):
+        for e_idx, body_q in enumerate(edge_body_q):
             body_label = f"{label}_edge_body_{e_idx}" if label else None
             shape_label = f"{label}_edge_capsule_{e_idx}" if label else None
 
-            body_id = self.add_link(xform=body_q, com=com_offset, label=body_label)
+            body_id = self.add_link(xform=body_q, label=body_label)
 
             self.add_shape_capsule(
                 body_id,
-                xform=capsule_xform,
                 radius=radius,
                 half_height=0.5 * edge_len[e_idx],
-                cfg=cfg,
+                cfg=segment_cfg,
                 label=shape_label,
                 color=rod_color,
             )
+            self._set_rod_segment_mass(body_id, linear_density * edge_len[e_idx])
 
             edge_bodies.append(body_id)
 
@@ -11417,9 +11531,9 @@ class ModelBuilder:
 
         def _edge_anchor_xform(e_idx: int, node_idx: int, reverse_tangent: bool = False) -> wp.transform:
             if node_idx == edge_u[e_idx]:
-                z = -0.5 * edge_len[e_idx] if use_com_origin else 0.0
+                z = -0.5 * edge_len[e_idx]
             elif node_idx == edge_v[e_idx]:
-                z = 0.5 * edge_len[e_idx] if use_com_origin else edge_len[e_idx]
+                z = 0.5 * edge_len[e_idx]
             else:
                 raise RuntimeError("add_rod: internal error (node not incident to edge)")
             rotation = _reverse_tangent_rotation if reverse_tangent else _identity_rotation
@@ -15463,13 +15577,18 @@ class ModelBuilder:
         # static particles (with zero mass) have zero inverse mass
         particle_inv_mass = np.divide(1.0, ms, out=np.zeros_like(ms), where=ms != 0.0)
 
-        # Keep the compact arrays for device transfer, while using Python lists in the
-        # large per-shape loops below. Iterating NumPy rows and scalars from Python is
-        # substantially more expensive than iterating their built-in equivalents.
-        shape_flags_list = _list_for_iteration(self.shape_flags)
-        shape_scale_list = _list_for_iteration(self.shape_scale)
-        shape_margin_list = _list_for_iteration(self.shape_margin)
-        shape_gap_list = _list_for_iteration(self.shape_gap)
+        n_shapes = len(self.shape_type)
+        shape_type_arr = np.asarray(self.shape_type, dtype=np.int32)
+        shape_flags_arr = (
+            np.asarray(self.shape_flags, dtype=np.int32)
+            if isinstance(self.shape_flags, np.ndarray)
+            else np.asarray([flag_to_int(f) for f in self.shape_flags], dtype=np.int32)
+        )
+        shape_scale_arr = (
+            pack_warp_values(self.shape_scale, wp.vec3) if n_shapes > 0 else np.empty((0, 3), dtype=np.float32)
+        )
+        shape_margin_arr = np.asarray(self.shape_margin, dtype=np.float32)
+        shape_gap_arr = np.asarray(self.shape_gap, dtype=np.float32)
 
         shape_collision_filter_packed = self._build_shape_collision_filter_packed()
         with wp.ScopedDevice(device):
@@ -15535,9 +15654,10 @@ class ModelBuilder:
 
             def _shape_requests_planar_sdf(shape_idx: int) -> bool:
                 """Whether a shape needs texture SDF data for planar-faced contact."""
-                if not (shape_flags_list[shape_idx] & ShapeFlags.COLLIDE_SHAPES):
+                sflags = int(shape_flags_arr[shape_idx])
+                if not (sflags & ShapeFlags.COLLIDE_SHAPES):
                     return False
-                stype = self.shape_type[shape_idx]
+                stype = int(shape_type_arr[shape_idx])
                 if stype in (GeoType.MESH, GeoType.CONVEX_MESH):
                     src = self.shape_source[shape_idx]
                     return src is not None and (
@@ -15548,14 +15668,14 @@ class ModelBuilder:
                 return stype == GeoType.BOX and (
                     self.shape_sdf_max_resolution[shape_idx] is not None
                     or self.shape_sdf_target_voxel_size[shape_idx] is not None
-                    or bool(shape_flags_list[shape_idx] & ShapeFlags.HYDROELASTIC)
+                    or bool(sflags & ShapeFlags.HYDROELASTIC)
                 )
 
             generated_shape_sources = list(self.shape_source)
             deduplicated_convex_sources = {}
-            for shape_idx, shape_type in enumerate(self.shape_type):
+            for shape_idx in np.flatnonzero(shape_type_arr == GeoType.CONVEX_MESH).tolist():
                 source = generated_shape_sources[shape_idx]
-                if shape_type != GeoType.CONVEX_MESH or not isinstance(source, Mesh):
+                if not isinstance(source, Mesh):
                     continue
                 source_identity = id(source)
                 if source_identity in deduplicated_convex_sources:
@@ -15566,8 +15686,11 @@ class ModelBuilder:
                 generated_shape_sources[shape_idx] = deduplicated_source
             generated_sdf_edge_meshes = []
             unit_box_edge_mesh = None
-            for shape_idx, shape_type in enumerate(self.shape_type):
-                if shape_type == GeoType.BOX and _shape_requests_planar_sdf(shape_idx):
+            colliding_box_indices = np.flatnonzero(
+                (shape_type_arr == GeoType.BOX) & ((shape_flags_arr & ShapeFlags.COLLIDE_SHAPES) != 0)
+            )
+            for shape_idx in colliding_box_indices.tolist():
+                if _shape_requests_planar_sdf(shape_idx):
                     if unit_box_edge_mesh is None:
                         # The edge mesh is intentionally unscaled; per-shape box
                         # half-extents are still applied through shape_scale.
@@ -15590,16 +15713,15 @@ class ModelBuilder:
                         generated_sdf_edge_meshes.append(unit_box_edge_mesh)
                     generated_shape_sources[shape_idx] = unit_box_edge_mesh
 
-            # build list of ids for geometry sources (meshes, sdfs, heightfields)
-            geo_sources = []
+            # build array of ids for geometry sources (meshes, sdfs, heightfields)
+            geo_sources = np.zeros(n_shapes, dtype=np.uint64)
             finalized_geos = {}  # content hash -> finalized geometry
             finalized_geos_by_identity = {}  # object id -> finalized geometry
             gaussians = []
             heightfield_meshes = []
             mesh_keep_alive = []
-            for geo in generated_shape_sources:
+            for shape_idx, geo in enumerate(generated_shape_sources):
                 if not geo:
-                    geo_sources.append(0)
                     continue
 
                 # Replicated builders reuse geometry objects across worlds. Use
@@ -15607,7 +15729,7 @@ class ModelBuilder:
                 # equivalent geometry objects share one finalized representation.
                 geo_identity = id(geo)
                 if geo_identity in finalized_geos_by_identity:
-                    geo_sources.append(finalized_geos_by_identity[geo_identity])
+                    geo_sources[shape_idx] = finalized_geos_by_identity[geo_identity]
                     continue
 
                 geo_hash = hash(geo)
@@ -15661,28 +15783,30 @@ class ModelBuilder:
 
                 finalized_geo = finalized_geos[geo_cache_key]
                 finalized_geos_by_identity[geo_identity] = finalized_geo
-                geo_sources.append(finalized_geo)
+                geo_sources[shape_idx] = finalized_geo
 
             # Mesh properties consumed by the collision kernels: watertightness
             # is checked once per unique collidable mesh (content-keyed like
             # finalized_geos above); visual-only shapes are skipped.
-            shape_mesh_properties = []
+            shape_mesh_properties = np.zeros(n_shapes, dtype=np.int32)
             mesh_properties_by_geo_hash: dict[int, int] = {}
-            for shape_type, geo, shape_flags in zip(
-                self.shape_type, generated_shape_sources, shape_flags_list, strict=True
-            ):
-                mesh_properties = 0
-                is_collidable = bool(shape_flags & (ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES))
-                if is_collidable and shape_type in (GeoType.MESH, GeoType.CONVEX_MESH) and isinstance(geo, Mesh):
-                    mesh_properties = mesh_properties_by_geo_hash.get(hash(geo))
+            collidable_mesh_indices = np.flatnonzero(
+                ((shape_type_arr == GeoType.MESH) | (shape_type_arr == GeoType.CONVEX_MESH))
+                & ((shape_flags_arr & (ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES)) != 0)
+            )
+            for shape_idx in collidable_mesh_indices.tolist():
+                geo = generated_shape_sources[shape_idx]
+                if isinstance(geo, Mesh):
+                    geo_hash = hash(geo)
+                    mesh_properties = mesh_properties_by_geo_hash.get(geo_hash)
                     if mesh_properties is None:
-                        mesh_properties = MeshProperties.WATERTIGHT if geo.is_watertight else 0
-                        mesh_properties_by_geo_hash[hash(geo)] = mesh_properties
-                    if shape_type == GeoType.MESH and geo.enable_surface_velocity:
-                        mesh_properties |= MeshProperties.SURFACE_VELOCITY
-                shape_mesh_properties.append(mesh_properties)
+                        mesh_properties = int(MeshProperties.WATERTIGHT) if geo.is_watertight else 0
+                        mesh_properties_by_geo_hash[geo_hash] = mesh_properties
+                    if shape_type_arr[shape_idx] == GeoType.MESH and geo.enable_surface_velocity:
+                        mesh_properties |= int(MeshProperties.SURFACE_VELOCITY)
+                    shape_mesh_properties[shape_idx] = mesh_properties
 
-            m.shape_type = wp.array(self.shape_type, dtype=wp.int32)
+            m.shape_type = wp.array(shape_type_arr, dtype=wp.int32)
             m.shape_source_ptr = wp.array(geo_sources, dtype=wp.uint64)
             m._shape_mesh_properties = wp.array(shape_mesh_properties, dtype=wp.int32, device=device)
             m.heightfield_meshes = heightfield_meshes
@@ -15696,35 +15820,35 @@ class ModelBuilder:
             boundary_chunks = []
             boundary_offset = 0
             boundary_starts = {}
-            shape_mesh_boundary_start = []
-            for shape_type, source, shape_flags, mesh_properties in zip(
-                self.shape_type, geo_sources, shape_flags_list, shape_mesh_properties, strict=True
-            ):
-                start = -1
-                if (
-                    shape_type == GeoType.MESH
-                    and source in finalized_meshes
-                    and shape_flags & ShapeFlags.COLLIDE_SHAPES
-                    and not mesh_properties & MeshProperties.WATERTIGHT
-                ):
-                    start = boundary_starts.get(source)
-                    if start is None:
-                        flags = compute_mesh_boundary_flags(finalized_meshes[source])
-                        start = boundary_starts[source] = boundary_offset
-                        boundary_chunks.append(flags)
-                        boundary_offset += len(flags)
-                shape_mesh_boundary_start.append(start)
+            shape_mesh_boundary_start = np.full(max(n_shapes, 1), -1, dtype=np.int32)
+            if finalized_meshes and n_shapes > 0:
+                open_mesh_indices = np.flatnonzero(
+                    (shape_type_arr == GeoType.MESH)
+                    & ((shape_flags_arr & ShapeFlags.COLLIDE_SHAPES) != 0)
+                    & ((shape_mesh_properties & int(MeshProperties.WATERTIGHT)) == 0)
+                )
+                for shape_idx in open_mesh_indices.tolist():
+                    source = int(geo_sources[shape_idx])
+                    if source in finalized_meshes:
+                        start = boundary_starts.get(source)
+                        if start is None:
+                            flags = compute_mesh_boundary_flags(finalized_meshes[source])
+                            start = boundary_starts[source] = boundary_offset
+                            boundary_chunks.append(flags)
+                            boundary_offset += len(flags)
+                        shape_mesh_boundary_start[shape_idx] = start
             m._mesh_boundary_flags = wp.array(
                 np.concatenate(boundary_chunks) if boundary_offset > 0 else np.zeros(1, dtype=np.uint8),
                 dtype=wp.uint8,
                 device=device,
             )
-            m._shape_mesh_boundary_start = wp.array(
-                shape_mesh_boundary_start if shape_mesh_boundary_start else [-1], dtype=wp.int32, device=device
-            )
+            m._shape_mesh_boundary_start = wp.array(shape_mesh_boundary_start, dtype=wp.int32, device=device)
 
             # Compact convex support data (one copy per shared geometry).
-            shape_support_data = []
+            shape_support_data = np.empty((n_shapes, 4), dtype=np.int32)
+            if n_shapes > 0:
+                shape_support_data[:, :3] = -1
+                shape_support_data[:, 3] = 0
             support_lut_chunks = []
             support_offset_chunks = []
             support_neighbor_chunks = []
@@ -15732,15 +15856,12 @@ class ModelBuilder:
             lut_offset = 0
             vertex_offset = 0
             neighbor_offset = 0
-            for shape_type, source, shape_flags in zip(
-                self.shape_type, generated_shape_sources, shape_flags_list, strict=True
-            ):
-                metadata = (-1, -1, -1, 0)
-                if (
-                    shape_type == GeoType.CONVEX_MESH
-                    and isinstance(source, Mesh)
-                    and shape_flags & ShapeFlags.COLLIDE_SHAPES
-                ):
+            colliding_convex_indices = np.flatnonzero(
+                (shape_type_arr == GeoType.CONVEX_MESH) & ((shape_flags_arr & ShapeFlags.COLLIDE_SHAPES) != 0)
+            )
+            for shape_idx in colliding_convex_indices.tolist():
+                source = generated_shape_sources[shape_idx]
+                if isinstance(source, Mesh):
                     source_key = hash(source)
                     if source_key not in support_cache:
                         topology = _convex_hull_adjacency(source)
@@ -15774,8 +15895,7 @@ class ModelBuilder:
                             support_neighbor_chunks.append(np.concatenate((edge_block, neighbors)).astype(np.int32))
                             neighbor_offset += len(support_neighbor_chunks[-1])
                         support_cache[source_key] = cached
-                    metadata = support_cache[source_key]
-                shape_support_data.append(metadata)
+                    shape_support_data[shape_idx] = support_cache[source_key]
 
             m._shape_support_data = wp.array(shape_support_data, dtype=wp.vec4i, device=device)
             m._convex_support_lut = wp.array(
@@ -15832,155 +15952,145 @@ class ModelBuilder:
 
             # ---------------------
             # Compute local AABBs and voxel resolutions for contact reduction
-            local_aabb_lower = []
-            local_aabb_upper = []
-            local_interior_point = []
-            voxel_resolution = []
-            from ..geometry.contact_reduction import NUM_VOXEL_DEPTH_SLOTS  # noqa: PLC0415
+            from ..geometry.contact_reduction import (  # noqa: PLC0415
+                NUM_VOXEL_DEPTH_SLOTS,
+                compute_voxel_resolution_from_aabb,
+            )
 
             voxel_budget = NUM_VOXEL_DEPTH_SLOTS
 
-            # Cache per unique (shape_type, shape_params, margin) to avoid redundant AABB computation
-            # for instanced shapes (e.g., 256 robots sharing the same shape parameters)
+            # Cache per unique (shape_type, id(shape_src), scale) for source-dependent shapes
             shape_aabb_cache = {}
 
-            def compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget):
-                """Compute voxel resolution from AABB with given budget."""
-                size = aabb_upper - aabb_lower
-                size = np.maximum(size, 1e-6)  # Avoid division by zero
+            if n_shapes == 0:
+                local_aabb_lower = np.empty((0, 3), dtype=np.float32)
+                local_aabb_upper = np.empty((0, 3), dtype=np.float32)
+                local_interior_point = np.empty((0, 3), dtype=np.float32)
+                voxel_resolution = np.empty((0, 3), dtype=np.int32)
+            else:
+                scale_clean = np.ascontiguousarray(shape_scale_arr, dtype=np.float32) + np.float32(0.0)
+                src_dependent_mask = (
+                    (shape_type_arr == GeoType.MESH)
+                    | (shape_type_arr == GeoType.CONVEX_MESH)
+                    | (shape_type_arr == GeoType.HFIELD)
+                )
+                primitive_indices = np.flatnonzero(~src_dependent_mask)
+                local_interior_point = np.zeros((n_shapes, 3), dtype=np.float32)
 
-                # Target voxel size for approximately cubic voxels
-                volume = size[0] * size[1] * size[2]
-                v = (volume / voxel_budget) ** (1.0 / 3.0)
-                v = max(v, 1e-6)
+                if len(primitive_indices) > 0:
+                    prim_types = (
+                        shape_type_arr if len(primitive_indices) == n_shapes else shape_type_arr[primitive_indices]
+                    )
+                    prim_scales = scale_clean if len(primitive_indices) == n_shapes else scale_clean[primitive_indices]
+                    key_buf = np.empty((len(primitive_indices), 4), dtype=np.uint32)
+                    key_buf[:, 0] = prim_types.view(np.uint32)
+                    key_buf[:, 1:] = prim_scales.view(np.uint32)
+                    key_16 = key_buf.view(np.dtype((np.void, 16))).ravel()
+                    _, first_idx, inv_idx = np.unique(key_16, return_index=True, return_inverse=True)
+                    n_uniq = len(first_idx)
+                    uniq_lo = np.empty((n_uniq, 3), dtype=np.float32)
+                    uniq_hi = np.empty((n_uniq, 3), dtype=np.float32)
+                    uniq_vox = np.ones((n_uniq, 3), dtype=np.int32)
+                    for u_i, p_idx in enumerate(first_idx.tolist()):
+                        st = int(prim_types[p_idx])
+                        sx = float(prim_scales[p_idx, 0])
+                        sy = float(prim_scales[p_idx, 1])
+                        sz = float(prim_scales[p_idx, 2])
+                        if st in (GeoType.ELLIPSOID, GeoType.BOX):
+                            lo64 = np.array([-sx, -sy, -sz])
+                            hi64 = np.array([sx, sy, sz])
+                            nx, ny, nz = compute_voxel_resolution_from_aabb(lo64, hi64, voxel_budget)
+                        elif st == GeoType.SPHERE:
+                            lo64 = np.array([-sx, -sx, -sx])
+                            hi64 = np.array([sx, sx, sx])
+                            nx, ny, nz = compute_voxel_resolution_from_aabb(lo64, hi64, voxel_budget)
+                        elif st == GeoType.CAPSULE:
+                            lo64 = np.array([-sx, -sx, -sy - sx])
+                            hi64 = np.array([sx, sx, sy + sx])
+                            nx, ny, nz = compute_voxel_resolution_from_aabb(lo64, hi64, voxel_budget)
+                        elif st == GeoType.CYLINDER:
+                            radial_extent = sx
+                            if sz > 0.0:
+                                radial_extent += (sy * sy) / (sz + np.sqrt(sz * sz - sy * sy))
+                            lo64 = np.array([-radial_extent, -radial_extent, -sy])
+                            hi64 = np.array([radial_extent, radial_extent, sy])
+                            nx, ny, nz = compute_voxel_resolution_from_aabb(lo64, hi64, voxel_budget)
+                        elif st == GeoType.CONE:
+                            lo64 = np.array([-sx, -sx, -sy])
+                            hi64 = np.array([sx, sx, sy])
+                            nx, ny, nz = compute_voxel_resolution_from_aabb(lo64, hi64, voxel_budget)
+                        else:
+                            lo64 = np.array([-1.0, -1.0, -1.0])
+                            hi64 = np.array([1.0, 1.0, 1.0])
+                            nx, ny, nz = 1, 1, 1
+                        uniq_lo[u_i] = lo64
+                        uniq_hi[u_i] = hi64
+                        uniq_vox[u_i] = (nx, ny, nz)
 
-                # Initial resolution
-                nx = max(1, round(size[0] / v))
-                ny = max(1, round(size[1] / v))
-                nz = max(1, round(size[2] / v))
-
-                # Reduce until under budget (reduce largest axis first for more cubic voxels)
-                while nx * ny * nz > voxel_budget:
-                    if nx >= ny and nx >= nz and nx > 1:
-                        nx -= 1
-                    elif ny >= nz and ny > 1:
-                        ny -= 1
-                    elif nz > 1:
-                        nz -= 1
+                    if len(primitive_indices) == n_shapes:
+                        local_aabb_lower = uniq_lo[inv_idx]
+                        local_aabb_upper = uniq_hi[inv_idx]
+                        voxel_resolution = uniq_vox[inv_idx]
                     else:
-                        break
-
-                return nx, ny, nz
-
-            for shape_type, shape_src, shape_scale in zip(
-                self.shape_type, self.shape_source, shape_scale_list, strict=True
-            ):
-                # Create cache key based on shape type and parameters
-                if (shape_type == GeoType.MESH or shape_type == GeoType.CONVEX_MESH) and shape_src is not None:
-                    cache_key = (shape_type, id(shape_src), tuple(shape_scale))
+                        local_aabb_lower = np.full((n_shapes, 3), -1.0, dtype=np.float32)
+                        local_aabb_upper = np.ones((n_shapes, 3), dtype=np.float32)
+                        voxel_resolution = np.ones((n_shapes, 3), dtype=np.int32)
+                        local_aabb_lower[primitive_indices] = uniq_lo[inv_idx]
+                        local_aabb_upper[primitive_indices] = uniq_hi[inv_idx]
+                        voxel_resolution[primitive_indices] = uniq_vox[inv_idx]
                 else:
-                    cache_key = (shape_type, tuple(shape_scale))
+                    local_aabb_lower = np.full((n_shapes, 3), -1.0, dtype=np.float32)
+                    local_aabb_upper = np.ones((n_shapes, 3), dtype=np.float32)
+                    voxel_resolution = np.ones((n_shapes, 3), dtype=np.int32)
 
-                # Check cache first
-                if cache_key in shape_aabb_cache:
-                    aabb_lower, aabb_upper, interior_point, nx, ny, nz = shape_aabb_cache[cache_key]
-                else:
-                    # Primitive origins are interior. A hull's AABB center can lie
-                    # outside it, and its vertex mean follows the tessellation, so
-                    # hulls use their volume centroid.
-                    interior_point = np.zeros(3)
-                    # Compute AABB based on shape type
-                    if shape_type == GeoType.MESH and shape_src is not None:
-                        # Compute local AABB from mesh vertices
-                        vertices = shape_src.vertices
-                        lo = vertices.min(axis=0) * np.array(shape_scale)
-                        hi = vertices.max(axis=0) * np.array(shape_scale)
-                        aabb_lower = np.minimum(lo, hi)
-                        aabb_upper = np.maximum(lo, hi)
-
-                        nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
-
-                    elif shape_type == GeoType.CONVEX_MESH and shape_src is not None:
-                        lo = shape_src.vertices.min(axis=0) * np.array(shape_scale)
-                        hi = shape_src.vertices.max(axis=0) * np.array(shape_scale)
-                        centroid = _convex_hull_interior_point(shape_src.vertices, shape_src.indices)
-                        interior_point = centroid * np.array(shape_scale)
-                        aabb_lower = np.minimum(lo, hi)
-                        aabb_upper = np.maximum(lo, hi)
-
-                        nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
-
-                    elif shape_type == GeoType.ELLIPSOID:
-                        # Ellipsoid: shape_scale = (semi_axis_x, semi_axis_y, semi_axis_z)
-                        sx, sy, sz = shape_scale
-                        aabb_lower = np.array([-sx, -sy, -sz])
-                        aabb_upper = np.array([sx, sy, sz])
-                        nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
-
-                    elif shape_type == GeoType.BOX:
-                        # Box: shape_scale = (hx, hy, hz) half-extents
-                        hx, hy, hz = shape_scale
-                        aabb_lower = np.array([-hx, -hy, -hz])
-                        aabb_upper = np.array([hx, hy, hz])
-                        nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
-
-                    elif shape_type == GeoType.SPHERE:
-                        # Sphere: shape_scale = (radius, radius, radius)
-                        r = shape_scale[0]
-                        aabb_lower = np.array([-r, -r, -r])
-                        aabb_upper = np.array([r, r, r])
-                        nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
-
-                    elif shape_type == GeoType.CAPSULE:
-                        # Capsule: shape_scale = (radius, half_height, radius)
-                        # Capsule is along Z axis with hemispherical caps (matches SDF in kernels.py)
-                        r, half_height, _ = shape_scale
-                        aabb_lower = np.array([-r, -r, -half_height - r])
-                        aabb_upper = np.array([r, r, half_height + r])
-                        nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
-
-                    elif shape_type == GeoType.CYLINDER:
-                        # Cylinder: shape_scale = (end_radius, half_height, barrel_radius)
-                        r, half_height, barrel_radius = shape_scale
-                        radial_extent = r
-                        if barrel_radius > 0.0:
-                            radial_extent += (half_height * half_height) / (
-                                barrel_radius + np.sqrt(barrel_radius * barrel_radius - half_height * half_height)
-                            )
-                        aabb_lower = np.array([-radial_extent, -radial_extent, -half_height])
-                        aabb_upper = np.array([radial_extent, radial_extent, half_height])
-                        nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
-
-                    elif shape_type == GeoType.CONE:
-                        # Cone: shape_scale = (radius, half_height, radius)
-                        # Cone is along Z axis (matches SDF in kernels.py)
-                        r, half_height, _ = shape_scale
-                        aabb_lower = np.array([-r, -r, -half_height])
-                        aabb_upper = np.array([r, r, half_height])
-                        nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
-
-                    elif shape_type == GeoType.HFIELD and shape_src is not None:
-                        hx = abs(shape_src.hx * shape_scale[0])
-                        hy = abs(shape_src.hy * shape_scale[1])
-                        z_lo = shape_src.min_z * shape_scale[2]
-                        z_hi = shape_src.max_z * shape_scale[2]
-                        aabb_lower = np.array([-hx, -hy, min(z_lo, z_hi)])
-                        aabb_upper = np.array([hx, hy, max(z_lo, z_hi)])
-                        nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
-
-                    else:
-                        # Other shapes (PLANE, etc.): use default unit cube with 1x1x1 voxel grid
-                        aabb_lower = np.array([-1.0, -1.0, -1.0])
-                        aabb_upper = np.array([1.0, 1.0, 1.0])
-                        nx, ny, nz = 1, 1, 1
-
-                    # Cache the result for reuse by identical shapes
-                    shape_aabb_cache[cache_key] = (aabb_lower, aabb_upper, interior_point, nx, ny, nz)
-
-                local_aabb_lower.append(aabb_lower)
-                local_aabb_upper.append(aabb_upper)
-                local_interior_point.append(interior_point)
-                voxel_resolution.append([nx, ny, nz])
+                src_dependent_indices = np.flatnonzero(src_dependent_mask)
+                for s_idx in src_dependent_indices.tolist():
+                    shape_src = self.shape_source[s_idx]
+                    if shape_src is None:
+                        continue
+                    st = int(shape_type_arr[s_idx])
+                    sc_tuple = (
+                        float(scale_clean[s_idx, 0]),
+                        float(scale_clean[s_idx, 1]),
+                        float(scale_clean[s_idx, 2]),
+                    )
+                    cache_key = (st, id(shape_src), sc_tuple)
+                    cached_aabb = shape_aabb_cache.get(cache_key)
+                    if cached_aabb is None:
+                        interior_pt = np.zeros(3, dtype=np.float32)
+                        sc_np = np.array(sc_tuple)
+                        if st == GeoType.MESH:
+                            vertices = shape_src.vertices
+                            lo64 = vertices.min(axis=0) * sc_np
+                            hi64 = vertices.max(axis=0) * sc_np
+                            aabb_lo = np.minimum(lo64, hi64)
+                            aabb_hi = np.maximum(lo64, hi64)
+                        elif st == GeoType.CONVEX_MESH:
+                            lo64 = shape_src.vertices.min(axis=0) * sc_np
+                            hi64 = shape_src.vertices.max(axis=0) * sc_np
+                            centroid = _convex_hull_interior_point(shape_src.vertices, shape_src.indices)
+                            interior_pt = (centroid * sc_np).astype(np.float32)
+                            aabb_lo = np.minimum(lo64, hi64)
+                            aabb_hi = np.maximum(lo64, hi64)
+                        else:
+                            hx = abs(shape_src.hx * sc_tuple[0])
+                            hy = abs(shape_src.hy * sc_tuple[1])
+                            z_lo = shape_src.min_z * sc_tuple[2]
+                            z_hi = shape_src.max_z * sc_tuple[2]
+                            aabb_lo = np.array([-hx, -hy, min(z_lo, z_hi)])
+                            aabb_hi = np.array([hx, hy, max(z_lo, z_hi)])
+                        nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lo, aabb_hi, voxel_budget)
+                        cached_aabb = (
+                            aabb_lo.astype(np.float32),
+                            aabb_hi.astype(np.float32),
+                            interior_pt,
+                            (nx, ny, nz),
+                        )
+                        shape_aabb_cache[cache_key] = cached_aabb
+                    local_aabb_lower[s_idx] = cached_aabb[0]
+                    local_aabb_upper[s_idx] = cached_aabb[1]
+                    local_interior_point[s_idx] = cached_aabb[2]
+                    voxel_resolution[s_idx] = cached_aabb[3]
 
             m.shape_collision_aabb_lower = wp.array(local_aabb_lower, dtype=wp.vec3, device=device)
             m.shape_collision_aabb_upper = wp.array(local_aabb_upper, dtype=wp.vec3, device=device)
@@ -15991,34 +16101,29 @@ class ModelBuilder:
             # Compute and compact texture SDF resources (shared table + per-shape index indirection)
             is_gpu = current_device.is_cuda
 
+            collidable_sdf_mask = (shape_flags_arr & (ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES)) != 0
+            hydro_collidable_mask = ((shape_flags_arr & ShapeFlags.HYDROELASTIC) != 0) & (
+                (shape_flags_arr & ShapeFlags.COLLIDE_SHAPES) != 0
+            )
             has_mesh_sdf = any(
-                stype in (GeoType.MESH, GeoType.CONVEX_MESH)
-                and ssrc is not None
-                and sflags & (ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES)
-                and getattr(ssrc, "sdf", None) is not None
-                for stype, ssrc, sflags in zip(self.shape_type, self.shape_source, shape_flags_list, strict=True)
+                self.shape_source[idx] is not None and getattr(self.shape_source[idx], "sdf", None) is not None
+                for idx in collidable_mesh_indices.tolist()
             )
             # Catch meshes whose SDF is still deferred (built during finalize) so
             # the CPU-runs-into-build_sdf path also raises here, not deeper down.
+            collidable_box_sdf_indices = np.flatnonzero(collidable_sdf_mask & (shape_type_arr == GeoType.BOX))
             has_deferred_mesh_sdf = any(
-                stype in (GeoType.MESH, GeoType.CONVEX_MESH, GeoType.BOX)
-                and (stype == GeoType.BOX or ssrc is not None)
-                and sflags & (ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES)
-                and (stype == GeoType.BOX or getattr(ssrc, "sdf", None) is None)
-                and (smax is not None or svox is not None)
-                for stype, ssrc, sflags, smax, svox in zip(
-                    self.shape_type,
-                    generated_shape_sources,
-                    shape_flags_list,
-                    self.shape_sdf_max_resolution,
-                    self.shape_sdf_target_voxel_size,
-                    strict=True,
+                generated_shape_sources[idx] is not None
+                and getattr(generated_shape_sources[idx], "sdf", None) is None
+                and (
+                    self.shape_sdf_max_resolution[idx] is not None or self.shape_sdf_target_voxel_size[idx] is not None
                 )
+                for idx in collidable_mesh_indices.tolist()
+            ) or any(
+                self.shape_sdf_max_resolution[idx] is not None or self.shape_sdf_target_voxel_size[idx] is not None
+                for idx in collidable_box_sdf_indices.tolist()
             )
-            has_hydroelastic_shapes = any(
-                (sflags & ShapeFlags.HYDROELASTIC) and (sflags & ShapeFlags.COLLIDE_SHAPES)
-                for sflags in shape_flags_list
-            )
+            has_hydroelastic_shapes = bool(np.any(hydro_collidable_mask))
             if (has_mesh_sdf or has_deferred_mesh_sdf or has_hydroelastic_shapes) and not is_gpu:
                 raise ValueError(
                     "Building texture SDFs requires a CUDA-capable GPU device. "
@@ -16044,7 +16149,7 @@ class ModelBuilder:
             compact_texture_sdf_coarse_textures = []
             compact_texture_sdf_subgrid_textures = []
             compact_texture_sdf_subgrid_start_slots = []
-            shape_sdf_index = [-1] * len(self.shape_type)
+            shape_sdf_index = np.full(n_shapes, -1, dtype=np.int32)
             sdf_cache = {}
             # Deferred-mesh SDFs are built into a temporary Mesh clone keyed by
             # the parameter tuple. This avoids mutating the user's shared Mesh
@@ -16055,12 +16160,25 @@ class ModelBuilder:
             deferred_collision_edges_cache: dict[tuple, Any] = {}
             deferred_collision_edges: dict[int, Any] = {}
 
-            for i in range(len(self.shape_type)):
-                shape_type = self.shape_type[i]
+            sdf_candidate_indices = np.flatnonzero(
+                collidable_sdf_mask
+                & (
+                    (shape_type_arr == GeoType.MESH)
+                    | (shape_type_arr == GeoType.CONVEX_MESH)
+                    | (shape_type_arr == GeoType.BOX)
+                    | hydro_collidable_mask
+                )
+            )
+            for i in sdf_candidate_indices.tolist():
+                shape_type = int(shape_type_arr[i])
                 shape_src = self.shape_source[i]
-                shape_flags = shape_flags_list[i]
-                shape_scale = shape_scale_list[i]
-                shape_gap = shape_gap_list[i]
+                shape_flags = int(shape_flags_arr[i])
+                shape_scale = (
+                    float(shape_scale_arr[i, 0]),
+                    float(shape_scale_arr[i, 1]),
+                    float(shape_scale_arr[i, 2]),
+                )
+                shape_gap = float(shape_gap_arr[i])
                 sdf_narrow_band_range = self.shape_sdf_narrow_band_range[i]
                 sdf_target_voxel_size = self.shape_sdf_target_voxel_size[i]
                 sdf_max_resolution = self.shape_sdf_max_resolution[i]
@@ -16069,9 +16187,9 @@ class ModelBuilder:
                 is_hydroelastic = bool(
                     shape_flags & ShapeFlags.HYDROELASTIC and shape_flags & ShapeFlags.COLLIDE_SHAPES
                 )
-                required_sdf_padding = shape_gap + shape_margin_list[i] if is_hydroelastic else shape_gap
+                required_sdf_padding = shape_gap + float(shape_margin_arr[i]) if is_hydroelastic else shape_gap
                 sdf_gen_margin = sdf_padding if sdf_padding is not None else required_sdf_padding
-                has_sdf_collision = bool(shape_flags & (ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES))
+                has_sdf_collision = True
 
                 cache_key = None
                 mesh_sdf = None
@@ -16215,18 +16333,16 @@ class ModelBuilder:
             # CollisionPipeline rejects rather than silently degrading.
             if any(self.shape_force_sdf):
                 wt_sdf_cache = {}
-                for i in range(len(self.shape_type)):
-                    if (
-                        shape_sdf_index[i] >= 0
-                        or self.shape_type[i] not in (GeoType.MESH, GeoType.CONVEX_MESH)
-                        or not (shape_flags_list[i] & ShapeFlags.COLLIDE_PARTICLES)
-                        or self.shape_source[i] is None
-                        or not self.shape_force_sdf[i]
-                    ):
+                force_sdf_candidates = np.flatnonzero(
+                    ((shape_flags_arr & ShapeFlags.COLLIDE_PARTICLES) != 0)
+                    & ((shape_type_arr == GeoType.MESH) | (shape_type_arr == GeoType.CONVEX_MESH))
+                )
+                for i in force_sdf_candidates.tolist():
+                    if shape_sdf_index[i] >= 0 or self.shape_source[i] is None or not self.shape_force_sdf[i]:
                         continue
                     src = self.shape_source[i]
                     sdf_padding_i = self.shape_sdf_padding[i]
-                    wt_margin = sdf_padding_i if sdf_padding_i is not None else shape_gap_list[i]
+                    wt_margin = sdf_padding_i if sdf_padding_i is not None else float(shape_gap_arr[i])
                     # Mirror the rigid SDF cache key: shapes sharing one Mesh get distinct SDFs when any
                     # baked generation parameter differs (margin/narrow-band/resolution/voxel/format).
                     # scale stays out (scale_baked=False applies it at query time; the rigid path bakes it).
@@ -16292,7 +16408,8 @@ class ModelBuilder:
 
             # ---------------------
             # heightfield collision data
-            hfield_count = sum(1 for t in self.shape_type if t == GeoType.HFIELD)
+            hfield_indices = np.flatnonzero(shape_type_arr == GeoType.HFIELD)
+            hfield_count = int(len(hfield_indices))
             m.heightfield_count = hfield_count
             if hfield_count > 1:
                 warnings.warn(
@@ -16305,11 +16422,11 @@ class ModelBuilder:
 
             compact_heightfield_data = []
             elevation_chunks = []
-            shape_heightfield_index = [-1] * len(self.shape_type)
+            shape_heightfield_index = np.full(max(n_shapes, 1), -1, dtype=np.int32)
             offset = 0
             if hfield_count > 0:
-                for i in range(len(self.shape_type)):
-                    if self.shape_type[i] == GeoType.HFIELD and self.shape_source[i] is not None:
+                for i in hfield_indices.tolist():
+                    if self.shape_source[i] is not None:
                         hf = self.shape_source[i]
                         hd = HeightfieldData()
                         hd.data_offset = offset
@@ -16321,7 +16438,9 @@ class ModelBuilder:
                         # parallel-slab checks assume non-negative planar extents;
                         # z uses raw multiplication so ``sz < 0`` inverts the surface
                         # (``min_z > max_z`` already encodes an inverted heightfield).
-                        sx, sy, sz = shape_scale_list[i]
+                        sx = float(shape_scale_arr[i, 0])
+                        sy = float(shape_scale_arr[i, 1])
+                        sz = float(shape_scale_arr[i, 2])
                         hd.hx = abs(hf.hx * sx)
                         hd.hy = abs(hf.hy * sy)
                         hd.min_z = hf.min_z * sz
@@ -16332,7 +16451,7 @@ class ModelBuilder:
                         offset += hf.nrow * hf.ncol
 
             m.shape_heightfield_index = wp.array(
-                shape_heightfield_index if shape_heightfield_index else [-1],
+                shape_heightfield_index,
                 dtype=wp.int32,
                 device=device,
             )
@@ -16350,27 +16469,35 @@ class ModelBuilder:
             # ---------------------
             # mesh edges (packed array + per-shape slice)
 
-            shape_edge_ranges = []
+            shape_edge_ranges = np.empty((max(n_shapes, 1), 2), dtype=np.int32)
+            shape_edge_ranges[:, 0] = -1
+            shape_edge_ranges[:, 1] = 0
             edge_chunks = []
             edge_center_chunks = []
             edge_half_chunks = []
             edge_offset = 0
             edge_cache = {}  # mesh python id → (start, count)
 
-            for i in range(len(self.shape_type)):
-                if (
-                    self.shape_type[i] in (GeoType.MESH, GeoType.CONVEX_MESH, GeoType.BOX)
-                    and generated_shape_sources[i] is not None
-                    and (shape_flags_list[i] & ShapeFlags.COLLIDE_SHAPES)
-                ):
+            if n_shapes > 0:
+                edge_candidate_indices = np.flatnonzero(
+                    (
+                        (shape_type_arr == GeoType.MESH)
+                        | (shape_type_arr == GeoType.CONVEX_MESH)
+                        | (shape_type_arr == GeoType.BOX)
+                    )
+                    & ((shape_flags_arr & ShapeFlags.COLLIDE_SHAPES) != 0)
+                )
+                for i in edge_candidate_indices.tolist():
                     mesh = generated_shape_sources[i]
+                    if mesh is None:
+                        continue
                     deferred_edges = deferred_collision_edges.get(i)
                     if deferred_edges is not None:
                         mesh_key = ("deferred", id(deferred_edges), id(mesh))
                     else:
                         mesh_key = id(mesh)
                     if mesh_key in edge_cache:
-                        shape_edge_ranges.append(edge_cache[mesh_key])
+                        shape_edge_ranges[i] = edge_cache[mesh_key]
                     else:
                         # ``Mesh.build_sdf()`` caches a simplified edge set on
                         # the mesh for SDF-mesh contact generation; fall back
@@ -16412,12 +16539,10 @@ class ModelBuilder:
                         edge_offset += count
                         entry = (start, count)
                         edge_cache[mesh_key] = entry
-                        shape_edge_ranges.append(entry)
-                else:
-                    shape_edge_ranges.append((-1, 0))
+                        shape_edge_ranges[i] = entry
 
             m._shape_edge_range = wp.array(
-                shape_edge_ranges if shape_edge_ranges else [(-1, 0)],
+                shape_edge_ranges,
                 dtype=wp.vec2i,
                 device=device,
             )
@@ -17074,6 +17199,161 @@ class ModelBuilder:
                 )
             yield (shape_a, shape_b) if shape_a <= shape_b else (shape_b, shape_a)
 
+    def _equality_loop_joint_mask(self) -> np.ndarray | None:
+        """Mask of the joints that imported MuJoCo equality constraints target, ``None`` without any.
+
+        Such joints (MJCF equality welds and connects imported as loop joints) never place a body;
+        see :func:`~newton._src.utils.topology.tree_joint_mask`. The mask comes from
+        :func:`~newton._src.solvers.mujoco.equality.equality_loop_joint_mask`, which
+        :class:`~newton.solvers.SolverMuJoCo` applies to the finalized rows.
+        """
+        target_kind_attr = self.custom_attributes.get("mujoco:equality_constraint_target_kind")
+        target_attr = self.custom_attributes.get("mujoco:equality_constraint_target")
+        if target_kind_attr is None or target_attr is None or not target_attr.values:
+            return None
+        from ..solvers.mujoco.equality import equality_loop_joint_mask  # noqa: PLC0415
+
+        kinds = target_kind_attr.values or {}
+        if not isinstance(kinds, dict):
+            kinds = dict(enumerate(kinds))
+        targets = target_attr.values
+        if not isinstance(targets, dict):
+            targets = dict(enumerate(targets))
+        rows = [row for row, target in targets.items() if target is not None]
+        kind_default = target_kind_attr.default
+        return equality_loop_joint_mask(
+            [kind_default if kinds.get(row) is None else kinds[row] for row in rows],
+            [targets[row] for row in rows],
+            self.joint_count,
+        )
+
+    def _weld_group_filter_pairs(self) -> np.ndarray:
+        """Shape pairs that filtering tree joints add between weld groups, shape [pair_count, 2].
+
+        A joint with ``collision_filter_parent=True`` filters the colliding shapes of its
+        child's weld group against those of its parent's weld group. Weld groups are the
+        bodies connected by filtering FIXED or zero-DOF tree joints, so a filtering weld joint
+        filters its whole group against itself, while a weld with
+        ``collision_filter_parent=False`` leaves its parent and child in separate groups: they
+        keep colliding, and a joint below one of them filters that side alone. Tree joints come
+        from :func:`~newton._src.utils.topology.tree_joint_mask`, shared with
+        :class:`~newton.solvers.SolverMuJoCo`: the joints of articulations and the first world
+        joint of every other body, never a joint an imported MuJoCo equality constraint targets.
+        Loop-closure joints (MJCF equality welds among them) neither weld nor expand, they keep
+        their direct pair. Bodies welded to the world form no group, as in MuJoCo, so a joint
+        below one of them filters that body alone. Shapes whose
+        :attr:`ShapeConfig.collision_filter_parent` is ``False`` take no part.
+
+        The pairs of two bodies that a filtering joint connects directly are not computed here:
+        :meth:`add_joint` and :meth:`add_shape` add them to :attr:`shape_collision_filter_pairs`
+        in either order, and :meth:`collapse_fixed_joints` completes them for the bodies it
+        merges, so edits to that list before :meth:`finalize` stay in effect. This adds the
+        remaining pairs, between bodies that weld groups join without a direct joint.
+        """
+        empty = np.empty((0, 2), dtype=np.int64)
+        body_count = self.body_count
+        if self.joint_count == 0 or body_count == 0 or self.shape_count == 0:
+            return empty
+        joint_parent = np.asarray(self.joint_parent, dtype=np.int64)
+        joint_child = np.asarray(self.joint_child, dtype=np.int64)
+        joint_type = np.asarray(self.joint_type, dtype=np.int64)
+        dof_count = np.asarray(self.joint_dof_dim, dtype=np.int64).reshape(-1, 2).sum(axis=1)
+        is_tree = tree_joint_mask(
+            joint_parent, joint_child, self.joint_articulation, body_count, self._equality_loop_joint_mask()
+        )
+        joint_filters = np.asarray(self.joint_collision_filter_parent, dtype=bool)
+        is_weld = is_tree & ((joint_type == JointType.FIXED) | (dof_count == 0))
+        # A weld with collision_filter_parent=False keeps its two bodies in separate groups.
+        welded = is_weld & joint_filters & (joint_parent >= 0)
+        if not np.any(welded):
+            # Every weld group is a single body: the direct pairs already cover the rule.
+            return empty
+
+        # Weld root per body: follow the filtering welds upward to the topmost body of the group,
+        # MuJoCo's weld id. A body has one tree joint, so at most one weld leads up from it, and
+        # pointer jumping over a forest settles within log2(body_count) + 1 rounds. Welds that
+        # close a cycle (add_articulation() rejects a body with two parents, not a ring of them)
+        # never settle, or settle every body of the ring on itself.
+        children = joint_child[welded]
+        root = np.arange(body_count, dtype=np.int64)
+        root[children] = joint_parent[welded]
+        for _ in range(int(np.log2(body_count)) + 2):
+            next_root = root[root]
+            if np.array_equal(next_root, root):
+                break
+            root = next_root
+        looped = root[root] != root
+        looped[children[root[children] == children]] = True
+        if np.any(looped):
+            raise ValueError(
+                f"Fixed or zero-DOF joints form a cycle among bodies {np.flatnonzero(looped).tolist()}; "
+                "the tree joints of an articulation must form a tree"
+            )
+
+        # A group welded to the world is no group: each of its bodies stands for itself. The body
+        # welded to the world is such a group's root.
+        world_welded = np.zeros(body_count, dtype=bool)
+        world_welded[joint_child[is_weld & (joint_parent < 0)]] = True
+        side = np.where(world_welded[root], np.arange(body_count, dtype=np.int64), root)
+        side_body_count = np.bincount(side, minlength=body_count)
+
+        shape_body = np.asarray(self.shape_body, dtype=np.int64)
+        shape_flags = np.asarray(self.shape_flags, dtype=np.int64)
+        takes_part = (shape_body >= 0) & ((shape_flags & int(ShapeFlags.COLLIDE_SHAPES)) != 0)
+        takes_part &= np.asarray(self.shape_collision_filter_parent, dtype=bool)
+        shapes = np.flatnonzero(takes_part)
+        if shapes.shape[0] == 0:
+            return empty
+        shape_side = side[shape_body[shapes]]
+        order = np.argsort(shape_side, kind="stable")
+        shapes = shapes[order]
+        shape_side = shape_side[order]
+        sides = np.arange(body_count, dtype=np.int64)
+        side_start = np.searchsorted(shape_side, sides, side="left")
+        side_count = np.searchsorted(shape_side, sides, side="right") - side_start
+
+        def product(left: np.ndarray, right: np.ndarray) -> np.ndarray:
+            """All (left shape, right shape) pairs of each (left side, right side) task."""
+            n_left = side_count[left]
+            n_right = side_count[right]
+            totals = n_left * n_right
+            total = int(totals.sum())
+            if total == 0:
+                return empty
+            task = np.repeat(np.arange(totals.shape[0]), totals)
+            local = np.arange(total, dtype=np.int64) - np.repeat(np.cumsum(totals) - totals, totals)
+            index_left, index_right = np.divmod(local, n_right[task])
+            return np.column_stack(
+                (shapes[side_start[left][task] + index_left], shapes[side_start[right][task] + index_right])
+            )
+
+        filtering = np.asarray(self.joint_collision_filter_parent, dtype=bool) & is_tree & (joint_parent >= 0)
+        parent_side = side[np.maximum(joint_parent, 0)]
+        child_side = side[joint_child]
+        # Joints between two groups, where at least one group is more than its direct body.
+        across = filtering & (parent_side != child_side)
+        across &= (side_body_count[parent_side] > 1) | (side_body_count[child_side] > 1)
+        pairs = product(parent_side[across], child_side[across])
+        # Filtering joints inside a group (its welds) filter the group against itself; a
+        # two-body group is its direct pair already.
+        within = filtering & (parent_side == child_side) & (side_body_count[child_side] > 2)
+        groups = np.unique(child_side[within])
+        if groups.shape[0]:
+            clique = product(groups, groups)
+            pairs = np.concatenate((pairs, clique[clique[:, 0] < clique[:, 1]]), axis=0)
+        if pairs.shape[0] == 0:
+            return empty
+        # Leave out the pairs of directly joined bodies; the public list holds those.
+        direct = joint_filters & (joint_parent >= 0)
+        direct_codes = np.minimum(joint_parent[direct], joint_child[direct]) * body_count + np.maximum(
+            joint_parent[direct], joint_child[direct]
+        )
+        body_a = shape_body[pairs[:, 0]]
+        body_b = shape_body[pairs[:, 1]]
+        codes = np.minimum(body_a, body_b) * body_count + np.maximum(body_a, body_b)
+        pairs = pairs[(body_a != body_b) & ~np.isin(codes, direct_codes)]
+        return np.sort(pairs, axis=1)
+
     def _build_shape_collision_filter_packed(self) -> np.ndarray:
         """Build the canonical filter store handed to :class:`Model`.
 
@@ -17106,6 +17386,9 @@ class ModelBuilder:
             pairs = tuple(self._iter_validated_shape_collision_filter_pairs(filter_pairs))
             if pairs:
                 chunks.append(np.asarray(pairs, dtype=np.int64).reshape((-1, 2)))
+        weld_pairs = self._weld_group_filter_pairs()
+        if weld_pairs.shape[0]:
+            chunks.append(weld_pairs)
         if not chunks:
             return np.empty(0, dtype=np.int64)
         all_pairs = np.concatenate(chunks, axis=0)
