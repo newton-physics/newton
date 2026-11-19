@@ -497,6 +497,12 @@ def Cube "Ground" (prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBinding
         )
         builder = newton.ModelBuilder()
         SolverKamino.register_custom_attributes(builder)
+        if not Usd.SchemaRegistry().FindAppliedAPIPrimDefinition("NewtonKaminoSccSceneAPI"):
+            self.allowOutputRegex(
+                r"Warning: Custom attribute 'newton:kamino:dynamicsSolver' is missing required customData "
+                r"\(assignment and frequency\)\. Skipping\.\n",
+                stream="stderr",
+            )
         builder.add_usd(Usd.Stage.Open(layer), load_visual_shapes=False)
         imported = builder.finalize(device="cpu")
         solver = SolverKamino(imported)

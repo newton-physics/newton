@@ -7,7 +7,12 @@ import math
 import unittest
 
 import newton
-from newton._src.solvers.kamino.config import ConstraintStabilizationConfig, SCCAPGDConfig, SCCSolverConfig
+from newton._src.solvers.kamino.config import (
+    ConstrainedDynamicsConfig,
+    ConstraintStabilizationConfig,
+    SCCAPGDConfig,
+    SCCSolverConfig,
+)
 from newton.solvers import SolverKamino
 from newton.tests.unittest_utils import requires
 
@@ -31,9 +36,11 @@ class TestKaminoUsdConfig(unittest.TestCase):
         """Read the composed solver and bilateral defaults from the applied API."""
         from pxr import Usd
 
-        if not Usd.SchemaRegistry().FindAppliedAPIPrimDefinition("NewtonKaminoSccSceneAPI"):
-            self.skipTest("Installed newton-usd-schemas predates NewtonKaminoSccSceneAPI")
         stage = self._stage(schemas='(prepend apiSchemas = ["NewtonKaminoSccSceneAPI"])')
+        if not Usd.SchemaRegistry().FindAppliedAPIPrimDefinition("NewtonKaminoSccSceneAPI"):
+            with self.assertRaisesRegex(ImportError, "newton-usd-schemas.*NewtonKaminoSccSceneAPI"):
+                self._model(stage)
+            return
         model = self._model(stage)
         config = SolverKamino.Config.from_model(model)
         self.assertEqual(config.dynamics_solver, "scc")
@@ -51,13 +58,26 @@ class TestKaminoUsdConfig(unittest.TestCase):
 
     def test_scene_api_order(self):
         """Honor the composed schema fallback and let an authored selection override it."""
-        from pxr import Sdf
+        from pxr import Sdf, Usd
 
         stage = self._stage(schemas='(prepend apiSchemas = ["NewtonKaminoSceneAPI", "NewtonKaminoSccSceneAPI"])')
-        self.assertEqual(SolverKamino.Config.from_model(self._model(stage)).dynamics_solver, "padmm")
+        if Usd.SchemaRegistry().FindAppliedAPIPrimDefinition("NewtonKaminoSccSceneAPI"):
+            self.assertEqual(SolverKamino.Config.from_model(self._model(stage)).dynamics_solver, "padmm")
         scene = stage.GetPrimAtPath("/Scene")
         scene.CreateAttribute("newton:kamino:dynamicsSolver", Sdf.ValueTypeNames.Token, custom=False).Set("scc")
         self.assertEqual(SolverKamino.Config.from_model(self._model(stage)).dynamics_solver, "scc")
+
+    def test_scc_uses_compatible_dynamics_fallback(self):
+        """Disable preconditioning before validating an imported SCC configuration."""
+        stage = self._stage('uniform token newton:kamino:dynamicsSolver = "scc"')
+        dynamics = ConstrainedDynamicsConfig(cull_speculative_contacts=False)
+        config = SolverKamino.Config.from_model(self._model(stage), dynamics=dynamics)
+        self.assertEqual(config.dynamics_solver, "scc")
+        self.assertFalse(config.dynamics.preconditioning)
+        self.assertFalse(config.dynamics.cull_speculative_contacts)
+        self.assertTrue(dynamics.preconditioning)
+        with self.assertRaisesRegex(ValueError, "preconditioning=False"):
+            SolverKamino.Config(dynamics_solver="scc", dynamics=dynamics)
 
     def test_authored_scc_configuration(self):
         """Apply authored SCC and APGD settings over Python fallbacks without mutating them."""

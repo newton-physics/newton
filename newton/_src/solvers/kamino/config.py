@@ -35,6 +35,7 @@ __all__ = [
 ]
 
 _DYNAMICS_SOLVER_USD = "newton:kamino:dynamicsSolver"
+_SCC_SCENE_API = "NewtonKaminoSccSceneAPI"
 _SCC_BILATERAL_SOLVER_USD = "newton:kamino:scc:bilateral:numericalSolver"
 _SCC_BILATERAL_TOKENS = {"lltb": "LLTB", "lltbrcm": "LLTBRCM"}
 _SCC_SCENE_SETTINGS = {
@@ -64,9 +65,23 @@ def _read_scene_fallback(_value: Any, context: dict[str, Any], *, usd_name: str)
     """Capture a composed schema fallback separately from an authored setting."""
     from pxr import Usd
 
-    attr = context["prim"].GetAttribute(usd_name)
+    from ...usd.utils import has_applied_api_schema  # noqa: PLC0415
+
+    prim = context["prim"]
+    attr = prim.GetAttribute(usd_name)
     time = Usd.TimeCode.Default()
-    if attr and attr.GetResolveInfo(time).GetSource() == Usd.ResolveInfoSourceFallback:
+    source = attr.GetResolveInfo(time).GetSource() if attr else Usd.ResolveInfoSourceNone
+    if (
+        usd_name == _DYNAMICS_SOLVER_USD
+        and source != Usd.ResolveInfoSourceDefault
+        and has_applied_api_schema(prim, _SCC_SCENE_API)
+        and not Usd.SchemaRegistry().FindAppliedAPIPrimDefinition(_SCC_SCENE_API)
+    ):
+        raise ImportError(
+            f"Importing the SCC solver selection on {prim.GetPath()} requires a version of "
+            f"newton-usd-schemas that provides {_SCC_SCENE_API}."
+        )
+    if source == Usd.ResolveInfoSourceFallback:
         return attr.Get(time)
     return None
 

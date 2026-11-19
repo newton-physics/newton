@@ -436,6 +436,9 @@ class SolverKamino(SolverBase, CouplingInterface):
             solver = config._dynamics_solver_from_model(model, kwargs.get("dynamics_solver"))
             if solver is not None:
                 kwargs["dynamics_solver"] = solver
+            dynamics = kwargs.get("dynamics")
+            if solver in {"scc", "dvi"} and dynamics is not None and dynamics.preconditioning:
+                kwargs["dynamics"] = replace(dynamics, preconditioning=False)
             cfg = SolverKamino.Config(**kwargs)
 
             # Parse solver-specific attributes imported from USD

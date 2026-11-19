@@ -208,13 +208,14 @@ For example, add these settings to the asset's ``PhysicsScene``.
        uniform bool newton:kamino:constraints:contactCompliance = true
    }
 
-Import uses the selected physics scene's default-time values. With the SCC
-schema installed, applying ``NewtonKaminoSccSceneAPI`` by itself supplies the
-``"scc"`` solver fallback and the ``"lltb"`` bilateral factorization fallback.
-Author ``newton:kamino:dynamicsSolver = "scc"`` to select SCC independently of
-API order. An explicitly authored scene setting takes precedence over the
-corresponding fallback passed to ``SolverKamino.Config.from_model()``.
-Passing a complete config directly to the solver uses that config.
+Import uses the selected physics scene's default-time values. Author
+``newton:kamino:dynamicsSolver = "scc"`` to select SCC independently of API
+order. Reading solver selection from the SCC schema defaults requires a version
+of ``newton-usd-schemas`` that provides ``NewtonKaminoSccSceneAPI``. An
+explicitly authored scene setting takes precedence over the corresponding
+fallback passed to ``SolverKamino.Config.from_model()``. SCC disables
+preconditioning. Passing a complete config directly to the solver uses that
+config.
 
 The SCC schema exposes the bilateral factorization, warmstarting, PGS and APGD
 controls, and convergence tolerance. The controls for the selected unilateral
