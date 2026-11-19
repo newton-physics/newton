@@ -85,6 +85,26 @@ def integrate_active_fraction(
 
 
 @fem.integrand
+def integrate_particle_scalar(
+    s: fem.Sample,
+    phi: fem.Field,
+    domain: fem.Domain,
+    inv_cell_volume: float,
+    particle_flags: wp.array[wp.int32],
+    values: wp.array[float],
+):
+    """Active-particle volume integral of a per-particle scalar (one where ``values`` is null) against the
+    nonnegative part of ``phi``, in cell volumes; needs generic assembly to clamp each node's shape function."""
+    if ~particle_flags[s.qp_index] & newton.ParticleFlags.ACTIVE:
+        return 0.0
+
+    value = float(1.0)
+    if values:
+        value = values[s.qp_index]
+    return wp.max(phi(s), 0.0) * value * inv_cell_volume
+
+
+@fem.integrand
 def integrate_mass(
     s: fem.Sample,
     phi: fem.Field,

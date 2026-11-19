@@ -47,11 +47,13 @@ from .rasterized_collisions import (
     build_rigidity_operator,
     collider_distance_reflect,
     interpolate_collider_normals,
+    particle_collider_penetration,
     particle_contact_gap,
     point_contact_radii,
     prioritize_pic_contacts,
     project_outside_collider,
     rasterize_collider,
+    recover_node_penetration,
     speculative_stop_distance,
     stabilize_collider_velocity,
 )
@@ -92,6 +94,7 @@ from .implicit_mpm_solver_kernels import (
     integrate_fraction,
     integrate_gimp_point_stress,
     integrate_mass,
+    integrate_particle_scalar,
     integrate_particle_stress,
     integrate_transformed_yield_parameters,
     integrate_velocity,
@@ -1092,14 +1095,17 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             Cell-local contact solver ordering may change.
         """
         collider_recovery_time: float | None = None
-        """Time constant of particle contact penetration recovery [s].
+        """Time constant of collider penetration recovery [s].
 
         Each step adds an outward normal target velocity of
-        ``(1 - exp(-dt / time)) * penetration / dt``, so penetration decays
-        over about this time whatever the step size. ``None`` disables
-        penetration recovery; 0.1 s is a reasonable starting value. Applies
-        to particle collider bases (``"pic"`` and ``"picN"``); grid collider
-        bases ignore it.
+        ``(1 - exp(-dt / time)) * penetration / dt`` to collider contacts, so
+        penetration decays over about this time whatever the step size.
+        ``None`` disables penetration recovery; 0.1 s is a reasonable starting
+        value. Particle collider bases (``"pic"`` and ``"picN"``) take the
+        penetration of each contact's particle surface. Grid collider bases
+        take, at each node, the average depth of the particle centers it
+        carries inside colliders, weighted by particle volume and the
+        nonnegative part of the node shape function.
 
         .. experimental::
 
@@ -1852,8 +1858,6 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         self._collider_contact_gap = (
             particle_contact_gap(self._mpm_model.voxel_size) if self.collider_basis.startswith("pic") else 0.0
         )
-        if not self.collider_basis.startswith("pic"):
-            self._collider_recovery_time = None
 
         if config.collider_velocity_mode not in ("forward", "backward"):
             raise ValueError(f"Invalid collider velocity mode: {config.collider_velocity_mode}")
@@ -3561,7 +3565,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         self._require_velocity_space_fields(scratch, mpm_model.has_compliant_particles)
 
         # Rasterize colliders to discrete space
-        self._rasterize_colliders(state_in, dt, last_step_data, scratch, inv_cell_volume)
+        self._rasterize_colliders(state_in, dt, last_step_data, scratch, pic, inv_cell_volume)
 
         # Velocity right-hand side and inverse mass matrix
         self._compute_unconstrained_velocity(state_in, dt, pic, scratch, inv_cell_volume)
@@ -3676,6 +3680,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         dt: float,
         last_step_data: LastStepData,
         scratch: ImplicitMPMScratchpad,
+        pic: fem.PicQuadrature,
         inv_cell_volume: float,
     ):
         # Rasterize collider to grid
@@ -3844,17 +3849,90 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 )
 
             if self._collider_recovery_time is not None:
-                wp.launch(
-                    stabilize_collider_velocity,
-                    dim=collider_node_count,
-                    inputs=[
-                        dt,
-                        _recovery_fraction(self._collider_recovery_time, dt),
-                        scratch.collider_distance_field.dof_values,
-                        scratch.collider_normal_field.dof_values,
-                        scratch.collider_velocity,
-                    ],
-                )
+                fraction = _recovery_fraction(self._collider_recovery_time, dt)
+                if speculative:
+                    wp.launch(
+                        stabilize_collider_velocity,
+                        dim=collider_node_count,
+                        inputs=[
+                            dt,
+                            fraction,
+                            scratch.collider_distance_field.dof_values,
+                            scratch.collider_normal_field.dof_values,
+                            scratch.collider_velocity,
+                        ],
+                    )
+                else:
+                    self._recover_grid_contact_penetration(state_in, dt, fraction, scratch, pic, inv_cell_volume)
+
+    def _recover_grid_contact_penetration(
+        self,
+        state_in: newton.State,
+        dt: float,
+        fraction: float,
+        scratch: ImplicitMPMScratchpad,
+        pic: fem.PicQuadrature,
+        inv_cell_volume: float,
+    ):
+        """Push grid contacts out by the average penetration of the particle centers they carry, weighted by particle
+        volume and the nonnegative part of the node shape function."""
+        penetration = fem.borrow_temporary(self.temporary_store, shape=state_in.particle_count, dtype=float)
+        wp.launch(
+            particle_collider_penetration,
+            dim=state_in.particle_count,
+            inputs=[
+                state_in.particle_q,
+                self._mpm_model.particle_flags,
+                self._particle_environment,
+                self._mpm_model.collider,
+                state_in.body_q,
+                None,
+                None,
+            ],
+            outputs=[penetration],
+        )
+        # Generic assembly evaluates each node's shape function, which the nonnegative clamp of the weights needs
+        node_penetration = fem.integrate(
+            integrate_particle_scalar,
+            quadrature=pic,
+            assembly="generic",
+            fields={"phi": scratch.collider_fraction_test},
+            values={
+                "inv_cell_volume": inv_cell_volume,
+                "particle_flags": self._mpm_model.particle_flags,
+                "values": penetration,
+            },
+            output_dtype=float,
+            temporary_store=self.temporary_store,
+        )
+        node_volume = fem.integrate(
+            integrate_particle_scalar,
+            quadrature=pic,
+            assembly="generic",
+            fields={"phi": scratch.collider_fraction_test},
+            values={
+                "inv_cell_volume": inv_cell_volume,
+                "particle_flags": self._mpm_model.particle_flags,
+                "values": None,
+            },
+            output_dtype=float,
+            temporary_store=self.temporary_store,
+        )
+        wp.launch(
+            recover_node_penetration,
+            dim=scratch.collider_node_count,
+            inputs=[
+                dt,
+                fraction,
+                node_penetration,
+                node_volume,
+                scratch.collider_normal_field.dof_values,
+                scratch.collider_velocity,
+            ],
+        )
+        node_penetration.release()
+        node_volume.release()
+        penetration.release()
 
     def _use_local_contact_construction(self, scratch: ImplicitMPMScratchpad) -> bool:
         """Prefer row compression for validated CUDA contact-map layouts."""

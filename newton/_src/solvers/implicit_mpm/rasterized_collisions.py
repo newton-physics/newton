@@ -1149,6 +1149,50 @@ def stabilize_collider_velocity(
 
 
 @wp.kernel
+def particle_collider_penetration(
+    positions: wp.array[wp.vec3],
+    particle_flags: wp.array[wp.int32],
+    particle_environment: wp.array[int],
+    collider: Collider,
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_q_prev: wp.array[wp.transform],
+    penetration: wp.array[float],
+):
+    """Depth of each active particle center inside its closest collider, zero outside and out of query range."""
+    i = wp.tid()
+    penetration[i] = 0.0
+    if (particle_flags[i] & newton.ParticleFlags.ACTIVE) == 0:
+        return
+    environment_index = int(_ALL_COLLIDER_WORLDS)
+    if particle_environment:
+        environment_index = particle_environment[i]
+    sdf, _gradient, _velocity, collider_id, _material_id = collision_sdf(
+        positions[i], environment_index, collider, body_q, body_qd, body_q_prev, 0.0
+    )
+    if collider_id != _NULL_COLLIDER_ID and sdf < 0.0:
+        penetration[i] = -sdf
+
+
+@wp.kernel
+def recover_node_penetration(
+    dt: float,
+    fraction: float,
+    node_penetration: wp.array[float],
+    node_volume: wp.array[float],
+    collider_normals: wp.array[wp.vec3],
+    collider_velocity: wp.array[wp.vec3],
+):
+    """Push grid contacts out by ``fraction`` per step of the volume-averaged penetration of the particles they carry."""
+    i = wp.tid()
+    normal = collider_normals[i]
+    volume = node_volume[i]
+    if wp.length_sq(normal) == 0.0 or volume <= 0.0:
+        return
+    collider_velocity[i] += (fraction * node_penetration[i] / (volume * dt)) * normal
+
+
+@wp.kernel
 def fill_collider_coupling_matrices(
     node_positions: wp.array[wp.vec3],
     collider: Collider,

@@ -66,6 +66,65 @@ def test_contact_recovery_truncated(test, device):
         test.assertLess(height, _PARTICLE_RADIUS + 0.03)
 
 
+def test_grid_contact_recovery(test, device):
+    """Push a particle sunk below the ground back up with grid collider bases, and only with recovery."""
+    with wp.ScopedDevice(device):
+        model = _make_contact_solver(device, -0.02, (0.0, 0.0, 0.0), None)[0]
+        for collider_basis in ("S2", "Q1"):
+            for recovery_time in (None, 0.35):
+                with test.subTest(collider_basis=collider_basis, recovery_time=recovery_time):
+                    config = _config(0.1, collider_basis=collider_basis, collider_recovery_time=recovery_time)
+                    solver = SolverImplicitMPM(model, config=config)
+                    state = model.state()
+                    for _ in range(5):
+                        solver.step(state, state, None, None, 0.1)
+                    height = float(state.particle_q.numpy()[0, 2])
+                    if recovery_time is None:
+                        test.assertAlmostEqual(height, -0.02, delta=1.0e-5)
+                    else:
+                        test.assertGreater(height, -0.003)
+                        test.assertLess(height, 0.03)
+
+
+def test_grid_contact_recovery_bounded(test, device):
+    """Keep S2 contact recovery outward and below the deepest particle's, with shape functions of both signs."""
+    dt, recovery_time, deepest = 0.05, 0.1, 0.05
+    with wp.ScopedDevice(device):
+        builder = newton.ModelBuilder()
+        SolverImplicitMPM.register_custom_attributes(builder)
+        # One particle at the cell center, where the S2 corner functions are negative, one shallower near a corner
+        for pos in ((0.55, 0.55, -deepest), (0.505, 0.505, -0.002)):
+            builder.add_particle(pos=pos, vel=(0.0, 0.0, 0.0), mass=1.0, radius=0.01)
+        builder.add_ground_plane(cfg=newton.ModelBuilder.ShapeConfig(mu=0.0))
+        model = builder.finalize(device=device)
+        targets = []
+        for time in (None, recovery_time):
+            solver = SolverImplicitMPM(model, config=_config(0.1, collider_basis="S2", collider_recovery_time=time))
+            rasterize = solver._rasterize_colliders
+
+            # Contact targets are step temporaries, so read them once rasterization has applied the recovery
+            def rasterize_and_record(state_in, step_dt, last_step_data, scratch, *args, rasterize=rasterize):
+                rasterize(state_in, step_dt, last_step_data, scratch, *args)
+                count = scratch.collider_node_count
+                # CPU arrays share memory with the step temporaries, so keep copies
+                targets.append(
+                    (
+                        scratch.collider_velocity.numpy()[:count].copy(),
+                        scratch.collider_normal_field.dof_values.numpy()[:count].copy(),
+                    )
+                )
+
+            solver._rasterize_colliders = rasterize_and_record
+            state = model.state()
+            solver.step(state, state, None, None, dt)
+        (velocity, normals), (recovered, _) = targets
+        correction = np.einsum("ij,ij->i", recovered - velocity, normals)
+        bound = -np.expm1(-dt / recovery_time) * deepest / dt
+        test.assertGreater(correction.max(), 0.0)
+        test.assertGreaterEqual(correction.min(), -1.0e-6)
+        test.assertLessEqual(correction.max(), bound * (1.0 + 1.0e-4))
+
+
 def test_predictive_contact_truncated(test, device):
     """Stop an approaching particle with its center the larger of one radius and 0.25 voxel out, in one P0 iteration."""
     with wp.ScopedDevice(device):
@@ -495,6 +554,8 @@ class TestImplicitMPMRecovery(unittest.TestCase):
 for function in (
     test_contact_target,
     test_contact_recovery_truncated,
+    test_grid_contact_recovery,
+    test_grid_contact_recovery_bounded,
     test_predictive_contact_truncated,
     test_project_outside_keeps_particle_radius,
     test_sdf_gradient_normals_particle_contacts,
