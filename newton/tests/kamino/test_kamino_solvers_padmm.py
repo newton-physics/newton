@@ -1163,6 +1163,13 @@ def make_redundant_fourbar(device: wp.DeviceLike, sparse: bool, linear_solver: t
     )
 
 
+def fourbar_dual_tolerance(sparse: bool) -> float:
+    """Returns the dual tolerance that the PADMM solves of the four-bar linkage reliably reach."""
+    # NOTE: The float32 iterative linear solves of the sparse problems, warm-started from the previous
+    # iterate, change the Delassus product by up to about 1e-5 between iterations
+    return 1e-5 if sparse else 1e-6
+
+
 def delassus_null_bases(problem: DualProblem, rel_tol: float = 1e-6) -> list[np.ndarray]:
     """Returns orthonormal bases of the numerical null spaces of the per-world (preconditioned) Delassus matrices."""
     bases = []
@@ -1297,6 +1304,7 @@ class TestPADMMNullspaceRobustness(NewtonTestCase):
                             detect_redundant_kinematics=False,
                             unpenalized_bilateral_rows=False,
                             max_iterations=500,
+                            dual_tolerance=fourbar_dual_tolerance(sparse),
                         )
                         solver = PADMMSolver(model=test.model, config=config, use_acceleration=use_acceleration)
                         test.build()
@@ -1317,7 +1325,10 @@ class TestPADMMNullspaceRobustness(NewtonTestCase):
                 for detect in (False, True):
                     test = make_redundant_fourbar(self.default_device, sparse)
                     config = PADMMSolver.Config(
-                        detect_redundant_kinematics=detect, unpenalized_bilateral_rows=False, max_iterations=500
+                        detect_redundant_kinematics=detect,
+                        unpenalized_bilateral_rows=False,
+                        max_iterations=500,
+                        dual_tolerance=fourbar_dual_tolerance(sparse),
                     )
                     solver = PADMMSolver(model=test.model, config=config, problem=test.problem)
 
@@ -1428,7 +1439,11 @@ class TestPADMMNullspaceRobustness(NewtonTestCase):
                 status, v_plus, lambdas, shifted = {}, {}, {}, {}
                 for reuse in (False, True):
                     test = make_redundant_fourbar(self.default_device, sparse, linear_solver=linear_solver)
-                    config = PADMMSolver.Config(reuse_redundant_kinematics_set=reuse, max_iterations=500)
+                    config = PADMMSolver.Config(
+                        reuse_redundant_kinematics_set=reuse,
+                        max_iterations=500,
+                        dual_tolerance=fourbar_dual_tolerance(sparse),
+                    )
                     solver = PADMMSolver(model=test.model, config=config, problem=test.problem)
 
                     # The first solve detects the redundant rows, and the second one reuses them if enabled
