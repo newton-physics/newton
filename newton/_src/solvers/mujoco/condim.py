@@ -54,7 +54,7 @@ class _DeprecatedCondim:
             modes = self._model.shape_material_friction_mode.numpy()
             modes[edited] = [friction_mode_from_condim(int(condim)) for condim in values[edited]]
             self._model.shape_material_friction_mode.assign(modes)
-            self._synced = values
+            self._synced = values.copy()
 
     def __call__(self) -> wp.array:
         self.apply_edits()

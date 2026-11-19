@@ -7863,6 +7863,14 @@ class TestMuJoCoAttributes(unittest.TestCase):
             model.mujoco.condim.fill_(4)
         solver = SolverMuJoCo(model, separate_worlds=False)
         np.testing.assert_array_equal(solver.mjw_model.geom_condim.numpy(), [4, 4, 4, 4])
+        # A retained array keeps reaching later solvers, also on CPU, where numpy() returns a view
+        cpu_model = build({}).finalize(device="cpu")
+        with self.assertWarns(NewtonDeprecationWarning):
+            condim = cpu_model.mujoco.condim
+        for value in (4, 6):
+            condim.fill_(value)
+            solver = SolverMuJoCo(cpu_model, separate_worlds=False)
+            np.testing.assert_array_equal(solver.mjw_model.geom_condim.numpy(), [value] * 4)
         with self.assertWarns(NewtonDeprecationWarning):
             model.mujoco.condim = wp.array([1, 3, 4, 6], dtype=wp.int32)
             np.testing.assert_array_equal(model.mujoco.condim.numpy(), [1, 3, 4, 6])
