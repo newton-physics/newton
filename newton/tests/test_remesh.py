@@ -11,6 +11,8 @@ This test suite validates:
 Note: SurfaceReconstructor requires Open3D which is an optional dependency.
 """
 
+import ctypes
+import sys
 import unittest
 
 import numpy as np
@@ -30,6 +32,14 @@ from newton.tests.unittest_utils import requires
 
 # Check if CUDA is available (required for Warp mesh raycasting)
 _cuda_available = wp.is_cuda_available()
+
+# Open3D's Linux binary links libEGL, which headless machines may lack.
+_libegl_available = True
+if sys.platform == "linux":
+    try:
+        ctypes.CDLL("libEGL.so.1")
+    except OSError:
+        _libegl_available = False
 
 
 def create_unit_cube_mesh(center: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
@@ -309,6 +319,7 @@ class TestPointCloudExtractor(unittest.TestCase):
 
 
 @requires("open3d")
+@unittest.skipUnless(_libegl_available, "Open3D requires the system library libEGL")
 @unittest.skipUnless(_cuda_available, "Requires CUDA")
 class TestSurfaceReconstructor(unittest.TestCase):
     """Test the SurfaceReconstructor class."""
@@ -973,6 +984,7 @@ class TestRemeshHelperFunctions(unittest.TestCase):
 
 
 @unittest.skipUnless(_cuda_available, "Remeshing requires CUDA")
+@unittest.skipUnless(_libegl_available, "Open3D requires the system library libEGL")
 @requires("open3d")
 class TestRemeshUnifiedAPI(unittest.TestCase):
     """Test the unified remeshing API in utils.py with method='poisson'."""
