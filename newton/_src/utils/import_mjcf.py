@@ -554,6 +554,14 @@ def parse_mjcf(
     mesh-file appearance and primitive palette colors are retained for compatibility.
     Other PBR texture layers are not imported.
 
+    Per-DOF MJCF joint provenance is recorded in ``model.mujoco.joint_dof_label`` in Newton's
+    linear-first DOF order as ``"{body_label}/{raw_joint_name}"`` (preserving unsanitized MJCF
+    joint names, or ``"{body_name}_joint_{idx}"`` / ``"freejoint"`` when unnamed). Native
+    ``ball`` and ``free`` joints append ``:rotX``..``:rotZ`` and ``:transX``..``:rotZ`` axis
+    suffixes, whereas converted three-hinge ball joints retain the individual hinge names.
+    Synthetic base joints added by ``floating`` or ``base_joint`` overrides leave DOF labels
+    empty unless an authored free joint remains free under ``floating=True``.
+
     Args:
         builder: The :class:`ModelBuilder` to add the bodies and joints to.
         source: The filename of the MuJoCo file to parse, or the MJCF XML string content.
@@ -2928,11 +2936,20 @@ def parse_mjcf(
                 )
             elif floating is not None and floating and parent == -1:
                 # floating=True only makes sense when connecting to world
-                joint_indices.append(
-                    builder._add_base_joint(
-                        child=link, floating=True, label=f"{body_label_path}/floating_base", parent=parent
-                    )
+                free_custom_attrs = (
+                    (joint_custom_attributes | dof_custom_attributes) if joint_type == JointType.FREE else None
                 )
+                joint_idx = builder._add_base_joint(
+                    child=link,
+                    floating=True,
+                    label=f"{body_label_path}/floating_base",
+                    parent=parent,
+                    custom_attributes=free_custom_attrs,
+                )
+                joint_indices.append(joint_idx)
+                if joint_type == JointType.FREE:
+                    for jn in joint_name:
+                        joint_name_to_idx[jn] = joint_idx
             else:
                 # Fixed joint to world or to parent_body
                 # When parent_body is set, _xform is already relative to parent body (computed via effective_xform)
