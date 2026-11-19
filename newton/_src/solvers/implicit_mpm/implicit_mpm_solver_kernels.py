@@ -352,17 +352,6 @@ def integrate_particle_stress(
 
 
 @wp.kernel
-def average_yield_parameters(
-    yield_parameters_int: wp.array[YieldParamVec],
-    particle_volume: wp.array[float],
-    yield_parameters_avg: wp.array[YieldParamVec],
-):
-    i = wp.tid()
-    pvol = particle_volume[i]
-    yield_parameters_avg[i] = wp.max(YieldParamVec(0.0), yield_parameters_int[i] / wp.max(pvol, EPSILON))
-
-
-@wp.kernel
 def average_elastic_parameters(
     elastic_parameters_int: wp.array[wp.vec3],
     particle_volume: wp.array[float],
@@ -966,14 +955,6 @@ def compute_bounds(
     if lane == 0:
         wp.atomic_min(lower_bounds, 0, tile_min)
         wp.atomic_max(upper_bounds, 0, tile_max)
-
-
-@wp.kernel
-def clamp_coordinates(
-    coords: wp.array[wp.vec3],
-):
-    i = wp.tid()
-    coords[i] = wp.min(wp.max(coords[i], wp.vec3(0.0)), wp.vec3(1.0))
 
 
 @wp.kernel
