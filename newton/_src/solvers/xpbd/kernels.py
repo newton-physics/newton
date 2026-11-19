@@ -2553,6 +2553,7 @@ def _solve_body_contact_positions(
     shape_material_mu: wp.array[float],
     shape_material_mu_torsional: wp.array[float],
     shape_material_mu_rolling: wp.array[float],
+    contact_pair_mu: wp.array[float],
     relaxation: float,
     dt: float,
     deltas: wp.array[wp.spatial_vector],
@@ -2646,6 +2647,10 @@ def _solve_body_contact_positions(
         mu /= float(mat_nonzero)
         mu_torsional /= float(mat_nonzero)
         mu_rolling /= float(mat_nonzero)
+    if contact_pair_mu:
+        pair_mu = contact_pair_mu[tid]
+        if pair_mu >= 0.0:
+            mu = pair_mu
 
     r_a = bx_a - wp.transform_point(X_wb_a, com_a)
     r_b = bx_b - wp.transform_point(X_wb_b, com_b)
@@ -2792,6 +2797,7 @@ def solve_body_contact_positions(
     shape_material_mu: wp.array[float],
     shape_material_mu_torsional: wp.array[float],
     shape_material_mu_rolling: wp.array[float],
+    contact_pair_mu: wp.array[float],
     relaxation: float,
     dt: float,
     deltas: wp.array[wp.spatial_vector],
@@ -2824,6 +2830,7 @@ def solve_body_contact_positions(
         shape_material_mu,
         shape_material_mu_torsional,
         shape_material_mu_rolling,
+        contact_pair_mu,
         relaxation,
         dt,
         deltas,

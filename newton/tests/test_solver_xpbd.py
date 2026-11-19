@@ -2707,6 +2707,49 @@ def test_xpbd_body_pair_reduction_on_curved_support(test, device):
     test.assertLess(outcomes[1][1], max(2 * outcomes[0][1], 0.01))
 
 
+def test_xpbd_material_pair_friction(test, device):
+    """Match explicit pair friction to the equivalent per-shape friction in a sliding contact."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    floor = builder.add_material("floor")
+    surface = builder.add_material("surface")
+    frictionless = builder.add_material("frictionless")
+    missing = builder.add_material("missing")
+    builder.set_material_pair(surface, floor, mu=0.25)
+    builder.set_material_pair(floor, frictionless, mu=0.0)
+    floor_shape = builder.add_ground_plane(cfg=builder.ShapeConfig(material_id=floor, mu=0.5))
+
+    cases = ((surface, 0.5), (None, 0.0), (frictionless, 0.5), (missing, 0.5), (None, 0.5), (missing, 0.25))
+    for i, (material, mu) in enumerate(cases):
+        body = builder.add_body(xform=wp.transform((2.0 * i, 0.0, 0.24), wp.quat_identity()))
+        shape = builder.add_shape_sphere(body, radius=0.25, cfg=builder.ShapeConfig(material_id=material, mu=mu))
+
+    model = builder.finalize(device=device)
+    solver = newton.solvers.SolverXPBD(model, iterations=2)
+    state_in, state_out = model.state(), model.state()
+    initial_velocity = np.zeros((model.body_count, 6), dtype=np.float32)
+    initial_velocity[:, 0] = 2.0
+    state_in.body_qd.assign(initial_velocity)
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    pipeline.collide(state_in, contacts)
+    # An external contact can use -1 for a world endpoint without a shape.
+    shape0 = contacts.rigid_contact_shape0.numpy()
+    shape1 = contacts.rigid_contact_shape1.numpy()
+    shape0[(shape0 == floor_shape) & (shape1 == shape)] = -1
+    shape1[(shape1 == floor_shape) & (shape0 == shape)] = -1
+    contacts.rigid_contact_shape0.assign(shape0)
+    contacts.rigid_contact_shape1.assign(shape1)
+    solver.step(state_in, state_out, None, contacts, 0.01)
+
+    velocity = state_out.body_qd.numpy()
+    test.assertLess(float(velocity[3, 0]), float(velocity[0, 0]))
+    test.assertLess(float(velocity[0, 0]), float(velocity[2, 0]))
+    test.assertAlmostEqual(float(velocity[2, 0]), 2.0, delta=1.0e-4)
+    np.testing.assert_allclose(velocity[0], velocity[1], atol=2.0e-4, rtol=0.0)
+    np.testing.assert_allclose(velocity[3], velocity[4], atol=2.0e-4, rtol=0.0)
+    np.testing.assert_allclose(velocity[1], velocity[5], atol=2.0e-4, rtol=0.0)
+
+
 class TestSolverXPBD(unittest.TestCase):
     def test_restitution_is_disabled_by_default(self):
         """Keep restitution disabled by default without a deprecation warning."""
@@ -2738,6 +2781,8 @@ class TestSolverXPBD(unittest.TestCase):
         with self.assertWarnsRegex(DeprecationWarning, "deprecated in Newton 1.6"):
             self.assertTrue(solver.compute_body_velocity_from_position_delta)
 
+
+add_function_test(TestSolverXPBD, "test_xpbd_material_pair_friction", test_xpbd_material_pair_friction, devices=devices)
 
 add_function_test(
     TestSolverXPBD,

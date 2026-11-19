@@ -33,6 +33,7 @@ from typing import Literal
 
 import warp as wp
 
+from .....geometry.materials import MaterialPairFriction, resolve_material_pair_friction
 from .....math import safe_div
 from .....sim.contacts import Contacts, contact_surface_point, contact_surface_separation
 from .....sim.model import Model
@@ -1029,6 +1030,8 @@ def make_convert_contacts_newton_to_kamino(
         shape_body: wp.array[wp.int32],
         shape_world: wp.array[wp.int32],
         shape_mu: wp.array[wp.float32],
+        material_pair_friction: MaterialPairFriction,
+        shape_material_id: wp.array[wp.int32],
         shape_restitution: wp.array[wp.float32],
         shape_mu_torsional: wp.array[wp.float32],
         shape_mu_rolling: wp.array[wp.float32],
@@ -1182,12 +1185,12 @@ def make_convert_contacts_newton_to_kamino(
                 return
 
         # Retrieve the material properties for this contact
-        # TODO: Integrate use of material manager to retrieve material properties
         mu_0 = shape_mu[sid_0]
         mu_1 = shape_mu[sid_1]
         epsilon_0 = shape_restitution[sid_0]
         epsilon_1 = shape_restitution[sid_1]
         mu = wp.static(make_get_mixed_material_pair_property(friction_mix_mode))(mu_0, mu_1)
+        mu = resolve_material_pair_friction(material_pair_friction, shape_material_id, sid_0, sid_1, mu)
         epsilon = wp.static(make_get_mixed_material_pair_property(restitution_mix_mode))(epsilon_0, epsilon_1)
 
         # Store the contact data in the Kamino format
@@ -1603,6 +1606,8 @@ def convert_contacts_newton_to_kamino(
             model.shape_body,
             model.shape_world,
             model.shape_material_mu,
+            model._material_pair_friction,
+            model.shape_material_id,
             model.shape_material_restitution,
             model.shape_material_mu_torsional,
             model.shape_material_mu_rolling,

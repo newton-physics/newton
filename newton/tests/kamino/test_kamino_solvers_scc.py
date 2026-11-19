@@ -3269,7 +3269,6 @@ class TestSCCSolver(NewtonTestCase):
                 xform=wp.transformf((0.0, 0.0, 0.1), wp.quat_identity()),
                 mass=1.0,
             )
-            # Kamino names materials after shape labels, so they must differ between worlds.
             world.add_shape_box(body=body, hx=0.1, hy=0.1, hz=0.1, cfg=shape_cfg, label=f"box_mu_{friction}")
             joint = world.add_joint_free(parent=-1, child=body)
             world.add_articulation([joint])
@@ -3318,6 +3317,77 @@ class TestSCCSolver(NewtonTestCase):
                         self.assertGreater(int(active_contacts[world_index]), 0)
                         self.assertAlmostEqual(float(velocities[body, 0]), expected_speed, delta=1.0e-4)
                         self.assertAlmostEqual(float(positions[body, 0]), expected_distance, delta=1.0e-5)
+
+    def test_material_pair_friction_overrides_all_contact_paths(self):
+        """Apply material-pair friction to sliding contacts through every collision path."""
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        SolverKamino.register_custom_attributes(builder)
+        expected_friction = np.array([0.0, 0.0, 0.25, 0.75, 0.625], dtype=np.float32)
+        for mu, self_pair, unassigned, copies in (
+            (0.0, False, False, 2),
+            (0.25, True, False, 1),
+            (None, False, False, 1),
+            (0.0, False, True, 1),
+        ):
+            world = newton.ModelBuilder(up_axis=newton.Axis.Z)
+            box_material = world.add_material("box")
+            ground_material = box_material if self_pair else world.add_material("ground")
+            if mu is not None:
+                world.set_material_pair(box_material, ground_material, mu=0.125)
+                world.set_material_pair(ground_material, box_material, mu=mu)
+
+            shape_cfg = world.ShapeConfig(mu=0.5, gap=0.0, margin=0.0, material_id=box_material)
+            body = world.add_link(xform=wp.transformf((0.0, 0.0, 0.1), wp.quat_identity()), mass=1.0)
+            world.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1, cfg=shape_cfg)
+            joint = world.add_joint_free(parent=-1, child=body)
+            world.add_articulation([joint])
+            ground_cfg = shape_cfg.copy()
+            ground_cfg.material_id = None if unassigned else ground_material
+            ground_pose = wp.transformf((0.0, 0.0, -0.1), wp.quat_identity())
+            world.add_shape_box(-1, xform=ground_pose, hx=1.0, hy=1.0, hz=0.1, cfg=ground_cfg)
+            builder.replicate(world, copy_count=copies)
+
+        model = builder.finalize(device=self.device)
+        dt = 2.0e-3
+        steps = 10
+        initial_speed = 3.0
+        for pipeline in (None, "primitive", "unified"):
+            with self.subTest(pipeline=pipeline):
+                model.shape_material_mu.fill_(0.5)
+                model.shape_material_mu_static.fill_(0.5)
+                config = SolverKamino.Config(dynamics_solver="scc", use_collision_detector=pipeline is not None)
+                if pipeline is not None:
+                    config.collision_detector = kamino_config.CollisionDetectorConfig(
+                        pipeline=pipeline, max_contacts_per_world=16, max_contacts_per_pair=8
+                    )
+                solver = SolverKamino(model, config=config)
+                updated = np.full(model.shape_count, 0.625, dtype=np.float32)
+                updated[model.body_shapes[3][0]] = 0.875
+                model.shape_material_mu.assign(updated)
+                model.shape_material_mu_static.assign(updated)
+                solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+
+                state_in, state_out = model.state(), model.state()
+                qd = state_in.joint_qd.numpy().reshape(-1, 6)
+                qd[:, 0] = initial_speed
+                state_in.joint_qd.assign(qd.reshape(-1))
+                newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
+                collision = newton.CollisionPipeline(model) if pipeline is None else None
+                contacts = collision.contacts() if collision is not None else None
+                for _ in range(steps):
+                    if collision is not None:
+                        collision.collide(state_in, contacts)
+                    solver.step(state_in, state_out, control=None, contacts=contacts, dt=dt)
+                    state_in, state_out = state_out, state_in
+
+                resolved = solver._contacts_kamino
+                self.assertTrue(np.all(resolved.world_active_contacts.numpy() > 0))
+                count = int(resolved.model_active_contacts.numpy()[0])
+                np.testing.assert_array_equal(
+                    resolved.material.numpy()[:count, 0], expected_friction[resolved.wid.numpy()[:count]]
+                )
+                expected_speed = initial_speed - expected_friction * 9.81 * dt * steps
+                np.testing.assert_allclose(state_in.body_qd.numpy()[:, 0], expected_speed, rtol=0.0, atol=1.5e-3)
 
     def test_08d3_scc_friction_propagates_through_fixed_joint(self):
         """Converge articulated contact friction at a 2 kHz step rate."""

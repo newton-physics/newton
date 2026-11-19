@@ -27,6 +27,7 @@ from ......geometry.collision_primitive import (
     collide_sphere_cylinder,
     collide_sphere_sphere,
 )
+from ......geometry.materials import MaterialPairFriction, resolve_material_pair_friction
 from ......geometry.types import GeoType
 from ...core.data import DataKamino
 from ...core.materials import make_get_material_pair_properties
@@ -1414,9 +1415,12 @@ def _primitive_narrowphase(
     material_restitution: wp.array[wp.float32],
     material_static_friction: wp.array[wp.float32],
     material_dynamic_friction: wp.array[wp.float32],
+    material_pair_keys: wp.array[wp.uint64],
     material_pair_restitution: wp.array[wp.float32],
     material_pair_static_friction: wp.array[wp.float32],
     material_pair_dynamic_friction: wp.array[wp.float32],
+    material_pair_friction: MaterialPairFriction,
+    shape_material_id: wp.array[wp.int32],
     contact_overflow_warning_emitted: wp.array[wp.int32],
     # Outputs:
     contact_model_num: wp.array[wp.int32],
@@ -1487,10 +1491,12 @@ def _primitive_narrowphase(
         material_restitution,
         material_static_friction,
         material_dynamic_friction,
+        material_pair_keys,
         material_pair_restitution,
         material_pair_static_friction,
         material_pair_dynamic_friction,
     )
+    mu_12 = resolve_material_pair_friction(material_pair_friction, shape_material_id, gid1, gid2, mu_12)
 
     # TODO(team): static loop unrolling to remove unnecessary branching
     if sid1 == GeoType.SPHERE and sid2 == GeoType.SPHERE:
@@ -1900,9 +1906,12 @@ def primitive_narrowphase(
             model.materials.restitution,
             model.materials.static_friction,
             model.materials.dynamic_friction,
+            model.material_pairs.keys,
             model.material_pairs.restitution,
             model.material_pairs.static_friction,
             model.material_pairs.dynamic_friction,
+            model.material_pair_friction,
+            model.shape_material_id,
             contact_overflow_warning_emitted,
         ],
         outputs=[

@@ -2436,6 +2436,40 @@ Example:
         restitution=0.5,  # Bouncy where supported
     )
 
+.. _Material pair friction:
+
+Material pair friction
+^^^^^^^^^^^^^^^^^^^^^^
+
+.. experimental::
+
+   :meth:`~ModelBuilder.add_material`, :attr:`~ModelBuilder.ShapeConfig.material_id`,
+   :attr:`~Model.shape_material_id`, :attr:`~Model.material_names`, :meth:`~ModelBuilder.set_material_pair`, and
+   the corresponding ``NewtonMaterialPairAPI`` USD authoring schema are experimental.
+   :class:`~newton.solvers.SolverKamino` and :class:`~newton.solvers.SolverXPBD`
+   support the scalar Coulomb friction override for rigid shape contacts.
+
+Assign a material ID to each participating shape and set the coefficient for
+the pair before finalizing the model. If a shape has no material ID or the pair
+has no override, the solver combines the shape coefficients using its usual
+friction rule.
+
+.. testcode:: material-config
+
+    rubber = builder.add_material("rubber")
+    steel = builder.add_material("steel")
+    builder.set_material_pair(rubber, steel, mu=0.9)
+
+    rubber_cfg = builder.ShapeConfig(material_id=rubber, mu=0.7)
+    steel_cfg = builder.ShapeConfig(material_id=steel, mu=0.4)
+
+Pairs are unordered and can refer to the same material twice. A coefficient
+of zero makes that pair frictionless. The pair coefficient stays fixed when
+individual shape coefficients change. Copies created by one call to
+:meth:`~ModelBuilder.replicate` share their remapped material IDs and overrides.
+To register a pair across copies of different builders, read the copied shapes'
+IDs from :attr:`~ModelBuilder.shape_material_id` on the destination builder.
+
 .. _Contact friction gain and adhesion:
 
 Friction gain and adhesion
@@ -2573,6 +2607,27 @@ without one take ``mu`` and ``mu_static`` from the builder defaults.
         prepend apiSchemas = ["PhysicsCollisionAPI"]
     ) {
         rel material:binding:physics = </RubberMaterial>
+    }
+
+**NewtonMaterialPairAPI**
+
+Apply this API schema to a prim in the imported subtree for each overridden
+pair. Each relationship must target one ``Material`` prim with
+``PhysicsMaterialAPI``. Colliders get their material ID from the corresponding
+physics material binding. ``newton:materialPair:mu`` is a required,
+dimensionless, finite nonnegative coefficient authored at default time. The
+same material can be the target of both relationships.
+Newton reads these authored properties directly from USD, including with
+schema packages that do not register ``NewtonMaterialPairAPI``.
+
+.. code-block:: usda
+
+    def Scope "RubberOnSteel" (
+        prepend apiSchemas = ["NewtonMaterialPairAPI"]
+    ) {
+        custom rel newton:materialPair:material0 = </RubberMaterial>
+        custom rel newton:materialPair:material1 = </SteelMaterial>
+        custom float newton:materialPair:mu = 0.9
     }
 
 **NewtonMeshCollisionAPI**

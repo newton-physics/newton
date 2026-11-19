@@ -119,6 +119,8 @@ class _BodyVariants:
     """First of the body's contiguous variant shape rows."""
     initial: int
     """Variant selected in the finalized model."""
+    material_offset: int = 0
+    """Offset from the shared shapes' material IDs to this body's registry."""
 
     def shifted(self, shape_offset: int) -> _BodyVariants:
         return replace(self, row_start=self.row_start + shape_offset)
@@ -421,6 +423,14 @@ class _VariantShapeRows:
         m._body_variant_first = wp.array(body_first, dtype=wp.int32, device=device)
         m._body_variant_rows = wp.array(body_rows, dtype=wp.vec2i, device=device)
         m._body_variant_inertia_start = wp.array(body_inertia_start, dtype=wp.int32, device=device)
+        m._body_variant_material_offset = wp.array(
+            [
+                builder._body_variants[body].material_offset if body in builder._body_variants else 0
+                for body in range(builder.body_count)
+            ],
+            dtype=wp.int32,
+            device=device,
+        )
         m._variant_mass = wp.array(masses, dtype=wp.float32, device=device)
         m._variant_com = wp.array(np.asarray(coms, dtype=np.float32).reshape(-1, 3), dtype=wp.vec3, device=device)
         m._variant_inertia = wp.array(

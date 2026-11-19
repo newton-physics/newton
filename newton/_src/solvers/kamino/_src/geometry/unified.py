@@ -19,6 +19,7 @@ from .....geometry.broad_phase_nxn import BroadPhaseAllPairs, BroadPhaseExplicit
 from .....geometry.broad_phase_sap import BroadPhaseSAP
 from .....geometry.collision_core import compute_tight_aabb_from_support
 from .....geometry.contact_data import ContactData
+from .....geometry.materials import MaterialPairFriction, resolve_material_pair_friction
 from .....geometry.narrow_phase import NarrowPhase
 from .....geometry.sdf_texture import TextureSDFData
 from .....geometry.support_function import GenericShapeData, SupportMapDataProvider, pack_mesh_ptr
@@ -74,9 +75,12 @@ class ContactWriterDataKamino:
     material_restitution: wp.array[wp.float32]
     material_static_friction: wp.array[wp.float32]
     material_dynamic_friction: wp.array[wp.float32]
+    material_pair_keys: wp.array[wp.uint64]
     material_pair_restitution: wp.array[wp.float32]
     material_pair_static_friction: wp.array[wp.float32]
     material_pair_dynamic_friction: wp.array[wp.float32]
+    material_pair_friction: MaterialPairFriction
+    shape_material_id: wp.array[wp.int32]
 
     # Contact limit and active count (Newton interface)
     contact_max: wp.int32
@@ -213,9 +217,13 @@ def _write_contact_unified_kamino(
         writer_data.material_restitution,
         writer_data.material_static_friction,
         writer_data.material_dynamic_friction,
+        writer_data.material_pair_keys,
         writer_data.material_pair_restitution,
         writer_data.material_pair_static_friction,
         writer_data.material_pair_dynamic_friction,
+    )
+    mu_ab = resolve_material_pair_friction(
+        writer_data.material_pair_friction, writer_data.shape_material_id, gid_a, gid_b, mu_ab
     )
     material = wp.vec2f(mu_ab, restitution_ab)
 
@@ -774,9 +782,12 @@ class CollisionPipelineUnifiedKamino:
         writer_data.material_restitution = self._model.materials.restitution
         writer_data.material_static_friction = self._model.materials.static_friction
         writer_data.material_dynamic_friction = self._model.materials.dynamic_friction
+        writer_data.material_pair_keys = self._model.material_pairs.keys
         writer_data.material_pair_restitution = self._model.material_pairs.restitution
         writer_data.material_pair_static_friction = self._model.material_pairs.static_friction
         writer_data.material_pair_dynamic_friction = self._model.material_pairs.dynamic_friction
+        writer_data.material_pair_friction = self._model.material_pair_friction
+        writer_data.shape_material_id = self._model.shape_material_id
         writer_data.contact_max = wp.int32(contacts.model_max_contacts_host)
         writer_data.contact_count = self.narrow_phase_contact_count
         writer_data.dropped_contact_count = self.dropped_contact_count

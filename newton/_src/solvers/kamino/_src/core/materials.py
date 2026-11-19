@@ -24,14 +24,15 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass
+from copy import copy
+from dataclasses import dataclass, field
 from enum import IntEnum
 
 import numpy as np
 import warp as wp
 
 from .....core.types import override
-from .math import tril_index
+from .....geometry.materials import find_material_pair, material_pair_key
 from .types import Descriptor
 
 logger = logging.getLogger(__name__)
@@ -125,8 +126,8 @@ class MaterialDescriptor(Descriptor):
     which are actually dependent on the pairwise interactions of the material with others.
 
     Attributes:
-        name: The name of the material.
-        uid: The unique identifier (UUID) of the material.
+        name: The name of the material. Read-only after registration.
+        uid: The unique identifier (UUID) of the material. Read-only after registration.
         restitution: The coefficient of restitution, according to the Newtonian impact model.
             Defaults to the global default of ``0.0``.
         static_friction: The coefficient of static friction, according to the Coulomb friction model.
@@ -142,6 +143,14 @@ class MaterialDescriptor(Descriptor):
     ###
     # Attributes
     ###
+
+    _registered: bool = field(default=False, init=False, repr=False, compare=False)
+    """Whether a manager has registered this descriptor's identity."""
+
+    def __setattr__(self, name, value):
+        if name in ("name", "uid") and self._registered:
+            raise AttributeError(f"Cannot change {name} of a registered material.")
+        super().__setattr__(name, value)
 
     restitution: float = DEFAULT_RESTITUTION
     """
@@ -275,46 +284,18 @@ class MaterialsModel:
 
 @dataclass
 class MaterialPairsModel:
-    """
-    A container to hold and manage per-material-pair properties.
-
-    Each material-pair property is stored as a flat array containing the elements of
-    the lower-triangular part of the corresponding symmetric matrix, where the entry
-    at row `i` and column `j` corresponds to the material pair `(i, j)`. The indices
-    `i,j` correspond to the material indices (`mid`) defined by the MaterialManager.
-
-    Attributes:
-        num_material_pairs: Total number of material pairs represented in the model.
-        restitution: Lower-triangular matrix of material-pair restitution coefficients.
-            Shape of ``(num_material_pairs,)``.
-        static_friction: Lower-triangular matrix of material-pair static friction coefficients.
-            Shape of ``(num_material_pairs,)``.
-        dynamic_friction: Lower-triangular matrix of material-pair dynamic friction coefficients.
-            Shape of ``(num_material_pairs,)``.
-    """
+    """Explicit material pair properties stored in sorted key order."""
 
     num_material_pairs: int = 0
-    """Total number of material pairs represented in the model."""
-
+    """Number of explicitly configured material pairs."""
+    keys: wp.array[wp.uint64] | None = None
+    """Sorted keys for the configured pairs, shape [num_material_pairs]."""
     restitution: wp.array[wp.float32] | None = None
-    """
-    Lower-triangular matrix of material-pair restitution coefficients.
-    Shape of ``(num_material_pairs,)``.
-    """
-
-    # TODO: Switch to wp.vec3f for anisotropic+torsional friction?
+    """Pair restitution coefficients, shape [num_material_pairs]."""
     static_friction: wp.array[wp.float32] | None = None
-    """
-    Lower-triangular matrix of material-pair static friction coefficients.
-    Shape of ``(num_material_pairs,)``.
-    """
-
-    # TODO: Switch to wp.vec3f for anisotropic+torsional friction?
+    """Pair static friction coefficients, shape [num_material_pairs]."""
     dynamic_friction: wp.array[wp.float32] | None = None
-    """
-    Lower-triangular matrix of material-pair dynamic friction coefficients.
-    Shape of ``(num_material_pairs,)``.
-    """
+    """Pair dynamic friction coefficients, shape [num_material_pairs]."""
 
 
 ###
@@ -495,6 +476,7 @@ def make_get_material_pair_properties(mixmode: MaterialMixMode = MaterialMixMode
         material_restitution: wp.array[wp.float32],
         material_static_friction: wp.array[wp.float32],
         material_dynamic_friction: wp.array[wp.float32],
+        material_pair_keys: wp.array[wp.uint64],
         material_pair_restitution: wp.array[wp.float32],
         material_pair_static_friction: wp.array[wp.float32],
         material_pair_dynamic_friction: wp.array[wp.float32],
@@ -512,6 +494,7 @@ def make_get_material_pair_properties(mixmode: MaterialMixMode = MaterialMixMode
             material_restitution: The per-material restitution coefficients.
             material_static_friction: The per-material static friction coefficients.
             material_dynamic_friction: The per-material dynamic friction coefficients.
+            material_pair_keys: Sorted keys for the configured material pairs.
             material_pair_restitution: The per-material-pair restitution coefficients.
             material_pair_static_friction: The per-material-pair static friction coefficients.
             material_pair_dynamic_friction: The per-material-pair dynamic friction coefficients.
@@ -519,13 +502,14 @@ def make_get_material_pair_properties(mixmode: MaterialMixMode = MaterialMixMode
         Returns:
             The restitution, static friction, and dynamic friction coefficients for the material pair.
         """
-        # Compute the index in the flattened lower-triangular matrix
-        mid_tril_idx = tril_index(mid1, mid2)
-
-        # Retrieve the material pair properties
-        restitution = material_pair_restitution[mid_tril_idx]
-        static_friction = material_pair_static_friction[mid_tril_idx]
-        dynamic_friction = material_pair_dynamic_friction[mid_tril_idx]
+        row = find_material_pair(material_pair_keys, mid1, mid2)
+        restitution = -1.0
+        static_friction = -1.0
+        dynamic_friction = -1.0
+        if row >= 0:
+            restitution = material_pair_restitution[row]
+            static_friction = material_pair_static_friction[row]
+            dynamic_friction = material_pair_dynamic_friction[row]
 
         # If any property is negative, compute the material pair properties using the set mixing method
         if restitution < 0.0:
@@ -580,7 +564,9 @@ class MaterialManager:
         """
         # Declare the materials and material-pairs lists
         self._materials: list[MaterialDescriptor] = []
-        self._pair_properties: list[list[MaterialPairProperties]] = []
+        self._material_indices: dict[str, int] = {}
+        self._material_uids: set[str] = set()
+        self._pair_properties: dict[int, MaterialPairProperties] = {}
 
         # Construct the default material if not provided
         if default_material is None:
@@ -610,10 +596,15 @@ class MaterialManager:
     @property
     def num_material_pairs(self) -> int:
         """
-        Returns the number of material pairs managed by this MaterialManager.
+        Returns the number of possible unordered pairs, including self-pairs.
         """
         N = len(self._materials)
         return N * (N + 1) // 2
+
+    @property
+    def num_configured_pairs(self) -> int:
+        """Return the number of explicitly configured pairs."""
+        return len(self._pair_properties)
 
     @property
     def materials(self) -> list[MaterialDescriptor]:
@@ -623,11 +614,13 @@ class MaterialManager:
         return self._materials
 
     @property
-    def pairs(self) -> list[list[MaterialPairProperties]]:
-        """
-        Returns the list of material-pair properties managed by this MaterialManager.
-        """
-        return self._pair_properties
+    def pairs(self) -> list[list[MaterialPairProperties | None]]:
+        """Return a symmetric snapshot of the configured pairs for inspection."""
+        pairs = [[None] * self.num_materials for _ in self.materials]
+        for key, properties in self._pair_properties.items():
+            first, second = key >> 32, key & 0xFFFFFFFF
+            pairs[first][second] = pairs[second][first] = properties
+        return pairs
 
     @property
     def default(self) -> MaterialDescriptor:
@@ -649,14 +642,22 @@ class MaterialManager:
         """
         if not isinstance(material, MaterialDescriptor):
             raise TypeError("`material` must be an instance of MaterialDescriptor.")
+        previous = self._materials[0]
+        self._validate_registration(material, replacing=previous)
+        del self._material_indices[previous.name]
+        self._material_uids.remove(previous.uid)
+        material.mid = 0
         self._materials[0] = material
+        self._material_indices[material.name] = 0
+        self._material_uids.add(material.uid)
+        material._registered = True
 
     @property
     def default_pair(self) -> MaterialPairProperties:
         """
         Returns the properties of the default material pair managed by this MaterialManager.
         """
-        return self._pair_properties[0][0]
+        return self._pair_properties[0]
 
     def has_material(self, name: str) -> bool:
         """
@@ -668,10 +669,13 @@ class MaterialManager:
         Returns:
             True if the material exists, False otherwise.
         """
-        for m in self._materials:
-            if m.name == name:
-                return True
-        return False
+        return name in self._material_indices
+
+    def _validate_registration(self, material: MaterialDescriptor, replacing: MaterialDescriptor | None = None) -> None:
+        if material.name in self._material_indices and (replacing is None or material.name != replacing.name):
+            raise ValueError(f"Material name '{material.name}' already exists.")
+        if material.uid in self._material_uids and (replacing is None or material.uid != replacing.uid):
+            raise ValueError(f"Material UID '{material.uid}' already exists.")
 
     def register(self, material: MaterialDescriptor) -> int:
         """
@@ -686,26 +690,13 @@ class MaterialManager:
         Raises:
             ValueError: If a material with the same name or UID already exists.
         """
-        # Get current bid from the number of bodies
+        self._validate_registration(material)
         material.mid = self.num_materials
-
-        # Check if the material already exists
-        if material.name in [m.name for m in self.materials]:
-            raise ValueError(f"Material name '{material.name}' already exists.")
-        if material.uid in [m.uid for m in self.materials]:
-            raise ValueError(f"Material UID '{material.uid}' already exists.")
-
-        # Add the new material to the list of materials
-        self.materials.append(material)
+        self._materials.append(material)
+        self._material_indices[material.name] = material.mid
+        self._material_uids.add(material.uid)
+        material._registered = True
         logger.debug("Registered new material:\n%s", material)
-
-        # Add placeholder entries in the material pair properties list
-        # NOTE: These are initialized to None and are to be set when the material pair is registered
-        self._pair_properties.append([None] * (material.mid + 1))
-        for i in range(material.mid):
-            self._pair_properties[i].append(None)
-
-        # Return the index of the new material
         return material.mid
 
     def register_pair(
@@ -723,11 +714,11 @@ class MaterialManager:
             ValueError: If either material is not already registered.
         """
         # Register the first material if it is not already registered
-        if first.name not in [m.name for m in self.materials]:
+        if not self.has_material(first.name):
             self.register(first)
 
         # Register the second material if it is not already registered
-        if second.name not in [m.name for m in self.materials]:
+        if not self.has_material(second.name):
             self.register(second)
 
         # Configure the material pair properties
@@ -751,7 +742,7 @@ class MaterialManager:
         mid2 = self.index(second)
 
         # Set the material pair properties
-        self._pair_properties[mid1][mid2] = self._pair_properties[mid2][mid1] = material_pair
+        self._pair_properties[material_pair_key(mid1, mid2)] = material_pair
         logger.debug("Configured material pair: %s - %s", self.materials[mid1].name, self.materials[mid2].name)
 
     def merge(self, other: MaterialManager):
@@ -767,16 +758,12 @@ class MaterialManager:
         # Iterate over the materials in the other manager
         for mat in other.materials:
             if not self.has_material(mat.name):
-                self.register(mat)
+                self.register(copy(mat))
 
-        # Iterate over the material pairs in the other manager
-        for i, mat1 in enumerate(other.materials):
-            for j, mat2 in enumerate(other.materials):
-                # Get the material pair properties from the other manager
-                pair_props = other.pairs[i][j]
-                # Configure the material pair properties in this manager if they exist
-                if pair_props is not None:
-                    self.configure_pair(first=mat1.name, second=mat2.name, material_pair=pair_props)
+        for key, pair_props in other._pair_properties.items():
+            first = other.materials[key >> 32].name
+            second = other.materials[key & 0xFFFFFFFF].name
+            self.configure_pair(first=first, second=second, material_pair=pair_props)
 
     def __getitem__(self, key) -> MaterialDescriptor:
         """
@@ -802,12 +789,7 @@ class MaterialManager:
 
         # Check if the key is a string
         elif isinstance(key, str):
-            # Check if the key is a valid material name
-            for m in self.materials:
-                if m.name == key:
-                    return m
-            # If not found, raise an error
-            raise ValueError(f"Material with name '{key}' not found.")
+            return self.materials[self.index(key)]
 
     def index(self, key: str | int) -> int:
         """
@@ -825,9 +807,8 @@ class MaterialManager:
         """
         # Check if the name exists in the materials list
         if isinstance(key, str):
-            for i in range(self.num_materials):
-                if key == self.materials[i].name:
-                    return i
+            if key in self._material_indices:
+                return self._material_indices[key]
         elif isinstance(key, int):
             # If the name is an integer, return it directly if it is a valid index
             if 0 <= key < self.num_materials:
@@ -867,31 +848,9 @@ class MaterialManager:
         Generates a matrix of restitution coefficients for all material pairs.
 
         Returns:
-            A 2D numpy array containing restitution coefficients.
+            A flat NumPy array containing the lower triangle of the restitution matrix.
         """
-        # Get the number of materials
-        num_materials = len(self._materials)
-        num_material_pairs = num_materials * (num_materials + 1) // 2
-
-        # Initialize the restitution matrix
-        restitution = np.full((num_material_pairs,), -1, dtype=np.float32)
-
-        # Fill the matrix with the restitution coefficients
-        for i in range(num_materials):
-            for j in range(0, i + 1):
-                # Check if the material pair properties exist
-                if self._pair_properties[i][j] is not None:
-                    ij = i * (i + 1) // 2 + j
-                    restitution[ij] = self._pair_properties[i][j].restitution
-                else:
-                    logger.debug(
-                        "Material-pair properties not set for materials:(%s, %s)",
-                        self.materials[i].name,
-                        self.materials[j].name,
-                    )
-
-        # Return the restitution matrix as a numpy array
-        return restitution
+        return self._pair_matrix("restitution")
 
     def static_friction_vector(self) -> np.ndarray:
         """
@@ -918,31 +877,9 @@ class MaterialManager:
         Generates a matrix of friction coefficients for all material pairs.
 
         Returns:
-            A 2D numpy array containing static friction coefficients.
+            A flat NumPy array containing the lower triangle of the static friction matrix.
         """
-        # Get the number of materials
-        num_materials = len(self._materials)
-        num_material_pairs = num_materials * (num_materials + 1) // 2
-
-        # Initialize the friction matrix
-        static_friction = np.full((num_material_pairs,), -1, dtype=np.float32)
-
-        # Fill the matrix with the friction coefficients
-        for i in range(num_materials):
-            for j in range(0, i + 1):
-                # Check if the material pair properties exist
-                if self._pair_properties[i][j] is not None:
-                    ij = i * (i + 1) // 2 + j
-                    static_friction[ij] = self._pair_properties[i][j].static_friction
-                else:
-                    logger.debug(
-                        "Material-pair properties not set for materials:(%s, %s)",
-                        self.materials[i].name,
-                        self.materials[j].name,
-                    )
-
-        # Return the friction matrix as a numpy array
-        return static_friction
+        return self._pair_matrix("static_friction")
 
     def dynamic_friction_vector(self) -> np.ndarray:
         """
@@ -969,31 +906,16 @@ class MaterialManager:
         Generates a matrix of friction coefficients for all material pairs.
 
         Returns:
-            A 2D numpy array containing dynamic friction coefficients.
+            A flat NumPy array containing the lower triangle of the dynamic friction matrix.
         """
-        # Get the number of materials
-        num_materials = len(self._materials)
-        num_material_pairs = num_materials * (num_materials + 1) // 2
+        return self._pair_matrix("dynamic_friction")
 
-        # Initialize the friction matrix
-        dynamic_friction = np.full((num_material_pairs,), -1, dtype=np.float32)
-
-        # Fill the matrix with the friction coefficients
-        for i in range(num_materials):
-            for j in range(0, i + 1):
-                # Check if the material pair properties exist
-                if self._pair_properties[i][j] is not None:
-                    ij = i * (i + 1) // 2 + j
-                    dynamic_friction[ij] = self._pair_properties[i][j].dynamic_friction
-                else:
-                    logger.debug(
-                        "Material-pair properties not set for materials:(%s, %s)",
-                        self.materials[i].name,
-                        self.materials[j].name,
-                    )
-
-        # Return the friction matrix as a numpy array
-        return dynamic_friction
+    def _pair_matrix(self, property_name: str) -> np.ndarray:
+        values = np.full(self.num_material_pairs, -1, dtype=np.float32)
+        for key, properties in self._pair_properties.items():
+            low, high = key >> 32, key & 0xFFFFFFFF
+            values[high * (high + 1) // 2 + low] = getattr(properties, property_name)
+        return values
 
     ###
     # Material Model Creation
@@ -1012,13 +934,12 @@ class MaterialManager:
         )
 
     def make_material_pairs_model(self) -> MaterialPairsModel:
-        # Construct the per-material-pair properties
-        mpairs_rest = [self.restitution_matrix()]
-        mpairs_static_fric = [self.static_friction_matrix()]
-        mpairs_dynamic_fric = [self.dynamic_friction_matrix()]
+        keys = sorted(self._pair_properties)
+        rows = [self._pair_properties[key] for key in keys]
         return MaterialPairsModel(
-            num_material_pairs=self.num_material_pairs,
-            restitution=wp.array(mpairs_rest[0], dtype=wp.float32),
-            static_friction=wp.array(mpairs_static_fric[0], dtype=wp.float32),
-            dynamic_friction=wp.array(mpairs_dynamic_fric[0], dtype=wp.float32),
+            num_material_pairs=len(keys),
+            keys=wp.array(keys, dtype=wp.uint64),
+            restitution=wp.array([row.restitution for row in rows], dtype=wp.float32),
+            static_friction=wp.array([row.static_friction for row in rows], dtype=wp.float32),
+            dynamic_friction=wp.array([row.dynamic_friction for row in rows], dtype=wp.float32),
         )
