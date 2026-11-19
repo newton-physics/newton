@@ -860,6 +860,36 @@ class TestMuJoCoEntityAuthoring(unittest.TestCase):
                     self.assertEqual(builder._custom_frequency_counts.get("mujoco:equality_constraint", 0), 0)
 
     @requires(*MUJOCO_MODULES)
+    def test_copy_world_equality_frames(self):
+        """Place world-side equality frames through ordinary and bulk builder copies."""
+        blueprint = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        pose = wp.transform((1.0, 0.0, 0.0), wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.3))
+        body = blueprint.add_body(xform=pose, mass=1.0, inertia=wp.mat33(np.eye(3)))
+        anchor = wp.vec3(0.2, -0.1, 0.4)
+        mujoco.add_equality_connect(blueprint, -1, body, anchor=anchor)
+        mujoco.add_equality_connect(blueprint, body, anchor=anchor)
+        mujoco.add_equality_weld(blueprint, body, relpose=wp.transform_inverse(pose))
+        mujoco.add_equality_weld(blueprint, -1, body, relpose=pose)
+        mujoco.add_equality_weld(blueprint, body)
+        mujoco.add_equality_weld(blueprint, -1, body)
+        placement = wp.transform((2.0, 3.0, 4.0), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.5))
+        placements = (placement, wp.transform_identity(), wp.transform_inverse(placement))
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        builder.add_world(blueprint, xform=placements[0])
+        builder.replicate(blueprint, 2, xforms=placements[1:])
+        model = builder.finalize()
+        anchors = model.mujoco.equality_constraint_anchor.numpy().reshape(3, 6, 3)
+        for world, xform in enumerate(placements):
+            with self.subTest(world=world):
+                np.testing.assert_allclose(anchors[world, 0], wp.transform_point(xform, anchor), atol=1e-6)
+                np.testing.assert_allclose(anchors[world, 1], anchor, atol=1e-6)
+                np.testing.assert_allclose(anchors[world, [2, 4]], np.tile(xform.p, (2, 1)), atol=1e-6)
+        solver = newton.solvers.SolverMuJoCo(model, disable_contacts=True, kinematic_switchable_roots=False)
+        state, output = model.state(), model.state()
+        solver.step(state, output, model.control(), None, 0.01)
+        np.testing.assert_allclose(output.body_q.numpy(), model.body_q.numpy(), atol=1e-6)
+
+    @requires(*MUJOCO_MODULES)
     def test_weld_preserves_each_world_initial_pose(self):
         """Infer weld-to-world poses per copy and preserve them across notifications."""
         blueprint = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
