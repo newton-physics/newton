@@ -119,8 +119,9 @@ Stepping responsibilities
 
 Newton supports two actuation paths:
 
-* **Internal joint drives** use the model's joint stiffness and damping and
-  the control's position and velocity targets. The physics solver evaluates
+* **Internal joint drives** use the model's ``joint_target_ke`` and
+  ``joint_target_kd`` drive gains and the control's position and velocity
+  targets. The physics solver evaluates
   them during ``solver.step()``; there is no separate actuator step. This also
   applies to standard USD joint drives imported with
   :meth:`~newton.ModelBuilder.add_usd`, subject to the solver's
@@ -193,6 +194,20 @@ This loop also applies when :meth:`~newton.ModelBuilder.add_usd` populated
        # Apply the computed effort and advance physics.
        solver.step(state_0, state_1, control, None, dt)
        state_0, state_1 = state_1, state_0
+
+This model has no collision shapes, so the solver receives ``None`` for
+contacts. For models with collision shapes, including USD imports, generate
+contacts each substep with :meth:`newton.CollisionPipeline.collide` and pass
+the contacts buffer to ``solver.step()`` instead of ``None``.
+
+.. testcode:: actuator-usage
+   :hide:
+
+   import numpy as np
+
+   assert np.isfinite(state_0.joint_q.numpy()).all()
+   assert np.isfinite(state_0.joint_qd.numpy()).all()
+   assert state_0.joint_q.numpy()[0] > 0.0  # moved from zero toward the 0.5 target
 
 For manual construction (outside of :class:`~newton.ModelBuilder`), compose the
 components directly:
