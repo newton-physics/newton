@@ -1186,6 +1186,15 @@ def make_update_proximal_structural_multipliers_kernel(correction: JointCorrecti
             feedback_residual = linear_residual
             if row - row_begin < position_rows:
                 feedback_residual = candidate_residual[row]
+                if dof_type == JointDoFType.D6:
+                    # Keep the bounded recovery and add only the geometric
+                    # error beyond the unbounded first-order prediction.
+                    raw_linear_residual = frozen_residual[row]
+                    if bid_a >= 0:
+                        raw_linear_residual += dt * wp.dot(row_jacobian_a, twist_a)
+                    if bid_b >= 0:
+                        raw_linear_residual += dt * wp.dot(row_jacobian_b, twist_b)
+                    feedback_residual = linear_residual + candidate_residual[row] - raw_linear_residual
             defect = proximal_defect[row]
             defect += proximal_relaxation * (feedback_residual - linear_residual - defect)
             update_residual = linear_residual + defect

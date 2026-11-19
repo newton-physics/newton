@@ -10,8 +10,8 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton._src.solvers.kamino._src.core.joints import D6JointAxes
-from newton._src.solvers.kamino._src.kinematics.joints import d6_angular_coordinates
+from newton._src.solvers.kamino._src.core.joints import D6JointAxes, JointCorrectionMode
+from newton._src.solvers.kamino._src.kinematics.joints import d6_angular_coordinates, write_d6_joint_motion
 from newton.solvers import SolverKamino
 from newton.tests.kamino import setup_tests, test_context
 from newton.tests.kamino.utils.extract import extract_cts_jacobians, extract_dofs_jacobians
@@ -40,6 +40,29 @@ def _measure_angular_derivatives(analytic: wp.array[wp.vec3f], finite_difference
     values_plus, _covectors_plus = d6_angular_coordinates(axes, plus, reference, False)
     analytic[count] = wp.transpose(covectors) @ direction
     finite_difference[count] = (values_plus - values_minus) / (2.0 * epsilon)
+
+
+@wp.kernel
+def _measure_wrapped_angles(
+    correction: int, reference: wp.array[float], result: wp.array[float], rates: wp.array[float]
+):
+    axes = D6JointAxes()
+    axes.linear = wp.identity(3, dtype=wp.float32)
+    axes.angular = wp.identity(3, dtype=wp.float32)
+    axes.angular_count = 3
+    axes.third_axis_sign = 1.0
+    write_d6_joint_motion(
+        axes,
+        correction,
+        0,
+        0,
+        wp.vec3f(0.0),
+        wp.quat_from_axis_angle(wp.vec3f(1.0, 0.0, 0.0), 0.1),
+        wp.spatial_vectorf(0.0),
+        reference,
+        result,
+        rates,
+    )
 
 
 class TestKaminoD6(unittest.TestCase):
@@ -91,6 +114,41 @@ class TestKaminoD6(unittest.TestCase):
                 solver.step(state, result, control, contacts=None, dt=dt)
                 np.testing.assert_allclose(result.body_qd.numpy(), expected_twists, atol=4.0e-4, rtol=0.0)
                 np.testing.assert_allclose(result.joint_qd.numpy(), expected_rates, atol=4.0e-4, rtol=0.0)
+
+    def test_rotation_correction_matches_reset_and_step(self):
+        """Honor the configured angular chart during reset and bound all TWOPI coordinates."""
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        body = builder.add_link(mass=1.0, inertia=_INERTIA, lock_inertia=True)
+        joint = builder.add_joint_d6(
+            -1,
+            body,
+            linear_axes=[builder.JointDofConfig(axis=(1, 0, 0))],
+            angular_axes=[builder.JointDofConfig(axis=(0, 0, 1))],
+        )
+        builder.add_articulation([joint])
+        builder.joint_q[1] = 3.2
+        model = builder.finalize(device=self.device)
+        for mode, expected in (("none", 3.2 - 2 * np.pi), ("continuous", 3.2), ("twopi", 3.2)):
+            with self.subTest(mode=mode):
+                solver = SolverKamino(
+                    model, SolverKamino.Config(rotation_correction=mode, use_collision_detector=False)
+                )
+                state = model.state()
+                newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+                solver.reset(state, config=SolverKamino.ResetConfig.preserve())
+                self.assertAlmostEqual(state.joint_q.numpy()[1], expected, delta=2.0e-6)
+                result = model.state()
+                solver.step(state, result, model.control(), contacts=None, dt=0.01)
+                self.assertAlmostEqual(result.joint_q.numpy()[1], expected, delta=2.0e-6)
+
+        reference = wp.array((2 * np.pi - 0.1, 0.0, 0.0), dtype=float, device=self.device)
+        result = wp.empty_like(reference)
+        rates = wp.empty_like(reference)
+        for mode, expected in ((JointCorrectionMode.TWOPI, 0.1), (JointCorrectionMode.CONTINUOUS, 2 * np.pi + 0.1)):
+            wp.launch(
+                _measure_wrapped_angles, dim=1, inputs=[mode, reference], outputs=[result, rates], device=self.device
+            )
+            self.assertAlmostEqual(result.numpy()[0], expected, delta=2.0e-6)
 
     def test_antiparallel_hinge_axes_recover(self):
         """Reduce a 180-degree swing error with a bounded correction on every backend."""
@@ -144,6 +202,36 @@ class TestKaminoD6(unittest.TestCase):
                 state.body_f.assign(wrench)
                 solver.step(state, result, model.control(), contacts=None, dt=0.01)
                 np.testing.assert_allclose(result.body_qd.numpy(), expected, atol=4.0e-4, rtol=0.0)
+
+    def test_lox_proximal_preserves_translation_recovery_bounds(self):
+        """Respect recovery caps and dead zones when feeding back exact D6 anchor errors."""
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        body = builder.add_link(mass=1.0, inertia=_INERTIA, lock_inertia=True)
+        joint = builder.add_joint_d6(
+            -1,
+            body,
+            linear_axes=[builder.JointDofConfig(axis=(1, 0, 0))],
+            angular_axes=[builder.JointDofConfig(axis=(0, 0, 1))],
+        )
+        builder.add_articulation([joint])
+        model = builder.finalize(device=self.device)
+        for displacement, cap, dead_zone, correction in (
+            (0.1, 0.01, 0.0, 0.01),
+            (0.0005, 0.01, 0.001, 0.0),
+            (0.1, 1.0, 0.0, 0.1),
+        ):
+            with self.subTest(displacement=displacement, cap=cap, dead_zone=dead_zone):
+                config = SolverKamino.Config(dynamics_solver="lox", use_collision_detector=False)
+                config.lox.joint_proximal_relaxation = 0.5
+                config.lox.joint_max_correction = cap
+                config.lox.position_tolerance = max(dead_zone, 1.0e-7)
+                solver = SolverKamino(model, config)
+                state, result = model.state(), model.state()
+                pose = state.body_q.numpy()
+                pose[body, 1] = displacement
+                state.body_q.assign(pose)
+                solver.step(state, result, model.control(), contacts=None, dt=0.01)
+                self.assertAlmostEqual(result.body_q.numpy()[body, 1], displacement - correction, delta=3.0e-6)
 
     def test_reset_recovers_rates_from_moving_anchors(self):
         """Recover authored rates and match them to both Jacobians at separated anchors."""

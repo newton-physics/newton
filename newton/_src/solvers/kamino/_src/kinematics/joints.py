@@ -288,15 +288,12 @@ def gimbal_reciprocal_axes(coords: wp.vec3f, third_axis_sign: wp.float32) -> wp.
     )
     c12 = wp.cross(a1, a2)
     det = wp.dot(a0, c12)
-    if wp.abs(det) < 1.0e-3:
-        # The first and last transported axes become collinear. Bound the
-        # reciprocal in their sum/difference directions and split the rate
-        # equally along the coincident direction at rank loss.
-        plus = a0 + a2
-        minus = a0 - a2
-        plus /= wp.max(wp.length_sq(plus), 1.0e-6)
-        minus /= wp.max(wp.length_sq(minus), 1.0e-6)
-        return wp.matrix_from_cols(plus + minus, a1, plus - minus)
+    if wp.abs(det) < 1.0e-7:
+        # At float32 rank loss, use the minimum-norm rate split. Regular
+        # charts retain their exact inverse, including near the singularity.
+        sign = wp.sign(wp.dot(a0, a2))
+        shared = (a0 + sign * a2) / wp.length_sq(a0 + sign * a2)
+        return wp.matrix_from_cols(shared, a1, sign * shared)
     c02 = wp.cross(a0, a2)
     c01 = wp.cross(a0, a1)
     return wp.matrix_from_cols(
@@ -419,7 +416,7 @@ def write_d6_joint_motion(
     for i in range(count):
         axis = d6_dof_axis(axes.linear_count, i)
         value = values[axis]
-        if i >= axes.linear_count and axes.angular_count < 3 and correction == JointCorrectionMode.TWOPI:
+        if i >= axes.linear_count and correction == JointCorrectionMode.TWOPI:
             value = wp.mod(value, wp.tau)
         joint_q[coords_offset + i] = value
         joint_qd[dofs_offset + i] = rates[axis]

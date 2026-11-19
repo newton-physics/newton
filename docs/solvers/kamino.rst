@@ -420,7 +420,8 @@ radians and radians per second.
 Each active axis supports position limits, direct effort, implicit drives,
 effort limits, armature, damping, and Coulomb friction. With three angular
 axes, individual Euler rates become indeterminate at gimbal lock. Kamino
-bounds the inverse angular velocity map near that pose.
+uses the minimum-norm rate split at float32 rank loss and the exact coordinate
+derivative at regular poses.
 
 Use ``use_fk_solver=False`` (the default) for general D6 layouts. The
 optional Kamino forward-kinematics solver supports D6 layouts that map to

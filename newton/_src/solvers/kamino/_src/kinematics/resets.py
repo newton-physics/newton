@@ -292,6 +292,7 @@ def _set_body_q(
 @wp.kernel
 def _reset_joints_state_from_bodies_state(
     # Inputs
+    rotation_correction: int,
     joint_world_id: wp.array[wp.int32],
     joint_dof_type: wp.array[wp.int32],
     joint_d6_axes: wp.array[D6JointAxes],
@@ -366,7 +367,7 @@ def _reset_joints_state_from_bodies_state(
     if dof_type == JointDoFType.D6:
         write_d6_joint_motion(
             joint_d6_axes[jid],
-            JointCorrectionMode.CONTINUOUS,
+            rotation_correction,
             dofs_offset,
             coords_offset,
             r_j,
@@ -785,6 +786,8 @@ def reset_joints_state_from_bodies_state(
     model: ModelKamino,
     state: StateKamino,
     world_mask: wp.array[wp.bool] | None = None,
+    *,
+    rotation_correction: int = JointCorrectionMode.CONTINUOUS,
 ):
     """
     Reset joint-based components of the state given body poses and velocities, inferring consistent
@@ -794,11 +797,13 @@ def reset_joints_state_from_bodies_state(
         model: Kamino model.
         state: Kamino state.
         world_mask: Per-world boolean mask. If provided, indicates in which worlds to perform the operation.
+        rotation_correction: Angular coordinate correction mode for general D6 joints.
     """
     wp.launch(
         _reset_joints_state_from_bodies_state,
         dim=model.size.sum_of_num_joints,
         inputs=[
+            rotation_correction,
             model.joints.wid,
             model.joints.dof_type,
             model.joints.d6_axes,
