@@ -1,0 +1,1 @@
+Deprecate `SolverMuJoCo.mjc_eq_to_newton_mimic`, which mapped MuJoCo equality constraints to the removed mimic constraints; every entry is now `-1` and reading it emits a `NewtonDeprecationWarning`. Remove its use, or read `SolverMuJoCo.mjc_eq_to_newton_joint_mimic` for the equality constraints of mimic joints.

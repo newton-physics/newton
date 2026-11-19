@@ -10430,6 +10430,8 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         self.assertEqual(solver.mj_model.neq, 1)
         np.testing.assert_allclose(solver.mjw_model.eq_data.numpy()[0, 0, :5], [0.5, 2.0, 0.0, 0.0, 0.0])
         self.assertEqual(solver.mjc_eq_to_newton_joint_mimic.numpy()[0, 0], follower)
+        with self.assertWarnsRegex(newton.NewtonDeprecationWarning, "mjc_eq_to_newton_mimic"):
+            self.assertEqual(solver.mjc_eq_to_newton_mimic.numpy()[0, 0], -1)
 
         coeffs = model.joint_mimic_coeffs.numpy()
         coeffs[follower] = (1.0, -3.0)

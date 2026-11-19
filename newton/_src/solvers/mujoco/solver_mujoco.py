@@ -691,6 +691,24 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self._update_data_interval = value
 
     @property
+    def mjc_eq_to_newton_mimic(self) -> wp.array2d[wp.int32] | None:
+        """Mapping from MuJoCo [world, eq] to the removed mimic constraints; every entry is -1.
+
+        .. deprecated:: 1.9
+            Mimic constraints were removed. :attr:`mjc_eq_to_newton_joint_mimic` maps the
+            equality constraints of mimic joints.
+        """
+        warnings.warn(
+            "SolverMuJoCo.mjc_eq_to_newton_mimic is deprecated in Newton 1.9 and maps nothing, because mimic "
+            "constraints were removed; use mjc_eq_to_newton_joint_mimic for mimic joints.",
+            NewtonDeprecationWarning,
+            stacklevel=2,
+        )
+        if self.mjc_eq_to_newton_joint_mimic is None:
+            return None
+        return wp.full_like(self.mjc_eq_to_newton_joint_mimic, -1)
+
+    @property
     def supported_observables(self):
         """Return observables available for the configured MuJoCo backend.
 
