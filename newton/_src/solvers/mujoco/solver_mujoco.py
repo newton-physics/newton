@@ -10052,6 +10052,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 # Their reach depends on the configuration, so treat every
                 # joint as actuated when any of them exist.
                 any_joint_actuated = not joint_actuators.all()
+                # With any actuator present, MuJoCo routes actuator-side gravity
+                # compensation through the joint clamp as well.
+                gravcomp_actuated = self.mj_model.nu > 0 and self.mj_model.ngravcomp > 0
                 # ``joint_solref_limit_mode`` is the per-DOF
                 # ``mujoco.solreflimit_mode`` array fetched at the start of
                 # ``_convert_to_mjc`` (see the ``get_custom_attribute`` block).
@@ -10067,15 +10070,19 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         in (mujoco.mjtJoint.mjJNT_SLIDE, mujoco.mjtJoint.mjJNT_HINGE)
                         and joint_effort_limit[newton_dof] == 0.0
                     ):
-                        if any_joint_actuated or mjc_jnt in actuated_joints:
+                        if (
+                            any_joint_actuated
+                            or mjc_jnt in actuated_joints
+                            or (gravcomp_actuated and self.mj_model.jnt_actgravcomp[mjc_jnt])
+                        ):
                             j = int(np.searchsorted(joint_qd_start, newton_dof, side="right") - 1)
                             axis = int(newton_dof - joint_qd_start[j])
                             raise ValueError(
                                 f"Joint '{model.joint_label[j]}' axis {axis} has joint_effort_limit=0, "
-                                "which MJCF cannot represent for a joint that an actuator can drive. "
+                                "which MJCF cannot represent for a joint that receives actuator forces. "
                                 "Omit save_to_mjcf to simulate this joint with zero actuator force."
                             )
-                        # Without a joint actuator the clamp has no effect. Do not
+                        # Without actuator forces the clamp has no effect. Do not
                         # persist the temporary nonzero compilation range.
                         spec.joints[mjc_jnt].actfrclimited = False
                         spec.joints[mjc_jnt].actfrcrange = (0.0, 0.0)

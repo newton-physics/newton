@@ -1524,6 +1524,17 @@ class TestMuJoCoDegenerateJointLimits(unittest.TestCase):
                     SolverMuJoCo(model, use_mujoco_cpu=True, save_to_mjcf=filename)
                 self.assertFalse(os.path.exists(filename))
 
+            # The clamp also limits actuator-side gravity compensation once any actuator exists.
+            model = self._make_model(effort_limit=0.0, direct_actuator=True)
+            model.joint_target_mode.fill_(int(newton.JointTargetMode.NONE))
+            model.mujoco.actuator_trnid.assign([wp.vec2i(1, -1)])
+            model.joint_effort_limit.assign([0.0, 1.0])
+            model.mujoco.gravcomp.fill_(1.0)
+            model.mujoco.jnt_actgravcomp.assign([True, False])
+            with self.assertRaisesRegex(ValueError, r"d6.*axis 0.*joint_effort_limit=0.*save_to_mjcf"):
+                SolverMuJoCo(model, use_mujoco_cpu=True, save_to_mjcf=filename)
+            self.assertFalse(os.path.exists(filename))
+
     def test_invalid_joint_limits_per_world(self):
         """Identify invalid scalar limits in both template and non-template worlds."""
         model = self._make_model(world_count=2, limit_lower=-1.0, limit_upper=1.0)
