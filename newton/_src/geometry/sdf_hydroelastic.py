@@ -39,10 +39,11 @@ import warp as wp
 
 from newton._src.core.types import MAXVAL, Devicelike
 
-from ..exceptions import NewtonDeprecationWarning, NewtonWarning
+from ..exceptions import NewtonWarning
 from ..sim.builder import ShapeFlags
 from ..sim.model import Model
 from ..sim.shape_contact_pairs import _shape_contact_pairs_for_mask
+from ..utils.deprecation import UnavailableAttribute
 from .collision_core import sat_box_intersection
 from .contact_data import ContactData
 from .contact_reduction import get_slot
@@ -55,6 +56,7 @@ from .contact_reduction_global import (
 )
 from .contact_reduction_hydroelastic import (
     EPS_SMALL,
+    SPECULATIVE_CONTACT_AREA,
     HydroelasticContactReduction,
     HydroelasticReductionConfig,
     export_hydroelastic_contact_to_buffer,
@@ -124,16 +126,6 @@ _ISO_REFINEMENT_MULTIPLIERS = (8, 32, 128, 256)
 # contact surfaces without making all face-storage allocations five times the
 # already conservative voxel capacity.
 _FACE_CONTACTS_PER_ISO_VOXEL = 2
-
-
-class _MarginContactAreaUnset:
-    """Mark an omitted deprecated margin contact area."""
-
-    def __repr__(self) -> str:
-        return "_DEPRECATED_MARGIN_CONTACT_AREA_UNSET"
-
-
-_DEPRECATED_MARGIN_CONTACT_AREA_UNSET: Any = _MarginContactAreaUnset()
 
 
 @wp.func
@@ -472,14 +464,10 @@ class HydroelasticSDF:
         friction moment per normal bin is preserved between reduced and
         unreduced contacts. Automatically enables ``anchor_contact``.
         Only active when reduce_contacts is True."""
-        margin_contact_area: float = _DEPRECATED_MARGIN_CONTACT_AREA_UNSET
-        """Deprecated speculative-contact area [m^2] retained for compatibility.
-
-        .. deprecated:: 1.6
-
-            This setting still controls speculative-contact activation
-            stiffness during the deprecation period.
-        """
+        margin_contact_area = UnavailableAttribute(
+            "HydroelasticSDF.Config.margin_contact_area was removed in Newton 1.9; "
+            "speculative contacts use a fixed activation area."
+        )
         pressure_func: Any = None
         """Optional Warp function defining ``pressure = f(signed_depth, shape_idx, data)``.
 
@@ -534,14 +522,6 @@ class HydroelasticSDF:
         bias measurably damps the contact response."""
 
         def __post_init__(self):
-            if self.margin_contact_area is _DEPRECATED_MARGIN_CONTACT_AREA_UNSET:
-                self.margin_contact_area = 1.0e-2
-            else:
-                warnings.warn(
-                    "HydroelasticSDF.Config.margin_contact_area is deprecated; remove this setting.",
-                    NewtonDeprecationWarning,
-                    stacklevel=2,
-                )
             # NaN fails both bounds (NaN comparisons return False) and lands here too.
             if not (0.0 <= float(self.mc_edge_clamp_min) <= 0.5):
                 raise ValueError(
@@ -746,7 +726,6 @@ class HydroelasticSDF:
                     normal_matching=self.config.normal_matching,
                     anchor_contact=self.config.anchor_contact,
                     moment_matching=self.config.moment_matching,
-                    margin_contact_area=self.config.margin_contact_area,
                     hashtable_size_factor=self.config.contact_reduction_hashtable_size_factor,
                 )
                 self.contact_reduction = HydroelasticContactReduction(
@@ -764,16 +743,12 @@ class HydroelasticSDF:
                     device=device,
                     writer_func=writer_func,
                     config=HydroelasticReductionConfig(
-                        margin_contact_area=self.config.margin_contact_area,
                         hashtable_size_factor=self.config.contact_reduction_hashtable_size_factor,
                     ),
                     deterministic=self.deterministic,
                     enable_reduction=False,
                 )
-                self.decode_contacts_kernel = get_decode_contacts_kernel(
-                    self.config.margin_contact_area,
-                    writer_func,
-                )
+                self.decode_contacts_kernel = get_decode_contacts_kernel(writer_func)
 
         self._host_warning_poll_interval = 120
         self._launch_counter = 0
@@ -1820,10 +1795,7 @@ def create_mc_iterate_voxel_vertices_func(pressure_func: Any, paired_samples: bo
 # =============================================================================
 
 
-def get_decode_contacts_kernel(
-    margin_contact_area: float,
-    writer_func: Any = None,
-):
+def get_decode_contacts_kernel(writer_func: Any = None):
     """Create a kernel that decodes hydroelastic contacts without reduction.
 
     This kernel is used when reduce_contacts=False. It exports all generated
@@ -1831,8 +1803,6 @@ def get_decode_contacts_kernel(
     read from the contact buffer after being evaluated once during generation.
 
     Args:
-        margin_contact_area: Deprecated compatibility area [m^2] for speculative
-            contact activation stiffness.
         writer_func: Warp function for writing decoded contacts.
 
     Returns:
@@ -1918,7 +1888,7 @@ def get_decode_contacts_kernel(
             else:
                 k_a = shape_material_kh[shape_a]
                 k_b = shape_material_kh[shape_b]
-                c_stiffness = wp.static(margin_contact_area) * get_effective_stiffness(k_a, k_b)
+                c_stiffness = SPECULATIVE_CONTACT_AREA * get_effective_stiffness(k_a, k_b)
 
             # Create ContactData for the writer function
             contact_data = ContactData()
