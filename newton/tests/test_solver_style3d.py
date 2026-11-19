@@ -577,7 +577,7 @@ def _advance_affine_coordinates(x: wp.array[wp.vec3], x_inertia: wp.array[wp.vec
 
 
 def test_affine_body_linear_system(test, device):
-    """Solve full affine inertia with matrix-free mass coupling and cloth contact products."""
+    """Verify affine inertia, fixed-configuration rigidity, and matrix-free coupling."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, -2.0))
     newton.solvers.SolverStyle3D.register_custom_attributes(builder)
     newton.solvers.style3d.add_cloth_grid(
@@ -777,6 +777,68 @@ def test_affine_body_linear_system(test, device):
                 np.testing.assert_array_equal(product.numpy()[:offset], 0.0)
                 np.testing.assert_allclose(product.numpy()[offset:], expected_mass_product, rtol=2e-6, atol=2e-5)
                 solver.collision = collision
+
+            # Check rigidity at identical float32 coordinates, without comparing nonlinear trajectories.
+            coordinates = solver._x.numpy()
+            coordinates[offset + 1 : offset + 4] = ((1.15, 0.12, 0.0), (0.0, 0.92, 0.08), (0.03, 0.0, 1.08))
+            solver._x.assign(coordinates)
+            affine = coordinates[offset + 1 : offset + 4].T.astype(np.float64)
+            u, _, vt = np.linalg.svd(affine)
+            rotation = u @ np.diag([1.0, 1.0, np.linalg.det(u @ vt)]) @ vt
+            unit_force = np.zeros((4, 3))
+            unit_force[1:] = -(affine - rotation).T
+            test.assertGreater(np.linalg.norm(unit_force), 0.1)
+            # The PSD tangent is the normal-space projector, not the energy's Hessian away from SO(3).
+            unit_tangent = np.zeros((12, 12))
+            for column, basis in enumerate(np.eye(9)):
+                local = rotation.T @ basis.reshape(3, 3).T
+                normal = rotation @ (0.5 * (local + local.T))
+                unit_tangent[3:, 3 + column] = normal.T.reshape(-1)
+            unit_diagonal = np.stack([unit_tangent[3 * i : 3 * i + 3, 3 * i : 3 * i + 3] for i in range(4)])
+            body_probe = probe[offset : offset + 4].astype(np.float64)
+            unit_product = (unit_tangent @ body_probe.reshape(-1)).reshape(4, 3)
+            unit_off_diag_product = unit_product - np.einsum("ijk,ik->ij", unit_diagonal, body_probe)
+            default_ratio = newton.solvers.SolverStyle3D.Config().affine_rigidity_ratio
+            test.assertGreater(default_ratio, 0.0)
+            rhs_seed = np.full((solver._dof_block_count, 3), 0.5, dtype=np.float32)
+            solver._A_diag.fill_(wp.mat33(17.0))
+            for ratio, rigidity_dt in ((default_ratio, dt), (0.25, dt), (0.25, 2.0 * dt), (0.0, dt)):
+                with test.subTest(rigidity_ratio=ratio, rigidity_dt=rigidity_dt):
+                    config.affine_rigidity_ratio = ratio
+                    solver._rhs.assign(rhs_seed)
+                    solver._affine_body.eval_orthogonality(
+                        solver._x[offset:], solver._rhs[offset:], solver._A_diag[offset:], ratio, rigidity_dt
+                    )
+                    solver._matrix_free_Ax.fill_(wp.vec3(17.0))
+                    product = solver._matrix_free_multiply(probe_wp)
+                    if ratio == 0.0:
+                        # Do not clear the diagonal/cache in the test: evaluation must remove stale rigidity.
+                        np.testing.assert_array_equal(solver._rhs.numpy(), rhs_seed)
+                        np.testing.assert_array_equal(solver._A_diag.numpy()[offset:], 0.0)
+                        np.testing.assert_allclose(
+                            product.numpy()[offset:], expected_mass_product, rtol=2e-6, atol=2e-5
+                        )
+                    else:
+                        stiffness = ratio * np.trace(mass[1:4, 1:4]) / (3.0 * rigidity_dt**2)
+                        # Normalize out stiffness so tolerances cover only float32 SVD/assembly roundoff.
+                        np.testing.assert_allclose(
+                            (solver._rhs.numpy()[offset : offset + 4] - rhs_seed[offset : offset + 4]) / stiffness,
+                            unit_force,
+                            rtol=2e-5,
+                            atol=2e-6,
+                        )
+                        np.testing.assert_allclose(
+                            solver._A_diag.numpy()[offset : offset + 4] / stiffness,
+                            unit_diagonal,
+                            rtol=2e-5,
+                            atol=2e-6,
+                        )
+                        np.testing.assert_allclose(
+                            (product.numpy()[offset : offset + 4] - expected_mass_product[:4]) / stiffness,
+                            unit_off_diag_product,
+                            rtol=2e-5,
+                            atol=2e-6,
+                        )
 
             config.linear_iterations = 0
             graph = None
