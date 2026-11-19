@@ -240,7 +240,7 @@ def _warn_if_mujoco_versions_mismatch(mujoco: Any, mujoco_warp: Any) -> None:
     ]
 
     mismatches = []
-    for package, module in (("mujoco", mujoco), ("mujoco-warp", mujoco_warp)):
+    for package, module in (("mujoco-core", mujoco), ("mujoco-warp", mujoco_warp)):
         specifier = _required_specifier(package, requirements)
         installed_version = _installed_version(package, module)
         if specifier and installed_version and not _version_satisfies(installed_version, specifier):
@@ -257,11 +257,14 @@ def _warn_if_mujoco_versions_mismatch(mujoco: Any, mujoco_warp: Any) -> None:
 
 
 def _installed_version(package: str, module: Any) -> str | None:
+    # The legacy ``mujoco`` distribution installs over the files of ``mujoco-core``, whose metadata stays behind.
+    module_version = getattr(module, "__version__", None)
+    if module_version is not None:
+        return str(module_version)
     try:
         return importlib_metadata.version(package)
     except importlib_metadata.PackageNotFoundError:
-        module_version = getattr(module, "__version__", None)
-        return str(module_version) if module_version is not None else None
+        return None
 
 
 def _version_satisfies(installed_version: str, specifier: str) -> bool:
@@ -550,21 +553,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
     This will save the MuJoCo model as an MJCF file, which can be opened in the MuJoCo simulator.
 
-    It is also possible to visualize the simulation running in the SolverMuJoCo through MuJoCo's own viewer.
-    This may help to debug the simulation and see how the MuJoCo model looks like when it is created from the Newton model.
-
-    .. code-block:: python
-
-        import newton
-
-        solver = newton.solvers.SolverMuJoCo(model)
-
-        for _ in range(num_frames):
-            # step the solver
-            solver.step(state_in, state_out, control, contacts, dt)
-            state_in, state_out = state_out, state_in
-
-            solver.render_mujoco_viewer()
+    To inspect the converted model in MuJoCo's own viewer while it is simulated, see :ref:`mujoco-viewer`.
     """
 
     class ObservableKind(SolverBase.ObservableKind):
@@ -2212,7 +2201,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 name="pair_solreffriction",
                 frequency="mujoco:pair",
                 dtype=wp.vec2,
-                default=wp.vec2(0.02, 1.0),
+                default=wp.vec2(0.0, 0.0),
                 namespace="mujoco",
                 mjcf_attribute_name="solreffriction",
             )
@@ -3506,10 +3495,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         remaining elements of each dimension form one flex with the default settings, skipping
         triangles whose particles all belong to a tetrahedral flex. Negative ``young``,
         ``edgestiffness``, ``edgedamping``, ``radius``, and sliding ``friction`` values are derived
-        from the Newton model. Flexes collide with each other and with shapes flagged
-        :attr:`~newton.ShapeFlags.COLLIDE_PARTICLES`, and with themselves when ``selfcollide`` is
-        set. Springs whose particles all belong to a 2D or 3D flex form a separate flex that does
-        not collide. Flexes with ``edgeequality`` get a MuJoCo flex equality constraint on their edge lengths.
+        from the Newton model; with the discrete integrator, springs with stiffness get
+        ``edgeequality`` instead of edge stiffness and damping. Flexes collide with each other
+        and with shapes flagged :attr:`~newton.ShapeFlags.COLLIDE_PARTICLES`, and with themselves
+        when ``selfcollide`` is set. Springs whose particles all belong to a 2D or 3D flex form a
+        separate flex that does not collide. Flexes with ``edgeequality`` get a MuJoCo flex
+        equality constraint on their edge lengths.
 
         Args:
             model: The Newton model.
@@ -3588,7 +3579,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 # Surface triangles of a tetrahedral mesh would duplicate its 3D flex.
                 unowned &= ~covered
             if dim == 1:
-                # Cloth springs keep their stiffness in a separate flex that does not collide, since
+                # Cloth springs form a separate flex that does not collide, since
                 # colliding with the cloth flex over the same particles would push the cloth apart.
                 groups.append((-1, unowned & covered))
                 unowned &= ~covered
@@ -3618,14 +3609,32 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 if dim == 2:
                     mj_flex.thickness = params["thickness"]
                     mj_flex.elastic2d = int(params["elastic2d"])
+                edgeequality = bool(params["edgeequality"])
                 if dim == 1:
+                    # MuJoCo's discrete integrator rejects edge stiffness and damping in favor of edge constraints.
+                    discrete = spec.option.integrator == mujoco.mjtIntegrator.mjINT_DISCRETE
                     for name, values in (
                         ("edgestiffness", model.spring_stiffness),
                         ("edgedamping", model.spring_damping),
                     ):
                         value = params[name]
-                        setattr(mj_flex, name, value if value >= 0.0 else flex._uniform(values.numpy()[keep], name))
-                if params["edgeequality"]:
+                        if value < 0.0 and discrete:
+                            stiff = values.numpy()[keep] > 0.0
+                            if name == "edgestiffness" and stiff.any():
+                                edgeequality = True
+                                if not stiff.all():
+                                    warnings.warn(
+                                        "A MuJoCo flex constrains all of its edges, including springs without "
+                                        "stiffness. Use newton.solvers.mujoco.add_flex to split them into "
+                                        "separate flexes.",
+                                        NewtonWarning,
+                                        stacklevel=_external_warning_stacklevel(),
+                                    )
+                            value = 0.0
+                        elif value < 0.0:
+                            value = flex._uniform(values.numpy()[keep], name)
+                        setattr(mj_flex, name, value)
+                if edgeequality:
                     # MuJoCo rejects edge stiffness together with edge constraints.
                     mj_flex.edgestiffness = 0.0
                     equality = spec.add_equality(type=mujoco.mjtEq.mjEQ_FLEX)
@@ -3734,30 +3743,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 pair_kwargs["solreffriction"] = pair_solreffriction[i].tolist()
             if pair_solimp is not None:
                 pair_kwargs["solimp"] = pair_solimp[i].tolist()
-            authored_margin = float(pair_margin[i]) if pair_margin is not None else 0.0
-            authored_gap = float(pair_gap[i]) if pair_gap is not None else 0.0
-            if self._zero_margins_for_native_ccd:
-                # NATIVECCD/MULTICCD reject non-zero margin at put_model (#2106);
-                # gap is unrestricted under MuJoCo 3.9, so forward it.
-                pair_kwargs["margin"] = 0.0
-                if pair_gap is not None:
-                    pair_kwargs["gap"] = authored_gap
-                if self._use_mujoco_contacts and authored_margin > 0.0:
-                    warnings.warn(
-                        f"Pair ({geom_name1}, {geom_name2}): authored margin="
-                        f"{authored_margin} zeroed for NATIVECCD/MULTICCD "
-                        f"compatibility (#2106). To honor this value, switch "
-                        f"to Newton's collision pipeline by constructing the "
-                        f"solver with use_mujoco_contacts=False and feeding "
-                        f"Newton-generated contacts into step().",
-                        NewtonWarning,
-                        stacklevel=2,
-                    )
-            else:
-                if pair_margin is not None:
-                    pair_kwargs["margin"] = authored_margin
-                if pair_gap is not None:
-                    pair_kwargs["gap"] = authored_gap
+            if pair_margin is not None:
+                pair_kwargs["margin"] = float(pair_margin[i])
+            if pair_gap is not None:
+                pair_kwargs["gap"] = float(pair_gap[i])
             if pair_friction is not None:
                 pair_kwargs["friction"] = pair_friction[i].tolist()
 
@@ -4657,7 +4646,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             wind: Wind velocity vector (x, y, z) for lift and drag forces. If None, uses model custom attribute or MuJoCo's default (0, 0, 0).
             magnetic: Global magnetic flux vector (x, y, z). If None, uses model custom attribute or MuJoCo's default (0, -0.5, 0).
             use_mujoco_cpu: If True, use MuJoCo's C implementation instead of `mujoco_warp`.
-            enable_multiccd: If True, enable multi-CCD contact generation (up to 4 contact points per geom pair instead of 1). If False, disable it. If None, use the model custom attribute or disable it by default. Note: geom pairs where either geom has ``margin > 0`` always produce a single contact regardless of this flag. With the MuJoCo Warp backend and ``use_mujoco_contacts=True``, all geom and pair margins are zeroed when the model has box geoms and NATIVECCD (the default) or multi-CCD is enabled, or has mesh geoms and multi-CCD is enabled; see *Margin zeroing* in the MuJoCo solver docs. The CPU backend keeps them.
+            enable_multiccd: If True, enable multi-CCD contact generation (up to 4 contact points per geom pair instead of 1). If False, disable it. If None, use the model custom attribute or disable it by default.
             enable_sleeping: Whether to enable MuJoCo Warp's sleeping optimization. If None, uses the model custom attribute or defaults to False. Sleeping requires the GPU backend, the Newton solver, MuJoCo contact handling, island detection, and a non-RK4 integrator.
             nvmax: Maximum number of active degrees of freedom per world when sleeping is enabled. Must accommodate every initially awake degree of freedom. If None, allocates space for every degree of freedom, which is safe but provides no compact-solver memory savings.
             sleep_tolerance: Sleep velocity tolerance. If None, uses model custom attribute or MuJoCo default (0.001).
@@ -4688,7 +4677,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 flags map ``RUN_TO_RUN`` to ``DeterminismType.ALL`` before
                 model-constant initialization. This requests the backend's
                 available deterministic operations, not an end-to-end guarantee.
-                In MuJoCo Warp 4.0.0, contact and constraint sorting are still
+                MuJoCo Warp's contact and constraint sorting are still
                 unimplemented hooks; enabling their flags does not sort rows.
                 With Newton contacts, separately enable deterministic ordering on
                 :class:`newton.CollisionPipeline`. Neither setting guarantees
@@ -4942,9 +4931,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self._notify_joint_rest_q: wp.array[float] | None = None
         self._joint_limit_solref_snapshot: wp.array[wp.vec2] | None = None
 
-        self._viewer = None
-        """Instance of the MuJoCo viewer for debugging."""
-
         if use_mujoco_contacts and model._has_body_variants:
             # MuJoCo compiles one geom per shape; it cannot follow a variant row's shape.
             raise NotImplementedError(
@@ -4958,10 +4944,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 "which requires use_mujoco_contacts=True; Newton contacts are not applied to flex particles."
             )
         self._use_mujoco_contacts = use_mujoco_contacts
-        """Whether MuJoCo handles collision detection.
-
-        Controls margin zeroing: when True with the MuJoCo Warp backend, geom/pair
-        margins on the MuJoCo model are kept at zero for NATIVECCD compatibility (#2106)."""
+        """Whether MuJoCo handles collision detection."""
 
         flags = {
             name: bool(getattr(mujoco_attrs, f"flag_{name}").numpy()[0])
@@ -4990,20 +4973,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         enableflags = sum(
             int(getattr(mujoco.mjtEnableBit, f"mjENBL_{name.upper()}")) for name in self._ENABLE_FLAGS if flags[name]
         )
-
-        # Earlier mujoco_warp releases rejected non-zero margins at put_model() on
-        # box-box pairs (default NATIVECCD path) and on box/mesh pairs with MULTICCD.
-        # MuJoCo Warp 3.17 accepts them, so the CPU backend keeps the authored margins
-        # (its put_model() call for mjw_model included); the Warp backend still zeroes
-        # them until its contacts with margins are validated on GPU. Skip the
-        # workaround when no such geom types exist in the model.
-        shape_types_arr = model.shape_type.numpy()
-        has_box = bool(np.any(shape_types_arr == GeoType.BOX))
-        has_mesh = bool(np.any((shape_types_arr == GeoType.MESH) | (shape_types_arr == GeoType.CONVEX_MESH)))
-        self._zero_margins_for_native_ccd = not use_mujoco_cpu and (
-            (has_box and (flags["nativeccd"] or enable_multiccd)) or (enable_multiccd and has_mesh)
-        )
-        """True when the MuJoCo Warp NATIVECCD/MULTICCD margin workaround applies (#2106)."""
 
         if enable_sleeping:
             enableflags |= mujoco.mjtEnableBit.mjENBL_SLEEP
@@ -6021,8 +5990,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         if flags & ModelFlags.SHAPE_PROPERTIES:
             self._validate_compiled_mesh_scales()
-        if flags & ModelFlags.ACTUATOR_PROPERTIES:
-            self._validate_compiled_actuator_gears()
 
         if flags & ModelFlags.BODY_INERTIAL_PROPERTIES:
             self._update_model_inertial_properties()
@@ -6076,6 +6043,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             need_const_0 = True
         if flags & ModelFlags.ACTUATOR_PROPERTIES:
             self._update_actuator_properties()
+            # Gear and actuator armature change the inverse weights behind cached contact gains.
+            self._invalidate_contact_fast_path()
             need_const_0 = True
 
         has_any_connect = self.has_connect_constraints or self.has_jnt_connect_constraints
@@ -6167,7 +6136,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     # Keep the compiled actuator_lengthrange: MuJoCo computes it by simulation at compile
                     # time, and mujoco_warp.set_length_range() would overwrite muscle ranges with limits * gear.
                     if need_const_fixed:
-                        self._mujoco_warp.set_const_fixed(self.mjw_model, self.mjw_data)
+                        self._mujoco_warp.set_const(
+                            self.mjw_model,
+                            self.mjw_data,
+                            groups=self._mujoco_warp.SetConstGroup.FIXED,
+                            restore=False,
+                        )
                     if need_const_0:
                         self._set_const_0()
                     if need_solref_update:
@@ -6193,18 +6167,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 # MuJoCo Warp cannot infer that Newton-side property updates
                 # invalidate sleeping islands, so explicitly wake them.
                 self._wake_sleeping_worlds()
-
-    def _validate_compiled_actuator_gears(self) -> None:
-        """Reject gear edits that invalidate MuJoCo-Warp's folded passive damping."""
-        if not self._compiled_actuator_gear_indices.size or self.model.device.is_capturing:
-            return
-
-        current = self.model.mujoco.actuator_gear.numpy()[self._compiled_actuator_gear_indices]
-        if np.any(current != self._compiled_actuator_gears):
-            raise ValueError(
-                "MuJoCo-Warp requires actuator_gear for actuators with passive damping to match "
-                "the compiled gear in every world. Recreate the solver after changing these gears."
-            )
 
     def _validate_compiled_mesh_scales(self) -> None:
         """Reject resizing compiled mesh assets, including tessellated cones, outside capture."""
@@ -8379,24 +8341,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 if shape_geom_solmix is not None:
                     geom_params["solmix"] = shape_geom_solmix[shape]
                 geom_params["gap"] = float(shape_gap[shape])
-                authored_margin = float(shape_margin[shape])
-                if self._zero_margins_for_native_ccd:
-                    # Zeroed in the spec for NATIVECCD/MULTICCD compatibility (#2106).
-                    # Restored at runtime when use_mujoco_contacts=False via the
-                    # update_geom_properties_kernel.
-                    geom_params["margin"] = 0.0
-                    if self._use_mujoco_contacts and authored_margin > 0.0:
-                        warnings.warn(
-                            f"Geom {name}: authored margin={authored_margin} zeroed for "
-                            f"NATIVECCD/MULTICCD compatibility (#2106). "
-                            f"To honor this value, switch to Newton's collision pipeline by "
-                            f"constructing the solver with use_mujoco_contacts=False and feeding "
-                            f"Newton-generated contacts into step().",
-                            NewtonWarning,
-                            stacklevel=2,
-                        )
-                else:
-                    geom_params["margin"] = authored_margin
+                geom_params["margin"] = float(shape_margin[shape])
 
                 body.add_geom(**geom_params)
                 # store the geom name instead of assuming index
@@ -9477,19 +9422,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             kinematic_welds.append(eq)
 
         with warnings.catch_warnings():
-            # MuJoCo 3.17 counts flex elasticity as a passive force, but the discrete
-            # integrator solves it in the constraint solver, so elastic flexes trip this check.
+            # MuJoCo's check does not count stretch elasticity, so elastic flexes without bending trip it.
             warnings.filterwarnings(
                 "ignore", message=r".*is not rigid and has no equality constraints or passive forces"
             )
             self.mj_model = spec.compile()
-        if not self.use_mujoco_cpu and np.any(self.mj_model.actuator_armature != 0.0):
-            warnings.warn(
-                "SolverMuJoCo's MuJoCo-Warp backend does not support actuator armature. "
-                "This property is ignored; use use_mujoco_cpu=True to preserve its dynamics.",
-                NewtonWarning,
-                stacklevel=3,
-            )
         self._canonical_bvh_aabb = self.mj_model.bvh_aabb.copy()
         self._canonical_body_ipos = self.mj_model.body_ipos.copy()
         self._canonical_body_iquat = self.mj_model.body_iquat.copy()
@@ -9604,46 +9541,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 # MuJoCo Warp consumes only the compiled runtime policy. Keep
                 # the authoring policy on the CPU model for inspection and MJCF export.
                 self.mj_model.tree_sleep_policy[:] = sleep_policies
-
-            # MuJoCo-Warp 3.15 folds actuator damping into DOF/tendon damping.
-            # Keep that construction-time contribution when publishing Newton's
-            # per-world passive properties. Native MuJoCo applies it separately.
-            self._actuator_dof_damping = None
-            self._actuator_tendon_damping = None
-            if not self.use_mujoco_cpu and np.any(self.mj_model.actuator_damping != 0.0):
-                self._actuator_dof_damping = wp.array(
-                    self.mjw_model.dof_damping.numpy()[0] - self.mj_model.dof_damping,
-                    dtype=wp.float32,
-                    device=model.device,
-                )
-                self._actuator_tendon_damping = wp.array(
-                    self.mjw_model.tendon_damping.numpy()[0] - self.mj_model.tendon_damping,
-                    dtype=wp.float32,
-                    device=model.device,
-                )
-
-            # The fold also includes polynomial damping and depends on gear**2.
-            # Pin damped direct-control gears to the compiled template, including
-            # during graph replay where host validation cannot run.
-            self._actuator_gear_fixed = None
-            self._compiled_actuator_gear_indices = np.empty((0, 0), dtype=np.int32)
-            self._compiled_actuator_gears = np.empty((0, 6), dtype=np.float32)
-            if not self.use_mujoco_cpu and mjc_actuator_ctrl_source_list:
-                fixed = (
-                    (self.mj_model.actuator_damping != 0.0) | np.any(self.mj_model.actuator_dampingpoly != 0.0, axis=1)
-                ) & (np.asarray(mjc_actuator_ctrl_source_list) == self.CtrlSource.CTRL_DIRECT)
-                if np.any(fixed):
-                    self._actuator_gear_fixed = wp.array(fixed, dtype=wp.bool, device=model.device)
-                    source_rows = actuator_custom_attr_idx[fixed]
-                    actuators_per_world = model.mujoco.actuator_gear.shape[0] // nworld
-                    self._compiled_actuator_gear_indices = (
-                        np.arange(nworld, dtype=np.int32)[:, None] * actuators_per_world + source_rows
-                    )
-                    self._compiled_actuator_gears = self.mj_model.actuator_gear[fixed].astype(np.float32)
-
-            # patch mjw_model with mesh_pos if it doesn't have it
-            if not hasattr(self.mjw_model, "mesh_pos"):
-                self.mjw_model.mesh_pos = wp.array(self.mj_model.mesh_pos, dtype=wp.vec3)
 
             # --- Create unified mappings: MuJoCo[world, entity] -> Newton[entity] ---
 
@@ -10123,6 +10020,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     world_quat = qpos0_data.xquat[body] * (1.0, -1.0, -1.0, -1.0)
                     eq.data[0:11] = [0.0, 0.0, 0.0, *world_pos, *world_quat, 1.0]
                     eq.solref = spec.default.equality.solref
+                # MuJoCo 4.0 writes an infinite force range as "0 0", which does not load while limited.
+                for joint in spec.joints:
+                    if np.isinf(joint.actfrcrange).any():
+                        joint.actfrclimited = mujoco.mjtLimited.mjLIMITED_FALSE
                 with open(target_filename, "w") as f:
                     f.write(spec.to_xml())
                     logger.info("Saved mujoco model to %s", os.path.abspath(target_filename))
@@ -10472,7 +10373,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self._mujoco.mj_setConst(self.mj_model, self.mj_data)
         else:
             m = self.mjw_model
-            self._mujoco_warp.set_const_0(m, self.mjw_data)
+            groups = self._mujoco_warp.SetConstGroup
+            self._mujoco_warp.set_const(m, self.mjw_data, groups=groups.KIN0 | groups.INERT0)
             if invweight:
                 wp.launch(
                     resolve_actuator_dampratio_invweight_kernel,
@@ -10791,7 +10693,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.mjc_dof_to_newton_dof,
                 self.model.joint_friction,
                 self.model.joint_damping,
-                self._actuator_dof_damping,
                 dof_solimp,
                 dof_solref,
             ],
@@ -11172,7 +11073,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 shape_mjc_solref_mode,
                 self.model.shape_margin,
                 self.model.shape_gap,
-                int(self._use_mujoco_contacts and self._zero_margins_for_native_ccd),
             ],
             outputs=[
                 self.mjw_model.geom_friction,
@@ -11476,13 +11376,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         pair_solreffriction = getattr(mujoco_attrs, "pair_solreffriction", None)
         pair_solimp = getattr(mujoco_attrs, "pair_solimp", None)
         # Restore pair margin/gap at runtime: the spec carries only template-world
-        # values, so per-world variance must be reapplied. margin is suppressed only
-        # under NATIVECCD/MULTICCD (#2106); gap is always forwarded (MuJoCo 3.9).
-        pair_margin = (
-            None
-            if (self._use_mujoco_contacts and self._zero_margins_for_native_ccd)
-            else getattr(mujoco_attrs, "pair_margin", None)
-        )
+        # values, so per-world variance must be reapplied.
+        pair_margin = getattr(mujoco_attrs, "pair_margin", None)
         pair_gap = getattr(mujoco_attrs, "pair_gap", None)
         pair_friction = getattr(mujoco_attrs, "pair_friction", None)
 
@@ -11698,7 +11593,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.mjc_tendon_to_newton_tendon,
                 tendon_stiffness,
                 tendon_damping,
-                self._actuator_tendon_damping,
                 tendon_frictionloss,
                 tendon_range,
                 tendon_margin,
@@ -11761,7 +11655,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         if refresh_inertia:
             # Native CPU constants cover only world 0. Evaluate physical inertia in the existing batched model.
             self._update_dof_armature()
-            self._mujoco_warp.set_const_0(self.mjw_model, self.mjw_data)
+            groups = self._mujoco_warp.SetConstGroup
+            self._mujoco_warp.set_const(self.mjw_model, self.mjw_data, groups=groups.KIN0 | groups.INERT0)
         if self.use_mujoco_cpu and mapping.shape[0] == 1 and not locked:
             invweight = self.mj_model.dof_invweight0[None, :]
         else:
@@ -11934,7 +11829,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 actuator_gear,
                 actuator_cranklength,
                 actuators_per_world,
-                self._actuator_gear_fixed,
             ],
             outputs=[
                 self.mjw_model.actuator_gainprm,
@@ -12279,79 +12173,3 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         f"world 0 references tendon {tendon_refs[0, c]}, "
                         f"but other worlds reference {tendon_refs[1:, c].tolist()}."
                     )
-
-    def render_mujoco_viewer(
-        self,
-        show_left_ui: bool = True,
-        show_right_ui: bool = True,
-        show_contact_points: bool = True,
-        show_contact_forces: bool = False,
-        show_transparent_geoms: bool = True,
-    ):
-        """Create and synchronize the MuJoCo viewer.
-        The viewer will be created if it is not already open.
-
-        .. note::
-
-            The MuJoCo viewer only supports rendering Newton models with a single world,
-            unless ``use_mujoco_cpu`` is ``True`` or the solver was initialized with
-            ``separate_worlds`` set to ``False``.
-
-            The MuJoCo viewer is only meant as a debugging tool. It shows the geoms compiled at
-            construction, so it rejects models with body variants.
-
-        Args:
-            show_left_ui: Whether to show the left UI.
-            show_right_ui: Whether to show the right UI.
-            show_contact_points: Whether to show contact points.
-            show_contact_forces: Whether to show contact forces.
-            show_transparent_geoms: Whether to show transparent geoms.
-
-        Raises:
-            NotImplementedError: If the model has body variants.
-        """
-        if self.model._has_body_variants:
-            raise NotImplementedError(
-                "The MuJoCo viewer cannot follow body variant selections; use a Newton viewer instead."
-            )
-        if self._viewer is None:
-            import mujoco.viewer
-
-            mujoco = self._mujoco
-
-            # make the headlights brighter to improve visibility
-            # in the MuJoCo viewer
-            self.mj_model.vis.headlight.ambient[:] = [0.3, 0.3, 0.3]
-            self.mj_model.vis.headlight.diffuse[:] = [0.7, 0.7, 0.7]
-            self.mj_model.vis.headlight.specular[:] = [0.9, 0.9, 0.9]
-
-            self._viewer = mujoco.viewer.launch_passive(
-                self.mj_model, self.mj_data, show_left_ui=show_left_ui, show_right_ui=show_right_ui
-            )
-            # Enter the context manager to keep the viewer alive
-            self._viewer.__enter__()
-
-            self._viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = show_contact_points
-            self._viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_CONTACTFORCE] = show_contact_forces
-            self._viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_TRANSPARENT] = show_transparent_geoms
-
-        if self._viewer.is_running():
-            if not self.use_mujoco_cpu:
-                with wp.ScopedDevice(self.model.device):
-                    self._mujoco_warp.get_data_into(self.mj_data, self.mj_model, self.mjw_data)
-
-            self._viewer.sync()
-
-    def close_mujoco_viewer(self):
-        """Close the MuJoCo viewer if it exists."""
-        if hasattr(self, "_viewer") and self._viewer is not None:
-            try:
-                self._viewer.__exit__(None, None, None)
-            except Exception:
-                pass  # Ignore errors during cleanup
-            finally:
-                self._viewer = None
-
-    def __del__(self):
-        """Cleanup method to close the viewer when the solver is destroyed."""
-        self.close_mujoco_viewer()

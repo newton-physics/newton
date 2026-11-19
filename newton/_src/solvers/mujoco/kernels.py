@@ -1763,29 +1763,6 @@ def apply_mjc_free_joint_f_to_body_f_kernel(
 
 
 @wp.kernel
-def convert_body_xforms_to_warp_kernel(
-    mjc_body_to_newton: wp.array2d[wp.int32],
-    xpos: wp.array2d[wp.vec3],
-    xquat: wp.array2d[wp.quat],
-    # outputs
-    body_q: wp.array[wp.transform],
-):
-    """Convert MuJoCo body transforms to Newton body_q array.
-
-    Iterates over MuJoCo bodies [world, mjc_body], looks up Newton body index,
-    reads MuJoCo position/quaternion, and writes to Newton body_q.
-    """
-    world, mjc_body = wp.tid()
-    newton_body = mjc_body_to_newton[world, mjc_body]
-    if newton_body >= 0:
-        pos = xpos[world, mjc_body]
-        quat = xquat[world, mjc_body]
-        # convert from wxyz to xyzw
-        quat = quat_wxyz_to_xyzw(quat)
-        body_q[newton_body] = wp.transform(pos, quat)
-
-
-@wp.kernel
 def update_body_mass_ipos_kernel(
     mjc_body_to_newton: wp.array2d[wp.int32],
     body_com: wp.array[wp.vec3f],
@@ -2079,7 +2056,6 @@ def update_actuator_properties_kernel(
     newton_actuator_gear: wp.array[wp.spatial_vector],
     newton_actuator_cranklength: wp.array[float],
     actuators_per_world: wp.int32,
-    actuator_gear_fixed: wp.array[wp.bool],
     # outputs
     actuator_gain: wp.array2d[vec10],
     actuator_bias: wp.array2d[vec10],
@@ -2108,7 +2084,6 @@ def update_actuator_properties_kernel(
         newton_actuator_gear: Newton's model.mujoco.actuator_gear
         newton_actuator_cranklength: Newton's model.mujoco.actuator_cranklength
         actuators_per_world: Number of actuators per world in Newton model
-        actuator_gear_fixed: Actuators whose damping was folded using their compiled gear
     """
     world, actuator = wp.tid()
     source = mjc_actuator_ctrl_source[actuator]
@@ -2134,8 +2109,7 @@ def update_actuator_properties_kernel(
         actuator_forcerange[world, actuator] = newton_actuator_forcerange[world_newton_idx]
 
     actuator_actrange[world, actuator] = newton_actuator_actrange[world_newton_idx]
-    if not actuator_gear_fixed or not actuator_gear_fixed[actuator]:
-        actuator_gear[world, actuator] = newton_actuator_gear[world_newton_idx]
+    actuator_gear[world, actuator] = newton_actuator_gear[world_newton_idx]
     actuator_cranklength[world, actuator] = newton_actuator_cranklength[world_newton_idx]
 
 
@@ -2144,7 +2118,6 @@ def update_dof_force_properties_kernel(
     mjc_dof_to_newton_dof: wp.array2d[wp.int32],
     joint_friction: wp.array[float],
     joint_damping: wp.array[float],
-    actuator_dof_damping: wp.array[float],
     dof_solimp: wp.array[vec5],
     dof_solref: wp.array[wp.vec2],
     # outputs
@@ -2165,11 +2138,7 @@ def update_dof_force_properties_kernel(
 
     dof_frictionloss[world, mjc_dof] = joint_friction[newton_dof]
     if joint_damping:
-        damping = joint_damping[newton_dof]
-        if actuator_dof_damping:
-            damping += actuator_dof_damping[mjc_dof]
-        # Each [world, dof] has one writer; avoid lowering += to an atomic.
-        dof_damping[world, mjc_dof] = damping
+        dof_damping[world, mjc_dof] = joint_damping[newton_dof]
     if dof_solimp:
         dof_solimp_out[world, mjc_dof] = dof_solimp[newton_dof]
     if dof_solref:
@@ -2477,7 +2446,6 @@ def update_geom_properties_kernel(
     shape_mjc_solref_mode: wp.array[wp.int32],
     shape_margin: wp.array[float],
     shape_gap: wp.array[float],
-    zero_margin: int,
     # outputs
     geom_friction: wp.array2d[wp.vec3f],
     geom_solref: wp.array2d[wp.vec2f],
@@ -2499,13 +2467,9 @@ def update_geom_properties_kernel(
     Note: geom_aabb and geom_rbound are recomputed for primitive geoms only;
     other geoms keep the bounds compiled by MuJoCo.
 
-    Note: geom_gap is forwarded from shape_gap (MuJoCo 3.9 semantics:
-    gap widens the detection envelope without affecting force generation).
-    geom_margin is zeroed when MuJoCo handles collisions because
-    mujoco_warp's NATIVECCD broadphase still rejects non-zero margins at
-    put_model() time (#2106).  When Newton provides contacts, margins are
-    restored from shape_margin so that ``convert_newton_contacts_to_mjwarp_kernel``
-    can compute correct ``includemargin`` thresholds via ``contact_params``.
+    Note: geom_margin and geom_gap are forwarded directly from shape_margin and
+    shape_gap (MuJoCo 3.9+ semantics: gap widens the detection envelope without
+    affecting force generation).
     """
     world, geom_idx = wp.tid()
 
@@ -2542,10 +2506,7 @@ def update_geom_properties_kernel(
         geom_solmix[world, geom_idx] = shape_geom_solmix[shape_idx]
 
     geom_gap[world, geom_idx] = shape_gap[shape_idx]
-    if zero_margin:
-        geom_margin[world, geom_idx] = 0.0
-    else:
-        geom_margin[world, geom_idx] = shape_margin[shape_idx]
+    geom_margin[world, geom_idx] = shape_margin[shape_idx]
 
     size = shape_size[shape_idx]
     gtype = geom_type[geom_idx]
@@ -3023,7 +2984,6 @@ def update_tendon_properties_kernel(
     # Newton tendon properties (inputs)
     tendon_stiffness: wp.array[wp.float32],
     tendon_damping: wp.array[wp.float32],
-    actuator_tendon_damping: wp.array[float],
     tendon_frictionloss: wp.array[wp.float32],
     tendon_range: wp.array[wp.vec2],
     tendon_margin: wp.array[wp.float32],
@@ -3062,11 +3022,7 @@ def update_tendon_properties_kernel(
     if tendon_stiffness:
         tendon_stiffness_out[world, mjc_tendon] = tendon_stiffness[newton_tendon]
     if tendon_damping:
-        damping = tendon_damping[newton_tendon]
-        if actuator_tendon_damping:
-            damping += actuator_tendon_damping[mjc_tendon]
-        # Each [world, tendon] has one writer; keep accumulation local.
-        tendon_damping_out[world, mjc_tendon] = damping
+        tendon_damping_out[world, mjc_tendon] = tendon_damping[newton_tendon]
     if tendon_frictionloss:
         tendon_frictionloss_out[world, mjc_tendon] = tendon_frictionloss[newton_tendon]
     if tendon_range:
