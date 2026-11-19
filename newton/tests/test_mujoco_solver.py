@@ -14452,7 +14452,7 @@ class TestMuJoCoSolverForceSpaceContactSolref(unittest.TestCase):
             world = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
             SolverMuJoCo.register_custom_attributes(world)
             cfg = newton.ModelBuilder.ShapeConfig(
-                is_hydroelastic=True, sdf_max_resolution=8, density=125.0, margin=0.0, gap=0.0
+                is_hydroelastic=True, sdf_max_resolution=8, density=125.0, margin=0.0, gap=0.0, mu=0.5
             )
             attrs = {"mujoco:solref_mode": SOLREF_MODE_FORCE_SPACE}
             world.add_shape_box(-1, hx=0.5, hy=0.2, hz=0.1, cfg=cfg, custom_attributes=attrs)
@@ -14484,6 +14484,7 @@ class TestMuJoCoSolverForceSpaceContactSolref(unittest.TestCase):
             contacts.rigid_contact_point1.fill_(wp.vec3(0.0, 0.0, -0.0025))
             contacts.rigid_contact_normal.fill_(wp.vec3(0.0, 0.0, 1.0))
             contacts.rigid_contact_stiffness.assign(np.array([1.0e4, 1.0e3, 3.0e3, 6.0e3, 1.0e10] * 2))
+            contacts.rigid_contact_damping.assign(0.02 * contacts.rigid_contact_stiffness.numpy())
             contacts.contact_generation.fill_(1)
             alias = copy(contacts)  # Share the device buffers before the solver creates any caches.
             graphs, expected = [], []
@@ -14495,10 +14496,10 @@ class TestMuJoCoSolverForceSpaceContactSolref(unittest.TestCase):
                 expected.append(output.body_qd.numpy().copy())
                 solver.step(state, output, None, contacts, dt)
                 np.testing.assert_allclose(output.body_qd.numpy(), expected[-1], rtol=2.0e-4, atol=1.0e-7)
-            # Expected normal speeds for 1 kg, 1e4 N/m, 5 mm depth, and impedance 0.95.
-            # The larger timestep hits the frequency limit.
-            np.testing.assert_allclose(expected[0][:, 2], 0.0025, rtol=2.0e-4)
-            np.testing.assert_allclose(expected[1][:, 2], 0.02375, rtol=2.0e-4)
+            # Backward-Euler spring-damper response: m=1 kg, K=1e4 N/m, C=200 N s/m, depth=5 mm.
+            for dt, velocity in zip((0.001, 0.05), expected, strict=True):
+                speed = dt * 50.0 / (1.0 + dt * 200.0 + dt * dt * 1.0e4)
+                np.testing.assert_allclose(velocity[:, 2], speed, rtol=2.0e-4)
             for index in (0, 1, 0):
                 wp.capture_launch(graphs[index])
                 np.testing.assert_allclose(output.body_qd.numpy(), expected[index], rtol=2.0e-4, atol=1.0e-7)
@@ -14535,23 +14536,33 @@ class TestMuJoCoSolverForceSpaceContactSolref(unittest.TestCase):
             solver.step(state, output, None, contacts, 0.001)
             np.testing.assert_allclose(output.body_qd.numpy()[0], expected[0][0], rtol=2.0e-4, atol=1.0e-7)
 
-            # Stop a small sliding motion below mu * N = 2.5 N, and slide under a larger load.
+            # An explicit zero damping must remain undamped, without a critical-damping fallback.
+            contacts.rigid_contact_damping.zero_()
+            solver.mjw_data.qacc_warmstart.zero_()
+            solver.step(state, output, None, contacts, 0.001)
+            self.assertAlmostEqual(float(output.body_qd.numpy()[0, 2]), 0.05 / 1.01, delta=1.0e-5)
+            contacts.rigid_contact_damping.assign(0.02 * contacts.rigid_contact_stiffness.numpy())
+
+            # Preload N=50 N: hold below mu * N = 25 N, and slide under a larger load.
             contacts.rigid_contact_count.fill_(10)
             contacts.contact_generation.fill_(3)
             initial_velocity = np.zeros(model.joint_dof_count, dtype=np.float32)
             initial_velocity[::6] = 5.0e-4
             state.joint_qd.assign(initial_velocity)
             load = np.zeros((model.body_count, 6), dtype=np.float32)
-            for force, held in ((1.0, True), (3.5, False)):
+            load[:, 2] = -50.0
+            for force, held in ((10.0, True), (40.0, False)):
                 load[:, 0] = force
                 state.body_f.assign(load)
                 solver.mjw_data.qacc_warmstart.zero_()
                 solver.step(state, output, None, contacts, 0.001)
                 velocity = output.body_qd.numpy()[:, 0]
                 if held:
-                    self.assertLess(float(np.abs(velocity).max()), 1.0e-5)
+                    # Native tangential regularization leaves a small residual velocity.
+                    speed = (5.0e-4 + 0.001 * force) / (1.0 + 100.0 * 0.001 * (200.0 + 0.001 * 1.0e4))
+                    np.testing.assert_allclose(velocity, speed, rtol=2.0e-4, atol=1.0e-7)
                 else:
-                    self.assertGreater(float(velocity.min()), 1.0e-4)
+                    self.assertGreater(float(velocity.min()), 1.0e-3)
 
     def _simulate_sphere_contact(
         self,

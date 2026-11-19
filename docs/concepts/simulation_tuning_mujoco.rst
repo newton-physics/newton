@@ -156,11 +156,11 @@ automatically. For the hydroelastic opt-in, follow
 :ref:`mujoco-hydroelastic-patch-response` and set mode ``0`` on both shapes
 before constructing the solver.
 
-For hydroelastic patch pressure contacts with the default pressure law, tune
-``kh`` instead of ``ke``/``kd``; normal damping is automatic. If increasing
-``kh`` no longer reduces penetration, reduce ``dt`` or increase substeps.
-The gain and ``solimp`` recipes below exclude these contacts; see
-:ref:`mujoco-hydroelastic-patch-response`.
+For hydroelastic pressure contacts with the default pressure law, tune ``kh``
+for stiffness and ``kd / ke`` for damping. The two shapes' ratios add to give
+the contact relaxation time. Set both shapes' ``kd=0`` for no generated damping.
+The ordinary-contact gain and ``solimp`` recipes below exclude these contacts;
+see :ref:`mujoco-hydroelastic-patch-response` for timestep and impedance limits.
 
 For other force-space contacts, evaluate damping and timestep safety
 with :ref:`contact-stiffness-sanity-checks`. The mode does not add friction,

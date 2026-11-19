@@ -493,11 +493,13 @@ Hydroelastic patch response
 
    The hydroelastic patch response may change without prior notice.
 
-For hydroelastic shapes, setting ``mujoco:solref_mode`` to ``0`` on both shapes
-opts into a response based on the sum of their pressure-contact stiffnesses.
-These stiffnesses come from ``kh`` and the contact geometry. The solver shares
-MuJoCo impedance across the patch in proportion to each contact's stiffness.
-This reduces sensitivity to how many contacts represent the patch.
+For two hydroelastic shapes in force-space mode (``mujoco:solref_mode=0``),
+the settings below enable a per-contact spring-damper response. Stiffness comes
+from the pressure law and contact geometry. Damping comes from
+:attr:`Contacts.rigid_contact_damping`, populated by the collision pipeline
+from the shapes' ``kd / ke`` ratios. The solver maps these gains through native
+MuJoCo contact parameters. Contact frames stay orthonormal, so native sensors
+and contact visualization need no rescaling.
 
 Set the mode when adding each hydroelastic shape, before constructing the solver::
 
@@ -512,27 +514,38 @@ USD assets cannot select this mode directly. For imported shapes, set
 ``mujoco:solref_mode`` in the builder after import and before finalization.
 
 Use MuJoCo-Warp with Newton contacts (``use_mujoco_contacts=False``),
-``cone="elliptic"``, and Euler, implicit, or implicitfast integration. Recreate the solver and CUDA
-graphs after changing which shapes select this mode. Default, raw, and mixed
-pairs keep the existing solver mapping. Generated hydroelastic damping changes
-for all pairs; see :ref:`hydroelastic damping <hydroelastic-contact-damping>`.
-Other solver settings use the existing contact mapping. Existing force-space
-hydroelastic pairs change response and may need retuning.
+``cone="elliptic"``, and Euler, implicit, implicitfast, or discrete integration.
+Recreate the solver and CUDA graphs after changing which shapes select this
+mode. Default, raw, and mixed pairs keep the existing solver mapping; generated
+hydroelastic damping changes for all pairs as described in
+:ref:`hydroelastic damping <hydroelastic-contact-damping>`. Other solver settings use the existing
+contact mapping.
 
-This mode takes normal stiffness from contact geometry and the pressure law
-(``kh`` for the default law), so ``ke`` does not tune it. It chooses normal
-damping automatically; ``kd`` and per-contact damping do not tune it.
-It also limits stiffness and damping according to the timestep.
-Use smaller steps if this limit makes a stiff patch too soft. Friction uses a
-damping rate of ``1 / dt`` for any positive ``kf``; changing its positive value
-does not tune this rate. ``kf=0`` still disables friction.
-Raise ``impratio`` to reduce creep below the friction limit. For example,
-``impratio=100`` reduces slip in the soft-slab case from issue #4561.
+Tune ``kh`` for stiffness with the default pressure law. Each penetrating
+contact receives damping ``c = k * (kd_a / ke_a + kd_b / ke_b)`` for positive
+``ke`` and nonnegative ``kd``. Set ``kd=0`` on both shapes for no generated
+damping. Per-contact damping overrides are honored, including zero.
+``ke`` affects damping through this ratio; it does not set hydroelastic stiffness.
+Existing force-space hydroelastic scenes may need retuning.
 
-Use ``HydroelasticSDF.Config(reduce_contacts=False)``. Reduced contacts can
-jitter with this mode; the solver does not check this setting. Reduced contacts
-and center-of-pressure matching remain follow-up work. Rounding near a patch
-edge can also misclassify contacts and cause small velocity kicks.
+For Euler, implicit, and implicitfast, this mapping gives the implicit normal
+spring-damper law while the requested impedance lies within MuJoCo's limits.
+The lower limit adds artificial inertia at small contact stiffnesses or timesteps.
+For a flat patch with identical contact Jacobians, its upper bound is about
+``0.0001 * N`` times the body mass for ``N`` contacts. This error does not vanish
+with smaller timesteps. The upper limit can make part of the response explicit.
+Discrete integration retains the lower-limit error; articulated systems with
+joint damping also depend on MuJoCo's effective-mass scaling. Exact continuum
+convergence is not guaranteed.
+
+Friction targets removal of tangential velocity within one timestep for any
+positive ``kf``; ``kf=0`` disables friction. Raise ``impratio`` to reduce creep
+below the friction limit. Friction remains approximate and can still creep.
+
+Use ``HydroelasticSDF.Config(reduce_contacts=False)``. Reduced contacts and
+center-of-pressure matching remain follow-up work. The solver does not check
+this setting. Rounding near a patch edge can also misclassify contacts and cause
+small velocity kicks.
 
 
 .. _mujoco-contact-solref-conversion:
