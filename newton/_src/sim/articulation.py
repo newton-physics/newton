@@ -930,7 +930,7 @@ def eval_articulation_ik(
 
     if type == JointType.D6:
         x_err_c = wp.quat_rotate_inv(q_p, x_err)
-        v_err_c = wp.quat_rotate_inv(q_p, v_err)
+        v_err_c = wp.quat_rotate_inv(q_p, v_err - wp.cross(w_p, x_err))
         if lin_axis_count > 0:
             axis = joint_axis[qd_start + 0]
             joint_q[q_start + 0] = wp.dot(x_err_c, axis)

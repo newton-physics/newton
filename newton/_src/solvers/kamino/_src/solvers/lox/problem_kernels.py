@@ -14,7 +14,7 @@ from functools import cache
 
 import warp as wp
 
-from ...core.joints import JointActuationType, JointCorrectionMode, JointDoFType
+from ...core.joints import D6JointAxes, JointActuationType, JointCorrectionMode, JointDoFType
 from ...core.math import compute_body_pose_update_with_logmap, contact_wrench_matrix_from_points
 from ...core.types import mat36f, mat66f, vec6f
 from ...geometry.contacts import ContactMode
@@ -1025,7 +1025,8 @@ def make_update_proximal_structural_multipliers_kernel(correction: JointCorrecti
     The candidate twist blends the global and projected twists of the joint bodies. The exact
     joint residual at the candidate poses corrects the linearized residual of the three
     positional rows of fixed, revolute, and spherical joints, expressed in the frozen joint
-    frame of their Jacobian; the correction of the other rows relaxes to zero. A non-finite
+    frame of their Jacobian. It also corrects the locked translations of D6 joints in their
+    parent anchor frame. The correction of the other rows relaxes to zero. A non-finite
     update fails the world and stops the update of the joint.
     """
 
@@ -1037,6 +1038,7 @@ def make_update_proximal_structural_multipliers_kernel(correction: JointCorrecti
         rotation_tolerance: wp.float32,
         model_joints_wid: wp.array[wp.int32],
         model_joints_dof_type: wp.array[wp.int32],
+        model_joints_d6_axes: wp.array[D6JointAxes],
         model_joints_coords_offset: wp.array[wp.int32],
         model_joints_dofs_offset: wp.array[wp.int32],
         model_joints_kinematic_cts_offset: wp.array[wp.int32],
@@ -1128,6 +1130,8 @@ def make_update_proximal_structural_multipliers_kernel(correction: JointCorrecti
         )
         wp.static(make_write_joint_data(correction))(
             dof_type,
+            model_joints_d6_axes,
+            jid,
             row_begin,
             model_joints_dofs_offset[jid],
             model_joints_coords_offset[jid],
@@ -1151,6 +1155,11 @@ def make_update_proximal_structural_multipliers_kernel(correction: JointCorrecti
             frozen_separation = wp.quat_rotate_inv(frozen_frame, separation)
             for axis in range(3):
                 candidate_residual[row_begin + axis] = frozen_separation[axis]
+        position_rows = int(0)
+        if full_position_block:
+            position_rows = 3
+        elif dof_type == JointDoFType.D6:
+            position_rows = 3 - model_joints_d6_axes[jid].linear_count
 
         # Update the multipliers of the joint rows, and the multiplier impulses on its bodies
         residual_max = wp.float32(0.0)
@@ -1175,7 +1184,7 @@ def make_update_proximal_structural_multipliers_kernel(correction: JointCorrecti
                 joint_rotation_dead_zone,
             )
             feedback_residual = linear_residual
-            if full_position_block and row - row_begin < 3:
+            if row - row_begin < position_rows:
                 feedback_residual = candidate_residual[row]
             defect = proximal_defect[row]
             defect += proximal_relaxation * (feedback_residual - linear_residual - defect)

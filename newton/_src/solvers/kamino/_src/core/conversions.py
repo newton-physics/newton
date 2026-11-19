@@ -27,10 +27,12 @@ from .geometry import GeometriesModel
 from .joints import (
     JOINT_QMAX,
     JOINT_QMIN,
+    D6JointAxes,
     DofActuationPath,
     JointActuationType,
     JointDoFType,
     JointsModel,
+    _axis_rotmatn_from_vec3f,
     _has_missing_implicit_pd_gains,
     has_dynamic_cts_wp,
     has_effort_cts_wp,
@@ -40,7 +42,7 @@ from .joints import (
 from .materials import MaterialDescriptor, MaterialManager
 from .shapes import max_contacts_for_shape_pair
 from .size import SizeKamino
-from .types import mat63f, to_warp_int32_array, vec6f
+from .types import mat63f, to_warp_int32_array
 
 if TYPE_CHECKING:
     from ..core.model import ModelKamino, ModelKaminoInfo
@@ -84,6 +86,7 @@ class StructuralUpdateViolation(IntEnum):
     FRICTION_CTS = 7
     EFFORT_CTS = 8
     CARTESIAN_HANDEDNESS = 9
+    CYLINDRICAL_AXES = 10
 
 
 ###
@@ -386,21 +389,43 @@ def validate_joint_actuation_updates_kernel(
 def validate_joint_axes_kernel(
     # Inputs:
     joint_qd_start: wp.array[wp.int32],
+    joint_dof_dim: wp.array2d[wp.int32],
     joint_axis: wp.array[wp.vec3f],
     joint_dof_type: wp.array[wp.int32],
     # Outputs:
     violations: wp.array[wp.int32],
 ):
-    """Find the first universal, gimbal, or Cartesian joint with invalid axis configuration."""
+    """Find the first joint with an invalid axis configuration."""
     joint = wp.tid()
     dof_type = joint_dof_type[joint]
+    dof_start = joint_qd_start[joint]
+    if dof_type == JointDoFType.D6 or dof_type == JointDoFType.CYLINDRICAL:
+        linear_count = joint_dof_dim[joint, 0]
+        angular_count = joint_dof_dim[joint, 1]
+        start = dof_start
+        for family in range(2):
+            count = linear_count if family == 0 else angular_count
+            for i in range(count):
+                axis = joint_axis[start + i]
+                if not wp.isfinite(wp.dot(axis, axis)) or wp.abs(wp.dot(axis, axis) - 1.0) > 1.0e-6:
+                    wp.atomic_min(violations, StructuralUpdateViolation.NONORTHONORMAL_AXES, joint)
+                    return
+                for j in range(i):
+                    if wp.abs(wp.dot(axis, joint_axis[start + j])) > 1.0e-6:
+                        wp.atomic_min(violations, StructuralUpdateViolation.NONORTHONORMAL_AXES, joint)
+                        return
+            start += count
+        if dof_type == JointDoFType.CYLINDRICAL:
+            if wp.length_sq(joint_axis[dof_start] - joint_axis[dof_start + 1]) > 1.0e-12:
+                wp.atomic_min(violations, StructuralUpdateViolation.CYLINDRICAL_AXES, joint)
+        return
+
     is_universal = dof_type == JointDoFType.UNIVERSAL
     is_gimbal = dof_type == JointDoFType.GIMBAL or dof_type == JointDoFType.GIMBAL_LEFT_HANDED
     is_cartesian = dof_type == JointDoFType.CARTESIAN
     if not is_universal and not is_gimbal and not is_cartesian:
         return
 
-    dof_start = joint_qd_start[joint]
     axis_0 = joint_axis[dof_start]
     axis_1 = joint_axis[dof_start + 1]
     valid = (
@@ -548,8 +573,6 @@ def joint_conversion_kernel(
     model_joint_armature: wp.array[wp.float32],
     model_joint_damping: wp.array[wp.float32],
     model_joint_friction: wp.array[wp.float32],
-    joint_limit_lower: wp.array[wp.float32],
-    joint_limit_upper: wp.array[wp.float32],
     body_is_immovable: wp.array[wp.int32],
     # Outputs:
     joint_dof_type: wp.array[wp.int32],
@@ -574,26 +597,26 @@ def joint_conversion_kernel(
     q_count_j = model_joint_q_start[joint_id + 1] - model_joint_q_start[joint_id]
     dofs_start_j = model_joint_qd_start[joint_id]
     qd_count_j = model_joint_qd_start[joint_id + 1] - dofs_start_j
-    limit_upper_j = vec6f()
-    limit_lower_j = vec6f()
     dof_axes_j = mat63f()
-    for i in range(qd_count_j):
-        limit_upper_j[i] = joint_limit_upper[dofs_start_j + i]
-        limit_lower_j[i] = joint_limit_lower[dofs_start_j + i]
+    for i in range(wp.min(qd_count_j, 6)):
         dof_axes_j[i] = model_joint_axis[dofs_start_j + i]
-    dof_type_j = JointDoFType.from_newton_wp(
-        type_j, q_count_j, qd_count_j, dof_dim_j, limit_lower_j, limit_upper_j, dof_axes_j
-    )
-    assert dof_type_j >= 0, "Joint DoF type must be valid"
+    dof_type_j = JointDoFType.from_newton_wp(type_j, q_count_j, qd_count_j, dof_dim_j, dof_axes_j)
+    joint_dof_type[joint_id] = dof_type_j
+    if dof_type_j < 0:
+        return
 
     # Get joint type properties
-    ncoords_j = JointDoFType.num_coords_wp(dof_type_j)
-    ndofs_j = JointDoFType.num_dofs_wp(dof_type_j)
-    num_kinematic_cts_j = JointDoFType.num_cts_wp(dof_type_j)
+    if dof_type_j == JointDoFType.D6:
+        ncoords_j = q_count_j
+        ndofs_j = qd_count_j
+        num_kinematic_cts_j = 6 - qd_count_j
+    else:
+        ncoords_j = JointDoFType.num_coords_wp(dof_type_j)
+        ndofs_j = JointDoFType.num_dofs_wp(dof_type_j)
+        num_kinematic_cts_j = JointDoFType.num_cts_wp(dof_type_j)
     assert ncoords_j >= 0, "Number of joint coordinates must be valid"
     assert ndofs_j >= 0, "Number of joint DoFs must be valid"
     assert num_kinematic_cts_j >= 0, "Number of joint constraints must be valid"
-    joint_dof_type[joint_id] = dof_type_j
     joint_num_coords[joint_id] = ncoords_j
     joint_num_dofs[joint_id] = ndofs_j
     act_type_j = int(JointActuationType.PASSIVE)
@@ -659,12 +682,27 @@ def joint_conversion_kernel(
         joint_num_bounded_cts[joint_id] = num_friction_cts_j + num_effort_cts_j
 
 
+@wp.func
+def _complete_d6_basis(axes: mat63f, start: int, count: int) -> wp.mat33f:
+    if count == 0:
+        return wp.identity(3, dtype=wp.float32)
+    first = axes[start]
+    if count == 1:
+        return _axis_rotmatn_from_vec3f(first)
+    second = axes[start + 1]
+    third = wp.cross(first, second)
+    if count == 3:
+        third = axes[start + 2]
+    return wp.matrix_from_cols(first, second, third)
+
+
 @wp.kernel
 def joint_frame_conversion_kernel(
     # Inputs:
     model_joint_parent: wp.array[wp.int32],
     model_joint_child: wp.array[wp.int32],
     model_joint_qd_start: wp.array[wp.int32],
+    model_joint_dof_dim: wp.array2d[wp.int32],
     model_joint_axis: wp.array[wp.vec3f],
     model_body_com: wp.array[wp.vec3f],
     model_joint_X_p: wp.array[wp.transformf],
@@ -676,6 +714,7 @@ def joint_frame_conversion_kernel(
     joint_F_r_F: wp.array[wp.vec3f],
     joint_X_B: wp.array[wp.mat33f],
     joint_X_F: wp.array[wp.mat33f],
+    joint_d6_axes: wp.array[D6JointAxes],
 ):
     # Retrieve the joint index
     joint_id = wp.tid()
@@ -705,6 +744,27 @@ def joint_frame_conversion_kernel(
     for i in range(ndofs_j):
         dof_axes_j[i] = model_joint_axis[dofs_start_j + i]
     R_axis_j = JointDoFType.axes_matrix_from_joint_type(dof_type_j, dof_axes_j)
+    if dof_type_j == JointDoFType.D6:
+        axes = D6JointAxes()
+        axes.linear_count = model_joint_dof_dim[joint_id, 0]
+        axes.angular_count = model_joint_dof_dim[joint_id, 1]
+        axes.linear = _complete_d6_basis(dof_axes_j, 0, axes.linear_count)
+        axes.third_axis_sign = 1.0
+        if axes.angular_count == 2:
+            # Complete the intrinsic XYZ chart with the locked angle in the middle.
+            first = dof_axes_j[axes.linear_count]
+            last = dof_axes_j[axes.linear_count + 1]
+            axes.angular = wp.matrix_from_cols(first, wp.cross(last, first), last)
+        elif axes.angular_count == 3:
+            first = dof_axes_j[axes.linear_count]
+            second = dof_axes_j[axes.linear_count + 1]
+            third = wp.cross(first, second)
+            if wp.dot(third, dof_axes_j[axes.linear_count + 2]) < 0.0:
+                axes.third_axis_sign = -1.0
+            axes.angular = wp.matrix_from_cols(first, second, third)
+        else:
+            axes.angular = _complete_d6_basis(dof_axes_j, axes.linear_count, axes.angular_count)
+        joint_d6_axes[joint_id] = axes
     X_B_j = wp.quat_to_matrix(q_p_j) @ R_axis_j
     X_F_j = wp.quat_to_matrix(q_c_j) @ R_axis_j
 
@@ -1134,12 +1194,13 @@ def validate_model_structural_updates(
     - :attr:`StructuralUpdateViolation.LIMIT_FINITE`: finite-limit state changed
     - :attr:`StructuralUpdateViolation.ACTUATION_PARTITION`: passive/actuated partition changed
     - :attr:`StructuralUpdateViolation.INVALID_TARGET_MODE`: unsupported target-mode combination
-    - :attr:`StructuralUpdateViolation.NONORTHONORMAL_AXES`: nonorthonormal universal/Cartesian/gimbal axes
+    - :attr:`StructuralUpdateViolation.NONORTHONORMAL_AXES`: nonorthonormal D6 axis bases
     - :attr:`StructuralUpdateViolation.GIMBAL_HANDEDNESS`: gimbal axis handedness changed
     - :attr:`StructuralUpdateViolation.IMMOVABILITY_FLIP`: a body's Kamino immovability status changed
     - :attr:`StructuralUpdateViolation.FRICTION_CTS`: joint friction constraint topology changed
     - :attr:`StructuralUpdateViolation.EFFORT_CTS`: effort-row topology changed
-    - :attr:`StructuralUpdateViolation.CARTESIAN_HANDEDNESS`: left-handed Cartesian axes
+    - :attr:`StructuralUpdateViolation.CARTESIAN_HANDEDNESS`: Cartesian axes changed handedness
+    - :attr:`StructuralUpdateViolation.CYLINDRICAL_AXES`: cylindrical axes became distinct
 
     An entry equal to the maximum of the body, joint, and DoF counts indicates that no
     violation of that type was found.
@@ -1153,7 +1214,7 @@ def validate_model_structural_updates(
         violations: The array to store the violations.
         check_dof: Whether to check the DoF updates.
         check_actuation: Whether to check the actuation updates.
-        check_axes: Whether to check universal and gimbal axes.
+        check_axes: Whether to validate joint axes.
         check_body_immovability: Whether to check that no body's immovability
             status changed (via mass, inertia, or KINEMATIC flag flip).
         kinematic_only_immovable: Whether only KINEMATIC bodies were built as immovable,
@@ -1216,6 +1277,7 @@ def validate_model_structural_updates(
             inputs=[
                 # Inputs:
                 model.joint_qd_start,
+                model.joint_dof_dim,
                 model.joint_axis,
                 joints.dof_type,
                 # Outputs:
@@ -1278,7 +1340,7 @@ def _validate_joint_axes(
     joint_dof_type: wp.array[wp.int32],
     violations: wp.array[wp.int32],
 ) -> None:
-    """Validate universal, gimbal, and Cartesian axes before Warp frame conversion."""
+    """Validate joint axes before Warp frame conversion."""
     violations.fill_(model.joint_count)
     if model.joint_count > 0:
         wp.launch(
@@ -1287,6 +1349,7 @@ def _validate_joint_axes(
             inputs=[
                 # Inputs:
                 model.joint_qd_start,
+                model.joint_dof_dim,
                 model.joint_axis,
                 joint_dof_type,
                 # Outputs:
@@ -1300,7 +1363,8 @@ def _validate_joint_axes(
         raise ValueError(
             f"Invalid joint configuration for SolverKamino:\n"
             f"  - joint {invalid_joint} ({model.joint_label[invalid_joint]!r}): "
-            "universal, Cartesian, and gimbal axes must be unit length and orthogonal"
+            "universal, Cartesian, and gimbal axes must be unit length and orthogonal. "
+            "D6 linear and angular bases must each be orthonormal."
         )
     invalid_joint = int(violations_np[StructuralUpdateViolation.GIMBAL_HANDEDNESS])
     if invalid_joint < model.joint_count:
@@ -1342,6 +1406,7 @@ def convert_model_joint_transforms(model: Model, joints: JointsModel) -> None:
             model.joint_parent,
             model.joint_child,
             model.joint_qd_start,
+            model.joint_dof_dim,
             model.joint_axis,
             model.body_com,
             model.joint_X_p,
@@ -1353,6 +1418,7 @@ def convert_model_joint_transforms(model: Model, joints: JointsModel) -> None:
             joints.F_r_Fj,
             joints.X_Bj,
             joints.X_Fj,
+            joints.d6_axes,
         ],
         device=model.device,
     )
@@ -1588,16 +1654,17 @@ def convert_rigid_bodies(
 
 def _warn_ignored_free_joint_friction(
     model: Model | ModelView,
-    joint_dof_type: wp.array[wp.int32],
+    joint_dof_type: np.ndarray,
 ) -> None:
     """Warn when friction is assigned to a FREE joint (ignored by Kamino)."""
     if model.joint_count == 0:
         return
-    dof_type_np = joint_dof_type.numpy()
+    free_joint_ids = np.flatnonzero(joint_dof_type == JointDoFType.FREE)
+    if free_joint_ids.size == 0:
+        return
     friction_np = model.joint_friction.numpy()
     qd_start_np = model.joint_qd_start.numpy()
     positive_friction = friction_np > 0.0
-    free_joint_ids = np.flatnonzero(dof_type_np == JointDoFType.FREE)
     positive_friction_prefix = np.empty(positive_friction.size + 1, dtype=np.intp)
     positive_friction_prefix[0] = 0
     np.cumsum(positive_friction, dtype=np.intp, out=positive_friction_prefix[1:])
@@ -1694,8 +1761,6 @@ def convert_joints(
             model.joint_armature,
             model.joint_damping,
             model.joint_friction,
-            model.joint_limit_lower,
-            model.joint_limit_upper,
             model_bodies.is_immovable,
             # Outputs:
             joint_dof_type,
@@ -1714,7 +1779,14 @@ def convert_joints(
         device=model.device,
     )
 
-    _warn_ignored_free_joint_friction(model, joint_dof_type)
+    joint_dof_type_np = joint_dof_type.numpy()
+    unsupported_joints = np.flatnonzero(joint_dof_type_np < 0)
+    if unsupported_joints.size:
+        joint = int(unsupported_joints[0])
+        raise ValueError(f"Unsupported joint layout for SolverKamino at joint {joint} ({model.joint_label[joint]!r}).")
+    _warn_ignored_free_joint_friction(model, joint_dof_type_np)
+    d6_axis_count = model.joint_count if np.any(joint_dof_type_np == JointDoFType.D6) else 0
+    joint_d6_axes = wp.empty(d6_axis_count, dtype=D6JointAxes, device=model.device)
 
     axis_validation_violations = wp.empty(len(StructuralUpdateViolation), dtype=wp.int32, device=model.device)
     _validate_joint_axes(model, joint_dof_type, axis_validation_violations)
@@ -1727,6 +1799,7 @@ def convert_joints(
             model.joint_parent,
             model.joint_child,
             model.joint_qd_start,
+            model.joint_dof_dim,
             model.joint_axis,
             model.body_com,
             model.joint_X_p,
@@ -1738,6 +1811,7 @@ def convert_joints(
             joint_F_r_F,
             joint_X_B,
             joint_X_F,
+            joint_d6_axes,
         ],
         device=model.device,
     )
@@ -1896,8 +1970,6 @@ def convert_joints(
     joint_world_start_np = model.joint_world_start.numpy()
     joint_child_np = model.joint_child.numpy()
     joint_parent_np = model.joint_parent.numpy()
-    joint_dof_type_np = joint_dof_type.numpy()
-
     # Assign base bodies based on articulation roots (if articulations are present)
     world_has_non_floating_root = np.zeros((model.world_count,), dtype=bool)
     if model.articulation_count > 0:
@@ -2103,6 +2175,7 @@ def convert_joints(
 
     # Joints
     model_joints = JointsModel(
+        d6_axes=joint_d6_axes,
         num_joints=model.joint_count,
         label=model.joint_label,
         wid=model.joint_world,

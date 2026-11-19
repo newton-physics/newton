@@ -307,10 +307,10 @@ class TestGimbal(unittest.TestCase):
             SolverKamino(model)
 
     def test_cartesian_rejects_invalid_axes(self):
-        """Reject three translational axes that are not orthonormal or form a left-handed set."""
+        """Accept both handednesses for translation and reject nonorthogonal axes."""
         cases = {
             "right-handed": (1.0, None),
-            "left-handed": (-1.0, "three translational axes must form a right-handed set"),
+            "left-handed": (-1.0, None),
             "not orthogonal": (1.0, "Cartesian, and gimbal axes must be unit length and orthogonal"),
         }
         for name, (sign, error) in cases.items():
@@ -337,7 +337,8 @@ class TestGimbal(unittest.TestCase):
                     model.joint_axis.assign(axes)
                 if error is None:
                     solver = SolverKamino(model)
-                    self.assertEqual(solver._model_kamino.joints.dof_type.numpy()[cartesian], JointDoFType.CARTESIAN)
+                    expected = JointDoFType.CARTESIAN if sign > 0.0 else JointDoFType.D6
+                    self.assertEqual(solver._model_kamino.joints.dof_type.numpy()[cartesian], expected)
                 else:
                     with self.assertRaisesRegex(ValueError, error):
                         SolverKamino(model)

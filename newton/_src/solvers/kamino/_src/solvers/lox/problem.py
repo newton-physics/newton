@@ -826,6 +826,7 @@ class LOXProblem:
                 rotation_tolerance,
                 joints.wid,
                 joints.dof_type,
+                joints.d6_axes,
                 joints.coords_offset,
                 joints.dofs_offset,
                 joints.kinematic_cts_offset,

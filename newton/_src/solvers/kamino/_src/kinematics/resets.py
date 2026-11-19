@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import warp as wp
 
-from ..core.joints import JointDoFType
+from ..core.joints import D6JointAxes, JointCorrectionMode, JointDoFType
 from ..core.model import ModelKamino
 from ..core.state import StateKamino
 from ..kinematics.joints import (
@@ -18,6 +18,7 @@ from ..kinematics.joints import (
     rod_joint_relative_twist,
     select_gimbal_coords,
     universal_intermediary_axes,
+    write_d6_joint_motion,
 )
 
 ###
@@ -293,6 +294,7 @@ def _reset_joints_state_from_bodies_state(
     # Inputs
     joint_world_id: wp.array[wp.int32],
     joint_dof_type: wp.array[wp.int32],
+    joint_d6_axes: wp.array[D6JointAxes],
     joint_coords_offset: wp.array[wp.int32],
     joint_dofs_offset: wp.array[wp.int32],
     joint_dynamic_cts_offset: wp.array[wp.int32],
@@ -361,9 +363,23 @@ def _reset_joints_state_from_bodies_state(
         u_j = rod_joint_relative_twist(T_B, T_F, u_B, u_F, wp.transform_get_rotation(p_j))
 
     # Evaluate joint coordinates/velocity from relative motion
-    _compute_and_write_joint_coords_and_vel(
-        dof_type, r_j, q_j, u_j, coords_offset, dofs_offset, joint_q_0, joint_q, joint_u
-    )
+    if dof_type == JointDoFType.D6:
+        write_d6_joint_motion(
+            joint_d6_axes[jid],
+            JointCorrectionMode.CONTINUOUS,
+            dofs_offset,
+            coords_offset,
+            r_j,
+            q_j,
+            u_j,
+            joint_q_0,
+            joint_q,
+            joint_u,
+        )
+    else:
+        _compute_and_write_joint_coords_and_vel(
+            dof_type, r_j, q_j, u_j, coords_offset, dofs_offset, joint_q_0, joint_q, joint_u
+        )
     for i in range(num_coords):
         joint_q_prev[coords_offset + i] = joint_q[coords_offset + i]
 
@@ -785,6 +801,7 @@ def reset_joints_state_from_bodies_state(
         inputs=[
             model.joints.wid,
             model.joints.dof_type,
+            model.joints.d6_axes,
             model.joints.coords_offset,
             model.joints.dofs_offset,
             model.joints.dynamic_cts_offset,
