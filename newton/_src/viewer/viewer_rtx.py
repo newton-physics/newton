@@ -30,7 +30,7 @@ import warp as wp
 import newton
 
 from ..core.types import Axis, override
-from ..exceptions import NewtonDeprecationWarning, NewtonWarning
+from ..exceptions import NewtonWarning
 from ..utils.mesh import compute_vertex_normals
 
 try:
@@ -3032,42 +3032,6 @@ void main() {
                     return pixels
 
         raise RuntimeError("Frame capture could not find the LdrColor render output")
-
-    def save_screenshot(self, path: str) -> None:
-        """Save the last rendered frame to an image file.
-
-        .. deprecated:: 1.7
-            Use :meth:`get_frame` and an image library instead, for example
-            ``PIL.Image.fromarray(viewer.get_frame().numpy()).save(path)``.
-
-        The file format is inferred from the extension (e.g. ``.png``, ``.jpg``).
-        Call this after at least one completed frame has been rendered (e.g.
-        after the simulation loop). Works in headless mode. While rendering is
-        paused, capture returns the frozen image.
-
-        Args:
-            path: Output image filename.
-
-        Raises:
-            RuntimeError: No completed image exists, or the renderer has no
-                color output.
-        """
-        warnings.warn(
-            "ViewerRTX.save_screenshot() is deprecated in Newton 1.7; "
-            "use get_frame().numpy() and an image library such as Pillow to save the image instead.",
-            NewtonDeprecationWarning,
-            stacklevel=2,
-        )
-        from PIL import Image
-
-        pixels = self._capture_screenshot_pixels()
-        pil_img = Image.fromarray(pixels)
-        ext = os.path.splitext(path)[1].lower()
-        if ext in {".jpg", ".JPG", ".jpeg", ".JPEG"}:
-            pil_img = pil_img.convert("RGB")
-            pil_img.save(path, quality=92)
-        else:
-            pil_img.save(path)
 
     # ----------------------------------------------------------- viewer API
 

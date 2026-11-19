@@ -53,7 +53,6 @@ class Example:
             bend_stiffness=5.0e1,
             bend_damping=1.0e0,
             label="cable",
-            body_frame_origin="com",
         )
 
         # Pin the first segment.

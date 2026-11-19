@@ -94,7 +94,7 @@ sudo apt-get install -y libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev 
 ### MuJoCo
 The first `pip` package to install is MuJoCo:
 ```bash
-pip install mujoco --pre -f https://py.mujoco.org/
+pip install mujoco-core --pre -f https://py.mujoco.org/
 ```
 
 **NOTE**:

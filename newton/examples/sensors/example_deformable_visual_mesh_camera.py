@@ -322,7 +322,6 @@ class Example:
             bend_damping=1.0e0,
             twist_damping=1.0e0,
             label="camera_cable",
-            body_frame_origin="com",
         )
 
         first = rod_bodies[0]

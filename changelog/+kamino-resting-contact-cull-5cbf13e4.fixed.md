@@ -1,0 +1,1 @@
+Fix bodies at rest in `SolverKamino` with the PADMM or SCC backend occasionally getting a sudden velocity kick when stepped with contacts from `CollisionPipeline`. A resting contact whose separation rounded to just above zero was culled as speculative; contacts within `ConstraintStabilizationConfig.delta` of touching are now kept.

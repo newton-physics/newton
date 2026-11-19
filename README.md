@@ -1206,6 +1206,9 @@ python -m newton.examples --describe robot_omniwheel
       </a>
     </td>
     <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/mujoco/example_mujoco_flex.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_mujoco_flex.jpg" alt="MuJoCo Flex">
+      </a>
     </td>
     <td align="center" width="33%">
     </td>
@@ -1215,6 +1218,7 @@ python -m newton.examples --describe robot_omniwheel
       <code>python -m newton.examples mujoco_sleeping</code>
     </td>
     <td align="center" width="33%">
+      <code>python -m newton.examples mujoco_flex</code>
     </td>
     <td align="center" width="33%">
     </td>
