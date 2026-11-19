@@ -60,6 +60,30 @@ def _select(model, variants, bodies=None):
 
 
 class TestBodyVariants(unittest.TestCase):
+    def test_material_pair_ids_follow_replicated_variants(self):
+        """Remap builder-local material IDs when adding and replicating variants."""
+        cube = _variant("cube")
+        cube_id = cube.add_material("cube")
+        cube.shape_material_id[0] = cube_id
+        cube.set_material_pair(cube_id, cube_id, mu=0.25)
+        spheres = _variant("spheres")
+        sphere_id = spheres.add_material("spheres")
+        spheres.shape_material_id[:] = [sphere_id, sphere_id]
+        spheres.set_material_pair(sphere_id, sphere_id, mu=0.5)
+        env = newton.ModelBuilder()
+        env.add_material("env")
+        env.add_body_variants(env.add_body(), [cube, spheres])
+        scene = newton.ModelBuilder()
+        scene.add_material("scene")
+        scene.replicate(env, 2)
+        model = scene.finalize(device="cpu")
+
+        self.assertEqual(model.material_names, ("scene", "env", "cube", "spheres"))
+        _select(model, [1, 0])
+        np.testing.assert_array_equal(model.shape_material_id.numpy()[[0, 1, 2]], [3, 3, 2])
+        np.testing.assert_array_equal(model._material_pair_friction.keys.numpy(), [(2 << 32) | 2, (3 << 32) | 3])
+        np.testing.assert_array_equal(model._material_pair_friction.mu.numpy(), [0.25, 0.5])
+
     def test_finalize_tables_and_initial_selection(self):
         cube, spheres = _variant("cube"), _variant("spheres")
         env = newton.ModelBuilder()

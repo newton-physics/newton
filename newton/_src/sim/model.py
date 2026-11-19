@@ -22,6 +22,7 @@ from ..exceptions import NewtonDeprecationWarning, NewtonWarning
 from ..geometry.deformable_visual import DeformableVisualMesh, _DeformableVisualSkinBatches
 from ..geometry.flags import ShapeFlags
 from ..geometry.inertia import _inverse_inertia_wp
+from ..geometry.materials import MaterialPairFriction
 from ..utils.deprecation import RemovedAttribute, warn_deprecation
 from ..utils.mesh import MeshAdjacency, MeshAdjacencyData
 from .contacts import Contacts
@@ -78,6 +79,7 @@ _SHAPE_VARIANT_ATTRIBUTES = (
     "shape_material_kd",
     "shape_material_kf",
     "shape_material_ka",
+    "shape_material_id",
     "shape_material_mu",
     "shape_material_mu_static",
     "shape_material_restitution",
@@ -579,6 +581,7 @@ class Model:
         "shape_material_kd": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_material_kf": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_material_ka": AttributeSpec(AttributeFrequency.SHAPE),
+        "shape_material_id": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_material_mu": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_material_mu_static": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_material_restitution": AttributeSpec(AttributeFrequency.SHAPE),
@@ -1043,6 +1046,14 @@ class Model:
         """Shape contact friction gain [N·s/m], shape [shape_count], float."""
         self.shape_material_ka: wp.array[wp.float32] | None = None
         """Shape contact adhesion distance [m], shape [shape_count], float."""
+        self.shape_material_id: wp.array[wp.int32] | None = None
+        """Indices into :attr:`material_names`, or -1 for unassigned shapes, shape [shape_count].
+
+        None when the builder registered no materials.
+        """
+        self.material_names: tuple[str, ...] = ()
+        """Builder-assigned contact material names, indexed by material ID."""
+        self._material_pair_friction = MaterialPairFriction()
         self.shape_material_mu: wp.array[wp.float32] | None = None
         """Shape coefficient of friction [dimensionless], shape [shape_count], float. The dynamic (kinetic)
         coefficient for solvers that model stick-slip friction (see :attr:`shape_material_mu_static`)."""
@@ -3104,7 +3115,11 @@ class Model:
     def _variant_copy_launches(self) -> list[wp.Launch]:
         """Recorded copies of every variant shape attribute into the variant rows, rebuilt when an
         array is replaced; :meth:`select_body_variants` sets the selection and dimension."""
-        copies = [(self._variant_shape_geometry[name], getattr(self, name)) for name in _SHAPE_VARIANT_ATTRIBUTES]
+        copies = [
+            (self._variant_shape_geometry[name], getattr(self, name))
+            for name in _SHAPE_VARIANT_ATTRIBUTES
+            if name != "shape_material_id" or self.shape_material_id is not None
+        ]
         copies.extend(self._variant_shape_custom.values())
         key = tuple(id(array) for pair in copies for array in pair)
         if self._variant_copy_cache is not None and self._variant_copy_cache[0] == key:

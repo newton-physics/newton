@@ -67,6 +67,20 @@ class TestMaterials(NewtonTestCase):
 
         setup_test_output(self, verbose=self.verbose)
 
+    def test_material_pair_table_only_stores_configured_pairs(self):
+        """Keep device storage proportional to configured pairs as materials grow."""
+        manager = MaterialManager()
+        for i in range(256):
+            manager.register(MaterialDescriptor(name=f"surface_{i}"))
+        manager.configure_pair(256, 1, MaterialPairProperties(dynamic_friction=0.25))
+        manager.configure_pair(3, 2, MaterialPairProperties(dynamic_friction=0.5))
+
+        with wp.ScopedDevice(test_context.device):
+            pairs = manager.make_material_pairs_model()
+        self.assertEqual(pairs.num_material_pairs, 3)
+        np.testing.assert_array_equal(pairs.keys.numpy(), [0, (1 << 32) | 256, (2 << 32) | 3])
+        np.testing.assert_allclose(pairs.dynamic_friction.numpy(), [DEFAULT_FRICTION, 0.25, 0.5])
+
     def test_00_default_material_properties(self):
         # Create a default-constructed surface material
         material = MaterialDescriptor(name="default")

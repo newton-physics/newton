@@ -76,6 +76,7 @@ def _parse_colliders(
     visuals: _UsdVisuals,
     mass_properties: _UsdMassProperties,
     material_specs: dict[str, _PhysicsMaterial],
+    material_ids: dict[str, int],
     default_shape_density: float,
     path_body_map: dict[str, int],
     path_shape_map: dict[str, int],
@@ -340,6 +341,7 @@ def _parse_colliders(
                     "xform": shape_xform,
                     "cfg": ModelBuilder.ShapeConfig(
                         **shape_contact,
+                        material_id=material_ids.get(material_path),
                         margin=inertia_margin,
                         gap=gap_val,
                         density=shape_density,

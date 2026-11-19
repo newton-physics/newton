@@ -2170,7 +2170,7 @@ def register_materials(model: Model, materials_manager: MaterialManager) -> np.n
         NumPy array of material indices for each geom.
     """
     # Set up material parameter dictionary
-    material_param_indices: dict[tuple[float, float, float], int] = {}
+    material_param_indices: dict[tuple[int, float, float, float], int] = {}
     for i, material in enumerate(materials_manager.materials):
         # Adding already existing (default) materials from material manager, making sure the values
         # undergo the same transformation as any material parameters in the Newton model (conversion
@@ -2178,12 +2178,13 @@ def register_materials(model: Model, materials_manager: MaterialManager) -> np.n
         mu = float(np.float32(material.dynamic_friction))
         mu_static = float(np.float32(material.static_friction))
         restitution = float(np.float32(material.restitution))
-        material_param_indices[(mu, mu_static, restitution)] = i
+        material_param_indices[(-1, mu, mu_static, restitution)] = i
 
     # Newton material parameters
     shape_friction = model.shape_material_mu.numpy().tolist()
     shape_static_friction = model.shape_material_mu_static.numpy().tolist()
     shape_restitution = model.shape_material_restitution.numpy().tolist()
+    shape_material_id = model.shape_material_id.numpy().tolist() if model.material_names else None
     # Mapping from geom to material index
     geom_material = np.zeros((model.shape_count,), dtype=int)
     # TODO: Integrate world index for shape material
@@ -2191,12 +2192,13 @@ def register_materials(model: Model, materials_manager: MaterialManager) -> np.n
 
     for s in range(model.shape_count):
         # Check if material with these parameters already exists
-        material_desc = (shape_friction[s], shape_static_friction[s], shape_restitution[s])
+        authored_id = shape_material_id[s] if shape_material_id is not None else -1
+        material_desc = (authored_id, shape_friction[s], shape_static_friction[s], shape_restitution[s])
         if material_desc in material_param_indices:
             material_id = material_param_indices[material_desc]
         else:
             material = MaterialDescriptor(
-                name=f"{model.shape_label[s]}_material",
+                name=f"shape_{s}_material",
                 restitution=shape_restitution[s],
                 static_friction=shape_static_friction[s],
                 dynamic_friction=shape_friction[s],
@@ -2223,8 +2225,8 @@ def convert_geometries(
     # Update size object
     model_size.sum_of_num_materials = materials_manager.num_materials
     model_size.max_of_num_materials = materials_manager.num_materials
-    model_size.sum_of_num_material_pairs = materials_manager.num_material_pairs
-    model_size.max_of_num_material_pairs = materials_manager.num_material_pairs
+    model_size.sum_of_num_material_pairs = materials_manager.num_configured_pairs
+    model_size.max_of_num_material_pairs = materials_manager.num_configured_pairs
 
     # Convert shapes to the Kamino data structure
     with wp.ScopedDevice(model.device):

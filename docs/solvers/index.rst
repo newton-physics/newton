@@ -202,6 +202,8 @@ formulation.
   :class:`~newton.solvers.SolverVBD`, :class:`~newton.solvers.SolverKamino`,
   :class:`~newton.solvers.SolverStyle3D`, and
   :class:`~newton.solvers.SolverImplicitMPM`.
+- :ref:`Material pair friction`: :class:`~newton.solvers.SolverKamino` and
+  :class:`~newton.solvers.SolverXPBD`.
 - ``ke`` / ``kd``: :class:`~newton.solvers.SolverFeatherstone`,
   :class:`~newton.solvers.SolverSemiImplicit`,
   :class:`~newton.solvers.SolverMuJoCo`, and

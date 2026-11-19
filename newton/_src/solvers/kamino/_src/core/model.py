@@ -5,12 +5,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 import warp as wp
 
 # Newton imports
+from .....geometry.materials import MaterialPairFriction
 from .....sim import Model
 from ....coupled.model_view import ModelView
 
@@ -551,6 +552,13 @@ class ModelKamino:
     The material-pairs data is currently defined globally to be shared by all worlds.
     """
 
+    material_pair_friction: MaterialPairFriction = field(default_factory=MaterialPairFriction)
+
+    @property
+    def shape_material_id(self) -> wp.array[wp.int32] | None:
+        """Return the current Newton material IDs for the converted geometries."""
+        return self._model.shape_material_id if self._model is not None else None
+
     ###
     # Properties
     ###
@@ -881,4 +889,5 @@ class ModelKamino:
             geoms=model_geoms,
             materials=model_materials,
             material_pairs=model_material_pairs,
+            material_pair_friction=model._material_pair_friction,
         )
