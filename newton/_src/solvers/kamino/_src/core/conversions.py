@@ -35,6 +35,7 @@ from .joints import (
     has_dynamic_cts_wp,
     has_effort_cts_wp,
     has_friction_cts_wp,
+    has_rod_dynamic_cts_wp,
 )
 from .materials import MaterialDescriptor, MaterialManager
 from .shapes import max_contacts_for_shape_pair
@@ -326,6 +327,8 @@ def validate_joint_dof_updates_kernel(
                 joint_armature[dof],
                 joint_damping[dof],
             )
+            if joint_dof_type[tid] == JointDoFType.ROD:
+                dynamic_required = has_rod_dynamic_cts_wp(joint_target_ke[dof], joint_target_kd[dof])
             dynamic_built = dynamic_row < dynamic_row_end and dynamic_cts_axis[dynamic_row] == axis
             if dynamic_required != dynamic_built:
                 wp.atomic_min(violations, StructuralUpdateViolation.DYNAMIC_CTS, tid)
@@ -618,6 +621,8 @@ def joint_conversion_kernel(
             model_joint_armature[dof],
             model_joint_damping[dof],
         )
+        if dof_type_j == JointDoFType.ROD:
+            dynamic = has_rod_dynamic_cts_wp(model_joint_target_ke[dof], model_joint_target_kd[dof])
         friction = has_friction_cts_wp(dof_type_j, model_joint_friction[dof])
         if dynamic:
             num_dynamic_cts_j += 1
@@ -948,6 +953,8 @@ def pack_joint_constraint_axes_kernel(
             model_joint_armature[dof],
             model_joint_damping[dof],
         )
+        if dof_type == JointDoFType.ROD:
+            dynamic = has_rod_dynamic_cts_wp(model_joint_target_ke[dof], model_joint_target_kd[dof])
         friction = has_friction_cts_wp(dof_type, model_joint_friction[dof])
         effort = has_effort_cts_wp(
             act_type,
@@ -2121,6 +2128,7 @@ def convert_joints(
         f_j=model.joint_friction,
         k_p_j=model.joint_target_ke,
         k_d_j=model.joint_target_kd,
+        q_j_rest=model.joint_rest_q,
         q_j_0=model.joint_q,
         dq_j_0=model.joint_qd,
         num_coords=joint_num_coords,
