@@ -8676,7 +8676,7 @@ def Xform "Articulation" (
     @requires("pxr.Usd")
     def test_contact_response_solref_scales_convex_decomposition_parts(self):
         """Test convex-decomposition parts get the same mass-scaled ke/kd as their source shape."""
-        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
 
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
@@ -8718,11 +8718,19 @@ def Xform "Articulation" (
                 )
             return set(shape_indices)
 
-        # An authored collider that merely uses the part naming scheme is not a part: its gains
-        # come from the builder defaults and must stay unscaled.
+        # An authored collider that merely uses the part naming scheme is not a part. Its own
+        # mjc:solref puts it in SOLREF_MODE_RAW, but with the Newton resolver first its gains
+        # come from the bound material, so they must stay unscaled.
+        material = UsdShade.Material.Define(stage, "/Materials/Mat")
+        material.GetPrim().ApplyAPI("NewtonMaterialAPI")
+        UsdPhysics.MaterialAPI.Apply(material.GetPrim())
+        material.GetPrim().GetAttribute("newton:contactStiffness").Set(4000.0)
+        material.GetPrim().GetAttribute("newton:contactDamping").Set(100.0)
         lookalike = UsdGeom.Cube.Define(stage, "/Body/Mesh_convex_7")
         lookalike.CreateSizeAttr(0.02)
         UsdPhysics.CollisionAPI.Apply(lookalike.GetPrim())
+        UsdShade.MaterialBindingAPI.Apply(lookalike.GetPrim()).Bind(material, "physics")
+        lookalike.GetPrim().CreateAttribute("mjc:solref", Sdf.ValueTypeNames.DoubleArray).Set([0.01, 1.0])
 
         with mock.patch.object(builder, "approximate_meshes", side_effect=add_convex_part):
             result = builder.add_usd(stage, schema_resolvers=[usd.SchemaResolverNewton(), usd.SchemaResolverMjc()])
@@ -8733,8 +8741,10 @@ def Xform "Articulation" (
             self.assertAlmostEqual(builder.shape_material_ke[shape], 0.5 * 1.0e4, places=1)
             self.assertAlmostEqual(builder.shape_material_kd[shape], 0.5 * 200.0, places=3)
         lookalike_shape = result["path_shape_map"]["/Body/Mesh_convex_7"]
-        self.assertAlmostEqual(builder.shape_material_ke[lookalike_shape], builder.default_shape_cfg.ke, places=3)
-        self.assertAlmostEqual(builder.shape_material_kd[lookalike_shape], builder.default_shape_cfg.kd, places=3)
+        solref_mode = builder.custom_attributes["mujoco:solref_mode"].values
+        self.assertEqual(solref_mode[lookalike_shape], SOLREF_MODE_RAW)
+        self.assertAlmostEqual(builder.shape_material_ke[lookalike_shape], 4000.0, places=3)
+        self.assertAlmostEqual(builder.shape_material_kd[lookalike_shape], 100.0, places=3)
 
     @requires("pxr.Usd")
     def test_mimic_constraint_parsing(self):
