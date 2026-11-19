@@ -983,7 +983,7 @@ add_function_test(
 )
 
 
-def test_aligned_box_minimum_depth(test, device):
+def test_aligned_box_minimum_depth(test, device, *, split=False):
     """Resolve thin aligned boxes on their minimum-depth faces in either order."""
     half = np.array(
         [(0.8682952523, 0.1414007992, 0.0418564677), (0.0013216696, 0.0001417170, 0.1454590708)],
@@ -1015,6 +1015,7 @@ def test_aligned_box_minimum_depth(test, device):
     model = builder.finalize(device=device)
     state = model.state()
     pipeline = newton.CollisionPipeline(model)
+    test.assertEqual(pipeline.narrow_phase.split_gjk_mpr, split)
     contacts = pipeline.contacts()
     pipeline.collide(state, contacts)
     count = int(contacts.rigid_contact_count.numpy()[0])
@@ -1041,6 +1042,22 @@ def test_aligned_box_minimum_depth(test, device):
 
 add_function_test(
     TestBoxContactNormal, "test_aligned_box_minimum_depth", test_aligned_box_minimum_depth, devices=get_test_devices()
+)
+
+
+def test_aligned_box_minimum_depth_split(test, device):
+    """Preserve minimum-depth aligned-box witnesses through the split CUDA kernels."""
+    if not device.is_cuda:
+        test.skipTest("Split collision kernels run only on CUDA")
+    with patch("newton._src.sim.collide._SPLIT_GJK_MPR_LEAN_PAIR_COUNT_THRESHOLD", 0):
+        test_aligned_box_minimum_depth(test, device, split=True)
+
+
+add_function_test(
+    TestBoxContactNormal,
+    "test_aligned_box_minimum_depth_split",
+    test_aligned_box_minimum_depth_split,
+    devices=get_test_devices(),
 )
 
 

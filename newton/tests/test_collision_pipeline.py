@@ -8115,9 +8115,15 @@ def test_small_hull_broad_phase_bounds(test, device):
 
     check_bounds()
     poses = state.body_q.numpy()
+    poses[1, :3] = poses[0, :3] + np.array([0.05, 0.0, 0.0])
+    state.body_q.assign(poses)
+    pipeline.collide(state, contacts)
+    count = int(contacts.rigid_contact_count.numpy()[0])
+    test.assertGreater(count, 0)
+    np.testing.assert_array_equal(contacts.rigid_contact_shape0.numpy()[:count], 0)
+    np.testing.assert_array_equal(contacts.rigid_contact_shape1.numpy()[:count], 1)
     for pose in poses:
         pose[3:] = np.asarray(wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.3) * wp.quat(*pose[3:]))
-    state.body_q.assign(poses)
     gc_was_enabled = _WARP_NEEDS_CAPTURE_GC_GUARD and gc.isenabled()
     if gc_was_enabled:
         gc.disable()
@@ -8127,6 +8133,7 @@ def test_small_hull_broad_phase_bounds(test, device):
     finally:
         if gc_was_enabled:
             gc.enable()
+    state.body_q.assign(poses)
     wp.capture_launch(capture.graph)
     check_bounds()
 
@@ -8142,7 +8149,9 @@ add_function_test(
 def test_tetrahedron_local_bounds_routing(test, device):
     """Reject distant tetrahedra while retaining overlap and near-gap queries across graph replays."""
     vertices = np.array([[-0.5, -0.5, -0.5], [0.5, 0.5, -0.5], [0.5, -0.5, 0.5], [-0.5, 0.5, 0.5]])
-    mesh = newton.Mesh(vertices, [0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3], compute_inertia=False)
+    # Finalization deduplicates face-local authoring vertices for collision.
+    indices = [0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3]
+    mesh = newton.Mesh(vertices[indices], list(range(12)), compute_inertia=False)
     rotation = wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 2.0, 3.0)), 0.63)
     offsets = (
         wp.vec3(0.96, 0.96, 0.0),
@@ -8171,8 +8180,7 @@ def test_tetrahedron_local_bounds_routing(test, device):
     test.assertEqual(int(pipeline.narrow_phase.gjk_candidate_pairs_count.numpy()[0]), 32)
     count = int(contacts.rigid_contact_count.numpy()[0])
     worlds = set((contacts.rigid_contact_shape0.numpy()[:count] // 2).tolist())
-    test.assertTrue(set(range(1, 64, 4)).issubset(worlds))
-    test.assertTrue(worlds.issubset({world for world in range(64) if world % 4 in (1, 2)}))
+    test.assertEqual(worlds, {world for world in range(64) if world % 4 in (1, 2)})
 
     gc_was_enabled = _WARP_NEEDS_CAPTURE_GC_GUARD and gc.isenabled()
     if gc_was_enabled:
@@ -8238,6 +8246,17 @@ def test_ellipsoid_pair_surface_witnesses(test, device):
                 builder.add_shape_ellipsoid(body, rx=0.5, ry=0.4, rz=0.35, cfg=cfg)
                 radii.append((0.5, 0.4, 0.35))
         builder.end_world()
+    builder.begin_world()
+    for side in range(2):
+        body = builder.add_body(xform=wp.transform(wp.vec3(0.9 * side, 0.0, 0.0)))
+        if side == 0:
+            builder.add_shape_sphere(body, radius=0.5, cfg=cfg)
+            radii.append((0.5, 0.5, 0.5))
+        else:
+            builder.add_shape_ellipsoid(body, rx=0.5, ry=0.4, rz=0.35, cfg=cfg)
+            radii.append((0.5, 0.4, 0.35))
+    builder.end_world()
+    expected_count = len(cases) + 1
     model = builder.finalize(device=device)
     state = model.state()
     for mode in ("explicit", "sap", "nxn"):
@@ -8246,7 +8265,13 @@ def test_ellipsoid_pair_surface_witnesses(test, device):
             contacts = pipeline.contacts()
             pipeline.collide(state, contacts)
             count = int(contacts.rigid_contact_count.numpy()[0])
-            test.assertEqual(count, len(cases))
+            test.assertEqual(count, expected_count)
+            test.assertEqual(int(pipeline.narrow_phase.gjk_candidate_pairs_count.numpy()[0]), 0)
+            distance = wp.empty(contacts.rigid_contact_max, dtype=float, device=device)
+            newton.eval_rigid_contact_kinematics(model, state, contacts, out_distance=distance)
+            aligned_pair = contacts.rigid_contact_shape0.numpy()[:count] == 4
+            test.assertEqual(int(np.count_nonzero(aligned_pair)), 1)
+            np.testing.assert_allclose(distance.numpy()[:count][aligned_pair], -0.1, atol=1e-6)
             normals = contacts.rigid_contact_normal.numpy()[:count]
             np.testing.assert_allclose(np.linalg.norm(normals, axis=1), 1.0, atol=1e-5)
             for side in (0, 1):
@@ -8266,6 +8291,16 @@ def test_ellipsoid_pair_surface_witnesses(test, device):
                 if gc_was_enabled:
                     gc.enable()
             initial_poses = state.body_q.numpy()
+            near_gap = initial_poses.copy()
+            near_gap[5, 0] = 1.005
+            state.body_q.assign(near_gap)
+            wp.capture_launch(capture.graph)
+            test.assertEqual(int(contacts.rigid_contact_count.numpy()[0]), expected_count)
+            test.assertEqual(int(pipeline.narrow_phase.gjk_candidate_pairs_count.numpy()[0]), 1)
+            newton.eval_rigid_contact_kinematics(model, state, contacts, out_distance=distance)
+            aligned_pair = contacts.rigid_contact_shape0.numpy()[:expected_count] == 4
+            test.assertEqual(int(np.count_nonzero(aligned_pair)), 1)
+            np.testing.assert_allclose(distance.numpy()[:expected_count][aligned_pair], 0.005, atol=1e-6)
             separated = initial_poses.copy()
             separated[:, 0] += 20.0 * np.arange(model.body_count)
             state.body_q.assign(separated)
@@ -8273,7 +8308,7 @@ def test_ellipsoid_pair_surface_witnesses(test, device):
             test.assertEqual(int(contacts.rigid_contact_count.numpy()[0]), 0)
             state.body_q.assign(initial_poses)
             wp.capture_launch(capture.graph)
-            test.assertEqual(int(contacts.rigid_contact_count.numpy()[0]), len(cases))
+            test.assertEqual(int(contacts.rigid_contact_count.numpy()[0]), expected_count)
 
 
 add_function_test(

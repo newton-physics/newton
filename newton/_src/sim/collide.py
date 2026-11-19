@@ -52,7 +52,7 @@ from ..geometry.support_function import (
     pack_mesh_ptr,
 )
 from ..geometry.tri_mesh_collision import TriMeshCollisionDetector
-from ..geometry.types import GeoType, Mesh
+from ..geometry.types import GeoType
 from ..sim.contacts import GENERATION_SENTINEL, Contacts
 from ..sim.model import Model
 from ..sim.shape_contact_pairs import (
@@ -2269,20 +2269,17 @@ class CollisionPipeline:
                 # Variant rows may change their source geometry at runtime.
                 # Keep their existing kernel, as well as CPU and tiny scenes.
                 if wp.get_device(device).is_cuda and variant_options is None:
-                    tetrahedron_count = sum(
-                        routed
-                        and shape_type == int(GeoType.CONVEX_MESH)
-                        and isinstance(mesh, Mesh)
-                        and len(mesh.vertices) == 4
-                        # Prefix model views can retain their parent's source list.
-                        for shape_type, mesh, routed in zip(shape_types, model.shape_source, route_mask, strict=False)
-                    )
-                    if tetrahedron_count >= _TETRAHEDRON_AABB_MIN_SHAPE_COUNT:
-                        self._compute_shape_aabbs = _create_shape_aabb_kernel(tight_tetrahedra=True)
-                        tetrahedron_separation = bool(
-                            tetrahedron_count
-                            == np.count_nonzero(route_mask & (shape_types == int(GeoType.CONVEX_MESH)))
+                    convex_mask = route_mask & (shape_types == int(GeoType.CONVEX_MESH))
+                    convex_count = np.count_nonzero(convex_mask)
+                    if convex_count >= _TETRAHEDRON_AABB_MIN_SHAPE_COUNT:
+                        # Rendering sources can retain duplicate face vertices.
+                        tetrahedron_sources = [mesh.id for mesh in model._mesh_keep_alive if len(mesh.points) == 4]
+                        tetrahedron_count = np.count_nonzero(
+                            convex_mask & np.isin(model.shape_source_ptr.numpy(), tetrahedron_sources)
                         )
+                        if tetrahedron_count >= _TETRAHEDRON_AABB_MIN_SHAPE_COUNT:
+                            self._compute_shape_aabbs = _create_shape_aabb_kernel(tight_tetrahedra=True)
+                            tetrahedron_separation = bool(tetrahedron_count == convex_count)
                 # A variant row can take the geometry of any variant shape it can hold at runtime, so
                 # the stages cover every variant shape a routed row can hold, appended as extra
                 # rows, and capacities count each row as any of them.

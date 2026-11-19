@@ -2555,7 +2555,7 @@ class TestBufferOverflowWarnings(unittest.TestCase):
 
     @unittest.skipUnless(_cuda_available, "Split GJK/MPR is enabled only on CUDA")
     def test_split_convex_launch_preserves_workers_without_support_acceleration(self):
-        """Use one-warp blocks without reducing the exhaustive query worker budget."""
+        """Retain wider blocks and the full exhaustive query worker budget."""
         narrow_phase = NarrowPhase(
             max_candidate_pairs=5000,
             candidate_pair_work_estimate=4096,
@@ -2565,7 +2565,7 @@ class TestBufferOverflowWarnings(unittest.TestCase):
             device="cuda:0",
         )
 
-        self.assertEqual(narrow_phase.split_convex_block_dim, 32)
+        self.assertEqual(narrow_phase.split_convex_block_dim, 128)
         self.assertEqual(
             narrow_phase.split_convex_total_num_threads,
             narrow_phase.block_dim * narrow_phase.num_tile_blocks,

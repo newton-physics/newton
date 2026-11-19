@@ -49,6 +49,22 @@ GJK_REFINE_TOLERANCE = 4.0 * FLOAT32_EPS
 Mat83f = wp.types.matrix(shape=(8, 3), dtype=wp.float32)
 
 
+def _pack_simplex_slots() -> tuple[int, ...]:
+    """Pack occupied slots followed by the highest free slot for each reachable mask."""
+    words = [0] * 6
+    for mask in range(15):
+        occupied = [slot for slot in range(4) if mask & (1 << slot)]
+        free = max(slot for slot in range(4) if not mask & (1 << slot))
+        order = [*occupied, free]
+        values = order + [0] * (4 - len(order)) + [free, len(occupied)]
+        for index, value in enumerate(values):
+            words[index] |= value << (2 * mask)
+    return tuple(words)
+
+
+_SIMPLEX_SLOT_WORDS = _pack_simplex_slots()
+
+
 @wp.func
 def coordinate_scale(x: wp.vec3) -> float:
     """Return the sum of absolute coordinates, an upper bound on the length [m]."""
@@ -490,20 +506,14 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
             if is_duplicate:
                 break
 
-            # Inline simplex_add_vertex
-            # A two-bit field for each occupancy mask encodes the occupied
-            # slots in ascending order, followed by the last free slot. This
-            # preserves insertion order without a scan and indexed vector writes
-            # on every GJK iteration. The final table encodes the occupied count.
-            # A full tetrahedron exits before the next insertion, so mask 15 is
-            # unused. Keep constants unsigned during Warp codegen.
+            # Unsigned packed words avoid a slot scan on every GJK iteration.
             shift = wp.uint32(2) * simplex_usage_mask
-            index0 = int((wp.static(wp.uint32(303239699)) >> shift) & wp.uint32(3))
-            index1 = int((wp.static(wp.uint32(1803447164)) >> shift) & wp.uint32(3))
-            index2 = int((wp.static(wp.uint32(3186146496)) >> shift) & wp.uint32(3))
-            index3 = int((wp.static(wp.uint32(3296772096)) >> shift) & wp.uint32(3))
-            free_slot = int((wp.static(wp.uint32(95092735)) >> shift) & wp.uint32(3))
-            used_count = int((wp.static(wp.uint32(1055517076)) >> shift) & wp.uint32(3))
+            index0 = int((wp.static(wp.uint32(_SIMPLEX_SLOT_WORDS[0])) >> shift) & wp.uint32(3))
+            index1 = int((wp.static(wp.uint32(_SIMPLEX_SLOT_WORDS[1])) >> shift) & wp.uint32(3))
+            index2 = int((wp.static(wp.uint32(_SIMPLEX_SLOT_WORDS[2])) >> shift) & wp.uint32(3))
+            index3 = int((wp.static(wp.uint32(_SIMPLEX_SLOT_WORDS[3])) >> shift) & wp.uint32(3))
+            free_slot = int((wp.static(wp.uint32(_SIMPLEX_SLOT_WORDS[4])) >> shift) & wp.uint32(3))
+            used_count = int((wp.static(wp.uint32(_SIMPLEX_SLOT_WORDS[5])) >> shift) & wp.uint32(3))
             indices = wp.vec4i(index0, index1, index2, index3)
             use_count = used_count + 1
 

@@ -61,7 +61,7 @@ def collide_ellipsoids(
     scale = wp.max(wp.max(radii_a), wp.max(radii_b))
     if scale <= 0.0 or wp.min(radii_a) <= 1e-4 * scale or wp.min(radii_b) <= 1e-4 * scale:
         return False, 0.0, center, normal
-    if wp.length(position_b) > wp.length(radii_a) + wp.length(radii_b):
+    if wp.length(position_b) > wp.max(radii_a) + wp.max(radii_b):
         return False, 0.0, center, normal
 
     # Keep curvature and support products away from absolute small-direction
@@ -87,11 +87,11 @@ def collide_ellipsoids(
             direction = wp.normalize(direction)
             _, _, delta = _support_pair(a, b, rotation_b, position, direction)
             depth = wp.dot(delta, direction)
+            if depth <= 0.0:
+                return False, 0.0, center, normal
             if depth < bound:
                 bound = depth
                 normal = direction
-    if bound <= 0.0:
-        return False, 0.0, center, normal
 
     for _iteration in range(16):
         point_a, point_b, delta = _support_pair(a, b, rotation_b, position, normal)

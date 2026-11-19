@@ -1432,6 +1432,7 @@ def create_narrow_phase_kernels_gjk_mpr_split(
     support_func: Any = None,
     post_process_contact: Any = None,
     speculative: bool = False,
+    _direct_box_contacts: bool = False,
 ):
     """Create graph-capturable MPR, GJK/refinement, and manifold work-queue kernels."""
     if support_func is None:
@@ -1440,9 +1441,11 @@ def create_narrow_phase_kernels_gjk_mpr_split(
         post_process_contact = post_process_axial_on_discrete_contact
 
     support_funcs = create_support_map_function(support_func, use_precomputed_center=True)
-    solve_mpr = create_solve_mpr(
-        support_func, _support_funcs=support_funcs, depth_certificate=create_solve_box_penetration
-    )
+
+    def certificate(support):
+        return create_solve_box_penetration(support, _direct_box_contacts=_direct_box_contacts)
+
+    solve_mpr = create_solve_mpr(support_func, _support_funcs=support_funcs, depth_certificate=certificate)
     solve_gjk = create_solve_closest_distance(support_func, _support_funcs=support_funcs)
     prepare_pair = create_prepare_convex_pair(external_aabb, speculative)
     write_result = create_write_convex_query_result(
@@ -1451,6 +1454,8 @@ def create_narrow_phase_kernels_gjk_mpr_split(
     suffix = (
         f"{external_aabb}_{writer_func.__name__}_{support_func.__name__}_{post_process_contact.__name__}_{speculative}"
     )
+    if _direct_box_contacts:
+        suffix += "_direct_boxes"
     accelerated_support = support_func in (support_map_accelerated, support_map_lean_accelerated)
     provider_type = AcceleratedSupportMapDataProvider if accelerated_support else SupportMapDataProvider
 
@@ -1518,19 +1523,37 @@ def create_narrow_phase_kernels_gjk_mpr_split(
                 if wp.static(accelerated_support):
                     provider.support_lut = support_lut
                     provider.support_vertex_offsets = support_vertex_offsets
-                collision, point_a, point_b, normal, penetration, seed, witnesses_valid = wp.static(
-                    solve_mpr.portal_core
-                )(
-                    query.geom_a,
-                    query.geom_b,
-                    query.relative_orientation_b,
-                    query.relative_position_b,
-                    query.enlarge,
-                    provider,
-                    wp.vec3(0.0),
-                )
+                direct = False
+                point_a = wp.vec3(0.0)
+                point_b = wp.vec3(0.0)
+                normal = wp.vec3(0.0)
+                penetration = float(0.0)
+                seed = wp.vec3(0.0)
+                if wp.static(hasattr(solve_mpr, "direct")):
+                    direct, point_a, point_b, normal, penetration = wp.static(solve_mpr.direct)(
+                        query.geom_a,
+                        query.geom_b,
+                        query.relative_orientation_b,
+                        query.relative_position_b,
+                        query.enlarge,
+                        1e-5,
+                    )
+                collision = direct
+                witnesses_valid = direct
+                if not direct:
+                    collision, point_a, point_b, normal, penetration, seed, witnesses_valid = wp.static(
+                        solve_mpr.portal_core
+                    )(
+                        query.geom_a,
+                        query.geom_b,
+                        query.relative_orientation_b,
+                        query.relative_position_b,
+                        query.enlarge,
+                        provider,
+                        wp.vec3(0.0),
+                    )
                 refine_portal = False
-                if collision:
+                if collision and not direct:
                     if query.type_a != GeoType.PLANE and query.type_b != GeoType.PLANE:
                         query.geom_a.bounds_half = _penetration_bounds_half(
                             query.shape_a,
@@ -2701,8 +2724,8 @@ class NarrowPhase:
         """
         Initialize NarrowPhase with pre-allocated buffers.
 
-        ``_direct_box_contacts`` enables aligned-box witnesses in the fused
-        kernel. CollisionPipeline selects it for box-and-plane scenes to avoid
+        ``_direct_box_contacts`` enables aligned-box witnesses in fused and split
+        kernels. CollisionPipeline selects it for box-and-plane scenes to avoid
         adding instruction-cache pressure to mixed-shape kernels.
 
         ``_tetrahedron_separation`` enables conservative local-frame bounds
@@ -2911,6 +2934,7 @@ class NarrowPhase:
         self.split_gjk_mpr = device_obj.is_cuda and has_generic_convex_pairs and split_gjk_mpr
         # Limit the large fused query's register footprint without changing its
         # numerical checks. Keep CPU, analytic-only, and split pipelines intact.
+        # LLVM CUDA ignores register limits, so retain its original launch too.
         fused_register_limit = (
             128
             if device_obj.is_cuda
@@ -2918,6 +2942,7 @@ class NarrowPhase:
             and candidate_pair_work_estimate >= _FUSED_CUDA_RESOURCE_PAIR_THRESHOLD
             and not self.split_gjk_mpr
             and _CUDA_MAX_REGISTERS_SUPPORTED
+            and not wp.config.llvm_cuda
             else None
         )
         self._fused_block_dim = 32 if fused_register_limit is not None else self.block_dim
@@ -2979,6 +3004,7 @@ class NarrowPhase:
                 support_func=split_support,
                 post_process_contact=split_post_process,
                 speculative=speculative,
+                _direct_box_contacts=_direct_box_contacts,
             )
         else:
             self.narrow_phase_mpr_kernel = None
@@ -3240,15 +3266,12 @@ class NarrowPhase:
         )
         # Split-convex blocks distribute independent serial pair queries across
         # lanes. Accelerated queries retain their one-warp worker budget.
-        # Exhaustive queries spread the existing worker count across one-warp
-        # blocks, avoiding a quarter-sized grid on large replicated scenes.
+        # Wider exhaustive-support blocks avoid dense-queue throughput loss.
         if device_obj.is_cuda:
             self.split_convex_block_dim = 32 if convex_support_acceleration else self.block_dim
         else:
             self.split_convex_block_dim = self.block_dim
         self.split_convex_total_num_threads = self.split_convex_block_dim * num_blocks
-        if device_obj.is_cuda:
-            self.split_convex_block_dim = 32
         # One-warp blocks spread sparse, serial-per-lane triangle solves across
         # more SMs without reducing the total number of launched threads.
         self.mesh_triangle_block_dim = 32 if device_obj.is_cuda else self.block_dim

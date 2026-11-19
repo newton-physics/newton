@@ -1014,4 +1014,6 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None, depth_certif
     solve_mpr.separated_core = solve_mpr_separated
     solve_mpr.needs_refine = solve_mpr_needs_refine
     solve_mpr.cooperative_certificate = certificate.cooperative
+    if hasattr(certificate, "direct"):
+        solve_mpr.direct = certificate.direct
     return solve_mpr
