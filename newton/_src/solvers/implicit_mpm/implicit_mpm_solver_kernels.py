@@ -1558,7 +1558,9 @@ def scatter_point_dof_values(
     nid = wp.tid()
     sid = space_node_indices[nid]
     if sid != fem.NULL_NODE_INDEX:
-        particle_values[cell_particle_indices[sid]] = dof_values[nid]
+        particle = cell_particle_indices[sid]
+        if particle >= 0:
+            particle_values[particle] = dof_values[nid]
 
 
 @wp.kernel
@@ -1571,8 +1573,11 @@ def gather_point_dof_values(
     """Load point-basis values from their particles; point nodes are cell-sorted particle positions."""
     nid = wp.tid()
     sid = space_node_indices[nid]
+    particle = -1
     if sid != fem.NULL_NODE_INDEX:
-        dof_values[nid] = particle_values[cell_particle_indices[sid]]
+        particle = cell_particle_indices[sid]
+    if particle >= 0:
+        dof_values[nid] = particle_values[particle]
     else:
         dof_values[nid] = dof_values.dtype(0.0)
 

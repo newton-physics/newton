@@ -502,6 +502,49 @@ def load_mesh(filename: str, method: str | None = None):
         return mesh
 
 
+_PLY_TYPES = {"char": "i1", "uchar": "u1", "short": "i2", "ushort": "u2", "int": "i4", "uint": "u4", "float": "f4"}
+_PLY_TYPES |= {"int8": "i1", "uint8": "u1", "int16": "i2", "uint16": "u2", "int32": "i4", "uint32": "u4"}
+_PLY_TYPES |= {"int64": "i8", "uint64": "u8", "float32": "f4", "double": "f8", "float64": "f8"}
+_PLY_BYTE_ORDERS = {"ascii": "", "binary_little_endian": "<", "binary_big_endian": ">"}
+
+
+def _read_ply_vertices(filename: str) -> dict[str, np.ndarray]:
+    """Read the per-vertex properties of a PLY file, which must store its vertices first."""
+    with open(filename, "rb") as file:
+        order, count, fields, in_vertices = None, None, [], False
+        try:
+            if file.readline().split() != [b"ply"]:
+                raise KeyError("ply")
+            for line in iter(file.readline, b""):
+                tokens = line.decode("ascii").split()
+                if tokens[:1] == ["end_header"]:
+                    break
+                if tokens[:1] == ["format"]:
+                    order = _PLY_BYTE_ORDERS[tokens[1]]
+                elif tokens[:1] == ["element"]:
+                    in_vertices = count is None
+                    if in_vertices and tokens[1] != "vertex":
+                        raise KeyError(tokens[1])
+                    count = int(tokens[2]) if in_vertices else count
+                elif tokens[:1] == ["property"] and in_vertices:
+                    fields.append((tokens[2], order + _PLY_TYPES[tokens[1]]))
+            else:
+                raise IndexError("end_header")
+            if order == "":
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")  # NumPy warns about missing data; the shape check reports it
+                    table = np.loadtxt(file, dtype=np.float32, max_rows=count, ndmin=2)
+                if table.shape != (count, len(fields)):
+                    raise IndexError("data")
+                return {name: table[:, i] for i, (name, _) in enumerate(fields)}
+            table = np.fromfile(file, dtype=fields, count=count)
+            if len(table) != count:
+                raise IndexError("data")
+            return {name: table[name] for name, _ in fields}
+        except (IndexError, KeyError, TypeError, ValueError) as e:
+            raise ValueError(f"'{filename}' is not a PLY file with a complete vertex table.") from e
+
+
 def visualize_meshes(
     meshes: list[tuple[list, list]], num_cols=0, num_rows=0, titles=None, scale_axes=True, show_plot=True
 ):
