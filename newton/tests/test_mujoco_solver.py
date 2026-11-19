@@ -7043,6 +7043,7 @@ class TestMuJoCoConversion(unittest.TestCase):
         model = builder.finalize()
         solver = SolverMuJoCo(model)
         self.assertEqual(solver.mj_model.nv, 2)
+        self.assertEqual(solver.mjw_data.nworld, 2)
 
     def test_separate_worlds_deprecated(self):
         """Warn on an explicit separate_worlds, keep its legacy behavior, and reject multi-world CPU models."""
@@ -15242,7 +15243,10 @@ class TestMuJoCoPerWorldMeshLayout(unittest.TestCase):
             world.shape_source[0].maxhullvert = limit
             builder.add_world(world)
         model = builder.finalize()
-        self.assertEqual(SolverMuJoCo(model).mjw_model.nmesh, 2)
+        mjw_model = SolverMuJoCo(model).mjw_model
+        self.assertEqual(mjw_model.nmesh, 2)
+        dataid = mjw_model.geom_dataid.numpy()
+        self.assertNotEqual(dataid[0, 0], dataid[1, 0])
 
     def test_world_without_bodies(self):
         """Build heterogeneous static mesh worlds without dividing by body count."""

@@ -2190,7 +2190,7 @@ class TestMuJoCoSiteActuators(unittest.TestCase):
 
     @requires(*MUJOCO_MODULES)
     def test_site_actuator_multiworld_separate(self):
-        """Site actuators in each world are dispatched correctly."""
+        """Partition site actuators by world and export one to the MuJoCo template."""
         robot_builder = ModelBuilder()
         robot_builder.add_mjcf(MJCF_SITE_ACTUATOR, ctrl_direct=True)
 
