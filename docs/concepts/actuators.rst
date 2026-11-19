@@ -6,6 +6,27 @@
 Actuators
 =========
 
+Stepping responsibilities
+-------------------------
+
+Newton supports two actuation paths:
+
+* **Internal joint drives** use the model's ``joint_target_ke`` and
+  ``joint_target_kd`` drive gains and the control's position and velocity
+  targets. The physics solver evaluates
+  them during ``solver.step()``; there is no separate actuator step. This also
+  applies to standard USD joint drives imported with
+  :meth:`~newton.ModelBuilder.add_usd`, subject to the solver's
+  :ref:`Joint feature support`.
+* **External actuators** are :class:`Actuator` objects, including those created
+  with :meth:`~newton.ModelBuilder.add_actuator` or imported from USD
+  ``NewtonActuator`` prims. The caller must call ``actuator.step()`` before
+  ``solver.step()``. Finalization creates ``model.actuators`` but the solver
+  does not step them automatically. Batteries in ``model.batteries`` also
+  require an explicit ``battery.step(control)`` after the actuators.
+
+The rest of this page describes external Newton actuators.
+
 .. experimental::
 
    The actuator API may change without prior notice. Feedback is welcome —
@@ -113,25 +134,6 @@ to add new models.
 
 Usage
 -----
-
-Stepping responsibilities
-^^^^^^^^^^^^^^^^^^^^^^^^^
-
-Newton supports two actuation paths:
-
-* **Internal joint drives** use the model's ``joint_target_ke`` and
-  ``joint_target_kd`` drive gains and the control's position and velocity
-  targets. The physics solver evaluates
-  them during ``solver.step()``; there is no separate actuator step. This also
-  applies to standard USD joint drives imported with
-  :meth:`~newton.ModelBuilder.add_usd`, subject to the solver's
-  :ref:`Joint feature support`.
-* **External actuators** are :class:`Actuator` objects, including those created
-  with :meth:`~newton.ModelBuilder.add_actuator` or imported from USD
-  ``NewtonActuator`` prims. The caller must call ``actuator.step()`` before
-  ``solver.step()``. Finalization creates ``model.actuators`` but the solver
-  does not step them automatically. Batteries in ``model.batteries`` also
-  require an explicit ``battery.step(control)`` after the actuators.
 
 External actuators
 ^^^^^^^^^^^^^^^^^^
