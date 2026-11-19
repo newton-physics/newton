@@ -467,8 +467,27 @@ class Model:
         :attr:`ModelBuilder.CustomAttribute.default <newton.ModelBuilder.CustomAttribute.default>`.
         Coupled model views use it for the rows they synthesize.
         """
+        dtype: Any = field(default=None, compare=False)
+        """Warp dtype of a built-in attribute that :meth:`ModelBuilder.finalize()
+        <newton.ModelBuilder.finalize>` converts generically, or ``None`` for other attributes,
+        including custom attributes, whose dtype is given by
+        :attr:`ModelBuilder.CustomAttribute.dtype <newton.ModelBuilder.CustomAttribute.dtype>`.
+
+        :class:`ModelBuilder <newton.ModelBuilder>` keeps list attributes with a dtype as NumPy arrays
+        between replication and finalization.
+        """
+        differentiable: bool | None = field(default=None, compare=False)
+        """For attributes with a :attr:`dtype`, whether :meth:`ModelBuilder.finalize()
+        <newton.ModelBuilder.finalize>` allocates gradients for the attribute when called with
+        ``requires_grad=True``. Not meaningful for attributes without a :attr:`dtype`.
+
+        ``None`` resolves to whether :attr:`dtype` has a floating-point scalar type.
+        """
 
         def __post_init__(self) -> None:
+            if self.differentiable is None:
+                scalar_dtype = getattr(self.dtype, "_wp_scalar_type_", self.dtype)
+                object.__setattr__(self, "differentiable", wp.types.type_is_float(scalar_dtype))
             if self.row_width < 1:
                 raise ValueError(f"Attribute row_width must be positive, got {self.row_width}")
             if self.compaction_policy not in {
@@ -506,14 +525,16 @@ class Model:
         "tendon_guide_active": AttributeSpec(AttributeFrequency.TENDON_GUIDE),
         "_tendon_initialized": AttributeSpec(AttributeFrequency.TENDON),
         # particles
-        "particle_q": AttributeSpec(AttributeFrequency.PARTICLE),
-        "particle_qd": AttributeSpec(AttributeFrequency.PARTICLE),
+        "particle_q": AttributeSpec(AttributeFrequency.PARTICLE, dtype=wp.vec3),
+        "particle_qd": AttributeSpec(AttributeFrequency.PARTICLE, dtype=wp.vec3),
         "particle_f": AttributeSpec(AttributeFrequency.PARTICLE),
-        "particle_mass": AttributeSpec(AttributeFrequency.PARTICLE),
+        "particle_mass": AttributeSpec(AttributeFrequency.PARTICLE, dtype=wp.float32),
         "particle_inv_mass": AttributeSpec(AttributeFrequency.PARTICLE),
-        "particle_radius": AttributeSpec(AttributeFrequency.PARTICLE),
-        "particle_flags": AttributeSpec(AttributeFrequency.PARTICLE),
-        "particle_world": AttributeSpec(AttributeFrequency.PARTICLE, references=AttributeFrequency.WORLD),
+        "particle_radius": AttributeSpec(AttributeFrequency.PARTICLE, dtype=wp.float32),
+        "particle_flags": AttributeSpec(AttributeFrequency.PARTICLE, dtype=wp.int32),
+        "particle_world": AttributeSpec(
+            AttributeFrequency.PARTICLE, references=AttributeFrequency.WORLD, dtype=wp.int32
+        ),
         "particle_colors": AttributeSpec(AttributeFrequency.PARTICLE),
         "particle_world_start": AttributeSpec(
             AttributeFrequency.PARTICLE,
@@ -524,17 +545,17 @@ class Model:
             compaction_policy="color_groups",
         ),
         # bodies
-        "body_q": AttributeSpec(AttributeFrequency.BODY),
-        "body_qd": AttributeSpec(AttributeFrequency.BODY),
-        "body_com": AttributeSpec(AttributeFrequency.BODY),
-        "body_inertia": AttributeSpec(AttributeFrequency.BODY),
-        "body_inv_inertia": AttributeSpec(AttributeFrequency.BODY),
-        "body_mass": AttributeSpec(AttributeFrequency.BODY),
-        "body_inv_mass": AttributeSpec(AttributeFrequency.BODY),
-        "body_flags": AttributeSpec(AttributeFrequency.BODY),
+        "body_q": AttributeSpec(AttributeFrequency.BODY, dtype=wp.transform),
+        "body_qd": AttributeSpec(AttributeFrequency.BODY, dtype=wp.spatial_vector),
+        "body_com": AttributeSpec(AttributeFrequency.BODY, dtype=wp.vec3),
+        "body_inertia": AttributeSpec(AttributeFrequency.BODY, dtype=wp.mat33),
+        "body_inv_inertia": AttributeSpec(AttributeFrequency.BODY, dtype=wp.mat33),
+        "body_mass": AttributeSpec(AttributeFrequency.BODY, dtype=wp.float32),
+        "body_inv_mass": AttributeSpec(AttributeFrequency.BODY, dtype=wp.float32),
+        "body_flags": AttributeSpec(AttributeFrequency.BODY, dtype=wp.int32),
         "body_f": AttributeSpec(AttributeFrequency.BODY),
         "body_label": AttributeSpec(AttributeFrequency.BODY),
-        "body_world": AttributeSpec(AttributeFrequency.BODY, references=AttributeFrequency.WORLD),
+        "body_world": AttributeSpec(AttributeFrequency.BODY, references=AttributeFrequency.WORLD, dtype=wp.int32),
         "body_colors": AttributeSpec(AttributeFrequency.BODY),
         "body_world_start": AttributeSpec(
             AttributeFrequency.BODY,
@@ -569,35 +590,32 @@ class Model:
         "_shape_variant_shape": AttributeSpec(AttributeFrequency.SHAPE),
         # shapes
         "shape_label": AttributeSpec(AttributeFrequency.SHAPE),
-        "shape_transform": AttributeSpec(AttributeFrequency.SHAPE),
-        "shape_body": AttributeSpec(
-            AttributeFrequency.SHAPE,
-            references=AttributeFrequency.BODY,
-        ),
+        "shape_transform": AttributeSpec(AttributeFrequency.SHAPE, dtype=wp.transform),
+        "shape_body": AttributeSpec(AttributeFrequency.SHAPE, references=AttributeFrequency.BODY, dtype=wp.int32),
         "shape_flags": AttributeSpec(AttributeFrequency.SHAPE),
-        "shape_material_ke": AttributeSpec(AttributeFrequency.SHAPE),
-        "shape_material_kd": AttributeSpec(AttributeFrequency.SHAPE),
-        "shape_material_kf": AttributeSpec(AttributeFrequency.SHAPE),
-        "shape_material_ka": AttributeSpec(AttributeFrequency.SHAPE),
-        "shape_material_mu": AttributeSpec(AttributeFrequency.SHAPE),
-        "shape_material_mu_static": AttributeSpec(AttributeFrequency.SHAPE),
-        "shape_material_restitution": AttributeSpec(AttributeFrequency.SHAPE),
-        "shape_material_mu_torsional": AttributeSpec(AttributeFrequency.SHAPE),
-        "shape_material_mu_rolling": AttributeSpec(AttributeFrequency.SHAPE),
-        "shape_material_kh": AttributeSpec(AttributeFrequency.SHAPE),
-        "shape_gap": AttributeSpec(AttributeFrequency.SHAPE),
+        "shape_material_ke": AttributeSpec(AttributeFrequency.SHAPE, dtype=wp.float32),
+        "shape_material_kd": AttributeSpec(AttributeFrequency.SHAPE, dtype=wp.float32),
+        "shape_material_kf": AttributeSpec(AttributeFrequency.SHAPE, dtype=wp.float32),
+        "shape_material_ka": AttributeSpec(AttributeFrequency.SHAPE, dtype=wp.float32),
+        "shape_material_mu": AttributeSpec(AttributeFrequency.SHAPE, dtype=wp.float32),
+        "shape_material_mu_static": AttributeSpec(AttributeFrequency.SHAPE, dtype=wp.float32),
+        "shape_material_restitution": AttributeSpec(AttributeFrequency.SHAPE, dtype=wp.float32),
+        "shape_material_mu_torsional": AttributeSpec(AttributeFrequency.SHAPE, dtype=wp.float32),
+        "shape_material_mu_rolling": AttributeSpec(AttributeFrequency.SHAPE, dtype=wp.float32),
+        "shape_material_kh": AttributeSpec(AttributeFrequency.SHAPE, dtype=wp.float32),
+        "shape_gap": AttributeSpec(AttributeFrequency.SHAPE, dtype=wp.float32),
         "shape_type": AttributeSpec(AttributeFrequency.SHAPE),
-        "shape_is_solid": AttributeSpec(AttributeFrequency.SHAPE),
-        "shape_margin": AttributeSpec(AttributeFrequency.SHAPE),
+        "shape_is_solid": AttributeSpec(AttributeFrequency.SHAPE, dtype=wp.bool),
+        "shape_margin": AttributeSpec(AttributeFrequency.SHAPE, dtype=wp.float32),
         "shape_source": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_source_ptr": AttributeSpec(AttributeFrequency.SHAPE),
-        "shape_scale": AttributeSpec(AttributeFrequency.SHAPE),
-        "shape_color": AttributeSpec(AttributeFrequency.SHAPE),
-        "shape_opacity": AttributeSpec(AttributeFrequency.SHAPE),
+        "shape_scale": AttributeSpec(AttributeFrequency.SHAPE, dtype=wp.vec3),
+        "shape_color": AttributeSpec(AttributeFrequency.SHAPE, dtype=wp.vec3, differentiable=False),
+        "shape_opacity": AttributeSpec(AttributeFrequency.SHAPE, dtype=wp.float32, differentiable=False),
         "shape_filter": AttributeSpec(AttributeFrequency.SHAPE),
-        "shape_collision_group": AttributeSpec(AttributeFrequency.SHAPE),
-        "shape_collision_radius": AttributeSpec(AttributeFrequency.SHAPE),
-        "shape_world": AttributeSpec(AttributeFrequency.SHAPE, references=AttributeFrequency.WORLD),
+        "shape_collision_group": AttributeSpec(AttributeFrequency.SHAPE, dtype=wp.int32),
+        "shape_collision_radius": AttributeSpec(AttributeFrequency.SHAPE, dtype=wp.float32),
+        "shape_world": AttributeSpec(AttributeFrequency.SHAPE, references=AttributeFrequency.WORLD, dtype=wp.int32),
         "shape_heightfield_index": AttributeSpec(
             AttributeFrequency.SHAPE,
             requires_empty_sentinel=True,
@@ -640,14 +658,12 @@ class Model:
         ),
         # springs and finite elements
         "spring_indices": AttributeSpec(
-            AttributeFrequency.SPRING,
-            references=AttributeFrequency.PARTICLE,
-            row_width=2,
+            AttributeFrequency.SPRING, references=AttributeFrequency.PARTICLE, row_width=2, dtype=wp.int32
         ),
-        "spring_rest_length": AttributeSpec(AttributeFrequency.SPRING),
-        "spring_stiffness": AttributeSpec(AttributeFrequency.SPRING),
-        "spring_damping": AttributeSpec(AttributeFrequency.SPRING),
-        "spring_control": AttributeSpec(AttributeFrequency.SPRING),
+        "spring_rest_length": AttributeSpec(AttributeFrequency.SPRING, dtype=wp.float32),
+        "spring_stiffness": AttributeSpec(AttributeFrequency.SPRING, dtype=wp.float32),
+        "spring_damping": AttributeSpec(AttributeFrequency.SPRING, dtype=wp.float32),
+        "spring_control": AttributeSpec(AttributeFrequency.SPRING, dtype=wp.float32),
         "spring_constraint_lambdas": AttributeSpec(AttributeFrequency.SPRING),
         # particle-body attachments
         "attachment_particle_body_body": AttributeSpec(
@@ -667,55 +683,49 @@ class Model:
             references=AttributeFrequency.WORLD,
         ),
         "tri_indices": AttributeSpec(
-            AttributeFrequency.TRIANGLE,
-            references=AttributeFrequency.PARTICLE,
+            AttributeFrequency.TRIANGLE, references=AttributeFrequency.PARTICLE, dtype=wp.int32
         ),
-        "tri_poses": AttributeSpec(AttributeFrequency.TRIANGLE),
-        "tri_activations": AttributeSpec(AttributeFrequency.TRIANGLE),
-        "tri_materials": AttributeSpec(AttributeFrequency.TRIANGLE),
-        "tri_areas": AttributeSpec(AttributeFrequency.TRIANGLE),
-        "tri_color": AttributeSpec(AttributeFrequency.TRIANGLE),
-        "tri_opacity": AttributeSpec(AttributeFrequency.TRIANGLE),
-        "edge_indices": AttributeSpec(
-            AttributeFrequency.EDGE,
-            references=AttributeFrequency.PARTICLE,
-        ),
-        "edge_rest_angle": AttributeSpec(AttributeFrequency.EDGE),
-        "edge_rest_length": AttributeSpec(AttributeFrequency.EDGE),
-        "edge_bending_properties": AttributeSpec(AttributeFrequency.EDGE),
+        "tri_poses": AttributeSpec(AttributeFrequency.TRIANGLE, dtype=wp.mat22),
+        "tri_activations": AttributeSpec(AttributeFrequency.TRIANGLE, dtype=wp.float32),
+        "tri_materials": AttributeSpec(AttributeFrequency.TRIANGLE, dtype=wp.float32),
+        "tri_areas": AttributeSpec(AttributeFrequency.TRIANGLE, dtype=wp.float32),
+        "tri_color": AttributeSpec(AttributeFrequency.TRIANGLE, dtype=wp.vec3, differentiable=False),
+        "tri_opacity": AttributeSpec(AttributeFrequency.TRIANGLE, dtype=wp.float32, differentiable=False),
+        "edge_indices": AttributeSpec(AttributeFrequency.EDGE, references=AttributeFrequency.PARTICLE, dtype=wp.int32),
+        "edge_rest_angle": AttributeSpec(AttributeFrequency.EDGE, dtype=wp.float32),
+        "edge_rest_length": AttributeSpec(AttributeFrequency.EDGE, dtype=wp.float32),
+        "edge_bending_properties": AttributeSpec(AttributeFrequency.EDGE, dtype=wp.float32),
         "edge_constraint_lambdas": AttributeSpec(AttributeFrequency.EDGE),
         "tet_indices": AttributeSpec(
-            AttributeFrequency.TETRAHEDRON,
-            references=AttributeFrequency.PARTICLE,
+            AttributeFrequency.TETRAHEDRON, references=AttributeFrequency.PARTICLE, dtype=wp.int32
         ),
-        "tet_poses": AttributeSpec(AttributeFrequency.TETRAHEDRON),
-        "tet_activations": AttributeSpec(AttributeFrequency.TETRAHEDRON),
-        "tet_materials": AttributeSpec(AttributeFrequency.TETRAHEDRON),
+        "tet_poses": AttributeSpec(AttributeFrequency.TETRAHEDRON, dtype=wp.mat33),
+        "tet_activations": AttributeSpec(AttributeFrequency.TETRAHEDRON, dtype=wp.float32),
+        "tet_materials": AttributeSpec(AttributeFrequency.TETRAHEDRON, dtype=wp.float32),
         # joints
         "joint_type": AttributeSpec(AttributeFrequency.JOINT),
-        "joint_parent": AttributeSpec(AttributeFrequency.JOINT, references=AttributeFrequency.BODY),
-        "joint_child": AttributeSpec(AttributeFrequency.JOINT, references=AttributeFrequency.BODY),
+        "joint_parent": AttributeSpec(AttributeFrequency.JOINT, references=AttributeFrequency.BODY, dtype=wp.int32),
+        "joint_child": AttributeSpec(AttributeFrequency.JOINT, references=AttributeFrequency.BODY, dtype=wp.int32),
         "joint_ancestor": AttributeSpec(
             AttributeFrequency.JOINT,
             references=AttributeFrequency.JOINT,
         ),
         "joint_articulation": AttributeSpec(
-            AttributeFrequency.JOINT,
-            references=AttributeFrequency.ARTICULATION,
+            AttributeFrequency.JOINT, references=AttributeFrequency.ARTICULATION, dtype=wp.int32
         ),
         "joint_mimic_joint": AttributeSpec(
             AttributeFrequency.JOINT,
             references=AttributeFrequency.JOINT,
         ),
         "joint_mimic_coeffs": AttributeSpec(AttributeFrequency.JOINT),
-        "joint_X_p": AttributeSpec(AttributeFrequency.JOINT),
-        "joint_X_c": AttributeSpec(AttributeFrequency.JOINT),
+        "joint_X_p": AttributeSpec(AttributeFrequency.JOINT, dtype=wp.transform),
+        "joint_X_c": AttributeSpec(AttributeFrequency.JOINT, dtype=wp.transform),
         "joint_dof_dim": AttributeSpec(AttributeFrequency.JOINT),
-        "joint_enabled": AttributeSpec(AttributeFrequency.JOINT),
+        "joint_enabled": AttributeSpec(AttributeFrequency.JOINT, dtype=wp.bool),
         "joint_twist_lower": AttributeSpec(AttributeFrequency.JOINT, deprecated=True),
         "joint_twist_upper": AttributeSpec(AttributeFrequency.JOINT, deprecated=True),
         "joint_label": AttributeSpec(AttributeFrequency.JOINT),
-        "joint_world": AttributeSpec(AttributeFrequency.JOINT, references=AttributeFrequency.WORLD),
+        "joint_world": AttributeSpec(AttributeFrequency.JOINT, references=AttributeFrequency.WORLD, dtype=wp.int32),
         "joint_q_start": AttributeSpec(
             AttributeFrequency.JOINT,
             references=AttributeFrequency.JOINT_COORD,
@@ -742,27 +752,27 @@ class Model:
             AttributeFrequency.JOINT_CONSTRAINT,
             compaction_policy="world_start",
         ),
-        "joint_q": AttributeSpec(AttributeFrequency.JOINT_COORD),
-        "joint_qd": AttributeSpec(AttributeFrequency.JOINT_DOF),
-        "joint_f": AttributeSpec(AttributeFrequency.JOINT_DOF),
-        "joint_armature": AttributeSpec(AttributeFrequency.JOINT_DOF),
-        "joint_target_q": AttributeSpec(AttributeFrequency.JOINT_COORD),
-        "joint_target_qd": AttributeSpec(AttributeFrequency.JOINT_DOF),
-        "joint_act": AttributeSpec(AttributeFrequency.JOINT_DOF),
-        "joint_axis": AttributeSpec(AttributeFrequency.JOINT_DOF),
-        "joint_target_mode": AttributeSpec(AttributeFrequency.JOINT_DOF),
-        "joint_target_ke": AttributeSpec(AttributeFrequency.JOINT_DOF),
-        "joint_target_kd": AttributeSpec(AttributeFrequency.JOINT_DOF),
-        "joint_damping": AttributeSpec(AttributeFrequency.JOINT_DOF),
-        "joint_stiffness": AttributeSpec(AttributeFrequency.JOINT_DOF),
-        "joint_rest_q": AttributeSpec(AttributeFrequency.JOINT_COORD),
-        "joint_limit_lower": AttributeSpec(AttributeFrequency.JOINT_DOF),
-        "joint_limit_upper": AttributeSpec(AttributeFrequency.JOINT_DOF),
-        "joint_limit_ke": AttributeSpec(AttributeFrequency.JOINT_DOF),
-        "joint_limit_kd": AttributeSpec(AttributeFrequency.JOINT_DOF),
-        "joint_effort_limit": AttributeSpec(AttributeFrequency.JOINT_DOF),
-        "joint_friction": AttributeSpec(AttributeFrequency.JOINT_DOF),
-        "joint_velocity_limit": AttributeSpec(AttributeFrequency.JOINT_DOF),
+        "joint_q": AttributeSpec(AttributeFrequency.JOINT_COORD, dtype=wp.float32),
+        "joint_qd": AttributeSpec(AttributeFrequency.JOINT_DOF, dtype=wp.float32),
+        "joint_f": AttributeSpec(AttributeFrequency.JOINT_DOF, dtype=wp.float32),
+        "joint_armature": AttributeSpec(AttributeFrequency.JOINT_DOF, dtype=wp.float32),
+        "joint_target_q": AttributeSpec(AttributeFrequency.JOINT_COORD, dtype=wp.float32),
+        "joint_target_qd": AttributeSpec(AttributeFrequency.JOINT_DOF, dtype=wp.float32),
+        "joint_act": AttributeSpec(AttributeFrequency.JOINT_DOF, dtype=wp.float32),
+        "joint_axis": AttributeSpec(AttributeFrequency.JOINT_DOF, dtype=wp.vec3),
+        "joint_target_mode": AttributeSpec(AttributeFrequency.JOINT_DOF, dtype=wp.int32),
+        "joint_target_ke": AttributeSpec(AttributeFrequency.JOINT_DOF, dtype=wp.float32),
+        "joint_target_kd": AttributeSpec(AttributeFrequency.JOINT_DOF, dtype=wp.float32),
+        "joint_damping": AttributeSpec(AttributeFrequency.JOINT_DOF, dtype=wp.float32),
+        "joint_stiffness": AttributeSpec(AttributeFrequency.JOINT_DOF, dtype=wp.float32),
+        "joint_rest_q": AttributeSpec(AttributeFrequency.JOINT_COORD, dtype=wp.float32),
+        "joint_limit_lower": AttributeSpec(AttributeFrequency.JOINT_DOF, dtype=wp.float32),
+        "joint_limit_upper": AttributeSpec(AttributeFrequency.JOINT_DOF, dtype=wp.float32),
+        "joint_limit_ke": AttributeSpec(AttributeFrequency.JOINT_DOF, dtype=wp.float32),
+        "joint_limit_kd": AttributeSpec(AttributeFrequency.JOINT_DOF, dtype=wp.float32),
+        "joint_effort_limit": AttributeSpec(AttributeFrequency.JOINT_DOF, dtype=wp.float32),
+        "joint_friction": AttributeSpec(AttributeFrequency.JOINT_DOF, dtype=wp.float32),
+        "joint_velocity_limit": AttributeSpec(AttributeFrequency.JOINT_DOF, dtype=wp.float32),
         # articulations and deprecated mimic constraints
         "articulation_start": AttributeSpec(
             AttributeFrequency.ARTICULATION,
@@ -776,8 +786,7 @@ class Model:
         ),
         "articulation_label": AttributeSpec(AttributeFrequency.ARTICULATION),
         "articulation_world": AttributeSpec(
-            AttributeFrequency.ARTICULATION,
-            references=AttributeFrequency.WORLD,
+            AttributeFrequency.ARTICULATION, references=AttributeFrequency.WORLD, dtype=wp.int32
         ),
         "articulation_world_start": AttributeSpec(
             AttributeFrequency.ARTICULATION,
@@ -833,20 +842,21 @@ class Model:
             AttributeFrequency.VOLUME, references=AttributeFrequency.TETRAHEDRON, compaction_policy="end"
         ),
         "constraint_mimic_joint0": AttributeSpec(
-            AttributeFrequency.CONSTRAINT_MIMIC,
-            references=AttributeFrequency.JOINT,
+            AttributeFrequency.CONSTRAINT_MIMIC, references=AttributeFrequency.JOINT, dtype=wp.int32
         ),
         "constraint_mimic_joint1": AttributeSpec(
-            AttributeFrequency.CONSTRAINT_MIMIC,
-            references=AttributeFrequency.JOINT,
+            AttributeFrequency.CONSTRAINT_MIMIC, references=AttributeFrequency.JOINT, dtype=wp.int32
         ),
-        "constraint_mimic_coef0": AttributeSpec(AttributeFrequency.CONSTRAINT_MIMIC),
-        "constraint_mimic_coef1": AttributeSpec(AttributeFrequency.CONSTRAINT_MIMIC),
-        "constraint_mimic_enabled": AttributeSpec(AttributeFrequency.CONSTRAINT_MIMIC),
+        "constraint_mimic_coef0": AttributeSpec(
+            AttributeFrequency.CONSTRAINT_MIMIC, dtype=wp.float32, differentiable=False
+        ),
+        "constraint_mimic_coef1": AttributeSpec(
+            AttributeFrequency.CONSTRAINT_MIMIC, dtype=wp.float32, differentiable=False
+        ),
+        "constraint_mimic_enabled": AttributeSpec(AttributeFrequency.CONSTRAINT_MIMIC, dtype=wp.bool),
         "constraint_mimic_label": AttributeSpec(AttributeFrequency.CONSTRAINT_MIMIC),
         "constraint_mimic_world": AttributeSpec(
-            AttributeFrequency.CONSTRAINT_MIMIC,
-            references=AttributeFrequency.WORLD,
+            AttributeFrequency.CONSTRAINT_MIMIC, references=AttributeFrequency.WORLD, dtype=wp.int32
         ),
     }
 

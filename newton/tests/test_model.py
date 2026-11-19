@@ -205,6 +205,59 @@ class TestModelAttributeSpecs(unittest.TestCase):
             with self.subTest(attribute=name):
                 self.assertEqual(model.get_attribute_frequency(name), expected_frequency)
 
+    def test_finalize_follows_spec_dtypes(self):
+        """Finalize attributes with a spec dtype to that dtype, with gradients only where differentiable."""
+        builder = ModelBuilder()
+        builder.add_cloth_grid(
+            pos=wp.vec3(0.0, 0.0, 1.0),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0),
+            dim_x=2,
+            dim_y=2,
+            cell_x=0.1,
+            cell_y=0.1,
+            mass=0.1,
+            add_springs=True,
+        )
+        builder.add_soft_grid(
+            pos=wp.vec3(1.0, 0.0, 1.0),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0),
+            dim_x=1,
+            dim_y=1,
+            dim_z=1,
+            cell_x=0.1,
+            cell_y=0.1,
+            cell_z=0.1,
+            density=100.0,
+            k_mu=1.0e3,
+            k_lambda=1.0e3,
+            k_damp=0.0,
+        )
+        body = builder.add_link()
+        builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+        joint = builder.add_joint_revolute(-1, body, axis=(0.0, 1.0, 0.0))
+        builder.add_articulation([joint])
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", NewtonDeprecationWarning)
+            builder.add_constraint_mimic(joint, joint, coef0=0.1, coef1=0.5)
+        model = builder.finalize(device="cpu", requires_grad=True)
+
+        specs = {**newton.Model._CORE_ATTRIBUTE_SPECS, **ModelBuilder._BUILDER_ATTRIBUTE_SPECS}
+        typed = {name: spec for name, spec in specs.items() if spec.dtype is not None}
+        self.assertGreater(len(typed), 90)
+        for name, spec in typed.items():
+            with self.subTest(attribute=name):
+                array = getattr(model, name)
+                self.assertIsNotNone(array)
+                self.assertEqual(array.dtype, spec.dtype)
+                self.assertEqual(array.requires_grad, spec.differentiable)
+        # Display colors and the deprecated mimic coefficients opt out of gradients.
+        for name in ("shape_color", "tri_opacity", "constraint_mimic_coef0"):
+            self.assertFalse(typed[name].differentiable)
+        self.assertTrue(typed["body_q"].differentiable)
+        self.assertFalse(typed["joint_parent"].differentiable)
+
 
 class TestParallelJointWarning(unittest.TestCase):
     """Warn on parallel joints between the same pair of bodies."""
