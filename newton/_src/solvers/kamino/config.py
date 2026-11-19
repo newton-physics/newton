@@ -596,7 +596,7 @@ class PADMMSolverConfig:
     dual_residual_mode: Literal["standard", "delassus"] = "delassus"
     """
     The definition of the dual residual `r_dual` between consecutive iterates.\n
-    - `"standard"`: The ADMM residual `eta * (x - x_p) + rho * (y - y_p)`.\n
+    - `"standard"`: The ADMM residual `eta * (x - x_p) + rho * (y - y_p)`, with the penalty `rho` of each row.\n
     - `"delassus"`: The change `D @ (x - x_p)` of the constraint-space velocity, obtained without an
       additional matrix-vector product from the right-hand side of the linear system. It is insensitive
       to the drift of the impulses along the null space of the Delassus operator, e.g. due to redundant
@@ -720,7 +720,9 @@ class PADMMSolverConfig:
 
     PADMM converges to a minimum-norm deviation from its initial guess. Scaling
     the warm-start forces makes null-space forces converge to the overall
-    minimum-norm solution.
+    minimum-norm solution. This does not apply to the redundant kinematic joint
+    rows dropped by `detect_redundant_kinematics`, whose internal stress is
+    carried by the kept rows.
     """
 
     contact_warmstart_method: Literal[
