@@ -1543,6 +1543,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
             model.AttributeFrequency.TETRAHEDRON: list(range(model.tet_count)) if keep_deformables else [],
             model.AttributeFrequency.SPRING: list(range(model.spring_count)) if keep_deformables else [],
             model.AttributeFrequency.ATTACHMENT_PARTICLE_BODY: attachment_order,
+            model.AttributeFrequency.CONSTRAINT_MIMIC: [],  # deprecated, has no entries
             # WORLD rows include the global world -1 after the local worlds.
             model.AttributeFrequency.WORLD: list(range(model.world_count + 1)),
         }
