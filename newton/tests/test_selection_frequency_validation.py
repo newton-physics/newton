@@ -70,7 +70,7 @@ class TestSelectionFrequencyValidation(unittest.TestCase):
             view.get_attribute("joint_type", model)
 
     def test_non_affine_origins_keep_uniform_metadata(self):
-        """Preserve uniform counts when irregular origins disable access."""
+        """Preserve uniform counts and address irregular origins by absolute row."""
         builder = newton.ModelBuilder()
         add_chain(builder, "target_0", 2)
         add_chain(builder, "other_0", 1)
@@ -84,9 +84,13 @@ class TestSelectionFrequencyValidation(unittest.TestCase):
         view = ArticulationView(model, "target_*", homogeneous=False)
         self.assertEqual(view.joint_count, 2)
         self.assertEqual(len(view.joint_names), 2)
-        self.assertIsNone(view.joints_contiguous)
-        with self.assertRaises(AttributeError):
-            view.get_attribute("joint_type", model)
+        self.assertFalse(view.joints_contiguous)
+        joint_rows = np.array([[[0, 1], [3, 4], [8, 9]]])
+        assert_np_equal(view.get_attribute("joint_type", model).numpy(), model.joint_type.numpy()[joint_rows])
+        model.joint_q.assign(np.arange(model.joint_coord_count, dtype=np.float32))
+        assert_np_equal(view.get_dof_positions(model).numpy(), np.array([[[0.0], [1.0], [4.0]]]))
+        with self.assertRaisesRegex(ValueError, "not uniformly strided"):
+            ArticulationView(model, "target_*")
 
     def test_different_sparse_patterns_keep_uniform_metadata(self):
         """Preserve uniform counts when physical gaps disable access."""
@@ -460,8 +464,8 @@ class TestSelectionFrequencyValidation(unittest.TestCase):
                 self.assertIsNone(view.joint_count)
                 self.assertIsNone(view.link_count)
 
-    def test_root_gate_is_atomic(self):
-        """Require both root layouts for root transform and velocity access."""
+    def test_irregular_root_layouts_use_absolute_rows(self):
+        """Address root coordinates and DOFs whose strides differ through their own absolute rows."""
         builder = newton.ModelBuilder()
 
         def add_free(label):
@@ -482,14 +486,20 @@ class TestSelectionFrequencyValidation(unittest.TestCase):
         add_free("target_2")
         model = builder.finalize()
 
+        # coordinate starts 0, 11, 22 are regular; DOF starts 0, 9, 19 are not
         view = ArticulationView(model, "target_*", homogeneous=False)
-        self.assertEqual(view.get_dof_positions(model).shape, (1, 3, 7))
-        with self.assertRaises(AttributeError):
-            view.get_dof_velocities(model)
-        with self.assertRaises(AttributeError):
-            view.get_root_transforms(model)
-        with self.assertRaises(AttributeError):
-            view.get_root_velocities(model)
+        q = np.arange(model.joint_coord_count, dtype=np.float32)
+        qd = -np.arange(model.joint_dof_count, dtype=np.float32)
+        model.joint_q.assign(q)
+        model.joint_qd.assign(qd)
+        q_rows = np.array([0, 11, 22])[:, None] + np.arange(7)
+        qd_rows = np.array([0, 9, 19])[:, None] + np.arange(6)
+        assert_np_equal(view.get_dof_positions(model).numpy(), q[q_rows][None])
+        assert_np_equal(view.get_dof_velocities(model).numpy(), qd[qd_rows][None])
+        assert_np_equal(view.get_root_transforms(model).numpy().reshape(3, 7), q[q_rows])
+        assert_np_equal(view.get_root_velocities(model).numpy().reshape(3, 6), qd[qd_rows])
+        with self.assertRaisesRegex(ValueError, "not uniformly strided"):
+            ArticulationView(model, "target_*")
 
     def test_unequal_world_totals_do_not_replace_affine_validation(self):
         """Keep a valid layout when unrelated world shape totals differ."""

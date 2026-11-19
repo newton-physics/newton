@@ -353,6 +353,7 @@ class SolverStyle3D(SolverBase):
                 input nor output state is modified in this case.
         """
         self.validate_observables(observables, contacts)
+        self._require_unreduced_contacts(contacts)
 
         if self.config.iterations < 1:
             raise ValueError(f"Config.iterations must be at least 1, got {self.config.iterations}.")

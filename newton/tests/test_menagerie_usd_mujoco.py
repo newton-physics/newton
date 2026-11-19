@@ -45,7 +45,7 @@ from newton.tests.test_menagerie_mujoco import (
     compare_inertia_tensors,
     run_newton_eval_fk,
 )
-from newton.tests.unittest_utils import USD_AVAILABLE
+from newton.tests.unittest_utils import requires
 from newton.usd import SchemaResolverMjc, SchemaResolverNewton
 
 # =============================================================================
@@ -133,7 +133,7 @@ def download_usd_asset(robot_name: str) -> Path:
 # =============================================================================
 # Import Tests
 # =============================================================================
-@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+@requires("pxr.Usd")
 class TestMenagerieUsdImport(unittest.TestCase):
     """Verify that each menagerie USD asset imports correctly into Newton."""
 
@@ -1168,6 +1168,9 @@ class TestMenagerieUSD(TestMenagerieBase):
         "tendon_invweight0",
         # stat.meaninertia is derived from body mass/inertia (which may differ for some USD models)
         "stat",
+        # Body ordering differs, so the (body, type) matching in
+        # compare_geom_fields_unordered does not apply -> compared via _compare_geoms
+        "geom_",
         # Broadphase collision data depends on geom ordering
         "nxn_",
         # Contact pairs not imported from USD
@@ -1744,7 +1747,7 @@ class TestMenagerieUSD(TestMenagerieBase):
 # Newton loads the pre-converted USD file.
 
 
-@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+@requires("pxr.Usd")
 class TestMenagerieUSD_H1(TestMenagerieUSD):
     """Unitree H1 humanoid: USD vs native MuJoCo simulation equivalence."""
 
@@ -1758,7 +1761,7 @@ class TestMenagerieUSD_H1(TestMenagerieUSD):
     backfill_model = True
 
 
-@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+@requires("pxr.Usd")
 class TestMenagerieUSD_G1WithHands(TestMenagerieUSD):
     """Unitree G1 29-DOF with hands: USD vs native MuJoCo simulation equivalence."""
 
@@ -1778,7 +1781,7 @@ class TestMenagerieUSD_G1WithHands(TestMenagerieUSD):
     dynamics_tolerance = 5e-4
 
 
-@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+@requires("pxr.Usd")
 class TestMenagerieUSD_ShadowHand(TestMenagerieUSD):
     """Shadow Hand (left): USD vs native MuJoCo simulation equivalence."""
 
@@ -1795,7 +1798,7 @@ class TestMenagerieUSD_ShadowHand(TestMenagerieUSD):
     dynamics_tolerance = 1e-4
 
 
-@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+@requires("pxr.Usd")
 class TestMenagerieUSD_Robotiq2f85V4(TestMenagerieUSD):
     """Robotiq 2F-85 v4 gripper: USD vs native MuJoCo simulation equivalence."""
 
@@ -1834,7 +1837,7 @@ class TestMenagerieUSD_Robotiq2f85V4(TestMenagerieUSD):
             )
 
 
-@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+@requires("pxr.Usd")
 class TestMenagerieUSD_ApptronikApollo(TestMenagerieUSD):
     """Apptronik Apollo humanoid: USD vs native MuJoCo simulation equivalence."""
 
@@ -1863,7 +1866,7 @@ class TestMenagerieUSD_ApptronikApollo(TestMenagerieUSD):
     }
 
 
-@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+@requires("pxr.Usd")
 class TestMenagerieUSD_BoosterT1(TestMenagerieUSD):
     """Booster T1 humanoid: USD vs native MuJoCo simulation equivalence."""
 
@@ -1893,7 +1896,7 @@ class TestMenagerieUSD_BoosterT1(TestMenagerieUSD):
     dynamics_tolerance = 3e-4
 
 
-@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+@requires("pxr.Usd")
 class TestMenagerieUSD_WonikAllegro(TestMenagerieUSD):
     """Wonik Allegro Hand (left): USD vs native MuJoCo simulation equivalence."""
 
@@ -1928,7 +1931,7 @@ class TestMenagerieUSD_WonikAllegro(TestMenagerieUSD):
         pass
 
 
-@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+@requires("pxr.Usd")
 class TestMenagerieUSD_UR5e(TestMenagerieUSD):
     """Universal Robots UR5e arm: USD vs native MuJoCo simulation equivalence."""
 

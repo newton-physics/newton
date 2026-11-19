@@ -1552,7 +1552,8 @@ class SolverCoupled(SolverBase, CouplingInterface):
             model.AttributeFrequency.TETRAHEDRON: list(range(model.tet_count)) if keep_deformables else [],
             model.AttributeFrequency.SPRING: list(range(model.spring_count)) if keep_deformables else [],
             model.AttributeFrequency.ATTACHMENT_PARTICLE_BODY: attachment_order,
-            model.AttributeFrequency.WORLD: list(range(model.world_count)),
+            # WORLD rows include the global world -1 after the local worlds.
+            model.AttributeFrequency.WORLD: list(range(model.world_count + 1)),
         }
         built_in_frequency_orders.update(self._compact_deformable_orders(built_in_frequency_orders))
         custom_frequency_orders = self._compact_custom_frequency_orders(built_in_frequency_orders)
@@ -1926,7 +1927,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         world_frequency = model.AttributeFrequency.WORLD
         projections.setdefault(
             world_frequency,
-            _compact_index_projection(range(model.world_count), model.world_count),
+            _compact_index_projection(range(model.world_count + 1), model.world_count + 1),
         )
         projections[attachment_frequency] = _compact_index_projection(
             rows,
@@ -2355,7 +2356,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         namespace = overrides.get(namespace_name)
         if namespace is None:
             parent_namespace = getattr(self.model, namespace_name)
-            namespace = _AttributeNamespaceView(parent_namespace)
+            namespace = _AttributeNamespaceView(parent_namespace, view)
             setattr(view, namespace_name, namespace)
         setattr(namespace, attr_name, value)
 
@@ -3030,6 +3031,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         contacts) own their own buffers internally.
         """
         self.validate_observables(observables, contacts)
+        self._require_unreduced_contacts(contacts)
         self._distribute_state(state_in, dt=dt)
         self._active_observables = observables
         try:
@@ -3680,22 +3682,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
                     ],
                     device=self.model.device,
                 )
-            if contacts._rigid_contact_diff_distance is not None and filtered._rigid_contact_diff_distance is not None:
-                wp.launch(
-                    _copy_filtered_rigid_contact_diff_kernel,
-                    dim=contacts.rigid_contact_max,
-                    inputs=[
-                        self._entry_rigid_contact_update[entry.name],
-                        rigid_src_to_dst,
-                        contacts._rigid_contact_diff_distance,
-                        contacts._rigid_contact_diff_point0_world,
-                        contacts._rigid_contact_diff_point1_world,
-                        filtered._rigid_contact_diff_distance,
-                        filtered._rigid_contact_diff_point0_world,
-                        filtered._rigid_contact_diff_point1_world,
-                    ],
-                    device=self.model.device,
-                )
 
         if contacts.soft_contact_max > 0 and int(entry.view.particle_count) > 0:
             soft_src_to_dst = self._entry_soft_contact_src_to_dst[entry.name]
@@ -3796,6 +3782,8 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 device=contacts.device,
             )
         filtered._contact_matching_mode = contacts.contact_matching_mode
+        # Entry solvers check this stamp; the filtered rows are as reduced as their source.
+        filtered._rigid_contact_body_pair_reduced = contacts.rigid_contact_body_pair_reduced
         filtered._enable_rigid_soft_full_surface_contact = bool(
             contacts._enable_rigid_soft_full_surface_contact and has_particles
         )
@@ -3869,15 +3857,14 @@ class SolverCoupled(SolverBase, CouplingInterface):
         if flags & int(ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
             if frequency == model_frequency.BODY:
                 return True
-        configuration_dof = attribute.name in ("joint_axis", "mujoco:dof_ref", "mujoco:dof_springref")
+        configuration_dof = attribute.name in ("joint_axis", "mujoco:dof_ref")
         if flags & int(ModelFlags.JOINT_PROPERTIES):
-            if frequency in (model_frequency.JOINT, model_frequency.JOINT_COORD) or attribute.name in (
-                "joint_axis",
-                "joint_target_q",
-            ):
+            if (
+                frequency in (model_frequency.JOINT, model_frequency.JOINT_COORD) and attribute.name != "joint_rest_q"
+            ) or attribute.name in ("joint_axis", "joint_target_q"):
                 return True
         if flags & int(ModelFlags.JOINT_DOF_PROPERTIES):
-            if frequency == model_frequency.JOINT_DOF or attribute.name == "joint_target_q":
+            if frequency == model_frequency.JOINT_DOF or attribute.name in ("joint_target_q", "joint_rest_q"):
                 return True
         if flags & int(ModelFlags.JOINT_DOF_FORCE_PROPERTIES):
             if (
@@ -3887,7 +3874,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         if flags & int(ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES) and attribute.name in (
             "joint_target_q",
             "mujoco:dof_ref",
-            "mujoco:dof_springref",
+            "joint_rest_q",
         ):
             return True
         if flags & int(ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES) and attribute.name == "joint_armature":
@@ -4645,30 +4632,6 @@ def _copy_filtered_rigid_contact_match_index_kernel(
         dst_match_index[dst_id] = match_id
     else:
         dst_match_index[dst_id] = -1
-
-
-@wp.kernel(enable_backward=False)
-def _copy_filtered_rigid_contact_diff_kernel(
-    update_filter: wp.array[wp.int32],
-    src_to_dst: wp.array[wp.int32],
-    src_distance: wp.array[wp.float32],
-    src_point0_world: wp.array[wp.vec3],
-    src_point1_world: wp.array[wp.vec3],
-    dst_distance: wp.array[wp.float32],
-    dst_point0_world: wp.array[wp.vec3],
-    dst_point1_world: wp.array[wp.vec3],
-):
-    if update_filter[0] == 0:
-        return
-
-    src_id = wp.tid()
-    dst_id = src_to_dst[src_id]
-    if dst_id < 0:
-        return
-
-    dst_distance[dst_id] = src_distance[src_id]
-    dst_point0_world[dst_id] = src_point0_world[src_id]
-    dst_point1_world[dst_id] = src_point1_world[src_id]
 
 
 @wp.kernel(enable_backward=False)

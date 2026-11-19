@@ -1,1 +1,0 @@
-Warn when `SolverMuJoCo` uses RK4 with Newton contacts because intermediate stages reuse input contact geometry; use `integrator="implicitfast"` or `use_mujoco_contacts=True` to avoid this limitation.

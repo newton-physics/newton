@@ -142,6 +142,12 @@ class GeometriesModel:
     Shape of ``(num_geoms,)``.
     """
 
+    stiffness: wp.array[wp.float32] | None = None
+    """Normal contact stiffness [N/m] for each geometry."""
+
+    damping: wp.array[wp.float32] | None = None
+    """Normal contact damping [N s/m] for each geometry."""
+
     torsional_friction: wp.array[wp.float32] | None = None
     """Per-geometry torsional friction coefficient [m]; ``None`` means zero."""
 

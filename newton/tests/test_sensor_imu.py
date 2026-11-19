@@ -42,7 +42,7 @@ class TestSensorIMU(unittest.TestCase):
             SensorIMU(model, sites=[site], request_state_attributes=True)
 
         self.assertEqual(len(caught), 1)
-        self.assertIs(caught[0].category, newton.exceptions.NewtonDeprecationWarning)
+        self.assertIs(caught[0].category, newton.NewtonDeprecationWarning)
         self.assertRegex(
             str(caught[0].message), r"SensorIMU.*request_state_attributes=True.*1\.7.*SolverBase.Observables"
         )
@@ -51,26 +51,28 @@ class TestSensorIMU(unittest.TestCase):
         self.assertIsNotNone(model.state().body_qdd)
 
     def test_observable_path_does_not_request_state_attributes(self):
-        """Keep explicit False construction warning-free and solver-driven."""
-        builder = newton.ModelBuilder()
-        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
-        site = builder.add_site(body, label="imu_site")
-        model = builder.finalize(device="cpu")
+        """Keep default and explicit False construction warning-free and solver-driven."""
+        for kwargs in ({}, {"request_state_attributes": False}):
+            with self.subTest(kwargs=kwargs):
+                builder = newton.ModelBuilder()
+                body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+                site = builder.add_site(body, label="imu_site")
+                model = builder.finalize(device="cpu")
 
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            SensorIMU(model, sites=[site], request_state_attributes=False)
-        self.assertEqual(caught, [])
-        self.assertIsNone(model.state().body_qdd)
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    SensorIMU(model, sites=[site], **kwargs)
+                self.assertEqual(caught, [])
+                self.assertIsNone(model.state().body_qdd)
 
-    def test_default_preserves_legacy_state_allocation(self):
-        """Keep unchanged IMU callers working throughout the deprecation period."""
+    def test_legacy_request_preserves_state_allocation(self):
+        """Keep explicit legacy IMU callers working throughout the deprecation period."""
         builder = newton.ModelBuilder()
         body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
         site = builder.add_site(body)
         model = builder.finalize(device="cpu")
         with self.assertWarnsRegex(DeprecationWarning, r"SensorIMU.*1\.7"):
-            sensor = SensorIMU(model, sites=[site])
+            sensor = SensorIMU(model, sites=[site], request_state_attributes=True)
         state = model.state()
         self.assertIsNotNone(state.body_qdd)
         state.body_qdd.zero_()
