@@ -15,7 +15,6 @@ import warp as wp
 from ..core.types import Axis, Devicelike, Vec2, Vec3, override
 from ..exceptions import NewtonWarning
 from ..utils.color import ColorSpace
-from ..utils.deprecation import RemovedAttribute, UnavailableAttribute
 from ..utils.texture import compute_texture_hash
 
 if TYPE_CHECKING:
@@ -2746,13 +2745,6 @@ class Gaussian:
         :class:`Data` arrays change.
         """
         return self._warp_bvh
-
-    # Tombstones so that assigning the old names fails instead of being ignored.
-    warp_data = UnavailableAttribute(
-        "Gaussian.warp_data was removed in Newton 1.9; "
-        "use the Gaussian.Data object returned by Gaussian.finalize() instead."
-    )
-    warp_bvh = RemovedAttribute("bvh", removed_in="1.9")
 
     def _find_sh_degree(self) -> int:
         """Spherical harmonics degree (0-3), inferred from *sh_coeffs* shape."""
