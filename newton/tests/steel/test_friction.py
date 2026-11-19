@@ -690,6 +690,8 @@ def _solve_contact_block(device, tangent_mass, rhs, initial, capacity=32):
             # Compliance coefficients: no compliant rows.
             wp.zeros((1, 1), dtype=float, device=device),
             wp.zeros((1, 1), dtype=float, device=device),
+            # Nesterov momentum history: off.
+            wp.zeros((1, 1), dtype=float, device=device),
             1,
             1.0,
             0,
@@ -1027,6 +1029,8 @@ def _coulomb_newton_mf_block(device, block):
             wp.zeros((1, 1), dtype=float, device=device),
             wp.zeros((1, 1), dtype=float, device=device),
             wp.zeros((1, 4), dtype=float, device=device),
+            # Nesterov momentum history: off.
+            wp.zeros((1, 1), dtype=float, device=device),
             1,
             1.0,
             0,

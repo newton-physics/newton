@@ -42,6 +42,7 @@ from .kernels import (
     _warmstart_desaxce_correction,
     _warmstart_joint_constraints,
     _warmstart_limit_constraints,
+    _write_padmm_world_residual,
     make_collect_solver_info_kernel,
     make_collect_solver_info_kernel_sparse,
     make_desaxce_correction_and_velocity_bias_kernel,
@@ -390,6 +391,24 @@ class PADMMSolver:
             device=self.device,
         )
 
+    def write_world_residual(self, world_residual: wp.array[wp.float32]) -> None:
+        """Write the terminal residual of each world relative to its stopping tolerances.
+
+        The value is ``max(r_p / primal_tolerance, r_d / dual_tolerance, r_c / compl_tolerance)``
+        of the latest solve, so values at most one satisfy every tolerance. With a
+        zero tolerance, a zero residual contributes zero and any other infinity.
+
+        Args:
+            world_residual: Output array with at least ``num_worlds`` entries.
+        """
+        wp.launch(
+            _write_padmm_world_residual,
+            dim=self._size.num_worlds,
+            inputs=[self.data.config, self.data.status],
+            outputs=[world_residual],
+            device=self._device,
+        )
+
     def solve(self, problem: DualProblem):
         """
         Solves the given dual problem using PADMM.
@@ -428,6 +447,11 @@ class PADMMSolver:
 
         # Update the final solution from the terminal PADMM state
         self._update_solution(problem)
+
+        # The solution is in the variables of the current joint decoupling, which an internal
+        # warm-start must know to rebase it, whichever way this solve was started
+        if problem.joint_decoupling is not None:
+            problem.joint_decoupling.record_solution_body_share()
 
     ###
     # Internals - High-Level Operations
@@ -556,7 +580,6 @@ class PADMMSolver:
                 inputs=[
                     # Inputs:
                     problem.data.dim,
-                    problem.data.mio,
                     self._data.status,
                     self._data.state.sigma,
                     # Outputs:
@@ -679,6 +702,9 @@ class PADMMSolver:
         """
         Warm-starts the bilateral joint constraint variables from the model data container.
 
+        The data container holds the impulses of the original rows, so this also applies the change
+        of variables of the problem's joint decoupling, if any.
+
         Args:
             model: The model associated with the problem.
             data: The model data associated with the problem.
@@ -725,6 +751,9 @@ class PADMMSolver:
             ],
             device=self.device,
         )
+
+        if problem.joint_decoupling is not None:
+            problem.joint_decoupling.decouple_warmstart(problem.data.P, x_0, y_0, z_0)
 
     def _warmstart_limit_constraints(
         self,
@@ -825,6 +854,11 @@ class PADMMSolver:
             problem: The dual forward dynamics problem to be solved.
                 This is needed during warm-starts in order to access the problem preconditioning.
         """
+        # The stored solution is in the variables of the joint decoupling of its own step, whose
+        # body share may differ from the current one, so express it in the current variables
+        if problem.joint_decoupling is not None:
+            problem.joint_decoupling.rebase_solution(self._data.solution.lambdas, self._data.solution.v_plus)
+
         # Apply the dual-problem preconditioner to the stored solution
         # in order to project to solution space of the PADMM variables
         wp.launch(
@@ -1358,7 +1392,6 @@ class PADMMSolver:
                     problem.data.ccgo,
                     problem.data.dim,
                     problem.data.vio,
-                    problem.data.mio,
                     problem.data.mu,
                     problem.data.v_f,
                     problem.data.D,

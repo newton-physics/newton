@@ -112,11 +112,12 @@ class InputProcessorEncoder(InputProcessorBase):
         self._sequential_indices = wp.array(np.arange(num_actuators, dtype=np.uint32), device=device)
 
     def process(self, inputs: InputProcessorBase.Inputs, state: None, dt: float | None) -> InputProcessorBase.Inputs:
+        out_pos = wp.empty_like(self._out_pos) if self._out_pos.requires_grad else self._out_pos
         wp.launch(
             kernel=_encoder_read_kernel,
             dim=self._num_actuators,
             inputs=[inputs.positions, inputs.pos_indices, inputs.sim_positions, self.output_joint_pos_indices],
-            outputs=[self._out_pos],
+            outputs=[out_pos],
             device=self._device,
         )
-        return replace(inputs, positions=self._out_pos, pos_indices=self._sequential_indices)
+        return replace(inputs, positions=out_pos, pos_indices=self._sequential_indices)

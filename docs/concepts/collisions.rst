@@ -264,38 +264,43 @@ average or a per-pair limit.
      - Estimated typical count
      - Notes
    * - Triangle mesh--infinite plane
-     - 240
+     - 184
      - ``V_mesh``
      - About 40
      - At most one candidate per mesh vertex.
    * - Mesh/heightfield--sphere or ellipsoid
-     - 240
+     - 184
      - ``T_overlap``
      - About 40
      - At most one contact per overlapping triangle.
    * - Mesh/heightfield--other primitive or convex hull
-     - 240
+     - 184
      - ``5 * T_overlap``
      - About 40
      - Each overlapping triangle uses the convex manifold path.
    * - Mesh--mesh
-     - 240
+     - 184
      - ``E_A + E_B``
      - About 40
      - Uses edge-vs-SDF queries, with BVH distance fallback when needed.
    * - Heightfield--mesh
-     - 240
+     - 184
      - ``E_heightfield + E_mesh``
      - About 40
      - Uses the mesh/SDF route with on-the-fly heightfield evaluation.
    * - Hydroelastic SDF--SDF
-     - 240 by default
+     - 184 penetrating + 100 speculative
      - Geometry and buffer dependent
      - No fixed estimate
      - ``anchor_contact=True`` can add contacts beyond the reduced set.
 
-The reduced maximum follows the current 240-slot contact-reduction layout.
-Disabling reduction exposes the geometry-dependent candidate bounds shown above.
+The default contact-reduction layout uses twelve dodecahedral normal bins with
+six footprint slots and one depth slot each, plus 100 spatial depth slots:
+``12 * 7 + 100 = 184``. Mesh, heightfield, and SDF routes can retain seven
+additional predictive contacts when speculative contacts are enabled.
+Hydroelastic reduction keeps speculative faces in a separate spatial depth
+budget. Disabling reduction exposes the geometry-dependent candidate bounds
+shown above.
 
 **Common pair guidance**
 
@@ -705,9 +710,22 @@ in the explicit filter-pair list.
 Filter pairs are automatically populated in several cases:
 
 - **Adjacent bodies**: Parent-child body pairs connected by joints (when
-  ``collision_filter_parent=True``). For USD joints with two explicit bodies,
-  ``physics:collisionEnabled`` controls this filter with inverse polarity; joints to world do not
-  create a body-pair filter. Also applies to max-coordinate jointed bodies.
+  ``collision_filter_parent=True``). The filter works on weld groups, like MuJoCo's: the
+  bodies joined by filtering fixed and zero-DOF tree joints count as one, so a joint filters its
+  child's weld group against its parent's weld group, and a filtering weld joint filters its
+  whole group against itself. A weld with ``collision_filter_parent=False`` keeps its parent and
+  child in separate groups: they collide, and a joint below one of them filters that side
+  alone. Loop-closure joints keep their direct pair only, and bodies welded to the world form no
+  group. The pairs are completed in
+  :meth:`~ModelBuilder.finalize`, so the order in which joints and shapes are added does not
+  matter, and shapes with ``ShapeConfig(collision_filter_parent=False)`` take no part. The pairs
+  of two bodies a joint connects directly stay as
+  :attr:`~ModelBuilder.shape_collision_filter_pairs` holds them, so removing them before
+  ``finalize()`` keeps those bodies colliding, and :meth:`~ModelBuilder.collapse_fixed_joints`
+  adds them for the bodies it merges. For USD
+  joints with two explicit bodies, ``physics:collisionEnabled`` controls this filter with
+  inverse polarity; joints to world do not create a body-pair filter. Also applies to
+  max-coordinate jointed bodies.
 - **Disabled self-collision**: All shape pairs within an articulation when ``enable_self_collisions=False``
 - **USD filtered pairs**: Pairs defined by ``physics:filteredPairs`` relationships in USD files
 - **USD collision disabled**: Shapes with ``physics:collisionEnabled=false`` (filtered against all other shapes)
@@ -1279,6 +1297,13 @@ Contact reduction is enabled by default. For scenes with many mesh-mesh interact
 
 To disable reduction, set ``reduce_contacts=False`` when creating the pipeline.
 
+Mesh/SDF depth coverage uses aspect-ratio-based voxel grids and normalized
+indexing, independent of the scene's length units. This also applies when
+body-pair reduction is disabled. Removing absolute length cutoffs and
+stabilizing normalized cell boundaries can change the retained contacts and
+simulation trajectories, especially for very small or degenerate geometry.
+No API or scene migration is required.
+
 **Body-pair contact reduction (opt-in):**
 
 Bodies built from many colliders (a foot made of several spheres or capsules, a
@@ -1298,11 +1323,18 @@ of the global contact reducer, before they are written. Enable it with
 
     pipeline = newton.CollisionPipeline(
         model,
-        body_pair_reduction=newton.CollisionPipeline.BodyPairReductionConfig(cell_size=0.25),
+        body_pair_reduction=newton.CollisionPipeline.BodyPairReductionConfig(),
     )
     contacts = pipeline.contacts()
 
 Contacts are grouped by body pair, material class, normal bin and spatial cell.
+By default, spatial coverage uses the same normalized voxel mapping and
+aspect-ratio-based grid sizing as SDF reduction, applied to fixed body-local
+collider-group bounds. Uniformly scaling the geometry does not require changing
+a cell size. The smaller finite dynamic group supplies the reference grid;
+an infinite ground plane never sets its scale. This is a runtime collision
+pipeline setting and does not add an authorable USD attribute.
+
 Each group keeps one depth representative, up to six sampled footprint extremes
 over all its contacts and up to six more over its touching contacts only, so
 speculative contacts cannot displace the support polygon. Mesh and
@@ -1313,21 +1345,37 @@ approximation: support is sampled, not exact, and keeping
 rim points can strengthen torsional friction. Selection is memoryless, so on
 curved or mesh supports the kept set can change between steps.
 
+Near-contact and speculative layers have independent coverage cells, so a distant
+speculative layer does not prevent reduction of a flat touching patch.
+The automatic mode conservatively keeps all contacts in cells whose
+separations vary by more than ``1e-5`` of the reference group's largest extent.
+This protects shallow touching regions from competing with deeper regions in
+the same cell. Contacts without a finite reference grid, or outside its fixed
+bounds, also pass through. These safeguards can reduce the savings on curved
+or tilted patches; they do not guarantee exact pressure or friction-torque
+distribution. An explicit ``cell_size`` selects the previous projected grid
+without the automatic depth-variation safeguard.
+
 Shapes on one body share a group only when their ``shape_material_*`` values
 and their per-shape custom attributes match;
 ``BodyPairReductionConfig.material_attributes`` narrows
 the attributes that count. Call
 :meth:`~CollisionPipeline.refresh_body_pair_reduction_groups` after changing
-them at runtime.
+them or the local collider transforms or margins at runtime; this also refreshes
+the fixed coverage bounds, including shape margins.
 
 Buffers from the pipeline's :meth:`~CollisionPipeline.contacts` are stamped
 :attr:`~Contacts.rigid_contact_body_pair_reduced` when the scene has primitive
 or convex contact pairs; a scene of only meshes and heightfields reduces nothing
-by body pair and keeps unstamped buffers. Only a pipeline that stamps its buffers
-collides into a stamped buffer, and a solver accepts one only
-if it declares :attr:`~solvers.SolverBase.supports_body_pair_reduced_contacts`;
-the others raise in ``step()``, also during CUDA graph capture.
-:class:`~solvers.SolverSteel` supports it, except with ``contact_compliance``.
+by body pair and keeps unstamped buffers. A stamped buffer must be filled by
+its reducing pipeline. The rows use the ordinary Newton contact contract.
+Built-in consumers accept
+these rows just as they accept mesh/SDF-reduced contacts, including through
+solver-owned pipelines and coupled contact streams. Backends using their own
+collision detection must be configured to consume Newton contacts to use this
+reduction. As with mesh/SDF reduction, fewer points can change aggregate
+stiffness, load distribution, and friction torque; reduction does not rescale
+material stiffness or promise identical compliance to the unreduced point set.
 Body-pair reduction doesn't support ``contact_matching="sticky"`` or
 hydroelastic contacts. Keep it off when it doesn't reduce the end-to-end step time.
 To check, compare the step time and :attr:`~Contacts.rigid_contact_count` with it
@@ -1402,7 +1450,7 @@ Shape collision behavior is controlled via :class:`~ModelBuilder.ShapeConfig`:
    * - ``collision_group``
      - Collision group ID. 0 disables collisions. Default: 1.
    * - ``collision_filter_parent``
-     - Filter collisions with adjacent body (parent in articulation or connected via joint). Default: True.
+     - Whether the shape takes part in parent-child filtering: a filtering joint of its body filters it against the shapes of the body on the joint's other side and of that body's weld group, in whichever order shape and joint are added. ``False`` keeps it colliding with them. Default: True.
    * - ``has_shape_collision``
      - Whether shape collides with other shapes. Default: True.
    * - ``has_particle_collision``
@@ -1584,21 +1632,33 @@ observed shape speed:
     )
     schedule.step()
 
-Any change in a collidable shape's linear or angular velocity triggers a
-refresh at the next substep. Slowing, stopping, or turning can increase the
-closing speed between shapes and require contacts that the earlier pass did
-not create. Shapes with rigid collision disabled do not affect the schedule
-or overflow reporting. The scheduler checks the final substep's output when
-reporting ``interval_overflow``.
+Collision detection keeps the pipeline's velocity-guided speculative extension
+for the selected time horizon. Scheduling does not add an all-direction contact
+reserve or change authored gaps and physical margins. The global point-speed
+bound determines refresh timing, not per-shape detection distances.
+
+Refreshes occur when the travel estimate approaches the configured distance
+cap, the previous horizon expires, or a routed shape's linear or angular
+velocity changes. After an observed velocity change, the next prediction
+horizon is one solver substep. Rotating shapes always use one-substep horizons:
+even constant angular velocity changes witness approach directions. Without
+rotation, the first substep may use a longer horizon. Gravity, braking, turning,
+and impacts can also require a refresh every substep.
+
+For explicit broad phase, the pair list determines which shapes affect the
+schedule, including listed shapes with rigid collision disabled; unlisted
+shapes do not affect it. Other broad phases use the rigid collision flags.
 
 The same ``step()`` call works directly or inside CUDA graph capture; callbacks
 must therefore be capture-safe and preallocate their storage. The scheduler
 always executes every configured solver substep. Its two states are ping-pong
 buffers, so the substep count must be even. ``schedule.interval_overflow`` is
-set when observed per-substep or accumulated travel exceeds the budget; in
-that case, increase the substep count or the speculative extension limit.
-Collision prediction horizons are capped at the next frame boundary, where
-contacts are always refreshed.
+set when observed per-substep or accumulated travel exceeds the configured
+distance cap, including motion observed after the final substep. This flag is
+not a continuous collision detection guarantee: unseen forces or impulses
+can invalidate a velocity forecast within a substep. Increase solver substeps
+when the expected motion requires it. Horizons are capped at the frame boundary,
+where contacts are always refreshed.
 
 Set ``collision_dt_max`` to cap the time between collision passes independently
 of the travel estimate. For example, ``1.0 / 120.0`` requests collision

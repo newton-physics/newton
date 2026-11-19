@@ -12,9 +12,10 @@ import warp as wp
 import newton
 from newton._src.utils import is_graph_capture_allocation_enabled
 from newton.selection import ArticulationView
-from newton.tests.unittest_utils import add_function_test, get_test_devices
+from newton.tests.unittest_utils import MUJOCO_MODULES, add_function_test, get_test_devices, requires
 
 
+@requires("git", *MUJOCO_MODULES, "pxr.Usd")
 class TestAnymalReset(unittest.TestCase):
     def setUp(self):
         self.device = wp.get_device()

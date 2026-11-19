@@ -1408,8 +1408,10 @@ class SolverSteel(SolverBase, CouplingInterface):
       damping response is unbounded, so under a large external load the drive reaction
       can exceed the limit. ``drive_mode="rows"`` instead solves one PGS row per driven DOF with the PhysX articulation force-drive
       update and clamps its impulse, which bounds the complete reaction.
-      :attr:`~newton.Model.joint_armature` and :attr:`~newton.Model.joint_damping` are
-      applied.
+      :attr:`~newton.Model.joint_armature` is applied. Positive passive
+      :attr:`~newton.Model.joint_damping` on PRISMATIC, REVOLUTE, BALL and D6 DOFs is
+      integrated implicitly by adding ``dt * damping`` to the mass diagonal in either
+      drive mode. Passive damping is independent of drive targets and effort limits.
     - Passive joint springs: :attr:`~newton.Model.joint_stiffness` and
       :attr:`~newton.Model.joint_rest_q` on PRISMATIC, REVOLUTE and D6 DOFs, applied
       explicitly as ``stiffness * (rest_q - q)`` like :class:`~newton.solvers.SolverFeatherstone`,
@@ -1475,7 +1477,7 @@ class SolverSteel(SolverBase, CouplingInterface):
 
     - On a CPU device both solve modes run world-serial portable kernels (``"colored"``
       sweeps in serial order). Features with only CUDA rows (contact compliance, a
-      ``friction_mode`` other than ``"fixed_normal"`` and joint friction) raise
+      ``friction_mode`` other than ``"fixed_normal"``, joint friction and ``nesterov_momentum``) raise
       :class:`NotImplementedError` there, as does sleeping with ``solve_mode="colored"``;
       contact torsion raises :class:`ValueError`.
     - Mimic relationships across articulations or on joints whose position and velocity
@@ -1498,7 +1500,7 @@ class SolverSteel(SolverBase, CouplingInterface):
     64 DOFs, joint velocity-limit and joint friction rows are disabled, the model has no mimic or loop-closing
     joints, drives are augmented and contacts use hard point friction or persistent friction patches
     (no warm start, regularization, velocity-only iterations, friction gap threshold, restitution,
-    contact torsion or compliance): the mass matrix is assembled and factored in
+    contact torsion, compliance or Nesterov momentum): the mass matrix is assembled and factored in
     the fill-free pattern of the kinematic tree, and constraint rows keep only the DOFs
     that support them.
     Otherwise, and for free bodies, dense factors are used. Both give the same dynamics up
@@ -1510,7 +1512,8 @@ class SolverSteel(SolverBase, CouplingInterface):
     factorization and solve each DOF by division, bitwise identical to the dense ``loop``
     kernels and equal to the ``tiled`` kernels up to float32 rounding, and take precedence
     over sparse factors. ``parallel_tree=True`` additionally traverses the independent
-    branches of each tree in parallel.
+    branches of each tree in parallel. ``nesterov_momentum=True`` keeps the dense factors and
+    skips the diagonal path.
 
     Constraint rows are stored per world with fixed capacities (``articulation_constraint_max``
     for rows of articulated bodies, ``free_body_constraint_max`` for free-body contacts, and
@@ -1549,9 +1552,13 @@ class SolverSteel(SolverBase, CouplingInterface):
         Like :class:`~newton.solvers.SolverMuJoCo`, the reconstruction uses the bodies' rigid mass
         and inertia, not :attr:`~newton.Model.joint_armature`. For a dynamic DOF the wrench
         projected onto the joint's motion subspace is therefore its generalized load
-        (:attr:`~newton.Control.joint_f`, explicit passive spring and damping forces and
-        joint-space rows) less ``armature * qdd``. Kinematic DOFs report the rigid-body load of
-        carrying their subtree along the prescribed motion.
+        (:attr:`~newton.Control.joint_f`, explicit passive spring forces, passive damping and
+        joint-space rows) less ``armature * qdd``. Positive passive damping on PRISMATIC,
+        REVOLUTE, BALL and D6 DOFs contributes ``-damping * (qd + dt * qdd)`` to that load,
+        where ``qd`` is the velocity after any velocity-limit prescaling and ``qdd`` is the
+        solved acceleration relative to that velocity. Thus ``qd + dt * qdd`` is the
+        end-of-step velocity. Kinematic DOFs report the rigid-body load of carrying their
+        subtree along the prescribed motion.
 
         The accounting has these limits:
 
@@ -1618,7 +1625,7 @@ class SolverSteel(SolverBase, CouplingInterface):
             The solver observable API may change without prior notice.
         """
 
-        body_awake: "wp.array[wp.bool] | None" = SolverBase.Observables.field(  # noqa: RUF009
+        body_awake: wp.array[wp.bool] | None = SolverBase.Observables.field(  # noqa: RUF009
             dtype=wp.bool,
             frequency=Model.AttributeFrequency.BODY,
         )
@@ -1631,14 +1638,6 @@ class SolverSteel(SolverBase, CouplingInterface):
             ObservableKind.BODY_AWAKE,
         }
     )
-
-    supports_body_pair_reduced_contacts: bool = True
-    """:meth:`step` accepts body-pair-reduced contacts, except with ``contact_compliance=True``, where it raises.
-
-    The compliant contact law is validated only on unreduced contacts.
-
-    .. experimental::
-    """
 
     # Constructor options. Most are fixed at construction; the _StepOption ones are read at every step.
     solve_mode = _ConstructionOption()
@@ -1695,6 +1694,7 @@ class SolverSteel(SolverBase, CouplingInterface):
     propagation_cached_response_body_max = _ConstructionOption()
     propagation_color_order = _ConstructionOption()
     deterministic = _ConstructionOption()
+    nesterov_momentum = _ConstructionOption()
 
     @classmethod
     def register_custom_attributes(cls, builder: ModelBuilder) -> None:
@@ -1892,6 +1892,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         propagation_cached_response_body_max: int = 8,
         propagation_color_order: Literal["contact", "longest_first"] = "contact",
         deterministic: wp.DeterministicMode | None = None,
+        nesterov_momentum: bool = False,
     ):
         """Create a Steel solver for a finalized model.
 
@@ -1928,11 +1929,13 @@ class SolverSteel(SolverBase, CouplingInterface):
             relaxation: Successive over-relaxation factor of the PGS sweep.
             update_mass_matrix_interval: Rebuild and refactor the mass matrix every this many
                 calls to :meth:`step`; ``1`` rebuilds it every step. Larger values reuse a
-                stale factorization between rebuilds. A change of ``dt``, :meth:`reset` and
-                :meth:`notify_model_changed` still request a refresh of the affected
-                articulations. Under CUDA graph capture the
-                host-side cadence is baked into the graph, so the interval should divide the
-                number of steps captured per graph.
+                stale factorization between rebuilds. A change of ``dt`` beyond a relative
+                tolerance of ``1e-6``, :meth:`reset` and :meth:`notify_model_changed` request a
+                refresh of the affected articulations. Under CUDA graph capture the host-side
+                cadence is baked into the graph, so the interval should divide the
+                number of steps captured per graph. The timestep associated with each factor
+                is checked on the device, so replaying a graph after a step or graph with a
+                different timestep refreshes the factor even between scheduled rebuilds.
             enable_joint_limits: Enforce :attr:`~newton.Model.joint_limit_lower` and
                 :attr:`~newton.Model.joint_limit_upper` of PRISMATIC, REVOLUTE and D6 DOFs as
                 unilateral rows. When ``False`` (the default), no joint-limit rows are created,
@@ -2420,6 +2423,18 @@ class SolverSteel(SolverBase, CouplingInterface):
                 ``BODY_PARENT_F`` sums contact wrenches with atomics, so it is outside this guarantee.
                 Steel's kernel modules always opt out of Warp's ``deterministic`` module option, so a
                 process-wide ``wp.config.deterministic`` only selects this mode.
+            nesterov_momentum: Accelerate the matrix-free Gauss-Seidel sweep with Nesterov momentum and
+                O'Donoghue-Candes gradient restart, as in MuJoCo's PGS solver. Each sweep starts from the
+                impulses extrapolated along the previous sweep's change, applied to the velocity through each
+                row's response; momentum restarts when a sweep's correction opposes the extrapolation.
+                Can converge in fewer iterations on stacks, mass ratios and long chains; gains appear above a
+                few iterations. The ``velocity_iterations`` post-pass runs the same sweep. Every world then
+                runs the general sweep, bypassing the specialized sparse, local and paired-factor solves,
+                and keeps ``8 * (articulation_constraint_max + free_body_constraint_max)`` bytes of sweep
+                history per world. Requires ``solve_mode="serial"``,
+                ``articulated_contact_response="immediate"`` and ``row_schedule="interleaved"``; other
+                combinations raise :class:`ValueError`. CUDA only: on CPU it raises
+                :class:`NotImplementedError`. Construction-only.
         """
         solve_mode, articulated_contact_response = _normalize_solve_mode(solve_mode, articulated_contact_response)
         _validate_solve_mode(solve_mode, articulated_contact_response)
@@ -2592,6 +2607,14 @@ class SolverSteel(SolverBase, CouplingInterface):
                 stacklevel=2,
             )
         configure_contact_torsion(self)
+        self._nesterov_momentum = bool(nesterov_momentum)
+        if self._nesterov_momentum and (
+            articulated_contact_response != "immediate" or self._row_schedule != "interleaved"
+        ):
+            raise ValueError(
+                "nesterov_momentum requires solve_mode='serial', articulated_contact_response='immediate' "
+                "and row_schedule='interleaved'"
+            )
         if not model.device.is_cuda:
             # CPU fallback: portable twins of the native row kernels cover the core matrix-free solve;
             # features with only native CUDA rows are rejected.
@@ -2750,7 +2773,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._coupling_patch_history_restore_pending = False
         self._coupling_iteration_restarts = True
         self._mass_update_requested = wp.zeros(model.articulation_count, dtype=wp.int32, device=model.device)
-        self._last_step_dt = None
+        self._mass_factor_dt = wp.zeros(model.articulation_count, dtype=wp.float32, device=model.device)
 
         self._model_plan: _SteelModelPlan | None = None
         self._kinematic_joint_mask = wp.zeros(model.joint_count, dtype=wp.int32, device=model.device)
@@ -3204,7 +3227,7 @@ class SolverSteel(SolverBase, CouplingInterface):
             )
 
     @override
-    def notify_model_changed(self, flags: ModelFlags | int, *, world_mask: "wp.array[wp.bool] | None" = None) -> None:
+    def notify_model_changed(self, flags: ModelFlags | int, *, world_mask: wp.array[wp.bool] | None = None) -> None:
         """Refresh cached solver data after model changes.
 
         Joint (frames), joint DOF, DOF force (drive gains), DOF inertial (armature), body
@@ -3277,7 +3300,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         if flags & dof_force:
             self._refresh_passive_joint_damping()
             self._refresh_passive_spring_stiffness()
-            # Augmented drive gains enter the factored mass-matrix diagonal.
+            # Augmented drive gains and passive damping enter the factored mass diagonal.
             self._mass_update_requested.fill_(1)
         if flags & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES):
             self._refresh_passive_spring_rest_q()
@@ -3409,7 +3432,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         world = np.where(world < 0, int(model.world_count), world).astype(np.int32)
         return supported[joint_dof_joint], world[joint_dof_joint]
 
-    def _clear_warmstart_history(self, world_mask: "wp.array[wp.bool] | None") -> None:
+    def _clear_warmstart_history(self, world_mask: wp.array[wp.bool] | None) -> None:
         """Discard the carried contact impulses of the selected worlds (all worlds for ``None``)."""
         if not self._contact_warmstart or self._world_count == 0:
             return
@@ -3439,7 +3462,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 device=self.model.device,
             )
 
-    def notify_state_changed(self, state: State, *, world_mask: "wp.array[wp.bool] | None" = None) -> None:
+    def notify_state_changed(self, state: State, *, world_mask: wp.array[wp.bool] | None = None) -> None:
         """Drop the carried kinematics of the selected worlds after writing ``state`` outside :meth:`step`.
 
         With ``reuse_kinematics`` on, the solver keeps the kinematics and inverse-dynamics terms it
@@ -3474,7 +3497,7 @@ class SolverSteel(SolverBase, CouplingInterface):
     def reset(
         self,
         state: State,
-        world_mask: "wp.array[wp.bool] | None" = None,
+        world_mask: wp.array[wp.bool] | None = None,
         flags: StateFlags | int | None = None,
     ) -> None:
         """Clear solver-owned state of the selected worlds.
@@ -3516,7 +3539,6 @@ class SolverSteel(SolverBase, CouplingInterface):
         if world_mask is None:
             # Restart the host-side cadence; graphs captured earlier keep the values baked into them.
             self._step = 0
-            self._last_step_dt = None
             self._buffer_index = 0
             self._ws_history_dt.zero_()
             self._ws_history_generation.fill_(CONTACT_GENERATION_NONE)
@@ -3670,7 +3692,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         endpoint_index: wp.array[int],
         endpoint_local_pos: wp.array[wp.vec3],
         out_mass: wp.array[float],
-        out_inertia: "wp.array[wp.mat33] | None" = None,
+        out_inertia: wp.array[wp.mat33] | None = None,
     ) -> None:
         """Evaluate articulated effective mass and inertia for coupling endpoints.
 
@@ -4965,6 +4987,7 @@ class SolverSteel(SolverBase, CouplingInterface):
             return
         self._paired_factor_coordinates = bool(
             not self._local_internal_fast_path
+            and not self._nesterov_momentum
             and not self._regularization_enabled
             and not self._contact_warmstart
             and self._iterations > 0
@@ -5089,6 +5112,7 @@ class SolverSteel(SolverBase, CouplingInterface):
             and not self._contact_torsion_enabled
             and self._mimic_count == 0
             and self._connect_count == 0
+            and not self._nesterov_momentum
             and self._has_owned_dof_topology(model)
         )
         candidate_sizes = self._diagonal_mass_sizes.intersection(self._joint_limit_sizes) if supported else ()
@@ -5217,6 +5241,7 @@ class SolverSteel(SolverBase, CouplingInterface):
             and not self._contact_torsion_enabled
             # Nor do they add the compliant residual term, and they rebuild the diagonal that compliance replaces.
             and not self._contact_compliance
+            and not self._nesterov_momentum
             and self._sparse_mass_matrix_size is None
         )
         plan = self._model_plan
@@ -5466,7 +5491,11 @@ class SolverSteel(SolverBase, CouplingInterface):
         """
         self._sparse_mass_matrix_size = None
         self._sparse_mass_matrix_plan = None
-        if not self._kernel_overrides.get("sparse_mass_matrix", True) or self._sparse_diagonal_contact_solve:
+        if (
+            not self._kernel_overrides.get("sparse_mass_matrix", True)
+            or self._sparse_diagonal_contact_solve
+            or self._nesterov_momentum
+        ):
             return
         if _model_has_bilateral_constraints(model):
             return
@@ -6323,8 +6352,16 @@ class SolverSteel(SolverBase, CouplingInterface):
                 contact_compliance=self._contact_compliance,
                 pair_cache=self._mfgs_pair_cache,
                 torsion_links=self._mfgs_torsion_links,
+                nesterov_momentum=self._nesterov_momentum,
             )
             self._mf_gs_row_phases = row_phases
+            # Per-world sweep history of nesterov_momentum; a (1, 1) stand-in when it is off.
+            momentum_shape = (
+                (self._world_count, 2 * (self._articulation_constraint_max + mf_rows))
+                if self._nesterov_momentum
+                else (1, 1)
+            )
+            self._momentum_scratch = wp.zeros(momentum_shape, dtype=float, device=model.device)
             if not model.device.is_cuda:
                 # CPU fallback: _launch_mf_gs_phase runs the world-serial twin of the native kernel.
                 self._pgs_solve_mf_gs_kernels = {}
@@ -6470,6 +6507,7 @@ class SolverSteel(SolverBase, CouplingInterface):
             self._torsion_row_radius,
             self._compliance.dense_gamma if self._compliance is not None else self._compliance_off_gamma,
             self._compliance.mf_gamma if self._compliance is not None else self._compliance_off_gamma,
+            self._momentum_scratch,
         ]
 
     def _launch_pgs_solve(
@@ -6948,10 +6986,6 @@ class SolverSteel(SolverBase, CouplingInterface):
         if self._contact_compliance:
             # Reject unsupported state before any stage can launch work.
             _contact_compliance.validate_step(self)
-            # The compliant contact law is validated on unreduced contacts only.
-            self._require_unreduced_contacts(
-                contacts, supports_body_pair_reduced_contacts=False, configuration="contact_compliance=True"
-            )
         self.validate_observables(observables, contacts)
         if contacts is not None and contacts.rigid_contact_max > self._max_contacts_alloc:
             raise ValueError(
@@ -7015,10 +7049,6 @@ class SolverSteel(SolverBase, CouplingInterface):
                 # Captured steps defer errors to the device; eager steps raise during preparation.
                 self._device_torsion.deferred_errors = wp.get_stream(self.model.device).is_capturing
                 self._device_torsion.begin_step(state_in, state_out)
-        if self._last_step_dt is not None and abs(self._last_step_dt - dt) > 1.0e-8:
-            # The augmented mass matrix depends on dt through the implicit drive terms.
-            self._force_mass_update = True
-        self._last_step_dt = dt
 
         model = self.model
         if control is None:
@@ -7114,7 +7144,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                     device=model.device,
                 )
                 parent_wrench_prescale = self._parent_wrench_prescale
-        self._stage1_crba(state_aug)
+        self._stage1_crba(state_aug, dt)
 
         # Stage 2: factor the augmented mass matrix of every articulation group.
         self._profile_stage("factor")
@@ -8524,13 +8554,15 @@ class SolverSteel(SolverBase, CouplingInterface):
         external body forces), :attr:`~newton.Control.joint_f`, passive joint springs and damping and the
         explicit part ``u0`` of each drive, clamped to :attr:`~newton.Model.joint_effort_limit`
         (an actuator-only clamp, as MuJoCo's ``actuatorfrcrange`` and PhysX's drive
-        ``maxForce``). The implicit part ``K = dt * kd + dt^2 * ke`` is stored in
+        ``maxForce``). The implicit drive part plus ``dt * max(joint_damping, 0)`` is stored in
         ``aug_row_K`` and added to the mass-matrix diagonal by :meth:`_stage1_crba`. With
-        ``drive_mode="rows"`` drives contribute nothing here; their rows are solved
-        with the constraints.
+        ``drive_mode="rows"`` only passive damping contributes to this diagonal; drive rows are solved
+        with the constraints. Passive damping uses ``dynamics_qd``, after velocity-limit
+        prescaling; actuator drives retain their input-state velocity.
         """
         model = self.model
         body_f = state_in.body_f if state_in.body_count else None
+        dynamics_qd = self._qd_work if self._enable_joint_velocity_limits else state_in.joint_qd
         state_aug._body_ft_s.zero_()
         common_inputs = [
             model.articulation_start,
@@ -8546,7 +8578,7 @@ class SolverSteel(SolverBase, CouplingInterface):
             model.joint_dof_dim,
             control.joint_f,
             state_in.joint_q,
-            state_in.joint_qd,
+            dynamics_qd,
             self._passive_spring_stiffness,
             self._passive_spring_rest_q,
             self._passive_joint_damping,
@@ -8560,7 +8592,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         ]
         if self._tree_plan is not None:
             self._launch_tree_tau(tau_inputs, state_aug)
-            if self._drive_mode == "augmented" and self._articulation_max_dofs > 0:
+            if self._articulation_max_dofs > 0:
                 wp.launch(
                     eval_augmented_drives,
                     dim=model.articulation_count,
@@ -8574,6 +8606,8 @@ class SolverSteel(SolverBase, CouplingInterface):
                         model.joint_dof_dim,
                         state_in.joint_q,
                         state_in.joint_qd,
+                        self._passive_joint_damping,
+                        self._drive_mode == "augmented",
                         model.joint_target_ke,
                         model.joint_target_kd,
                         control.joint_target_q,
@@ -8588,7 +8622,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                     block_dim=self._serial_kernel_block_dim,
                     device=model.device,
                 )
-        elif self._drive_mode == "augmented" and self._articulation_max_dofs > 0:
+        elif self._articulation_max_dofs > 0:
             wp.launch(
                 eval_rigid_tau_and_augmented_drives,
                 dim=model.articulation_count,
@@ -8596,6 +8630,8 @@ class SolverSteel(SolverBase, CouplingInterface):
                     *common_inputs,
                     self._articulation_H_rows,
                     *tau_inputs,
+                    state_in.joint_qd,
+                    self._drive_mode == "augmented",
                     model.joint_target_ke,
                     model.joint_target_kd,
                     control.joint_target_q,
@@ -8675,7 +8711,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 device=self.model.device,
             )
 
-    def _stage1_crba(self, state_aug: State):
+    def _stage1_crba(self, state_aug: State, dt: float):
         """Build the joint-space mass matrix of articulations due for a refresh and add drive terms."""
         model = self.model
         global_flag = 1 if ((self._step % self._update_mass_matrix_interval) == 0 or self._force_mass_update) else 0
@@ -8683,8 +8719,8 @@ class SolverSteel(SolverBase, CouplingInterface):
         wp.launch(
             build_mass_update_mask,
             dim=model.articulation_count,
-            inputs=[global_flag, self._mass_update_requested, self._dynamics_art_active],
-            outputs=[self._mass_update_mask],
+            inputs=[global_flag, dt, self._mass_update_requested, self._dynamics_art_active],
+            outputs=[self._mass_update_mask, self._mass_factor_dt],
             device=model.device,
         )
         if not global_flag:
@@ -8779,8 +8815,6 @@ class SolverSteel(SolverBase, CouplingInterface):
                 device=model.device,
                 block_dim=128,
             )
-            if self._drive_mode != "augmented":
-                continue
             wp.launch(
                 apply_augmented_mass_diagonal_grouped,
                 dim=n_arts,
@@ -15178,6 +15212,7 @@ def _get_pgs_solve_mf_gs_kernel(
     row_phase: int | None = None,
     pair_cache: bool = False,
     torsion_links: bool = False,
+    nesterov_momentum: bool = False,
 ) -> "wp.Kernel":
     """Build the fused matrix-free projected Gauss-Seidel kernel for one solver shape.
 
@@ -15234,6 +15269,8 @@ def _get_pgs_solve_mf_gs_kernel(
             compact shared copy of the row types and parents.
         torsion_links: Find the contact torsion rows and their members through shared row lists built once
             per launch (``contact_torsion.torque_links_source``); the results are the same.
+        nesterov_momentum: Extrapolate the impulses with Nesterov momentum at the start of every sweep
+            after the first, keeping the history in ``momentum_scratch`` (``SolverSteel.nesterov_momentum``).
         factor_coordinates: Skip the worlds without free-body rows, which the paired
             factor-coordinate solve owns (:func:`_get_pgs_solve_paired_factor_kernel`).
         skip_local_internal_worlds: Solve only the worlds that the articulation-local solves
@@ -15656,6 +15693,74 @@ def _get_pgs_solve_mf_gs_kernel(
         if skip_local_internal_worlds
         else ""
     )
+    # Nesterov momentum with O'Donoghue-Candes restart; per-world scratch holds
+    # [lam_prev dense][lam_prev mf][e dense][e mf].
+    momentum_init = (
+        f"""
+    float* mom_prev_d = &momentum_scratch.data[world * 2 * ({M_D} + {M_MF})];
+    float* mom_prev_m = mom_prev_d + {M_D};
+    float* mom_e_d = mom_prev_m + {M_MF};
+    float* mom_e_m = mom_e_d + {M_D};
+    int mom_k = 0;
+    for (int i = lane; i < m_dense; i += 32) {{ mom_prev_d[i] = s_lam_dense[i]; mom_e_d[i] = 0.0f; }}
+    for (int i = lane; i < m_mf; i += 32) {{ mom_prev_m[i] = s_lam_mf[i]; mom_e_m[i] = 0.0f; }}
+    __syncwarp();
+"""
+        if nesterov_momentum
+        else ""
+    )
+    momentum_sweep = (
+        f"""
+        if (iter > 0) {{
+            // Restart when the last sweep's correction opposes its extrapolation, and when friction switches on.
+            float mom_dot = 0.0f;
+            for (int i = lane; i < m_dense; i += 32)
+                mom_dot += (s_lam_dense[i] - mom_prev_d[i] - mom_e_d[i]) * mom_e_d[i];
+            for (int i = lane; i < m_mf; i += 32)
+                mom_dot += (s_lam_mf[i] - mom_prev_m[i] - mom_e_m[i]) * mom_e_m[i];
+            bool restart = warp_sum(mom_dot) < 0.0f || global_iter == friction_start_iteration;
+            mom_k = restart ? 0 : mom_k + 1;
+            float beta = mom_k > 1 ? (float)(mom_k - 1) / (float)(mom_k + 2) : 0.0f;
+            // Extrapolate the impulses; stateless velocity-limit rows keep their last clamp. e holds the
+            // change the stored impulse actually took, so v below follows it exactly as a sweep update would.
+            for (int i = lane; i < m_dense; i += 32) {{
+                float lam = s_lam_dense[i];
+                float y = (s_meta_dense[i] & {type_mask}) == {int(PGS_CONSTRAINT_TYPE_JOINT_VELOCITY_LIMIT)} ? lam : lam + beta * (lam - mom_prev_d[i]);
+                mom_prev_d[i] = lam;
+                mom_e_d[i] = y - lam;
+                s_lam_dense[i] = y;
+            }}
+            for (int i = lane; i < m_mf; i += 32) {{
+                float lam = s_lam_mf[i];
+                float y = (mf_meta.data[off_meta + i * 4 + 3] & 0xFFFF) == {int(PGS_CONSTRAINT_TYPE_JOINT_VELOCITY_LIMIT)} ? lam : lam + beta * (lam - mom_prev_m[i]);
+                mom_prev_m[i] = lam;
+                mom_e_m[i] = y - lam;
+                s_lam_mf[i] = y;
+            }}
+            __syncwarp();
+            // Apply each row's impulse change through its own response, as the sweep does.
+            for (int i = 0; i < m_dense; i++) {{
+                float e = mom_e_d[i];
+                if (e == 0.0f) continue;
+                int row_base = jy_world_base + i * {D};
+                for (int d = lane; d < {D}; d += 32) s_v[d] += Y_world.data[row_base + d] * e;
+            }}
+            __syncwarp();
+            for (int i = 0; i < m_mf; i++) {{
+                float e = mom_e_m[i];
+                if (e == 0.0f) continue;
+                int packed_dofs = mf_meta.data[off_meta + i * 4];
+                int dof_a = packed_dofs >> 16;
+                int dof_b = (packed_dofs << 16) >> 16;
+                if (lane < 6 && dof_a >= 0) s_v[dof_a + lane] += mf_MiJt_a.data[mf6_base + i * 6 + lane] * e;
+                if (lane >= 6 && lane < 12 && dof_b >= 0) s_v[dof_b + lane - 6] += mf_MiJt_b.data[mf6_base + i * 6 + lane - 6] * e;
+                __syncwarp();
+            }}
+        }}
+"""
+        if nesterov_momentum
+        else ""
+    )
     snippet = f"""
 #if defined(__CUDA_ARCH__)
     const unsigned MASK = 0xFFFFFFFF;
@@ -15715,11 +15820,11 @@ def _get_pgs_solve_mf_gs_kernel(
 {velocity_limit_range}
 {torsion_link_build}
 {dense_pipe_decl}
-
+{momentum_init}
     for (int iter = 0; iter < iterations; iter++) {{
         const int global_iter = iteration_offset + iter;
         int iteration_changed = 0;
-
+{momentum_sweep}
         // Dense rows, prefetching the response of the next row.
         if (dense_main_end > 0) {{
 {dense_prefetch_init}
@@ -16000,6 +16105,7 @@ def _get_pgs_solve_mf_gs_kernel(
                 row_phase,
                 pair_cache,
                 torsion_links,
+                nesterov_momentum,
             )
             + "_local",
         )
@@ -16037,6 +16143,7 @@ def _get_pgs_solve_mf_gs_kernel(
         torsion_row_radius: wp.array2d[float],
         compliance_dense_gamma: wp.array2d[float],
         compliance_mf_gamma: wp.array2d[float],
+        momentum_scratch: wp.array2d[float],
         iterations: int,
         omega: float,
         regularize: int,
@@ -16078,6 +16185,7 @@ def _get_pgs_solve_mf_gs_kernel(
         torsion_row_radius: wp.array2d[float],
         compliance_dense_gamma: wp.array2d[float],
         compliance_mf_gamma: wp.array2d[float],
+        momentum_scratch: wp.array2d[float],
         iterations: int,
         omega: float,
         regularize: int,
@@ -16120,6 +16228,7 @@ def _get_pgs_solve_mf_gs_kernel(
             torsion_row_radius,
             compliance_dense_gamma,
             compliance_mf_gamma,
+            momentum_scratch,
             iterations,
             omega,
             regularize,
@@ -16147,6 +16256,7 @@ def _get_pgs_solve_mf_gs_kernel(
         row_phase,
         pair_cache,
         torsion_links,
+        nesterov_momentum,
     )
     pgs_solve_mf_gs.__name__ = name
     pgs_solve_mf_gs.__qualname__ = name
@@ -16170,6 +16280,7 @@ def _mf_gs_kernel_name(
     row_phase: int | None = None,
     pair_cache: bool = False,
     torsion_links: bool = False,
+    nesterov_momentum: bool = False,
 ) -> str:
     """Return the unique name of one matrix-free Gauss-Seidel kernel shape."""
     return (
@@ -16184,6 +16295,7 @@ def _mf_gs_kernel_name(
         f"{'_factor' if factor_coordinates else ''}"
         f"{'_jfric' if joint_friction else ''}"
         f"{'_compliance' if contact_compliance else ''}"
+        f"{'_momentum' if nesterov_momentum else ''}"
     )
 
 
@@ -16278,6 +16390,7 @@ def _mf_gs_skip_local_kernel(snippet: str, name: str) -> "wp.Kernel":
         torsion_row_radius: wp.array2d[float],
         compliance_dense_gamma: wp.array2d[float],
         compliance_mf_gamma: wp.array2d[float],
+        momentum_scratch: wp.array2d[float],
         iterations: int,
         omega: float,
         regularize: int,
@@ -16320,6 +16433,7 @@ def _mf_gs_skip_local_kernel(snippet: str, name: str) -> "wp.Kernel":
         torsion_row_radius: wp.array2d[float],
         compliance_dense_gamma: wp.array2d[float],
         compliance_mf_gamma: wp.array2d[float],
+        momentum_scratch: wp.array2d[float],
         iterations: int,
         omega: float,
         regularize: int,
@@ -16363,6 +16477,7 @@ def _mf_gs_skip_local_kernel(snippet: str, name: str) -> "wp.Kernel":
             torsion_row_radius,
             compliance_dense_gamma,
             compliance_mf_gamma,
+            momentum_scratch,
             iterations,
             omega,
             regularize,

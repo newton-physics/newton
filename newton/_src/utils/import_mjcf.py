@@ -639,7 +639,7 @@ def parse_mjcf(
         parse_meshes: Whether geometries of type `"mesh"` should be parsed. If False, geometries of type `"mesh"` are ignored.
         parse_sites: Whether sites (non-colliding reference points) should be parsed. If False, sites are ignored.
         parse_visuals: Whether visual geometries (non-collision shapes) should be loaded. If False, visual shapes are not loaded (different from `hide_visuals` which loads but hides them). Default is True.
-        parse_mujoco_options: Whether solver options from the MJCF `<option>` tag should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
+        parse_mujoco_options: Whether solver options from the MJCF `<option>` tag should be parsed. If False, solver options are not loaded and custom attributes retain their default values; the ``gravity`` and ``filterparent`` flags, which change the Newton model rather than a solver option, are then ignored as well. Default is True.
         up_axis: The up axis of the MuJoCo scene. The default is Z up.
         ignore_names: A list of regular expressions. Bodies and joints with a name matching one of the regular expressions will be ignored.
         ignore_classes: A list of regular expressions. Bodies and joints with a class matching one of the regular expressions will be ignored.
@@ -648,7 +648,10 @@ def parse_mjcf(
         no_class_as_colliders: If True, geometries without a class are parsed as collision geometries. If False, geometries without a class are parsed as visual geometries.
         force_show_colliders: If True, the collision shapes are always shown, even if there are visual shapes.
             Collider planes in MJCF groups 0-2 remain visible even when this is False.
-        enable_self_collisions: If True, self-collisions are enabled.
+        enable_self_collisions: If True, self-collisions are enabled. ``<option><flag filterparent="disable"/>``
+            additionally lets parent and child bodies collide by importing their joints with
+            ``collision_filter_parent=False``; ``enable_self_collisions=False`` still disables every collision
+            between the imported shapes.
         ignore_inertial_definitions: If True, the inertial parameters defined in the MJCF are ignored and the inertia is calculated from the shape geometry.
         collapse_fixed_joints: If True, fixed joints are removed and the respective bodies are merged.
         collapse_massless_fixed_root: If True, collapse only the massless fixed-joint chain below an imported free root body. Ignored when ``collapse_fixed_joints`` is True.
@@ -671,10 +674,18 @@ def parse_mjcf(
             See :ref:`custom_attributes` for details on custom attributes. If False (default), position/velocity
             actuators use :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.JOINT_TARGET` mode where control comes
             from :attr:`newton.Control.joint_target_q` and :attr:`newton.Control.joint_target_qd`.
-            For position-only drives using ``dampratio``, constructing
+            A scalar ``gear`` on a one-DOF (hinge or slide) position/velocity actuator is folded into the
+            joint-target drive, so the targets stay in joint units: the actuator is imported with unit gear, ``kp``,
+            ``kv``, ``damping`` and ``armature`` are scaled by ``gear**2``, ``forcerange`` by ``gear`` and ``ctrlrange``
+            by ``1 / gear`` (bounds swapped for a negative ``gear``). Position/velocity actuators whose gear cannot be
+            folded (a gear on a multi-DOF joint, a vector gear or a zero gear) are imported as
+            :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.CTRL_DIRECT` so that MuJoCo applies the gear.
+            For position-only joint-target drives using ``dampratio``, constructing
             :class:`~newton.solvers.SolverMuJoCo` initializes zero entries in
             :attr:`newton.Model.joint_target_kd` with the resolved damping coefficients.
             Subsequent damping edits use ``joint_target_kd`` as usual.
+            This does not apply to ``CTRL_DIRECT`` actuators: their gains stay in the MuJoCo actuator (in actuator
+            units), and ``joint_target_kd`` is neither written nor read for them.
         path_resolver: Callback to resolve file paths. Takes (base_dir, file_path) and returns a resolved path. For <include> elements, can return either a file path or XML content directly. For asset elements (mesh, texture, etc.), must return an absolute file path. By default, assets are searched relative to the main model with the compiler asset directory, then relative to the included file without that directory prefix, and finally relative to the included file with it. Custom resolvers receive the authoring file's directory and the file path with that file's compiler asset directory prefix.
         legacy_margin_gap: If True, restore pre-MuJoCo-3.9 import behavior
             where ``shape_margin`` is computed as ``mj_margin - mj_gap``.
@@ -807,8 +818,14 @@ def parse_mjcf(
         raise ValueError(f"MJCF compiler balanceinertia must be 'false' or 'true'; got {balance_inertia_value!r}.")
     balance_inertia = balance_inertia_value == "true"
 
+    # Like gravity, filterparent changes the Newton model rather than a solver option: it decides
+    # whether the imported joints filter parent-child collisions (collision_filter_parent). FIXED
+    # joints keep the filter because MuJoCo welds those bodies together.
+    filter_parent = True
+
     # Parse MJCF compiler and option tags for ONCE and WORLD frequency custom attributes
-    # WORLD frequency attributes use index 0 here; they get remapped during add_world()
+    # WORLD frequency attributes use the current world, -1 outside a world context;
+    # add_world() remaps them to the destination world.
     # Use findall for <option> to handle multiple elements after include expansion
     # (later values override earlier ones, matching MuJoCo's merge behavior).
     if parse_mujoco_options:
@@ -822,14 +839,15 @@ def parse_mjcf(
                     parsed = parse_custom_attributes(elem.attrib, builder_custom_attr_option, "mjcf")
                     for key, value in parsed.items():
                         if key in builder.custom_attributes:
-                            builder.custom_attributes[key].values[0] = value
+                            attribute = builder.custom_attributes[key]
+                            attribute.values[builder._model_value_key(attribute)] = value
 
         flag_attrs = [
             attr
             for attr in builder_custom_attr_option
             if attr.namespace == "mujoco" and (attr.name.startswith("flag_") or attr.name == "enable_sleeping")
         ]
-        flag_names = {attr.mjcf_attribute_name for attr in flag_attrs} | {"gravity"}
+        flag_names = {attr.mjcf_attribute_name for attr in flag_attrs} | {"gravity", "filterparent"}
         gravity_enabled = True
         for option_elem in root.findall("option"):
             for flag_elem in option_elem.findall("flag"):
@@ -841,14 +859,19 @@ def parse_mjcf(
                         stacklevel=2,
                     )
                 for key, value in parse_custom_attributes(flag_elem.attrib, flag_attrs, "mjcf").items():
-                    builder.custom_attributes[key].values[0] = value
+                    attribute = builder.custom_attributes[key]
+                    attribute.values[builder._model_value_key(attribute)] = value
                 if "gravity" in flag_elem.attrib:
                     gravity_enabled = SolverMuJoCo._parse_enable_disable(flag_elem.attrib["gravity"])
+                if "filterparent" in flag_elem.attrib:
+                    filter_parent = SolverMuJoCo._parse_enable_disable(flag_elem.attrib["filterparent"])
         if not gravity_enabled:
             if builder.current_world >= 0:
                 builder.world_gravity[builder.current_world] = wp.vec3()
             else:
                 builder.gravity = wp.vec3()
+
+    joint_filter_parent = None if filter_parent else False
 
     class_parent = {}
     class_children = {}
@@ -2710,11 +2733,33 @@ def parse_mjcf(
                 warn_invalid_joint_solreflimit(joint_attrib)
 
                 effort_limit = default_joint_effort_limit
-                if "actuatorfrcrange" in joint_attrib and is_limited(
-                    joint_attrib, "actuatorfrclimited", "actuatorfrcrange"
-                ):
-                    actuatorfrcrange = parse_vec(joint_attrib, "actuatorfrcrange", None)
-                    effort_limit = max(abs(actuatorfrcrange[0]), abs(actuatorfrcrange[1]))
+                actuatorfrclimited = joint_attrib.get("actuatorfrclimited", "auto").lower()
+                if actuatorfrclimited not in {"auto", "false", "true"}:
+                    raise ValueError(
+                        f"Joint {joint_name[-1]!r} actuatorfrclimited must be 'auto', 'false', or 'true'; "
+                        f"got {actuatorfrclimited!r}."
+                    )
+                if "actuatorfrcrange" in joint_attrib or actuatorfrclimited == "true":
+                    # MuJoCo reads an empty attribute as unspecified.
+                    actuatorfrcrange = [float(value) for value in joint_attrib.get("actuatorfrcrange", "").split()]
+                    actuatorfrcrange = actuatorfrcrange or [0.0, 0.0]
+                    if len(actuatorfrcrange) != 2:
+                        raise ValueError("Joint actuatorfrcrange must contain exactly two values.")
+                    lower, upper = actuatorfrcrange
+                    if (
+                        actuatorfrclimited == "auto"
+                        and compiler_attribs.get("autolimits", "true").lower() == "false"
+                        and (lower != 0.0 or upper != 0.0)
+                    ):
+                        raise ValueError(
+                            f"Joint {joint_name[-1]!r} has actuatorfrcrange but requires explicit "
+                            'actuatorfrclimited="true" or "false" when autolimits="false".'
+                        )
+                    force_limited = actuatorfrclimited == "true" or (actuatorfrclimited == "auto" and lower < upper)
+                    if force_limited:
+                        if lower >= upper:
+                            raise ValueError("Joint actuatorfrcrange lower bound must be smaller than upper bound.")
+                        effort_limit = max(abs(lower), abs(upper))
 
                 rest_q = builder.default_joint_cfg.rest_q
                 if "springref" in joint_attrib or "ref" in joint_attrib:
@@ -2914,6 +2959,7 @@ def parse_mjcf(
                     friction=ball_friction,
                     damping=ball_damping,
                     stiffness=ball_stiffness,
+                    collision_filter_parent=joint_filter_parent,
                     label=joint_label,
                     custom_attributes=joint_custom_attributes | dof_custom_attributes,
                 )
@@ -2935,6 +2981,7 @@ def parse_mjcf(
                     child=link,
                     linear_axes=linear_axes,
                     angular_axes=angular_axes,
+                    collision_filter_parent=None if joint_type == JointType.FIXED else joint_filter_parent,
                     label=joint_label,
                     parent_xform=parent_xform_for_joint,
                     child_xform=wp.transform(joint_pos, wp.quat_identity()),
@@ -3660,9 +3707,11 @@ def parse_mjcf(
                     logger.warning("<exclude> references unknown body '%s', skipping", body2_name)
                 continue
 
-            # Find all shapes belonging to body1 and body2
-            body1_shapes = [i for i, body in enumerate(builder.shape_body) if body == body1_idx]
-            body2_shapes = [i for i, body in enumerate(builder.shape_body) if body == body2_idx]
+            # The broad phase only ever tests colliding shapes, so sites and visual-only shapes need no filter pairs.
+            body1_shapes, body2_shapes = (
+                [shape for shape in builder.body_shapes[body] if builder.shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES]
+                for body in (body1_idx, body2_idx)
+            )
 
             # Add all shape pairs from these bodies to collision filter
             for shape1_idx in body1_shapes:
@@ -4071,13 +4120,26 @@ def parse_mjcf(
             act_name = merged_attrib.get("name", f"{actuator_type}_{target_name_for_log}")
 
             ctrl_source_val = SolverMuJoCo.CtrlSource.CTRL_DIRECT
+            folded_gear = 1.0
             if actuator_type in {"position", "velocity"} and trntype == 0 and total_dofs != 0 and not ctrl_direct:
-                ctrl_source_val = SolverMuJoCo.CtrlSource.JOINT_TARGET
+                # SolverMuJoCo rebuilds JOINT_TARGET actuators with unit gear. A scalar gear on a one-DOF joint is
+                # folded into the joint-target drive below; other non-unit gears (vector gear, zero gear) cannot be
+                # folded and keep the MuJoCo actuator (CTRL_DIRECT) so MuJoCo compiles the gear in.
+                gear = np.zeros(6)
+                authored_gear = np.array(merged_attrib.get("gear", "1").split(), dtype=float)
+                gear[: len(authored_gear)] = authored_gear
+                if np.allclose(gear, (1.0, 0.0, 0.0, 0.0, 0.0, 0.0)):
+                    ctrl_source_val = SolverMuJoCo.CtrlSource.JOINT_TARGET
+                elif total_dofs == 1 and gear[0] != 0.0 and not np.any(gear[1:]):
+                    ctrl_source_val = SolverMuJoCo.CtrlSource.JOINT_TARGET
+                    folded_gear = float(gear[0])
+            # Folding gear g into the actuator scales stiffness/damping/armature by g**2.
+            gear_sq = folded_gear**2
             ctrlrange_is_derived = False
             if actuator_type == "position":
-                kp = parse_float(merged_attrib, "kp", 1.0)  # MuJoCo default kp=1
-                kv = parse_float(merged_attrib, "kv", 0.0)  # Optional velocity damping
-                dampratio = parse_float(merged_attrib, "dampratio", 0.0)
+                kp = parse_float(merged_attrib, "kp", 1.0) * gear_sq  # MuJoCo default kp=1
+                kv = parse_float(merged_attrib, "kv", 0.0) * gear_sq  # Optional velocity damping
+                dampratio = parse_float(merged_attrib, "dampratio", 0.0)  # dimensionless; solver resolves it from kp
                 gainprm = vec10(kp, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 biasprm = vec10(0.0, -kp, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 if kv > 0.0:
@@ -4109,7 +4171,7 @@ def parse_mjcf(
                             builder.joint_target_kd[dof_idx] = kv
 
             elif actuator_type == "velocity":
-                kv = parse_float(merged_attrib, "kv", 1.0)  # MuJoCo default kv=1
+                kv = parse_float(merged_attrib, "kv", 1.0) * gear_sq  # MuJoCo default kv=1
                 gainprm = vec10(kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 biasprm = vec10(0.0, 0.0, -kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 if ctrl_source_val == SolverMuJoCo.CtrlSource.JOINT_TARGET:
@@ -4202,6 +4264,26 @@ def parse_mjcf(
                 and "mujoco:actuator_actrange" in parsed_attrs
             ):
                 parsed_attrs["mujoco:actuator_actrange"] *= scale
+            if folded_gear != 1.0:
+                # Express the authored gear in joint units: the folded actuator has unit gear, ctrl is the joint
+                # target, and MuJoCo's actuator-space limits and passive terms map through gear g.
+                if "mujoco:actuator_ctrlrange" in parsed_attrs:
+                    lo, hi = (float(v) / folded_gear for v in parsed_attrs["mujoco:actuator_ctrlrange"])
+                    parsed_attrs["mujoco:actuator_ctrlrange"] = wp.vec2(min(lo, hi), max(lo, hi))
+                if "mujoco:actuator_forcerange" in parsed_attrs:
+                    lo, hi = (float(v) * folded_gear for v in parsed_attrs["mujoco:actuator_forcerange"])
+                    parsed_attrs["mujoco:actuator_forcerange"] = wp.vec2(min(lo, hi), max(lo, hi))
+                for key in ("mujoco:actuator_damping", "mujoco:actuator_armature"):
+                    if key in parsed_attrs:
+                        parsed_attrs[key] = float(parsed_attrs[key]) * gear_sq
+                if "mujoco:actuator_dampingpoly" in parsed_attrs:
+                    poly = parsed_attrs["mujoco:actuator_dampingpoly"]
+                    parsed_attrs["mujoco:actuator_dampingpoly"] = wp.vec2(
+                        float(poly[0]) * gear_sq, float(poly[1]) * gear_sq
+                    )
+                parsed_attrs["mujoco:actuator_gear"] = wp.types.vector(length=6, dtype=wp.float32)(
+                    1.0, 0.0, 0.0, 0.0, 0.0, 0.0
+                )
             if crank_length is not None:
                 parsed_attrs["mujoco:actuator_cranklength"] = crank_length
 

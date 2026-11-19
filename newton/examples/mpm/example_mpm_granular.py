@@ -16,7 +16,6 @@ import warnings
 
 import numpy as np
 import warp as wp
-from pxr import Usd
 
 import newton
 import newton.examples
@@ -42,6 +41,8 @@ class Example:
         SolverImplicitMPM.register_custom_attributes(builder)
 
         if args.from_usd:
+            from pxr import Usd  # noqa: PLC0415 (only the --from-usd path needs USD)
+
             # Particle samples, point-subset materials, and solver configuration are authored in USD.
             # Particle masses are derived from bound physics:density values and authored widths.
             stage = Usd.Stage.Open(newton.examples.get_asset("mpm_sand.usda"))

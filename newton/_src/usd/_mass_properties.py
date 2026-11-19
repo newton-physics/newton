@@ -35,6 +35,21 @@ def _is_enabled_collider(prim: Usd.Prim) -> bool:
     return False
 
 
+def _is_disabled_rigid_body(prim: Usd.Prim) -> bool:
+    from pxr import UsdPhysics
+
+    return UsdPhysics.RigidBodyAPI(prim).GetRigidBodyEnabledAttr().Get() is False
+
+
+def _owns_descendants(prim: Usd.Prim) -> bool:
+    """Whether geometry below ``prim`` belongs to ``prim``'s rigid body, as the native physics parser assigns colliders."""
+    from pxr import UsdPhysics
+
+    if not prim.HasAPI(UsdPhysics.RigidBodyAPI):
+        return False
+    return not (_is_disabled_rigid_body(prim) and usd.physics_parser_skips_disabled_bodies())
+
+
 class _UsdMassProperties:
     """Keep mass calculations and their records scoped to one import."""
 
@@ -113,7 +128,7 @@ class _UsdMassProperties:
     # authored-value checks and yield nondeterministic mass properties. Supported versions
     # also apply authored mass from disabled colliders after the callback
     # (https://github.com/PixarAnimationStudios/OpenUSD/pull/4164).
-    # Bypass ComputeMassProperties for either condition and use recorded enabled colliders.
+    # Bypass ComputeMassProperties for any such condition and use recorded enabled colliders.
     # Remove each workaround once the minimum supported usd-core ships its upstream fix.
     # Density is excluded from the blocked-attribute check: it is read into an initialized
     # struct member upstream and blocked density already resolves to "unspecified".
@@ -139,7 +154,12 @@ class _UsdMassProperties:
             return True
         it = iter(Usd.PrimRange(body_prim, Usd.TraverseInstanceProxies()))
         for prim in it:
-            if prim != body_prim and prim.HasAPI(UsdPhysics.RigidBodyAPI):
+            if prim != body_prim and _owns_descendants(prim):
+                if _is_disabled_rigid_body(prim):
+                    # Before OpenUSD 26.11, ComputeMassProperties may count a nested disabled
+                    # body's colliders toward this body although the parser assigns them to
+                    # the disabled body.
+                    return True
                 it.PruneChildren()
                 continue
             if prim.HasAPI(UsdPhysics.CollisionAPI):
