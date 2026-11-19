@@ -9,7 +9,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.exceptions import NewtonWarning
+from newton import NewtonWarning
 from newton.tests._deformable_test_utils import _add_curve, _add_surface, _add_volume
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
@@ -387,7 +387,6 @@ class TestModelDeformableObjects(unittest.TestCase):
             rod=newton.Rod([(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0)], radius=0.02),
             label="anchored",
             wrap_in_articulation=False,
-            body_frame_origin="com",
         )
         anchor = builder.add_joint_fixed(-1, bodies[0], label="anchor")
         builder.add_articulation([*joints, anchor])
@@ -424,7 +423,6 @@ class TestModelDeformableObjects(unittest.TestCase):
                 rod=newton.Rod(points[:2] if label == "removed" else points, radius=0.02),
                 label=label,
                 wrap_in_articulation=False,
-                body_frame_origin="com",
             )
             root = (
                 builder.add_joint_free(bodies[0]) if label == "unaffected" else builder.add_joint_fixed(-1, bodies[0])

@@ -20,7 +20,7 @@ from newton.tests._usd_deformable_test_utils import (
     _deformable_stage,
     group_range,
 )
-from newton.tests.unittest_utils import USD_AVAILABLE
+from newton.tests.unittest_utils import requires
 
 _CABLE_PTS_2SEG = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0)]
 _CABLE_PTS_3SEG = [(0.0, 1.0, 1.0), (0.1, 1.0, 1.0), (0.2, 1.0, 1.0), (0.3, 1.0, 1.0)]
@@ -46,7 +46,7 @@ def _cable_shape_ids(builder, path):
     return ids
 
 
-@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+@requires("pxr.Usd")
 class TestUSDDeformableFilteredPairs(unittest.TestCase):
     """Standard physics:filteredPairs lowering for shape-backed deformables."""
 

@@ -4,7 +4,6 @@
 """Row capacities, overflow reporting, watermarks and heterogeneous-world guards of SolverSteel."""
 
 import gc
-import sys
 import unittest
 import weakref
 
@@ -15,6 +14,7 @@ import newton
 from newton._src.solvers.steel.friction_patches import FrictionPatches
 from newton._src.solvers.steel.kernels import allocate_world_contact_slots, finalize_mf_constraint_counts
 from newton.solvers import SolverSteel
+from newton.tests.steel._fixtures import printf_capture_is_reliable
 from newton.tests.unittest_utils import StdOutCapture, add_function_test, get_cuda_test_devices, get_test_devices
 
 
@@ -76,8 +76,7 @@ def test_dense_capacity_failure_is_world_local(test, device, solve_mode="serial"
 
 def test_overflow_warning_is_printed_once(test, device, solve_mode="serial", response="immediate"):
     """Print one device-side warning per overflowing row family, inside this test."""
-    if wp.get_device(device).is_cpu and sys.platform == "win32":
-        test.skipTest("Warp CPU printf capture is unreliable on Windows")
+    check_output = printf_capture_is_reliable()
     model = _box_on_ground(device, worlds=2)
     if response == "propagation":
         # The propagation rows hold every contact, in free_body_constraint_max + articulation_constraint_max rows.
@@ -92,7 +91,8 @@ def test_overflow_warning_is_printed_once(test, device, solve_mode="serial", res
     step_output = []
     for _ in range(2):
         capture = StdOutCapture()
-        capture.begin()
+        if check_output:
+            capture.begin()
         try:
             pipeline.collide(state_in, contacts)
             solver.step(state_in, state_out, model.control(), contacts, 1.0 / 240.0)
@@ -101,7 +101,7 @@ def test_overflow_warning_is_printed_once(test, device, solve_mode="serial", res
             try:
                 wp.synchronize()
             finally:
-                output = capture.end()
+                output = capture.end() if check_output else ""
         step_output.append(
             [
                 line
@@ -109,10 +109,11 @@ def test_overflow_warning_is_printed_once(test, device, solve_mode="serial", res
                 if line.strip() and not (line.startswith("Module") and "load on device" in line)
             ]
         )
-    family = "propagation" if response == "propagation" else "matrix-free"
-    test.assertEqual(len(step_output[0]), 1, step_output[0])
-    test.assertRegex(step_output[0][0], rf"^Warning: Steel {family} constraint-row overflow in world [01]:")
-    test.assertEqual(step_output[1], [])
+    if check_output:
+        family = "propagation" if response == "propagation" else "matrix-free"
+        test.assertEqual(len(step_output[0]), 1, step_output[0])
+        test.assertRegex(step_output[0][0], rf"^Warning: Steel {family} constraint-row overflow in world [01]:")
+        test.assertEqual(step_output[1], [])
     expected = [0, 0, 0, 1, 0] if response == "propagation" else [0, 1, 0, 0, 0]
     np.testing.assert_array_equal(solver._row_overflow_warning_emitted.numpy(), expected)
 

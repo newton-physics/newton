@@ -734,22 +734,6 @@ Viewer controls:
 
 Orbit mode keeps the pivot fixed while the camera rotates around it. Use ``F`` to center the pivot on the model, ``Shift`` + middle drag to pan the pivot with the camera, and the mouse wheel to change the orbit distance.
 
-**Troubleshooting:**
-
-If you encounter an OpenGL context error on Linux with Wayland:
-
-.. code-block:: text
-
-    OpenGL.error.Error: Attempt to retrieve context when no valid context
-
-Set the PyOpenGL platform before running:
-
-.. code-block:: bash
-
-    export PYOPENGL_PLATFORM=glx
-
-This is a known issue when running OpenGL applications on Wayland display servers.
-
 RTX Viewer
 ~~~~~~~~~~
 

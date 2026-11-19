@@ -83,7 +83,7 @@ class TestSensorContact(unittest.TestCase):
             SensorContact(model, sensing_bodies="*", request_contact_attributes=True)
 
         self.assertEqual(len(caught), 1)
-        self.assertIs(caught[0].category, newton.exceptions.NewtonDeprecationWarning)
+        self.assertIs(caught[0].category, newton.NewtonDeprecationWarning)
         self.assertRegex(
             str(caught[0].message), r"SensorContact.*request_contact_attributes=True.*1\.7.*SolverBase.Observables"
         )
@@ -92,20 +92,22 @@ class TestSensorContact(unittest.TestCase):
         self.assertIsNotNone(newton.CollisionPipeline(model).contacts().force)
 
     def test_observable_path_does_not_request_contact_attributes(self):
-        """Keep explicit False construction warning-free and solver-driven."""
-        model = _make_two_world_model(device="cpu")
+        """Keep default and explicit False construction warning-free and solver-driven."""
+        for kwargs in ({}, {"request_contact_attributes": False}):
+            with self.subTest(kwargs=kwargs):
+                model = _make_two_world_model(device="cpu")
 
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            SensorContact(model, sensing_bodies="*", request_contact_attributes=False)
-        self.assertEqual(caught, [])
-        self.assertIsNone(newton.CollisionPipeline(model).contacts().force)
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    SensorContact(model, sensing_bodies="*", **kwargs)
+                self.assertEqual(caught, [])
+                self.assertIsNone(newton.CollisionPipeline(model).contacts().force)
 
-    def test_default_preserves_legacy_force_allocation(self):
-        """Keep existing callers working while warning about the deprecated default."""
+    def test_legacy_request_preserves_force_allocation(self):
+        """Keep explicit legacy callers working throughout the deprecation period."""
         model = _make_two_world_model(device="cpu")
         with self.assertWarnsRegex(DeprecationWarning, r"request_contact_attributes=True.*1\.7"):
-            sensor = SensorContact(model, sensing_bodies="*")
+            sensor = SensorContact(model, sensing_bodies="*", request_contact_attributes=True)
         contacts = newton.CollisionPipeline(model).contacts()
         self.assertIsNotNone(contacts.force)
         sensor.update(model.state(), contacts)
@@ -509,7 +511,7 @@ class TestSensorContact(unittest.TestCase):
         col_b = sensor.counterpart_indices[row_a].index(shape_b)
         col_ground_a = sensor.counterpart_indices[row_a].index(ground)
         col_ground_b = sensor.counterpart_indices[row_b].index(ground)
-        positions = sensor.position_matrix.numpy()
+        positions = sensor.position_matrix.numpy().copy()
         # surface points are the offset-shifted contact points in world space
         # A-B: weights 2 and 5 over surface midpoints (6, 12, 0) and (4, 13.5, 0)
         expected_ab = [32.0 / 7.0, 91.5 / 7.0, 0.0]

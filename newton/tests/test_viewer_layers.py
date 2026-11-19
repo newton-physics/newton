@@ -12,6 +12,7 @@ from newton._src.viewer.gl.frame_cache import FrameCache
 from newton._src.viewer.viewer import ViewerBase
 from newton._src.viewer.viewer_rtx import ViewerRTX
 from newton._src.viewer.viewer_viser import ViewerViser
+from newton.tests.unittest_utils import requires
 from newton.viewer import ViewerNull
 
 
@@ -294,6 +295,7 @@ class TestViewerLayers(unittest.TestCase):
         self.assertEqual(list(viewer.layers), ["__default__"])
         self.assertEqual(viewer.layer.name_prefix, "")
 
+    @requires("pyglet")
     def test_rtx_remove_layer_with_sibling_fails_loudly(self):
         """RTX should not silently wipe sibling layers during clear_model()."""
         viewer = _MinimalRTXViewer()
@@ -306,6 +308,7 @@ class TestViewerLayers(unittest.TestCase):
         self.assertIn("A", viewer.layers)
         self.assertIn("B", viewer.layers)
 
+    @requires("pyglet")
     def test_rtx_borrowed_stage_disables_deformable_overlays(self):
         """Leave a borrowed stage's deformable presentation visible by itself."""
         viewer = _MinimalRTXViewer()
@@ -314,6 +317,7 @@ class TestViewerLayers(unittest.TestCase):
         self.assertFalse(viewer.show_triangles)
         self.assertFalse(viewer.show_deformable_visual_meshes)
 
+    @requires("pyglet")
     def test_rtx_deformable_state_hides_and_restores_geometry(self):
         """Queue current skinned points when a hidden runtime mesh is shown again."""
         builder = newton.ModelBuilder()
@@ -341,6 +345,7 @@ class TestViewerLayers(unittest.TestCase):
         self.assertTrue(viewer._pending_mesh_visibility[name])
         np.testing.assert_array_equal(viewer._pending_mesh_points[name], [[0, 0, 2], [1, 0, 2], [0, 1, 2]])
 
+    @requires("pyglet")
     def test_rtx_clear_all_layers_allows_layered_scene_reset(self):
         """RTX can reset a complete layered scene while keeping single-layer clear guarded."""
         viewer = _MinimalRTXViewer()

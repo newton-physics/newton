@@ -61,7 +61,7 @@ axis with every translational axis parallel to it. Negating three translational
 axes flips their handedness, so a swapped D6 joint with X, Y, and Z translational
 axes gets a left-handed axis set, which :class:`~newton.solvers.SolverKamino`
 rejects. Newton cannot reverse any other swapped D6 or merged joint. It keeps
-the authored axes and emits a :class:`~newton.exceptions.NewtonWarning`, because
+the authored axes and emits a :class:`~newton.NewtonWarning`, because
 any limits, drives, or initial state may act in the mirrored direction. Author
 the joint with the rigid body as ``physics:body1`` to avoid this. A swapped spherical joint keeps its axes, so its ``joint_q`` holds the
 inverse of the authored joint rotation. This does not change its motion, because
@@ -190,6 +190,9 @@ across three families:
 * **Surface / cloth** -- a ``UsdGeom.Mesh`` with ``PhysicsSurfaceDeformableSimAPI`` becomes
   cloth: particles with triangle elements and bending edges. Polygonal faces (such as quads) are
   fan-triangulated on import as a Newton extension to the proposal's triangle-only input.
+  Display color and opacity come from the bound material, and ``displayColor``/``displayOpacity``
+  fill what it leaves unset. A ``uniform`` primvar with one value per face applies to that face's
+  triangles; other interpolations use the first value for the whole cloth.
 * **Volume** -- a ``UsdGeom.TetMesh`` with ``PhysicsVolumeDeformableSimAPI`` becomes a soft
   body. Under a ``PhysicsDeformableBodyAPI`` ancestor exactly one simulation TetMesh is
   selected; other TetMeshes in that hierarchy are graphics/collision geometry and are not
@@ -452,8 +455,10 @@ proposal-marked deformables use the final 1000 kg/m³ fallback rather than
 TetMesh keeps ``ModelBuilder.default_tet_density`` for compatibility. Cable element volumes use
 resolved rest lengths and physical thickness: ``V = L_rest * pi * diameter**2 / 4``.
 Density-derived masses and total-mass weights use these rest volumes, as the proposal requires.
-Explicit segment masses still apply directly. Newton retains its capsule inertia approximation,
-scaled to each resolved segment mass.
+Explicit segment masses still apply directly. Newton computes solid-cylinder inertia from
+each resolved segment mass, radius and rest length, using the same assignment as native
+:meth:`~newton.ModelBuilder.add_rod`. Collision shapes remain capsules;
+``ModelBuilder.default_shape_cfg.is_solid`` does not apply to cables.
 
 Cloth element volumes use rest triangle areas and geometry thickness. Volume deformables use
 rest tetrahedron volumes. Typed mass conversion and total-mass distribution use these same volumes.

@@ -29,6 +29,7 @@ from newton._src.solvers.vbd.rigid_vbd_kernels import (
     find_vertex_triangle_separator,
     place_dat_division_plane,
     planar_truncation_t,
+    record_world_residual,
 )
 
 from ...geometry import ParticleFlags
@@ -713,7 +714,8 @@ def evaluate_dihedral_angle_based_bending_force_hessian(
     if edge_indices[bending_index, 0] == -1 or edge_indices[bending_index, 1] == -1:
         return wp.vec3(0.0), wp.mat33(0.0)
 
-    eps = 1.0e-6
+    edge_eps = 1.0e-6  # shortest hinge edge that gets a bending force [m]
+    aspect_eps = 1.0e-2  # smallest triangle height over the hinge edge, relative to the edge length
 
     vi0 = edge_indices[bending_index, 0]
     vi1 = edge_indices[bending_index, 1]
@@ -740,8 +742,11 @@ def evaluate_dihedral_angle_based_bending_force_hessian(
     n2_norm = wp.length(n2)
     e_norm = wp.length(e)
 
-    # Early exit for degenerate cases
-    if n1_norm < eps or n2_norm < eps or e_norm < eps:
+    # Early exit for degenerate cases. n1 and n2 are not normalized (their length is twice the triangle area), so
+    # compare them with the squared edge length: a triangle is degenerate when its height is below aspect_eps
+    # times the edge, at any mesh scale.
+    area_eps = aspect_eps * e_norm * e_norm
+    if e_norm < edge_eps or n1_norm < area_eps or n2_norm < area_eps:
         return wp.vec3(0.0), wp.mat33(0.0)
 
     n1_hat = n1 / n1_norm
@@ -822,7 +827,8 @@ def evaluate_dihedral_angle_based_bending_force_hessian(
         n1_prev_norm = wp.length(n1_prev_raw)
         n2_prev_norm = wp.length(n2_prev_raw)
         e_prev_norm = wp.length(e_prev)
-        if n1_prev_norm < eps or n2_prev_norm < eps or e_prev_norm < eps:
+        area_eps_prev = aspect_eps * e_prev_norm * e_prev_norm
+        if e_prev_norm < edge_eps or n1_prev_norm < area_eps_prev or n2_prev_norm < area_eps_prev:
             return bending_force, bending_hessian
 
         n1_prev = n1_prev_raw / n1_prev_norm
@@ -2188,8 +2194,7 @@ def accumulate_contact_force_and_hessian_no_self_contact(
     body_particle_contact_particle: wp.array[int],
     body_particle_contact_count: wp.array[int],
     body_particle_contact_max: int,
-    # per-contact soft AVBD parameters for body-particle contacts (shared with rigid side)
-    body_particle_contact_penalty_k: wp.array[float],
+    # Per-contact material shared with the rigid side.
     body_particle_contact_material_ke: wp.array[float],
     body_particle_contact_material_kd: wp.array[float],
     body_particle_contact_material_mu: wp.array[float],
@@ -2216,8 +2221,7 @@ def accumulate_contact_force_and_hessian_no_self_contact(
         particle_idx = body_particle_contact_particle[t_id]
 
         if particle_colors[particle_idx] == current_color:
-            # Read per-contact AVBD penalty and material properties shared with the rigid side
-            contact_ke = body_particle_contact_penalty_k[t_id]
+            contact_ke = body_particle_contact_material_ke[t_id]
             contact_kd = body_particle_contact_material_kd[t_id]
             contact_mu = body_particle_contact_material_mu[t_id]
 
@@ -2541,8 +2545,8 @@ def gather_particle_body_contact_force_and_hessian(
     body_particle_contact_indices: wp.array[wp.vec3i],
     particle_contact_head: wp.array[int],
     particle_contact_next: wp.array[int],
-    # per-contact soft AVBD parameters for body-particle contacts (shared with rigid side)
-    body_particle_contact_penalty_k: wp.array[float],
+    # Per-contact material shared with the rigid side.
+    body_particle_contact_material_ke: wp.array[float],
     body_particle_contact_material_kd: wp.array[float],
     body_particle_contact_material_mu: wp.array[float],
     shape_body: wp.array[int],
@@ -2591,7 +2595,7 @@ def gather_particle_body_contact_force_and_hessian(
             continue
         corner = node - 3 * contact_index
         corners = body_particle_contact_indices[contact_index]
-        contact_ke = body_particle_contact_penalty_k[contact_index]
+        contact_ke = body_particle_contact_material_ke[contact_index]
         contact_kd = body_particle_contact_material_kd[contact_index]
         contact_mu = body_particle_contact_material_mu[contact_index]
 
@@ -2678,8 +2682,8 @@ def scatter_particle_body_contact_force_and_hessian(
     contact_filter: _SoftContactFilterData,
     body_particle_contact_max: int,
     worker_count: int,
-    # per-contact soft AVBD parameters for body-particle contacts (shared with rigid side)
-    body_particle_contact_penalty_k: wp.array[float],
+    # Per-contact material shared with the rigid side.
+    body_particle_contact_material_ke: wp.array[float],
     body_particle_contact_material_kd: wp.array[float],
     body_particle_contact_material_mu: wp.array[float],
     shape_body: wp.array[int],
@@ -2712,7 +2716,7 @@ def scatter_particle_body_contact_force_and_hessian(
     contact_index = wp.tid()
     while contact_index < count:
         corners = body_particle_contact_indices[contact_index]
-        contact_ke = body_particle_contact_penalty_k[contact_index]
+        contact_ke = body_particle_contact_material_ke[contact_index]
         contact_kd = body_particle_contact_material_kd[contact_index]
         contact_mu = body_particle_contact_material_mu[contact_index]
 
@@ -2832,8 +2836,10 @@ def make_solve_elasticity_tile(include_triangles: bool, include_tets: bool, two_
         particle_adjacency: MeshAdjacencyData,
         particle_forces: wp.array[wp.vec3],
         particle_hessians: wp.array[wp.mat33],
+        particle_world: wp.array[wp.int32],
         # output
         particle_displacements: wp.array[wp.vec3],
+        world_residual: wp.array[float],
     ):
         tid = wp.tid()
         particle_slot = tid // TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE
@@ -3001,14 +3007,21 @@ def make_solve_elasticity_tile(include_triangles: bool, include_tets: bool, two_
                 + mass[particle_index] * dt_sqr_reciprocal * wp.identity(n=3, dtype=float)
                 + particle_hessians[particle_index]
             )
-            if abs(wp.determinant(h_total)) > 1e-8:
+            det = wp.determinant(h_total)
+            if abs(det) > 1e-8:
                 h_inv = wp.inverse(h_total)
                 f_total = (
                     f_total
                     + mass[particle_index] * (inertia[particle_index] - pos[particle_index]) * dt_sqr_reciprocal
                     + particle_forces[particle_index]
                 )
-                particle_displacements[particle_index] = particle_displacements[particle_index] + h_inv * f_total
+                dx = h_inv * f_total
+                particle_displacements[particle_index] = particle_displacements[particle_index] + dx
+                if world_residual:
+                    record_world_residual(world_residual, particle_world[particle_index], wp.dot(f_total, dx))
+            elif world_residual and not wp.isfinite(det):
+                # A non-finite Hessian also skips the update; report it instead of dropping the particle.
+                record_world_residual(world_residual, particle_world[particle_index], wp.inf)
 
     return solve_elasticity_tile_kernel
 
@@ -3036,8 +3049,10 @@ def solve_elasticity(
     particle_adjacency: MeshAdjacencyData,
     particle_forces: wp.array[wp.vec3],
     particle_hessians: wp.array[wp.mat33],
+    particle_world: wp.array[wp.int32],
     # output
     particle_displacements: wp.array[wp.vec3],
+    world_residual: wp.array[float],
 ):
     t_id = wp.tid()
 
@@ -3094,9 +3109,16 @@ def solve_elasticity(
     h = h + particle_hessians[particle_index]
     f = f + particle_forces[particle_index]
 
-    if abs(wp.determinant(h)) > 1e-8:
+    det = wp.determinant(h)
+    if abs(det) > 1e-8:
         h_inv = wp.inverse(h)
-        particle_displacements[particle_index] = particle_displacements[particle_index] + h_inv * f
+        dx = h_inv * f
+        particle_displacements[particle_index] = particle_displacements[particle_index] + dx
+        if world_residual:
+            record_world_residual(world_residual, particle_world[particle_index], wp.dot(f, dx))
+    elif world_residual and not wp.isfinite(det):
+        # A non-finite Hessian also skips the update; report it instead of dropping the particle.
+        record_world_residual(world_residual, particle_world[particle_index], wp.inf)
 
 
 @wp.kernel

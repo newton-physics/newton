@@ -25,8 +25,8 @@ Minimum Requirements
      - Minimum
      - Notes
    * - Python
-     - 3.10
-     - 3.10 support is deprecated; removal planned for Newton 1.9. Use 3.11+.
+     - 3.11
+     -
    * - OS
      - Linux (x86-64, aarch64), Windows (x86-64, ARM64), or macOS (CPU only)
      - macOS has no GPU acceleration; Windows ARM64 support is experimental
@@ -67,9 +67,18 @@ Platform-Specific Requirements
 
 **Linux**
 
-On Linux, the ``importers`` and ``remesh`` extras (and extras that include them,
-such as ``examples`` and ``dev``) require GLIBC 2.35 or newer, e.g. Ubuntu
-22.04+. RHEL 9 and Amazon Linux 2023 can install only the base package.
+On Linux, the ``remesh`` and ``dev`` extras require GLIBC 2.35 or newer, e.g.
+Ubuntu 22.04+. On Linux ARM64, ``importers`` and the extras that include it,
+such as ``examples``, require it too. RHEL 9 and Amazon Linux 2023 ship GLIBC
+2.34, so on x86-64 they can install ``importers`` and ``examples`` but not
+``remesh`` or ``dev``.
+
+**Python 3.14**
+
+Python 3.14 supports the simulation, importers, examples, and notebook extras
+on Linux x86-64 and ARM64, Windows x86-64, and macOS ARM64. On Linux ARM64,
+Newton uses USD Core 26.11 for Python 3.14; earlier Python versions use USD
+Exchange. Windows ARM64 retains the optional-feature limitations below.
 
 **Linux aarch64 (ARM64)**
 
@@ -79,18 +88,9 @@ enable these GPUs. They need a Warp wheel built with an earlier CUDA 12
 toolkit; see `Warp's CUDA 12.9 ARM64 limitation
 <https://nvidia.github.io/warp/v1.17/user_guide/installation.html#cuda-12-9-limitation-on-linux-arm-platforms>`__.
 
-Installing the ``examples`` extra on ARM64 Linux systems such as NVIDIA Jetson
-Thor and DGX Spark also requires X11 development libraries to build
-``imgui_bundle`` from source:
-
-.. code-block:: console
-
-    sudo apt-get update
-    sudo apt-get install -y libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libgl1-mesa-dev
-
 **Windows ARM64 (experimental)**
 
-Windows on ARM64 requires Warp 1.19 or newer and Python 3.11 or newer. Several
+Windows on ARM64 requires Warp 1.19 or newer. Several
 optional dependencies do not publish Windows ARM64 packages, so the extras skip
 them on this platform. Most notably, :class:`~newton.solvers.SolverMuJoCo` and
 USD import and export are unavailable because ``mujoco`` and ``usd-core`` cannot
@@ -150,12 +150,6 @@ with other packages:
             python -m venv .venv
             .venv\Scripts\Activate.ps1
             pip install "newton[examples]"
-
-.. note::
-
-    Users on Python 3.10 may experience issues when installing ``imgui_bundle`` (a dependency of the
-    ``examples`` extra). If you encounter installation errors, we recommend upgrading to
-    Python 3.11 or newer, or follow the :doc:`development` guide to install Newton using ``uv``.
 
 .. _running-examples:
 
@@ -287,7 +281,7 @@ Additional optional dependency sets are defined in ``pyproject.toml``:
    * - ``notebook``
      - Jupyter notebook support with Rerun visualization (includes ``examples``)
    * - ``dev``
-     - Dependencies for development and testing (includes ``examples``)
+     - Dependencies for development and testing (includes ``examples`` + ``remesh``)
    * - ``docs``
      - Dependencies for building the documentation
 
