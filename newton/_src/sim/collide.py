@@ -3153,8 +3153,7 @@ class CollisionPipeline:
         # Rigid contact detection -- broad phase + narrow phase.
         # These kernels hardcode record_tape=False internally so they are
         # never captured on an active wp.Tape.  The differentiable
-        # augmentation and soft-contact kernels that follow are tape-safe
-        # and recorded normally.
+        # soft-contact kernels that follow are tape-safe and recorded normally.
 
         # Eager calls copy the sticky rescale flag to the host and raise on a copy from an earlier call; never syncs.
         check_unit_scale_sdf = self._shape_unit_scale_sdf.shape[0] > 0 and not wp.get_device(self.device).is_capturing
