@@ -42,7 +42,7 @@ The runner workflows apply repository, trigger, workload, and run identifiers as
 | `TerminationEnabled` | `false` | Enables termination when set to `true`. `false` is shadow mode, which records instances that the watchdog would terminate without terminating them. |
 | `RequiredRepository` | Empty string | Requires an exact repository tag when nonempty. It must be set when termination is enabled with `TerminateAfterMinutes` below `120`. It is additional to, not a replacement for, the permanent ownership boundary. |
 
-The 120-minute termination threshold is measured from EC2 launch, leaving 40 minutes beyond an 80-minute job timeout for boot, runner registration, queueing, and cleanup. Checks run every 15 minutes, so an instance can remain active until the next scan, roughly 135 minutes after launch. The overdue alert threshold remains 120 minutes.
+The 120-minute termination threshold is measured from EC2 launch, leaving about 25 minutes beyond the longest job, the GPU tests with their 90-minute test limit, for boot, runner registration, queueing, and cleanup. Checks run every 15 minutes, so an instance can remain active until the next scan, roughly 135 minutes after launch. The overdue alert threshold remains 120 minutes.
 
 The permanent ownership boundary is `created-by=github-actions-newton-role`. The watchdog discovers only instances with this tag, and its IAM policy permits termination only for instances with the same tag.
 

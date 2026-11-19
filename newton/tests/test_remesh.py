@@ -421,6 +421,37 @@ class TestSurfaceReconstructor(unittest.TestCase):
             reconstructor.reconstruct(empty_points, empty_normals, verbose=False)
 
 
+@wp.kernel(module="unique")
+def _accumulate_point_sums(
+    points: wp.array[wp.vec3],
+    normals: wp.array[wp.vec3],
+    inv_voxel_size: float,
+    keys: wp.array[wp.uint64],
+    active_slots: wp.array[wp.int32],
+    sum_pos_x: wp.array[wp.float32],
+    sum_pos_y: wp.array[wp.float32],
+    sum_pos_z: wp.array[wp.float32],
+    sum_norm_x: wp.array[wp.float32],
+    sum_norm_y: wp.array[wp.float32],
+    sum_norm_z: wp.array[wp.float32],
+    counts: wp.array[wp.int32],
+):
+    tid = wp.tid()
+    point = points[tid]
+    normal = normals[tid]
+
+    key = compute_voxel_key(point, inv_voxel_size)
+    idx = hashtable_find_or_insert(key, keys, active_slots)
+    if idx >= 0:
+        wp.atomic_add(sum_pos_x, idx, point[0])
+        wp.atomic_add(sum_pos_y, idx, point[1])
+        wp.atomic_add(sum_pos_z, idx, point[2])
+        wp.atomic_add(sum_norm_x, idx, normal[0])
+        wp.atomic_add(sum_norm_y, idx, normal[1])
+        wp.atomic_add(sum_norm_z, idx, normal[2])
+        wp.atomic_add(counts, idx, 1)
+
+
 @unittest.skipUnless(_cuda_available, "VoxelHashGrid requires CUDA")
 class TestVoxelHashGrid(unittest.TestCase):
     """Test the VoxelHashGrid class for sparse voxel accumulation."""
@@ -651,38 +682,8 @@ class TestVoxelHashGrid(unittest.TestCase):
         wp_points = wp.array(points_data, dtype=wp.vec3)
         wp_normals = wp.array(normals_data, dtype=wp.vec3)
 
-        @wp.kernel(module="unique")
-        def accumulate_points(
-            points: wp.array[wp.vec3],
-            normals: wp.array[wp.vec3],
-            inv_voxel_size: float,
-            keys: wp.array[wp.uint64],
-            active_slots: wp.array[wp.int32],
-            sum_pos_x: wp.array[wp.float32],
-            sum_pos_y: wp.array[wp.float32],
-            sum_pos_z: wp.array[wp.float32],
-            sum_norm_x: wp.array[wp.float32],
-            sum_norm_y: wp.array[wp.float32],
-            sum_norm_z: wp.array[wp.float32],
-            counts: wp.array[wp.int32],
-        ):
-            tid = wp.tid()
-            point = points[tid]
-            normal = normals[tid]
-
-            key = compute_voxel_key(point, inv_voxel_size)
-            idx = hashtable_find_or_insert(key, keys, active_slots)
-            if idx >= 0:
-                wp.atomic_add(sum_pos_x, idx, point[0])
-                wp.atomic_add(sum_pos_y, idx, point[1])
-                wp.atomic_add(sum_pos_z, idx, point[2])
-                wp.atomic_add(sum_norm_x, idx, normal[0])
-                wp.atomic_add(sum_norm_y, idx, normal[1])
-                wp.atomic_add(sum_norm_z, idx, normal[2])
-                wp.atomic_add(counts, idx, 1)
-
         wp.launch(
-            accumulate_points,
+            _accumulate_point_sums,
             dim=3,
             inputs=[
                 wp_points,
@@ -778,38 +779,8 @@ class TestVoxelHashGrid(unittest.TestCase):
         wp_points = wp.array(points_data, dtype=wp.vec3)
         wp_normals = wp.array(normals_data, dtype=wp.vec3)
 
-        @wp.kernel(module="unique")
-        def accumulate_points(
-            points: wp.array[wp.vec3],
-            normals: wp.array[wp.vec3],
-            inv_voxel_size: float,
-            keys: wp.array[wp.uint64],
-            active_slots: wp.array[wp.int32],
-            sum_pos_x: wp.array[wp.float32],
-            sum_pos_y: wp.array[wp.float32],
-            sum_pos_z: wp.array[wp.float32],
-            sum_norm_x: wp.array[wp.float32],
-            sum_norm_y: wp.array[wp.float32],
-            sum_norm_z: wp.array[wp.float32],
-            counts: wp.array[wp.int32],
-        ):
-            tid = wp.tid()
-            point = points[tid]
-            normal = normals[tid]
-
-            key = compute_voxel_key(point, inv_voxel_size)
-            idx = hashtable_find_or_insert(key, keys, active_slots)
-            if idx >= 0:
-                wp.atomic_add(sum_pos_x, idx, point[0])
-                wp.atomic_add(sum_pos_y, idx, point[1])
-                wp.atomic_add(sum_pos_z, idx, point[2])
-                wp.atomic_add(sum_norm_x, idx, normal[0])
-                wp.atomic_add(sum_norm_y, idx, normal[1])
-                wp.atomic_add(sum_norm_z, idx, normal[2])
-                wp.atomic_add(counts, idx, 1)
-
         wp.launch(
-            accumulate_points,
+            _accumulate_point_sums,
             dim=3,
             inputs=[
                 wp_points,
@@ -880,38 +851,8 @@ class TestVoxelHashGrid(unittest.TestCase):
         wp_points = wp.array(points_data, dtype=wp.vec3)
         wp_normals = wp.array(normals_data, dtype=wp.vec3)
 
-        @wp.kernel(module="unique")
-        def accumulate_points(
-            points: wp.array[wp.vec3],
-            normals: wp.array[wp.vec3],
-            inv_voxel_size: float,
-            keys: wp.array[wp.uint64],
-            active_slots: wp.array[wp.int32],
-            sum_pos_x: wp.array[wp.float32],
-            sum_pos_y: wp.array[wp.float32],
-            sum_pos_z: wp.array[wp.float32],
-            sum_norm_x: wp.array[wp.float32],
-            sum_norm_y: wp.array[wp.float32],
-            sum_norm_z: wp.array[wp.float32],
-            counts: wp.array[wp.int32],
-        ):
-            tid = wp.tid()
-            point = points[tid]
-            normal = normals[tid]
-
-            key = compute_voxel_key(point, inv_voxel_size)
-            idx = hashtable_find_or_insert(key, keys, active_slots)
-            if idx >= 0:
-                wp.atomic_add(sum_pos_x, idx, point[0])
-                wp.atomic_add(sum_pos_y, idx, point[1])
-                wp.atomic_add(sum_pos_z, idx, point[2])
-                wp.atomic_add(sum_norm_x, idx, normal[0])
-                wp.atomic_add(sum_norm_y, idx, normal[1])
-                wp.atomic_add(sum_norm_z, idx, normal[2])
-                wp.atomic_add(counts, idx, 1)
-
         wp.launch(
-            accumulate_points,
+            _accumulate_point_sums,
             dim=3,
             inputs=[
                 wp_points,
