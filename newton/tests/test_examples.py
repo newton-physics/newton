@@ -1286,6 +1286,14 @@ add_example_test(
 
 add_example_test(
     TestIKExamples,
+    name="ik.example_ik_delta_robot",
+    devices=cuda_test_devices,
+    use_viewer=True,
+    test_options={"requires": ("pycunls",), "num-frames": 600},
+)
+
+add_example_test(
+    TestIKExamples,
     name="ik.example_ik_cube_stacking",
     test_options_cuda={"world-count": 16, "num-frames": 2000},
     devices=cuda_test_devices,

@@ -14,6 +14,7 @@ import warp as wp
 
 from ..model import Model
 from .ik_common import IKJacobianType
+from .ik_cunls_optimizer import IKOptimizerCuNLS
 from .ik_lbfgs_optimizer import IKOptimizerLBFGS
 from .ik_lm_optimizer import IKOptimizerLM
 from .ik_objectives import IKObjective
@@ -27,6 +28,10 @@ class IKOptimizer(StrEnum):
 
     LBFGS = "lbfgs"
     """Use an L-BFGS quasi-Newton optimizer."""
+
+    CUNLS = "cunls"
+    """Use the cuNLS constrained Levenberg-Marquardt optimizer, which enforces loop-closing joints,
+    mimic joints and hard joint limits (see :class:`~newton.ik.IKOptimizerCuNLS`)."""
 
 
 class IKSampler(StrEnum):
@@ -197,14 +202,14 @@ class IKSolver:
     """High-level inverse-kinematics front end with optional multi-seed sampling.
 
     ``IKSolver`` expands each base problem into one or more candidate seeds,
-    delegates optimization to :class:`~newton.ik.IKOptimizerLM` or
-    :class:`~newton.ik.IKOptimizerLBFGS`, and keeps the lowest-cost candidate for each
-    base problem.
+    delegates optimization to :class:`~newton.ik.IKOptimizerLM`,
+    :class:`~newton.ik.IKOptimizerLBFGS` or :class:`~newton.ik.IKOptimizerCuNLS`, and keeps
+    the lowest-cost candidate for each base problem.
 
     Forward kinematics follows articulation tree joints. Joints outside
     articulations, including loop-closing joints, do not contribute to link
     poses or their position/rotation Jacobians; loop-closure constraints are
-    not enforced by this solver. Position and rotation objectives require a
+    enforced only by the :attr:`~newton.ik.IKOptimizer.CUNLS` backend. Position and rotation objectives require a
     link with an incoming articulation joint and raise :class:`ValueError`
     otherwise. External root parents retain their :attr:`Model.body_q` pose
     from solver initialization. Models with multiple incoming articulation
@@ -217,7 +222,8 @@ class IKSolver:
         n_problems: Number of base IK problems solved together.
         objectives: Ordered IK objectives shared by all problems.
         optimizer: Optimizer backend to use.
-        jacobian_mode: Jacobian backend to use inside the optimizer.
+        jacobian_mode: Jacobian backend to use inside the optimizer. The cuNLS backend always
+            uses its analytic Jacobians.
         sampler: Initial-seed sampling strategy.
         n_seeds: Number of candidate seeds generated per base problem.
         noise_std: Standard deviation used by
@@ -351,6 +357,8 @@ class IKSolver:
                 wolfe_c1=wolfe_c1,
                 wolfe_c2=wolfe_c2,
             )
+        elif optimizer is IKOptimizer.CUNLS:
+            self._impl = IKOptimizerCuNLS(model, self.n_expanded, objectives, problem_idx=self.problem_idx_expanded)
         else:
             raise ValueError(f"Unsupported optimizer: {optimizer}")
 
@@ -372,8 +380,9 @@ class IKSolver:
                 solution of each base problem, shape [n_problems, joint_coord_count].
                 It may alias ``joint_q_in``.
             iterations: Number of optimizer iterations to run for each sampled
-                seed.
-            step_size: Unitless LM step scale. Ignored by the L-BFGS backend.
+                seed. The cuNLS backend treats it as the limit of each inner solve
+                and stops each seed once it has converged.
+            step_size: Unitless LM step scale. Ignored by the L-BFGS and cuNLS backends.
         """
         if joint_q_in.shape != (self.n_problems, self.n_coords):
             raise ValueError("joint_q_in has incompatible shape")
@@ -386,7 +395,7 @@ class IKSolver:
 
         if self.optimizer_type is IKOptimizer.LM:
             self._impl.step(self.joint_q_expanded, self.joint_q_expanded, iterations=iterations, step_size=step_size)
-        elif self.optimizer_type is IKOptimizer.LBFGS:
+        elif self.optimizer_type in (IKOptimizer.LBFGS, IKOptimizer.CUNLS):
             self._impl.step(self.joint_q_expanded, self.joint_q_expanded, iterations=iterations)
         else:
             raise RuntimeError(f"Unsupported optimizer: {self.optimizer_type}")
