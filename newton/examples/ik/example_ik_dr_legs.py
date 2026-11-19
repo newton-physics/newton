@@ -3,17 +3,19 @@
 
 """Example IK DR Legs (closed-loop biped legs)
 
-Whole-body inverse kinematics of DR Legs, a biped whose legs are serial-parallel linkages with
-three closed kinematic loops each, solved for a grid of robots in one batch.
+Whole-body inverse kinematics of DR Legs, a biped from Disney Research whose legs are
+serial-parallel linkages with three closed kinematic loops each, solved for many robots in one
+batch.
 - The asset's articulation tree reaches every body; six revolute joints close the loops.
-- The feet stay planted while the pelvis squats, sways and twists; the robots are staggered in
-  time.
+- The robots walk single file around concentric rings, neighboring rings in opposite
+  directions: IK places the pelvis along the ring and each foot on its footsteps, alternately
+  planted and swinging.
 - ``IKOptimizer.CUNLS`` keeps the loops closed (equality constraints) and the servos inside
   their limits (hard bounds); ``--optimizer lm`` uses Newton's default optimizer, which ignores
   loop-closing joints.
 
 Success criteria:
-- A grid of bipeds keeps its feet on the ground while each pelvis squats, sways and twists.
+- Rings of bipeds walk in circles, one behind the other, feet stepping on the ground.
 - All leg linkages stay connected.
 - With ``--optimizer lm``, the leg linkages come apart.
 
@@ -34,16 +36,44 @@ import newton
 import newton.examples
 import newton.ik as ik
 
-ROBOT_SPACING = 0.5  # [m]
 FOOT_SOLE = 0.018  # [m], depth of the sole below the foot frame
 
-# Pelvis motion around a crouch, relative to the pose the asset is loaded in (legs almost straight).
-CROUCH = 0.04  # [m]
-SQUAT_AMPLITUDE = 0.015  # [m]
-SWAY_AMPLITUDE = 0.02  # [m], sideways
-SURGE_AMPLITUDE = 0.015  # [m], forward and back
-TWIST_AMPLITUDE = 0.2  # [rad], about the vertical axis
-MOTION_RATE = 1.5  # [rad/s]
+# Rings: robots walk single file, ROBOT_GAP apart along each ring.
+FIRST_RING_RADIUS = 1.0  # [m]
+RING_GAP = 0.4  # [m]
+ROBOT_GAP = 0.35  # [m]
+
+# Gait, relative to the pose the asset is loaded in (legs almost straight).
+CROUCH = 0.04  # [m], pelvis height below the loaded pose
+WALK_SPEED = 0.08  # [m/s]
+GAIT_PERIOD = 0.8  # [s], each foot swings once per period
+STEP_HEIGHT = 0.02  # [m]
+
+
+def ring_layout(robot_count):
+    """Place the robots single file on concentric rings.
+
+    Returns the ring radius [m], starting angle [rad] and walking direction (+1 counterclockwise,
+    -1 clockwise) of each robot.
+    """
+    radius, angle, direction = [], [], []
+    ring = 0
+    while len(radius) < robot_count:
+        r = FIRST_RING_RADIUS + ring * RING_GAP
+        count = min(int(2.0 * math.pi * r / ROBOT_GAP), robot_count - len(radius))
+        radius += [r] * count
+        angle += list(2.0 * math.pi * np.arange(count) / count)
+        direction += [1.0 if ring % 2 == 0 else -1.0] * count
+        ring += 1
+    return np.array(radius), np.array(angle), np.array(direction)
+
+
+def yaw_quats(yaw):
+    """Quaternions (xyzw) of rotations by ``yaw`` [rad] about the vertical axis."""
+    q = np.zeros((len(yaw), 4), dtype=np.float32)
+    q[:, 2] = np.sin(0.5 * yaw)
+    q[:, 3] = np.cos(0.5 * yaw)
+    return q
 
 
 class Example:
@@ -67,91 +97,111 @@ class Example:
         self.pelvis = body_names.index("pelvis")
         self.feet = [body_names.index("foot_l"), body_names.index("foot_r")]
 
-        # The loaded pose is closed and stands on the feet: it defines the targets.
+        # In the loaded pose the robot faces +x, its loops are closed and its bodies are not
+        # rotated: the gait places the pelvis and feet at these offsets, turned along the ring.
         state = self.robot_model.state()
         newton.eval_fk(self.robot_model, self.robot_model.joint_q, self.robot_model.joint_qd, state)
         home = state.body_q.numpy()
-        self.pelvis_home = home[self.pelvis]
-        foot_poses = home[self.feet]
+        self.pelvis_offset = home[self.pelvis, :3] - np.array([0.0, 0.0, CROUCH])
+        self.foot_offsets = home[self.feet, :3]
 
         scene = newton.ModelBuilder()
         scene.replicate(robot, self.world_count)
-        scene.add_ground_plane(height=float(foot_poses[:, 2].min()) - FOOT_SOLE)
+        scene.add_ground_plane(height=float(self.foot_offsets[:, 2].min()) - FOOT_SOLE)
         self.model = scene.finalize()
         self.state = self.model.state()
 
+        # All robots share one space; the rings keep them apart.
+        self.ring_radius, self.ring_angle, self.ring_direction = ring_layout(self.world_count)
         self.viewer.set_model(self.model)
-        self.viewer.set_world_offsets((ROBOT_SPACING, ROBOT_SPACING, 0.0))
-        distance = 0.3 + 0.5 * ROBOT_SPACING * math.ceil(math.sqrt(self.world_count))
-        self.viewer.set_camera(pos=wp.vec3(distance, -distance, 0.05 + 0.5 * distance), pitch=-22.0, yaw=135.0)
+        self.viewer.set_world_offsets((0.0, 0.0, 0.0))
+        distance = 0.9 * self.ring_radius.max() + 0.8
+        self.viewer.set_camera(pos=wp.vec3(distance, -distance, 0.9 * distance), pitch=-35.0, yaw=135.0)
 
         # ------------------------------------------------------------------
-        # IK: pelvis pose, planted feet, servo limits; one problem per robot
+        # IK: pelvis and foot poses, servo limits; one problem per robot
         # ------------------------------------------------------------------
-        # Stagger the robots over one period of the motion.
-        self.time_offsets = 2.0 * math.pi / MOTION_RATE * np.arange(self.world_count) / self.world_count
-        self.pelvis_positions = np.zeros((self.world_count, 3), dtype=np.float32)
-        self.pelvis_rotations = np.zeros((self.world_count, 4), dtype=np.float32)
-        self.pelvis_pos_obj = ik.IKObjectivePosition(
-            link_index=self.pelvis,
-            link_offset=wp.vec3(0.0, 0.0, 0.0),
-            target_positions=wp.zeros(self.world_count, dtype=wp.vec3),
-        )
-        self.pelvis_rot_obj = ik.IKObjectiveRotation(
-            link_index=self.pelvis,
-            link_offset_rotation=wp.quat_identity(),
-            target_rotations=wp.zeros(self.world_count, dtype=wp.vec4),
-        )
-        foot_objectives = []
-        for foot, pose in zip(self.feet, foot_poses, strict=True):
-            foot_objectives.append(
-                ik.IKObjectivePosition(
-                    link_index=foot,
-                    link_offset=wp.vec3(0.0, 0.0, 0.0),
-                    target_positions=wp.array([pose[:3]] * self.world_count, dtype=wp.vec3),
-                )
+        def pose_objectives(link):
+            position = ik.IKObjectivePosition(
+                link_index=link,
+                link_offset=wp.vec3(0.0, 0.0, 0.0),
+                target_positions=wp.zeros(self.world_count, dtype=wp.vec3),
             )
-            foot_objectives.append(
-                ik.IKObjectiveRotation(
-                    link_index=foot,
-                    link_offset_rotation=wp.quat_identity(),
-                    target_rotations=wp.array([pose[3:]] * self.world_count, dtype=wp.vec4),
-                )
+            rotation = ik.IKObjectiveRotation(
+                link_index=link,
+                link_offset_rotation=wp.quat_identity(),
+                target_rotations=wp.zeros(self.world_count, dtype=wp.vec4),
             )
+            return position, rotation
+
+        self.pose_objectives = [pose_objectives(link) for link in (self.pelvis, *self.feet)]
         self.limit_obj = ik.IKObjectiveJointLimit(
             joint_limit_lower=self.robot_model.joint_limit_lower,
             joint_limit_upper=self.robot_model.joint_limit_upper,
         )
 
-        # Row i of joint_q holds the coordinates of world i.
-        self.joint_q = self.model.joint_q.reshape((self.world_count, self.robot_model.joint_coord_count))
         self.ik_iters = 30
         self.solver = ik.IKSolver(
             model=self.robot_model,
             n_problems=self.world_count,
-            objectives=[self.pelvis_pos_obj, self.pelvis_rot_obj, *foot_objectives, self.limit_obj],
+            objectives=[*(obj for pair in self.pose_objectives for obj in pair), self.limit_obj],
             optimizer=args.optimizer,
             jacobian_mode=ik.IKJacobianType.ANALYTIC,
         )
+
+        # Row i of joint_q holds the coordinates of world i. Start each robot (its free root:
+        # position, then rotation) at its place on the ring.
+        self.joint_q = self.model.joint_q.reshape((self.world_count, self.robot_model.joint_coord_count))
+        self.update_targets()
+        q = self.joint_q.numpy()
+        q[:, 0:3], q[:, 3:7] = self.target_positions[0], self.target_rotations[0]
+        self.joint_q.assign(q)
 
         self.tracking_errors = []
 
     # ----------------------------------------------------------------------
     # Helpers
     # ----------------------------------------------------------------------
+    def place_on_ring(self, arc, offset):
+        """Position [m] and heading [rad] of a point ``offset`` (forward, left, up) from the spot
+        ``arc`` [m] along each robot's ring, facing the walking direction."""
+        theta = self.ring_angle + self.ring_direction * arc / self.ring_radius
+        heading = np.stack([-np.sin(theta), np.cos(theta)], axis=1) * self.ring_direction[:, None]
+        left = np.stack([-heading[:, 1], heading[:, 0]], axis=1)
+        position = np.empty((self.world_count, 3), dtype=np.float32)
+        position[:, :2] = (
+            self.ring_radius[:, None] * np.stack([np.cos(theta), np.sin(theta)], axis=1)
+            + offset[0] * heading
+            + offset[1] * left
+        )
+        position[:, 2] = offset[2]
+        return position, theta + 0.5 * math.pi * self.ring_direction  # continuous: no jumps at +-pi
+
     def update_targets(self):
-        """Squat, sway, surge and twist each pelvis about a crouch above its planted feet."""
-        phase = MOTION_RATE * (self.sim_time + self.time_offsets)
-        self.pelvis_positions[:] = self.pelvis_home[:3]
-        self.pelvis_positions[:, 0] += SURGE_AMPLITUDE * np.sin(2.0 * phase)
-        self.pelvis_positions[:, 1] += SWAY_AMPLITUDE * np.sin(phase)
-        self.pelvis_positions[:, 2] += -CROUCH + SQUAT_AMPLITUDE * np.cos(2.0 * phase)
-        home_rotation = wp.quat(*self.pelvis_home[3:])
-        for i, angle in enumerate(TWIST_AMPLITUDE * np.sin(phase)):
-            twist = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), float(angle))
-            self.pelvis_rotations[i] = wp.mul(twist, home_rotation)
-        self.pelvis_pos_obj.set_target_positions(wp.array(self.pelvis_positions, dtype=wp.vec3))
-        self.pelvis_rot_obj.set_target_rotations(wp.array(self.pelvis_rotations, dtype=wp.vec4))
+        """Advance the pelvis along the ring and step the feet: each foot stays planted for half a
+        gait period, then swings one stride forward in an arc."""
+        stride = WALK_SPEED * GAIT_PERIOD
+        positions, yaws = [], []
+        position, yaw = self.place_on_ring(WALK_SPEED * self.sim_time, self.pelvis_offset)
+        positions.append(position)
+        yaws.append(yaw)
+        for side, offset in enumerate(self.foot_offsets):
+            cycle = self.sim_time / GAIT_PERIOD + 0.5 * side  # the feet swing half a period apart
+            swing = min(max(2.0 * (cycle % 1.0) - 1.0, 0.0), 1.0)  # 0 while planted, 0 -> 1 in the swing
+            swing = swing * swing * (3.0 - 2.0 * swing)  # smooth start and stop
+            # Footsteps are one stride apart; on average each foot keeps pace with the pelvis.
+            arc = stride * (math.floor(cycle) + swing - 0.5 * side + 0.25)
+            lifted = offset + np.array([0.0, 0.0, STEP_HEIGHT * math.sin(math.pi * swing)])
+            position, yaw = self.place_on_ring(arc, lifted)
+            positions.append(position)
+            yaws.append(yaw)
+        self.target_positions = positions
+        self.target_rotations = [yaw_quats(yaw) for yaw in yaws]
+        for (position_obj, rotation_obj), position, rotation in zip(
+            self.pose_objectives, self.target_positions, self.target_rotations, strict=True
+        ):
+            position_obj.set_target_positions(wp.array(position, dtype=wp.vec3))
+            rotation_obj.set_target_rotations(wp.array(rotation, dtype=wp.vec4))
 
     def loop_gaps(self):
         """Distance [m] between the two frames of each loop-closing joint, in all worlds."""
@@ -185,13 +235,15 @@ class Example:
         q = self.joint_q.numpy()[:, 1:][:, limited]
         if not np.all((q >= lower[limited] - 1e-5) & (q <= upper[limited] + 1e-5)):
             raise ValueError("A servo left its joint limits")
-        pelvis = self.state.body_q.numpy()[self.pelvis :: self.robot_model.body_count, :3]
-        self.tracking_errors.extend(np.linalg.norm(pelvis - self.pelvis_positions, axis=1))
+        body_q = self.state.body_q.numpy()
+        for link, target in zip((self.pelvis, *self.feet), self.target_positions, strict=True):
+            position = body_q[link :: self.robot_model.body_count, :3]
+            self.tracking_errors.extend(np.linalg.norm(position - target, axis=1))
 
     def test_final(self):
         worst = max(self.tracking_errors)
         if worst > 1e-3:
-            raise ValueError(f"A pelvis missed its target by {worst * 1e3:.2f} mm, expected at most 1 mm")
+            raise ValueError(f"A pelvis or foot missed its target by {worst * 1e3:.2f} mm, expected at most 1 mm")
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)
