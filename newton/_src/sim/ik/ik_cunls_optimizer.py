@@ -346,7 +346,9 @@ class IKOptimizerCuNLS:
             lm = pycunls.LevenbergMarquardtMinimizerOptions()
             base = lm.base_options
             base.max_num_iterations = iterations
-            base.cost_tolerance = 1.0e-12  # absolute: residuals are meters and radians
+            # Absolute: residuals are meters and radians, so this stops at about 10 um. Much tighter
+            # sits at the float32 rounding of forward kinematics a few meters from the origin.
+            base.cost_tolerance = 1.0e-10
             base.state_tolerance = 1.0e-10
             base.reuse_structure = True
             lm.base_options = base
