@@ -1706,10 +1706,10 @@ class ModelBuilder:
         """Transformer function that converts a URDF attribute value string to a valid Warp dtype. If undefined, the generic converter from :func:`newton.utils.string_to_warp` is used. Receives an optional context dict with parsing-time information."""
 
         reference_value_transformer: Callable[[list[Any], dict[str, Any]], list[Any]] | None = None
-        """Batch transformer for references and frames copied by :meth:`ModelBuilder.add_builder`.
+        """Batch transformer for entity references copied by :meth:`ModelBuilder.add_builder`.
 
-        Use this instead of :attr:`references` when remapping depends on companion
-        attribute values or the copy's placement. For each copied builder, the callback is invoked once
+        Use this instead of :attr:`references` when the referenced entity type depends on
+        other values in the same row. For each copied builder, the callback is invoked once
         for this attribute if its value container is nonempty. It receives a list of the
         source builder's authored values and a context dictionary with these keys:
 
@@ -1733,7 +1733,6 @@ class ModelBuilder:
         - ``"world"`` (``int``): Destination world for this copy, or ``-1`` for global
           entities. Use this value for world references instead of adding an offset.
         - ``"label_prefix"`` (``str | None``): Optional label prefix for this copy.
-        - ``"xform"`` (``wp.transform | None``): Placement of this copy; ``None`` means identity.
 
         The callback must return a list in the same order and of the same length, preserving
         ``None`` entries for unset rows. Treat the supplied builders, mappings, and source
@@ -4716,7 +4715,7 @@ class ModelBuilder:
         )
         if copy_count > 1 and not needs_ordered_merge:
             self._merge_builder_custom_attributes_copies(
-                builder, counts, starts, worlds, label_prefixes, custom_attributes, xforms
+                builder, counts, starts, worlds, label_prefixes, custom_attributes
             )
             if has_actuators or has_batteries:
                 actuator_starts = starts("actuator").tolist()
@@ -4739,7 +4738,7 @@ class ModelBuilder:
             for copy_index, world in enumerate(worlds.tolist()):
                 entity_offsets = dict(zip(kinds, offset_rows[copy_index], strict=True))
                 self._merge_builder_custom_attributes(
-                    builder, entity_offsets, world, label_prefixes[copy_index], custom_attributes, xforms[copy_index]
+                    builder, entity_offsets, world, label_prefixes[copy_index], custom_attributes
                 )
                 if has_actuators:
                     self._merge_builder_actuators(
@@ -4751,6 +4750,45 @@ class ModelBuilder:
                 if has_batteries:
                     self._merge_builder_batteries(builder, entity_offsets["actuator"], world)
         self.actuator_count += copy_count * counts["actuator"]
+
+        eq_count = builder._equality_constraint_count
+        if eq_count:
+            eq_base = self._equality_constraint_count - copy_count * eq_count
+            for copy_index in moved_copies:
+                self._transform_world_equalities(eq_base + copy_index * eq_count, eq_count, xforms[copy_index])
+
+    def _transform_world_equalities(self, start: int, count: int, xform: wp.transform) -> None:
+        # Import locally to avoid a cycle while the public simulation package initializes.
+        from ..solvers.mujoco.enums import EqType  # noqa: PLC0415
+        from ..solvers.mujoco.equality import MJC_OBJ_BODY, MJC_OBJ_UNKNOWN  # noqa: PLC0415
+
+        def read(name: str, row: int) -> Any:
+            attr = self._eq_attr(f"equality_constraint_{name}")
+            values = attr.values or []
+            return values[row] if row < len(values) and values[row] is not None else attr.default
+
+        def write(name: str, row: int, value: Any) -> None:
+            attr = self._eq_attr(f"equality_constraint_{name}")
+            if attr.values is None:
+                attr.values = []
+            attr.values.extend([None] * max(0, row + 1 - len(attr.values)))
+            attr.values[row] = value
+
+        for row in range(start, start + count):
+            if read("objtype", row) not in (MJC_OBJ_UNKNOWN, MJC_OBJ_BODY):
+                continue
+            kind = read("type", row)
+            body1, body2 = read("body1", row), read("body2", row)
+            if kind == EqType.CONNECT and body1 < 0:
+                write("anchor", row, wp.transform_point(xform, axis_to_vec3(read("anchor", row))))
+            elif kind == EqType.WELD:
+                relpose = wp.transform(*read("relpose", row))
+                if body1 < 0:
+                    write("relpose", row, xform * relpose)
+                elif body2 < 0:
+                    write("anchor", row, wp.transform_point(xform, axis_to_vec3(read("anchor", row))))
+                    # Match collapse_fixed_joints: body2's anchor moves, but relpose.p stays in body1.
+                    write("relpose", row, wp.transform(relpose.p, relpose.q * wp.quat_inverse(xform.q)))
 
     def _model_value_key(self, attribute: CustomAttribute) -> int:
         """Return the value key of a ``ONCE`` or ``WORLD`` attribute in the current world context.
@@ -6048,7 +6086,6 @@ class ModelBuilder:
         worlds: np.ndarray,
         label_prefixes: Sequence[str | None],
         attributes: dict[str, ModelBuilder.CustomAttribute],
-        xforms: Sequence[wp.transform | None],
     ) -> None:
         """Bulk-merge custom attributes across ``len(worlds)`` copies of ``builder``."""
         self._resolve_custom_frequency_articulation_owners()
@@ -6267,7 +6304,6 @@ class ModelBuilder:
                     world,
                     label_prefixes[copy_index],
                     fallback_attributes,
-                    xforms[copy_index],
                     _resolved_cf_offsets=cf_offsets_copy,
                     _defer_label_prefix=True,
                 )
@@ -6338,7 +6374,6 @@ class ModelBuilder:
         world: int,
         label_prefix: str | None,
         attributes: dict[str, ModelBuilder.CustomAttribute],
-        xform: wp.transform | None,
         *,
         _resolved_cf_offsets: dict[str, int] | None = None,
         _defer_label_prefix: bool = False,
@@ -6434,7 +6469,6 @@ class ModelBuilder:
                         "row_indices": row_indices,
                         "world": world,
                         "label_prefix": label_prefix,
-                        "xform": xform,
                     },
                 )
                 if len(transformed) != len(row_values):
