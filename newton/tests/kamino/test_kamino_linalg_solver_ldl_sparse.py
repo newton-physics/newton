@@ -45,7 +45,7 @@ class TestLDLBlockSparseSolver(unittest.TestCase):
                 info = DenseSquareMultiLinearInfo()
                 info.finalize([capacity], dtype=wp.float32, device=device)
                 info.dim.assign([13])
-                matrix = wp.zeros(capacity * capacity, device=device)
+                matrix = wp.zeros(info.matrix_shape, device=device)
                 rhs = wp.array(rng.normal(size=capacity).astype(np.float32), device=device)
                 x = wp.full(capacity, -123.0, device=device)
                 solver = LDLBlockSparseSolver(
@@ -60,10 +60,10 @@ class TestLDLBlockSparseSolver(unittest.TestCase):
                     graph = capture.graph
                 for n in (7, 13, 0, 11):
                     info.dim.assign([n])
-                    storage = np.zeros(capacity * capacity, dtype=np.float32)
+                    storage = np.zeros(info.matrix_shape, dtype=np.float32)
                     basis = rng.normal(size=(n, n))
                     a = (basis @ basis.T + np.eye(n)).astype(np.float32)
-                    storage[: n * n] = a.ravel()
+                    storage[0, : n * n] = a.ravel()
                     matrix.assign(storage)
                     x.fill_(-123.0)
                     if graph is None:
@@ -76,9 +76,9 @@ class TestLDLBlockSparseSolver(unittest.TestCase):
                             x.numpy()[:n], np.linalg.solve(a.astype(np.float64), rhs.numpy()[:n]), atol=3e-6, rtol=3e-6
                         )
                         padded = (n + 5) // 6 * 6
-                        lower = solver.factors.numpy()[: padded * padded].reshape(padded, padded)
+                        lower = solver.factors.numpy()[0, : padded * padded].reshape(padded, padded)
                         lower = np.tril(lower)
-                        diagonal = solver.diagonal.numpy()[:padded]
+                        diagonal = solver.diagonal.numpy()[0, :padded]
                         np.testing.assert_array_equal(np.diag(lower), 1.0)
                         self.assertTrue(np.all(diagonal > 0.0))
                         original = np.eye(padded)
@@ -122,7 +122,9 @@ class TestLDLBlockSparseSolver(unittest.TestCase):
             with self.subTest(device=device, ordering=ordering):
                 info = DenseSquareMultiLinearInfo()
                 info.finalize([8, 4, 1], dtype=wp.float32, device=device)
-                source = np.concatenate([a.ravel() for a in matrices])
+                source = np.zeros(info.matrix_shape, dtype=np.float32)
+                for world, matrix in enumerate(matrices):
+                    source[world, : matrix.size] = matrix.ravel()
                 a = wp.array(source, device=device)
                 solver = LDLBlockSparseSolver(block_rows=groups, block_edges=edges, ordering=ordering, device=device)
                 solver.finalize(DenseLinearOperatorData(info=info, mat=a))
@@ -169,7 +171,7 @@ class TestLDLBlockSparseSolver(unittest.TestCase):
                         atol=2e-6,
                         rtol=2e-6,
                     )
-                reconstructed = wp.empty_like(a)
+                reconstructed = wp.zeros_like(a)
                 solver.reconstruct(reconstructed)
                 np.testing.assert_allclose(reconstructed.numpy(), source, atol=2e-6, rtol=2e-6)
                 # Reuse the same factors for strided multiple RHS and whitened-response Grams.
@@ -197,6 +199,21 @@ class TestLDLBlockSparseSolver(unittest.TestCase):
                     np.testing.assert_allclose(actual[:, :width], expected, rtol=2e-6, atol=2e-6)
                     np.testing.assert_allclose(y.T @ y, b_matrix.T @ expected, rtol=3e-6, atol=3e-6)
                     np.testing.assert_array_equal(actual[:, width:], -123.0)
+                # Per-world RHS rows use offsets relative to each world's row.
+                row_rhs = np.full((3, 50), -123.0, dtype=np.float32)
+                for world, offset in enumerate((0, 8, 12)):
+                    n = len(matrices[world])
+                    row_rhs[world, 2 : 2 + 5 * n] = rhs_matrix[offset : offset + n].ravel()
+                row_b = wp.array(row_rhs, device=device)
+                row_x = wp.full(row_rhs.shape, -123.0, device=device)
+                row_layout = {**layout, "offsets": wp.full(3, 2, dtype=wp.int32, device=device)}
+                solver.solve_matrix(row_b, row_x, **row_layout)
+                for world, (offset, width) in enumerate(((0, 3), (8, 2), (12, 1))):
+                    n = len(matrices[world])
+                    actual = row_x.numpy()[world, 2 : 2 + 5 * n].reshape(n, 5)
+                    expected = result.numpy().reshape(13, 5)[offset : offset + n]
+                    np.testing.assert_allclose(actual[:, :width], expected[:, :width], rtol=1e-6, atol=1e-6)
+                    np.testing.assert_array_equal(actual[:, width:], -123.0)
                 active = wp.array([8, 0, 1], dtype=wp.int32, device=device)
                 info.dim = active
                 x.fill_(-123.0)
@@ -222,15 +239,15 @@ class TestLDLBlockSparseSolver(unittest.TestCase):
         basis = rng.normal(size=(13, 13))
         matrices = [(basis @ basis.T + np.eye(13)).astype(np.float32), np.eye(7, dtype=np.float32)]
         matrices[1][0, 0] = -1e-6
-        source = np.zeros(14 * 14 + 9 * 9, dtype=np.float32)
-        source[: 13 * 13] = matrices[0].ravel()
-        source[14 * 14 : 14 * 14 + 7 * 7] = matrices[1].ravel()
         rhs = rng.normal(size=(23, 3)).astype(np.float32)
         for device, ordering in product([wp.get_device("cpu"), *wp.get_cuda_devices()[:1]], ("meca", "rcm")):
             with self.subTest(device=device, ordering=ordering):
                 info = DenseSquareMultiLinearInfo()
                 info.finalize([14, 9], dtype=wp.float32, device=device)
                 info.dim.assign([13, 7])
+                source = np.zeros(info.matrix_shape, dtype=np.float32)
+                source[0, : 13 * 13] = matrices[0].ravel()
+                source[1, : 7 * 7] = matrices[1].ravel()
                 a = wp.array(source, device=device)
                 solver = LDLBlockSparseSolver(
                     operator=DenseLinearOperatorData(info=info, mat=a), ordering=ordering, failed_pivot_shift=1e-5
@@ -251,11 +268,22 @@ class TestLDLBlockSparseSolver(unittest.TestCase):
                     expected = np.linalg.solve(matrix.astype(np.float64) + shift * np.eye(n), rhs[start : start + n])
                     np.testing.assert_allclose(solved[start : start + n], expected, atol=3e-6, rtol=3e-6)
                 np.testing.assert_array_equal(solved[[13, 21, 22]], -123.0)
+                # Per-world RHS rows use offsets relative to each world's row.
+                row_rhs = np.full((2, 14 * 3), -123.0, dtype=np.float32)
+                row_rhs[0, : 13 * 3] = rhs[:13].ravel()
+                row_rhs[1, : 7 * 3] = rhs[14:21].ravel()
+                row_b = wp.array(row_rhs, device=device)
+                row_x = wp.full(row_rhs.shape, -123.0, device=device)
+                solver.solve_matrix(row_b, row_x, **{**layout, "offsets": wp.zeros(2, dtype=wp.int32, device=device)})
+                np.testing.assert_allclose(row_x.numpy()[0, : 13 * 3], solved[:13].ravel(), atol=1e-6, rtol=1e-6)
+                np.testing.assert_allclose(row_x.numpy()[1, : 7 * 3], solved[14:21].ravel(), atol=1e-6, rtol=1e-6)
+                np.testing.assert_array_equal(row_x.numpy()[0, 13 * 3 :], -123.0)
+                np.testing.assert_array_equal(row_x.numpy()[1, 7 * 3 :], -123.0)
                 reconstructed = wp.zeros_like(a)
                 solver.reconstruct(reconstructed)
-                np.testing.assert_allclose(reconstructed.numpy()[:169].reshape(13, 13), matrices[0], atol=1e-5)
+                np.testing.assert_allclose(reconstructed.numpy()[0, :169].reshape(13, 13), matrices[0], atol=1e-5)
                 np.testing.assert_allclose(
-                    reconstructed.numpy()[196:245].reshape(7, 7), matrices[1] + 1e-5 * np.eye(7), atol=1e-7
+                    reconstructed.numpy()[1, :49].reshape(7, 7), matrices[1] + 1e-5 * np.eye(7), atol=1e-7
                 )
                 np.testing.assert_array_equal(a.numpy(), source)
 
@@ -269,7 +297,7 @@ class TestLDLBlockSparseSolver(unittest.TestCase):
                 info.finalize([96, 96], dtype=wp.float32, device=device)
                 matrices = np.stack([np.eye(96, dtype=np.float32)] * 2)
                 matrices[1, 0, 0] = -1e-6
-                a = wp.array(matrices.ravel(), device=device)
+                a = wp.array(matrices.reshape(2, -1), device=device)
                 solver = LDLBlockSparseSolver(
                     operator=DenseLinearOperatorData(info=info, mat=a),
                     block_rows=groups,
@@ -288,7 +316,7 @@ class TestLDLBlockSparseSolver(unittest.TestCase):
                 solver.solve_inplace(x)
                 np.testing.assert_array_equal(x.numpy()[:96], 1.0)
                 np.testing.assert_allclose(x.numpy()[96], 1.0 / 9e-6, rtol=2e-6)
-                np.testing.assert_array_equal(a.numpy(), matrices.ravel())
+                np.testing.assert_array_equal(a.numpy(), matrices.reshape(2, -1))
 
 
 if __name__ == "__main__":

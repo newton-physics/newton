@@ -7,15 +7,22 @@
 :attr:`OptixShapes.world_planes` flattened; the other Warp BVH arguments are unused.
 """
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 import warp as wp
 
-from ...geometry import Gaussian, GeoType, raycast
+from ..geometry import Gaussian, GeoType, raycast
 from . import raytrace
-from .types import MeshData
+from .types import MeshData, RenderConfig
+
+if TYPE_CHECKING:
+    from ..geometry.optix import OptixShapes
 
 
-def create_closest_hit(config, shapes):
-    from ...geometry.optix import ray_interval, wo, world_offset  # noqa: PLC0415
+def create_closest_hit(config: RenderConfig, shapes: OptixShapes) -> wp.Function:
+    from ..geometry.optix import ray_interval, wo, world_offset  # noqa: PLC0415
 
     grid, extent, world_count = shapes.grid, shapes.extent, shapes.world_count
     planes_per_world = shapes.world_planes.shape[1]
@@ -95,19 +102,16 @@ def create_closest_hit(config, shapes):
                             face = int(query.primitive_index)
                             u = 1.0 - query.u - query.v
                             v = query.u
-                            normal = wp.normalize(
-                                raycast.safe_div_vec3(wp.mesh_eval_face_normal(mesh, face), shape_sizes[si])
-                            )
+                            mesh_data_id = shape_mesh_data_ids[si]
+                            smooth = False
+                            if mesh_data_id > -1:
+                                smooth = mesh_data[mesh_data_id].normals.shape[0] > 0
+                            # Vertex normals replace the face normal, so only compute it without them.
+                            normal = wp.vec3f(0.0)
+                            if not smooth:
+                                normal = raycast.safe_div_vec3(wp.mesh_eval_face_normal(mesh, face), shape_sizes[si])
                             hit.normal = raytrace._mesh_hit_normal(
-                                shape_transforms[si],
-                                shape_sizes[si],
-                                mesh,
-                                shape_mesh_data_ids[si],
-                                mesh_data,
-                                normal,
-                                face,
-                                u,
-                                v,
+                                shape_transforms[si], shape_sizes[si], mesh, mesh_data_id, mesh_data, normal, face, u, v
                             )
                             hit.bary_u = u
                             hit.bary_v = v
@@ -130,8 +134,8 @@ def create_closest_hit(config, shapes):
     return closest_hit_shape
 
 
-def create_first_hit(config, shapes):
-    from ...geometry.optix import ray_interval, wo, world_offset  # noqa: PLC0415
+def create_first_hit(config: RenderConfig, shapes: OptixShapes) -> wp.Function:
+    from ..geometry.optix import ray_interval, wo, world_offset  # noqa: PLC0415
 
     grid, extent, world_count = shapes.grid, shapes.extent, shapes.world_count
     planes_per_world = shapes.world_planes.shape[1]
