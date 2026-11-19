@@ -360,6 +360,9 @@ def _setup_allegro(articulation_builder):
     for i in range(articulation_builder.joint_dof_count):
         articulation_builder.joint_target_ke[i] = 150
         articulation_builder.joint_target_kd[i] = 20
+    for joint, joint_type in enumerate(articulation_builder.joint_type):
+        if joint_type == newton.JointType.REVOLUTE:
+            articulation_builder.joint_armature[articulation_builder.joint_qd_start[joint]] = 1e-2
     if hasattr(articulation_builder, "joint_target_q"):
         articulation_builder.joint_target_q[:] = articulation_builder.joint_q
     else:
