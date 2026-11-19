@@ -1861,6 +1861,7 @@ class TestSCCSolver(NewtonTestCase):
                 problem_nc,
                 problem_uio,
                 contact_bid_ab,
+                wp.array(np.arange(body_color_masks.shape[0], dtype=np.int32), device=self.device),
                 body_color_masks,
                 inequality_colors,
                 inequality_num_colors,
@@ -1909,6 +1910,7 @@ class TestSCCSolver(NewtonTestCase):
                 problem_nc,
                 problem_uio,
                 inequality_bodies,
+                wp.array(np.arange(body_color_masks.shape[0], dtype=np.int32), device=self.device),
                 body_color_masks,
                 inequality_colors,
                 inequality_num_colors,
@@ -1955,6 +1957,7 @@ class TestSCCSolver(NewtonTestCase):
                 problem_nc,
                 problem_uio,
                 inequality_bodies,
+                wp.array(np.arange(body_color_masks.shape[0], dtype=np.int32), device=self.device),
                 body_color_masks,
                 inequality_colors,
                 inequality_num_colors,
@@ -2037,6 +2040,7 @@ class TestSCCSolver(NewtonTestCase):
                 problem_nc,
                 problem_uio,
                 inequality_bodies,
+                wp.array(np.arange(body_color_masks.shape[0], dtype=np.int32), device=self.device),
                 body_color_masks,
                 inequality_colors,
                 inequality_num_colors,
@@ -3410,6 +3414,184 @@ class TestSCCSolver(NewtonTestCase):
                     2.5e-5,
                 )
 
+    def test_08d3a_dense_schur_matches_alternation_on_articulated_contacts(self):
+        """Match converged alternation when friction acts on Schur-coupled contacts.
+
+        Each sphere link touches the ground on its own, so its friction load must
+        come from the Delassus normal diagonal, not from the Schur complement's.
+        """
+        shape_cfg = newton.ModelBuilder.ShapeConfig(density=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
+        SolverKamino.register_custom_attributes(builder)
+        builder.add_ground_plane(cfg=shape_cfg)
+        parent = builder.add_link(
+            mass=0.1,
+            xform=wp.transform(wp.vec3(0.0, 0.0, 0.018), wp.quat_identity()),
+            inertia=wp.mat33(np.eye(3) * 1.0e-3),
+            lock_inertia=True,
+        )
+        builder.add_shape_sphere(parent, radius=0.02, cfg=shape_cfg)
+        joints = [builder.add_joint_free(parent)]
+        for index in range(6):
+            body = builder.add_link(
+                mass=0.01, com=wp.vec3(0.05, 0.0, 0.0), inertia=wp.mat33(np.eye(3) * 1.0e-3), lock_inertia=True
+            )
+            builder.add_shape_sphere(
+                body, xform=wp.transform(wp.vec3(0.05, 0.0, 0.0), wp.quat_identity()), radius=0.02, cfg=shape_cfg
+            )
+            joints.append(
+                builder.add_joint_revolute(
+                    parent,
+                    body,
+                    parent_xform=wp.transform(wp.vec3(0.1, 0.0, 0.0), wp.quat_identity()),
+                    axis=(newton.Axis.Z, newton.Axis.Y, newton.Axis.X)[index % 3],
+                    armature=0.1,
+                    friction=0.05,
+                    effort_limit=1.0,
+                    target_ke=100.0,
+                    target_kd=10.0,
+                    actuator_mode=newton.JointTargetMode.POSITION,
+                )
+            )
+            parent = body
+        builder.add_articulation(joints)
+        model = builder.finalize(device=self.device)
+        rng = np.random.default_rng(0)
+        targets = rng.uniform(-0.3, 0.3, model.joint_coord_count)
+        initial_qd = rng.uniform(-0.5, 0.5, model.joint_dof_count)
+
+        def step(use_schur_complement: bool, max_alternating_iterations: int) -> np.ndarray:
+            config = SolverKamino.Config(
+                dynamics_solver="scc",
+                use_fk_solver=False,
+                sparse_jacobian=False,
+                sparse_dynamics=False,
+                use_collision_detector=True,
+                scc=kamino_config.SCCSolverConfig(
+                    use_schur_complement=use_schur_complement,
+                    max_alternating_iterations=max_alternating_iterations,
+                    tolerance=0.0,
+                ),
+            )
+            solver = SolverKamino(model, config=config)
+            state_in, state_out = model.state(), model.state()
+            state_in.joint_qd.assign(initial_qd)
+            newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
+            control = model.control()
+            control.joint_target_q.assign(targets)
+            solver.step(state_in, state_out, control=control, contacts=None, dt=0.005)
+            self.assertGreater(int(solver._contacts_kamino.world_active_contacts.numpy()[0]), 0)
+            return state_out.joint_qd.numpy()
+
+        reference = step(use_schur_complement=False, max_alternating_iterations=3000)
+        schur = step(use_schur_complement=True, max_alternating_iterations=400)
+        scale = np.max(np.abs(reference))
+        np.testing.assert_allclose(schur / scale, reference / scale, rtol=0.0, atol=1.0e-3)
+
+    def _step_articulated_bar_on_ground(
+        self, use_schur_complement: bool, max_alternating_iterations: int, sparse: bool = False
+    ) -> tuple[np.ndarray, np.ndarray, dict[int, list[int]]]:
+        """Step a falling 4-sphere revolute bar and a free sphere once.
+
+        Every bar contact carries the whole bar through the eliminated joint
+        rows, although no two contacts share a body. Returns the joint
+        velocities, the SCC body coloring nodes, and the dense contact colors
+        keyed by body.
+        """
+        shape_cfg = newton.ModelBuilder.ShapeConfig(density=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
+        SolverKamino.register_custom_attributes(builder)
+        builder.add_ground_plane(cfg=shape_cfg)
+        parent = -1
+        joints = []
+        for index in range(4):
+            body = builder.add_link(
+                mass=0.1,
+                xform=wp.transform(wp.vec3(0.1 * index, 0.0, 0.018), wp.quat_identity()),
+                inertia=wp.mat33(np.eye(3) * 1.0e-3),
+                lock_inertia=True,
+            )
+            builder.add_shape_sphere(body, radius=0.02, cfg=shape_cfg)
+            if parent < 0:
+                joints.append(builder.add_joint_free(body))
+            else:
+                joints.append(
+                    builder.add_joint_revolute(
+                        parent,
+                        body,
+                        parent_xform=wp.transform(wp.vec3(0.1, 0.0, 0.0), wp.quat_identity()),
+                        axis=newton.Axis.Z,
+                        effort_limit=1.0,
+                    )
+                )
+            parent = body
+        builder.add_articulation(joints)
+        free_body = builder.add_body(
+            mass=0.1,
+            xform=wp.transform(wp.vec3(0.0, 1.0, 0.018), wp.quat_identity()),
+            inertia=wp.mat33(np.eye(3) * 1.0e-3),
+            lock_inertia=True,
+        )
+        builder.add_shape_sphere(free_body, radius=0.02, cfg=shape_cfg)
+        model = builder.finalize(device=self.device)
+        initial_qd = np.zeros(model.joint_dof_count)
+        initial_qd[2] = -0.5
+        initial_qd[model.joint_qd_start.numpy()[model.joint_count - 1] + 2] = -0.5
+
+        config = SolverKamino.Config(
+            dynamics_solver="scc",
+            use_fk_solver=False,
+            sparse_jacobian=sparse,
+            sparse_dynamics=sparse,
+            use_collision_detector=True,
+            scc=kamino_config.SCCSolverConfig(
+                use_schur_complement=use_schur_complement,
+                max_alternating_iterations=max_alternating_iterations,
+                tolerance=0.0,
+            ),
+        )
+        solver = SolverKamino(model, config=config)
+        state_in, state_out = model.state(), model.state()
+        state_in.joint_qd.assign(initial_qd)
+        newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
+        solver.step(state_in, state_out, control=model.control(), contacts=None, dt=0.005)
+        self.assertGreaterEqual(int(solver._contacts_kamino.world_active_contacts.numpy()[0]), 5)
+        scc = solver._solver_kamino.solver_fd
+        contact_colors: dict[int, list[int]] = {}
+        if not sparse:
+            # Ground contacts pair one body with the world (-1).
+            colors = scc._data.state.inequality_colors.numpy()
+            for (body_a, body_b), color in zip(scc._data.state.inequality_bodies.numpy(), colors, strict=True):
+                if color >= 0 and min(body_a, body_b) < 0 <= max(body_a, body_b):
+                    contact_colors.setdefault(int(max(body_a, body_b)), []).append(int(color))
+        return state_out.joint_qd.numpy(), scc._body_color_nodes.numpy(), contact_colors
+
+    def test_08d3b_dense_schur_colors_articulations_as_one_node(self):
+        """Stop a falling articulated bar whose contacts share no body.
+
+        Body coloring would place the bar contacts in one color and update
+        them against stale velocities. Coloring each articulation as one node
+        keeps them apart, while the free sphere may still share a color.
+        """
+        reference, body_nodes, _ = self._step_articulated_bar_on_ground(False, 3000)
+        schur, schur_nodes, contact_colors = self._step_articulated_bar_on_ground(True, 100)
+        np.testing.assert_allclose(schur, reference, rtol=0.0, atol=1.0e-4)
+        np.testing.assert_array_equal(body_nodes, np.arange(5))
+        np.testing.assert_array_equal(schur_nodes, [0, 0, 0, 0, 4])
+        bar_colors = [color for body in range(4) for color in contact_colors[body]]
+        self.assertEqual(len(bar_colors), len(set(bar_colors)))
+        self.assertTrue(set(contact_colors[4]) & set(bar_colors))
+
+    def test_08d3c_sparse_schur_colors_articulations_as_one_node(self):
+        """Stop the articulated bar with sparse Schur sweeps.
+
+        Sparse PGS updates the contact groups of one color in parallel, so its
+        coloring must also treat each articulation as one node.
+        """
+        reference, _, _ = self._step_articulated_bar_on_ground(False, 3000)
+        schur, _, _ = self._step_articulated_bar_on_ground(True, 100, sparse=True)
+        np.testing.assert_allclose(schur, reference, rtol=0.0, atol=1.0e-4)
+
     def test_08d4_scc_incline_friction_threshold(self):
         """Hold or slide according to the Coulomb incline threshold."""
         dt = 2.0e-3
@@ -3931,6 +4113,7 @@ class TestSCCSolver(NewtonTestCase):
                 problem_nc,
                 problem_uio,
                 inequality_bodies,
+                wp.array(np.arange(body_color_masks.shape[0], dtype=np.int32), device=self.device),
                 body_color_masks,
                 inequality_colors,
                 inequality_num_colors,
@@ -4059,6 +4242,7 @@ class TestSCCSolver(NewtonTestCase):
                 problem_nc,
                 problem_uio,
                 inequality_bodies,
+                wp.array(np.arange(body_color_masks.shape[0], dtype=np.int32), device=self.device),
                 body_color_masks,
                 inequality_colors,
                 inequality_num_colors,
@@ -4201,6 +4385,7 @@ class TestSCCSolver(NewtonTestCase):
                 sorter.sorted_to_unsorted_map,
                 cids,
                 bodies,
+                wp.array(np.arange(3, dtype=np.int32), device=self.device),
                 wp.zeros(3, dtype=wp.uint64, device=self.device),
                 group_starts,
                 scratch,
@@ -4312,6 +4497,7 @@ class TestSCCSolver(NewtonTestCase):
                     sorter.sorted_to_unsorted_map,
                     cids,
                     bodies,
+                    wp.array(np.arange(body_masks.shape[0], dtype=np.int32), device=self.device),
                     body_masks,
                     group_starts,
                     group_colors,
@@ -4454,6 +4640,7 @@ class TestSCCSolver(NewtonTestCase):
                 problem_nc,
                 problem_uio,
                 inequality_bodies,
+                wp.array(np.arange(body_color_masks.shape[0], dtype=np.int32), device=self.device),
                 body_color_masks,
                 inequality_colors,
                 inequality_num_colors,
