@@ -6,8 +6,19 @@
 Actuators
 =========
 
-Stepping responsibilities
--------------------------
+.. experimental::
+
+   The actuator API may change without prior notice. Feedback is welcome —
+   please file issues or discussion threads.
+
+Actuators provide composable implementations that read physics simulation
+state, compute effort, and **accumulate** (scatter-add) the effort into
+control arrays for application to the simulation.  The caller must zero the
+output array before stepping actuators each frame.  The simulator does not
+need to be part of Newton: actuators can be used in any simulator that
+provides the state arrays and applies the computed effort.
+
+.. _actuator-stepping:
 
 Newton supports two actuation paths:
 
@@ -26,18 +37,6 @@ Newton supports two actuation paths:
   require an explicit ``battery.step(control)`` after the actuators.
 
 The rest of this page describes external Newton actuators.
-
-.. experimental::
-
-   The actuator API may change without prior notice. Feedback is welcome —
-   please file issues or discussion threads.
-
-Actuators provide composable implementations that read physics simulation
-state, compute effort, and **accumulate** (scatter-add) the effort into
-control arrays for application to the simulation.  The caller must zero the
-output array before stepping actuators each frame.  The simulator does not
-need to be part of Newton: actuators can be used in any simulator that
-provides the state arrays and applies the computed effort.
 
 Each :class:`Actuator` instance is **vectorized**: a single actuator object
 operates on a batch of DOF indices in global state and control arrays, allowing
@@ -970,7 +969,7 @@ package. These become external actuators in ``model.actuators`` after
 finalization and require explicit stepping before the physics solver, as
 shown in `External actuators`_. Imported batteries must also be stepped after
 the actuators. Standard USD joint drives instead run inside ``solver.step()``;
-see `Stepping responsibilities`_.
+see :ref:`the stepping guidance above <actuator-stepping>`.
 
 Each applied API schema becomes one component:
 
