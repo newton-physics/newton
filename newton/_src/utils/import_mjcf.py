@@ -1587,25 +1587,30 @@ def parse_mjcf(
         start = wp.vec3(values[0:3]) * scale
         end = wp.vec3(values[3:6]) * scale
 
-        if incoming_xform is not None:
-            start = wp.transform_point(incoming_xform, start)
-            end = wp.transform_point(incoming_xform, end)
-
         position = (start + end) * 0.5
         # Match MuJoCo's compiler, which points local +Z from the second endpoint to the first.
         direction = start - end
         length = wp.length(direction)
-        if length < 1.0e-6:
+        # Only a truly degenerate segment (MuJoCo's mjEPS) has no direction; short segments keep their length.
+        if length < 1.0e-14:
             if zero_length_error is not None:
                 raise ValueError(zero_length_error)
-            return wp.transform(position, wp.quat_identity()), 0.0
-
-        direction /= length
-        if float(direction[2]) < -0.999999:
-            rotation = wp.quat(1.0, 0.0, 0.0, 0.0)
+            local_xform = wp.transform(position, wp.quat_identity())
+            half_length = 0.0
         else:
-            rotation = wp.quat_between_vectors(wp.vec3(0.0, 0.0, 1.0), direction)
-        return wp.transform(position, rotation), float(length) * 0.5
+            direction /= length
+            if float(direction[2]) < -0.999999:
+                rotation = wp.quat(1.0, 0.0, 0.0, 0.0)
+            else:
+                rotation = wp.quat_between_vectors(wp.vec3(0.0, 0.0, 1.0), direction)
+            local_xform = wp.transform(position, rotation)
+            half_length = float(length) * 0.5
+
+        # Build the segment frame locally, then compose it with the parent frame so the parent's
+        # rotation about the segment axis is kept (MuJoCo composes the frame after the segment).
+        if incoming_xform is not None:
+            local_xform = incoming_xform * local_xform
+        return local_xform, half_length
 
     def parse_shapes(
         defaults,

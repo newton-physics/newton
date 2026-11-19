@@ -7282,6 +7282,70 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
                     )
                     np.testing.assert_allclose(builder.shape_scale[idx], mj_model.geom_size[0], atol=1e-6)
 
+    @requires(*MUJOCO_MODULES)
+    def test_geom_fromto_box_keeps_frame_rotation_like_native_mujoco(self):
+        """A box with fromto inside a rotated frame keeps the frame's roll about the segment."""
+        import mujoco
+
+        mjcf = """<mujoco model="fromto_frame">
+    <worldbody>
+        <frame euler="0 0 45">
+            <geom name="g" type="box" fromto="0 0 0.5  0 0 -0.5" size="0.05 0.05"/>
+        </frame>
+    </worldbody>
+</mujoco>"""
+        mj_model = mujoco.MjModel.from_xml_string(mjcf)
+        mj_data = mujoco.MjData(mj_model)
+        mujoco.mj_forward(mj_model, mj_data)
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        idx = builder.shape_label.index("fromto_frame/worldbody/g")
+        xform = builder.shape_transform[idx]
+        np.testing.assert_allclose(xform[:3], mj_data.geom_xpos[0], atol=1e-6)
+        np.testing.assert_allclose(
+            np.array(wp.quat_to_matrix(wp.quat(*xform[3:7]))).reshape(3, 3),
+            mj_data.geom_xmat[0].reshape(3, 3),
+            atol=1e-5,
+        )
+
+    @requires(*MUJOCO_MODULES)
+    def test_geom_fromto_box_keeps_import_xform_rotation(self):
+        """A rotated import xform rotates a box with fromto about the segment axis."""
+        import mujoco
+
+        framed = """<mujoco model="m"><worldbody><frame euler="0 0 45">
+            <geom name="g" type="box" fromto="0 0 0.5  0 0 -0.5" size="0.05 0.05"/>
+        </frame></worldbody></mujoco>"""
+        plain = framed.replace('<frame euler="0 0 45">', "<frame>")
+        mj_model = mujoco.MjModel.from_xml_string(framed)
+        mj_data = mujoco.MjData(mj_model)
+        mujoco.mj_forward(mj_model, mj_data)
+
+        rot = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), wp.pi / 4.0)
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(plain, xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), rot))
+        idx = builder.shape_label.index("m/worldbody/g")
+        xform = builder.shape_transform[idx]
+        np.testing.assert_allclose(
+            np.array(wp.quat_to_matrix(wp.quat(*xform[3:7]))).reshape(3, 3),
+            mj_data.geom_xmat[0].reshape(3, 3),
+            atol=1e-5,
+        )
+
+    @requires(*MUJOCO_MODULES)
+    def test_geom_fromto_short_segment_keeps_length(self):
+        """A short but nonzero fromto segment keeps its half-length."""
+        mjcf = """<mujoco model="fromto_short">
+    <worldbody>
+        <geom name="g" type="box" fromto="0 0 2.5e-7  0 0 -2.5e-7" size="0.05"/>
+    </worldbody>
+</mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        idx = builder.shape_label.index("fromto_short/worldbody/g")
+        self.assertAlmostEqual(float(builder.shape_scale[idx][2]), 2.5e-7, delta=1e-9)
+
     def test_actuator_mode_inference_from_actuator_type(self):
         """Test that JointTargetMode is correctly inferred from MJCF actuator types."""
         from newton._src.sim.enums import JointTargetMode  # noqa: PLC0415
