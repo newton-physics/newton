@@ -8,8 +8,10 @@ import unittest
 import numpy as np
 import warp as wp
 
+import newton
 from newton._src.solvers.kamino._src.linalg import RedundantRowShift
-from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino import setup_test_output, setup_tests, test_context
+from newton.tests.unittest_utils import NewtonTestCase
 
 
 def reference_shifted_rows(D: np.ndarray, threshold: float) -> np.ndarray:
@@ -104,11 +106,13 @@ class RedundantProblem:
         )
 
 
-class TestRedundantRowShift(unittest.TestCase):
+class TestRedundantRowShift(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.device = test_context.device
+
+        setup_test_output(self)
 
     def test_00_shifts_redundant_rows(self):
         """Exactly the redundant rows of the block are shifted by their diagonal, as in the float64 reference."""
@@ -200,7 +204,7 @@ class TestRedundantRowShift(unittest.TestCase):
                 np.testing.assert_array_equal(problem.D.numpy(), expected)
 
 
-class TestRedundantRowCheck(unittest.TestCase):
+class TestRedundantRowCheck(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
@@ -208,6 +212,8 @@ class TestRedundantRowCheck(unittest.TestCase):
         self.problem = RedundantProblem(
             dims=[30, 40, 50], offsets=[4, 0, 10], num_rows=[20, 30, 36], num_redundant=[3, 5, 6], device=self.device
         )
+
+        setup_test_output(self)
         self.shift = RedundantRowShift(3, self.problem.max_rows, threshold=1e-5, check=True, device=self.device)
         self.problem.detect(self.shift)
         self.reference = self.shift.shifted.numpy().copy()
@@ -321,7 +327,7 @@ class TestRedundantRowCheck(unittest.TestCase):
         self.assertEqual(float(shift._reference.numpy()[0]), 0.0)
 
 
-class TestRedundantRowFactorCheck(unittest.TestCase):
+class TestRedundantRowFactorCheck(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
@@ -329,6 +335,8 @@ class TestRedundantRowFactorCheck(unittest.TestCase):
         self.problem = RedundantProblem(
             dims=[30, 40, 50], offsets=[4, 0, 10], num_rows=[20, 30, 36], num_redundant=[3, 5, 6], device=self.device
         )
+
+        setup_test_output(self)
         self.setup_shift(seed=5)
 
     def setup_shift(self, seed: int):
@@ -448,5 +456,6 @@ class TestRedundantRowFactorCheck(unittest.TestCase):
 
 
 if __name__ == "__main__":
+    newton.utils.setup_console_logging()
     setup_tests()
     unittest.main(verbosity=2)

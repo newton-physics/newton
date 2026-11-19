@@ -1180,11 +1180,13 @@ def add_null_components(problem: DualProblem, vector: wp.array, bases: list[np.n
     return vector_np
 
 
-class TestPADMMNullspaceRobustness(unittest.TestCase):
+class TestPADMMNullspaceRobustness(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
+
+        setup_test_output(self)
 
     def test_00_delassus_dual_residual(self):
         """The Delassus-weighted dual residual matches `P^{-1} D (x - x_p)` between consecutive iterates."""
