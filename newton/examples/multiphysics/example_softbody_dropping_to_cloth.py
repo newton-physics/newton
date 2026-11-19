@@ -118,7 +118,7 @@ class Example:
         if self.solver_type == "style3d":
             self.solver = SolverStyle3D(
                 model=self.model,
-                config=SolverStyle3D.Config(iterations=15, linear_iterations=5),
+                config=SolverStyle3D.Config(iterations=10, linear_iterations=10),
             )
         elif self.solver_type == "vbd":
             self.solver = SolverVBD(model=self.model, **vbd_kwargs)
