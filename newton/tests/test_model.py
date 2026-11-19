@@ -657,6 +657,7 @@ class TestModelMesh(unittest.TestCase):
         np.testing.assert_allclose(values.numpy(), np.array([[1.25, -2.5]] * 3, dtype=np.float32))
 
     def test_empty_sequence_custom_attribute_materializes_default_values(self):
+        """Preserve trailing dimensions for sequence defaults and authored rows."""
         attr = ModelBuilder.CustomAttribute(
             name="default_table_shape_attr",
             frequency=newton.Model.AttributeFrequency.SHAPE,
@@ -669,6 +670,26 @@ class TestModelMesh(unittest.TestCase):
 
         full_mock.assert_not_called()
         np.testing.assert_allclose(values.numpy(), np.array([[0.0, 1.0, 2.0]] * 2, dtype=np.float32))
+
+        for frequency, storage in (
+            ("table", [None, None, None]),
+            (newton.Model.AttributeFrequency.SHAPE, {0: [0.0, 1.0, 2.0]}),
+        ):
+            with self.subTest(frequency=frequency):
+                attr.frequency = frequency
+                attr.values = storage
+                values = attr.build_array(3, device="cpu", requires_grad=True)
+                self.assertTrue(values.requires_grad)
+                np.testing.assert_array_equal(values.numpy(), [[0.0, 1.0, 2.0]] * 3)
+
+        attr.default = [0.0]
+        attr.values = {0: [2.0], 1: [3.0]}
+        np.testing.assert_array_equal(attr.build_array(2, device="cpu").numpy(), [[2.0], [3.0]])
+        attr.default = 0.0
+        np.testing.assert_array_equal(attr.build_array(2, device="cpu").numpy(), [[2.0], [3.0]])
+        attr.frequency = newton.Model.AttributeFrequency.WORLD
+        attr.values = {-1: [0.0, 1.0, 2.0]}
+        np.testing.assert_array_equal(attr.build_array(3, device="cpu").numpy(), [[0.0, 1.0, 2.0]] * 3)
 
     def test_mesh_hash_uses_cached_sha_digest(self):
         mesh = newton.Mesh.create_box(
