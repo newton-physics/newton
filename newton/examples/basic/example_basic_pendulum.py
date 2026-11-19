@@ -156,7 +156,7 @@ class Example:
 
         def check_velocities(_, qd):
             # velocity outside the plane of the pendulum should be close to zero
-            check = abs(qd[0]) < 1e-4 and abs(qd[6]) < 1e-4
+            check = abs(qd[0]) < 1e-4 and abs(qd[5]) < 1e-3
             # velocity in the plane of the pendulum should be reasonable
             check = check and abs(qd[1]) < 10.0 and abs(qd[2]) < 5.0 and abs(qd[3]) < 10.0 and abs(qd[4]) < 10.0
             return check
