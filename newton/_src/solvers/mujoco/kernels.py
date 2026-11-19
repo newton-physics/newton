@@ -1808,29 +1808,6 @@ def apply_mjc_free_joint_f_to_body_f_kernel(
 
 
 @wp.kernel
-def convert_body_xforms_to_warp_kernel(
-    mjc_body_to_newton: wp.array2d[wp.int32],
-    xpos: wp.array2d[wp.vec3],
-    xquat: wp.array2d[wp.quat],
-    # outputs
-    body_q: wp.array[wp.transform],
-):
-    """Convert MuJoCo body transforms to Newton body_q array.
-
-    Iterates over MuJoCo bodies [world, mjc_body], looks up Newton body index,
-    reads MuJoCo position/quaternion, and writes to Newton body_q.
-    """
-    world, mjc_body = wp.tid()
-    newton_body = mjc_body_to_newton[world, mjc_body]
-    if newton_body >= 0:
-        pos = xpos[world, mjc_body]
-        quat = xquat[world, mjc_body]
-        # convert from wxyz to xyzw
-        quat = quat_wxyz_to_xyzw(quat)
-        body_q[newton_body] = wp.transform(pos, quat)
-
-
-@wp.kernel
 def update_body_mass_ipos_kernel(
     mjc_body_to_newton: wp.array2d[wp.int32],
     body_com: wp.array[wp.vec3f],
