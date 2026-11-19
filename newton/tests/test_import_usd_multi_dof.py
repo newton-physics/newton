@@ -5,13 +5,13 @@ import os
 import unittest
 
 import newton
-from newton.tests.unittest_utils import USD_AVAILABLE
+from newton.tests.unittest_utils import requires
 
 
 class TestImportUsdMultiDofJoints(unittest.TestCase):
     """Tests for USD import of multi-DOF joints (multiple single-DOF joints between same bodies)."""
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_humanoid_mjc_multi_dof(self):
         """Import a MuJoCo-converted humanoid with multi-joint body pairs.
 
@@ -31,7 +31,7 @@ class TestImportUsdMultiDofJoints(unittest.TestCase):
         # 27 DOFs: 6 free root + 21 individual DOFs from the 21 revolute joints
         self.assertEqual(builder.joint_dof_count, 27)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_humanoid_mjc_path_joint_map(self):
         """All original joint prim paths should be in the path_joint_map."""
         builder = newton.ModelBuilder()
@@ -50,7 +50,7 @@ class TestImportUsdMultiDofJoints(unittest.TestCase):
         hip_indices = {path_joint_map[p] for p in hip_paths}
         self.assertEqual(len(hip_indices), 1, "All right hip joints should map to the same D6 joint index")
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_humanoid_mjc_finalize(self):
         """The imported humanoid should finalize and simulate without errors."""
         builder = newton.ModelBuilder()

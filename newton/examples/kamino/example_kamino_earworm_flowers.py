@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Animate a garden of twenty-stage Stewart platform flowers using Kamino DVI.
+"""Animate a garden of twenty-stage Stewart platform flowers using Kamino SCC.
 
 Each plate is the moving platform of one stage and the base of the next.
 Universal joints attach both ends of each hydraulic actuator. A passive axial
@@ -19,7 +19,16 @@ The custom garden layout is assigned once after model setup. Calling the
 viewer's set_visible_worlds() or set_world_offsets() afterward replaces it;
 reapply viewer.world_offsets.assign(example.world_offsets) to restore it.
 
-Command: python -m newton.examples kamino_earworm_flowers
+Success criteria:
+- Seven articulated flowers form a compact garden, with their bases remaining anchored.
+- The stacked platforms sway, bounce, twist, and bow with small timing differences between flowers.
+- The spherical scissor mechanisms at the tips open and close while remaining attached and connected.
+- Motion stays bounded without joints separating or the flower mechanisms collapsing.
+
+Runs:
+- `python -m newton.examples kamino_earworm_flowers`
+- `python -m newton.examples kamino_earworm_flowers --mute`
+  - No background audio plays.
 """
 
 import argparse
@@ -31,6 +40,7 @@ import warp as wp
 import newton
 import newton.examples
 from newton.examples.kamino.utils.hoberman import generate_sphere
+from newton.examples.kamino.utils.ldl import add_ldl_arguments, configure_ldl
 from newton.solvers import SolverKamino
 
 # Saturated colors distinguish the interlocking flower rings.
@@ -588,6 +598,7 @@ def advance_time(time: wp.array[float], dt: float):
 
 class Example:
     def __init__(self, viewer: newton.viewer.ViewerBase, args=None):
+        """Build the animated earworm flower garden with the requested solver options."""
         self.viewer = viewer
         self.stage_count = args.stage_count if args else 20
         self.world_count = getattr(args, "world_count", 7) if args else 7
@@ -776,7 +787,7 @@ class Example:
         self.variations = wp.array(self.variations_host, dtype=wp.vec3)
 
         config = SolverKamino.Config.from_model(
-            self.model, dynamics_solver="dvi", sparse_dynamics=True, sparse_jacobian=True
+            self.model, dynamics_solver="scc", sparse_dynamics=True, sparse_jacobian=True
         )
         config.use_fk_solver = False
         config.use_collision_detector = False
@@ -786,13 +797,13 @@ class Example:
         config.dynamics.preconditioning = False
         config.dynamics.linear_solver_type = "CR"
         config.dynamics.linear_solver_kwargs = {"maxiter": 9}
-        config.dvi.bilateral_solver_type = "LLTBRCM"
-        config.dvi.bilateral_solver_kwargs = {"parallel_factorization": True}
-        config.dvi.tolerance = 1e-5
-        config.dvi.regularization = 1e-8
-        config.dvi.max_alternating_iterations = 4
-        config.dvi.inequality_sweeps_per_iteration = 3
-        config.dvi.bilateral_solve_interval = 1
+        config.scc.bilateral_solver_kwargs = {"parallel_factorization": True}
+        config.scc.tolerance = 1e-5
+        config.scc.regularization = 1e-8
+        config.scc.max_alternating_iterations = 4
+        config.scc.inequality_sweeps_per_iteration = 3
+        config.scc.bilateral_solve_interval = 1
+        configure_ldl(config, args)
         self.solver = SolverKamino(self.model, config=config)
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -955,6 +966,8 @@ class Example:
 
     @staticmethod
     def create_parser():
+        """Create simulation arguments, including optional Kamino LDL backend and ordering selection."""
+
         def positive_int(value: str) -> int:
             try:
                 result = int(value)
@@ -965,6 +978,7 @@ class Example:
             return result
 
         parser = newton.examples.create_parser()
+        add_ldl_arguments(parser)
         newton.examples.add_world_count_arg(parser)
         parser.set_defaults(world_count=7)
         parser.add_argument(
@@ -986,5 +1000,6 @@ class Example:
 
 
 if __name__ == "__main__":
+    newton.utils.setup_console_logging()
     viewer, args = newton.examples.init(Example.create_parser())
     newton.examples.run(Example(viewer, args), args)

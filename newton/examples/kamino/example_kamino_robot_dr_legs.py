@@ -1,23 +1,47 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Robot DR Legs
-#
-# Shows how to simulate DR Legs with multiple worlds using SolverKamino.
-#
-# Command: python -m newton.examples kamino_robot_dr_legs --world-count 16
-#
-###########################################################################
+"""Example Robot DR Legs
 
+Shows how to simulate DR Legs with multiple worlds using SolverKamino.
+
+Success criteria:
+- A torso-free biped with complex leg linkages appears and stays standing upright.
+- Right-drag its movable bodies: leg joints remain connected and the mechanism responds without
+  explosive motion.
+
+Runs:
+- `python -m newton.examples kamino_robot_dr_legs`
+- `python -m newton.examples kamino_robot_dr_legs --world-count 16`
+"""
+
+import numpy as np
 import warp as wp
 
 import newton
 import newton.examples
+from newton.examples.kamino.utils.ldl import add_ldl_arguments, configure_ldl
+
+# Options read by only one Kamino dynamics solver, mapped to their CLI flags.
+_SOLVER_OPTIONS = {
+    "scc": {"unilateral_solver": "--unilateral-solver", "use_schur_complement": "--[no-]use-schur-complement"},
+    "padmm": {"use_graph_conditionals": "--no-graph-conditionals"},
+}
+
+
+def _reject_ignored_options(args, dynamics_solver: str) -> None:
+    """Reject explicit options that the selected dynamics solver never reads."""
+    for solver, options in _SOLVER_OPTIONS.items():
+        if solver == dynamics_solver:
+            continue
+        for name, flag in options.items():
+            if getattr(args, name, None) is not None:
+                raise ValueError(f"{flag} requires --dynamics-solver {solver}.")
 
 
 class Example:
     def __init__(self, viewer: newton.viewer.ViewerBase, args=None):
+        """Build the Kamino DR Legs robot simulation with the requested solver options."""
         # Set simulation run-time configurations
         self.fps = 50
         self.frame_dt = 1.0 / self.fps
@@ -25,15 +49,16 @@ class Example:
         self.world_count = args.world_count if args else 1
         self.use_kamino_contacts = args.use_kamino_contacts if args else False
         self.dynamics_solver = getattr(args, "dynamics_solver", "padmm") if args else "padmm"
-        self.linear_solver_type = getattr(args, "linear_solver_type", "LLTB") if args else "LLTB"
+        _reject_ignored_options(args, self.dynamics_solver)
+        self.linear_solver_type = getattr(args, "linear_solver_type", None) or "LLTB"
         self.linear_solver_kwargs = getattr(args, "linear_solver_kwargs", {}) if args else {}
-        target_sim_dt = self.frame_dt / 12 if self.dynamics_solver == "dvi" else 0.01
+        target_sim_dt = self.frame_dt / 12 if self.dynamics_solver == "scc" else 0.01
         self.sim_substeps = max(1, round(self.frame_dt / target_sim_dt))
         self.sim_dt = self.frame_dt / self.sim_substeps
-        # DVI benefits from early contact detection because it solves inequality
+        # SCC benefits from early contact detection because it solves inequality
         # constraints slightly less accurately than PADMM. Contact forces remain
         # zero until the shapes overlap.
-        dvi_contact_margin = 5.0e-4 if self.dynamics_solver == "dvi" else 1e-6
+        scc_contact_margin = 5.0e-4 if self.dynamics_solver == "scc" else 1e-6
         self.viewer = viewer
         self.device = wp.get_device()
         self.animated = getattr(args, "animated", False) if args else False
@@ -42,13 +67,13 @@ class Example:
         # Create a single-robot model builder and register the Kamino-specific custom attributes
         robot_builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         newton.solvers.SolverKamino.register_custom_attributes(robot_builder)
-        robot_builder.default_shape_cfg.margin = dvi_contact_margin
+        robot_builder.default_shape_cfg.margin = scc_contact_margin
         robot_builder.default_shape_cfg.gap = 1e-2
         if self.animated:
             robot_builder.default_shape_cfg.mu = 0.1
         # Load the DR Legs USD and add it to the builder.
         # Pinned to an older revision: the current one is better for RL but tips over
-        # differently in simulation, which the DVI contact regressions detect. Drop the
+        # differently in simulation, which the SCC contact regressions detect. Drop the
         # ref once that is understood.
         asset_path = newton.utils.download_asset("disneyresearch", ref="261cd1f429619d8ef4f546bd788ab9dea906b5e1")
         asset_file = str(asset_path / "dr_legs" / "usd" / "dr_legs_with_meshes_and_boxes.usda")
@@ -84,7 +109,7 @@ class Example:
         # Create the multi-world model by duplicating the single-robot
         # builder for the specified number of worlds
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
-        builder.default_shape_cfg.margin = dvi_contact_margin
+        builder.default_shape_cfg.margin = scc_contact_margin
         builder.default_shape_cfg.gap = 1e-2
         for _ in range(self.world_count):
             builder.add_world(robot_builder)
@@ -100,8 +125,8 @@ class Example:
         self.config = newton.solvers.SolverKamino.Config.from_model(
             self.model,
             dynamics_solver=self.dynamics_solver,
-            sparse_dynamics=self.dynamics_solver == "dvi",
-            sparse_jacobian=self.dynamics_solver in ("dvi", "lox"),
+            sparse_dynamics=self.dynamics_solver == "scc",
+            sparse_jacobian=self.dynamics_solver in ("scc", "lox"),
         )
         self.config.use_fk_solver = True
         self.config.use_collision_detector = self.use_kamino_contacts
@@ -112,8 +137,8 @@ class Example:
         self.config.padmm.primal_tolerance = 1e-4
         self.config.padmm.dual_tolerance = 1e-4
         self.config.padmm.compl_tolerance = 1e-4
-        self.config.padmm.use_graph_conditionals = getattr(args, "use_graph_conditionals", True) if args else True
-        if self.dynamics_solver == "dvi":
+        self.config.padmm.use_graph_conditionals = getattr(args, "use_graph_conditionals", None) is not False
+        if self.dynamics_solver == "scc":
             self.config.use_fk_solver = False
             if self.use_kamino_contacts:
                 self.config.integrator = "moreau"
@@ -123,16 +148,18 @@ class Example:
             self.config.dynamics.preconditioning = False
             self.config.dynamics.linear_solver_type = "CR"
             self.config.dynamics.linear_solver_kwargs = {"maxiter": 9}
-            self.config.dvi.bilateral_solver_type = "LLTBRCM"
-            self.config.dvi.bilateral_solver_kwargs = {"parallel_factorization": True}
-            self.config.dvi.tolerance = 1e-4
-            self.config.dvi.regularization = 1e-5
-            self.config.dvi.max_alternating_iterations = 4
-            self.config.dvi.inequality_sweeps_per_iteration = 3
-            self.config.dvi.bilateral_solve_interval = 1
-            self.config.dvi.contact_warmstart_method = "key_and_position_with_tangential_net_force"
-            self.config.dvi.unilateral_solver = getattr(args, "unilateral_solver", "pgs")
-            self.config.dvi.use_schur_complement = getattr(args, "use_schur_complement", None)
+            self.config.scc.bilateral_solver_type = getattr(args, "bilateral_solver_type", None) or "LLTBRCM"
+            if self.config.scc.bilateral_solver_type == "LLTBRCM":
+                self.config.scc.bilateral_solver_kwargs = {"parallel_factorization": True}
+            self.config.scc.tolerance = 1e-4
+            self.config.scc.regularization = 1e-5
+            self.config.scc.max_alternating_iterations = 4
+            self.config.scc.inequality_sweeps_per_iteration = 3
+            self.config.scc.bilateral_solve_interval = 1
+            self.config.scc.contact_warmstart_method = "key_and_position_with_tangential_net_force"
+            self.config.scc.unilateral_solver = getattr(args, "unilateral_solver", None) or "pgs"
+            self.config.scc.use_schur_complement = getattr(args, "use_schur_complement", None)
+        configure_ldl(self.config, args)
         self.solver = newton.solvers.SolverKamino(self.model, config=self.config)
 
         # Create state and control data containers
@@ -234,9 +261,21 @@ class Example:
         self.viewer.end_frame()
 
     def test_final(self):
-        # TODO: Add some assertions here once we have a more meaningful test scenario
+        """Verify finite body states and successful LOX status when that backend is selected."""
+        assert np.isfinite(self.state_0.body_q.numpy()).all(), "Body poses must remain finite"
+        assert np.isfinite(self.state_0.body_qd.numpy()).all(), "Body velocities must remain finite"
         if self.dynamics_solver == "lox":
             assert not self.solver.status.numpy()["failed"].any(), "The LOX backend failed"
+        if not self.animated:
+            pelvis_ids = [i for i, label in enumerate(self.model.body_label) if label.endswith("/pelvis")]
+            assert pelvis_ids, "No body label ends with '/pelvis'"
+            newton.examples.test_body_state(
+                self.model,
+                self.state_0,
+                "robots are standing",
+                lambda q, qd: q[2] > 0.25,
+                indices=pelvis_ids,
+            )
 
     def _init_animation(self, model_asset: str, animation_asset: str):
         import numpy as np  # noqa: PLC0415
@@ -328,35 +367,44 @@ class Example:
 
     @staticmethod
     def create_parser():
+        """Create simulation arguments, including optional Kamino LDL backend and ordering selection."""
         import argparse  # noqa: PLC0415
 
         parser = newton.examples.create_parser()
+        add_ldl_arguments(parser)
         newton.examples.add_world_count_arg(parser)
         newton.examples.add_kamino_contacts_arg(parser)
         parser.add_argument(
             "--dynamics-solver",
-            choices=("padmm", "dvi", "lox"),
+            choices=("padmm", "scc", "lox"),
             default="padmm",
             help="Kamino dynamics solver to use.",
         )
         parser.add_argument(
             "--unilateral-solver",
             choices=("pgs", "apgd"),
-            default="pgs",
-            help="DVI unilateral subsolver; APGD uses De Saxce contact correction.",
+            default=None,
+            help="SCC unilateral subsolver (default: pgs); APGD uses De Saxce contact correction.",
         )
         parser.add_argument(
             "--use-schur-complement",
             action=argparse.BooleanOptionalAction,
             default=None,
-            help="Eliminate bilateral rows during DVI unilateral solves (automatic for bounded PD drives).",
+            help="Eliminate bilateral rows during SCC unilateral solves (automatic for bounded PD drives).",
         )
         parser.add_argument(
             "--linear-solver-type",
-            choices=("LLTB", "LLTBRCM", "CR"),
-            default="LLTB",
+            choices=("LLTB", "LLTBRCM", "LDL", "CR"),
+            default=None,
             type=str.upper,
-            help="Kamino dynamics linear solver to use.",
+            help="Kamino dynamics linear solver (default: LLTB).",
+        )
+        parser.add_argument(
+            "--bilateral-solver-type",
+            choices=("LLTB", "LLTBRCM", "LDL"),
+            default=None,
+            type=str.upper,
+            help="SCC bilateral solver (default: LLTBRCM).",
         )
         parser.add_argument(
             "--no-graph-conditionals",
@@ -378,11 +426,12 @@ class Example:
         )
         parser.set_defaults(world_count=1)
         parser.set_defaults(use_kamino_contacts=True)
-        parser.set_defaults(use_graph_conditionals=True)
+        parser.set_defaults(use_graph_conditionals=None)
         return parser
 
 
 if __name__ == "__main__":
+    newton.utils.setup_console_logging()
     parser = Example.create_parser()
     viewer, args = newton.examples.init(parser)
     newton.examples.run(Example(viewer, args), args)

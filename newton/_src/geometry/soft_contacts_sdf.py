@@ -538,7 +538,8 @@ def _emit_soft_ef_contact(
 def _create_soft_face_contact_kernel(compact_sdf: bool):
     module_name = f"soft_face_contacts_{compact_sdf}"
 
-    @wp.kernel(module=module_name)
+    # Compaction is disabled under requires_grad, so its kernels never need an adjoint.
+    @wp.kernel(module=module_name, enable_backward=False if compact_sdf else None)
     def soft_face_contact_kernel(
         face_pairs: wp.array[wp.vec2i],
         particle_q: wp.array[wp.vec3],
@@ -703,7 +704,8 @@ classify_soft_face_contacts = _create_soft_face_contact_kernel(True)
 def _create_soft_sdf_contact_kernel(geo_filter: int, *, edge: bool = False):
     module_name = f"soft_sdf_contacts_{edge}_{geo_filter}"
 
-    @wp.kernel(module=module_name)
+    # Only consumes the compaction queue, which requires_grad disables.
+    @wp.kernel(module=module_name, enable_backward=False)
     def create_soft_sdf_contacts(
         fallback_tids: wp.array[wp.int32],
         fallback_count: wp.array[wp.int32],
@@ -816,7 +818,8 @@ _SDF_FACE_KERNEL_BY_GEO = {geo: _create_soft_sdf_contact_kernel(int(geo)) for ge
 def _create_soft_edge_contact_kernel(compact_sdf: bool):
     module_name = f"soft_edge_contacts_{compact_sdf}"
 
-    @wp.kernel(module=module_name)
+    # Compaction is disabled under requires_grad, so its kernels never need an adjoint.
+    @wp.kernel(module=module_name, enable_backward=False if compact_sdf else None)
     def soft_edge_contact_kernel(
         edge_pairs: wp.array[wp.vec2i],
         particle_q: wp.array[wp.vec3],

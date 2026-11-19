@@ -10,11 +10,81 @@ import numpy as np
 import warp as wp
 
 from newton import ModelBuilder
-from newton._src.geometry.inertia import verify_and_correct_inertia
+from newton._src.geometry.inertia import _inverse_inertia, verify_and_correct_inertia
 
 
 class TestInertiaValidation(unittest.TestCase):
     """Test cases for inertia verification and correction."""
+
+    def test_builder_inertia_tolerance_validation(self):
+        """Reject invalid numerical settings before constructing the model."""
+        builder = ModelBuilder()
+        for name in ("inertia_relative_tolerance", "inertia_absolute_tolerance", "inertia_correction"):
+            for value in (-1.0, float("nan"), float("inf"), 1e100):
+                with self.subTest(setting=name, value=value):
+                    setattr(builder, name, value)
+                    with self.assertRaisesRegex(ValueError, name):
+                        builder.finalize()
+            setattr(builder, name, 1.0e-6)
+        for value in (0.0, 1e-100):
+            builder.inertia_absolute_tolerance = value
+            with self.assertRaisesRegex(ValueError, "inertia_absolute_tolerance"):
+                builder.finalize()
+
+    def test_skip_inertia_validation(self):
+        """Preserve mass and inertia but derive consistent inverses when validation is skipped."""
+        builder = ModelBuilder()
+        # Cover thin rods, triangle balancing, mass clamping, and invalid mass
+        # together so skipping cannot accidentally leave part of the stage enabled.
+        for mass, diagonal in ((1e-5, [8e-11, 8e-11, 1e-12]), (1.0, [1, 1, 4]), (-1.0, [1, 1, 1])):
+            builder.add_body(mass=mass, inertia=wp.mat33(np.diag(diagonal)))
+        builder.bound_mass = 2.0
+        builder.bound_inertia = 10.0
+        for detailed in (False, True):
+            builder.validate_inertia_detailed = detailed
+            for skip_all in (False, True):
+                with self.subTest(detailed=detailed, skip_all=skip_all):
+                    with warnings.catch_warnings(record=True) as caught:
+                        warnings.simplefilter("always")
+                        model = builder.finalize(skip_all_validations=skip_all, skip_validation_inertia=not skip_all)
+                    self.assertEqual(len(caught), 0)
+                    for name in ("body_mass", "body_inertia"):
+                        expected = np.array(getattr(builder, name), dtype=np.float32)
+                        if "inertia" in name:
+                            expected = expected.reshape(-1, 3, 3)
+                        np.testing.assert_array_equal(getattr(model, name).numpy(), expected)
+                    np.testing.assert_allclose(model.body_inv_mass.numpy(), [1e5, 1.0, 0.0])
+                    for i, mass in enumerate(builder.body_mass):
+                        expected_inverse = (
+                            np.linalg.inv(np.array(builder.body_inertia[i]).reshape(3, 3).astype(np.float64))
+                            if mass > 0.0
+                            else np.zeros((3, 3))
+                        )
+                        np.testing.assert_allclose(model.body_inv_inertia.numpy()[i], expected_inverse, rtol=1e-6)
+
+    def test_finalize_imported_inverses(self):
+        """Recompute imported small inertia and edited mass inverses in every finalization mode."""
+        builder = ModelBuilder()
+        builder.add_urdf(
+            """<robot name="tiny"><link name="rod"><inertial>
+            <mass value="1"/><inertia ixx="1e-13" iyy="1e-13" izz="1e-13" ixy="0" ixz="0" iyz="0"/>
+            </inertial></link></robot>""",
+            floating=True,
+        )
+        builder.inertia_absolute_tolerance = 1e-20
+        builder.body_mass[0] = 2.0
+        original_inverse = np.array(builder.body_inv_inertia[0])
+        for detailed in (False, True):
+            builder.validate_inertia_detailed = detailed
+            for flags in ({}, {"skip_validation_inertia": True}, {"skip_all_validations": True}):
+                with self.subTest(detailed=detailed, flags=flags):
+                    model = builder.finalize(**flags)
+                    self.assertEqual(model.body_mass.numpy()[0], 2.0)
+                    self.assertEqual(model.body_inv_mass.numpy()[0], 0.5)
+                    np.testing.assert_allclose(model.body_inertia.numpy()[0], np.eye(3) * 1e-13, atol=0.0, rtol=1e-6)
+                    np.testing.assert_allclose(model.body_inv_inertia.numpy()[0], np.eye(3) * 1e13, atol=0.0, rtol=1e-6)
+                    np.testing.assert_array_equal(np.array(builder.body_inv_inertia[0]), original_inverse)
+                    self.assertEqual(builder.body_inv_mass[0], 1.0)
 
     def test_negative_mass_correction(self):
         """Test that negative mass is corrected to zero."""
@@ -59,7 +129,7 @@ class TestInertiaValidation(unittest.TestCase):
         self.assertTrue(inertia_array[1, 1] >= 0)
         self.assertTrue(inertia_array[2, 2] >= 0)
 
-    def test_inertia_bound(self):
+    def test_bound_inertia(self):
         """Test that inertia diagonal elements below bound are clamped."""
         mass = 1.0
         bound_inertia = 1.0
@@ -285,6 +355,9 @@ class TestInertiaValidation(unittest.TestCase):
 
     def test_singular_inertia_repaired(self):
         """Test that singular inertia for positive-mass body is made positive-definite."""
+        # Host inversion must preserve Warp's zero result for singular inputs.
+        for diagonal in ([0.0, 0.0, 0.0], [0.0, 1.0, 1.0]):
+            np.testing.assert_array_equal(np.array(_inverse_inertia(wp.mat33(np.diag(diagonal)))), np.zeros(9))
         mass = 1.0
         inertia = wp.mat33([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
 
@@ -301,7 +374,9 @@ class TestInertiaValidation(unittest.TestCase):
 class TestInertiaValidationParity(unittest.TestCase):
     """Test that CPU (detailed) and GPU (fast) validation paths produce identical results."""
 
-    def _finalize_both_paths(self, mass, inertia, bound_mass=None, bound_inertia=None, balance_inertia=True):
+    def _finalize_both_paths(
+        self, mass, inertia, bound_mass=None, bound_inertia=None, balance_inertia=True, **settings
+    ):
         """Helper to finalize a single-body model with both validation paths and return results."""
         results = {}
         for detailed in [True, False]:
@@ -310,6 +385,8 @@ class TestInertiaValidationParity(unittest.TestCase):
             builder.bound_mass = bound_mass
             builder.bound_inertia = bound_inertia
             builder.validate_inertia_detailed = detailed
+            for name, value in settings.items():
+                setattr(builder, name, value)
 
             body_idx = builder.add_body(
                 mass=mass,
@@ -328,21 +405,24 @@ class TestInertiaValidationParity(unittest.TestCase):
             results[mode] = {
                 "model_mass": float(model.body_mass.numpy()[body_idx]),
                 "model_inertia": np.array(model.body_inertia.numpy()[body_idx]),
+                "model_inv_inertia": np.array(model.body_inv_inertia.numpy()[body_idx]),
             }
         return results
 
-    def _assert_parity(self, results, atol=1e-5):
+    def _assert_parity(self, results, atol=1e-5, rtol=1e-7):
         """Assert that detailed and fast results match."""
         np.testing.assert_allclose(
             results["detailed"]["model_mass"],
             results["fast"]["model_mass"],
             atol=atol,
+            rtol=rtol,
             err_msg="Model mass mismatch between detailed and fast paths",
         )
         np.testing.assert_allclose(
             results["detailed"]["model_inertia"],
             results["fast"]["model_inertia"],
             atol=atol,
+            rtol=rtol,
             err_msg="Model inertia mismatch between detailed and fast paths",
         )
 
@@ -378,11 +458,48 @@ class TestInertiaValidationParity(unittest.TestCase):
         # Inertia should be positive-definite
         eigenvalues = np.linalg.eigvals(results["detailed"]["model_inertia"])
         self.assertTrue(np.all(eigenvalues > 0))
+        results = self._finalize_both_paths(
+            mass=1.0, inertia=np.zeros((3, 3)), inertia_absolute_tolerance=1e-12, inertia_correction=2e-12
+        )
+        self._assert_parity(results, atol=0.0)
+        np.testing.assert_allclose(results["fast"]["model_inertia"], np.eye(3) * 3e-12, atol=0.0, rtol=1e-6)
 
     def test_parity_semidefinite_inertia(self):
         """Both paths should repair semi-definite inertia (one zero eigenvalue)."""
         results = self._finalize_both_paths(mass=1.0, inertia=np.diag([0.0, 1.0, 1.0]))
         self._assert_parity(results)
+        results = self._finalize_both_paths(
+            mass=1.0, inertia=np.diag([0.0, 1.0, 1.0]), inertia_relative_tolerance=1e-3, inertia_correction=0.0
+        )
+        # Warp's float32 eigendecomposition differs slightly from NumPy's.
+        self._assert_parity(results, atol=0.0, rtol=1e-6)
+        np.testing.assert_allclose(
+            results["fast"]["model_inertia"].diagonal(), [1e-3, 1.001, 1.001], atol=0.0, rtol=1e-6
+        )
+
+        # The initial shift rounds to 1.0 in float32, leaving a zero moment.
+        results = self._finalize_both_paths(
+            mass=1.0, inertia=np.diag([-1.0, 1.0, 1.0]), inertia_relative_tolerance=0.0, inertia_correction=0.0
+        )
+        for result in results.values():
+            self.assertTrue(np.all(np.linalg.eigvalsh(result["model_inertia"]) > 0))
+            np.testing.assert_allclose(
+                result["model_inv_inertia"] @ result["model_inertia"], np.eye(3), atol=1e-6, rtol=1e-6
+            )
+
+        # A rotated tensor can still have a negative moment after the first
+        # float32 repair. Check both repair and initial validation of that tensor.
+        axis = np.array([2.0, 5.0, 5.0])
+        indefinite = (np.eye(3) - 1.1 * np.outer(axis, axis) / 54.0).astype(np.float32)
+        for shift in (0.0, 0.1):
+            inertia = indefinite + np.eye(3, dtype=np.float32) * np.float32(shift)
+            self.assertLess(np.linalg.eigvalsh(inertia.astype(np.float64))[0], 0.0)
+            results = self._finalize_both_paths(
+                mass=1.0, inertia=inertia, inertia_relative_tolerance=0.0, inertia_correction=0.0
+            )
+            for mode, result in results.items():
+                with self.subTest(shift=shift, mode=mode):
+                    self.assertGreater(np.linalg.eigvalsh(result["model_inertia"].astype(np.float64))[0], 0.0)
 
     def test_parity_nonsymmetric_inertia(self):
         """Both paths should symmetrize non-symmetric inertia."""
@@ -435,6 +552,9 @@ class TestInertiaValidationParity(unittest.TestCase):
         """Both paths should correct triangle inequality violations identically."""
         results = self._finalize_both_paths(mass=1.0, inertia=np.diag([0.1, 0.1, 10.0]))
         self._assert_parity(results)
+        results = self._finalize_both_paths(mass=1.0, inertia=np.diag([0.1, 0.1, 10.0]), inertia_correction=0.25)
+        self._assert_parity(results)
+        np.testing.assert_allclose(results["fast"]["model_inertia"].diagonal(), [10.15, 10.15, 20.05], rtol=1e-6)
 
     def test_parity_near_boundary_triangle(self):
         """Near-boundary triangle cases should get consistent corrections."""
@@ -485,6 +605,35 @@ class TestInertiaValidationParity(unittest.TestCase):
                     model = builder.finalize()
                 self.assertEqual(len(w), 0, f"Unexpected warnings: {[str(x.message) for x in w]}")
                 np.testing.assert_allclose(model.body_inertia.numpy()[idx].diagonal(), diag, atol=1e-10)
+
+                # Small accepted tensors must retain usable inverses, including
+                # sub-mm shape-derived inertia and explicitly supplied inertia.
+                builder = ModelBuilder()
+                builder.validate_inertia_detailed = detailed
+                builder.inertia_absolute_tolerance = 1e-20
+                builder.add_body(mass=1e-6, inertia=wp.mat33(np.eye(3) * 1e-13))
+                # Rotated principal moments [2e-18, 1e-16, 1e-16] used to
+                # trigger spurious balancing in the unscaled fast eigensolver.
+                rotated = np.array(
+                    [
+                        [5.611494675630723e-17, -4.856007461128892e-17, 4.0934798642794375e-18],
+                        [-4.856007461128892e-17, 4.626687849038571e-17, 4.529553353195449e-18],
+                        [4.0934798642794375e-18, 4.529553353195449e-18, 9.961816849803897e-17],
+                    ],
+                    dtype=np.float32,
+                )
+                builder.add_body(mass=1e-6, inertia=wp.mat33(rotated))
+                for radius, half_height in ((0.0005, 0.005), (0.0001, 0.0005), (0.00005, 0.00025)):
+                    idx = builder.add_body()
+                    builder.add_shape_capsule(idx, radius=radius, half_height=half_height)
+                expected = np.array(builder.body_inertia).reshape(-1, 3, 3)
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    model = builder.finalize()
+                self.assertEqual(len(caught), 0)
+                np.testing.assert_array_equal(model.body_inertia.numpy(), expected)
+                for inertia, inv_inertia in zip(expected, model.body_inv_inertia.numpy(), strict=True):
+                    np.testing.assert_allclose(inv_inertia @ inertia, np.eye(3), atol=2e-6, rtol=1e-6)
 
     def test_lightweight_inertia_parity(self):
         """Test that both paths preserve lightweight inertia identically."""

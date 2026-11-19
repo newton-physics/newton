@@ -124,6 +124,10 @@ class ViewerNull(ViewerBase):
         pass
 
     @override
+    def _log_deformable_visual_meshes(self, state):
+        # Nothing is drawn, so display options are no-ops here, as for the other show_* flags.
+        return
+
     def begin_frame(self, time: float):
         """
         No-op implementation for beginning a frame.

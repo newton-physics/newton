@@ -4,7 +4,6 @@
 """Regression tests for routed tendons in the VBD rigid solver."""
 
 import unittest
-import warnings
 
 import numpy as np
 import warp as wp
@@ -12,6 +11,7 @@ import warp as wp
 import newton
 from newton import Axis, TendonGuideType
 from newton._src.solvers.vbd.rigid_vbd_kernels import create_solve_rigid_body
+from newton._src.solvers.vbd.tendon_kernels import TendonForceElementAdjacencyInfo, evaluate_tendon_force_hessians
 from newton.tests.test_tendon_capstan import (
     _moving_rolling_route_material_error,
     build_dynamic_pulley_atwood,
@@ -30,10 +30,6 @@ TENDON_VBD_SOLVER_KWARGS = {
     "iterations": 20,
     "tendon_max_sweeps": 32,
     "tendon_settle_tol": 1.0e-3,
-    "rigid_compliant_alm": False,
-    "rigid_avbd_beta": 1.0e6,
-    "rigid_joint_linear_k_start": 1.0e7,
-    "rigid_joint_angular_k_start": 1.0e5,
     "rigid_joint_linear_kd": 5.0e-2,
     "rigid_joint_angular_kd": 2.0e-2,
 }
@@ -70,12 +66,125 @@ def _hinge_z_angle(body_q, body_idx):
 
 
 def _make_tendon_vbd_solver(model, **overrides):
-    # Retain legacy-mode coverage without suppressing unrelated warnings.
-    with warnings.catch_warnings():
-        warnings.filterwarnings(
-            "ignore", message="^rigid_compliant_alm=False is deprecated", category=DeprecationWarning
-        )
-        return newton.solvers.SolverVBD(model, **(TENDON_VBD_SOLVER_KWARGS | overrides))
+    return newton.solvers.SolverVBD(model, **(TENDON_VBD_SOLVER_KWARGS | overrides))
+
+
+@wp.kernel
+def _evaluate_roller_reaction(
+    poses: wp.array[wp.transform],
+    prev_poses: wp.array[wp.transform],
+    com: wp.array[wp.vec3],
+    adjacency: TendonForceElementAdjacencyInfo,
+    guide_body: wp.array[int],
+    guide_type: wp.array[int],
+    offsets: wp.array[wp.vec3],
+    axes: wp.array[wp.vec3],
+    cone_l: wp.array[int],
+    cone_r: wp.array[int],
+    cap_ratio: wp.array[float],
+    rest: wp.array[float],
+    point_l: wp.array[wp.vec3],
+    point_r: wp.array[wp.vec3],
+    compliance: wp.array[float],
+    damping: wp.array[float],
+    active: wp.array[int],
+    guide_l: wp.array[int],
+    guide_r: wp.array[int],
+    result: wp.array[wp.vec3],
+):
+    force, torque, _h_ll, _h_al, _h_aa = evaluate_tendon_force_hessians(
+        0,
+        1.0 / 60.0,
+        poses,
+        prev_poses,
+        com,
+        adjacency,
+        guide_body,
+        guide_type,
+        offsets,
+        axes,
+        cone_l,
+        cone_r,
+        cap_ratio,
+        rest,
+        point_l,
+        point_r,
+        compliance,
+        damping,
+        active,
+        guide_l,
+        guide_r,
+    )
+    result[0] = force
+    result[1] = torque
+
+
+def test_vbd_spin_reaction_matches_capstan_projection(test, device):
+    """Bound the actual rim torque, including off-tangent VBD trial poses."""
+    device = wp.get_device(device)
+    adjacency = TendonForceElementAdjacencyInfo()
+    adjacency.body_adj_segments = wp.array([0, 1], dtype=int, device=device)
+    adjacency.body_adj_segments_offsets = wp.array([0, 2], dtype=int, device=device)
+    cases = [
+        (rho, tensions, 0.0, 0.0, 1.0)
+        for rho, tensions in ((1.0, [4, 3]), (2.0, [4, 3]), (2.0, [9, 1]), (2.0, [1, 9]), (2.0, [9, 0]))
+    ]
+    cases += [
+        (np.exp(0.001 * np.pi), [10, 10], np.pi / 4, 0.0, 1.0),
+        (np.exp(0.001 * np.pi), [10, 10], 0.0, np.pi / 4, 0.2),
+        (1.0, [10, 10], np.pi / 4, 0.0, 0.2),
+        (2.0, [4, 3], np.pi / 4, 0.0, 1.0),
+        (2.0, [0.004, 0.003], 0.0, 0.0, 1.0e-6),
+    ]
+    for rho, tensions, angle_l, angle_r, radius in cases:
+        with test.subTest(rho=rho, tensions=tensions, angle_l=angle_l, angle_r=angle_r, radius=radius):
+            center = np.array([0.5, 0, 0]) if radius > 1.0e-4 else np.zeros(3)
+            contact_l, contact_r = center + np.array([0, radius, 0]), center + np.array([radius, 0, 0])
+            direction_l = np.array([np.cos(angle_l), np.sin(angle_l), 0])
+            direction_r = np.array([np.sin(angle_r), -np.cos(angle_r), 0])
+            rest = 1.0 - 0.01 * np.array(tensions, dtype=np.float32)
+            output = wp.zeros(2, dtype=wp.vec3, device=device)
+            inputs = [
+                wp.array([wp.transform_identity()], dtype=wp.transform, device=device),
+                wp.array([wp.transform(wp.vec3(0.03, -0.04, 0.0))], dtype=wp.transform, device=device),
+                wp.zeros(1, dtype=wp.vec3, device=device),
+                adjacency,
+                wp.array([-1, 0, -1], dtype=int, device=device),
+                wp.array(
+                    [int(TendonGuideType.ANCHOR), int(TendonGuideType.ROLLER), int(TendonGuideType.ANCHOR)],
+                    dtype=int,
+                    device=device,
+                ),
+                wp.array([np.zeros(3), center, np.zeros(3)], dtype=wp.vec3, device=device),
+                wp.array([[0, 0, 1]] * 3, dtype=wp.vec3, device=device),
+                wp.array([-1, 0, -1], dtype=int, device=device),
+                wp.array([-1, 1, -1], dtype=int, device=device),
+                wp.array([1, rho, 1], dtype=float, device=device),
+                wp.array(rest, device=device),
+                wp.array([contact_l - direction_l, contact_r], dtype=wp.vec3, device=device),
+                wp.array([contact_l, contact_r + direction_r], dtype=wp.vec3, device=device),
+                wp.full(2, 0.01, device=device),
+                wp.zeros(2, device=device),
+                wp.ones(2, dtype=int, device=device),
+                wp.array([0, 1], dtype=int, device=device),
+                wp.array([1, 2], dtype=int, device=device),
+                output,
+            ]
+            wp.launch(_evaluate_roller_reaction, dim=1, inputs=inputs, device=device)
+            expected_force = -tensions[0] * direction_l + tensions[1] * direction_r
+            bound = radius * (rho - 1.0) / (rho + 1.0) * sum(tensions)
+            rim_torque = radius * (tensions[0] * np.cos(angle_l) - tensions[1] * np.cos(angle_r))
+            expected_torque = np.cross(center, expected_force) + np.array([0, 0, np.clip(rim_torque, -bound, bound)])
+            torque_tol = 2.0e-5 * (np.linalg.norm(center) + radius)
+            np.testing.assert_allclose(output.numpy()[0], expected_force, atol=2.0e-5, rtol=0)
+            np.testing.assert_allclose(output.numpy()[1], expected_torque, atol=torque_tol, rtol=0)
+            if device.is_cuda:
+                with wp.ScopedCapture(device=device) as capture:
+                    wp.launch(_evaluate_roller_reaction, dim=1, inputs=inputs, device=device)
+                output.zero_()
+                wp.capture_launch(capture.graph)
+                np.testing.assert_allclose(output.numpy()[0], expected_force, atol=2.0e-5, rtol=0)
+                np.testing.assert_allclose(output.numpy()[1], expected_torque, atol=torque_tol, rtol=0)
 
 
 def test_vbd_no_tendon_specialization(test, device):
@@ -88,7 +197,7 @@ def test_vbd_no_tendon_specialization(test, device):
         builder.add_articulation([joint])
         builder.color()
         model = builder.finalize()
-        solvers = [newton.solvers.SolverVBD(model, iterations=5, rigid_compliant_alm=True) for _ in range(2)]
+        solvers = [newton.solvers.SolverVBD(model, iterations=5) for _ in range(2)]
         test.assertIs(solvers[0]._solve_rigid_body_kernel, create_solve_rigid_body(False))
         solvers[1]._solve_rigid_body_kernel = create_solve_rigid_body(True)
         states = [(model.state(), model.state()) for _ in solvers]
@@ -261,10 +370,10 @@ def build_dynamic_rolling_route():
     return builder.finalize(), candidate, candidate_guide, lower, upper
 
 
-def run_vbd_model(model, num_frames=80, substeps=12, fps=60):
+def run_vbd_model(test, model, num_frames=80, substeps=12, fps=60, **solver_kwargs):
     _set_serial_body_coloring(model)
     dt = 1.0 / fps / substeps
-    solver = _make_tendon_vbd_solver(model)
+    solver = _make_tendon_vbd_solver(model, **solver_kwargs)
     state_0 = model.state()
     state_1 = model.state()
     control = model.control()
@@ -282,10 +391,11 @@ def run_vbd_model(model, num_frames=80, substeps=12, fps=60):
     return state_0, solver
 
 
-def run_vbd_motorized_model(model, drive_joint, target=2.0, num_frames=70, substeps=10, fps=60):
+def run_vbd_motorized_model(test, model, drive_joint, target=2.0, num_frames=70, substeps=10, fps=60):
     _set_serial_body_coloring(model)
     dt = 1.0 / fps / substeps
-    solver = _make_tendon_vbd_solver(model)
+    # Use stiff (1e7 N/m) slider and pulley joints; the drive command stays abrupt.
+    solver = _make_tendon_vbd_solver(model, rigid_joint_linear_ke=1.0e7)
     state_0 = model.state()
     state_1 = model.state()
     control = model.control()
@@ -305,7 +415,7 @@ def run_vbd_motorized_model(model, drive_joint, target=2.0, num_frames=70, subst
     return state_0, solver
 
 
-def _run_dynamic_pulley(mu, device, num_frames=40):
+def _run_dynamic_pulley(test, mu, device, num_frames=40):
     model, left_idx, right_idx, pulley_idx = build_dynamic_pulley_atwood(mu=mu)
     _set_serial_body_coloring(model)
 
@@ -336,7 +446,7 @@ def _run_dynamic_pulley(mu, device, num_frames=40):
     return body_q, left_idx, right_idx, theta
 
 
-def _dynamic_capstan_metrics(device, mu, num_frames=40):
+def _dynamic_capstan_metrics(test, device, mu, num_frames=40):
     model, left_idx, right_idx, pulley_idx = build_dynamic_pulley_atwood(mu=mu)
     _set_serial_body_coloring(model)
     substeps = 12
@@ -373,9 +483,9 @@ def _dynamic_capstan_metrics(device, mu, num_frames=40):
     return body_q, left_travel, right_travel, cable_travel, theta, rim_travel, slip
 
 
-def _kinematic_capstan_metrics(device, mu, num_frames=40):
+def _kinematic_capstan_metrics(test, device, mu, num_frames=40):
     model, left_idx, right_idx, pulley_idx = build_kinematic_pulley_atwood(mu=mu)
-    state, _ = run_vbd_model(model, num_frames=num_frames)
+    state, _ = run_vbd_model(test, model, num_frames=num_frames)
     body_q = state.body_q.numpy()
     left_travel = float(body_q[left_idx][2]) - 2.0
     right_travel = 2.0 - float(body_q[right_idx][2])
@@ -735,13 +845,7 @@ def test_vbd_tendon_diagnostics_match_final_pose(test, device):
         builder.add_tendon(route)
         builder.color()
         model = builder.finalize()
-        with test.assertWarnsRegex(DeprecationWarning, "rigid_compliant_alm=False is deprecated"):
-            solver = newton.solvers.SolverVBD(
-                model,
-                iterations=1,
-                rigid_compliant_alm=False,
-                rigid_avbd_beta=1.0e6,
-            )
+        solver = newton.solvers.SolverVBD(model, iterations=1)
         state_0 = model.state()
         state_1 = model.state()
 
@@ -831,7 +935,7 @@ def test_vbd_nonrolling_rotation_uses_discrete_length_rate(test, device):
 def test_vbd_rolling_spin_does_not_add_damping_tension(test, device):
     """Pure roller-axis spin should transport material without stretching the free spans."""
     with wp.ScopedDevice(device):
-        model, pulley = build_kinematic_rolling_transport(mu=10.0)
+        model, pulley = build_kinematic_rolling_transport(mu=10.0, pre_stretch=0.08)
         model.tendon_segment_damping.fill_(100.0)
         _set_serial_body_coloring(model)
         solver = _make_tendon_vbd_solver(model)
@@ -978,17 +1082,26 @@ def test_vbd_same_body_rolling_span_applies_net_torque(test, device):
             solver.tendon_segment_attachment_r.numpy() - solver.tendon_segment_attachment_l.numpy(), axis=1
         )
         rest_lengths = span_lengths.copy()
-        rest_lengths[0] += 1.0
-        rest_lengths[1] -= 0.01
+        rest_lengths -= 0.01
         state_0, state_1 = model.state(), model.state()
         solver.reset(state_0)
         state_0.tendon_segment_rest_length.assign(rest_lengths)
         initial_pose = state_0.body_q.numpy()[body].copy()
-        solver.step(state_0, state_1, model.control(), None, 1.0 / 120.0)
+        dt = 0.002
+        # With both spans carrying 10 N, internal endpoint forces cancel.
+        # The net wrench is the external span's force at its tangent point;
+        # losing the same-body row would leave the wrong roller-axis moment.
+        point = solver.tendon_segment_attachment_r.numpy()[0]
+        direction = point - solver.tendon_segment_attachment_l.numpy()[0]
+        force = -10.0 * direction / np.linalg.norm(direction)
+        torque = np.cross(point - initial_pose[:3], force)[2]
+        solver.step(state_0, state_1, model.control(), None, dt)
 
         final_pose = state_1.body_q.numpy()[body]
-        np.testing.assert_allclose(final_pose[:3], initial_pose[:3], rtol=0.0, atol=1.0e-7)
-        test.assertGreater(_hinge_z_angle(state_1.body_q.numpy(), body), initial_angle + 1.0e-5)
+        np.testing.assert_allclose(final_pose[:3] - initial_pose[:3], force * dt**2, rtol=0.03, atol=2.0e-8)
+        test.assertAlmostEqual(
+            _hinge_z_angle(state_1.body_q.numpy(), body) - initial_angle, float(torque * dt**2), delta=2.0e-7
+        )
         test.assertGreater(float(solver.tendon_segment_material_tension.numpy()[1]), 1.0)
 
 
@@ -1062,7 +1175,7 @@ def test_vbd_pinhole_slip_atwood(test, device):
     """A pinhole is a frictionless slip waypoint: heavy descends, light rises."""
     with wp.ScopedDevice(device):
         model, left_idx, right_idx = build_pinhole_atwood()
-        state, _ = run_vbd_model(model, num_frames=120)
+        state, _ = run_vbd_model(test, model, num_frames=120)
         body_q = state.body_q.numpy()
         test.assertTrue(np.isfinite(body_q).all(), "Non-finite VBD pinhole Atwood state")
 
@@ -1101,7 +1214,7 @@ def test_vbd_dynamic_pulley_uses_angular_jacobian(test, device):
     """High friction recovers the no-slip angular Jacobian baseline."""
     with wp.ScopedDevice(device):
         model, left_idx, right_idx, pulley_idx = build_dynamic_pulley_atwood(mu=10.0)
-        state, _ = run_vbd_model(model, num_frames=60)
+        state, _ = run_vbd_model(test, model, num_frames=60)
         body_q = state.body_q.numpy()
         test.assertTrue(np.isfinite(body_q).all(), "Non-finite VBD dynamic pulley Atwood state")
 
@@ -1125,7 +1238,8 @@ def test_vbd_pulley_inertia_limit_locks_cable_travel(test, device):
             pulley_mass=20000.0,
             pulley_radius=radius,
         )
-        state, _ = run_vbd_model(model, num_frames=60)
+        # Support the 20,000 kg pulley against gravity without changing its rotational inertia.
+        state, _ = run_vbd_model(test, model, num_frames=60, rigid_joint_linear_ke=1.0e7)
         body_q = state.body_q.numpy()
         test.assertTrue(np.isfinite(body_q).all(), "Non-finite VBD high-inertia pulley state")
 
@@ -1142,9 +1256,11 @@ def test_vbd_pulley_inertia_limit_locks_cable_travel(test, device):
 def test_vbd_dynamic_capstan_mu_controls_pulley_rotation(test, device):
     """Dynamic capstan: zero mu slips, mid mu grips partially, high mu approaches no-slip."""
     with wp.ScopedDevice(device):
-        low = _dynamic_capstan_metrics(device, mu=0.0)
-        mid = _dynamic_capstan_metrics(device, mu=0.04)
-        high = _dynamic_capstan_metrics(device, mu=10.0)
+        low = _dynamic_capstan_metrics(test, device, mu=0.0)
+        # Stay below the sticking threshold: near-threshold angular
+        # transients need not be ordered by mu at a single observation time.
+        mid = _dynamic_capstan_metrics(test, device, mu=0.005)
+        high = _dynamic_capstan_metrics(test, device, mu=10.0)
 
         for label, metrics in [("low", low), ("mid", mid), ("high", high)]:
             body_q, left_travel, right_travel, *_ = metrics
@@ -1182,9 +1298,9 @@ def test_vbd_dynamic_capstan_mu_controls_pulley_rotation(test, device):
 def test_vbd_kinematic_capstan_mu_controls_slip_and_locking(test, device):
     """Kinematic capstan: zero mu slips, mid mu slips less, high mu locks."""
     with wp.ScopedDevice(device):
-        low = _kinematic_capstan_metrics(device, mu=0.0)
-        mid = _kinematic_capstan_metrics(device, mu=0.08)
-        high = _kinematic_capstan_metrics(device, mu=10.0)
+        low = _kinematic_capstan_metrics(test, device, mu=0.0)
+        mid = _kinematic_capstan_metrics(test, device, mu=0.08)
+        high = _kinematic_capstan_metrics(test, device, mu=10.0)
 
         for label, metrics in [("low", low), ("mid", mid), ("high", high)]:
             body_q, _, _, theta = metrics
@@ -1210,11 +1326,13 @@ def test_vbd_kinematic_capstan_mu_controls_slip_and_locking(test, device):
         )
 
 
-def test_vbd_motorized_pulley_drives_slider(test, device):
-    """A rolling drive pulley must convert rotation into cable sliding."""
+def test_vbd_unloaded_motorized_pulley_does_not_drive_slider(test, device):
+    """Check that finite friction cannot grip an unloaded cable."""
     with wp.ScopedDevice(device):
         model, slider_idx, pulley_idx, drive_joint = build_motorized_pulley_drive(mu=10.0)
-        state, _ = run_vbd_motorized_model(model, drive_joint)
+        # Isolate unloaded transport from stiff joint/drive convergence transients.
+        model.tendon_segment_compliance.fill_(1.0e-4)
+        state, _ = run_vbd_motorized_model(test, model, drive_joint)
         body_q = state.body_q.numpy()
         test.assertTrue(np.isfinite(body_q).all(), "Non-finite VBD motorized pulley state")
 
@@ -1222,16 +1340,14 @@ def test_vbd_motorized_pulley_drives_slider(test, device):
         theta = abs(_hinge_z_angle(body_q, pulley_idx))
 
         test.assertGreater(theta, 0.5, f"VBD drive pulley should rotate under its target: theta={theta:.4f}")
-        test.assertGreater(
-            slider_x, -0.2, f"VBD no-slip drive should pull the slider through the cable: x={slider_x:.4f}"
-        )
+        test.assertAlmostEqual(slider_x, -0.4, delta=1.0e-5)
 
 
 def test_vbd_frictionless_motorized_pulley_does_not_drive_slider(test, device):
     """With mu=0, pulley spin should not inject cable sliding through rolling transfer."""
     with wp.ScopedDevice(device):
         model, slider_idx, pulley_idx, drive_joint = build_motorized_pulley_drive(mu=0.0)
-        state, _ = run_vbd_motorized_model(model, drive_joint)
+        state, _ = run_vbd_motorized_model(test, model, drive_joint)
         body_q = state.body_q.numpy()
         test.assertTrue(np.isfinite(body_q).all(), "Non-finite VBD frictionless motorized pulley state")
 
@@ -1246,10 +1362,12 @@ def test_vbd_frictionless_motorized_pulley_does_not_drive_slider(test, device):
         )
 
 
-def test_vbd_motorized_pulley_couples_without_delay(test, device):
-    """A driven pulley should move the cable during the initial rotation, not later."""
+def test_vbd_unloaded_motorized_pulley_preserves_rest(test, device):
+    """Check that an unloaded spinning pulley does not inject stretch during startup."""
     with wp.ScopedDevice(device):
         model, slider_idx, pulley_idx, drive_joint = build_motorized_pulley_drive(mu=10.0)
+        # Isolate unloaded transport from stiff joint/drive convergence transients.
+        model.tendon_segment_compliance.fill_(1.0e-4)
         _set_serial_body_coloring(model)
         solver = _make_tendon_vbd_solver(model)
         state_0 = model.state()
@@ -1261,6 +1379,7 @@ def test_vbd_motorized_pulley_couples_without_delay(test, device):
 
         q_start = int(model.joint_q_start.numpy()[drive_joint])
         initial_x = float(state_0.body_q.numpy()[slider_idx][0])
+        initial_rest = solver.tendon_segment_rest_length.numpy().copy()
         dt = 1.0 / 60.0 / 10.0
         for _ in range(30):
             control.joint_target_q[q_start : q_start + 1].fill_(1.0)
@@ -1274,39 +1393,62 @@ def test_vbd_motorized_pulley_couples_without_delay(test, device):
         theta = abs(_hinge_z_angle(body_q, pulley_idx))
 
         test.assertGreater(theta, 0.1, f"VBD pulley should have started rotating: theta={theta:.4f}")
-        test.assertGreater(slider_dx, 0.02, f"VBD pulley rotation should immediately pull cable: dx={slider_dx:.4f}")
+        test.assertAlmostEqual(slider_dx, 0.0, delta=1.0e-5)
+        np.testing.assert_allclose(state_0.tendon_segment_rest_length.numpy(), initial_rest, atol=1.0e-6, rtol=0)
 
 
 def test_vbd_motorized_pulley_updates_rest_in_first_step(test, device):
-    """Rolling surface transfer should happen in the same VBD step as pulley rotation."""
+    """Check initial grip and sustained drive beyond frictionless pre-tension relaxation."""
     with wp.ScopedDevice(device):
-        model, _, pulley_idx, drive_joint = build_motorized_pulley_drive(mu=10.0)
-        _set_serial_body_coloring(model)
-        solver = _make_tendon_vbd_solver(model)
-        state_0 = model.state()
-        state_1 = model.state()
-        control = model.control()
-        collision_pipeline = newton.CollisionPipeline(model)
-        contacts = collision_pipeline.contacts()
-        newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+        displacement = []
+        for mu in (0.0, 10.0):
+            with test.subTest(mu=mu):
+                model, slider_idx, pulley_idx, drive_joint = build_motorized_pulley_drive(mu=mu)
+                model.tendon_segment_compliance.fill_(1.0e-3)
+                model.tendon_segment_rest_length.fill_((0.4**2 - 0.1**2) ** 0.5 - 0.01)
+                _set_serial_body_coloring(model)
+                solver = _make_tendon_vbd_solver(model)
+                state_0 = model.state()
+                state_1 = model.state()
+                control = model.control()
+                collision_pipeline = newton.CollisionPipeline(model)
+                contacts = collision_pipeline.contacts()
+                newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
-        q_start = int(model.joint_q_start.numpy()[drive_joint])
-        initial_rest = solver.tendon_segment_rest_length.numpy().copy()
-        control.joint_target_q[q_start : q_start + 1].fill_(1.0)
+                q_start = int(model.joint_q_start.numpy()[drive_joint])
+                initial_rest = solver.tendon_segment_rest_length.numpy().copy()
+                initial_x = float(state_0.body_q.numpy()[slider_idx, 0])
+                control.joint_target_q[q_start : q_start + 1].fill_(1.0)
 
-        state_0.clear_forces()
-        collision_pipeline.collide(state_0, contacts)
-        solver.step(state_0, state_1, control, contacts, 1.0 / 60.0 / 10.0)
+                state_0.clear_forces()
+                collision_pipeline.collide(state_0, contacts)
+                solver.step(state_0, state_1, control, contacts, 1.0 / 600.0)
 
-        body_q = state_1.body_q.numpy()
-        theta = abs(_hinge_z_angle(body_q, pulley_idx))
-        rest_delta = solver.tendon_segment_rest_length.numpy() - initial_rest
+                body_q = state_1.body_q.numpy()
+                theta = abs(_hinge_z_angle(body_q, pulley_idx))
+                rest_delta = solver.tendon_segment_rest_length.numpy() - initial_rest
 
-        test.assertGreater(theta, 1.0e-3, f"VBD drive pulley should rotate in the first step: theta={theta:.6f}")
+                test.assertGreater(
+                    theta, 1.0e-3, f"VBD drive pulley should rotate in the first step: theta={theta:.6f}"
+                )
+                if mu > 0:
+                    test.assertGreater(
+                        float(np.max(np.abs(rest_delta))),
+                        1.0e-4,
+                        f"VBD pulley rotation should transfer rest length in the first step: delta={rest_delta}",
+                    )
+                state_0, state_1 = state_1, state_0
+                for _ in range(29):
+                    state_0.clear_forces()
+                    collision_pipeline.collide(state_0, contacts)
+                    solver.step(state_0, state_1, control, contacts, 1.0 / 600.0)
+                    state_0, state_1 = state_1, state_0
+                displacement.append(float(state_0.body_q.numpy()[slider_idx, 0]) - initial_x)
+
         test.assertGreater(
-            float(np.max(np.abs(rest_delta))),
-            1.0e-4,
-            f"VBD pulley rotation should transfer rolling rest length in the first step: delta={rest_delta}",
+            displacement[1],
+            displacement[0] + 3.0e-3,
+            f"Frictional drive must move the slider beyond pre-tension relaxation: displacement={displacement}",
         )
 
 
@@ -1328,7 +1470,8 @@ def test_vbd_moving_rolling_route_conserves_material(test, device):
                     f"VBD cable material drifted by {error} m for mu={mu}, short_segment={short_segment}",
                 )
                 if short_segment is not None:
-                    test.assertLess(min_rest, 1.1e-6, "The VBD material-donor span should exercise the clamp")
+                    test.assertGreaterEqual(min_rest, 0.99e-6)
+                    test.assertLess(min_rest, 1.1e-6, "The moving route must actually deplete the outgoing span")
 
 
 def test_vbd_equal_weight_atwood(test, device):
@@ -1500,7 +1643,12 @@ add_test(
     devices,
     test_vbd_kinematic_capstan_mu_controls_slip_and_locking,
 )
-add_test(TestTendonVBD, "vbd_motorized_pulley_drives_slider", devices, test_vbd_motorized_pulley_drives_slider)
+add_test(
+    TestTendonVBD,
+    "vbd_unloaded_motorized_pulley_does_not_drive_slider",
+    devices,
+    test_vbd_unloaded_motorized_pulley_does_not_drive_slider,
+)
 add_test(
     TestTendonVBD,
     "vbd_frictionless_motorized_pulley_does_not_drive_slider",
@@ -1509,9 +1657,9 @@ add_test(
 )
 add_test(
     TestTendonVBD,
-    "vbd_motorized_pulley_couples_without_delay",
+    "vbd_unloaded_motorized_pulley_preserves_rest",
     devices,
-    test_vbd_motorized_pulley_couples_without_delay,
+    test_vbd_unloaded_motorized_pulley_preserves_rest,
 )
 add_test(
     TestTendonVBD,
@@ -1527,6 +1675,14 @@ add_test(
 )
 add_test(TestTendonVBD, "vbd_equal_weight_atwood", devices, test_vbd_equal_weight_atwood)
 add_test(TestTendonVBD, "vbd_no_tendon_specialization", devices, test_vbd_no_tendon_specialization)
+
+
+add_test(
+    TestTendonVBD,
+    "vbd_spin_reaction_matches_capstan_projection",
+    devices,
+    test_vbd_spin_reaction_matches_capstan_projection,
+)
 
 
 if __name__ == "__main__":

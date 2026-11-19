@@ -40,7 +40,7 @@ class TestSolverMuJoCoPlanarMesh(unittest.TestCase):
         indices = np.array([0, 1, 2, 1, 3, 2], dtype=np.int32)
         model = self._build_mesh_model(vertices, indices)
 
-        solver = SolverMuJoCo(model, use_mujoco_cpu=True, use_mujoco_contacts=False)
+        solver = SolverMuJoCo(model, use_mujoco_contacts=False)
 
         self.assertEqual(solver.mj_model.nmesh, 1)
         self.assertEqual(solver.mj_model.mesh_vertnum[0], 5)
@@ -60,7 +60,7 @@ class TestSolverMuJoCoPlanarMesh(unittest.TestCase):
         indices = np.array([0, 1, 2], dtype=np.int32)
         model = self._build_mesh_model(vertices, indices)
 
-        solver = SolverMuJoCo(model, use_mujoco_cpu=True, use_mujoco_contacts=False)
+        solver = SolverMuJoCo(model, use_mujoco_contacts=False)
 
         self.assertEqual(solver.mj_model.nmesh, 1)
         self.assertEqual(solver.mj_model.mesh_vertnum[0], 4)
@@ -81,7 +81,7 @@ class TestSolverMuJoCoPlanarMesh(unittest.TestCase):
         indices = np.array([0, 1, 2, 0, 3, 1, 1, 3, 2, 2, 3, 0], dtype=np.int32)
         model = self._build_mesh_model(vertices, indices)
 
-        solver = SolverMuJoCo(model, use_mujoco_cpu=True, use_mujoco_contacts=False)
+        solver = SolverMuJoCo(model, use_mujoco_contacts=False)
 
         self.assertEqual(solver.mj_model.nmesh, 1)
         self.assertEqual(solver.mj_model.mesh_vertnum[0], 4)

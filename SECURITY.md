@@ -135,7 +135,7 @@ applies to the project.
   layers.
 - **Supply-chain boundary:** Source control, continuous integration,
   third-party actions, package registries, and release automation determine what
-  users actually install. Three surfaces in `.github/workflows/` carry
+  users actually install. The following surfaces in `.github/workflows/` carry
   privileges beyond an ordinary build:
   - Tag-triggered release automation publishes to a public package index using
     a short-lived OIDC token rather than a stored registry credential, gated by
@@ -146,6 +146,21 @@ applies to the project.
   - Continuous integration authenticates to a cloud provider through OIDC to
     provision ephemeral self-hosted GPU runners, which then execute repository
     code on infrastructure the project controls.
+  - Opt-in maintainer delegated approval handles PR comments with a dedicated
+    GitHub App credential. It allows an active maintainer other than the PR
+    author to attest to an exact head in place of independent review. Changes to
+    the workflow and explicitly listed tooling/policy paths are excluded; other
+    configuration changes remain eligible at maintainer discretion. It runs trusted
+    default-branch code with the runner's isolated system Python; repository
+    environments, configuration, and imports must not control its execution.
+    The App key belongs in a branch-restricted Actions environment, and every
+    workflow able to access that environment is part of its trust boundary.
+    The App must have no ruleset bypass; required reviews, CODEOWNERS, checks,
+    and the merge queue remain enforced by GitHub. Keep this feature disabled
+    until equivalent sandbox protections demonstrate that stale approvals and
+    concurrent pushes cannot admit an unreviewed head. Setup, limitations, and
+    recovery are documented in the
+    [maintainer approval guide](.github/maintainer-approval.md).
 
 ### Threat Model
 

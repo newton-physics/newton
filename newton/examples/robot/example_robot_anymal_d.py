@@ -1,15 +1,22 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Robot Anymal D
-#
-# Shows how to simulate Anymal D with multiple worlds using MuJoCo or Kamino.
-#
-# Command: python -m newton.examples robot_anymal_d --world-count 16
-#          python -m newton.examples robot_anymal_d --solver kamino
-#
-###########################################################################
+"""Example Robot Anymal D
+
+Shows how to simulate Anymal D with multiple worlds using MuJoCo or Kamino.
+
+Success criteria:
+- ANYmal D robots appear standing on the ground.
+- The user can grasp every robot with a right click and move them around.
+- The robots do not interact with each other but collide properly with the ground plane.
+
+Runs:
+- `python -m newton.examples robot_anymal_d --world-count 4`
+  - 4 ANYmal D robots appear.
+- `python -m newton.examples robot_anymal_d --world-count 16`
+  - 16 ANYmal D robots appear.
+- `python -m newton.examples robot_anymal_d --solver kamino`
+"""
 
 import warp as wp
 
@@ -17,10 +24,12 @@ import newton
 import newton.examples
 import newton.utils
 from newton import JointTargetMode, JointType
+from newton.examples.kamino.utils.ldl import add_ldl_arguments, configure_ldl
 
 
 class Example:
     def __init__(self, viewer, args):
+        """Build the ANYmal D robot simulation with the requested solver options."""
         self.fps = 50
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
@@ -29,6 +38,8 @@ class Example:
 
         self.world_count = args.world_count
         self.solver_type = args.solver
+        if self.solver_type != "kamino":
+            configure_ldl(None, args)
 
         self.viewer = viewer
 
@@ -92,12 +103,12 @@ class Example:
         use_mujoco_contacts = self.solver_type == "mujoco" and args.use_mujoco_contacts
         if self.solver_type == "kamino":
             solver_config = newton.solvers.SolverKamino.Config.from_model(
-                self.model, dynamics_solver="dvi", sparse_dynamics=True, sparse_jacobian=True
+                self.model, dynamics_solver="scc", sparse_dynamics=True, sparse_jacobian=True
             )
             # Eliminate bilateral rows once before the projected inequality sweeps.
-            solver_config.dvi.max_alternating_iterations = 32
-            solver_config.dvi.use_schur_complement = True
-            solver_config.dvi.bilateral_solver_type = "LLTBRCM"
+            solver_config.scc.max_alternating_iterations = 32
+            solver_config.scc.use_schur_complement = True
+            configure_ldl(solver_config, args)
             self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
         else:
             self.solver = newton.solvers.SolverMuJoCo(
@@ -198,15 +209,13 @@ class Example:
         # Only check velocities on CUDA where we run 500 frames (enough time to settle)
         # On CPU we only run 10 frames and the robot is still falling (~0.65 m/s)
         if self.device.is_cuda:
-            # fmt: off
+            # Relaxed from 0.1 - collision pipeline has residual velocities up to ~0.2
             newton.examples.test_body_state(
                 self.model,
                 self.state_0,
                 "body velocities are small",
-                lambda q, qd: max(abs(qd))
-                < 0.25,  # Relaxed from 0.1 - collision pipeline has residual velocities up to ~0.2
+                lambda q, qd: max(abs(qd)) < 0.25,
             )
-            # fmt: on
 
         if self.solver_type == "kamino":
             body_q = self.state_0.body_q.numpy()
@@ -219,7 +228,9 @@ class Example:
 
     @staticmethod
     def create_parser():
+        """Create simulation arguments, including optional Kamino LDL backend and ordering selection."""
         parser = newton.examples.create_parser()
+        add_ldl_arguments(parser)
         newton.examples.add_world_count_arg(parser)
         newton.examples.add_mujoco_contacts_arg(parser)
         parser.add_argument("--solver", choices=["mujoco", "kamino"], default="mujoco")
