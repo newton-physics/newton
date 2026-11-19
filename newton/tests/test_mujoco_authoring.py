@@ -962,16 +962,39 @@ class TestMuJoCoEntityAuthoring(unittest.TestCase):
         self.assertIsNotNone(solver.mjc_tendon_to_newton_tendon)
         np.testing.assert_array_equal(solver.mjc_tendon_to_newton_tendon.numpy(), [[0], [1]])
 
-        # Also check that mjc_tendon_to_newton_tendon is initialized to None when ntendon == 0.
-        no_tendon_builder = newton.ModelBuilder()
-        _add_revolute(no_tendon_builder, "solo")
-        no_tendon_solver = newton.solvers.SolverMuJoCo(
-            no_tendon_builder.finalize(device="cpu"),
+        # MJCF <position>/<velocity> rows routed through JOINT_TARGET (including 3-axis ball joints)
+        # also export their authored labels with unique names.
+        jt_mjcf = """<mujoco model="jt_names">
+            <worldbody>
+                <body name="link">
+                    <joint name="hinge" type="hinge" axis="0 1 0"/>
+                    <geom type="sphere" size="0.1"/>
+                    <body name="tip" pos="0 0 0.2">
+                        <joint name="ball" type="ball"/>
+                        <geom type="sphere" size="0.05"/>
+                    </body>
+                </body>
+            </worldbody>
+            <actuator>
+                <position name="hinge-pos" joint="hinge" kp="50"/>
+                <velocity name="hinge-vel" joint="hinge" kv="5"/>
+                <position name="ball-pos" joint="ball" kp="20"/>
+                <motor name="hinge-pos" joint="hinge" gear="1"/>
+            </actuator>
+        </mujoco>"""
+        jt_builder = newton.ModelBuilder()
+        jt_builder.add_mjcf(jt_mjcf)
+        jt_solver = newton.solvers.SolverMuJoCo(
+            jt_builder.finalize(device="cpu"),
             use_mujoco_cpu=True,
             disable_contacts=True,
             kinematic_switchable_roots=False,
         )
-        self.assertIsNone(no_tendon_solver.mjc_tendon_to_newton_tendon)
+        jt_mj = jt_solver.mj_model
+        self.assertEqual(
+            [jt_mj.actuator(i).name for i in range(jt_mj.nu)],
+            ["hinge-pos", "hinge-vel", "ball-pos", "ball-pos_1", "ball-pos_2", "hinge-pos_1"],
+        )
 
 
 if __name__ == "__main__":

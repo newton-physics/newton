@@ -4900,8 +4900,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         Shape [nworld, neq], dtype int32."""
         self.mjc_tendon_to_newton_tendon: wp.array2d[wp.int32] | None = None
-        """Mapping from MuJoCo [world, tendon] to Newton tendon index. Shape [nworld, ntendon], dtype int32."""
-        self.mjc_tendon_to_newton_tendon: wp.array2d[wp.int32] | None = None
         """Mapping from MuJoCo [world, tendon] to Newton tendon index.
 
         Shape [nworld, ntendon], dtype int32."""
@@ -8400,6 +8398,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             jt_damping = get_custom_attribute("actuator_damping")
             jt_dampingpoly = get_custom_attribute("actuator_dampingpoly")
             jt_armature = get_custom_attribute("actuator_armature")
+            jt_label = getattr(mujoco_attrs, "actuator_label", None)
 
             # Which sub-actuator a row feeds (as is_position): position->position only,
             # velocity->velocity only, unknown->both.
@@ -8432,8 +8431,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     w = int(jt_world[row])
                     if w != first_world and w != -1:
                         continue
+                raw_label = jt_label[row] if isinstance(jt_label, list) and row < len(jt_label) else ""
                 info = {
                     "actuator_idx": row,
+                    "label": str(raw_label).strip() if raw_label is not None else "",
                     "has_ctrlrange": bool(jt_has_ctrlrange[row]) if jt_has_ctrlrange is not None else False,
                     "ctrlrange": tuple(jt_ctrlrange[row]) if jt_ctrlrange is not None else None,
                     "ctrllimited": int(jt_ctrllimited[row]) if jt_ctrllimited is not None else None,
@@ -8449,12 +8450,22 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 for is_position in kinds:
                     joint_target_ranges[(dof, is_position)] = info
 
+        used_jt_actuator_names: set[str] = {a.name for a in spec.actuators if a.name}
+
         def joint_target_actuator_kwargs(base: dict[str, Any], dof: int, is_position: bool) -> dict[str, Any]:
-            """Merge the matching row's authored ranges and passive properties onto a sub-actuator."""
+            """Merge the matching row's authored ranges, passive properties, and label onto a sub-actuator."""
             kwargs = dict(base)
             info = joint_target_ranges.get((dof, is_position))
             if info is None:
                 return kwargs
+            if info["label"]:
+                act_name = info["label"]
+                suffix = 1
+                while act_name in used_jt_actuator_names:
+                    act_name = f"{info['label']}_{suffix}"
+                    suffix += 1
+                used_jt_actuator_names.add(act_name)
+                kwargs["name"] = act_name
             kwargs["damping"] = info["damping"]
             kwargs["armature"] = info["armature"]
             if info["ctrllimited"] is not None:
