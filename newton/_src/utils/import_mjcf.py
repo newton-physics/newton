@@ -1591,8 +1591,8 @@ def parse_mjcf(
         # Match MuJoCo's compiler, which points local +Z from the second endpoint to the first.
         direction = start - end
         length = wp.length(direction)
-        # Only a truly degenerate segment (MuJoCo's mjEPS) has no direction; short segments keep their length.
-        if length < 1.0e-14:
+        # MuJoCo rejects fromto segments shorter than 1e-7; longer short segments keep their length.
+        if length < 1.0e-7:
             if zero_length_error is not None:
                 raise ValueError(zero_length_error)
             local_xform = wp.transform(position, wp.quat_identity())

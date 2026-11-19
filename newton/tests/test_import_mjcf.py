@@ -7256,7 +7256,7 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
 
     @requires(*MUJOCO_MODULES)
     def test_geom_fromto_box_ellipsoid_matches_native_mujoco(self):
-        """Box and ellipsoid geoms with fromto span the segment like native MuJoCo."""
+        """Verify box and ellipsoid geoms with fromto span the segment like native MuJoCo."""
         import mujoco
 
         for geom_type in ("box", "ellipsoid"):
@@ -7282,9 +7282,33 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
                     )
                     np.testing.assert_allclose(builder.shape_scale[idx], mj_model.geom_size[0], atol=1e-6)
 
+        # A slanted segment inside a frame with both a position and a rotation checks the composition order.
+        for geom_type in ("box", "ellipsoid"):
+            with self.subTest(geom_type=geom_type, frame=True):
+                mjcf = f"""<mujoco model="fromto_slanted">
+    <worldbody>
+        <frame pos="0.1 0.2 0" euler="20 0 45">
+            <geom name="g" type="{geom_type}" fromto="0.1 0.2 0.3  0.4 0.6 0.8" size="0.05 0.07"/>
+        </frame>
+    </worldbody>
+</mujoco>"""
+                mj_model = mujoco.MjModel.from_xml_string(mjcf)
+                mj_data = mujoco.MjData(mj_model)
+                mujoco.mj_forward(mj_model, mj_data)
+
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(mjcf)
+                xform = builder.shape_transform[builder.shape_label.index("fromto_slanted/worldbody/g")]
+                np.testing.assert_allclose(xform[:3], mj_data.geom_xpos[0], atol=1e-6)
+                np.testing.assert_allclose(
+                    np.array(wp.quat_to_matrix(wp.quat(*xform[3:7]))).reshape(3, 3),
+                    mj_data.geom_xmat[0].reshape(3, 3),
+                    atol=1e-5,
+                )
+
     @requires(*MUJOCO_MODULES)
     def test_geom_fromto_box_keeps_frame_rotation_like_native_mujoco(self):
-        """A box with fromto inside a rotated frame keeps the frame's roll about the segment."""
+        """Verify a box with fromto inside a rotated frame keeps the frame's roll about the segment."""
         import mujoco
 
         mjcf = """<mujoco model="fromto_frame">
@@ -7311,7 +7335,7 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
 
     @requires(*MUJOCO_MODULES)
     def test_geom_fromto_box_keeps_import_xform_rotation(self):
-        """A rotated import xform rotates a box with fromto about the segment axis."""
+        """Verify a rotated import xform rotates a box with fromto about the segment axis."""
         import mujoco
 
         framed = """<mujoco model="m"><worldbody><frame euler="0 0 45">
@@ -7335,7 +7359,7 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
 
     @requires(*MUJOCO_MODULES)
     def test_geom_fromto_short_segment_keeps_length(self):
-        """A short but nonzero fromto segment keeps its half-length."""
+        """Verify a short but nonzero fromto segment keeps its half-length."""
         mjcf = """<mujoco model="fromto_short">
     <worldbody>
         <geom name="g" type="box" fromto="0 0 2.5e-7  0 0 -2.5e-7" size="0.05"/>

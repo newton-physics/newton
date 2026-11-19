@@ -1,1 +1,1 @@
-Fixed `add_mjcf()` raising `IndexError` for `box` and `ellipsoid` geoms that use `fromto`; they now span the segment like MuJoCo.
+Fix `add_mjcf()` raising `IndexError` for `box` and `ellipsoid` geoms that use `fromto`; they now span the segment like MuJoCo. Geoms and sites that use `fromto` in a rotated frame or under a rotated import `xform` now keep that rotation.
