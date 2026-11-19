@@ -1202,10 +1202,10 @@ class TestPADMMNullspaceRobustness(NewtonTestCase):
                 builder_fn=basics.build_box_on_plane, max_world_contacts=8, device=self.default_device, sparse=sparse
             ),
         }
-        # NOTE: The unpenalized four-bar converges within a few iterations, so only the deterministic dense
-        # solves resolve the last change of iterates
+        # NOTE: The unpenalized four-bar converges in three iterations, so only its first change of iterates is
+        # compared, and only with the deterministic dense solves
         cases = [
-            (name, sparse, use_acceleration, penalty, unpenalized, False, 5)
+            (name, sparse, use_acceleration, penalty, unpenalized, False, 2 if unpenalized else 5)
             for name in builders
             for sparse in (False, True)
             for use_acceleration in (False, True)
@@ -1256,6 +1256,7 @@ class TestPADMMNullspaceRobustness(NewtonTestCase):
                         add_null_components(test.problem, test.problem.data.v_f, bases, 1e-2)
                     solver.coldstart()
                     solver.solve(problem=test.problem)
+                    np.testing.assert_array_equal(solver.data.status.numpy()["iterations"], max_iterations)
                     if detect:
                         self.assertGreater(int(solver._redundant_joints.shifted.numpy().sum()), 0)
                     x.append(
@@ -1271,10 +1272,12 @@ class TestPADMMNullspaceRobustness(NewtonTestCase):
                     )
 
                 # Compare with the explicit Delassus product of the last change of preconditioned iterates
+                # NOTE: The product is recovered from the linear system with the float32 rounding of `D x`
                 for w in range(len(D)):
                     dx = (x[1][w].astype(np.float64) - x[0][w]) / P[w]
                     r_dual_ref = (D[w] @ dx) / P[w]
-                    np.testing.assert_allclose(r_d[1][w], np.abs(r_dual_ref).max(), rtol=1e-2, atol=1e-6)
+                    atol = max(1e-6, 4e-6 * np.abs(D[w] @ (x[1][w] / P[w]) / P[w]).max())
+                    np.testing.assert_allclose(r_d[1][w], np.abs(r_dual_ref).max(), rtol=1e-2, atol=atol)
 
                     # Compare each row, which the non-accelerated solve stores
                     if detect and not use_acceleration:
