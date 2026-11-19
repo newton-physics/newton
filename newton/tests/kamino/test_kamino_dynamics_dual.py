@@ -15,11 +15,11 @@ import newton
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.dynamics.dual import DualProblem
 from newton._src.solvers.kamino._src.linalg import ConjugateGradientSolver
-from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
-from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino import setup_test_output, setup_tests, test_context
 from newton.tests.kamino.utils.extract import extract_problem_vector
 from newton.tests.kamino.utils.make import make_containers, update_containers
 from newton.tests.kamino.utils.print import debug_print_model_info
+from newton.tests.unittest_utils import NewtonTestCase
 from newton.tests.utils.basics import make_basics_heterogeneous_builder
 
 logger = logging.getLogger(__name__)
@@ -29,24 +29,14 @@ logger = logging.getLogger(__name__)
 ###
 
 
-class TestDualProblem(unittest.TestCase):
+class TestDualProblem(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.verbose = test_context.verbose  # Set to True for detailed output
         self.default_device = wp.get_device(test_context.device)
 
-        # Set debug-level logging to print verbose test output to console
-        if self.verbose:
-            set_log_level(logging.DEBUG)
-            logger.debug("\n")  # Add newline before test output for better readability
-        else:
-            reset_log_level()
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
+        setup_test_output(self, verbose=self.verbose)
 
     def test_01_allocate_dual_problem(self):
         """
@@ -79,7 +69,6 @@ class TestDualProblem(unittest.TestCase):
             logger.debug("problem.data.config: %s", problem.data.config)
             logger.debug("problem.data.maxdim: %s", problem.data.maxdim)
             logger.debug("problem.data.dim: %s", problem.data.dim)
-            logger.debug("problem.data.mio: %s", problem.data.mio)
             logger.debug("problem.data.vio: %s", problem.data.vio)
             logger.debug("problem.data.u_f (shape): %s", problem.data.u_f.shape)
             logger.debug("problem.data.v_b (shape): %s", problem.data.v_b.shape)
@@ -103,8 +92,6 @@ class TestDualProblem(unittest.TestCase):
         self.assertEqual(problem.data.config.size, nw)
         self.assertEqual(problem.data.maxdim.size, nw)
         self.assertEqual(problem.data.dim.size, nw)
-        if not problem.sparse:
-            self.assertEqual(problem.data.mio.size, nw)
         self.assertEqual(problem.data.vio.size, nw)
         self.assertEqual(problem.data.u_f.size, nb)
         self.assertEqual(problem.data.v_b.size, maxdims)
@@ -167,7 +154,6 @@ class TestDualProblem(unittest.TestCase):
             logger.debug("")  # Print a blank line for better readability
             logger.debug("problem.data.maxdim: %s", problem.data.maxdim)
             logger.debug("problem.data.dim: %s", problem.data.dim)
-            logger.debug("problem.data.mio: %s", problem.data.mio)
             logger.debug("problem.data.vio: %s", problem.data.vio)
             logger.debug("problem.data.D: %s", problem.data.D)
             logger.debug("problem.data.u_f:\n%s", problem.data.u_f)
