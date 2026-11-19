@@ -2639,9 +2639,7 @@ class Gaussian:
                 (default: :attr:`SortingMode.RAY_HIT_DISTANCE`).
             sh_color_space: Color space of evaluated SH radiance. Defaults to
                 sRGB (display-encoded); pass :attr:`~newton.utils.ColorSpace.LINEAR`
-                for scene-linear radiance. Only :class:`~newton.sensors.SensorCamera`
-                honors this; the deprecated :class:`~newton.sensors.SensorTiledCamera`
-                ignores it.
+                for scene-linear radiance.
         """
 
         self._positions = np.ascontiguousarray(np.asarray(positions, dtype=np.float32).reshape(-1, 3))
@@ -2869,7 +2867,7 @@ class Gaussian:
         Raises:
             RuntimeError: If :meth:`finalize` has not been called yet.
         """
-        from ..sensors.warp_raytrace.gaussians import compute_gaussian_bvh_bounds  # noqa: PLC0415
+        from ..render.gaussians import compute_gaussian_bvh_bounds  # noqa: PLC0415
 
         if self._warp_bvh is None or self._warp_data is None:
             raise RuntimeError("Gaussian.bvh_refit() requires Gaussian.finalize() to have been called first.")
