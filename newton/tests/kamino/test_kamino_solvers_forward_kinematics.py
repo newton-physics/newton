@@ -18,7 +18,7 @@ from newton._src.solvers.kamino._src.core.joints import JointActuationType, Join
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.kinematics.joints import compute_joints_data
 from newton._src.solvers.kamino._src.solvers.fk import ForwardKinematicsSolver
-from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino import setup_test_output, setup_tests, test_context
 from newton.tests.kamino.utils.diff_check import diff_check
 from newton.tests.kamino.utils.joints import (
     run_test_single_joint_examples,
@@ -30,7 +30,7 @@ from newton.tests.kamino.utils.sampling import (
     sample_body_poses,
     sample_world_mask,
 )
-from newton.tests.unittest_utils import requires
+from newton.tests.unittest_utils import NewtonTestCase, requires
 from newton.tests.utils.basics import build_boxes_fourbar, build_cartpole
 from newton.tests.utils.testing import (
     build_all_joints_test,
@@ -329,7 +329,7 @@ def solve_and_check_fk_random_poses(
 ###
 
 
-class TestJacobianAssembly(unittest.TestCase):
+class TestJacobianAssembly(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
@@ -337,8 +337,7 @@ class TestJacobianAssembly(unittest.TestCase):
         self.has_cuda = self.default_device.is_cuda
         self.verbose = test_context.verbose
 
-    def tearDown(self):
-        self.default_device = None
+        setup_test_output(self, verbose=self.verbose)
 
     @requires("pxr.Usd")
     def test_finite_differences_single_joint(self):
@@ -466,14 +465,12 @@ class TestJacobianAssembly(unittest.TestCase):
                 self.assertLess(np.max(np.abs(residual)), 3e-6)
 
 
-class TestPerDofActuation(unittest.TestCase):
+class TestPerDofActuation(NewtonTestCase):
     def setUp(self):
+        setup_test_output(self)
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
-
-    def tearDown(self):
-        self.default_device = None
 
     def test_reject_mixed_passive_and_actuated_dofs(self):
         """Reject a joint with a mixed passive and actuated DoF partition."""
@@ -498,14 +495,12 @@ class TestPerDofActuation(unittest.TestCase):
         ForwardKinematicsSolver(model)
 
 
-class TestPassiveUniversalJointFrame(unittest.TestCase):
+class TestPassiveUniversalJointFrame(NewtonTestCase):
     def setUp(self):
+        setup_test_output(self)
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
-
-    def tearDown(self):
-        self.default_device = None
 
     def test_follower_joint_frame(self):
         """Test kinematic constraints and jacobian for a passive universal joint.
@@ -567,7 +562,7 @@ class TestPassiveUniversalJointFrame(unittest.TestCase):
         )
 
 
-class TestRandomPoses(unittest.TestCase):
+class TestRandomPoses(NewtonTestCase):
     """Validate FK solves on random poses for multiple models."""
 
     def setUp(self):
@@ -577,8 +572,7 @@ class TestRandomPoses(unittest.TestCase):
         self.has_cuda = self.default_device.is_cuda
         self.verbose = test_context.verbose
 
-    def tearDown(self):
-        self.default_device = None
+        setup_test_output(self, verbose=self.verbose)
 
     def _make_solve_and_check(self, model, num_poses, rng, **overrides):
         """Return a ``solve_and_check_fk_random_poses`` partial with the common defaults for random-pose tests."""
@@ -803,16 +797,14 @@ class TestRandomPoses(unittest.TestCase):
         self.assertTrue(solve_and_check_fn(use_sparsity=True))
 
 
-class TestFourBarTieRodAxisFrames(unittest.TestCase):
+class TestFourBarTieRodAxisFrames(NewtonTestCase):
     """Non-random single-purpose check for axis-joint frames after model changes."""
 
     def setUp(self):
+        setup_test_output(self)
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
-
-    def tearDown(self):
-        self.default_device = None
 
     def test_axis_joint_frames_update_after_notify(self):
         """Synthetic axis frames match a fresh solver after model changes."""
@@ -857,14 +849,12 @@ class TestFourBarTieRodAxisFrames(unittest.TestCase):
         )
 
 
-class TestWarnings(unittest.TestCase):
+class TestWarnings(NewtonTestCase):
     def setUp(self):
+        setup_test_output(self)
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
-
-    def tearDown(self):
-        self.default_device = None
 
     def test_solve_fk_warns_without_base_body_when_base_provided(self):
         """
@@ -893,18 +883,15 @@ class TestWarnings(unittest.TestCase):
         self.assertTrue(any("no free-floating base body" in message for message in logs.output))
 
 
-class TestMultiRhsVelocity(unittest.TestCase):
+class TestMultiRhsVelocity(NewtonTestCase):
     """Verify shared-factorization velocity FK."""
 
     def setUp(self):
         """Initialize the shared Kamino test device."""
+        setup_test_output(self)
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
-
-    def tearDown(self):
-        """Release the test device reference."""
-        self.default_device = None
 
     def test_multi_rhs_matches_repeated_velocity_solves(self):
         """Match every multi-RHS body twist to an independent velocity solve."""
@@ -1066,6 +1053,7 @@ class TestMultiRhsVelocity(unittest.TestCase):
 
 if __name__ == "__main__":
     # Test setup
+    newton.utils.setup_console_logging()
     setup_tests()
 
     # Run all tests

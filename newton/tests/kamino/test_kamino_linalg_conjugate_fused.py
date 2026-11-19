@@ -16,6 +16,7 @@ import unittest
 import numpy as np
 import warp as wp
 
+import newton
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.core.types import vec6f
 from newton._src.solvers.kamino._src.dynamics.dual import DualProblem
@@ -27,8 +28,9 @@ from newton._src.solvers.kamino._src.linalg.conjugate_fused import (
     make_fused_cr_kernel,
 )
 from newton._src.solvers.kamino._src.solvers.padmm import PADMMSolver, PADMMWarmStartMode
-from newton.tests.kamino import setup_tests
+from newton.tests.kamino import setup_test_output, setup_tests
 from newton.tests.kamino.utils.make import make_containers, update_containers
+from newton.tests.unittest_utils import NewtonTestCase
 from newton.tests.utils import basics
 
 MB = MAX_BLOCKS_PER_ROW
@@ -216,8 +218,11 @@ def _solve_fused(worlds, use_precond, device, rng, coupled_rows=0):
     return x.numpy(), b_ref, A_ref
 
 
-class TestFusedCRKernel(unittest.TestCase):
+class TestFusedCRKernel(NewtonTestCase):
     """Numeric correctness of the fused CR kernel against numpy."""
+
+    def setUp(self):
+        setup_test_output(self)
 
     @classmethod
     def setUpClass(cls):
@@ -301,8 +306,11 @@ def _run_padmm_sparse(solver_cls, device):
     }
 
 
-class TestFusedCRIntegration(unittest.TestCase):
+class TestFusedCRIntegration(NewtonTestCase):
     """End-to-end: fused CRF must match the multi-launch CR inside the PADMM solver."""
+
+    def setUp(self):
+        setup_test_output(self)
 
     @classmethod
     def setUpClass(cls):
@@ -325,4 +333,6 @@ class TestFusedCRIntegration(unittest.TestCase):
 
 
 if __name__ == "__main__":
+    newton.utils.setup_console_logging()
+    setup_tests()
     unittest.main()

@@ -145,7 +145,7 @@ def _make_solver(
             ),
             SolverCoupled.Entry(
                 name="vbd",
-                solver=lambda v: SolverVBD(model=v, iterations=5, rigid_compliant_alm=True),
+                solver=lambda v: SolverVBD(model=v, iterations=5),
                 bodies=[int(i) for i in vbd_ids.numpy()],
                 particles=list(range(model.particle_count)),
             ),
@@ -838,7 +838,8 @@ def _cuda_stf_warp_adapter():
     return stf, stf_warp
 
 
-def _make_xpbd_vbd_contact_solver(device) -> tuple[newton.Model, SolverCoupledADMM]:
+def _make_xpbd_vbd_contact_solver(device, coupling_iterations: int = 1) -> tuple[newton.Model, SolverCoupledADMM]:
+    """Two boxes in contact, one per solver entry."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     builder.default_shape_cfg.density = 1000.0
     body_a = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
@@ -857,12 +858,12 @@ def _make_xpbd_vbd_contact_solver(device) -> tuple[newton.Model, SolverCoupledAD
             ),
             SolverCoupled.Entry(
                 name="vbd",
-                solver=lambda v: SolverVBD(model=v, iterations=1, rigid_compliant_alm=True),
+                solver=lambda v: SolverVBD(model=v, iterations=1),
                 bodies=[body_b],
             ),
         ],
         coupling=SolverCoupledADMM.Config(
-            iterations=2,
+            iterations=coupling_iterations,
             gamma=1.0,
             contact_pairs=[SolverCoupledADMM.ContactPair(source="xpbd", destination="vbd")],
         ),
@@ -902,7 +903,8 @@ class TestAdmmGraphCapture(unittest.TestCase):
         dt = 1.0 / 120.0
 
         def warmed_up():
-            model, solver = _make_xpbd_vbd_contact_solver(device)
+            # Two coupling iterations, so that the recorded step repeats its phases.
+            model, solver = _make_xpbd_vbd_contact_solver(device, coupling_iterations=2)
             state_0, state_1, control = model.state(), model.state(), model.control()
             # Allocations and module loads must precede a recording.
             solver.step(state_0, state_1, control, contacts=None, dt=dt)
@@ -1325,16 +1327,13 @@ class TestAdmmBodyParticleAttachment(unittest.TestCase):
     def test_single_vbd_entry_attachment_is_left_to_vbd(self):
         """Leave a same-entry model attachment to SolverVBD without an attachment warning."""
         model = _build_body_particle_attachment_scene()
-        with (
-            self.assertNoLogs("newton._src.solvers.coupled.solver_coupled_admm", level="WARNING"),
-            self.assertWarns(DeprecationWarning),
-        ):
+        with self.assertNoLogs("newton._src.solvers.coupled.solver_coupled_admm", level="WARNING"):
             solver = SolverCoupledADMM(
                 model,
                 [
                     SolverCoupled.Entry(
                         "both",
-                        lambda view: SolverVBD(view, iterations=0, rigid_compliant_alm=False),
+                        lambda view: SolverVBD(view, iterations=0),
                         bodies=range(model.body_count),
                         particles=range(model.particle_count),
                     ),

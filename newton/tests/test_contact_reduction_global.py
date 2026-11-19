@@ -1159,6 +1159,43 @@ def test_centered_deepest_wins_max_depth_slot(test, device):
     test.assertAlmostEqual(best_depth, deepest_depth, places=5, msg="Deepest contact should be among winners")
 
 
+def test_centered_coincident_normal_coverage(test, device):
+    """Reduce a coincident contact cloud to twelve representatives spanning the sphere."""
+    rng = np.random.default_rng(42)
+    normals_np = rng.standard_normal((256, 3)).astype(np.float32)
+    normals_np /= np.linalg.norm(normals_np, axis=1, keepdims=True)
+    normals = wp.array(normals_np, dtype=wp.vec3, device=device)
+    reducer = GlobalContactReducer(capacity=512, device=device)
+
+    @wp.kernel(module="unique")
+    def store_normal_cloud(normals: wp.array[wp.vec3], data: GlobalContactReducerData):
+        tid = wp.tid()
+        # Separated candidates exercise normal depth coverage without footprint
+        # winners. Coincident positions share one voxel, so it adds no winner.
+        export_and_reduce_contact_centered(
+            shape_a=0,
+            shape_b=1,
+            position=wp.vec3(0.0),
+            normal=normals[tid],
+            depth=0.001 + float(tid) * 0.000001,
+            fingerprint=tid,
+            centered_position=wp.vec3(0.0),
+            X_ws_voxel_shape=wp.transform_identity(),
+            aabb_lower_voxel=wp.vec3(-1.0),
+            aabb_upper_voxel=wp.vec3(1.0),
+            voxel_res=wp.vec3i(4, 4, 4),
+            reducer_data=data,
+        )
+
+    wp.launch(store_normal_cloud, dim=len(normals_np), inputs=[normals, reducer.get_data_struct()], device=device)
+    winners = get_winning_contacts(reducer)
+    test.assertEqual(len(winners), 12)
+    fingerprints = reducer.contact_fingerprints.numpy()[winners]
+    retained_normals = normals_np[fingerprints]
+    for axis in np.concatenate((np.eye(3), -np.eye(3))):
+        test.assertGreater(float(np.max(retained_normals @ axis)), 0.5)
+
+
 def test_centered_pre_pruning_reduces_buffer_usage(test, device):
     """Verify pre-pruning skips dominated contacts, reducing buffer allocations.
 
@@ -1782,6 +1819,12 @@ add_function_test(
     TestGlobalContactReducer,
     "test_centered_deepest_wins_max_depth_slot",
     test_centered_deepest_wins_max_depth_slot,
+    devices=devices,
+)
+add_function_test(
+    TestGlobalContactReducer,
+    "test_centered_coincident_normal_coverage",
+    test_centered_coincident_normal_coverage,
     devices=devices,
 )
 add_function_test(
