@@ -10,7 +10,7 @@ import time
 import unittest
 import warnings
 import xml.etree.ElementTree as ET
-from copy import deepcopy
+from copy import copy, deepcopy
 from enum import IntFlag
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -5630,30 +5630,7 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
         # Warp array).  This mimics the dexsuite/IsaacLab pattern where a
         # fresh Contacts wrapper is materialised each substep around a pool
         # of persistent device buffers.
-        class _AliasedContacts:
-            pass
-
-        contacts_alias = _AliasedContacts()
-        for attr in (
-            "contact_counters",
-            "rigid_contact_count",
-            "contact_generation",
-            "rigid_contact_max",
-            "soft_contact_max",
-            "rigid_contact_shape0",
-            "rigid_contact_shape1",
-            "rigid_contact_point0",
-            "rigid_contact_point1",
-            "rigid_contact_normal",
-            "rigid_contact_offset0",
-            "rigid_contact_offset1",
-            "rigid_contact_margin0",
-            "rigid_contact_margin1",
-            "rigid_contact_stiffness",
-            "rigid_contact_damping",
-            "rigid_contact_friction",
-        ):
-            setattr(contacts_alias, attr, getattr(contacts_a, attr))
+        contacts_alias = copy(contacts_a)
 
         # Sanity: the two wrappers are distinct objects but share the same
         # contact_generation array — the precise dexsuite scenario.
