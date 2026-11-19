@@ -3412,9 +3412,11 @@ class CollisionPipeline:
         writer_data.collision_update_dt = collision_update_dt
         writer_data.max_speculative_extension = max_speculative_extension
         # Run narrow phase with custom contact writer (writes directly to Contacts format)
+        launch_narrow_phase = self.narrow_phase.launch_custom_write
         narrow_phase_extension_kwargs = {}
         if type(self.narrow_phase).launch_custom_write is NarrowPhase.launch_custom_write:
             if recovery_contacts is not None:
+                launch_narrow_phase = self.narrow_phase._launch_custom_write
                 narrow_phase_extension_kwargs.update(
                     _mesh_recovery=recovery_contacts,
                     shape_body=model.shape_body,
@@ -3439,7 +3441,7 @@ class CollisionPipeline:
             )
         if self._reduces_body_pairs:
             narrow_phase_extension_kwargs.update(body_q=state.body_q, shape_body=model.shape_body)
-        self.narrow_phase.launch_custom_write(
+        launch_narrow_phase(
             candidate_pair=self.broad_phase_shape_pairs,
             candidate_pair_count=self.broad_phase_pair_count,
             shape_types=model.shape_type,

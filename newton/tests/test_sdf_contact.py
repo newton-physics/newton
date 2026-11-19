@@ -798,6 +798,25 @@ def test_planar_recovery_solver_consumers(test, device):
         # several collision passes so sharing just the source descriptor fails.
         for _ in range(3):
             pipeline.collide(state, contacts)
+        for response in ("immediate", "propagation"):
+            with test.subTest(solver="SolverSteel", response=response):
+                state, result = model.state(), model.state()
+                state.body_f.fill_(wp.spatial_vector(20.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+                pipeline.collide(state, contacts)
+                solver = newton.solvers.SolverSteel(model, articulated_contact_response=response)
+                solver.step(state, result, None, contacts, dt)
+                displacement = float(result.body_q.numpy()[body, 0])
+                test.assertLess(displacement, 0.0)
+                test.assertGreaterEqual(displacement, -0.001 / 32.0 - 1.0e-6)
+
+                # Reuse the same contacts after the probe leaves the certified corridor.
+                joint_q = state.joint_q.numpy()
+                joint_q[1] = 0.00025
+                state.joint_q.assign(joint_q)
+                solver.step(state, result, None, contacts, dt)
+                reference = model.state()
+                solver.step(state, reference, None, None, dt)
+                np.testing.assert_allclose(result.body_q.numpy(), reference.body_q.numpy(), rtol=0.0, atol=1.0e-7)
         for solver_type in (newton.solvers.SolverXPBD, newton.solvers.SolverVBD):
             for coupled in (False, True):
                 for spin in ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)):

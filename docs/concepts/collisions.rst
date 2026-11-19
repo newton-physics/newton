@@ -1126,7 +1126,9 @@ Solvers and :class:`~sensors.SensorContact` read the same two surface witnesses
 and separation normal from the contact buffer. XPBD and VBD bound positional
 correction while the probe is deeply embedded. XPBD skips restitution on the
 recovery contact. VBD can support an external load while limiting the outward
-correction per step. The semi-implicit and Featherstone solvers use a bounded
+correction per step using a temporary hard normal constraint. Steel bounds
+the penetration used for its corrective velocity and skips restitution on
+recovery contacts. The semi-implicit and Featherstone solvers use a bounded
 penetration depth for the elastic contact force.
 MuJoCo Warp with Newton contacts temporarily
 uses recovery stiffness and damping to limit its separation speed, then resumes
