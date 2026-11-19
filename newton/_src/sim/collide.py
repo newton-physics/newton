@@ -2274,6 +2274,7 @@ class CollisionPipeline:
                 mesh_sdf_pair_mask = mesh_mask | heightfield_mask
                 planar_sdf_mask = np.zeros(len(route_types), dtype=bool)
                 recovery_shape_mask = np.zeros(len(route_types), dtype=bool)
+                recovery_probe_mask = np.zeros(len(route_types), dtype=bool)
                 has_meshes = bool(np.any(mesh_mask))
                 has_heightfields = bool(np.any(heightfield_mask))
                 if (
@@ -2292,7 +2293,6 @@ class CollisionPipeline:
                         (route_types != int(GeoType.HFIELD))
                         & ((route_types == int(GeoType.MESH)) | (shape_edge_range[:, 1] > 0))
                     )
-                    recovery_shape_mask = mesh_sdf_shapes & (shape_sdf_index >= 0)
                     coarse_textures = getattr(model, "_texture_sdf_coarse_textures", None)
                     if coarse_textures is not None and len(coarse_textures) > 0:
                         has_texture_sdf = np.array(
@@ -2304,6 +2304,13 @@ class CollisionPipeline:
                         )
                         mesh_sdf_texture_only = bool(
                             np.any(mesh_sdf_shapes) and np.all(has_texture_sdf[mesh_sdf_shapes])
+                        )
+                        mesh_properties = with_variant_shapes(
+                            "_shape_mesh_properties", model._shape_mesh_properties.numpy()
+                        )
+                        recovery_shape_mask = mesh_sdf_shapes & has_texture_sdf
+                        recovery_probe_mask = recovery_shape_mask & (
+                            (mesh_properties & int(MeshProperties.RECOVERY_PROBE)) != 0
                         )
                     if mesh_sdf_texture_only:
                         texture_sdf_data = model._texture_sdf_data.numpy()
@@ -2335,14 +2342,21 @@ class CollisionPipeline:
                 plane_capacity = plane_mask[:shape_count_routed]
                 planar_sdf_capacity = capacity(planar_sdf_mask)
                 if model._texture_sdf_data is not None:
-                    # Ordinary mesh pairs may include BVH-only meshes. Only pairs with
-                    # two mesh SDFs can ever produce a thin-wall recovery contact.
+                    # Both shapes need textures, and at least one must be an
+                    # eligible probe. Dense meshes cannot use recovery storage.
                     textured_mesh = capacity(recovery_shape_mask)
+                    recovery_probe = capacity(recovery_probe_mask)
                     if explicit_pairs_host is not None:
                         a, b = explicit_pairs_host.T
-                        self._mesh_recovery_pair_max = int(np.count_nonzero(textured_mesh[a] & textured_mesh[b]))
+                        self._mesh_recovery_pair_max = int(
+                            np.count_nonzero(
+                                textured_mesh[a] & textured_mesh[b] & (recovery_probe[a] | recovery_probe[b])
+                            )
+                        )
                     else:
-                        self._mesh_recovery_pair_max = _compute_per_world_mask_pair_max(model, textured_mesh)
+                        self._mesh_recovery_pair_max = _compute_per_world_mask_pair_max(
+                            model, recovery_probe, textured_mesh
+                        )
                 if self.broad_phase_mode == "explicit" and self.shape_pairs_filtered is not None:
                     # Explicit pair types are fixed at pipeline construction, including
                     # intentional cross-world pairs, so size only the stages they can reach.

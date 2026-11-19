@@ -1114,6 +1114,8 @@ the probe surface must be connected. A mesh query verifies the two locally
 planar wall faces and the swept probe footprint.
 Each collision update uses the current geometry. Once the overlap is shallow,
 the ordinary SDF contacts take over.
+Between updates, translation and rotation may reuse a recovery contact only
+while the entire swept probe remains inside the verified corridor.
 Broad contact patches, ambiguous exits, and nearby features that intrude on the
 footprint use the ordinary manifold. The same fallback applies when the probe
 has more than 4,096 vertices or the swept query visits more than 128 wall

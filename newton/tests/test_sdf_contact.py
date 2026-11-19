@@ -21,6 +21,7 @@ from newton._src.geometry.sdf_contact import (
 from newton._src.geometry.sdf_texture import TextureSDFData
 from newton._src.utils.heightfield import HeightfieldData
 from newton.sensors import SensorContact
+from newton.solvers.experimental.coupled import SolverCoupled
 from newton.tests.unittest_utils import (
     MUJOCO_MODULES,
     add_function_test,
@@ -725,6 +726,88 @@ def test_planar_recovery_eligibility(test, device):
         slots = recovery.active_slots.numpy()
         np.testing.assert_array_equal(recovery.keys.numpy()[slots[: slots[-1]]], [1])
 
+        # Reuse the cooked fields with unchanged indexed surfaces. The extra
+        # vertices put both meshes above the recovery budget without another bake.
+        builder = newton.ModelBuilder()
+        for mesh, body in ((wall, -1), (probe, builder.add_body())):
+            dense = newton.Mesh(np.vstack((mesh.vertices, np.zeros((4097, 3)))), mesh.indices)
+            dense.sdf = mesh.sdf
+            builder.add_shape_mesh(body, mesh=dense)
+        model = builder.finalize()
+        for broad_phase in ("nxn", "sap", "explicit"):
+            with test.subTest(broad_phase=broad_phase):
+                pipeline = newton.CollisionPipeline(
+                    model,
+                    broad_phase=broad_phase,
+                    shape_pairs_filtered=wp.array([(0, 1)], dtype=wp.vec2i) if broad_phase == "explicit" else None,
+                )
+                test.assertIsNone(pipeline.contacts()._mesh_recovery_contacts)
+
+
+def test_planar_recovery_solver_consumers(test, device):
+    """Preserve bounded contact response under rotation and coupled filtering."""
+    with wp.ScopedDevice(device):
+        wall, probe = test.loaded_wall_and_probe(device)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        cfg = builder.ShapeConfig(gap=0.0002, margin=0.0, density=0.0, ke=1.0e6, kd=150.0)
+        builder.add_shape_mesh(-1, mesh=wall, xform=wp.transform(wp.vec3(0.0005, 0.0, 0.0)), cfg=cfg)
+        body = builder.add_body(mass=0.05, inertia=wp.mat33(np.eye(3) * 1.0e-6))
+        builder.add_shape_mesh(body, mesh=probe, cfg=cfg)
+        builder.color()
+        model = builder.finalize()
+        pipeline = newton.CollisionPipeline(model, rigid_contact_max=32)
+        contacts = pipeline.contacts()
+        state, result = model.state(), model.state()
+        dt = 1.0 / 1440.0
+        # Filtered buffers have their own generation counter. Start them after
+        # several collision passes so sharing just the source descriptor fails.
+        for _ in range(3):
+            pipeline.collide(state, contacts)
+        for solver_type in (newton.solvers.SolverXPBD, newton.solvers.SolverVBD):
+            for coupled in (False, True):
+                for spin in ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)):
+                    with test.subTest(solver=solver_type.__name__, coupled=coupled, spin=spin):
+                        state, result = model.state(), model.state()
+                        state.body_qd.fill_(wp.spatial_vector(0.0, 0.0, 0.0, *spin))
+                        state.body_f.fill_(wp.spatial_vector(20.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+                        pipeline.collide(state, contacts)
+                        if coupled:
+                            solver = SolverCoupled(
+                                model,
+                                entries=[
+                                    SolverCoupled.Entry(
+                                        name="rigid",
+                                        solver=lambda view, cls=solver_type: cls(view, iterations=4),
+                                        bodies=[body],
+                                    )
+                                ],
+                            )
+                        else:
+                            solver = solver_type(model, iterations=4)
+                        solver.step(state, result, None, contacts, dt)
+                        displacement = float(result.body_q.numpy()[body, 0])
+                        test.assertLess(displacement, 0.0)
+                        test.assertGreaterEqual(displacement, -0.001 / 32.0 - 1.0e-6)
+                        if coupled and solver_type is newton.solvers.SolverXPBD and spin == (0.0, 0.0, 0.0):
+                            with wp.ScopedCapture(device=device) as capture:
+                                solver.step(state, result, None, contacts, dt)
+                            result.body_q.fill_(wp.transform(wp.vec3(float("nan")), wp.quat_identity()))
+                            wp.capture_launch(capture.graph)
+                            test.assertAlmostEqual(float(result.body_q.numpy()[body, 0]), displacement, delta=1.0e-7)
+                            # A later ordinary collision pass invalidates the old
+                            # certificate even though its storage is retained.
+                            # The graph must observe the new source generation.
+                            pair_max = pipeline._mesh_recovery_pair_max
+                            pipeline._mesh_recovery_pair_max = 0
+                            pipeline.collide(state, contacts)
+                            wp.capture_launch(capture.graph)
+                            reference = model.state()
+                            solver_type(model, iterations=4).step(state, reference, None, contacts, dt)
+                            np.testing.assert_allclose(
+                                result.body_q.numpy(), reference.body_q.numpy(), rtol=1.0e-5, atol=1.0e-7
+                            )
+                            pipeline._mesh_recovery_pair_max = pair_max
+
 
 class TestSDFContact(unittest.TestCase):
     @classmethod
@@ -867,6 +950,12 @@ add_function_test(
     TestSDFContact,
     "test_planar_recovery_eligibility",
     test_planar_recovery_eligibility,
+    devices=get_cuda_test_devices(),
+)
+add_function_test(
+    TestSDFContact,
+    "test_planar_recovery_solver_consumers",
+    test_planar_recovery_solver_consumers,
     devices=get_cuda_test_devices(),
 )
 add_function_test(

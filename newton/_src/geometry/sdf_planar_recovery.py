@@ -408,14 +408,11 @@ def active_recovery_contact(
     contact = data.contacts[slot]
     first = pose_a if a < b else pose_b
     second = pose_b if a < b else pose_a
-    # Two anchors alone cannot detect rotation around either witness.
-    # Keep the certified direction only while the original orientations hold.
     chord0 = _rotation_chord(first.q, contact.rotation0)
     chord1 = _rotation_chord(second.q, contact.rotation1)
-    if wp.max(chord0, chord1) > 1.0e-6:
-        return -2
     # A quaternion chord of length c moves any point at radius r by at
-    # most 2*c*r. Charge this motion against both corridor clearances.
+    # most 2*c*r. Bound the entire swept probe, including rotations about
+    # either witness, against the padding verified by the mesh query.
     angular_motion = 2.0 * (chord0 * contact.sweep_radii[0] + chord1 * contact.sweep_radii[1])
     # Invertible transforms of two contact anchors can round differently at
     # large world offsets. Compare body displacement from the detection pose,

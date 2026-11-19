@@ -16,6 +16,7 @@ import warp as wp
 
 from ...core.reset import reset_world_selected as _reset_world_selected
 from ...geometry import ParticleFlags, ShapeFlags
+from ...geometry.sdf_planar_recovery import MeshRecoveryData
 from ...sim import JointType, Model, ModelFlags, StateFlags
 from ..solver import SolverBase
 from .interface import (
@@ -3589,6 +3590,12 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 inputs=[
                     contacts.contact_generation,
                     filtered.contact_generation,
+                    contacts._mesh_recovery_contacts.generation
+                    if contacts._mesh_recovery_contacts is not None
+                    else None,
+                    filtered._mesh_recovery_contacts.generation
+                    if filtered._mesh_recovery_contacts is not None
+                    else None,
                     self._entry_rigid_contact_generation[entry.name],
                     self._entry_soft_contact_generation[entry.name],
                     self._entry_rigid_contact_update[entry.name],
@@ -3800,6 +3807,18 @@ class SolverCoupled(SolverBase, CouplingInterface):
         filtered._contact_matching_mode = contacts.contact_matching_mode
         # Entry solvers check this stamp; the filtered rows are as reduced as their source.
         filtered._rigid_contact_body_pair_reduced = contacts.rigid_contact_body_pair_reduced
+        recovery = contacts._mesh_recovery_contacts
+        if recovery is None:
+            filtered._mesh_recovery_contacts = None
+        else:
+            if filtered._mesh_recovery_contacts is None:
+                filtered._mesh_recovery_contacts = MeshRecoveryData()
+                filtered._mesh_recovery_contacts.generation = wp.empty(1, dtype=int, device=contacts.device)
+            # Filtering preserves global shape IDs. Share immutable certificates
+            # while translating their generation to the filtered buffer's counter.
+            filtered._mesh_recovery_contacts.keys = recovery.keys
+            filtered._mesh_recovery_contacts.active_slots = recovery.active_slots
+            filtered._mesh_recovery_contacts.contacts = recovery.contacts
         filtered._enable_rigid_soft_full_surface_contact = bool(
             contacts._enable_rigid_soft_full_surface_contact and has_particles
         )
@@ -4473,6 +4492,8 @@ def _add_mapped_particle_forces_kernel(
 def _prepare_filtered_contact_update_kernel(
     src_generation: wp.array[wp.int32],
     dst_generation: wp.array[wp.int32],
+    src_recovery_generation: wp.array[wp.int32],
+    dst_recovery_generation: wp.array[wp.int32],
     rigid_generation: wp.array[wp.int32],
     soft_generation: wp.array[wp.int32],
     rigid_update_out: wp.array[wp.int32],
@@ -4503,6 +4524,8 @@ def _prepare_filtered_contact_update_kernel(
             else:
                 generation = generation + 1
             dst_generation[0] = generation
+        if dst_recovery_generation:
+            dst_recovery_generation[0] = dst_generation[0] if src_recovery_generation[0] == src_generation[0] else -1
         if rigid_update != 0:
             rigid_generation[0] = src_generation[0]
         if soft_update != 0:

@@ -98,6 +98,7 @@ def _check_held_contact(recovery: MeshRecoveryData, result: wp.array[int]):
     contact.initial_depth = 0.004
     contact.rotation0 = wp.quat_identity()
     contact.rotation1 = wp.quat_identity()
+    contact.sweep_radii = wp.vec2(0.01, 0.01)
     recovery.contacts[slot] = contact
     for i in range(5):
         pose = wp.transform_identity()
@@ -132,6 +133,11 @@ def _check_held_contact(recovery: MeshRecoveryData, result: wp.array[int]):
     contact.rotation1 = wp.quat_identity()
     contact.relative_translation = wp.vec3()
     recovery.contacts[slot] = contact
+    small_rotation = wp.transform(wp.vec3(), wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.001))
+    result[12] = active_recovery_contact(recovery, 0, 0, 1, wp.transform_identity(), small_rotation, normal)
+    result[13] = active_recovery_contact(recovery, 0, 1, 0, small_rotation, wp.transform_identity(), -normal)
+    small_rotation.p = wp.vec3(0.0, 0.00012, 0.0)
+    result[14] = active_recovery_contact(recovery, 0, 0, 1, wp.transform_identity(), small_rotation, normal)
     for i in range(2):
         displacement = contact.initial_depth if i == 0 else -0.26 * contact.thickness
         pose = wp.transform(displacement * normal, wp.quat_identity())
@@ -143,12 +149,14 @@ def _check_held_contact(recovery: MeshRecoveryData, result: wp.array[int]):
 def test_held_contact_corridor(test, device):
     """Use a held row only while the current poses remain inside its proven corridor."""
     recovery = allocate_mesh_recovery(8, device)
-    result = wp.empty(12, dtype=int, device=device)
+    result = wp.empty(15, dtype=int, device=device)
     wp.launch(_check_held_contact, 1, inputs=[recovery, result], device=device)
     slots = result.numpy()
     test.assertGreaterEqual(slots[0], 0)
     test.assertEqual(slots[1], slots[0])
-    np.testing.assert_array_equal(slots[2:], [slots[0], -2, -2, slots[0], slots[0], -1, -2, -2, -2, slots[0]])
+    np.testing.assert_array_equal(
+        slots[2:], [slots[0], -2, -2, slots[0], slots[0], -1, -2, -2, -2, slots[0], slots[0], slots[0], -2]
+    )
     test.assertTrue(np.all(recovery.keys.numpy() == np.iinfo(np.uint64).max))
 
 
