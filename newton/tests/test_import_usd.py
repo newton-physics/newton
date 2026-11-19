@@ -8546,6 +8546,8 @@ def Xform "Articulation" (
         UsdGeom.Xform.Define(stage, "/Articulation")
         body = UsdGeom.Xform.Define(stage, "/Articulation/Body")
         UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+        body_mass = 2.0
+        UsdPhysics.MassAPI.Apply(body.GetPrim()).CreateMassAttr(body_mass)
 
         col = UsdGeom.Cube.Define(stage, "/Articulation/Body/Col")
         col_prim = col.GetPrim()
@@ -8560,8 +8562,9 @@ def Xform "Articulation" (
         model = builder.finalize()
         idx = result["path_shape_map"]["/Articulation/Body/Col"]
 
-        expected_ke = 1.0 / (0.01**2 * 0.5**2)
-        expected_kd = 2.0 / 0.01
+        # solref gives per-unit-mass gains; the importer scales them by the body mass.
+        expected_ke = body_mass / (0.01**2 * 0.5**2)
+        expected_kd = body_mass * 2.0 / 0.01
         self.assertAlmostEqual(model.shape_material_ke.numpy()[idx], expected_ke, places=1)
         self.assertAlmostEqual(model.shape_material_kd.numpy()[idx], expected_kd, places=1)
         # kf/ka fall through to material (no MuJoCo per-shape kf/ka)
@@ -8577,6 +8580,119 @@ def Xform "Articulation" (
 
         self.assertAlmostEqual(model2.shape_material_ke.numpy()[idx2], 4000.0, places=1)
         self.assertAlmostEqual(model2.shape_material_kd.numpy()[idx2], 100.0, places=1)
+
+    @requires("pxr.Usd")
+    def test_contact_response_solref_scaled_by_body_mass(self):
+        """Test solref-derived ke/kd are converted to force space with the shape's body mass."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        body = UsdGeom.Xform.Define(stage, "/World/Finger")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+        UsdPhysics.MassAPI.Apply(body.GetPrim()).CreateMassAttr(0.015)
+
+        def add_box(path, solref=None):
+            box = UsdGeom.Cube.Define(stage, path)
+            box.CreateSizeAttr(0.02)
+            UsdPhysics.CollisionAPI.Apply(box.GetPrim())
+            if solref is not None:
+                box.GetPrim().CreateAttribute("mjc:solref", Sdf.ValueTypeNames.DoubleArray).Set(solref)
+
+        add_box("/World/Finger/Pad", [0.01, 1.0])
+        add_box("/World/Finger/Plain")
+        add_box("/World/Ground", [0.01, 1.0])  # static: no rigid body
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        result = builder.add_usd(
+            stage, schema_resolvers=[usd.SchemaResolverNewton(), usd.SchemaResolverPhysx(), usd.SchemaResolverMjc()]
+        )
+        model = builder.finalize()
+        shapes = result["path_shape_map"]
+        pad, plain, ground = shapes["/World/Finger/Pad"], shapes["/World/Finger/Plain"], shapes["/World/Ground"]
+        ke = model.shape_material_ke.numpy()
+        kd = model.shape_material_kd.numpy()
+
+        # solref (0.01, 1) gives k = 1e4 [1/s^2] and b = 200 [1/s] per unit mass; the body weighs 0.015 kg.
+        self.assertAlmostEqual(ke[pad], 150.0, places=3)
+        self.assertAlmostEqual(kd[pad], 3.0, places=5)
+        # A shape without mjc:solref keeps the builder defaults.
+        self.assertAlmostEqual(ke[plain], builder.default_shape_cfg.ke, places=3)
+        self.assertAlmostEqual(kd[plain], builder.default_shape_cfg.kd, places=3)
+        # A static shape has no body mass and keeps the per-unit-mass values.
+        self.assertAlmostEqual(ke[ground], 1.0e4, places=1)
+        self.assertAlmostEqual(kd[ground], 200.0, places=3)
+        # SolverMuJoCo keeps reading the raw solref.
+        self.assertEqual(model.mujoco.solref_mode.numpy()[pad], SOLREF_MODE_RAW)
+        assert_np_equal(model.mujoco.solref.numpy()[pad], np.array([0.01, 1.0]), tol=1e-6)
+
+        # Without the MuJoCo custom attributes there is no solref_mode, and SolverMuJoCo
+        # rebuilds solref from ke/kd, so the per-unit-mass values must stay.
+        builder_unregistered = newton.ModelBuilder()
+        result = builder_unregistered.add_usd(
+            stage, schema_resolvers=[usd.SchemaResolverNewton(), usd.SchemaResolverPhysx(), usd.SchemaResolverMjc()]
+        )
+        pad = result["path_shape_map"]["/World/Finger/Pad"]
+        self.assertAlmostEqual(builder_unregistered.shape_material_ke[pad], 1.0e4, places=1)
+        self.assertAlmostEqual(builder_unregistered.shape_material_kd[pad], 200.0, places=3)
+
+    @requires("pxr.Usd")
+    def test_contact_response_solref_scales_convex_decomposition_parts(self):
+        """Test convex-decomposition parts get the same mass-scaled ke/kd as their source shape."""
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+        body = UsdGeom.Xform.Define(stage, "/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+        UsdPhysics.MassAPI.Apply(body.GetPrim()).CreateMassAttr(0.5)
+
+        box = newton.Mesh.create_box(
+            1.0, 1.0, 1.0, duplicate_vertices=False, compute_normals=False, compute_uvs=False, compute_inertia=False
+        )
+        mesh = UsdGeom.Mesh.Define(stage, "/Body/Mesh")
+        mesh.CreatePointsAttr().Set([Gf.Vec3f(*point) for point in box.vertices.tolist()])
+        mesh.CreateFaceVertexIndicesAttr().Set(box.indices.tolist())
+        mesh.CreateFaceVertexCountsAttr().Set([3] * (len(box.indices) // 3))
+        UsdPhysics.CollisionAPI.Apply(mesh.GetPrim())
+        UsdPhysics.MeshCollisionAPI.Apply(mesh.GetPrim()).GetApproximationAttr().Set(
+            UsdPhysics.Tokens.convexDecomposition
+        )
+        mesh.GetPrim().CreateAttribute("mjc:solref", Sdf.ValueTypeNames.DoubleArray).Set([0.01, 1.0])
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+
+        def add_convex_part(shape_indices=None, **_kwargs):
+            # Stand in for a decomposition backend: add one extra part the way approximate_meshes does.
+            for shape in shape_indices:
+                builder.add_shape_box(
+                    body=builder.shape_body[shape],
+                    hx=0.1,
+                    hy=0.1,
+                    hz=0.1,
+                    cfg=newton.ModelBuilder.ShapeConfig(
+                        ke=builder.shape_material_ke[shape], kd=builder.shape_material_kd[shape], density=0.0
+                    ),
+                    label=f"{builder.shape_label[shape]}_convex_1",
+                    custom_attributes={"mujoco:solref_mode": SOLREF_MODE_RAW},
+                )
+            return set(shape_indices)
+
+        with mock.patch.object(builder, "approximate_meshes", side_effect=add_convex_part):
+            result = builder.add_usd(stage, schema_resolvers=[usd.SchemaResolverNewton(), usd.SchemaResolverMjc()])
+
+        source = result["path_shape_map"]["/Body/Mesh"]
+        part = builder.shape_label.index("/Body/Mesh_convex_1")
+        for shape in (source, part):
+            self.assertAlmostEqual(builder.shape_material_ke[shape], 0.5 * 1.0e4, places=1)
+            self.assertAlmostEqual(builder.shape_material_kd[shape], 0.5 * 200.0, places=3)
 
     @requires("pxr.Usd")
     def test_mimic_constraint_parsing(self):

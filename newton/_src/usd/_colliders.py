@@ -20,6 +20,7 @@ from ..core.types import Axis
 from ..exceptions import NewtonWarning
 from ..geometry import ShapeFlags
 from ..sim.builder import ModelBuilder
+from ..solvers.mujoco.constants import SOLREF_MODE_RAW
 from . import utils as usd
 from ._collision_filters import _collect_filtered_pairs
 from ._mass_properties import _is_enabled_collider
@@ -64,6 +65,8 @@ class _ColliderProperties:
     shell_thickness: float | None
     maxhullvert: int | None = None
     approximation: str | None = None
+    solref_contact_keys: frozenset[str] = frozenset()
+    """Contact keys (``"ke"``, ``"kd"``) whose value came from the shape's ``mjc:solref``."""
 
 
 def _parse_colliders(
@@ -85,6 +88,7 @@ def _parse_colliders(
     incoming_world_xform: wp.transform,
     usd_axis_to_axis: dict[UsdPhysics.Axis, Axis],
     imported_rigid_collider_groups: dict[str, tuple[str, ...]],
+    solref_contact_paths: dict[str, frozenset[str]],
     ignore_paths: list[str],
     load_visual_shapes: bool,
     hide_collision_shapes: bool,
@@ -240,11 +244,15 @@ def _parse_colliders(
                             verbose=verbose,
                         )
                         mesh_properties["approximation"] = usd.get_attribute(prim, "physics:approximation", None)
+                    solref_keys: set[str] = set()
                     collider_properties = _ColliderProperties(
                         enabled=_is_enabled_collider(prim),
                         margin=margin_val,
                         gap=gap_val,
-                        contact=_resolve_shape_contact(prim, R, material, builder.default_shape_cfg, verbose=verbose),
+                        contact=_resolve_shape_contact(
+                            prim, R, material, builder.default_shape_cfg, verbose=verbose, solref_keys=solref_keys
+                        ),
+                        solref_contact_keys=frozenset(solref_keys),
                         sdf=sdf,
                         is_hydroelastic=is_hydroelastic,
                         kh=kh,
@@ -511,6 +519,8 @@ def _parse_colliders(
                 path_shape_map[path] = shape_id
                 path_shape_scale[path] = scale
                 imported_rigid_collider_groups[path] = collision_groups
+                if collider_properties.solref_contact_keys:
+                    solref_contact_paths[path] = collider_properties.solref_contact_keys
 
                 # Restore the real collision margin when shell thickness was substituted.
                 # TODO: Consider adding a dedicated shell_thickness field to ShapeConfig
@@ -560,6 +570,52 @@ def _parse_colliders(
             builder.approximate_meshes(
                 method=remeshing_method, shape_indices=rest, keep_visual_shapes=False, **dict(remeshing_kwargs)
             )
+
+
+def _scale_solref_contact_gains(
+    builder: ModelBuilder,
+    solref_contact_paths: dict[str, frozenset[str]],
+    path_shape_map: dict[str, int],
+    first_shape: int,
+) -> None:
+    """Convert solref-derived shape contact gains to force space.
+
+    ``mjc:solref`` yields per-unit-mass gains (k [1/s^2], b [1/s]), while
+    ``shape_material_ke`` [N/m] and ``shape_material_kd`` [N·s/m] are force-space
+    gains. Multiply by the mass of the shape's body, a resting-contact estimate of
+    the effective mass. Only shapes in ``SOLREF_MODE_RAW`` are converted: there
+    :class:`~newton.solvers.SolverMuJoCo` uses the raw solref and ignores ke/kd. In
+    the other modes it rebuilds solref from ke/kd, so the values stay unchanged, as
+    do static shapes, which have no body mass.
+
+    Args:
+        builder: Builder holding the imported shapes.
+        solref_contact_paths: Collider prim path to the contact keys taken from its ``mjc:solref``.
+        path_shape_map: Collider prim path to shape index.
+        first_shape: Index of the first shape added by this import.
+    """
+    solref_mode = builder.custom_attributes.get("mujoco:solref_mode")
+    if not solref_contact_paths or solref_mode is None:
+        return
+
+    shape_keys = {path_shape_map[path]: keys for path, keys in solref_contact_paths.items() if path in path_shape_map}
+    # Convex-decomposition parts copy their source shape's gains before masses are resolved.
+    for shape in range(first_shape, builder.shape_count):
+        source_path, separator, _ = builder.shape_label[shape].rpartition("_convex_")
+        if separator and source_path in solref_contact_paths:
+            shape_keys[shape] = solref_contact_paths[source_path]
+
+    for shape, keys in shape_keys.items():
+        body = builder.shape_body[shape]
+        if body < 0 or int(solref_mode.values.get(shape, solref_mode.default)) != SOLREF_MODE_RAW:
+            continue
+        mass = builder.body_mass[body]
+        if not math.isfinite(mass) or mass <= 0.0:
+            continue
+        if "ke" in keys:
+            builder.shape_material_ke[shape] *= mass
+        if "kd" in keys:
+            builder.shape_material_kd[shape] *= mass
 
 
 def _physx_convex_decomposition_kwargs(prim: Usd.Prim, resolver: SchemaResolverManager) -> tuple[tuple[str, Any], ...]:

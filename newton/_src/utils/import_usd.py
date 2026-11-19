@@ -469,7 +469,7 @@ def parse_usd(
 
     from ..usd import _joints  # noqa: PLC0415
     from ..usd._articulations import _parse_articulations  # noqa: PLC0415
-    from ..usd._colliders import _parse_colliders  # noqa: PLC0415
+    from ..usd._colliders import _parse_colliders, _scale_solref_contact_gains  # noqa: PLC0415
     from ..usd._collision_filters import (  # noqa: PLC0415
         _apply_collision_groups,
         _apply_filtered_pairs,
@@ -1945,6 +1945,10 @@ def parse_usd(
     # all rigid shapes exist. Preserve the builder default on every imported shape so callers can
     # still disable collisions with zero or a shared negative group.
     imported_rigid_collider_groups: dict[str, tuple[str, ...]] = {}
+    # Colliders whose ke/kd came from their own mjc:solref; converted to force space below,
+    # once body masses are resolved.
+    solref_contact_paths: dict[str, frozenset[str]] = {}
+    first_collider_shape = builder.shape_count
 
     _parse_colliders(
         builder=builder,
@@ -1964,6 +1968,7 @@ def parse_usd(
         incoming_world_xform=incoming_world_xform,
         usd_axis_to_axis=usd_axis_to_axis,
         imported_rigid_collider_groups=imported_rigid_collider_groups,
+        solref_contact_paths=solref_contact_paths,
         ignore_paths=ignore_paths,
         load_visual_shapes=load_visual_shapes,
         hide_collision_shapes=hide_collision_shapes,
@@ -2206,6 +2211,8 @@ def parse_usd(
                         NewtonWarning,
                         stacklevel=2,
                     )
+
+    _scale_solref_contact_gains(builder, solref_contact_paths, path_shape_map, first_collider_shape)
 
     # add joints to floating bodies (bodies not connected as children to any joint)
     new_bodies = list(path_body_map.values())
