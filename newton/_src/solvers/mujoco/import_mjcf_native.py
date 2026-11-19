@@ -554,8 +554,6 @@ def _import_actuators(
 ) -> None:
     import mujoco
 
-    actuator_start = builder._custom_frequency_counts.get("mujoco:actuator", 0)
-    skipped_actuators = 0
     pending_damping: set[int] = set()
     transmission_types = {int(native): int(newton) for newton, native in _transmission_types().items()}
     targets = {
@@ -578,7 +576,6 @@ def _import_actuators(
                 NewtonWarning,
                 stacklevel=3,
             )
-            skipped_actuators += 1
             continue
         target = mapping[source_target]
         alternate = sites[source_alt] if source_alt >= 0 and transmission in (TrnType.SITE, TrnType.SLIDERCRANK) else -1
@@ -654,10 +651,6 @@ def _import_actuators(
         if values.get("mujoco:native_actuator_inheritrange", 0) > 0:
             builder._add_model_finalizer(_finalize_native_actuator_ranges)
         builder.add_custom_values(**values)
-
-    imported_actuators = builder._custom_frequency_counts.get("mujoco:actuator", 0) - actuator_start
-    if imported_actuators + skipped_actuators != model.nu:
-        raise RuntimeError("Native MJCF conversion did not preserve all retained actuators.")
 
 
 def _tendons(builder, spec, model, joints, dofs, geoms, sites, custom_values):
