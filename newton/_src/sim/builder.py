@@ -12,6 +12,7 @@ import gc
 import hashlib
 import logging
 import math
+import operator
 import warnings
 import weakref
 from bisect import bisect_left, bisect_right
@@ -28,6 +29,7 @@ import warp as wp
 from ... import config
 from ..core._warnings import _external_warning_stacklevel
 from ..core.host_transform import (
+    join_warp_values,
     pack_transforms,
     pack_warp_values,
     quat_rotate_rows,
@@ -1862,14 +1864,11 @@ class ModelBuilder:
                             return wp.zeros(0, dtype=self.dtype, requires_grad=requires_grad, device=device)
 
                         def _pack_items(items: Sequence[Any]) -> np.ndarray:
-                            if not elem_shape:
+                            packed = join_warp_values(items, warp_dtype) if elem_shape else None
+                            if packed is None:
                                 packed = np.asarray(items, dtype=scalar_np_dtype)
-                                if packed.shape != (len(items),):
-                                    raise ValueError("Scalar attribute rows have trailing dimensions")
-                                return packed
-                            packed = pack_warp_values(items, warp_dtype)
                             if packed.shape != (len(items), *elem_shape):
-                                raise ValueError("Compound attribute rows have mismatched shape")
+                                raise ValueError("Custom attribute rows have mismatched shape")
                             return packed
 
                         try:
@@ -1916,7 +1915,9 @@ class ModelBuilder:
                                         upper = count - 1
                                 out = np.empty((count, *elem_shape), dtype=scalar_np_dtype)
                                 out[:] = fill_default
-                                keys = np.fromiter(self.values.keys(), dtype=np.int64, count=len(self.values))
+                                keys = np.fromiter(
+                                    map(operator.index, self.values), dtype=np.int64, count=len(self.values)
+                                )
                                 valid_mask = (keys >= 0) & (keys < upper)
                                 if np.any(valid_mask):
                                     vals_list = list(self.values.values())
@@ -1929,7 +1930,7 @@ class ModelBuilder:
                                     out[-1] = global_np
 
                             return wp.array(out, dtype=self.dtype, requires_grad=requires_grad, device=device)
-                        except (TypeError, ValueError):
+                        except (TypeError, ValueError, OverflowError):
                             pass
 
             if self.is_custom_frequency:
@@ -4708,7 +4709,11 @@ class ModelBuilder:
         custom_attributes = self._prepare_builder_custom_attributes(builder)
         has_actuators = bool(builder.actuator_entries)
         has_batteries = bool(builder.battery_entries)
-        if copy_count > 1:
+        # Transformers can observe actuators and batteries merged by earlier copies.
+        needs_ordered_merge = (has_actuators or has_batteries) and any(
+            attr.values and attr.reference_value_transformer is not None for attr in custom_attributes.values()
+        )
+        if copy_count > 1 and not needs_ordered_merge:
             self._merge_builder_custom_attributes_copies(
                 builder, counts, starts, worlds, label_prefixes, custom_attributes
             )
@@ -6105,6 +6110,7 @@ class ModelBuilder:
             return merged
 
         fallback_attributes: dict[str, ModelBuilder.CustomAttribute] = {}
+        max_row_key = np.iinfo(np.int64).max
 
         for full_key, attr in attributes.items():
             freq_key = attr.frequency
@@ -6116,6 +6122,19 @@ class ModelBuilder:
                 fallback_attributes[full_key] = attr
                 continue
 
+            if isinstance(attr.values, dict) and attr.values:
+                key_starts = starts(self._builder_frequency_key(freq_key))
+                try:
+                    src_keys = np.fromiter(map(operator.index, attr.values), dtype=np.int64, count=len(attr.values))
+                except (TypeError, OverflowError):
+                    fallback_attributes[full_key] = attr
+                    continue
+                # Copy starts are nonnegative and ordered. Keep Python key arithmetic
+                # when the last copy's offset would overflow the NumPy indices.
+                if int(src_keys.max()) > max_row_key - int(key_starts[-1]):
+                    fallback_attributes[full_key] = attr
+                    continue
+
             if (
                 full_key == collision_mask_domain_key
                 and first_domain_shape
@@ -6126,7 +6145,6 @@ class ModelBuilder:
             ):
                 merged = ensure_merged_attr(full_key, attr, False)
                 shape_starts = starts("shape")
-                src_keys = np.fromiter(attr.values.keys(), dtype=np.int64, count=len(attr.values))
                 base_vals = np.asarray(
                     [first_domain_shape.get(int(v), int(v)) for v in attr.values.values()], dtype=np.int64
                 )
@@ -6177,7 +6195,6 @@ class ModelBuilder:
                         merged.values.extend(padded * (copy_count - 1))
                         merged.values.extend(src_list)
                 elif source_values:
-                    src_keys = np.fromiter(source_values.keys(), dtype=np.int64, count=len(source_values))
                     all_keys = (idx_starts[:, None] + src_keys[None, :]).ravel().tolist()
                     all_vals = list(source_values.values()) * copy_count
                     merged.values.update(zip(all_keys, all_vals, strict=False))
@@ -6224,7 +6241,6 @@ class ModelBuilder:
                 if all(self._is_integer_scalar(v) for v in source_values.values()):
                     merged = ensure_merged_attr(full_key, attr, False)
                     if source_values:
-                        src_keys = np.fromiter(source_values.keys(), dtype=np.int64, count=len(source_values))
                         src_vals = np.asarray([int(v) for v in source_values.values()], dtype=np.int64)
                         all_keys = (idx_starts[:, None] + src_keys[None, :]).ravel().tolist()
                         shifted = np.where(

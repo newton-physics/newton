@@ -10,7 +10,6 @@ add_* functions (add_body, add_shape, add_joint, etc.).
 
 import unittest
 import warnings
-from unittest import mock
 
 import numpy as np
 import warp as wp
@@ -2712,20 +2711,7 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
             default=0.0,
             values={-1: [4.0]},
         )
-        original_wp_array = wp.array
-        seen_inputs: list[object] = []
-
-        def spy_wp_array(data, *args, **kwargs):
-            seen_inputs.append(data)
-            return original_wp_array(data, *args, **kwargs)
-
-        with mock.patch.object(wp, "array", side_effect=spy_wp_array):
-            arr = attr.build_array(3, device=self.device)
-
-        # Verify the NumPy fast path rejected non-scalar global_np (even on NumPy 1.x)
-        # and routed the sequence-valued rows through the general list path.
-        self.assertEqual(len(seen_inputs), 1)
-        self.assertIsInstance(seen_inputs[0], list)
+        arr = attr.build_array(3, device=self.device)
         self.assertEqual(arr.shape, (3, 1))
         np.testing.assert_allclose(arr.numpy(), [[4.0], [4.0], [4.0]])
 
@@ -2740,6 +2726,39 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         ref_arr = ref_attr.build_array(3, device=self.device)
         self.assertEqual(ref_arr.shape, (3, 1))
         np.testing.assert_allclose(ref_arr.numpy(), [[0.0], [0.0], [4.0]])
+
+    def test_build_array_nested_vector_rows(self):
+        """Preserve the extra array dimension in nested vector defaults and overrides."""
+        row = [[4.0, 5.0, 6.0]]
+        attr = ModelBuilder.CustomAttribute(
+            name="nested_vector",
+            dtype=wp.vec3,
+            frequency=AttributeFrequency.WORLD,
+            default=row,
+            values={0: [[1.0, 2.0, 3.0]]},
+        )
+        arr = attr.build_array(2, device=self.device)
+        self.assertEqual(arr.shape, (2, 1))
+        np.testing.assert_array_equal(arr.numpy(), [[[1.0, 2.0, 3.0]], row])
+
+        attr.default = wp.vec3(0.0)
+        attr.values = {-1: row}
+        arr = attr.build_array(2, device=self.device)
+        self.assertEqual(arr.shape, (2, 1))
+        np.testing.assert_array_equal(arr.numpy(), [row, row])
+
+    def test_build_array_ignores_unmatched_override_keys(self):
+        """Keep dictionary row matching for keys that cannot be narrowed to integers."""
+        for key in (2**64, 1.5):
+            with self.subTest(key=key):
+                attr = ModelBuilder.CustomAttribute(
+                    name="sparse_override",
+                    dtype=wp.float32,
+                    frequency=AttributeFrequency.BODY,
+                    default=0.0,
+                    values={0: 4.0, key: 9.0},
+                )
+                np.testing.assert_array_equal(attr.build_array(2, device=self.device).numpy(), [4.0, 0.0])
 
 
 if __name__ == "__main__":

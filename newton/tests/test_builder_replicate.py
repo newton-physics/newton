@@ -18,6 +18,51 @@ from newton.utils import compute_world_offsets
 
 
 class TestModelBuilderReplicate(unittest.TestCase):
+    def test_reference_transformer_sees_previous_actuator(self):
+        """Expose the previous copy's actuator rows to the reference transformer."""
+        source = self._make_source()
+
+        def previous_actuator(values, context):
+            entries = context["destination_builder"].actuator_entries
+            return [sum(len(entry.indices) for entry in entries.values()) - 1] * len(values)
+
+        source.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="previous_actuator",
+                dtype=wp.int32,
+                default=-1,
+                frequency="test:thing",
+                values=[0],
+                reference_value_transformer=previous_actuator,
+            )
+        )
+        builder = ModelBuilder()
+        builder.replicate(source, 2)
+        np.testing.assert_array_equal(builder.finalize(device="cpu").previous_actuator.numpy(), [-1, 0])
+
+    def test_replicate_preserves_unmatched_override_keys(self):
+        """Avoid narrowing sparse keys or overflowing them when applying copy offsets."""
+        for key in (2**64, 1.5, 2**63 - 1):
+            with self.subTest(key=key):
+                source = ModelBuilder()
+                source.add_body()
+                source.add_body()
+                source.add_custom_attribute(
+                    ModelBuilder.CustomAttribute(
+                        name="sparse_override",
+                        dtype=wp.float32,
+                        frequency=Model.AttributeFrequency.BODY,
+                        default=0.0,
+                        values={0: 4.0, key: 9.0},
+                    )
+                )
+                builder = ModelBuilder()
+                builder.replicate(source, 2)
+                self.assertEqual(builder.custom_attributes["sparse_override"].values[key + 2], 9.0)
+                np.testing.assert_array_equal(
+                    builder.finalize(device="cpu").sparse_override.numpy(), [4.0, 0.0, 4.0, 0.0]
+                )
+
     @staticmethod
     def _make_source() -> ModelBuilder:
         builder = ModelBuilder()
@@ -1386,6 +1431,9 @@ class TestModelBuilderReplicateLabelPrefixes(unittest.TestCase):
         np.testing.assert_array_equal(rep_model.test.wrap_shape.numpy(), seq_model.test.wrap_shape.numpy())
         np.testing.assert_array_equal(rep_model.test.wrap_world.numpy(), seq_model.test.wrap_world.numpy())
         np.testing.assert_allclose(rep_model.test.wrap_prm.numpy(), seq_model.test.wrap_prm.numpy())
+        np.testing.assert_array_equal(
+            rep_model.test.wrap_prm.numpy(), np.tile([np.arange(1, 11), np.arange(10)], (4, 1))
+        )
         np.testing.assert_allclose(rep_model.test.body_offset.numpy(), seq_model.test.body_offset.numpy())
         np.testing.assert_array_equal(rep_model.test.body_world.numpy(), seq_model.test.body_world.numpy())
         np.testing.assert_array_equal(
