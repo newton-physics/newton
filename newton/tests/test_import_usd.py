@@ -1846,6 +1846,53 @@ def Xform "Articulation" (
         self.assertAlmostEqual(float(model.joint_limit_kd.numpy()[dof]), builder.default_joint_cfg.limit_kd, places=4)
         self.assertEqual(int(model.mujoco.solreflimit_mode.numpy()[dof]), SOLREF_MODE_MJCF_DEFAULT)
 
+    @requires("pxr.Usd")
+    def test_physics_scene_declaration_keeps_solver_update_flags(self):
+        """Merge a PhysicsScene declaration of a solver attribute with its registration, in either order."""
+        from pxr import Usd
+
+        usd_content = """#usda 1.0
+(
+    upAxis = "Z"
+)
+
+def PhysicsScene "physicsScene"
+{
+    custom float newton:mujoco:gravcomp = 0 (
+        customData = {
+            string assignment = "model"
+            string frequency = "body"
+        }
+    )
+}
+
+def Xform "Body" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+)
+{
+    def Sphere "Collision" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double radius = 0.1
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+        for register_first in (True, False):
+            with self.subTest(register_first=register_first):
+                builder = newton.ModelBuilder()
+                if register_first:
+                    SolverMuJoCo.register_custom_attributes(builder)
+                builder.add_usd(stage)
+                if not register_first:
+                    SolverMuJoCo.register_custom_attributes(builder)
+                model = builder.finalize(device="cpu")
+                self.assertEqual(
+                    model.get_attribute_update_flags("mujoco:gravcomp"), newton.ModelFlags.BODY_INERTIAL_PROPERTIES
+                )
+
     @requires("pxr.Usd", *MUJOCO_MODULES)
     def test_unauthored_usd_solreflimit_uses_mujoco_default(self):
         """Preserve MuJoCo's implicit limit response for an unauthored USD joint."""

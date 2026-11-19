@@ -1667,7 +1667,10 @@ class ModelBuilder:
         construction. :attr:`ModelFlags.NONE <newton.ModelFlags.NONE>` declares that solvers read the
         attribute at every step. Only attributes assigned to :attr:`Model.AttributeAssignment.MODEL`
         declare it. Solvers set it for the custom attributes they register.
-        :meth:`Model.get_attribute_update_flags() <newton.Model.get_attribute_update_flags>` returns it."""
+        :meth:`Model.get_attribute_update_flags() <newton.Model.get_attribute_update_flags>` returns it.
+
+        A redeclaration of the attribute without flags, for example from an imported asset, is
+        compatible with the declared flags and keeps them; two different non-``None`` flags conflict."""
 
         values: dict[int, Any] | list[Any] | None = None
         """Storage for specific values (overrides).
@@ -2849,8 +2852,19 @@ class ModelBuilder:
             and Model._normalize_attribute_reference(existing.references)
             == Model._normalize_attribute_reference(incoming.references)
             and existing.reference_value_transformer is incoming.reference_value_transformer
-            and existing.update_flags == incoming.update_flags
+            # A declaration without update flags is compatible with any flags.
+            and (
+                existing.update_flags is None
+                or incoming.update_flags is None
+                or existing.update_flags == incoming.update_flags
+            )
         )
+
+    def _adopt_custom_attribute_update_flags(self, existing: CustomAttribute, incoming: CustomAttribute) -> None:
+        """Keep the update flags of a matching redeclaration when ``existing`` declares none."""
+        if existing.update_flags is None and incoming.update_flags is not None:
+            existing.update_flags = incoming.update_flags
+            self._custom_schema_epoch += 1
 
     @staticmethod
     def _custom_frequency_specs_match(existing: CustomFrequency, incoming: CustomFrequency) -> bool:
@@ -2920,6 +2934,7 @@ class ModelBuilder:
         if existing:
             if not self._custom_attribute_specs_match(existing, attribute):
                 raise ValueError(f"Custom attribute '{key}' already exists with incompatible spec")
+            self._adopt_custom_attribute_update_flags(existing, attribute)
             self._index_custom_world_reference_attribute(existing)
             return
 
@@ -4805,6 +4820,7 @@ class ModelBuilder:
             if merged is not None:
                 if not self._custom_attribute_specs_match(merged, attr):
                     raise ValueError(f"Custom attribute '{full_key}' already exists with incompatible spec")
+                self._adopt_custom_attribute_update_flags(merged, attr)
                 if not self._custom_attribute_defaults_match(merged.default, attr.default):
                     raise ValueError(
                         f"Custom attribute '{full_key}' default mismatch when merging builders: "
