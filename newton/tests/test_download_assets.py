@@ -169,6 +169,46 @@ class TestDownloadAssets(unittest.TestCase):
                         else:
                             self.assertFalse((path.parent / "assets").exists())
 
+    def test_download_with_versioned_sparse_checkout(self):
+        """Download real assets with compatible sparse-checkout options at each version boundary."""
+        execute = git.Git.execute
+        installed_version = git.Git().version_info
+        for version in ((2, 34, 1), (2, 35, 0), (2, 36, 0)):
+            if version[:2] > installed_version[:2]:
+                continue  # The installed Git must support the options selected by the simulated version.
+            for mode, ref in (("branch", "main"), ("commit", self.work.head.commit.hexsha)):
+                commands = []
+
+                def record_execute(command_git, command, *args, commands=commands, **kwargs):
+                    if "sparse-checkout" in command:
+                        commands.append(command[command.index("sparse-checkout") + 1 :])
+                    return execute(command_git, command, *args, **kwargs)
+
+                with (
+                    self.subTest(version=version, mode=mode),
+                    mock.patch.object(git.Git, "version_info", new_callable=mock.PropertyMock, return_value=version),
+                    mock.patch.object(git.Git, "execute", new=record_execute),
+                ):
+                    cache_dir = Path(self.cache_dir, f"{version[1]}-{mode}")
+                    path = download_git_folder(self.remote_dir, self.asset_rel, cache_dir, ref=ref)
+                    self.assertEqual((path / "foo.txt").read_text(encoding="utf-8"), "v1\n")
+                    with git.Repo(path.parents[1]) as cached_repo:
+                        self.assertEqual(cached_repo.git.config("--bool", "core.sparseCheckoutCone"), "true")
+                    set_commands = [command for command in commands if command[0] == "set"]
+                    self.assertTrue(set_commands)
+                    for command in set_commands:
+                        if version < (2, 36):
+                            self.assertNotIn("--skip-checks", command)
+                        else:
+                            self.assertIn("--skip-checks", command)
+                        self.assertEqual(command[-2:], ["--", self.asset_rel])
+                        if version < (2, 35):
+                            self.assertNotIn("--cone", command)
+                        else:
+                            self.assertIn("--cone", command)
+                    if version < (2, 35):
+                        self.assertIn(["init", "--cone"], commands)
+
     def test_download_long_asset_paths(self):
         """Download long paths without the temporary checkout exceeding Windows path limits."""
         prefix = _cache_prefix(self.remote_dir, self.asset_rel)
@@ -574,6 +614,7 @@ class TestDownloadAssets(unittest.TestCase):
                 clear_git_cache(self.cache_dir)
                 attempts = 0
                 incomplete_repo = mock.Mock()
+                incomplete_repo.git.version_info = git.Git().version_info
                 incomplete_repo.git.fetch.side_effect = git.exc.GitCommandError("git fetch", 128, stderr=stderr)
 
                 def flaky_init(path, *args, incomplete_repo=incomplete_repo, **kwargs):

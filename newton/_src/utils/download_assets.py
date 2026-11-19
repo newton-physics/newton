@@ -293,6 +293,21 @@ def _find_parent_cache(
     return None
 
 
+def _set_sparse_checkout(repo, folder_path: str) -> None:
+    """Select a literal directory using options supported by the installed Git."""
+    version = repo.git.version_info
+    options = []
+    # Git 2.35 moved cone initialization into set; older releases need init.
+    if version < (2, 35):
+        repo.git.sparse_checkout("init", "--cone")
+    else:
+        options.append("--cone")
+    # Git 2.36 introduced path checks and the flag to permit names such as !models.
+    if version >= (2, 36):
+        options.append("--skip-checks")
+    repo.git.sparse_checkout("set", *options, "--", folder_path)
+
+
 def download_git_folder(
     git_url: str,
     folder_path: str,
@@ -421,8 +436,7 @@ def download_git_folder(
                     repo = gitpython.Repo.init(temp_dir)
                     try:
                         repo.create_remote("origin", git_url)
-                        repo.git.sparse_checkout("init")
-                        repo.git.sparse_checkout("set", "--cone", "--skip-checks", "--", folder_path)
+                        _set_sparse_checkout(repo, folder_path)
                         repo.git.fetch("origin", ref, "--depth=1", "--filter=blob:none")
                     except BaseException:
                         repo.close()
@@ -449,7 +463,7 @@ def download_git_folder(
                     final_dir = cache_path / f"{base_prefix}_{tree.hexsha}"
                     # Avoid materializing unchanged files when another ref already cached them.
                     if not (final_dir / folder_path).is_dir():
-                        repo.git.sparse_checkout("set", "--cone", "--skip-checks", "--", folder_path)
+                        _set_sparse_checkout(repo, folder_path)
                         repo.git.checkout(checkout_ref)
                     latest_commit = commit.hexsha
                 finally:
