@@ -10125,6 +10125,9 @@ class TestMuJoCoSolverUpdateFlags(unittest.TestCase):
                     solver.notify_model_changed(model.get_attribute_update_flags(mode_name))
                 array = self._array(model, name)
                 self.assertGreater(array.size, 0, "extend the test model to cover this attribute")
+                # Refresh what earlier edits left stale, so only this edit can change the solver.
+                # This must precede numpy(), which aliases the model array on CPU.
+                solver.notify_model_changed(flags)
                 values = array.numpy()
                 if values.dtype == np.bool_:
                     values = ~values
