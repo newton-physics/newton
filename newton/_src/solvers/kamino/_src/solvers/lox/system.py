@@ -61,10 +61,12 @@ class LOXSystem:
     """Batched dense smooth body systems over independent body components.
 
     World-level bookkeeping remains in model body order. Each body component has
-    one matrix storage row and a packed vector block, so disconnected articulations
-    can be factorized independently. Once the factorization has ordered the rows of
-    each block, the matrices are assembled directly in that order. When every
-    body is prescribed, the system holds one empty placeholder block.
+    one dense matrix and a packed vector block, so disconnected articulations
+    can be factorized independently. The components of several bodies hold one
+    matrix row each, sized for the largest of them; the single bodies hold compact
+    ``6 x 6`` matrices. Once the factorization has ordered the rows of each block,
+    the matrices are assembled directly in that order. When every body is
+    prescribed, the system holds one empty placeholder block.
     The arrays live in :class:`LOXSystemData`, exposed as :attr:`data`.
     """
 
@@ -130,7 +132,7 @@ class LOXSystem:
         info.finalize(dimensions=storage_dimensions, dtype=wp.float32, itype=wp.int32, device=self.device)
         if active_dimensions != storage_dimensions:
             info.dim = wp.array(active_dimensions, dtype=wp.int32, device=self.device)
-        self._data = LOXSystemData(body_block, body_local, body_vector_index, info, self.device)
+        self._data = LOXSystemData(body_block, body_local, body_vector_index, info, self.num_sparse_blocks, self.device)
 
         # The first body of each edge between two dynamic bodies clears the off-diagonal blocks of the edge
         # before an assembly, see :func:`.system_kernels._assemble_body_inertial_systems`
@@ -143,8 +145,7 @@ class LOXSystem:
         self.linear_solver: LLTBlockedRCMTraversalSolver | None = None
         """Sparse LLT of the multi-body blocks, or ``None`` when every block holds a single body."""
         if self.num_sparse_blocks > 0:
-            # The totals of the sparse prefix cover the single-body blocks, so that captured steps
-            # assemble every block into the matrix of the factorization.
+            # The vector total of the sparse prefix covers the packed vectors of every block.
             sparse_info = DenseSquareMultiLinearInfo()
             sparse_info.finalize(
                 dimensions=storage_dimensions[: self.num_sparse_blocks],
@@ -154,7 +155,6 @@ class LOXSystem:
             )
             if active_dimensions != storage_dimensions:
                 sparse_info.dim = wp.array(active_dimensions, dtype=wp.int32, device=self.device)
-            sparse_info.total_mat_size = info.total_mat_size
             sparse_info.total_vec_size = info.total_vec_size
             # Batches that fill the device take small tiles, which skip most of the zero
             # blocks of a tree-like body graph, and one warp per world, which matches the
@@ -194,9 +194,17 @@ class LOXSystem:
 
     @property
     def matrix(self) -> wp.array2d[wp.float32]:
-        """Matrix that the assembly writes: :attr:`LOXSystemData.matrix`, or the matrix of the factorization
-        during :meth:`assemble_and_factorize`."""
+        """Matrices of the multi-body blocks that the assembly writes: :attr:`LOXSystemData.matrix`, or the
+        matrix of the factorization during :meth:`assemble_and_factorize`."""
         return self._matrix
+
+    @property
+    def single_body_matrix(self) -> wp.array2d[wp.float32]:
+        """Matrices of the single-body blocks: :attr:`LOXSystemData.single_body_matrix`.
+
+        Every assembly writes them, including the captured assembly into the factorization.
+        """
+        return self._data.single_body_matrix
 
     @property
     def inverse_permutation(self) -> wp.array[wp.int32] | None:
@@ -266,7 +274,7 @@ class LOXSystem:
                 time_step,
                 self._inverse_permutation,
             ],
-            outputs=[self._matrix, self._data.right_hand_side],
+            outputs=[self._matrix, self._data.single_body_matrix, self._data.right_hand_side],
             device=self.device,
         )
 
@@ -349,7 +357,13 @@ class LOXSystem:
                 joint_rotation_dead_zone,
                 self._inverse_permutation,
             ],
-            outputs=[structural_rows.penalty, structural_rows.body_impulse, self._matrix, self._data.right_hand_side],
+            outputs=[
+                structural_rows.penalty,
+                structural_rows.body_impulse,
+                self._matrix,
+                self._data.single_body_matrix,
+                self._data.right_hand_side,
+            ],
             device=self.device,
         )
 
@@ -424,7 +438,7 @@ class LOXSystem:
                 dynamic_rows.free_velocity,
                 self._inverse_permutation,
             ],
-            outputs=[self._matrix],
+            outputs=[self._matrix, self._data.single_body_matrix],
             device=self.device,
         )
 
@@ -439,6 +453,7 @@ class LOXSystem:
                     self._data.body_local,
                     self._data.info.dim,
                     self._data.matrix,
+                    self._data.single_body_matrix,
                 ],
                 outputs=[self._data.single_body_inverse],
                 device=self.device,

@@ -2629,9 +2629,7 @@ class Gaussian:
                 (default: :attr:`SortingMode.RAY_HIT_DISTANCE`).
             sh_color_space: Color space of evaluated SH radiance. Defaults to
                 sRGB (display-encoded); pass :attr:`~newton.utils.ColorSpace.LINEAR`
-                for scene-linear radiance. Only :class:`~newton.sensors.SensorCamera`
-                honors this; the deprecated :class:`~newton.sensors.SensorTiledCamera`
-                ignores it.
+                for scene-linear radiance.
         """
 
         self._positions = np.ascontiguousarray(np.asarray(positions, dtype=np.float32).reshape(-1, 3))
@@ -2820,7 +2818,7 @@ class Gaussian:
         Raises:
             RuntimeError: If :meth:`finalize` has not been called yet.
         """
-        from ..sensors.warp_raytrace.gaussians import compute_gaussian_bvh_bounds  # noqa: PLC0415
+        from ..render.gaussians import compute_gaussian_bvh_bounds  # noqa: PLC0415
 
         if self._warp_bvh is None or self._warp_data is None:
             raise RuntimeError("Gaussian.bvh_refit() requires Gaussian.finalize() to have been called first.")
@@ -2857,16 +2855,17 @@ class Gaussian:
         Returns:
             A new :class:`Gaussian` instance.
         """
-        import meshio
+        from .utils import _read_ply_vertices  # noqa: PLC0415
 
-        ply = meshio.ply.read(filename)
-        attrs = ply.point_data
+        attrs = _read_ply_vertices(filename)
 
         def columns(prefix: str) -> np.ndarray | None:
             names = sorted((n for n in attrs if n.startswith(prefix)), key=lambda n: int(n[len(prefix) :]))
             return np.stack([attrs[n] for n in names], axis=1).astype(np.float32) if names else None
 
-        positions = np.ascontiguousarray(ply.points, dtype=np.float32)
+        if not all(axis in attrs for axis in "xyz"):
+            raise ValueError(f"PLY file '{filename}' has no vertex positions.")
+        positions = np.stack([attrs[axis] for axis in "xyz"], axis=1).astype(np.float32)
 
         rotations = columns("rot_")
         if rotations is not None:
