@@ -7044,20 +7044,25 @@ class ModelBuilder:
             _validate_variant_builder(self, variant)
         variant_set = _snapshot_variants(variants, labels, self._shape_row_attributes())
         rows = _plan_variant_rows(variant_set, initial, self.body_label[body])
-        declarations = dict(self.custom_attributes)
+        # Merge the declarations into copies, so the variants' own declarations keep their update flags.
+        declarations: dict[str, ModelBuilder.CustomAttribute] = {}
         for row in rows:
             for candidate in row.candidates:
                 for key, declaration, _ in candidate.custom:
-                    if not self._custom_attribute_specs_match(declarations.setdefault(key, declaration), declaration):
+                    merged = declarations.get(key)
+                    if merged is None:
+                        merged = declarations[key] = copy.copy(self.custom_attributes.get(key, declaration))
+                    if not self._custom_attribute_specs_match(merged, declaration):
                         raise ValueError(
                             f"Variant shape custom attribute '{key}' is declared differently than in this "
                             "builder or another variant."
                         )
+                    if merged.update_flags is None:
+                        merged.update_flags = declaration.update_flags
         # Declare every variant's attributes now, so later declarations are checked against them and
-        # finalize() declares nothing.
-        for key, declaration in declarations.items():
-            if key not in self.custom_attributes:
-                self.add_custom_attribute(declaration)
+        # finalize() declares nothing. This also adopts flags for attributes declared without them.
+        for declaration in declarations.values():
+            self.add_custom_attribute(declaration)
 
         # A row's builder flags are the union over the shapes it can hold, which all have the row's
         # role, so contact pairs and joint filters include every one of them.
