@@ -169,6 +169,36 @@ class TestDownloadAssets(unittest.TestCase):
                         else:
                             self.assertFalse((path.parent / "assets").exists())
 
+    def test_download_long_asset_paths(self):
+        """Download long paths without the temporary checkout exceeding Windows path limits."""
+        prefix = _cache_prefix(self.remote_dir, self.asset_rel)
+        cache_dir = Path(self.cache_dir, "branch")
+        final_dir = cache_dir / f"{prefix}_{'a' * 40}"
+        padding = 230 - len(str(final_dir / self.asset_rel / "meshes" / "model.txt"))
+        if padding < 0:
+            self.skipTest("Test cache directory is too long to construct the path boundary")
+        relative_file = Path("meshes", "m" * padding + "model.txt")
+        asset_file = Path(self.work_dir, self.asset_rel) / relative_file
+        asset_file.parent.mkdir()
+        asset_file.write_text("long asset path\n", encoding="utf-8")
+        self.work.index.add([str(asset_file)])
+        commit = self.work.index.commit("Add asset near the Windows path limit")
+        self.work.git.push("origin", "main")
+
+        # The final file fits below MAX_PATH, but a full ref hash makes the temporary file exceed it.
+        git_config = {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.longpaths", "GIT_CONFIG_VALUE_0": "false"}
+        with mock.patch.dict(os.environ, git_config):
+            for mode, ref in (("branch", "main"), ("commit", commit.hexsha)):
+                with (
+                    self.subTest(mode=mode),
+                    mock.patch("newton._src.utils.download_assets._safe_rename", wraps=_safe_rename) as rename,
+                ):
+                    path = download_git_folder(self.remote_dir, self.asset_rel, Path(self.cache_dir, mode), ref=ref)
+                    self.assertEqual((path / relative_file).read_text(encoding="utf-8"), "long asset path\n")
+                    temporary, final = rename.call_args.args
+                    suffix = f"_p{os.getpid()}_t{threading.get_ident()}"
+                    self.assertLessEqual(len(temporary.name), len(final.name) + len(suffix))
+
     def test_reuse_identical_content_across_refs(self):
         """Reuse unchanged assets across commits, branches, and tags."""
         first_commit = self.work.head.commit.hexsha
@@ -763,24 +793,28 @@ class TestCleanupStaleTempDirs(unittest.TestCase):
         _safe_rmtree(self.base)
 
     def test_removes_old_temp_dirs(self):
-        """Orphaned temp dirs older than max_age are removed."""
-        old_temp = self.cache_path / f"{self.base_prefix}_deadbeef_p99999_t99999"
-        old_temp.mkdir(parents=True)
+        """Remove expired temporary directories with short and legacy hashes."""
+        old_temps = [self.cache_path / f"{self.base_prefix}_{'a' * size}_p99999_t99999" for size in (8, 16, 64)]
         old_mtime = time.time() - 7200
-        os.utime(old_temp, (old_mtime, old_mtime))
+        for old_temp in old_temps:
+            old_temp.mkdir()
+            os.utime(old_temp, (old_mtime, old_mtime))
 
         _cleanup_stale_temp_dirs(self.cache_path, self.base_prefix, max_age=3600)
 
-        self.assertFalse(old_temp.exists())
+        for old_temp in old_temps:
+            self.assertFalse(old_temp.exists())
 
     def test_preserves_recent_temp_dirs(self):
-        """Recent temp dirs (within max_age) are not removed."""
-        recent_temp = self.cache_path / f"{self.base_prefix}_deadbeef_p99999_t99999"
-        recent_temp.mkdir(parents=True)
+        """Preserve recent temporary directories with short and legacy hashes."""
+        recent_temps = [self.cache_path / f"{self.base_prefix}_{'a' * size}_p99999_t99999" for size in (8, 16, 64)]
+        for recent_temp in recent_temps:
+            recent_temp.mkdir()
 
         _cleanup_stale_temp_dirs(self.cache_path, self.base_prefix, max_age=3600)
 
-        self.assertTrue(recent_temp.exists())
+        for recent_temp in recent_temps:
+            self.assertTrue(recent_temp.exists())
 
     def test_ignores_non_temp_version_dirs(self):
         """Content-hash version dirs are NOT cleaned by temp cleanup."""

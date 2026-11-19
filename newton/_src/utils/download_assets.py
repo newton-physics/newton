@@ -393,7 +393,8 @@ def download_git_folder(
         return cached_target
 
     # The content hash is only known after fetching the requested tree.
-    temp_dir = _temp_cache_path(cache_path / f"{base_prefix}_{ref_key}")
+    # Bound the ref token to leave room for asset paths in temporary checkouts on Windows.
+    temp_dir = _temp_cache_path(cache_path / f"{base_prefix}_{ref_key[:16]}")
 
     # Clean up orphaned temp directories
     _cleanup_stale_temp_dirs(cache_path, base_prefix)
