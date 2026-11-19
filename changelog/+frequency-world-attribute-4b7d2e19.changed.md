@@ -1,0 +1,1 @@
+Validate integer custom attributes that reference particles, bodies, shapes, joints, or articulations in `ModelBuilder.finalize()`, raising `ValueError` for indices outside `[-1, count - 1]`. Fix such references before finalizing.

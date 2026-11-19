@@ -1,0 +1,1 @@
+Add `ModelBuilder.CustomFrequency.world_attribute` to declare per-world custom-frequency rows. `ModelBuilder.finalize()` validates their world ordering like built-in entities and publishes `<name>_count` and `<name>_world_start` on the model.
