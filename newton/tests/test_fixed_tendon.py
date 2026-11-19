@@ -288,7 +288,7 @@ class TestMujocoFixedTendon(unittest.TestCase):
           <worldbody>
             <body name="finger" pos="0 0 0.5">
               <joint name="mcp-flex" type="hinge" axis="0 1 0" damping="0.1"/>
-              <joint name="mcp_abd" type="hinge" axis="1 0 0" damping="0.1"/>
+              <joint name="mcp_abduction" type="hinge" axis="1 0 0" damping="0.1"/>
               <geom type="capsule" size="0.03 0.1" mass="0.5"/>
               <body name="distal" pos="0 0 -0.2">
                 <joint name="dip_slide" type="slide" axis="0 0 1" damping="0.2"/>
@@ -299,7 +299,7 @@ class TestMujocoFixedTendon(unittest.TestCase):
           </worldbody>
           <tendon>
             <fixed name="synergy-tendon" stiffness="2.0" damping="0.5" springlength="0.0">
-              <joint joint="mcp_abd" coef="-0.5"/>
+              <joint joint="mcp_abduction" coef="-0.5"/>
               <joint joint="mcp-flex" coef="1.2"/>
               <joint joint="dip-hinge" coef="-0.8"/>
               <joint joint="dip_slide" coef="2.0"/>
@@ -362,15 +362,15 @@ class TestMujocoFixedTendon(unittest.TestCase):
             SolverMuJoCo(bad_model, use_mujoco_cpu=True, kinematic_switchable_roots=False)
 
         # Heterogeneous per-world DOF selectors on the same combined joint raise ValueError.
-        het_blueprint = newton.ModelBuilder()
-        het_blueprint.add_mjcf(mjcf, ctrl_direct=True)
-        het_builder = newton.ModelBuilder()
-        het_builder.replicate(het_blueprint, 2)
-        # World 1 entry 0 selects mcp-flex (local DOF 0 -> global 4) instead of mcp_abd (local DOF 1 -> global 5).
-        het_builder.custom_attributes["mujoco:tendon_joint_dof"].values[4] = 4
-        het_model = het_builder.finalize(device="cpu")
+        mismatch_blueprint = newton.ModelBuilder()
+        mismatch_blueprint.add_mjcf(mjcf, ctrl_direct=True)
+        mismatch_builder = newton.ModelBuilder()
+        mismatch_builder.replicate(mismatch_blueprint, 2)
+        # World 1 entry 0 selects mcp-flex (local DOF 0 -> global 4) instead of mcp_abduction (local DOF 1 -> global 5).
+        mismatch_builder.custom_attributes["mujoco:tendon_joint_dof"].values[4] = 4
+        mismatch_model = mismatch_builder.finalize(device="cpu")
         with self.assertRaisesRegex(ValueError, "homogeneous worlds"):
-            SolverMuJoCo(het_model, use_mujoco_cpu=False, separate_worlds=True, kinematic_switchable_roots=False)
+            SolverMuJoCo(mismatch_model, use_mujoco_cpu=False, separate_worlds=True, kinematic_switchable_roots=False)
 
         # Converted 3-hinge ball joints cannot participate in MuJoCo fixed tendons and warn cleanly.
         ball_mjcf = """<mujoco>
