@@ -678,6 +678,15 @@ dominate normal stiffness while a shape with ``mu=0`` makes its pairs
 frictionless. Unexpected slip can also come from missing contacts or an
 incomplete solve.
 
+**Torsional and rolling friction.** Body-body contacts resist spin about the
+contact normal and rolling in the contact plane.
+:attr:`~newton.ModelBuilder.ShapeConfig.mu_torsional` and
+:attr:`~newton.ModelBuilder.ShapeConfig.mu_rolling` are lengths [m]: each
+torque limit is the coefficient times the normal force. Both defaults are
+nonzero. Pair coefficients use the geometric mean, so zero on either shape
+disables that channel. For small parts and thin cables, reduce the
+coefficients or set them to zero if angular resistance is too strong.
+
 **Body coloring.** VBD updates bodies in the same color group in parallel.
 Automatic coloring uses joint and tendon connections, but does not include
 contacts. Contacting bodies may share a color, which can slow convergence.
@@ -686,6 +695,8 @@ doubled solve metric to bound their simultaneous corrections. This can improve
 stability in dense contact networks, but those pairs may need more iterations.
 Bodies in different color groups are updated sequentially, so their contact
 solve metrics are not doubled.
+Damped grasps with same-color contacts can still fail at higher iteration
+counts.
 For small scenes with predictable contacts, consider splitting
 existing groups in ``builder.body_color_groups`` to separate frequently
 contacting bodies. Make these edits after ``builder.color()`` and before

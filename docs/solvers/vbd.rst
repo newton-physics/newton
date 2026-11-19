@@ -767,7 +767,10 @@ internal metric that the solver sets every step from the pair's inverse
 Delassus support over :math:`h^2` plus structural stiffness; the user does not set :math:`\rho_n`. The
 force acts along :math:`\mathbf{n}` at the support points with the matching
 torques, and the row adds :math:`k_{\text{eff}}\,\mathbf{n}\mathbf{n}^{\mathsf T}`
-to the body Hessians (``accumulate_body_body_contacts_per_body``). After every
+to the body Hessians (``accumulate_body_body_contacts_per_body``). For a
+contact between two dynamic bodies of the same color, the body solve doubles
+every Hessian block of the contact (normal, damping and friction) and leaves
+its forces unchanged, which bounds the two simultaneous corrections. After every
 iteration the multiplier is advanced by the relaxed ascent
 :math:`\lambda_n \leftarrow \max\big(s\,(\lambda_n + \rho_n C),\ 0\big)`
 (``update_duals_body_body_contacts``). At
@@ -788,7 +791,9 @@ bodies: the torque about the normal is clamped to
 :math:`\mu_{\text{tor}} f_n` and the torque in the contact plane is projected
 onto the disk of radius :math:`\mu_{\text{roll}} f_n`, with the pair's
 :attr:`~newton.ModelBuilder.ShapeConfig.mu_torsional` and
-:attr:`~newton.ModelBuilder.ShapeConfig.mu_rolling` [m]. Damping is
+:attr:`~newton.ModelBuilder.ShapeConfig.mu_rolling` [m], each the geometric
+mean of the two shapes' values, so a zero on either shape removes that
+resistance for the pair. Damping is
 :math:`-k_d\,(\mathbf{n}\cdot\mathbf{v}_{\text{rel}})\,\mathbf{n}` while the row
 carries load, only while the bodies approach by default and in both directions
 of the normal relative velocity with ``rigid_contact_damping_bidirectional=True``.

@@ -412,6 +412,7 @@ def _eval_contact_pair_conditioning_kernel(
     body_inv_mass: wp.array[float],
     body_inv_inertia: wp.array[wp.mat33],
     rho_out: wp.array[wp.vec4],
+    metric_out: wp.array[wp.mat33],
 ):
     normal = wp.vec3(0.0, 0.0, 1.0)
     anchor = wp.vec3(1.0, 0.0, 0.0)
@@ -422,6 +423,10 @@ def _eval_contact_pair_conditioning_kernel(
         0, 1, normal, body_q, body_inv_mass, body_inv_inertia, 1.0
     )
     rho_out[0] = wp.vec4(tangent_rho[0, 0], tangent_rho[0, 1], torsional_rho, rolling_rho[0, 1])
+    _, tangent_metric = _project_friction_disk_metric(wp.vec3(0.0), normal, tangent_rho, 1.0)
+    _, rolling_metric = _project_friction_disk_metric(wp.vec3(0.0), normal, rolling_rho, 1.0)
+    metric_out[0] = tangent_metric
+    metric_out[1] = rolling_metric
 
 
 @wp.kernel
@@ -497,7 +502,6 @@ def _eval_compliant_sliding_contact_metric_kernel(
         0.0,
         wp.vec3(0.0),
         0.5,
-        0.01,
         0.01,
         wp.vec3(0.0),
         False,
@@ -902,7 +906,6 @@ def _eval_separating_contact_damping_kernel(
         20.0,
         wp.vec3(0.0),
         0.0,
-        0.01,
         dt,
         wp.vec3(0.0),
         bidirectional,
@@ -937,7 +940,6 @@ def _eval_separating_contact_damping_kernel(
         0.0,
         wp.vec3(0.0),
         0.0,
-        0.01,
         dt,
         wp.vec3(0.0),
         bidirectional,
@@ -1214,7 +1216,6 @@ def _eval_rigid_contact_rigid_motion_kernel(
         20.0,
         wp.vec3(0.0),
         0.0,
-        0.01,
         dt,
         wp.vec3(0.0),
         False,
@@ -1249,7 +1250,6 @@ def _eval_rigid_contact_rigid_motion_kernel(
         0.0,
         wp.vec3(0.0),
         0.0,
-        0.01,
         dt,
         wp.vec3(0.0),
         False,
@@ -1620,29 +1620,44 @@ def _rigid_contact_conditioning_uses_world_pair_mobility(test, device):
             device=device,
         )
         rho = wp.empty(1, dtype=wp.vec4, device=device)
+        metric = wp.empty(2, dtype=wp.mat33, device=device)
 
         wp.launch(
             _eval_contact_pair_conditioning_kernel,
             dim=1,
             inputs=[shape_body, body_q, body_com, body_inv_mass, body_inv_inertia],
-            outputs=[rho],
+            outputs=[rho, metric],
             device=device,
         )
 
         # Tangent: diag(1, 10) + diag(10, 1) = 11I.
         # Angular: diag(1, 2, 9) + diag(2, 1, 9) = diag(3, 3, 18).
         np.testing.assert_allclose(rho.numpy()[0], [1.0 / 11.0, 1.0 / 11.0, 1.0 / 18.0, 1.0 / 3.0], rtol=1.0e-6)
+        np.testing.assert_allclose(
+            metric.numpy(),
+            [
+                np.diag([1.0 / 11.0, 1.0 / 11.0, 0.0]),
+                np.diag([1.0 / 3.0, 1.0 / 3.0, 0.0]),
+            ],
+            rtol=1.0e-6,
+            atol=1.0e-7,
+        )
 
         body_q.assign([wp.transform_identity(), wp.transform_identity()])
         wp.launch(
             _eval_contact_pair_conditioning_kernel,
             dim=1,
             inputs=[shape_body, body_q, body_com, body_inv_mass, body_inv_inertia],
-            outputs=[rho],
+            outputs=[rho, metric],
             device=device,
         )
         # Tangent: diag(2, 20); retain both inverse-response eigenvalues.
         np.testing.assert_allclose(rho.numpy()[0], [0.5, 0.05, 1.0 / 18.0, 0.25], rtol=1.0e-6)
+        np.testing.assert_allclose(
+            metric.numpy(),
+            [np.diag([0.5, 0.05, 0.0]), np.diag([0.5, 0.25, 0.0])],
+            atol=1.0e-7,
+        )
 
         # Very heavy bodies: rho must scale with mass instead of overflowing float32.
         body_inv_mass.fill_(1.0e-20)
@@ -1651,10 +1666,47 @@ def _rigid_contact_conditioning_uses_world_pair_mobility(test, device):
             _eval_contact_pair_conditioning_kernel,
             dim=1,
             inputs=[shape_body, body_q, body_com, body_inv_mass, body_inv_inertia],
-            outputs=[rho],
+            outputs=[rho, metric],
             device=device,
         )
         np.testing.assert_allclose(rho.numpy()[0], [0.5e20, 0.05e20, 1.0e20 / 18.0, 0.25e20], rtol=1.0e-6)
+
+        # An oblique pair must preserve inverse-response directions, not just eigenvalues.
+        angle = 0.37
+        rotation = np.array(
+            [
+                [math.cos(angle), -math.sin(angle), 0.0],
+                [math.sin(angle), math.cos(angle), 0.0],
+                [0.0, 0.0, 1.0],
+            ]
+        )
+        inverse_inertia = np.diag([1.0, 2.0, 9.0])
+        point_mobility, angular_mobility = np.zeros((3, 3)), np.zeros((3, 3))
+        for orientation in (np.eye(3), rotation):
+            world_inertia = orientation @ inverse_inertia @ orientation.T
+            x, y, z = orientation @ np.array([1.0, 0.0, 0.0])
+            cross = np.array([[0.0, -z, y], [z, 0.0, -x], [-y, x, 0.0]])
+            point_mobility += np.eye(3) - cross @ world_inertia @ cross
+            angular_mobility += world_inertia
+        expected = np.zeros((2, 3, 3))
+        expected[0, :2, :2] = np.linalg.inv(point_mobility[:2, :2])
+        expected[1, :2, :2] = np.linalg.inv(angular_mobility[:2, :2])
+        body_inv_mass.fill_(1.0)
+        body_inv_inertia.assign([inverse_inertia, inverse_inertia])
+        body_q.assign(
+            [
+                wp.transform_identity(),
+                wp.transform(wp.vec3(0.0), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), angle)),
+            ]
+        )
+        wp.launch(
+            _eval_contact_pair_conditioning_kernel,
+            dim=1,
+            inputs=[shape_body, body_q, body_com, body_inv_mass, body_inv_inertia],
+            outputs=[rho, metric],
+            device=device,
+        )
+        np.testing.assert_allclose(metric.numpy(), expected, rtol=2.0e-6, atol=1.0e-7)
 
 
 def _friction_disk_projection_matches_metric_oracle(test, device):
@@ -1912,27 +1964,33 @@ def _angular_contact_friction_isolates_channels(test, device):
         normal.assign([normal_np])
         rolling_history = 0.001 * np.array([-1.0, 0.0, 1.0]) / math.sqrt(2.0)
         rolling_limit = 0.002
-        wp.launch(
-            _eval_angular_contact_friction_kernel,
-            dim=1,
-            inputs=[
-                body_q,
-                body_q_prev,
-                normal,
-                wp.zeros(1, dtype=float, device=device),
-                wp.array([rolling_limit / 100.0], dtype=float, device=device),
-                wp.array([rolling_history], dtype=wp.vec3, device=device),
-                1.0e6,
-            ],
-            outputs=[torque, hessian],
-            device=device,
-        )
-        torque_np = torque.numpy()[0].astype(np.float64)
-        normal_torque = float(np.dot(torque_np, normal_np))
-        tangent_torque = torque_np - normal_np * normal_torque
-        test.assertLess(abs(normal_torque), 1.0e-5 * rolling_limit)
-        test.assertLessEqual(np.linalg.norm(torque_np), (1.0 + 1.0e-5) * rolling_limit)
-        test.assertGreater(np.linalg.norm(tangent_torque), 0.5 * np.linalg.norm(rolling_history))
+        # At a response of 1e6, float32 rounding of the rotation times the response exceeds the limit,
+        # so only the bounds hold there; the history is checked at 1e3.
+        for response in (1.0e6, 1.0e3):
+            wp.launch(
+                _eval_angular_contact_friction_kernel,
+                dim=1,
+                inputs=[
+                    body_q,
+                    body_q_prev,
+                    normal,
+                    wp.zeros(1, dtype=float, device=device),
+                    wp.array([rolling_limit / 100.0], dtype=float, device=device),
+                    wp.array([rolling_history], dtype=wp.vec3, device=device),
+                    response,
+                ],
+                outputs=[torque, hessian],
+                device=device,
+            )
+            torque_np = torque.numpy()[0].astype(np.float64)
+            normal_torque = float(np.dot(torque_np, normal_np))
+            tangent_torque = torque_np - normal_np * normal_torque
+            test.assertLess(abs(normal_torque), 1.0e-5 * rolling_limit)
+            test.assertLessEqual(np.linalg.norm(torque_np), (1.0 + 1.0e-5) * rolling_limit)
+            if response == 1.0e3:
+                np.testing.assert_allclose(
+                    tangent_torque, rolling_history, rtol=0.0, atol=0.05 * np.linalg.norm(rolling_history)
+                )
 
 
 def _rigid_contact_structural_support_conditions_tangent_rho(test, device):
@@ -3364,13 +3422,10 @@ def _body_body_contact_damping_ignores_rho(test, device):
                 material_kd,
                 material_mu,
                 contact_tangent_rho,
-                wp.zeros(4, dtype=float, device=device),
-                wp.zeros(4, dtype=wp.mat22, device=device),
                 contact_lambda,
                 wp.zeros(4, dtype=wp.vec3, device=device),
                 contact_c0,
                 0.95,
-                0.01,
                 False,
             ],
             outputs=[body0, body1, point0_world, point1_world, force_on_body1, pure_torque_on_body1],
@@ -5508,8 +5563,9 @@ def _collect_rigid_contact_forces_reports_solved_angular_reaction(test, device):
     omega_prev = state_in.body_qd.numpy()[body, 3:].copy()
     solver.iterations = 1
     pipeline.collide(state_in, contacts)
-    solver.step(state_in, state_out, None, contacts, dt)
-    _, body1, _, _, _, count = solver.collect_rigid_contact_forces(state_out.body_q, body_q_prev, contacts, dt)
+    observables = solver.observables(contacts=contacts, kinds={newton.solvers.SolverBase.ObservableKind.CONTACT_F})
+    solver.step(state_in, state_out, None, contacts, dt, observables=observables)
+    body0, body1, _, _, force1, count = solver.collect_rigid_contact_forces(state_out.body_q, body_q_prev, contacts, dt)
 
     test.assertEqual(int(count.numpy()[0]), 1)
     sign = 1.0 if int(body1.numpy()[0]) == body else -1.0
@@ -5517,6 +5573,23 @@ def _collect_rigid_contact_forces_reports_solved_angular_reaction(test, device):
     test.assertGreater(float(np.linalg.norm(expected)), 0.01)
     np.testing.assert_allclose(sign * solver.body_body_contact_lambda_angular.numpy()[0], expected, atol=1.0e-6)
     np.testing.assert_allclose(sign * solver._rigid_contact_pure_torque_on_body1.numpy()[0], expected, atol=1.0e-6)
+
+    # The public wrench is on body 0: the force moment plus the opposite pure couple.
+    body0_index = int(body0.numpy()[0])
+    poses = state_out.body_q.numpy()
+    reference = (
+        _transform_contact_point_np(poses, body0_index, model.body_com.numpy()[body0_index])
+        if body0_index >= 0
+        else np.zeros(3)
+    )
+    point0 = _transform_contact_point_np(poses, body0_index, contacts.rigid_contact_point0.numpy()[0])
+    force0 = -force1.numpy()[0]
+    expected_torque0 = np.cross(point0 - reference, force0) - sign * expected
+    np.testing.assert_allclose(
+        observables.contact_f.numpy()[0],
+        np.concatenate((force0, expected_torque0)),
+        atol=1.0e-6,
+    )
 
     # A separating damper can reverse the net force without releasing elastic support.
     normal = contacts.rigid_contact_normal.numpy()[0]
@@ -5841,6 +5914,44 @@ def _body_body_contact_lists_flag_same_color_pairs(test, device):
     entries = body_contact_bodies.numpy()
     listed = sorted((int(c), *(int(v) for v in e)) for c, e in zip(indices, entries, strict=True) if c >= 0)
     test.assertEqual(listed, [(0, 0, 1, 1), (0, 0, 1, 1), (1, 1, 2, 0), (1, 1, 2, 0)])
+
+
+def _same_color_stack_holds_on_slope(test, device):
+    """Hold a three-box stack of one color at rest on a 20 degree slope."""
+    theta = np.radians(20.0)
+    normal = np.array([np.sin(theta), 0.0, np.cos(theta)])
+    down = np.array([np.cos(theta), 0.0, -np.sin(theta)])
+    ke, dt = 1.0e5, 1.0 / 600.0
+    material = {"ke": ke, "kd": 100.0, "mu": 0.5, "mu_torsional": 0.0, "mu_rolling": 0.0}
+    builder = newton.ModelBuilder()
+    builder.add_shape_plane(
+        plane=(*normal, 0.0), width=3.0, length=3.0, cfg=newton.ModelBuilder.ShapeConfig(density=0.0, **material)
+    )
+    # 1 kg boxes, started at the loaded depth of four corner contacts.
+    box_cfg = newton.ModelBuilder.ShapeConfig(density=250.0, **material)
+    tilt = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), float(theta))
+    sink = 9.81 * np.cos(theta) / (4.0 * ke)
+    for level in range(3):
+        height = 0.05 + 0.1 * level - sink * sum(3 - j for j in range(level + 1))
+        body = builder.add_body(xform=wp.transform(wp.vec3(*(height * normal)), tilt))
+        builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.05, cfg=box_cfg)
+    builder.color()
+    test.assertEqual(len(builder.body_color_groups), 1)
+    model = builder.finalize(device=device)
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    solver = newton.solvers.SolverVBD(model, iterations=10)
+    state_in, state_out = model.state(), model.state()
+    start = state_in.body_q.numpy()[body, :3].copy()
+    for _ in range(480):
+        pipeline.collide(state_in, contacts)
+        solver.step(state_in, state_out, None, contacts, dt)
+        state_in, state_out = state_out, state_in
+
+    # tan(20 deg) < mu, so the stack must stay. In 0.8 s the top box creeps 2.3 mm on main
+    # and 0.6 mm with the same-color pair factor disabled.
+    creep = float((state_in.body_q.numpy()[body, :3] - start) @ down)
+    test.assertAlmostEqual(creep, 0.0, delta=4.0e-4)
 
 
 def _body_particle_contact_lists_skip_static_kinematic(test, device):
@@ -7339,6 +7450,12 @@ add_function_test(
     TestSolverVBD,
     "test_body_body_contact_lists_flag_same_color_pairs",
     _body_body_contact_lists_flag_same_color_pairs,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_same_color_stack_holds_on_slope",
+    _same_color_stack_holds_on_slope,
     devices=devices,
 )
 add_function_test(
