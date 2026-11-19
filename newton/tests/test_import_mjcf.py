@@ -13318,5 +13318,85 @@ class TestImportMjcfHeightfieldOrientation(unittest.TestCase):
             np.testing.assert_allclose(imported_grid(png, {"terrain.png": png_payload}), flipped)
 
 
+class TestImportMjcfJointDofLabels(unittest.TestCase):
+    def test_mjcf_joint_dof_labels(self):
+        """Ensure add_mjcf populates mujoco:joint_dof_label across merged, hyphenated, ball, and free joints."""
+        mjcf = """<mujoco model="robot">
+            <worldbody>
+                <body name="root_body" pos="0 0 1">
+                    <freejoint name="root-free"/>
+                    <geom type="sphere" size="0.1"/>
+                    <body name="hinge_slide" pos="0 0 0.2">
+                        <joint name="hinge-a" type="hinge" axis="1 0 0"/>
+                        <joint name="slide_b" type="slide" axis="0 0 1"/>
+                        <geom type="sphere" size="0.05"/>
+                    </body>
+                    <body name="underscore_ambig" pos="0 0 0.4">
+                        <joint name="a_b" type="hinge" axis="1 0 0"/>
+                        <joint name="c" type="hinge" axis="0 1 0"/>
+                        <geom type="sphere" size="0.05"/>
+                    </body>
+                    <body name="ball_body" pos="0 0 0.6">
+                        <joint name="sph-joint" type="ball"/>
+                        <geom type="sphere" size="0.05"/>
+                    </body>
+                    <body name="three_hinge" pos="0 0 0.8">
+                        <joint name="rx" type="hinge" axis="1 0 0"/>
+                        <joint name="ry" type="hinge" axis="0 1 0"/>
+                        <joint name="rz" type="hinge" axis="0 0 1"/>
+                        <geom type="sphere" size="0.05"/>
+                    </body>
+                </body>
+            </worldbody>
+        </mujoco>"""
+
+        prefix = "robot/worldbody/root_body"
+        for convert_3d in (False, True):
+            with self.subTest(convert_3d_hinge_to_ball_joints=convert_3d):
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(mjcf, convert_3d_hinge_to_ball_joints=convert_3d)
+                model = builder.finalize(device="cpu")
+
+                expected = [
+                    f"{prefix}/root-free:transX",
+                    f"{prefix}/root-free:transY",
+                    f"{prefix}/root-free:transZ",
+                    f"{prefix}/root-free:rotX",
+                    f"{prefix}/root-free:rotY",
+                    f"{prefix}/root-free:rotZ",
+                    # Newton orders linear DOFs before angular DOFs on combined joints.
+                    f"{prefix}/hinge_slide/slide_b",
+                    f"{prefix}/hinge_slide/hinge-a",
+                    f"{prefix}/underscore_ambig/a_b",
+                    f"{prefix}/underscore_ambig/c",
+                    f"{prefix}/ball_body/sph-joint:rotX",
+                    f"{prefix}/ball_body/sph-joint:rotY",
+                    f"{prefix}/ball_body/sph-joint:rotZ",
+                    f"{prefix}/three_hinge/rx",
+                    f"{prefix}/three_hinge/ry",
+                    f"{prefix}/three_hinge/rz",
+                ]
+                self.assertEqual(model.mujoco.joint_dof_label, expected)
+
+                if not convert_3d:
+                    solver = newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True, kinematic_switchable_roots=False)
+                    jnt_to_dof = solver.mjc_jnt_to_newton_dof.numpy()[0]
+                    mapped_labels = [model.mujoco.joint_dof_label[int(d)] for d in jnt_to_dof]
+                    self.assertEqual(
+                        mapped_labels,
+                        [
+                            f"{prefix}/root-free:transX",
+                            f"{prefix}/hinge_slide/slide_b",
+                            f"{prefix}/hinge_slide/hinge-a",
+                            f"{prefix}/underscore_ambig/a_b",
+                            f"{prefix}/underscore_ambig/c",
+                            f"{prefix}/ball_body/sph-joint:rotX",
+                            f"{prefix}/three_hinge/rx",
+                            f"{prefix}/three_hinge/ry",
+                            f"{prefix}/three_hinge/rz",
+                        ],
+                    )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
