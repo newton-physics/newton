@@ -1172,7 +1172,9 @@ def delassus_null_bases(problem: DualProblem, rel_tol: float = 1e-6) -> list[np.
     return bases
 
 
-def add_null_components(problem: DualProblem, vector: wp.array, bases: list[np.ndarray], scale: float) -> np.ndarray:
+def add_null_components(
+    problem: DualProblem, vector: wp.array[wp.float32], bases: list[np.ndarray], scale: float
+) -> np.ndarray:
     """Adds null-space components of norm ``scale`` to each world block of ``vector`` and returns the result."""
     rng = np.random.default_rng(0)
     vector_np = vector.numpy()
@@ -1193,67 +1195,94 @@ class TestPADMMNullspaceRobustness(NewtonTestCase):
         setup_test_output(self)
 
     def test_00_delassus_dual_residual(self):
-        """The Delassus-weighted dual residual matches `P^{-1} D (x - x_p)` between consecutive iterates."""
+        """Check that the Delassus-weighted dual residual matches `P^{-1} D (x - x_p)` between consecutive iterates."""
         builders = {
             "fourbar": lambda sparse: make_redundant_fourbar(self.default_device, sparse),
             "box_on_plane": lambda sparse: TestSetup(
                 builder_fn=basics.build_box_on_plane, max_world_contacts=8, device=self.default_device, sparse=sparse
             ),
         }
-        num_iterations = 5
         # NOTE: The unpenalized four-bar converges within a few iterations, so only the deterministic dense
         # solves resolve the last change of iterates
         cases = [
-            (name, sparse, use_acceleration, penalty, unpenalized)
+            (name, sparse, use_acceleration, penalty, unpenalized, False, 5)
             for name in builders
             for sparse in (False, True)
             for use_acceleration in (False, True)
             for penalty in ("fixed", "balanced")
             for unpenalized in ((False, True) if name == "fourbar" and not sparse else (False,))
         ]
+
+        # Drop the redundant rows, whose residual dominates the maximum only after several accelerated iterations
+        cases += [("fourbar", sparse, False, "fixed", False, True, 5) for sparse in (False, True)]
+        cases += [("fourbar", False, True, "fixed", False, True, 30)]
+
         setups = {}
-        for name, sparse, use_acceleration, penalty, unpenalized in cases:
+        for name, sparse, use_acceleration, penalty, unpenalized, detect, num_iterations in cases:
             # Build each model once, with the bare Delassus matrices that the solves regularize
             if (name, sparse) not in setups:
                 test = builders[name](sparse)
                 test.build()
                 D = [D.astype(np.float64) for D in extract_delassus(test.problem.delassus, only_active_dims=True)]
                 P = extract_problem_vector(test.problem.delassus, test.problem.data.P.numpy(), only_active_dims=True)
-                setups[name, sparse] = (test, D, P)
-            test, D, P = setups[name, sparse]
+                setups[name, sparse] = (test, D, P, delassus_null_bases(test.problem))
+            test, D, P, bases = setups[name, sparse]
             with self.subTest(
-                model=name, sparse=sparse, use_acceleration=use_acceleration, penalty=penalty, unpenalized=unpenalized
+                model=name,
+                sparse=sparse,
+                use_acceleration=use_acceleration,
+                penalty=penalty,
+                unpenalized=unpenalized,
+                detect=detect,
             ):
                 # Run the solver for two consecutive iteration counts from the same cold start
-                x, r_d = [], []
+                x, r_d, r_dual = [], [], []
                 for max_iterations in (num_iterations - 1, num_iterations):
                     config = PADMMSolver.Config(
                         dual_residual_mode="delassus",
-                        detect_redundant_kinematics=False,
+                        detect_redundant_kinematics=detect,
                         unpenalized_bilateral_rows=unpenalized,
                         max_iterations=max_iterations,
                         penalty_update_method=penalty,
                         penalty_update_freq=1,
                     )
-                    solver = PADMMSolver(model=test.model, config=config, use_acceleration=use_acceleration)
+                    solver = PADMMSolver(
+                        model=test.model, config=config, problem=test.problem, use_acceleration=use_acceleration
+                    )
                     test.build()
+
+                    # Load the dropped rows with impulses by a null-space bias
+                    if detect:
+                        add_null_components(test.problem, test.problem.data.v_f, bases, 1e-2)
                     solver.coldstart()
                     solver.solve(problem=test.problem)
+                    if detect:
+                        self.assertGreater(int(solver._redundant_joints.shifted.numpy().sum()), 0)
                     x.append(
                         extract_problem_vector(
                             test.problem.delassus, solver.data.state.x.numpy(), only_active_dims=True
                         )
                     )
                     r_d.append(solver.data.status.numpy()["r_d"])
+                    r_dual.append(
+                        extract_problem_vector(
+                            test.problem.delassus, solver.data.residuals.r_dual.numpy(), only_active_dims=True
+                        )
+                    )
 
                 # Compare with the explicit Delassus product of the last change of preconditioned iterates
                 for w in range(len(D)):
                     dx = (x[1][w].astype(np.float64) - x[0][w]) / P[w]
-                    r_d_ref = np.abs((D[w] @ dx) / P[w]).max()
-                    np.testing.assert_allclose(r_d[1][w], r_d_ref, rtol=1e-2, atol=1e-6)
+                    r_dual_ref = (D[w] @ dx) / P[w]
+                    np.testing.assert_allclose(r_d[1][w], np.abs(r_dual_ref).max(), rtol=1e-2, atol=1e-6)
+
+                    # Compare each row, which the non-accelerated solve stores
+                    if detect and not use_acceleration:
+                        atol = 1e-4 * np.abs(r_dual_ref).max()
+                        np.testing.assert_allclose(r_dual[1][w], r_dual_ref, rtol=1e-2, atol=atol)
 
     def test_01_delassus_dual_residual_converges_with_null_leakage(self):
-        """The Delassus-weighted dual residual converges despite a free velocity leaking into the Delassus null space."""
+        """Check that the Delassus-weighted dual residual converges with a free velocity leaking into the null space."""
         for sparse in (False, True):
             for use_acceleration in (False, True):
                 with self.subTest(sparse=sparse, use_acceleration=use_acceleration):
@@ -1278,7 +1307,7 @@ class TestPADMMNullspaceRobustness(NewtonTestCase):
                         self.assertFalse(bool(status["standard"]["converged"]))
 
     def test_02_redundant_joint_shift(self):
-        """Dropping the redundant joint rows leaves no impulse on them and preserves the solution velocities."""
+        """Check that dropping the redundant joint rows leaves no impulse on them and keeps the solution velocities."""
         for sparse in (False, True):
             with self.subTest(sparse=sparse):
                 v_plus, lambdas = [], []
@@ -1315,7 +1344,7 @@ class TestPADMMNullspaceRobustness(NewtonTestCase):
                 np.testing.assert_allclose(v_plus[1], v_plus[0], rtol=0.0, atol=1e-3 * np.abs(v_plus[0]).max())
 
     def test_03_redundant_joint_sparse_block(self):
-        """The kinematic joint block assembled from the sparse Jacobian matches the dense Delassus matrix."""
+        """Check that the kinematic joint block assembled from the sparse Jacobian matches the dense Delassus matrix."""
         blocks, shifts = [], []
         for sparse in (False, True):
             test = make_redundant_fourbar(self.default_device, sparse)
@@ -1351,7 +1380,7 @@ class TestPADMMNullspaceRobustness(NewtonTestCase):
                 self.assertEqual(np.linalg.matrix_rank(B[np.ix_(kept, kept)], tol=1e-6 * np.abs(B).max()), rank)
 
     def test_04_unpenalized_bilateral_rows(self):
-        """Removing the penalty of the bilateral joint rows preserves the solution and speeds up convergence."""
+        """Check that removing the penalty of the bilateral joint rows keeps the solution and speeds up convergence."""
         for use_acceleration in (False, True):
             with self.subTest(use_acceleration=use_acceleration):
                 status, v_plus, lambdas = {}, {}, {}
@@ -1380,7 +1409,7 @@ class TestPADMMNullspaceRobustness(NewtonTestCase):
                 )
 
     def test_05_reuse_redundant_kinematics_set(self):
-        """Reusing the dropped joint rows that pass the check gives the solution of the detection at every step."""
+        """Check that reusing the dropped rows that pass the check gives the solution of the detection at every step."""
         for sparse, linear_solver in (
             (False, LLTBlockedSolver),
             (False, LLTBlockedRCMSolver),
@@ -1432,7 +1461,7 @@ class TestPADMMNullspaceRobustness(NewtonTestCase):
                 )
 
     def test_06_redundant_kinematics_detection_requires_loops(self):
-        """The detection of redundant kinematic constraints is only allocated for models with closed loops."""
+        """Check that the redundant kinematics detection is only allocated for models with closed loops."""
         for name, builder_fn, kwargs, has_loops in (
             ("fourbar_fixed", basics.build_boxes_fourbar, {"fixedbase": True, "limits": False}, True),
             ("fourbar_floating", basics.build_boxes_fourbar, {"fixedbase": False, "limits": False}, True),
@@ -1470,7 +1499,7 @@ class TestPADMMNullspaceRobustness(NewtonTestCase):
 
             # Flag both ends as kinematic, which the builder only allows on roots
             view = ModelView(model, "anchored_chain")
-            flags = model.body_flags.numpy()
+            flags = model.body_flags.numpy().copy()
             flags[[bodies[0], bodies[-1]]] = int(BodyFlags.KINEMATIC)
             view.body_flags = wp.array(flags, dtype=wp.int32, device=model.device)
 
@@ -1485,7 +1514,7 @@ class TestPADMMNullspaceRobustness(NewtonTestCase):
             self.assertTrue(np.all(np.isfinite(state_out.body_q.numpy())))
 
     def test_07_dense_metrics_exclude_redundant_row_shifts(self):
-        """The dense Delassus matrix after the solve, and the solver info, exclude the shifts of the dropped rows."""
+        """Check that the dense Delassus matrix after the solve, and the solver info, exclude the dropped row shifts."""
         test = make_redundant_fourbar(self.default_device, sparse=False)
         config = PADMMSolver.Config(max_iterations=50)
         solver = PADMMSolver(model=test.model, config=config, problem=test.problem, collect_info=True)
@@ -1509,6 +1538,7 @@ class TestPADMMNullspaceRobustness(NewtonTestCase):
             expected = D[w] + sigma[w] * np.eye(len(D[w]))
             np.testing.assert_allclose(D_solved[w], expected, rtol=1e-5, atol=1e-5 * np.abs(expected).max())
             v_plus_ref = (D[w] @ (lambdas[w] / P[w]) + v_f[w]) / P[w]
+            self.assertTrue(np.all(np.isfinite(lambdas[w])) and np.all(np.isfinite(v_plus[w])))
             np.testing.assert_allclose(v_plus[w], v_plus_ref, rtol=0.0, atol=1e-4 * np.abs(v_plus_ref).max())
 
 

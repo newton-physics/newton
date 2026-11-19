@@ -593,14 +593,15 @@ class PADMMSolverConfig:
     Must be greater than zero. Defaults to `1e-6`.
     """
 
-    dual_residual_mode: Literal["standard", "delassus"] = "delassus"
+    dual_residual_mode: Literal["standard", "delassus"] = field(default="delassus", kw_only=True)
     """
     The definition of the dual residual `r_dual` between consecutive iterates.\n
     - `"standard"`: The ADMM residual `eta * (x - x_p) + rho * (y - y_p)`, with the penalty `rho` of each row.\n
     - `"delassus"`: The change `D @ (x - x_p)` of the constraint-space velocity, obtained without an
       additional matrix-vector product from the right-hand side of the linear system. It is insensitive
       to the drift of the impulses along the null space of the Delassus operator, e.g. due to redundant
-      constraints, which may otherwise prevent convergence.\n
+      constraints, which may otherwise prevent convergence. With an iterative linear solver, it also includes the
+      change of the linear solver residual, so `linear_solver_tolerance` should be well below `dual_tolerance`.\n
     Both are scaled by the inverse preconditioner. The setting of the first world applies to all worlds.
     Defaults to `"delassus"`.
     """
@@ -738,7 +739,7 @@ class PADMMSolverConfig:
     Defaults to `key_and_position`.
     """
 
-    detect_redundant_kinematics: bool = True
+    detect_redundant_kinematics: bool = field(default=True, kw_only=True)
     """
     Whether to drop the numerically redundant kinematic joint constraints from the Delassus matrix
     using a diagonal shift.\n
@@ -758,7 +759,7 @@ class PADMMSolverConfig:
     The setting of the first world applies to all worlds. Defaults to `True`.
     """
 
-    redundant_kinematics_pivot_threshold: float = 1e-5
+    redundant_kinematics_pivot_threshold: float = field(default=1e-5, kw_only=True)
     """
     The relative pivot below which `detect_redundant_kinematics` drops a kinematic joint constraint.\n
     The relative pivot of a row is the squared sine of the angle between the row and the span of the rows
@@ -768,7 +769,7 @@ class PADMMSolverConfig:
     The setting of the first world applies to all worlds. Must be in the range (0, 1). Defaults to `1e-5`.
     """
 
-    reuse_redundant_kinematics_set: bool = True
+    reuse_redundant_kinematics_set: bool = field(default=True, kw_only=True)
     """
     Whether to keep the set of kinematic joint constraints dropped at the previous step while it remains valid.\n
     At every step, the previous set is checked for kept rows that became dependent, or dropped rows that became
@@ -782,7 +783,7 @@ class PADMMSolverConfig:
     The setting of the first world applies to all worlds. Defaults to `True`.
     """
 
-    unpenalized_bilateral_rows: bool = True
+    unpenalized_bilateral_rows: bool = field(default=True, kw_only=True)
     """
     Whether to remove the ALM penalty from the bilateral joint constraints, i.e. the joint dynamics and
     kinematic rows.\n

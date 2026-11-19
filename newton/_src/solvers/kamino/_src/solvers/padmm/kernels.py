@@ -817,17 +817,18 @@ def _project_to_feasible_cone(
 
 @wp.func
 def _get_delassus_regularization(
-    sparse: wp.bool, sigma: wp.vec2f, eta: wp.float32, rho: wp.float32, rho_scale: wp.float32
+    sparse: wp.bool, sigma: wp.vec2f, eta: wp.float32, rho: wp.float32, rho_scale: wp.float32, shift: wp.float32
 ) -> wp.float32:
     """
     Returns the proximal regularization held by the Delassus operator on a row in the current iteration.
 
     The dense matrix holds the regularization `sigma` set before the iterations, with the penalty `sigma - eta`
-    scaled by `rho_scale`, while the sparse operator is updated with the current scaled ALM penalty.
+    scaled by `rho_scale`, while the sparse operator is updated with the current scaled ALM penalty. Both
+    also hold the `shift` of the row if it is dropped as redundant.
     """
     if sparse:
-        return eta + rho * rho_scale
-    return sigma[0] - (1.0 - rho_scale) * (sigma[0] - eta)
+        return eta + rho * rho_scale + shift
+    return sigma[0] - (1.0 - rho_scale) * (sigma[0] - eta) + shift
 
 
 @wp.func
@@ -886,6 +887,9 @@ def make_update_dual_variables_and_compute_primal_dual_residuals(
         problem_sparse: wp.bool,
         solver_sigma: wp.array[wp.vec2f],
         solver_rho_scale: wp.array[wp.float32],
+        shift_row_offset: wp.array[wp.int32],
+        shift_num_rows: wp.array[wp.int32],
+        shifts: wp.array2d[wp.float32],
         solver_v: wp.array[wp.float32],
         solver_x: wp.array[wp.float32],
         solver_y: wp.array[wp.float32],
@@ -946,7 +950,12 @@ def make_update_dual_variables_and_compute_primal_dual_residuals(
         r_d = (1.0 / P_i) * (eta * (x - x_p) + rho * (y - y_p))
         if wp.static(delassus_dual_residual):
             sigma = _get_delassus_regularization(
-                problem_sparse, solver_sigma[wid], eta, rho_w, solver_rho_scale[thread_offset]
+                problem_sparse,
+                solver_sigma[wid],
+                eta,
+                rho_w,
+                solver_rho_scale[thread_offset],
+                _get_row_shift(shift_row_offset, shift_num_rows, shifts, wid, tid),
             )
             r_d = _compute_delassus_dual_residual(
                 status.iterations, P_i, sigma, solver_v[thread_offset], x, solver_Dx_p, thread_offset, r_d
@@ -999,6 +1008,9 @@ def _make_project_dual_convergence_accel_kernel(reduction_size: int, delassus_du
         problem_sparse: wp.bool,
         solver_state_sigma: wp.array[wp.vec2f],
         solver_state_rho_scale: wp.array[wp.float32],
+        shift_row_offset: wp.array[wp.int32],
+        shift_num_rows: wp.array[wp.int32],
+        shifts: wp.array2d[wp.float32],
         solver_state_v: wp.array[wp.float32],
         solver_state_x: wp.array[wp.float32],
         solver_state_x_p: wp.array[wp.float32],
@@ -1059,7 +1071,7 @@ def _make_project_dual_convergence_accel_kernel(reduction_size: int, delassus_du
         rho = pen.rho
         inv_rho = 1.0 / rho
         eta = config.eta
-        sigma = _get_delassus_regularization(problem_sparse, solver_state_sigma[wid], eta, rho, 1.0)
+        sigma = _get_delassus_regularization(problem_sparse, solver_state_sigma[wid], eta, rho, 1.0, 0.0)
 
         r_p_local = wp.float32(0.0)
         r_d_local = wp.float32(0.0)
@@ -1161,6 +1173,7 @@ def _make_project_dual_convergence_accel_kernel(reduction_size: int, delassus_du
                                 eta,
                                 rho,
                                 solver_state_rho_scale[thread_offset],
+                                _get_row_shift(shift_row_offset, shift_num_rows, shifts, wid, local_id),
                             ),
                             solver_state_v[thread_offset],
                             x,
