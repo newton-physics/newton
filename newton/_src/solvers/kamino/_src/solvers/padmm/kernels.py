@@ -394,14 +394,33 @@ def _update_delassus_proximal_regularization(
     D[ncts * tid + tid] += sigma[0] - sigma[1] - unscaled * (penalty.rho - penalty.rho_p)
 
 
+@wp.func
+def _get_row_shift(
+    shift_row_offset: wp.array[wp.int32],
+    shift_num_rows: wp.array[wp.int32],
+    shifts: wp.array2d[wp.float32],
+    wid: wp.int32,
+    tid: wp.int32,
+) -> wp.float32:
+    """Returns the diagonal shift of a row dropped as redundant, or zero."""
+    if shifts:
+        row = tid - shift_row_offset[wid]
+        if row >= 0 and row < shift_num_rows[wid]:
+            return shifts[wid, row]
+    return wp.float32(0.0)
+
+
 @wp.kernel
-def _add_unscaled_penalty_to_delassus(
+def _restore_uniform_regularization(
     # Inputs:
     problem_dim: wp.array[wp.int32],
     problem_vio: wp.array[wp.int32],
     solver_config: wp.array[PADMMConfigStruct],
     solver_state_sigma: wp.array[wp.vec2f],
     solver_state_rho_scale: wp.array[wp.float32],
+    shift_row_offset: wp.array[wp.int32],
+    shift_num_rows: wp.array[wp.int32],
+    shifts: wp.array2d[wp.float32],
     # Outputs:
     D_storage: wp.array2d[wp.float32],
 ):
@@ -414,10 +433,11 @@ def _add_unscaled_penalty_to_delassus(
     if tid >= ncts:
         return
 
-    # Complete the regularization of the scaled rows to the uniform `sigma`
+    # Complete the regularization of the scaled rows to the uniform `sigma`, and remove the shifts of the dropped rows
     sigma = solver_state_sigma[wid][0]
     unscaled = 1.0 - solver_state_rho_scale[problem_vio[wid] + tid]
-    D[ncts * tid + tid] += unscaled * (sigma - solver_config[wid].eta)
+    shift = _get_row_shift(shift_row_offset, shift_num_rows, shifts, wid, tid)
+    D[ncts * tid + tid] += unscaled * (sigma - solver_config[wid].eta) - shift
 
 
 @wp.kernel
@@ -460,10 +480,7 @@ def _update_delassus_proximal_regularization_sparse(
     eta = solver_config[wid].eta + solver_penalty[wid].rho * solver_state_rho_scale[mio + tid]
 
     # Add the shifts of the redundant rows, if any
-    if shifts:
-        row = tid - shift_row_offset[wid]
-        if row >= 0 and row < shift_num_rows[wid]:
-            eta += shifts[wid, row]
+    eta += _get_row_shift(shift_row_offset, shift_num_rows, shifts, wid, tid)
     delassus_eta[mio + tid] = eta
 
 
@@ -1598,6 +1615,9 @@ def make_collect_solver_info_kernel(use_acceleration: bool):
         solver_config: wp.array[PADMMConfigStruct],
         solver_state_sigma: wp.array[wp.vec2f],
         solver_state_rho_scale: wp.array[wp.float32],
+        shift_row_offset: wp.array[wp.int32],
+        shift_num_rows: wp.array[wp.int32],
+        shifts: wp.array2d[wp.float32],
         solver_state_s: wp.array[wp.float32],
         solver_state_x: wp.array[wp.float32],
         solver_state_x_p: wp.array[wp.float32],
@@ -1678,13 +1698,15 @@ def make_collect_solver_info_kernel(use_acceleration: bool):
         compute_cwise_vec_mul(ncts, vio, problem_P, solver_state_y, solver_info_lambdas)
 
         # Compute the post-event constraint-space velocity from the current solution: v_plus = v_f + D @ lambda
-        # NOTE: The diagonal of `D` lacks the unscaled share of the penalty, see `_update_delassus_proximal_regularization`
+        # NOTE: The diagonal of `D` lacks the unscaled share of the penalty, see `_update_delassus_proximal_regularization`,
+        # and holds the shifts of the dropped redundant rows
         compute_gemv(ncts, vio, sigma[0], problem_P, problem_D, solver_state_y, problem_v_f, solver_info_v_plus)
         rho = sigma[0] - solver_config[wid].eta
         for i in range(ncts):
             v_i = vio + i
             unscaled = 1.0 - solver_state_rho_scale[v_i]
-            solver_info_v_plus[v_i] += unscaled * rho * solver_state_y[v_i] / problem_P[v_i]
+            shift = _get_row_shift(shift_row_offset, shift_num_rows, shifts, wid, i)
+            solver_info_v_plus[v_i] += (unscaled * rho - shift) * solver_state_y[v_i] / problem_P[v_i]
 
         # Compute the De Saxce correction for each contact as: s = G(v_plus)
         compute_desaxce_corrections(nc, cio, vio, ccgo, problem_mu, solver_info_v_plus, solver_info_s)

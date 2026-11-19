@@ -24,7 +24,6 @@ from ...kinematics.limits import LimitsKamino
 from ...linalg import LLTBlockedRCMSolver, LLTBlockedSolver, RedundantRowShift
 from ...utils.tile import get_block_dim, get_tile_size
 from .kernels import (
-    _add_unscaled_penalty_to_delassus,
     _apply_dual_preconditioner_to_solution,
     _apply_dual_preconditioner_to_state,
     _compute_complementarity_residuals,
@@ -38,6 +37,7 @@ from .kernels import (
     _make_project_dual_convergence_accel_kernel,
     _project_to_feasible_cone,
     _reset_solver_data,
+    _restore_uniform_regularization,
     _scale_warmstart_forces,
     _update_delassus_proximal_regularization,
     _update_delassus_proximal_regularization_sparse,
@@ -83,14 +83,19 @@ def _has_kinematic_loops(model: ModelKamino) -> bool:
     Returns whether the joints with kinematic constraints form a closed loop in any world of the model.
 
     Without loops, each kinematic joint constrains a distinct body relative to the rest of its tree,
-    so the kinematic constraints are never redundant.
+    so the kinematic constraints are never redundant. Immovable bodies count as the world body.
     """
     if model.size.sum_of_num_joints == 0:
         return False
 
-    # Union-find over the bodies, with one node per world for the world body
+    # Union-find over the bodies, with one node per world for the world body and the immovable bodies
     num_bodies = model.size.sum_of_num_bodies
     root = list(range(num_bodies + model.size.num_worlds))
+    for bid, (wid, immovable) in enumerate(
+        zip(model.bodies.wid.numpy(), model.bodies.is_immovable.numpy(), strict=True)
+    ):
+        if immovable:
+            root[bid] = num_bodies + int(wid)
 
     def find(node: int) -> int:
         while root[node] != node:
@@ -554,9 +559,10 @@ class PADMMSolver:
         self._update_solution(problem)
 
         # Restore the uniform regularization of the dense Delassus matrix, as expected by the solution metrics
-        if self._scale_joint_rho and not problem.sparse:
+        detection = self._redundant_joints
+        if (self._scale_joint_rho or detection is not None) and not problem.sparse:
             wp.launch(
-                kernel=_add_unscaled_penalty_to_delassus,
+                kernel=_restore_uniform_regularization,
                 dim=(self._size.num_worlds, self._size.max_of_max_total_cts),
                 inputs=[
                     problem.data.dim,
@@ -564,6 +570,9 @@ class PADMMSolver:
                     self._data.config,
                     self._data.state.sigma,
                     self._data.state.rho_scale,
+                    self._kinematic_cts_offset,
+                    self._num_kinematic_cts,
+                    detection.shifts if detection is not None else None,
                 ],
                 outputs=[problem.data.D],
                 device=self._device,
@@ -1604,6 +1613,9 @@ class PADMMSolver:
                     self._data.config,
                     self._data.state.sigma,
                     self._data.state.rho_scale,
+                    self._kinematic_cts_offset,
+                    self._num_kinematic_cts,
+                    self._redundant_joints.shifts if self._redundant_joints is not None else None,
                     self._data.state.s,
                     self._data.state.x,
                     self._data.state.x_p,

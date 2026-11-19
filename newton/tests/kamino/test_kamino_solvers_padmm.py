@@ -3,6 +3,7 @@
 
 """Unit tests for the Proximal-ADMM Solver."""
 
+import itertools
 import logging
 import unittest
 from pathlib import Path
@@ -13,6 +14,8 @@ import warp as wp
 
 import newton
 from newton import ModelBuilder
+from newton._src.sim import BodyFlags
+from newton._src.solvers.coupled.model_view import ModelView
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.dynamics.dual import DualProblem
 from newton._src.solvers.kamino._src.kinematics.constraints import unpack_constraint_solutions
@@ -31,6 +34,7 @@ from newton._src.solvers.kamino._src.solvers.padmm.math import (
     project_to_coulomb_cone,
     project_to_coulomb_dual_cone,
 )
+from newton._src.solvers.kamino.solver_kamino import SolverKamino
 from newton.tests.kamino import setup_test_output, setup_tests, test_context
 from newton.tests.kamino.utils.extract import (
     extract_delassus,
@@ -1197,23 +1201,32 @@ class TestPADMMNullspaceRobustness(NewtonTestCase):
             ),
         }
         num_iterations = 5
+        # NOTE: The unpenalized four-bar converges within a few iterations, so only the deterministic dense
+        # solves resolve the last change of iterates
         cases = [
             (name, sparse, use_acceleration, penalty, unpenalized)
             for name in builders
             for sparse in (False, True)
             for use_acceleration in (False, True)
             for penalty in ("fixed", "balanced")
-            for unpenalized in ((False, True) if name == "fourbar" else (False,))
+            for unpenalized in ((False, True) if name == "fourbar" and not sparse else (False,))
         ]
+        setups = {}
         for name, sparse, use_acceleration, penalty, unpenalized in cases:
-            make_test = builders[name]
+            # Build each model once, with the bare Delassus matrices that the solves regularize
+            if (name, sparse) not in setups:
+                test = builders[name](sparse)
+                test.build()
+                D = [D.astype(np.float64) for D in extract_delassus(test.problem.delassus, only_active_dims=True)]
+                P = extract_problem_vector(test.problem.delassus, test.problem.data.P.numpy(), only_active_dims=True)
+                setups[name, sparse] = (test, D, P)
+            test, D, P = setups[name, sparse]
             with self.subTest(
                 model=name, sparse=sparse, use_acceleration=use_acceleration, penalty=penalty, unpenalized=unpenalized
             ):
                 # Run the solver for two consecutive iteration counts from the same cold start
                 x, r_d = [], []
                 for max_iterations in (num_iterations - 1, num_iterations):
-                    test = make_test(sparse)
                     config = PADMMSolver.Config(
                         dual_residual_mode="delassus",
                         detect_redundant_kinematics=False,
@@ -1224,10 +1237,6 @@ class TestPADMMNullspaceRobustness(NewtonTestCase):
                     )
                     solver = PADMMSolver(model=test.model, config=config, use_acceleration=use_acceleration)
                     test.build()
-                    D = [D.copy() for D in extract_delassus(test.problem.delassus, only_active_dims=True)]
-                    P = extract_problem_vector(
-                        test.problem.delassus, test.problem.data.P.numpy(), only_active_dims=True
-                    )
                     solver.coldstart()
                     solver.solve(problem=test.problem)
                     x.append(
@@ -1436,6 +1445,71 @@ class TestPADMMNullspaceRobustness(NewtonTestCase):
                 )
                 solver = PADMMSolver(model=test.model, config=PADMMSolver.Config(), problem=test.problem)
                 self.assertEqual(solver._redundant_joints is not None, has_loops)
+
+        # A chain between two immovable bodies closes a loop through the world
+        with self.subTest(model="anchored_chain"):
+            builder = ModelBuilder(up_axis=newton.Axis.Z)
+            SolverKamino.register_custom_attributes(builder)
+            bodies = []
+            for z in (2.0, 1.6, 1.2):
+                body = builder.add_link(xform=wp.transformf(wp.vec3f(0.0, 0.0, z), wp.quat_identity(dtype=wp.float32)))
+                builder.add_shape_box(body=body, hx=0.1, hy=0.1, hz=0.2)
+                bodies.append(body)
+            joints = [
+                builder.add_joint_revolute(
+                    parent=parent,
+                    child=child,
+                    axis=newton.Axis.X,
+                    parent_xform=wp.transformf(wp.vec3f(0.0, 0.0, -0.2), wp.quat_identity(dtype=wp.float32)),
+                    child_xform=wp.transformf(wp.vec3f(0.0, 0.0, 0.2), wp.quat_identity(dtype=wp.float32)),
+                )
+                for parent, child in itertools.pairwise(bodies)
+            ]
+            builder.add_articulation(joints)
+            model = builder.finalize(device=self.default_device)
+
+            # Flag both ends as kinematic, which the builder only allows on roots
+            view = ModelView(model, "anchored_chain")
+            flags = model.body_flags.numpy()
+            flags[[bodies[0], bodies[-1]]] = int(BodyFlags.KINEMATIC)
+            view.body_flags = wp.array(flags, dtype=wp.int32, device=model.device)
+
+            # The two parallel hinges of the middle body have 10 rows of rank 6
+            solver = SolverKamino(view, config=SolverKamino.Config(use_collision_detector=False))
+            detection = solver._solver_kamino.solver_fd._redundant_joints
+            self.assertIsNotNone(detection)
+            state_in, state_out = view.state(), view.state()
+            newton.eval_fk(view, view.joint_q, view.joint_qd, state_in)
+            solver.step(state_in, state_out, control=None, contacts=None, dt=1.0e-3)
+            self.assertEqual(int(detection.shifted.numpy().sum()), 4)
+            self.assertTrue(np.all(np.isfinite(state_out.body_q.numpy())))
+
+    def test_07_dense_metrics_exclude_redundant_row_shifts(self):
+        """The dense Delassus matrix after the solve, and the solver info, exclude the shifts of the dropped rows."""
+        test = make_redundant_fourbar(self.default_device, sparse=False)
+        config = PADMMSolver.Config(max_iterations=50)
+        solver = PADMMSolver(model=test.model, config=config, problem=test.problem, collect_info=True)
+        test.build()
+
+        # Add a null-space bias, which loads the dropped rows with impulses
+        add_null_components(test.problem, test.problem.data.v_f, delassus_null_bases(test.problem), 1e-2)
+        D = [D.astype(np.float64) for D in extract_delassus(test.problem.delassus, only_active_dims=True)]
+        solver.coldstart()
+        solver.solve(problem=test.problem)
+        self.assertGreater(int(solver._redundant_joints.shifted.numpy().sum()), 0)
+
+        # Compare with the bare matrix plus the uniform regularization
+        D_solved = extract_delassus(test.problem.delassus, only_active_dims=True)
+        sigma = solver.data.state.sigma.numpy()[:, 0]
+        P = extract_problem_vector(test.problem.delassus, test.problem.data.P.numpy(), only_active_dims=True)
+        v_f = extract_problem_vector(test.problem.delassus, test.problem.data.v_f.numpy(), only_active_dims=True)
+        lambdas = extract_problem_vector(test.problem.delassus, solver.data.info.lambdas.numpy(), only_active_dims=True)
+        v_plus = extract_problem_vector(test.problem.delassus, solver.data.info.v_plus.numpy(), only_active_dims=True)
+        for w in range(len(D)):
+            expected = D[w] + sigma[w] * np.eye(len(D[w]))
+            np.testing.assert_allclose(D_solved[w], expected, rtol=1e-5, atol=1e-5 * np.abs(expected).max())
+            v_plus_ref = (D[w] @ (lambdas[w] / P[w]) + v_f[w]) / P[w]
+            np.testing.assert_allclose(v_plus[w], v_plus_ref, rtol=0.0, atol=1e-4 * np.abs(v_plus_ref).max())
 
 
 ###
