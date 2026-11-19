@@ -5793,14 +5793,17 @@ class TestMuJoCoSolverContactKf(unittest.TestCase):
 
     def test_kf_sets_contact_solreffriction(self):
         """Verify positive kf sets the mixed contact solreffriction."""
-        model, solver = self._make_sphere_scene(kf_sphere=800.0, kf_plane=200.0)
-        nacon, _, _ = self._step_and_read_solreffriction(model, solver)
-        solreffriction = solver.mjw_data.contact.solreffriction.numpy()[:nacon]
-        # equal solmix/priority -> mix = 0.5
-        expected = self._expected_solreffriction(solver, nacon, kf_pair=500.0)
-        for i in range(nacon):
-            self.assertAlmostEqual(float(solreffriction[i][0]) / expected[i], 1.0, places=5)
-            self.assertEqual(float(solreffriction[i][1]), 1.0)
+        for solmix in ((1.0, 1.0), (5e-16, 0.0)):
+            with self.subTest(solmix=solmix):
+                model, solver = self._make_sphere_scene(kf_sphere=800.0, kf_plane=200.0)
+                solver.mjw_model.geom_solmix.assign(np.array([solmix], dtype=np.float32))
+                nacon, _, _ = self._step_and_read_solreffriction(model, solver)
+                solreffriction = solver.mjw_data.contact.solreffriction.numpy()[:nacon]
+                # equal solmix/priority -> mix = 0.5
+                expected = self._expected_solreffriction(solver, nacon, kf_pair=500.0)
+                for i in range(nacon):
+                    self.assertAlmostEqual(float(solreffriction[i][0]) / expected[i], 1.0, places=5)
+                    self.assertEqual(float(solreffriction[i][1]), 1.0)
 
     def test_kf_zero_mixes_with_positive_value(self):
         """Verify zero kf participates in the usual contact-material mixing."""
@@ -12446,7 +12449,7 @@ class TestActuatorDampratioMultiWorldRuntime(unittest.TestCase):
                         attr.values[row] = bias
                 model = builder.finalize()
                 worlds = model.mujoco.actuator_world.numpy()
-                biasprm = model.mujoco.actuator_biasprm.numpy()
+                biasprm = model.mujoco.actuator_biasprm.numpy().copy()
                 if importer == "add_mjcf":
                     biasprm[worlds >= 0, 2] = ratios[worlds[worlds >= 0]]
                 biasprm[worlds < 0, 2] = 0.75

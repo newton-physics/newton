@@ -50,12 +50,19 @@ def add_mjcf_body_collision_filters(builder, joint_indices: Sequence[int], start
         for joint in range(builder.joint_count)
         if joint in imported_joints or builder.joint_articulation[joint] >= 0
     ]
-    if joints:
-        joints = topological_sort(
-            [(builder.joint_parent[joint], builder.joint_child[joint]) for joint in joints],
-            custom_indices=joints,
+    articulations = {}
+    for joint in joints:
+        articulations.setdefault(builder.joint_articulation[joint], []).append(joint)
+    # Independent articulations can share bodies without sharing a tree.
+    joints = [
+        joint
+        for group in articulations.values()
+        for joint in topological_sort(
+            [(builder.joint_parent[joint], builder.joint_child[joint]) for joint in group],
+            custom_indices=group,
             use_dfs=False,
         )
+    ]
     weld_roots = {-1: -1}
     for joint in joints:
         child = builder.joint_child[joint]
@@ -69,12 +76,16 @@ def add_mjcf_body_collision_filters(builder, joint_indices: Sequence[int], start
         if not builder.shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES:
             continue
         root = weld_roots.get(body, body)
-        groups.setdefault(root, []).append(shape)
+        key = (builder.shape_world[shape], root)
+        groups.setdefault(key, []).append(shape)
         if shape >= start_shape:
-            imported_groups.add(root)
+            imported_groups.add(key)
 
-    for root in imported_groups:
-        shapes = groups[root]
+    imported_groups.update(key for key in groups if (-1, key[1]) in imported_groups)
+    for world, root in imported_groups:
+        shapes = groups[(world, root)]
+        if world >= 0:
+            shapes = sorted(groups.get((-1, root), []) + shapes)
         for i, first in enumerate(shapes):
             for second in shapes[i + 1 :]:
                 if second >= start_shape and builder.shape_body[first] != builder.shape_body[second]:
@@ -91,8 +102,14 @@ def add_mjcf_body_collision_filters(builder, joint_indices: Sequence[int], start
         # MuJoCo permits contacts with the world even when parent filtering is enabled.
         if parent_root == -1 or parent_root == child_root:
             continue
-        for first in groups.get(parent_root, ()):
-            for second in groups.get(child_root, ()):
+        world = builder.joint_world[joint]
+        parent_shapes = groups.get((world, parent_root), [])
+        child_shapes = groups.get((world, child_root), [])
+        if world >= 0:
+            parent_shapes = groups.get((-1, parent_root), []) + parent_shapes
+            child_shapes = groups.get((-1, child_root), []) + child_shapes
+        for first in parent_shapes:
+            for second in child_shapes:
                 if first >= start_shape or second >= start_shape:
                     builder.add_shape_collision_filter_pair(first, second)
 

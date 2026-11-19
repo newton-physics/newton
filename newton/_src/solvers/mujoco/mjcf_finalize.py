@@ -103,10 +103,10 @@ def _spring_gains(springdamper: np.ndarray, inverse_weights: np.ndarray) -> tupl
 
 
 def _finalize_native_core_parameters(builder: ModelBuilder, model: Model) -> None:
-    from ...sim.enums import JointTargetMode, JointType  # noqa: PLC0415
+    from ...sim.enums import JointTargetMode  # noqa: PLC0415
 
     attrs = model.mujoco
-    types, starts = model.joint_type.numpy(), model.joint_qd_start.numpy()
+    starts = model.joint_qd_start.numpy()
     native_types = attrs.native_joint_type.numpy()
     springs = attrs.native_joint_springdamper.numpy()
     baseline = attrs.native_joint_gain_baseline.numpy()
@@ -137,8 +137,7 @@ def _finalize_native_core_parameters(builder: ModelBuilder, model: Model) -> Non
             dof = int(targets[row])
             if sources[row] != CtrlSource.JOINT_TARGET or dof < 0 or bias[row, 2] <= 0:
                 continue
-            joint = int(np.searchsorted(starts, dof, side="right") - 1)
-            width = 3 if types[joint] == JointType.BALL else 1
+            width = _joint_dof_count(native_types[dof])
             axes = np.arange(dof, dof + width)
             if np.any(modes[axes] != JointTargetMode.POSITION):
                 continue

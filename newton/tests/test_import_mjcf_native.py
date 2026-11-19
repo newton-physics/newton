@@ -95,7 +95,7 @@ def _assert_mesh_geometry(test, builder, vertices, faces=None, *, normals=None, 
         np.testing.assert_allclose(mesh.uvs, np.asarray(uvs)[vertex_ids], atol=1e-6)
 
 
-@requires("mujoco")
+@requires("mujoco", "mujoco_warp")
 class TestImportMjcfNative(unittest.TestCase):
     def assert_roundtrip(self, xml, fields, **kwargs):
         """Compare native parameters after converting through the builder."""
@@ -196,21 +196,25 @@ class TestImportMjcfNative(unittest.TestCase):
     </worldbody>
 </mujoco>
 """
-            builder = newton.ModelBuilder()
-            builder.add_mjcf_native(mjcf)
+            for embed in (True, False):
+                with self.subTest(embed=embed):
+                    builder = newton.ModelBuilder()
+                    builder.add_mjcf_native(
+                        mjcf.replace("<texture name=", f'<texture embed="{str(embed).lower()}" name=')
+                    )
 
-            _assert_mesh_geometry(
-                self,
-                builder,
-                [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]],
-                [[0, 1, 2], [0, 3, 1], [0, 2, 3], [1, 3, 2]],
-                uvs=[[0, 1], [1, 1], [0, 0], [1, 0]],
-            )
-            texture = builder.shape_source[0].texture
-            if isinstance(texture, str):
-                self.assertEqual(texture, texture_path)
-            else:
-                np.testing.assert_array_equal(texture, [[[255, 0, 0]]])
+                    _assert_mesh_geometry(
+                        self,
+                        builder,
+                        [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]],
+                        [[0, 1, 2], [0, 3, 1], [0, 2, 3], [1, 3, 2]],
+                        uvs=[[0, 1], [1, 1], [0, 0], [1, 0]],
+                    )
+                    texture = builder.shape_source[0].texture
+                    if isinstance(texture, str):
+                        self.assertEqual(texture, texture_path)
+                    else:
+                        np.testing.assert_array_equal(texture, [[[255, 0, 0]]])
 
     def test_native_mesh_materials(self):
         """Preserve material defaults, unset values, and RGB precedence over RGBA."""
@@ -1443,6 +1447,7 @@ class TestImportMjcfNative(unittest.TestCase):
             )
 
     def test_attached_weld_collision_filters_with_unordered_joints(self):
+        """Filter every welded ancestor even when joints were inserted child-first."""
         builder = newton.ModelBuilder()
         bodies = [builder.add_link() for _ in range(4)]
         for body in bodies:
@@ -1456,6 +1461,77 @@ class TestImportMjcfNative(unittest.TestCase):
         )
         for shape in range(4):
             self.assertIn((shape, 4), builder.shape_collision_filter_pairs)
+
+    def test_import_after_existing_collision_filters(self):
+        """Accept materialized filters and independent articulations sharing a body."""
+        for materialized, shared_body in product((False, True), repeat=2):
+            with self.subTest(materialized=materialized, shared_body=shared_body):
+                builder = newton.ModelBuilder()
+                body = builder.add_link()
+                builder.add_shape_sphere(body, radius=0.1)
+                builder.add_articulation([builder.add_joint_free(body)])
+                if shared_body:
+                    parent = builder.add_link()
+                    builder.add_articulation([builder.add_joint_free(parent), builder.add_joint_fixed(parent, body)])
+                if materialized:
+                    self.assertEqual(builder.shape_collision_filter_pairs, [])
+                builder.add_mjcf_native('<mujoco><worldbody><geom size=".1"/></worldbody></mujoco>')
+                self.assertEqual(builder.shape_count, 2)
+
+    def test_promoted_visual_collision_masks(self):
+        """Enable collisions when zero-mask visual geoms are explicitly promoted."""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf_native(
+            """<mujoco><default><geom contype="0" conaffinity="0"/></default><worldbody>
+                <body><freejoint/><geom size=".1"/></body>
+                <body pos=".1 0 0"><freejoint/><geom size=".1"/></body></worldbody></mujoco>""",
+            parse_visuals_as_colliders=True,
+        )
+        self.assertTrue(all(group > 0 for group in builder.shape_collision_group))
+        self.assertNotIn((0, 1), builder.shape_collision_filter_pairs)
+        solver = SolverMuJoCo(builder.finalize())
+        self.assertTrue(np.all(solver.mj_model.geom_contype | solver.mj_model.geom_conaffinity))
+
+    def test_native_world_topology(self):
+        """Reject topology differences that a shared MuJoCo template cannot represent."""
+        cases = (
+            (
+                "contact pairs",
+                '<body><freejoint/><geom name="a" size=".1"/></body>'
+                '<body pos="1 0 0"><freejoint/><geom name="b" size=".1"/></body>',
+                ('<contact><pair geom1="a" geom2="b"/></contact>', ""),
+            ),
+            (
+                "ball.*limit",
+                '<body><joint type="ball" limited="{value}" range="0 30"/><geom size=".1"/></body>',
+                ("false", "true"),
+            ),
+            (
+                "tendon",
+                '<body><joint name="x" type="slide"/><joint name="y"/><geom size=".1"/></body>',
+                tuple(f'<tendon><fixed><joint joint="{joint}" coef="1"/></fixed></tendon>' for joint in ("x", "y")),
+            ),
+        )
+        for message, worldbody, variants in cases:
+            for reverse in (False, True):
+                with self.subTest(kind=message, reverse=reverse):
+                    builder = newton.ModelBuilder()
+                    for value in variants[:: -1 if reverse else 1]:
+                        body = worldbody.format(value=value)
+                        extra = "" if "{value}" in worldbody else value
+                        builder.begin_world()
+                        builder.add_mjcf_native(f"<mujoco><worldbody>{body}</worldbody>{extra}</mujoco>")
+                        builder.end_world()
+                    with self.assertRaisesRegex(ValueError, message):
+                        SolverMuJoCo(builder.finalize(), disable_contacts=True)
+
+    def test_weld_filters_stay_within_worlds(self):
+        builder = newton.ModelBuilder()
+        for _ in range(3):
+            builder.begin_world()
+            builder.add_mjcf_native('<mujoco><worldbody><body><geom size=".1"/></body></worldbody></mujoco>')
+            builder.end_world()
+        self.assertEqual(builder.shape_collision_filter_pairs, [])
 
     def test_site_equality_world_endpoints(self):
         asset = newton.ModelBuilder()
@@ -1473,7 +1549,7 @@ class TestImportMjcfNative(unittest.TestCase):
         for endpoint in ("site1", "site2"):
             with self.subTest(endpoint=endpoint):
                 refs = getattr(model.mujoco, f"native_equality_{endpoint}")
-                original = refs.numpy()
+                original = refs.numpy().copy()
                 changed = original.copy()
                 changed[1] = model.shape_count - 1
                 refs.assign(changed)
@@ -1484,6 +1560,29 @@ class TestImportMjcfNative(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, f"{endpoint}.*another world"):
                     SolverMuJoCo(model, disable_contacts=True)
                 refs.assign(original)
+
+    def test_site_equality_with_padded_meshes(self):
+        xml = """<mujoco><asset><mesh name="m" vertex="0 0 0 1 0 0 0 1 0 0 0 1"/></asset>
+            <worldbody><body><freejoint/><geom size=".1"/>{mesh}<site name="a"/><site name="b"/>
+            </body></worldbody><equality><connect site1="a" site2="b"/></equality></mujoco>"""
+        builder = newton.ModelBuilder()
+        for mesh in ("", '<geom type="mesh" mesh="m" contype="0" conaffinity="0" density="0"/>'):
+            builder.begin_world()
+            builder.add_mjcf_native(xml.format(mesh=mesh), convert_mjc_equality_constraints=False)
+            builder.end_world()
+        solver = SolverMuJoCo(builder.finalize(), skip_visual_only_geoms=False, disable_contacts=True)
+        sites = solver.mj_model.eq_objtype == solver._mujoco.mjtObj.mjOBJ_SITE
+        np.testing.assert_array_equal(solver.mj_model.eq_obj1id[sites], [0])
+        np.testing.assert_array_equal(solver.mj_model.eq_obj2id[sites], [1])
+
+    def test_invalid_base_joint_before_mutation(self):
+        builder = newton.ModelBuilder()
+        with self.assertRaisesRegex(ValueError, "base_joint dict cannot specify"):
+            builder.add_mjcf_native(
+                '<mujoco><worldbody><body><geom size=".1"/></body></worldbody></mujoco>',
+                base_joint={"joint_type": newton.JointType.FIXED, "parent": -1},
+            )
+        self.assertEqual(builder.body_count, 0)
 
     def test_site_equalities(self):
         """Preserve both site references and frames through copying and conversion."""
@@ -1679,6 +1778,7 @@ class TestImportMjcfNative(unittest.TestCase):
                             </body></worldbody></mujoco>'''
                         self.assert_roundtrip(xml, ("geom_size", "geom_pos", "geom_quat"))
 
+    @requires("PIL")
     def test_native_texture_orientation(self):
         """Match MuJoCo texture samples through Newton's viewer conventions."""
         import mujoco

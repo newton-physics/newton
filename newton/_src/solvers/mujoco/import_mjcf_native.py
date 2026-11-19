@@ -240,6 +240,15 @@ def _add_joints(builder, model, selected, parent, body, local, label, convert_ba
         joint_type = JointType.PRISMATIC if linear else JointType.REVOLUTE
     elif convert_ball and not linear and len(angular) == 3:
         joint_type = JointType.BALL
+        if any(axis.rest_q != 0.0 for axis in angular):
+            warnings.warn(
+                "Converting three hinges to a ball joint uses an identity spring rest orientation; "
+                "set convert_3d_hinge_to_ball_joints=False to preserve scalar spring rest coordinates.",
+                NewtonWarning,
+                stacklevel=3,
+            )
+            for axis in angular:
+                axis.rest_q = 0.0
     joint = builder.add_joint(
         joint_type,
         parent,
@@ -358,7 +367,11 @@ def _mesh(model, mesh_id, material_id, maxhullvert):
         if t >= 0:
             h, w, c = int(model.tex_height[t]), int(model.tex_width[t]), int(model.tex_nchannel[t])
             adr = int(model.tex_adr[t])
-            texture = model.tex_data[adr : adr + h * w * c].reshape(h, w, c).copy()
+            if adr >= 0:
+                texture = model.tex_data[adr : adr + h * w * c].reshape(h, w, c).copy()
+            else:
+                path = int(model.tex_pathadr[t])
+                texture = model.paths[path:].split(b"\0", 1)[0].decode() if path >= 0 else None
         if uvs is not None:
             uvs *= model.mat_texrepeat[material_id]
     if uvs is not None:
@@ -382,9 +395,9 @@ def _shape_geometry(model, spec, i, meshes, mesh_maxhullvert) -> tuple[np.ndarra
     kind = int(model.geom_type[i])
     size = model.geom_size[i].copy()
     src = None
-    if model.geom_type[i] == mujoco.mjtGeom.mjGEOM_SPHERE:
+    if kind == int(mujoco.mjtGeom.mjGEOM_SPHERE):
         size[:] = size[0]
-    elif model.geom_type[i] in (mujoco.mjtGeom.mjGEOM_CAPSULE, mujoco.mjtGeom.mjGEOM_CYLINDER):
+    elif kind == int(mujoco.mjtGeom.mjGEOM_CAPSULE):
         size[2] = size[0]
     elif kind == int(mujoco.mjtGeom.mjGEOM_PLANE):
         size[:] = 0
@@ -570,6 +583,14 @@ def _import_actuators(
         target = mapping[source_target]
         alternate = sites[source_alt] if source_alt >= 0 and transmission in (TrnType.SITE, TrnType.SLIDERCRANK) else -1
         native_parameters = _read_native_parameters("actuator", actuator)
+        if not (
+            actuator.biastype == mujoco.mjtBias.mjBIAS_AFFINE
+            and (
+                (actuator.gaintype == mujoco.mjtGain.mjGAIN_FIXED and actuator.gainprm[0] == -actuator.biasprm[1])
+                or actuator.gaintype == mujoco.mjtGain.mjGAIN_PID
+            )
+        ):
+            native_parameters["native_actuator_inheritrange"] = 0.0
         values = _attributes(
             builder,
             native_actuator_target_kd=-1.0,
@@ -834,11 +855,12 @@ def _equalities(builder, spec, model, bodies, joints, dofs, sites, tendons, conv
             body1, body2 = bodies[first], bodies[second] if second >= 0 else -1
             anchor = wp.vec3(data[:3])
             relpose = _transform(data[3:6], data[6:10]) if kind == EqType.WELD else None
+            if kind == EqType.WELD and second == 0:
+                anchor = wp.transform_point(placement, anchor)
             if kind == EqType.WELD and np.any(spec.equalities[i].data[6:10]):
                 if first == 0:
                     relpose = placement * relpose
                 elif second == 0:
-                    anchor = wp.transform_point(placement, anchor)
                     # The held point remains in body1's frame; only the relative orientation changes.
                     relpose = wp.transform(relpose.p, relpose.q * wp.quat_inverse(placement.q))
         if body1 == -2 or body2 == -2:
@@ -852,7 +874,7 @@ def _equalities(builder, spec, model, bodies, joints, dofs, sites, tendons, conv
             builder._add_model_finalizer(_finalize_native_weld_poses)
             pose1 = builder.body_q[body1] if body1 >= 0 else wp.transform_identity()
             pose2 = builder.body_q[body2] if body2 >= 0 else wp.transform_identity()
-            relpose = wp.transform_inverse(pose1) * pose2
+            relpose = wp.transform_inverse(pose1) * pose2 * wp.transform(anchor, wp.quat_identity())
         if convert:
             row, loop = mjc_add_equality_loop_joint(
                 builder, kind, body1, body2, anchor, relpose, float(data[10]), label, active, attrs
@@ -922,11 +944,12 @@ def _contacts(builder, spec, model, bodies, geoms, start_shape, self_collisions,
         return
     local = {shape: i for i, shape in enumerate(selected)}
     masks = [builder.custom_attributes[f"mujoco:{name}"] for name in ("contype", "conaffinity")]
+    filter_pairs = builder._shape_collision_filter_pairs
     compiled = compile_collision_masks(
         *[[int(attr.values.get(shape, attr.default)) for shape in selected] for attr in masks],
         prefiltered_pairs=[
             (local[a], local[b])
-            for a, b in builder._shape_collision_filter_pairs.explicit_pairs
+            for a, b in getattr(filter_pairs, "explicit_pairs", filter_pairs)
             if a in local and b in local
         ],
         force_nonzero=True,
@@ -1111,10 +1134,7 @@ def parse_mjcf(
     """Import compiled data, retaining authored inputs that depend on composition."""
     import mujoco
 
-    if floating is not None and base_joint is not None:
-        raise ValueError("floating and base_joint are mutually exclusive")
-    if floating and parent_body != -1:
-        raise ValueError("floating=True requires parent_body=-1")
+    builder._validate_base_joint_params(floating, base_joint, parent_body)
     if override_root_xform and xform is None:
         raise ValueError("override_root_xform=True requires xform")
     if scale <= 0 or not np.isfinite(scale):
@@ -1330,6 +1350,9 @@ def parse_mjcf(
             collider = True
         if not collider and not (visual and parse_visuals):
             continue
+        contype, conaffinity = int(model.geom_contype[i]), int(model.geom_conaffinity[i])
+        if parse_visuals_as_colliders and collider and not (contype or conaffinity):
+            contype = conaffinity = 1
         pose = _transform(model.geom_pos[i], model.geom_quat[i])
         if native_body == 0:
             pose = placement * pose
@@ -1353,7 +1376,7 @@ def parse_mjcf(
             cfg.margin -= cfg.gap
         cfg.has_shape_collision = collider
         cfg.has_particle_collision = cfg.has_shape_collision
-        cfg.collision_group = 0 if not (model.geom_contype[i] or model.geom_conaffinity[i]) else cfg.collision_group
+        cfg.collision_group = 0 if not (contype or conaffinity) else cfg.collision_group
         cfg.is_visible = (
             (visual and not hide_visuals)
             or force_show_colliders
@@ -1391,8 +1414,8 @@ def parse_mjcf(
                 hfield_base=float(model.hfield_size[model.geom_dataid[i], 3])
                 if kind == int(mujoco.mjtGeom.mjGEOM_HFIELD)
                 else -1.0,
-                contype=int(model.geom_contype[i]),
-                conaffinity=int(model.geom_conaffinity[i]),
+                contype=contype,
+                conaffinity=conaffinity,
                 collision_mask_domain=domain,
                 condim=int(model.geom_condim[i]),
                 geom_priority=int(model.geom_priority[i]),

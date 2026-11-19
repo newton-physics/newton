@@ -11,6 +11,7 @@ import numpy as np
 
 from ...sim.model import Model
 from .constants import _DISABLE_FLAGS, _ENABLE_FLAGS
+from .enums import _JointType
 from .mjcf_parameters import (
     _NATIVE_ACTUATOR_FIELDS,
     _NATIVE_GEOM_FIELDS,
@@ -37,32 +38,85 @@ _NATIVE_WORLD_FIELDS = {
 _NATIVE_BATCHED_MODEL_FIELDS = tuple(field for fields in _NATIVE_WORLD_FIELDS.values() for field in fields.values())
 
 
+def _native_pair_rows(model, native, geom_shapes):
+    rows = np.full((len(geom_shapes), native.npair), -1, dtype=np.int32)
+    if not model.custom_frequency_counts.get("mujoco:pair", 0):
+        return rows
+    groups = {}
+    for row, (world, first, second) in enumerate(
+        zip(
+            model.mujoco.pair_world.numpy(),
+            model.mujoco.pair_geom1.numpy(),
+            model.mujoco.pair_geom2.numpy(),
+            strict=True,
+        )
+    ):
+        groups.setdefault(world, {})[first, second] = row
+    expected = {tuple(sorted(pair)) for pair in zip(native.pair_geom1, native.pair_geom2, strict=True)}
+    for world, shapes in enumerate(geom_shapes):
+        slots = {shape: geom for geom, shape in enumerate(shapes) if shape >= 0}
+        pairs = {
+            tuple(sorted((slots[first], slots[second]))): row
+            for (first, second), row in (groups.get(-1, {}) | groups.get(world, {})).items()
+            if first in slots and second in slots
+        }
+        if pairs.keys() != expected:
+            raise ValueError(
+                f"SolverMuJoCo requires matching explicit contact pairs across worlds; world {world} differs."
+            )
+        for pair, endpoints in enumerate(zip(native.pair_geom1, native.pair_geom2, strict=True)):
+            rows[world, pair] = pairs[tuple(sorted(endpoints))]
+    return rows
+
+
+def _validate_native_tendon_paths(model, tendon_rows):
+    if tendon_rows is None or not tendon_rows.size:
+        return
+    attrs = model.mujoco
+    fixed = attrs.native_tendon_fixed.numpy()
+    if not np.any(fixed):
+        return
+    starts, counts = attrs.tendon_joint_adr.numpy(), attrs.tendon_joint_num.numpy()
+    joints, coefs = attrs.tendon_joint.numpy(), attrs.tendon_coef.numpy()
+    dofs = attrs.native_tendon_joint_dof.numpy()
+    dofs = np.where(dofs >= 0, dofs, model.joint_qd_start.numpy()[joints])
+    per_world = model.joint_dof_count // len(tendon_rows)
+    for tendon, rows in enumerate(tendon_rows.T):
+        reference = None
+        for world, row in enumerate(rows):
+            if row < 0 or not fixed[row]:
+                path = None
+            else:
+                entries = slice(starts[row], starts[row] + counts[row])
+                path = tuple(zip((dofs[entries] - world * per_world).tolist(), coefs[entries].tolist(), strict=True))
+            if world == 0:
+                reference = path
+            elif path != reference:
+                raise ValueError(
+                    f"SolverMuJoCo requires matching fixed tendon paths across worlds; tendon {tendon}, world {world} differs."
+                )
+
+
 def _publish_native_world_parameters(model, native, mjw_model, joint_dofs, geom_shapes, tendon_rows, actuator_rows):
+    import mujoco
+
     nworld = len(joint_dofs)
     if nworld <= 1:
         return
     if actuator_rows is not None:
         count = len(model.mujoco.actuator_world) // nworld
         actuator_rows = np.where(actuator_rows >= 0, actuator_rows + np.arange(nworld)[:, None] * count, -1)
-    pair_rows = np.full((nworld, native.npair), -1, dtype=np.int32)
-    if native.npair:
-        pairs = {
-            (world, min(first, second), max(first, second)): row
-            for row, (world, first, second) in enumerate(
-                zip(
-                    model.mujoco.pair_world.numpy(),
-                    model.mujoco.pair_geom1.numpy(),
-                    model.mujoco.pair_geom2.numpy(),
-                    strict=True,
-                )
-            )
-        }
-        # Compilation sorts pairs; match their endpoints rather than their input order.
-        for world, shapes in enumerate(geom_shapes):
-            for pair, (first, second) in enumerate(zip(native.pair_geom1, native.pair_geom2, strict=True)):
-                endpoints = sorted((shapes[first], shapes[second]))
-                if endpoints[0] >= 0:
-                    pair_rows[world, pair] = pairs.get((world, *endpoints), pairs.get((-1, *endpoints), -1))
+    pair_rows = _native_pair_rows(model, native, geom_shapes)
+    _validate_native_tendon_paths(model, tendon_rows)
+    if joint_dofs.size:
+        source_types = model.mujoco.native_joint_type.numpy()[np.maximum(joint_dofs, 0)]
+        joint_dofs = np.where(source_types == native.jnt_type, joint_dofs, -1)
+        flags = model.mujoco.native_joint_limited.numpy()[np.maximum(joint_dofs, 0)]
+        ranges = model.mujoco.native_joint_range.numpy()[np.maximum(joint_dofs, 0)]
+        limited = np.where(flags == mujoco.mjtLimited.mjLIMITED_AUTO, np.any(ranges != 0, axis=-1), flags != 0)
+        balls = (joint_dofs >= 0) & (native.jnt_type == _JointType.BALL)
+        if np.any(balls & (limited != native.jnt_limited)):
+            raise ValueError("SolverMuJoCo requires matching ball joint limit flags across worlds.")
     mappings = {
         "joint": joint_dofs,
         "dof": joint_dofs[:, native.dof_jntid],

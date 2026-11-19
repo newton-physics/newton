@@ -1704,7 +1704,7 @@ class ModelBuilder:
         """Transformer function that converts a URDF attribute value string to a valid Warp dtype. If undefined, the generic converter from :func:`newton.utils.string_to_warp` is used. Receives an optional context dict with parsing-time information."""
 
         reference_value_transformer: Callable[[list[Any], dict[str, Any]], list[Any]] | None = None
-        """Batch transformer for entity references copied by :meth:`ModelBuilder.add_builder`.
+        """Batch transformer for references and frames copied by :meth:`ModelBuilder.add_builder`.
 
         Use this instead of :attr:`references` when the referenced entity type depends on
         other values in the same row. For each copied builder, the callback is invoked once
@@ -1731,6 +1731,7 @@ class ModelBuilder:
         - ``"world"`` (``int``): Destination world for this copy, or ``-1`` for global
           entities. Use this value for world references instead of adding an offset.
         - ``"label_prefix"`` (``str | None``): Optional label prefix for this copy.
+        - ``"xform"`` (``wp.transform | None``): Placement of this copy; ``None`` means identity.
 
         The callback must return a list in the same order and of the same length, preserving
         ``None`` entries for unset rows. Treat the supplied builders, mappings, and source
@@ -4640,7 +4641,7 @@ class ModelBuilder:
         for copy_index, world in enumerate(worlds.tolist()):
             entity_offsets = dict(zip(kinds, offset_rows[copy_index], strict=True))
             self._merge_builder_custom_attributes(
-                builder, entity_offsets, world, label_prefixes[copy_index], custom_attributes
+                builder, entity_offsets, world, label_prefixes[copy_index], custom_attributes, xforms[copy_index]
             )
             if has_actuators:
                 self._merge_builder_actuators(
@@ -6051,6 +6052,7 @@ class ModelBuilder:
         world: int,
         label_prefix: str | None,
         attributes: dict[str, ModelBuilder.CustomAttribute],
+        xform: wp.transform | None,
     ) -> None:
         # Resolve existing destination rows, since its topology may have
         # changed since the rows were first added.
@@ -6136,6 +6138,7 @@ class ModelBuilder:
                         "row_indices": row_indices,
                         "world": world,
                         "label_prefix": label_prefix,
+                        "xform": xform,
                     },
                 )
                 if len(transformed) != len(row_values):

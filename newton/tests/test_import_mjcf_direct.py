@@ -17,7 +17,7 @@ from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import requires
 
 
-@requires("mujoco")
+@requires("mujoco", "mujoco_warp")
 class TestImportMjcfDirect(unittest.TestCase):
     def test_native_defaults_without_xml_bridge(self):
         """Resolve inherited actuator/material defaults without the legacy parser."""
@@ -46,7 +46,10 @@ class TestImportMjcfDirect(unittest.TestCase):
         reference = mujoco.MjModel.from_xml_string(xml)
         builder = newton.ModelBuilder()
         builder.rigid_gap = 0.0
-        import_mjcf_direct(builder, xml)
+        with self.assertWarnsRegex(UserWarning, "settotalmass.*deprecated"):
+            import_mjcf_direct(builder, xml)
+        self.assertEqual(builder.shape_scale[2][2], builder.shape_scale[2][0])
+        self.assertEqual(builder.shape_scale[3][2], 0)
         np.testing.assert_allclose(builder.body_mass, reference.body_mass[1:], rtol=1e-6)
         rotation = np.empty(9)
         mujoco.mju_quat2Mat(rotation, reference.body_iquat[1])

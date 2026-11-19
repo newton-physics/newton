@@ -20,6 +20,7 @@ from .constants import (
     FLOAT64_EPS,
     HINGE_CONNECT_HALF_SPAN,
     MJ_MINMU,
+    MJ_MINVAL,
     MJC_OBJ_SITE,
     SOLREF_MODE_FORCE_SPACE,
     SOLREF_MODE_MJCF_DEFAULT,
@@ -159,9 +160,9 @@ def contact_params(
         solmix1 = geom_solmix[worldid, g1]
         solmix2 = geom_solmix[worldid, g2]
         mix = safe_div(solmix1, solmix1 + solmix2)
-        mix = wp.where((solmix1 < FLOAT64_EPS) and (solmix2 < FLOAT64_EPS), 0.5, mix)
-        mix = wp.where((solmix1 < FLOAT64_EPS) and (solmix2 >= FLOAT64_EPS), 0.0, mix)
-        mix = wp.where((solmix1 >= FLOAT64_EPS) and (solmix2 < FLOAT64_EPS), 1.0, mix)
+        mix = wp.where((solmix1 < MJ_MINVAL) and (solmix2 < MJ_MINVAL), 0.5, mix)
+        mix = wp.where((solmix1 < MJ_MINVAL) and (solmix2 >= MJ_MINVAL), 0.0, mix)
+        mix = wp.where((solmix1 >= MJ_MINVAL) and (solmix2 < MJ_MINVAL), 1.0, mix)
         condim = wp.max(condim1, condim2)
         resolved_friction = wp.max(geom_friction[worldid, g1], geom_friction[worldid, g2])
 

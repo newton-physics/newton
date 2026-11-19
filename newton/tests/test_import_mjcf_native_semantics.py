@@ -19,7 +19,7 @@ from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import requires
 
 
-@requires("mujoco")
+@requires("mujoco", "mujoco_warp")
 class TestImportMjcfNativeSemantics(unittest.TestCase):
     def test_damping_resolves_before_solver_construction(self):
         """Resolve composed damping at finalization while preserving overrides and builder intent."""
@@ -161,6 +161,52 @@ class TestImportMjcfNativeSemantics(unittest.TestCase):
         self.assertEqual(fallback.joint_target_kd.numpy()[1], 0)
         self.assertTrue(np.all(fallback.joint_target_kd.numpy()[[0, 2]] > 0))
 
+    def test_converted_hinge_parameters(self):
+        """Keep scalar servo spans and skip hinge polynomials after ball conversion."""
+        xml = """<mujoco><worldbody><body>
+            <joint name="x" axis="1 0 0" stiffness="1 .2 .3" damping=".1 .2 .3"/>
+            <joint name="y" axis="0 1 0"/><joint name="z" axis="0 0 1"/>
+            <geom type="box" size=".1 .2 .3"/></body></worldbody>{actuator}</mujoco>"""
+        for servo in (False, True):
+            with self.subTest(servo=servo):
+                actuator = '<actuator><position joint="z" kp="10" dampratio=".7"/></actuator>' if servo else ""
+                asset = newton.ModelBuilder()
+                asset.add_mjcf_native(xml.format(actuator=actuator), convert_3d_hinge_to_ball_joints=True)
+                builder = newton.ModelBuilder()
+                builder.replicate(asset, 2)
+                model = builder.finalize()
+                if servo:
+                    gains = model.joint_target_kd.numpy().reshape(2, 3)
+                    np.testing.assert_array_equal(gains[:, :2], 0)
+                    self.assertTrue(np.all(gains[:, 2] > 0))
+                solver = SolverMuJoCo(model, disable_contacts=True)
+                np.testing.assert_array_equal(solver.mjw_model.jnt_stiffnesspoly.numpy(), 0)
+                np.testing.assert_array_equal(solver.mjw_model.dof_dampingpoly.numpy(), 0)
+
+    def test_converted_hinge_spring_rest(self):
+        builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(NewtonWarning, "identity spring rest orientation"):
+            builder.add_mjcf_native(
+                '<mujoco><worldbody><body><joint axis="1 0 0" springref="15"/>'
+                '<joint axis="0 1 0"/><joint axis="0 0 1"/><geom size=".1"/></body></worldbody></mujoco>',
+                convert_3d_hinge_to_ball_joints=True,
+            )
+        np.testing.assert_array_equal(builder.joint_rest_q, [0, 0, 0, 1])
+
+    def test_ineligible_inheritrange(self):
+        """Keep ignored general-actuator inheritrange from enabling a control clamp."""
+        import mujoco
+
+        xml = """<mujoco><worldbody><body><joint name="j" type="slide" range="-1 1"/>
+            <geom size=".1"/></body></worldbody><actuator><general joint="j" inheritrange="1"/>
+            </actuator></mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf_native(xml)
+        solver = SolverMuJoCo(builder.finalize(), disable_contacts=True)
+        reference = mujoco.MjModel.from_xml_string(xml)
+        np.testing.assert_array_equal(solver.mj_model.actuator_ctrllimited, reference.actuator_ctrllimited)
+        np.testing.assert_array_equal(solver.mj_model.actuator_ctrlrange, reference.actuator_ctrlrange)
+
     def test_damping_uses_initial_body_variant(self):
         """Resolve after the selected variant has contributed its inertia."""
         import mujoco
@@ -290,6 +336,16 @@ class TestImportMjcfNativeSemantics(unittest.TestCase):
                         solver.mjw_model.dof_damping.numpy().reshape(-1), np.r_[kd, kd * 2], rtol=3e-5
                     )
                     np.testing.assert_array_equal(model.mujoco.native_joint_springdamper.numpy(), 0)
+
+    def test_kinematic_root_compiler_floor(self):
+        """Keep a root below MuJoCo's inertia floor on the mocap path."""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf_native('<mujoco><worldbody><body><freejoint/><geom size=".1"/></body></worldbody></mujoco>')
+        builder.body_flags[0] = int(newton.BodyFlags.KINEMATIC)
+        model = builder.finalize()
+        model.body_inertia.assign(np.eye(3, dtype=np.float32)[None] * 5e-16)
+        solver = SolverMuJoCo(model, disable_contacts=True)
+        self.assertEqual(solver.mj_model.nmocap, 1)
 
     def test_native_custom_attribute_mapping(self):
         """Extract inherited values before scaling and retain their filtered, reordered, copied rows."""
@@ -1057,13 +1113,17 @@ class TestImportMjcfNativeSemantics(unittest.TestCase):
                 edited = [[0, 0.125]] if cpu else [[0, 0.125], [0.75, 1e6], [2.3, 0.25]]
                 model.joint_effort_limit.assign(np.array(edited, dtype=np.float32).reshape(-1))
                 solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
-                if not cpu and model.device.is_cuda:
-                    with wp.ScopedCapture(device=model.device) as capture:
-                        solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
-                    wp.capture_launch(capture.graph)
                 lower = [[0, -0.125]] if cpu else [[0, -0.125], [-0.75, -10], [-1.2, -0.25]]
                 upper = [[0, 0.125]] if cpu else [[0, 0.125], [0.75, 10], [2.3, 0.25]]
                 assert_forces(solver, lower, upper)
+                if not cpu and model.device.is_cuda:
+                    with wp.ScopedCapture(device=model.device) as capture:
+                        solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
+                    edited[0][1] = 0.375
+                    model.joint_effort_limit.assign(np.array(edited, dtype=np.float32).reshape(-1))
+                    wp.capture_launch(capture.graph)
+                    lower[0][1], upper[0][1] = -0.375, 0.375
+                    assert_forces(solver, lower, upper)
                 solver = SolverMuJoCo(model, use_mujoco_cpu=cpu, disable_contacts=True)
                 assert_forces(solver, lower, upper)
 
@@ -1373,7 +1433,11 @@ class TestImportMjcfNativeSemantics(unittest.TestCase):
                         xml, xform=wp.transform((2, 0, 0), wp.quat_identity()), convert_mjc_equality_constraints=convert
                     )
                 solver = SolverMuJoCo(builder.finalize(), disable_contacts=True, kinematic_switchable_roots=False)
-                reference = mujoco.MjModel.from_xml_string(xml.replace('pos="1 0 0"', 'pos="3 0 0"'))
+                reference = mujoco.MjModel.from_xml_string(
+                    xml.replace('pos="1 0 0"', 'pos="3 0 0"').replace(
+                        '<weld body1="b"', '<weld anchor="2 0 0" body1="b"'
+                    )
+                )
                 reference.eq_data[:, 11] = 0  # Match the shared solver's frozen-pose policy.
                 np.testing.assert_allclose(solver.mj_model.eq_data, reference.eq_data)
                 solver.notify_model_changed(newton.ModelFlags.CONSTRAINT_PROPERTIES)
@@ -1386,7 +1450,12 @@ class TestImportMjcfNativeSemantics(unittest.TestCase):
         placement = wp.transform((2, 3, 4), wp.quat_from_axis_angle(wp.vec3(0, 0, 1), 0.5))
         for convert, endpoints in product(
             (False, True),
-            ('body1="b" relpose="-1 0 0 1 0 0 0"', 'body1="world" body2="b" relpose="1 0 0 1 0 0 0"'),
+            (
+                'body1="b" relpose="-1 0 0 1 0 0 0"',
+                'body1="world" body2="b" relpose="1 0 0 1 0 0 0"',
+                'body1="b"',
+                'body1="world" body2="b"',
+            ),
         ):
             with self.subTest(convert=convert, endpoints=endpoints):
                 xml = f"""<mujoco><worldbody><body name="b" pos="1 0 0"><freejoint/>
@@ -1399,7 +1468,10 @@ class TestImportMjcfNativeSemantics(unittest.TestCase):
                     np.testing.assert_allclose(
                         builder.joint_X_p[-1], builder.body_q[0] * builder.joint_X_c[-1], atol=5e-7
                     )
-                solver = SolverMuJoCo(builder.finalize(), disable_contacts=True, kinematic_switchable_roots=False)
+                model = builder.finalize()
+                if endpoints.startswith('body1="b"'):
+                    np.testing.assert_allclose(model.mujoco.equality_constraint_anchor.numpy()[0], placement.p)
+                solver = SolverMuJoCo(model, disable_contacts=True, kinematic_switchable_roots=False)
                 data = mujoco.MjData(solver.mj_model)
                 mujoco.mj_forward(solver.mj_model, data)
                 self.assertEqual(len(data.efc_pos), 6)
@@ -1426,7 +1498,14 @@ class TestImportMjcfNativeSemantics(unittest.TestCase):
                     asset, 2, xforms=[wp.transform_identity(), wp.transform((2, 0, 0), wp.quat_identity())]
                 )
                 expected = np.array(
-                    [mujoco.MjModel.from_xml_string(xml.format(root=root, child=".3 .2 1")).eq_data for root in (1, 3)]
+                    [
+                        mujoco.MjModel.from_xml_string(
+                            xml.format(root=root, child=".3 .2 1").replace(
+                                'anchor=".4 .2 -.1"', f'anchor="{0.4 + root - 1} .2 -.1"'
+                            )
+                        ).eq_data
+                        for root in (1, 3)
+                    ]
                 )
                 expected[..., 11] = 0
                 model = builder.finalize()

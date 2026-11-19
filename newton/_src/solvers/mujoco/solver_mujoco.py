@@ -5397,7 +5397,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         them. This method therefore always zeros, per world, ``qacc_warmstart``,
         ``qfrc_applied``, ``xfrc_applied``, ``act`` and ``ctrl``. (``qacc`` is
         left alone: the solver overwrites it from ``qacc_warmstart`` at the start
-        of every step.)
+        of every step.) Delayed actuator histories are restored to neutral
+        controls for the selected worlds.
 
         In addition, the requested entries of the Newton :class:`~newton.State`
         are reset to the model defaults (``model.joint_q`` / ``model.joint_qd``)
@@ -5508,6 +5509,16 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             d.ctrl[:] = 0.0
             d.act[:] = 0.0
             d.xfrc_applied[:] = 0.0
+            m = self.mj_model
+            if getattr(m, "nhistory", 0):
+                self._mujoco.mj_resetCtrl(m, d)
+                for actuator, (nsample, _) in enumerate(m.actuator_history):
+                    if nsample:
+                        adr, dim = m.actuator_ctrladr[actuator], m.actuator_ctrlnum[actuator]
+                        times = -np.arange(nsample, 0, -1, dtype=np.float64) * m.opt.timestep
+                        values = np.tile(d.ctrl[adr : adr + dim], (nsample, 1))
+                        d.history[m.actuator_historyadr[actuator]] = 0
+                        self._mujoco.mj_initCtrlHistory(m, d, actuator, times, values)
             return
 
         d = self.mjw_data
@@ -5522,6 +5533,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             inputs=[world_mask, *buffers],
             device=self.model.device,
         )
+        if getattr(self.mjw_model, "nhistory", 0):
+            with wp.ScopedDevice(self.model.device), self._scoped_mujoco_warp_execution():
+                self._mujoco_warp.reset_history(self.mjw_model, d, reset=world_mask)
         if self.enable_sleeping:
             self._update_mjc_data(d, self.model, state, world_mask=world_mask)
             self._wake_sleeping_worlds(world_mask, clear_overflow=True)
@@ -8036,6 +8050,23 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 raise ValueError("Differing mesh counts with explicit MuJoCo contact pairs are not supported.")
             selected_shapes_set = set(selected_shapes)
             shape_world_mapping = dict(zip(selected_shapes, shape_layout.world_shapes.T, strict=True))
+            for key in ("native_equality_site1", "native_equality_site2"):
+                refs = getattr(model.mujoco, key, None)
+                if refs is None:
+                    continue
+                refs = refs.numpy().reshape(model.world_count, -1)
+                expected = (
+                    np.array([shape_world_mapping.get(shape, np.full(model.world_count, shape)) for shape in refs[0]])
+                    .reshape(-1, model.world_count)
+                    .T
+                )
+                if np.any(refs != expected):
+                    world, row = np.argwhere(refs != expected)[0]
+                    raise ValueError(
+                        "SolverMuJoCo requires homogeneous worlds. "
+                        f"Equality constraint {key.removeprefix('native_equality_')} mismatch at position {row} "
+                        f"between world 0 and world {world}."
+                    )
             # Template pairs also bind the corresponding shapes in every other world.
             mujoco_pair_contact_shapes = {
                 int(world_shape)
@@ -8570,7 +8601,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # welded to them has both. Such a massless body can never be dynamic,
         # so a massless kinematic root is driven like a fixed root: as a mocap
         # body without DOFs.
-        has_mass = (body_mass > FLOAT64_EPS) & (np.linalg.eigvalsh(body_inertia).min(axis=1) > FLOAT64_EPS)
+        has_mass = (body_mass > mujoco.mjMINVAL) & (np.linalg.eigvalsh(body_inertia).min(axis=1) > mujoco.mjMINVAL)
         has_mass = has_mass[: template_bodies * model.world_count].reshape(model.world_count, -1)
         weld_group = np.arange(template_bodies)
         for j in joint_order:
@@ -12338,7 +12369,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 if not np.any(valid):
                     continue
                 shape_world = model.shape_world.numpy()
-                shape_start = model.shape_world_start.numpy()
                 owners = shape_world[np.maximum(refs, 0)]
                 foreign = valid & (owners >= 0) & (owners != np.arange(world_count)[:, None])
                 if np.any(foreign):
@@ -12346,16 +12376,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     raise ValueError(
                         f"Equality constraint {key.removeprefix('native_equality_')} at position {c} of world "
                         f"{world} references shape {refs[world, c]} of another world."
-                    )
-                local_refs = np.where(owners >= 0, refs - shape_start[np.maximum(owners, 0)], -2 - refs)
-                local_refs = np.where(valid, local_refs, -1)
-                mismatches = local_refs != local_refs[0]
-                if np.any(mismatches):
-                    world, c = np.argwhere(mismatches)[0]
-                    raise ValueError(
-                        "SolverMuJoCo requires homogeneous worlds. "
-                        f"Equality constraint {key.removeprefix('native_equality_')} mismatch at position {c} "
-                        f"between world 0 and world {world}."
                     )
 
             # Tendon equalities export world 0's tendon names, so later worlds must target the same tendons.

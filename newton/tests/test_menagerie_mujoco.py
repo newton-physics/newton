@@ -1095,6 +1095,7 @@ MJWARP_MODEL_BATCHED_FIELDS: list[str] = [
     "jnt_pos",
     "jnt_axis",
     "jnt_stiffness",
+    "jnt_stiffnesspoly",
     "jnt_range",
     "jnt_actfrcrange",
     "jnt_margin",
@@ -1104,6 +1105,7 @@ MJWARP_MODEL_BATCHED_FIELDS: list[str] = [
     "dof_frictionloss",
     "dof_armature",
     "dof_damping",
+    "dof_dampingpoly",
     "dof_invweight0",
     # geom
     "geom_matid",
@@ -1119,6 +1121,8 @@ MJWARP_MODEL_BATCHED_FIELDS: list[str] = [
     "geom_margin",
     "geom_gap",
     "geom_rgba",
+    "geom_surfacevel",
+    "geom_adhesion",
     # site
     "site_pos",
     "site_quat",
@@ -1147,6 +1151,7 @@ MJWARP_MODEL_BATCHED_FIELDS: list[str] = [
     "pair_margin",
     "pair_gap",
     "pair_friction",
+    "pair_adhesion",
     # equality constraint
     "eq_solref",
     "eq_solimp",
@@ -1160,7 +1165,9 @@ MJWARP_MODEL_BATCHED_FIELDS: list[str] = [
     "tendon_actfrcrange",
     "tendon_margin",
     "tendon_stiffness",
+    "tendon_stiffnesspoly",
     "tendon_damping",
+    "tendon_dampingpoly",
     "tendon_armature",
     "tendon_frictionloss",
     "tendon_lengthspring",
@@ -1177,6 +1184,8 @@ MJWARP_MODEL_BATCHED_FIELDS: list[str] = [
     "actuator_cranklength",
     "actuator_acc0",
     "actuator_lengthrange",
+    "actuator_delay",
+    "actuator_history",
 ]
 
 
@@ -1802,7 +1811,7 @@ class TestMenagerieBase(unittest.TestCase):
 
         # Perturb joint positions so FK has something to compute
         rng = np.random.default_rng(seed=42)
-        joint_q_np = model.joint_q.numpy()
+        joint_q_np = model.joint_q.numpy().copy()
         joint_q_np += rng.uniform(-0.1, 0.1, size=joint_q_np.shape).astype(np.float32)
 
         # Renormalize quaternions for free and ball joints (perturbation

@@ -41,6 +41,46 @@ def _build_two_world_model(world_count: int = 2) -> newton.Model:
 
 @requires(*MUJOCO_MODULES)
 class TestMuJoCoReset(unittest.TestCase):
+    def test_reset_delayed_actuator_history(self):
+        import mujoco
+        import mujoco_warp
+
+        asset = newton.ModelBuilder()
+        asset.add_mjcf_native("""<mujoco><option gravity="0 0 0" timestep=".001"/>
+            <worldbody><body><joint name="j"/><geom size=".1"/></body></worldbody>
+            <actuator><motor joint="j" delay=".002" nsample="4"/></actuator></mujoco>""")
+        builder = newton.ModelBuilder()
+        builder.replicate(asset, 2)
+        model = builder.finalize()
+        for cpu in (False, True):
+            with self.subTest(cpu=cpu):
+                solver = SolverMuJoCo(model, use_mujoco_cpu=cpu, separate_worlds=True, disable_contacts=True)
+                data = solver.mj_data if cpu else solver.mjw_data
+                initial = data.history.copy() if cpu else data.history.numpy().copy()
+                if cpu:
+                    data.ctrl[:] = 1
+                else:
+                    data.ctrl.fill_(1)
+                for _ in range(4):
+                    if cpu:
+                        mujoco.mj_step(solver.mj_model, data)
+                    else:
+                        mujoco_warp.step(solver.mjw_model, data)
+                stepped = data.history.copy() if cpu else data.history.numpy().copy()
+                self.assertFalse(np.array_equal(initial, stepped))
+                mask = wp.array([True, False, False], dtype=wp.bool, device=model.device)
+                solver.reset(model.state(), world_mask=mask)
+                actual = data.history.copy() if cpu else data.history.numpy()
+                if cpu:
+                    np.testing.assert_array_equal(actual, initial)
+                    mujoco.mj_step(solver.mj_model, data)
+                    np.testing.assert_array_equal(data.qfrc_actuator, 0)
+                else:
+                    np.testing.assert_array_equal(actual[0], initial[0])
+                    np.testing.assert_array_equal(actual[1], stepped[1])
+                    mujoco_warp.step(solver.mjw_model, data)
+                    np.testing.assert_array_equal(data.qfrc_actuator.numpy()[0], 0)
+
     def _setup_stepped_solver(self):
         self.model = _build_two_world_model(world_count=2)
         self.solver = SolverMuJoCo(self.model, iterations=2, ls_iterations=2)
