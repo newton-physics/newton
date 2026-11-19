@@ -13,10 +13,11 @@ Success criteria:
 - Picked bags interact with the belt and other bags after release without falling through the belt.
 
 Runs:
+- `python -m newton.examples basic_conveyor`
 - `python -m newton.examples basic_conveyor --solver xpbd`
 - `python -m newton.examples basic_conveyor --solver vbd --belt-speed 2.0`
-- `python -m newton.examples basic_conveyor`
 - `python -m newton.examples basic_conveyor --solver kamino`
+- `python -m newton.examples basic_conveyor --solver style3d`
 """
 
 import math
@@ -165,7 +166,7 @@ class Example:
         self.fps = 100
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
-        self.sim_substeps = 4 if solver_type == "kamino" else 10
+        self.sim_substeps = 4 if solver_type in ("kamino", "style3d") else 10
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.viewer = viewer
@@ -410,6 +411,11 @@ class Example:
             solver_config.scc.max_alternating_iterations = 1
             solver_config.scc.bilateral_solve_interval = 1
             self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
+        elif solver_type == "style3d":
+            self.solver = newton.solvers.SolverStyle3D(
+                self.model,
+                dynamics=newton.solvers.SolverStyle3D.Dynamics.AFFINE_BODY,
+            )
         else:
             self.solver = newton.solvers.SolverXPBD(self.model)
 
@@ -527,7 +533,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--solver",
         type=str,
-        choices=["xpbd", "vbd", "kamino"],
+        choices=["xpbd", "vbd", "kamino", "style3d"],
         default="xpbd",
         help="Solver backend to use.",
     )

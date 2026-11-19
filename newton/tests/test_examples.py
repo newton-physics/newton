@@ -647,6 +647,17 @@ add_basic_example_test(
     test_suffix="kamino",
     allow_output_regexes=[(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
 )
+add_basic_example_test(
+    name="basic.example_basic_conveyor",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 100, "solver": "style3d"},
+    test_suffix="style3d",
+    allow_output_regexes=[
+        (_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr"),
+        (_STYLE3D_PRECOMPUTE_OUTPUT_RE, "stdout"),
+    ],
+)
 add_example_batch(
     TestBasicExamples,
     name="basic.example_basic_conveyor_forces",
