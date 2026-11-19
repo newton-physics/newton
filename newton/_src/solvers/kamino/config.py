@@ -774,12 +774,16 @@ class PADMMSolverConfig:
     Whether to keep the set of kinematic joint constraints dropped at the previous step while it remains valid.\n
     At every step, the previous set is checked for kept rows that became dependent, or dropped rows that became
     independent, and only the worlds that fail the check repeat the detection, which avoids most of its cost.
-    A reused set is always valid, up to a hysteresis of ten times `redundant_kinematics_pivot_threshold` on the
-    dropped rows, so the reuse is safe. Disabling it repeats the detection in every world at every step, which
-    is mostly useful for debugging.\n
+    The kept rows of a reused set are always independent, and the dropped rows are dependent up to a hysteresis
+    of ten times `redundant_kinematics_pivot_threshold`. Disabling the reuse repeats the detection in every world
+    at every step, which is mostly useful for debugging.\n
     With the `LLTB` and `LLTBRCM` linear solvers and dense dynamics, the check reads the Cholesky factor of the
     Delassus matrix, and the worlds that fail it are factorized again. Otherwise, the kinematic joint block is
     factorized separately for the check.\n
+    NOTE: The check on the factor of the Delassus matrix compares each dropped row with all the other rows,
+    including joint dynamics rows, limits and contacts. When these span a dropped row that became independent of
+    the kinematic rows, e.g. when leaving a configuration with more redundant rows, the row can remain dropped
+    for a few steps, and the joint constraint it carries is not enforced until then.\n
     The setting of the first world applies to all worlds. Defaults to `True`.
     """
 
