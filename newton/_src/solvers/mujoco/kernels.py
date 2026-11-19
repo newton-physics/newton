@@ -2033,8 +2033,8 @@ def update_axis_properties_kernel(
         joint_target_kd: Per-DOF velocity/damping gains (kd)
         joint_target_mode: Per-DOF target mode from Model.joint_target_mode
         mjc_actuator_effort_limited: Per-world flags, 1 for ball-joint actuators whose force range
-            follows ``joint_effort_limit``, 0 otherwise. Actuators whose force range that world
-            authored and actuators MuJoCo compiled without a force limit (MJCF
+            follows ``joint_effort_limit``, 0 otherwise. Actuators with a force range authored in
+            that world and actuators MuJoCo compiled without a force limit (MJCF
             ``forcelimited="false"``) are 0.
         joint_effort_limit: Per-DOF effort limits; a ball actuator's force range is
             ``(-limit, limit)`` for its DOF. A runtime zero limit writes a [0, 0] range, which

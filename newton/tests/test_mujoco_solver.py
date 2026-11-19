@@ -10009,7 +10009,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
 
     @requires(*MUJOCO_MODULES)
     def test_ball_joint_effort_limit_runtime_update(self):
-        """Ball-joint actuator force ranges follow joint_effort_limit after notify_model_changed()."""
+        """Verify ball-joint actuator force ranges follow joint_effort_limit after notify_model_changed()."""
         dt = 0.002
         for use_mujoco_cpu in (False, True):
             with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
@@ -10055,7 +10055,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
 
     @requires(*MUJOCO_MODULES)
     def test_ball_joint_effort_limit_keeps_authored_force_range(self):
-        """Authored MJCF force ranges, and actuators MuJoCo does not force-limit, keep their range."""
+        """Verify authored MJCF force ranges, and actuators MuJoCo does not force-limit, keep their range."""
         mjcf = """<mujoco>
             <worldbody>
                 <body name="a"><joint name="a" type="ball"/><geom type="sphere" size="0.1" mass="1"/></body>
@@ -10081,7 +10081,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
 
     @requires(*MUJOCO_MODULES)
     def test_ball_joint_effort_limit_follows_authored_force_range_per_world(self):
-        """Each world keeps its own authored ball force range and follows the effort limit otherwise."""
+        """Verify each world keeps its own authored ball force range and follows the effort limit otherwise."""
         mjcf = """<mujoco>
             <worldbody>
                 <body name="a"><joint name="a" type="ball"/><geom type="sphere" size="0.1" mass="1"/></body>
@@ -10090,19 +10090,21 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
                 <position joint="a" kp="10" {forcerange}/>
             </actuator>
         </mujoco>"""
-        builder = newton.ModelBuilder()
-        for forcerange in ('forcerange="-2 2"', ""):
-            builder.begin_world()
-            builder.add_mjcf(mjcf.format(forcerange=forcerange))
-            builder.end_world()
-        model = builder.finalize()
-        solver = SolverMuJoCo(model, separate_worlds=True, disable_contacts=True)
-        model.joint_effort_limit.fill_(5.0)
-        solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
-        forcerange = solver.mjw_model.actuator_forcerange.numpy()
-        # World 0 authored [-2, 2] and keeps it. World 1 did not, so it follows the effort limit.
-        np.testing.assert_allclose(forcerange[0], [[-2.0, 2.0]] * 3)
-        np.testing.assert_allclose(forcerange[1], [[-5.0, 5.0]] * 3)
+        for authored_world in (0, 1):
+            with self.subTest(authored_world=authored_world):
+                builder = newton.ModelBuilder()
+                for world in range(2):
+                    builder.begin_world()
+                    builder.add_mjcf(mjcf.format(forcerange='forcerange="-2 2"' if world == authored_world else ""))
+                    builder.end_world()
+                model = builder.finalize()
+                solver = SolverMuJoCo(model, separate_worlds=True, disable_contacts=True)
+                model.joint_effort_limit.fill_(5.0)
+                solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
+                forcerange = solver.mjw_model.actuator_forcerange.numpy()
+                # The authoring world keeps [-2, 2]; the other world follows the effort limit.
+                np.testing.assert_allclose(forcerange[authored_world], [[-2.0, 2.0]] * 3)
+                np.testing.assert_allclose(forcerange[1 - authored_world], [[-5.0, 5.0]] * 3)
 
 
 class TestMuJoCoSolverPairProperties(unittest.TestCase):
