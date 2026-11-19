@@ -1417,7 +1417,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         ``Model.joint_stiffness`` and ``Model.joint_rest_q`` during finalization.
         Runtime ``dof_passive_stiffness`` remains a deprecated alias to the core stiffness
         array. Runtime ``dof_springref`` is a deprecated alias to ``Model.joint_rest_q`` when
-        their layouts and values coincide and raises an error otherwise; see
+        their layouts and values coincide and does not exist otherwise; see
         :ref:`mujoco-joint-spring-migration`.
         ``dof_springdamper`` holds construction-time pairs (time constant [s], damping ratio).
         Solver construction resolves positive pairs into ``Model.joint_stiffness`` and
