@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import itertools
 import json
 import os
 import re
@@ -222,6 +223,7 @@ class TestSimulationBenchmarks(unittest.TestCase):
         """Keep nightly collisions out of the gate with finite timing statistics."""
         benchmark_names = (
             "simulation.bench_cloth.DeformableRigidCollision.time_collide",
+            "simulation.bench_cloth.DeformableRigidMeshBackendScaling.time_simulate",
             "simulation.bench_cloth.DeformableRigidCollisionScale.time_collide",
         )
         inventory = {entry["name"]: entry for entry in self._discover_benchmarks(pr_gate=False)}
@@ -251,6 +253,51 @@ class TestSimulationBenchmarks(unittest.TestCase):
             ("box_coarse_cloth_256", "box", 8, 256, 1, False),
             bench_cloth.FastDeformableRigidCoarseClothVBD.params[0],
         )
+
+    def test_sdf_mesh_backend_benchmarks_repeat_mesh_cases(self):
+        """Repeat only existing mesh cases with the "sdf" back-end and skip revisions without it."""
+        inventory = {entry["name"] for entry in self._discover_benchmarks(pr_gate=True)}
+        patterns = tuple(re.compile(selection) for selection in load_benchmark_patterns())
+        for benchmark, base, method in (
+            (
+                bench_cloth.FastDeformableRigidCoarseClothSdfMesh,
+                bench_cloth.FastDeformableRigidCoarseCloth,
+                "time_collide",
+            ),
+            (
+                bench_cloth.FastDeformableRigidCoarseClothVBDSdfMesh,
+                bench_cloth.FastDeformableRigidCoarseClothVBD,
+                "time_simulate",
+            ),
+        ):
+            with self.subTest(benchmark=benchmark.__name__):
+                name = f"simulation.bench_cloth.{benchmark.__name__}.{method}"
+                self.assertIn(name, inventory)
+                self.assertTrue(any(pattern.search(name) for pattern in patterns))
+                self.assertEqual(base.mesh_backend, "bvh")
+                self.assertEqual(benchmark.mesh_backend, "sdf")
+                cases = benchmark.params[0]
+                self.assertTrue(cases)
+                self.assertLessEqual(set(cases), set(base.params[0]))
+                self.assertEqual({case[1] for case in cases}, {"mesh"})
+
+        scaling = bench_cloth.DeformableRigidMeshBackendScaling
+        self.assertEqual(scaling.params[3], ("bvh", "sdf"))
+        self.assertEqual(scaling.param_names, ["cloth_particles", "rigid_triangles", "contact", "mesh_backend"])
+        self.assertLessEqual(set(bench_cloth.WRAPPED_CLOTH_SOFT_CONTACT_MAX), set(itertools.product(*scaling.params)))
+
+        benchmark = bench_cloth.FastDeformableRigidCoarseClothSdfMesh()
+        self.assertEqual(bench_cloth.DeformableRigidCollision()._mesh_backend_args(), {})
+        self.assertEqual(benchmark._mesh_backend_args(), {"rigid_soft_full_surface_mesh_backend": "sdf"})
+
+        class PipelineWithoutBackendArgument:
+            def __init__(self, model, enable_rigid_soft_full_surface_contact=False):
+                pass
+
+        with patch.object(bench_cloth.newton, "CollisionPipeline", PipelineWithoutBackendArgument):
+            self.assertEqual(bench_cloth.DeformableRigidCollision()._mesh_backend_args(), {})
+            with self.assertRaises(bench_cloth.SkipNotImplemented):
+                benchmark._mesh_backend_args()
 
     def test_deformable_rigid_benchmark_rejects_overflow(self):
         """Reject each truncated contact stream but allow exactly full buffers."""
