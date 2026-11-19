@@ -11,7 +11,6 @@ from ...core.types import override
 from ...exceptions import NewtonDeprecationWarning
 from ...sim import Contacts, Control, JointType, Model, ModelFlags, State, StateFlags
 from ...sim.joint_mimic import has_supported_joint_mimics
-from ...utils.deprecation import UnavailableAttribute
 from ..coupled.interface import CouplingInterface
 from ..solver import SolverBase
 from ..tendon_kernels import solve_tendon_material, update_tendon_attachments
@@ -246,12 +245,6 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
             # reserve space for the particle hash grid
             with wp.ScopedDevice(model.device):
                 model.particle_grid.reserve(model.particle_count)
-
-    # Tombstone so that assigning the removed flag fails instead of being ignored.
-    compute_body_velocity_from_position_delta = UnavailableAttribute(
-        "SolverXPBD.compute_body_velocity_from_position_delta was removed in Newton 1.9; "
-        "XPBD maintains rigid-body velocities incrementally."
-    )
 
     @override
     def reset(
