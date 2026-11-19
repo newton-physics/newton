@@ -39,12 +39,13 @@ class Example:
     ):
         self.viewer = viewer
         self.args = args
+        self.solver_type = getattr(args, "solver", "vbd") if args is not None else "vbd"
 
         # Simulation cadence
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
-        self.sim_substeps = 10
+        self.sim_substeps = 2 if self.solver_type == "kamino" else 10
         self.sim_iterations = 5
         self.sim_dt = self.frame_dt / self.sim_substeps
 
@@ -63,6 +64,8 @@ class Example:
         layer_gap = cable_radius * 3.0
 
         builder = newton.ModelBuilder()
+        if self.solver_type == "kamino":
+            newton.solvers.SolverKamino.register_custom_attributes(builder)
         builder.rigid_gap = 0.0
 
         # Material properties
@@ -168,12 +171,17 @@ class Example:
         self.collision_pipeline = newton.CollisionPipeline(self.model, contact_matching="sticky")
         self.contacts = self.collision_pipeline.contacts()
 
-        self.solver = newton.solvers.SolverVBD(
-            self.model,
-            iterations=self.sim_iterations,
-            rigid_body_contact_buffer_size=256,
-            rigid_contact_history=True,
-        )
+        if self.solver_type == "kamino":
+            config = newton.solvers.SolverKamino.Config.from_model(self.model, dynamics_solver="lox")
+            config.use_collision_detector = False
+            self.solver = newton.solvers.SolverKamino(self.model, config=config)
+        else:
+            self.solver = newton.solvers.SolverVBD(
+                self.model,
+                iterations=self.sim_iterations,
+                rigid_body_contact_buffer_size=256,
+                rigid_contact_history=True,
+            )
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -257,5 +265,7 @@ class Example:
 
 
 if __name__ == "__main__":
-    viewer, args = newton.examples.init()
+    parser = newton.examples.create_parser()
+    parser.add_argument("--solver", choices=["vbd", "kamino"], default="vbd", help="Cable dynamics solver.")
+    viewer, args = newton.examples.init(parser)
     newton.examples.run(Example(viewer, args), args)

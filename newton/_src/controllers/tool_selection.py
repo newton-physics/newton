@@ -49,9 +49,9 @@ def resolve_tool_sites(
     """Match ``tool_sites`` to exactly one site per robot in ``model_robot_index_np``.
 
     ``model_robot_index_np`` is expected to be the already-ordered set of
-    controlled articulations a :func:`~newton.controllers.resolve_joint_selection`
-    call resolved, so there is no second, independent articulation resolution
-    to keep in sync with the first.
+    controlled articulations a ``resolve_joint_selection()`` call resolved, so
+    there is no second, independent articulation resolution to keep in sync
+    with the first.
 
     Args:
         model: Model to select from.
