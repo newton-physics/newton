@@ -29,7 +29,8 @@ import warp as wp
 import newton
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
-from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino import setup_test_output, setup_tests, test_context
+from newton.tests.unittest_utils import NewtonTestCase
 
 
 def _build_revolute_with_offset(angle_pj: float, angle_cj: float) -> newton.Model:
@@ -72,8 +73,9 @@ def _build_revolute_with_offset(angle_pj: float, angle_cj: float) -> newton.Mode
     return builder.finalize()
 
 
-class TestKaminoNonAlignedJointFrames(unittest.TestCase):
+class TestKaminoNonAlignedJointFrames(NewtonTestCase):
     def setUp(self):
+        setup_test_output(self)
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.device = wp.get_device(test_context.device)
@@ -236,4 +238,5 @@ class TestKaminoNonAlignedJointFrames(unittest.TestCase):
 
 if __name__ == "__main__":
     newton.utils.setup_console_logging()
+    setup_tests()
     unittest.main()
