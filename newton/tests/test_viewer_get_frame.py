@@ -887,6 +887,17 @@ class TestViewerGLGetFrame(unittest.TestCase):
                         # every registered position, including the default "side".
                         self.assertEqual(calls[-5:], ["panel", "side", "stats", "free", "timeline_gui"])
                         self.assertFalse(gui.workspace.timeline_options["recording"])
+                        # The console panel and its resize handle must keep ImGui's
+                        # window stack balanced; skip its open animation.
+                        gui.workspace.console.open = True
+                        gui.workspace._console_pixels = gui.workspace.console_height
+                        for frame in range(2, 4):
+                            viewer.begin_frame(frame / 60)
+                            viewer.log_state(state)
+                            viewer.end_frame()
+                        self.assertFalse(gui.ui.section_errors)
+                        gui.workspace.console.open = False
+                        gui.workspace._console_pixels = 0.0
 
                     # Render clipped text, widgets, and user images into an isolated target.
                     previous_fbo = _gl_get_integer(gl, gl.GL_FRAMEBUFFER_BINDING)

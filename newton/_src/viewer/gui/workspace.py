@@ -926,7 +926,6 @@ class ViewerWorkspace:
                 120,
                 700,
             )
-            ui.end()
         timeline = self._active_timeline
         if self._window("##workspace_timeline", 0, h - bottom - status, w, bottom):
             if timeline is not None:
