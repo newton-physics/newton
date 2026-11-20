@@ -318,10 +318,13 @@ class ViewerGui:
         if ui.internal.temp_input_is_active(active):
             return True
         state = ui.internal.get_input_text_state(active)
+        # InputScalar() filters characters with a callback and marks its
+        # editor with LocalizeDecimalPoint instead of the public Chars* flags.
         numeric = (
             ui.InputTextFlags_.chars_decimal
             | ui.InputTextFlags_.chars_scientific
             | ui.InputTextFlags_.chars_hexadecimal
+            | ui.internal.InputTextFlagsPrivate_.localize_decimal_point
         )
         return state is not None and bool(state.flags & numeric)
 

@@ -57,28 +57,32 @@ def _scale_history_display(
     display_particle_q[i] = particle_q[i] * 0.01
 
 
+def _offscreen_imgui_backend(test: unittest.TestCase) -> ImGuiBackend:
+    """Return a real ImGui backend and context without an OpenGL window or renderer."""
+    from imgui_bundle import imgui, imguizmo
+
+    context = imgui.create_context()
+    # A previous native viewer test may have left another context current.
+    imgui.set_current_context(context)
+    test.addCleanup(imgui.destroy_context, context)
+    ui = ImGuiBackend.__new__(ImGuiBackend)
+    ui.is_available, ui.imgui, ui.giz, ui._context = True, imgui, imguizmo.im_guizmo, context
+    ui._workspace_style, ui.key_press_filter, ui.dpi_scale = True, None, 1.0
+    ui.io = imgui.get_io()
+    ui.io.set_ini_filename("")
+    ui.io.display_size = (640, 480)
+    # Build draw lists without a GPU renderer.
+    ui.io.backend_flags |= imgui.BackendFlags_.renderer_has_textures
+    ui._frame_time = ui._frame_recovery_state = ui._pending_file_dialog = None
+    ui.section_errors = {}
+    return ui
+
+
 @requires("imgui_bundle")
 class TestViewerUI(unittest.TestCase):
     def setUp(self) -> None:
-        from imgui_bundle import imgui, imguizmo
-
-        context = imgui.create_context()
-        # A previous native viewer test may have left another context current.
-        imgui.set_current_context(context)
-        self.addCleanup(imgui.destroy_context, context)
         # Exercise ImGui state without an OpenGL renderer or window.
-        self.ui = ImGuiBackend.__new__(ImGuiBackend)
-        self.ui._workspace_style = True
-        self.ui._context = context
-        self.ui.key_press_filter = None
-        self.ui.imgui = imgui
-        self.ui.giz = imguizmo.im_guizmo
-        self.ui.io = imgui.get_io()
-        self.ui.io.set_ini_filename("")
-        self.ui.io.display_size = (640, 480)
-        self.ui.io.backend_flags |= imgui.BackendFlags_.renderer_has_textures
-        self.ui.is_available = True
-        self.ui._frame_time = None
+        self.ui = _offscreen_imgui_backend(self)
 
     def test_custom_joint_property_storage(self) -> None:
         """Native editors honor custom owners, flattened rows, and logical joint indices."""
@@ -858,77 +862,87 @@ class TestViewerShapeProperties(unittest.TestCase):
 class TestViewerGLShouldStep(unittest.TestCase):
     """ViewerGL.should_step() state machine: running, paused, and single-step."""
 
+    @requires("imgui_bundle", "pyglet")
     def test_gui_popup_owns_viewer_shortcuts(self) -> None:
-        """Keep popup keys from closing or changing the simulation without keyboard capture."""
+        """Keep popup keys from closing or changing the simulation without keyboard capture.
+
+        Drive real ImGui popup and text-input state with real pyglet key codes.
+        """
+        import_pyglet_window(shadow_window=False)
+        from pyglet.window import key
+
+        ui = _offscreen_imgui_backend(self)
+        imgui = ui.imgui
+        # Closing releases the GUI renderer; a window without a GL context skips that.
+        ui.window = SimpleNamespace(context=None)
         viewer = SimpleNamespace(_paused=False, _step_requested=False, show_ui=True, _display_options_user={})
         gui = ViewerGui.__new__(ViewerGui)
-        gui._viewer = viewer
+        gui._viewer, gui.ui, gui.show_ui = viewer, ui, True
         gui.workspace = gui.console_capture = None
-        popup = True
-        gui.ui = SimpleNamespace(
-            is_available=True,
-            shutdown=lambda: None,
-            io=SimpleNamespace(want_capture_keyboard=False, want_text_input=False),
-            imgui=SimpleNamespace(
-                is_popup_open=lambda *_: popup,
-                PopupFlags_=SimpleNamespace(any_popup=1),
-            ),
-        )
-        closed = []
+        gui._loading_splash_active = False
         framed = []
         gui.frame_camera_on_model = lambda: framed.append(True)
-        key = SimpleNamespace(GRAVE=1, MOD_CTRL=2, SPACE=3, PERIOD=4, H=5, F=6, ESCAPE=7)
-        with patch_sys_module("pyglet", SimpleNamespace(window=SimpleNamespace(key=key))):
-            for symbol in (key.ESCAPE, key.SPACE, key.PERIOD, key.H, key.F):
-                gui.handle_key_press(symbol, close_fn=lambda: closed.append(True))
-            self.assertFalse(closed)
-            self.assertFalse(framed)
-            self.assertFalse(viewer._paused)
-            self.assertFalse(viewer._step_requested)
-            self.assertTrue(viewer.show_ui)
-            popup = False
-            gui.handle_key_press(key.SPACE)
-            self.assertTrue(viewer._paused)
-            self.assertTrue(viewer._display_options_user["_paused"])
-            gui.handle_key_press(key.PERIOD)
-            self.assertTrue(viewer._step_requested)
-            gui.handle_key_press(key.ESCAPE, close_fn=lambda: closed.append(True))
-            self.assertEqual(closed, [True])
+        values = {"name": "abc", "value": 1.0}
 
-            # GUI focus and numeric editing leave viewer shortcuts available.
-            gui.workspace = SimpleNamespace(rect=(200, 40, 600, 400))
-            gui.ui.io = SimpleNamespace(
-                want_capture_keyboard=True,
-                want_capture_mouse=False,
-                want_text_input=False,
-                mouse_pos=(400, 200),
-            )
-            active = False
-            numeric = False
-            gui.ui.imgui.is_any_item_active = lambda: active
-            gui.ui.imgui.internal = SimpleNamespace(
-                get_active_id=lambda: 42,
-                temp_input_is_active=lambda _: numeric,
-                get_input_text_state=lambda _: SimpleNamespace(flags=0),
-            )
-            gui.ui.imgui.InputTextFlags_ = SimpleNamespace(chars_decimal=1, chars_scientific=2, chars_hexadecimal=4)
-            for mouse, text, item, capture_mouse, numeric in (
-                ((100, 200), False, False, True, False),
-                ((400, 200), True, True, False, False),
-                ((400, 200), False, True, False, False),
-                ((400, 200), False, False, True, False),
-                ((100, 200), True, True, True, True),
-            ):
-                gui.ui.io.mouse_pos, gui.ui.io.want_text_input = mouse, text
-                active, gui.ui.io.want_capture_mouse = item, capture_mouse
-                before = viewer._paused
+        def frame(popup: str | None = None, field: str | None = None) -> None:
+            """Submit one ImGui frame with an optional open popup or focused input field."""
+            ui.begin_frame()
+            imgui.begin("Inputs")
+            if popup == "open":
+                imgui.open_popup("menu")
+            if imgui.begin_popup("menu"):
+                if popup == "close":
+                    imgui.close_current_popup()
+                imgui.end_popup()
+            if field is not None:
+                imgui.set_keyboard_focus_here()
+            if field == "name":
+                _, values["name"] = imgui.input_text("##name", values["name"])
+            elif field == "value":
+                _, values["value"] = imgui.input_float("##value", values["value"])
+            imgui.end()
+            ui.end_frame()
+
+        closed = []
+        frame(popup="open")
+        self.assertTrue(imgui.is_popup_open("", imgui.PopupFlags_.any_popup))
+        for symbol in (key.ESCAPE, key.SPACE, key.PERIOD, key.H, key.F):
+            gui.handle_key_press(symbol, close_fn=lambda: closed.append(True))
+        self.assertFalse(closed)
+        self.assertFalse(framed)
+        self.assertFalse(viewer._paused)
+        self.assertFalse(viewer._step_requested)
+        self.assertTrue(gui.show_ui)
+
+        frame(popup="close")
+        frame()
+        self.assertFalse(imgui.is_popup_open("", imgui.PopupFlags_.any_popup))
+        gui.handle_key_press(key.SPACE)
+        self.assertTrue(viewer._paused)
+        self.assertTrue(viewer._display_options_user["_paused"])
+        gui.handle_key_press(key.PERIOD)
+        self.assertTrue(viewer._step_requested)
+        gui.handle_key_press(key.ESCAPE, close_fn=lambda: closed.append(True))
+        self.assertEqual(closed, [True])
+        self.assertFalse(ui.is_available)
+        ui.is_available = True
+
+        # String entry owns Space; numeric entry keeps viewer shortcuts but
+        # retains its decimal point and Escape cancellation.
+        for field, ignored in (("name", True), ("value", False)):
+            with self.subTest(field=field):
+                for _ in range(3):
+                    frame(field=field)
+                self.assertTrue(ui.io.want_text_input)
+                self.assertEqual(gui._numeric_text_input_active(), not ignored)
+                paused = viewer._paused
                 gui.handle_key_press(key.SPACE)
-                self.assertEqual(viewer._paused, before if text and not numeric else not before)
-            viewer._step_requested = False
-            gui.handle_key_press(key.PERIOD)
-            gui.handle_key_press(key.ESCAPE, close_fn=lambda: closed.append(True))
-            self.assertFalse(viewer._step_requested)
-            self.assertEqual(closed, [True])
+                self.assertEqual(viewer._paused, paused if ignored else not paused)
+                viewer._paused, viewer._step_requested = True, False
+                gui.handle_key_press(key.PERIOD)
+                gui.handle_key_press(key.ESCAPE, close_fn=lambda: closed.append(True))
+                self.assertFalse(viewer._step_requested)
+                self.assertEqual(closed, [True])
 
     def test_returns_true_when_running(self):
         v = _make_gl_state(paused=False, step_requested=False)
@@ -1776,10 +1790,14 @@ class TestCollisionInspector(unittest.TestCase):
                 # Opening a shape's contact list must not select a contact or
                 # make F jump away from the shape. Pagination is only for rows.
                 ws.selected = ("shape", 0)
-                ui = SimpleNamespace(push_id=lambda *_: None, pop_id=lambda: None, selectable=lambda *_: (False,))
-                ws.gui = SimpleNamespace(ui=SimpleNamespace(imgui=ui))
-                ws.widgets.label = lambda *_args, **_kwargs: None
+                ws.gui = SimpleNamespace(ui=_offscreen_imgui_backend(self))
+                ws.widgets = PhysicsWidgets(ws.gui)
+                imgui = ws.gui.ui.imgui
+                ws.gui.ui.begin_frame()
+                imgui.begin("Contacts")
                 inspector.draw_contact_list(SimpleNamespace(_page=lambda rows: rows[:1]), ws.selected)
+                imgui.end()
+                ws.gui.ui.end_frame()
                 self.assertIsNone(inspector.active_contact)
                 self.assertEqual(inspector.focus_points(), [])
                 inspector.visible_contacts = ()
@@ -1873,23 +1891,17 @@ class TestCollisionInspector(unittest.TestCase):
                 self.assertEqual(fields["probe:weights"][1:], (0, 2))
                 # Collapsing the built-in fields must not turn their None
                 # namespace into an invalid custom-attribute tab label.
-                tabs = []
-                ws.widgets = SimpleNamespace(
-                    group=lambda _: nullcontext(False),
-                    tab_item=lambda label, tabs=tabs: (tabs.append(label) or False,),
-                )
-                ws.gui = SimpleNamespace(
-                    ui=SimpleNamespace(
-                        imgui=SimpleNamespace(
-                            separator_text=lambda _: None,
-                            begin_tab_bar=lambda _: True,
-                            end_tab_bar=lambda: None,
-                        )
-                    )
-                )
                 ws.selected = ("contact", 0)
-                inspector.draw_contact(None, ws.selected)
-                self.assertEqual(tabs, ["probe"])
+                with (
+                    patch.object(ws.widgets, "group", return_value=nullcontext(False)),
+                    patch.object(ws.widgets, "tab_item", wraps=ws.widgets.tab_item) as tab_item,
+                ):
+                    ws.gui.ui.begin_frame()
+                    imgui.begin("Contact")
+                    inspector.draw_contact(PropertyInspector(ws), ws.selected)
+                    imgui.end()
+                    ws.gui.ui.end_frame()
+                self.assertEqual([call.args[0] for call in tab_item.call_args_list], ["probe"])
                 ws.selected = None
                 soft = {
                     name: (start, count)
