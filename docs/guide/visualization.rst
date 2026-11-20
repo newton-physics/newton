@@ -578,7 +578,10 @@ same rest coordinate frame. This small example uses already-transformed data:
     )
     gaussian = newton.Gaussian(positions=[[0.25, 0.25, 0.25]], scales=[[0.1, 0.1, 0.1]])
     visual_index = prototype.add_deformable_visual_gaussian(
-        gaussian, kind="tetrahedron", tet_range=(tet_start, prototype.tet_count),
+        gaussian,
+        binding=newton.geometry.GaussianBinding.Tetrahedron(
+            tet_range=(tet_start, prototype.tet_count),
+        ),
         label="toy/splats",
     )
     builder = newton.ModelBuilder()
@@ -589,7 +592,8 @@ This creates the render-only Gaussian shape; do not also call
 The returned index identifies the visual in this prototype, not in every
 later composed model.
 
-To reuse a precomputed binding, supply both ``parent`` and ``weights``.
+To reuse a precomputed binding, set both ``parent`` and ``weights`` on
+:class:`~newton.geometry.GaussianBinding.Tetrahedron`.
 ``parent`` has one **tetrahedron index**, in the builder's index space, per
 Gaussian. It does not contain the tetrahedron's four particle indices.
 For local tetrahedron IDs, add ``tet_start``. Each row of ``weights`` has four

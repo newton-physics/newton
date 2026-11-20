@@ -28,6 +28,7 @@ import logging
 import numpy as np
 import warp as wp
 
+from ..geometry.deformable_visual import GaussianBinding
 from .import_usd_deformable_utils import (
     _DeformableImportContext,
     _has_graphics_material_subsets,
@@ -361,10 +362,7 @@ def _deformable_import_visual(ctx: _DeformableImportContext) -> None:
                 bind_poses = np.linalg.inv(basis).astype(np.float32)
                 index = builder.add_deformable_visual_gaussian(
                     gaussian,
-                    kind="tetrahedron",
-                    tet_range=tet_range,
-                    parent=parent,
-                    weights=weights,
+                    binding=GaussianBinding.Tetrahedron(tet_range=tet_range, parent=parent, weights=weights),
                     label=path,
                 )
             except ValueError as exc:

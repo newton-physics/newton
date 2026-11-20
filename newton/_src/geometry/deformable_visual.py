@@ -17,6 +17,7 @@ from __future__ import annotations
 import itertools
 import operator
 from collections.abc import Sequence
+from dataclasses import dataclass
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any, SupportsIndex
 
@@ -175,6 +176,31 @@ class DeformableVisualMesh:
     def vertex_count(self) -> int:
         """Number of visual mesh vertices."""
         return len(self._rest_vertices)
+
+
+class GaussianBinding:
+    """Host-side bindings passed to :meth:`newton.ModelBuilder.add_deformable_visual_gaussian`.
+
+    The builder copies the binding arrays. Evaluated transforms and scales live
+    in :class:`DeformableVisuals`, independently of the binding type.
+
+    .. experimental::
+    """
+
+    @dataclass(frozen=True, kw_only=True)
+    class Tetrahedron:
+        """Bind Gaussian centers and ellipsoids to tetrahedra.
+
+        Supply both ``parent`` and ``weights`` for a precomputed binding, or
+        omit both to compute it from the Gaussian centers.
+        """
+
+        tet_range: tuple[int, int]
+        """Owning [start, end) tetrahedron range in the builder."""
+        parent: list[int] | np.ndarray | None = None
+        """Builder tetrahedron index per Gaussian, shape [count]."""
+        weights: np.ndarray | None = None
+        """Finite signed barycentric weights, shape [count, 4], summing to one per row."""
 
 
 class DeformableVisualGaussian:

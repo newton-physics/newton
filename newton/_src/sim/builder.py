@@ -71,6 +71,7 @@ from ..geometry import (
 from ..geometry.deformable_visual import (
     DeformableVisualGaussian,
     DeformableVisualMesh,
+    GaussianBinding,
     _DeformableGaussianBatch,
     _DeformableVisualSkinBatches,
 )
@@ -15562,10 +15563,7 @@ class ModelBuilder:
         self,
         gaussian: Gaussian,
         *,
-        kind: DeformableVisualMesh.Kind | str,
-        tet_range: tuple[int, int],
-        parent: list[int] | np.ndarray | None = None,
-        weights: np.ndarray | None = None,
+        binding: GaussianBinding.Tetrahedron,
         label: str = "",
     ) -> int:
         """Attach a Gaussian field to a volumetric deformable for rendering.
@@ -15581,12 +15579,8 @@ class ModelBuilder:
 
         Args:
             gaussian: Rest Gaussian appearance and center positions [m].
-            kind: Binding kind. The initial implementation supports only
-                :attr:`~newton.geometry.DeformableVisualMesh.Kind.TETRAHEDRON`.
-            tet_range: Owning ``[start, end)`` tetrahedron range.
-            parent: Optional precomputed parent tetrahedron per Gaussian.
-            weights: Optional four barycentric weights per Gaussian. Finite signed
-                weights are accepted for extrapolation and must sum to one.
+            binding: Simulation elements and optional precomputed weights. See
+                :class:`~newton.geometry.GaussianBinding.Tetrahedron`.
             label: Display label.
 
         Returns:
@@ -15619,20 +15613,19 @@ class ModelBuilder:
         if np.any(gaussian.scales <= 0.0):
             raise ValueError("add_deformable_visual_gaussian: Gaussian scales must be positive")
 
-        kind = self._resolve_deformable_visual_kind(kind)
-        if kind != DeformableVisualMesh.Kind.TETRAHEDRON:
-            raise ValueError("add_deformable_visual_gaussian currently supports only kind='tetrahedron'")
-        binding = self._prepare_deformable_visual_binding(
+        if not isinstance(binding, GaussianBinding.Tetrahedron):
+            raise TypeError("binding must be GaussianBinding.Tetrahedron")
+        prepared = self._prepare_deformable_visual_binding(
             gaussian.positions,
-            kind=kind,
-            tet_range=tet_range,
-            parent=parent,
-            weights=weights,
+            kind=DeformableVisualMesh.Kind.TETRAHEDRON,
+            tet_range=binding.tet_range,
+            parent=binding.parent,
+            weights=binding.weights,
             allow_negative=True,
         )
         # The backing shape uses current_world; its drivers must have the same ownership.
         worlds = {
-            self.particle_world[particle] for tet in np.unique(binding["parent"]) for particle in self.tet_indices[tet]
+            self.particle_world[particle] for tet in np.unique(prepared["parent"]) for particle in self.tet_indices[tet]
         }
         if worlds != {self.current_world}:
             raise ValueError(
@@ -15643,7 +15636,7 @@ class ModelBuilder:
         shape = self.add_shape_gaussian(-1, gaussian=gaussian, label=label or None)
         self._deformable_visual_gaussians.append(
             {
-                **binding,
+                **prepared,
                 "gaussian": gaussian,
                 "shape": shape,
                 "label": label,

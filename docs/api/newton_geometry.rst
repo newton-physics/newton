@@ -19,6 +19,7 @@ newton.geometry
    DeformableVisualGaussian
    DeformableVisualMesh
    DeformableVisuals
+   GaussianBinding
    HydroelasticSDF
    NarrowPhase
    ParticleSurface

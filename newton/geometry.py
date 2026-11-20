@@ -23,6 +23,7 @@ from ._src.geometry.deformable_visual import (
     DeformableVisualGaussian,
     DeformableVisualMesh,
     DeformableVisuals,
+    GaussianBinding,
 )
 from ._src.geometry.inertia import compute_inertia_shape, transform_inertia
 from ._src.geometry.kernels import sdf_box, sdf_capsule, sdf_cone, sdf_cylinder, sdf_mesh, sdf_plane, sdf_sphere
@@ -38,6 +39,7 @@ __all__ = [
     "DeformableVisualGaussian",
     "DeformableVisualMesh",
     "DeformableVisuals",
+    "GaussianBinding",
     "HydroelasticSDF",
     "NarrowPhase",
     "ParticleSurface",
