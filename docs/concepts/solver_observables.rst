@@ -306,6 +306,19 @@ the step, or the last stage with RK4. The solver writes observables only during 
 and :meth:`~newton.solvers.SolverMuJoCo.reset` leaves them unchanged, so zero
 them for reset worlds if a consumer reads them before the next step.
 
+MuJoCo Warp also exports ``QACC_SMOOTH``, MuJoCo's pre-constraint joint
+acceleration ``qacc_smooth`` [m/s² or rad/s²]: the acceleration from all
+forces except constraints such as contacts, joint limits, and equalities. It is
+expressed as the time derivative of :attr:`~newton.State.joint_qd` and
+evaluated at the input state of the step; with RK4 it comes from the last
+stage. For hinge and slide DOFs this is MuJoCo's value in Newton DOF order. Free
+and ball joints follow Newton's velocity convention rather than MuJoCo's: the
+linear acceleration is that of the child's center of mass, and angular
+accelerations are expressed in the joint's parent frame. With
+:meth:`~newton.solvers.SolverMuJoCo.set_qacc_smooth_override`, masked DOFs report
+the override that the constraint solve used; see
+:ref:`mujoco_qacc_smooth_override`.
+
 The constants are strings, so literal names work too:
 
 .. code-block:: python

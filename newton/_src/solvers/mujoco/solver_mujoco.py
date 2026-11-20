@@ -80,12 +80,14 @@ from .kernels import (
     apply_mjc_free_joint_f_to_body_f_kernel,
     apply_mjc_particle_f_kernel,
     apply_mjc_qfrc_kernel,
+    apply_qacc_smooth_override_kernel,
     build_ref_q_kernel,
     capture_actuator_dampratio_kernel,
     collect_overflow_kernel,
     convert_mj_coords_to_warp_kernel,
     convert_mj_particles_to_warp_kernel,
     convert_newton_contacts_to_mjwarp_kernel,
+    convert_qacc_from_mj_kernel,
     convert_qfrc_from_mj_kernel,
     convert_rigid_forces_from_mj_kernel,
     convert_solref,
@@ -580,6 +582,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         QFRC_FRICTIONLOSS = "qfrc_frictionloss"
         """DOF friction-loss constraint forces in Newton generalized-coordinate order."""
 
+        QACC_SMOOTH = "qacc_smooth"
+        """Pre-constraint joint accelerations in Newton generalized-coordinate order (MuJoCo Warp only)."""
+
         OVERFLOW = "overflow"
         """Per-world capacity-overflow bitmask for the most recent step; see :ref:`mujoco_overflow_observable`."""
 
@@ -633,6 +638,20 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         :attr:`qfrc_bias`.
         """
 
+        qacc_smooth: wp.array[wp.float32] | None = SolverBase.Observables.field(  # noqa: RUF009
+            dtype=wp.float32,
+            frequency=AttributeFrequency.JOINT_DOF,
+        )
+        """Pre-constraint joint accelerations [m/s² or rad/s²], shape ``(joint_dof_count,)``.
+
+        MuJoCo's ``qacc_smooth``: the acceleration from all forces except
+        constraints, expressed as the time derivative of
+        :attr:`State.joint_qd <newton.State.joint_qd>`. From the same force
+        evaluation as :attr:`qfrc_bias`, at the input state of the step. With
+        :meth:`SolverMuJoCo.set_qacc_smooth_override`, masked DOFs report the
+        override that the constraint solve used.
+        """
+
         overflow: wp.array[wp.int32] | None = SolverBase.Observables.field(  # noqa: RUF009
             dtype=wp.int32,
             frequency=AttributeFrequency.WORLD,
@@ -672,6 +691,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             ObservableKind.QFRC_BIAS,
             ObservableKind.QFRC_CONSTRAINT,
             ObservableKind.QFRC_FRICTIONLOSS,
+            ObservableKind.QACC_SMOOTH,
             ObservableKind.OVERFLOW,
         }
     )
@@ -693,6 +713,15 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self._update_data_interval = value
 
     @property
+    def use_speculative_contacts(self) -> bool:
+        """Whether speculative contacts are enabled, as passed to the constructor.
+
+        Read-only. See the ``use_speculative_contacts`` argument of
+        :class:`SolverMuJoCo`.
+        """
+        return self._use_speculative_contacts
+
+    @property
     def supported_observables(self):
         """Return observables available for the configured MuJoCo backend.
 
@@ -700,7 +729,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         """
         kinds = super().supported_observables
         if self.use_mujoco_cpu:
-            kinds = kinds.difference({self.ObservableKind.OVERFLOW})
+            kinds = kinds.difference({self.ObservableKind.OVERFLOW, self.ObservableKind.QACC_SMOOTH})
             if self.mj_model.opt.integrator not in (
                 self._mujoco.mjtIntegrator.mjINT_EULER,
                 self._mujoco.mjtIntegrator.mjINT_RK4,
@@ -4714,6 +4743,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         if use_speculative_contacts and use_mujoco_contacts:
             raise ValueError("use_speculative_contacts=True requires Newton contacts on the MuJoCo Warp backend.")
         self._use_speculative_contacts = use_speculative_contacts
+        self._qacc_smooth_override: tuple[wp.array[wp.float32], wp.array[wp.bool] | None] | None = None
 
         # Import and cache MuJoCo modules (only happens once per class)
         mujoco, _ = self.import_mujoco()
@@ -5176,56 +5206,209 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         with self._scoped_deterministic_config():
             yield
 
+    def set_qacc_smooth_override(
+        self,
+        values: wp.array[wp.float32] | None,
+        *,
+        dof_mask: wp.array[wp.bool] | None = None,
+    ) -> None:
+        """Replace MuJoCo Warp's pre-constraint joint accelerations on selected DOFs.
+
+        MuJoCo computes ``qacc_smooth``, the joint acceleration from all forces
+        except constraints, before it solves contacts, joint limits and other
+        constraints. With an override set, every :meth:`step` replaces
+        ``qacc_smooth`` on the DOFs selected by ``dof_mask`` with ``values``
+        right after MuJoCo computes it, recomputes the matching smooth forces
+        ``qfrc_smooth = M·qacc_smooth``, and then runs the constraint solve and
+        the integrator as usual. Contacts, limits and the other bodies still
+        respond to the overridden motion. This couples learned or external
+        free-motion models with MuJoCo's constraint handling.
+
+        The solver keeps references to ``values`` and ``dof_mask`` and reads
+        them on every step until the override is cleared; it does not copy
+        them. Update ``values`` in place before each step, including inside a
+        captured CUDA graph. Call this method outside graph capture: a graph
+        keeps reading the arrays that were set when it was captured.
+
+        Accelerations use the same convention as
+        :attr:`SolverMuJoCo.Observables.qacc_smooth`: they are time
+        derivatives of :attr:`State.joint_qd <newton.State.joint_qd>`. Masked
+        DOFs without a MuJoCo DOF, such as those of loop joints, are ignored.
+        Without an override, :meth:`step` runs MuJoCo Warp's native step
+        unchanged.
+
+        Under ``implicit`` and ``implicitfast`` integration, the velocity
+        update still applies MuJoCo's implicit damping to the overridden
+        acceleration, so the override sets ``qacc_smooth``, not the final
+        velocity change.
+
+        See :ref:`mujoco_qacc_smooth_override` for an example.
+
+        .. experimental::
+            This method may change without prior notice.
+
+        Args:
+            values: Pre-constraint joint accelerations [m/s² or rad/s²], shape
+                ``(joint_dof_count,)``, or ``None`` to clear the override.
+            dof_mask: DOFs to override, shape ``(joint_dof_count,)``. If
+                ``None``, every DOF is overridden. Must be ``None`` when
+                ``values`` is ``None``.
+
+        Raises:
+            TypeError: If ``values`` or ``dof_mask`` is not a Warp array.
+            ValueError: If the solver uses ``use_mujoco_cpu=True``, sleeping,
+                or an integrator other than Euler, implicit or implicitfast, or
+                if an array has the wrong dtype, shape or device.
+        """
+        if values is None:
+            if dof_mask is not None:
+                raise ValueError("dof_mask must be None when clearing the qacc_smooth override (values=None).")
+            self._qacc_smooth_override = None
+            return
+        if self.use_mujoco_cpu:
+            raise ValueError("The qacc_smooth override requires the MuJoCo Warp backend (use_mujoco_cpu=False).")
+        if self.enable_sleeping:
+            raise ValueError(
+                "The qacc_smooth override does not support sleeping, because MuJoCo Warp then solves "
+                "constraints in a compacted DOF space. Set enable_sleeping=False."
+            )
+        self._check_qacc_smooth_override_integrator()
+        dof_count = self.model.joint_dof_count
+        for name, arr, dtype in (("values", values, wp.float32), ("dof_mask", dof_mask, wp.bool)):
+            if arr is None:
+                continue
+            if not isinstance(arr, wp.array):
+                raise TypeError(f"{name} must be a Warp array, got {type(arr).__name__}.")
+            if arr.dtype != dtype or arr.shape != (dof_count,):
+                raise ValueError(
+                    f"{name} must have dtype {dtype.__name__} and shape ({dof_count},) (joint_dof_count), "
+                    f"got dtype {getattr(arr.dtype, '__name__', arr.dtype)} and shape {arr.shape}."
+                )
+            if arr.device != self.model.device:
+                raise ValueError(f"{name} is on {arr.device}, but the model is on {self.model.device}.")
+        self._qacc_smooth_override = (values, dof_mask)
+
+    def _check_qacc_smooth_override_integrator(self) -> None:
+        integrator = self.mjw_model.opt.integrator
+        if integrator not in (
+            self._mujoco.mjtIntegrator.mjINT_EULER,
+            self._mujoco.mjtIntegrator.mjINT_IMPLICIT,
+            self._mujoco.mjtIntegrator.mjINT_IMPLICITFAST,
+        ):
+            name = self._mujoco.mjtIntegrator(int(integrator)).name.removeprefix("mjINT_").lower()
+            raise ValueError(
+                f"The qacc_smooth override requires Euler, implicit or implicitfast integration, got {name}. "
+                "RK4 evaluates the dynamics at several stages, and the discrete integrator solves with an "
+                "effective inertia."
+            )
+
     @event_scope
     def _mujoco_warp_step(self):
-        if not self._use_speculative_contacts:
+        override = self._qacc_smooth_override
+        if not self._use_speculative_contacts and override is None:
             self._mujoco_warp.step(self.mjw_model, self.mjw_data)
             return
         model, data = self.mjw_model, self.mjw_data
-        if model.opt.integrator not in (
-            self._mujoco.mjtIntegrator.mjINT_EULER,
-            self._mujoco.mjtIntegrator.mjINT_IMPLICITFAST,
-        ):
-            raise ValueError("use_speculative_contacts=True requires Euler or implicitfast integration.")
-        contact = data.contact
-        wp.launch(
-            speculative.prepare_contacts,
-            dim=data.naconmax,
-            inputs=[
-                data.nacon,
-                model.opt.timestep,
-                contact.worldid,
-                contact.dist,
-                contact.includemargin,
-                contact.dim,
-                contact.solref,
-                contact.solimp,
-                self._speculative_clearance,
-                self._speculative_dim,
-                self._speculative_solref,
-                self._speculative_solimp,
-            ],
-            device=self.device,
-        )
+        if self._use_speculative_contacts:
+            if model.opt.integrator not in (
+                self._mujoco.mjtIntegrator.mjINT_EULER,
+                self._mujoco.mjtIntegrator.mjINT_IMPLICITFAST,
+            ):
+                raise ValueError("use_speculative_contacts=True requires Euler or implicitfast integration.")
+            contact = data.contact
+            wp.launch(
+                speculative.prepare_contacts,
+                dim=data.naconmax,
+                inputs=[
+                    data.nacon,
+                    model.opt.timestep,
+                    contact.worldid,
+                    contact.dist,
+                    contact.includemargin,
+                    contact.dim,
+                    contact.solref,
+                    contact.solimp,
+                    self._speculative_clearance,
+                    self._speculative_dim,
+                    self._speculative_solref,
+                    self._speculative_solimp,
+                ],
+                device=self.device,
+            )
         self._mujoco_warp.step1(model, data)
+        if self._use_speculative_contacts:
+            contact = data.contact
+            wp.launch(
+                speculative.set_contact_targets,
+                dim=data.naconmax,
+                inputs=[
+                    data.nacon,
+                    model.opt.timestep,
+                    contact.worldid,
+                    self._speculative_clearance,
+                    contact.efc_address,
+                    contact.dist,
+                    contact.includemargin,
+                    data.efc.vel,
+                    data.efc.pos,
+                    data.efc.aref,
+                ],
+                device=self.device,
+            )
+        if override is None:
+            self._mujoco_warp.step2(model, data)
+        else:
+            self._mujoco_warp_step2_with_qacc_smooth_override(*override)
+
+    def _mujoco_warp_step2_with_qacc_smooth_override(
+        self, values: wp.array[wp.float32], dof_mask: wp.array[wp.bool] | None
+    ) -> None:
+        """Run ``mujoco_warp.step2`` with ``qacc_smooth`` replaced before the constraint solve.
+
+        Mirrors ``mujoco_warp.step2`` for the Euler, implicit and implicitfast
+        integrators; ``test_override_reproduces_native_step`` guards
+        against divergence from MuJoCo Warp.
+        """
+        mjw = self._mujoco_warp
+        m, d = self.mjw_model, self.mjw_data
+        self._check_qacc_smooth_override_integrator()
+        mjw.fwd_actuation(m, d)
+        mjw.fwd_acceleration(m, d)
+        model = self.model
         wp.launch(
-            speculative.set_contact_targets,
-            dim=data.naconmax,
+            apply_qacc_smooth_override_kernel,
+            dim=(d.nworld, model.joint_count // d.nworld),
             inputs=[
-                data.nacon,
-                model.opt.timestep,
-                contact.worldid,
-                self._speculative_clearance,
-                contact.efc_address,
-                contact.dist,
-                contact.includemargin,
-                data.efc.vel,
-                data.efc.pos,
-                data.efc.aref,
+                values,
+                dof_mask,
+                d.qpos,
+                d.qvel,
+                model.joint_count // d.nworld,
+                model.joint_type,
+                model.joint_qd_start,
+                model.joint_dof_dim,
+                model.joint_child,
+                model.joint_X_p,
+                model.joint_X_c,
+                model.body_com,
+                self.mj_q_start,
+                self.mj_qd_start,
             ],
-            device=self.device,
+            outputs=[d.qacc_smooth],
+            device=model.device,
         )
-        self._mujoco_warp.step2(model, data)
+        # The constraint solver reads both qacc_smooth and qfrc_smooth, so keep them consistent.
+        mjw.mul_m(m, d, d.qfrc_smooth, d.qacc_smooth)
+        mjw.solve(m, d)
+        if m.opt.run_rne_postconstraint or (
+            not (m.opt.disableflags & mjw.DisableBit.SENSOR) and m.sensor_rne_postconstraint
+        ):
+            mjw.rne_postconstraint(m, d)
+        mjw.sensor_acc(m, d, skip_rne_postconstraint=True)
+        if m.opt.integrator == self._mujoco.mjtIntegrator.mjINT_EULER:
+            mjw.euler(m, d)
+        else:
+            mjw.implicit(m, d)
 
     @event_scope
     @override
@@ -6768,6 +6951,29 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         if not isinstance(observables, self.Observables):
             return
+        if is_mjwarp and observables.is_requested(self.ObservableKind.QACC_SMOOTH):
+            wp.launch(
+                convert_qacc_from_mj_kernel,
+                dim=(nworld, joints_per_world),
+                inputs=[
+                    mj_data.qacc_smooth,
+                    joints_per_world,
+                    model.joint_type,
+                    model.joint_q_start,
+                    model.joint_qd_start,
+                    model.joint_dof_dim,
+                    model.joint_child,
+                    model.joint_X_p,
+                    model.joint_X_c,
+                    model.body_com,
+                    state_prev.joint_q,
+                    state_prev.joint_qd,
+                    self.mj_q_start,
+                    self.mj_qd_start,
+                ],
+                outputs=[observables.qacc_smooth],
+                device=model.device,
+            )
         for kind, qfrc in (
             (self.ObservableKind.QFRC_BIAS, observables.qfrc_bias),
             (self.ObservableKind.QFRC_CONSTRAINT, observables.qfrc_constraint),

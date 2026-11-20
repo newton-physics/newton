@@ -1206,6 +1206,63 @@ interval until the next refresh. The solver's velocity bound uses each
 individual dynamics timestep. Speculative constraints can consume additional
 constraint rows, so check contact and constraint capacities for the scene.
 
+The read-only :attr:`~newton.solvers.SolverMuJoCo.use_speculative_contacts`
+property reports the mode, for example so a derived solver can validate its
+settings.
+
+.. _mujoco_qacc_smooth_override:
+
+Overriding pre-constraint accelerations
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+MuJoCo computes each step's pre-constraint joint acceleration, ``qacc_smooth``,
+from all forces except constraints, and then solves contacts, joint limits, and
+other constraints around it.
+:meth:`~newton.solvers.SolverMuJoCo.set_qacc_smooth_override` replaces
+``qacc_smooth`` on selected DOFs before that solve. A learned or external model
+can then supply the free motion of a robot while MuJoCo Warp still resolves its
+contacts and limits, and the motion of every other body, in one solve:
+
+.. code-block:: python
+
+    solver = newton.solvers.SolverMuJoCo(model, integrator="implicitfast")
+    qacc_smooth = wp.zeros(model.joint_dof_count, dtype=wp.float32)
+    dof_mask = wp.array(robot_dof_mask, dtype=wp.bool)
+    solver.set_qacc_smooth_override(qacc_smooth, dof_mask=dof_mask)
+
+    for _ in range(steps):
+        predict_qacc_smooth(state_in, control, out=qacc_smooth)  # fills the array in place
+        solver.step(state_in, state_out, control, contacts, dt)
+        state_in, state_out = state_out, state_in
+
+    solver.set_qacc_smooth_override(None)  # back to MuJoCo's own qacc_smooth
+
+With an override set, a step runs ``step1``, ``fwd_actuation``, and
+``fwd_acceleration``, writes the override into ``qacc_smooth`` on the masked
+DOFs, recomputes the smooth forces ``qfrc_smooth = M·qacc_smooth``, and then
+runs the constraint solve, post-constraint quantities and sensors, and the
+integrator, as ``mujoco_warp.step2`` does. Without an override, the step is
+unchanged.
+
+- The solver keeps references to the arrays and reads them on every step, so a
+  CUDA graph can capture the step together with the code that fills the values.
+  Set the override before capturing; a graph keeps reading the arrays it was
+  captured with.
+- Values use the convention of the ``QACC_SMOOTH`` observable (see
+  :ref:`solver_observables`), so a model trained on that observable can feed the
+  override directly. For a free or ball joint with only some DOFs masked, the
+  unmasked components keep MuJoCo's acceleration in that convention.
+- Euler, implicit, and implicitfast integration and ``use_speculative_contacts``
+  are supported. Under implicit and implicitfast integration, the velocity update
+  still applies MuJoCo's implicit damping to the overridden acceleration.
+- RK4, the discrete integrator, sleeping, and ``use_mujoco_cpu=True`` are
+  rejected with :class:`ValueError`.
+
+.. experimental::
+
+   :meth:`~newton.solvers.SolverMuJoCo.set_qacc_smooth_override` may change
+   without prior notice.
+
 Push, pull, and contact export are implemented by
 ``SolverMuJoCo._apply_mjc_control``, ``SolverMuJoCo._update_newton_state``,
 and ``SolverMuJoCo._populate_contact_observables``. The MuJoCo Warp path uses kernels
