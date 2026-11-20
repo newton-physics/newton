@@ -813,6 +813,10 @@ class ViewerGL(ViewerBase):
 
     def _populate_sdf_isomesh_instances(self) -> None:
         super()._populate_sdf_isomesh_instances()
+        # Distance-based detail only serves interactive inspection; captured
+        # frames and the legacy GUI keep full-resolution isosurfaces.
+        if self.gui is None or not self.gui.workspace_enabled:
+            return
         from .gl.mesh_lod import SdfMeshLOD  # noqa: PLC0415
 
         for batch in self._sdf_isomesh_instances.values():

@@ -113,6 +113,31 @@ class _ViewerLegacyMeshSignatureProbe(ViewerNull):
 
 
 class TestViewerGeometryBatching(unittest.TestCase):
+    def test_sdf_display_lod_only_for_workspace_gui(self) -> None:
+        """Keep full-resolution SDF isosurfaces for headless capture and the legacy GUI."""
+        from unittest import mock  # noqa: PLC0415
+
+        from newton._src.viewer import viewer_gl  # noqa: PLC0415
+        from newton._src.viewer.gl import mesh_lod  # noqa: PLC0415
+
+        for gui, expected in (
+            (None, False),
+            (SimpleNamespace(workspace_enabled=False), False),
+            (SimpleNamespace(workspace_enabled=True), True),
+        ):
+            with self.subTest(gui=gui):
+                viewer = viewer_gl.ViewerGL.__new__(viewer_gl.ViewerGL)
+                viewer.gui = gui
+                viewer._sdf_isomesh_instances = {"sdf": SimpleNamespace(mesh="mesh")}
+                viewer.objects = {"mesh": SimpleNamespace(num_indices=400_000)}
+                with (
+                    mock.patch.object(newton.viewer.ViewerBase, "_populate_sdf_isomesh_instances"),
+                    mock.patch.object(mesh_lod, "SdfMeshLOD") as lod,
+                ):
+                    viewer._populate_sdf_isomesh_instances()
+                self.assertEqual(hasattr(viewer.objects["mesh"], "_display_lod"), expected)
+                self.assertEqual(lod.called, expected)
+
     def test_sdf_display_culling_preserves_intersections_and_shadow_casters(self) -> None:
         """Cull offscreen SDF instances without dropping boundary geometry or shadows."""
         lod = SdfMeshLOD.__new__(SdfMeshLOD)
