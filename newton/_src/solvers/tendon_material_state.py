@@ -14,7 +14,7 @@ import warp as wp
 
 from ..sim import Model
 from ..sim.tendon import TendonGuideType
-from .tendon_kernels import _initialize_tendon_material
+from .tendon_kernels import _initialize_tendon_material, _sweep_tendon_material
 from .tendon_material import TendonMaterialStatus, solve_tendon_material_component
 
 
@@ -38,16 +38,18 @@ class _TendonMaterialWorkspace:
     next_guide: wp.array[int]
     incoming: wp.array[int]
     failed_component: wp.array[int]
+    oversized: wp.array[bool]
 
 
 def _create_tendon_material_workspace(model: Model) -> _TendonMaterialWorkspace:
     """Allocate packed scratch proportional to the number of authored spans."""
     if model.requires_grad:
         raise ValueError("The direct tendon material solve does not support differentiable simulation")
+    oversized = np.zeros(model.tendon_count, dtype=bool)
     if model.tendon_segment_count:
         compliance = model.tendon_segment_compliance.numpy()
-        if not np.all(np.isfinite(compliance) & (compliance >= 1.0e-25)):
-            raise ValueError("The direct tendon material solve requires finite compliance >= 1e-25 m/N")
+        if not np.all(np.isfinite(compliance) & (compliance >= 0.0)):
+            raise ValueError("Tendon compliance must be finite and non-negative")
         starts = model.tendon_start.numpy()
         kinds = model.tendon_guide_type.numpy()
         for tendon in range(model.tendon_count):
@@ -55,13 +57,12 @@ def _create_tendon_material_workspace(model: Model) -> _TendonMaterialWorkspace:
             for kind in kinds[starts[tendon] + 1 : starts[tendon + 1]]:
                 count += 1
                 if count > 32:
-                    raise ValueError(
-                        "The direct tendon material solve supports at most 32 authored spans "
-                        f"between anchors (tendon {tendon})"
-                    )
+                    oversized[tendon] = True
+                    break
                 if kind == int(TendonGuideType.ANCHOR):
                     count = 0
     workspace = _TendonMaterialWorkspace()
+    workspace.oversized = wp.array(oversized, dtype=bool, device=model.device)
     for name in ("previous_rest", "trial", "initial", "compliance", "cap", "upper", "output"):
         setattr(workspace, name, wp.zeros(model.tendon_segment_count, dtype=float, device=model.device))
     workspace.transfer = wp.zeros(model.tendon_segment_count, dtype=wp.float64, device=model.device)
@@ -82,6 +83,8 @@ def _reject_material(workspace: _TendonMaterialWorkspace, tendon: int, row: int,
 
 @wp.func
 def _project_component(workspace: _TendonMaterialWorkspace, tendon: int, row: int, count: int) -> bool:
+    # Native indexing assumes contiguous arrays. All buffers below are private 1-D
+    # allocations. Packing in segment order gives row + count <= segment_end.
     if workspace.count[row] != count:
         workspace.valid[row] = 0
     workspace.count[row] = count
@@ -142,9 +145,12 @@ def _project_tendon_material(
     The caller must inspect the result on the accepted pose, not just trial poses.
     """
     workspace.failed_component[tendon] = -1
+    sweep_only = workspace.oversized[tendon]
     for seg in range(segment_start, segment_end):
-        if not wp.isfinite(raw_compliance[seg]) or raw_compliance[seg] < 1.0e-25:
+        if not wp.isfinite(raw_compliance[seg]) or raw_compliance[seg] < 0.0:
             return _reject_material(workspace, tendon, segment_start, int(TendonMaterialStatus.BAD_INPUT))
+        if raw_compliance[seg] < 1.0e-25:
+            sweep_only = True
         workspace.next_guide[seg] = -1
         workspace.incoming[seg] = -1
         workspace.trial[seg] = stretch[seg]
@@ -178,6 +184,8 @@ def _project_tendon_material(
                 return _reject_material(workspace, tendon, segment_start, int(TendonMaterialStatus.INVALID_ROUTE))
         workspace.next_guide[left] = guide
         workspace.incoming[right] = guide
+        if not wp.isfinite(cap_ratio[guide]) or cap_ratio[guide] < 1.0:
+            return _reject_material(workspace, tendon, segment_start, int(TendonMaterialStatus.BAD_INPUT))
         if rolling:
             # Preserve the validated float32 order for common arc exchange and
             # differential transport. Do not clip this trial before projection.
@@ -187,6 +195,9 @@ def _project_tendon_material(
             workspace.trial[right] = workspace.trial[right] - common
             workspace.trial[left] = workspace.trial[left] - differential
             workspace.trial[right] = workspace.trial[right] + differential
+
+    if sweep_only:
+        return _reject_material(workspace, tendon, segment_start, int(TendonMaterialStatus.SWEEPS_REQUIRED))
 
     row = int(-1)
     count = int(0)
@@ -298,6 +309,9 @@ def solve_tendon_material_direct(
     raw_compliance: wp.array[float],
     failure: wp.array[wp.vec2i],
     accepted_pose: int,
+    max_sweeps: int,
+    settle_tol: float,
+    settle_atol: float,
 ):
     """Solve the linear material return map; latch rejection only on accepted poses."""
     tendon_id = wp.tid()
@@ -373,15 +387,101 @@ def solve_tendon_material_direct(
             seg_stretch,
             guide_material_transfer,
         )
+    if not valid and material_added == 0.0:
+        row = workspace.failed_component[tendon_id]
+        code = workspace.status[row]
+        if (
+            code == int(TendonMaterialStatus.NUMERICAL_FAILURE)
+            or code == int(TendonMaterialStatus.SWEEPS_REQUIRED)
+            or code == int(TendonMaterialStatus.BOUND_INCOMPATIBLE)
+            or code == int(TendonMaterialStatus.SLACK_INFEASIBLE)
+        ):
+            # Direct only writes to stretch and transfer after the entire tendon succeeds.
+            # Verify the entire trial before sweeps: rejection in an early component
+            # may have prevented direct from visiting a later one.
+            finite = bool(True)
+            feasible = bool(True)
+            spare = wp.float64(0.0)
+            roundoff = wp.float64(0.0)
+            component = segment_start
+            for seg in range(segment_start, segment_end):
+                if seg_active[seg] != 0:
+                    finite = finite and wp.isfinite(workspace.trial[seg]) and wp.isfinite(seg_length[seg])
+                    finite = finite and wp.isfinite(seg_active_compliance[seg]) and seg_active_compliance[seg] >= 0.0
+                    finite = finite and wp.isfinite(seg_damping_tension[seg])
+                    # A different anchor component cannot lend this one material.
+                    spare += wp.float64(seg_length[seg]) - wp.float64(workspace.trial[seg]) - wp.float64(1.0e-6)
+                    roundoff += wp.float64(
+                        1.0e-6 * wp.max(wp.max(seg_length[seg], wp.abs(workspace.trial[seg])), 1.0e-6)
+                    )
+                    if workspace.next_guide[seg] < 0:
+                        if spare < -roundoff:
+                            feasible = False
+                            row = component
+                            workspace.failed_component[tendon_id] = row
+                            break
+                        component = seg + 1
+                        spare = wp.float64(0.0)
+                        roundoff = wp.float64(0.0)
+            if finite and feasible:
+                settled, added = _sweep_tendon_material(
+                    tendon_id,
+                    guide_start,
+                    guide_end - guide_start,
+                    segment_start,
+                    seg_rest_length,
+                    seg_stretch,
+                    seg_damping_tension,
+                    seg_active,
+                    seg_active_compliance,
+                    tendon_guide_type,
+                    tendon_guide_active,
+                    seg_length,
+                    seg_rolling_delta_l,
+                    seg_rolling_delta_r,
+                    tendon_guide_cone_seg_l,
+                    tendon_guide_cone_seg_r,
+                    tendon_guide_cap_ratio,
+                    tendon_cone_sweep_count,
+                    apply_rolling_transfer,
+                    apply_pinhole_slip,
+                    1,
+                    max_sweeps,
+                    settle_tol,
+                    settle_atol,
+                    1,
+                    0.0,
+                    guide_material_transfer,
+                    True,
+                )
+                for seg in range(segment_start, segment_end):
+                    if seg_active[seg] != 0:
+                        finite = finite and wp.isfinite(seg_stretch[seg]) and wp.isfinite(seg_rest_length[seg])
+                        tension = seg_stretch[seg] / wp.max(seg_active_compliance[seg], 1.0e-30)
+                        finite = finite and wp.isfinite(tension + seg_damping_tension[seg])
+                for guide in range(guide_start + 1, guide_end - 1):
+                    finite = finite and wp.isfinite(guide_material_transfer[guide])
+                if settled and added == 0.0 and finite:
+                    return
+                if added > 0.0:
+                    workspace.status[row] = int(TendonMaterialStatus.BOUND_INCOMPATIBLE)
+                else:
+                    workspace.status[row] = int(TendonMaterialStatus.SWEEPS_NOT_CONVERGED)
+            elif not finite:
+                workspace.status[row] = int(TendonMaterialStatus.BAD_INPUT)
+            else:
+                workspace.status[row] = int(TendonMaterialStatus.BOUND_INCOMPATIBLE)
     if not valid:
-        # Provisional iterates may be infeasible. Preserve the previous material
-        # allocation and retry after the body update; never fall back to sweeps.
+        for guide in range(guide_start + 1, guide_end - 1):
+            guide_material_transfer[guide] = 0.0
         for seg in range(segment_start, segment_end):
             seg_rest_length[seg] = workspace.previous_rest[seg]
             seg_stretch[seg] = seg_length[seg] - seg_rest_length[seg]
         if accepted_pose != 0 and failure[tendon_id][0] == 0:
             row = workspace.failed_component[tendon_id]
             code = workspace.status[row]
+            if code == int(TendonMaterialStatus.SWEEPS_NOT_CONVERGED):
+                row = -1  # Sweeps check the entire tendon.
             failure[tendon_id] = wp.vec2i(code, row)
             wp.printf(
                 "Error: direct tendon material solve rejected accepted pose "

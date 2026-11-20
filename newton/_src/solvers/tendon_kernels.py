@@ -1509,8 +1509,6 @@ def solve_tendon_material(
     # segment prefix is the guide prefix minus the number of preceding tendons.
     seg_offset = guide_start - tendon_id
 
-    min_rest = 1.0e-6
-
     material_added = _initialize_tendon_material(
         tendon_id,
         body_q,
@@ -1549,6 +1547,83 @@ def solve_tendon_material(
         guide_material_transfer,
     )
 
+    _, material_added = _sweep_tendon_material(
+        tendon_id,
+        guide_start,
+        num_guides,
+        seg_offset,
+        seg_rest_length,
+        seg_stretch,
+        seg_damping_tension,
+        seg_active,
+        seg_active_compliance,
+        tendon_guide_type,
+        tendon_guide_active,
+        seg_length,
+        seg_rolling_delta_l,
+        seg_rolling_delta_r,
+        tendon_guide_cone_seg_l,
+        tendon_guide_cone_seg_r,
+        tendon_guide_cap_ratio,
+        tendon_cone_sweep_count,
+        apply_rolling_transfer,
+        apply_pinhole_slip,
+        adaptive_cone_sweeps,
+        tendon_max_sweeps,
+        tendon_settle_tol,
+        tendon_settle_atol,
+        report_material_exhaustion,
+        material_added,
+        guide_material_transfer,
+        False,
+    )
+    if report_material_exhaustion != 0 and material_added > 0.0:
+        wp.printf(
+            "ERROR: Tendon %d material rest-length floor added %g m of cable. "
+            "The accepted material solve cannot conserve cable length; rest lengths and tensions are invalid. "
+            "Check wrapped-arc growth, available cable material, and material-solver convergence.\n",
+            tendon_id,
+            material_added,
+        )
+
+
+@wp.func
+def _sweep_tendon_material(
+    tendon_id: int,
+    guide_start: int,
+    num_guides: int,
+    seg_offset: int,
+    seg_rest_length: wp.array[float],
+    seg_stretch: wp.array[float],
+    seg_damping_tension: wp.array[float],
+    seg_active: wp.array[int],
+    seg_active_compliance: wp.array[float],
+    tendon_guide_type: wp.array[int],
+    tendon_guide_active: wp.array[bool],
+    seg_length: wp.array[float],
+    seg_rolling_delta_l: wp.array[float],
+    seg_rolling_delta_r: wp.array[float],
+    tendon_guide_cone_seg_l: wp.array[int],
+    tendon_guide_cone_seg_r: wp.array[int],
+    tendon_guide_cap_ratio: wp.array[float],
+    tendon_cone_sweep_count: wp.array[int],
+    apply_rolling_transfer: int,
+    apply_pinhole_slip: int,
+    adaptive_cone_sweeps: int,
+    tendon_max_sweeps: int,
+    tendon_settle_tol: float,
+    tendon_settle_atol: float,
+    report_material_exhaustion: int,
+    initial_material_added: float,
+    guide_material_transfer: wp.array[float],
+    certify_final: bool,
+) -> tuple[bool, float]:
+    """Apply rolling and project the initialized material trial in place."""
+    material_added = initial_material_added
+    min_rest = 1.0e-6
+    guide_end = guide_start + num_guides
+    num_segs = num_guides - 1
+    converged = int(1)
     if apply_rolling_transfer != 0 or apply_pinhole_slip != 0:
         # Rolling supplies the full no-slip trial; friction decides how much
         # can stick. Applying a beta-scaled increment after projection would
@@ -1584,6 +1659,8 @@ def solve_tendon_material(
 
             tendon_cone_sweep_count[tendon_id] = tendon_cone_sweep_count[tendon_id] + 1
             converged = int(adaptive_cone_sweeps != 0 and tendon_settle_tol > 0.0)
+            if certify_final and material_sweep == material_sweep_count - 1:
+                converged = 1
             previous_guide = int(-1)
             for order in range(1, num_guides - 1):
                 i = order
@@ -1786,11 +1863,4 @@ def solve_tendon_material(
                         material_added = material_added + added
                 seg_rest_length[seg] = wp.max(raw_rest, min_rest)
 
-    if report_material_exhaustion != 0 and material_added > 0.0:
-        wp.printf(
-            "ERROR: Tendon %d material rest-length floor added %g m of cable. "
-            "The accepted material solve cannot conserve cable length; rest lengths and tensions are invalid. "
-            "Check wrapped-arc growth, available cable material, and material-solver convergence.\n",
-            tendon_id,
-            material_added,
-        )
+    return converged != 0, material_added

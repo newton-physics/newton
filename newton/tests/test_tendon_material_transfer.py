@@ -6,6 +6,7 @@
 import sys
 import unittest
 from functools import partial
+from itertools import product
 
 import numpy as np
 import warp as wp
@@ -379,13 +380,13 @@ def test_invalid_route_and_material_are_rejected(test, device):
     test.assertEqual(int(fixture.workspace.status.numpy()[0]), int(TendonMaterialStatus.INVALID_ROUTE))
     np.testing.assert_array_equal(fixture.solver.tendon_segment_stretch.numpy(), initial)
     fixture.solver.tendon_guide_cone_seg_r.assign(np.array([-1, 1, -1], dtype=np.int32))
-    fixture.solver.tendon_guide_cap_ratio.fill_(5.0)
+    fixture.solver.tendon_guide_cap_ratio.fill_(0.5)
     fixture.launch()
     test.assertFalse(fixture.accepted.numpy()[0])
     test.assertEqual(int(fixture.workspace.status.numpy()[0]), int(TendonMaterialStatus.BAD_INPUT))
     np.testing.assert_array_equal(fixture.transfer.numpy(), -77.0)
     fixture.solver.tendon_guide_cap_ratio.fill_(2.0)
-    fixture.model.tendon_segment_compliance.zero_()
+    fixture.model.tendon_segment_compliance.fill_(-0.1)
     fixture.launch()
     test.assertFalse(fixture.accepted.numpy()[0])
     test.assertEqual(int(fixture.workspace.status.numpy()[0]), int(TendonMaterialStatus.BAD_INPUT))
@@ -473,7 +474,7 @@ def test_graph_replay_uses_current_trial(test, device):
 
 
 def test_workspace_limits_each_anchor_component(test, device):
-    """Apply the 32-span limit per anchor component, not to the entire tendon."""
+    """Select sweeps only if an authored anchor-to-anchor component exceeds 32 spans."""
     a, p = newton.TendonGuideType.ANCHOR, newton.TendonGuideType.PINHOLE
     for component_sizes, valid in (((32, 32), True), ((33,), False)):
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
@@ -491,13 +492,9 @@ def test_workspace_limits_each_anchor_component(test, device):
                 )
         builder.add_tendon(guides)
         model = builder.finalize(device=device)
-        if valid:
-            workspace = _create_tendon_material_workspace(model)
-            test.assertEqual(workspace.initial.size, sum(component_sizes))
-            test.assertEqual(workspace.faces.size, sum(component_sizes))
-        else:
-            with test.assertRaisesRegex(ValueError, "32 authored spans"):
-                _create_tendon_material_workspace(model)
+        workspace = _create_tendon_material_workspace(model)
+        test.assertEqual(workspace.initial.size, sum(component_sizes))
+        test.assertEqual(bool(workspace.oversized.numpy()[0]), not valid)
 
 
 def _world_material_model(device, *, worlds=1, mu=0.0):
@@ -522,6 +519,141 @@ def _world_material_model(device, *, worlds=1, mu=0.0):
         builder.end_world()
     builder.color()
     return builder.finalize(device=device)
+
+
+def test_high_friction_matches_sweeps_without_retry(test, device):
+    """Slide at a capstan ratio above four without falling back in either solver."""
+    model = _world_material_model(device, mu=1.0)
+    ratio = np.exp(np.pi / 2)
+    for solver_type in (newton.solvers.SolverXPBD, newton.solvers.SolverVBD):
+        for direct in (False, True):
+            solver = solver_type(model, iterations=2, tendon_material_direct=direct)
+            state, output = model.state(), model.state()
+            solver.step(state, output, model.control(), None, 0.01)
+            solver.check_tendon_material(output)
+            np.testing.assert_allclose(
+                solver.tendon_segment_material_tension.numpy(), 20 * np.array([ratio, 1]) / (1 + ratio), atol=2e-5
+            )
+            test.assertEqual(int(solver.tendon_cone_sweep_count.numpy()[0]) == 0, direct)
+
+
+def test_checked_sweep_fallback(test, device):
+    """Retry only the rejected tendon and detect an insufficient sweep budget."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    for size in (2, 32, 33):
+        builder.begin_world()
+        guides = [newton.TendonGuide(body=-1)]
+        for i in range(size):
+            kind = newton.TendonGuideType.ANCHOR if i + 1 == size else newton.TendonGuideType.PINHOLE
+            guides.append(newton.TendonGuide(body=-1, guide_type=kind, offset=(i + 1, 0.0, 0.0), compliance=1.0e-5))
+        builder.add_tendon(guides)
+        builder.end_world()
+    model = builder.finalize(device=device)
+    rest = np.full(67, 0.004, dtype=np.float32)
+    rest[[0, 2, 34]] -= np.float32(0.001)
+    outputs = []
+    for solver_type, direct in product((newton.solvers.SolverXPBD, newton.solvers.SolverVBD), (False, True)):
+        solver = solver_type(
+            model,
+            iterations=1,
+            tendon_material_direct=direct,
+            tendon_max_sweeps=256,
+            tendon_settle_tol=1e-6,
+            tendon_settle_atol=1e-6,
+        )
+        solver._update_tendon_cone_rows(model, None, False)
+        solver.tendon_segment_length.fill_(0.004)
+        solver.tendon_segment_route_rest_length.assign(rest)
+        solver.tendon_segment_rest_length_step.assign(rest)
+        # At this ratio the 32-segment trial exercises the numerical fallback.
+        solver.tendon_guide_cap_ratio.fill_(8.0)
+
+        def run(solver=solver):
+            solver._solve_tendon_material(None, None, None, 0.01, damping_from_pose_delta=False, accepted_pose=False)
+
+        run()
+        if device.is_cuda:
+            with wp.ScopedCapture(device=device) as capture:
+                run()
+            wp.capture_launch(capture.graph)
+        outputs.append(solver.tendon_segment_stretch.numpy())
+        if direct:
+            counts = solver.tendon_cone_sweep_count.numpy()
+            test.assertEqual(counts[0], 0)
+            test.assertGreater(counts[1], 0)
+            test.assertGreater(counts[2], 0)
+            workspace = solver._tendon_material_workspace
+            test.assertEqual(workspace.status.numpy()[2], TendonMaterialStatus.NUMERICAL_FAILURE)
+            test.assertEqual(workspace.status.numpy()[34], TendonMaterialStatus.SWEEPS_REQUIRED)
+            np.testing.assert_allclose(outputs[-2], outputs[-1], rtol=1e-6, atol=1e-11)
+            for start, end in ((0, 2), (2, 34), (34, 67)):
+                test.assertAlmostEqual(outputs[-1][start:end].sum(dtype=float), 0.001, delta=1e-9)
+            # The same snapshot now has one sweep. Unsettled tendons must retain
+            # their previous rest lengths and no provisional slip.
+            solver.tendon_max_sweeps = 1
+            solver.tendon_segment_rest_length.assign(rest)
+            run()
+            np.testing.assert_array_equal(solver.tendon_segment_rest_length.numpy()[2:], rest[2:])
+            np.testing.assert_array_equal(solver._tendon_guide_material_transfer.numpy()[3:], 0.0)
+            test.assertEqual(workspace.status.numpy()[2], TendonMaterialStatus.SWEEPS_NOT_CONVERGED)
+            # Disabling early-out still certifies the last sweep, including
+            # the case where convergence occurs exactly at the budget.
+            solver.tendon_settle_tol = 0.0
+            # Allow a few float32 ulps of the 100 N load for reconstruction.
+            solver.tendon_settle_atol = float(4 * np.spacing(np.float32(100.0)))
+            solver.tendon_max_sweeps = 32
+            run()
+            np.testing.assert_array_equal(solver.tendon_cone_sweep_count.numpy(), [0, 32, 32])
+            final = solver.tendon_segment_stretch.numpy()
+            np.testing.assert_allclose(final, outputs[-1], atol=1e-10)
+            for start, end in ((2, 34), (34, 67)):
+                tension = final[start:end].astype(np.float64) / np.float32(1.0e-5)
+                test.assertLessEqual(np.max(np.abs(tension[:-1] - 8.0 * tension[1:])), solver.tendon_settle_atol)
+
+
+def test_fallback_restarts_all_components(test, device):
+    """Apply rolling once if a later component of the same tendon requires sweeps."""
+    a, r, p = newton.TendonGuideType.ANCHOR, newton.TendonGuideType.ROLLER, newton.TendonGuideType.PINHOLE
+    fixture = _MaterialFixture(device, [a, r, a, *([p] * 31), a])
+    model, n = fixture.model, 34
+    length = np.full(n, 0.004, dtype=np.float32)
+    length[:2] = 0.1
+    initial = length.copy()
+    initial[:2] = [0.08, 0.09]
+    initial[2] -= np.float32(0.001)
+    compliance = np.full(n, 1e-5, dtype=np.float32)
+    compliance[:2] = 0.001
+    model.tendon_segment_compliance.assign(compliance)
+    expected = []
+    for inextensible, direct in product((False, True), (False, True)):
+        solver = newton.solvers.SolverXPBD(model, iterations=1, tendon_material_direct=direct)
+        solver.tendon_segment_length.assign(length)
+        solver.tendon_segment_route_rest_length.assign(initial)
+        solver.tendon_segment_rest_length_step.assign(initial)
+        solver.tendon_guide_active_step.fill_(True)
+        solver.tendon_guide_active.fill_(True)
+        wp.copy(solver.tendon_guide_cone_seg_l, fixture.solver.tendon_guide_cone_seg_l)
+        wp.copy(solver.tendon_guide_cone_seg_r, fixture.solver.tendon_guide_cone_seg_r)
+        solver.tendon_guide_cap_ratio.assign([1.0, 2.0, *([8.0] * (n - 1))])
+        solver.tendon_segment_rolling_delta_r.assign([0.002, *([0.0] * (n - 1))])
+        solver.tendon_segment_rolling_delta_l.assign([0.0, -0.001, *([0.0] * (n - 2))])
+        if inextensible:
+            compliance[-1] = 0.0
+        model.tendon_segment_compliance.assign(compliance)
+        solver.notify_model_changed(newton.ModelFlags.TENDON_PROPERTIES)
+        solver.tendon_segment_active_compliance.assign(compliance)
+        solver._solve_tendon_material(None, None, None, 0.01, damping_from_pose_delta=False, accepted_pose=True)
+        rest = solver.tendon_segment_rest_length.numpy()
+        test.assertAlmostEqual(float(rest[:2].sum()), 0.171, delta=3e-8)
+        expected.append(rest)
+        if direct:
+            test.assertGreater(solver.tendon_cone_sweep_count.numpy()[0], 0)
+            np.testing.assert_array_equal(solver._tendon_material_failure.numpy()[:, 0], 0)
+            if not inextensible:
+                status = solver._tendon_material_workspace.status.numpy()
+                test.assertGreater(status[0], 0)
+                test.assertEqual(status[2], TendonMaterialStatus.NUMERICAL_FAILURE)
+            np.testing.assert_array_equal(expected[-2], expected[-1])
 
 
 def test_direct_steps_and_state_replay(test, device):
@@ -625,10 +757,11 @@ def test_accepted_failure_follows_state(test, device):
         with test.subTest(solver=solver_type.__name__):
             model.tendon_guide_mu.assign(np.array([0.0, 1.0, 0.0] * 2, dtype=np.float32))
             solver = solver_type(model, iterations=2, tendon_material_direct=True)
+            model.tendon_segment_compliance.fill_(-0.1)
             a, b, clean, copied = (model.state() for _ in range(4))
             control = model.control()
             solver.step(a, b, control, None, 0.01)
-            with test.assertRaisesRegex(RuntimeError, "BAD_INPUT"):
+            with test.assertRaisesRegex(RuntimeError, r"BAD_INPUT.*world 0, tendon 0.*BAD_INPUT.*world 1, tendon 1"):
                 solver.check_tendon_material(b)
             failure = b._tendon_material_failure.numpy().copy()
             np.testing.assert_array_equal(failure[:, 0], int(TendonMaterialStatus.BAD_INPUT))
@@ -637,7 +770,7 @@ def test_accepted_failure_follows_state(test, device):
             solver.check_tendon_material(clean)
 
             # Fix the parameter, not the trajectory: its earlier rejection must remain visible.
-            model.tendon_guide_mu.fill_(0.1)
+            model.tendon_segment_compliance.fill_(0.01)
             solver.notify_model_changed(newton.ModelFlags.TENDON_PROPERTIES)
             solver.step(b, a, control, None, 0.01)
             np.testing.assert_array_equal(a._tendon_material_failure.numpy(), failure)
@@ -652,6 +785,10 @@ def test_accepted_failure_follows_state(test, device):
             np.testing.assert_array_equal(
                 copied._tendon_material_failure.numpy()[:, 0], [0, int(TendonMaterialStatus.BAD_INPUT)]
             )
+            with test.assertRaises(RuntimeError) as error:
+                solver.check_tendon_material(copied)
+            test.assertIn("world 1, tendon 1", str(error.exception))
+            test.assertNotIn("world 0, tendon 0", str(error.exception))
             solver.reset(copied, flags=0)
             solver.check_tendon_material(copied)
 
@@ -659,11 +796,11 @@ def test_accepted_failure_follows_state(test, device):
                 with wp.ScopedCapture(device=device) as capture:
                     solver.step(clean, b, control, None, 0.01)
                     solver.step(b, clean, control, None, 0.01)
-                model.tendon_guide_mu.fill_(1.0)
+                model.tendon_segment_compliance.fill_(-0.1)
                 wp.capture_launch(capture.graph)
                 with test.assertRaisesRegex(RuntimeError, "BAD_INPUT"):
                     solver.check_tendon_material(clean)
-                model.tendon_guide_mu.fill_(0.1)
+                model.tendon_segment_compliance.fill_(0.01)
                 wp.capture_launch(capture.graph)
                 with test.assertRaisesRegex(RuntimeError, "BAD_INPUT"):
                     solver.check_tendon_material(clean)
@@ -676,6 +813,7 @@ def test_provisional_material_failure_can_retry(test, device):
     state = model.state()
     solver._load_tendon_history(state)
     solver._update_tendon_cone_rows(model, state.body_q, False)
+    solver.tendon_guide_cap_ratio.fill_(0.5)
     before = solver.tendon_segment_rest_length.numpy().copy()
     solver._solve_tendon_material(None, None, None, 0.01, damping_from_pose_delta=False, accepted_pose=False)
     np.testing.assert_array_equal(solver.tendon_segment_rest_length.numpy(), before)
@@ -849,7 +987,7 @@ def test_direct_input_contract(test, device):
     model = _world_material_model(device)
     for solver_type in (newton.solvers.SolverXPBD, newton.solvers.SolverVBD):
         solver = solver_type(model, iterations=1, tendon_material_direct=True)
-        model.tendon_segment_compliance.zero_()
+        model.tendon_segment_compliance.fill_(-0.01)
         with test.assertRaisesRegex(ValueError, "compliance"):
             solver.notify_model_changed(newton.ModelFlags.TENDON_PROPERTIES)
         with test.assertRaisesRegex(ValueError, "compliance"):
@@ -991,6 +1129,9 @@ for function in (
     test_direct_missing_pinhole_connection_is_rejected,
     test_graph_replay_uses_current_trial,
     test_workspace_limits_each_anchor_component,
+    test_high_friction_matches_sweeps_without_retry,
+    test_checked_sweep_fallback,
+    test_fallback_restarts_all_components,
     test_direct_steps_and_state_replay,
     test_direct_rest_edit_and_partial_reset,
     test_accepted_failure_follows_state,

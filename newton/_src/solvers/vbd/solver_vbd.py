@@ -784,14 +784,17 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 Zero disables early-out; must be finite and nonnegative.
             tendon_settle_atol: Absolute final capstan-force residual tolerance [N].
                 Combined with the relative tolerance; must be finite and nonnegative.
-                Ignored when ``tendon_settle_tol`` is zero.
+                With zero relative tolerance, only direct-mode fallback checks this tolerance after its last sweep.
             tendon_activation_tol: Relative radius gap that inactive dynamic rollers must cross before activation.
-            tendon_material_direct: Experimental linear finite-friction material projection instead of sweeps.
-                Requires compliance >= 1e-25 m/N and at most 32 authored spans between anchors;
-                effective capstan ratios must be in [1, 4].
+            tendon_material_direct: Select the linear finite-friction material projection.
+
+                .. experimental::
+                    The direct material solver option may change.
+
+                Tendons outside its size or compliance range, or without a verified direct result,
+                use sweeps with the configured count and stopping tolerances.
                 Call :meth:`check_tendon_material` on the output State after stepping or CUDA graph replay.
-                Requires at least one iteration and internal rigid-body integration. The sweep count and stopping
-                tolerances do not control this mode. Not differentiable.
+                Requires at least one iteration and internal rigid-body integration. Not differentiable.
 
             collision_pipeline: Optional :class:`~newton.CollisionPipeline`
                 owned by this solver. When given, the solver allocates its own

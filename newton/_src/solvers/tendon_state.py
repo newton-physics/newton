@@ -259,6 +259,9 @@ class TendonStateMixin:
                     model.tendon_segment_compliance,
                     self._tendon_material_failure,
                     int(accepted_pose),
+                    self.tendon_max_sweeps,
+                    self.tendon_settle_tol,
+                    self.tendon_settle_atol,
                 ]
             )
         else:
@@ -282,31 +285,38 @@ class TendonStateMixin:
             raise NotImplementedError("The direct tendon material solve is not differentiable")
 
     def check_tendon_material(self, state: State) -> None:
-        """Raise if a direct material projection rejected an accepted pose in this trajectory.
+        """Raise if material transfer failed at an accepted pose in this trajectory.
 
-        This experimental check synchronizes with the device. Call it outside CUDA
+        .. experimental::
+            This trajectory check is part of the direct material solver API.
+
+        This check synchronizes with the device. Call it outside CUDA
         graph capture after stepping or replay, before consuming the result. A
         failure remains in the State through subsequent steps and State.assign().
         Discard the affected trajectory; correct its input and reset its tendon
-        history before trying again. No material-sweep fallback is used.
+        history before trying again. A successful sweep fallback does not latch a failure.
 
         Args:
             state: Trajectory to inspect, belonging to this solver's model.
 
         Raises:
-            RuntimeError: A linear direct material projection failed on an accepted pose.
+            RuntimeError: An accepted pose has invalid material data or neither direct projection nor fallback succeeded.
         """
         if state._tendon_material_failure is None:
             return
         failure = state._tendon_material_failure.numpy()
         failed = np.flatnonzero(failure[:, 0])
         if failed.size:
-            tendon = int(failed[0])
-            code, component = map(int, failure[tendon])
-            reason = TendonMaterialStatus(code).name
+            worlds = self.model.tendon_world.numpy()
+            details = []
+            for tendon in failed:
+                code, component = map(int, failure[tendon])
+                where = f"world {worlds[tendon]}, tendon {tendon}"
+                if component >= 0:
+                    where += f", component starting at segment {component}"
+                details.append(f"{TendonMaterialStatus(code).name} ({code}), {where}")
             raise RuntimeError(
-                f"Direct tendon material solve failed: {reason} ({code}), tendon {tendon}, "
-                f"component starting at segment {component}. Discard the affected trajectory, "
+                f"Direct tendon material solve failed: {'; '.join(details)}. Discard the affected trajectory, "
                 "correct its input, and reset its tendon history before retrying."
             )
 
@@ -377,8 +387,6 @@ class TendonStateMixin:
             if name != "tendon_segment_rest_length" and (value < 0).any():
                 raise ValueError(f"{name} must be non-negative")
         rest = model.tendon_segment_rest_length.numpy()
-        if self.tendon_material_direct and (model.tendon_segment_compliance.numpy() < 1.0e-25).any():
-            raise ValueError("The direct tendon material solve requires compliance >= 1e-25 m/N")
         if np.array_equal(rest, self._tendon_authored_rest_length):
             return
 

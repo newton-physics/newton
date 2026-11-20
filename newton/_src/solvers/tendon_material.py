@@ -14,9 +14,9 @@ material transfer. Redistribution supports nonzero trial extensions and slack
 bounds spanning at most 2**68 in magnitude.
 
 Upper extension bounds are feasibility checks, not additional contact forces.
-An incompatible bound produces an explicit failure, never a clipped result or a
-fallback to sweeps. The caller must invalidate cached faces if route identities
-change and must handle negative status before accepting a simulation result.
+An incompatible bound rejects the component without publishing a clipped result.
+The caller owns any whole-tendon retry and invalidates cached faces when route
+identities change.
 """
 
 from enum import IntEnum
@@ -57,6 +57,12 @@ class TendonMaterialStatus(IntEnum):
     COMPONENT_TOO_LARGE = -6
     """Reject a material component with more than 32 active spans."""
 
+    SWEEPS_REQUIRED = -7
+    """Use sweeps for a tendon outside the direct solver's size or compliance range."""
+
+    SWEEPS_NOT_CONVERGED = -8
+    """Fallback sweeps did not satisfy the requested force tolerance."""
+
 
 @wp.func_native("""
 const int offset = tendon * span_stride;
@@ -76,7 +82,7 @@ for (int i = 0; i < n; ++i) {
     total = next_total;
     if (i < n - 1) {
         const double k = cap_ratio[edge_offset + i];
-        if (!wp::isfinite(k) || k < 1.0 || k > 4.0) return;
+        if (!wp::isfinite(k) || k < 1.0) return;
     }
 }
 total += total_error;
@@ -201,6 +207,9 @@ if (total <= 0.0) {
 }
 
 
+// A fixed absolute tolerance can merge opposite sliding directions near zero.
+// Use the same relative roundoff to validate a face and to cache it for reuse.
+const double face_relative_roundoff = 64.0 * double(n) * 2.220446049250313e-16;
 double tension[32];
 // One cached-face attempt, then one deterministic direct cold solve.
 for (int attempt = 0; attempt < 2; ++attempt) {
@@ -301,6 +310,24 @@ for (int attempt = 0; attempt < 2; ++attempt) {
                         }
                     }
                 }
+                // A propagated breakpoint and a root computed from the coefficients
+                // accumulate roundoff independently. Prefer any exact interval match.
+                if (!found) {
+                    for (int j = 0; j < count; ++j) {
+                        const double lo = low[current][j], hi = high[current][j];
+                        if (bb[current][j] <= 0.0 || lo > hi) continue;
+                        const double candidate = bb[current][j] / aa[current][j];
+                        const double endpoint = candidate < lo ? lo : hi;
+                        const bool shared = candidate < lo ? (j > 0 && high[current][j - 1] == lo)
+                                                           : (j + 1 < count && low[current][j + 1] == hi);
+                        const double roundoff = (i + 1) * 2.220446049250313e-16 * wp::min(candidate, endpoint);
+                        if (shared && wp::isfinite(candidate) && wp::abs(candidate - endpoint) <= roundoff) {
+                            root = endpoint;
+                            found = true;
+                            break;
+                        }
+                    }
+                }
                 if (!found) { status[tendon] = -4; return; }
             }
             minima[i] = root;
@@ -336,9 +363,9 @@ for (int attempt = 0; attempt < 2; ++attempt) {
         if (i < n - 1) {
             const double left = tension[i], right = tension[i + 1];
             const double k = cap_ratio[edge_offset + i];
-            const double force_tolerance = 2.0e-6 * wp::max(wp::max(left, right), 1.0e-20);
-            // Do not let a user-sized force tolerance merge both finite-friction faces.
-            const double face_roundoff = 64.0 * double(n) * 2.220446049250313e-16 * wp::max(wp::max(left, right), 1.0e-20);
+            const double tension_scale = wp::max(left, right);
+            const double force_tolerance = 2.0e-6 * tension_scale;
+            const double face_roundoff = face_relative_roundoff * tension_scale;
             const double c_next = compliance[offset + i + 1];
             const double flow_tolerance = force_tolerance / wp::max(1.0/c + k/c_next, k/c + 1.0/c_next);
             const double positive_gap = k * right - left;
@@ -361,8 +388,13 @@ for (int attempt = 0; attempt < 2; ++attempt) {
     }
     for (int i = 0; i < n && validation_status == 1; ++i) {
         // Float32 storage must remain finite and respect the rest bound too.
-        const float rounded = static_cast<float>(compliance[offset + i] * tension[i]);
-        if (!wp::isfinite(rounded) || !(rounded > 0.0f) || rounded > upper[offset + i] ||
+        const double exact = double(compliance[offset + i]) * tension[i];
+        const float rounded = static_cast<float>(exact);
+        // Half the smallest float32 subnormal ties to zero; keep rejecting
+        // a representable extension that was merely flushed to zero.
+        const bool rounds_to_zero = exact > 0.0 && exact <= 0x1p-150;
+        if (!wp::isfinite(rounded) || (rounded == 0.0f && !rounds_to_zero) ||
+            rounded < 0.0f || rounded > upper[offset + i] ||
             wp::abs(double(rounded) / compliance[offset + i] - tension[i]) > 2.0e-7 * wp::max(tension[i], 1.0e-20)) {
             validation_status = -4; break;
         }
@@ -382,7 +414,7 @@ for (int attempt = 0; attempt < 2; ++attempt) {
     for (int i = 0; i < n - 1; ++i) {
         const double k = cap_ratio[edge_offset + i];
         const double left = tension[i], right = tension[i + 1];
-        const double tolerance = 64.0 * double(n) * 2.220446049250313e-16 * wp::max(wp::max(left, right), 1.0e-20);
+        const double tolerance = face_relative_roundoff * wp::max(left, right);
         if (wp::abs(left - k * right) <= tolerance) faces[edge_offset + i] = 1;
         else if (wp::abs(right - k * left) <= tolerance) faces[edge_offset + i] = -1;
         else faces[edge_offset + i] = 0;
@@ -414,12 +446,16 @@ def solve_tendon_material_component(
     A cached active-face set is validated first. If it is stale, the
     deterministic direct solve recomputes the same return map. Neither path
     uses material sweeps. Negative status leaves output, transfer, and cached faces
-    unchanged; the caller must report the failure instead of accepting it.
+    unchanged so the caller can retry the tendon from its original allocation.
+
+    Native indexing requires contiguous one-dimensional buffers. The caller must
+    reserve n segment entries, n - 1 edge entries and a status slot at the supplied
+    offsets; arbitrary array views are not supported.
 
     Args:
         initial: Effective trial extensions, including frozen damping [m].
         compliance: Positive frozen segment compliances [m/N], at least 1e-25.
-        cap_ratio: Capstan ratios at internal guides, in [1, 4].
+        cap_ratio: Finite capstan tension ratios at internal guides, each at least one.
         upper: Maximum effective extensions allowed by minimum rest lengths [m].
         output: Projected effective extensions [m].
         transfer: Net material transfer after each span [m]; zero at the component end.

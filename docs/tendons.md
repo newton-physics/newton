@@ -165,18 +165,22 @@ constraints, relaxation may need adjustment for strongly coupled routes.
 
 ### Direct material projection (experimental)
 
-Both solvers accept `tendon_material_direct=True` to replace material sweeps
-with a coupled finite-friction solve of each anchor-separated tendon component.
+Both solvers accept `tendon_material_direct=True` to try a coupled finite-friction
+solve of each anchor-separated tendon component.
 It supports the existing linear compliance and damping law, full rolling
 transport, and dynamic circular guides. Sweeps remain the default.
 
-The direct mode currently requires finite authored compliance of at least
-`1e-25 m/N`, at most 32 authored spans between anchors, and an effective
-capstan tension ratio between 1 and 4 at every connection. VBD still uses its
-effective compliance floor. The mode does not support differentiation or VBD's
-external rigid-body integration. Reconstruct the solver to change modes;
-`tendon_max_sweeps`, `tendon_settle_tol`, and `tendon_settle_atol` do not control
-the direct solve.
+If a tendon has more than 32 authored segments between anchors or an authored
+compliance below `1e-25 m/N`, it goes straight to sweeps. If a direct result fails
+its numerical or bound checks, only that tendon retries with sweeps from the
+same material allocation. A large compliance difference between segments makes numerical
+rejection more likely, even if every compliance exceeds the minimum. The outcome
+also depends on the applied load and route; there is no fixed supported ratio
+between the largest and smallest compliance. Fallback uses `tendon_max_sweeps`, `tendon_settle_tol`,
+and `tendon_settle_atol`. With zero relative tolerance, it runs the full sweep
+budget and checks the final result against the absolute tolerance.
+VBD retains its effective compliance floor. Reconstruct the solver to switch
+modes. Direct mode does not support differentiation or external rigid-body integration.
 
 An unresolved guide connection between two active spans is rejected rather than
 treated as two independent components. In particular, a zero or very short span
@@ -189,14 +193,17 @@ accepted pose. Intermediate body iterates can be retried without latching a
 failure. An accepted failure remains in the State through subsequent steps and
 `State.assign()`; a later successful solve does not clear it. Discard the affected
 trajectory, correct its input, and reset its tendon history before retrying.
-There is no silent fallback to sweeps.
+Invalid routes, material deficits, and fallback sweeps that miss tolerance are
+reported with the world and tendon indices.
 
-This option does not change the authored per-span material data. USD selection
-is separate: the [tendon schema proposal](https://github.com/newton-physics/newton-usd-schemas/pull/107)
-currently allows only `sweeps` for its scene-level `materialSolver` property.
-Adding `direct` and its importer mapping remains part of the
-[tendon USD work](https://github.com/newton-physics/newton/issues/4910); this mode
-is currently selected through Python only. Nonlinear material laws are not included.
+Slack cable can have more than one zero-tension allocation. Direct keeps an
+already feasible allocation. If material must move, it minimizes the sum of
+squared transfers across the guides: a stretched middle segment between two
+equally slack neighbors draws equally from both sides. The resulting segment
+rest lengths carry over to the next step and are stored as float32.
+
+Select direct mode in Python. USD selection is tracked in
+[#5502](https://github.com/newton-physics/newton/issues/5502).
 
 ### Reading tension (experimental diagnostics)
 

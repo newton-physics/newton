@@ -247,21 +247,63 @@ def _assert_reference(test, x, c, k, output, rtol=3.0e-6):
 
 
 def test_cold_three_span_return_map(test, device):
-    """Verify cold three span return map."""
+    """Balance both 2:1 sliding guides: conservation gives tensions [8, 4, 8] from [9, 1, 10]."""
     y, status, _ = _solve(device, [9, 1, 10], [1, 1, 1], [2, 2])
     test.assertEqual(status[0], TendonMaterialStatus.COLD)
     np.testing.assert_allclose(y[0], [8, 4, 8])
 
 
 def test_correct_warm_faces(test, device):
-    """Verify correct warm faces."""
+    """Recover the cold solution using the two known sliding directions."""
     y, status, _ = _solve(device, [9, 1, 10], [1, 1, 1], [2, 2], faces=[1, -1])
     test.assertEqual(status[0], TendonMaterialStatus.WARM)
     np.testing.assert_allclose(y[0], [8, 4, 8])
 
 
+def test_high_friction_taut_tail(test, device):
+    """Preserve a one-sided capstan solution through the float32 storage limit."""
+    ratio = np.nextafter(np.float32(100.0), np.float32(np.inf))
+    for n in (16, 32):
+        with test.subTest(segments=n):
+            extension = np.zeros(n, dtype=np.float32)
+            extension[0] = np.float32(0.004) - np.float32(0.003)
+            # Every guide slides: tension, and hence extension at equal compliance,
+            # decreases by this ratio at each guide.
+            weights = float(ratio) ** -np.arange(n, dtype=np.float64)
+            expected = (float(extension[0]) * weights / weights.sum()).astype(np.float32)
+            cold, status, faces = _solve(device, extension, 1e-5, ratio, allow_warm=False)
+            test.assertEqual(status[0], TendonMaterialStatus.COLD)
+            warm, status, _ = _solve(device, extension, 1e-5, ratio, faces=faces)
+            test.assertEqual(status[0], TendonMaterialStatus.WARM)
+            for projected in (cold[0], warm[0]):
+                np.testing.assert_array_max_ulp(projected, expected, maxulp=1)
+                test.assertAlmostEqual(projected.sum(dtype=np.float64), float(extension[0]), delta=1e-10)
+                if n == 32:
+                    test.assertGreater(projected[21], 0)
+                    np.testing.assert_array_equal(projected[22:], 0)
+
+
+def test_sticking_at_small_tensions(test, device):
+    """Keep a sticking guide inside its friction cone at either tension scale."""
+    trial = np.array([0.001, 0.002], dtype=np.float32)
+    # Scaling both compliances lowers the tensions without changing their 1:2 ratio.
+    for compliance in (1.0, 2.0**116):
+        with test.subTest(compliance=compliance):
+            cold, status, faces = _solve(device, trial, compliance, 4.0, allow_warm=False)
+            test.assertEqual(status[0], TendonMaterialStatus.COLD)
+            np.testing.assert_array_equal(cold[0], trial)
+            np.testing.assert_array_equal(faces, 0)
+            warm, status, _ = _solve(device, trial, compliance, 4.0, faces=faces)
+            test.assertEqual(status[0], TendonMaterialStatus.WARM)
+            np.testing.assert_array_equal(warm[0], trial)
+            # A stale sliding direction must also fail validation at this scale.
+            retried, status, _ = _solve(device, trial, compliance, 4.0, faces=[1])
+            test.assertEqual(status[0], TendonMaterialStatus.COLD)
+            np.testing.assert_array_equal(retried[0], trial)
+
+
 def test_stale_warm_face_is_recomputed(test, device):
-    """Verify stale warm face is recomputed."""
+    """Discard a sliding guess when equal tensions satisfy the sticking condition."""
     x, c, k = [10, 1.0e-8], [1, 1.0e-9], [2]
     y, status, _ = _solve(device, x, c, k, faces=[1])
     test.assertEqual(status[0], TendonMaterialStatus.COLD)
@@ -270,14 +312,14 @@ def test_stale_warm_face_is_recomputed(test, device):
 
 
 def test_slip_reversal_invalidates_warm_face(test, device):
-    """Verify slip reversal invalidates warm face."""
+    """Recompute the transfer when the load reverses a cached sliding direction."""
     y, status, _ = _solve(device, [1, 9], [1, 1], [2], faces=[1])
     test.assertEqual(status[0], TendonMaterialStatus.COLD)
     _assert_reference(test, [1, 9], [1, 1], [2], y[0])
 
 
 def test_slack_redistribution_moves_least_material(test, device):
-    """Verify slack redistribution moves least material."""
+    """Move only enough rest length across the guide to unload the stretched segment."""
     y, status, faces = _solve(device, [1, -2], [1, 1], [2], faces=[1])
     test.assertEqual(status[0], TendonMaterialStatus.SLACK_REDISTRIBUTED)
     np.testing.assert_array_equal(y[0], [0, -1])
@@ -285,7 +327,7 @@ def test_slack_redistribution_moves_least_material(test, device):
 
 
 def test_infeasible_slack_does_not_partially_write(test, device):
-    """Verify infeasible slack does not partially write."""
+    """Leave outputs and cached faces untouched when the slack bounds cannot conserve material."""
     y, status, faces = _solve(device, [-3, 2], [1, 1], [2], upper=[-2, 5], faces=[1])
     test.assertEqual(status[0], TendonMaterialStatus.SLACK_INFEASIBLE)
     np.testing.assert_array_equal(y, -123.0)
@@ -293,7 +335,7 @@ def test_infeasible_slack_does_not_partially_write(test, device):
 
 
 def test_slack_bound_deficit_survives_large_background(test, device):
-    """Verify slack bound deficit survives large background."""
+    """Detect a one-unit rest deficit beside cancelling extensions of magnitude 1e20."""
     a = np.float32(1.0e20)
     y, status, faces = _solve(device, [0, -a, 0], [1, 1, 1], [2, 2], upper=[-a, -1, 0], faces=[1, 1])
     test.assertEqual(status[0], TendonMaterialStatus.SLACK_INFEASIBLE)
@@ -302,7 +344,7 @@ def test_slack_bound_deficit_survives_large_background(test, device):
 
 
 def test_slack_bilateral_transfer_and_reversal(test, device):
-    """Verify slack bilateral transfer and reversal."""
+    """Draw slack from both neighbors and reverse the allocation when the route is reversed."""
     for x, upper, expected in (
         ([-1, 1, -1], [3, 3, 3], [-0.5, 0, -0.5]),
         ([-5, 2, -1], [-2, 2, 2], [-4, 0, 0]),
@@ -318,7 +360,7 @@ def test_slack_bilateral_transfer_and_reversal(test, device):
 
 
 def test_random_slack_matches_isotonic_oracle(test, device):
-    """Verify random slack matches isotonic oracle."""
+    """Compare bounded slack redistribution with an independent least-transfer solution."""
     rng = np.random.default_rng(2026090904)
     for n in (2, 3, 8, 32):
         count = 128
@@ -348,7 +390,7 @@ def test_random_slack_matches_isotonic_oracle(test, device):
 
 
 def test_slack_single_span_and_zero_total(test, device):
-    """Verify slack single span and zero total."""
+    """Keep a lone slack segment at its bound without transferring material."""
     for x, upper in (([-1], [-1]), ([0], [0])):
         y, status, _ = _solve(device, x, [1], [], upper=upper)
         test.assertEqual(status[0], TendonMaterialStatus.SLACK_UNCHANGED)
@@ -356,7 +398,7 @@ def test_slack_single_span_and_zero_total(test, device):
 
 
 def test_slack_total_survives_large_cancellation(test, device):
-    """Verify slack total survives large cancellation."""
+    """Preserve the unit of slack left after opposite extensions of magnitude 1e20 cancel."""
     x = np.array([1.0e20, -1, -1.0e20], dtype=np.float32)
     for trial, expected in ((x, [0, 0, -1]), (x[::-1], [-1, 0, 0])):
         y, status, _ = _solve(device, trial, [1, 1, 1], [2, 2])
@@ -365,7 +407,7 @@ def test_slack_total_survives_large_cancellation(test, device):
 
 
 def test_slack_block_merging_preserves_prefix_low_parts(test, device):
-    """Verify slack block merging preserves prefix low parts."""
+    """Preserve the 3:1 slack split when merging nearly cancelling transfer blocks."""
     for magnitude, slack in ((1.0e20, 1.0), (1.0e8, 1.0e-8)):
         x = np.array([-magnitude, -slack, 2 * magnitude, 0, -magnitude], dtype=np.float32)
         expected = np.array([-0.75, 0, 0, 0, -0.25]) * np.float32(slack)
@@ -377,7 +419,7 @@ def test_slack_block_merging_preserves_prefix_low_parts(test, device):
 
 
 def test_slack_reconstruction_preserves_small_neighbor_allocation(test, device):
-    """Verify slack reconstruction preserves small neighbor allocation."""
+    """Retain a small neighboring slack allocation beside a much larger one."""
     a = np.float32(1.0e20)
     x = np.array([-a, -1, 2, -1, -1], dtype=np.float32)
     expected = np.array([-a, 0, 0, 0, -1], dtype=np.float32)
@@ -388,7 +430,7 @@ def test_slack_reconstruction_preserves_small_neighbor_allocation(test, device):
 
 
 def test_three_scale_slack_cancellation_is_rejected_explicitly(test, device):
-    """Verify three scale slack cancellation is rejected explicitly."""
+    """Reject redistribution outside the precision range but keep feasible slack unchanged."""
     x = [0, 0, 2.0**90, -(2.0**-56), 2.0**36, -(2.0**90), -(2.0**36)]
     y, status, faces = _solve(device, x, np.ones(7), np.full(6, 2), faces=np.ones(6))
     test.assertEqual(status[0], TendonMaterialStatus.NUMERICAL_FAILURE)
@@ -403,7 +445,7 @@ def test_three_scale_slack_cancellation_is_rejected_explicitly(test, device):
 
 
 def test_slack_invalidates_cache_before_reactivation(test, device):
-    """Verify slack invalidates cache before reactivation."""
+    """Require a cold solve on re-tensioning, then reuse its sliding directions."""
     snapshots = [[9, 1, 10], [-1, 1, -1], [-0.5, 0, -0.5], [9, 1, 10], [9, 1, 10]]
     trials = [wp.array(x, dtype=float, device=device) for x in snapshots]
     c = wp.ones(3, dtype=float, device=device)
@@ -456,7 +498,7 @@ def test_slack_invalidates_cache_before_reactivation(test, device):
 
 
 def test_feasible_slack_history_is_preserved(test, device):
-    """Verify feasible slack history is preserved."""
+    """Keep both slack rest lengths and clear obsolete sliding directions."""
     y, status, faces = _solve(device, [-1, -2], [1, 1], [2], faces=[1])
     test.assertEqual(status[0], TendonMaterialStatus.SLACK_UNCHANGED)
     np.testing.assert_array_equal(y[0], [-1, -2])
@@ -464,35 +506,35 @@ def test_feasible_slack_history_is_preserved(test, device):
 
 
 def test_impossible_bounds_are_explicit(test, device):
-    """Verify impossible bounds are explicit."""
+    """Reject the taut solution without publishing it when a segment exceeds its bound."""
     y, status, _ = _solve(device, [10, 1, 1], [1, 1, 1], [2, 2], upper=[100, 1, 100])
     test.assertEqual(status[0], TendonMaterialStatus.BOUND_INCOMPATIBLE)
     np.testing.assert_array_equal(y, -123.0)
 
 
 def test_history_incompatible_but_cone_feasible_bounds(test, device):
-    """Verify history incompatible but cone feasible bounds."""
+    """Reject a bound that would require slip contrary to the loading history."""
     y, status, _ = _solve(device, [1, 9, 10], [1, 1, 1], [2, 2], upper=[3, 100, 100])
     test.assertEqual(status[0], TendonMaterialStatus.BOUND_INCOMPATIBLE)
     np.testing.assert_array_equal(y, -123.0)
 
 
 def test_compatible_exact_bound_touch(test, device):
-    """Verify compatible exact bound touch."""
+    """Accept a sliding solution when the first segment lands exactly on its bound."""
     y, status, _ = _solve(device, [1, 8, 11], [1, 1, 1], [2, 2], upper=[3, 100, 100])
     test.assertEqual(status[0], TendonMaterialStatus.COLD)
     np.testing.assert_allclose(y[0], [3, 6, 11])
 
 
 def test_invalid_cached_face_is_only_a_failed_guess(test, device):
-    """Verify invalid cached face is only a failed guess."""
+    """Recover the cold solution when a cached direction is invalid."""
     y, status, _ = _solve(device, [9, 1, 10], [1, 1, 1], [2, 2], faces=[99, -1])
     test.assertEqual(status[0], TendonMaterialStatus.COLD)
     np.testing.assert_allclose(y[0], [8, 4, 8])
 
 
 def test_nearly_zero_wrap_keeps_sticking_history(test, device):
-    """Verify nearly zero wrap keeps sticking history."""
+    """Preserve equal tensions despite a stale sliding guess at nearly unit capstan ratio."""
     x, c, k = np.ones(32), np.ones(32), np.full(31, np.float32(1.000001))
     y, status, _ = _solve(device, x, c, k, faces=np.ones(31, dtype=np.int32))
     test.assertEqual(status[0], TendonMaterialStatus.COLD)
@@ -500,7 +542,7 @@ def test_nearly_zero_wrap_keeps_sticking_history(test, device):
 
 
 def test_bound_touch_allows_only_double_roundoff(test, device):
-    """Verify bound touch allows only double roundoff."""
+    """Accept an unchanged segment at its upper bound despite intermediate roundoff."""
     x = np.float32(0.0001070217476808466)
     c = np.float32(0.00010297950211679563)
     y, status, _ = _solve(device, [x], [c], [], upper=[x])
@@ -509,7 +551,7 @@ def test_bound_touch_allows_only_double_roundoff(test, device):
 
 
 def test_random_wide_compliance_cold_and_warm(test, device):
-    """Verify random wide compliance cold and warm."""
+    """Match the independent tension solution across nine decades of segment compliance."""
     rng = np.random.default_rng(20260909)
     count, n = 128, 32
     c = np.power(10.0, rng.uniform(-12.0, -3.0, (count, n))).astype(np.float32)
@@ -575,7 +617,6 @@ def test_invalid_inputs_preserve_output_and_cache(test, device):
         ([9, 1], [1.0e-26, 1], [2], [100, 100]),
         ([9, 1], [1, np.nan], [2], [100, 100]),
         ([9, 1], [1, 1], [0.999], [100, 100]),
-        ([9, 1], [1, 1], [4.001], [100, 100]),
         ([9, 1], [1, 1], [np.inf], [100, 100]),
         ([9, 1], [1, 1], [2], [np.nan, 100]),
     )
@@ -740,6 +781,12 @@ add_function_test(
     TestTendonMaterialDirect, "test_cold_three_span_return_map", test_cold_three_span_return_map, devices=devices
 )
 add_function_test(TestTendonMaterialDirect, "test_correct_warm_faces", test_correct_warm_faces, devices=devices)
+add_function_test(
+    TestTendonMaterialDirect, "test_high_friction_taut_tail", test_high_friction_taut_tail, devices=devices
+)
+add_function_test(
+    TestTendonMaterialDirect, "test_sticking_at_small_tensions", test_sticking_at_small_tensions, devices=devices
+)
 add_function_test(
     TestTendonMaterialDirect, "test_stale_warm_face_is_recomputed", test_stale_warm_face_is_recomputed, devices=devices
 )
