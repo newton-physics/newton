@@ -26,29 +26,6 @@ def sample_grains(
 
 
 @wp.kernel
-def transform_grains(
-    particle_pos_prev: wp.array[wp.vec3],
-    particle_transform_prev: wp.array[wp.mat33],
-    particle_pos: wp.array[wp.vec3],
-    particle_transform: wp.array[wp.mat33],
-    positions: wp.array2d[wp.vec3],
-):
-    pid, k = wp.tid()
-
-    pos_adv = positions[pid, k]
-
-    p_pos = particle_pos[pid]
-    p_frame = particle_transform[pid]
-    p_pos_prev = particle_pos_prev[pid]
-    p_frame_prev = particle_transform_prev[pid]
-
-    pos_loc = wp.inverse(p_frame_prev) @ (pos_adv - p_pos_prev)
-
-    p_pos_adv = p_frame @ pos_loc + p_pos
-    positions[pid, k] = p_pos_adv
-
-
-@wp.kernel
 def repeat_particle_environment(
     particle_environment: wp.array[int],
     grains_per_particle: int,

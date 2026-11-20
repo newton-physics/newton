@@ -11,7 +11,7 @@ import warp as wp
 import newton
 from newton._src.sim.collide import eval_rigid_contact_surface_velocities
 from newton.solvers.experimental.coupled import SolverCoupled
-from newton.tests.unittest_utils import add_function_test, get_test_devices
+from newton.tests.unittest_utils import MUJOCO_MODULES, add_function_test, get_test_devices
 
 
 def _make_solver(name, model):
@@ -22,6 +22,8 @@ def _make_solver(name, model):
         return newton.solvers.SolverSemiImplicit(model)
     if name == "featherstone":
         return newton.solvers.SolverFeatherstone(model)
+    if name == "mujoco":
+        return newton.solvers.SolverMuJoCo(model, use_mujoco_contacts=False)
     return newton.solvers.SolverXPBD(model, iterations=5)
 
 
@@ -333,14 +335,16 @@ for test_device in devices:
         test_mesh_surface_velocity_moves_rigid_body_through_coupled_solver,
         devices=[test_device],
     )
-    for name in ("xpbd", "semi_implicit", "featherstone", "vbd"):
+    for name in ("xpbd", "semi_implicit", "featherstone", "vbd", "mujoco"):
         if name == "vbd" and test_device.is_cpu:
             continue
+        requires = MUJOCO_MODULES if name == "mujoco" else ()
         add_function_test(
             TestMeshSurfaceVelocity,
             f"test_mesh_surface_velocity_moves_rigid_body_{name}",
             test_mesh_surface_velocity_moves_rigid_body,
             devices=[test_device],
+            requires=requires,
             solver_name=name,
         )
         add_function_test(
@@ -348,6 +352,7 @@ for test_device in devices:
             f"test_disabled_surface_velocity_runs_rigid_solver_{name}",
             test_disabled_surface_velocity_runs_rigid_solver,
             devices=[test_device],
+            requires=requires,
             solver_name=name,
         )
         add_function_test(
@@ -355,6 +360,7 @@ for test_device in devices:
             f"test_normal_surface_velocity_does_not_affect_contact_{name}",
             test_normal_surface_velocity_does_not_affect_contact,
             devices=[test_device],
+            requires=requires,
             solver_name=name,
         )
 
