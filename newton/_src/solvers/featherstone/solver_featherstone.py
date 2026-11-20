@@ -30,6 +30,7 @@ from ..solver import SolverBase
 from . import kernels
 from .kernels import (
     accumulate_free_distance_joint_f_to_body_force,
+    apply_kinematic_armature,
     compute_body_parent_f,
     compute_com_transforms,
     compute_spatial_inertia,
@@ -58,6 +59,9 @@ from .kernels import (
     zero_kinematic_body_forces,
     zero_kinematic_joint_qdd,
 )
+
+# armature substituted for kinematic joints so the solve leaves them unaccelerated
+_KINEMATIC_ARMATURE = 1.0e10
 
 _FRICTION_SMOOTHING_DEPRECATION_MSG = (
     "friction_smoothing is deprecated in Newton 1.8 and is ignored. "
@@ -253,6 +257,8 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
         self._mass_scratch_holder = self
 
         self._update_kinematic_state()
+        # armature the latest mass-matrix factorization used (see _effective_armature)
+        self._mass_scratch_armature = self.joint_armature_effective
 
         self._compute_articulation_indices(model)
         self._allocate_model_aux_vars(model)
@@ -290,6 +296,8 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
         self.descendant_free_distance_articulation_indices = None
         self.descendant_free_distance_refresh_joint_starts = None
         self.joint_armature_effective = model.joint_armature
+        # per-DOF flag (1 = kinematic) for the differentiable armature substitution
+        self._kinematic_dof_mask = None
 
         body_flags = None
         kinematic_mask = None
@@ -342,15 +350,45 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
             if model.joint_count and self.has_kinematic_bodies:
                 joint_qd_start = model.joint_qd_start.numpy()
                 joint_armature = model.joint_armature.numpy().copy()
+                kinematic_dof = np.zeros(model.joint_dof_count, dtype=np.int32)
                 for joint_idx in range(model.joint_count):
                     if not kinematic_mask[joint_child[joint_idx]]:
                         continue
                     self.has_kinematic_joints = True
                     dof_start = int(joint_qd_start[joint_idx])
                     dof_end = int(joint_qd_start[joint_idx + 1])
-                    joint_armature[dof_start:dof_end] = 1.0e10
+                    joint_armature[dof_start:dof_end] = _KINEMATIC_ARMATURE
+                    kinematic_dof[dof_start:dof_end] = 1
                 if self.has_kinematic_joints:
+                    # detached copy for the non-differentiable path; the
+                    # differentiable path rebuilds it per step (see _effective_armature)
                     self.joint_armature_effective = wp.array(joint_armature, dtype=float, device=model.device)
+                    self._kinematic_dof_mask = wp.array(kinematic_dof, dtype=wp.int32, device=model.device)
+
+    def _effective_armature(self, target):
+        """Return the armature array the mass-matrix chain factors with this step.
+
+        Kinematic joints get a huge armature. The detached
+        ``joint_armature_effective`` copy would cut the gradient of
+        ``Model.joint_armature`` for every DOF, so on the differentiable path
+        (``target`` is the step's output state) the substitution is a taped
+        launch into a per-state array, which passes the gradient through for
+        dynamic DOFs.
+        """
+        if self._kinematic_dof_mask is None or target is self:
+            return self.joint_armature_effective
+        out = getattr(target, "_joint_armature_effective", None)
+        if out is None:
+            out = wp.empty_like(self.model.joint_armature, requires_grad=True)
+            target._joint_armature_effective = out
+        wp.launch(
+            apply_kinematic_armature,
+            dim=self.model.joint_dof_count,
+            inputs=[self.model.joint_armature, self._kinematic_dof_mask, _KINEMATIC_ARMATURE],
+            outputs=[out],
+            device=self.model.device,
+        )
+        return out
 
     @override
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
@@ -430,6 +468,10 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
         solver-owned matrices would alias across the steps of one gradient
         tape (earlier steps' adjoints would read later steps' rewritten
         values, and later steps' covector deposits would be consumed again).
+        This requires a distinct output state for every recorded step, as
+        for the rest of the per-state data: reusing output states across the
+        steps of one tape (ping-pong) overwrites the matrices that earlier
+        steps' adjoints read and gives wrong gradients.
 
         Memory: each gradient-recording step owns its own J/M/P/H/L (plus
         H_mimic when mimics exist) in both primal and adjoint storage -
@@ -568,6 +610,8 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
             # matrices (solver-owned ones would alias across tape steps); the
             # requires_grad=False path reuses the solver-owned matrices.
             self._allocate_system_matrices(target, requires_grad)
+            if self._kinematic_dof_mask is not None:
+                target._joint_armature_effective = wp.empty_like(model.joint_armature, requires_grad=requires_grad)
 
         # mark the target augmented so step() allocates only once per target
         target._featherstone_augmented = True
@@ -905,6 +949,8 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                     # print(state_in.body_qd.numpy())
 
                     if self._mass_matrix_dirty or self._step % self.update_mass_matrix_interval == 0:
+                        armature = self._effective_armature(state_aug)
+
                         # build J
                         wp.launch(
                             eval_rigid_jacobian,
@@ -946,7 +992,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                                             state_aug._M_by_size[size],
                                             self._group_to_art[size],
                                             self.articulation_dof_start,
-                                            self.joint_armature_effective,
+                                            armature,
                                         ],
                                         outputs=[state_aug._H_by_size[size], state_aug._L_by_size[size]],
                                         device=model.device,
@@ -1008,7 +1054,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
 
                         if not (self.use_tile_gemm and self.fuse_cholesky and not self._has_joint_mimics):
                             solve_H = state_aug.H
-                            solve_armature = self.joint_armature_effective
+                            solve_armature = armature
                             if self._has_joint_mimics:
                                 state_aug.H_mimic.zero_()
                                 wp.launch(
@@ -1023,7 +1069,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                                         model.joint_qd_start,
                                         model.joint_mimic_joint,
                                         model.joint_mimic_coeffs,
-                                        self.joint_armature_effective,
+                                        armature,
                                         state_aug.H,
                                     ],
                                     outputs=[state_aug.H_mimic],
@@ -1059,13 +1105,14 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                         # the solve below (and any skipped-interval step) reads the
                         # matrices this chain run produced; remember where they live
                         self._mass_scratch_holder = state_aug
+                        self._mass_scratch_armature = armature
 
                     # solve for qdd
                     state_aug.joint_qdd.zero_()
                     solve_H = self._mass_scratch_holder.H
                     # the armature the factorization used; the solve adjoint
                     # deposits its gradient here
-                    solve_armature = self.joint_armature_effective
+                    solve_armature = self._mass_scratch_armature
                     solve_tau = state_aug.joint_tau
                     if self._has_joint_mimics:
                         solve_H = self._mass_scratch_holder.H_mimic

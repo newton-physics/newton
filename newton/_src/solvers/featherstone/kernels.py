@@ -70,6 +70,23 @@ def zero_kinematic_body_forces(
 
 
 @wp.kernel
+def apply_kinematic_armature(
+    joint_armature: wp.array[float],
+    kinematic_dof: wp.array[wp.int32],
+    kinematic_armature: float,
+    # outputs
+    armature_effective: wp.array[float],
+):
+    """Substitute ``kinematic_armature`` on kinematic DOFs; dynamic DOFs keep
+    (and stay differentiable w.r.t.) their model armature."""
+    i = wp.tid()
+    if kinematic_dof[i] != 0:
+        armature_effective[i] = kinematic_armature
+    else:
+        armature_effective[i] = joint_armature[i]
+
+
+@wp.kernel
 def reduce_mimic_inertia(
     articulation_start: wp.array[int],
     articulation_end: wp.array[int],

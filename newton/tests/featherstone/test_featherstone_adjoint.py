@@ -14,15 +14,22 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton._src.solvers.featherstone.kernels import compute_body_parent_f
+from newton._src.solvers.featherstone.kernels import (
+    compute_body_parent_f,
+    eval_dense_cholesky_batched,
+    eval_dense_solve_batched,
+)
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 STAND = np.array([0.2, 0.4, -0.6, -0.2, -0.4, 0.6, -0.2, 0.4, -0.6, 0.2, -0.4, 0.6], dtype=np.float32)
 SIM_DT = 1.0e-3
 
 
-def _build_model(device, requires_grad=True):
-    """Build the floating quadruped (inflated inertias, armature 0.1) on the test device."""
+def _build_model(device, requires_grad=True, kinematic_pendulum=False):
+    """Build the floating quadruped (inflated inertias, armature 0.1) on the test device.
+
+    With ``kinematic_pendulum``, a separate one-link articulation whose body
+    is kinematic is appended after the quadruped (its DOF comes last)."""
     builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
     builder.default_joint_cfg.armature = 0.1
     builder.default_joint_cfg.target_ke = 0.0
@@ -41,6 +48,10 @@ def _build_model(device, requires_grad=True):
         inertia_np += np.eye(3, dtype=np.float32) * 0.01
         builder.body_inertia[body] = wp.mat33(inertia_np)
     builder.joint_q[-12:] = STAND
+    if kinematic_pendulum:
+        link = builder.add_link(mass=1.0, is_kinematic=True, label="kinematic_pendulum")
+        joint = builder.add_joint_revolute(parent=-1, child=link, axis=newton.Axis.Y)
+        builder.add_articulation([joint])
     return builder.finalize(device=device, requires_grad=requires_grad)
 
 
@@ -133,61 +144,192 @@ add_function_test(
 )
 
 
-def test_armature_gradient(test, device):
-    """Verify the joint-armature gradient on the default dense-Cholesky path.
+@wp.kernel
+def _weighted_qd_loss_kernel(qd: wp.array[float], w: wp.array[float], loss: wp.array[float]):
+    i = wp.tid()
+    wp.atomic_add(loss, 0, w[i] * qd[i])
 
-    The armature regularizes the mass-matrix diagonal before the Cholesky
-    factorization, so one solver step's joint velocities depend on it. Before
-    the fix the solve adjoint dropped this dependence and the tape gradient
-    w.r.t. ``Model.joint_armature`` was exactly zero. The tape gradient of a
-    linear joint-velocity loss is compared against central finite differences
-    of the same step.
+
+def _check_armature_gradient(test, device, kinematic_pendulum):
+    """Compare one step's tape gradient w.r.t. Model.joint_armature with central differences.
+
+    The hinges start off the stand pose with random velocities and torques,
+    so every quadruped DOF's armature matters, and each DOF is checked on
+    its own. With ``kinematic_pendulum`` the model also holds a kinematic
+    articulation, which switches the solver to its kinematic-armature
+    substitution; the quadruped's gradients must survive it and the
+    kinematic DOF must get none.
     """
-    model = _build_model(device)
+    model = _build_model(device, kinematic_pendulum=kinematic_pendulum)
     solver = newton.solvers.SolverFeatherstone(model)
-    newton.eval_fk(model, model.joint_q, model.joint_qd, model)
+    n_dyn = 18  # the quadruped's DOFs; the kinematic pendulum's DOF comes after them
+    rng = np.random.default_rng(1)
+    q0 = model.joint_q.numpy().copy()
+    q0[7:19] += rng.uniform(-0.2, 0.2, 12).astype(np.float32)
+    qd0 = np.zeros(model.joint_dof_count, dtype=np.float32)
+    qd0[:n_dyn] = rng.uniform(-1.0, 1.0, n_dyn)
+    tau = np.zeros(model.joint_dof_count, dtype=np.float32)
+    tau[6:n_dyn] = rng.uniform(-20.0, 20.0, n_dyn - 6)
+    w = np.zeros(model.joint_dof_count, dtype=np.float32)
+    w[:n_dyn] = rng.standard_normal(n_dyn)
+    w_arr = wp.array(w, dtype=float, device=device)
     armature0 = model.joint_armature.numpy().astype(np.float64).copy()
 
+    def make_state(requires_grad):
+        state = model.state(requires_grad=requires_grad)
+        state.joint_q.assign(q0)
+        state.joint_qd.assign(qd0)
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+        return state
+
+    def control():
+        ctrl = model.control(requires_grad=True)
+        ctrl.joint_f.assign(tau)
+        return ctrl
+
     def step_loss(armature64):
-        """One eager solver step with the given armature; returns the probe loss."""
+        """One eager step with the given armature; returns the weighted joint-velocity loss."""
         model.joint_armature.assign(armature64.astype(np.float32))
-        st0 = model.state()
-        st1 = model.state()
-        solver.step(st0, st1, model.control(), None, SIM_DT)
-        qd = st1.joint_qd.numpy().astype(np.float64)
-        return 0.3 * qd[9] - 0.7 * qd[13] + 1.1 * qd[3] - 0.4 * qd[16]
+        solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+        st1 = model.state(requires_grad=False)
+        solver.step(make_state(False), st1, control(), None, SIM_DT)
+        return float(np.dot(w.astype(np.float64), st1.joint_qd.numpy().astype(np.float64)))
 
     model.joint_armature.grad.zero_()
-    st0 = model.state(requires_grad=True)
+    st0 = make_state(True)
     st1 = model.state(requires_grad=True)
     loss = wp.zeros(1, dtype=wp.float32, requires_grad=True, device=device)
     tape = wp.Tape()
     with tape:
-        solver.step(st0, st1, model.control(requires_grad=True), None, SIM_DT)
-        wp.launch(_joint_qd_loss_kernel, dim=1, inputs=[st1.joint_qd, loss], device=device)
+        solver.step(st0, st1, control(), None, SIM_DT)
+        wp.launch(
+            _weighted_qd_loss_kernel, dim=model.joint_dof_count, inputs=[st1.joint_qd, w_arr, loss], device=device
+        )
     tape.backward(loss)
     ana = model.joint_armature.grad.numpy().astype(np.float64).copy()
     tape.zero()
 
     eps = 1e-2
-    fd = np.zeros_like(armature0)
-    for c in range(armature0.size):
+    fd = np.zeros(n_dyn)
+    for c in range(n_dyn):
         ap = armature0.copy()
         ap[c] += eps
         am = armature0.copy()
         am[c] -= eps
         fd[c] = (step_loss(ap) - step_loss(am)) / (2.0 * eps)
     model.joint_armature.assign(armature0.astype(np.float32))
+    solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
 
-    scale = np.abs(fd).max()
-    test.assertGreater(scale, 1e-6, "armature FD is zero - harness broken")
-    err = np.abs(ana - fd).max() / scale
-    test.assertLessEqual(
-        err,
-        0.02,
-        f"armature gradient off by {err * 100:.2f}% of max|FD| (tape {ana}, FD {fd}) - "
-        "the Cholesky-solve adjoint drops the armature dependence",
+    scale = float(np.abs(fd).max())
+    hinge_resolved = int((np.abs(fd[6:]) > 1e-2 * scale).sum())
+    test.assertGreaterEqual(
+        hinge_resolved, 8, f"only {hinge_resolved} hinge armature channels resolvable - harness broken"
     )
+    for c in range(n_dyn):
+        err = abs(ana[c] - fd[c])
+        test.assertLessEqual(
+            err,
+            0.02 * abs(fd[c]) + 1e-4 * scale,
+            f"armature DOF {c}: tape {ana[c]:.5e} vs FD {fd[c]:.5e} - the Cholesky-solve adjoint "
+            "drops the armature dependence",
+        )
+    if kinematic_pendulum:
+        test.assertEqual(float(ana[n_dyn]), 0.0, "the kinematic DOF's substituted armature must not get a gradient")
+
+
+def test_armature_gradient(test, device):
+    """Verify the joint-armature gradient on the default dense-Cholesky path.
+
+    The armature regularizes the mass-matrix diagonal before the Cholesky
+    factorization. Before the fix, the solve adjoint dropped this dependence
+    and the tape gradient w.r.t. ``Model.joint_armature`` was exactly zero.
+    """
+    _check_armature_gradient(test, device, kinematic_pendulum=False)
+
+
+def test_armature_gradient_with_kinematic_joint(test, device):
+    """Verify the dynamic DOFs keep their armature gradient when the model has a kinematic joint.
+
+    Kinematic joints make the solver substitute a huge armature for their
+    DOFs; it used to do so with a detached copy of ``Model.joint_armature``,
+    which zeroed the gradient for every DOF of the model.
+    """
+    _check_armature_gradient(test, device, kinematic_pendulum=True)
+
+
+def test_dense_cholesky_solve_contract(test, device):
+    """Check the dense Cholesky/solve adjoint against float64 central differences.
+
+    ``dense_cholesky`` factors the lower triangle of ``A`` plus ``diag(R)``
+    and never reads the upper triangle, so the solve adjoint must deposit
+    the symmetrized gradient on the lower triangle, nothing on the upper
+    triangle, and the diagonal into ``R``. The upper triangle here holds
+    values unrelated to the lower one, so a full-matrix deposit fails. The
+    factor ``L`` is internal and must get no adjoint.
+    """
+    n = 6
+    rng = np.random.default_rng(7)
+    m = rng.standard_normal((n, n))
+    spd = m @ m.T + 0.5 * np.eye(n)
+    a64 = np.tril(spd) + np.triu(rng.standard_normal((n, n)), 1)  # upper triangle is never read
+    r64 = 0.1 + 0.05 * np.abs(rng.standard_normal(n))
+    b64 = rng.standard_normal(n)
+    g64 = rng.standard_normal(n)
+
+    def phi(a, r, b):
+        """g . (lower-symmetrized A + diag(R))^-1 b in float64."""
+        low = np.tril(a)
+        sym = low + np.tril(low, -1).T + np.diag(r)
+        return float(g64 @ np.linalg.solve(sym, b))
+
+    def fd(which, eps=1e-6):
+        """Central differences of phi w.r.t. every entry of A, R or b."""
+        base = {"a": a64, "r": r64, "b": b64}
+        out = np.zeros(base[which].size)
+        for c in range(out.size):
+            args = {k: v.copy() for k, v in base.items()}
+            args[which].flat[c] += eps
+            hi = phi(args["a"], args["r"], args["b"])
+            args[which].flat[c] -= 2.0 * eps
+            out[c] = (hi - phi(args["a"], args["r"], args["b"])) / (2.0 * eps)
+        return out
+
+    a = wp.array(a64.astype(np.float32).reshape(-1), dtype=float, requires_grad=True, device=device)
+    r = wp.array(r64.astype(np.float32), dtype=float, requires_grad=True, device=device)
+    b = wp.array(b64.astype(np.float32), dtype=float, requires_grad=True, device=device)
+    w = wp.array(g64.astype(np.float32), dtype=float, device=device)
+    lfac = wp.zeros(n * n, dtype=float, requires_grad=True, device=device)
+    x = wp.zeros(n, dtype=float, requires_grad=True, device=device)
+    tmp = wp.zeros(n, dtype=float, requires_grad=True, device=device)
+    starts = wp.array([0], dtype=wp.int32, device=device)
+    dims = wp.array([n], dtype=wp.int32, device=device)
+    loss = wp.zeros(1, dtype=float, requires_grad=True, device=device)
+
+    tape = wp.Tape()
+    with tape:
+        wp.launch(
+            eval_dense_cholesky_batched, dim=1, inputs=[starts, dims, starts, a, r], outputs=[lfac], device=device
+        )
+        wp.launch(
+            eval_dense_solve_batched,
+            dim=1,
+            inputs=[starts, dims, starts, a, r, starts, lfac, b],
+            outputs=[x, tmp],
+            device=device,
+        )
+        wp.launch(_weighted_qd_loss_kernel, dim=n, inputs=[x, w, loss], device=device)
+    tape.backward(loss)
+
+    upper = np.triu(np.ones((n, n), dtype=bool), 1).reshape(-1)
+    grad_a = a.grad.numpy().astype(np.float64)
+    test.assertTrue(np.all(grad_a[upper] == 0.0), f"upper-triangle gradient must be zero, got {grad_a[upper]}")
+    for name, tape_g, ref in (
+        ("A (lower triangle)", grad_a[~upper], fd("a")[~upper]),
+        ("R (regularization)", r.grad.numpy().astype(np.float64), fd("r")),
+        ("b", b.grad.numpy().astype(np.float64), fd("b")),
+    ):
+        np.testing.assert_allclose(tape_g, ref, rtol=2e-3, atol=1e-4 * np.abs(ref).max(), err_msg=name)
+    test.assertTrue(np.all(lfac.grad.numpy() == 0.0), "the internal Cholesky factor must get no adjoint")
 
 
 def test_rigid_tau_external_wrench(test, device):
@@ -299,8 +441,13 @@ def test_rigid_tau_external_wrench(test, device):
 def test_body_parent_f_wrench_contract(test, device):
     """Verify compute_body_parent_f shifts the public wrench into the solve frame.
 
-    With zero bias and no descendants the transmitted wrench at the COM must
-    read (-F, -tau): the solve-frame r x F term cancels against the COM
+    This guards a contract this change introduces rather than a defect on
+    main: eval_rigid_tau no longer leaves the shifted wrench in body_f_ext,
+    so compute_body_parent_f now receives the public wrench and must shift
+    it itself (main's kernel expects the shifted one, and the solver's
+    body_parent_f observable is the same before and after). With zero bias
+    and no descendants the transmitted wrench at the COM must read
+    (-F, -tau): the solve-frame r x F term cancels against the COM
     re-reference. The input buffer must stay unmodified.
     """
     n = 3
@@ -360,7 +507,10 @@ def _joint_qd_loss_kernel(joint_qd: wp.array[float], loss: wp.array[float]):
 
 
 def test_non_grad_step_reuses_aux_arrays(test, device):
-    """Verify repeated non-grad steps reuse the solver's auxiliary arrays."""
+    """Verify repeated non-grad steps reuse the solver's auxiliary arrays.
+
+    This guards this change's per-state allocation against reallocating on
+    every non-grad step; main passes it too."""
     model = _build_model(device, requires_grad=False)
     solver = newton.solvers.SolverFeatherstone(model)
     newton.eval_fk(model, model.joint_q, model.joint_qd, model)
@@ -385,6 +535,18 @@ add_function_test(
     TestFeatherstoneAdjoint,
     "test_armature_gradient",
     test_armature_gradient,
+    devices=get_test_devices(),
+)
+add_function_test(
+    TestFeatherstoneAdjoint,
+    "test_armature_gradient_with_kinematic_joint",
+    test_armature_gradient_with_kinematic_joint,
+    devices=get_test_devices(),
+)
+add_function_test(
+    TestFeatherstoneAdjoint,
+    "test_dense_cholesky_solve_contract",
+    test_dense_cholesky_solve_contract,
     devices=get_test_devices(),
 )
 add_function_test(
