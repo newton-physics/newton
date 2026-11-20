@@ -208,6 +208,7 @@ class FrameHistory:
         """Initialize empty history for the viewer's current Model without recording a frame."""
         self.viewer = viewer
         self.model = viewer.model
+        """Model active at construction; sizes the timeline's speed plots. Recording uses each call's layer Model."""
         self.frames: list[HistoryFrame] = []
         self.index = 0
         self.first_frame = 0
@@ -281,7 +282,8 @@ class FrameHistory:
         if frame is None or not (frame.states or frame.contact_records or frame.arrays):
             return
         control = self.viewer._inspection_components.get("control")
-        arrays = _component_arrays(control, model=self.model)
+        # Layers own their Models; filter each call by the active layer's Model.
+        arrays = _component_arrays(control, model=self.viewer.model)
         if not self._reserve(frame, sum(a.capacity for a in arrays.values())):
             return
         frame.control = {name: _snapshot_array(array) for name, array in arrays.items()}
@@ -346,7 +348,7 @@ class FrameHistory:
 
     def _record_state(self, key: HistoryKey, state: State) -> None:
         frame = self._pending
-        arrays = _component_arrays(state, model=self.model)
+        arrays = _component_arrays(state, model=self.viewer.model)
         if not self._reserve(frame, sum(a.capacity for a in arrays.values())):
             return
         saved = {name: _snapshot_array(array) for name, array in arrays.items()}
@@ -433,6 +435,7 @@ class FrameHistory:
         self, key: HistoryKey, contacts: Contacts, state: State, observables: SolverBase.Observables | None
     ) -> None:
         frame = self._pending
+        model = self.viewer.model
         counters = contacts.contact_counters.numpy()
         count = min(int(counters[0]), contacts.rigid_contact_max)
         soft_count = min(int(counters[1]), contacts.soft_contact_max)
@@ -446,13 +449,13 @@ class FrameHistory:
                 if array is not None:
                     arrays[prefix + suffix] = (array, n)
         observable_arrays = {}
-        if observables is not None and observables.model is self.model:
+        if observables is not None and observables.model is model:
             for name, array in vars(observables).items():
                 if not name.startswith("_") and isinstance(array, wp.array):
                     ranges = self._observable_ranges(observables, name, array, contacts, count, soft_count)
                     observable_arrays[name] = (array, ranges)
         state_key = self._logged_states.get(id(state))
-        state_arrays = _component_arrays(state, model=self.model) if state_key is None else {}
+        state_arrays = _component_arrays(state, model=model) if state_key is None else {}
         size = (
             sum(n * array.strides[0] for array, n in arrays.values())
             + sum(sum(n for _, n in ranges) * array.strides[0] for array, ranges in observable_arrays.values())
@@ -475,7 +478,7 @@ class FrameHistory:
         )
         if len(frame.contact_records) == 1:
             frame.touching, frame.soft_shape_contacts = count, soft_count
-            frame.soft_self_contacts = self._soft_self_contact_count(contacts) if self.model.particle_count else 0
+            frame.soft_self_contacts = self._soft_self_contact_count(contacts) if model.particle_count else 0
 
     def arrays(self, kind: str, name: str, arrays: dict[str, Any]) -> dict[str, Any]:
         """Record the arguments of a named logging call, or substitute the replayed frame's arguments.
@@ -522,8 +525,10 @@ class FrameHistory:
         info = contacts.soft_self_contact_data
         if info is None:
             return 0
-        if self._self_contact_counts is None:
-            self._self_contact_counts = wp.zeros(2, dtype=int, device=self.model.device)
+        # Layers may hold Models on different devices; count on the buffers' device.
+        device = info.vertex_colliding_triangles_count.device
+        if self._self_contact_counts is None or self._self_contact_counts.device != device:
+            self._self_contact_counts = wp.zeros(2, dtype=int, device=device)
         else:
             self._self_contact_counts.zero_()
         wp.launch(
@@ -538,7 +543,7 @@ class FrameHistory:
                 info.edge_colliding_edges,
             ],
             outputs=[self._self_contact_counts],
-            device=self.model.device,
+            device=device,
         )
         return int(self._self_contact_counts.numpy().sum())
 

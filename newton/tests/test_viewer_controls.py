@@ -1435,6 +1435,48 @@ class TestViewerProperties(unittest.TestCase):
                 self.assertIsNot(shown_observables, observables)
                 self.assertIs(shown_observables.contacts, shown_contacts)
 
+                # Each layer's calls are filtered by that layer's own Model, not
+                # the Model active when history was created.
+                layered_builder = newton.ModelBuilder()
+                layered_builder.add_body()
+                layered_builder.add_shape_sphere(0, radius=0.1)
+                layered_builder.add_custom_attribute(
+                    newton.ModelBuilder.CustomAttribute(
+                        name="sample",
+                        namespace="probe",
+                        assignment=Assignment.STATE,
+                        frequency=Frequency.ONCE,
+                        dtype=float,
+                        default=3.0,
+                    )
+                )
+                layered_model = layered_builder.finalize(device=device)
+                layered = ViewerNull()
+                layered.activate("first")
+                layered.set_model(model)
+                layered.activate("second")
+                layered.set_model(layered_model)
+                layered.activate("first")
+                layered_history = FrameHistory(layered)
+                layered_state = layered_model.state()
+                layered_contacts = newton.Contacts(4, 0, device=device)
+                layered_observables = newton.solvers.SolverXPBD(layered_model).observables(
+                    contacts=layered_contacts, kinds={newton.solvers.SolverBase.ObservableKind.CONTACT_F}
+                )
+                layered_history.begin_frame(0.0)
+                layered_history.state(state)
+                layered.activate("second")
+                layered_history.state(layered_state)
+                layered_history.contacts(layered_contacts, layered_model.state(), layered_observables)
+                layered.activate("first")
+                layered_history.end_frame()
+                layered_frame = layered_history.frames[0]
+                self.assertNotIn("probe:sample", layered_frame.states["state", "first", 0])
+                self.assertIn("probe:sample", layered_frame.states["state", "second", 0])
+                record = layered_frame.contact_records["contacts", "second", 0]
+                self.assertTrue(record.observables)
+                self.assertIn("probe:sample", record.state)
+
                 # Replay reproduces cleared and populated batches regardless of the live arguments.
                 markers = FrameHistory(viewer)
                 for time, logged in ((0.0, points), (1.0, None), (2.0, points)):
