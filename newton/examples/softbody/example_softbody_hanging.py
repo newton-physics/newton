@@ -93,11 +93,9 @@ class Example:
         if self.solver_type == "style3d":
             self.solver = newton.solvers.SolverStyle3D(
                 self.model,
-                config=newton.solvers.SolverStyle3D.Config(iterations=self.iterations, linear_iterations=5),
+                config=newton.solvers.SolverStyle3D.Config(iterations=self.iterations, linear_iterations=15),
             )
-            self.solver.collision.stiff_vf = 0.0
-            self.solver.collision.stiff_ee = 0.0
-            self.solver.collision.stiff_ef = 0.0
+            self.solver.collision = None
         else:
             self.solver = newton.solvers.SolverVBD(
                 model=self.model,

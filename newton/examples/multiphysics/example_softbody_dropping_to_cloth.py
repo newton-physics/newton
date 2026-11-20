@@ -35,8 +35,8 @@ class Example:
         self.sim_substeps = 10
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        if self.solver_type not in {"vbd", "coupled", "style3d"}:
-            raise ValueError("The softbody dropping to cloth example supports the vbd, coupled, and style3d solvers.")
+        if self.solver_type not in {"vbd", "style3d", "coupled"}:
+            raise ValueError("The softbody dropping to cloth example supports the vbd, style3d and coupled solvers.")
 
         builder = newton.ModelBuilder()
         if self.solver_type == "style3d":
@@ -115,13 +115,10 @@ class Example:
             "particle_self_contact_gap": 0.01,
             "particle_enable_tile_solve": True,
         }
-        if self.solver_type == "style3d":
-            self.solver = SolverStyle3D(
-                model=self.model,
-                config=SolverStyle3D.Config(iterations=10, linear_iterations=10),
-            )
-        elif self.solver_type == "vbd":
+        if self.solver_type == "vbd":
             self.solver = SolverVBD(model=self.model, **vbd_kwargs)
+        elif self.solver_type == "style3d":
+            self.solver = SolverStyle3D(self.model)
         else:
 
             def configure_soft_view(view: ModelView) -> None:
@@ -229,7 +226,7 @@ class Example:
             "--solver",
             help="Type of solver",
             type=str,
-            choices=["vbd", "coupled", "style3d"],
+            choices=["vbd", "style3d", "coupled"],
             default="vbd",
         )
         parser.add_argument(
