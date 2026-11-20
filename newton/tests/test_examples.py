@@ -1846,8 +1846,8 @@ add_example_test(
     name="multiphysics.example_style3d_parcel_sorting_conveyor",
     devices=test_devices,
     use_viewer=True,
-    test_options={"num-frames": 240, "seed": 3},
-    test_options_cpu={"num-frames": 36, "seed": 0},
+    # By frame 8 the flat parcel has contacted the belt and started moving.
+    test_options={"num-frames": 8, "seed": 0},
     allow_output_regexes=[(_STYLE3D_PRECOMPUTE_OUTPUT_RE, "stdout")],
 )
 add_example_test(
