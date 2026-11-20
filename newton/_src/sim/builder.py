@@ -32,6 +32,7 @@ from ..core.host_transform import (
     join_warp_values,
     pack_transforms,
     pack_warp_values,
+    quat_multiply_rows,
     quat_rotate_rows,
     store_transform_rows,
     transform_inverse,
@@ -4701,44 +4702,54 @@ class ModelBuilder:
         self.actuator_count += copy_count * counts["actuator"]
 
         eq_count = builder._equality_constraint_count
-        if eq_count:
+        if eq_count and len(moved_copies):
             eq_base = self._equality_constraint_count - copy_count * eq_count
-            for copy_index in moved_copies:
-                self._transform_world_equalities(eq_base + copy_index * eq_count, eq_count, xforms[copy_index])
+            self._transform_world_equalities(builder, eq_base + moved_copies * eq_count, moved_xforms)
 
-    def _transform_world_equalities(self, start: int, count: int, xform: wp.transform) -> None:
+    def _transform_world_equalities(self, builder: ModelBuilder, starts: np.ndarray, xforms: np.ndarray) -> None:
+        """Place the world-side equality frames of the copies of ``builder`` whose rows begin at ``starts``."""
         # Import locally to avoid a cycle while the public simulation package initializes.
         from ..solvers.mujoco.enums import EqType  # noqa: PLC0415
         from ..solvers.mujoco.equality import MJC_OBJ_BODY, MJC_OBJ_UNKNOWN  # noqa: PLC0415
 
-        def read(name: str, row: int) -> Any:
-            attr = self._eq_attr(f"equality_constraint_{name}")
-            values = attr.values or []
-            return values[row] if row < len(values) and values[row] is not None else attr.default
+        def source(name: str) -> list:
+            return builder._eq_list(f"equality_constraint_{name}")
 
-        def write(name: str, row: int, value: Any) -> None:
+        def destination(name: str) -> list:
             attr = self._eq_attr(f"equality_constraint_{name}")
             if attr.values is None:
                 attr.values = []
             # Full length: finalize() warns about a partially populated column.
             attr.values.extend([None] * (self._equality_constraint_count - len(attr.values)))
-            attr.values[row] = value
+            return attr.values
 
-        for row in range(start, start + count):
-            if read("objtype", row) not in (MJC_OBJ_UNKNOWN, MJC_OBJ_BODY):
-                continue
-            kind = read("type", row)
-            body1, body2 = read("body1", row), read("body2", row)
-            if kind == EqType.CONNECT and body1 < 0:
-                write("anchor", row, wp.transform_point(xform, axis_to_vec3(read("anchor", row))))
-            elif kind == EqType.WELD:
-                relpose = wp.transform(*read("relpose", row))
-                if body1 < 0:
-                    write("relpose", row, xform * relpose)
-                elif body2 < 0:
-                    write("anchor", row, wp.transform_point(xform, axis_to_vec3(read("anchor", row))))
-                    # Match collapse_fixed_joints: body2's anchor moves, but relpose.p stays in body1.
-                    write("relpose", row, wp.transform(relpose.p, relpose.q * wp.quat_inverse(xform.q)))
+        # Rows are selected once in the source; arrays below are shaped (moved copy, row, ...).
+        kind, body1, body2 = (np.asarray(source(name)) for name in ("type", "body1", "body2"))
+        on_bodies = np.isin(source("objtype"), (MJC_OBJ_UNKNOWN, MJC_OBJ_BODY))
+        weld = on_bodies & (kind == EqType.WELD)
+        world_first = np.flatnonzero(weld & (body1 < 0))
+        world_second = np.flatnonzero(weld & (body1 >= 0) & (body2 < 0))
+        anchored = np.concatenate((np.flatnonzero(on_bodies & (kind == EqType.CONNECT) & (body1 < 0)), world_second))
+
+        if len(anchored):
+            anchors = source("anchor")
+            points = np.asarray([axis_to_vec3(anchors[row]) for row in anchored.tolist()], dtype=np.float32)
+            points = quat_rotate_rows(xforms[:, None, 3:], points[None]) + xforms[:, None, :3]
+            values = destination("anchor")
+            targets = (starts[:, None] + anchored[None]).ravel().tolist()
+            for target, point in zip(targets, points.reshape(-1, 3), strict=True):
+                values[target] = wp.vec3.from_buffer_copy(point)
+        welded = np.concatenate((world_first, world_second))
+        if len(welded):
+            relposes = source("relpose")
+            poses = pack_transforms([relposes[row] for row in welded.tolist()])
+            first = transform_multiply_rows(xforms[:, None], poses[None, : len(world_first)])
+            # Match collapse_fixed_joints: body2's anchor moves, but relpose.p stays in body1.
+            second = np.tile(poses[len(world_first) :], (len(xforms), 1, 1))
+            second[..., 3:] = quat_multiply_rows(second[..., 3:], transform_inverse_rows(xforms)[:, None, 3:])
+            targets = starts[:, None] + welded[None]
+            placed = np.concatenate((first, second), axis=1)
+            store_transform_rows(destination("relpose"), targets.ravel(), placed.reshape(-1, 7))
 
     def _model_value_key(self, attribute: CustomAttribute) -> int:
         """Return the value key of a ``ONCE`` or ``WORLD`` attribute in the current world context.
