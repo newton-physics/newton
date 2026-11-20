@@ -54,7 +54,12 @@ from .mjcf_finalize import (
 )
 from .mjcf_parameters import _read_native_parameters, _register_native_attributes
 from .solver_mujoco import SolverMuJoCo
-from .utils import mjc_add_equality_loop_joint, mjc_add_equality_mimic, mjc_polycoef_has_higher_order
+from .utils import (
+    import_mujoco_module,
+    mjc_add_equality_loop_joint,
+    mjc_add_equality_mimic,
+    mjc_polycoef_has_higher_order,
+)
 
 if TYPE_CHECKING:
     import mujoco
@@ -1132,7 +1137,7 @@ def parse_mjcf(
     legacy_margin_gap: bool = False,
 ) -> None:
     """Import compiled data, retaining authored inputs that depend on composition."""
-    import mujoco
+    mujoco = import_mujoco_module()
 
     builder._validate_base_joint_params(floating, base_joint, parent_body)
     if override_root_xform and xform is None:

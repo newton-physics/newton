@@ -116,15 +116,20 @@ class TestLazySolverImports(unittest.TestCase):
             "    try:\n"
             "        raise ValueError\n"
             "    except ValueError as handled:  # becomes the context of the error MuJoCo stores\n"
-            "        newton.solvers.SolverMuJoCo.import_mujoco()\n"
+            "        IMPORT_MUJOCO\n"
             "        assert handled.__traceback__ is not None\n"
             "    return weakref.ref(local)\n"
             "ref = caller()\n"
             "gc.collect()\n"
             "print('released' if ref() is None else 'pinned')\n"
         )
-        result = _run_in_fresh_interpreter(code)
-        self.assertEqual(result.stdout.strip().splitlines()[-1], "released")
+        for entry_point in (
+            "newton.solvers.SolverMuJoCo.import_mujoco()",
+            "newton.ModelBuilder().add_mjcf_native('<mujoco/>')",
+        ):
+            with self.subTest(entry_point=entry_point):
+                result = _run_in_fresh_interpreter(code.replace("IMPORT_MUJOCO", entry_point))
+                self.assertEqual(result.stdout.strip().splitlines()[-1], "released")
 
 
 if __name__ == "__main__":
