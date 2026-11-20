@@ -198,8 +198,8 @@ def test_vbd_no_tendon_specialization(test, device):
         builder.color()
         model = builder.finalize()
         solvers = [newton.solvers.SolverVBD(model, iterations=5) for _ in range(2)]
-        test.assertIs(solvers[0]._solve_rigid_body_kernel, create_solve_rigid_body(False))
-        solvers[1]._solve_rigid_body_kernel = create_solve_rigid_body(True)
+        test.assertIs(solvers[0]._solve_rigid_body_kernel, create_solve_rigid_body(False, True))
+        solvers[1]._solve_rigid_body_kernel = create_solve_rigid_body(True, True)
         states = [(model.state(), model.state()) for _ in solvers]
         control = model.control()
 

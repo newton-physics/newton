@@ -230,6 +230,8 @@ formulation.
   :class:`~newton.solvers.SolverMuJoCo`, and the LOX backend of
   :class:`~newton.solvers.SolverKamino`, on contacts whose ``friction_mode``
   enables them.
+  :class:`~newton.solvers.SolverVBD` also supports these properties for
+  compliant-ALM rigid-rigid contacts.
 - ``mu_static``: stored as :attr:`~newton.Model.shape_material_mu_static` and
   carried into :class:`~newton.solvers.SolverKamino`'s material tables, but no
   built-in solver distinguishes static from dynamic friction in its contact

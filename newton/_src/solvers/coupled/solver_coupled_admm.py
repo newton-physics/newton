@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import logging
 import math
-import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
@@ -15,7 +14,6 @@ from typing import TYPE_CHECKING, Literal
 import numpy as np
 import warp as wp
 
-from ...exceptions import NewtonDeprecationWarning
 from ...geometry.flags import ShapeFlags
 from ...math import quat_between_vectors_robust
 from ...sim import BodyFlags, JointType, ModelFlags, ShapeFrictionMode, StateFlags
@@ -524,61 +522,6 @@ class SolverCoupledADMM(SolverCoupled):
                 namespace="coupling",
             )
         )
-
-    @classmethod
-    def add_body_particle_attachment(
-        cls,
-        builder: ModelBuilder,
-        body: int,
-        particle: int,
-        *,
-        body_point: tuple[float, float, float] | wp.vec3 = (0.0, 0.0, 0.0),
-        stiffness: float = 1.0e4,
-        damping: float = 0.0,
-        enabled: bool = True,
-    ) -> int:
-        """Add a model-level rigid-body-to-particle attachment.
-
-        .. deprecated:: 1.7
-            Use :meth:`newton.ModelBuilder.add_attachment_particle_body` instead. Attachments
-            authored there are applied inside :class:`~newton.solvers.SolverVBD` when one entry
-            owns both endpoints, and coupled by ADMM when the endpoints span two entries.
-
-        Args:
-            builder: Model builder that owns the body and particle.
-            body: Body index for the rigid endpoint.
-            particle: Particle index for the deformable endpoint.
-            body_point: Body-local attachment point [m].
-            stiffness: Quadratic ADMM attachment stiffness [N/m].
-            damping: Quadratic ADMM attachment damping [N·s/m].
-            enabled: Whether the attachment row is active.
-
-        Returns:
-            Index of the attachment.
-        """
-        warnings.warn(
-            "SolverCoupledADMM.add_body_particle_attachment() is deprecated; use "
-            "ModelBuilder.add_attachment_particle_body() instead.",
-            NewtonDeprecationWarning,
-            stacklevel=2,
-        )
-        if cls.BODY_PARTICLE_ATTACHMENT_FREQUENCY not in builder.custom_frequencies:
-            cls.register_custom_attributes(builder)
-        indices = builder.add_custom_values(
-            **{
-                cls.BODY_PARTICLE_ATTACHMENT_BODY_ATTR: int(body),
-                cls.BODY_PARTICLE_ATTACHMENT_PARTICLE_ATTR: int(particle),
-                cls.BODY_PARTICLE_ATTACHMENT_BODY_POINT_ATTR: wp.vec3(
-                    body_point[0],
-                    body_point[1],
-                    body_point[2],
-                ),
-                cls.BODY_PARTICLE_ATTACHMENT_STIFFNESS_ATTR: float(stiffness),
-                cls.BODY_PARTICLE_ATTACHMENT_DAMPING_ATTR: float(damping),
-                cls.BODY_PARTICLE_ATTACHMENT_ENABLED_ATTR: bool(enabled),
-            }
-        )
-        return indices[cls.BODY_PARTICLE_ATTACHMENT_BODY_ATTR]
 
     @dataclass(frozen=True)
     class ContactPair:
@@ -2857,8 +2800,8 @@ class SolverCoupledADMM(SolverCoupled):
             )
 
         rows = []
-        # An attachment migrated to the model arrays but still authored through the deprecated
-        # helper appears in both sources; applying it twice would double its stiffness. Identical
+        # An attachment migrated to the model arrays but still authored as a legacy row
+        # appears in both sources; applying it twice would double its stiffness. Identical
         # rows within one source stay, since repeating a row there is an explicit choice.
         model_keys = set()
         duplicates = []
@@ -2898,8 +2841,8 @@ class SolverCoupledADMM(SolverCoupled):
         if duplicates:
             logger.warning(
                 f"SolverCoupledADMM ignored particle-body attachment {', '.join(duplicates)} because an identical "
-                "attachment is already defined on the model; remove the deprecated "
-                "SolverCoupledADMM.add_body_particle_attachment() call.",
+                "attachment is already defined on the model; remove the legacy "
+                "coupling:body_particle_attachment row.",
             )
         return rows
 

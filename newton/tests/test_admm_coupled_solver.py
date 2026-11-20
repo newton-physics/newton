@@ -1219,39 +1219,32 @@ class TestAdmmBodyParticleAttachment(unittest.TestCase):
         disabled = _make_semi_body_particle_solver(model)
         self.assertEqual(disabled._admm_rp_groups, [])
 
-    def test_deprecated_helper_preserves_legacy_attachment_row(self):
-        """Keep the deprecated ADMM helper compatible with its custom-row layout."""
-        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
-        particle = builder.add_particle(pos=(0.3, 0.0, 0.0), vel=wp.vec3(), mass=1.0, radius=0.0)
+    def test_legacy_attachment_rows_are_consumed(self):
+        """Keep ADMM compatible with the legacy ``coupling:body_particle_attachment`` rows."""
 
-        with self.assertWarnsRegex(DeprecationWarning, "add_attachment_particle_body"):
-            attachment = SolverCoupledADMM.add_body_particle_attachment(builder, body, particle, stiffness=500.0)
+        def build(stiffness: float) -> newton.Model:
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+            body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+            particle = builder.add_particle(pos=(0.3, 0.0, 0.0), vel=wp.vec3(), mass=1.0, radius=0.0)
+            SolverCoupledADMM.register_custom_attributes(builder)
+            builder.add_custom_values(
+                **{
+                    SolverCoupledADMM.BODY_PARTICLE_ATTACHMENT_BODY_ATTR: body,
+                    SolverCoupledADMM.BODY_PARTICLE_ATTACHMENT_PARTICLE_ATTR: particle,
+                    SolverCoupledADMM.BODY_PARTICLE_ATTACHMENT_STIFFNESS_ATTR: stiffness,
+                }
+            )
+            builder.color()
+            model = builder.finalize(device="cpu")
+            model.particle_grid = None
+            return model
 
-        self.assertEqual(attachment, 0)
-        self.assertEqual(builder.attachment_particle_body_count, 0)
-
-        builder.color()
-        model = builder.finalize(device="cpu")
+        model = build(500.0)
         self.assertEqual(model.attachment_particle_body_count, 0)
-        self.assertEqual(
-            model.custom_frequency_counts[SolverCoupledADMM.BODY_PARTICLE_ATTACHMENT_FREQUENCY],
-            1,
-        )
-        self.assertIn(
-            SolverCoupledADMM.BODY_PARTICLE_ATTACHMENT_FREQUENCY,
-            model.custom_frequency_counts,
-        )
+        self.assertEqual(len(_make_semi_body_particle_solver(model)._admm_rp_groups), 1)
 
-        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
-        particle = builder.add_particle(pos=(0.3, 0.0, 0.0), vel=wp.vec3(), mass=1.0, radius=0.0)
-        with self.assertWarns(DeprecationWarning):
-            SolverCoupledADMM.add_body_particle_attachment(builder, body, particle, stiffness=math.inf)
-        builder.color()
-        model = builder.finalize(device="cpu")
         with self.assertRaisesRegex(ValueError, "is hard; use ModelBuilder.add_attachment_particle_body"):
-            _make_semi_body_particle_solver(model)
+            _make_semi_body_particle_solver(build(math.inf))
 
     def test_single_unsupported_entry_attachment_is_reported(self):
         """Warn when a same-entry solver cannot apply a model attachment."""
