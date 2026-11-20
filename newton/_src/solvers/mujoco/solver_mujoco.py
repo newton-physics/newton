@@ -4039,13 +4039,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     jtype = int(model_joint_type_np[newton_joint])
                     if dof >= 0:
                         if jtype in (JointType.BALL, JointType.FREE, JointType.FIXED):
-                            warnings.warn(
-                                f"Skipping joint entry {j} for tendon {i}: joint {newton_joint} has unsupported "
-                                f"type {JointType(jtype).name} for fixed tendons (expected scalar hinge or slide).",
-                                NewtonWarning,
-                                stacklevel=2,
+                            raise ValueError(
+                                f"Fixed tendon '{tendon_label}' joint entry {j} targets "
+                                f"{JointType(jtype).name.lower()} joint '{model.joint_label[newton_joint]}'; "
+                                "MuJoCo fixed tendons require a scalar hinge or slide joint. "
+                                "For MJCF hinge endpoints, disable convert_3d_hinge_to_ball_joints."
                             )
-                            continue
                         first_dof = int(model_joint_qd_start_np[newton_joint])
                         dof_count = int(model_joint_qd_start_np[newton_joint + 1]) - first_dof
                         if not first_dof <= dof < first_dof + dof_count:
@@ -12258,8 +12257,15 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 if (t_dof_attr is not None and len(t_dof_attr) == len(t_jnt_np))
                 else np.full(len(t_jnt_np), -1, dtype=np.int32)
             )
+            t_coef_attr = getattr(mujoco_attrs, "tendon_coef", None)
+            t_coef_np = (
+                t_coef_attr.numpy()
+                if (t_coef_attr is not None and len(t_coef_attr) == len(t_jnt_np))
+                else np.zeros(len(t_jnt_np), dtype=np.float32)
+            )
+            qd_start_np = model.joint_qd_start.numpy()
             dofs_per_world = model.joint_dof_count // world_count
-            per_world_wraps: list[list[tuple[int, int]]] = [[] for _ in range(world_count)]
+            per_world_tendons: list[list[tuple[tuple[int, int, float], ...]]] = [[] for _ in range(world_count)]
             for t_idx in range(len(tw_np)):
                 tw = int(tw_np[t_idx])
                 if tw < 0 or int(ttype_np[t_idx]) != 0:
@@ -12268,6 +12274,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 count = int(t_num_np[t_idx])
                 if start < 0 or count <= 0 or start + count > len(t_jnt_np):
                     continue
+                tendon_wraps: list[tuple[int, int, float]] = []
                 for j_idx in range(start, start + count):
                     nj = int(t_jnt_np[j_idx])
                     dof = int(t_dof_np[j_idx])
@@ -12282,13 +12289,22 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                             "of another world."
                         )
                     if 0 <= tw < world_count:
+                        resolved_dof = dof
+                        if (
+                            resolved_dof < 0
+                            and 0 <= nj < len(qd_start_np) - 1
+                            and int(qd_start_np[nj + 1]) - int(qd_start_np[nj]) == 1
+                        ):
+                            resolved_dof = int(qd_start_np[nj])
                         local_j = nj % joints_per_world if (nj >= 0 and joints_per_world > 0) else nj
-                        local_d = dof % dofs_per_world if (dof >= 0 and dofs_per_world > 0) else -1
-                        per_world_wraps[tw].append((local_j, local_d))
-            if any(per_world_wraps):
+                        local_d = resolved_dof % dofs_per_world if (resolved_dof >= 0 and dofs_per_world > 0) else -1
+                        tendon_wraps.append((local_j, local_d, float(t_coef_np[j_idx])))
+                if 0 <= tw < world_count:
+                    per_world_tendons[tw].append(tuple(tendon_wraps))
+            if any(per_world_tendons):
                 for w in range(1, world_count):
-                    if per_world_wraps[w] != per_world_wraps[0]:
+                    if per_world_tendons[w] != per_world_tendons[0]:
                         raise ValueError(
                             "SolverMuJoCo requires homogeneous worlds. "
-                            f"Fixed tendon joint/DoF targets in world {w} differ from world 0."
+                            f"Fixed tendon joint/DoF targets or coefficients in world {w} differ from world 0."
                         )

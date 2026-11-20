@@ -816,6 +816,15 @@ automatic conversion between native ``Model.tendon_*`` routes and
 target resolution use the provider path; see
 :doc:`/concepts/usd_parsing` for supported path attributes.
 
+Fixed-tendon joint entries store their Newton joint index in
+``model.mujoco.tendon_joint`` and an optional absolute model DOF index in
+``model.mujoco.tendon_joint_dof`` (default ``-1``). When MJCF import merges
+multiple scalar ``hinge``/``slide`` joints on one body into a single
+:attr:`~newton.JointType.D6` joint, ``tendon_joint_dof`` selects the specific
+scalar DOF within ``tendon_joint``; ``-1`` uses scalar ``tendon_joint`` lookup,
+as emitted by USD ``MjcTendon`` import and ``add_tendon_fixed`` (which still
+requires scalar revolute or prismatic joints).
+
 For force-based limit gains, set ``model.mujoco.tendon_limit_ke`` (stiffness
 [N/m]) and ``tendon_limit_kd`` (damping [N s/m]), select force-space authoring
 with ``tendon_solref_limit_mode = 0``, then notify

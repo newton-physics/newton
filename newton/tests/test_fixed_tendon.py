@@ -10,6 +10,7 @@ import warp as wp
 import newton
 from newton._src.utils import is_graph_capture_allocation_enabled
 from newton.solvers import SolverMuJoCo
+from newton.solvers import mujoco as mjc_author
 from newton.tests.unittest_utils import MUJOCO_MODULES, requires
 
 
@@ -322,7 +323,7 @@ class TestMujocoFixedTendon(unittest.TestCase):
             world_count = 1 if use_mujoco_cpu else 2
             with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
                 blueprint = newton.ModelBuilder()
-                blueprint.add_mjcf(mjcf, ctrl_direct=True)
+                blueprint.add_mjcf(mjcf, ctrl_direct=True, verbose=use_mujoco_cpu)
                 builder = newton.ModelBuilder()
                 builder.replicate(blueprint, world_count)
                 model = builder.finalize(device="cpu" if use_mujoco_cpu else None)
@@ -353,6 +354,69 @@ class TestMujocoFixedTendon(unittest.TestCase):
                 for w in range(world_count):
                     np.testing.assert_allclose(q_np[w], ref_data.qpos, atol=1e-4, rtol=1e-4)
 
+        # Distinct MJCF names that sanitize identically ('a-b' vs 'a_b') resolve to distinct DOFs.
+        collision_mjcf = """<mujoco>
+          <worldbody>
+            <body name="b">
+              <joint name="a-b" type="hinge" axis="1 0 0"/>
+              <joint name="a_b" type="hinge" axis="0 1 0"/>
+              <geom type="sphere" size="0.1"/>
+            </body>
+          </worldbody>
+          <tendon>
+            <fixed name="t">
+              <joint joint="a-b" coef="1.0"/>
+              <joint joint="a_b" coef="-2.0"/>
+            </fixed>
+          </tendon>
+        </mujoco>"""
+        collision_builder = newton.ModelBuilder()
+        collision_builder.add_mjcf(collision_mjcf)
+        collision_solver = SolverMuJoCo(
+            collision_builder.finalize(device="cpu"), use_mujoco_cpu=True, kinematic_switchable_roots=False
+        )
+        np.testing.assert_array_equal(collision_solver.mj_model.wrap_objid, [0, 1])
+        np.testing.assert_allclose(collision_solver.mj_model.wrap_prm, [1.0, -2.0])
+
+        # Equivalent 1-DOF targets from MJCF (explicit dof=0) and add_tendon_fixed (dof=-1) pass validation,
+        # whereas differing coefficients across worlds raise ValueError.
+        one_hinge_mjcf = """<mujoco>
+          <worldbody>
+            <body name="b"><joint name="h" type="hinge" axis="0 1 0"/><geom type="sphere" size="0.1"/></body>
+          </worldbody>
+          <tendon><fixed name="t"><joint joint="h" coef="1.5"/></fixed></tendon>
+        </mujoco>"""
+        mixed_builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(mixed_builder)
+        mixed_builder.begin_world()
+        mixed_builder.add_mjcf(one_hinge_mjcf)
+        mixed_builder.end_world()
+        mixed_builder.begin_world()
+        link = mixed_builder.add_link(mass=1.0)
+        mixed_builder.add_shape_sphere(link, radius=0.1)
+        rev = mixed_builder.add_joint_revolute(parent=-1, child=link, axis=wp.vec3(0.0, 1.0, 0.0))
+        mixed_builder.add_articulation([rev])
+        mjc_author.add_tendon_fixed(mixed_builder, [(rev, 1.5)], label="t")
+        mixed_builder.end_world()
+        mixed_solver = SolverMuJoCo(
+            mixed_builder.finalize(device="cpu"),
+            use_mujoco_cpu=False,
+            separate_worlds=True,
+            disable_contacts=True,
+            kinematic_switchable_roots=False,
+        )
+        self.assertEqual(mixed_solver.mj_model.ntendon, 1)
+
+        mixed_builder.custom_attributes["mujoco:tendon_coef"].values[1] = -1.5
+        with self.assertRaisesRegex(ValueError, "homogeneous worlds"):
+            SolverMuJoCo(
+                mixed_builder.finalize(device="cpu"),
+                use_mujoco_cpu=False,
+                separate_worlds=True,
+                disable_contacts=True,
+                kinematic_switchable_roots=False,
+            )
+
         # Corrupted DOF selector pointing outside its joint raises ValueError.
         bad_builder = newton.ModelBuilder()
         bad_builder.add_mjcf(mjcf, ctrl_direct=True)
@@ -361,19 +425,8 @@ class TestMujocoFixedTendon(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "does not belong to joint"):
             SolverMuJoCo(bad_model, use_mujoco_cpu=True, kinematic_switchable_roots=False)
 
-        # Heterogeneous per-world DOF selectors on the same combined joint raise ValueError.
-        mismatch_blueprint = newton.ModelBuilder()
-        mismatch_blueprint.add_mjcf(mjcf, ctrl_direct=True)
-        mismatch_builder = newton.ModelBuilder()
-        mismatch_builder.replicate(mismatch_blueprint, 2)
-        # World 1 entry 0 selects mcp-flex (local DOF 0 -> global 4) instead of mcp_abduction (local DOF 1 -> global 5).
-        mismatch_builder.custom_attributes["mujoco:tendon_joint_dof"].values[4] = 4
-        mismatch_model = mismatch_builder.finalize(device="cpu")
-        with self.assertRaisesRegex(ValueError, "homogeneous worlds"):
-            SolverMuJoCo(mismatch_model, use_mujoco_cpu=False, separate_worlds=True, kinematic_switchable_roots=False)
-
-        # Converted 3-hinge ball joints cannot participate in MuJoCo fixed tendons and warn cleanly.
-        ball_mjcf = """<mujoco>
+        # Heterogeneous per-world DOF selectors or shifted tendon boundaries raise ValueError.
+        two_tendon_mjcf = """<mujoco>
           <worldbody>
             <body name="b">
               <joint name="rx" type="hinge" axis="1 0 0"/>
@@ -383,15 +436,53 @@ class TestMujocoFixedTendon(unittest.TestCase):
             </body>
           </worldbody>
           <tendon>
-            <fixed name="t"><joint joint="ry" coef="1.0"/></fixed>
+            <fixed name="t0"><joint joint="rx" coef="1.0"/><joint joint="ry" coef="1.0"/></fixed>
+            <fixed name="t1"><joint joint="rz" coef="1.0"/></fixed>
+          </tendon>
+        </mujoco>"""
+        boundary_blueprint = newton.ModelBuilder()
+        boundary_blueprint.add_mjcf(two_tendon_mjcf)
+        boundary_builder = newton.ModelBuilder()
+        boundary_builder.replicate(boundary_blueprint, 2)
+        # Keep the flattened wrap sequence identical in world 1 ([3, 4, 5]), but change boundaries to [1, 2].
+        boundary_builder.custom_attributes["mujoco:tendon_joint_num"].values[2] = 1
+        boundary_builder.custom_attributes["mujoco:tendon_joint_adr"].values[3] = 4
+        boundary_builder.custom_attributes["mujoco:tendon_joint_num"].values[3] = 2
+        with self.assertRaisesRegex(ValueError, "homogeneous worlds"):
+            SolverMuJoCo(
+                boundary_builder.finalize(device="cpu"),
+                use_mujoco_cpu=False,
+                separate_worlds=True,
+                disable_contacts=True,
+                kinematic_switchable_roots=False,
+            )
+
+        # Converted 3-hinge ball joints raise ValueError rather than silently exporting a truncated tendon.
+        ball_mjcf = """<mujoco>
+          <worldbody>
+            <body name="b">
+              <joint name="rx" type="hinge" axis="1 0 0"/>
+              <joint name="ry" type="hinge" axis="0 1 0"/>
+              <joint name="rz" type="hinge" axis="0 0 1"/>
+              <geom type="sphere" size="0.1"/>
+              <body name="c" pos="0 0 0.2">
+                <joint name="child_h" type="hinge" axis="0 1 0"/>
+                <geom type="sphere" size="0.05"/>
+              </body>
+            </body>
+          </worldbody>
+          <tendon>
+            <fixed name="t">
+              <joint joint="ry" coef="1.0"/>
+              <joint joint="child_h" coef="0.5"/>
+            </fixed>
           </tendon>
         </mujoco>"""
         ball_builder = newton.ModelBuilder()
         ball_builder.add_mjcf(ball_mjcf, convert_3d_hinge_to_ball_joints=True)
         ball_model = ball_builder.finalize(device="cpu")
-        with self.assertWarnsRegex(UserWarning, "unsupported type BALL"):
-            ball_solver = SolverMuJoCo(ball_model, use_mujoco_cpu=True, kinematic_switchable_roots=False)
-        self.assertEqual(ball_solver.mj_model.ntendon, 0)
+        with self.assertRaisesRegex(ValueError, "convert_3d_hinge_to_ball_joints"):
+            SolverMuJoCo(ball_model, use_mujoco_cpu=True, kinematic_switchable_roots=False)
 
 
 if __name__ == "__main__":
