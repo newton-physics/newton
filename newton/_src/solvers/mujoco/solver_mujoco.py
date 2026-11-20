@@ -9872,9 +9872,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 headroom = (njmax or _default_njmax(self.mj_model, self.mj_data)) - self.mj_data.nefc
                 self._kinematic_weld_capacity = active_welds + max(0, headroom) // 6
 
-            from mujoco_warp._src.io import is_sparse as is_mujoco_warp_sparse
-
-            if njmax_nnz is not None and is_mujoco_warp_sparse(self.mj_model):
+            if njmax_nnz is not None and self.mjw_model.is_sparse:
                 initial_required_nnz = self._get_initial_jacobian_nnz()
                 minimum_njmax_nnz = max(1, initial_required_nnz)
                 if njmax_nnz < minimum_njmax_nnz:
@@ -9883,7 +9881,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         f"of at least {minimum_njmax_nnz}; the initial Jacobian contains "
                         f"{initial_required_nnz} nonzeros."
                     )
-            elif njmax_nnz is None and is_mujoco_warp_sparse(self.mj_model):
+            elif njmax_nnz is None and self.mjw_model.is_sparse:
                 from mujoco_warp._src.io import _default_nconmax, _default_njmax, _default_njmax_nnz
 
                 # MJWarp only counts friction that is nonzero at construction, but
