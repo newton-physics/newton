@@ -61,6 +61,15 @@ def _build_rigid_model(device) -> newton.Model:
     return builder.finalize(device=device)
 
 
+def _build_jointless_model(device) -> newton.Model:
+    """Build a jointless box resting on the ground."""
+    builder = newton.ModelBuilder()
+    builder.add_ground_plane()
+    body = builder.add_link(xform=wp.transform(wp.vec3(0.0, 0.0, _BOX_HALF - 0.005), wp.quat_identity()))
+    builder.add_shape_box(body, hx=_BOX_HALF, hy=_BOX_HALF, hz=_BOX_HALF)
+    return builder.finalize(device=device)
+
+
 def _build_cloth_model(device, requires_grad: bool = False, with_box: bool = True) -> newton.Model:
     """Build a spring cloth draped over a free box resting on the ground."""
     builder = newton.ModelBuilder()
@@ -139,6 +148,14 @@ def test_rigid_force_inputs_unchanged(test, device, solver_fn):
     for alias_forces in (False, True):
         with test.subTest(alias_forces=alias_forces):
             model = _build_rigid_model(device)
+            _run_force_input_contract(test, device, solver_fn, model, alias_forces)
+
+
+def test_jointless_force_inputs_unchanged(test, device, solver_fn):
+    """Keep body_f unchanged for jointless bodies, where no joint force buffer is involved."""
+    for alias_forces in (False, True):
+        with test.subTest(alias_forces=alias_forces):
+            model = _build_jointless_model(device)
             _run_force_input_contract(test, device, solver_fn, model, alias_forces)
 
 
@@ -288,6 +305,10 @@ rigid_solvers = {
     "vbd": newton.solvers.SolverVBD,
     "xpbd": newton.solvers.SolverXPBD,
 }
+jointless_solvers = {
+    "semi_implicit": newton.solvers.SolverSemiImplicit,
+    "xpbd": newton.solvers.SolverXPBD,
+}
 cloth_solvers = {
     "featherstone": newton.solvers.SolverFeatherstone,
     "semi_implicit": newton.solvers.SolverSemiImplicit,
@@ -309,6 +330,14 @@ for device in devices:
             TestSolverForceInputs,
             f"test_rigid_force_inputs_unchanged_{solver_name}",
             test_rigid_force_inputs_unchanged,
+            devices=[device],
+            solver_fn=solver_fn,
+        )
+    for solver_name, solver_fn in jointless_solvers.items():
+        add_function_test(
+            TestSolverForceInputs,
+            f"test_jointless_force_inputs_unchanged_{solver_name}",
+            test_jointless_force_inputs_unchanged,
             devices=[device],
             solver_fn=solver_fn,
         )
