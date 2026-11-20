@@ -310,6 +310,35 @@ def test_vbd_mimic_property_updates(test, device):
     test.assertAlmostEqual(float(q[0] + q[1]), 0.001, delta=1.0e-6)
 
 
+def test_vbd_mimic_d6_gimbal_lock(test, device):
+    """Resolve a three-axis D6 mismatch authored at the Euler-angle singularity."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    axis = newton.ModelBuilder.JointDofConfig.create_unlimited
+    joints = []
+    for _ in range(2):
+        body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        joints.append(
+            builder.add_joint_d6(-1, body, angular_axes=[axis(newton.Axis.X), axis(newton.Axis.Y), axis(newton.Axis.Z)])
+        )
+    builder.body_flags[0] = int(newton.BodyFlags.KINEMATIC)
+    builder.add_articulation(joints)
+    builder.set_joint_mimic(joints[1], joints[0])
+    builder.color()
+    model = builder.finalize(device=device)
+    model.joint_q.assign(np.array([0.1, 0.5 * np.pi, 0.2, 0.101, 0.5 * np.pi, 0.2], dtype=np.float32))
+    state, other = model.state(), model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+    solver = newton.solvers.SolverVBD(model, iterations=5)
+    for _ in range(100):
+        solver.step(state, other, None, None, 1.0 / 960.0)
+        state, other = other, state
+    body_q = state.body_q.numpy().astype(np.float64)
+    test.assertTrue(np.all(np.isfinite(body_q)))
+    # The Euler split is undefined here, so compare orientations instead.
+    alignment = min(1.0, abs(float(np.dot(body_q[0, 3:], body_q[1, 3:]))))
+    test.assertLess(2.0 * np.arccos(alignment), 5.0e-3)
+
+
 class TestSolverVBDMimic(unittest.TestCase):
     def test_mimic_kernel_module_follows_deterministic_mode(self):
         """Apply VBD's deterministic option to the separately compiled mimic kernels."""
@@ -336,6 +365,7 @@ add_function_test(
 add_function_test(TestSolverVBDMimic, "test_vbd_driven_finger_limit", test_vbd_driven_finger_limit, devices=devices)
 add_function_test(TestSolverVBDMimic, "test_vbd_mimic_gradients", test_vbd_mimic_gradients, devices=devices)
 add_function_test(TestSolverVBDMimic, "test_vbd_mimic_reset", test_vbd_mimic_reset, devices=devices)
+add_function_test(TestSolverVBDMimic, "test_vbd_mimic_d6_gimbal_lock", test_vbd_mimic_d6_gimbal_lock, devices=devices)
 add_function_test(
     TestSolverVBDMimic, "test_vbd_mimic_property_updates", test_vbd_mimic_property_updates, devices=devices
 )

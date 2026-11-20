@@ -46,7 +46,12 @@ from ..tendon_state import TendonStateMixin
 from ..xpbd import kernels as xpbd_kernels
 from ..xpbd.kernels import apply_joint_forces
 from . import particle_vbd_kernels, rigid_vbd_kernels, vbd_coupling_kernels
-from .joint_mimic_kernels import JointMimicData, accumulate_joint_mimics, update_joint_mimic_duals
+from .joint_mimic_kernels import (
+    JointMimicData,
+    accumulate_joint_mimics,
+    seed_joint_mimic_rho,
+    update_joint_mimic_duals,
+)
 from .particle_vbd_kernels import (
     NUM_THREADS_PER_COLLISION_PRIMITIVE,
     TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
@@ -1084,6 +1089,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             self._joint_mimics.linear_ke = self.rigid_joint_linear_ke
             self._joint_mimics.angular_ke = self.rigid_joint_angular_ke
             self._joint_mimics.lambda_ = wp.zeros((model.joint_count, 6), dtype=float, device=self.device)
+            self._joint_mimics.rho = wp.zeros((model.joint_count, 6), dtype=float, device=self.device)
             self._set_module_options(options, module=accumulate_joint_mimics.module)
 
         # Initialize rigid penetration-free (DAT) truncation state
@@ -4001,6 +4007,20 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                         self.joint_angle_prev,
                     ],
                     block_dim=self._rigid_joint_block_dim,
+                    device=self.device,
+                )
+
+            if self._has_joint_mimics:
+                wp.launch(
+                    seed_joint_mimic_rho,
+                    dim=model.joint_count,
+                    inputs=[
+                        self._joint_mimics,
+                        state_in.body_q,
+                        self.body_inv_mass_effective,
+                        self.body_inv_inertia_effective,
+                        1.0 / (dt * dt),
+                    ],
                     device=self.device,
                 )
 
