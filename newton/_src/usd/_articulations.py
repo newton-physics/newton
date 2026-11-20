@@ -70,7 +70,6 @@ def _parse_articulations(
     from pxr import Sdf, UsdPhysics
 
     parent_prim = None
-    body_data = {}
     for path, desc in articulation_entries:
         if warn_invalid_desc(path, desc):
             continue
@@ -110,6 +109,21 @@ def _parse_articulations(
             articulation_custom_attrs = usd.get_custom_attribute_values(parent_prim, builder_custom_attr_articulation)
         if verbose and articulation_custom_attrs:
             logger.info("Extracted articulation custom attributes: %s", articulation_custom_attrs)
+        body_data = {}
+        # OpenUSD also lists the far endpoint of excluded joints in articulatedBodies;
+        # only bodies reached through a tree joint belong to this articulation.
+        tree_body_paths = set()
+        for joint_path in desc.articulatedJoints:
+            joint_key = str(joint_path)
+            joint_desc = joint_descriptions[joint_key]
+            if joint_key in mjc_equality_connect_or_weld_paths or joint_desc.excludeFromArticulation:
+                continue
+            tree_body_paths.update((str(joint_desc.body0), str(joint_desc.body1)))
+        # Without tree joints (e.g. a single root body) keep the articulation root body,
+        # or every listed body when the root API sits on a non-body ancestor.
+        if not tree_body_paths:
+            articulated_keys = {str(p) for p in desc.articulatedBodies}
+            tree_body_paths = {articulation_path} if articulation_path in articulated_keys else articulated_keys
         body_ids = {}
         body_labels = []
         current_body_id = 0
@@ -121,6 +135,8 @@ def _parse_articulations(
                 continue
             key = str(p)
             if key in ignored_body_paths:
+                continue
+            if key not in tree_body_paths:
                 continue
 
             usd_prim = stage.GetPrimAtPath(p)
