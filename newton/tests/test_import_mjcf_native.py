@@ -792,6 +792,27 @@ class TestImportMjcfNative(unittest.TestCase):
         np.testing.assert_allclose(solver.mjw_model.pair_adhesion.numpy(), [[0.0, 0.0], [1.4, 0.7]])
         self.assertTrue(solver.mjw_model.flg_adhesion)
 
+        attached = newton.ModelBuilder()
+        host = attached.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        host_shape = attached.add_shape_sphere(host, radius=0.1)
+        attached.add_mjcf_native(
+            """<mujoco><option><flag filterparent="disable"/></option><worldbody><geom name="floor" type="plane" size="1 1 .1"/>
+            <body name="link"><joint/><geom name="link_geom" size=".1"/></body>
+            </worldbody><contact><exclude body1="world" body2="link"/></contact></mujoco>""",
+            parent_body=host,
+            base_joint={
+                "joint_type": newton.JointType.REVOLUTE,
+                "angular_axes": [newton.ModelBuilder.JointDofConfig(axis=(0, 0, 1))],
+                "collision_filter_parent": False,
+            },
+        )
+        floor, link = (
+            next(i for i, label in enumerate(attached.shape_label) if label.endswith(f"/{name}"))
+            for name in ("floor", "link_geom")
+        )
+        self.assertIn(tuple(sorted((floor, link))), attached._shape_collision_filter_pairs)
+        self.assertNotIn(tuple(sorted((host_shape, link))), attached._shape_collision_filter_pairs)
+
     def test_equalities(self):
         """Preserve body and joint equalities with and without Newton conversion."""
         xml = """<mujoco><worldbody><body name="a"><joint name="a"/><geom size=".1"/></body>
@@ -1285,6 +1306,32 @@ class TestImportMjcfNative(unittest.TestCase):
                 np.testing.assert_allclose(
                     solver.mjw_data.qvel.numpy(), np.stack([d.qvel for _, d in references]), rtol=2e-5, atol=2e-6
                 )
+
+    def test_native_surface_velocity_contacts(self):
+        """Enable moving surfaces when only a non-template world has surface velocity."""
+        import mujoco
+        import mujoco_warp
+
+        xml = """<mujoco><option timestep=".001" integrator="Euler"/>
+            <worldbody><geom type="plane" size="1 1 .1" surfacevel="{speed} 0 0 0 0 0"/>
+            <body pos="0 0 .09"><freejoint/><geom size=".1" mass="1"/></body>
+            </worldbody></mujoco>"""
+        builder = newton.ModelBuilder()
+        references = []
+        for speed in (0, 1):
+            source = xml.format(speed=speed)
+            builder.begin_world()
+            builder.add_mjcf_native(source)
+            builder.end_world()
+            native = mujoco.MjModel.from_xml_string(source)
+            references.append((native, mujoco.MjData(native)))
+        solver = SolverMuJoCo(builder.finalize(), separate_worlds=True, kinematic_switchable_roots=False)
+        mujoco_warp.step(solver.mjw_model, solver.mjw_data)
+        for native, data in references:
+            mujoco.mj_step(native, data)
+        velocities = solver.mjw_data.qvel.numpy()
+        self.assertGreater(abs(velocities[1, 0]), 1e-4)
+        np.testing.assert_allclose(velocities, np.stack([data.qvel for _, data in references]), rtol=2e-5, atol=2e-6)
 
     def test_native_world_template_parameters(self):
         """Reject different fluid coefficients or actuator layouts across worlds."""

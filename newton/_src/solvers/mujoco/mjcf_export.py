@@ -167,6 +167,8 @@ def _publish_native_world_parameters(model, native, mjw_model, joint_dofs, geom_
             output.assign(compiled)
             if field in ("geom_adhesion", "pair_adhesion"):
                 mjw_model.flg_adhesion |= bool(np.any(compiled))
+            elif field == "geom_surfacevel":
+                mjw_model.flg_surfacevel |= bool(np.any(compiled))
             elif kind == "tendon":
                 flag = "has_tendon_stiffness" if field == "tendon_stiffnesspoly" else "has_tendon_damping"
                 setattr(mjw_model, flag, getattr(mjw_model, flag) or bool(np.any(compiled)))

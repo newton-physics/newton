@@ -115,13 +115,6 @@ class TrnType(IntEnum):
     SLIDERCRANK = 5
 
 
-class _JointType(IntEnum):
-    FREE = 0
-    BALL = 1
-    SLIDE = 2
-    HINGE = 3
-
-
 def _joint_dof_count(kind: int) -> int:
     return 6 if kind == _JointType.FREE else 3 if kind == _JointType.BALL else 1
 

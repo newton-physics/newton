@@ -854,7 +854,7 @@ def _equalities(builder, spec, model, bodies, joints, dofs, sites, tendons, conv
             body1, body2 = bodies[first] if first > 0 else -1, bodies[second] if second > 0 else -1
             anchor = wp.vec3(data[:3])
             relpose = _transform(data[3:6], data[6:10]) if kind == EqType.WELD else None
-            if kind == EqType.WELD and second == 0:
+            if (kind == EqType.WELD and second == 0) or (kind == EqType.CONNECT and first == 0):
                 anchor = wp.transform_point(placement, anchor)
             if kind == EqType.WELD and np.any(spec.equalities[i].data[6:10]):
                 if first == 0:
@@ -927,10 +927,11 @@ def _contacts(builder, spec, model, bodies, geoms, start_shape, self_collisions,
         builder.add_custom_values(**values)
     for signature in model.exclude_signature:
         first, second = int(signature) >> 16, int(signature) & 65535
-        if bodies[first] == -2 or bodies[second] == -2:
+        body1, body2 = bodies[first] if first > 0 else -1, bodies[second] if second > 0 else -1
+        if body1 == -2 or body2 == -2:
             continue
-        for a in builder.body_shapes.get(bodies[first], []):
-            for b in builder.body_shapes.get(bodies[second], []):
+        for a in builder.body_shapes.get(body1, []):
+            for b in builder.body_shapes.get(body2, []):
                 builder.add_shape_collision_filter_pair(a, b)
     selected = [
         i for i in range(start_shape, builder.shape_count) if builder.shape_flags[i] & ShapeFlags.COLLIDE_SHAPES

@@ -62,7 +62,7 @@ class TestImportMjcfNativeSemantics(unittest.TestCase):
         import mujoco
 
         xml = """<mujoco><worldbody><body pos="2 3 4" euler="10 20 30">{root}
-            <geom type="box" size=".2 .3 .4" mass="3"/>
+            <geom type="box" size=".2 .3 .4" pos=".2 .1 .4" mass="3"/>
             <body pos="0 0 1"><joint name="j" axis="0 1 0" ref="30" armature=".03"/>
                 <geom type="box" size=".1 .2 .3" mass="1"/>
                 <body pos="0 0 1"><joint name="k" axis="0 1 0" armature=".04"/>
@@ -70,7 +70,7 @@ class TestImportMjcfNativeSemantics(unittest.TestCase):
                 </body></body></body></worldbody>
             <actuator><position joint="k" kp="20" dampratio=".7"/>
                 <position joint="j" kp="10" dampratio=".4"/></actuator></mujoco>"""
-        for root in ("", "<freejoint/>"):
+        for root in ("", "<freejoint/>", '<joint type="free" armature=".1"/>'):
             with self.subTest(root=root):
                 source = xml.format(root=root)
                 builder = newton.ModelBuilder()
@@ -79,6 +79,8 @@ class TestImportMjcfNativeSemantics(unittest.TestCase):
                 model = builder.finalize()
                 native = mujoco.MjModel.from_xml_string(source)
                 expected = -native.actuator_biasprm[::-1, 2]
+                if "armature" in root:
+                    SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
                 np.testing.assert_allclose(model.joint_target_kd.numpy()[-2:], expected, rtol=3e-5)
                 np.testing.assert_allclose(model.joint_q.numpy(), initial_q)
 
@@ -129,6 +131,21 @@ class TestImportMjcfNativeSemantics(unittest.TestCase):
                 np.testing.assert_allclose(
                     solver.mjw_model.jnt_stiffness.numpy(), before[0].reshape(2, width)[:, :1], rtol=3e-5
                 )
+
+        source = xml.format(kind="free", timeconst=0.2, payload=payload).replace(
+            'type="free"', 'type="free" armature=".1"'
+        )
+        reference = mujoco.MjModel.from_xml_string(source)
+        builder = newton.ModelBuilder()
+        builder.add_mjcf_native(source)
+        for cpu in (False, True):
+            with self.subTest(free_armature=True, cpu=cpu):
+                model = builder.finalize()
+                np.testing.assert_allclose(model.mujoco.native_joint_springdamper.numpy()[0], [0.2, 0.7])
+                solver = SolverMuJoCo(model, use_mujoco_cpu=cpu, disable_contacts=True)
+                np.testing.assert_allclose(model.joint_stiffness.numpy(), reference.jnt_stiffness[0], rtol=3e-5)
+                np.testing.assert_allclose(model.joint_damping.numpy(), reference.dof_damping, rtol=3e-5)
+                np.testing.assert_allclose(solver.mj_model.dof_damping, reference.dof_damping, rtol=3e-5)
 
     def test_ball_target_damping_overrides(self):
         """Preserve per-axis zero and nonzero overrides before finalization."""
@@ -1453,38 +1470,47 @@ class TestImportMjcfNativeSemantics(unittest.TestCase):
                 solver.notify_model_changed(newton.ModelFlags.CONSTRAINT_PROPERTIES)
                 np.testing.assert_allclose(solver.mjw_model.eq_data.numpy()[0], reference.eq_data)
 
-    def test_explicit_world_weld_placement(self):
-        """Place authored world-side weld frames consistently in both representations."""
+    def test_explicit_world_equality_placement(self):
+        """Place world-side equality anchors consistently in both representations."""
         import mujoco
 
         placement = wp.transform((2, 3, 4), wp.quat_from_axis_angle(wp.vec3(0, 0, 1), 0.5))
-        for convert, endpoints in product(
+        for convert, (kind, endpoints) in product(
             (False, True),
             (
-                'body1="b" relpose="-1 0 0 1 0 0 0"',
-                'body1="world" body2="b" relpose="1 0 0 1 0 0 0"',
-                'body1="b"',
-                'body1="world" body2="b"',
+                ("weld", 'body1="b" relpose="-1 0 0 1 0 0 0"'),
+                ("weld", 'body1="world" body2="b" relpose="1 0 0 1 0 0 0"'),
+                ("weld", 'body1="b"'),
+                ("weld", 'body1="world" body2="b"'),
+                ("connect", 'body1="world" body2="b" anchor=".2 -.1 .4"'),
+                ("connect", 'body1="b" anchor=".2 -.1 .4"'),
             ),
         ):
-            with self.subTest(convert=convert, endpoints=endpoints):
+            with self.subTest(convert=convert, kind=kind, endpoints=endpoints):
                 xml = f"""<mujoco><worldbody><body name="b" pos="1 0 0"><freejoint/>
-                    <geom size=".1"/></body></worldbody><equality><weld {endpoints}/></equality></mujoco>"""
+                    <geom size=".1"/></body></worldbody><equality><{kind} {endpoints}/></equality></mujoco>"""
                 builder = newton.ModelBuilder()
                 warning = self.assertWarnsRegex(NewtonWarning, "FREE joint parallel") if convert else nullcontext()
                 with warning:
                     builder.add_mjcf_native(xml, xform=placement, convert_mjc_equality_constraints=convert)
                 if convert:
                     np.testing.assert_allclose(
-                        builder.joint_X_p[-1], builder.body_q[0] * builder.joint_X_c[-1], atol=5e-7
+                        np.asarray(builder.joint_X_p[-1])[: 7 if kind == "weld" else 3],
+                        np.asarray(builder.body_q[0] * builder.joint_X_c[-1])[: 7 if kind == "weld" else 3],
+                        atol=5e-7,
                     )
                 model = builder.finalize()
-                if endpoints.startswith('body1="b"'):
+                if kind == "connect":
+                    anchor = wp.vec3(0.2, -0.1, 0.4)
+                    if endpoints.startswith('body1="world"'):
+                        anchor = wp.transform_point(placement, anchor)
+                    np.testing.assert_allclose(model.mujoco.equality_constraint_anchor.numpy()[0], anchor, atol=1e-6)
+                elif endpoints.startswith('body1="b"'):
                     np.testing.assert_allclose(model.mujoco.equality_constraint_anchor.numpy()[0], placement.p)
                 solver = SolverMuJoCo(model, disable_contacts=True, kinematic_switchable_roots=False)
                 data = mujoco.MjData(solver.mj_model)
                 mujoco.mj_forward(solver.mj_model, data)
-                self.assertEqual(len(data.efc_pos), 6)
+                self.assertEqual(len(data.efc_pos), 6 if kind == "weld" else 3)
                 np.testing.assert_allclose(data.efc_pos, 0, atol=1e-6)
 
     def test_weld_pose_finalization(self):

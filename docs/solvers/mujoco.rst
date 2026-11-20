@@ -1052,7 +1052,8 @@ and finalized again.
 Resolution runs after the initial body variant has been selected and shares one
 batched mass-matrix calculation between passive springs and target damping.
 Actuator or tendon armature excludes only its owning articulation; unassigned
-ownership conservatively excludes the whole model. Those cases, unsupported
+ownership conservatively excludes the whole model. Free-joint armature also
+defers its owning articulation because MuJoCo applies it at the body origin. Those cases, unsupported
 topology, and singular or numerically ill-conditioned inertia retain deferred
 resolution through ``SolverMuJoCo``. Resolved articulations do not have their core
 coefficients rewritten by solver construction. Deferred passive springs resolve

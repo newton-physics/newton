@@ -9,7 +9,7 @@ import numpy as np
 import warp as wp
 
 from ...core.types import MAXVAL
-from ...sim import ModelBuilder
+from ...sim import JointType, ModelBuilder
 from ...sim.model import Model
 from .constants import FLOAT64_EPS, MJ_MINVAL
 from .enums import CtrlSource, TrnType, _ActuatorDynamicsType, _joint_dof_count, _JointType
@@ -18,6 +18,13 @@ from .reference import build_ref_q, compute_body_poses_at_qref
 
 def _native_inertia_exclusions(model: Model) -> set[int]:
     excluded = set()
+    armature = model.joint_armature.numpy()
+    starts = model.joint_qd_start.numpy()
+    owners = model.joint_articulation.numpy()
+    for joint in np.flatnonzero(model.joint_type.numpy() == JointType.FREE):
+        if np.any(armature[starts[joint] : starts[joint + 1]] != 0):
+            # MuJoCo applies free-joint armature at the body origin; Newton uses the COM.
+            excluded.add(int(owners[joint]))
     for kind in ("actuator", "tendon"):
         armature = getattr(model.mujoco, f"{kind}_armature", None)
         if armature is None:
