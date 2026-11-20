@@ -1843,6 +1843,15 @@ class TestMultiphysicsExamples(NewtonTestCase):
 
 add_example_test(
     TestMultiphysicsExamples,
+    name="multiphysics.example_style3d_parcel_sorting_conveyor",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 240, "seed": 3},
+    test_options_cpu={"num-frames": 36, "seed": 0},
+    allow_output_regexes=[(_STYLE3D_PRECOMPUTE_OUTPUT_RE, "stdout")],
+)
+add_example_test(
+    TestMultiphysicsExamples,
     name="multiphysics.example_style3d_balls_dropped_into_bag",
     devices=test_devices,
     test_options={"num-frames": 180},
