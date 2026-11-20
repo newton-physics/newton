@@ -11153,6 +11153,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self.mj_model.site_pos[:] = self.mjw_model.site_pos.numpy()[0]
             self.mj_model.site_quat[:] = self.mjw_model.site_quat.numpy()[0]
             self.mj_model.site_size[:] = self.mjw_model.site_size.numpy()
+            # Runtime edits invalidate the compiler's shared-frame shortcut.
+            self.mj_model.site_sameframe[:] = self._mujoco.mjtSameFrame.mjSAMEFRAME_NONE
             self._mujoco.mj_kinematics(self.mj_model, self.mj_data)
 
     def _publish_joint_limit_properties(self):
