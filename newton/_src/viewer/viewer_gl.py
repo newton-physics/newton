@@ -305,6 +305,8 @@ class ViewerGL(ViewerBase):
             legacy_gui: Use the legacy sidebar, statistics overlay, and floating
                 image/plot windows instead of the docked inspection workspace.
                 Defaults to False. Has no effect in headless mode.
+
+                .. experimental::
             capture_logs: Mirror ``newton`` log records and Newton warnings into
                 the workspace console until :meth:`close`. This adds a handler
                 to the ``newton`` logger and routes :class:`~newton.NewtonWarning`
@@ -2431,7 +2433,10 @@ class ViewerGL(ViewerBase):
             output:
                 Optional pre-allocated Warp array with shape `(height, width, 3)`
                 and dtype `wp.uint8`. If `None`, a new array will be created.
-            render_ui: Whether to render the UI.
+            render_ui: Whether to render the UI. With the default inspection
+                workspace in a visible window, the scene covers only the docked
+                viewport within the returned frame; set ``show_ui = False`` or
+                use ``legacy_gui=True`` to capture the scene at full size.
 
         Returns:
             wp.array: RGB image data on the viewer device with shape

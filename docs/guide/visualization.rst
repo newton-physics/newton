@@ -788,7 +788,12 @@ Use an image library to save the captured pixels, for example:
 
 UI overlays are excluded by default. ``ViewerGL`` supports
 ``get_frame(render_ui=True)`` to include them; ``ViewerRTX`` does not support
-that option. RTX also does not support capturing fullscreen images displayed
+that option. In a visible ``ViewerGL`` window with the default inspection
+workspace, the scene is rendered into the docked viewport, so ``get_frame()``
+keeps the window size but the scene covers only the viewport rectangle and the
+rest is panel background. To record the full window, set
+``viewer.show_ui = False`` or create the viewer with ``legacy_gui=True``.
+Headless rendering is unaffected. RTX also does not support capturing fullscreen images displayed
 with ``log_image(..., fullscreen=True)``: ``get_frame()`` raises
 ``NotImplementedError`` for those frames. Capture resumes after the next scene
 render. RTX capture uses the fixed render resolution and reads through CPU
