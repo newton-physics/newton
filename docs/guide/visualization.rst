@@ -600,6 +600,9 @@ To use the previous sidebar GUI, construct the viewer with
 overlay, floating image/plot windows, and UI callbacks without creating the
 docked inspection workspace. The keyword-only flag defaults to ``False`` and
 has no effect when ``headless=True``.
+The workspace panels add roughly 1–2 ms of CPU time per interactive frame
+compared with the legacy sidebar; use the legacy GUI when frame rate matters
+more than inspection.
 
 The workspace compiles its interaction kernels during construction and when
 binding a model on a different device, avoiding stalls on first selection or

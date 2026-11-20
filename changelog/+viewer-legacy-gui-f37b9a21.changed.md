@@ -1,0 +1,1 @@
+Make the docked inspection workspace the default ViewerGL GUI. Its panels cost about 1–2 ms more CPU time per interactive frame than the legacy sidebar, so pass `ViewerGL(legacy_gui=True)` where frame rate matters more than inspection. Headless rendering is unaffected.
