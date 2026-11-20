@@ -1,0 +1,350 @@
+{
+  "schema_version": 1,
+  "case_id": "r7_h1_gusset_bag",
+  "source_input_npz_sha256": "b14f1dc1359a7c679b9c57068fff0c33008b7d438506343864d6b5a723ac42d5",
+  "source_input_metadata_sha256": "76d862965cf098d1692bc5b83c67844a656b71ac6f925e32211d160af2b9d627",
+  "source_state_sha256": "339002f76dc90df8f945d1040c6ee36ea56fd0a22c55819ff9cb4aff7dd5b5c7",
+  "source_command_sha256": "c1150116433f67ec73b562251c28db0f421b622308827913bd664aec7c6be8c2",
+  "source_archive_relative_path": "comparison/common-starts/r7_h1_gusset_bag/common-start",
+  "scope": "Explicit public State and Control initialization and prescribed hand keyframes. No solver histories or scoring reference trajectory.",
+  "license": "Apache-2.0 generated state/commands; BSD-3-Clause source geometry",
+  "duration_s": 13.1,
+  "hold_window": [
+    4.0,
+    5.5
+  ],
+  "initial_hold_prepared": true,
+  "cloth_transform": {
+    "scale": 1.0,
+    "position": [
+      0,
+      0,
+      0
+    ],
+    "jacket_rotation": false
+  },
+  "table": {
+    "center": [
+      0,
+      0.39,
+      0.2375
+    ],
+    "half": [
+      0.65,
+      0.31,
+      0.0125
+    ],
+    "margin": 0.001,
+    "friction": 1.0
+  },
+  "material": {
+    "radius": 0.003,
+    "friction": 1.0,
+    "hand_friction": 1.0,
+    "sdf_resolution": 128
+  },
+  "hands": [
+    {
+      "side": "left",
+      "root_pos": [
+        -0.13115553691983226,
+        -0.4,
+        0.45
+      ],
+      "rotation": [
+        0.7147031426429749,
+        -0.10765480995178223,
+        -0.6896461844444275,
+        -0.04469868913292885
+      ],
+      "controls": [
+        1.25,
+        0.008686668469377504,
+        1.0,
+        0,
+        0,
+        0
+      ],
+      "label": "original_h1_left"
+    },
+    {
+      "side": "right",
+      "root_pos": [
+        0.10866150766611102,
+        -0.4,
+        0.45
+      ],
+      "rotation": [
+        -0.019256312400102615,
+        0.7002716660499573,
+        -0.05622326210141182,
+        0.7113984227180481
+      ],
+      "controls": [
+        1.25,
+        0.009059418357859632,
+        1.0,
+        0,
+        0,
+        0
+      ],
+      "label": "original_h1_right"
+    }
+  ],
+  "camera": {
+    "position": [
+      1.5,
+      -1.7,
+      1.55
+    ],
+    "target": [
+      0.1,
+      0.4,
+      0.72
+    ],
+    "fov": 48.0
+  },
+  "arrays": {
+    "state0.particle_q": {
+      "shape": [
+        5578,
+        3
+      ],
+      "dtype": "float32",
+      "sha256": "03ed610fba1770de71c8579dfc692e77a4dd7baefdaf3999c0a52f72eee219ff"
+    },
+    "state0.particle_qd": {
+      "shape": [
+        5578,
+        3
+      ],
+      "dtype": "float32",
+      "sha256": "c31f3ab098f34ef1c2bd3bad9b0a7f0f606fb9a557cada39c8d1155a884c5063"
+    },
+    "state0.particle_f": {
+      "shape": [
+        5578,
+        3
+      ],
+      "dtype": "float32",
+      "sha256": "c31f3ab098f34ef1c2bd3bad9b0a7f0f606fb9a557cada39c8d1155a884c5063"
+    },
+    "state0.body_q": {
+      "shape": [
+        26,
+        7
+      ],
+      "dtype": "float32",
+      "sha256": "43ab28faef8f62505a6125d9b4aa388f518a023e126e971562f25ec6216a26da"
+    },
+    "state0.body_qd": {
+      "shape": [
+        26,
+        6
+      ],
+      "dtype": "float32",
+      "sha256": "afc249b32e5549092c980b1995ea5401e73af3fcda168c1da9ae1bdbfce0d447"
+    },
+    "state0.body_f": {
+      "shape": [
+        26,
+        6
+      ],
+      "dtype": "float32",
+      "sha256": "afc249b32e5549092c980b1995ea5401e73af3fcda168c1da9ae1bdbfce0d447"
+    },
+    "state0.joint_q": {
+      "shape": [
+        38
+      ],
+      "dtype": "float32",
+      "sha256": "f2757ffe6c33d60b4794fe97dcf17098a5c5c1deabe4b377b7e2f041dcdf8537"
+    },
+    "state0.joint_qd": {
+      "shape": [
+        36
+      ],
+      "dtype": "float32",
+      "sha256": "81c611f35bff79491538b2f7cf201c7597a661a5c549633541c62bdc8af1613f"
+    },
+    "state1.particle_q": {
+      "shape": [
+        5578,
+        3
+      ],
+      "dtype": "float32",
+      "sha256": "03ed610fba1770de71c8579dfc692e77a4dd7baefdaf3999c0a52f72eee219ff"
+    },
+    "state1.particle_qd": {
+      "shape": [
+        5578,
+        3
+      ],
+      "dtype": "float32",
+      "sha256": "c31f3ab098f34ef1c2bd3bad9b0a7f0f606fb9a557cada39c8d1155a884c5063"
+    },
+    "state1.particle_f": {
+      "shape": [
+        5578,
+        3
+      ],
+      "dtype": "float32",
+      "sha256": "c31f3ab098f34ef1c2bd3bad9b0a7f0f606fb9a557cada39c8d1155a884c5063"
+    },
+    "state1.body_q": {
+      "shape": [
+        26,
+        7
+      ],
+      "dtype": "float32",
+      "sha256": "43ab28faef8f62505a6125d9b4aa388f518a023e126e971562f25ec6216a26da"
+    },
+    "state1.body_qd": {
+      "shape": [
+        26,
+        6
+      ],
+      "dtype": "float32",
+      "sha256": "afc249b32e5549092c980b1995ea5401e73af3fcda168c1da9ae1bdbfce0d447"
+    },
+    "state1.body_f": {
+      "shape": [
+        26,
+        6
+      ],
+      "dtype": "float32",
+      "sha256": "afc249b32e5549092c980b1995ea5401e73af3fcda168c1da9ae1bdbfce0d447"
+    },
+    "state1.joint_q": {
+      "shape": [
+        38
+      ],
+      "dtype": "float32",
+      "sha256": "f2757ffe6c33d60b4794fe97dcf17098a5c5c1deabe4b377b7e2f041dcdf8537"
+    },
+    "state1.joint_qd": {
+      "shape": [
+        36
+      ],
+      "dtype": "float32",
+      "sha256": "81c611f35bff79491538b2f7cf201c7597a661a5c549633541c62bdc8af1613f"
+    },
+    "control.joint_f": {
+      "shape": [
+        36
+      ],
+      "dtype": "float32",
+      "sha256": "81c611f35bff79491538b2f7cf201c7597a661a5c549633541c62bdc8af1613f"
+    },
+    "control.joint_target_q": {
+      "shape": [
+        38
+      ],
+      "dtype": "float32",
+      "sha256": "5109f89d6d435f3ddc77d579cd3e68db9f4f60a340fa882d8b9faf04e760c1aa"
+    },
+    "control.joint_target_qd": {
+      "shape": [
+        36
+      ],
+      "dtype": "float32",
+      "sha256": "81c611f35bff79491538b2f7cf201c7597a661a5c549633541c62bdc8af1613f"
+    },
+    "control.joint_act": {
+      "shape": [
+        36
+      ],
+      "dtype": "float32",
+      "sha256": "81c611f35bff79491538b2f7cf201c7597a661a5c549633541c62bdc8af1613f"
+    },
+    "control.tri_activations": {
+      "shape": [
+        10880
+      ],
+      "dtype": "float32",
+      "sha256": "6766d5bcf90d69555d68f81e8818b4aa517a40a82332b219b269b40d2b430996"
+    },
+    "driver0.times": {
+      "shape": [
+        10
+      ],
+      "dtype": "float32",
+      "sha256": "5299021a6d984c6ac5b6c426d9883d03e512c563a2c2b382e6f8d71be18a6094"
+    },
+    "driver0.positions": {
+      "shape": [
+        10,
+        3
+      ],
+      "dtype": "float32",
+      "sha256": "5ddbcde2d1903d3f5d91c3d53743d2a4defc77246b5237147518e516638a8263"
+    },
+    "driver0.rotations": {
+      "shape": [
+        10,
+        4
+      ],
+      "dtype": "float32",
+      "sha256": "6c302a6e5bb24ae6d31d319c66f0d95b16f3b8bb7d7205efac6f52fa7823dac3"
+    },
+    "driver0.fingers": {
+      "shape": [
+        10,
+        12
+      ],
+      "dtype": "float32",
+      "sha256": "0c382282df2daa96b1aa0e3155bb55067996d7033ba5ab35bca30a3671678dd0"
+    },
+    "driver1.times": {
+      "shape": [
+        10
+      ],
+      "dtype": "float32",
+      "sha256": "5299021a6d984c6ac5b6c426d9883d03e512c563a2c2b382e6f8d71be18a6094"
+    },
+    "driver1.positions": {
+      "shape": [
+        10,
+        3
+      ],
+      "dtype": "float32",
+      "sha256": "37436b995b9faecae8c077c6ec845cc83fee8bd5f77b7c5e2906db8e0288a536"
+    },
+    "driver1.rotations": {
+      "shape": [
+        10,
+        4
+      ],
+      "dtype": "float32",
+      "sha256": "6cc7de354cfc4e5741f193237b9e8fefea161dba70c2acae4304084e25ba55ff"
+    },
+    "driver1.fingers": {
+      "shape": [
+        10,
+        12
+      ],
+      "dtype": "float32",
+      "sha256": "252e11ad80d772ed8e596d31f039fdcbe94f913d788c043a2a17840a4399eb41"
+    },
+    "rest.vertices": {
+      "shape": [
+        5578,
+        3
+      ],
+      "dtype": "float32",
+      "sha256": "03ed610fba1770de71c8579dfc692e77a4dd7baefdaf3999c0a52f72eee219ff"
+    },
+    "rest.triangles": {
+      "shape": [
+        10880,
+        3
+      ],
+      "dtype": "int32",
+      "sha256": "b5834ffd6d6228f0f12d11fde0810e44ac667282660d9e4b0ffee11906cb5874"
+    }
+  },
+  "npz_sha256": "90c540bb6fcbba9a04f660366a10069778ae7b717dd44031ae754e3a99bed0ee",
+  "license_notices": [
+    "Pinned unitree_h1/LICENSE"
+  ]
+}

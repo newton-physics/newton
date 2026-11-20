@@ -20,6 +20,8 @@ repos:
     hooks:
       - id: check-added-large-files
         args: [--maxkb=500]
+        # Preserve the native garment mesh and exact public initial state.
+        exclude: ^asv/collision_fidelity/assets/(cached_jacket_native\.npz|h1/j3_h1_jacket\.npz)$
       - id: check-case-conflict
       - id: check-illegal-windows-names
       - id: check-json
