@@ -193,7 +193,7 @@ class ViewerGui:
         if not self.is_available:
             return False
         if (
-            getattr(self, "_loading_splash_active", False)
+            self._loading_splash_active
             or (self.show_ui and getattr(self, "_gizmo_hovered", False))
             or (self.show_ui and getattr(self._viewer, "gizmo_is_using", False))
         ):
@@ -252,7 +252,7 @@ class ViewerGui:
     @property
     def following_selection(self) -> bool:
         """Report whether selection following is enabled by the held key or latched GUI toggle."""
-        return getattr(self, "_follow_held", False) or getattr(self, "_follow_latched", False)
+        return self._follow_held or self._follow_latched
 
     def stop_following_selection(self) -> None:
         """A changed selection or scene must not inherit another object's follow mode."""
@@ -267,7 +267,7 @@ class ViewerGui:
 
     def toggle_follow_selection(self) -> None:
         """Stop latched following or frame an eligible selection and begin following its center."""
-        if getattr(self, "_follow_latched", False):
+        if self._follow_latched:
             self.stop_following_selection()
         elif self.workspace is not None and self.workspace.can_follow_selection:
             self.frame_camera_on_model(contacts=False)
@@ -275,7 +275,7 @@ class ViewerGui:
 
     def update_camera_follow(self, is_key_down: Callable[[int], bool]) -> None:
         """Transport the orbit pivot with the displayed selection, without refitting it."""
-        if getattr(self, "_frame_key_down", False):
+        if self._frame_key_down:
             from pyglet.window import key
 
             if not is_key_down(key.F):
@@ -285,7 +285,7 @@ class ViewerGui:
         if self.workspace is None or not self.workspace.can_follow_selection:
             self.stop_following_selection()
             return
-        if not getattr(self, "_follow_latched", False) and self.should_ignore_keyboard_input():
+        if not self._follow_latched and self.should_ignore_keyboard_input():
             self._follow_held = False
             return
         bounds = self.workspace.selection_bounds(include_contacts=False, sync_selection=not self.show_ui)
@@ -333,7 +333,7 @@ class ViewerGui:
 
     def should_ignore_keyboard_input(self) -> bool:
         """Block shortcuts during loading, popups, or string entry while allowing them in numeric editors."""
-        if getattr(self, "_loading_splash_active", False):
+        if self._loading_splash_active:
             return True
         if not self.is_available or not self.show_ui:
             return False
@@ -618,12 +618,16 @@ class ViewerGui:
         if picking is None or camera is None or viewer._last_state is None:
             return False
         fb_x, fb_y = to_framebuffer_coords(x, y)
-        rect = getattr(getattr(viewer, "renderer", None), "_workspace_rect", None)
+        rect = self._viewport_rect()
         if rect is not None:
             fb_x, fb_y = fb_x - rect[0], fb_y - rect[1]
         ray_start, ray_dir = camera.get_world_ray(fb_x, fb_y)
         picking.pick(viewer._last_state, ray_start, ray_dir)
         return True
+
+    def _viewport_rect(self) -> tuple[int, int, int, int] | None:
+        """Return the docked GL viewport in framebuffer pixels, or None when the scene fills the window."""
+        return self._viewer.renderer._workspace_rect if self.workspace is not None else None
 
     def update_picking_from_screen(self, x: float, y: float, to_framebuffer_coords) -> bool:
         """Update an active pick with a viewport-local ray; return False if no active picker or camera exists."""
@@ -635,7 +639,7 @@ class ViewerGui:
         if picking is None or camera is None:
             return False
         fb_x, fb_y = to_framebuffer_coords(x, y)
-        rect = getattr(getattr(viewer, "renderer", None), "_workspace_rect", None)
+        rect = self._viewport_rect()
         if rect is not None:
             fb_x, fb_y = fb_x - rect[0], fb_y - rect[1]
         ray_start, ray_dir = camera.get_world_ray(fb_x, fb_y)
@@ -725,7 +729,7 @@ class ViewerGui:
             window = getattr(renderer, "window", None)
             if window is not None and hasattr(window, "get_size"):
                 _, h = window.get_size()
-                viewport = getattr(renderer, "_workspace_rect", None)
+                viewport = self._viewport_rect()
                 if viewport is not None:
                     framebuffer_height = max(float(renderer._screen_height), 1.0)
                     height = max(viewport[3] * h / framebuffer_height, 1.0)
@@ -835,7 +839,7 @@ class ViewerGui:
             self.show_ui = not self.show_ui
             self._viewer._display_options_user["show_ui"] = self.show_ui
         elif symbol == pyglet.window.key.F:
-            if not getattr(self, "_frame_key_down", False):
+            if not self._frame_key_down:
                 self._frame_key_down = True
                 self.frame_camera_on_model()
                 # Follow the spatial owner even when F framed a contact on it.

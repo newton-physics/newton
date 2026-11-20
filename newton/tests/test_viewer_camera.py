@@ -51,7 +51,7 @@ class TestViewerCameraOrbit(unittest.TestCase):
         viewer = SimpleNamespace(camera=camera, model=True, is_rendering_paused=lambda: False)
         gui = ViewerGui.__new__(ViewerGui)
         gui._viewer, gui.ui = viewer, None
-        gui._loading_splash_active = False
+        gui._loading_splash_active = gui._frame_key_down = gui._follow_held = gui._follow_latched = False
         gui._cam_vel = np.zeros(3)
         gui._camera_orbit_sensitivity = 0.1
         gui._camera_drag_buttons = 0

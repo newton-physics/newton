@@ -220,15 +220,9 @@ class PhysicsSurfaceShader(ShaderShape):
             gl.glUniform1f(loc["inspection_radius"], renderer._xray_inspection_radius)
             gl.glUniform1f(loc["deformable_opacity"], getattr(renderer, "_xray_deformable_opacity", 0.28))
             for _, obj in objects:
-                deformable = getattr(obj, "_physics_role", None) == "deformable"
+                deformable = obj._physics_role == "deformable"
                 gl.glUniform1i(loc["deformable"], deformable)
-                coverage = (
-                    0.22
-                    if deformable
-                    else 0.65
-                    if getattr(obj, "_physics_static", False)
-                    else (0.0 if visual else 0.08)
-                )
+                coverage = 0.22 if deformable else 0.65 if obj._physics_static else (0.0 if visual else 0.08)
                 gl.glUniform1f(loc["shadow_coverage"], coverage)
                 # Deformed points already live in display space and change
                 # every frame. No readback or stale rest-pose bounding box.
@@ -560,7 +554,7 @@ class PhysicsShellShader(ShaderGL):
         """Submit a wire pass only when the relevant rigid or deformable edge overlay is enabled."""
         edges = getattr(renderer, "_xray_collision_edges" if collision else "_xray_edges", True)
         soft_edges = getattr(renderer, "_xray_deformable_edges", True) and any(
-            getattr(obj, "_physics_role", None) == "deformable" for _, obj in objects
+            obj._physics_role == "deformable" for _, obj in objects
         )
         if edges or wire_only or soft_edges:
             self._render_pass(renderer, objects, oit=oit, collision=collision, wire_only=wire_only)
@@ -601,7 +595,7 @@ class PhysicsShellShader(ShaderGL):
             gl.glPolygonOffset(-1.0, -1.0)
             for _, obj in objects:
                 mesh = getattr(obj, "mesh", obj)
-                deformable = getattr(obj, "_physics_role", None) == "deformable"
+                deformable = obj._physics_role == "deformable"
                 edges = getattr(
                     renderer,
                     "_xray_deformable_edges" if deformable else "_xray_collision_edges" if collision else "_xray_edges",

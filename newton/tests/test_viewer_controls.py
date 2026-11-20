@@ -578,6 +578,7 @@ class TestViewerCameraSpeed(unittest.TestCase):
         gui = ViewerGui.__new__(ViewerGui)
         gui._viewer = viewer
         gui.ui = None
+        gui._loading_splash_active = False
         gui._cam_vel = np.zeros(3, dtype=np.float32)
         gui._cam_damp_tau = 0.1
 
@@ -606,6 +607,7 @@ class TestViewerCameraSpeed(unittest.TestCase):
         gui = ViewerGui.__new__(ViewerGui)
         gui._viewer = viewer
         gui.ui = None
+        gui._loading_splash_active = False
         velocity_init = np.array([1.0, 0.0, 0.0], dtype=np.float32)  # Non-zero initial velocity
         gui._cam_vel = velocity_init.copy()
         gui._cam_damp_tau = 0.1

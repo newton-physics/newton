@@ -159,7 +159,7 @@ class SdfMeshLOD:
         visible = self._visible(matrix, centers, axes)
         obj._lod_draws = self._draws(levels, visible)
         obj._lod_opaque_draws = obj._lod_transparent_draws = obj._lod_wire_draws = None
-        if getattr(renderer, "_physics_xray", False):
+        if renderer._physics_xray:
             self._prepare_xray(renderer, obj, transforms, levels, visible, view)
 
     def _prepare_xray(

@@ -842,7 +842,7 @@ class ViewerGL(ViewerBase):
 
         for batch in self._sdf_isomesh_instances.values():
             mesh = self.objects[batch.mesh]
-            if mesh.num_indices > 300_000 and not hasattr(mesh, "_display_lod"):
+            if mesh.num_indices > 300_000 and mesh._display_lod is None:
                 mesh._display_lod = SdfMeshLOD(self, batch)
 
     def _rebuild_gl_shape_caches(self):

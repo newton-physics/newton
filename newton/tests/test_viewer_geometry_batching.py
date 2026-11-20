@@ -129,13 +129,13 @@ class TestViewerGeometryBatching(unittest.TestCase):
                 viewer = viewer_gl.ViewerGL.__new__(viewer_gl.ViewerGL)
                 viewer.gui = gui
                 viewer._sdf_isomesh_instances = {"sdf": SimpleNamespace(mesh="mesh")}
-                viewer.objects = {"mesh": SimpleNamespace(num_indices=400_000)}
+                viewer.objects = {"mesh": SimpleNamespace(num_indices=400_000, _display_lod=None)}
                 with (
                     mock.patch.object(newton.viewer.ViewerBase, "_populate_sdf_isomesh_instances"),
                     mock.patch.object(mesh_lod, "SdfMeshLOD") as lod,
                 ):
                     viewer._populate_sdf_isomesh_instances()
-                self.assertEqual(hasattr(viewer.objects["mesh"], "_display_lod"), expected)
+                self.assertEqual(viewer.objects["mesh"]._display_lod is not None, expected)
                 self.assertEqual(lod.called, expected)
 
     def test_sdf_display_culling_preserves_intersections_and_shadow_casters(self) -> None:
