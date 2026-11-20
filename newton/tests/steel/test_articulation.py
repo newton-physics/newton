@@ -1904,6 +1904,12 @@ def _check_runtime_coefficient_change(test, device, equality: bool):
     wp.capture_launch(capture.graph)
     test.assertFalse(_has_mimic_row(solver))
 
+    # A replaced array takes effect with an eager notification.
+    model.mujoco.equality_constraint_enabled = wp.ones(1, dtype=wp.bool, device=device)
+    solver.notify_model_changed(newton.ModelFlags.CONSTRAINT_PROPERTIES)
+    solver.step(state_0, state_1, control, None, DT)
+    test.assertTrue(_has_mimic_row(solver))
+
 
 def test_runtime_coefficient_change(test, device):
     """Read mimic coefficients and equality enabled flags every step, also from a captured graph."""

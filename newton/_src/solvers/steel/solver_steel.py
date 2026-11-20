@@ -3304,6 +3304,10 @@ class SolverSteel(SolverBase, CouplingInterface):
         world_mask = self._normalize_reset_world_mask(world_mask)
         if flags & ModelFlags.CONSTRAINT_PROPERTIES:
             _validate_equality_constraints(self.model)
+            if self._mimic_reads_equality:
+                # The mimic rows read these every step; follow arrays replaced on the model.
+                self._equality_enabled = self.model.mujoco.equality_constraint_enabled
+                self._equality_polycoef = self.model.mujoco.equality_constraint_polycoef
         self._coupling_patch_history_snapshot_pending = False
         self._coupling_patch_history_restore_pending = False
         if self._sleeping is not None:
@@ -4053,6 +4057,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         here, so the per-step launches are compatible with CUDA graph capture.
         """
         self._mimic_count = 0
+        self._mimic_reads_equality = False
         self._mimic_art_start_np = None
         self._mimic_sizes = frozenset()
         self._mimic_slot = None
@@ -4169,7 +4174,8 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._mimic_q1 = wp.array(q1, dtype=wp.int32, device=device)
         self._mimic_equality = wp.array(equality, dtype=wp.int32, device=device)
         self._mimic_owner = wp.array(owner, dtype=wp.int32, device=device)
-        if equality_rows.size:
+        self._mimic_reads_equality = bool(equality_rows.size)
+        if self._mimic_reads_equality:
             self._equality_enabled = model.mujoco.equality_constraint_enabled
             self._equality_polycoef = model.mujoco.equality_constraint_polycoef
         else:
