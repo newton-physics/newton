@@ -12,6 +12,7 @@ import gc
 import hashlib
 import logging
 import math
+import operator
 import warnings
 import weakref
 from bisect import bisect_left, bisect_right
@@ -28,6 +29,7 @@ import warp as wp
 from ... import config
 from ..core._warnings import _external_warning_stacklevel
 from ..core.host_transform import (
+    join_warp_values,
     pack_transforms,
     pack_warp_values,
     quat_rotate_rows,
@@ -92,7 +94,6 @@ from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_convex
 from ..math import quat_between_vectors_robust
 from ..usd.schema_resolver import SchemaResolver
 from ..utils import compute_world_offsets, tree_joint_mask
-from ..utils.deprecation import RemovedAttribute
 from ..utils.mesh import MeshAdjacency, split_mesh_components
 from .body_variants import (
     _BodyVariants,
@@ -1854,7 +1855,94 @@ class ModelBuilder:
             """
             if self.values is None or len(self.values) == 0:
                 return self._build_default_array(count, device=device, requires_grad=requires_grad)
-            elif self.is_custom_frequency:
+
+            if self.dtype is not str:
+                warp_dtype = {int: wp.int32, float: wp.float32, bool: wp.bool}.get(self.dtype, self.dtype)
+                if not wp.types.type_is_struct(warp_dtype):
+                    try:
+                        elem_shape = tuple(getattr(warp_dtype, "_shape_", ()) or ())
+                        scalar_type = getattr(warp_dtype, "_wp_scalar_type_", None) or warp_dtype
+                        # wp.dtype_to_numpy(wp.bfloat16) returns np.uint16 (raw bits), so
+                        # NumPy would cast floats to integers instead of bfloat16 values.
+                        scalar_np_dtype = None if scalar_type is wp.bfloat16 else wp.dtype_to_numpy(scalar_type)
+                    except TypeError:
+                        scalar_np_dtype = None
+                        elem_shape = ()
+                    if scalar_np_dtype is not None:
+                        if count <= 0:
+                            return wp.zeros(0, dtype=self.dtype, requires_grad=requires_grad, device=device)
+
+                        def _pack_items(items: Sequence[Any]) -> np.ndarray:
+                            packed = join_warp_values(items, warp_dtype) if elem_shape else None
+                            if packed is None:
+                                packed = np.asarray(items, dtype=scalar_np_dtype)
+                            if packed.shape != (len(items), *elem_shape):
+                                raise ValueError("Custom attribute rows have mismatched shape")
+                            return packed
+
+                        try:
+                            if elem_shape:
+                                default_np = _pack_items([self.default])[0]
+                            else:
+                                default_np = np.asarray(self.default, dtype=scalar_np_dtype)
+                                if default_np.ndim != 0:
+                                    # Scalar dtypes also support array-valued rows through the general path.
+                                    raise ValueError("Scalar attribute default has trailing dimensions")
+
+                            if self.is_custom_frequency:
+                                src = self.values if len(self.values) <= count else self.values[:count]
+                                n = len(src)
+                                out = np.empty((count, *elem_shape), dtype=scalar_np_dtype)
+                                if n < count:
+                                    out[n:] = default_np
+                                if n > 0:
+                                    if not any(v is None for v in src):
+                                        out[:n] = _pack_items(src)
+                                    else:
+                                        out[:n] = default_np
+                                        present_idx = [i for i, v in enumerate(src) if v is not None]
+                                        if present_idx:
+                                            out[np.asarray(present_idx, dtype=np.intp)] = _pack_items(
+                                                [src[i] for i in present_idx]
+                                            )
+                            else:
+                                fill_default = default_np
+                                has_world_global = (
+                                    self.frequency == Model.AttributeFrequency.WORLD and -1 in self.values
+                                )
+                                global_np = None
+                                upper = count
+                                if has_world_global:
+                                    if elem_shape:
+                                        global_np = _pack_items([self.values[-1]])[0]
+                                    else:
+                                        global_np = np.asarray(self.values[-1], dtype=scalar_np_dtype)
+                                        if global_np.ndim != 0:
+                                            raise ValueError("Scalar attribute global value has trailing dimensions")
+                                    if self.references is None and self.reference_value_transformer is None:
+                                        fill_default = global_np
+                                        upper = count - 1
+                                out = np.empty((count, *elem_shape), dtype=scalar_np_dtype)
+                                out[:] = fill_default
+                                keys = np.fromiter(
+                                    map(operator.index, self.values), dtype=np.int64, count=len(self.values)
+                                )
+                                valid_mask = (keys >= 0) & (keys < upper)
+                                if np.any(valid_mask):
+                                    vals_list = list(self.values.values())
+                                    if bool(np.all(valid_mask)):
+                                        out[keys] = _pack_items(vals_list)
+                                    else:
+                                        valid_pos = np.flatnonzero(valid_mask)
+                                        out[keys[valid_pos]] = _pack_items([vals_list[p] for p in valid_pos.tolist()])
+                                if has_world_global:
+                                    out[-1] = global_np
+
+                            return wp.array(out, dtype=self.dtype, requires_grad=requires_grad, device=device)
+                        except (TypeError, ValueError, OverflowError):
+                            pass
+
+            if self.is_custom_frequency:
                 # Custom frequency: vals is a list, replace None with defaults and pad/truncate as needed
                 arr = [val if val is not None else self.default for val in self.values]
                 arr = arr + [self.default] * max(0, count - len(arr))
@@ -4038,11 +4126,6 @@ class ModelBuilder:
         """
         return len(self.articulation_start)
 
-    # Tombstones so that assigning the 1.3-era names fails loudly instead of
-    # creating an unused instance attribute whose targets are never applied.
-    joint_target_pos = RemovedAttribute("joint_target_q", removed_in="1.5")
-    joint_target_vel = RemovedAttribute("joint_target_qd", removed_in="1.5")
-
     @property
     def joint_twist_lower(self) -> list[float]:
         """Lower twist limits, never used by :meth:`finalize` or any solver.
@@ -4720,24 +4803,48 @@ class ModelBuilder:
         self.joint_constraint_count += copy_count * counts["joint_constraint"]
 
         custom_attributes = self._prepare_builder_custom_attributes(builder)
-        kinds = tuple(counts)
-        offset_rows = np.stack([starts(kind) for kind in kinds], axis=1).tolist()
         has_actuators = bool(builder.actuator_entries)
         has_batteries = bool(builder.battery_entries)
-        for copy_index, world in enumerate(worlds.tolist()):
-            entity_offsets = dict(zip(kinds, offset_rows[copy_index], strict=True))
-            self._merge_builder_custom_attributes(
-                builder, entity_offsets, world, label_prefixes[copy_index], custom_attributes
+        # Transformers can observe actuators and batteries merged by earlier copies.
+        needs_ordered_merge = (has_actuators or has_batteries) and any(
+            attr.values and attr.reference_value_transformer is not None for attr in custom_attributes.values()
+        )
+        if copy_count > 1 and not needs_ordered_merge:
+            self._merge_builder_custom_attributes_copies(
+                builder, counts, starts, worlds, label_prefixes, custom_attributes
             )
-            if has_actuators:
-                self._merge_builder_actuators(
-                    builder,
-                    int(joint_dof_starts[copy_index]),
-                    int(joint_coord_starts[copy_index]),
-                    entity_offsets["actuator"],
+            if has_actuators or has_batteries:
+                actuator_starts = starts("actuator").tolist()
+                joint_dof_starts_list = joint_dof_starts.tolist()
+                joint_coord_starts_list = joint_coord_starts.tolist()
+                for copy_index, world in enumerate(worlds.tolist()):
+                    act_offset = actuator_starts[copy_index]
+                    if has_actuators:
+                        self._merge_builder_actuators(
+                            builder,
+                            joint_dof_starts_list[copy_index],
+                            joint_coord_starts_list[copy_index],
+                            act_offset,
+                        )
+                    if has_batteries:
+                        self._merge_builder_batteries(builder, act_offset, world)
+        else:
+            kinds = tuple(counts)
+            offset_rows = np.stack([starts(kind) for kind in kinds], axis=1).tolist()
+            for copy_index, world in enumerate(worlds.tolist()):
+                entity_offsets = dict(zip(kinds, offset_rows[copy_index], strict=True))
+                self._merge_builder_custom_attributes(
+                    builder, entity_offsets, world, label_prefixes[copy_index], custom_attributes
                 )
-            if has_batteries:
-                self._merge_builder_batteries(builder, entity_offsets["actuator"], world)
+                if has_actuators:
+                    self._merge_builder_actuators(
+                        builder,
+                        int(joint_dof_starts[copy_index]),
+                        int(joint_coord_starts[copy_index]),
+                        entity_offsets["actuator"],
+                    )
+                if has_batteries:
+                    self._merge_builder_batteries(builder, entity_offsets["actuator"], world)
         self.actuator_count += copy_count * counts["actuator"]
 
     def _model_value_key(self, attribute: CustomAttribute) -> int:
@@ -6028,6 +6135,295 @@ class ModelBuilder:
             attributes[full_key] = attr
         return attributes
 
+    def _merge_builder_custom_attributes_copies(
+        self,
+        builder: ModelBuilder,
+        counts: dict[str, int],
+        starts: Callable[[str], np.ndarray],
+        worlds: np.ndarray,
+        label_prefixes: Sequence[str | None],
+        attributes: dict[str, ModelBuilder.CustomAttribute],
+    ) -> None:
+        """Bulk-merge custom attributes across ``len(worlds)`` copies of ``builder``."""
+        self._resolve_custom_frequency_articulation_owners()
+        copy_count = len(worlds)
+        base_cf_offsets = dict(self._custom_frequency_counts)
+        worlds_list = worlds.tolist()
+
+        collision_mask_domain_key = "mujoco:collision_mask_domain"
+        source_domain_attr = builder.custom_attributes.get(collision_mask_domain_key)
+        first_domain_shape: dict[int, int] = {}
+        if source_domain_attr is not None and source_domain_attr.values:
+            source_domain_items = (
+                source_domain_attr.values.items()
+                if isinstance(source_domain_attr.values, dict)
+                else enumerate(source_domain_attr.values)
+            )
+            for shape_idx, val in source_domain_items:
+                if val is None:
+                    continue
+                dom = int(val)
+                if dom >= 0:
+                    first_domain_shape.setdefault(dom, shape_idx)
+
+        cf_starts_cache: dict[str, np.ndarray] = {}
+
+        def get_starts(entity_or_key: Model.AttributeFrequency | str | None) -> np.ndarray | None:
+            if entity_or_key is None:
+                return None
+            if isinstance(entity_or_key, Model.AttributeFrequency):
+                return starts(entity_or_key.name.lower())
+            if entity_or_key in cf_starts_cache:
+                return cf_starts_cache[entity_or_key]
+            if entity_or_key in builder._custom_frequency_counts or entity_or_key in base_cf_offsets:
+                base_off = base_cf_offsets.get(entity_or_key, 0)
+                step = builder._custom_frequency_counts.get(entity_or_key, 0)
+                arr = base_off + np.arange(copy_count, dtype=np.int64) * step
+                cf_starts_cache[entity_or_key] = arr
+                return arr
+            raise ValueError(
+                f"Unknown references value '{entity_or_key}'. "
+                f"Valid values are: {list(counts.keys())} or custom frequencies."
+            )
+
+        def ensure_merged_attr(
+            full_key: str, attr: ModelBuilder.CustomAttribute, is_custom_frequency: bool
+        ) -> ModelBuilder.CustomAttribute:
+            merged = self.custom_attributes.get(full_key)
+            if merged is None:
+                merged = replace(attr, values=[] if is_custom_frequency else {})
+                self.custom_attributes[full_key] = merged
+                self._custom_schema_epoch += 1
+                self._index_custom_world_reference_attribute(merged)
+                return merged
+            if not self._custom_attribute_defaults_match(merged.default, attr.default):
+                raise ValueError(
+                    f"Custom attribute '{full_key}' default mismatch when merging builders: "
+                    f"existing={merged.default}, incoming={attr.default}"
+                )
+            if merged.values is None:
+                merged.values = [] if is_custom_frequency else {}
+            return merged
+
+        fallback_attributes: dict[str, ModelBuilder.CustomAttribute] = {}
+        max_row_key = np.iinfo(np.int64).max
+
+        for full_key, attr in attributes.items():
+            freq_key = attr.frequency
+            if (
+                attr.reference_value_transformer is not None
+                or freq_key in (Model.AttributeFrequency.ONCE, Model.AttributeFrequency.WORLD)
+                or full_key == "mujoco:equality_constraint_target"
+            ):
+                fallback_attributes[full_key] = attr
+                continue
+
+            if isinstance(attr.values, dict) and attr.values:
+                key_starts = starts(self._builder_frequency_key(freq_key))
+                try:
+                    src_keys = np.fromiter(map(operator.index, attr.values), dtype=np.int64, count=len(attr.values))
+                except (TypeError, OverflowError):
+                    fallback_attributes[full_key] = attr
+                    continue
+                # Copy starts are nonnegative and ordered. Keep Python key arithmetic
+                # when the last copy's offset would overflow the NumPy indices.
+                if int(src_keys.max()) > max_row_key - int(key_starts[-1]):
+                    fallback_attributes[full_key] = attr
+                    continue
+
+            if (
+                full_key == collision_mask_domain_key
+                and first_domain_shape
+                and freq_key == Model.AttributeFrequency.SHAPE
+                and isinstance(attr.values, dict)
+                and self._is_integer_scalar(attr.default)
+                and int(attr.default) < 0
+            ):
+                merged = ensure_merged_attr(full_key, attr, False)
+                shape_starts = starts("shape")
+                base_vals = np.asarray(
+                    [first_domain_shape.get(int(v), int(v)) for v in attr.values.values()], dtype=np.int64
+                )
+                all_keys = (shape_starts[:, None] + src_keys[None, :]).ravel().tolist()
+                shifted = np.where(
+                    base_vals[None, :] >= 0, base_vals[None, :] + shape_starts[:, None], base_vals[None, :]
+                )
+                merged.values.update(zip(all_keys, shifted.ravel().tolist(), strict=False))
+                continue
+            if full_key == collision_mask_domain_key and first_domain_shape:
+                fallback_attributes[full_key] = attr
+                continue
+
+            reference = attr.references
+            if isinstance(reference, str):
+                reference = Model._normalize_attribute_reference(reference)
+
+            is_custom_frequency = isinstance(freq_key, str)
+            if is_custom_frequency:
+                base_idx = base_cf_offsets.get(freq_key, 0)
+                src_freq_count = builder._custom_frequency_counts.get(freq_key, 0)
+                idx_starts = None
+            else:
+                freq_name = self._builder_frequency_key(freq_key)
+                idx_starts = starts(freq_name)
+                src_freq_count = counts.get(freq_name, 0)
+                base_idx = 0
+
+            use_current_world = reference == Model.AttributeFrequency.WORLD
+            val_starts = None if use_current_world else get_starts(reference)
+            has_nonzero_val_offset = val_starts is not None and bool(np.any(val_starts != 0))
+            source_values = attr.values
+
+            if is_custom_frequency and len(source_values) > src_freq_count:
+                fallback_attributes[full_key] = attr
+                continue
+
+            if not use_current_world and not has_nonzero_val_offset:
+                merged = ensure_merged_attr(full_key, attr, is_custom_frequency)
+                if is_custom_frequency:
+                    if len(merged.values) < base_idx:
+                        merged.values.extend([None] * (base_idx - len(merged.values)))
+                    src_list = list(source_values)
+                    if len(src_list) == src_freq_count:
+                        merged.values.extend(src_list * copy_count)
+                    else:
+                        padded = src_list + [None] * (src_freq_count - len(src_list))
+                        merged.values.extend(padded * (copy_count - 1))
+                        merged.values.extend(src_list)
+                elif source_values:
+                    all_keys = (idx_starts[:, None] + src_keys[None, :]).ravel().tolist()
+                    all_vals = list(source_values.values()) * copy_count
+                    merged.values.update(zip(all_keys, all_vals, strict=False))
+                continue
+
+            if use_current_world:
+                shifts_default = all(not self._custom_attribute_defaults_match(w, attr.default) for w in worlds_list)
+                if (
+                    shifts_default
+                    and len(source_values) == src_freq_count
+                    and (is_custom_frequency or all(0 <= k < src_freq_count for k in source_values))
+                ):
+                    merged = ensure_merged_attr(full_key, attr, is_custom_frequency)
+                    if is_custom_frequency:
+                        if len(merged.values) < base_idx:
+                            merged.values.extend([None] * (base_idx - len(merged.values)))
+                        if src_freq_count > 0:
+                            merged.values.extend(np.repeat(worlds, src_freq_count).tolist())
+                    elif src_freq_count > 0:
+                        all_keys = (
+                            (idx_starts[:, None] + np.arange(src_freq_count, dtype=np.int64)[None, :]).ravel().tolist()
+                        )
+                        all_vals = np.repeat(worlds, src_freq_count).tolist()
+                        merged.values.update(zip(all_keys, all_vals, strict=False))
+                    continue
+                fallback_attributes[full_key] = attr
+                continue
+
+            # has_nonzero_val_offset: integer scalar reference fast path
+            default_unchanged = self._is_integer_scalar(attr.default) and int(attr.default) < 0
+            if default_unchanged and is_custom_frequency and len(source_values) == src_freq_count:
+                if all(self._is_integer_scalar(v) for v in source_values):
+                    merged = ensure_merged_attr(full_key, attr, True)
+                    if len(merged.values) < base_idx:
+                        merged.values.extend([None] * (base_idx - len(merged.values)))
+                    if src_freq_count > 0:
+                        src_arr = np.asarray([int(v) for v in source_values], dtype=np.int64)
+                        shifted = np.where(
+                            src_arr[None, :] >= 0, src_arr[None, :] + val_starts[:, None], src_arr[None, :]
+                        )
+                        merged.values.extend(shifted.ravel().tolist())
+                    continue
+            elif default_unchanged and not is_custom_frequency:
+                if all(self._is_integer_scalar(v) for v in source_values.values()):
+                    merged = ensure_merged_attr(full_key, attr, False)
+                    if source_values:
+                        src_vals = np.asarray([int(v) for v in source_values.values()], dtype=np.int64)
+                        all_keys = (idx_starts[:, None] + src_keys[None, :]).ravel().tolist()
+                        shifted = np.where(
+                            src_vals[None, :] >= 0, src_vals[None, :] + val_starts[:, None], src_vals[None, :]
+                        )
+                        merged.values.update(zip(all_keys, shifted.ravel().tolist(), strict=False))
+                    continue
+
+            fallback_attributes[full_key] = attr
+
+        if fallback_attributes:
+            kinds = tuple(counts)
+            offset_rows = np.stack([starts(kind) for kind in kinds], axis=1).tolist()
+            for copy_index, world in enumerate(worlds_list):
+                cf_offsets_copy = dict(base_cf_offsets)
+                for cf_key, cf_count in builder._custom_frequency_counts.items():
+                    cf_offsets_copy[cf_key] = base_cf_offsets.get(cf_key, 0) + copy_index * cf_count
+                entity_offsets = dict(zip(kinds, offset_rows[copy_index], strict=True))
+                self._merge_builder_custom_attributes(
+                    builder,
+                    entity_offsets,
+                    world,
+                    label_prefixes[copy_index],
+                    fallback_attributes,
+                    _resolved_cf_offsets=cf_offsets_copy,
+                    _defer_label_prefix=True,
+                )
+
+        if any(label_prefixes):
+            eq_count = builder._equality_constraint_count
+            eq_base = base_cf_offsets.get("mujoco:equality_constraint", 0)
+            eq_label_attr = self.custom_attributes.get("mujoco:equality_constraint_label") if eq_count > 0 else None
+            freq_label_specs = []
+            for frequency_key, frequency in builder.custom_frequencies.items():
+                label_key = frequency.label_attribute
+                if label_key is None:
+                    continue
+                source_label_attribute = builder.custom_attributes.get(label_key)
+                if source_label_attribute is None or source_label_attribute.frequency != frequency_key:
+                    continue
+                label_attribute = self.custom_attributes.get(label_key)
+                if (
+                    label_attribute is None
+                    or not isinstance(label_attribute.values, list)
+                    or not label_attribute.values
+                ):
+                    continue
+                freq_label_specs.append(
+                    (
+                        label_attribute.values,
+                        base_cf_offsets.get(frequency_key, 0),
+                        builder._custom_frequency_counts.get(frequency_key, 0),
+                    )
+                )
+
+            for copy_index, label_prefix in enumerate(label_prefixes):
+                if not label_prefix:
+                    continue
+                for label_vals, cf_base, cf_count in freq_label_specs:
+                    start = cf_base + copy_index * cf_count
+                    for row in range(start, min(start + cf_count, len(label_vals))):
+                        label = label_vals[row]
+                        if label:
+                            label_vals[row] = f"{label_prefix}/{label}"
+                if eq_label_attr is not None and eq_label_attr.values:
+                    start = eq_base + copy_index * eq_count
+                    for i in range(start, min(start + eq_count, len(eq_label_attr.values))):
+                        label = eq_label_attr.values[i]
+                        if label:
+                            eq_label_attr.values[i] = f"{label_prefix}/{label}"
+
+        for freq_key, freq_obj in builder.custom_frequencies.items():
+            if freq_key not in self.custom_frequencies:
+                self.custom_frequencies[freq_key] = freq_obj
+                self._custom_schema_epoch += 1
+            self._custom_world_reference_attribute_keys.setdefault(freq_key, [])
+
+        for freq_key, builder_count in builder._custom_frequency_counts.items():
+            total = base_cf_offsets.get(freq_key, 0) + copy_count * builder_count
+            self._custom_frequency_counts[freq_key] = total
+            frequency = builder.custom_frequencies.get(freq_key)
+            if frequency is not None and frequency.articulation_owner_resolver is not None:
+                self._custom_frequency_owner_resolved_counts[freq_key] = total
+
+        for key, finalizer in builder._custom_attribute_model_finalizers.items():
+            self._add_custom_attribute_model_finalizer(key, finalizer)
+
     def _merge_builder_custom_attributes(
         self,
         builder: ModelBuilder,
@@ -6035,18 +6431,28 @@ class ModelBuilder:
         world: int,
         label_prefix: str | None,
         attributes: dict[str, ModelBuilder.CustomAttribute],
+        *,
+        _resolved_cf_offsets: dict[str, int] | None = None,
+        _defer_label_prefix: bool = False,
     ) -> None:
         # Resolve existing destination rows, since its topology may have
         # changed since the rows were first added.
-        self._resolve_custom_frequency_articulation_owners()
-        custom_frequency_offsets = dict(self._custom_frequency_counts)
+        if _resolved_cf_offsets is None:
+            self._resolve_custom_frequency_articulation_owners()
+            custom_frequency_offsets = dict(self._custom_frequency_counts)
+        else:
+            custom_frequency_offsets = _resolved_cf_offsets
 
         # Builders allocate MJCF mask-domain IDs independently. Remap every
         # incoming domain as one unit so its IDs cannot collide with domains
         # already present in the destination builder.
         collision_mask_domain_key = "mujoco:collision_mask_domain"
         collision_mask_domain_remap: dict[int, int] = {}
-        source_domain_attr = builder.custom_attributes.get(collision_mask_domain_key)
+        source_domain_attr = (
+            builder.custom_attributes.get(collision_mask_domain_key)
+            if collision_mask_domain_key in attributes
+            else None
+        )
         if source_domain_attr is not None and source_domain_attr.values:
             source_items = (
                 source_domain_attr.values.items()
@@ -6282,7 +6688,7 @@ class ModelBuilder:
             else:
                 merged.values.update(enum_values)
 
-        if label_prefix:
+        if label_prefix and not _defer_label_prefix:
             for frequency_key, frequency in builder.custom_frequencies.items():
                 label_key = frequency.label_attribute
                 if label_key is None:
