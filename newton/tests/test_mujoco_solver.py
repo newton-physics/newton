@@ -32,6 +32,7 @@ from newton._src.solvers.mujoco.enums import (
     _ActuatorBiasType,
     _ActuatorDynamicsType,
     _ActuatorGainType,
+    _JointType,
 )
 from newton._src.solvers.mujoco.equality import _add_equality_constraint
 from newton._src.solvers.mujoco.geometry import build_shape_layout, compile_layout_collision_masks
@@ -97,6 +98,14 @@ def _expected_positive_limit_solref(ke: float, kd: float, factor: float) -> np.n
 
 @requires(*MUJOCO_MODULES)
 class TestMuJoCoSolver(unittest.TestCase):
+    def test_joint_type_enum_matches_mujoco(self):
+        """Pin every joint type ordinal against MuJoCo's native joint types."""
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        self.assertEqual(
+            {member.name: int(member) for member in _JointType},
+            {name.removeprefix("mjJNT_"): int(member) for name, member in mujoco.mjtJoint.__members__.items()},
+        )
+
     def test_collision_coloring_uses_all_32_mujoco_mask_bits(self):
         """Verify that graph-color fallback uses bits 0 through 31 before degrading to MuJoCo defaults."""
         clique_size = 33
