@@ -546,17 +546,17 @@ if __name__ == "__main__":
     tri_bvh.rebuild(pos, tri_indices)
     edge_bvh.rebuild(pos, edge_indices)
 
-    print(f"tri_bvh.lower_bounds[0] = {tri_bvh.lower_bounds.numpy()[0]}")
-    print(f"tri_bvh.upper_bounds[0] = {tri_bvh.upper_bounds.numpy()[0]}")
-    print(f"edge_bvh.lower_bounds[0] = {edge_bvh.lower_bounds.numpy()[0]}")
-    print(f"edge_bvh.upper_bounds[0] = {edge_bvh.upper_bounds.numpy()[0]}")
+    print(f"tri_bvh.lower_bounds[0] = {tri_bvh.lower_bounds.numpy()[0]}")  # noqa: T201
+    print(f"tri_bvh.upper_bounds[0] = {tri_bvh.upper_bounds.numpy()[0]}")  # noqa: T201
+    print(f"edge_bvh.lower_bounds[0] = {edge_bvh.lower_bounds.numpy()[0]}")  # noqa: T201
+    print(f"edge_bvh.upper_bounds[0] = {edge_bvh.upper_bounds.numpy()[0]}")  # noqa: T201
 
     test_vert = wp.array([wp.vec3(2, 0, 0.5), wp.vec3(0, 2, 0.5)], dtype=wp.vec3)
     test_edge = wp.array([[0, 1, 0, 1]], dtype=int)
     test_result = wp.array(shape=(2, 1), dtype=int)
     tri_bvh.aabb_vs_line(test_vert, test_edge, test_result)
-    print(test_result)
+    print(test_result)  # noqa: T201
 
     test_vert = wp.array([wp.vec3(0.5, 0.5, 1.5)], dtype=wp.vec3)
     tri_bvh.triangle_vs_point(test_vert, pos, tri_indices, test_result, False, 1, 1.0)
-    print(test_result)
+    print(test_result)  # noqa: T201

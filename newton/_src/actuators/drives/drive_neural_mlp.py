@@ -9,7 +9,15 @@ from typing import Any, ClassVar
 
 import warp as wp
 
-from ..utils import _looks_like_torch_checkpoint, _parse_metadata_scale, _runtime_shape, load_checkpoint, load_metadata
+from ...utils.deprecation import warn_deprecation
+from ..space import DriveOutputSpace
+from ..utils import (
+    _TORCH_CHECKPOINT_DEPRECATION_MSG,
+    _looks_like_torch_checkpoint,
+    _parse_metadata_scale,
+    load_checkpoint,
+    load_metadata,
+)
 from ._linearization import (
     IMPLICIT_JACOBIAN_MARGIN as _JACOBIAN_MARGIN,
 )
@@ -178,11 +186,11 @@ class DriveNeuralMLP(DriveBase):
     Configuration parameters (``input_order``, ``input_idx``,
     ``pos_scale``, ``vel_scale``, ``effort_scale``) are read from checkpoint
     metadata, falling back to defaults when absent. ``.onnx`` checkpoints run
-    through Warp-NN. Torch checkpoints keep the Torch backend and accept pt2
-    archives (``.pt2`` saved with ``torch.export.save``; preferred) and the
-    deprecated TorchScript (``.pt`` saved with ``torch.jit.save``) and
-    module-bundle (``{"model": <network module>, "metadata": {...}}`` saved
-    with ``torch.save``) formats.
+    through Warp-NN. Torch checkpoints keep the Torch backend and must be pt2
+    archives saved with ``torch.export.save``.
+
+    .. deprecated:: 1.8
+        Torch checkpoints are deprecated; export the network to ONNX.
 
     Implicit actuation linearizes the network about the current state each
     step (:meth:`prepare_implicit`) and enters the shared implicit solve as
@@ -191,7 +199,7 @@ class DriveNeuralMLP(DriveBase):
     checkpoints with ``input_idx == [0]``.
     """
 
-    SHARED_PARAMS: ClassVar[set[str]] = {"model_path"}
+    SHARED_PARAMS: ClassVar[set[str]] = {"model_path", "output_space"}
 
     @dataclass
     class State(DriveBase.State):
@@ -231,19 +239,27 @@ class DriveNeuralMLP(DriveBase):
         model_path = args["model_path"]
         if not model_path:
             raise ValueError("DriveNeuralMLP requires a non-empty 'model_path'")
-        return {"model_path": model_path}
+        return {
+            "model_path": model_path,
+            "output_space": DriveOutputSpace(args.get("output_space", DriveOutputSpace.EFFORT)),
+        }
 
-    def __init__(self, model_path: str):
+    def __init__(self, model_path: str, *, output_space: DriveOutputSpace = DriveOutputSpace.EFFORT):
         """Initialize the MLP drive from a checkpoint file.
 
         Args:
-            model_path: Path to the ``.onnx``, ``.pt2``, ``.pt``, or ``.pth``
-                checkpoint.
+            model_path: Path to the ``.onnx`` checkpoint or the pt2 archive
+                (``.pt2``, ``.pt``, or ``.pth``). Torch checkpoints are
+                deprecated since 1.8; use ONNX.
+            output_space: Interpretation of checkpoint outputs, EFFORT or DUTY.
+                The checkpoint must be trained for these units.
         """
+        self.output_space = DriveOutputSpace(output_space)
         self.model_path = model_path
         self._is_torch_checkpoint = _looks_like_torch_checkpoint(model_path)
 
         if self._is_torch_checkpoint:
+            warn_deprecation(_TORCH_CHECKPOINT_DEPRECATION_MSG)
             import torch
 
             self._torch_device = torch.device("cpu")
@@ -302,14 +318,13 @@ class DriveNeuralMLP(DriveBase):
         runtime, _ = load_checkpoint(
             self.model_path,
             device=device,
-            batch_size=num_actuators,
             input_batch_axes=0,
             requires_grad=True,
         )
         self._network = runtime
         self.network = runtime
-        self._net_input_name = runtime.input_names[0]
-        self._net_output_name = runtime.output_names[0]
+        self._net_input_name = runtime.inputs[0].name
+        self._net_output_name = runtime.outputs[0].name
 
         feat = 2 * len(self.input_idx)
         self._net_input = wp.zeros((num_actuators, feat), dtype=wp.float32, device=device)
@@ -330,11 +345,7 @@ class DriveNeuralMLP(DriveBase):
         self._net_input.requires_grad = True
         self._grad_seed = wp.full((num_actuators, 1), 1.0, dtype=wp.float32, device=device)
 
-        try:
-            out_shape = _runtime_shape(runtime, self._net_output_name)
-        except ValueError:
-            runtime({self._net_input_name: self._net_input})
-            out_shape = _runtime_shape(runtime, self._net_output_name)
+        out_shape = runtime({self._net_input_name: self._net_input})[self._net_output_name].shape
         if out_shape != (num_actuators, 1):
             raise ValueError(
                 f"DriveNeuralMLP: network output '{self._net_output_name}' has shape {out_shape}, "
@@ -392,6 +403,8 @@ class DriveNeuralMLP(DriveBase):
         dt: float,
         inv_mass: wp.array[float] | None = None,
         device: wp.Device | None = None,
+        *,
+        custom_inputs: dict[str, Any] | None = None,
     ) -> None:
         """Refresh the linearization of the network about the current state.
 
@@ -510,10 +523,12 @@ class DriveNeuralMLP(DriveBase):
         vel_indices: wp.array[wp.uint32],
         target_pos_indices: wp.array[wp.uint32],
         target_vel_indices: wp.array[wp.uint32],
-        forces: wp.array[float],
+        output: wp.array[float],
         state: DriveNeuralMLP.State,
         dt: float,
         device: wp.Device | None = None,
+        *,
+        custom_inputs: dict[str, Any] | None = None,
     ) -> None:
         device = device or self._device
         n = self._num_actuators
@@ -526,7 +541,7 @@ class DriveNeuralMLP(DriveBase):
                 pos_indices,
                 vel_indices,
                 target_pos_indices,
-                forces,
+                output,
                 state,
             )
             return
@@ -574,8 +589,8 @@ class DriveNeuralMLP(DriveBase):
 
         wp.launch(
             _scale_and_copy_kernel,
-            dim=len(forces),
-            inputs=[effort, forces, self.effort_scale, 1],
+            dim=len(output),
+            inputs=[effort, output, self.effort_scale, 1],
             device=device,
         )
 

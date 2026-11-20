@@ -10,8 +10,7 @@ import warnings
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
-import numpy as np
-
+from ..exceptions import NewtonWarning
 from ..sim.enums import JointTargetMode
 from ..solvers.mujoco.constants import SOLREF_MODE_FORCE_SPACE, SOLREF_MODE_MJCF_DEFAULT, SOLREF_MODE_RAW
 from . import utils as usd
@@ -107,7 +106,7 @@ class _DofParams:
     target_vel: float
     target_ke: float
     target_kd: float
-    effort_limit: float
+    effort_limit: float | None
     actuator_mode: JointTargetMode
     initial_position: float | None
     initial_velocity: float | None
@@ -214,9 +213,9 @@ class _UsdJointProperties:
     ) -> _DofParams:
         """Resolve limits, drive, and initial state for one revolute/prismatic DOF.
 
-        Returns values in Newton units (radians for revolute DOFs). ``velocity_limit``
-        and the initial state stay ``None`` when unauthored so callers can apply their
-        own fallbacks; drive targets/gains are zero when ``has_drive`` is False.
+        Returns values in Newton units (radians for revolute DOFs). ``velocity_limit``,
+        ``effort_limit``, and the initial state stay ``None`` when unauthored so callers
+        can apply their own fallbacks; drive targets/gains are zero when ``has_drive`` is False.
         """
         limit_gains_scaling = self.degrees_to_radian if is_revolute else 1.0
         armature = self.resolver.get_value(
@@ -268,7 +267,12 @@ class _UsdJointProperties:
         target_vel = jd.drive.targetVelocity if has_drive else 0.0
         target_ke = jd.drive.stiffness if has_drive else 0.0
         target_kd = jd.drive.damping if has_drive else 0.0
-        effort_limit = jd.drive.forceLimit if has_drive else np.inf
+        effort_limit = jd.drive.forceLimit if has_drive else None
+        # A joint-level limit such as MuJoCo's actuatorfrcrange bounds the same
+        # effort as the drive force limit, so keep the tighter one.
+        joint_effort_limit = self.resolver.get_value(jp_prim, PrimType.JOINT, "effort_limit")
+        if joint_effort_limit is not None:
+            effort_limit = joint_effort_limit if effort_limit is None else min(effort_limit, joint_effort_limit)
         if has_drive:
             actuator_mode = JointTargetMode.from_gains(
                 target_ke, target_kd, force_position_velocity_actuation, has_drive=True
@@ -298,6 +302,8 @@ class _UsdJointProperties:
                 velocity_limit *= self.degrees_to_radian
             if initial_position is not None:
                 initial_position *= self.degrees_to_radian
+            if initial_velocity is not None:
+                initial_velocity *= self.degrees_to_radian
 
         return _DofParams(
             armature=armature,
@@ -357,6 +363,16 @@ def _resolve_physics_material(
     if not math.isfinite(desc.density):
         warnings.warn(
             f"{prim.GetPath()}: authored material density must be finite; treating it as unspecified.",
+            NewtonWarning,
+            stacklevel=3,
+        )
+    if 0.0 < desc.staticFriction < desc.dynamicFriction:
+        # An unauthored staticFriction is 0 in UsdPhysics and stays silent. The message carries no
+        # per-prim values so that the default warning filter collapses it to one per import.
+        warnings.warn(
+            "A physics material authors a positive physics:staticFriction below its physics:dynamicFriction; "
+            "shapes bound to it keep a single friction coefficient (mu = dynamicFriction).",
+            NewtonWarning,
             stacklevel=3,
         )
 
@@ -423,6 +439,7 @@ def _resolve_shape_offsets(
             warnings.warn(
                 f"Prim '{prim.GetPath()}': legacy translation yields "
                 f"negative margin (mjc_margin={margin_val}, mjc_gap={mjc_gap}).",
+                NewtonWarning,
                 stacklevel=4,
             )
         margin_val = newton_margin
@@ -436,7 +453,7 @@ def _resolve_shape_contact(
     defaults: ModelBuilder.ShapeConfig,
     *,
     verbose: bool,
-) -> dict[str, float]:
+) -> dict[str, float | None]:
     """Select contact response values from shape, material, and builder settings."""
     # Contact response precedence:
     #   per-shape mjc:solref (non-legacy) > material > legacy per-shape > default
@@ -448,7 +465,17 @@ def _resolve_shape_contact(
         if _r.name == "newton":
             break
     has_solref = mjc_has_priority and usd.get_attribute(prim, "mjc:solref") is not None
-    shape_contact = {}
+    shape_contact = {
+        "mu": material.dynamicFriction,
+        # Both coefficients come from one source: the bound material (UsdPhysics defaults an
+        # unauthored staticFriction to 0) or, for an unbound collider, the builder defaults. A
+        # static coefficient not above the dynamic one keeps a single coefficient;
+        # _resolve_physics_material warns when an authored one is dropped this way.
+        "mu_static": (material.staticFriction if material.staticFriction > material.dynamicFriction else None),
+        "restitution": material.restitution,
+        "mu_torsional": material.torsionalFriction,
+        "mu_rolling": material.rollingFriction,
+    }
     for _ck in ("ke", "kd", "kf", "ka"):
         per_shape_val = resolver.get_value(prim, prim_type=PrimType.SHAPE, key=_ck, verbose=verbose)
         has_shape = per_shape_val is not None and math.isfinite(float(per_shape_val))
@@ -498,6 +525,7 @@ def _resolve_shape_sdf(
             f"{prim.GetPath()}: NewtonSDFCollisionAPI and NewtonMeshCollisionAPI are "
             f"independent collision representations and should not be co-applied; "
             f"SDF configuration will be used.",
+            NewtonWarning,
             stacklevel=4,
         )
 
@@ -513,6 +541,7 @@ def _resolve_shape_sdf(
         warnings.warn(
             f"{prim.GetPath()}: newton:sdfTargetVoxelSize={sdf_target_voxel_size!r} is invalid "
             f"(must be > 0); falling back to default.",
+            NewtonWarning,
             stacklevel=4,
         )
         sdf_target_voxel_size = None
@@ -526,6 +555,7 @@ def _resolve_shape_sdf(
         warnings.warn(
             f"{prim.GetPath()}: newton:sdfMaxResolution={sdf_max_resolution!r} is invalid "
             f"(must be > 0); falling back to default.",
+            NewtonWarning,
             stacklevel=4,
         )
         sdf_max_resolution = None
@@ -533,6 +563,7 @@ def _resolve_shape_sdf(
         warnings.warn(
             f"{prim.GetPath()}: newton:sdfMaxResolution={sdf_max_resolution!r} must be "
             f"divisible by 8 (SDF volumes are allocated in 8x8x8 tiles); falling back to default.",
+            NewtonWarning,
             stacklevel=4,
         )
         sdf_max_resolution = None
@@ -540,6 +571,7 @@ def _resolve_shape_sdf(
         warnings.warn(
             f"{prim.GetPath()}: both newton:sdfTargetVoxelSize and newton:sdfMaxResolution "
             f"are set; sdfTargetVoxelSize takes precedence.",
+            NewtonWarning,
             stacklevel=4,
         )
         sdf_max_resolution = None
@@ -575,6 +607,7 @@ def _resolve_shape_sdf(
         warnings.warn(
             f"{prim.GetPath()}: newton:sdfTextureFormat={sdf_texture_format!r} is invalid "
             f"(expected one of {list(_valid_sdf_tex_fmts)}); falling back to default.",
+            NewtonWarning,
             stacklevel=4,
         )
         sdf_texture_format = None
@@ -587,6 +620,7 @@ def _resolve_shape_sdf(
     elif sdf_padding is not None and sdf_padding < 0:
         warnings.warn(
             f"{prim.GetPath()}: newton:sdfPadding={sdf_padding!r} is invalid (must be >= 0); falling back to default.",
+            NewtonWarning,
             stacklevel=4,
         )
         sdf_padding = None
@@ -620,6 +654,7 @@ def _resolve_shape_hydroelastic(
     elif kh is not None and kh <= 0:
         warnings.warn(
             f"{prim.GetPath()}: newton:hydroelasticStiffness={kh!r} is invalid (must be > 0); falling back to default.",
+            NewtonWarning,
             stacklevel=4,
         )
         kh = None
@@ -647,6 +682,7 @@ def _resolve_shape_hydroelastic(
             f"{prim.GetPath()}: hydroelastic mesh requires newton:sdfMaxResolution "
             f"or newton:sdfTargetVoxelSize so an SDF can be generated; "
             f"disabling hydroelastic for this shape.",
+            NewtonWarning,
             stacklevel=4,
         )
         is_hydroelastic = False
@@ -670,6 +706,7 @@ def _resolve_shape_shell(
         else:
             warnings.warn(
                 f"Shape {prim.GetPath()}: negative shell thickness {shell_thickness_val}; falling back to margin.",
+                NewtonWarning,
                 stacklevel=4,
             )
             inertia_margin = margin_val

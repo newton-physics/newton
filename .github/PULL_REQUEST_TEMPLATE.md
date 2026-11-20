@@ -7,6 +7,9 @@
 
 - [ ] New or existing tests cover these changes
 - [ ] The documentation is up to date with these changes
+- [ ] USD schema/importer support is covered, or the description explains a
+      review-accepted deferral (reason, issue, owner, target milestone) or why
+      the feature is runtime-only or non-authorable
 - [ ] For user-facing changes, a fragment has been added by following the
       [changelog fragment instructions](https://github.com/newton-physics/newton/blob/main/changelog/README.md)
 

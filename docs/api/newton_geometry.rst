@@ -16,6 +16,8 @@ newton.geometry
    BroadPhaseAllPairs
    BroadPhaseExplicit
    BroadPhaseSAP
+   DeformableVisualMesh
+   DeformableVisuals
    HydroelasticSDF
    NarrowPhase
    ParticleSurface
@@ -51,15 +53,3 @@ newton.geometry
    sdf_plane
    sdf_sphere
    transform_inertia
-
-.. rubric:: Deprecated
-
-.. list-table::
-   :header-rows: 1
-
-   * - Name
-     - Guidance
-   * - ``MATCH_BROKEN``
-     - Do not rely on this value.
-   * - ``MATCH_NOT_FOUND``
-     - Do not rely on this value.

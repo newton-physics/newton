@@ -3,13 +3,84 @@
 
 from __future__ import annotations
 
+import logging
 import os
+import string
+from time import perf_counter
+
+logger = logging.getLogger(__name__)
+
+# pyglet key name -> Dear ImGui key name
+_KEY_NAMES = {
+    "TAB": "tab",
+    "BACKSPACE": "backspace",
+    "RETURN": "enter",
+    "ESCAPE": "escape",
+    "INSERT": "insert",
+    "DELETE": "delete",
+    "SPACE": "space",
+    "LEFT": "left_arrow",
+    "RIGHT": "right_arrow",
+    "UP": "up_arrow",
+    "DOWN": "down_arrow",
+    "PAGEUP": "page_up",
+    "PAGEDOWN": "page_down",
+    "HOME": "home",
+    "END": "end",
+    "NUM_ENTER": "keypad_enter",
+    "NUM_DECIMAL": "keypad_decimal",
+    "NUM_DIVIDE": "keypad_divide",
+    "NUM_MULTIPLY": "keypad_multiply",
+    "NUM_SUBTRACT": "keypad_subtract",
+    "NUM_ADD": "keypad_add",
+    "LCTRL": "left_ctrl",
+    "RCTRL": "right_ctrl",
+    "LSHIFT": "left_shift",
+    "RSHIFT": "right_shift",
+    "LALT": "left_alt",
+    "RALT": "right_alt",
+    "LCOMMAND": "left_super",
+    "RCOMMAND": "right_super",
+    "GRAVE": "grave_accent",
+    "MINUS": "minus",
+    "EQUAL": "equal",
+    "BRACKETLEFT": "left_bracket",
+    "BRACKETRIGHT": "right_bracket",
+    "BACKSLASH": "backslash",
+    "SEMICOLON": "semicolon",
+    "APOSTROPHE": "apostrophe",
+    "COMMA": "comma",
+    "PERIOD": "period",
+    "SLASH": "slash",
+    "PRINT": "print_screen",
+    "PAUSE": "pause",
+    "CAPSLOCK": "caps_lock",
+    "NUMLOCK": "num_lock",
+    "SCROLLLOCK": "scroll_lock",
+    **{f"F{i}": f"f{i}" for i in range(1, 13)},
+    **{f"_{i}": f"_{i}" for i in range(10)},
+    **{f"NUM_{i}": f"keypad{i}" for i in range(10)},
+    **{letter: letter.lower() for letter in string.ascii_uppercase},
+}
+_MODIFIER_NAMES = {"ctrl": "mod_ctrl", "shift": "mod_shift", "alt": "mod_alt", "super": "mod_super"}
+# Dear ImGui cursor name -> pyglet window cursor name
+_CURSOR_NAMES = {
+    "arrow": "CURSOR_DEFAULT",
+    "text_input": "CURSOR_TEXT",
+    "resize_all": "CURSOR_SIZE",
+    "resize_ns": "CURSOR_SIZE_UP_DOWN",
+    "resize_ew": "CURSOR_SIZE_LEFT_RIGHT",
+    "resize_nesw": "CURSOR_SIZE_DOWN_LEFT",
+    "resize_nwse": "CURSOR_SIZE_DOWN_RIGHT",
+    "hand": "CURSOR_HAND",
+}
 
 
 class UI:
     def __init__(self, window):
         self._file_dialog_result: str | None = None
         self._pending_file_dialog = None
+        self._frame_time: float | None = None
         # DPI scale applied to ImGui style and fonts. Updated by ``_apply_dpi_scaling``
         # whenever the framebuffer-to-window ratio changes (e.g. moving the window
         # between displays with different DPI).
@@ -20,45 +91,26 @@ class UI:
                 imgui,
                 imguizmo,
             )
-            from imgui_bundle.python_backends import pyglet_backend
 
             self.imgui = imgui
             self.giz = imguizmo.im_guizmo
             self.is_available = True
-        except ImportError:
+        except ImportError as e:
             self.is_available = False
-            print("Warning: imgui_bundle not found. Install with: pip install imgui-bundle")
+            logger.warning(
+                'Viewer GUI is unavailable: %s. Install its dependencies with `pip install "newton[examples]"`.', e
+            )
             return
 
         self.window = window
-        self.imgui.create_context()
-        try:
-            # Create without callbacks so we can fix the scroll handler first
-            self.impl = pyglet_backend.create_renderer(self.window, attach_callbacks=False)
-        except Exception as e:
-            # Unlikely to happen since RendererGL already sets PYOPENGL_PLATFORM=glx
-            # on Wayland, but just in case the auto-detection missed the session type.
-            if "no valid context" in str(e).lower() or "no current context" in str(e).lower():
-                raise RuntimeError(
-                    "Failed to initialize the OpenGL UI renderer. "
-                    "If you are on Wayland, try setting the environment variable:\n\n"
-                    "  PYOPENGL_PLATFORM=glx uv run -m newton.examples <example>\n"
-                ) from e
-            raise
-
+        # The native renderer binds to one context, and create_context() keeps an earlier viewer's current.
+        self._context = self.imgui.create_context()
+        self.imgui.set_current_context(self._context)
         self.io = self.imgui.get_io()
-
-        # Fix inverted scroll direction in the pyglet imgui backend before
-        # attaching callbacks so pyglet captures the corrected handler.
-        # The replacement must be named "on_mouse_scroll" because pyglet
-        # matches handlers by __name__.
-        io = self.io
-
-        def on_mouse_scroll(x, y, scroll_x, scroll_y):
-            io.add_mouse_wheel_event(scroll_x, scroll_y)
-
-        self.impl.on_mouse_scroll = on_mouse_scroll
-        self.impl._attach_callbacks(self.window)
+        # Dear ImGui's native renderer, so the GUI needs no Python OpenGL bindings besides pyglet's.
+        if not self.imgui.backends.opengl3_init("#version 330"):
+            raise RuntimeError("Failed to initialize the OpenGL UI renderer.")
+        self._attach_input()
 
         # Set up proper DPI scaling for high-DPI displays.
         #
@@ -72,9 +124,79 @@ class UI:
         self._refresh_io_metrics()
         self.dpi_scale = self._detect_dpi_scale()
 
-        # ``_apply_dpi_scaling`` resets to the base dark style and then scales
-        # it; no need to call ``_setup_dark_style`` separately here.
+        # Reset to ImGui defaults, apply the dark theme, then scale style and fonts.
         self._apply_dpi_scaling()
+
+    def _attach_input(self) -> None:
+        """Forward pyglet window input to Dear ImGui."""
+        from pyglet.window import key, mouse
+
+        imgui, io, window = self.imgui, self.io, self.window
+        io.backend_flags |= imgui.BackendFlags_.has_mouse_cursors
+        keys = {getattr(key, name): getattr(imgui.Key, value) for name, value in _KEY_NAMES.items()}
+        modifiers = {
+            getattr(imgui.Key, f"{side}_{name}"): getattr(imgui.Key, modifier)
+            for name, modifier in _MODIFIER_NAMES.items()
+            for side in ("left", "right")
+        }
+        buttons = {mouse.LEFT: 0, mouse.RIGHT: 1, mouse.MIDDLE: 2}
+        self._cursors = {
+            int(getattr(imgui.MouseCursor_, name)): getattr(window, cursor) for name, cursor in _CURSOR_NAMES.items()
+        }
+        self._cursor: int | None = None
+        held_modifiers = set()
+
+        def on_key(symbol, down):
+            imgui_key = keys.get(symbol)
+            if imgui_key is not None:
+                io.add_key_event(imgui_key, down)
+                modifier = modifiers.get(imgui_key)
+                if modifier is not None:
+                    # The modifier stays down while either of its keys is held.
+                    (held_modifiers.add if down else held_modifiers.discard)(imgui_key)
+                    io.add_key_event(modifier, any(modifiers[held] == modifier for held in held_modifiers))
+
+        def on_mouse_button(button, down):
+            if button in buttons:
+                io.add_mouse_button_event(buttons[button], down)
+
+        def on_text(text):
+            for char in text:
+                io.add_input_character(ord(char))
+
+        def on_mouse_position(x, y, *_):
+            io.add_mouse_pos_event(x, io.display_size.y - y)
+
+        window.push_handlers(
+            on_key_press=lambda symbol, _modifiers: on_key(symbol, True),
+            on_key_release=lambda symbol, _modifiers: on_key(symbol, False),
+            # A key released while unfocused reports no release.
+            on_deactivate=held_modifiers.clear,
+            on_text=on_text,
+            on_mouse_motion=on_mouse_position,
+            # Button transitions belong to press/release; a press on every drag motion restarts cancelled drags.
+            on_mouse_drag=on_mouse_position,
+            on_mouse_press=lambda _x, _y, button, _modifiers: on_mouse_button(button, True),
+            on_mouse_release=lambda _x, _y, button, _modifiers: on_mouse_button(button, False),
+            on_mouse_scroll=lambda _x, _y, scroll_x, scroll_y: io.add_mouse_wheel_event(scroll_x, scroll_y),
+            on_resize=lambda _width, _height: self._refresh_io_metrics(),
+            # Release the renderer while the window still has its GL context.
+            on_close=self.shutdown,
+        )
+
+    def _update_mouse_cursor(self) -> None:
+        """Show the cursor shape Dear ImGui asks for, such as a resize arrow."""
+        if self.io.config_flags & self.imgui.ConfigFlags_.no_mouse_cursor_change:
+            return
+        cursor = int(self.imgui.get_mouse_cursor())
+        if cursor == self._cursor:
+            return
+        self._cursor = cursor
+        visible = cursor != int(self.imgui.MouseCursor_.none)
+        self.window.set_mouse_visible(visible)
+        if visible:
+            shape = self._cursors.get(cursor, self.window.CURSOR_DEFAULT)
+            self.window.set_mouse_cursor(self.window.get_system_mouse_cursor(shape))
 
     def _refresh_io_metrics(self) -> None:
         """Sync ``io.display_size`` and ``io.display_framebuffer_scale`` with
@@ -152,111 +274,20 @@ class UI:
 
         ``display_size`` is set to the framebuffer size, so ImGui works in
         framebuffer pixels. Without this rescale every widget would render at
-        ~half size on Retina/4K displays. Re-applying first restores the base
-        style (``_setup_dark_style``) so repeated calls do not compound.
+        ~half size on Retina/4K displays. Re-applying first resets to ImGui
+        defaults, then applies the dark theme (``_setup_dark_style``) before
+        scaling, so fields outside the theme do not compound either.
         """
         if not self.is_available:
             return
 
+        self.imgui.set_current_context(self._context)
+        self._context.style = self.imgui.Style()
         self._setup_dark_style()
         style = self.imgui.get_style()
         if self.dpi_scale != 1.0:
             style.scale_all_sizes(self.dpi_scale)
         style.font_scale_dpi = self.dpi_scale
-
-    def _setup_grey_style(self):
-        if not self.is_available:
-            return
-
-        style = self.imgui.get_style()
-
-        # Style properties
-        style.alpha = 1.0
-        # style.disabled_alpha = 0.5
-        style.window_padding = (13.0, 10.0)
-        style.window_rounding = 0.0
-        style.window_border_size = 1.0
-        style.window_min_size = (32.0, 32.0)
-        style.window_title_align = (0.5, 0.5)
-        style.window_menu_button_position = self.imgui.Dir_.right
-        style.child_rounding = 3.0
-        style.child_border_size = 1.0
-        style.popup_rounding = 5.0
-        style.popup_border_size = 1.0
-        style.frame_padding = (20.0, 8.100000381469727)
-        style.frame_rounding = 2.0
-        style.frame_border_size = 0.0
-        style.item_spacing = (3.0, 3.0)
-        style.item_inner_spacing = (3.0, 8.0)
-        style.cell_padding = (6.0, 14.10000038146973)
-        style.indent_spacing = 0.0
-        style.columns_min_spacing = 10.0
-        style.scrollbar_size = 10.0
-        style.scrollbar_rounding = 2.0
-        style.grab_min_size = 12.10000038146973
-        style.grab_rounding = 1.0
-        style.tab_rounding = 2.0
-        style.tab_border_size = 0.0
-        style.color_button_position = self.imgui.Dir_.right
-        style.button_text_align = (0.5, 0.5)
-        style.selectable_text_align = (0.0, 0.0)
-
-        # fmt: off
-        # Colors
-        style.set_color_(self.imgui.Col_.text, self.imgui.ImVec4(0.9803921580314636, 0.9803921580314636, 0.9803921580314636, 1.0))
-        style.set_color_(self.imgui.Col_.text_disabled, self.imgui.ImVec4(0.4980392158031464, 0.4980392158031464, 0.4980392158031464, 1.0))
-        style.set_color_(self.imgui.Col_.window_bg, self.imgui.ImVec4(0.09411764889955521, 0.09411764889955521, 0.09411764889955521, 1.0))
-        style.set_color_(self.imgui.Col_.child_bg, self.imgui.ImVec4(0.1568627506494522, 0.1568627506494522, 0.1568627506494522, 1.0))
-        style.set_color_(self.imgui.Col_.popup_bg, self.imgui.ImVec4(0.09411764889955521, 0.09411764889955521, 0.09411764889955521, 1.0))
-        style.set_color_(self.imgui.Col_.border, self.imgui.ImVec4(1.0, 1.0, 1.0, 0.09803921729326248))
-        style.set_color_(self.imgui.Col_.border_shadow, self.imgui.ImVec4(0.0, 0.0, 0.0, 0.0))
-        style.set_color_(self.imgui.Col_.frame_bg, self.imgui.ImVec4(1.0, 1.0, 1.0, 0.09803921729326248))
-        style.set_color_(self.imgui.Col_.frame_bg_hovered, self.imgui.ImVec4(1.0, 1.0, 1.0, 0.1568627506494522))
-        style.set_color_(self.imgui.Col_.frame_bg_active, self.imgui.ImVec4(0.0, 0.0, 0.0, 0.0470588244497776))
-        style.set_color_(self.imgui.Col_.title_bg, self.imgui.ImVec4(0.1176470592617989, 0.1176470592617989, 0.1176470592617989, 1.0))
-        style.set_color_(self.imgui.Col_.title_bg_active, self.imgui.ImVec4(0.1568627506494522, 0.1568627506494522, 0.1568627506494522, 1.0))
-        style.set_color_(self.imgui.Col_.title_bg_collapsed, self.imgui.ImVec4(0.1176470592617989, 0.1176470592617989, 0.1176470592617989, 1.0))
-        style.set_color_(self.imgui.Col_.menu_bar_bg, self.imgui.ImVec4(0.0, 0.0, 0.0, 0.0))
-        style.set_color_(self.imgui.Col_.scrollbar_bg, self.imgui.ImVec4(0.0, 0.0, 0.0, 0.1098039224743843))
-        style.set_color_(self.imgui.Col_.scrollbar_grab, self.imgui.ImVec4(1.0, 1.0, 1.0, 0.3921568691730499))
-        style.set_color_(self.imgui.Col_.scrollbar_grab_hovered, self.imgui.ImVec4(1.0, 1.0, 1.0, 0.4705882370471954))
-        style.set_color_(self.imgui.Col_.scrollbar_grab_active, self.imgui.ImVec4(0.0, 0.0, 0.0, 0.09803921729326248))
-        style.set_color_(self.imgui.Col_.check_mark, self.imgui.ImVec4(1.0, 1.0, 1.0, 1.0))
-        style.set_color_(self.imgui.Col_.slider_grab, self.imgui.ImVec4(1.0, 1.0, 1.0, 0.3921568691730499))
-        style.set_color_(self.imgui.Col_.slider_grab_active, self.imgui.ImVec4(1.0, 1.0, 1.0, 0.3137255012989044))
-        style.set_color_(self.imgui.Col_.button, self.imgui.ImVec4(1.0, 1.0, 1.0, 0.09803921729326248))
-        style.set_color_(self.imgui.Col_.button_hovered, self.imgui.ImVec4(1.0, 1.0, 1.0, 0.1568627506494522))
-        style.set_color_(self.imgui.Col_.button_active, self.imgui.ImVec4(0.0, 0.0, 0.0, 0.0470588244497776))
-        style.set_color_(self.imgui.Col_.header, self.imgui.ImVec4(1.0, 1.0, 1.0, 0.09803921729326248))
-        style.set_color_(self.imgui.Col_.header_hovered, self.imgui.ImVec4(1.0, 1.0, 1.0, 0.1568627506494522))
-        style.set_color_(self.imgui.Col_.header_active, self.imgui.ImVec4(0.0, 0.0, 0.0, 0.0470588244497776))
-        style.set_color_(self.imgui.Col_.separator, self.imgui.ImVec4(1.0, 1.0, 1.0, 0.1568627506494522))
-        style.set_color_(self.imgui.Col_.separator_hovered, self.imgui.ImVec4(1.0, 1.0, 1.0, 0.2352941185235977))
-        style.set_color_(self.imgui.Col_.separator_active, self.imgui.ImVec4(1.0, 1.0, 1.0, 0.2352941185235977))
-        style.set_color_(self.imgui.Col_.resize_grip, self.imgui.ImVec4(1.0, 1.0, 1.0, 0.1568627506494522))
-        style.set_color_(self.imgui.Col_.resize_grip_hovered, self.imgui.ImVec4(1.0, 1.0, 1.0, 0.2352941185235977))
-        style.set_color_(self.imgui.Col_.resize_grip_active, self.imgui.ImVec4(1.0, 1.0, 1.0, 0.2352941185235977))
-        style.set_color_(self.imgui.Col_.tab, self.imgui.ImVec4(1.0, 1.0, 1.0, 0.09803921729326248))
-        style.set_color_(self.imgui.Col_.tab_hovered, self.imgui.ImVec4(1.0, 1.0, 1.0, 0.1568627506494522))
-        style.set_color_(self.imgui.Col_.tab_selected, self.imgui.ImVec4(1.0, 1.0, 1.0, 0.3137255012989044))
-        style.set_color_(self.imgui.Col_.tab_dimmed, self.imgui.ImVec4(0.0, 0.0, 0.0, 0.1568627506494522))
-        style.set_color_(self.imgui.Col_.tab_dimmed_selected, self.imgui.ImVec4(1.0, 1.0, 1.0, 0.2352941185235977))
-        style.set_color_(self.imgui.Col_.plot_lines, self.imgui.ImVec4(1.0, 1.0, 1.0, 0.3529411852359772))
-        style.set_color_(self.imgui.Col_.plot_lines_hovered, self.imgui.ImVec4(1.0, 1.0, 1.0, 1.0))
-        style.set_color_(self.imgui.Col_.plot_histogram, self.imgui.ImVec4(1.0, 1.0, 1.0, 0.3529411852359772))
-        style.set_color_(self.imgui.Col_.plot_histogram_hovered, self.imgui.ImVec4(1.0, 1.0, 1.0, 1.0))
-        style.set_color_(self.imgui.Col_.table_header_bg, self.imgui.ImVec4(0.1568627506494522, 0.1568627506494522, 0.1568627506494522, 1.0))
-        style.set_color_(self.imgui.Col_.table_border_strong, self.imgui.ImVec4(1.0, 1.0, 1.0, 0.3137255012989044))
-        style.set_color_(self.imgui.Col_.table_border_light, self.imgui.ImVec4(1.0, 1.0, 1.0, 0.196078434586525))
-        style.set_color_(self.imgui.Col_.table_row_bg, self.imgui.ImVec4(0.0, 0.0, 0.0, 0.0))
-        style.set_color_(self.imgui.Col_.table_row_bg_alt, self.imgui.ImVec4(1.0, 1.0, 1.0, 0.01960784383118153))
-        style.set_color_(self.imgui.Col_.text_selected_bg, self.imgui.ImVec4(0.0, 0.0, 0.0, 1.0))
-        style.set_color_(self.imgui.Col_.drag_drop_target, self.imgui.ImVec4(0.168627455830574, 0.2313725501298904, 0.5372549295425415, 1.0))
-        style.set_color_(self.imgui.Col_.nav_cursor, self.imgui.ImVec4(1.0, 1.0, 1.0, 1.0))
-        style.set_color_(self.imgui.Col_.nav_windowing_highlight, self.imgui.ImVec4(1.0, 1.0, 1.0, 0.699999988079071))
-        style.set_color_(self.imgui.Col_.nav_windowing_dim_bg, self.imgui.ImVec4(0.800000011920929, 0.800000011920929, 0.800000011920929, 0.2000000029802322))
-        style.set_color_(self.imgui.Col_.modal_window_dim_bg, self.imgui.ImVec4(0.0, 0.0, 0.0, 0.5647059082984924))
-        # fmt: on
 
     def _setup_dark_style(self):
         if not self.is_available:
@@ -357,17 +388,25 @@ class UI:
         style.set_color_(self.imgui.Col_.modal_window_dim_bg, self.imgui.ImVec4(0.196078434586525, 0.1764705926179886, 0.5450980663299561, 0.501960813999176))
         # fmt: on
 
-    def begin_frame(self):
+    def cancel_mouse_interaction(self) -> None:
+        """Discard pending input and release widgets without completing a click."""
+        self.io.clear_events_queue()
+        self.io.clear_input_mouse()
+        self.imgui.set_current_context(self._context)
+        self.imgui.internal.clear_active_id()
+        self._context.want_capture_mouse_next_frame = -1
+        self.io.want_capture_mouse = False
+
+    def begin_frame(self) -> None:
         """Renders a single frame of the UI. This should be called from the main render loop."""
         if not self.is_available:
             return
 
-        try:
-            self.impl.process_inputs()
-        except AttributeError:
-            # Older integrations may not require this
-            pass
+        now = perf_counter()
+        self.io.delta_time = max(now - self._frame_time, 1e-6) if self._frame_time is not None else 1.0 / 60.0
+        self._frame_time = now
 
+        self.imgui.set_current_context(self._context)
         self.imgui.new_frame()
         self.giz.begin_frame()
 
@@ -383,7 +422,10 @@ class UI:
         if not self.is_available:
             return
 
-        self.impl.render(self.imgui.get_draw_data())
+        self.imgui.set_current_context(self._context)
+        self.imgui.backends.opengl3_new_frame()
+        self.imgui.backends.opengl3_render_draw_data(self.imgui.get_draw_data())
+        self._update_mouse_cursor()
 
     def is_capturing_mouse(self):
         if not self.is_available:
@@ -464,7 +506,7 @@ class UI:
                     if len(result) == 1:
                         self._file_dialog_result = result[0]
                     elif len(result) > 1:
-                        print("Warning: multiple files selected; expected a single file.")
+                        logger.warning("multiple files selected; expected a single file.")
                 else:
                     self._file_dialog_result = result
             self._pending_file_dialog = None
@@ -482,7 +524,7 @@ class UI:
 
             self._pending_file_dialog = pfd.save_file(title, os.getcwd())
         except ImportError:
-            print("Warning: portable_file_dialogs not available")
+            logger.warning("portable_file_dialogs not available")
 
     def open_load_file_dialog(self, title: str = "Open File") -> None:
         """Start an asynchronous native OS open-file dialog.
@@ -497,10 +539,16 @@ class UI:
 
             self._pending_file_dialog = pfd.open_file(title, os.getcwd())
         except ImportError:
-            print("Warning: portable_file_dialogs not available")
+            logger.warning("portable_file_dialogs not available")
 
     def shutdown(self):
         if not self.is_available:
             return
 
-        self.impl.shutdown()
+        self.is_available = False
+        if getattr(self.window, "context", None) is None:
+            return  # the window is gone, and its GL objects with it
+        self.window.switch_to()
+        self.imgui.set_current_context(self._context)
+        self.imgui.backends.opengl3_shutdown()
+        self.imgui.destroy_context(self._context)

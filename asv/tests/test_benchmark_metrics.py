@@ -3,6 +3,7 @@
 
 import sys
 import unittest
+import weakref
 from pathlib import Path
 from unittest.mock import patch
 
@@ -13,6 +14,7 @@ sys.path.insert(0, str(BENCHMARK_DIR))
 
 from benchmark_metrics import (  # noqa: E402
     collect_simulation_metrics,
+    collect_startup_metrics,
     compute_simulation_metrics,
     validate_simulation_state,
 )
@@ -49,7 +51,7 @@ class TestBenchmarkMetrics(unittest.TestCase):
             @property
             def free_memory(self):
                 if workloads:
-                    self_test.assertEqual(workloads[0].step_count, 2)
+                    self_test.assertEqual(workloads[0].step_count, 3)
                 return next(self.free_memory_values)
 
         self_test = self
@@ -63,7 +65,7 @@ class TestBenchmarkMetrics(unittest.TestCase):
                 self.step_count = 0
 
             def step(self):
-                self.benchmark_time += (0.01, 0.02)[self.step_count]
+                self.benchmark_time += (0.5, 0.01, 0.02)[self.step_count]
                 self.step_count += 1
 
         def create_workload():
@@ -95,6 +97,55 @@ class TestBenchmarkMetrics(unittest.TestCase):
         self.assertAlmostEqual(metrics.real_time_factor, 32 * 0.01 / 0.12)
         self.assertAlmostEqual(metrics.p95_frame_time_ms, 40.0)
         self.assertAlmostEqual(metrics.gpu_memory_mib, 8.0)
+
+    def test_collect_simulation_metrics_times_same_frames_with_reset(self):
+        """Verify reset and rebuilt workloads time the same frames."""
+
+        class FakeDevice:
+            free_memory = 0
+
+        class FakeWorkload:
+            sim_dt = 0.01
+            sim_substeps = 1
+            benchmark_time = 0.0
+            frame = 0
+
+            def step(self):
+                self.benchmark_time += 0.01
+                self.frame += 1
+
+            def reset(self):
+                self.frame = 0
+
+        def collect_timed_frames(reset_workload):
+            workloads = []
+            timed_frames = []
+
+            def create_workload():
+                workloads.append(FakeWorkload())
+                return workloads[-1]
+
+            def timer():
+                timed_frames.append(workloads[-1].frame)
+                return float(len(timed_frames))
+
+            with (
+                patch("benchmark_metrics.wp.get_device", return_value=FakeDevice()),
+                patch("benchmark_metrics.wp.synchronize_device"),
+            ):
+                collect_simulation_metrics(
+                    create_workload=create_workload,
+                    world_count=1,
+                    num_frames=2,
+                    samples=2,
+                    timer=timer,
+                    reset_workload=reset_workload,
+                )
+            return len(workloads), timed_frames
+
+        # The timer reads the frame count before and after each timed frame.
+        self.assertEqual(collect_timed_frames(None), (2, [1, 2, 2, 3] * 2))
+        self.assertEqual(collect_timed_frames(FakeWorkload.reset), (1, [1, 2, 2, 3] * 2))
 
     def test_collect_simulation_metrics_with_synchronization(self):
         """Verify synchronized wall timing drives collected metrics."""
@@ -180,6 +231,67 @@ class TestBenchmarkMetrics(unittest.TestCase):
                 samples=1,
                 timer=iter((0.0, 0.01)).__next__,
             )
+
+    def test_collect_startup_metrics(self):
+        """Average phase and total times, freeing each workload before the next one."""
+        clock = [0.0]
+        workloads = []
+        events = []
+
+        class FakeWorkload:
+            def __init__(self, startup_phase_times, scale):
+                self.cycle = self  # Only garbage collection frees a reference cycle.
+                startup_phase_times.update(
+                    model=0.4 * scale, replication=0.1 * scale, finalize=0.2 * scale, solver=0.1 * scale
+                )
+                clock[0] += 0.5 * scale
+
+            def step(self):
+                events.append("step")
+                clock[0] += 0.1
+
+        def create_workload(startup_phase_times):
+            self.assertTrue(all(workload() is None for workload in workloads), "previous workload is still alive")
+            workload = FakeWorkload(startup_phase_times, len(workloads) + 1)
+            workloads.append(weakref.ref(workload))
+            return workload
+
+        with patch("benchmark_metrics.wp.synchronize_device", side_effect=lambda: events.append("synchronize")):
+            metrics = collect_startup_metrics(create_workload, samples=2, timer=lambda: clock[0])
+
+        self.assertEqual(events, ["step", "synchronize"] * 2)
+        self.assertAlmostEqual(metrics.model_time, 0.6)
+        self.assertAlmostEqual(metrics.replication_time, 0.15)
+        self.assertAlmostEqual(metrics.finalize_time, 0.3)
+        self.assertAlmostEqual(metrics.solver_time, 0.15)
+        self.assertAlmostEqual(metrics.total_time, 0.85)
+
+    def test_collect_startup_metrics_rejects_missing_phases(self):
+        """Reject incomplete instrumentation in any startup sample."""
+        for missing_phase in ("model", "replication", "finalize", "solver"):
+            for incomplete_sample in (0, 1):
+                with self.subTest(phase=missing_phase, sample=incomplete_sample):
+                    sample_index = 0
+
+                    def create_workload(phase_times, missing_phase=missing_phase, incomplete_sample=incomplete_sample):
+                        nonlocal sample_index
+                        phase_times.update(model=0.4, replication=0.1, finalize=0.2, solver=0.1)
+                        if sample_index == incomplete_sample:
+                            del phase_times[missing_phase]
+                        sample_index += 1
+                        return type("Workload", (), {"step": lambda self: None})()
+
+                    with (
+                        patch("benchmark_metrics.wp.synchronize_device"),
+                        self.assertRaisesRegex(RuntimeError, f"Missing startup phases:.*{missing_phase}"),
+                    ):
+                        collect_startup_metrics(create_workload, samples=2)
+
+    def test_collect_startup_metrics_rejects_nonpositive_samples(self):
+        """Reject an empty sample set before constructing a workload."""
+        for samples in (0, -1):
+            with self.subTest(samples=samples), self.assertRaisesRegex(ValueError, "samples must be positive"):
+                collect_startup_metrics(lambda phases: self.fail("unexpected workload construction"), samples=samples)
 
     def test_validate_simulation_state(self):
         """Validate finite states, unit quaternions, and bounded speeds."""

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import logging
 import warnings
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
@@ -12,6 +13,8 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import warp as wp
 
+from ..core._warnings import _external_warning_stacklevel
+from ..exceptions import NewtonWarning
 from ..sim.builder import ModelBuilder
 from ..sim.enums import JointTargetMode
 from ..sim.model import Model
@@ -22,6 +25,7 @@ from ._resolution_policy import (
     _shift_joint_limits_for_reference,
 )
 from .schema_resolver import PrimType
+from .schemas import _mjc_angle_scale
 
 if TYPE_CHECKING:
     from pxr import Usd, UsdPhysics
@@ -30,7 +34,59 @@ if TYPE_CHECKING:
     from ._resolution_policy import _UsdJointProperties
     from .schema_resolver import SchemaResolverManager
 
+logger = logging.getLogger(__name__)
+
 AttributeFrequency = Model.AttributeFrequency
+
+
+def _endpoints_swapped(joint_desc: UsdPhysics.JointDesc, body_index_map: dict[str, int]) -> bool:
+    """Return whether the importer swaps a joint's ends, making physics:body0 the child.
+
+    The ends are swapped when physics:body1 is not an imported rigid body, for example when
+    it is empty (the world) or a static prim.
+
+    Args:
+        joint_desc: The joint description.
+        body_index_map: The map from body prim path to body index used to resolve the joint.
+
+    Returns:
+        ``True`` if the joint's ends are swapped.
+    """
+    return body_index_map.get(str(joint_desc.body1), -1) == -1
+
+
+def _resolve_scalar_spring(
+    prim: Usd.Prim,
+    is_revolute: bool,
+    builder: ModelBuilder,
+    joint_properties: _UsdJointProperties,
+    physics_scene_prim: Usd.Prim | None,
+    custom_attrs: dict[str, Any],
+) -> tuple[float, float | None, float]:
+    """Resolve scalar stiffness, rest coordinate and reference offset in Newton units."""
+    resolver = joint_properties.resolver
+    legacy_stiffness = custom_attrs.pop("mujoco:dof_passive_stiffness", None)
+    legacy_springref = custom_attrs.pop("mujoco:dof_springref", None)
+    stiffness = resolver.get_value(
+        prim,
+        PrimType.JOINT,
+        "stiffness",
+        default=builder.default_joint_cfg.stiffness if legacy_stiffness is None else legacy_stiffness,
+    )
+    springref = resolver.get_value(prim, PrimType.JOINT, "springref", default=None)
+    ref = resolver.get_value(prim, PrimType.JOINT, "ref", default=None)
+    angle_scale = _mjc_angle_scale(physics_scene_prim) if is_revolute else 1.0
+    # Registered custom values have already passed through their unit transformers.
+    if springref is not None:
+        springref = float(springref) * angle_scale
+    else:
+        springref = legacy_springref
+    ref = custom_attrs.get("mujoco:dof_ref", None if ref is None else float(ref) * angle_scale)
+    rest_q = builder.default_joint_cfg.rest_q
+    if springref is not None or ref is not None:
+        rest_q = float(springref or 0.0) - float(ref or 0.0)
+    ref = float(ref or 0.0)
+    return stiffness, rest_q, ref
 
 
 def resolve_joint_parent_child(
@@ -52,19 +108,80 @@ def resolve_joint_parent_child(
     child_path = str(joint_desc.body1)
     parent_id = body_index_map.get(parent_path, -1)
     child_id = body_index_map.get(child_path, -1)
-    # If child_id is -1, swap parent and child
-    if child_id == -1:
+    if _endpoints_swapped(joint_desc, body_index_map):
         if parent_id == -1:
             raise ValueError(f"Unable to parse joint {joint_desc.primPath}: both bodies unresolved")
         parent_id, child_id = child_id, parent_id
         if get_transforms:
             parent_tf, child_tf = child_tf, parent_tf
         if verbose:
-            print(f"Joint {joint_desc.primPath} connects {parent_path} to world")
+            logger.info("Joint %s connects %s to world", joint_desc.primPath, parent_path)
     if get_transforms:
         return parent_id, child_id, parent_tf, child_tf
     else:
         return parent_id, child_id
+
+
+def _collision_enabled_authored(joint_prim: Usd.Prim) -> bool:
+    """Whether the joint prim authors ``physics:collisionEnabled`` (an explicit per-joint choice)."""
+    attr = joint_prim.GetAttribute("physics:collisionEnabled")
+    return bool(attr) and attr.HasAuthoredValue()
+
+
+def _joint_filters_parent(
+    joint_prim: Usd.Prim, joint_desc: UsdPhysics.JointDesc, is_fixed: bool, scene_filter_parent: bool
+) -> bool:
+    """Resolve ``collision_filter_parent`` for a joint prim.
+
+    An authored ``physics:collisionEnabled`` wins. Otherwise the PhysicsScene's ``mjc:flag:filterparent``
+    applies to non-fixed joints; fixed joints keep the filter because MuJoCo welds those bodies.
+    """
+    if _collision_enabled_authored(joint_prim):
+        return not joint_desc.collisionEnabled
+    return scene_filter_parent or is_fixed
+
+
+def _can_reverse_joint_axes(
+    linear_axes: list[ModelBuilder.JointDofConfig],
+    angular_axes: list[ModelBuilder.JointDofConfig],
+) -> bool:
+    """Return whether negating the DOF axes reverses a joint whose endpoints were swapped.
+
+    UsdPhysics measures a joint coordinate from the body0 frame to the body1 frame, so
+    swapping the endpoints inverts the joint motion. Negating every axis inverts it exactly
+    only when the DOF motions commute: translations alone, or one rotation with
+    translations along its axis.
+
+    Args:
+        linear_axes: The translational DOFs.
+        angular_axes: The rotational DOFs.
+
+    Returns:
+        ``True`` if negating the axes reverses the joint exactly.
+    """
+    if not angular_axes:
+        return True
+    rotation_axis = np.array(angular_axes[0].axis)
+    return len(angular_axes) == 1 and all(
+        np.linalg.norm(np.cross(np.array(dof.axis), rotation_axis)) < 1e-6 for dof in linear_axes
+    )
+
+
+def _warn_irreversible_joint(description: str) -> None:
+    """Warn that a swapped joint keeps its authored axes because Newton cannot reverse it.
+
+    Args:
+        description: The joint prim path, or the merged joint prim paths.
+    """
+    warnings.warn(
+        f"Newton cannot reverse {description}, so it keeps the authored axes. Newton reverses a joint whose "
+        "physics:body1 is not an imported rigid body, but it can only reverse a joint with no rotational axis, "
+        "or one rotational axis with every translational axis parallel to it. Any limits, drives, or initial "
+        "state of this joint may act in the mirrored direction. To avoid this, author the joint with the rigid "
+        "body as physics:body1.",
+        NewtonWarning,
+        stacklevel=_external_warning_stacklevel(),
+    )
 
 
 def parse_joint(
@@ -96,8 +213,13 @@ def parse_joint(
     _should_write_solreflimit_mode: Callable[[], bool],
     _should_write_solreflimit_gain_baseline: Callable[[], bool],
     resolve_joint_parent_child: Callable[..., Any],
+    scene_filter_parent: bool = True,
 ) -> int | None:
-    """Parse a joint description and add it to the builder. Returns the resulting joint index if successful, None otherwise."""
+    """Parse a joint description and add it to the builder. Returns the resulting joint index if successful, None otherwise.
+
+    ``scene_filter_parent`` is the PhysicsScene's ``mjc:flag:filterparent`` value; it decides
+    ``collision_filter_parent`` for non-fixed joints that do not author ``physics:collisionEnabled``.
+    """
     from pxr import UsdPhysics
 
     if not joint_desc.jointEnabled and only_load_enabled_joints:
@@ -111,6 +233,9 @@ def parse_joint(
     parent_id, child_id, parent_tf, child_tf = resolve_joint_parent_child(  # pyright: ignore[reportAssignmentType]
         joint_desc, path_body_map, get_transforms=True
     )
+    # A swap reverses the direction of the authored joint coordinate. Negating the joint
+    # axes restores it, so authored limits, targets, and state keep their meaning.
+    endpoints_swapped = _endpoints_swapped(joint_desc, path_body_map)
 
     if incoming_xform is not None:
         parent_tf = incoming_xform * parent_tf
@@ -119,7 +244,10 @@ def parse_joint(
     joint_custom_attrs = usd.get_custom_attribute_values(
         joint_prim,
         builder_custom_attr_joint,
-        context={"builder": builder, "physics_scene_prim": physics_scene_prim},
+        context={
+            "builder": builder,
+            "physics_scene_prim": physics_scene_prim,
+        },
     )
     joint_params = {
         "parent": parent_id,
@@ -127,7 +255,8 @@ def parse_joint(
         "parent_xform": parent_tf,
         "child_xform": child_tf,
         "label": joint_path,
-        "collision_filter_parent": parent_id != -1 and not joint_desc.collisionEnabled,
+        "collision_filter_parent": parent_id != -1
+        and _joint_filters_parent(joint_prim, joint_desc, key == UsdPhysics.ObjectType.FixedJoint, scene_filter_parent),
         "enabled": joint_desc.jointEnabled,
         "custom_attributes": joint_custom_attrs,
     }
@@ -144,12 +273,18 @@ def parse_joint(
             joint_drive_gains_scaling=joint_drive_gains_scaling,
             force_position_velocity_actuation=force_position_velocity_actuation,
         )
-        _shift_joint_limits_for_reference(dof, joint_custom_attrs)
+        stiffness, rest_q, ref = _resolve_scalar_spring(
+            joint_prim, is_revolute, builder, joint_properties, physics_scene_prim, joint_custom_attrs
+        )
+        _shift_joint_limits_for_reference(dof, {"mujoco:dof_ref": ref})
+        joint_params["stiffness"] = stiffness
+        joint_params["rest_q"] = rest_q
         if _should_write_solreflimit_mode():
             joint_custom_attrs[solreflimit_mode_key] = dof.limit_solref_mode
         if _should_write_solreflimit_gain_baseline():
             joint_custom_attrs[solreflimit_gain_baseline_key] = wp.vec2(dof.limit_ke, dof.limit_kd)
-        joint_params["axis"] = usd_axis_to_axis[joint_desc.axis]
+        axis = usd_axis_to_axis[joint_desc.axis]
+        joint_params["axis"] = -axis.to_vec3() if endpoints_swapped else axis
         joint_params["limit_lower"] = dof.limit_lower
         joint_params["limit_upper"] = dof.limit_upper
         joint_params["limit_ke"] = dof.limit_ke
@@ -158,12 +293,12 @@ def parse_joint(
         joint_params["friction"] = dof.friction
         joint_params["damping"] = dof.damping
         joint_params["velocity_limit"] = dof.velocity_limit
+        joint_params["effort_limit"] = dof.effort_limit
         if dof.has_drive:
-            joint_params["target_vel"] = dof.target_vel
-            joint_params["target_pos"] = dof.target_pos
+            joint_params["target_qd"] = dof.target_vel
+            joint_params["target_q"] = dof.target_pos
             joint_params["target_ke"] = dof.target_ke
             joint_params["target_kd"] = dof.target_kd
-            joint_params["effort_limit"] = dof.effort_limit
         joint_params["actuator_mode"] = dof.actuator_mode
 
         # Initial joint state, applied after creation (already in Newton units)
@@ -175,7 +310,20 @@ def parse_joint(
         else:
             joint_index = builder.add_joint_prismatic(**joint_params)
     elif key == UsdPhysics.ObjectType.SphericalJoint:
+        joint_params["armature"] = R.get_value(
+            joint_prim, prim_type=PrimType.JOINT, key="armature", default=default_joint_armature, verbose=verbose
+        )
+        joint_params["friction"] = R.get_value(
+            joint_prim, prim_type=PrimType.JOINT, key="friction", default=default_joint_friction, verbose=verbose
+        )
         _, joint_damping = joint_properties.resolve_joint_damping(joint_prim)
+        joint_params["stiffness"] = R.get_value(
+            joint_prim,
+            PrimType.JOINT,
+            "stiffness",
+            default=joint_custom_attrs.pop("mujoco:dof_passive_stiffness", builder.default_joint_cfg.stiffness),
+        )
+        joint_custom_attrs.pop("mujoco:dof_springref", None)
         joint_params["damping"] = joint_damping
         joint_index = builder.add_joint_ball(**joint_params)
     elif key == UsdPhysics.ObjectType.D6Joint:
@@ -188,10 +336,17 @@ def parse_joint(
             warnings.warn(
                 f"Ignoring {usd_attrs} on native D6 joint {joint_path}: "
                 "MuJoCo has no D6 joint or corresponding reference-coordinate semantics.",
+                NewtonWarning,
                 stacklevel=2,
             )
             for attr_key in unsupported_ref_attrs:
                 del joint_custom_attrs[attr_key]
+        joint_stiffness = R.get_value(
+            joint_prim,
+            PrimType.JOINT,
+            "stiffness",
+            default=joint_custom_attrs.pop("mujoco:dof_passive_stiffness", builder.default_joint_cfg.stiffness),
+        )
         joint_armature = R.get_value(
             joint_prim, prim_type=PrimType.JOINT, key="armature", default=default_joint_armature, verbose=verbose
         )
@@ -327,11 +482,12 @@ def parse_joint(
                         limit_upper=limit_upper,
                         limit_ke=current_joint_limit_ke,
                         limit_kd=current_joint_limit_kd,
-                        target_pos=target_pos,
-                        target_vel=target_vel,
+                        target_q=target_pos,
+                        target_qd=target_vel,
                         target_ke=target_ke,
                         target_kd=target_kd,
                         damping=joint_linear_damping,
+                        stiffness=joint_stiffness,
                         armature=joint_armature,
                         effort_limit=effort_limit,
                         velocity_limit=joint_velocity_limit
@@ -395,11 +551,12 @@ def parse_joint(
                         limit_upper=limit_upper * DegreesToRadian,
                         limit_ke=current_joint_limit_ke / DegreesToRadian,
                         limit_kd=current_joint_limit_kd / DegreesToRadian,
-                        target_pos=target_pos * DegreesToRadian,
-                        target_vel=target_vel * DegreesToRadian,
+                        target_q=target_pos * DegreesToRadian,
+                        target_qd=target_vel * DegreesToRadian,
                         target_ke=target_ke / DegreesToRadian / joint_drive_gains_scaling,
                         target_kd=target_kd / DegreesToRadian / joint_drive_gains_scaling,
                         damping=joint_angular_damping,
+                        stiffness=joint_stiffness,
                         armature=joint_armature,
                         effort_limit=effort_limit,
                         velocity_limit=joint_velocity_limit * DegreesToRadian
@@ -422,6 +579,18 @@ def parse_joint(
             joint_custom_attrs[solreflimit_gain_baseline_key] = [
                 wp.vec2(axis.limit_ke, axis.limit_kd) for axis in [*linear_axes, *angular_axes]
             ]
+
+        # Without any free axis the joint is a weld in MuJoCo: it keeps the parent filter unless the
+        # joint authors physics:collisionEnabled.
+        joint_params["collision_filter_parent"] = parent_id != -1 and _joint_filters_parent(
+            joint_prim, joint_desc, not linear_axes and not angular_axes, scene_filter_parent
+        )
+        if endpoints_swapped:
+            if _can_reverse_joint_axes(linear_axes, angular_axes):
+                for axis in [*linear_axes, *angular_axes]:
+                    axis.axis = -axis.axis
+            else:
+                _warn_irreversible_joint(f"joint {joint_path}")
 
         joint_index = builder.add_joint_d6(**joint_params, linear_axes=linear_axes, angular_axes=angular_axes)
     elif key == UsdPhysics.ObjectType.DistanceJoint:
@@ -446,12 +615,12 @@ def parse_joint(
             builder.joint_q[builder.joint_q_start[joint_index]] = initial_position
             if verbose:
                 unit = "rad" if key == UsdPhysics.ObjectType.RevoluteJoint else "m"
-                print(f"Set {joint_type_str} joint {joint_index} position to {initial_position} ({unit})")
+                logger.info("Set %s joint %s position to %s (%s)", joint_type_str, joint_index, initial_position, unit)
         if initial_velocity is not None:
             builder.joint_qd[builder.joint_qd_start[joint_index]] = initial_velocity
             if verbose:
                 unit = "rad/s" if key == UsdPhysics.ObjectType.RevoluteJoint else "m/s"
-                print(f"Set {joint_type_str} joint {joint_index} velocity to {initial_velocity} {unit}")
+                logger.info("Set %s joint %s velocity to %s %s", joint_type_str, joint_index, initial_velocity, unit)
     elif key == UsdPhysics.ObjectType.D6Joint:
         # Apply D6 joint initial state
         q_start = builder.joint_q_start[joint_index]
@@ -478,13 +647,21 @@ def parse_joint(
                 coord_val = pos * DegreesToRadian if is_rot else pos
                 builder.joint_q[q_start + dof_idx] = coord_val
                 if verbose:
-                    print(f"Set D6 joint {joint_index} {axis_name} position to {pos} ({'deg' if is_rot else 'm'})")
+                    logger.info(
+                        "Set D6 joint %s %s position to %s (%s)", joint_index, axis_name, pos, "deg" if is_rot else "m"
+                    )
 
             if vel is not None and qd_start + dof_idx < qd_end:
-                vel_val = vel  # D6 velocities are already in correct units
+                vel_val = vel * DegreesToRadian if is_rot else vel
                 builder.joint_qd[qd_start + dof_idx] = vel_val
                 if verbose:
-                    print(f"Set D6 joint {joint_index} {axis_name} velocity to {vel} rad/s")
+                    logger.info(
+                        "Set D6 joint %s %s velocity to %s (%s)",
+                        joint_index,
+                        axis_name,
+                        vel,
+                        "deg/s" if is_rot else "m/s",
+                    )
 
     return joint_index
 
@@ -515,6 +692,7 @@ def parse_merged_joints(
     _should_write_solreflimit_mode: Callable[[], bool],
     _should_write_solreflimit_gain_baseline: Callable[[], bool],
     resolve_joint_parent_child: Callable[..., Any],
+    scene_filter_parent: bool = True,
 ) -> int | None:
     """Combine multiple single-DOF joints between the same two bodies into one D6 joint.
 
@@ -547,7 +725,8 @@ def parse_merged_joints(
     angular_initial_pos: list[float | None] = []
     angular_initial_vel: list[float | None] = []
     enabled_count = 0
-    collision_filter_parent = False
+    sibling_descs = []
+    swapped_axes: list[ModelBuilder.JointDofConfig] = []
 
     # Find the first enabled joint to use as representative for transforms and metadata
     first_desc = None
@@ -584,6 +763,7 @@ def parse_merged_joints(
             warnings.warn(
                 f"Merged joint {jp} has different anchor positions than representative "
                 f"{first_desc.primPath}; using representative positions for the D6 joint.",
+                NewtonWarning,
                 stacklevel=2,
             )
             break
@@ -600,7 +780,10 @@ def parse_merged_joints(
     joint_custom_attrs = usd.get_custom_attribute_values(
         first_prim,
         joint_freq_attrs,
-        context={"builder": builder, "physics_scene_prim": physics_scene_prim},
+        context={
+            "builder": builder,
+            "physics_scene_prim": physics_scene_prim,
+        },
     )
     # Per-DOF custom attributes accumulated separately for linear / angular
     # so we can reorder to D6 DOF order (linear first, then angular).
@@ -614,8 +797,8 @@ def parse_merged_joints(
         jd = joint_descriptions[jp]
         if not jd.jointEnabled and only_load_enabled_joints:
             continue
-        collision_filter_parent = collision_filter_parent or not jd.collisionEnabled
         jp_prim = stage.GetPrimAtPath(jd.primPath)
+        sibling_descs.append((jp_prim, jd))
         if collect_schema_attrs:
             R.collect_prim_attrs(jp_prim)
 
@@ -642,9 +825,15 @@ def parse_merged_joints(
         sibling_dof_attrs = usd.get_custom_attribute_values(
             jp_prim,
             dof_freq_attrs,
-            context={"builder": builder, "physics_scene_prim": physics_scene_prim},
+            context={
+                "builder": builder,
+                "physics_scene_prim": physics_scene_prim,
+            },
         )
-        _shift_joint_limits_for_reference(dof, sibling_dof_attrs)
+        stiffness, rest_q, ref = _resolve_scalar_spring(
+            jp_prim, is_revolute, builder, joint_properties, physics_scene_prim, sibling_dof_attrs
+        )
+        _shift_joint_limits_for_reference(dof, {"mujoco:dof_ref": ref})
         if _should_write_solreflimit_mode():
             sibling_dof_attrs[solreflimit_mode_key] = dof.limit_solref_mode
         if _should_write_solreflimit_gain_baseline():
@@ -679,17 +868,21 @@ def parse_merged_joints(
             limit_upper=dof.limit_upper,
             limit_ke=dof.limit_ke,
             limit_kd=dof.limit_kd,
-            target_pos=dof.target_pos,
-            target_vel=dof.target_vel,
+            target_q=dof.target_pos,
+            target_qd=dof.target_vel,
             target_ke=dof.target_ke,
             target_kd=dof.target_kd,
             damping=dof.damping,
+            stiffness=stiffness,
+            rest_q=rest_q,
             armature=dof.armature,
             friction=dof.friction,
-            effort_limit=dof.effort_limit,
+            effort_limit=dof.effort_limit if dof.effort_limit is not None else np.inf,
             velocity_limit=dof.velocity_limit if dof.velocity_limit is not None else default_joint_velocity_limit,
             actuator_mode=dof.actuator_mode,
         )
+        if _endpoints_swapped(jd, path_body_map):
+            swapped_axes.append(ax)
 
         if is_revolute:
             angular_axes.append(ax)
@@ -708,6 +901,13 @@ def parse_merged_joints(
 
     if enabled_count == 0:
         return None
+    # Negate the axes of the swapped joints, as in parse_joint.
+    if swapped_axes:
+        if _can_reverse_joint_axes(linear_axes, angular_axes):
+            for ax in swapped_axes:
+                ax.axis = -ax.axis
+        else:
+            _warn_irreversible_joint(f"merged joints {', '.join(joint_paths)}")
 
     # D6 DOF order: linear first, then angular
     dof_prim_paths = linear_prim_paths + angular_prim_paths
@@ -738,6 +938,12 @@ def parse_merged_joints(
     if "mujoco:joint_dof_label" in builder.custom_attributes:
         joint_custom_attrs["mujoco:joint_dof_label"] = dof_prim_paths
 
+    # The merged joint filters if any sibling does, each resolved against the scene flag. Without any
+    # free axis it is a weld in MuJoCo and keeps the filter unless a sibling authors collisionEnabled.
+    is_weld = not linear_axes and not angular_axes
+    collision_filter_parent = any(
+        _joint_filters_parent(prim, desc, is_weld, scene_filter_parent) for prim, desc in sibling_descs
+    )
     joint_index = builder.add_joint_d6(
         parent=parent_id,
         child=child_id,
@@ -767,9 +973,12 @@ def parse_merged_joints(
             builder.joint_qd[qd_start + dof_idx] = vel
 
     if verbose:
-        print(
-            f"Merged {len(joint_paths)} joints into D6 joint {joint_index}: "
-            f"{len(linear_axes)} linear + {len(angular_axes)} angular DOFs"
+        logger.info(
+            "Merged %s joints into D6 joint %s: %s linear + %s angular DOFs",
+            len(joint_paths),
+            joint_index,
+            len(linear_axes),
+            len(angular_axes),
         )
 
     return joint_index

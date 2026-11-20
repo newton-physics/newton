@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Literal
@@ -13,6 +14,7 @@ import numpy as np
 import warp as wp
 
 from . import utils as usd
+from ._joint_plan import _ArticulationJointPlan
 from .schema_resolver import PrimType
 
 if TYPE_CHECKING:
@@ -20,6 +22,8 @@ if TYPE_CHECKING:
 
     from ..sim.builder import ModelBuilder
     from .schema_resolver import SchemaResolverManager
+
+logger = logging.getLogger(__name__)
 
 
 def _parse_articulations(
@@ -56,7 +60,6 @@ def _parse_articulations(
     parse_joint: Callable[..., int | None],
     parse_merged_joints: Callable[..., int | None],
     import_attached_cables: Callable[[list[str]], None],
-    topological_sort_undirected: Callable[..., tuple[list[int], list[int]]],
 ) -> None:
     """Parse articulation descriptions in their existing order.
 
@@ -96,26 +99,24 @@ def _parse_articulations(
         # First check if articulation_prim itself has the PhysicsArticulationRootAPI
         if articulation_prim.HasAPI(UsdPhysics.ArticulationRootAPI):
             if verbose:
-                print(f"Extracting articulation custom attributes from {articulation_prim.GetPath()}")
+                logger.info("Extracting articulation custom attributes from %s", articulation_prim.GetPath())
             articulation_custom_attrs = usd.get_custom_attribute_values(
                 articulation_prim, builder_custom_attr_articulation
             )
         # If not, check the parent prim
         elif parent_prim is not None and parent_prim.IsValid() and parent_prim.HasAPI(UsdPhysics.ArticulationRootAPI):
             if verbose:
-                print(f"Extracting articulation custom attributes from parent {parent_prim.GetPath()}")
+                logger.info("Extracting articulation custom attributes from parent %s", parent_prim.GetPath())
             articulation_custom_attrs = usd.get_custom_attribute_values(parent_prim, builder_custom_attr_articulation)
         if verbose and articulation_custom_attrs:
-            print(f"Extracted articulation custom attributes: {articulation_custom_attrs}")
+            logger.info("Extracted articulation custom attributes: %s", articulation_custom_attrs)
         body_ids = {}
         body_labels = []
         current_body_id = 0
         art_bodies = []
         if verbose:
-            print(f"Bodies under articulation {path!s}:")
+            logger.info("Bodies under articulation %s:%s", path, "".join(f"\n\t{p!s}" for p in desc.articulatedBodies))
         for p in desc.articulatedBodies:
-            if verbose:
-                print(f"\t{p!s}")
             if p == Sdf.Path.emptyPath:
                 continue
             key = str(p)
@@ -169,21 +170,13 @@ def _parse_articulations(
             continue
 
         # determine the joint graph for this articulation
-        joint_names: list[str] = []
-        joint_edges: list[tuple[int, int]] = []
-        # keys of joints that are excluded from the articulation (loop joints)
-        joint_excluded: set[str] = set()
-        # Groups of joints that share the same body pair (multi-DOF joints from MuJoCo USD).
-        # Maps the representative joint path (first encountered) to all joint paths in the group.
-        merged_joint_groups: dict[str, list[str]] = {}
-        # Track which body pair maps to which representative joint path
-        body_pair_to_representative: dict[tuple[int, int], str] = {}
+        joint_plan = _ArticulationJointPlan()
         for p in desc.articulatedJoints:
             joint_path = str(p)
             joint_desc = joint_descriptions[joint_path]
             if joint_path in mjc_equality_connect_or_weld_paths:
                 if verbose:
-                    print(f"Skipping equality connect/weld joint '{joint_path}' from articulation joint graph")
+                    logger.info("Skipping equality connect/weld joint '%s' from articulation joint graph", joint_path)
                 continue
             # it may be possible that a joint is filtered out in the middle of
             # a chain of joints, which results in a disconnected graph
@@ -195,20 +188,12 @@ def _parse_articulations(
             if str(joint_desc.body1) in ignored_body_paths:
                 continue
             parent_id, child_id = resolve_joint_parent_child(joint_desc, body_ids, get_transforms=False)  # pyright: ignore[reportAssignmentType]
-            if joint_desc.excludeFromArticulation:
-                joint_excluded.add(joint_path)
-            else:
-                body_pair = (parent_id, child_id)
-                if body_pair in body_pair_to_representative:
-                    # Another joint between the same bodies — merge into existing group
-                    rep = body_pair_to_representative[body_pair]
-                    merged_joint_groups[rep].append(joint_path)
-                else:
-                    # First joint for this body pair
-                    body_pair_to_representative[body_pair] = joint_path
-                    merged_joint_groups[joint_path] = [joint_path]
-                    joint_edges.append(body_pair)
-                    joint_names.append(joint_path)
+            joint_plan.add_joint(joint_path, parent_id, child_id, excluded=joint_desc.excludeFromArticulation)
+
+        joint_names = joint_plan.joint_names
+        joint_edges = joint_plan.joint_edges
+        joint_excluded = joint_plan.joint_excluded
+        merged_joint_groups = joint_plan.merged_joint_groups
 
         articulation_joint_indices = []
         articulation_ids: set[int] = set()
@@ -279,23 +264,7 @@ def _parse_articulations(
             sorted_joints = []
         else:
             # we have an articulation with joints, we need to sort them topologically
-            if joint_ordering is not None:
-                if verbose:
-                    print(f"Sorting joints using {joint_ordering} ordering...")
-                sorted_joints, reversed_joint_list = topological_sort_undirected(
-                    joint_edges, use_dfs=joint_ordering == "dfs", ensure_single_root=True
-                )
-                if reversed_joint_list:
-                    reversed_joint_paths = [joint_names[joint_id] for joint_id in reversed_joint_list]
-                    reversed_joint_names = ", ".join(reversed_joint_paths)
-                    raise ValueError(
-                        f"Reversed joints are not supported: {reversed_joint_names}. Ensure that the joint parent body is defined as physics:body0 and the child is defined as physics:body1 in the joint prim."
-                    )
-                if verbose:
-                    print("Joint ordering:", sorted_joints)
-            else:
-                # we keep the original order of the joints
-                sorted_joints = np.arange(len(joint_names))
+            sorted_joints = joint_plan.get_joint_order(joint_ordering, verbose=verbose)
 
         if len(sorted_joints) > 0:
             # insert the bodies in the order of the joints

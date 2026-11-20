@@ -1,22 +1,31 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Basic Joints
-#
-# Shows how to use the ModelBuilder API to programmatically create different
-# joint types: BALL, DISTANCE, PRISMATIC, and REVOLUTE.
-#
-# Command: python -m newton.examples basic_joints --solver xpbd
-#          python -m newton.examples basic_joints --solver vbd
-#          python -m newton.examples basic_joints --solver kamino
-#
-###########################################################################
+"""Example Basic Joints
+
+Shows how to use the ModelBuilder API to programmatically create different
+joint types: BALL, DISTANCE, PRISMATIC, and REVOLUTE.
+
+Success criteria:
+- Three two-link systems appear: a revolute pendulum on the left, a prismatic slider in the middle,
+  and a ball joint on the right.
+- The revolute pendulum swings; the prismatic body initially slides downward along its constrained
+  axis.
+- Right-drag the hanging bodies: the revolute joint stays in its plane, the slider follows its axis,
+  and the ball joint permits rotation about all three axes.
+
+Runs:
+- `python -m newton.examples basic_joints`
+- `python -m newton.examples basic_joints --solver xpbd`
+- `python -m newton.examples basic_joints --solver vbd`
+- `python -m newton.examples basic_joints --solver kamino`
+"""
 
 import warp as wp
 
 import newton
 import newton.examples
+from newton.examples.kamino.utils.ldl import add_ldl_arguments, configure_ldl
 
 
 @wp.func
@@ -34,9 +43,12 @@ def _slider_constrained_motion_has_stopped(q: wp.transform, qd: wp.spatial_vecto
 
 class Example:
     def __init__(self, viewer, args):
+        """Build the joint-type demonstration with the requested solver options."""
         self.viewer = viewer
         self.args = args
         self.solver_type = getattr(args, "solver", "xpbd") if args is not None else "xpbd"
+        if self.solver_type != "kamino":
+            configure_ldl(None, args)
 
         # setup simulation parameters first
         self.fps = 100
@@ -190,21 +202,20 @@ class Example:
             self.solver = newton.solvers.SolverVBD(
                 self.model,
                 iterations=2,
-                rigid_compliant_alm=True,
                 rigid_joint_linear_ke=1.0e6,
                 rigid_joint_angular_ke=1.0e6,
             )
         elif self.solver_type == "kamino":
             solver_config = newton.solvers.SolverKamino.Config.from_model(
                 self.model,
-                dynamics_solver="dvi",
+                dynamics_solver="scc",
                 sparse_dynamics=True,
                 sparse_jacobian=True,
             )
-            solver_config.dvi.bilateral_solver_type = "LLTBRCM"
-            solver_config.dvi.max_alternating_iterations = 5
-            solver_config.dvi.bilateral_solve_interval = 5
-            solver_config.dvi.inequality_sweeps_per_iteration = 1
+            configure_ldl(solver_config, args)
+            solver_config.scc.max_alternating_iterations = 5
+            solver_config.scc.bilateral_solve_interval = 5
+            solver_config.scc.inequality_sweeps_per_iteration = 1
             self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
         else:
             self.solver = newton.solvers.SolverXPBD(self.model)
@@ -217,12 +228,7 @@ class Example:
 
         if self.solver_type == "kamino":
             self.collision_pipeline = None
-            self.contacts = newton.Contacts(
-                self.model.rigid_contact_max,
-                0,
-                device=self.model.device,
-                requested_attributes=self.model.get_requested_contact_attributes(),
-            )
+            self.contacts = None
         else:
             self.collision_pipeline = newton.CollisionPipeline(self.model)
             self.contacts = self.collision_pipeline.contacts()
@@ -345,8 +351,6 @@ class Example:
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
         if self.contacts is not None:
-            if self.solver_type == "kamino" and self.viewer.show_contacts:
-                self.solver.update_contacts(self.contacts, self.state_0)
             self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
 
@@ -354,6 +358,7 @@ class Example:
 if __name__ == "__main__":
     # Parse arguments and initialize viewer
     parser = newton.examples.create_parser()
+    add_ldl_arguments(parser)
     parser.add_argument(
         "--solver",
         type=str,

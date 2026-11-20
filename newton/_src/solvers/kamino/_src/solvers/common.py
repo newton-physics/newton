@@ -48,13 +48,16 @@ class WarmStartMode(IntEnum):
 
 
 class DualSolution:
-    """Constraint impulse and post-event velocity arrays for a dual solver."""
+    """Constraint impulses and constraint-law velocity arrays for a dual solver."""
 
     def __init__(self, size: SizeKamino | None = None):
         self.lambdas: wp.array[wp.float32] | None = None
         """Constraint impulses, shape ``(sum_of_max_total_cts,)``."""
         self.v_plus: wp.array[wp.float32] | None = None
-        """Post-event constraint-space velocities, shape ``(sum_of_max_total_cts,)``."""
+        """Constraint-law velocities, including biases and physical compliance times impulse.
+
+        These differ from measured relative body velocities. Shape ``(sum_of_max_total_cts,)``.
+        """
         if size is not None:
             self.finalize(size)
 
@@ -67,6 +70,23 @@ class DualSolution:
         """Reset all solution arrays to zero."""
         self.lambdas.zero_()
         self.v_plus.zero_()
+
+
+@wp.func
+def tolerance_scaled_residual(residual: wp.float32, tolerance: wp.float32) -> wp.float32:
+    """Return ``residual / tolerance``, or zero or infinity for a zero tolerance.
+
+    A zero tolerance passes only for a zero residual, so the result is at most
+    one exactly when ``residual <= tolerance``. Non-finite residuals return
+    infinity, because a later maximum would drop NaN.
+    """
+    if not wp.isfinite(residual):
+        return wp.inf
+    if tolerance > 0.0:
+        return residual / tolerance
+    if residual > 0.0:
+        return wp.inf
+    return 0.0
 
 
 @wp.kernel

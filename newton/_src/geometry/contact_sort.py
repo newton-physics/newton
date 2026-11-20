@@ -191,6 +191,57 @@ def _gather_full_kernel(data: _FullContactArrays, perm: wp.array[wp.int32], coun
         data.match_index[i] = data.match_index_buf[p]
 
 
+# -----------------------------------------------------------------------
+# Second sort pass for models whose shape indices don't fit in the packed key.
+#
+# The writers then store only the per-pair sub-key.  The first radix pass
+# orders contacts by sub-key; a second stable pass on a ``(shape_a, shape_b)``
+# pair key built from the backed-up shape columns gives the same order as one
+# sort on the packed ``(shape_a, shape_b, sub_key)`` key would.
+# -----------------------------------------------------------------------
+
+
+@wp.func
+def _make_pair_key(shape_a: wp.int32, shape_b: wp.int32, shape_index_bits: int) -> wp.int64:
+    return (wp.int64(shape_a) << wp.int64(shape_index_bits)) | wp.int64(shape_b)
+
+
+@wp.kernel(enable_backward=False)
+def _pair_keys_from_pairs_kernel(
+    pair_buf: wp.array[wp.vec2i],
+    count: wp.array[int],
+    first_pass_perm: wp.array[wp.int32],
+    shape_index_bits: int,
+    pair_keys: wp.array[wp.int64],
+):
+    """Build pair keys in first-pass order from the simple layout's backed-up pairs."""
+    i = wp.tid()
+    p = first_pass_perm[i]
+    if p >= count[0]:
+        pair_keys[i] = SORT_KEY_SENTINEL
+        return
+    pair = pair_buf[p]
+    pair_keys[i] = _make_pair_key(pair[0], pair[1], shape_index_bits)
+
+
+@wp.kernel(enable_backward=False)
+def _pair_keys_from_shapes_kernel(
+    shape0_buf: wp.array[wp.int32],
+    shape1_buf: wp.array[wp.int32],
+    count: wp.array[int],
+    first_pass_perm: wp.array[wp.int32],
+    shape_index_bits: int,
+    pair_keys: wp.array[wp.int64],
+):
+    """Build pair keys in first-pass order from the full layout's backed-up shapes."""
+    i = wp.tid()
+    p = first_pass_perm[i]
+    if p >= count[0]:
+        pair_keys[i] = SORT_KEY_SENTINEL
+        return
+    pair_keys[i] = _make_pair_key(shape0_buf[p], shape1_buf[p], shape_index_bits)
+
+
 class ContactSorter:
     """Sort contact arrays into a deterministic canonical order.
 
@@ -205,6 +256,16 @@ class ContactSorter:
 
     ``key_bit_count`` limits sorting to the populated low key bits, reducing
     radix passes without changing the full-capacity graph-capture behavior.
+
+    Set ``pair_shape_index_bits`` when two shape indices and the sub-key don't
+    fit in one 63-bit key.  The sort keys then hold only the sub-key, and a
+    second stable radix pass orders contacts by a ``(shape_a, shape_b)`` pair
+    key with ``pair_shape_index_bits`` per shape, read from the contact shape
+    columns.  :attr:`sorted_keys_view` then holds the sorted pair keys.
+
+    Set ``allocate_simple_scratch=False`` for a sorter used only by
+    :meth:`sort_full` to avoid allocating the unused simple-layout scratch.
+    Scratch allocation is fixed at construction time.
     """
 
     def __init__(
@@ -212,11 +273,15 @@ class ContactSorter:
         capacity: int,
         *,
         key_bit_count: int = 64,
+        pair_shape_index_bits: int = 0,
         per_contact_shape_properties: bool = False,
+        allocate_simple_scratch: bool = True,
         device: Devicelike = None,
     ):
         if not 1 <= key_bit_count <= 64:
             raise ValueError(f"key_bit_count must be in [1, 64], got {key_bit_count}")
+        if not 0 <= pair_shape_index_bits <= 31:
+            raise ValueError(f"pair_shape_index_bits must be in [0, 31], got {pair_shape_index_bits}")
         with wp.ScopedDevice(device):
             self._capacity = capacity
             self._key_bit_count = key_bit_count
@@ -224,14 +289,21 @@ class ContactSorter:
             self._sort_indices = wp.zeros(2 * capacity, dtype=wp.int32)
             self._sort_keys_copy = wp.zeros(2 * capacity, dtype=wp.int64)
 
+            # Second pass on the shape pair, only for models past the packed key's shape limit.
+            self._pair_shape_index_bits = pair_shape_index_bits
+            pair_capacity = capacity if pair_shape_index_bits > 0 else 0
+            self._pair_keys = wp.zeros(2 * pair_capacity, dtype=wp.int64)
+
             self._has_shape_props = per_contact_shape_properties
 
             # Scratch buffers for the simple gather (NarrowPhase.launch path).
-            self._simple_pair_buf = wp.zeros(capacity, dtype=wp.vec2i)
-            self._simple_position_buf = wp.zeros(capacity, dtype=wp.vec3)
-            self._simple_normal_buf = wp.zeros(capacity, dtype=wp.vec3)
-            self._simple_penetration_buf = wp.zeros(capacity, dtype=float)
-            self._simple_tangent_buf = wp.zeros(capacity, dtype=wp.vec3)
+            self._has_simple_scratch = allocate_simple_scratch
+            simple_capacity = capacity if allocate_simple_scratch else 0
+            self._simple_pair_buf = wp.zeros(simple_capacity, dtype=wp.vec2i)
+            self._simple_position_buf = wp.zeros(simple_capacity, dtype=wp.vec3)
+            self._simple_normal_buf = wp.zeros(simple_capacity, dtype=wp.vec3)
+            self._simple_penetration_buf = wp.zeros(simple_capacity, dtype=float)
+            self._simple_tangent_buf = wp.zeros(simple_capacity, dtype=wp.vec3)
             self._simple_match_index_buf = wp.zeros(1, dtype=wp.int32)
 
             # Scratch buffers for the full gather (CollisionPipeline.collide path).
@@ -289,6 +361,8 @@ class ContactSorter:
                 permuted alongside the other contact fields during sorting.
             device: Device to launch on.
         """
+        if not self._has_simple_scratch:
+            raise ValueError("sort_simple requires allocate_simple_scratch=True")
         n = self._capacity
 
         has_tangent = contact_tangent is not None and contact_tangent.shape[0] > 0
@@ -316,8 +390,8 @@ class ContactSorter:
             inputs=[data, contact_count, sort_keys, self._sort_keys_copy, self._sort_indices],
             device=device,
         )
-        wp.utils.radix_sort_pairs(self._sort_keys_copy, self._sort_indices, n, end_bit=self._key_bit_count)
-        wp.launch(_gather_simple_kernel, dim=n, inputs=[data, self._sort_indices, contact_count], device=device)
+        perm = self._sort_permutation(_pair_keys_from_pairs_kernel, [data.pair_buf], contact_count, device)
+        wp.launch(_gather_simple_kernel, dim=n, inputs=[data, perm, contact_count], device=device)
 
     def sort_full(
         self,
@@ -412,40 +486,70 @@ class ContactSorter:
             inputs=[data, contact_count, sort_keys, self._sort_keys_copy, self._sort_indices],
             device=device,
         )
+        perm = self._sort_permutation(
+            _pair_keys_from_shapes_kernel, [data.shape0_buf, data.shape1_buf], contact_count, device
+        )
+        wp.launch(_gather_full_kernel, dim=n, inputs=[data, perm, contact_count], device=device)
+
+    def _sort_permutation(
+        self, pair_keys_kernel, shape_inputs: list, contact_count: wp.array[wp.int32], device: Devicelike
+    ) -> wp.array[wp.int32]:
+        """Radix-sort the backed-up keys and return the gather permutation."""
+        n = self._capacity
         wp.utils.radix_sort_pairs(self._sort_keys_copy, self._sort_indices, n, end_bit=self._key_bit_count)
-        wp.launch(_gather_full_kernel, dim=n, inputs=[data, self._sort_indices, contact_count], device=device)
+        if self._pair_shape_index_bits == 0:
+            return self._sort_indices
+
+        # Stable second pass: the pair key is the major key, the first pass's sub-key order breaks ties.
+        bits = self._pair_shape_index_bits
+        wp.launch(
+            pair_keys_kernel,
+            dim=n,
+            inputs=[*shape_inputs, contact_count, self._sort_indices, bits],
+            outputs=[self._pair_keys],
+            device=device,
+        )
+        # One bit above the pair key keeps the sentinel past every real pair.
+        wp.utils.radix_sort_pairs(self._pair_keys, self._sort_indices, n, end_bit=2 * bits + 1)
+        return self._sort_indices
 
     @property
-    def sorted_keys_view(self) -> wp.array:
+    def pair_shape_index_bits(self) -> int:
+        """Bits per shape index in the second-pass pair key, or 0 for a single packed-key pass."""
+        return self._pair_shape_index_bits
+
+    @property
+    def sorted_keys_view(self) -> wp.array[wp.int64]:
         """View of sorted keys (first half of internal buffer).
 
         Valid only after :meth:`sort_simple` or :meth:`sort_full` returns.
         The array has ``capacity`` elements; active entries are
-        ``sorted_keys_view[:contact_count]``.
+        ``sorted_keys_view[:contact_count]``.  With a second pair pass these
+        are the sorted ``(shape_a, shape_b)`` pair keys.
         """
+        if self._pair_shape_index_bits > 0:
+            return self._pair_keys[: self._capacity]
         return self._sort_keys_copy[: self._capacity]
 
     @property
     def scratch_pos_world(self) -> wp.array:
-        """Shared scratch buffer for external cross-frame world-space positions.
+        """Transient position scratch available to sequential pipeline stages.
 
-        Sized ``capacity`` :class:`wp.vec3`.  Reserved for use by
-        :class:`~newton._src.geometry.contact_match.ContactMatcher`, which
-        repurposes the sorter's unused ``point0`` scratch between frames to
-        store the previous frame's world-space contact positions.
+        Sized ``capacity`` :class:`wp.vec3`.  :meth:`sort_full` overwrites this
+        storage on every call, so it cannot hold state across frames;
+        :class:`~newton._src.geometry.contact_match.ContactMatcher` keeps its
+        previous-frame history in buffers it owns.
 
         .. note::
-            The buffer is **only idle between frames** — i.e. between the end
-            of one :meth:`sort_full` call and the start of the next.  Writes
-            outside that window will corrupt the next sort.  Do not write to
-            this buffer unless you are implementing cross-frame state that
-            coordinates with the pipeline's per-frame call order.
+            Contents are only meaningful to the stage that wrote them, until
+            the next :meth:`sort_full` call.  Coordinate any reuse with the
+            pipeline's per-frame call order.
         """
         return self._full_point0_buf
 
     @property
     def scratch_normal(self) -> wp.array:
-        """Shared scratch buffer for external cross-frame world-space normals.
+        """Transient normal scratch available to sequential pipeline stages.
 
         Sized ``capacity`` :class:`wp.vec3`.  Companion to
         :attr:`scratch_pos_world`; see that property for usage constraints.

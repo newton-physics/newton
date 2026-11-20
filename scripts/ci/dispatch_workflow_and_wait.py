@@ -40,8 +40,8 @@ import time
 POLL_INTERVAL: int = 30
 """Seconds between status polls."""
 
-MAX_POLL_DURATION: int = 60 * 60
-"""Maximum total seconds to wait for the dispatched run to complete (1 hour)."""
+MAX_POLL_DURATION: int = 120 * 60
+"""Maximum total seconds to wait for the dispatched run; must outlast the 90 min GPU test limit and runner start."""
 
 GH_TIMEOUT: int = 120
 """Maximum seconds to wait for a single ``gh`` CLI invocation."""

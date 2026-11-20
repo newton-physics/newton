@@ -11,6 +11,7 @@ import warp as wp
 import newton
 from newton import ModelFlags
 from newton.solvers import SolverMuJoCo
+from newton.tests.unittest_utils import MUJOCO_MODULES, requires
 
 
 def _build_sleep_model(world_count: int = 1, *, register_custom_attributes: bool = False) -> newton.Model:
@@ -109,6 +110,7 @@ def _build_selective_wake_model() -> newton.Model:
     return builder.finalize()
 
 
+@requires(*MUJOCO_MODULES)
 class TestMuJoCoSleeping(unittest.TestCase):
     def _make_sim(self, *, world_count: int = 1, **solver_kwargs):
         model = _build_sleep_model(world_count)
@@ -152,7 +154,8 @@ class TestMuJoCoSleeping(unittest.TestCase):
 
     def test_per_world_sleep_tolerance(self):
         model = _build_sleep_model(world_count=2, register_custom_attributes=True)
-        model.mujoco.sleep_tolerance.assign(np.array([0.01, 0.02], dtype=np.float32))
+        # Two local worlds followed by the global world, which MuJoCo ignores.
+        model.mujoco.sleep_tolerance.assign(np.array([0.01, 0.02, 0.5], dtype=np.float32))
 
         solver = SolverMuJoCo(model, enable_sleeping=True, nvmax=1, iterations=2, disable_contacts=True)
 
@@ -185,12 +188,24 @@ class TestMuJoCoSleeping(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "does not support integrator='rk4'"):
             SolverMuJoCo(custom_integrator_model, enable_sleeping=True)
 
+        no_island_model = _build_sleep_model(register_custom_attributes=True)
+        no_island_model.mujoco.flag_island.fill_(False)
+        no_island_model.mujoco.enable_sleeping.fill_(True)
+        for enable_sleeping in (None, True):
+            with self.subTest(enable_sleeping=enable_sleeping):
+                with self.assertRaisesRegex(ValueError, "requires island detection"):
+                    SolverMuJoCo(no_island_model, enable_sleeping=enable_sleeping)
+
     def test_invalid_per_world_sleep_tolerance_fails_early(self):
         model = _build_sleep_model(world_count=2, register_custom_attributes=True)
-        model.mujoco.sleep_tolerance.assign(np.array([0.01, -1.0], dtype=np.float32))
+        model.mujoco.sleep_tolerance.assign(np.array([0.01, -1.0, 1.0e-3], dtype=np.float32))
 
         with self.assertRaisesRegex(ValueError, "got -1.0 at world 1"):
             SolverMuJoCo(model, enable_sleeping=True, nvmax=1)
+
+        # MuJoCo ignores the final global-world entry, so it is not validated.
+        model.mujoco.sleep_tolerance.assign(np.array([0.01, 0.02, -1.0], dtype=np.float32))
+        SolverMuJoCo(model, enable_sleeping=True, nvmax=1)
 
     def test_parallel_world_sleeping_requires_matching_default_velocities(self):
         model = _build_sleep_model(world_count=2)
@@ -206,7 +221,8 @@ class TestMuJoCoSleeping(unittest.TestCase):
         sleep_policy = SolverMuJoCo.SleepPolicy
 
         self.assertTrue(bool(model.mujoco.enable_sleeping.numpy()[0]))
-        self.assertAlmostEqual(float(model.mujoco.sleep_tolerance.numpy()[0]), 0.123)
+        # Options imported outside a world context belong to global world -1.
+        self.assertAlmostEqual(float(model.mujoco.sleep_tolerance.numpy()[-1]), 0.123)
         np.testing.assert_array_equal(
             model.mujoco.sleep_policy.numpy(),
             [sleep_policy.AUTO, sleep_policy.NEVER, sleep_policy.ALLOWED, sleep_policy.INIT],
@@ -380,6 +396,30 @@ class TestMuJoCoSleeping(unittest.TestCase):
 
         self.assertEqual(int(solver.mjw_data.ntree_awake.numpy()[0]), 1)
         self.assertEqual(int(solver.mjw_data.nv_awake.numpy()[0]), 1)
+
+    def test_captured_model_update_wakes_sleeping_trees(self):
+        """Wake every sleeping world when replaying a captured model notification."""
+        if wp.get_cuda_device_count() == 0:
+            self.skipTest("CUDA graph capture requires a CUDA device")
+        device = wp.get_cuda_device(0)
+        if not wp.is_mempool_enabled(device):
+            self.skipTest("CUDA graph capture requires the CUDA mempool allocator")
+
+        with wp.ScopedDevice(device):
+            _, solver, state_0, state_1, control, contacts = self._make_sim(
+                world_count=2, enable_sleeping=True, nvmax=1
+            )
+            solver.notify_model_changed(ModelFlags.ALL)
+            with wp.ScopedCapture(device=device) as capture:
+                solver.notify_model_changed(ModelFlags.ALL)
+
+            for _ in range(2):
+                state_0, state_1 = self._sleep_all(solver, state_0, state_1, control, contacts)
+                np.testing.assert_array_equal(solver.mjw_data.ntree_awake.numpy(), [0, 0])
+                wp.capture_launch(capture.graph)
+                np.testing.assert_array_equal(solver.mjw_data.ntree_awake.numpy(), [1, 1])
+                np.testing.assert_array_equal(solver.mjw_data.nv_awake.numpy(), [1, 1])
+                self.assertTrue(np.all(solver.mjw_data.tree_asleep.numpy() < 0))
 
     def test_wake_preserves_overflow_until_reset(self):
         _, solver, state_0, *_ = self._make_sim(enable_sleeping=True, nvmax=1)

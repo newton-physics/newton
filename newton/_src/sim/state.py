@@ -74,12 +74,11 @@ class State:
 
     EXTENDED_ATTRIBUTES: frozenset[str] = frozenset(EXTENDED_ATTRIBUTE_TEMPLATES)
     """
-    Names of optional extended state attributes that are not allocated by default.
+    Deprecated optional solver-produced state attributes.
 
-    These can be requested via :meth:`newton.ModelBuilder.request_state_attributes` or
-    :meth:`newton.Model.request_state_attributes` before calling :meth:`newton.Model.state`.
+    .. deprecated:: 1.7
 
-    See :ref:`extended_state_attributes` for details and usage.
+        Request :class:`newton.solvers.SolverBase.Observables` from the solver instead.
     """
 
     @classmethod
@@ -116,7 +115,23 @@ class State:
         """3D velocities of particles [m/s], shape (particle_count,), dtype :class:`vec3`."""
 
         self.particle_f: wp.array | None = None
-        """3D forces on particles [N], shape (particle_count,), dtype :class:`vec3`."""
+        """External forces on particles [N], shape (particle_count,), dtype :class:`vec3`.
+
+        This is a solver input: :meth:`SolverBase.step() <newton.solvers.SolverBase.step>` reads it from
+        ``state_in`` and never writes it, so forces written once persist across substeps until the caller
+        clears them."""
+
+        self.tendon_segment_rest_length: wp.array[float] | None = None
+        """Material rest lengths [m], shape (tendon_segment_count,). Initialized on the first solver step."""
+        self.tendon_segment_attachment_l_local: wp.array[wp.vec3] | None = None
+        """Previous left tangent points in body-local coordinates [m], shape (tendon_segment_count,)."""
+        self.tendon_segment_attachment_r_local: wp.array[wp.vec3] | None = None
+        """Previous right tangent points in body-local coordinates [m], shape (tendon_segment_count,)."""
+        self.tendon_guide_active: wp.array[wp.bool] | None = None
+        """Accepted routing activity, shape (tendon_guide_count,). Initialized on the first solver step."""
+        # Initialization/reset bookkeeping is copied by assign() along with physical history.
+        self._tendon_initialized: wp.array[wp.bool] | None = None
+        self._tendon_rebaseline: wp.array[wp.bool] | None = None
 
         self.body_q: wp.array | None = None
         """Rigid body transforms (7-DOF) [m, unitless quaternion], shape (body_count,), dtype :class:`transform`."""
@@ -132,13 +147,19 @@ class State:
         First three entries: linear acceleration [m/s²] relative to the body's center of mass in world frame;
         last three: angular acceleration [rad/s²] in world frame.
 
-        This is an extended state attribute; see :ref:`extended_state_attributes` for more information.
+        .. deprecated:: 1.7
+            Request :attr:`newton.solvers.SolverBase.ObservableKind.BODY_QDD` from the solver and read
+            :attr:`newton.solvers.SolverBase.Observables.body_qdd` instead.
         """
 
         self.body_f: wp.array | None = None
         """Rigid body forces (spatial) [N, N·m], shape (body_count,), dtype :class:`spatial_vector`.
         First three entries: linear force [N] in world frame applied at the body's center of mass (COM).
         Last three: torque (moment) [N·m] in world frame.
+
+        This is a solver input: :meth:`SolverBase.step() <newton.solvers.SolverBase.step>` reads it from
+        ``state_in`` and never writes it, so wrenches written once persist across substeps until the caller
+        clears them.
 
         .. note::
             :attr:`body_f` represents an external wrench in world frame with the body's center of mass (COM) as reference point.
@@ -148,7 +169,9 @@ class State:
         """Parent interaction forces [N, N·m], shape (body_count,), dtype :class:`spatial_vector`.
         First three entries: linear force [N]; last three: torque [N·m].
 
-        This is an extended state attribute; see :ref:`extended_state_attributes` for more information.
+        .. deprecated:: 1.7
+            Request :attr:`newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F` from the solver and read
+            :attr:`newton.solvers.SolverBase.Observables.body_parent_f` instead.
 
         .. note::
             :attr:`body_parent_f` represents incoming joint wrenches in world frame, referenced to the body's center of mass (COM).
@@ -159,13 +182,16 @@ class State:
 
         self.joint_qd: wp.array | None = None
         """Generalized joint velocity coordinates [m/s or rad/s, depending on joint type], shape (joint_dof_count,), dtype float.
-        For FREE and DISTANCE joints, the linear entries are child-COM velocity in the joint parent frame and the angular entries are angular velocity in that same frame."""
+        For FREE, DISTANCE, and ROD joints, the linear entries are child-COM velocity in the joint parent frame and the angular entries are angular velocity in that same frame."""
 
     def clear_forces(self) -> None:
         """
         Clear all force arrays (for particles and bodies) in the state object.
 
         Sets all entries of :attr:`particle_f` and :attr:`body_f` to zero, if present.
+        Solvers do not modify these external force inputs, so call this once per frame to
+        apply the same forces on every substep, or before each substep when the forces are
+        recomputed per substep (for example, viewer picking).
         """
         with wp.ScopedTimer("clear_forces", False):
             if self.particle_count:

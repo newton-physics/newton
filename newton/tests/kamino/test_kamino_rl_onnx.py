@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import contextlib
-import importlib.util
 import io
 import os
 import subprocess
@@ -13,22 +12,25 @@ import unittest
 import numpy as np
 import warp as wp
 
+import newton
 from newton._src.solvers.kamino.examples.rl.example_rl_drlegs import _build_observation_kernel
 from newton._src.solvers.kamino.examples.rl.joystick import JoystickConfig, JoystickController
 from newton._src.solvers.kamino.examples.rl.simulation import RigidBodySim
+from newton.tests.kamino import setup_test_output, setup_tests
+from newton.tests.unittest_utils import NewtonTestCase, has_module, requires
 
-_HAS_ONNX = importlib.util.find_spec("onnx") is not None
-_HAS_WARP_NN = importlib.util.find_spec("warp_nn") is not None
-
-if _HAS_ONNX and _HAS_WARP_NN:
+if has_module("onnx") and has_module("warp_nn"):
     import onnx
     from onnx import TensorProto, helper, numpy_helper
 
     from newton._src.solvers.kamino.examples.rl.onnx_policy import WarpOnnxPolicy
 
 
-class TestKaminoRlDrlegsWarp(unittest.TestCase):
+class TestKaminoRlDrlegsWarp(NewtonTestCase):
     """Test the Warp-native DR Legs policy path."""
+
+    def setUp(self):
+        setup_test_output(self)
 
     def test_module_imports_without_torch(self):
         """Import the DR Legs example when PyTorch is unavailable."""
@@ -151,9 +153,12 @@ import newton._src.solvers.kamino.examples.rl.example_rl_drlegs  # noqa: F401, E
         self.assertIs(wrapper.body_pair_contact_flag, flag)
 
 
-@unittest.skipUnless(_HAS_ONNX and _HAS_WARP_NN, "onnx or warp-nn not installed")
-class TestKaminoRlOnnx(unittest.TestCase):
+@requires("onnx", "warp_nn")
+class TestKaminoRlOnnx(NewtonTestCase):
     """Test Warp-NN policy inference used by the Kamino RL example."""
+
+    def setUp(self):
+        setup_test_output(self)
 
     def _save_policy(
         self,
@@ -215,6 +220,31 @@ class TestKaminoRlOnnx(unittest.TestCase):
         expected = observation @ weights.T + bias
         np.testing.assert_allclose(actual, expected)
 
+    @unittest.skipUnless(wp.is_cuda_available(), "CUDA device required")
+    def test_fixed_batch_policy_replays_cuda_graph(self):
+        """Rebatch a fixed export without changing its file and replay new inputs."""
+        with tempfile.TemporaryDirectory(dir=os.getcwd()) as tmp_dir:
+            path, weights, bias = self._save_policy(tmp_dir)
+            model = onnx.load(path)
+            for value in (*model.graph.input, *model.graph.output):
+                value.type.tensor_type.shape.dim[0].dim_value = 1
+            onnx.save(model, path)
+            with open(path, "rb") as stream:
+                original = stream.read()
+            policy = WarpOnnxPolicy(path, device="cuda:0", batch_size=2, action_width=2)
+            observation = wp.zeros((2, 2), dtype=wp.float32, device="cuda:0")
+            with wp.ScopedCapture(device="cuda:0") as capture:
+                output = policy(observation)
+            for values in (
+                np.array([[1.0, 2.0], [-1.0, 0.5]], dtype=np.float32),
+                np.array([[3.0, -2.0], [0.0, 4.0]], dtype=np.float32),
+            ):
+                observation.assign(values)
+                wp.capture_launch(capture.graph)
+                np.testing.assert_allclose(output.numpy(), values @ weights.T + bias)
+            with open(path, "rb") as stream:
+                self.assertEqual(stream.read(), original)
+
     def test_policy_rejects_invalid_warp_dtype(self):
         """Reject Warp observations with an incompatible dtype."""
         with tempfile.TemporaryDirectory(dir=os.getcwd()) as tmp_dir:
@@ -244,4 +274,6 @@ class TestKaminoRlOnnx(unittest.TestCase):
 
 
 if __name__ == "__main__":
+    newton.utils.setup_console_logging()
+    setup_tests()
     unittest.main()

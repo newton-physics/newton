@@ -39,8 +39,10 @@ import warp as wp
 
 from newton._src.core.types import MAXVAL, Devicelike
 
+from ..exceptions import NewtonWarning
 from ..sim.builder import ShapeFlags
 from ..sim.model import Model
+from ..sim.shape_contact_pairs import _shape_contact_pairs_for_mask
 from .collision_core import sat_box_intersection
 from .contact_data import ContactData
 from .contact_reduction import get_slot
@@ -53,6 +55,7 @@ from .contact_reduction_global import (
 )
 from .contact_reduction_hydroelastic import (
     EPS_SMALL,
+    SPECULATIVE_CONTACT_AREA,
     HydroelasticContactReduction,
     HydroelasticReductionConfig,
     export_hydroelastic_contact_to_buffer,
@@ -122,16 +125,6 @@ _ISO_REFINEMENT_MULTIPLIERS = (8, 32, 128, 256)
 # contact surfaces without making all face-storage allocations five times the
 # already conservative voxel capacity.
 _FACE_CONTACTS_PER_ISO_VOXEL = 2
-
-
-class _MarginContactAreaUnset:
-    """Mark an omitted deprecated margin contact area."""
-
-    def __repr__(self) -> str:
-        return "_DEPRECATED_MARGIN_CONTACT_AREA_UNSET"
-
-
-_DEPRECATED_MARGIN_CONTACT_AREA_UNSET: Any = _MarginContactAreaUnset()
 
 
 @wp.func
@@ -470,14 +463,6 @@ class HydroelasticSDF:
         friction moment per normal bin is preserved between reduced and
         unreduced contacts. Automatically enables ``anchor_contact``.
         Only active when reduce_contacts is True."""
-        margin_contact_area: float = _DEPRECATED_MARGIN_CONTACT_AREA_UNSET
-        """Deprecated speculative-contact area [m^2] retained for compatibility.
-
-        .. deprecated:: 1.6
-
-            This setting still controls speculative-contact activation
-            stiffness during the deprecation period.
-        """
         pressure_func: Any = None
         """Optional Warp function defining ``pressure = f(signed_depth, shape_idx, data)``.
 
@@ -532,14 +517,6 @@ class HydroelasticSDF:
         bias measurably damps the contact response."""
 
         def __post_init__(self):
-            if self.margin_contact_area is _DEPRECATED_MARGIN_CONTACT_AREA_UNSET:
-                self.margin_contact_area = 1.0e-2
-            else:
-                warnings.warn(
-                    "HydroelasticSDF.Config.margin_contact_area is deprecated; remove this setting.",
-                    DeprecationWarning,
-                    stacklevel=2,
-                )
             # NaN fails both bounds (NaN comparisons return False) and lands here too.
             if not (0.0 <= float(self.mc_edge_clamp_min) <= 0.5):
                 raise ValueError(
@@ -646,9 +623,9 @@ class HydroelasticSDF:
             # Chunk scratch for the count-aware prefix scans, so each scan only
             # touches the active records instead of the full worst-case buffer.
             self.iso_scan_scratch = [
-                wp.zeros(_scan_scratch_size(level_input, device), dtype=wp.int32) for level_input in self.input_sizes
+                wp.zeros(_scan_scratch_size(level_input, device), dtype=wp.int64) for level_input in self.input_sizes
             ]
-            self.broad_scan_scratch = wp.zeros(_scan_scratch_size(self.max_num_shape_pairs, device), dtype=wp.int32)
+            self.broad_scan_scratch = wp.zeros(_scan_scratch_size(self.max_num_shape_pairs, device), dtype=wp.int64)
             self.iso_buffer_records = [wp.empty((self.max_num_blocks_broad,), dtype=wp.vec3ui)] + [
                 wp.empty((self.iso_max_dims[i],), dtype=wp.vec3ui) for i in range(4)
             ]
@@ -744,7 +721,6 @@ class HydroelasticSDF:
                     normal_matching=self.config.normal_matching,
                     anchor_contact=self.config.anchor_contact,
                     moment_matching=self.config.moment_matching,
-                    margin_contact_area=self.config.margin_contact_area,
                     hashtable_size_factor=self.config.contact_reduction_hashtable_size_factor,
                 )
                 self.contact_reduction = HydroelasticContactReduction(
@@ -762,16 +738,12 @@ class HydroelasticSDF:
                     device=device,
                     writer_func=writer_func,
                     config=HydroelasticReductionConfig(
-                        margin_contact_area=self.config.margin_contact_area,
                         hashtable_size_factor=self.config.contact_reduction_hashtable_size_factor,
                     ),
                     deterministic=self.deterministic,
                     enable_reduction=False,
                 )
-                self.decode_contacts_kernel = get_decode_contacts_kernel(
-                    self.config.margin_contact_area,
-                    writer_func,
-                )
+                self.decode_contacts_kernel = get_decode_contacts_kernel(writer_func)
 
         self._host_warning_poll_interval = 120
         self._launch_counter = 0
@@ -808,6 +780,8 @@ class HydroelasticSDF:
         config: HydroelasticSDF.Config | None = None,
         writer_func: Any = None,
         deterministic: bool = False,
+        *,
+        shape_pairs_filtered: wp.array[wp.vec2i] | None = None,
     ) -> HydroelasticSDF | None:
         """Create HydroelasticSDF from a model.
 
@@ -816,6 +790,7 @@ class HydroelasticSDF:
             config: Optional configuration for hydroelastic collision handling.
             writer_func: Optional writer function for decoding contacts.
             deterministic: Whether to enable deterministic hydroelastic kernels.
+            shape_pairs_filtered: Explicit candidate pairs, when provided by the pipeline.
 
         Returns:
             HydroelasticSDF instance, or None if no hydroelastic shape pairs exist.
@@ -824,13 +799,11 @@ class HydroelasticSDF:
 
         # Check if any shapes have hydroelastic flag.
         is_hydroelastic = (shape_flags & int(ShapeFlags.HYDROELASTIC)) != 0
-        if not is_hydroelastic.any():
+        if np.count_nonzero(is_hydroelastic) < 2:
             return None
 
-        shape_pairs = model.shape_contact_pairs.numpy().reshape(-1, 2)
-        num_hydroelastic_pairs = int(
-            np.count_nonzero(is_hydroelastic[shape_pairs[:, 0]] & is_hydroelastic[shape_pairs[:, 1]])
-        )
+        hydroelastic_pairs = _shape_contact_pairs_for_mask(model, is_hydroelastic, shape_pairs=shape_pairs_filtered)
+        num_hydroelastic_pairs = len(hydroelastic_pairs)
 
         if num_hydroelastic_pairs == 0:
             return None
@@ -868,10 +841,13 @@ class HydroelasticSDF:
         # walks only its finer SDF and samples the other SDF at those points.
         total_num_tiles = 0
         total_num_active_tiles = 0
-        hydroelastic_pairs = shape_pairs[is_hydroelastic[shape_pairs[:, 0]] & is_hydroelastic[shape_pairs[:, 1]]]
+        shape_types = model.shape_type.numpy()
         for shape_a, shape_b in hydroelastic_pairs:
             sdf_idx_a = int(shape_sdf_index[shape_a])
             sdf_idx_b = int(shape_sdf_index[shape_b])
+            # NarrowPhase sorts by type before routing pairs to hydroelastic.
+            if shape_types[shape_a] > shape_types[shape_b]:
+                sdf_idx_a, sdf_idx_b = sdf_idx_b, sdf_idx_a
             # Match broadphase_collision_pairs_count(): equal-resolution pairs
             # retain shape B as the traversal grid.
             sdf_idx = sdf_idx_b
@@ -1028,7 +1004,7 @@ class HydroelasticSDF:
                     "Hydroelastic reduction dropped contacts due to hashtable insert "
                     f"failures ({hashtable_failures}). Increase rigid_contact_max "
                     "and/or HydroelasticSDF.Config.contact_reduction_hashtable_size_factor.",
-                    RuntimeWarning,
+                    NewtonWarning,
                     stacklevel=2,
                 )
 
@@ -1472,7 +1448,7 @@ def create_count_iso_voxels_block_kernel(pressure_func: Any, integer_center: boo
     sample_sdf = _texture_sample_sdf_zfiltered if paired_samples else _texture_sample_sdf_scalar
     sample_sdf_at_voxel = _texture_sample_sdf_at_voxel_paired if paired_samples else _texture_sample_sdf_at_voxel_scalar
 
-    @wp.kernel(enable_backward=False)
+    @wp.kernel(enable_backward=False, module="unique")
     def count_iso_voxels_block(
         grid_size: int,
         in_buffer_collide_count: wp.array[int],
@@ -1590,7 +1566,7 @@ def create_count_iso_voxel_children_kernel(pressure_func: Any, integer_center: b
     sample_sdf = _texture_sample_sdf_zfiltered if paired_samples else _texture_sample_sdf_scalar
     sample_sdf_at_voxel = _texture_sample_sdf_at_voxel_paired if paired_samples else _texture_sample_sdf_at_voxel_scalar
 
-    @wp.kernel(enable_backward=False)
+    @wp.kernel(enable_backward=False, module="unique")
     def count_iso_voxel_children(
         grid_size: int,
         in_buffer_collide_count: wp.array[int],
@@ -1814,10 +1790,7 @@ def create_mc_iterate_voxel_vertices_func(pressure_func: Any, paired_samples: bo
 # =============================================================================
 
 
-def get_decode_contacts_kernel(
-    margin_contact_area: float,
-    writer_func: Any = None,
-):
+def get_decode_contacts_kernel(writer_func: Any = None):
     """Create a kernel that decodes hydroelastic contacts without reduction.
 
     This kernel is used when reduce_contacts=False. It exports all generated
@@ -1825,15 +1798,13 @@ def get_decode_contacts_kernel(
     read from the contact buffer after being evaluated once during generation.
 
     Args:
-        margin_contact_area: Deprecated compatibility area [m^2] for speculative
-            contact activation stiffness.
         writer_func: Warp function for writing decoded contacts.
 
     Returns:
         A warp kernel that can be launched to decode all contacts.
     """
 
-    @wp.kernel(enable_backward=False)
+    @wp.kernel(enable_backward=False, module="unique")
     def decode_contacts_kernel(
         grid_size: int,
         contact_count: wp.array[int],
@@ -1912,7 +1883,7 @@ def get_decode_contacts_kernel(
             else:
                 k_a = shape_material_kh[shape_a]
                 k_b = shape_material_kh[shape_b]
-                c_stiffness = wp.static(margin_contact_area) * get_effective_stiffness(k_a, k_b)
+                c_stiffness = SPECULATIVE_CONTACT_AREA * get_effective_stiffness(k_a, k_b)
 
             # Create ContactData for the writer function
             contact_data = ContactData()
@@ -1994,7 +1965,7 @@ def get_generate_contacts_kernel(
     edge_clamp_min = float(mc_edge_clamp_min)
     edge_clamp_max = float(1.0 - mc_edge_clamp_min)
 
-    @wp.kernel(enable_backward=False)
+    @wp.kernel(enable_backward=False, module="unique")
     def generate_contacts_kernel(
         grid_size: int,
         iso_voxel_count: wp.array[wp.int32],

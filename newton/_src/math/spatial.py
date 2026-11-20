@@ -22,12 +22,12 @@ def quat_between_vectors_robust(from_vec: wp.vec3, to_vec: wp.vec3, eps: float =
     Returns:
         wp.quat: Rotation quaternion q such that q * from_vec = to_vec.
     """
-    d = wp.dot(from_vec, to_vec)
+    distance_sq_tolerance = 2.0 * eps
 
-    if d >= 1.0 - eps:
+    if wp.length_sq(from_vec - to_vec) <= distance_sq_tolerance:
         return wp.quat_identity()
 
-    if d <= -1.0 + eps:
+    if wp.length_sq(from_vec + to_vec) <= distance_sq_tolerance:
         # Deterministic axis orthogonal to from_vec.
         # Prefer cross with X, fallback to Y if nearly parallel.
         helper = wp.vec3(1.0, 0.0, 0.0)
@@ -202,8 +202,9 @@ def quat_velocity(q_now: wp.quat, q_prev: wp.quat, dt: float) -> wp.vec3:
     if wp.dot(q1, q0) < 0.0:
         q0 = wp.quat(-q0[0], -q0[1], -q0[2], -q0[3])
 
-    # dq = q1 * conj(q0)
-    dq = wp.normalize(wp.mul(q1, wp.quat_inverse(q0)))
+    # Subtract first so identical orientations give exactly zero angular motion.
+    difference = wp.mul(q1 - q0, wp.quat_inverse(q0))
+    dq = wp.quat(difference[0], difference[1], difference[2], wp.dot(q1, q0))
 
     axis, angle = wp.quat_to_axis_angle(dq)
     return axis * (angle / dt)
@@ -234,7 +235,7 @@ def quat_between_axes(*axes: AxisType) -> wp.quat:
         else:
             dq = wp.quat_between_vectors(src.to_vec3(), dst.to_vec3())
             __axis_rotations[(src.value, dst.value)] = dq
-        q *= dq
+        q = dq * q
     return q
 
 

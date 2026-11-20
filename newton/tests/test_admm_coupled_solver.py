@@ -17,9 +17,11 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.sim.collide import _TRIANGLE_PAIRS_MIN_CAPACITY
 from newton._src.solvers.coupled.interface import CouplingInterface
 from newton.solvers import (
     SolverBase,
+    SolverFeatherstone,
     SolverMuJoCo,
     SolverSemiImplicit,
     SolverVBD,
@@ -29,6 +31,7 @@ from newton.solvers.experimental.coupled import (
     SolverCoupled,
     SolverCoupledADMM,
 )
+from newton.tests.unittest_utils import MUJOCO_MODULES, requires
 
 
 @wp.kernel(enable_backward=False)
@@ -142,7 +145,7 @@ def _make_solver(
             ),
             SolverCoupled.Entry(
                 name="vbd",
-                solver=lambda v: SolverVBD(model=v, iterations=5, rigid_compliant_alm=True),
+                solver=lambda v: SolverVBD(model=v, iterations=5),
                 bodies=[int(i) for i in vbd_ids.numpy()],
                 particles=list(range(model.particle_count)),
             ),
@@ -276,10 +279,9 @@ def _build_body_particle_attachment_scene(enabled: bool = True) -> newton.Model:
         inertia=wp.mat33(np.eye(3)),
     )
     particle = builder.add_particle(pos=(0.3, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0, radius=0.0)
-    SolverCoupledADMM.add_body_particle_attachment(
-        builder,
-        body,
+    builder.add_attachment_particle_body(
         particle,
+        body,
         stiffness=500.0,
         enabled=enabled,
     )
@@ -294,7 +296,7 @@ def _build_two_world_body_particle_attachment_scene() -> newton.Model:
     world = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     body = world.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
     particle = world.add_particle(pos=(0.3, 0.0, 0.0), vel=wp.vec3(), mass=1.0, radius=0.0)
-    SolverCoupledADMM.add_body_particle_attachment(world, body, particle, stiffness=500.0)
+    world.add_attachment_particle_body(particle, body, stiffness=500.0)
     world.color()
 
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
@@ -780,6 +782,7 @@ class TestAdmmSmoke(unittest.TestCase):
                     else:
                         SolverCoupledADMM(model, entries, config)
 
+    @requires(*MUJOCO_MODULES)
     def test_construct_and_step_no_attachments(self):
         model, rs, re, _ = _build_cloth_rigid_scene()
         solver = _make_solver(model, rs, re, admm_iters=1)
@@ -788,6 +791,7 @@ class TestAdmmSmoke(unittest.TestCase):
         self.assertTrue(np.all(np.isfinite(body_q)))
         self.assertTrue(np.all(np.isfinite(particle_q)))
 
+    @requires(*MUJOCO_MODULES)
     def test_admm_iters_idempotent_with_no_coupling(self):
         """With gamma=0 and no attachments the iteration count should not
         change the result (no coupling = idempotent outer loop)."""
@@ -803,6 +807,7 @@ class TestAdmmSmoke(unittest.TestCase):
         np.testing.assert_allclose(part_a, part_b, atol=1e-6)
 
 
+@requires(*MUJOCO_MODULES)
 class TestAdmmProximal(unittest.TestCase):
     """Proximal terms affect constrained DOFs only."""
 
@@ -847,7 +852,7 @@ class TestAdmmGraphCapture(unittest.TestCase):
                 ),
                 SolverCoupled.Entry(
                     name="vbd",
-                    solver=lambda v: SolverVBD(model=v, iterations=1, rigid_compliant_alm=True),
+                    solver=lambda v: SolverVBD(model=v, iterations=1),
                     bodies=[body_b],
                 ),
             ],
@@ -963,6 +968,153 @@ class TestAdmmModelJointInterface(unittest.TestCase):
 
         self.assertLess(final_gap, 0.5 * initial_gap)
 
+    def test_split_reduced_articulation_child_gets_builder_free_root_joint(self):
+        """Move a split articulation's child through a builder-equivalent FREE root joint.
+
+        The child entry owns no joint, so its compact view synthesizes the
+        FREE joint ``ModelBuilder.add_body()`` would create, through which
+        the reduced-coordinate child entry moves the body.
+        """
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        builder.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(
+                name="dof_gain",
+                dtype=wp.float32,
+                frequency=newton.Model.AttributeFrequency.JOINT_DOF,
+                namespace="test",
+                default=2.5,
+            )
+        )
+        inertia = wp.mat33(np.eye(3) * 0.01)
+        parent = builder.add_link(mass=1.0, inertia=inertia)
+        child = builder.add_link(
+            xform=wp.transform(wp.vec3(0.3, 0.0, 0.0), wp.quat_identity()), mass=1.0, inertia=inertia, label="child"
+        )
+        root = builder.add_joint_free(parent)
+        ball = builder.add_joint_ball(
+            parent, child, collision_filter_parent=False, custom_attributes={"test:dof_gain": 7.0}
+        )
+        builder.add_articulation([root, ball])
+        model = builder.finalize(device="cpu")
+
+        reference_builder = newton.ModelBuilder()
+        reference_builder.add_body()
+        reference = reference_builder.finalize(device="cpu")
+
+        solver = SolverCoupledADMM(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(name="parent", solver=SolverFeatherstone, bodies=[parent], joints=[root]),
+                SolverCoupled.Entry(name="child", solver=SolverFeatherstone, bodies=[child]),
+            ],
+            coupling=SolverCoupledADMM.Config(
+                iterations=12,
+                rho=40.0,
+                baumgarte=0.5,
+                joint_stiffness=500.0,
+                joint_angular_stiffness=50.0,
+                joint_proximal_bodies=False,
+            ),
+        )
+
+        view = solver.view("child")
+        self.assertEqual(view.joint_count, 1)
+        np.testing.assert_array_equal(view.joint_parent.numpy(), [-1])
+        np.testing.assert_array_equal(view.joint_child.numpy(), [0])
+        np.testing.assert_array_equal(view.joint_ancestor.numpy(), [-1])
+        np.testing.assert_array_equal(view.articulation_start.numpy(), [0, 1])
+        np.testing.assert_array_equal(view.articulation_end.numpy(), [1])
+        np.testing.assert_allclose(view.joint_q.numpy(), model.body_q.numpy()[child], atol=1.0e-7)
+        self.assertEqual(view.joint_label, ["child_free_joint"])
+        for name in (
+            "joint_type",
+            "joint_X_p",
+            "joint_X_c",
+            "joint_dof_dim",
+            "joint_enabled",
+            "joint_target_q",
+            "joint_axis",
+            "joint_target_mode",
+            "joint_limit_lower",
+            "joint_limit_upper",
+            "joint_limit_ke",
+            "joint_limit_kd",
+            "joint_armature",
+            "joint_effort_limit",
+            "joint_velocity_limit",
+            "joint_friction",
+        ):
+            np.testing.assert_array_equal(getattr(view, name).numpy(), getattr(reference, name).numpy(), err_msg=name)
+        # Custom attributes take their registered default, like a builder-created FREE joint.
+        np.testing.assert_array_equal(view.test.dof_gain.numpy(), np.full(6, 2.5, dtype=np.float32))
+
+        # Step from the authored body poses; forward kinematics of the
+        # identity-frame ball joint would place both bodies at the origin.
+        state_0, state_1 = model.state(), model.state()
+        for _ in range(8):
+            solver.step(state_0, state_1, None, None, 1.0 / 120.0)
+            state_0, state_1 = state_1, state_0
+        body_q = state_0.body_q.numpy()
+        initial_gap = abs(model.body_q.numpy()[child, 0] - model.body_q.numpy()[parent, 0])
+
+        # Equal masses meet near the midpoint; a welded child would drag the parent onto x = 0.3.
+        self.assertLess(abs(body_q[child, 0] - body_q[parent, 0]), 0.05 * initial_gap)
+        self.assertLess(body_q[child, 0], 0.25)
+        self.assertGreater(body_q[parent, 0], 0.05)
+
+    def test_split_articulation_proximal_dofs_follow_view_articulations(self):
+        """Map each body to the DOFs of its view articulation, including synthesized FREE roots.
+
+        The chain A-B-C-D alternates entries, so the ``outer`` view holds A's
+        FREE root in one articulation and C's synthesized FREE root with the
+        C-D revolute in another. D moves with C's FREE DOFs, not A's.
+        """
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        inertia = wp.mat33(np.eye(3) * 0.01)
+        a, b, c, d = (
+            builder.add_link(
+                xform=wp.transform(wp.vec3(0.3 * i, 0.0, 0.0), wp.quat_identity()), mass=1.0, inertia=inertia
+            )
+            for i in range(4)
+        )
+        half = wp.transform(wp.vec3(0.15, 0.0, 0.0), wp.quat_identity())
+        half_back = wp.transform(wp.vec3(-0.15, 0.0, 0.0), wp.quat_identity())
+        root = builder.add_joint_free(a)
+        ab = builder.add_joint_ball(a, b, parent_xform=half, child_xform=half_back)
+        bc = builder.add_joint_ball(b, c, parent_xform=half, child_xform=half_back)
+        cd = builder.add_joint_revolute(c, d, axis=(0.0, 1.0, 0.0), parent_xform=half, child_xform=half_back)
+        builder.add_articulation([root, ab, bc, cd])
+        model = builder.finalize(device="cpu")
+
+        solver = SolverCoupledADMM(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(name="outer", solver=SolverFeatherstone, bodies=[a, c, d], joints=[root, cd]),
+                SolverCoupled.Entry(name="middle", solver=SolverFeatherstone, bodies=[b]),
+            ],
+            coupling=SolverCoupledADMM.Config(iterations=4, rho=40.0, gamma=0.5, joint_proximal_bodies=False),
+        )
+
+        entry = solver._entries["outer"]
+        buf = solver._admm_buffers["outer"]
+        starts = buf.body_joint_qd_start.numpy()
+        counts = buf.body_joint_qd_count.numpy()
+        indices = buf.body_joint_qd_indices.numpy()
+        body_dofs = {
+            int(body): indices[starts[local] : starts[local] + counts[local]].tolist()
+            for local, body in enumerate(entry.body_local_to_global.numpy())
+        }
+        # View DOFs: A's FREE root 0-5, C's synthesized FREE root 6-11, C-D revolute 12.
+        self.assertEqual(body_dofs[a], list(range(6)))
+        self.assertEqual(body_dofs[c], list(range(6, 13)))
+        self.assertEqual(body_dofs[d], list(range(6, 13)))
+
+        state_0, state_1 = model.state(), model.state()
+        for _ in range(4):
+            solver.step(state_0, state_1, None, None, 1.0 / 120.0)
+            state_0, state_1 = state_1, state_0
+        self.assertTrue(np.all(np.isfinite(state_0.body_q.numpy())))
+
     def test_joint_proxy_shape_collisions_disabled_after_shape_compaction(self):
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         unrelated = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
@@ -1045,9 +1197,10 @@ class TestAdmmModelJointInterface(unittest.TestCase):
 
 
 class TestAdmmBodyParticleAttachment(unittest.TestCase):
-    """Custom model attributes are converted to rigid-particle ADMM attachments."""
+    """Model attachment rows are converted to rigid-particle ADMM attachments."""
 
-    def test_custom_attribute_attachment_closes_gap(self):
+    def test_model_attachment_closes_gap(self):
+        """Couple a cross-entry model attachment and pull the endpoints together."""
         model = _build_body_particle_attachment_scene()
         solver = _make_semi_body_particle_solver(model)
         initial_gap = np.linalg.norm(model.state().body_q.numpy()[0, :3] - model.state().particle_q.numpy()[0])
@@ -1056,6 +1209,99 @@ class TestAdmmBodyParticleAttachment(unittest.TestCase):
         final_gap = np.linalg.norm(body_q[0, :3] - particle_q[0])
 
         self.assertLess(final_gap, 0.5 * initial_gap)
+
+        model.attachment_particle_body_stiffness.fill_(math.inf)
+        with self.assertRaisesRegex(ValueError, "Hard particle-body attachments require both endpoints.*SolverVBD"):
+            _make_semi_body_particle_solver(model)
+        model.attachment_particle_body_enabled.fill_(False)
+        disabled = _make_semi_body_particle_solver(model)
+        self.assertEqual(disabled._admm_rp_groups, [])
+
+    def test_legacy_attachment_rows_are_consumed(self):
+        """Keep ADMM compatible with the legacy ``coupling:body_particle_attachment`` rows."""
+
+        def build(stiffness: float) -> newton.Model:
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+            body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+            particle = builder.add_particle(pos=(0.3, 0.0, 0.0), vel=wp.vec3(), mass=1.0, radius=0.0)
+            SolverCoupledADMM.register_custom_attributes(builder)
+            builder.add_custom_values(
+                **{
+                    SolverCoupledADMM.BODY_PARTICLE_ATTACHMENT_BODY_ATTR: body,
+                    SolverCoupledADMM.BODY_PARTICLE_ATTACHMENT_PARTICLE_ATTR: particle,
+                    SolverCoupledADMM.BODY_PARTICLE_ATTACHMENT_STIFFNESS_ATTR: stiffness,
+                }
+            )
+            builder.color()
+            model = builder.finalize(device="cpu")
+            model.particle_grid = None
+            return model
+
+        model = build(500.0)
+        self.assertEqual(model.attachment_particle_body_count, 0)
+        self.assertEqual(len(_make_semi_body_particle_solver(model)._admm_rp_groups), 1)
+
+        with self.assertRaisesRegex(ValueError, "is hard; use ModelBuilder.add_attachment_particle_body"):
+            _make_semi_body_particle_solver(build(math.inf))
+
+    def test_single_unsupported_entry_attachment_is_reported(self):
+        """Warn when a same-entry solver cannot apply a model attachment."""
+        model = _build_body_particle_attachment_scene()
+        with self.assertLogs("newton._src.solvers.coupled.solver_coupled_admm", level="WARNING") as logs:
+            solver = SolverCoupledADMM(
+                model,
+                [
+                    SolverCoupled.Entry(
+                        "both",
+                        lambda view: SolverSemiImplicit(view, enable_tri_contact=False),
+                        bodies=range(model.body_count),
+                        particles=range(model.particle_count),
+                    ),
+                ],
+                SolverCoupledADMM.Config(iterations=1),
+            )
+
+        self.assertEqual(solver._admm_rp_groups, [])
+        self.assertTrue(any("only SolverVBD" in message for message in logs.output))
+
+    def test_single_vbd_entry_attachment_is_left_to_vbd(self):
+        """Leave a same-entry model attachment to SolverVBD without an attachment warning."""
+        model = _build_body_particle_attachment_scene()
+        with self.assertNoLogs("newton._src.solvers.coupled.solver_coupled_admm", level="WARNING"):
+            solver = SolverCoupledADMM(
+                model,
+                [
+                    SolverCoupled.Entry(
+                        "both",
+                        lambda view: SolverVBD(view, iterations=0),
+                        bodies=range(model.body_count),
+                        particles=range(model.particle_count),
+                    ),
+                ],
+                SolverCoupledADMM.Config(iterations=1),
+            )
+
+        self.assertEqual(solver._admm_rp_groups, [])
+        self.assertEqual(solver.view("both").attachment_particle_body_count, 1)
+
+    def test_unowned_attachment_endpoint_is_reported(self):
+        """Warn about attachment rows that no entry can apply."""
+        model = _build_body_particle_attachment_scene()
+        with self.assertLogs("newton._src.solvers.coupled.solver_coupled_admm", level="WARNING") as logs:
+            solver = SolverCoupledADMM(
+                model,
+                [
+                    SolverCoupled.Entry(
+                        "body",
+                        lambda view: SolverSemiImplicit(view, enable_tri_contact=False),
+                        bodies=range(model.body_count),
+                    ),
+                ],
+                SolverCoupledADMM.Config(iterations=1),
+            )
+
+        self.assertEqual(solver._admm_rp_groups, [])
+        self.assertTrue(any("not owned by any entry" in message for message in logs.output))
 
     def test_masked_reset_preserves_unselected_attachment_history(self):
         """Clear selected attachment duals and preserve every other row."""
@@ -1101,6 +1347,7 @@ class TestAdmmBodyParticleAttachment(unittest.TestCase):
         np.testing.assert_array_equal(group.lambda_.numpy()[1], lambda_before[1])
 
 
+@requires(*MUJOCO_MODULES)
 class TestAdmmExternalForces(unittest.TestCase):
     """External forces set on ``state_in.body_f`` / ``particle_f`` by the
     caller (e.g. a viewer gizmo) must reach the sub-solvers."""
@@ -1137,13 +1384,22 @@ class TestAdmmExternalForces(unittest.TestCase):
         body_idx = rs  # only MuJoCo body
         body_mass = float(model_b.body_mass.numpy()[body_idx])
         upward_force = 5.0 * body_mass * 9.81  # 5 g upward wrench
+        output_body_f = np.full((model_b.body_count, 6), 0.25, dtype=np.float32)
+        output_particle_f = np.full((model_b.particle_count, 3), 0.5, dtype=np.float32)
         for _ in range(5):
             state_0.clear_forces()
             wrench = np.zeros((model_b.body_count, 6), dtype=np.float32)
             wrench[body_idx, 2] = upward_force  # linear z
             state_0.body_f = wp.array(wrench, dtype=wp.spatial_vector, device=model_b.device)
+            # Distinct output-state sentinels: solvers never write force inputs in either state.
+            state_1.body_f.assign(output_body_f)
+            state_1.particle_f.assign(output_particle_f)
             collision_pipeline.collide(state_0, contacts)
             solver_b.step(state_0, state_1, control, contacts, 1.0 / 60.0)
+            np.testing.assert_array_equal(state_0.body_f.numpy(), wrench)
+            np.testing.assert_array_equal(state_0.particle_f.numpy(), 0.0)
+            np.testing.assert_array_equal(state_1.body_f.numpy(), output_body_f)
+            np.testing.assert_array_equal(state_1.particle_f.numpy(), output_particle_f)
             state_0, state_1 = state_1, state_0
         z_with_force = state_0.body_q.numpy()[0, 2]
 
@@ -1195,7 +1451,7 @@ class TestAdmmCollisionDetection(unittest.TestCase):
                     ),
                 )
                 pipeline = solver._admm_collision_pipeline
-                expected_capacity = capacity if capacity is not None else defaults["max_triangle_pairs"].default
+                expected_capacity = capacity if capacity is not None else _TRIANGLE_PAIRS_MIN_CAPACITY
                 expected_factor = (
                     factor if factor is not None else defaults["contact_reduction_hashtable_size_factor"].default
                 )
@@ -1284,7 +1540,6 @@ class TestAdmmCollisionDetection(unittest.TestCase):
         model.shape_contact_pairs = wp.array(
             np.asarray([(shape_a, shape_b)], dtype=np.int32), dtype=wp.vec2i, device=model.device
         )
-        model.shape_contact_pair_count = 1
 
         with self.assertRaisesRegex(ValueError, "same world"):
             SolverCoupledADMM(

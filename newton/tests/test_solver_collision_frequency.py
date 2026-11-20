@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 import warp as wp
@@ -110,7 +111,7 @@ def test_frequency_validation_and_ownership(test, device):
         _StubSolver(model, collision_pipeline=other_pipeline)
 
     with test.assertRaisesRegex(ValueError, "requires contact matching"):
-        SolverVBD(model, collision_pipeline=pipeline, rigid_contact_history=True, rigid_compliant_alm=False)
+        SolverVBD(model, collision_pipeline=pipeline, rigid_contact_history=True)
 
     # Non-owning solver: contacts property is None, external contacts pass through.
     plain = _NonOwning(model)
@@ -133,7 +134,6 @@ def test_frequency_validation_and_ownership(test, device):
         iterations=1,
         collision_pipeline=pipeline,
         rigid_contact_history=False,
-        rigid_compliant_alm=False,
         collision_frequency_type={Slot.RIGID: Frequency.PRE_POST_INIT},
     )
     with test.assertRaisesRegex(ValueError, "requires contact matching"):
@@ -178,13 +178,15 @@ def test_vbd_rigid_none_refreshes_external_contacts(test, device):
         iterations=1,
         collision_pipeline=pipeline,
         rigid_contact_history=False,
-        rigid_compliant_alm=False,
         collision_frequency_type={Slot.RIGID: Frequency.NONE, Slot.SOFT_SELF_CONTACT: Frequency.NONE},
     )
     state_a, state_b = model.state(), model.state()
+    observables = solver.observables(kinds=set())
 
     pipeline.collide(state_a, solver.contacts)
-    solver.step(state_a, state_b, None, None, 1e-3)
+    with patch.object(solver, "validate_observables", wraps=solver.validate_observables) as validate:
+        solver.step(state_a, state_b, None, None, 1e-3, observables=observables)
+    validate.assert_called_once_with(observables, solver.contacts)
     test.assertGreater(int(solver.body_body_contact_counts.numpy().sum()), 0)
 
     solver.contacts.clear()
@@ -213,7 +215,6 @@ def test_vbd_rigid_iterations_mode(test, device):
             model,
             iterations=3,
             collision_pipeline=pipeline,
-            rigid_compliant_alm=False,
             collision_frequency={Slot.RIGID: freq},
             collision_frequency_type={Slot.RIGID: mode, Slot.SOFT_SELF_CONTACT: Frequency.NONE},
         )
@@ -249,7 +250,6 @@ def test_vbd_rigid_pre_post_init_mode(test, device):
         iterations=1,
         collision_pipeline=pipeline,
         rigid_contact_history=False,
-        rigid_compliant_alm=False,
         collision_frequency_type={Slot.RIGID: Frequency.PRE_POST_INIT},
     )
 
@@ -316,7 +316,6 @@ def test_vbd_rigid_iterations_preserves_contact_duals(test, device):
         iterations=3,
         collision_pipeline=pipeline,
         rigid_contact_history=False,
-        rigid_compliant_alm=False,
         collision_frequency={Slot.RIGID: 1},
         collision_frequency_type={Slot.RIGID: Frequency.ITERATIONS},
     )
@@ -339,9 +338,9 @@ def test_vbd_rigid_iterations_refreshes_contact_frame(test, device):
             self.contact_frame_steps = []
             super().__init__(*args, **kwargs)
 
-        def _step_body_body_contact_frame(self, contacts, body_q, dt, lambda_retention, penalty_decay):
-            self.contact_frame_steps.append((lambda_retention, penalty_decay))
-            super()._step_body_body_contact_frame(contacts, body_q, dt, lambda_retention, penalty_decay)
+        def _step_body_body_contact_frame(self, contacts, body_q, dt, lambda_retention, **kwargs):
+            self.contact_frame_steps.append(lambda_retention)
+            super()._step_body_body_contact_frame(contacts, body_q, dt, lambda_retention, **kwargs)
 
     model = _build_model(device)
     pipeline = newton.CollisionPipeline(model, broad_phase="nxn", contact_matching="latest")
@@ -349,7 +348,6 @@ def test_vbd_rigid_iterations_refreshes_contact_frame(test, device):
         model,
         iterations=3,
         collision_pipeline=pipeline,
-        rigid_compliant_alm=True,
         collision_frequency={Slot.RIGID: 1},
         collision_frequency_type={Slot.RIGID: Frequency.ITERATIONS},
     )
@@ -357,7 +355,7 @@ def test_vbd_rigid_iterations_refreshes_contact_frame(test, device):
     solver.step(model.state(), model.state(), None, None, 1e-3)
 
     test.assertEqual(len(solver.contact_frame_steps), 4)
-    test.assertEqual(solver.contact_frame_steps[1:], [(1.0, 1.0), (1.0, 1.0), (1.0, 1.0)])
+    test.assertEqual(solver.contact_frame_steps[1:], [1.0, 1.0, 1.0])
 
 
 def test_vbd_rigid_iterations_refreshes_body_particle_contacts(test, device):
@@ -384,7 +382,6 @@ def test_vbd_rigid_iterations_refreshes_body_particle_contacts(test, device):
         iterations=3,
         collision_pipeline=pipeline,
         rigid_contact_history=False,
-        rigid_compliant_alm=False,
         collision_frequency={Slot.RIGID: 1},
         collision_frequency_type={Slot.RIGID: Frequency.ITERATIONS, Slot.SOFT_SELF_CONTACT: Frequency.NONE},
     )
@@ -775,8 +772,8 @@ def test_vbd_pipeline_parity_and_deprecations(test, device):
     q_b = run(model_b, solver_b, None)
     assert_np_equal(q_b, q_a, tol=1e-6)
 
-    # Deprecated radius selects the legacy interpretation and warns.
-    with test.assertWarns(DeprecationWarning):
+    # Deprecated radius selects the legacy interpretation and warns at the caller.
+    with test.assertWarns(DeprecationWarning) as caught:
         SolverVBD(
             _build_cloth_model(device),
             iterations=1,
@@ -784,14 +781,16 @@ def test_vbd_pipeline_parity_and_deprecations(test, device):
             particle_self_contact_radius=0.02,
             particle_self_contact_margin=0.04,
         )
+    test.assertEqual(caught.filename, __file__)
     # Margin-only calls retain their old query-radius meaning during deprecation.
-    with test.assertWarns(DeprecationWarning):
+    with test.assertWarns(DeprecationWarning) as caught:
         legacy_margin = SolverVBD(
             _build_cloth_model(device),
             iterations=1,
             particle_enable_self_contact=True,
             particle_self_contact_margin=0.4,
         )
+    test.assertEqual(caught.filename, __file__)
     test.assertEqual(legacy_margin.particle_self_contact_margin, 0.2)
     test.assertEqual(legacy_margin.particle_self_contact_gap, 0.2)
     # Invalid ignored legacy geometry still warns but is not rejected.
@@ -813,8 +812,9 @@ def test_vbd_pipeline_parity_and_deprecations(test, device):
             particle_self_contact_margin=0.1,
         )
     # Deprecated interval warns; combining it with an explicit slot raises.
-    with test.assertWarns(DeprecationWarning):
+    with test.assertWarns(DeprecationWarning) as caught:
         SolverVBD(_build_cloth_model(device), iterations=1, particle_collision_detection_interval=2)
+    test.assertEqual(caught.filename, __file__)
     with test.assertRaises(ValueError):
         SolverVBD(
             _build_cloth_model(device),

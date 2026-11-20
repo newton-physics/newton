@@ -14,10 +14,11 @@ import warp as wp
 
 import newton
 import newton.usd
-from newton.tests.unittest_utils import USD_AVAILABLE
+from newton import NewtonWarning
+from newton.tests.unittest_utils import has_module, requires
 from newton.viewer import ViewerRTX, ViewerUSD
 
-if USD_AVAILABLE:
+if has_module("pxr.Usd"):
     from pxr import UsdGeom, UsdShade
 
 
@@ -39,7 +40,7 @@ def _build_box_model() -> newton.Model:
     return builder.finalize()
 
 
-@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+@requires("pxr.Usd")
 class TestViewerUSD(unittest.TestCase):
     def _make_viewer(self):
         # Allocate a private work dir per test so the texture PNG and any
@@ -133,6 +134,22 @@ class TestViewerUSD(unittest.TestCase):
                 np.testing.assert_array_equal(exported.GetFaceVertexIndicesAttr().Get(), mesh.indices)
                 np.testing.assert_allclose(exported.GetNormalsAttr().Get(viewer._frame_index), mesh.normals)
 
+    def test_log_mesh_authors_extent_per_frame(self):
+        """Author extent alongside deforming mesh points."""
+        viewer = self._make_viewer()
+        indices = wp.array([0, 1, 2], dtype=wp.int32)
+        frames = (
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 2.0, 0.0]],
+            [[-1.0, 0.0, 0.0], [1.0, 0.0, 3.0], [0.0, 2.0, 0.0]],
+        )
+        for frame, points in enumerate(frames):
+            viewer.begin_frame(frame / viewer.fps)
+            viewer.log_mesh("/deforming", wp.array(points, dtype=wp.vec3), indices)
+
+        extent = UsdGeom.Mesh.Get(viewer.stage, "/root/deforming").GetExtentAttr()
+        for frame, points in enumerate(frames):
+            np.testing.assert_allclose(extent.Get(frame), [np.min(points, axis=0), np.max(points, axis=0)])
+
     def test_log_points_keeps_per_point_wp_vec3_colors_for_three_points(self):
         viewer = self._make_viewer()
 
@@ -189,8 +206,8 @@ class TestViewerUSD(unittest.TestCase):
         self.assertFalse(prim_after.IsValid())
         self.assertTrue(os.path.exists(temp_file.name))
 
-    def test_partial_texture_rewrite_keeps_published_png_intact(self):
-        """A crash mid-write must not corrupt the previously published PNG."""
+    def test_partial_texture_write_can_be_retried(self):
+        """Keep failed exports unpublished so a retry writes a complete image."""
         from PIL import Image
 
         viewer = self._make_viewer()
@@ -211,30 +228,57 @@ class TestViewerUSD(unittest.TestCase):
 
         viewer.begin_frame(0.0)
         viewer.log_mesh(mesh_name, points, indices, uvs=uvs, texture=texture)
+        viewer.log_instances(
+            "/copy",
+            mesh_name,
+            wp.array([wp.transform_identity()], dtype=wp.transform),
+            None,
+            wp.array([[1, 1, 1]], dtype=wp.vec3),
+            None,
+        )
         tex_path = self._logged_texture_path(viewer, mesh_name)
         with open(tex_path, "rb") as published_file:
             published = published_file.read()
 
         real_save = Image.Image.save
+        fail_next_save = True
 
         def partial_save(image, file_path, *args, **kwargs):
+            nonlocal fail_next_save
+            if not fail_next_save:
+                return real_save(image, file_path, *args, **kwargs)
+            fail_next_save = False
             buffer = io.BytesIO()
             kwargs.setdefault("format", "PNG")
             real_save(image, buffer, *args, **kwargs)
             partial_png = buffer.getvalue()
             with open(file_path, "wb") as partial_file:
                 partial_file.write(partial_png[: len(partial_png) // 2])
+            # Only the prototype export fails; an accidental instance retry would succeed.
             raise OSError("simulated crash mid-write")
 
-        viewer.clear_model()
-        viewer.begin_frame(0.0)
+        # Exports are named by content, so a crash can only hit a new image's file.
+        replacement = np.ascontiguousarray(255 - texture)
         with mock.patch("PIL.Image.Image.save", partial_save), self.assertWarns(UserWarning):
-            viewer.log_mesh(mesh_name, points, indices, uvs=uvs, texture=texture)
+            viewer.log_mesh(mesh_name, points, indices, uvs=uvs, texture=replacement)
+
+        for path in ("/root/textured_mesh", "/root/copy/instance_0"):
+            shader = self._get_bound_preview_surface(viewer.stage.GetPrimAtPath(path))
+            self.assertFalse(shader.GetInput("diffuseColor").HasConnectedSource())
 
         with open(tex_path, "rb") as published_file:
             self.assertEqual(published_file.read(), published)
         leaked = sorted(name for name in os.listdir(viewer._test_work_dir) if name.endswith(".tmp"))
         self.assertEqual(leaked, [])
+        self.assertEqual(
+            sorted(name for name in os.listdir(viewer._test_work_dir) if name.endswith(".png")),
+            [os.path.basename(tex_path)],
+        )
+        viewer.log_mesh(mesh_name, points, indices, uvs=uvs, texture=replacement)
+        replacement_path = self._logged_texture_path(viewer, mesh_name)
+        self.assertNotEqual(replacement_path, tex_path)
+        with Image.open(replacement_path) as image:
+            np.testing.assert_array_equal(np.asarray(image), replacement)
 
     def test_save_texture_atomic_cleans_up_tmp_on_failure(self):
         """A failure during the temp-file write must not leave a `.tmp` sibling behind."""
@@ -384,7 +428,8 @@ class TestViewerUSD(unittest.TestCase):
         opacities = wp.array([0.25, 0.75], dtype=wp.float32)
 
         viewer.begin_frame(0.0)
-        viewer.log_mesh("/opacity_mesh", points, indices)
+        viewer.log_mesh("/opacity_mesh", points, indices, roughness=0.1, metallic=0.7)
+        viewer.log_instances("/inherited_instances", "/opacity_mesh", xforms, scales, None, None)
         viewer.log_instances(
             "/opacity_instances",
             "/opacity_mesh",
@@ -404,6 +449,43 @@ class TestViewerUSD(unittest.TestCase):
         np.testing.assert_allclose(np.asarray(shader0.GetInput("diffuseColor").Get()), [0.2, 0.4, 0.6], atol=1e-6)
         self.assertAlmostEqual(shader0.GetInput("roughness").Get(), 0.25, places=6)
         self.assertAlmostEqual(shader0.GetInput("metallic").Get(), 0.1, places=6)
+
+        viewer.log_instances("/default_instances", "/opacity_mesh", xforms, scales, colors, None)
+        default_prim = viewer.stage.GetPrimAtPath("/root/default_instances/instance_0")
+        default_shader = self._get_bound_preview_surface(default_prim)
+        self.assertAlmostEqual(default_shader.GetInput("roughness").Get(), 0.5)
+        self.assertAlmostEqual(default_shader.GetInput("metallic").Get(), 0.0)
+        self.assertFalse(default_shader.GetInput("diffuseColor").HasConnectedSource())
+        viewer.log_mesh(
+            "/opacity_mesh",
+            points,
+            indices,
+            uvs=wp.array([[0, 0], [1, 0], [0, 1]], dtype=wp.vec2),
+            texture=np.full((2, 2, 3), 255, dtype=np.uint8),
+        )
+        for prim, roughness, metallic in (
+            (default_prim, 0.5, 0.0),
+            (viewer.stage.GetPrimAtPath("/root/opacity_instances/instance_0"), 0.25, 0.1),
+            (viewer.stage.GetPrimAtPath("/root/inherited_instances/instance_0"), 0.1, 0.7),
+        ):
+            shader = self._get_bound_preview_surface(prim)
+            self.assertAlmostEqual(shader.GetInput("roughness").Get(), roughness, places=6)
+            self.assertAlmostEqual(shader.GetInput("metallic").Get(), metallic, places=6)
+        default_shader = self._get_bound_preview_surface(default_prim)
+        texture_source = default_shader.GetInput("diffuseColor").GetConnectedSource()
+        self.assertIsNotNone(texture_source)
+        self.assertEqual(texture_source[0].GetPrim().GetName(), "DiffuseTexture")
+
+        other_points = wp.array(points.numpy() + np.array([2.0, 0.0, 0.0]), dtype=wp.vec3)
+        uvs = wp.array([[0, 0], [1, 0], [0, 1]], dtype=wp.vec2)
+        viewer.log_mesh("/other_mesh", other_points, indices, uvs=uvs, texture=np.zeros((2, 2, 3), dtype=np.uint8))
+        previous_material, _ = UsdShade.MaterialBindingAPI(default_prim).ComputeBoundMaterial()
+        # USD currently keeps the old prototype when a group name is reused.
+        # A texture refresh must not apply the new prototype's material to it.
+        viewer.log_instances("/default_instances", "/other_mesh", xforms, scales, None, None)
+        viewer.log_mesh("/other_mesh", other_points, indices, uvs=uvs, texture=np.full((2, 2, 3), 127, dtype=np.uint8))
+        current_material, _ = UsdShade.MaterialBindingAPI(default_prim).ComputeBoundMaterial()
+        self.assertEqual(current_material.GetPath(), previous_material.GetPath())
 
     def test_log_instances_rejects_mismatched_opacity_count(self):
         """Reject opacity arrays that do not match instance count."""
@@ -638,6 +720,169 @@ class TestViewerUSD(unittest.TestCase):
         mesh = UsdGeom.Mesh.Get(viewer.stage, viewer._get_path("/dynamic_mesh"))
         self.assertEqual(len(mesh.GetNormalsAttr().Get(0)), 3)
         np.testing.assert_allclose(mesh.GetNormalsAttr().Get(1), [[0, 0, 1]] * 3)
+
+    def test_log_geo_exports_gprims(self):
+        """Write analytic shapes as Gprims and keep meshes for the rest."""
+        viewer = self._make_viewer()
+        viewer.begin_frame(0.0)
+        viewer.log_geo("/sphere", newton.GeoType.SPHERE, (0.5,), 0.0, True)
+        for geo_type in (newton.GeoType.CAPSULE, newton.GeoType.CYLINDER, newton.GeoType.CONE):
+            viewer.log_geo(f"/{geo_type.name.lower()}", geo_type, (0.2, 0.3), 0.0, True)
+        viewer.log_geo("/box", newton.GeoType.BOX, (0.1, 0.2, 0.3), 0.0, True)
+        viewer.log_geo("/ellipsoid", newton.GeoType.ELLIPSOID, (0.1, 0.2, 0.3), 0.0, True)
+        viewer.log_geo("/barrel", newton.GeoType.CYLINDER, (0.2, 0.3, 0.5), 0.0, True)
+        viewer.log_geo("/plane", newton.GeoType.PLANE, (1.0, 1.0), 0.0, True)
+
+        stage = viewer.stage
+        self.assertAlmostEqual(UsdGeom.Sphere.Get(stage, "/root/sphere").GetRadiusAttr().Get(0), 0.5)
+        for name, schema in (("capsule", UsdGeom.Capsule), ("cylinder", UsdGeom.Cylinder), ("cone", UsdGeom.Cone)):
+            gprim = schema.Get(stage, f"/root/{name}")
+            self.assertAlmostEqual(gprim.GetRadiusAttr().Get(0), 0.2, places=6)
+            self.assertAlmostEqual(gprim.GetHeightAttr().Get(0), 0.6, places=6)
+            self.assertEqual(gprim.GetAxisAttr().Get(), UsdGeom.Tokens.z)
+        for name, schema in (("box", UsdGeom.Cube), ("ellipsoid", UsdGeom.Sphere)):
+            gprim = schema.Get(stage, f"/root/{name}/geom")
+            bound = gprim.ComputeLocalBound(0, UsdGeom.Tokens.default_).ComputeAlignedRange()
+            np.testing.assert_allclose(bound.GetMax(), [0.1, 0.2, 0.3], rtol=1e-6)
+        self.assertTrue(stage.GetPrimAtPath("/root/barrel").IsA(UsdGeom.Mesh))
+        self.assertTrue(stage.GetPrimAtPath("/root/plane").IsA(UsdGeom.Mesh))
+
+    def test_log_geo_replaces_prototype_of_another_type(self):
+        """Re-log a name with a new type without stale children, and keep the unit ellipsoid default."""
+        viewer = self._make_viewer()
+        viewer.begin_frame(0.0)
+        stage = viewer.stage
+
+        viewer.log_geo("/shape", newton.GeoType.ELLIPSOID, (), 0.0, True)
+        bound = UsdGeom.Sphere.Get(stage, "/root/shape/geom").ComputeLocalBound(0, UsdGeom.Tokens.default_)
+        np.testing.assert_allclose(bound.ComputeAlignedRange().GetMax(), [1.0, 1.0, 1.0], rtol=1e-6)
+
+        with self.assertWarns(NewtonWarning):
+            viewer.log_geo("/shape", newton.GeoType.SPHERE, (0.5,), 0.0, True)
+        self.assertTrue(stage.GetPrimAtPath("/root/shape").IsA(UsdGeom.Sphere))
+        self.assertFalse(stage.GetPrimAtPath("/root/shape/geom"))
+
+        with self.assertWarns(NewtonWarning):
+            viewer.log_geo("/shape", newton.GeoType.PLANE, (1.0, 1.0), 0.0, True)
+        self.assertTrue(stage.GetPrimAtPath("/root/shape").IsA(UsdGeom.Mesh))
+
+        viewer.log_geo("/gprim", newton.GeoType.SPHERE, (0.5,), 0.0, True)
+        points = wp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=wp.vec3)
+        indices = wp.array([0, 1, 2], dtype=wp.int32)
+        with self.assertWarns(NewtonWarning):
+            viewer.log_mesh("/gprim", points, indices)
+        self.assertTrue(stage.GetPrimAtPath("/root/gprim").IsA(UsdGeom.Mesh))
+
+    def test_log_geo_replaces_scaled_prototype_of_another_type(self):
+        """Swapping box and ellipsoid replaces the prototype instead of keeping the old scale samples."""
+        viewer = self._make_viewer()
+        stage = viewer.stage
+        viewer.begin_frame(0.0)
+        viewer.log_geo("/shape", newton.GeoType.BOX, (0.1, 0.2, 0.3), 0.0, True)
+
+        for frame, (geo_type, schema) in enumerate(
+            ((newton.GeoType.ELLIPSOID, UsdGeom.Sphere), (newton.GeoType.BOX, UsdGeom.Cube)), start=1
+        ):
+            viewer.begin_frame(frame / viewer.fps)
+            with self.assertWarns(NewtonWarning):
+                viewer.log_geo("/shape", geo_type, (0.4, 0.5, 0.6), 0.0, True)
+            gprim = stage.GetPrimAtPath("/root/shape/geom")
+            self.assertTrue(gprim.IsA(schema))
+            # The replacement's first sample also holds for earlier frames.
+            bound = schema(gprim).ComputeLocalBound(0, UsdGeom.Tokens.default_).ComputeAlignedRange()
+            np.testing.assert_allclose(bound.GetMax(), [0.4, 0.5, 0.6], rtol=1e-6)
+
+    def test_log_geo_drops_appearance_of_replaced_mesh(self):
+        """A Gprim replacing a colored mesh prototype does not inherit the mesh's appearance."""
+        viewer = self._make_viewer()
+        viewer.begin_frame(0.0)
+        points = wp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=wp.vec3)
+        indices = wp.array([0, 1, 2], dtype=wp.int32)
+        viewer.log_mesh("/shape", points, indices, color=(0.9, 0.1, 0.1), opacity=0.5)
+        with self.assertWarns(NewtonWarning):
+            viewer.log_geo("/shape", newton.GeoType.SPHERE, (0.5,), 0.0, True)
+
+        xforms = wp.array([wp.transform_identity()], dtype=wp.transform)
+        viewer.log_instances("/instances", "/shape", xforms, None, None, None)
+        instance = viewer.stage.GetPrimAtPath("/root/instances/instance_0")
+        material, _binding = UsdShade.MaterialBindingAPI(instance).ComputeBoundMaterial()
+        self.assertFalse(material)
+
+    def test_log_geo_animates_gprim_size(self):
+        """Re-logging a Gprim prototype keeps earlier sizes as time samples."""
+        viewer = self._make_viewer()
+        for frame, radius in ((0, 0.5), (1, 0.25)):
+            viewer.begin_frame(frame / viewer.fps)
+            viewer.log_geo("/sphere", newton.GeoType.SPHERE, (radius,), 0.0, True)
+            viewer.log_geo("/box", newton.GeoType.BOX, (radius, radius, radius), 0.0, True)
+
+        sphere = UsdGeom.Sphere.Get(viewer.stage, "/root/sphere")
+        cube = UsdGeom.Cube.Get(viewer.stage, "/root/box/geom")
+        for frame, radius in ((0, 0.5), (1, 0.25)):
+            self.assertAlmostEqual(sphere.GetRadiusAttr().Get(frame), radius)
+            np.testing.assert_allclose(sphere.GetExtentAttr().Get(frame)[1], [radius] * 3)
+            bound = cube.ComputeLocalBound(frame, UsdGeom.Tokens.default_).ComputeAlignedRange()
+            np.testing.assert_allclose(bound.GetMax(), [radius] * 3, rtol=1e-6)
+
+    def test_log_shapes_instances_gprim_prototypes(self):
+        """Render Gprim instances with their color while prototypes stay hidden."""
+        viewer = self._make_viewer()
+        xforms = wp.array([wp.transform(wp.vec3(1.0, 2.0, 3.0), wp.quat_identity())], dtype=wp.transform)
+        colors = wp.array([wp.vec3(0.9, 0.1, 0.1)], dtype=wp.vec3)
+
+        viewer.begin_frame(0.0)
+        viewer.log_shapes("/spheres", newton.GeoType.SPHERE, (0.5,), xforms, colors)
+        viewer.log_shapes("/boxes", newton.GeoType.BOX, (0.1, 0.2, 0.3), xforms, colors)
+
+        sphere = viewer.stage.GetPrimAtPath("/root/spheres/instance_0")
+        cube = viewer.stage.GetPrimAtPath("/root/boxes/instance_0/geom")
+        self.assertTrue(sphere.IsA(UsdGeom.Sphere))
+        self.assertTrue(cube.IsA(UsdGeom.Cube))
+        for prim in (sphere, cube):
+            self.assertEqual(UsdGeom.Imageable(prim).ComputeVisibility(0), UsdGeom.Tokens.inherited)
+            color = UsdGeom.PrimvarsAPI(prim).FindPrimvarWithInheritance("displayColor").Get(0)
+            np.testing.assert_allclose(color, [[0.9, 0.1, 0.1]], rtol=1e-6)
+        bound = UsdGeom.Imageable(cube).ComputeWorldBound(0, UsdGeom.Tokens.default_).ComputeAlignedRange()
+        np.testing.assert_allclose(bound.GetMin(), [0.9, 1.8, 2.7], rtol=1e-6)
+        np.testing.assert_allclose(bound.GetMax(), [1.1, 2.2, 3.3], rtol=1e-6)
+        for prototype in viewer.stage.GetPrimAtPath("/root/geometry").GetChildren():
+            self.assertEqual(UsdGeom.Imageable(prototype).ComputeVisibility(0), UsdGeom.Tokens.invisible)
+
+    def test_accumulated_frame_time_maps_to_consecutive_time_codes(self):
+        """Author one time code per frame when time is accumulated from a float step."""
+        num_frames = 32
+        for steps_per_frame in (1, 2):
+            with self.subTest(steps_per_frame=steps_per_frame):
+                viewer = self._make_viewer()
+                step_dt = 1.0 / (viewer.fps * steps_per_frame)
+                sim_time = 0.0
+                for step in range(num_frames * steps_per_frame):
+                    viewer.begin_frame(sim_time)
+                    points = wp.array([[float(step), 0.0, 0.0]], dtype=wp.vec3)
+                    path = viewer.log_points("/points", points, radii=0.01)
+                    viewer.end_frame()
+                    sim_time += step_dt
+
+                points_attr = UsdGeom.Points.Get(viewer.stage, path).GetPointsAttr()
+                self.assertEqual([int(t) for t in points_attr.GetTimeSamples()], list(range(num_frames)))
+                # Each time code holds the last step logged within its frame.
+                last_steps = [int(points_attr.Get(frame)[0][0]) for frame in range(num_frames)]
+                self.assertEqual(last_steps, [(frame + 1) * steps_per_frame - 1 for frame in range(num_frames)])
+                self.assertEqual(viewer.stage.GetEndTimeCode(), num_frames - 1)
+
+    def test_frame_time_maps_to_the_frame_containing_it(self):
+        """Map negative, zero and fractional times to the time code of the frame that contains them."""
+        viewer = self._make_viewer()
+        frame_codes = [-2.0, -1.5, -1.0, 0.0, 0.5]
+        for step, frame_code in enumerate(frame_codes):
+            viewer.begin_frame(frame_code / viewer.fps)
+            points = wp.array([[float(step), 0.0, 0.0]], dtype=wp.vec3)
+            path = viewer.log_points("/points", points, radii=0.01)
+            viewer.end_frame()
+
+        points_attr = UsdGeom.Points.Get(viewer.stage, path).GetPointsAttr()
+        self.assertEqual([int(t) for t in points_attr.GetTimeSamples()], [-2, -1, 0])
+        self.assertEqual([int(points_attr.Get(code)[0][0]) for code in (-2, -1, 0)], [1, 2, 4])
 
 
 if __name__ == "__main__":

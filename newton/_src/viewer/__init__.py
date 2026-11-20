@@ -39,6 +39,7 @@ Layers:
     activated layer's model.
 """
 
+from .picking import Picking
 from .viewer import Layer, ViewerBase
 from .viewer_file import ViewerFile
 from .viewer_gl import ViewerGL
@@ -50,6 +51,7 @@ from .viewer_viser import ViewerViser
 
 __all__ = [
     "Layer",
+    "Picking",
     "ViewerBase",
     "ViewerFile",
     "ViewerGL",

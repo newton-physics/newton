@@ -4,26 +4,35 @@
 """Regressions for captured sparse assembly and numerical ordering."""
 
 import unittest
+from types import SimpleNamespace
 
 import numpy as np
 import warp as wp
 
+import newton
 from newton._src.solvers.kamino._src.core.types import vec6f
 from newton._src.solvers.kamino._src.linalg.core import DenseLinearOperatorData, DenseSquareMultiLinearInfo
 from newton._src.solvers.kamino._src.linalg.factorize.llt_blocked_rcm_solver import LLTBlockedRCMSolver
-from newton._src.solvers.kamino._src.solvers.dvi.sparse_kernels import (
+from newton._src.solvers.kamino._src.solvers.scc.sparse import (
+    _build_sparse_bilateral_pairs,
+    _build_sparse_bilateral_row_nzb_topology,
+    group_bilateral_pairs,
+)
+from newton._src.solvers.kamino._src.solvers.scc.sparse_kernels import (
     _build_sparse_bilateral_block,
     _set_sparse_bilateral_diagonal,
 )
+from newton.tests.kamino import setup_test_output, setup_tests
+from newton.tests.unittest_utils import NewtonTestCase
 
 
 @wp.kernel
 def _assemble(
-    source: wp.array[wp.float32],
+    source: wp.array2d[wp.float32],
     inverse: wp.array[wp.int32],
     permuted: bool,
     n: int,
-    target: wp.array[wp.float32],
+    target: wp.array2d[wp.float32],
 ):
     row, col = wp.tid()
     target_row = row
@@ -31,10 +40,57 @@ def _assemble(
     if permuted:
         target_row = inverse[row]
         target_col = inverse[col]
-    target[target_row * n + target_col] = source[row * n + col]
+    target[0, target_row * n + target_col] = source[0, row * n + col]
 
 
-class TestKaminoSparseAssemblyLifecycle(unittest.TestCase):
+class TestKaminoSparseTopology(NewtonTestCase):
+    def setUp(self):
+        setup_test_output(self)
+
+    def test_preserve_block_order_across_worlds(self):
+        """Preserve block ordering, bounded rows, and empty worlds in cached topology."""
+        device = wp.get_device("cpu")
+
+        def ints(values):
+            return wp.array(values, dtype=wp.int32, device=device)
+
+        jacobian = SimpleNamespace(
+            nzb_start=ints([2, 8, 9]),
+            nzb_coords=ints(
+                [(-1, -1), (-1, -1), (2, 0), (0, 6), (1, 0), (0, 0), (3, 0), (1, 6), (-1, -1), (1, 0), (0, 0)]
+            ),
+        )
+        problem = SimpleNamespace(
+            delassus=SimpleNamespace(constraint_jacobian=jacobian),
+            data=SimpleNamespace(njc=ints([3, 0, 2]), nbc=ints([1, 0, 0])),
+        )
+        path = SimpleNamespace(
+            device=device,
+            jacobians=SimpleNamespace(joint_constraint_nzb_count=ints([6, 0, 2])),
+            model=SimpleNamespace(info=SimpleNamespace(bodies_offset=ints([0, 2, 5]))),
+        )
+        _build_sparse_bilateral_pairs(path, problem)
+        expected_pairs = [
+            (0, 0, 1, 1, 3, 7),
+            (0, 0, 1, 0, 5, 4),
+            (0, 0, 2, 0, 5, 2),
+            (0, 1, 2, 0, 4, 2),
+            (2, 0, 1, 5, 10, 9),
+        ]
+        np.testing.assert_array_equal(np.stack([a.numpy() for a in path.bilateral_nzb_pairs], axis=1), expected_pairs)
+        np.testing.assert_array_equal(path.bilateral_entry_starts.numpy(), [0, 2, 3, 4, 5])
+
+        _build_sparse_bilateral_row_nzb_topology(path, problem)
+        offsets, starts, indices = path.bilateral_row_nzb_topology
+        np.testing.assert_array_equal(offsets.numpy(), [0, 4, 4])
+        np.testing.assert_array_equal(starts.numpy(), [0, 2, 4, 5, 6, 7, 8])
+        np.testing.assert_array_equal(indices.numpy(), [3, 5, 4, 7, 2, 6, 10, 9])
+
+
+class TestKaminoSparseAssemblyLifecycle(NewtonTestCase):
+    def setUp(self):
+        setup_test_output(self)
+
     def test_capture_reset_and_changing_values(self):
         """Preserve numeric ordering through first use, resets, and changing values."""
         if not wp.is_cuda_available() or not wp.is_conditional_graph_supported():
@@ -53,8 +109,8 @@ class TestKaminoSparseAssemblyLifecycle(unittest.TestCase):
             with self.subTest(parallel=parallel):
                 info = DenseSquareMultiLinearInfo()
                 info.finalize(dimensions=[n], dtype=wp.float32, device=device)
-                matrix = wp.zeros(n * n, dtype=wp.float32, device=device)
-                source = wp.array(first.ravel(), dtype=wp.float32, device=device)
+                matrix = wp.zeros((1, n * n), dtype=wp.float32, device=device)
+                source = wp.array(first.reshape(1, -1), dtype=wp.float32, device=device)
                 solver = LLTBlockedRCMSolver(
                     operator=DenseLinearOperatorData(info=info, mat=matrix),
                     parallel_factorization=parallel,
@@ -101,17 +157,17 @@ class TestKaminoSparseAssemblyLifecycle(unittest.TestCase):
                 graph = capture()
                 self.assertEqual(int(solver._structural_ready.numpy()[0]), 0)
                 # Values may change after capture but before its first replay.
-                source.assign(second.ravel())
+                source.assign(second.reshape(1, -1))
                 wp.capture_launch(graph)
                 check(second, fresh_order=True)
-                source.assign(first.ravel())
+                source.assign(first.reshape(1, -1))
                 wp.capture_launch(graph)
                 check(first)
                 solver.reset()
                 self.assertEqual(int(solver._structural_ready.numpy()[0]), 0)
                 wp.capture_launch(graph)
                 check(first, fresh_order=True)
-                source.assign(second.ravel())
+                source.assign(second.reshape(1, -1))
                 solver.compute_sparse(assemble)
                 self.assertEqual(int(solver._structural_ready.numpy()[0]), 0)
                 wp.capture_launch(graph)
@@ -153,7 +209,10 @@ def _relative_error(actual, expected):
     return float(np.linalg.norm(actual - expected) / max(np.linalg.norm(expected), 1.0e-30))
 
 
-class TestKaminoSparseAssemblyQuality(unittest.TestCase):
+class TestKaminoSparseAssemblyQuality(NewtonTestCase):
+    def setUp(self):
+        setup_test_output(self)
+
     def test_redundant_cancelling_bridge(self):
         """Preserve numerical ordering and accuracy as a structural bridge becomes nonzero."""
         if not wp.is_cuda_available():
@@ -173,19 +232,22 @@ class TestKaminoSparseAssemblyQuality(unittest.TestCase):
         coordinates = [
             (row, int(body)) for row in range(n) for body in np.flatnonzero(np.any(jacobian[row] != 0, axis=1))
         ]
-        pairs = np.asarray(
-            [
-                (0, row, col, body, i, j)
-                for i, (row, body) in enumerate(coordinates)
-                for j, (col, other) in enumerate(coordinates)
-                if row < col and body == other
-            ],
-            dtype=np.int32,
-        ).T
+        pairs, entry_starts = group_bilateral_pairs(
+            np.asarray(
+                [
+                    (0, row, col, body, i, j)
+                    for i, (row, body) in enumerate(coordinates)
+                    for j, (col, other) in enumerate(coordinates)
+                    if row < col and body == other
+                ],
+                dtype=np.int32,
+            ).T
+        )
         pair_arrays = [wp.array(values, dtype=wp.int32, device=device) for values in pairs]
+        entry_starts = wp.array(entry_starts, dtype=wp.int32, device=device)
         info = DenseSquareMultiLinearInfo()
         info.finalize(dimensions=[n], dtype=wp.float32, device=device)
-        control_matrix = wp.zeros(n * n, dtype=wp.float32, device=device)
+        control_matrix = wp.zeros((1, n * n), dtype=wp.float32, device=device)
         candidate_matrix = wp.zeros_like(control_matrix)
         control = LLTBlockedRCMSolver(
             operator=DenseLinearOperatorData(info=info, mat=control_matrix),
@@ -219,7 +281,7 @@ class TestKaminoSparseAssemblyQuality(unittest.TestCase):
                 inputs=[
                     info.dim,
                     info.vio,
-                    info.mio,
+                    info.maxdim,
                     info.vio,
                     diagonal,
                     matrix,
@@ -231,14 +293,14 @@ class TestKaminoSparseAssemblyQuality(unittest.TestCase):
             )
             wp.launch(
                 _build_sparse_bilateral_block,
-                dim=pairs.shape[1],
+                dim=entry_starts.size - 1,
                 inputs=[
                     inv_mass,
                     inv_inertia,
+                    entry_starts,
                     *pair_arrays,
                     values,
-                    info.dim,
-                    info.mio,
+                    info.maxdim,
                     info.vio,
                     scale,
                     matrix,
@@ -276,7 +338,10 @@ class TestKaminoSparseAssemblyQuality(unittest.TestCase):
                 wp.capture_launch(capture.graph)
                 matrix_np = control_matrix.numpy().reshape(n, n)
                 np.testing.assert_allclose(
-                    observed.numpy().reshape(n, n), matrix_np[np.ix_(order, order)], rtol=3.0e-6, atol=3.0e-7
+                    np.tril(observed.numpy().reshape(n, n)),
+                    np.tril(matrix_np[np.ix_(order, order)]),
+                    rtol=3.0e-6,
+                    atol=3.0e-7,
                 )
                 scaling = np.sqrt(1.0 / (diag_np.astype(np.float64) + np.finfo(np.float32).eps))
                 oracle = scaling[:, None] * unscaled * scaling[None, :] + np.eye(n) * 7.0e-7
@@ -293,3 +358,9 @@ class TestKaminoSparseAssemblyQuality(unittest.TestCase):
                 )
                 factor = np.tril(candidate.L.numpy().reshape(n, n)).astype(np.float64)
                 self.assertLess(_relative_error(factor @ factor.T, oracle[np.ix_(order, order)]), 2.0e-6)
+
+
+if __name__ == "__main__":
+    newton.utils.setup_console_logging()
+    setup_tests()
+    unittest.main()
