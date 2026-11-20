@@ -13836,10 +13836,10 @@ def Mesh "JustAMesh" ()
     def test_get_tetmesh_vendor_namespace_legacy_recovery(self):
         """Vendor-namespaced material reads follow the ``compat_namespaces`` opt-in.
 
-        Canonical-only (``compat_namespaces=()``) reads moduli only from a ``physics:`` material
-        that applies ``PhysicsVolumeDeformableMaterialAPI``. The deprecated default (``None``) reads
-        vendor namespaces off any bound material and emits a ``DeprecationWarning``;
-        ``DEFORMABLE_LEGACY_NAMESPACES`` keeps that behavior explicitly (without the warning).
+        Canonical-only (the default and ``compat_namespaces=()``) reads moduli only from a
+        ``physics:`` material that applies ``PhysicsVolumeDeformableMaterialAPI``; only the
+        default warns about the attributes it ignores. ``DEFORMABLE_LEGACY_NAMESPACES`` reads
+        vendor namespaces off any bound material.
         """
         from pxr import Usd
 
@@ -13896,49 +13896,99 @@ def Xform "World" ()
         custom float physics:youngsModulus = 300000
         custom float physics:poissonsRatio = 0.3
     }
+    def TetMesh "VendorApiBody" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1)]
+        int4[] tetVertexIndices = [(0, 1, 2, 3)]
+        rel material:binding:physics = </World/VendorApiMaterial>
+    }
+    def Material "VendorApiMaterial" (
+        prepend apiSchemas = ["PhysicsVolumeDeformableMaterialAPI"]
+    )
+    {
+        float omniphysics:density = 40
+        float omniphysics:youngsModulus = 300000
+        float omniphysics:poissonsRatio = 0.3
+    }
+    def TetMesh "BaseDensityBody" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1)]
+        int4[] tetVertexIndices = [(0, 1, 2, 3)]
+        rel material:binding:physics = </World/BaseDensityMaterial>
+    }
+    def Material "BaseDensityMaterial" (
+        prepend apiSchemas = ["PhysicsMaterialAPI"]
+    )
+    {
+        float physics:density = 40
+    }
+    def TetMesh "TimeSampledBody" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1)]
+        int4[] tetVertexIndices = [(0, 1, 2, 3)]
+        rel material:binding:physics = </World/TimeSampledMaterial>
+    }
+    def Material "TimeSampledMaterial" (
+        prepend apiSchemas = ["PhysicsVolumeDeformableMaterialAPI"]
+    )
+    {
+        float omniphysics:density.timeSamples = {
+            1: 40,
+        }
+    }
 }
 """
         stage = Usd.Stage.CreateInMemory()
         stage.GetRootLayer().ImportFromString(usda)
-        prim = stage.GetPrimAtPath("/World/SoftBody")
 
-        # Canonical-only: vendor moduli are ignored.
-        tm_canonical = usd.get_tetmesh(prim, compat_namespaces=())
-        self.assertIsNone(tm_canonical.k_mu)
-        self.assertIsNone(tm_canonical.density)
+        # Vendor moduli, and canonical moduli on a material WITHOUT the deformable material
+        # API, are ignored: silently with explicit (), with a warning by default.
+        for path in ("/World/SoftBody", "/World/UnscopedBody"):
+            with self.subTest(path=path):
+                ignored = stage.GetPrimAtPath(path)
+                with warnings.catch_warnings():
+                    warnings.simplefilter("error")
+                    tm_canonical = usd.get_tetmesh(ignored, compat_namespaces=())
+                with self.assertWarnsRegex(newton.NewtonWarning, f"{path}: ignoring .*:youngsModulus"):
+                    tm_default = usd.get_tetmesh(ignored)
+                for tm in (tm_canonical, tm_default):
+                    self.assertIsNone(tm.k_mu)
+                    self.assertIsNone(tm.density)
 
-        # Deprecated default: reads the vendor namespaces off the bound material and warns.
-        with self.assertWarns(DeprecationWarning):
-            tm_default = usd.get_tetmesh(prim)
-        self.assertIsNotNone(tm_default.k_mu)
-        self.assertAlmostEqual(tm_default.density, 40.0)
+                # Explicit legacy namespaces read them off any bound material.
+                with warnings.catch_warnings():
+                    warnings.simplefilter("error")
+                    tm_legacy = usd.get_tetmesh(ignored, compat_namespaces=usd.DEFORMABLE_LEGACY_NAMESPACES)
+                self.assertAlmostEqual(tm_legacy.k_mu[0], 300000.0 / (2.0 * 1.3), places=0)
+                self.assertAlmostEqual(tm_legacy.density, 40.0)
 
-        # Explicit legacy namespaces: same reads, no deprecation warning.
-        tm_legacy = usd.get_tetmesh(prim, compat_namespaces=usd.DEFORMABLE_LEGACY_NAMESPACES)
-        self.assertIsNotNone(tm_legacy.k_mu)
-        self.assertAlmostEqual(tm_legacy.k_mu[0], 300000.0 / (2.0 * 1.3), places=0)
-        self.assertAlmostEqual(tm_legacy.density, 40.0)
-
-        # A canonical material under the deprecated default reads identically and must NOT
-        # warn: the default change alters nothing for it (the gate matches add_usd's).
+        # Vendor values on a material WITH the API never warned before, so the default keeps
+        # reading them for a deprecation window; explicit () ignores them.
+        vendor_api = stage.GetPrimAtPath("/World/VendorApiBody")
+        with self.assertWarnsRegex(newton.NewtonDeprecationWarning, "reading omniphysics:youngsModulus"):
+            tm_vendor_api = usd.get_tetmesh(vendor_api)
+        self.assertAlmostEqual(tm_vendor_api.k_mu[0], 300000.0 / (2.0 * 1.3), places=0)
+        self.assertAlmostEqual(tm_vendor_api.density, 40.0)
         with warnings.catch_warnings():
-            warnings.simplefilter("error", DeprecationWarning)
+            warnings.simplefilter("error")
+            self.assertIsNone(usd.get_tetmesh(vendor_api, compat_namespaces=()).density)
+            # A vendor value authored only as time samples is read by neither default.
+            self.assertIsNone(usd.get_tetmesh(stage.GetPrimAtPath("/World/TimeSampledBody")).density)
+
+        # A canonical material, and base-material density, are read by default and must NOT warn.
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
             tm_canonical_default = usd.get_tetmesh(stage.GetPrimAtPath("/World/CanonicalBody"))
+            tm_base_density = usd.get_tetmesh(stage.GetPrimAtPath("/World/BaseDensityBody"))
         self.assertAlmostEqual(tm_canonical_default.density, 40.0)
         self.assertIsNotNone(tm_canonical_default.k_mu)
-
-        # Canonical physics: moduli on a material WITHOUT the deformable material API: the
-        # deprecated default reads them off any bound material, but canonical-only scopes
-        # moduli to API-applied materials and drops them. The default is load-bearing, so
-        # it must warn.
-        unscoped = stage.GetPrimAtPath("/World/UnscopedBody")
-        with self.assertWarns(DeprecationWarning):
-            tm_unscoped_default = usd.get_tetmesh(unscoped)
-        self.assertIsNotNone(tm_unscoped_default.k_mu)
-        self.assertAlmostEqual(tm_unscoped_default.density, 40.0)
-        tm_unscoped_canonical = usd.get_tetmesh(unscoped, compat_namespaces=())
-        self.assertIsNone(tm_unscoped_canonical.k_mu)
-        self.assertIsNone(tm_unscoped_canonical.density)
+        self.assertAlmostEqual(tm_base_density.density, 40.0)
 
     @requires("pxr.Usd")
     def test_get_tetmesh_no_material(self):

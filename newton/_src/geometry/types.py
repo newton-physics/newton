@@ -2109,18 +2109,13 @@ class TetMesh:
         frequency is ambiguous or cannot be inferred emit a warning and are
         omitted without preventing the TetMesh from loading.
 
-        Material-attribute namespaces (deprecated default): with ``compat_namespaces=None``
-        (the default) the legacy vendor namespaces (``omniphysics:`` / ``physxDeformableBody:``)
-        are read off any bound material, matching the pre-canonical behavior. That default is
-        deprecated and emits a ``DeprecationWarning`` when it is load-bearing: the bound material
-        authors vendor-namespaced deformable attributes, or canonical ``physics:`` attributes
-        without ``PhysicsVolumeDeformableMaterialAPI`` (API-applied canonical or render-only
-        materials do not warn); a future
-        release will default to canonical ``physics:``-only. Pass ``compat_namespaces=()`` to adopt
-        the canonical-only behavior now -- moduli are then read only from a material that applies
-        ``PhysicsVolumeDeformableMaterialAPI`` -- or pass an explicit list (e.g.
-        ``newton.usd.DEFORMABLE_LEGACY_NAMESPACES``) to keep reading vendor namespaces without the
-        warning.
+        Material-attribute namespaces: by default, only canonical ``physics:`` attributes are
+        read, moduli from a material that applies ``PhysicsVolumeDeformableMaterialAPI`` and
+        density also from one that applies ``UsdPhysicsMaterialAPI``. Omitting
+        ``compat_namespaces`` warns when this ignores attributes authored on the bound material.
+        Pass an explicit list (e.g. ``newton.usd.DEFORMABLE_LEGACY_NAMESPACES``) to read the
+        canonical and the listed vendor namespaces off any bound material.
+        One deprecated exception to the default is described under ``compat_namespaces``.
 
         Example:
 
@@ -2140,8 +2135,13 @@ class TetMesh:
             prim: The USD prim to load the tetrahedral mesh from.
             compat_namespaces: Vendor attribute namespaces accepted as a fallback to the canonical
                 ``physics:`` material attributes, lifting the ``PhysicsVolumeDeformableMaterialAPI``
-                gate. ``None`` (the default) selects the deprecated legacy namespaces; pass ``()`` for
-                canonical-only.
+                gate. ``None`` (the default) and ``()`` are canonical-only; only ``None`` warns
+                about ignored attributes.
+
+                .. deprecated:: 1.9
+                    ``None`` still reads vendor-namespaced values without a ``physics:`` counterpart
+                    from a material that applies ``PhysicsVolumeDeformableMaterialAPI``. A future
+                    release ignores them.
 
         Returns:
             A :class:`newton.TetMesh` with vertex positions and tet connectivity.
