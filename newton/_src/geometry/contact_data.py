@@ -194,6 +194,15 @@ def contact_separation(contact_data: ContactData) -> float:
 
 
 @wp.func
+def mesh_search_envelope(gap_sum: float, margin_sum: float) -> float:
+    """Allow for float32 rounding in the writer's inclusive margin subtraction."""
+    if margin_sum == 0.0:
+        return gap_sum
+    distance = gap_sum + margin_sum
+    return distance + wp.max(wp.abs(gap_sum), wp.abs(distance)) * 1.1920928955078125e-7
+
+
+@wp.func
 def contact_passes_gap_check(
     contact_data: ContactData,
 ) -> bool:
