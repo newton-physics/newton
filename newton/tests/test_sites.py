@@ -410,6 +410,43 @@ class TestSiteInvariantEnforcement(unittest.TestCase):
         self.assertFalse(cfg.has_shape_collision)
         self.assertFalse(cfg.has_particle_collision)
 
+    def test_add_shape_plane_mesh_gaussian_as_site(self):
+        """Test creating plane, mesh, and gaussian sites via as_site=True."""
+        builder = newton.ModelBuilder()
+        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+
+        mesh = newton.Mesh(
+            vertices=np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32),
+            indices=np.array([0, 1, 2], dtype=np.int32),
+        )
+        gaussian = newton.Gaussian(positions=np.array([[0.0, 0.0, 0.0]], dtype=np.float32))
+
+        plane_site = builder.add_shape_plane(body=body, as_site=True, label="plane_site")
+        mesh_site = builder.add_shape_mesh(body=body, mesh=mesh, as_site=True, label="mesh_site")
+        gaussian_site = builder.add_shape_gaussian(body=body, gaussian=gaussian, as_site=True, label="gaussian_site")
+
+        with self.assertRaises(ValueError):
+            builder.add_shape_gaussian(
+                body=body,
+                gaussian=gaussian,
+                as_site=True,
+                collision_proxy="convex_hull",
+            )
+
+        model = builder.finalize()
+        flags = model.shape_flags.numpy()
+        types = model.shape_type.numpy()
+
+        for idx, expected_type in (
+            (plane_site, GeoType.PLANE),
+            (mesh_site, GeoType.MESH),
+            (gaussian_site, GeoType.GAUSSIAN),
+        ):
+            self.assertTrue(bool(flags[idx] & ShapeFlags.SITE))
+            self.assertFalse(bool(flags[idx] & ShapeFlags.COLLIDE_SHAPES))
+            self.assertFalse(bool(flags[idx] & ShapeFlags.COLLIDE_PARTICLES))
+            self.assertEqual(int(types[idx]), int(expected_type))
+
 
 if __name__ == "__main__":
     unittest.main()

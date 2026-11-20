@@ -531,6 +531,50 @@ def Xform "World" {{
                     site = model.shape_label.index("/World/link/site")
                     np.testing.assert_allclose(model.shape_scale.numpy()[site], expected)
 
+    def test_plane_mesh_and_gaussian_sites(self):
+        """Test that Plane, Mesh, and ParticleField3DGaussianSplat prims with SiteAPI are imported as sites."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+
+        for schema_name in ("NewtonSiteAPI", "MjcSiteAPI"):
+            with self.subTest(schema=schema_name):
+                stage = Usd.Stage.CreateInMemory()
+                UsdPhysics.Scene.Define(stage, "/Scene")
+                body = UsdGeom.Xform.Define(stage, "/Body").GetPrim()
+                UsdPhysics.RigidBodyAPI.Apply(body)
+                UsdPhysics.CollisionAPI.Apply(UsdGeom.Cube.Define(stage, "/Body/Collider").GetPrim())
+
+                plane = UsdGeom.Plane.Define(stage, "/Body/PlaneSite")
+                plane.GetPrim().AddAppliedSchema(schema_name)
+
+                mesh = UsdGeom.Mesh.Define(stage, "/Body/MeshSite")
+                mesh.CreatePointsAttr([(0, 0, 0), (1, 0, 0), (0, 1, 0)])
+                mesh.CreateFaceVertexCountsAttr([3])
+                mesh.CreateFaceVertexIndicesAttr([0, 1, 2])
+                mesh.GetPrim().AddAppliedSchema(schema_name)
+
+                gaussian = stage.DefinePrim("/Body/GaussianSite", "ParticleField3DGaussianSplat")
+                gaussian.CreateAttribute("positions", Sdf.ValueTypeNames.Point3fArray).Set([(0.0, 0.0, 0.0)])
+                gaussian.AddAppliedSchema(schema_name)
+
+                builder = newton.ModelBuilder()
+                builder.add_usd(stage)
+                model = builder.finalize()
+
+                shape_flags = model.shape_flags.numpy()
+                shape_types = model.shape_type.numpy()
+
+                expected = (
+                    ("/Body/PlaneSite", GeoType.PLANE),
+                    ("/Body/MeshSite", GeoType.MESH),
+                    ("/Body/GaussianSite", GeoType.GAUSSIAN),
+                )
+                for label, expected_type in expected:
+                    idx = model.shape_label.index(label)
+                    self.assertTrue(bool(shape_flags[idx] & ShapeFlags.SITE), f"{label} should be a site")
+                    self.assertFalse(bool(shape_flags[idx] & ShapeFlags.COLLIDE_SHAPES))
+                    self.assertFalse(bool(shape_flags[idx] & ShapeFlags.COLLIDE_PARTICLES))
+                    self.assertEqual(int(shape_types[idx]), int(expected_type))
+
 
 if __name__ == "__main__":
     unittest.main()

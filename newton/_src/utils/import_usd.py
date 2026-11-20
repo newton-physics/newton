@@ -996,6 +996,7 @@ def parse_usd(
                     length=length,
                     cfg=visual_shape_cfg_for_prim,
                     color=shape_color,
+                    as_site=is_site,
                     label=path_name,
                     **shape_visual_kwargs,
                 )
@@ -1064,6 +1065,7 @@ def parse_usd(
                             mesh=subset_mesh,
                             cfg=visual_shape_cfg_for_prim,
                             color=None,
+                            as_site=is_site,
                             label=subset_path,
                         )
                         path_shape_map[subset_path] = subset_shape_id
@@ -1086,6 +1088,7 @@ def parse_usd(
                         mesh=mesh,
                         cfg=visual_shape_cfg_for_prim,
                         color=shape_color,
+                        as_site=is_site,
                         label=path_name,
                         **shape_visual_kwargs,
                     )
@@ -1098,6 +1101,7 @@ def parse_usd(
                     scale=scale,
                     cfg=visual_shape_cfg_for_prim,
                     color=shape_color,
+                    as_site=is_site,
                     label=path_name,
                     **shape_visual_kwargs,
                 )
