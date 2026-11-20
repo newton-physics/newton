@@ -102,6 +102,24 @@ class TestLazySolverImports(unittest.TestCase):
         result = _run_in_fresh_interpreter(code)
         self.assertEqual(result.stdout.strip(), "ok")
 
+    @newton.tests.unittest_utils.requires(*newton.tests.unittest_utils.MUJOCO_MODULES)
+    def test_first_mujoco_import_does_not_pin_caller(self):
+        """Verify that the first MuJoCo import releases the stack that triggered it."""
+        code = (
+            "import gc, weakref\n"
+            "import newton\n"
+            "class Local: pass\n"
+            "def caller():\n"
+            "    local = Local()\n"
+            "    newton.solvers.SolverMuJoCo.import_mujoco()\n"
+            "    return weakref.ref(local)\n"
+            "ref = caller()\n"
+            "gc.collect()\n"
+            "print('released' if ref() is None else 'pinned')\n"
+        )
+        result = _run_in_fresh_interpreter(code)
+        self.assertEqual(result.stdout.strip().splitlines()[-1], "released")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

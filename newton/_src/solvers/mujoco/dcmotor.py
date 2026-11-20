@@ -14,6 +14,7 @@ import numpy as np
 
 from ...sim import ModelBuilder
 from .actuators import ActuatorTarget, _add_actuator
+from .utils import import_mujoco_module
 
 if TYPE_CHECKING:
     from mujoco import MjsActuator
@@ -52,7 +53,7 @@ def parse_input(value: str | int) -> int:
 def _import_mujoco():
     """Load the native shortcut resolver only when a DC motor is authored/imported."""
     try:
-        import mujoco
+        mujoco = import_mujoco_module()
     except ImportError as exc:
         raise ImportError(
             "Authoring or importing <dcmotor> actuators requires MuJoCo. Install it with `uv pip install 'newton[sim]'`."

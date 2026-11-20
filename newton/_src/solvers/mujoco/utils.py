@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 import warnings
 from collections.abc import Sequence
 from typing import Any
@@ -22,6 +23,18 @@ from .equality import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def import_mujoco_module():
+    """Import :mod:`mujoco` without keeping the importing call stack alive."""
+    import mujoco
+
+    # MuJoCo 4.0 stores the ImportError of a missing GL backend; its traceback pins every calling frame.
+    err = getattr(sys.modules.get("mujoco.rendering.classic.gl_context"), "_import_error", None)
+    while isinstance(err, BaseException):
+        err.__traceback__ = None
+        err = err.__cause__ or err.__context__
+    return mujoco
 
 
 def solref_invalid_mask(solref: Sequence[float] | np.ndarray) -> np.ndarray:
