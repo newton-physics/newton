@@ -1,1 +1,0 @@
-Centralize viewer GUI color defaults for icons, headers, controls, overlays, and ImGui styles while preserving the existing appearance and legacy palette. Icon tint overrides continue to reuse the grayscale texture atlas.

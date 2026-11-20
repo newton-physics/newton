@@ -9,7 +9,8 @@ Keep viewport picking and selection outlines synchronized with body variants and
 Refresh geometry properties and BVH references when shape variants change, respect
 particle visibility during picking, and apply viewport display modes across layers.
 Inspect and edit custom joint-frequency attributes using their own namespace and row width.
-Record history from the application's `log_state()`, `log_contacts()`, `log_points()` and `log_lines()` calls and replay it through those calls, pausing stepping through `ViewerBase.should_step()` until playback reaches the newest frame.
+Record history from the application's `log_state()`, `log_contacts()`, `log_points()` and `log_lines()` calls and replay it through those calls, pausing stepping through `ViewerBase.should_step()` until playback reaches the newest frame. Recording is opt-in through the timeline's **Record history** checkbox.
+Mirror `newton` log records and Newton warnings into the console only when the application passes `ViewerGL(capture_logs=True)`, as the example runner does.
 Frame scenes and selections from displayed geometry when rendering uses different units from the collision model.
 Filter contact glyphs to selected shapes and bodies by default, with a toggle to show all contacts.
 Show logged per-body and per-world solver observables, such as `solver_residual`, read-only in the State tab, and list a solver's supported observable kinds in the Solver tab.

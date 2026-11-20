@@ -1,1 +1,0 @@
-Show ViewerGL contact labels only while paused with contact inspection open; clear them immediately on playback and restore current witnesses when paused again, without label readbacks during simulation.
