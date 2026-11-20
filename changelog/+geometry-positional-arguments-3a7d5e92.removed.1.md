@@ -1,1 +1,1 @@
-Remove `Gaussian.warp_data` and `Gaussian.warp_bvh`, deprecated in Newton 1.6; use the `Gaussian.Data` object returned by `Gaussian.finalize()` and `Gaussian.bvh` instead.
+Remove `Gaussian.warp_data` and `Gaussian.warp_bvh`, deprecated in Newton 1.6; use the `Gaussian.Data` object returned by `Gaussian.finalize()` and `Gaussian.bvh` instead. Assigning a custom BVH has no replacement: `Gaussian.bvh` is read-only and `Gaussian.finalize()` always builds the BVH.
