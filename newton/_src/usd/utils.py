@@ -798,8 +798,12 @@ def _ignored_tetmesh_material_attrs(prim: Usd.Prim) -> list[str]:
     ignored = []
     for name in ("youngsModulus", "poissonsRatio", "density"):
         for namespace in ("physics", *DEFORMABLE_LEGACY_NAMESPACES):
-            if material_prim.GetAttribute(f"{namespace}:{name}").HasAuthoredValue():
-                if namespace != "physics" or not (volume_api or (name == "density" and base_api)):
+            attr = material_prim.GetAttribute(f"{namespace}:{name}")
+            if attr.HasAuthoredValue():
+                # Time samples alone supply no value to either read.
+                if attr.Get() is not None and (
+                    namespace != "physics" or not (volume_api or (name == "density" and base_api))
+                ):
                     ignored.append(f"{namespace}:{name}")
                 break
     return ignored

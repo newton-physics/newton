@@ -13926,6 +13926,22 @@ def Xform "World" ()
     {
         float physics:density = 40
     }
+    def TetMesh "TimeSampledBody" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1)]
+        int4[] tetVertexIndices = [(0, 1, 2, 3)]
+        rel material:binding:physics = </World/TimeSampledMaterial>
+    }
+    def Material "TimeSampledMaterial" (
+        prepend apiSchemas = ["PhysicsVolumeDeformableMaterialAPI"]
+    )
+    {
+        float omniphysics:density.timeSamples = {
+            1: 40,
+        }
+    }
 }
 """
         stage = Usd.Stage.CreateInMemory()
@@ -13962,6 +13978,8 @@ def Xform "World" ()
         with warnings.catch_warnings():
             warnings.simplefilter("error")
             self.assertIsNone(usd.get_tetmesh(vendor_api, compat_namespaces=()).density)
+            # A vendor value authored only as time samples is read by neither default.
+            self.assertIsNone(usd.get_tetmesh(stage.GetPrimAtPath("/World/TimeSampledBody")).density)
 
         # A canonical material, and base-material density, are read by default and must NOT warn.
         with warnings.catch_warnings():
