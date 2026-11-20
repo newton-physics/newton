@@ -706,15 +706,22 @@ def _average_rigid_contact_material(
     mu1: float,
     mu_torsional1: float,
     mu_rolling1: float,
+    friction_mode: int,
 ):
     """Average material properties for a rigid contact pair.
 
     ke, kd: arithmetic mean.
-    mu, mu_torsional, mu_rolling: geometric mean.
+    mu, mu_torsional, mu_rolling: geometric mean, zero unless ``friction_mode`` enables the component.
     """
     avg_ke, avg_kd, avg_mu = _average_contact_material(ke0, kd0, mu0, ke1, kd1, mu1)
     avg_mu_torsional = wp.sqrt(mu_torsional0) * wp.sqrt(mu_torsional1)
     avg_mu_rolling = wp.sqrt(mu_rolling0) * wp.sqrt(mu_rolling1)
+    if friction_mode < int(ShapeFrictionMode.SLIDING):
+        avg_mu = 0.0
+    if friction_mode < int(ShapeFrictionMode.TORSIONAL):
+        avg_mu_torsional = 0.0
+    if friction_mode < int(ShapeFrictionMode.ROLLING):
+        avg_mu_rolling = 0.0
     return avg_ke, avg_kd, avg_mu, avg_mu_torsional, avg_mu_rolling
 
 
@@ -4520,9 +4527,8 @@ def init_body_body_contact_materials(
         shape_material_mu[shape_id_1],
         shape_material_mu_torsional[shape_id_1],
         shape_material_mu_rolling[shape_id_1],
+        contact_friction_mode(shape_material_friction_mode, shape_id_0, shape_id_1),
     )
-    if contact_friction_mode(shape_material_friction_mode, shape_id_0, shape_id_1) == int(ShapeFrictionMode.NONE):
-        avg_mu = 0.0
 
     contact_material_kd[i] = avg_kd
     contact_material_mu[i] = wp.vec3(avg_mu, avg_mu_torsional, avg_mu_rolling)
@@ -4600,9 +4606,8 @@ def init_body_body_contacts_alm(
         shape_material_mu[s1],
         shape_material_mu_torsional[s1],
         shape_material_mu_rolling[s1],
+        contact_friction_mode(shape_material_friction_mode, s0, s1),
     )
-    if contact_friction_mode(shape_material_friction_mode, s0, s1) == int(ShapeFrictionMode.NONE):
-        avg_mu = 0.0
     contact_material_ke[i] = avg_ke
     contact_material_kd[i] = avg_kd
     contact_material_mu[i] = wp.vec3(avg_mu, avg_mu_torsional, avg_mu_rolling)

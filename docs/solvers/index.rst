@@ -220,18 +220,16 @@ formulation.
   (except :class:`~newton.solvers.SolverMuJoCo` flexes, see
   :ref:`mujoco-flexes`). ``TORSIONAL`` and ``ROLLING`` are supported by
   :class:`~newton.solvers.SolverXPBD`, :class:`~newton.solvers.SolverMuJoCo`,
-  and :class:`~newton.solvers.SolverKamino` with the LOX backend (torsional
-  and rolling friction share its elliptic friction budget). Other solvers
-  apply sliding friction only, and warn if they solve rigid contacts.
-  :class:`~newton.solvers.SolverSteel` provides experimental torsion on
-  ``TORSIONAL`` or ``ROLLING`` shapes that also set
+  :class:`~newton.solvers.SolverVBD`, and :class:`~newton.solvers.SolverKamino`
+  with the LOX backend (torsional and rolling friction share its elliptic
+  friction budget). Other solvers apply sliding friction only, and warn if they
+  solve rigid contacts. :class:`~newton.solvers.SolverSteel` provides
+  experimental torsion on ``TORSIONAL`` or ``ROLLING`` shapes that also set
   ``steel:min_torsional_patch_radius``.
 - ``mu_torsional`` / ``mu_rolling``: :class:`~newton.solvers.SolverXPBD`,
-  :class:`~newton.solvers.SolverMuJoCo`, and the LOX backend of
-  :class:`~newton.solvers.SolverKamino`, on contacts whose ``friction_mode``
-  enables them.
-  :class:`~newton.solvers.SolverVBD` also supports these properties for
-  compliant-ALM rigid-rigid contacts.
+  :class:`~newton.solvers.SolverMuJoCo`, :class:`~newton.solvers.SolverVBD`,
+  and the LOX backend of :class:`~newton.solvers.SolverKamino`, on contacts
+  whose ``friction_mode`` enables them.
 - ``mu_static``: stored as :attr:`~newton.Model.shape_material_mu_static` and
   carried into :class:`~newton.solvers.SolverKamino`'s material tables, but no
   built-in solver distinguishes static from dynamic friction in its contact

@@ -2101,7 +2101,7 @@ def _rigid_contact_history_restore_from_match_index(test, device):
                 shape_mu,
                 shape_mu_torsional,
                 shape_mu_rolling,
-                None,
+                wp.array([int(newton.ShapeFrictionMode.ROLLING)] * 2, dtype=wp.int32, device=device),
                 1,
                 match_index,
                 *matched_gen[:3],
@@ -2177,7 +2177,7 @@ def _rigid_contact_history_compliant_alm_friction_warmstart(test, device):
                     wp.array(shape_mu, dtype=float, device=device),
                     wp.array([0.4, 0.4], dtype=float, device=device),
                     wp.array([0.2, 0.2], dtype=float, device=device),
-                    None,
+                    wp.array([int(newton.ShapeFrictionMode.ROLLING)] * 2, dtype=wp.int32, device=device),
                     latest,
                     match_index,
                     *matched_gen[:3],
@@ -5351,9 +5351,10 @@ def _capsule_axial_spin_dissipates_via_friction(test, device):
     test.assertLess(omega_x, 4.0, f"axial spin failed to dissipate (omega_x={omega_x:.4f}, v_y={v_y:.4f})")
 
 
-def _simulate_vbd_angular_friction(device, channel, coefficient):
+def _simulate_vbd_angular_friction(device, channel, coefficient, friction_mode=newton.ShapeFrictionMode.ROLLING):
     """Simulate rotation resisted by one angular contact-friction channel."""
     builder = newton.ModelBuilder()
+    builder.default_shape_cfg.friction_mode = friction_mode
     builder.default_shape_cfg.ke = 5.0e5
     builder.default_shape_cfg.kd = 100.0
     builder.default_shape_cfg.mu = 0.0
@@ -5401,6 +5402,15 @@ def _angular_friction_slows_rotation_without_sliding(test, device):
         test.assertLess(resisted, 0.7 * unresisted, msg=channel)
 
 
+def _angular_friction_requires_friction_mode(test, device):
+    """Verify each angular channel stays off below the friction mode that enables it."""
+    mode = newton.ShapeFrictionMode
+    for channel, disabled_mode in (("torsional", mode.SLIDING), ("rolling", mode.TORSIONAL)):
+        unresisted = _simulate_vbd_angular_friction(device, channel, 0.0)
+        disabled = _simulate_vbd_angular_friction(device, channel, 0.05, disabled_mode)
+        test.assertAlmostEqual(disabled, unresisted, delta=1.0e-3 * unresisted, msg=channel)
+
+
 def _rolling_friction_stores_no_torsional_couple(test, device):
     """Verify a spin about a tilted contact normal leaves a rolling-only multiplier tangential."""
     normal = np.ones(3) / math.sqrt(3.0)
@@ -5410,6 +5420,7 @@ def _rolling_friction_stores_no_torsional_couple(test, device):
     mu_rolling = 1.0e-6
     builder = newton.ModelBuilder(gravity=tuple(-9.81 * normal))
     cfg = newton.ModelBuilder.ShapeConfig(density=0.0, ke=ke, kd=0.0, mu=0.0, mu_torsional=0.0, mu_rolling=mu_rolling)
+    cfg.friction_mode = newton.ShapeFrictionMode.ROLLING
     builder.add_shape_plane(plane=(*normal, 0.0), width=0.0, length=0.0, cfg=cfg)
     body = builder.add_body(
         xform=wp.transform(wp.vec3(*(normal * (radius - mass * 9.81 / ke))), wp.quat_identity()),
@@ -5451,6 +5462,7 @@ def _torsional_friction_holds_against_stiff_drive(test, device):
     builder.default_shape_cfg.mu = 0.0
     builder.default_shape_cfg.mu_torsional = mu_angular
     builder.default_shape_cfg.mu_rolling = 0.0
+    builder.default_shape_cfg.friction_mode = newton.ShapeFrictionMode.TORSIONAL
     builder.add_ground_plane()
 
     center = wp.vec3(0.0, 0.0, radius - 1.0e-5)
@@ -5540,6 +5552,7 @@ def _collect_rigid_contact_forces_reports_solved_angular_reaction(test, device):
     inertia = 0.01
     builder = newton.ModelBuilder()
     cfg = newton.ModelBuilder.ShapeConfig(density=0.0, ke=5.0e5, kd=0.0, mu=0.0, mu_torsional=0.01, mu_rolling=0.01)
+    cfg.friction_mode = newton.ShapeFrictionMode.ROLLING
     builder.add_ground_plane(cfg=cfg)
     body = builder.add_body(
         xform=wp.transform(wp.vec3(0.0, 0.0, 0.2 - 9.81 / cfg.ke), wp.quat_identity()),
@@ -7841,6 +7854,12 @@ add_function_test(
     TestSolverVBD,
     "test_angular_friction_slows_rotation_without_sliding",
     _angular_friction_slows_rotation_without_sliding,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_angular_friction_requires_friction_mode",
+    _angular_friction_requires_friction_mode,
     devices=devices,
 )
 add_function_test(

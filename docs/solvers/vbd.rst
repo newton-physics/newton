@@ -793,7 +793,8 @@ onto the disk of radius :math:`\mu_{\text{roll}} f_n`, with the pair's
 :attr:`~newton.ModelBuilder.ShapeConfig.mu_torsional` and
 :attr:`~newton.ModelBuilder.ShapeConfig.mu_rolling` [m], each the geometric
 mean of the two shapes' values, so a zero on either shape removes that
-resistance for the pair. Damping is
+resistance for the pair. Each bound only acts on contacts whose
+:class:`~newton.ShapeFrictionMode` enables it. Damping is
 :math:`-k_d\,(\mathbf{n}\cdot\mathbf{v}_{\text{rel}})\,\mathbf{n}` while the row
 carries load, only while the bodies approach by default and in both directions
 of the normal relative velocity with ``rigid_contact_damping_bidirectional=True``.

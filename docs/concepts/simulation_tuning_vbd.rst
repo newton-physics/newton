@@ -677,13 +677,16 @@ frictionless. Unexpected slip can also come from missing contacts or an
 incomplete solve.
 
 **Torsional and rolling friction.** Body-body contacts resist spin about the
-contact normal and rolling in the contact plane.
+contact normal when the
+:attr:`~newton.ModelBuilder.ShapeConfig.friction_mode` of either shape is
+``TORSIONAL`` or ``ROLLING``, and rolling in the contact plane when it is
+``ROLLING``; the default ``SLIDING`` mode applies neither.
 :attr:`~newton.ModelBuilder.ShapeConfig.mu_torsional` and
 :attr:`~newton.ModelBuilder.ShapeConfig.mu_rolling` are lengths [m]: each
-torque limit is the coefficient times the normal force. Both defaults are
-nonzero. Pair coefficients use the geometric mean, so zero on either shape
-disables that channel. For small parts and thin cables, reduce the
-coefficients or set them to zero if angular resistance is too strong.
+torque limit is the coefficient times the normal force. Both coefficients
+default to nonzero values. Pair coefficients use the geometric mean, so zero
+on either shape disables that channel. For small parts and thin cables, reduce
+the coefficients or set them to zero if angular resistance is too strong.
 
 **Body coloring.** VBD updates bodies in the same color group in parallel.
 Automatic coloring uses joint and tendon connections, but does not include
