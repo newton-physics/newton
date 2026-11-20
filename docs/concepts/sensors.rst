@@ -106,7 +106,7 @@ link filters are matched against the final path component of each label.
 Available Sensors
 -----------------
 
-Newton provides five sensor types. See the
+Newton provides four sensor types. See the
 :doc:`API reference <../api/newton_sensors>` for constructor arguments,
 attributes, and usage examples.
 
@@ -120,7 +120,6 @@ attributes, and usage examples.
   experimental OptiX ray tracing with ``backend="optix"``; build its shapes with
   ``model.bvh_build_shapes(state, backend="optix")`` and refit them with
   ``model.bvh_refit_shapes(state, backend="optix")``.
-* :class:`~newton.sensors.SensorTiledCamera` -- deprecated; superseded by :class:`~newton.sensors.SensorCamera`.
 
 Camera Rays from USD and Calibration Data
 -----------------------------------------

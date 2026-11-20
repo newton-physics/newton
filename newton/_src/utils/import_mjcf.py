@@ -542,7 +542,7 @@ def parse_mjcf(
     """
     Parses MuJoCo XML (MJCF) file and adds the bodies and joints to the given ModelBuilder.
     MuJoCo-specific custom attributes are registered on the builder automatically.
-    Importing ``<dcmotor>`` actuators requires the optional ``mujoco`` package
+    Importing ``<dcmotor>`` actuators requires the optional ``mujoco-core`` package
     (included in ``newton[sim]``) to resolve native defaults, and raises
     :class:`ImportError` if it is unavailable. Other MJCF import remains independent of MuJoCo.
 
@@ -1566,46 +1566,51 @@ def parse_mjcf(
         if "zaxis" in attrib:
             zaxis = np.array(attrib["zaxis"].split(), dtype=float)
             zaxis /= np.linalg.norm(zaxis)
-            axis = np.array([-zaxis[1], zaxis[0], 0.0])
-            axis_norm_sq = np.dot(axis, axis)
-            # Match MuJoCo's mjuu_z2quat, including mjuu_normvec's mjEPS cutoff.
-            if axis_norm_sq < 1e-14:
-                axis = np.array([1.0, 0.0, 0.0])
-                axis_norm = 0.0
-            else:
-                axis_norm = np.sqrt(axis_norm_sq)
-                axis /= axis_norm
-            half_angle = 0.5 * np.arctan2(axis_norm, zaxis[2])
-            return wp.quat(*(axis * np.sin(half_angle)), np.cos(half_angle))
+            return quat_from_zaxis(zaxis)
         return wp.quat_identity()
+
+    def quat_from_zaxis(zaxis: np.ndarray) -> wp.quat:
+        """Rotate local +Z onto the unit vector ``zaxis`` like MuJoCo's ``mjuu_z2quat``."""
+        axis = np.array([-zaxis[1], zaxis[0], 0.0])
+        axis_norm_sq = np.dot(axis, axis)
+        # Match MuJoCo's mjuu_z2quat, including mjuu_normvec's mjEPS cutoff.
+        if axis_norm_sq < 1e-14:
+            axis = np.array([1.0, 0.0, 0.0])
+            axis_norm = 0.0
+        else:
+            axis_norm = np.sqrt(axis_norm_sq)
+            axis /= axis_norm
+        half_angle = 0.5 * np.arctan2(axis_norm, zaxis[2])
+        return wp.quat(*(axis * np.sin(half_angle)), np.cos(half_angle))
 
     def parse_fromto_transform(
         attrib, incoming_xform: wp.transform | None = None, zero_length_error: str | None = None
     ) -> tuple[wp.transform, float]:
         """Parse a MuJoCo fromto segment into its transform and half-length."""
-        values = parse_vec(attrib, "fromto", (0.0, 0.0, 0.0, 1.0, 0.0, 0.0))
-        start = wp.vec3(values[0:3]) * scale
-        end = wp.vec3(values[3:6]) * scale
+        values = np.array(parse_vec(attrib, "fromto", (0.0, 0.0, 0.0, 1.0, 0.0, 0.0)), dtype=np.float64)
+        start = values[0:3]
+        end = values[3:6]
 
-        if incoming_xform is not None:
-            start = wp.transform_point(incoming_xform, start)
-            end = wp.transform_point(incoming_xform, end)
-
-        position = (start + end) * 0.5
+        position = wp.vec3(*((start + end) * 0.5 * scale))
         # Match MuJoCo's compiler, which points local +Z from the second endpoint to the first.
         direction = start - end
-        length = wp.length(direction)
-        if length < 1.0e-6:
+        length = float(np.linalg.norm(direction))
+        # MuJoCo rejects authored fromto segments shorter than 1e-7, so test the length before
+        # applying the import scale; longer short segments keep their length.
+        if length < 1.0e-7:
             if zero_length_error is not None:
                 raise ValueError(zero_length_error)
-            return wp.transform(position, wp.quat_identity()), 0.0
-
-        direction /= length
-        if float(direction[2]) < -0.999999:
-            rotation = wp.quat(1.0, 0.0, 0.0, 0.0)
+            local_xform = wp.transform(position, wp.quat_identity())
+            half_length = 0.0
         else:
-            rotation = wp.quat_between_vectors(wp.vec3(0.0, 0.0, 1.0), direction)
-        return wp.transform(position, rotation), float(length) * 0.5
+            local_xform = wp.transform(position, quat_from_zaxis(direction / length))
+            half_length = length * 0.5 * scale
+
+        # Build the segment frame locally, then compose it with the parent frame so the parent's
+        # rotation about the segment axis is kept (MuJoCo composes the frame after the segment).
+        if incoming_xform is not None:
+            local_xform = incoming_xform * local_xform
+        return local_xform, half_length
 
     def parse_shapes(
         defaults,
@@ -1655,6 +1660,11 @@ def parse_mjcf(
             tf = wp.transform(geom_pos, geom_rot)
             if incoming_xform is not None:
                 tf = incoming_xform * tf
+
+            if "fromto" in geom_attrib and geom_type in {"box", "ellipsoid"}:
+                # MuJoCo spans the segment along local Z and uses size[0] for both cross-section axes.
+                tf, geom_half_length = parse_fromto_transform(geom_attrib, incoming_xform)
+                geom_size = np.array([geom_size[0], geom_size[0], geom_half_length], dtype=np.float32)
 
             geom_density = parse_float(geom_attrib, "density", density)
             geom_mass_explicit = None

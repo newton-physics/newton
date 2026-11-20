@@ -113,7 +113,7 @@ def _validate_joint_limits(
     joint_pos_lower: wp.array[wp.float32],
     joint_pos_upper: wp.array[wp.float32],
     total_controlled_dofs: int,
-    device: wp.context.Device,
+    device: wp.Device,
 ) -> None:
     """Raise unless ``joint_pos_lower``/``joint_pos_upper`` are finite, correctly shaped, and ``lower < upper`` everywhere.
 

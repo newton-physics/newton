@@ -13,7 +13,7 @@ from ...sim.joint_mimic import eval_joint_mimic, has_supported_joint_mimics
 from ..coupled.interface import CouplingInterface
 from ..semi_implicit import kernels_contact, kernels_muscle, kernels_particle
 from ..semi_implicit.kernels_contact import (
-    eval_body_contact,
+    eval_body_contact_forces,
     eval_particle_body_contact_forces,
     eval_particle_contact_forces,
 )
@@ -262,6 +262,10 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
 
         self._compute_articulation_indices(model)
         self._allocate_model_aux_vars(model)
+        # Total particle forces for non-differentiable steps; allocated here so graph capture never allocates it.
+        self._particle_f_work = (
+            wp.empty((model.particle_count,), dtype=wp.vec3, device=model.device) if model.particle_count else None
+        )
 
         if self.use_tile_gemm and model.joint_count:
             if self.fuse_cholesky and not self._has_joint_mimics:
@@ -701,8 +705,17 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
             particle_f = None
             body_f = None
 
-            if state_in.particle_count:
-                particle_f = state_in.particle_f
+            if state_in.particle_count and model.particle_count:
+                # State.particle_f is a read-only input; elastic and contact forces are added to this copy.
+                # Differentiable steps use a new buffer that the tape keeps alive for the adjoint.
+                particle_f = None if requires_grad else self._particle_f_work
+                if particle_f is None or particle_f.shape[0] != model.particle_count:
+                    particle_f = wp.empty(
+                        (model.particle_count,), dtype=wp.vec3, device=model.device, requires_grad=requires_grad
+                    )
+                    if not requires_grad:
+                        self._particle_f_work = particle_f
+                wp.copy(particle_f, state_in.particle_f, count=model.particle_count)
 
             if state_in.body_count:
                 body_f = state_aug.body_f_ext
@@ -721,25 +734,26 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                         device=model.device,
                     )
 
-            # damped springs
-            eval_spring_forces(model, state_in, particle_f)
+            if particle_f is not None:
+                # damped springs
+                eval_spring_forces(model, state_in, particle_f)
 
-            # triangle elastic and lift/drag forces
-            eval_triangle_forces(model, state_in, control, particle_f)
+                # triangle elastic and lift/drag forces
+                eval_triangle_forces(model, state_in, control, particle_f)
 
-            # triangle bending
-            eval_bending_forces(model, state_in, particle_f)
+                # triangle bending
+                eval_bending_forces(model, state_in, particle_f)
 
-            # tetrahedral FEM
-            eval_tetrahedra_forces(model, state_in, control, particle_f)
+                # tetrahedral FEM
+                eval_tetrahedra_forces(model, state_in, control, particle_f)
 
-            # particle-particle interactions
-            eval_particle_contact_forces(model, state_in, particle_f)
+                # particle-particle interactions
+                eval_particle_contact_forces(model, state_in, particle_f)
 
-            # particle shape contact for non-articulated models; articulated models run this after ID
-            # so contacts see the freshly reconstructed public COM twist.
-            if not model.joint_count:
-                eval_particle_body_contact_forces(model, state_in, contacts, particle_f, body_f)
+                # particle shape contact for non-articulated models; articulated models run this after ID
+                # so contacts see the freshly reconstructed public COM twist.
+                if not model.joint_count:
+                    eval_particle_body_contact_forces(model, state_in, contacts, particle_f, body_f)
 
             # muscles
             if False:
@@ -821,47 +835,18 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                     device=model.device,
                 )
 
-                eval_particle_body_contact_forces(
-                    model,
-                    state_in,
-                    contacts,
-                    particle_f,
-                    body_f,
-                    body_q=state_in.body_q,
-                    body_qd=state_aug.body_qd_fk,
-                )
-
-                if contacts is not None and contacts.rigid_contact_max:
-                    wp.launch(
-                        kernel=eval_body_contact,
-                        dim=contacts.rigid_contact_max,
-                        inputs=[
-                            state_in.body_q,
-                            state_aug.body_qd_fk,
-                            model.body_com,
-                            model.shape_material_ke,
-                            model.shape_material_kd,
-                            model.shape_material_kf,
-                            model.shape_material_ka,
-                            model.shape_material_mu,
-                            model.shape_body,
-                            contacts.rigid_contact_count,
-                            contacts.rigid_contact_point0,
-                            contacts.rigid_contact_point1,
-                            contacts.rigid_contact_surface_velocity,
-                            contacts.rigid_contact_normal,
-                            contacts.rigid_contact_shape0,
-                            contacts.rigid_contact_shape1,
-                            contacts.rigid_contact_margin0,
-                            contacts.rigid_contact_margin1,
-                            contacts.rigid_contact_stiffness,
-                            contacts.rigid_contact_damping,
-                            contacts.rigid_contact_friction,
-                            False,
-                        ],
-                        outputs=[body_f],
-                        device=model.device,
+                if particle_f is not None:
+                    eval_particle_body_contact_forces(
+                        model,
+                        state_in,
+                        contacts,
+                        particle_f,
+                        body_f,
+                        body_q=state_in.body_q,
+                        body_qd=state_aug.body_qd_fk,
                     )
+
+                eval_body_contact_forces(model, state_in, contacts, body_f_out=body_f, body_qd=state_aug.body_qd_fk)
 
                 if self.has_kinematic_bodies and body_f is not None:
                     wp.launch(
@@ -1309,6 +1294,6 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                     device=model.device,
                 )
 
-            self.integrate_particles(model, state_in, state_out, dt)
+            self.integrate_particles(model, state_in, state_out, dt, particle_f=particle_f)
 
             self._step += 1
