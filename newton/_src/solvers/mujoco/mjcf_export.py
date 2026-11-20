@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from ...core.types import MAXVAL
 from ...sim.model import Model
 from .constants import _DISABLE_FLAGS, _ENABLE_FLAGS
 from .enums import _JointType
@@ -104,8 +105,11 @@ def _publish_native_world_parameters(model, native, mjw_model, joint_dofs, geom_
     if nworld <= 1:
         return
     if actuator_rows is not None:
-        count = len(model.mujoco.actuator_world) // nworld
-        actuator_rows = np.where(actuator_rows >= 0, actuator_rows + np.arange(nworld)[:, None] * count, -1)
+        if np.any(actuator_rows >= 0):
+            count = len(model.mujoco.actuator_world) // nworld
+            actuator_rows = np.where(actuator_rows >= 0, actuator_rows + np.arange(nworld)[:, None] * count, -1)
+        else:
+            actuator_rows = None
     pair_rows = _native_pair_rows(model, native, geom_shapes)
     _validate_native_tendon_paths(model, tendon_rows)
     if joint_dofs.size:
@@ -117,6 +121,12 @@ def _publish_native_world_parameters(model, native, mjw_model, joint_dofs, geom_
         balls = (joint_dofs >= 0) & (native.jnt_type == _JointType.BALL)
         if np.any(balls & (limited != native.jnt_limited)):
             raise ValueError("SolverMuJoCo requires matching ball joint limit flags across worlds.")
+        lower = model.joint_limit_lower.numpy()[np.maximum(joint_dofs, 0)]
+        upper = model.joint_limit_upper.numpy()[np.maximum(joint_dofs, 0)]
+        limited = ~((lower <= -MAXVAL) & (upper >= MAXVAL))
+        scalars = (joint_dofs >= 0) & np.isin(native.jnt_type, (_JointType.SLIDE, _JointType.HINGE))
+        if np.any(scalars & (limited != native.jnt_limited)):
+            raise ValueError("SolverMuJoCo requires matching scalar joint limit flags across worlds.")
     mappings = {
         "joint": joint_dofs,
         "dof": joint_dofs[:, native.dof_jntid],
@@ -130,7 +140,7 @@ def _publish_native_world_parameters(model, native, mjw_model, joint_dofs, geom_
         ("actuator", ("native_actuator_group", "native_actuator_nsample")),
     ):
         rows = mappings[kind]
-        if rows is None or not rows.size:
+        if rows is None or not np.any(rows >= 0):
             continue
         valid = rows >= 0
         for name in names:
@@ -144,7 +154,7 @@ def _publish_native_world_parameters(model, native, mjw_model, joint_dofs, geom_
 
     for kind, fields in _NATIVE_WORLD_FIELDS.items():
         rows = mappings[kind]
-        if rows is None or not rows.size:
+        if rows is None or not np.any(rows >= 0):
             continue
         valid = rows >= 0
         for name, field in fields.items():

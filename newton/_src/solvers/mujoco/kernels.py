@@ -3668,6 +3668,24 @@ def reset_world_buffers_kernel(
 
 
 @wp.kernel(enable_backward=False)
+def shift_actuator_history_time_kernel(
+    world_mask: wp.array[wp.bool],
+    actuator_history: wp.array2d[wp.vec2i],
+    actuator_historyadr: wp.array2d[int],
+    time: wp.array[float],
+    history: wp.array2d[float],
+):
+    # MuJoCo Warp resets history at time zero; Newton reset preserves simulation time.
+    world, actuator = wp.tid()
+    if world_mask and not world_mask[world]:
+        return
+    nsample = actuator_history[world % actuator_history.shape[0], actuator][0]
+    start = actuator_historyadr[world % actuator_historyadr.shape[0], actuator] + 2
+    for sample in range(nsample):
+        history[world, start + sample] += time[world]
+
+
+@wp.kernel(enable_backward=False)
 def reset_sleeping_state_kernel(
     world_mask: wp.array[wp.bool],
     clear_overflow: int,

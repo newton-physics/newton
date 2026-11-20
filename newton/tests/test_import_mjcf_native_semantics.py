@@ -1335,16 +1335,28 @@ class TestImportMjcfNativeSemantics(unittest.TestCase):
                         np.testing.assert_allclose(solver.mjw_model.tendon_lengthspring.numpy(), expected)
 
     def test_fixed_tendon_springlength_scaling(self):
+        """Scale linear tendon lengths without changing all-hinge tendon coordinates."""
         import mujoco
 
         xml = """<mujoco><worldbody><body><joint name="s" type="slide" ref=".2" springref=".5"/>
+            <geom size=".1"/></body><body><joint name="h" ref=".1" springref=".3"/>
             <geom size=".1"/></body></worldbody><tendon>
             <fixed><joint joint="s" coef="2"/></fixed>
-            <fixed springlength=".3"><joint joint="s" coef="1"/></fixed></tendon></mujoco>"""
+            <fixed springlength=".3"><joint joint="s" coef="1"/></fixed>
+            <fixed range="-1 2" springlength=".5 1"><joint joint="s" coef="1"/>
+                <joint joint="h" coef="2"/></fixed>
+            <fixed><joint joint="s" coef="1"/><joint joint="h" coef="2"/></fixed>
+            <fixed range="-1 2" springlength=".5 1"><joint joint="h" coef="2"/></fixed>
+            </tendon></mujoco>"""
         builder = newton.ModelBuilder()
         builder.add_mjcf_native(xml, scale=2)
-        expected = mujoco.MjModel.from_xml_string(xml).tendon_lengthspring * 2
-        np.testing.assert_allclose(builder.finalize().mujoco.tendon_springlength.numpy(), expected)
+        reference = mujoco.MjModel.from_xml_string(xml)
+        factors = np.array([2, 2, 2, 2, 1])[:, None]
+        expected = reference.tendon_lengthspring * factors
+        model = builder.finalize()
+        np.testing.assert_allclose(model.mujoco.tendon_springlength.numpy(), expected)
+        np.testing.assert_allclose(model.mujoco.tendon_range.numpy(), reference.tendon_range * factors)
+        np.testing.assert_allclose(model.mujoco.tendon_coef.numpy(), [2, 1, 1, 4, 1, 4, 2])
 
     def test_tendon_springlength_sentinels(self):
         """Recompute automatic tendon rest lengths while retaining explicit zero."""

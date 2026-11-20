@@ -5499,7 +5499,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 for actuator, (nsample, _) in enumerate(m.actuator_history):
                     if nsample:
                         adr, dim = m.actuator_ctrladr[actuator], m.actuator_ctrlnum[actuator]
-                        times = -np.arange(nsample, 0, -1, dtype=np.float64) * m.opt.timestep
+                        times = d.time - np.arange(nsample, 0, -1, dtype=np.float64) * m.opt.timestep
                         values = np.tile(d.ctrl[adr : adr + dim], (nsample, 1))
                         d.history[m.actuator_historyadr[actuator]] = 0
                         self._mujoco.mj_initCtrlHistory(m, d, actuator, times, values)
@@ -5520,6 +5520,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         if getattr(self.mjw_model, "nhistory", 0):
             with wp.ScopedDevice(self.model.device), self._scoped_mujoco_warp_execution():
                 self._mujoco_warp.reset_history(self.mjw_model, d, reset=world_mask)
+            wp.launch(
+                kernels.shift_actuator_history_time_kernel,
+                dim=(d.nworld, self.mjw_model.nu),
+                inputs=[world_mask, self.mjw_model.actuator_history, self.mjw_model.actuator_historyadr, d.time],
+                outputs=[d.history],
+                device=self.model.device,
+            )
         if self.enable_sleeping:
             self._update_mjc_data(d, self.model, state, world_mask=world_mask)
             self._wake_sleeping_worlds(world_mask, clear_overflow=True)

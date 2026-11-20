@@ -21,7 +21,7 @@ from ...core.types import MAXVAL, Axis, AxisType, Transform
 from ...exceptions import NewtonWarning
 from ...geometry import Mesh, ShapeFlags
 from ...geometry.types import Heightfield
-from ...sim import JointTargetMode, JointType, ModelBuilder
+from ...sim import BodyFlags, JointTargetMode, JointType, ModelBuilder
 from ...sim.model import Model
 from ...usd.schemas import solref_to_stiffness_damping
 from ...utils.import_utils import (
@@ -139,7 +139,7 @@ def _scale_spec(spec: mujoco.MjSpec, scale: float) -> None:
             joint.margin *= scale
     linear_tendons = set()
     for tendon in spec.tendons:
-        if any(w.type != mujoco.mjtWrap.mjWRAP_JOINT for w in tendon.path) or all(
+        if any(w.type != mujoco.mjtWrap.mjWRAP_JOINT for w in tendon.path) or any(
             w.target.type == mujoco.mjtJoint.mjJNT_SLIDE for w in tendon.path
         ):
             linear_tendons.add(tendon.name)
@@ -406,7 +406,7 @@ def _shape_geometry(model, spec, i, meshes, mesh_maxhullvert) -> tuple[np.ndarra
         material_id = int(model.geom_matid[i])
         key = (mesh_id, material_id)
         if key not in meshes:
-            native_maxhullvert = spec.meshes[mesh_id].maxhullvert
+            native_maxhullvert = spec.mesh(spec.geoms[i].meshname).maxhullvert
             maxhullvert = native_maxhullvert if native_maxhullvert >= 4 else mesh_maxhullvert
             meshes[key] = _mesh(model, mesh_id, material_id, maxhullvert)
         src = meshes[key]
@@ -610,7 +610,9 @@ def _import_actuators(
             actuator_biastype=int(model.actuator_biastype[i]),
             actuator_actdim=int(actuator.actdim),
             actuator_actearly=bool(model.actuator_actearly[i]),
-            actuator_lengthrange=actuator.lengthrange,
+            actuator_lengthrange=model.actuator_lengthrange[i]
+            if actuator.lengthrange[0] < actuator.lengthrange[1]
+            else actuator.lengthrange,
             actuator_cranklength=model.actuator_cranklength[i],
             actuator_ctrlspec=int(model.actuator_ctrlspec[i]),
             actuator_damping=model.actuator_damping[i],
@@ -623,7 +625,7 @@ def _import_actuators(
                 _attributes(
                     builder,
                     **{
-                        f"actuator_{name}range": getattr(actuator, f"{name}range"),
+                        f"actuator_{name}range": getattr(model, f"actuator_{name}range")[i],
                         f"actuator_{name}limited": int(getattr(actuator, f"{name}limited")),
                         f"actuator_has_{name}range": True,
                     },
@@ -653,7 +655,7 @@ def _import_actuators(
         builder.add_custom_values(**values)
 
 
-def _tendons(builder, spec, model, joints, dofs, geoms, sites, custom_values):
+def _tendons(builder, spec, model, joints, dofs, geoms, sites, custom_values, *, scale):
     import mujoco
 
     mapping = {}
@@ -661,6 +663,7 @@ def _tendons(builder, spec, model, joints, dofs, geoms, sites, custom_values):
         adr, num = int(model.tendon_adr[i]), int(model.tendon_num[i])
         path = range(adr, adr + num)
         fixed = all(model.wrap_type[w] == int(mujoco.mjtWrap.mjWRAP_JOINT) for w in path)
+        linear = fixed and any(model.jnt_type[model.wrap_objid[w]] == mujoco.mjtJoint.mjJNT_SLIDE for w in path)
         entries = []
         for w in path:
             kind, target = int(model.wrap_type[w]), int(model.wrap_objid[w])
@@ -668,6 +671,9 @@ def _tendons(builder, spec, model, joints, dofs, geoms, sites, custom_values):
             if fixed:
                 if target not in joints:
                     break
+                # MjSpec exposes wrap coefficients read-only, so scale them during conversion.
+                if linear and model.jnt_type[target] == mujoco.mjtJoint.mjJNT_HINGE:
+                    parameter *= scale
                 entries.append(
                     _attributes(
                         builder,
@@ -845,7 +851,7 @@ def _equalities(builder, spec, model, bodies, joints, dofs, sites, tendons, conv
             anchor = builder.shape_transform[shape1].p
             relpose = builder.shape_transform[shape1] * wp.transform_inverse(builder.shape_transform[shape2])
         else:
-            body1, body2 = bodies[first], bodies[second] if second >= 0 else -1
+            body1, body2 = bodies[first] if first > 0 else -1, bodies[second] if second > 0 else -1
             anchor = wp.vec3(data[:3])
             relpose = _transform(data[3:6], data[6:10]) if kind == EqType.WELD else None
             if kind == EqType.WELD and second == 0:
@@ -905,7 +911,7 @@ def _contacts(builder, spec, model, bodies, geoms, start_shape, self_collisions,
     pairs = {pair.id: pair for pair in spec.pairs}
     for i in range(model.npair):
         first, second = int(model.pair_geom1[i]), int(model.pair_geom2[i])
-        if first not in geoms or second not in geoms:
+        if not self_collisions or first not in geoms or second not in geoms:
             continue
         values = _attributes(
             builder,
@@ -1452,7 +1458,7 @@ def parse_mjcf(
                 custom_attributes=custom_values.get((frequency.SHAPE, spec.sites[i]), {}),
             )
 
-    tendons = _tendons(builder, spec, model, joint_ids, joints, geoms, sites, custom_values)
+    tendons = _tendons(builder, spec, model, joint_ids, joints, geoms, sites, custom_values, scale=scale)
 
     _import_actuators(
         builder,
@@ -1493,7 +1499,13 @@ def parse_mjcf(
     add_mjcf_body_collision_filters(builder, imported_joints, start_shape)
     _contacts(builder, spec, model, bodies, geoms, start_shape, enable_self_collisions, custom_values)
     if collapse_fixed_joints:
-        builder.collapse_fixed_joints()
+        builder.collapse_fixed_joints(
+            joints_to_keep=[
+                joint
+                for joint, child in enumerate(builder.joint_child)
+                if child >= 0 and builder.body_flags[child] & BodyFlags.KINEMATIC
+            ]
+        )
     elif collapse_massless_fixed_root:
         collapse_massless_fixed_root_joints(builder, imported_joints)
     if verbose:

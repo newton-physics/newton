@@ -651,6 +651,124 @@ class TestImportMjcfNative(unittest.TestCase):
             mujoco.mj_forward(model, data)
         np.testing.assert_allclose(actual.qfrc_actuator, expected.qfrc_actuator, rtol=1e-5)
 
+    def test_scaled_frame_mesh_instances(self):
+        """Keep compiled mesh instances associated with their authored mesh settings."""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf_native("""<mujoco><asset>
+            <mesh name="m" maxhullvert="4" vertex="0 0 0 1 0 0 0 1 0 0 0 1"/></asset>
+            <worldbody><body><freejoint/><geom type="mesh" mesh="m"/>
+            <frame scale="2" scaling="geometry"><geom type="mesh" mesh="m"/></frame>
+            </body></worldbody></mujoco>""")
+        self.assertEqual(builder.shape_count, 2)
+        first, second = builder.shape_source
+        self.assertEqual((first.maxhullvert, second.maxhullvert), (4, 4))
+        np.testing.assert_allclose(
+            np.linalg.norm(second.vertices, axis=1), 2 * np.linalg.norm(first.vertices, axis=1), rtol=1e-5
+        )
+
+    def test_scaled_frame_actuator_ranges(self):
+        """Use compiler-resolved actuator bounds after frame scaling."""
+        import mujoco
+
+        xml = """<mujoco><worldbody><frame scale="2" scaling="geometry"><body>
+            <joint name="s" type="slide"/><geom size=".1"/></body></frame></worldbody>
+            <actuator><general joint="s" gainprm="10" biastype="affine" biasprm="0 -10 0"
+                dyntype="filterexact" dynprm=".01" ctrlrange="-1 1"
+                actrange="-1 1" forcerange="-3 3" lengthrange="-1 1"/></actuator></mujoco>"""
+        reference = mujoco.MjModel.from_xml_string(xml)
+        builder = newton.ModelBuilder()
+        builder.add_mjcf_native(xml, ctrl_direct=True)
+        solver = SolverMuJoCo(builder.finalize(), disable_contacts=True)
+        for name in ("ctrl", "force", "act", "length"):
+            with self.subTest(range=name):
+                field = f"actuator_{name}range"
+                expected = getattr(reference, field)
+                np.testing.assert_allclose(builder.custom_attributes[f"mujoco:{field}"].values, expected)
+                np.testing.assert_allclose(getattr(solver.mj_model, field), expected)
+
+    def test_attached_world_equality(self):
+        """An imported world equality stays anchored to world when the tree is attached."""
+        for convert, endpoints in product((False, True), ('body1="b"', 'body1="world" body2="b"')):
+            with self.subTest(convert=convert, endpoints=endpoints):
+                builder = newton.ModelBuilder()
+                host = builder.add_body(mass=1, inertia=wp.mat33(np.eye(3)))
+                builder.add_mjcf_native(
+                    f"""<mujoco><worldbody><body name="b"><geom size=".1"/></body></worldbody>
+                        <equality><weld {endpoints}/></equality></mujoco>""",
+                    parent_body=host,
+                    convert_mjc_equality_constraints=convert,
+                )
+                self.assertEqual(builder.joint_parent[1], host)
+                first = builder.custom_attributes["mujoco:equality_constraint_body1"].values[0]
+                second = builder.custom_attributes["mujoco:equality_constraint_body2"].values[0]
+                self.assertEqual({first, second}, {-1, 1})
+
+    def test_explicit_pairs_without_self_collisions(self):
+        """Explicit pairs must not override the importer's self-collision switch."""
+        import mujoco
+
+        xml = """<mujoco><worldbody><body><freejoint/><geom name="a" size=".1"/></body>
+            <body pos=".1 0 0"><freejoint/><geom name="b" size=".1"/></body></worldbody>
+            <contact><pair geom1="a" geom2="b"/></contact></mujoco>"""
+        for enabled in (False, True):
+            with self.subTest(enabled=enabled):
+                builder = newton.ModelBuilder()
+                builder.add_mjcf_native(xml, enable_self_collisions=enabled)
+                solver = SolverMuJoCo(builder.finalize())
+                self.assertEqual(solver.mj_model.npair, int(enabled))
+                data = mujoco.MjData(solver.mj_model)
+                mujoco.mj_forward(solver.mj_model, data)
+                self.assertEqual(data.ncon, int(enabled))
+
+    def test_collapse_preserves_mocap(self):
+        """Keep mocap roots while still collapsing ordinary fixed children."""
+        builder = newton.ModelBuilder()
+        for count in (1, 2):
+            builder.add_mjcf_native(
+                """<mujoco><worldbody><body mocap="true"><geom size=".1"/>
+                <body pos="0 0 1"><geom size=".1"/></body></body></worldbody></mujoco>""",
+                collapse_fixed_joints=True,
+            )
+            self.assertEqual(builder.body_count, count)
+            self.assertTrue(all(flags & newton.BodyFlags.KINEMATIC for flags in builder.body_flags))
+            self.assertEqual(builder.shape_body, [body for body in range(count) for _ in range(2)])
+
+    def test_builder_targets_without_native_actuators(self):
+        """Publish replicated builder targets when the imported asset has no actuators."""
+        asset = newton.ModelBuilder()
+        asset.add_mjcf_native('<mujoco><worldbody><body><joint/><geom size=".1"/></body></worldbody></mujoco>')
+        asset.joint_target_ke[0] = 10
+        asset.joint_target_mode[0] = newton.JointTargetMode.POSITION
+        builder = newton.ModelBuilder()
+        builder.replicate(asset, 2)
+        solver = SolverMuJoCo(builder.finalize(), disable_contacts=True)
+        self.assertEqual(solver.mj_model.nu, 1)
+        np.testing.assert_allclose(solver.mj_model.actuator_gainprm[:, 0], 10)
+
+    def test_scalar_limit_flags_across_worlds(self):
+        """Require matching limit enablement, allowing different enabled bounds."""
+        for kind, reverse in product(("hinge", "slide"), (False, True)):
+            with self.subTest(kind=kind, reverse=reverse):
+                asset = newton.ModelBuilder()
+                asset.add_mjcf_native(
+                    f'<mujoco><worldbody><body><joint type="{kind}"/><geom size=".1"/></body></worldbody></mujoco>'
+                )
+                builder = newton.ModelBuilder()
+                builder.replicate(asset, 2)
+                dof = int(reverse)
+                builder.joint_limit_lower[dof] = 0
+                builder.joint_limit_upper[dof] = 1
+                with self.assertRaisesRegex(ValueError, "scalar joint limit flags"):
+                    SolverMuJoCo(builder.finalize(), disable_contacts=True)
+                builder.joint_limit_lower[1 - dof] = -1
+                builder.joint_limit_upper[1 - dof] = 2
+                solver = SolverMuJoCo(builder.finalize(), disable_contacts=True)
+                self.assertTrue(solver.mj_model.jnt_limited[0])
+                np.testing.assert_allclose(
+                    solver.mjw_model.jnt_range.numpy()[:, 0],
+                    list(zip(builder.joint_limit_lower, builder.joint_limit_upper, strict=True)),
+                )
+
     def test_contact_pairs_masks_and_excludes(self):
         """Preserve asymmetric masks, explicit pair parameters and exclusions."""
         xml = """<mujoco><worldbody><body name="a"><freejoint/><geom name="a" size=".1" contype="1" conaffinity="2"/></body>

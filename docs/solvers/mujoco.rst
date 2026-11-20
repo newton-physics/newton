@@ -130,6 +130,8 @@ velocity and adhesion, and actuator delay and interpolation retain per-world
 values at solver construction. Fluid coefficients, actuator groups, and
 history-buffer sample counts must match across corresponding entities;
 different values raise ``ValueError`` because their compiled layout is shared.
+Corresponding joints must agree on whether limits are enabled; enabled bounds
+may differ across worlds.
 Rebuild the solver after editing these native attributes.
 
 Without a custom resolver, file-backed native imports use MuJoCo's asset-path

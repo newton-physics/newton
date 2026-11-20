@@ -62,7 +62,8 @@ class _ComparisonResult(unittest.TextTestResult):
     def addSkip(self, test, reason):
         super().addSkip(test, reason)
         if self.current is not None:
-            self.current["status"] = "skipped"
+            if self.current["status"] == "passed":
+                self.current["status"] = "skipped"
             self.current["details"].append(reason)
 
     def addExpectedFailure(self, test, err):
