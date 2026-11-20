@@ -10,7 +10,7 @@ import time
 import unittest
 import warnings
 import xml.etree.ElementTree as ET
-from copy import deepcopy
+from copy import copy, deepcopy
 from enum import IntFlag
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -32,6 +32,7 @@ from newton._src.solvers.mujoco.enums import (
     _ActuatorBiasType,
     _ActuatorDynamicsType,
     _ActuatorGainType,
+    _JointType,
 )
 from newton._src.solvers.mujoco.equality import _add_equality_constraint
 from newton._src.solvers.mujoco.geometry import build_shape_layout, compile_layout_collision_masks
@@ -97,6 +98,14 @@ def _expected_positive_limit_solref(ke: float, kd: float, factor: float) -> np.n
 
 @requires(*MUJOCO_MODULES)
 class TestMuJoCoSolver(unittest.TestCase):
+    def test_joint_type_enum_matches_mujoco(self):
+        """Pin every joint type ordinal against MuJoCo's native joint types."""
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        self.assertEqual(
+            {member.name: int(member) for member in _JointType},
+            {name.removeprefix("mjJNT_"): int(member) for name, member in mujoco.mjtJoint.__members__.items()},
+        )
+
     def test_collision_coloring_uses_all_32_mujoco_mask_bits(self):
         """Verify that graph-color fallback uses bits 0 through 31 before degrading to MuJoCo defaults."""
         clique_size = 33
@@ -5601,30 +5610,7 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
         # Warp array).  This mimics the dexsuite/IsaacLab pattern where a
         # fresh Contacts wrapper is materialised each substep around a pool
         # of persistent device buffers.
-        class _AliasedContacts:
-            pass
-
-        contacts_alias = _AliasedContacts()
-        for attr in (
-            "contact_counters",
-            "rigid_contact_count",
-            "contact_generation",
-            "rigid_contact_max",
-            "soft_contact_max",
-            "rigid_contact_shape0",
-            "rigid_contact_shape1",
-            "rigid_contact_point0",
-            "rigid_contact_point1",
-            "rigid_contact_normal",
-            "rigid_contact_offset0",
-            "rigid_contact_offset1",
-            "rigid_contact_margin0",
-            "rigid_contact_margin1",
-            "rigid_contact_stiffness",
-            "rigid_contact_damping",
-            "rigid_contact_friction",
-        ):
-            setattr(contacts_alias, attr, getattr(contacts_a, attr))
+        contacts_alias = copy(contacts_a)
 
         # Sanity: the two wrappers are distinct objects but share the same
         # contact_generation array — the precise dexsuite scenario.
@@ -6310,7 +6296,8 @@ class TestMuJoCoContactForce(unittest.TestCase):
     def test_external_contact_observables_preserve_input_geometry(self):
         """Keep collision rows stable across substeps and map forces past culled rows."""
         model, _ = self._build_box_on_ground()
-        solver = SolverMuJoCo(model, use_mujoco_contacts=False)
+        with self.assertWarnsRegex(NewtonWarning, "RK4 and Newton contacts"):
+            solver = SolverMuJoCo(model, use_mujoco_contacts=False, integrator="rk4")
         pipeline = newton.CollisionPipeline(model, rigid_contact_max=16)
         self.assertLess(model.rigid_contact_max, solver.get_max_contact_count())
         contacts = pipeline.contacts()
@@ -6318,6 +6305,9 @@ class TestMuJoCoContactForce(unittest.TestCase):
         joint_q = state_in.joint_q.numpy()
         joint_q[2] = 0.09  # Start in contact, rather than waiting for gravity to close the gap.
         state_in.joint_q.assign(joint_q)
+        velocity = state_in.joint_qd.numpy()
+        velocity[0] = 0.5  # The last RK4 force evaluation uses a displaced box COM.
+        state_in.joint_qd.assign(velocity)
         newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
         pipeline.collide(state_in, contacts)
         count = int(contacts.rigid_contact_count.numpy()[0])
@@ -6327,6 +6317,21 @@ class TestMuJoCoContactForce(unittest.TestCase):
         shapes = contacts.rigid_contact_shape0.numpy()
         shapes[0] = -1
         contacts.rigid_contact_shape0.assign(shapes)
+        # Exercise both wrench references even when the collider emits every
+        # pair in the same shape order.
+        for first, second in (
+            (contacts.rigid_contact_shape0, contacts.rigid_contact_shape1),
+            (contacts.rigid_contact_point0, contacts.rigid_contact_point1),
+            (contacts.rigid_contact_offset0, contacts.rigid_contact_offset1),
+            (contacts.rigid_contact_margin0, contacts.rigid_contact_margin1),
+        ):
+            left, right = first.numpy(), second.numpy()
+            left[1], right[1] = right[1].copy(), left[1].copy()
+            first.assign(left)
+            second.assign(right)
+        normals = contacts.rigid_contact_normal.numpy()
+        normals[1] *= -1.0
+        contacts.rigid_contact_normal.assign(normals)
         fields = (
             "rigid_contact_count",
             "rigid_contact_shape0",
@@ -6342,7 +6347,7 @@ class TestMuJoCoContactForce(unittest.TestCase):
         )
         snapshots = {field: getattr(contacts, field).numpy().copy() for field in fields}
         observables = solver.observables(contacts=contacts, kinds={newton.solvers.SolverBase.ObservableKind.CONTACT_F})
-        for _ in range(3):
+        for step in range(3):
             observables.contact_f.fill_(float("nan"))
             solver.step(state_in, state_out, None, contacts, 0.002, observables=observables)
             for field, expected in snapshots.items():
@@ -6352,6 +6357,21 @@ class TestMuJoCoContactForce(unittest.TestCase):
             np.testing.assert_array_equal(forces[count:], 0.0)
             self.assertTrue(np.isfinite(forces).all())
             self.assertGreater(np.linalg.norm(forces[1:count, :3]), 0.0)
+            indices = solver._contact_tid_to_cid.numpy()[1:count]
+            pos = solver.mjw_data.contact.pos.numpy()[indices]
+            geoms = solver.mjw_data.contact.geom.numpy()[indices]
+            mapped_shapes = solver.mjc_geom_to_newton_shape.numpy()[0][geoms]
+            for side in (0, 1):
+                np.testing.assert_array_equal(mapped_shapes[:, side], snapshots[f"rigid_contact_shape{side}"][1:count])
+            normal_force = np.sum(forces[1:count, :3] * normals[1:count], axis=1)
+            self.assertLessEqual(normal_force.max(), 1e-5)
+            if step == 0:
+                self.assertLess(normal_force[0], 0.0)
+                self.assertLess(normal_force[1:].min(), 0.0)
+            bodies = solver.mjw_model.geom_bodyid.numpy()[geoms[:, 0]]
+            reference = solver.mjw_data.xipos.numpy()[0, bodies]
+            expected_torque = np.cross(pos - reference, forces[1:count, :3])
+            np.testing.assert_allclose(forces[1:count, 3:], expected_torque, rtol=1e-5, atol=1e-5)
             state_in, state_out = state_out, state_in
 
     def _build_box_on_ground(self, *, friction: float = 1.0, height: float = 0.1):
@@ -6422,6 +6442,18 @@ class TestMuJoCoContactForce(unittest.TestCase):
                 f = observables.contact_f.numpy()[:nacon, :3]
                 force_acc += np.sum(f, axis=0)
 
+        # These condim=3 contacts exert a force at the contact point, so the
+        # torque about shape0's COM is entirely due to the moment arm.
+        if use_mujoco_cpu:
+            positions = solver.mj_data.contact.pos[:nacon]
+            bodies = solver.mj_model.geom_bodyid[solver.mj_data.contact.geom[:nacon, 0]]
+            reference = solver.mj_data.xipos[bodies]
+        else:
+            positions = solver.mjw_data.contact.pos.numpy()[:nacon]
+            bodies = solver.mjw_model.geom_bodyid.numpy()[solver.mjw_data.contact.geom.numpy()[:nacon, 0]]
+            reference = solver.mjw_data.xipos.numpy()[0, bodies]
+        wrenches = observables.contact_f.numpy()[:nacon]
+        np.testing.assert_allclose(wrenches[:, 3:], np.cross(positions - reference, wrenches[:, :3]), atol=1e-5)
         total_force = force_acc / avg
         shape0 = int(contacts.rigid_contact_shape0.numpy()[0])
         if use_mujoco_cpu:
@@ -8323,10 +8355,8 @@ class TestMuJoCoOptions(unittest.TestCase):
             njmax_nnz=2,
         )
         mujoco, _ = SolverMuJoCo.import_mujoco()
-        from mujoco_warp._src.io import is_sparse as is_mujoco_warp_sparse
-
         self.assertFalse(mujoco.mj_isSparse(solver.mj_model))
-        self.assertTrue(is_mujoco_warp_sparse(solver.mj_model))
+        self.assertTrue(solver.mjw_model.is_sparse)
 
         with self.assertRaisesRegex(
             ValueError,
