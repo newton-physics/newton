@@ -524,6 +524,7 @@ class TestModelMesh(unittest.TestCase):
         np.testing.assert_allclose(values.numpy(), np.array([[1.25, -2.5]] * 3, dtype=np.float32))
 
     def test_empty_sequence_custom_attribute_materializes_default_values(self):
+        """Preserve trailing dimensions for sequence defaults and authored rows."""
         attr = ModelBuilder.CustomAttribute(
             name="default_table_shape_attr",
             frequency=newton.Model.AttributeFrequency.SHAPE,
@@ -536,6 +537,26 @@ class TestModelMesh(unittest.TestCase):
 
         full_mock.assert_not_called()
         np.testing.assert_allclose(values.numpy(), np.array([[0.0, 1.0, 2.0]] * 2, dtype=np.float32))
+
+        for frequency, storage in (
+            ("table", [None, None, None]),
+            (newton.Model.AttributeFrequency.SHAPE, {0: [0.0, 1.0, 2.0]}),
+        ):
+            with self.subTest(frequency=frequency):
+                attr.frequency = frequency
+                attr.values = storage
+                values = attr.build_array(3, device="cpu", requires_grad=True)
+                self.assertTrue(values.requires_grad)
+                np.testing.assert_array_equal(values.numpy(), [[0.0, 1.0, 2.0]] * 3)
+
+        attr.default = [0.0]
+        attr.values = {0: [2.0], 1: [3.0]}
+        np.testing.assert_array_equal(attr.build_array(2, device="cpu").numpy(), [[2.0], [3.0]])
+        attr.default = 0.0
+        np.testing.assert_array_equal(attr.build_array(2, device="cpu").numpy(), [[2.0], [3.0]])
+        attr.frequency = newton.Model.AttributeFrequency.WORLD
+        attr.values = {-1: [0.0, 1.0, 2.0]}
+        np.testing.assert_array_equal(attr.build_array(3, device="cpu").numpy(), [[0.0, 1.0, 2.0]] * 3)
 
     def test_mesh_hash_uses_cached_sha_digest(self):
         mesh = newton.Mesh.create_box(
@@ -1221,13 +1242,9 @@ class TestModelMesh(unittest.TestCase):
             mesh = builder.shape_source[shape]
             self.assertEqual(len(mesh.vertices), mesh.maxhullvert)
 
+    @requires("coacd")
     def test_mesh_approximation_coacd_is_repeatable(self):
         """Decompose a nonconvex mesh with CoACD repeatedly and get identical hulls."""
-        try:
-            import coacd  # noqa: F401
-        except ImportError:
-            self.skipTest("Requires coacd")
-
         # A torus is nonconvex, so CoACD's parallel tree search has several cuts to choose from.
         rings, sides = 32, 12
         u, v = np.meshgrid(
@@ -4963,54 +4980,6 @@ class TestModelValidation(unittest.TestCase):
             control.clear()
         except Exception as e:
             self.fail(f"control.clear() raised {type(e).__name__}: {e}")
-
-
-class TestRemovedJointTargetAliases(unittest.TestCase):
-    """The 1.3-era ``joint_target_pos`` / ``joint_target_vel`` aliases are gone.
-
-    They are shadowed by tombstone descriptors rather than simply deleted so
-    that code written against the old API fails loudly. A plain deletion would
-    let ``obj.joint_target_pos = targets`` succeed as a fresh instance
-    attribute while ``joint_target_q`` stayed untouched, silently dropping the
-    requested targets.
-    """
-
-    ALIASES = (("joint_target_pos", "joint_target_q"), ("joint_target_vel", "joint_target_qd"))
-
-    def _owners(self):
-        builder = ModelBuilder()
-        base = builder.add_link(mass=1.0)
-        j = builder.add_joint_revolute(parent=-1, child=base, axis=newton.Axis.Z)
-        builder.add_articulation([j])
-        model = builder.finalize()
-        return (("Model", model), ("Control", model.control()), ("ModelBuilder", ModelBuilder()))
-
-    def test_assignment_raises_and_leaves_no_shadow_attribute(self):
-        """Verify assignment to a removed alias raises without shadowing."""
-        for label, obj in self._owners():
-            for alias, replacement in self.ALIASES:
-                with self.subTest(owner=label, alias=alias):
-                    with self.assertRaisesRegex(AttributeError, rf"{label}\.{alias}.*{replacement}"):
-                        setattr(obj, alias, [1.0, 2.0])
-                    self.assertNotIn(alias, vars(obj))
-
-    def test_read_raises(self):
-        """Verify reading a removed alias raises and names its replacement."""
-        for label, obj in self._owners():
-            for alias, replacement in self.ALIASES:
-                with self.subTest(owner=label, alias=alias):
-                    with self.assertRaisesRegex(AttributeError, rf"{label}\.{alias}.*{replacement}"):
-                        getattr(obj, alias)
-                    # Raising AttributeError on read keeps the usual probes well behaved.
-                    self.assertFalse(hasattr(obj, alias))
-                    self.assertEqual(getattr(obj, alias, "default"), "default")
-
-    def test_canonical_names_still_work(self):
-        """Verify replacement attributes remain readable."""
-        for label, obj in self._owners():
-            with self.subTest(owner=label):
-                self.assertIsNotNone(obj.joint_target_q)
-                self.assertIsNotNone(obj.joint_target_qd)
 
 
 class TestParentCollisionFilterWeldGroups(unittest.TestCase):

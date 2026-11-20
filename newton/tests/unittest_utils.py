@@ -17,7 +17,6 @@ import sys
 import tempfile
 import time
 import unittest
-import warnings
 import xml.etree.ElementTree as ET
 from typing import Any
 
@@ -98,6 +97,20 @@ def requires(*modules: str):
 
 
 MODULE_LOAD_OUTPUT_RE = r"^Module .* load on device '[^']*' took [\d.]+ ms\s*\((?:compiled|cached)\)\n?"
+
+# Optional rich console prefix of an INFO log record.
+INFO_LOG_PREFIX_RE = r"(?:\[\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d{3}\]\[[\w.-]+\.py:\d+\]\[INFO\]: )?"
+ASSET_CACHE_REFRESH_OUTPUT_RE = (
+    rf"(?:{INFO_LOG_PREFIX_RE}New version of [^\n]+ found "
+    r"\(cached: [0-9a-f]{8}, latest: [0-9a-f]{8}\)\. Refreshing\.\.\.\n)?"
+)
+# Log output of a ``newton.utils.download_asset()`` call that clones the asset repository.
+NEWTON_ASSET_DOWNLOAD_OUTPUT_RE = (
+    ASSET_CACHE_REFRESH_OUTPUT_RE
+    + INFO_LOG_PREFIX_RE
+    + r"Cloning https://github\.com/newton-physics/newton-assets\.git "
+    r"\(ref: [0-9a-f]{40}\)\.\.\.\n" + INFO_LOG_PREFIX_RE + r"Successfully downloaded folder to: [^\n]+\n?"
+)
 
 # The batched transform helpers in newton._src.core.host_transform mirror the operation
 # order of Warp's native builtins, so they match bit for bit where neither side fuses
@@ -182,29 +195,6 @@ def _deprecation_warning_output_regexes(stderr: str, message_prefix: str):
 
 # Extra --warp-config KEY=VALUE entries forwarded to example subprocesses.
 warp_config_overrides: list[str] = []
-
-
-def _restore_warning_filters(saved: list) -> None:
-    warnings.filters[:] = saved
-
-
-def ignore_sensor_tiled_camera_deprecation() -> None:
-    """Silence the whole-class ``SensorTiledCamera`` deprecation warning.
-
-    ``SensorTiledCamera`` is deprecated in favor of ``newton.sensors.SensorCamera``.
-    The tests that still exercise it call this from ``setUpModule`` so its
-    construction warning does not escalate to an error under ``--strict-warnings``.
-
-    The suppression is scoped to the calling module: the previous global filter
-    state is restored after ``tearDownModule`` so it does not leak into later
-    test modules.
-    """
-    unittest.addModuleCleanup(_restore_warning_filters, warnings.filters[:])
-    warnings.filterwarnings(
-        "ignore",
-        message="SensorTiledCamera is deprecated",
-        category=DeprecationWarning,
-    )
 
 
 @contextlib.contextmanager
@@ -715,15 +705,23 @@ class NewtonTestCase(unittest.TestCase):
         self.addCleanup(self._finish_output_capture)
         super()._callSetUp()
 
-    def expectOutputRegex(self, regex: str, *, stream: str = "any"):
-        """Allow matching stdout/stderr output and fail if it does not appear."""
+    def expectOutputRegex(self, regex: str, *, stream: str = "any", report: bool = False):
+        """Allow matching stdout/stderr output and fail if it does not appear.
 
-        self._require_output_capture().add_pattern(regex, stream=stream, required=True)
+        Matching output is discarded unless ``report`` is true, in which case it is
+        printed once the test's output passes validation.
+        """
 
-    def allowOutputRegex(self, regex: str, *, stream: str = "any"):
-        """Allow matching stdout/stderr output without requiring it."""
+        self._require_output_capture().add_pattern(regex, stream=stream, required=True, report=report)
 
-        self._require_output_capture().add_pattern(regex, stream=stream, required=False)
+    def allowOutputRegex(self, regex: str, *, stream: str = "any", report: bool = False):
+        """Allow matching stdout/stderr output without requiring it.
+
+        Allowed output is discarded unless ``report`` is true, in which case it is
+        printed once the test's output passes validation.
+        """
+
+        self._require_output_capture().add_pattern(regex, stream=stream, required=False, report=report)
 
     def assertSubprocessSuccess(self, result, *, command):
         """Assert a subprocess succeeded and include its output in this test's output contract."""

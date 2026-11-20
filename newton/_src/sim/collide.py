@@ -12,7 +12,7 @@ import numpy as np
 import warp as wp
 
 from ..core.reset import normalize_reset_world_mask
-from ..exceptions import NewtonDeprecationWarning, NewtonWarning
+from ..exceptions import NewtonWarning
 from ..geometry.broad_phase_nxn import BroadPhaseAllPairs, BroadPhaseExplicit
 from ..geometry.broad_phase_sap import BroadPhaseSAP
 from ..geometry.collision_core import compute_tight_aabb_from_support
@@ -33,11 +33,16 @@ from ..geometry.contact_reduction_body_pairs import (
 )
 from ..geometry.contact_reduction_global import CONTACT_ID_BITS, MAX_GROUP_ID
 from ..geometry.contact_sort import ContactSorter
-from ..geometry.differentiable_contacts import launch_differentiable_contact_augment
 from ..geometry.flags import MeshProperties, ShapeFlags
 from ..geometry.kernels import create_soft_contacts
 from ..geometry.narrow_phase import NarrowPhase
 from ..geometry.sdf_hydroelastic import HydroelasticSDF
+from ..geometry.sdf_planar_recovery import (
+    MeshRecoveryData,
+    allocate_mesh_recovery,
+    empty_mesh_recovery,
+    reset_mesh_recovery,
+)
 from ..geometry.soft_contacts_heightfield import _HEIGHTFIELD_CELLS_PER_TASK, launch_soft_heightfield_contacts
 from ..geometry.soft_contacts_mesh import (
     MeshContactData,
@@ -310,7 +315,7 @@ def write_contact(
     contact_data: ContactData,
     writer_data: ContactWriterData,
     output_index: int,
-):
+) -> bool:
     """
     Write a contact to the output arrays using ContactData and ContactWriterData.
 
@@ -323,10 +328,11 @@ def write_contact(
     if index < 0:
         contact_gap = writer_data.shape_gap[contact_data.shape_a] + writer_data.shape_gap[contact_data.shape_b]
         if contact_separation(contact_data) > contact_gap:
-            return
+            return False
         index = wp.atomic_add(writer_data.contact_count, 0, 1)
     normal = wp.normalize(contact_data.contact_normal_a_to_b)
     _write_contact_at_index(contact_data, writer_data, index, normal)
+    return index < writer_data.contact_max
 
 
 @wp.func
@@ -334,7 +340,7 @@ def write_contact_speculative(
     contact_data: ContactData,
     writer_data: ContactWriterData,
     output_index: int,
-):
+) -> bool:
     """Write a present or exactly predicted contact to the output arrays."""
     contact_data.gap_sum = writer_data.shape_gap[contact_data.shape_a] + writer_data.shape_gap[contact_data.shape_b]
     index = output_index
@@ -347,11 +353,12 @@ def write_contact_speculative(
             writer_data.collision_update_dt,
             writer_data.max_speculative_extension,
         ):
-            return
+            return False
         index = wp.atomic_add(writer_data.contact_count, 0, 1)
 
     normal = wp.normalize(contact_data.contact_normal_a_to_b)
     _write_contact_at_index(contact_data, writer_data, index, normal)
+    return index < writer_data.contact_max
 
 
 @wp.func
@@ -455,6 +462,7 @@ def compute_shape_aabbs(
     contact_generation: wp.array[wp.int32],
     broad_phase_pair_count: wp.array[wp.int32],
     num_contact_counters: int,
+    recovery: MeshRecoveryData,
     # outputs
     aabb_lower: wp.array[wp.vec3],
     aabb_upper: wp.array[wp.vec3],
@@ -480,6 +488,9 @@ def compute_shape_aabbs(
             g = g + 1
         contact_generation[0] = g
         broad_phase_pair_count[0] = 0
+        if recovery.keys.shape[0] > 0:
+            reset_mesh_recovery(recovery)
+            recovery.generation[0] = g
 
     # Empty variant rows have their collision flags cleared; give them an empty AABB because broad
     # phases include every row that could hold a colliding variant shape.
@@ -589,6 +600,11 @@ def compute_shape_aabbs(
         # so we only need to handle the rotation here.
         local_lo = shape_collision_aabb_lower[shape_id]
         local_hi = shape_collision_aabb_upper[shape_id]
+        # Gap and margin are added per pair in the writer, but per shape here.
+        # Pad before adding to the bounds so cancellation at a face near zero
+        # cannot hide a contact on the rounded pair threshold.
+        rounding = (wp.abs(shape_gap[shape_id]) + wp.abs(margin)) * (2.0 * 1.1920928955078125e-7)
+        margin_vec = wp.vec3(effective_gap + rounding)
 
         center = (local_lo + local_hi) * 0.5
         half = (local_hi - local_lo) * 0.5
@@ -1765,7 +1781,6 @@ class CollisionPipeline:
         include_static_kinematic_pairs: bool = True,
         soft_contact_max: int | None = None,
         soft_contact_gap: float | None = None,
-        soft_contact_margin: float | None = None,
         enable_rigid_soft_full_surface_contact: bool = False,
         requires_grad: bool | None = None,
         broad_phase: Literal["nxn", "sap", "explicit"]
@@ -1844,9 +1859,6 @@ class CollisionPipeline:
             soft_contact_gap: Detection-only distance [m] added to the
                 per-particle radius for particle-shape (soft) contact queries.
                 Defaults to 0.01.
-            soft_contact_margin: Deprecated alias of ``soft_contact_gap`` (the
-                value is detection-only slack on top of the particle radius,
-                i.e. a gap under the margin/gap convention).
             enable_rigid_soft_full_surface_contact: Generate soft contacts over the full soft-mesh
                 surface -- the edges and triangle interiors -- against rigid surfaces, in addition to
                 the per-vertex (particle) contacts. Catches rigid features that pass between soft
@@ -1867,11 +1879,9 @@ class CollisionPipeline:
                 collision/solver time. Set ``soft_contact_max`` to size storage explicitly;
                 this does not reduce the number of feature pairs queried.
                 See :ref:`full-surface-mesh-contact-costs`.
-            requires_grad: Whether pipeline-generated soft contacts and the
-                deprecated automatic rigid-contact outputs require gradients.
-                If None, uses ``model.requires_grad``. Explicit calls to
-                :func:`newton.eval_rigid_contact_kinematics` do not
-                depend on this flag.
+            requires_grad: Whether pipeline-generated soft contacts require gradients.
+                If None, uses ``model.requires_grad``. Rigid-contact gradients come from
+                :func:`newton.eval_rigid_contact_kinematics` and do not depend on this flag.
             broad_phase:
                 Either a broad phase mode string ("explicit", "nxn", "sap") or
                 a prebuilt broad phase instance for expert usage.
@@ -1919,13 +1929,16 @@ class CollisionPipeline:
                 .. experimental::
 
                     The ``"sticky"`` mode may change without prior notice.
-            contact_matching_pos_threshold: World-space distance threshold [m]
-                between the previous and current contact midpoints
-                ``0.5 * (world(point0) + world(point1))``.  Contacts whose
-                midpoint moves more than this are considered broken. In sticky mode,
-                instead compare each saved body-local witness, transformed by the
-                current body pose, with its fresh contact point. The contact is
-                broken if either witness moves farther than this distance.
+            contact_matching_pos_threshold: World-space distance threshold [m].
+                In latest mode, compare the previous and current contact midpoints
+                ``0.5 * (world(point0) + world(point1))``; movement beyond the
+                threshold breaks the match. In sticky mode,
+                compare both transported body-local witnesses with their fresh
+                points, or match a travelling contact when the changes in one
+                body's world-oriented witness offset and in the world-space
+                witness separation stay within this threshold. A matched contact
+                keeps fresh geometry if either transported witness exceeds the
+                threshold; its identity is retained.
                 Defaults to ``0.0005``.
             contact_matching_normal_dot_threshold: Minimum dot product between
                 old and new contact normals for a match.
@@ -2040,17 +2053,7 @@ class CollisionPipeline:
                 rigid_contact_max = rigid_contact_estimate.capacity
                 _warn_large_rigid_contact_estimate(rigid_contact_estimate)
         self._rigid_contact_max = rigid_contact_max
-        if soft_contact_margin is not None:
-            if soft_contact_gap is not None:
-                raise ValueError("soft_contact_margin is a deprecated alias of soft_contact_gap; pass only one")
-            warnings.warn(
-                "The soft_contact_margin parameter of CollisionPipeline is deprecated; "
-                "use soft_contact_gap (same value: detection-only distance added to the particle radius).",
-                NewtonDeprecationWarning,
-                stacklevel=2,
-            )
-            soft_contact_gap = soft_contact_margin
-        elif soft_contact_gap is None:
+        if soft_contact_gap is None:
             soft_contact_gap = 0.01
         if soft_contact_gap < 0.0:
             raise ValueError(f"soft_contact_gap must be >= 0, got {soft_contact_gap}")
@@ -2071,6 +2074,8 @@ class CollisionPipeline:
             shape_aabb_upper = wp.zeros(shape_count, dtype=wp.vec3, device=device)
 
         self.model = model
+        self._empty_mesh_recovery = empty_mesh_recovery(model.device.alias)
+        self._mesh_recovery_pair_max = None
         self.shape_count = shape_count
         self.device = device
         self.reduce_contacts = reduce_contacts
@@ -2254,6 +2259,8 @@ class CollisionPipeline:
                 plane_mask = route_rows & (route_types == int(GeoType.PLANE))
                 mesh_sdf_pair_mask = mesh_mask | heightfield_mask
                 planar_sdf_mask = np.zeros(len(route_types), dtype=bool)
+                recovery_shape_mask = np.zeros(len(route_types), dtype=bool)
+                recovery_probe_mask = np.zeros(len(route_types), dtype=bool)
                 has_meshes = bool(np.any(mesh_mask))
                 has_heightfields = bool(np.any(heightfield_mask))
                 if (
@@ -2284,6 +2291,13 @@ class CollisionPipeline:
                         mesh_sdf_texture_only = bool(
                             np.any(mesh_sdf_shapes) and np.all(has_texture_sdf[mesh_sdf_shapes])
                         )
+                        mesh_properties = with_variant_shapes(
+                            "_shape_mesh_properties", model._shape_mesh_properties.numpy()
+                        )
+                        recovery_shape_mask = mesh_sdf_shapes & has_texture_sdf
+                        recovery_probe_mask = recovery_shape_mask & (
+                            (mesh_properties & int(MeshProperties.RECOVERY_PROBE)) != 0
+                        )
                     if mesh_sdf_texture_only:
                         texture_sdf_data = model._texture_sdf_data.numpy()
                         scale_baked = texture_sdf_data["scale_baked"]
@@ -2313,6 +2327,22 @@ class CollisionPipeline:
                 heightfield_capacity = heightfield_mask[:shape_count_routed]
                 plane_capacity = plane_mask[:shape_count_routed]
                 planar_sdf_capacity = capacity(planar_sdf_mask)
+                if model._texture_sdf_data is not None:
+                    # Both shapes need textures, and at least one must be an
+                    # eligible probe. Dense meshes cannot use recovery storage.
+                    textured_mesh = capacity(recovery_shape_mask)
+                    recovery_probe = capacity(recovery_probe_mask)
+                    if explicit_pairs_host is not None:
+                        a, b = explicit_pairs_host.T
+                        self._mesh_recovery_pair_max = int(
+                            np.count_nonzero(
+                                textured_mesh[a] & textured_mesh[b] & (recovery_probe[a] | recovery_probe[b])
+                            )
+                        )
+                    else:
+                        self._mesh_recovery_pair_max = _compute_per_world_mask_pair_max(
+                            model, recovery_probe, textured_mesh
+                        )
                 if self.broad_phase_mode == "explicit" and self.shape_pairs_filtered is not None:
                     # Explicit pair types are fixed at pipeline construction, including
                     # intentional cross-world pairs, so size only the stages they can reach.
@@ -2685,6 +2715,24 @@ class CollisionPipeline:
         self._reduces_body_pairs = (
             body_pair_reduction is not None and self.narrow_phase.group_contact_reducer is not None
         )
+        pair_capacity = self.narrow_phase.max_mesh_mesh_pairs
+        if self._mesh_recovery_pair_max is not None:
+            pair_capacity = min(pair_capacity, self._mesh_recovery_pair_max)
+        texture_data = model._texture_sdf_data
+        self._mesh_recovery_pair_max = 0
+        if (
+            texture_data is not None
+            and texture_data.shape[0] > 0
+            and pair_capacity > 0
+            and model.body_count > 0
+            and self.narrow_phase.shape_pairs_mesh_mesh is not None
+            and type(self.narrow_phase).launch_custom_write is NarrowPhase.launch_custom_write
+            and self.narrow_phase._contact_writer is contact_writer
+            and not self._reduces_body_pairs
+            and not self.requires_grad
+            and self.rigid_contact_max > 0
+        ):
+            self._mesh_recovery_pair_max = pair_capacity
 
         # Soft (cloth) self-contact: disabled until init_soft_self_contact() creates
         # the shared detector (re-pointed per Contacts buffer; see
@@ -2735,25 +2783,6 @@ class CollisionPipeline:
         return self._soft_contact_max
 
     @property
-    def soft_contact_margin(self) -> float:
-        """Deprecated alias of :attr:`soft_contact_gap`."""
-        warnings.warn(
-            "CollisionPipeline.soft_contact_margin is deprecated; use soft_contact_gap.",
-            NewtonDeprecationWarning,
-            stacklevel=2,
-        )
-        return self.soft_contact_gap
-
-    @soft_contact_margin.setter
-    def soft_contact_margin(self, value: float) -> None:
-        warnings.warn(
-            "CollisionPipeline.soft_contact_margin is deprecated; use soft_contact_gap.",
-            NewtonDeprecationWarning,
-            stacklevel=2,
-        )
-        self.soft_contact_gap = value
-
-    @property
     def soft_contact_pair_count(self) -> int:
         """Number of precomputed (particle, shape) pairs launched for soft contacts.
 
@@ -2769,16 +2798,6 @@ class CollisionPipeline:
         """Whether any rigid-soft contact pass has candidates, including full-surface passes."""
         return self._soft_contact_tids_size > 0 or self._soft_mesh_contact_data is not None
 
-    @property
-    def soft_rigid_contact_pair_count(self) -> int:
-        """Deprecated alias of :attr:`soft_contact_pair_count`."""
-        warnings.warn(
-            "CollisionPipeline.soft_rigid_contact_pair_count is deprecated; use soft_contact_pair_count.",
-            NewtonDeprecationWarning,
-            stacklevel=2,
-        )
-        return self.soft_contact_pair_count
-
     def contacts(self) -> Contacts:
         """
         Allocate and return a new :class:`newton.Contacts` object for this pipeline.
@@ -2786,15 +2805,12 @@ class CollisionPipeline:
         The returned buffer uses this pipeline's ``requires_grad`` flag (resolved at
         construction from the argument or ``model.requires_grad``).
 
+        For solver-only CUDA graphs, use this method or collide once with a
+        directly constructed buffer before capture to bind its recovery storage.
+        Recapture the graph if that storage is replaced.
+
         Returns:
             A newly allocated contacts buffer sized for this pipeline.
-
-        .. experimental::
-
-            If ``requires_grad`` is true, deprecated rigid-contact distance and
-            point compatibility arrays are allocated. New code should allocate
-            only the outputs it needs and pass them to
-            :func:`newton.eval_rigid_contact_kinematics`.
         """
         detector = self._soft_self_contact_detector
         soft_self_contact = detector is not None
@@ -2829,6 +2845,7 @@ class CollisionPipeline:
         )
         contacts._contact_matching_mode = self.contact_matching
         contacts._rigid_contact_body_pair_reduced = self._reduces_body_pairs
+        self._prepare_mesh_recovery(contacts)
         if self._soft_mesh_contact_data is not None:
             allocate_soft_mesh_contact_buffers(contacts)
             contacts._soft_contact_mesh_data = self._soft_mesh_contact_data
@@ -3053,12 +3070,27 @@ class CollisionPipeline:
             device=model.device,
         )
 
+    def _prepare_mesh_recovery(self, contacts):
+        if self._mesh_recovery_pair_max and contacts.rigid_contact_max > 0:
+            # A rejected write can still leave a claim. In deterministic mode
+            # size for every eligible pair so hash insertion order cannot drop one.
+            pair_max = self._mesh_recovery_pair_max
+            if not self.deterministic:
+                pair_max = min(pair_max, contacts.rigid_contact_max)
+            capacity = 2 * pair_max
+            storage = contacts._mesh_recovery_contacts
+            if storage is None or storage.keys.shape[0] < capacity or storage.deterministic != self.deterministic:
+                contacts._mesh_recovery_contacts = allocate_mesh_recovery(
+                    capacity, self.device, deterministic=self.deterministic
+                )
+            return contacts._mesh_recovery_contacts
+        return None
+
     def collide(
         self,
         state: State,
         contacts: Contacts,
         *,
-        soft_contact_margin: float | None = None,
         soft_self_contact: bool = False,
         dt: float | None = None,
     ):
@@ -3066,16 +3098,11 @@ class CollisionPipeline:
 
         Safe to call inside a :class:`wp.Tape` context.  The non-differentiable
         broad-phase and narrow-phase kernels are launched with tape recording
-        hardcoded ``record_tape=False`` internally.  The differentiable kernels
-        (soft-contact generation and rigid-contact augmentation) are recorded on
-        the tape so that gradients flow through ``state.body_q`` and
-        ``state.particle_q``.
-
-        For backward compatibility, when ``requires_grad=True`` the deprecated
-        ``contacts.rigid_contact_diff_*`` arrays are populated by a lightweight
-        augmentation kernel. New code should call
-        :func:`newton.eval_rigid_contact_kinematics` explicitly
-        after collision detection to reconstruct only the quantities it needs.
+        hardcoded ``record_tape=False`` internally.  The differentiable
+        soft-contact generation kernels are recorded on the tape so that
+        gradients flow through ``state.body_q`` and ``state.particle_q``.
+        Call :func:`newton.eval_rigid_contact_kinematics` after collision
+        detection for differentiable rigid-contact quantities.
 
         .. experimental::
 
@@ -3086,10 +3113,6 @@ class CollisionPipeline:
         Args:
             state: The current simulation state.
             contacts: The contacts buffer to populate (will be cleared first).
-            soft_contact_margin: Deprecated; set ``soft_contact_gap`` on the
-                :class:`CollisionPipeline` constructor instead. When not
-                ``None``, the value is still honored for this call and a
-                :class:`DeprecationWarning` is emitted.
             soft_self_contact: Also run soft (cloth) self-contact detection
                 into ``contacts.soft_self_contact_data``. Requires
                 :meth:`init_soft_self_contact` to have been called. The
@@ -3136,16 +3159,7 @@ class CollisionPipeline:
 
         model = self.model
         # update any additional parameters
-        if soft_contact_margin is not None:
-            warnings.warn(
-                "The soft_contact_margin argument of CollisionPipeline.collide() is deprecated; "
-                "set soft_contact_gap on the CollisionPipeline constructor instead.",
-                NewtonDeprecationWarning,
-                stacklevel=2,
-            )
-            soft_contact_gap = soft_contact_margin
-        else:
-            soft_contact_gap = self.soft_contact_gap
+        soft_contact_gap = self.soft_contact_gap
         if self._speculative_enabled:
             if dt is None:
                 raise ValueError("dt must be provided when speculative contacts are enabled")
@@ -3165,8 +3179,7 @@ class CollisionPipeline:
         # Rigid contact detection -- broad phase + narrow phase.
         # These kernels hardcode record_tape=False internally so they are
         # never captured on an active wp.Tape.  The differentiable
-        # augmentation and soft-contact kernels that follow are tape-safe
-        # and recorded normally.
+        # soft-contact kernels that follow are tape-safe and recorded normally.
 
         # Eager calls copy the sticky rescale flag to the host and raise on a copy from an earlier call; never syncs.
         check_unit_scale_sdf = self._shape_unit_scale_sdf.shape[0] > 0 and not wp.get_device(self.device).is_capturing
@@ -3175,6 +3188,8 @@ class CollisionPipeline:
 
         # Compute AABBs for all shapes, zero counters, bump generation.
         # Fuses contacts.clear() + broad_phase_pair_count.zero_() + AABB update.
+        recovery_contacts = self._prepare_mesh_recovery(contacts)
+        recovery = recovery_contacts or self._empty_mesh_recovery
         wp.launch(
             kernel=compute_shape_aabbs,
             dim=model.shape_count,
@@ -3196,6 +3211,7 @@ class CollisionPipeline:
                 contacts.contact_generation,
                 self.broad_phase_pair_count,
                 contacts.contact_counters.shape[0],
+                recovery,
             ],
             outputs=[
                 self.narrow_phase.shape_aabb_lower,
@@ -3333,8 +3349,16 @@ class CollisionPipeline:
         writer_data.collision_update_dt = collision_update_dt
         writer_data.max_speculative_extension = max_speculative_extension
         # Run narrow phase with custom contact writer (writes directly to Contacts format)
+        launch_narrow_phase = self.narrow_phase.launch_custom_write
         narrow_phase_extension_kwargs = {}
         if type(self.narrow_phase).launch_custom_write is NarrowPhase.launch_custom_write:
+            if recovery_contacts is not None:
+                launch_narrow_phase = self.narrow_phase._launch_custom_write
+                narrow_phase_extension_kwargs.update(
+                    _mesh_recovery=recovery_contacts,
+                    shape_body=model.shape_body,
+                    body_q=state.body_q,
+                )
             narrow_phase_extension_kwargs.update(
                 mesh_edge_centers=model._mesh_edge_centers,
                 mesh_edge_halves=model._mesh_edge_halves,
@@ -3354,7 +3378,7 @@ class CollisionPipeline:
             )
         if self._reduces_body_pairs:
             narrow_phase_extension_kwargs.update(body_q=state.body_q, shape_body=model.shape_body)
-        self.narrow_phase.launch_custom_write(
+        launch_narrow_phase(
             candidate_pair=self.broad_phase_shape_pairs,
             candidate_pair_count=self.broad_phase_pair_count,
             shape_types=model.shape_type,
@@ -3467,6 +3491,7 @@ class CollisionPipeline:
                 margin1=contacts.rigid_contact_margin1,
                 body_q=state.body_q,
                 shape_body=writer_data.shape_body,
+                recovery=recovery,
                 device=self.device,
             )
 
@@ -3539,18 +3564,9 @@ class CollisionPipeline:
                 shape_body=model.shape_body,
                 buffer_id=self._contact_matcher.buffer_id(contacts),
                 contact_generation=contacts.contact_generation,
+                recovery=recovery,
                 device=self.device,
                 **sticky_offsets,
-            )
-
-        # Differentiable contact augmentation: reconstruct world-space contact
-        # quantities through body_q so that gradients flow via wp.Tape.
-        if self.requires_grad and contacts._rigid_contact_diff_distance is not None:
-            launch_differentiable_contact_augment(
-                contacts=contacts,
-                body_q=state.body_q,
-                shape_body=model.shape_body,
-                device=self.device,
             )
 
         # Generate soft contacts for particles and shapes

@@ -18,8 +18,8 @@ from newton._src.solvers.kamino._src.linalg.core import (
     prefix_offsets,
     segment_local_indices,
 )
-from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
-from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino import setup_test_output, setup_tests, test_context
+from newton.tests.unittest_utils import NewtonTestCase
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +28,10 @@ logger = logging.getLogger(__name__)
 ###
 
 
-class TestLinAlgCorePrefixOffsets(unittest.TestCase):
+class TestLinAlgCorePrefixOffsets(NewtonTestCase):
+    def setUp(self):
+        setup_test_output(self)
+
     def test_prefix_offsets_of_list(self):
         """Return the offset of each block followed by the total size."""
         offsets = prefix_offsets([6, 0, 4, 3], validate_dtype=np.int16)
@@ -68,7 +71,7 @@ class TestLinAlgCorePrefixOffsets(unittest.TestCase):
                 info_type().finalize(dimensions=dims, itype=wp.int16)
 
 
-class TestLinAlgCoreMakeTolerance(unittest.TestCase):
+class TestLinAlgCoreMakeTolerance(NewtonTestCase):
     def setUp(self):
         # Configs
         if not test_context.setup_done:
@@ -77,17 +80,7 @@ class TestLinAlgCoreMakeTolerance(unittest.TestCase):
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose  # Set to True for verbose output
 
-        # Set debug-level logging to print verbose test output to console
-        if self.verbose:
-            set_log_level(logging.DEBUG)
-            logger.debug("\n")  # Add newline before test output for better readability
-        else:
-            reset_log_level()
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
+        setup_test_output(self, verbose=self.verbose)
 
     def test_00_make_tolerance_from_defaults(self):
         tol = make_dtype_tolerance()
@@ -134,7 +127,7 @@ class TestLinAlgCoreMakeTolerance(unittest.TestCase):
         self.assertAlmostEqual(tol, wp.float32(np.finfo(np.float32).eps), places=7)
 
 
-class TestLinAlgCoreDenseMultiLinearRectangularInfo(unittest.TestCase):
+class TestLinAlgCoreDenseMultiLinearRectangularInfo(NewtonTestCase):
     def setUp(self):
         # Configs
         if not test_context.setup_done:
@@ -143,17 +136,7 @@ class TestLinAlgCoreDenseMultiLinearRectangularInfo(unittest.TestCase):
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose  # Set to True for verbose output
 
-        # Set debug-level logging to print verbose test output to console
-        if self.verbose:
-            set_log_level(logging.DEBUG)
-            logger.debug("\n")  # Add newline before test output for better readability
-        else:
-            reset_log_level()
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
+        setup_test_output(self, verbose=self.verbose)
 
     def test_00_make_single_rectangular_default(self):
         dims = (3, 4)
@@ -241,7 +224,7 @@ class TestLinAlgCoreDenseMultiLinearRectangularInfo(unittest.TestCase):
             self.assertEqual(info.ivio.numpy()[i], sum(d[1] for d in dims[:i]))
 
 
-class TestLinAlgCoreDenseMultiLinearSquareInfo(unittest.TestCase):
+class TestLinAlgCoreDenseMultiLinearSquareInfo(NewtonTestCase):
     def setUp(self):
         # Configs
         if not test_context.setup_done:
@@ -250,17 +233,7 @@ class TestLinAlgCoreDenseMultiLinearSquareInfo(unittest.TestCase):
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose  # Set to True for verbose output
 
-        # Set debug-level logging to print verbose test output to console
-        if self.verbose:
-            set_log_level(logging.DEBUG)
-            logger.debug("\n")  # Add newline before test output for better readability
-        else:
-            reset_log_level()
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
+        setup_test_output(self, verbose=self.verbose)
 
     def test_00_make_single_square_default(self):
         dims = 4
