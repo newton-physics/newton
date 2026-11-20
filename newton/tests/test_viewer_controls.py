@@ -2047,6 +2047,7 @@ class TestViewerGizmos(unittest.TestCase):
         self.gui.workspace_enabled = False
         self.gui._frame_key_down = self.gui._follow_held = self.gui._follow_latched = False
         self.gui._follow_center = None
+        self.gui._selection_press = None
         self.gui.ui = ImGuiBackend.__new__(ImGuiBackend)
         self.gui.ui._context = context
         self.gui.ui.is_available = True

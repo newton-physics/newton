@@ -192,7 +192,7 @@ class ContactLabels(ShaderGL):
         gl = self._gl
         gl.glBindVertexArray(self.vao)
         _, _, width, height = renderer._get_scene_viewport()
-        scale = getattr(renderer, "_contact_label_scale", 1.0)
+        scale = renderer._contact_label_scale
         view = np.asarray(renderer._view_matrix).reshape(4, 4)
         projection = np.asarray(renderer._projection_matrix).reshape(4, 4)
         layout_key = (view.tobytes(), projection.tobytes(), width, height, scale)

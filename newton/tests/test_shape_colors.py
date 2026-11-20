@@ -800,6 +800,9 @@ class TestShapeColors(unittest.TestCase):
         renderer._physics_xray = False
         renderer._surface_grid_enabled = False
         renderer._surface_grid_objects = ()
+        renderer._contact_labels = ()
+        renderer._joint_triangles = None
+        renderer._selection_instances = ()
         transparent_shader = MagicMock()
         renderer._shape_shader = MagicMock()
         renderer._shape_transparent_shader = transparent_shader

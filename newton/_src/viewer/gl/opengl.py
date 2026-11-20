@@ -1250,6 +1250,33 @@ class RendererGL:
         self._surface_grid_enabled = False
         """Overlay adaptive surface grids on objects with a nonzero ``_surface_grid``."""
         self._surface_grid_objects = ()
+        # X-ray pass settings, synchronized from the workspace viewport controls.
+        self._xray_opacity = 0.65
+        """Opacity of visual shells in X-ray mode."""
+        self._xray_edges = True
+        self._xray_deformable_opacity = 0.28
+        """Opacity of deformable surfaces and skins in X-ray mode."""
+        self._xray_deformable_edges = True
+        self._xray_collision_opacity = 0.196
+        """Opacity of collision shapes in X-ray mode."""
+        self._xray_collision_edges = True
+        self._xray_proximity_range = 0.0
+        """Fade distance in multiples of ``_xray_inspection_radius``; 0 disables proximity fading."""
+        self._xray_adaptive = True
+        """Adapt X-ray wireframe detail to screen size."""
+        self._xray_inspection_radius = 0.0
+        """Largest collision radius of the visible movable shapes [m]."""
+        # Selection and contact overlays, set by the workspace inspectors.
+        self._selection_scale = 1.0
+        """GUI scale applied to selection outline widths."""
+        self._contact_labels = ()
+        """Paused contact witness points and their label text."""
+        self._contact_selection = None
+        """Contact line batch name, first selected contact and count, or None."""
+        self._contact_label_scale = 1.0
+        """GUI scale applied to contact label text."""
+        self._joint_triangles = None
+        """Selected joint angle arcs as triangle data, or None."""
         self.draw_sky = True
         self.draw_fps = True
         self.draw_shadows = True
@@ -2508,13 +2535,13 @@ class RendererGL:
 
                 self._physics_contact_shader = PhysicsContactShader(gl)
             self._physics_contact_shader.render(self, contact_disks)
-        if getattr(self, "_contact_labels", ()):
+        if self._contact_labels:
             if self._contact_label_shader is None:
                 from .contact_labels import ContactLabels  # noqa: PLC0415
 
                 self._contact_label_shader = ContactLabels(gl)
             self._contact_label_shader.render(self, self._contact_labels)
-        if getattr(self, "_joint_triangles", None) is not None:
+        if self._joint_triangles is not None:
             if self._joint_shader is None:
                 from .joint_glyphs import JointGlyphShader  # noqa: PLC0415
 
@@ -2522,7 +2549,7 @@ class RendererGL:
             self._joint_shader.render(self._joint_triangles[0], depth_equal=True)
 
         has_msaa = getattr(self, "msaa_samples", 0) > 0 and self._frame_msaa_fbo is not None
-        if getattr(self, "_selection_instances", ()):
+        if self._selection_instances:
             if has_msaa:
                 self._resolve_msaa_frame()
                 msaa_resolved = True
@@ -2532,8 +2559,8 @@ class RendererGL:
                 self._selection_outline = SelectionOutline(gl)
             self._selection_outline.render(self, self._selection_instances)
 
-        joint_transparency = getattr(self, "_joint_triangles", None) is not None and len(self._joint_triangles[1])
-        selected_surfaces = any(index == -1 for _, index in getattr(self, "_selection_instances", ()))
+        joint_transparency = self._joint_triangles is not None and len(self._joint_triangles[1])
+        selected_surfaces = any(index == -1 for _, index in self._selection_instances)
         if (
             transparent_objects
             or shells
@@ -2627,7 +2654,7 @@ class RendererGL:
             self._render_physics_shells(wires, oit=False, wire_only=True)
         self._render_surface_grid(oit=False)
         gl.glPolygonMode(gl.GL_FRONT_AND_BACK, gl.GL_FILL)
-        if getattr(self, "_joint_triangles", None) is not None:
+        if self._joint_triangles is not None:
             self._joint_shader.render(self._joint_triangles[1])
         if envelopes:
             self._render_wireframe_shapes(envelopes, transparent=True)
@@ -2669,7 +2696,7 @@ class RendererGL:
             self._render_physics_shells(wires, oit=True, wire_only=True)
         self._render_surface_grid(oit=True)
         gl.glPolygonMode(gl.GL_FRONT_AND_BACK, gl.GL_FILL)
-        if getattr(self, "_joint_triangles", None) is not None:
+        if self._joint_triangles is not None:
             self._joint_shader.render(self._joint_triangles[1], oit=True, reference=self.camera.pivot_distance)
         self._render_selected_surfaces(oit=True)
         if envelopes:
@@ -2702,7 +2729,7 @@ class RendererGL:
         gl.glEnable(gl.GL_DEPTH_TEST)
 
     def _render_selected_surfaces(self, *, oit: bool) -> None:
-        meshes = [obj for obj, index in getattr(self, "_selection_instances", ()) if index == -1]
+        meshes = [obj for obj, index in self._selection_instances if index == -1]
         if not meshes:
             return
         if self._selection_surface_shader is None:
@@ -2762,7 +2789,7 @@ class RendererGL:
                 alpha=1.0,
             )
             self._wireframe_shader.set_world(identity)
-            selection = getattr(self, "_contact_selection", None)
+            selection = self._contact_selection
             for name, line_obj in lines.items():
                 witness = name.endswith("/contacts/witnesses")
                 selected = (

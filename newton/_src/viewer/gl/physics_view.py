@@ -218,7 +218,7 @@ class PhysicsSurfaceShader(ShaderShape):
             gl.glUniform1f(loc["collision_opacity"], renderer._xray_collision_opacity)
             gl.glUniform1f(loc["proximity_range"], renderer._xray_proximity_range)
             gl.glUniform1f(loc["inspection_radius"], renderer._xray_inspection_radius)
-            gl.glUniform1f(loc["deformable_opacity"], getattr(renderer, "_xray_deformable_opacity", 0.28))
+            gl.glUniform1f(loc["deformable_opacity"], renderer._xray_deformable_opacity)
             for _, obj in objects:
                 deformable = obj._physics_role == "deformable"
                 gl.glUniform1i(loc["deformable"], deformable)
@@ -366,7 +366,7 @@ class PhysicsContactShader(ShaderGL):
             gl.glUniform3f(loc["sun_direction"], *renderer._sun_direction)
             gl.glEnable(gl.GL_BLEND)
             gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
-            selection = getattr(renderer, "_contact_selection", None)
+            selection = renderer._contact_selection
             for name, obj in objects.items():
                 selected = selection[1:] if selection is not None and selection[0] == name else (-1, 0)
                 gl.glUniform2i(loc["selected_instances"], *selected)
@@ -552,10 +552,8 @@ class PhysicsShellShader(ShaderGL):
         wire_only: bool = False,
     ) -> None:
         """Submit a wire pass only when the relevant rigid or deformable edge overlay is enabled."""
-        edges = getattr(renderer, "_xray_collision_edges" if collision else "_xray_edges", True)
-        soft_edges = getattr(renderer, "_xray_deformable_edges", True) and any(
-            obj._physics_role == "deformable" for _, obj in objects
-        )
+        edges = renderer._xray_collision_edges if collision else renderer._xray_edges
+        soft_edges = renderer._xray_deformable_edges and any(obj._physics_role == "deformable" for _, obj in objects)
         if edges or wire_only or soft_edges:
             self._render_pass(renderer, objects, oit=oit, collision=collision, wire_only=wire_only)
 
@@ -579,16 +577,16 @@ class PhysicsShellShader(ShaderGL):
             gl.glUniformMatrix4fv(loc["projection"], 1, gl.GL_FALSE, arr_pointer(renderer._projection_matrix))
             gl.glUniform3f(loc["view_pos"], *renderer.camera.pos)
             gl.glUniform2f(loc["viewport_size"], *renderer._get_scene_viewport()[2:])
-            gl.glUniform1f(loc["shell_opacity"], getattr(renderer, "_xray_opacity", 0.65))
-            gl.glUniform1f(loc["collision_opacity"], getattr(renderer, "_xray_collision_opacity", 0.196))
+            gl.glUniform1f(loc["shell_opacity"], renderer._xray_opacity)
+            gl.glUniform1f(loc["collision_opacity"], renderer._xray_collision_opacity)
             gl.glUniform1f(loc["inv_reference"], 1.0 / max(renderer.camera.pivot_distance, 1e-6))
-            gl.glUniform1i(loc["adaptive"], getattr(renderer, "_xray_adaptive", True))
+            gl.glUniform1i(loc["adaptive"], renderer._xray_adaptive)
             gl.glUniform1i(loc["oit_enabled"], oit)
             gl.glUniform1i(loc["collision"], collision)
-            gl.glUniform1f(loc["proximity_range"], getattr(renderer, "_xray_proximity_range", 0.0))
-            gl.glUniform1f(loc["inspection_radius"], getattr(renderer, "_xray_inspection_radius", 0.0))
+            gl.glUniform1f(loc["proximity_range"], renderer._xray_proximity_range)
+            gl.glUniform1f(loc["inspection_radius"], renderer._xray_inspection_radius)
             gl.glUniform1i(loc["wire_only"], wire_only)
-            gl.glUniform1f(loc["deformable_opacity"], getattr(renderer, "_xray_deformable_opacity", 0.28))
+            gl.glUniform1f(loc["deformable_opacity"], renderer._xray_deformable_opacity)
             gl.glDepthFunc(gl.GL_LESS)
             gl.glPolygonMode(gl.GL_FRONT_AND_BACK, gl.GL_LINE)
             gl.glEnable(gl.GL_POLYGON_OFFSET_LINE)

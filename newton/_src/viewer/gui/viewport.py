@@ -147,8 +147,6 @@ class ViewportControls:
             viewer.renderer._xray_inspection_radius = movable_radius or radius
             self._inspection_models = visible_models
         renderer = viewer.renderer
-        if not hasattr(renderer, "_xray_inspection_radius"):
-            renderer._xray_inspection_radius = 0.0
         renderer._physics_xray = self.mode == "xray"
         renderer._surface_grid_enabled = self.surface_grid and self.mode in ("wire", "xray")
         renderer._xray_opacity = self.shell_opacity
