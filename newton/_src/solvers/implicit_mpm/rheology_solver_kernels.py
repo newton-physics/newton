@@ -34,9 +34,6 @@ mat13 = wp.vec3
 _Index8 = wp.types.vector(length=8, dtype=int)
 _Scalar8 = wp.types.vector(length=8, dtype=float)
 _Vectors8 = wp.types.matrix(shape=(8, 3), dtype=float)
-_Index16 = wp.types.vector(length=16, dtype=int)
-_Scalar16 = wp.types.vector(length=16, dtype=float)
-_Vectors16 = wp.types.matrix(shape=(16, 3), dtype=float)
 
 wp.set_module_options({"enable_backward": False})
 
@@ -1149,6 +1146,49 @@ def make_solve_short_strain_row(has_rotation: bool):
     return solve_short_strain_row_impl
 
 
+def _make_strain_block(width: int):
+    """Specialize the ordered gather and scatter loops for one fixed block width."""
+    index_type = wp.types.vector(length=width, dtype=int)
+    scalars_type = wp.types.vector(length=width, dtype=float)
+    vectors_type = wp.types.matrix(shape=(width, 3), dtype=float)
+
+    @fem.cache.dynamic_func(suffix=(width, "gather"), allow_overloads=True)
+    def gather_strain_block(rows: Any, row: int, entry_base: int, velocity: wp.array[wp.vec3], tau: vec6):
+        nodes = index_type()
+        weights = vectors_type()
+        velocities = vectors_type()
+        for k in range(wp.static(width)):
+            node, weight = _strain_row_entry(rows, row, entry_base + k)
+            nodes[k] = node
+            weights[k] = weight
+        for k in range(wp.static(width)):
+            velocities[k] = velocity[nodes[k]]
+        for k in range(wp.static(width)):
+            tau += _symmetric_part_op(weights[k], velocities[k])
+        return tau
+
+    @fem.cache.dynamic_func(suffix=(width, "scatter"), allow_overloads=True)
+    def scatter_strain_block(
+        rows: Any, row: int, entry_base: int, ds: vec6, inv_mass: wp.array[float], velocity: wp.array[wp.vec3]
+    ):
+        nodes = index_type()
+        weights = vectors_type()
+        inverse_masses = scalars_type()
+        for k in range(wp.static(width)):
+            node, weight = _strain_row_entry(rows, row, entry_base + k)
+            nodes[k] = node
+            weights[k] = weight
+        for k in range(wp.static(width)):
+            inverse_masses[k] = inv_mass[nodes[k]]
+        dv = vectors_type()
+        for k in range(wp.static(width)):
+            dv[k] = _symmetric_part_transposed_op(weights[k], ds)
+        for k in range(wp.static(width)):
+            velocity[nodes[k]] += inverse_masses[k] * dv[k]
+
+    return gather_strain_block, scatter_strain_block
+
+
 def make_solve_strain_rows(
     has_viscosity: bool,
     has_dilatancy: bool,
@@ -1245,36 +1285,10 @@ def make_solve_strain_rows(
                 if wp.static(has_viscosity):
                     gather_begin = entries - entries % 16
                     for entry_base in range(0, gather_begin, 16):
-                        gather16_nodes = _Index16()
-                        gather16_weights = _Vectors16()
-                        gather16_velocities = _Vectors16()
-
-                        for k in range(16):
-                            node, weight = _strain_row_entry(rows, row, entry_base + k)
-                            gather16_nodes[k] = node
-                            gather16_weights[k] = weight
-
-                        for k in range(16):
-                            gather16_velocities[k] = velocity[gather16_nodes[k]]
-
-                        for k in range(16):
-                            tau += _symmetric_part_op(gather16_weights[k], gather16_velocities[k])
+                        tau = wp.static(_make_strain_block(16)[0])(rows, row, entry_base, velocity, tau)
                 gather_end = entries - entries % 8
                 for entry_base in range(gather_begin, gather_end, 8):
-                    gather8_nodes = _Index8()
-                    gather8_weights = _Vectors8()
-                    gather8_velocities = _Vectors8()
-
-                    for k in range(8):
-                        node, weight = _strain_row_entry(rows, row, entry_base + k)
-                        gather8_nodes[k] = node
-                        gather8_weights[k] = weight
-
-                    for k in range(8):
-                        gather8_velocities[k] = velocity[gather8_nodes[k]]
-
-                    for k in range(8):
-                        tau += _symmetric_part_op(gather8_weights[k], gather8_velocities[k])
+                    tau = wp.static(_make_strain_block(8)[0])(rows, row, entry_base, velocity, tau)
                 for entry_index in range(gather_end, entries):
                     node, weight = _strain_row_entry(rows, row, entry_index)
                     tau += _symmetric_part_op(weight, velocity[node])
@@ -1303,44 +1317,10 @@ def make_solve_strain_rows(
                     if wp.static(has_viscosity):
                         scatter_begin = n - n % 16
                         for entry_base in range(0, scatter_begin, 16):
-                            scatter16_nodes = _Index16()
-                            scatter16_weights = _Vectors16()
-                            scatter16_inv_mass = _Scalar16()
-                            scatter16_dv = _Vectors16()
-
-                            for k in range(16):
-                                node, weight = _strain_row_entry(rows, row, entry_base + k)
-                                scatter16_nodes[k] = node
-                                scatter16_weights[k] = weight
-
-                            for k in range(16):
-                                scatter16_inv_mass[k] = inv_mass[scatter16_nodes[k]]
-
-                            for k in range(16):
-                                scatter16_dv[k] = _symmetric_part_transposed_op(scatter16_weights[k], ds)
-
-                            for k in range(16):
-                                velocity[scatter16_nodes[k]] += scatter16_inv_mass[k] * scatter16_dv[k]
+                            wp.static(_make_strain_block(16)[1])(rows, row, entry_base, ds, inv_mass, velocity)
                     scatter_end = n - n % 8
                     for entry_base in range(scatter_begin, scatter_end, 8):
-                        scatter8_nodes = _Index8()
-                        scatter8_weights = _Vectors8()
-                        scatter8_inv_mass = _Scalar8()
-                        scatter8_dv = _Vectors8()
-
-                        for k in range(8):
-                            node, weight = _strain_row_entry(rows, row, entry_base + k)
-                            scatter8_nodes[k] = node
-                            scatter8_weights[k] = weight
-
-                        for k in range(8):
-                            scatter8_inv_mass[k] = inv_mass[scatter8_nodes[k]]
-
-                        for k in range(8):
-                            scatter8_dv[k] = _symmetric_part_transposed_op(scatter8_weights[k], ds)
-
-                        for k in range(8):
-                            velocity[scatter8_nodes[k]] += scatter8_inv_mass[k] * scatter8_dv[k]
+                        wp.static(_make_strain_block(8)[1])(rows, row, entry_base, ds, inv_mass, velocity)
                     for entry_index in range(scatter_end, n):
                         node, weight = _strain_row_entry(rows, row, entry_index)
                         dv = _symmetric_part_transposed_op(weight, ds)
