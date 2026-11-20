@@ -990,6 +990,14 @@ accuracy as bodies move, and the solver warns at construction. Use
 ``integrator="implicitfast"`` or ``use_mujoco_contacts=True`` to avoid this
 limitation.
 
+Newton contacts also carry the surface velocity of meshes created with
+``enable_surface_velocity=True`` (see :class:`~newton.Mesh`), which the solver
+forwards to MuJoCo's per-contact ``surfacevel`` to drive the friction rows.
+They carry a linear velocity only, so torsional friction (``condim`` 4 and 6)
+treats a spinning mesh as still. MuJoCo's collision detection has no per-vertex
+surface velocity, so these meshes act as still surfaces with
+``use_mujoco_contacts=True``.
+
 Collision filtering
 ~~~~~~~~~~~~~~~~~~~
 
@@ -1072,8 +1080,9 @@ Margin and gap mapping
 :attr:`~newton.Model.shape_margin` maps to MuJoCo
 ``geom_margin`` and :attr:`~newton.Model.shape_gap` maps to ``geom_gap``;
 authored contact-pair values similarly map to ``pair_margin`` and ``pair_gap``.
-The margin mapping is subject to *Margin zeroing* below. The solver forwards gap
-values at construction and runtime property updates. MuJoCo reports surface
+The solver forwards margin and gap values at construction on both the CPU and
+MuJoCo Warp backends; runtime property updates apply only to the MuJoCo Warp
+backend. MuJoCo reports surface
 distances in ``(margin, margin + gap]`` as inactive contacts without contact
 force. See :ref:`margin and gap semantics
 <margin-gap-semantics>` for Newton's contact geometry and MuJoCo's `margin and
@@ -1088,25 +1097,9 @@ import translation.
 
 **Multi-contact CCD.** Constructing
 :class:`~newton.solvers.SolverMuJoCo` with ``enable_multiccd=True``
-allows up to four contact points per geom pair instead of one. Pairs
-where either geom has non-zero MuJoCo ``geom_margin`` still fall back
-to a single contact regardless of the flag (see *Margin zeroing*
-below for how Newton's :attr:`~newton.Model.shape_margin` is forwarded
-to it). MuJoCo Warp currently remains single-contact for cylinder--box;
+allows up to four contact points per geom pair instead of one. MuJoCo Warp
+currently remains single-contact for cylinder--box;
 see :ref:`Geometry Pair Contact Behavior`.
-
-**Margin zeroing.** Earlier ``mujoco_warp`` releases rejected non-zero geom
-margins on box-box pairs (its default NATIVECCD path) and on any box/mesh pair
-when ``enable_multiccd=True``. Current releases accept them, but the MuJoCo Warp
-backend of :class:`~newton.solvers.SolverMuJoCo` still zeroes ``geom_margin`` and
-``pair_margin`` model-wide at compile time whenever a box geom exists and NATIVECCD
-or multi-CCD is enabled, or whenever ``enable_multiccd=True`` is combined with mesh
-geoms; geoms and pairs with non-zero authored margins emit a warning when
-``use_mujoco_contacts=True``. The Newton model's :attr:`~newton.Model.shape_margin` array
-is left untouched, and when ``use_mujoco_contacts=False`` the authored
-margins are restored at runtime through ``update_geom_properties_kernel``.
-The CPU backend (``use_mujoco_cpu=True``) keeps the authored geom and pair
-margins, so its contacts can differ from the MuJoCo Warp backend's for such models.
 
 
 Contact pairs

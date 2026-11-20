@@ -9,7 +9,7 @@ from unittest import mock
 import numpy as np
 import warp as wp
 
-from newton import Axis, Mesh, Model, ModelBuilder, NewtonDeprecationWarning, Rod
+from newton import Axis, Mesh, Model, ModelBuilder, NewtonDeprecationWarning, NewtonWarning, Rod
 from newton._src.geometry.contact_reduction import NUM_VOXEL_DEPTH_SLOTS, compute_voxel_resolution_from_aabb
 from newton._src.sim.builder import _ARRAY_BACKED_ATTRIBUTE_DTYPES, _materialize_array_backed_list
 from newton.actuators import BatteryConstantResistance, DriveOutputSpace, DrivePD, MotorDC
@@ -18,6 +18,51 @@ from newton.utils import compute_world_offsets
 
 
 class TestModelBuilderReplicate(unittest.TestCase):
+    def test_reference_transformer_sees_previous_actuator(self):
+        """Expose the previous copy's actuator rows to the reference transformer."""
+        source = self._make_source()
+
+        def previous_actuator(values, context):
+            entries = context["destination_builder"].actuator_entries
+            return [sum(len(entry.indices) for entry in entries.values()) - 1] * len(values)
+
+        source.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="previous_actuator",
+                dtype=wp.int32,
+                default=-1,
+                frequency="test:thing",
+                values=[0],
+                reference_value_transformer=previous_actuator,
+            )
+        )
+        builder = ModelBuilder()
+        builder.replicate(source, 2)
+        np.testing.assert_array_equal(builder.finalize(device="cpu").previous_actuator.numpy(), [-1, 0])
+
+    def test_replicate_preserves_unmatched_override_keys(self):
+        """Avoid narrowing sparse keys or overflowing them when applying copy offsets."""
+        for key in (2**64, 1.5, 2**63 - 1):
+            with self.subTest(key=key):
+                source = ModelBuilder()
+                source.add_body()
+                source.add_body()
+                source.add_custom_attribute(
+                    ModelBuilder.CustomAttribute(
+                        name="sparse_override",
+                        dtype=wp.float32,
+                        frequency=Model.AttributeFrequency.BODY,
+                        default=0.0,
+                        values={0: 4.0, key: 9.0},
+                    )
+                )
+                builder = ModelBuilder()
+                builder.replicate(source, 2)
+                self.assertEqual(builder.custom_attributes["sparse_override"].values[key + 2], 9.0)
+                np.testing.assert_array_equal(
+                    builder.finalize(device="cpu").sparse_override.numpy(), [4.0, 0.0, 4.0, 0.0]
+                )
+
     @staticmethod
     def _make_source() -> ModelBuilder:
         builder = ModelBuilder()
@@ -1254,3 +1299,246 @@ class TestModelBuilderReplicateLabelPrefixes(unittest.TestCase):
         """label_prefixes must have exactly one entry per replicated world."""
         with self.assertRaises(ValueError):
             ModelBuilder().replicate(self._source("root"), 2, label_prefixes=["only-one"])
+
+    def test_bulk_custom_attributes_match_sequential_add_world(self):
+        """Bulk custom-attribute replication and array building match sequential add_world()."""
+        vec10f = wp.types.vector(10, wp.float32)
+
+        def make_source() -> ModelBuilder:
+            src = ModelBuilder()
+            b0 = src.add_link(xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()), label="b0")
+            b1 = src.add_link(xform=wp.transform((0.0, 0.0, 2.0), wp.quat_identity()), label="b1")
+            j0 = src.add_joint_free(parent=-1, child=b0, label="j0")
+            j1 = src.add_joint_revolute(parent=b0, child=b1, axis=(0.0, 1.0, 0.0), label="j1")
+            src.add_articulation([j0, j1], label="art")
+            s0 = src.add_shape_sphere(body=b0, radius=0.1, label="s0")
+            src.add_shape_box(body=b1, hx=0.1, hy=0.1, hz=0.1, label="s1")
+
+            src.add_custom_frequency(
+                ModelBuilder.CustomFrequency(name="wrap", namespace="test", label_attribute="test:wrap_label")
+            )
+            src.add_custom_attribute(
+                ModelBuilder.CustomAttribute(
+                    name="wrap_label", dtype=str, frequency="test:wrap", namespace="test", default=""
+                )
+            )
+            src.add_custom_attribute(
+                ModelBuilder.CustomAttribute(
+                    name="wrap_shape",
+                    dtype=wp.int32,
+                    frequency="test:wrap",
+                    namespace="test",
+                    references="shape",
+                    default=-1,
+                )
+            )
+            src.add_custom_attribute(
+                ModelBuilder.CustomAttribute(
+                    name="wrap_world",
+                    dtype=wp.int32,
+                    frequency="test:wrap",
+                    namespace="test",
+                    references="world",
+                    default=-1,
+                )
+            )
+            src.add_custom_attribute(
+                ModelBuilder.CustomAttribute(
+                    name="wrap_prm",
+                    dtype=vec10f,
+                    frequency="test:wrap",
+                    namespace="test",
+                    default=vec10f(*range(10)),
+                )
+            )
+            src.add_custom_attribute(
+                ModelBuilder.CustomAttribute(
+                    name="body_world",
+                    dtype=wp.int32,
+                    frequency=Model.AttributeFrequency.BODY,
+                    namespace="test",
+                    references="world",
+                    default=-1,
+                    values={b0: -1},
+                )
+            )
+            src.add_custom_attribute(
+                ModelBuilder.CustomAttribute(
+                    name="body_offset",
+                    dtype=wp.vec3,
+                    frequency=Model.AttributeFrequency.BODY,
+                    namespace="test",
+                    default=wp.vec3(1.0, 2.0, 3.0),
+                    values={b1: wp.vec3(4.0, 5.0, 6.0)},
+                )
+            )
+            src.add_custom_attribute(
+                ModelBuilder.CustomAttribute(
+                    name="body_parent_shape",
+                    dtype=wp.int32,
+                    frequency=Model.AttributeFrequency.BODY,
+                    namespace="test",
+                    references="shape",
+                    default=-1,
+                    values={b0: s0, b1: -1},
+                )
+            )
+            src.add_custom_attribute(
+                ModelBuilder.CustomAttribute(
+                    name="collision_mask_domain",
+                    dtype=wp.int32,
+                    frequency=Model.AttributeFrequency.SHAPE,
+                    namespace="mujoco",
+                    default=-1,
+                    values={s0: 7, 1: -1},
+                )
+            )
+            src.add_custom_values(
+                **{
+                    "test:wrap_label": "w0",
+                    "test:wrap_shape": s0,
+                    "test:wrap_world": -1,
+                    "test:wrap_prm": vec10f(*[float(i + 1) for i in range(10)]),
+                }
+            )
+            # Second row leaves wrap_prm unset (None gap before end of custom frequency)
+            src.add_custom_values(
+                **{
+                    "test:wrap_label": "w1",
+                    "test:wrap_shape": -1,
+                    "test:wrap_world": -1,
+                }
+            )
+            return src
+
+        prefixes = ["env0", None, "env2", "env3"]
+        rep_scene = TestModelBuilderReplicate._make_destination()
+        seq_scene = TestModelBuilderReplicate._make_destination()
+        proto = make_source()
+        rep_scene.replicate(proto, 4, label_prefixes=prefixes)
+        for prefix in prefixes:
+            seq_scene.add_world(proto, label_prefix=prefix)
+
+        with self.assertWarnsRegex(NewtonWarning, "test:wrap_prm.*7 values.*expects 8"):
+            rep_model = rep_scene.finalize(device="cpu")
+        with self.assertWarnsRegex(NewtonWarning, "test:wrap_prm.*7 values.*expects 8"):
+            seq_model = seq_scene.finalize(device="cpu")
+
+        self.assertEqual(rep_model.test.wrap_label, seq_model.test.wrap_label)
+        np.testing.assert_array_equal(rep_model.test.wrap_shape.numpy(), seq_model.test.wrap_shape.numpy())
+        np.testing.assert_array_equal(rep_model.test.wrap_world.numpy(), seq_model.test.wrap_world.numpy())
+        np.testing.assert_allclose(rep_model.test.wrap_prm.numpy(), seq_model.test.wrap_prm.numpy())
+        np.testing.assert_array_equal(
+            rep_model.test.wrap_prm.numpy(), np.tile([np.arange(1, 11), np.arange(10)], (4, 1))
+        )
+        np.testing.assert_allclose(rep_model.test.body_offset.numpy(), seq_model.test.body_offset.numpy())
+        np.testing.assert_array_equal(rep_model.test.body_world.numpy(), seq_model.test.body_world.numpy())
+        np.testing.assert_array_equal(
+            rep_model.test.body_parent_shape.numpy(), seq_model.test.body_parent_shape.numpy()
+        )
+        np.testing.assert_array_equal(
+            rep_model.mujoco.collision_mask_domain.numpy(), seq_model.mujoco.collision_mask_domain.numpy()
+        )
+
+    def test_short_custom_frequency_world_reference_matches_sequential_add_world(self):
+        """Short custom-frequency WORLD-reference lists preserve defaults on unpopulated rows."""
+        sub_a = ModelBuilder()
+        sub_a.add_link(xform=wp.transform())
+        sub_a.add_custom_frequency(ModelBuilder.CustomFrequency(name="my_freq", namespace="test"))
+        sub_a.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="freq_world",
+                dtype=wp.int32,
+                frequency="test:my_freq",
+                namespace="test",
+                references="world",
+                default=-7,
+            )
+        )
+        sub_a.add_custom_values(**{"test:freq_world": 5})
+
+        sub_b = ModelBuilder()
+        sub_b.add_custom_frequency(ModelBuilder.CustomFrequency(name="my_freq", namespace="test"))
+        sub_b.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="other",
+                dtype=wp.int32,
+                frequency="test:my_freq",
+                namespace="test",
+                default=0,
+            )
+        )
+        sub_b.add_custom_values(**{"test:other": 10})
+        sub_b.add_custom_values(**{"test:other": 20})
+
+        src = sub_a
+        src.add_builder(sub_b)
+        self.assertEqual(src.custom_attributes["test:freq_world"].values, [5])
+        self.assertEqual(src._custom_frequency_counts["test:my_freq"], 3)
+
+        rep_scene = ModelBuilder()
+        seq_scene = ModelBuilder()
+        rep_scene.replicate(src, 3)
+        for _ in range(3):
+            seq_scene.add_world(src)
+
+        with self.assertWarnsRegex(NewtonWarning, "test:freq_world.*7 values.*expects 9"):
+            rep_model = rep_scene.finalize(device="cpu")
+        with self.assertWarnsRegex(NewtonWarning, "test:freq_world.*7 values.*expects 9"):
+            seq_model = seq_scene.finalize(device="cpu")
+
+        expected = [0, -7, -7, 1, -7, -7, 2, -7, -7]
+        np.testing.assert_array_equal(rep_model.test.freq_world.numpy(), expected)
+        np.testing.assert_array_equal(rep_model.test.freq_world.numpy(), seq_model.test.freq_world.numpy())
+
+        # Also verify full-length lists containing None entries still map to world indices.
+        sub_mid = ModelBuilder()
+        sub_mid.add_custom_frequency(ModelBuilder.CustomFrequency(name="my_freq", namespace="test"))
+        sub_mid.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="other",
+                dtype=wp.int32,
+                frequency="test:my_freq",
+                namespace="test",
+                default=0,
+            )
+        )
+        sub_mid.add_custom_values(**{"test:other": 2})
+
+        src_with_none = ModelBuilder()
+        src_with_none.add_link(xform=wp.transform())
+        src_with_none.add_custom_frequency(ModelBuilder.CustomFrequency(name="my_freq", namespace="test"))
+        src_with_none.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="freq_world",
+                dtype=wp.int32,
+                frequency="test:my_freq",
+                namespace="test",
+                references="world",
+                default=-7,
+                values=[5, None, 5],
+            )
+        )
+        src_with_none.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="other",
+                dtype=wp.int32,
+                frequency="test:my_freq",
+                namespace="test",
+                default=0,
+            )
+        )
+        for _ in range(3):
+            src_with_none.add_builder(sub_mid)
+        self.assertEqual(src_with_none.custom_attributes["test:freq_world"].values, [5, None, 5])
+
+        rep_none = ModelBuilder()
+        seq_none = ModelBuilder()
+        rep_none.replicate(src_with_none, 3)
+        for _ in range(3):
+            seq_none.add_world(src_with_none)
+
+        rep_none_model = rep_none.finalize(device="cpu")
+        seq_none_model = seq_none.finalize(device="cpu")
+        np.testing.assert_array_equal(rep_none_model.test.freq_world.numpy(), [0, 0, 0, 1, 1, 1, 2, 2, 2])
+        np.testing.assert_array_equal(rep_none_model.test.freq_world.numpy(), seq_none_model.test.freq_world.numpy())

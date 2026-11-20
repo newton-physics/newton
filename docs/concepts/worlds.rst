@@ -514,8 +514,7 @@ select. Current limitations:
   cannot wrap around variant shapes, and MuJoCo's viewer does not follow selections.
 - Variant shapes cannot be planes, heightfields, Gaussians, or hydroelastic shapes.
 - :class:`~newton.sensors.SensorCamera` and :func:`~newton.intersect_ray` follow selections after
-  the next :meth:`~newton.Model.bvh_refit_shapes`. The deprecated ``SensorTiledCamera`` raises for
-  models with variants.
+  the next :meth:`~newton.Model.bvh_refit_shapes`.
 - ``ViewerGL``, ``ViewerViser``, and ``ViewerNull`` follow selections through
   :meth:`~newton.viewer.ViewerBase.notify_model_changed`; ``ViewerUSD``, ``ViewerRerun``,
   ``ViewerFile``, and ``ViewerRTX`` raise :class:`NotImplementedError` when notified of one.
