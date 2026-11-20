@@ -411,18 +411,6 @@ def _make_contact_value_fast(score: float, fingerprint: int, contact_id: int) ->
 
 
 @wp.func
-def _make_preprune_probe_fast(score: float, fingerprint: int) -> wp.uint64:
-    """Pre-prune ceiling probe (fast path).
-
-    Packs the full-precision score with ``0xFFFFFFFF`` in the contact_id
-    field, creating the maximum possible value for this score.  The
-    comparison ``stored < probe`` is true whenever the stored value can
-    be beaten, regardless of what contact_id the new contact receives.
-    """
-    return (wp.uint64(float_flip(score)) << wp.uint64(32)) | wp.uint64(0xFFFFFFFF)
-
-
-@wp.func
 def _make_spatial_contact_value_fast(score: float, is_inner: bool, fingerprint: int, contact_id: int) -> wp.uint64:
     """Pack inner/outer priority, spatial score, and contact id."""
     priority = wp.uint64(0)
