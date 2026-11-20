@@ -27,6 +27,8 @@ if TYPE_CHECKING:
 
 
 _MSAA_SURFACE_SLOTS = 4
+# Register budget of the Warp megakernel: the occupancy it buys outweighs the extra spills.
+_MAX_REGISTERS = 96
 
 
 @wp.struct
@@ -420,7 +422,12 @@ def create_kernel(
         result.color = shade.color
         return result
 
-    @wp.kernel(enable_backward=False, module="unique", module_options={"fast_math": config.enable_fast_math})
+    @wp.kernel(
+        enable_backward=False,
+        module="unique",
+        module_options={"fast_math": config.enable_fast_math},
+        cuda_max_registers=_MAX_REGISTERS,
+    )
     def render_megakernel(
         # Model and Config
         view_count: wp.int32,
