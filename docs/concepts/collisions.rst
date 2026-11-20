@@ -1108,6 +1108,41 @@ Two approaches available:
 2. **SDF-based** (recommended): Uses precomputed signed distance fields for fast queries.
    For mesh shapes, call ``mesh.build_sdf(...)`` once and reuse the mesh.
 
+When a rounded, closed mesh probe straddles a thin wall, Newton can publish a
+single contact on the shorter exit path. Both shapes need texture SDFs and
+the probe surface must be connected. A mesh query verifies the two locally
+planar wall faces and the swept probe footprint.
+Each collision update uses the current geometry. Once the overlap is shallow,
+the ordinary SDF contacts take over.
+Between updates, translation and rotation may reuse a recovery contact only
+while the entire swept probe remains inside the verified corridor.
+Broad contact patches, ambiguous exits, and nearby features that intrude on the
+footprint use the ordinary manifold. The same fallback applies when the probe
+has more than 4,096 vertices or the swept query visits more than 128 wall
+triangles. The default recovery table can also fall back after 32 hash probes.
+With ``deterministic=True``, the table reserves space for all eligible pairs
+and probes until it finds a slot. This keeps recovery contact selection
+repeatable within the collision buffer capacities. A complete crossing can
+leave the shapes separated, so no discrete overlap remains to recover.
+
+Solvers and :class:`~sensors.SensorContact` read the same two surface witnesses
+and separation normal from the contact buffer. XPBD and VBD bound positional
+correction while the probe is deeply embedded. XPBD skips restitution on the
+recovery contact. VBD can support an external load while limiting the outward
+correction per step using a temporary hard normal constraint. Steel bounds
+the penetration used for its corrective velocity and skips restitution on
+recovery contacts. The semi-implicit and Featherstone solvers use a bounded
+penetration depth for the elastic contact force.
+MuJoCo Warp with Newton contacts temporarily
+uses recovery stiffness and damping to limit its separation speed, then resumes
+the ordinary contact material response. Hydroelastic pairs follow the
+pressure-based contact model.
+
+When capturing a solver-only CUDA graph, allocate the contact buffer with
+:meth:`~CollisionPipeline.contacts` or run the pipeline once on a manually
+allocated buffer before capture. Recapture the graph if switching pipelines
+replaces the buffer's recovery storage.
+
 .. warning::
    If SDF is not precomputed, mesh-mesh contacts fall back to on-the-fly BVH distance queries
    which are **significantly slower**. For production use with complex meshes, precompute and
@@ -2093,9 +2128,7 @@ helper and gradients do not flow through its direction.
     builder.add_ground_plane()
     model = builder.finalize(requires_grad=True)
 
-    # Disable deprecated automatic rigid-contact outputs. This also disables
-    # soft-contact gradients, which are independent of the helper below.
-    pipeline = newton.CollisionPipeline(model, requires_grad=False)
+    pipeline = newton.CollisionPipeline(model)
     contacts = pipeline.contacts()
     state = model.state(requires_grad=True)
     distance = wp.empty(
@@ -2120,17 +2153,6 @@ helper and gradients do not flow through its direction.
         )
     })
     grad_body_q = tape.gradients[state.body_q]
-
-Starting in Newton 1.6, the ``Contacts.rigid_contact_diff_*`` attributes are
-deprecated compatibility outputs. The distance and point arrays remain allocated
-and populated when the collision pipeline has ``requires_grad=True`` during the
-deprecation window.
-Allocate only the outputs you need and call
-:func:`newton.eval_rigid_contact_kinematics` explicitly to prepare
-for their removal. The deprecated ``rigid_contact_diff_normal`` attribute is
-already an alias for
-:attr:`~newton.Contacts.rigid_contact_normal` and does not allocate a duplicate
-array.
 
 .. _Creating Contacts:
 

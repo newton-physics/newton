@@ -11,6 +11,12 @@ import warp as wp
 
 from ...core.types import vec5
 from ...geometry.inertia import _eig_inertia
+from ...geometry.sdf_planar_recovery import (
+    MeshRecoveryData,
+    active_recovery_contact,
+    has_recovery_contacts,
+    recovery_step_depth,
+)
 from ...sim import BodyFlags, JointTargetMode, JointType
 from ...sim.articulation import eval_joint_motion
 from ...sim.contacts import contact_surface_point, contact_surface_separation
@@ -242,6 +248,85 @@ def quat_xyzw_to_wxyz(q: wp.quat) -> wp.quat:
     return wp.quat(q[3], q[0], q[1], q[2])
 
 
+@wp.func_native("""
+auto rotate_f64 = [](float x, float y, float z, float w, float a, float b, float c) -> wp::vec3 {
+    double ux = x, uy = y, uz = z, uw = w, va = a, vb = b, vc = c;
+    double n = ux * ux + uy * uy + uz * uz + uw * uw;
+    if (n == 0.0) return wp::vec3(a, b, c);  // no rotation instead of NaN
+    double cx = uy * vc - uz * vb, cy = uz * va - ux * vc, cz = ux * vb - uy * va;
+    double tx = uw * cx + (uy * cz - uz * cy), ty = uw * cy + (uz * cx - ux * cz), tz = uw * cz + (ux * cy - uy * cx);
+    double s = 2.0 / n;
+    return wp::vec3((float)(va + s * tx), (float)(vb + s * ty), (float)(vc + s * tz));
+};
+#if !defined(__CUDACC__)
+return rotate_f64(x, y, z, w, a, b, c);
+#else
+// FP64 runs at a small fraction of the FP32 rate on most RTX GPUs. Carry each intermediate as an
+// unevaluated (high, low) float32 pair instead, like cuda::fp32mp2 in CCCL: TwoSum (Knuth),
+// Fast2Sum (Dekker) and an FMA product, with __fmul_rn so no product is fused into a later add.
+struct ff { float h; float l; };
+auto two_sum = [](float p, float q) -> ff { float s = p + q; float t = s - p; return ff{s, (p - (s - t)) + (q - t)}; };
+auto fast_two_sum = [](float p, float q) -> ff { float s = p + q; return ff{s, q - (s - p)}; };
+auto two_prod = [](float p, float q) -> ff { float m = __fmul_rn(p, q); return ff{m, fmaf(p, q, -m)}; };
+auto add = [&](ff p, ff q) -> ff { ff s = two_sum(p.h, q.h); return fast_two_sum(s.h, s.l + (p.l + q.l)); };
+auto sub = [&](ff p, ff q) -> ff { ff s = two_sum(p.h, -q.h); return fast_two_sum(s.h, s.l + (p.l - q.l)); };
+auto mul = [&](ff p, float q) -> ff { ff m = two_prod(p.h, q); return fast_two_sum(m.h, m.l + p.l * q); };
+
+// eps = |q|^2 - 1
+ff ww = two_prod(w, w);
+ff acc = two_sum(ww.h, -1.0f);
+acc.l += ww.l;
+acc = add(acc, two_prod(x, x));
+acc = add(acc, two_prod(y, y));
+acc = add(acc, two_prod(z, z));
+float eps = acc.h + acc.l;
+if (!(eps > -1.0e-4f && eps < 1.0e-4f)) return rotate_f64(x, y, z, w, a, b, c);
+float k = eps * eps - eps;  // 1 / (1 + eps) - 1, up to eps^3
+
+ff cx = sub(two_prod(y, c), two_prod(z, b));
+ff cy = sub(two_prod(z, a), two_prod(x, c));
+ff cz = sub(two_prod(x, b), two_prod(y, a));
+ff tx = add(mul(cx, w), sub(mul(cz, y), mul(cy, z)));
+ff ty = add(mul(cy, w), sub(mul(cx, z), mul(cz, x)));
+ff tz = add(mul(cz, w), sub(mul(cy, x), mul(cx, y)));
+ff rx = two_sum(a, 2.0f * tx.h);
+ff ry = two_sum(b, 2.0f * ty.h);
+ff rz = two_sum(c, 2.0f * tz.h);
+return wp::vec3(
+    rx.h + (rx.l + 2.0f * tx.l + 2.0f * k * tx.h),
+    ry.h + (ry.l + 2.0f * ty.l + 2.0f * k * ty.h),
+    rz.h + (rz.l + 2.0f * tz.l + 2.0f * k * tz.h));
+#endif
+""")
+def _quat_rotate_exact(x: float, y: float, z: float, w: float, a: float, b: float, c: float) -> wp.vec3:
+    """``v + 2 (w (u x v) + u x (u x v)) / |q|^2`` for ``q = (u, w) = (x, y, z, w)`` and ``v = (a, b, c)``."""
+    ...
+
+
+@wp.func
+def quat_rotate_normalized(q: wp.quat, v: wp.vec3) -> wp.vec3:
+    """Rotate ``v`` by ``q / |q|``, rounding only the result.
+
+    ``wp.quat_rotate`` assumes ``|q| == 1`` and otherwise returns
+    ``|q|^2 R v + (|q|^2 - 1) v``. Float32 quaternions miss unit norm by a
+    positively biased ~1e-7, and float32 rounding inside the rotation repeats
+    while the state changes slowly, so repeating the FREE/BALL frame changes
+    on every :class:`SolverMuJoCo` step would scale velocities and
+    anchor-relative positions geometrically.
+    """
+    if q[0] == 0.0 and q[1] == 0.0 and q[2] == 0.0 and q[3] == 1.0:
+        return v
+    return _quat_rotate_exact(q[0], q[1], q[2], q[3], v[0], v[1], v[2])
+
+
+@wp.func
+def quat_rotate_inv_normalized(q: wp.quat, v: wp.vec3) -> wp.vec3:
+    """Rotate ``v`` by the inverse of ``q / |q|``; see :func:`quat_rotate_normalized`."""
+    if q[0] == 0.0 and q[1] == 0.0 and q[2] == 0.0 and q[3] == 1.0:
+        return v
+    return _quat_rotate_exact(-q[0], -q[1], -q[2], q[3], v[0], v[1], v[2])
+
+
 # Coupling kernels
 @wp.func
 def find_mujoco_body_from_newton_body(
@@ -407,6 +492,16 @@ def eval_mujoco_coupling_effective_mass_block_kernel(
     out_inertia[tid] = inertia
 
 
+@wp.func
+def _recovery_solref(thickness: float, depth: float, dt: float, solimp: vec5) -> wp.vec2:
+    """Limit the positional recovery target independently of the contact distance."""
+    imp_max = wp.clamp(solimp[1], 0.0001, 0.9999)
+    target_speed = recovery_step_depth(thickness, depth) / dt
+    damping = 1.0 / dt
+    stiffness = damping * target_speed / depth * imp_max
+    return wp.vec2(-stiffness, -damping * imp_max)
+
+
 # Kernel functions
 # fast math only approximates div/sqrt here; keep transcendentals out of this kernel
 @wp.kernel(module="unique", module_options={"fast_math": True})
@@ -445,6 +540,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
     rigid_contact_stiffness: wp.array[wp.float32],
     rigid_contact_damping: wp.array[wp.float32],
     rigid_contact_friction: wp.array[wp.float32],
+    rigid_contact_surface_velocity: wp.array[wp.vec3],
     shape_margin: wp.array[float],
     shape_material_kf: wp.array[float],
     opt_impratio_invsqrt: wp.array[float],
@@ -466,10 +562,16 @@ def convert_newton_contacts_to_mjwarp_kernel(
     contact_geom_out: wp.array[wp.vec2i],
     contact_efc_address_out: wp.array2d[int],
     contact_worldid_out: wp.array[int],
+    contact_type_out: wp.array[int],
+    constraint_contact_type: int,
+    contact_surfacevel_out: wp.array[wp.vec3],
     # Fast-path generation tracking
     contact_generation: wp.array[wp.int32],
     last_contact_generation: wp.array[wp.int32],
     tid_to_cid: wp.array[wp.int32],
+    recovery: MeshRecoveryData,
+    world_timestep: wp.array[float],
+    compact_stale: bool,
 ):
     # nacon_out is scratch storage, initialized to zero by the solver and
     # reset by _sync_nacon_count after each pass.
@@ -484,30 +586,24 @@ def convert_newton_contacts_to_mjwarp_kernel(
     tid = wp.tid()
 
     count = rigid_contact_count[0]
+    if tid >= count:
+        return
 
     gen = contact_generation[0]
     last_gen = last_contact_generation[0]
-    needs_full = gen != last_gen
-
-    if needs_full:
+    # An expired recovery row must release its slot even when the detection
+    # generation is held. Actuators also consume the packed table directly.
+    if gen != last_gen or (compact_stale and has_recovery_contacts(recovery, gen)):
         # ── FULL PATH ────────────────────────────────────────────────────
         # Runs on the first substep after collision detection.  Identical to
         # the original kernel plus recording the tid→cid mapping.
 
-        if tid == 0:
-            if count > naconmax:
-                wp.printf(
-                    "Number of Newton contacts (%d) exceeded MJWarp limit (%d). Increase nconmax.\n",
-                    count,
-                    naconmax,
-                )
-
-        if count > naconmax:
-            count = naconmax
-
-        if tid >= count:
-            tid_to_cid[tid] = -1
-            return
+        if tid == 0 and not compact_stale and count > naconmax:
+            wp.printf(
+                "Number of Newton contacts (%d) exceeded MJWarp limit (%d). Increase nconmax.\n",
+                count,
+                naconmax,
+            )
 
         shape_a = rigid_contact_shape0[tid]
         shape_b = rigid_contact_shape1[tid]
@@ -543,6 +639,20 @@ def convert_newton_contacts_to_mjwarp_kernel(
             X_wb_a = body_q[body_a]
         if body_b >= 0:
             X_wb_b = body_q[body_b]
+
+        recovery_slot = active_recovery_contact(
+            recovery,
+            gen,
+            shape_a,
+            shape_b,
+            X_wb_a,
+            X_wb_b,
+            rigid_contact_normal[tid],
+        )
+
+        if compact_stale and recovery_slot < -1:
+            tid_to_cid[tid] = -1
+            return
 
         # Strip artificial shape margins from Newton offsets before computing MuJoCo's geometry-surface anchor.
         offset_scale_a = safe_div(rigid_contact_margin0[tid] - shape_margin[shape_a], rigid_contact_margin0[tid])
@@ -689,12 +799,19 @@ def convert_newton_contacts_to_mjwarp_kernel(
                     dampratio = 1.0
                 solref = wp.vec2(timeconst, dampratio)
 
+        if recovery_slot >= 0 and dist < margin:
+            dt = world_timestep[worldid % world_timestep.shape[0]]
+            solref = _recovery_solref(recovery.contacts[recovery_slot].thickness, margin - dist, dt, solimp)
+
         cid = wp.atomic_add(nacon_out, 0, 1)
         if cid >= naconmax:
             tid_to_cid[tid] = -1
             return
 
         tid_to_cid[tid] = cid
+        # Keep a stable compacted slot for a held certificate. Its validity
+        # can change at each predictor pose without moving ordinary rows.
+        contact_type_out[cid] = 0 if recovery_slot < -1 else constraint_contact_type
 
         write_contact(
             dist_in=dist,
@@ -722,6 +839,11 @@ def convert_newton_contacts_to_mjwarp_kernel(
             contact_efc_address_out=contact_efc_address_out,
             contact_worldid_out=contact_worldid_out,
         )
+
+        if rigid_contact_surface_velocity:
+            # Newton contacts carry a linear surface velocity only, so the spin stays zero.
+            velocity = rigid_contact_surface_velocity[tid]
+            contact_surfacevel_out[cid] = wp.vec3(wp.dot(frame[1], velocity), wp.dot(frame[2], velocity), 0.0)
     else:
         # ── FAST PATH ────────────────────────────────────────────────────
         # Subsequent substeps with the same contact set.  Only dist, pos,
@@ -765,14 +887,26 @@ def convert_newton_contacts_to_mjwarp_kernel(
 
         n = rigid_contact_normal[tid]
         # rigid_contact_margin includes shape_margin; MuJoCo handles it explicitly, subtract to recover radius_eff.
-        contact_dist_out[cid] = contact_surface_separation(
+        dist = contact_surface_separation(
             bx_a,
             bx_b,
             n,
             rigid_contact_margin0[tid] - shape_margin[shape_a],
             rigid_contact_margin1[tid] - shape_margin[shape_b],
         )
+        contact_dist_out[cid] = dist
         contact_pos_out[cid] = 0.5 * (point_a + point_b)
+        if recovery.keys.shape[0]:
+            slot = active_recovery_contact(recovery, gen, shape_a, shape_b, X_wb_a, X_wb_b, n)
+            if slot != -1:
+                contact_type_out[cid] = constraint_contact_type if slot >= 0 else 0
+                depth = contact_includemargin_out[cid] - dist
+                if slot >= 0 and depth > 0.0:
+                    world = contact_worldid_out[cid]
+                    dt = world_timestep[world % world_timestep.shape[0]]
+                    contact_solref_out[cid] = _recovery_solref(
+                        recovery.contacts[slot].thickness, depth, dt, contact_solimp_out[cid]
+                    )
 
         for i in range(contact_efc_address_out.shape[1]):
             contact_efc_address_out[cid, i] = -1
@@ -786,15 +920,22 @@ def _sync_nacon_count(
     last_nacon_count: wp.array[wp.int32],
     contact_generation: wp.array[wp.int32],
     last_contact_generation: wp.array[wp.int32],
+    recovery: MeshRecoveryData,
+    compact_stale: bool,
+    naconmax: int,
 ):
     """Publish the compacted count and reset scratch storage for the next pass."""
     gen = contact_generation[0]
-    if gen == last_contact_generation[0]:
-        nacon[0] = last_nacon_count[0]
-    else:
-        nacon[0] = contact_count[0]
+    if gen != last_contact_generation[0] or (compact_stale and has_recovery_contacts(recovery, gen)):
         last_nacon_count[0] = contact_count[0]
         last_contact_generation[0] = gen
+        if compact_stale and contact_count[0] > naconmax:
+            wp.printf(
+                "Number of eligible Newton contacts (%d) exceeded MJWarp limit (%d). Increase nconmax.\n",
+                contact_count[0],
+                naconmax,
+            )
+    nacon[0] = wp.min(last_nacon_count[0], naconmax)
     contact_count[0] = 0
     ncollision[0] = 0
 
@@ -865,10 +1006,14 @@ def convert_mj_coords_to_warp_kernel(
                 qpos[worldid, q_i + 6],
             )
         )
-        world_xform = wp.transform(world_pos, world_rot)
-        joint_xform = wp.transform_inverse(joint_X_p[joint_id]) * world_xform * joint_X_c[joint_id]
-        joint_pos = wp.transform_get_translation(joint_xform)
-        joint_rot = wp.transform_get_rotation(joint_xform)
+        # inv(joint_X_p) * world_xform * joint_X_c, with the translation rotated
+        # by normalized quaternions so the push/pull round trip stays unbiased.
+        q_p = wp.transform_get_rotation(joint_X_p[joint_id])
+        joint_rot = wp.quat_inverse(q_p) * world_rot * wp.transform_get_rotation(joint_X_c[joint_id])
+        anchor_offset_world = quat_rotate_normalized(world_rot, wp.transform_get_translation(joint_X_c[joint_id]))
+        joint_pos = quat_rotate_inv_normalized(
+            q_p, world_pos - wp.transform_get_translation(joint_X_p[joint_id]) + anchor_offset_world
+        )
         joint_q[wq_i + 0] = joint_pos[0]
         joint_q[wq_i + 1] = joint_pos[1]
         joint_q[wq_i + 2] = joint_pos[2]
@@ -880,17 +1025,15 @@ def convert_mj_coords_to_warp_kernel(
         # MuJoCo qvel for FREE: linear is body-origin velocity in world,
         # angular is in body frame. Convert origin→COM in world, then rotate
         # the twist into the parent joint frame.
-        q_p = wp.transform_get_rotation(joint_X_p[joint_id])
-
         w_body = wp.vec3(qvel[worldid, qd_i + 3], qvel[worldid, qd_i + 4], qvel[worldid, qd_i + 5])
-        w_world = wp.quat_rotate(world_rot, w_body)
+        w_world = quat_rotate_normalized(world_rot, w_body)
 
-        com_world = wp.quat_rotate(world_rot, body_com[child])
+        com_world = quat_rotate_normalized(world_rot, body_com[child])
         v_origin_world = wp.vec3(qvel[worldid, qd_i + 0], qvel[worldid, qd_i + 1], qvel[worldid, qd_i + 2])
         v_com_world = v_origin_world + wp.cross(w_world, com_world)
 
-        v_com_parent = wp.quat_rotate_inv(q_p, v_com_world)
-        w_parent = wp.quat_rotate_inv(q_p, w_world)
+        v_com_parent = quat_rotate_inv_normalized(q_p, v_com_world)
+        w_parent = quat_rotate_inv_normalized(q_p, w_world)
 
         joint_qd[wqd_i + 0] = v_com_parent[0]
         joint_qd[wqd_i + 1] = v_com_parent[1]
@@ -914,7 +1057,7 @@ def convert_mj_coords_to_warp_kernel(
         joint_q[wq_i + 3] = r[3]
 
         omega_mj = wp.vec3(qvel[worldid, qd_i + 0], qvel[worldid, qd_i + 1], qvel[worldid, qd_i + 2])
-        w_newton = wp.quat_rotate(mj_to_anchor, omega_mj)
+        w_newton = quat_rotate_normalized(mj_to_anchor, omega_mj)
         joint_qd[wqd_i + 0] = w_newton[0]
         joint_qd[wqd_i + 1] = w_newton[1]
         joint_qd[wqd_i + 2] = w_newton[2]
@@ -1020,13 +1163,16 @@ def convert_warp_coords_to_mj_kernel(
         # joint_qd[0:6] follows the parent-frame contract from State.joint_qd.
         # MuJoCo only allows FREE joints at the worldbody root, so the parent
         # anchor's world transform is joint_X_p.
-        joint_xform = wp.transform(
-            wp.vec3(joint_q[wq_i + 0], joint_q[wq_i + 1], joint_q[wq_i + 2]),
-            wp.quat(joint_q[wq_i + 3], joint_q[wq_i + 4], joint_q[wq_i + 5], joint_q[wq_i + 6]),
+        joint_pos = wp.vec3(joint_q[wq_i + 0], joint_q[wq_i + 1], joint_q[wq_i + 2])
+        joint_rot = wp.quat(joint_q[wq_i + 3], joint_q[wq_i + 4], joint_q[wq_i + 5], joint_q[wq_i + 6])
+        q_p = wp.transform_get_rotation(joint_X_p[joint_id])
+        world_rot = q_p * joint_rot * wp.quat_inverse(wp.transform_get_rotation(joint_X_c[joint_id]))
+        anchor_offset_world = quat_rotate_normalized(world_rot, wp.transform_get_translation(joint_X_c[joint_id]))
+        world_pos = (
+            wp.transform_get_translation(joint_X_p[joint_id])
+            + quat_rotate_normalized(q_p, joint_pos)
+            - anchor_offset_world
         )
-        world_xform = joint_X_p[joint_id] * joint_xform * wp.transform_inverse(joint_X_c[joint_id])
-        world_pos = wp.transform_get_translation(world_xform)
-        world_rot = wp.transform_get_rotation(world_xform)
 
         qpos[worldid, q_i + 0] = world_pos[0]
         qpos[worldid, q_i + 1] = world_pos[1]
@@ -1041,21 +1187,20 @@ def convert_warp_coords_to_mj_kernel(
 
         # Velocities: rotate parent-frame twist into world, then apply CoM→origin
         # and world→body conversions to match MuJoCo qvel.
-        q_p = wp.transform_get_rotation(joint_X_p[joint_id])
         v_com_parent = wp.vec3(joint_qd[wqd_i + 0], joint_qd[wqd_i + 1], joint_qd[wqd_i + 2])
         w_parent = wp.vec3(joint_qd[wqd_i + 3], joint_qd[wqd_i + 4], joint_qd[wqd_i + 5])
 
-        v_com_world = wp.quat_rotate(q_p, v_com_parent)
-        w_world = wp.quat_rotate(q_p, w_parent)
+        v_com_world = quat_rotate_normalized(q_p, v_com_parent)
+        w_world = quat_rotate_normalized(q_p, w_parent)
 
         child = joint_child[joint_id]
-        com_world = wp.quat_rotate(world_rot, body_com[child])
+        com_world = quat_rotate_normalized(world_rot, body_com[child])
         v_origin_world = v_com_world - wp.cross(w_world, com_world)
         qvel[worldid, qd_i + 0] = v_origin_world[0]
         qvel[worldid, qd_i + 1] = v_origin_world[1]
         qvel[worldid, qd_i + 2] = v_origin_world[2]
 
-        w_body = wp.quat_rotate_inv(world_rot, w_world)
+        w_body = quat_rotate_inv_normalized(world_rot, w_world)
         qvel[worldid, qd_i + 3] = w_body[0]
         qvel[worldid, qd_i + 4] = w_body[1]
         qvel[worldid, qd_i + 5] = w_body[2]
@@ -1072,7 +1217,7 @@ def convert_warp_coords_to_mj_kernel(
         qpos[worldid, q_i + 3] = ball_q_wxyz[3]
 
         w_newton = wp.vec3(joint_qd[wqd_i + 0], joint_qd[wqd_i + 1], joint_qd[wqd_i + 2])
-        w_mj = wp.quat_rotate(q_cj * wp.quat_inverse(r), w_newton)
+        w_mj = quat_rotate_normalized(q_cj * wp.quat_inverse(r), w_newton)
         qvel[worldid, qd_i + 0] = w_mj[0]
         qvel[worldid, qd_i + 1] = w_mj[1]
         qvel[worldid, qd_i + 2] = w_mj[2]
@@ -1409,6 +1554,7 @@ def create_convert_mjw_contacts_to_newton_kernel():
         mj_xquat: wp.array2d[wp.quatf],
         njmax: int,
         newton_to_mjw: wp.array[wp.int32],
+        mj_xipos: wp.array2d[wp.vec3],
         # outputs
         rigid_contact_count: wp.array[wp.int32],
         rigid_contact_shape0: wp.array[wp.int32],
@@ -1478,7 +1624,7 @@ def create_convert_mjw_contacts_to_newton_kernel():
 
         if contact_force:
             # Negate: contact_force_fn returns force on geom2; Newton stores force on shape0 (geom1).
-            contact_force[output_idx] = -wp.static(_import_contact_force_fn())(
+            wrench = -wp.static(_import_contact_force_fn())(
                 mj_opt_cone,
                 mj_contact_frame,
                 mj_contact_friction,
@@ -1492,6 +1638,14 @@ def create_convert_mjw_contacts_to_newton_kernel():
                 contact_idx,
                 True,
             )
+            # Shift from the contact point to shape 0's COM at the force
+            # evaluation stage (which can be an intermediate RK4 pose).
+            geom = mj_contact_geom[contact_idx][0]
+            body = mj_geom_bodyid[geom] if geom >= 0 else 0
+            reference = mj_xipos[world, body] if body > 0 else wp.vec3()
+            force = wp.spatial_top(wrench)
+            torque = wp.spatial_bottom(wrench) + wp.cross(mj_contact_pos[contact_idx] - reference, force)
+            contact_force[output_idx] = wp.spatial_vector(force, torque)
 
     return convert_mjw_contacts_to_newton_kernel
 
@@ -1765,29 +1919,6 @@ def apply_mjc_free_joint_f_to_body_f_kernel(
         wp.spatial_top(xfrc) + v,
         wp.spatial_bottom(xfrc) + w,
     )
-
-
-@wp.kernel
-def convert_body_xforms_to_warp_kernel(
-    mjc_body_to_newton: wp.array2d[wp.int32],
-    xpos: wp.array2d[wp.vec3],
-    xquat: wp.array2d[wp.quat],
-    # outputs
-    body_q: wp.array[wp.transform],
-):
-    """Convert MuJoCo body transforms to Newton body_q array.
-
-    Iterates over MuJoCo bodies [world, mjc_body], looks up Newton body index,
-    reads MuJoCo position/quaternion, and writes to Newton body_q.
-    """
-    world, mjc_body = wp.tid()
-    newton_body = mjc_body_to_newton[world, mjc_body]
-    if newton_body >= 0:
-        pos = xpos[world, mjc_body]
-        quat = xquat[world, mjc_body]
-        # convert from wxyz to xyzw
-        quat = quat_wxyz_to_xyzw(quat)
-        body_q[newton_body] = wp.transform(pos, quat)
 
 
 @wp.kernel
@@ -2258,7 +2389,7 @@ def update_kinematic_weld_reference_kernel(
     anchor = wp.vec3(0.0)
     pos = wp.vec3(0.0)
     rot = wp.quat_identity()
-    if jnt_type[jnt] == 0:  # mjJNT_FREE
+    if jnt_type[jnt] == _JointType.FREE:
         adr = jnt_qposadr[jnt]
         pos = wp.vec3(q[adr], q[adr + 1], q[adr + 2])
         rot = wp.normalize(wp.quat(q[adr + 4], q[adr + 5], q[adr + 6], q[adr + 3]))
@@ -2271,13 +2402,13 @@ def update_kinematic_weld_reference_kernel(
             adr = jnt_qposadr[j]
             local_pos = jnt_pos[world % jnt_pos.shape[0], j]
             x_anchor = wp.quat_rotate(rot, local_pos) + pos
-            if jnt_type[j] == 1:  # mjJNT_BALL
+            if jnt_type[j] == _JointType.BALL:
                 rot = rot * wp.normalize(wp.quat(q[adr + 1], q[adr + 2], q[adr + 3], q[adr]))
                 pos = x_anchor - wp.quat_rotate(rot, local_pos)
             else:
                 axis = jnt_axis[world % jnt_axis.shape[0], j]
                 angle = q[adr] - qpos0[world % qpos0.shape[0], adr]
-                if jnt_type[j] == 2:  # mjJNT_SLIDE
+                if jnt_type[j] == _JointType.SLIDE:
                     pos = pos + wp.quat_rotate(rot, axis) * angle
                 else:
                     rot = rot * wp.quat_from_axis_angle(axis, angle)
@@ -2419,7 +2550,7 @@ def update_jnt_reference_kernel(
     """Shift scalar joint limits to a new reference without changing their relative bounds."""
     world, jnt = wp.tid()
     dof = mjc_jnt_to_newton_dof[world, jnt]
-    if dof < 0 or jnt_type[jnt] < 2:
+    if dof < 0 or jnt_type[jnt] < _JointType.SLIDE:
         return
     ref = float(0.0)
     if dof_ref:
@@ -2465,7 +2596,7 @@ def update_joint_transforms_kernel(
 
     # Skip free joints
     jtype = mjc_jnt_type[mjc_jnt]
-    if jtype == 0:  # mjJNT_FREE
+    if jtype == _JointType.FREE:
         return
 
     # Get transforms from Newton (indexed by Newton joint)
@@ -2528,7 +2659,6 @@ def update_geom_properties_kernel(
     shape_mjc_solref_mode: wp.array[wp.int32],
     shape_margin: wp.array[float],
     shape_gap: wp.array[float],
-    zero_margin: int,
     # outputs
     geom_friction: wp.array2d[wp.vec3f],
     geom_solref: wp.array2d[wp.vec2f],
@@ -2550,13 +2680,9 @@ def update_geom_properties_kernel(
     Note: geom_aabb and geom_rbound are recomputed for primitive geoms only;
     other geoms keep the bounds compiled by MuJoCo.
 
-    Note: geom_gap is forwarded from shape_gap (MuJoCo 3.9 semantics:
-    gap widens the detection envelope without affecting force generation).
-    geom_margin is zeroed when MuJoCo handles collisions because
-    mujoco_warp's NATIVECCD broadphase still rejects non-zero margins at
-    put_model() time (#2106).  When Newton provides contacts, margins are
-    restored from shape_margin so that ``convert_newton_contacts_to_mjwarp_kernel``
-    can compute correct ``includemargin`` thresholds via ``contact_params``.
+    Note: geom_margin and geom_gap are forwarded directly from shape_margin and
+    shape_gap (MuJoCo 3.9+ semantics: gap widens the detection envelope without
+    affecting force generation).
     """
     world, geom_idx = wp.tid()
 
@@ -2593,10 +2719,7 @@ def update_geom_properties_kernel(
         geom_solmix[world, geom_idx] = shape_geom_solmix[shape_idx]
 
     geom_gap[world, geom_idx] = shape_gap[shape_idx]
-    if zero_margin:
-        geom_margin[world, geom_idx] = 0.0
-    else:
-        geom_margin[world, geom_idx] = shape_margin[shape_idx]
+    geom_margin[world, geom_idx] = shape_margin[shape_idx]
 
     size = shape_size[shape_idx]
     gtype = geom_type[geom_idx]
@@ -3762,7 +3885,7 @@ OVERFLOW_CONTACT_PIPELINE = wp.constant(wp.int32(1 << 16))
 """Collision pipeline overflowed: rigid_contact_count exceeded rigid_contact_max."""
 
 OVERFLOW_SOLVER_NCONMAX = wp.constant(wp.int32(1 << 17))
-"""Solver nconmax overflow: rigid_contact_count exceeded naconmax."""
+"""Solver nconmax overflow: the inputs to the solver exceeded naconmax."""
 
 
 @wp.kernel
@@ -3770,6 +3893,7 @@ def collect_overflow_kernel(
     # Newton collision pipeline diagnostics
     rigid_contact_count: wp.array[wp.int32],  # [1] — total contacts generated
     rigid_contact_max: int,  # collision pipeline buffer capacity
+    solver_contact_count: wp.array[wp.int32],  # [1] — before truncation to solver capacity
     naconmax: int,  # solver contact buffer capacity
     # 1 when Newton fed contacts to the solver (use_mujoco_contacts=False);
     # 0 when MuJoCo Warp ran its own collision detection — bits 16-17 are
@@ -3782,9 +3906,7 @@ def collect_overflow_kernel(
 ):
     """Collect overflow signals from the collision pipeline and solver into a per-world bitmask.
 
-    Runs with ``dim=nworld``. Thread 0 checks the global contact count against
-    both capacity limits and ORs the result into every world slot; all threads
-    independently OR in their world's mujoco-warp overflow bits.
+    Each world receives the shared contact overflow bits and its own MuJoCo Warp bits.
 
     Newton-defined bits (16-17) are only set when ``newton_contacts=1``.  When
     MuJoCo Warp performs its own collision detection the ``contacts`` argument
@@ -3799,7 +3921,7 @@ def collect_overflow_kernel(
         count = rigid_contact_count[0]
         if count > rigid_contact_max:
             newton_bits = newton_bits | OVERFLOW_CONTACT_PIPELINE
-        if count > naconmax:
+        if solver_contact_count[0] > naconmax:
             newton_bits = newton_bits | OVERFLOW_SOLVER_NCONMAX
 
     # Merge Newton bits and this world's mujoco-warp bits into the output.

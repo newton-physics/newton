@@ -1,0 +1,1 @@
+Remove the error guard left behind for the `joint_target_pos` / `joint_target_vel` aliases of `Model`, `Control`, and `ModelBuilder`, which were removed in Newton 1.5. Reading them now raises a plain `AttributeError`, and assigning them is no longer rejected: the assignment creates an unused attribute. Use `joint_target_q` / `joint_target_qd`.

@@ -65,43 +65,6 @@ MJC_OBJ_JOINT = 3
 MJC_OBJ_TENDON = 18
 
 
-def _copy_equality_frames(values, context, *, anchor):
-    xform = context.get("xform")
-    if xform is None:
-        return values
-    attrs = context["builder"].custom_attributes
-
-    def read(name, row):
-        attr = attrs[f"mujoco:equality_constraint_{name}"]
-        value = attr.values[row]
-        return attr.default if value is None else value
-
-    result = list(values)
-    for index, row in enumerate(context["row_indices"]):
-        if values[index] is None or read("objtype", row) != MJC_OBJ_BODY:
-            continue
-        kind = read("type", row)
-        first, second = read("body1", row), read("body2", row)
-        if anchor:
-            if (kind == EqType.CONNECT and first < 0) or (kind == EqType.WELD and second < 0):
-                result[index] = wp.transform_point(xform, wp.vec3(values[index]))
-        elif kind == EqType.WELD:
-            pose = wp.transform(*values[index])
-            if first < 0:
-                result[index] = xform * pose
-            elif second < 0:
-                result[index] = wp.transform(pose.p, pose.q * wp.quat_inverse(xform.q))
-    return result
-
-
-def _copy_equality_anchor(values, context):
-    return _copy_equality_frames(values, context, anchor=True)
-
-
-def _copy_equality_relpose(values, context):
-    return _copy_equality_frames(values, context, anchor=False)
-
-
 def _register_equality_constraint_attributes(builder: ModelBuilder) -> None:
     """Declare the ``model.mujoco.equality_constraint_*`` custom-attribute rows on ``builder``.
 
@@ -160,7 +123,6 @@ def _register_equality_constraint_attributes(builder: ModelBuilder) -> None:
             assignment=model_assignment,
             dtype=wp.vec3,
             default=wp.vec3(),
-            reference_value_transformer=_copy_equality_anchor,
             namespace="mujoco",
         )
     )
@@ -181,7 +143,6 @@ def _register_equality_constraint_attributes(builder: ModelBuilder) -> None:
             assignment=model_assignment,
             dtype=wp.transform,
             default=wp.transform_identity(),
-            reference_value_transformer=_copy_equality_relpose,
             namespace="mujoco",
         )
     )
