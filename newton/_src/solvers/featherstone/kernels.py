@@ -1011,31 +1011,6 @@ def compute_link_velocity(
     body_I_s[child] = I_s
 
 
-# Convert body forces from COM-frame to world-origin-frame and negate for use in Featherstone dynamics.
-@wp.kernel
-def convert_body_force_com_to_origin(
-    body_q: wp.array[wp.transform],
-    body_X_com: wp.array[wp.transform],
-    # outputs
-    body_f_ext: wp.array[wp.spatial_vector],
-):
-    tid = wp.tid()
-
-    f_ext_com = body_f_ext[tid]
-
-    # skip if force is zero
-    if wp.length(f_ext_com) == 0.0:
-        return
-
-    body_q_com_val = body_q[tid] * body_X_com[tid]
-    r_com = wp.transform_get_translation(body_q_com_val)
-
-    force = wp.spatial_top(f_ext_com)
-    torque_com = wp.spatial_bottom(f_ext_com)
-
-    body_f_ext[tid] = -wp.spatial_vector(force, torque_com + wp.cross(r_com, force))
-
-
 @wp.kernel
 def accumulate_free_distance_joint_f_to_body_force(
     joint_type: wp.array[int],
