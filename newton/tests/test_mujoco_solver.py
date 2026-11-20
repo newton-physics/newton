@@ -8355,10 +8355,8 @@ class TestMuJoCoOptions(unittest.TestCase):
             njmax_nnz=2,
         )
         mujoco, _ = SolverMuJoCo.import_mujoco()
-        from mujoco_warp._src.io import is_sparse as is_mujoco_warp_sparse
-
         self.assertFalse(mujoco.mj_isSparse(solver.mj_model))
-        self.assertTrue(is_mujoco_warp_sparse(solver.mj_model))
+        self.assertTrue(solver.mjw_model.is_sparse)
 
         with self.assertRaisesRegex(
             ValueError,
