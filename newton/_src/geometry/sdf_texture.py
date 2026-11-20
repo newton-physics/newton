@@ -838,6 +838,16 @@ def _locate_cell(sdf: TextureSDFData, f: wp.vec3) -> _CellLookup:
 
 
 @wp.func
+def _texture_sdf_cell_radius(sdf: TextureSDFData, point: wp.vec3) -> float:
+    """Return half the diagonal of the interpolation cell containing the point."""
+    f = wp.cw_mul(point - sdf.sdf_box_lower, sdf.inv_sdf_dx)
+    cell = _locate_cell(sdf, f)
+    if cell.start_slot >= SLOT_LINEAR:
+        return sdf.voxel_radius * sdf.subgrid_size_f
+    return sdf.voxel_radius
+
+
+@wp.func
 def _locate_cell_pair(sdf: TextureSDFData, f0: wp.vec3, f1: wp.vec3) -> tuple[_CellLookup, _CellLookup]:
     """Resolve two cells while sharing a common subgrid-slot lookup."""
     loc0 = _locate_cell_coords(sdf, f0)
