@@ -1855,9 +1855,14 @@ def test_joint_equality_replaces_joint_mimic(test, device):
     test.assertAlmostEqual(q[1], 0.1 - 0.5 * q[0], delta=0.02)
 
 
-def test_runtime_coefficient_change(test, device):
-    """Read joint-owned coefficients every step, also from a captured graph."""
-    builder, _, follower = _build_two_revolute_chain(0.0, 1.0)
+def _has_mimic_row(solver) -> bool:
+    row_types = solver._row_type.numpy()
+    counts = solver._constraint_count.numpy()
+    return any(PGS_CONSTRAINT_TYPE_MIMIC in row_types[w, : counts[w]] for w in range(row_types.shape[0]))
+
+
+def _check_runtime_coefficient_change(test, device, equality: bool):
+    builder, _, follower = _build_two_revolute_chain(0.0, 1.0, equality=equality)
     model = builder.finalize(device=device)
     solver = SolverSteel(model, iterations=16, baumgarte=0.1)
     state_0, state_1 = model.state(), model.state()
@@ -1879,23 +1884,38 @@ def test_runtime_coefficient_change(test, device):
     q = state_0.joint_q.numpy()
     test.assertAlmostEqual(q[1], q[0], delta=0.02)
 
-    coeffs = model.joint_mimic_coeffs.numpy()
-    coeffs[follower] = (0.1, -0.5)
-    model.joint_mimic_coeffs.assign(coeffs)
+    if equality:
+        coeffs = model.mujoco.equality_constraint_polycoef.numpy()
+        coeffs[0, :2] = (0.1, -0.5)
+        model.mujoco.equality_constraint_polycoef.assign(coeffs)
+    else:
+        coeffs = model.joint_mimic_coeffs.numpy()
+        coeffs[follower] = (0.1, -0.5)
+        model.joint_mimic_coeffs.assign(coeffs)
     for _ in range(150):
         wp.capture_launch(capture.graph)
     q = state_0.joint_q.numpy()
     test.assertTrue(np.isfinite(q).all())
     test.assertAlmostEqual(q[1], 0.1 - 0.5 * q[0], delta=0.02)
+    if not equality:
+        return
+
+    model.mujoco.equality_constraint_enabled.fill_(False)
+    wp.capture_launch(capture.graph)
+    test.assertFalse(_has_mimic_row(solver))
+
+
+def test_runtime_coefficient_change(test, device):
+    """Read mimic coefficients and equality enabled flags every step, also from a captured graph."""
+    for equality in (False, True):
+        with test.subTest(equality=equality):
+            _check_runtime_coefficient_change(test, device, equality)
 
 
 def test_mimic_row_is_assembled(test, device):
     """Assemble a mimic row that carries the coupling."""
     solver, _ = _run_chain(device, coef0=0.0, coef1=1.0, leader_target=0.5, steps=10)
-    row_types = solver._row_type.numpy()
-    counts = solver._constraint_count.numpy()
-    rows = [int(t) for w in range(row_types.shape[0]) for t in row_types[w, : counts[w]]]
-    test.assertIn(PGS_CONSTRAINT_TYPE_MIMIC, rows)
+    test.assertTrue(_has_mimic_row(solver))
 
 
 def test_replicated_mimics_have_articulation_local_ranges(test, device):
