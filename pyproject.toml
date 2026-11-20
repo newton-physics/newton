@@ -48,10 +48,10 @@ sim = [
 # Optional cuNLS backend for inverse kinematics (IKOptimizer.CUNLS): closed loops, mimic joints and
 # hard joint limits. Pick the extra matching the CUDA major version of the driver.
 cunls-cu12 = [
-    "pycunls-cu12>=0.5.0; sys_platform == 'linux' and (platform_machine == 'x86_64' or platform_machine == 'aarch64')",
+    "pycunls-cu12>=0.4.2; sys_platform == 'linux' and (platform_machine == 'x86_64' or platform_machine == 'aarch64')",
 ]
 cunls-cu13 = [
-    "pycunls-cu13>=0.5.0; sys_platform == 'linux' and (platform_machine == 'x86_64' or platform_machine == 'aarch64')",
+    "pycunls-cu13>=0.4.2; sys_platform == 'linux' and (platform_machine == 'x86_64' or platform_machine == 'aarch64')",
 ]
 
 # Optional ONNX policy inference for neural actuators and RL policy examples.
