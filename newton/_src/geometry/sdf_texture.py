@@ -2151,7 +2151,7 @@ def _build_sparse_sdf(
     # but .numpy() on the full array is fine — the sync is unavoidable because
     # we need num_required on the host to size the texture allocation.
     subgrid_addresses = wp.zeros(total_subgrids, dtype=wp.int32, device=device)
-    wp._src.utils.array_scan(subgrid_required, subgrid_addresses, inclusive=False)
+    wp.utils.array_scan(subgrid_required, subgrid_addresses, inclusive=False)
 
     required_np = subgrid_required.numpy()
     num_required = int(np.sum(required_np))
