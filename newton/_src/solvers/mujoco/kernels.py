@@ -3515,6 +3515,222 @@ def convert_qfrc_from_mj_kernel(
             qfrc[wqd_i + i] = mjw_qfrc[worldid, qd_i + i]
 
 
+@wp.func
+def free_qacc_mj_to_newton(
+    a_origin_world: wp.vec3,
+    alpha_body: wp.vec3,
+    world_rot: wp.quat,
+    q_p: wp.quat,
+    w_world: wp.vec3,
+    com_body: wp.vec3,
+):
+    """Convert a MuJoCo FREE-joint acceleration to the time derivative of Newton's ``joint_qd``.
+
+    Differentiates the velocity map of :func:`convert_mj_coords_to_warp_kernel`.
+    The angular term is a pure rotation because the frame rotates with the
+    angular velocity it maps. The linear term moves the reference point from the
+    body origin to the COM, which adds the centripetal acceleration.
+    """
+    alpha_world = quat_rotate_normalized(world_rot, alpha_body)
+    com_world = quat_rotate_normalized(world_rot, com_body)
+    a_com_world = a_origin_world + wp.cross(alpha_world, com_world) + wp.cross(w_world, wp.cross(w_world, com_world))
+    return quat_rotate_inv_normalized(q_p, a_com_world), quat_rotate_inv_normalized(q_p, alpha_world)
+
+
+@wp.func
+def free_qacc_newton_to_mj(
+    a_com_parent: wp.vec3,
+    alpha_parent: wp.vec3,
+    world_rot: wp.quat,
+    q_p: wp.quat,
+    w_world: wp.vec3,
+    com_body: wp.vec3,
+):
+    """Invert :func:`free_qacc_mj_to_newton`."""
+    alpha_world = quat_rotate_normalized(q_p, alpha_parent)
+    com_world = quat_rotate_normalized(world_rot, com_body)
+    a_origin_world = (
+        quat_rotate_normalized(q_p, a_com_parent)
+        - wp.cross(alpha_world, com_world)
+        - wp.cross(w_world, wp.cross(w_world, com_world))
+    )
+    return a_origin_world, quat_rotate_inv_normalized(world_rot, alpha_world)
+
+
+@wp.kernel
+def convert_qacc_from_mj_kernel(
+    mjw_qacc: wp.array2d[wp.float32],
+    joints_per_world: int,
+    joint_type: wp.array[wp.int32],
+    joint_q_start: wp.array[wp.int32],
+    joint_qd_start: wp.array[wp.int32],
+    joint_dof_dim: wp.array2d[wp.int32],
+    joint_child: wp.array[wp.int32],
+    joint_X_p: wp.array[wp.transform],
+    joint_X_c: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
+    joint_q: wp.array[wp.float32],
+    joint_qd: wp.array[wp.float32],
+    mj_q_start: wp.array[wp.int32],
+    mj_qd_start: wp.array[wp.int32],
+    # output
+    qacc: wp.array[wp.float32],
+):
+    """Convert a MuJoCo generalized acceleration [nworld, nv] to the time derivative of Newton's ``joint_qd``.
+
+    FREE and BALL frames come from the Newton state ``joint_q``/``joint_qd`` at
+    which MuJoCo evaluated the acceleration, since MuJoCo's ``qpos``/``qvel``
+    have advanced by the time the step returns. Other joints are copied directly.
+    """
+    worldid, jntid = wp.tid()
+    joint_id = joints_per_world * worldid + jntid
+
+    # Skip loop joints — they have no MuJoCo DOF entries
+    if mj_q_start[jntid] < 0:
+        return
+
+    qd_i = mj_qd_start[jntid]
+    wq_i = joint_q_start[joint_id]
+    wqd_i = joint_qd_start[joint_id]
+    jtype = joint_type[joint_id]
+
+    if jtype == JointType.FREE:
+        q_p = wp.transform_get_rotation(joint_X_p[joint_id])
+        joint_rot = wp.quat(joint_q[wq_i + 3], joint_q[wq_i + 4], joint_q[wq_i + 5], joint_q[wq_i + 6])
+        # Inverse of joint_rot = inv(q_p) * world_rot * q_c in convert_mj_coords_to_warp_kernel.
+        world_rot = q_p * joint_rot * wp.quat_inverse(wp.transform_get_rotation(joint_X_c[joint_id]))
+        w_world = quat_rotate_normalized(q_p, wp.vec3(joint_qd[wqd_i + 3], joint_qd[wqd_i + 4], joint_qd[wqd_i + 5]))
+        a_com, alpha = free_qacc_mj_to_newton(
+            wp.vec3(mjw_qacc[worldid, qd_i + 0], mjw_qacc[worldid, qd_i + 1], mjw_qacc[worldid, qd_i + 2]),
+            wp.vec3(mjw_qacc[worldid, qd_i + 3], mjw_qacc[worldid, qd_i + 4], mjw_qacc[worldid, qd_i + 5]),
+            world_rot,
+            q_p,
+            w_world,
+            body_com[joint_child[joint_id]],
+        )
+        for i in range(3):
+            qacc[wqd_i + i] = a_com[i]
+            qacc[wqd_i + 3 + i] = alpha[i]
+    elif jtype == JointType.BALL:
+        # Newton's ball rotation is mj_to_anchor * q_cj; see convert_mj_coords_to_warp_kernel.
+        r = wp.quat(joint_q[wq_i + 0], joint_q[wq_i + 1], joint_q[wq_i + 2], joint_q[wq_i + 3])
+        mj_to_anchor = r * wp.quat_inverse(joint_X_c[joint_id].q)
+        alpha = quat_rotate_normalized(
+            mj_to_anchor, wp.vec3(mjw_qacc[worldid, qd_i + 0], mjw_qacc[worldid, qd_i + 1], mjw_qacc[worldid, qd_i + 2])
+        )
+        for i in range(3):
+            qacc[wqd_i + i] = alpha[i]
+    else:
+        axis_count = joint_dof_dim[joint_id, 0] + joint_dof_dim[joint_id, 1]
+        for i in range(axis_count):
+            qacc[wqd_i + i] = mjw_qacc[worldid, qd_i + i]
+
+
+@wp.func
+def _qacc_override_masked(dof_mask: wp.array[wp.bool], dof: int) -> bool:
+    if dof_mask:
+        return dof_mask[dof]
+    return True
+
+
+@wp.kernel
+def apply_qacc_smooth_override_kernel(
+    values: wp.array[wp.float32],
+    dof_mask: wp.array[wp.bool],
+    qpos: wp.array2d[wp.float32],
+    qvel: wp.array2d[wp.float32],
+    joints_per_world: int,
+    joint_type: wp.array[wp.int32],
+    joint_qd_start: wp.array[wp.int32],
+    joint_dof_dim: wp.array2d[wp.int32],
+    joint_child: wp.array[wp.int32],
+    joint_X_p: wp.array[wp.transform],
+    joint_X_c: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
+    mj_q_start: wp.array[wp.int32],
+    mj_qd_start: wp.array[wp.int32],
+    # in/out
+    qacc_smooth: wp.array2d[wp.float32],
+):
+    """Replace MuJoCo ``qacc_smooth`` on masked Newton DOFs with ``values``.
+
+    ``values`` hold time derivatives of Newton's ``joint_qd``. Hinge and slide
+    DOFs are written directly. A FREE or BALL joint with any masked DOF is
+    converted to Newton's convention, its masked components are replaced, and
+    the result is converted back, so unmasked components keep their native
+    acceleration. A null ``dof_mask`` selects every DOF.
+    """
+    worldid, jntid = wp.tid()
+    joint_id = joints_per_world * worldid + jntid
+
+    q_i = mj_q_start[jntid]
+    if q_i < 0:
+        return
+
+    qd_i = mj_qd_start[jntid]
+    wqd_i = joint_qd_start[joint_id]
+    jtype = joint_type[joint_id]
+
+    if jtype == JointType.FREE:
+        any_masked = False
+        for i in range(6):
+            if _qacc_override_masked(dof_mask, wqd_i + i):
+                any_masked = True
+        if not any_masked:
+            return
+        q_p = wp.transform_get_rotation(joint_X_p[joint_id])
+        world_rot = quat_wxyz_to_xyzw(
+            wp.quat(qpos[worldid, q_i + 3], qpos[worldid, q_i + 4], qpos[worldid, q_i + 5], qpos[worldid, q_i + 6])
+        )
+        w_world = quat_rotate_normalized(
+            world_rot, wp.vec3(qvel[worldid, qd_i + 3], qvel[worldid, qd_i + 4], qvel[worldid, qd_i + 5])
+        )
+        com_body = body_com[joint_child[joint_id]]
+        a_com, alpha = free_qacc_mj_to_newton(
+            wp.vec3(qacc_smooth[worldid, qd_i + 0], qacc_smooth[worldid, qd_i + 1], qacc_smooth[worldid, qd_i + 2]),
+            wp.vec3(qacc_smooth[worldid, qd_i + 3], qacc_smooth[worldid, qd_i + 4], qacc_smooth[worldid, qd_i + 5]),
+            world_rot,
+            q_p,
+            w_world,
+            com_body,
+        )
+        for i in range(3):
+            if _qacc_override_masked(dof_mask, wqd_i + i):
+                a_com[i] = values[wqd_i + i]
+            if _qacc_override_masked(dof_mask, wqd_i + 3 + i):
+                alpha[i] = values[wqd_i + 3 + i]
+        a_origin, alpha_body = free_qacc_newton_to_mj(a_com, alpha, world_rot, q_p, w_world, com_body)
+        for i in range(3):
+            qacc_smooth[worldid, qd_i + i] = a_origin[i]
+            qacc_smooth[worldid, qd_i + 3 + i] = alpha_body[i]
+    elif jtype == JointType.BALL:
+        any_masked = False
+        for i in range(3):
+            if _qacc_override_masked(dof_mask, wqd_i + i):
+                any_masked = True
+        if not any_masked:
+            return
+        q_mj = quat_wxyz_to_xyzw(
+            wp.quat(qpos[worldid, q_i + 0], qpos[worldid, q_i + 1], qpos[worldid, q_i + 2], qpos[worldid, q_i + 3])
+        )
+        mj_to_anchor = wp.quat_inverse(joint_X_c[joint_id].q) * q_mj
+        alpha = quat_rotate_normalized(
+            mj_to_anchor,
+            wp.vec3(qacc_smooth[worldid, qd_i + 0], qacc_smooth[worldid, qd_i + 1], qacc_smooth[worldid, qd_i + 2]),
+        )
+        for i in range(3):
+            if _qacc_override_masked(dof_mask, wqd_i + i):
+                alpha[i] = values[wqd_i + i]
+        alpha_mj = quat_rotate_inv_normalized(mj_to_anchor, alpha)
+        for i in range(3):
+            qacc_smooth[worldid, qd_i + i] = alpha_mj[i]
+    else:
+        axis_count = joint_dof_dim[joint_id, 0] + joint_dof_dim[joint_id, 1]
+        for i in range(axis_count):
+            if _qacc_override_masked(dof_mask, wqd_i + i):
+                qacc_smooth[worldid, qd_i + i] = values[wqd_i + i]
+
+
 @wp.kernel
 def update_pair_properties_kernel(
     pairs_per_world: int,
