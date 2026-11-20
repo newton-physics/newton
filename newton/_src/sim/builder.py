@@ -1157,7 +1157,11 @@ class ModelBuilder:
         ke: float = 2.5e3
         """The normal contact stiffness [N/m]."""
         kd: float = 100.0
-        """The normal contact damping coefficient [N·s/m]."""
+        """The normal contact damping coefficient [N·s/m].
+
+        Hydroelastic contacts use ``kd / ke`` as a shape relaxation time;
+        see :ref:`hydroelastic damping <hydroelastic-contact-damping>`.
+        """
         kf: float = 1000.0
         """The contact friction gain [N·s/m].
 

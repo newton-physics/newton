@@ -10,7 +10,7 @@ import time
 import unittest
 import warnings
 import xml.etree.ElementTree as ET
-from copy import deepcopy
+from copy import copy, deepcopy
 from enum import IntFlag
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -14523,6 +14523,126 @@ class TestMuJoCoSolverForceSpaceContactSolref(unittest.TestCase):
                     self.assertAlmostEqual(float(timeconst) / expected_timeconst, 1.0, places=5)
                     self.assertAlmostEqual(float(dampratio) / expected_dampratio, 1.0, places=5)
                 np.testing.assert_array_equal(solimp[:, 0], solimp[:, 1])
+
+    def test_hydroelastic_patch_subdivision(self):
+        """Preserve patch response and friction across subdivision, worlds, and captured timesteps."""
+        if not wp.is_cuda_available():
+            self.skipTest("Requires CUDA")
+        with wp.ScopedDevice("cuda:0"):
+            world = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+            SolverMuJoCo.register_custom_attributes(world)
+            cfg = newton.ModelBuilder.ShapeConfig(
+                is_hydroelastic=True, sdf_max_resolution=8, density=125.0, margin=0.0, gap=0.0, mu=0.5
+            )
+            attrs = {"mujoco:solref_mode": SOLREF_MODE_FORCE_SPACE}
+            world.add_shape_box(-1, hx=0.5, hy=0.2, hz=0.1, cfg=cfg, custom_attributes=attrs)
+            for x in (-0.2, 0.2):
+                body = world.add_body(xform=wp.transform((x, 0.0, 0.095), wp.quat_identity()))
+                world.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1, cfg=cfg, custom_attributes=attrs)
+            builder = newton.ModelBuilder()
+            builder.replicate(world, 2)
+            model = builder.finalize()
+            solver = SolverMuJoCo(
+                model,
+                use_mujoco_contacts=False,
+                cone="elliptic",
+                impratio=100.0,
+                nconmax=16,
+                njmax=64,
+                iterations=30,
+                deterministic=wp.DeterministicMode.RUN_TO_RUN,
+            )
+            state, output = model.state(), model.state()
+            newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+            contacts = newton.Contacts(10, 0, per_contact_shape_properties=True)
+            contacts.rigid_contact_count.fill_(10)
+            contacts.rigid_contact_shape0.assign(np.repeat([0, 3], 5).astype(np.int32))
+            contacts.rigid_contact_shape1.assign(np.array([1, 2, 2, 2, 1, 4, 5, 5, 5, 4], dtype=np.int32))
+            contacts.rigid_contact_point0.assign(
+                np.tile([[-0.2, 0.0, 0.0975]] + [[0.2, 0.0, 0.0975]] * 3 + [[-0.2, 0.0, 0.08]], (2, 1))
+            )
+            contacts.rigid_contact_point1.fill_(wp.vec3(0.0, 0.0, -0.0025))
+            contacts.rigid_contact_normal.fill_(wp.vec3(0.0, 0.0, 1.0))
+            contacts.rigid_contact_stiffness.assign(np.array([1.0e4, 1.0e3, 3.0e3, 6.0e3, 1.0e10] * 2))
+            contacts.rigid_contact_damping.assign(0.02 * contacts.rigid_contact_stiffness.numpy())
+            contacts.contact_generation.fill_(1)
+            alias = copy(contacts)  # Share the device buffers before the solver creates any caches.
+            graphs, expected = [], []
+            for dt in (0.001, 0.05):
+                with wp.ScopedCapture() as capture:
+                    solver.step(state, output, None, contacts, dt)
+                graphs.append(capture.graph)
+                wp.capture_launch(capture.graph)
+                expected.append(output.body_qd.numpy().copy())
+                solver.step(state, output, None, contacts, dt)
+                np.testing.assert_allclose(output.body_qd.numpy(), expected[-1], rtol=2.0e-4, atol=1.0e-7)
+            # Backward-Euler spring-damper response: m=1 kg, K=1e4 N/m, C=200 N s/m, depth=5 mm.
+            for dt, velocity in zip((0.001, 0.05), expected, strict=True):
+                speed = dt * 50.0 / (1.0 + dt * 200.0 + dt * dt * 1.0e4)
+                np.testing.assert_allclose(velocity[:, 2], speed, rtol=2.0e-4)
+            for index in (0, 1, 0):
+                wp.capture_launch(graphs[index])
+                np.testing.assert_allclose(output.body_qd.numpy(), expected[index], rtol=2.0e-4, atol=1.0e-7)
+                velocity = output.body_qd.numpy()[:, 2]
+                np.testing.assert_allclose(velocity, velocity[0], rtol=2.0e-4, atol=1.0e-7)
+                self.assertGreater(float(velocity[0]), 0.0)
+                # Contact frames remain orthonormal for native force readouts.
+                frame = solver.mjw_data.contact.frame.numpy()[:10]
+                np.testing.assert_allclose(
+                    frame @ frame.transpose(0, 2, 1), np.tile(np.eye(3), (10, 1, 1)), atol=1.0e-6
+                )
+
+            # Replaying the first capture must not reinterpret reused activation rows as pressure.
+            pose = state.body_q.numpy()
+            moved = pose.copy()
+            moved[:, 2] -= 0.1
+            state.body_q.assign(moved)
+            solver.mjw_data.qacc_warmstart.zero_()
+            wp.capture_launch(graphs[0])
+            np.testing.assert_array_equal(
+                solver._hydroelastic_contact_cache[contacts.contact_generation][0].numpy(),
+                [True] * 4 + [False] + [True] * 4 + [False],
+            )
+            reused_velocity = output.body_qd.numpy().copy()
+            solver.mjw_data.qacc_warmstart.zero_()
+            solver.step(state, output, None, alias, 0.001)
+            np.testing.assert_allclose(output.body_qd.numpy(), reused_velocity, rtol=2.0e-4, atol=1.0e-7)
+            state.body_q.assign(pose)
+
+            # Unrelated patches and separated activation rows must not change this body's response.
+            contacts.rigid_contact_count.fill_(1)
+            contacts.contact_generation.fill_(2)
+            solver.mjw_data.qacc_warmstart.zero_()
+            solver.step(state, output, None, contacts, 0.001)
+            np.testing.assert_allclose(output.body_qd.numpy()[0], expected[0][0], rtol=2.0e-4, atol=1.0e-7)
+
+            # An explicit zero damping must remain undamped, without a critical-damping fallback.
+            contacts.rigid_contact_damping.zero_()
+            solver.mjw_data.qacc_warmstart.zero_()
+            solver.step(state, output, None, contacts, 0.001)
+            self.assertAlmostEqual(float(output.body_qd.numpy()[0, 2]), 0.05 / 1.01, delta=1.0e-5)
+            contacts.rigid_contact_damping.assign(0.02 * contacts.rigid_contact_stiffness.numpy())
+
+            # Preload N=50 N: hold below mu * N = 25 N, and slide under a larger load.
+            contacts.rigid_contact_count.fill_(10)
+            contacts.contact_generation.fill_(3)
+            initial_velocity = np.zeros(model.joint_dof_count, dtype=np.float32)
+            initial_velocity[::6] = 5.0e-4
+            state.joint_qd.assign(initial_velocity)
+            load = np.zeros((model.body_count, 6), dtype=np.float32)
+            load[:, 2] = -50.0
+            for force, held in ((10.0, True), (40.0, False)):
+                load[:, 0] = force
+                state.body_f.assign(load)
+                solver.mjw_data.qacc_warmstart.zero_()
+                solver.step(state, output, None, contacts, 0.001)
+                velocity = output.body_qd.numpy()[:, 0]
+                if held:
+                    # Native tangential regularization leaves a small residual velocity.
+                    speed = (5.0e-4 + 0.001 * force) / (1.0 + 100.0 * 0.001 * (200.0 + 0.001 * 1.0e4))
+                    np.testing.assert_allclose(velocity, speed, rtol=2.0e-4, atol=1.0e-7)
+                else:
+                    self.assertGreater(float(velocity.min()), 1.0e-3)
 
     def _simulate_sphere_contact(
         self,

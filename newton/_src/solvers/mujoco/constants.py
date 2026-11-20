@@ -24,6 +24,12 @@ constants.
 Larger ratios make kinematic roots more rigid but slow the convergence of iterative solvers on their weld and
 contact rows."""
 
+MJ_MINIMP = 0.0001
+"""MuJoCo's minimum constraint impedance."""
+
+MJ_MAXIMP = 0.9999
+"""MuJoCo's maximum constraint impedance."""
+
 MJ_MINMU = 1.0e-5
 """MuJoCo's minimum friction coefficient clamp."""
 

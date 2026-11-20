@@ -463,25 +463,90 @@ also includes ``mu**2 * (1 + mu**2) / (impratio * (condim - 1))`` to account
 for the summed pyramid-edge normal response. Here ``mu`` is the final sliding
 friction after contact overrides. Elliptic and frictionless contacts retain
 the inverse-weight factor alone. The same mapping applies to positive
-per-contact stiffness and damping overrides; zero per-contact damping retains
-the critical-damping fallback.
+per-contact stiffness and damping overrides, except for the hydroelastic patch
+response below; zero per-contact damping otherwise retains the critical-damping
+fallback.
 
 This resting-contact approximation is not the full scalar contact effective mass
 :math:`(J M^{-1} J^T)^{-1}` for arbitrary articulated or off-center contacts.
 
 ``model.mujoco.solref_mode`` (per shape) records how
 ``shape_material_ke`` / ``shape_material_kd`` and ``mujoco.solref``
-combine, with the same three states as joint limits. The list describes existing
-model and implementation behavior; the constants are not a public selection
-API:
+combine, with the same three states as joint limits. The names below are
+internal constants; use the documented integer mode to select the
+:ref:`hydroelastic patch response <mujoco-hydroelastic-patch-response>`:
 
 * ``SOLREF_MODE_FORCE_SPACE`` — Newton force-space gains; the per-contact
-  factor above applies.
+  factor above applies, with the hydroelastic exception below.
 * ``SOLREF_MODE_RAW`` — forward the authored ``mujoco.solref`` (e.g.
   from an MJCF/USD import) unchanged.
 * ``SOLREF_MODE_MJCF_DEFAULT`` — registered default; preserves MuJoCo's
   compile-time contact dynamics and the legacy unit-mass numerical
   ``convert_solref(ke, kd, 1, 1)`` round-trip in ``geom_solref``.
+
+.. _mujoco-hydroelastic-patch-response:
+
+Hydroelastic patch response
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. experimental::
+
+   The hydroelastic patch response may change without prior notice.
+
+For two hydroelastic shapes in force-space mode (``mujoco:solref_mode=0``),
+the settings below enable a per-contact spring-damper response. Stiffness comes
+from the pressure law and contact geometry. Damping comes from
+:attr:`Contacts.rigid_contact_damping`, populated by the collision pipeline
+from the shapes' ``kd / ke`` ratios. The solver maps these gains through native
+MuJoCo contact parameters. Contact frames stay orthonormal, so native sensors
+and contact visualization need no rescaling.
+
+Set the mode when adding each hydroelastic shape, before constructing the solver::
+
+    newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
+    cfg = newton.ModelBuilder.ShapeConfig(is_hydroelastic=True, sdf_max_resolution=64, kh=1.0e11)
+    builder.add_shape_box(
+        body, hx=0.002, hy=0.002, hz=0.002, cfg=cfg,
+        custom_attributes={"mujoco:solref_mode": 0},
+    )
+
+USD assets cannot select this mode directly. For imported shapes, set
+``mujoco:solref_mode`` in the builder after import and before finalization.
+
+Use MuJoCo-Warp with Newton contacts (``use_mujoco_contacts=False``),
+``cone="elliptic"``, and Euler, implicit, implicitfast, or discrete integration.
+Recreate the solver and CUDA graphs after changing which shapes select this
+mode. Default, raw, and mixed pairs keep the existing solver mapping; generated
+hydroelastic damping changes for all pairs as described in
+:ref:`hydroelastic damping <hydroelastic-contact-damping>`. Other solver settings use the existing
+contact mapping.
+
+Tune ``kh`` for stiffness with the default pressure law. Each penetrating
+contact receives damping ``c = k * (kd_a / ke_a + kd_b / ke_b)`` for positive
+``ke`` and nonnegative ``kd``. Set ``kd=0`` on both shapes for no generated
+damping. Per-contact damping overrides are honored, including zero.
+``ke`` affects damping through this ratio; it does not set hydroelastic stiffness.
+Existing force-space hydroelastic scenes may need retuning.
+
+For Euler, implicit, and implicitfast, this mapping gives the implicit normal
+spring-damper law while the requested impedance lies within MuJoCo's limits.
+The lower limit adds artificial inertia at small contact stiffnesses or timesteps.
+For a flat patch with identical contact Jacobians, its upper bound is about
+``0.0001 * N`` times the body mass for ``N`` contacts. This error does not vanish
+with smaller timesteps. The upper limit can make part of the response explicit.
+Discrete integration retains the lower-limit error; articulated systems with
+joint damping also depend on MuJoCo's effective-mass scaling. Exact continuum
+convergence is not guaranteed.
+
+Friction targets removal of tangential velocity within one timestep for any
+positive ``kf``; ``kf=0`` disables friction. Raise ``impratio`` to reduce creep
+below the friction limit. Friction remains approximate and can still creep.
+
+Use ``HydroelasticSDF.Config(reduce_contacts=False)``. Reduced contacts and
+center-of-pressure matching remain follow-up work. The solver does not check
+this setting. Rounding near a patch edge can also misclassify contacts and cause
+small velocity kicks.
+
 
 .. _mujoco-contact-solref-conversion:
 
@@ -518,7 +583,8 @@ MuJoCo's `refsafe option
 These ``SOLREF_MODE_*`` names describe internal mode values; they are not
 public Newton symbols. MJCF/USD import selects the appropriate authored/default
 mode automatically. Do not import the constants from ``newton._src`` to change
-the mode from user code.
+the mode from user code. For the hydroelastic opt-in, follow
+:ref:`mujoco-hydroelastic-patch-response`.
 
 .. note::
 
@@ -552,7 +618,10 @@ weighting. A resolved ``kf = 0`` makes the contact frictionless
 If a positive ``kf`` cannot produce a positive, finite inverse-weight
 denominator, ``solreffriction`` remains unset and MuJoCo inherits the normal
 ``solref``. The mapping is independent of the shape's ``solref_mode`` above,
-which only governs the normal-direction ``solref``.
+which only governs the normal-direction ``solref``, except for the
+:ref:`hydroelastic patch response <mujoco-hydroelastic-patch-response>`. Its
+pressure contacts use a direct-format friction reference with damping rate
+``1 / dt`` for any positive ``kf``; the ``refsafe`` bound above does not apply.
 
 The slope is calibrated for the sliding friction rows. With ``condim > 3``, the
 torsional and rolling rows share the same per-contact ``solreffriction`` and

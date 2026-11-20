@@ -10,6 +10,7 @@ import os
 import re
 import sys
 import warnings
+import weakref
 from array import array
 from collections.abc import Iterable
 from contextlib import contextmanager
@@ -19,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import warp as wp
+from warp._src.deterministic import det_buffer_allocation_scope
 
 from ...core._warnings import _external_warning_stacklevel
 from ...core.types import MAXVAL, Axis, override, vec5, vec10
@@ -4714,6 +4716,17 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # Import and cache MuJoCo modules (only happens once per class)
         mujoco, _ = self.import_mujoco()
         mujoco_attrs = getattr(model, "mujoco", None)
+        solref_mode = getattr(mujoco_attrs, "solref_mode", None)
+        self._hydroelastic_shape_enabled = None
+        if not use_mujoco_cpu and not use_mujoco_contacts and solref_mode is not None:
+            required_flags = ShapeFlags.HYDROELASTIC | ShapeFlags.COLLIDE_SHAPES
+            enabled = ((model.shape_flags.numpy() & required_flags) == required_flags) & (
+                solref_mode.numpy() == SOLREF_MODE_FORCE_SPACE
+            )
+            if np.count_nonzero(enabled) >= 2:
+                self._hydroelastic_shape_enabled = wp.array(enabled, dtype=bool, device=model.device)
+        self._hydroelastic_contact_cache = weakref.WeakKeyDictionary()
+
         if enable_sleeping is None:
             if mujoco_attrs is not None and hasattr(mujoco_attrs, "enable_sleeping"):
                 enable_sleeping = bool(mujoco_attrs.enable_sleeping.numpy()[0])
@@ -5868,6 +5881,30 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         bodies_per_world = self.model.body_count // self.model.world_count
         mujoco_attrs = getattr(model, "mujoco", None)
         shape_mjc_solref_mode = getattr(mujoco_attrs, "solref_mode", None) if mujoco_attrs is not None else None
+        hydroelastic = (
+            self._hydroelastic_shape_enabled is not None
+            and contacts.rigid_contact_stiffness is not None
+            and self.mjw_model.opt.cone == self._mujoco_warp.ConeType.ELLIPTIC
+            and self.mjw_model.opt.integrator
+            in (
+                self._mujoco_warp.IntegratorType.EULER,
+                self._mujoco_warp.IntegratorType.IMPLICIT,
+                self._mujoco_warp.IntegratorType.IMPLICITFAST,
+                self._mujoco_warp.IntegratorType.DISCRETE,
+            )
+        )
+        if hydroelastic:
+            # Aliased Contacts wrappers share one generation buffer and must retain row classification.
+            cache = self._hydroelastic_contact_cache.get(contacts.contact_generation)
+            if cache is None:
+                # Retain caches across graphs; replay must not reset a reused row's classification.
+                with det_buffer_allocation_scope(model.device, model.device.is_capturing):
+                    cache = (
+                        wp.zeros(launch_dim, dtype=bool, device=model.device),
+                        wp.full(launch_dim, _GENERATION_SENTINEL, dtype=int, device=model.device),
+                    )
+                self._hydroelastic_contact_cache[contacts.contact_generation] = cache
+            hydroelastic_pressure, hydroelastic_generation = cache
         wp.launch(
             convert_newton_contacts_to_mjwarp_kernel,
             dim=(launch_dim,),
@@ -5930,6 +5967,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 contacts.contact_generation,
                 self._last_contact_generation,
                 self._contact_tid_to_cid,
+                self.mjw_model.opt.timestep,
+                hydroelastic_pressure if hydroelastic else None,
+                hydroelastic_generation if hydroelastic else None,
+                self._hydroelastic_shape_enabled if hydroelastic else None,
+                hydroelastic,
+                self.mjw_model.opt.integrator == self._mujoco_warp.IntegratorType.DISCRETE,
             ],
             device=model.device,
             block_dim=block_dim,
@@ -5950,6 +5993,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self._last_nacon_count,
                 contacts.contact_generation,
                 self._last_contact_generation,
+                hydroelastic,
             ],
             device=model.device,
         )

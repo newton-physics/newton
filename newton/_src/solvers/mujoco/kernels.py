@@ -18,6 +18,8 @@ from .constants import (
     DEFAULT_LIMIT_SOLREF_DAMPRATIO,
     DEFAULT_LIMIT_SOLREF_TIMECONST,
     HINGE_CONNECT_HALF_SPAN,
+    MJ_MAXIMP,
+    MJ_MINIMP,
     MJ_MINMU,
     MJ_MINVAL,
     SOLREF_MODE_FORCE_SPACE,
@@ -484,6 +486,21 @@ def eval_mujoco_coupling_effective_mass_block_kernel(
     out_inertia[tid] = inertia
 
 
+@wp.func
+def _hydroelastic_solref(stiffness: float, damping: float, invweight: float, timestep: float, is_discrete: bool):
+    """Map an implicit spring-damper through native MuJoCo contact parameters."""
+    damping = wp.max(damping, 0.0)
+    imp = float(MJ_MINIMP)
+    if not is_discrete:
+        damping += timestep * stiffness
+        scaled_weight = invweight * timestep * damping
+        # Reciprocal form avoids inf / inf for very stiff contacts.
+        imp = wp.clamp(1.0 / (1.0 + 1.0 / wp.max(scaled_weight, MJ_MINVAL)), MJ_MINIMP, MJ_MAXIMP)
+    # Discrete already integrates the spring and damper implicitly.
+    factor = invweight * (1.0 - imp)
+    return wp.vec2(-stiffness * factor, -damping * factor), vec5(imp, imp, 0.001, 1.0, 0.5)
+
+
 # Kernel functions
 # fast math only approximates div/sqrt here; keep transcendentals out of this kernel
 @wp.kernel(module="unique", module_options={"fast_math": True})
@@ -547,6 +564,12 @@ def convert_newton_contacts_to_mjwarp_kernel(
     contact_generation: wp.array[wp.int32],
     last_contact_generation: wp.array[wp.int32],
     tid_to_cid: wp.array[wp.int32],
+    opt_timestep: wp.array[float],
+    hydroelastic_pressure: wp.array[bool],
+    hydroelastic_generation: wp.array[int],
+    hydroelastic_shape_enabled: wp.array[bool],
+    hydroelastic: bool,
+    is_discrete: bool,
 ):
     # nacon_out is scratch storage, initialized to zero by the solver and
     # reset by _sync_nacon_count after each pass.
@@ -564,7 +587,8 @@ def convert_newton_contacts_to_mjwarp_kernel(
 
     gen = contact_generation[0]
     last_gen = last_contact_generation[0]
-    needs_full = gen != last_gen
+    # Selected patches refresh timestep-dependent parameters on every substep.
+    needs_full = gen != last_gen or hydroelastic
 
     if needs_full:
         # ── FULL PATH ────────────────────────────────────────────────────
@@ -641,6 +665,14 @@ def convert_newton_contacts_to_mjwarp_kernel(
             rigid_contact_margin0[tid] - shape_margin[shape_a],
             rigid_contact_margin1[tid] - shape_margin[shape_b],
         )
+        if hydroelastic and hydroelastic_generation[tid] != gen:
+            # Retain the exported stiffness's meaning until collision detection replaces this row.
+            hydroelastic_pressure[tid] = (
+                hydroelastic_shape_enabled[shape_a]
+                and hydroelastic_shape_enabled[shape_b]
+                and dist < shape_margin[shape_a] + shape_margin[shape_b]
+            )
+            hydroelastic_generation[tid] = gen
         pos = 0.5 * (point_a + point_b)
 
         frame = make_frame(n)
@@ -766,6 +798,18 @@ def convert_newton_contacts_to_mjwarp_kernel(
                     dampratio = 1.0
                 solref = wp.vec2(timeconst, dampratio)
 
+        if hydroelastic and hydroelastic_pressure[tid]:
+            stiffness = rigid_contact_stiffness[tid]
+            if stiffness > 0.0 and invweight > 0.0:
+                h = opt_timestep[worldid % opt_timestep.shape[0]]
+                solref, solimp = _hydroelastic_solref(stiffness, rigid_contact_damping[tid], invweight, h, is_discrete)
+                if condim > 1:
+                    rate = 1.0 / h
+                    if is_discrete:
+                        # Compensate discrete's b / (1 + h*b), to the impedance-floor accuracy.
+                        rate /= MJ_MINIMP
+                    solreffriction = wp.vec2(0.0, -rate * solimp[1])
+
         cid = wp.atomic_add(nacon_out, 0, 1)
         if cid >= naconmax:
             tid_to_cid[tid] = -1
@@ -863,10 +907,11 @@ def _sync_nacon_count(
     last_nacon_count: wp.array[wp.int32],
     contact_generation: wp.array[wp.int32],
     last_contact_generation: wp.array[wp.int32],
+    force_full: bool,
 ):
     """Publish the compacted count and reset scratch storage for the next pass."""
     gen = contact_generation[0]
-    if gen == last_contact_generation[0]:
+    if gen == last_contact_generation[0] and not force_full:
         nacon[0] = last_nacon_count[0]
     else:
         nacon[0] = contact_count[0]
