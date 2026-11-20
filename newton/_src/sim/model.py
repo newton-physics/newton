@@ -885,7 +885,6 @@ class Model:
             """
             object.__setattr__(self, "_name", name)
             object.__setattr__(self, "_deprecated_aliases", {})
-            object.__setattr__(self, "_removed_attributes", {})
 
         def add_deprecated_alias(self, name: str, getter: Callable[[], Any], message: str) -> None:
             """Add a deprecated attribute alias.
@@ -913,9 +912,6 @@ class Model:
             self._deprecated_aliases[name] = (getter, message)
 
         def __getattr__(self, name: str) -> Any:
-            removed = self.__dict__.get("_removed_attributes", {}).get(name)
-            if removed is not None:
-                return removed.__get__(self)
             aliases = self.__dict__.get("_deprecated_aliases", {})
             if name in aliases:
                 getter, message = aliases[name]
@@ -925,9 +921,6 @@ class Model:
 
         def __setattr__(self, name: str, value: Any) -> None:
             if not name.startswith("_"):
-                removed = self.__dict__.get("_removed_attributes", {}).get(name)
-                if removed is not None:
-                    removed.__set__(self, value)
                 aliases = object.__getattribute__(self, "__dict__").get("_deprecated_aliases", {})
                 if name in aliases:
                     getter, message = aliases[name]
@@ -938,12 +931,6 @@ class Model:
                         return
                     raise AttributeError(f"Deprecated alias '{self._name}.{name}' does not support assignment")
             object.__setattr__(self, name, value)
-
-        def __delattr__(self, name: str) -> None:
-            removed = self.__dict__.get("_removed_attributes", {}).get(name)
-            if removed is not None:
-                removed.__delete__(self)
-            object.__delattr__(self, name)
 
         def __repr__(self):
             """Return a string representation showing the namespace and its attributes."""
