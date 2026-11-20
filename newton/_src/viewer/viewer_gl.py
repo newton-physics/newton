@@ -10,7 +10,7 @@ import inspect
 import re
 import time
 from collections.abc import Callable, Iterator, Sequence
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from importlib import metadata
 from typing import Any, Literal
 
@@ -336,7 +336,7 @@ class ViewerGL(ViewerBase):
         self._history: FrameHistory | None = None
         """Display history recorded from logging calls; owned by the inspection workspace."""
         self._history_depth = 0
-        # Scenes that replace a cleared Model are framed on their first state
+        # Examples the browser switches to are framed on their first state
         # unless they set a camera themselves.
         self._camera_revision = 0
         self._scene_camera_revision = 0
@@ -707,8 +707,17 @@ class ViewerGL(ViewerBase):
             self.gui.clear_example_callbacks()
 
         super().clear_model()
-        self._frame_next_model = True
-        self._scene_camera_revision = self._camera_revision
+
+    @override
+    @contextmanager
+    def _preserve_display_options(self, *, switching: bool = False) -> Iterator[None]:
+        """Frame the next Model when the example browser switches examples; resets keep the view."""
+        if switching:
+            # An example that sets no camera of its own is framed on its first state.
+            self._frame_next_model = True
+            self._scene_camera_revision = self._camera_revision
+        with super()._preserve_display_options(switching=switching):
+            yield
 
     @override
     def _init_layer_state(self, layer: Layer) -> None:
