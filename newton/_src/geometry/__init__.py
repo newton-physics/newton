@@ -19,7 +19,6 @@ from .collision_primitive import (
     collide_sphere_sphere,
 )
 from .deformable_visual import (
-    DeformableVisualBinding,
     DeformableVisualGaussian,
     DeformableVisualMesh,
     DeformableVisuals,
@@ -56,7 +55,6 @@ __all__ = [
     "BroadPhaseAllPairs",
     "BroadPhaseExplicit",
     "BroadPhaseSAP",
-    "DeformableVisualBinding",
     "DeformableVisualGaussian",
     "DeformableVisualMesh",
     "DeformableVisuals",

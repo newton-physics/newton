@@ -20,7 +20,6 @@ from ._src.geometry import (
     collide_sphere_sphere,
 )
 from ._src.geometry.deformable_visual import (
-    DeformableVisualBinding,
     DeformableVisualGaussian,
     DeformableVisualMesh,
     DeformableVisuals,
@@ -36,7 +35,6 @@ __all__ = [
     "BroadPhaseAllPairs",
     "BroadPhaseExplicit",
     "BroadPhaseSAP",
-    "DeformableVisualBinding",
     "DeformableVisualGaussian",
     "DeformableVisualMesh",
     "DeformableVisuals",

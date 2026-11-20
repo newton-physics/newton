@@ -69,7 +69,6 @@ from ..geometry import (
     transform_inertia,
 )
 from ..geometry.deformable_visual import (
-    DeformableVisualBinding,
     DeformableVisualGaussian,
     DeformableVisualMesh,
     _DeformableGaussianBatch,
@@ -16128,7 +16127,8 @@ class ModelBuilder:
             start, end = batch.prototype_ranges[index]
             visual = DeformableVisualGaussian(
                 gaussian=spec["gaussian"],
-                binding=DeformableVisualBinding(spec["kind"], parent, weights),
+                parent=parent,
+                weights=weights,
                 rest_rotations=batch.bindings.rest_rotations[start:end],
                 rest_scales=batch.bindings.rest_scales[start:end],
                 shape=spec["shape"],

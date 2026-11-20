@@ -17,7 +17,7 @@ from warp._src import types as warp_types
 
 from ..core.types import override
 from ..geometry import Gaussian, Mesh
-from ..geometry.deformable_visual import DeformableVisualBinding, DeformableVisualGaussian, DeformableVisualMesh
+from ..geometry.deformable_visual import DeformableVisualGaussian, DeformableVisualMesh
 from ..sim import Model, ModelFlags, State
 from ..sim.shape_contact_pairs import _ShapeContactPairs
 from ..utils.color import ColorSpace
@@ -965,7 +965,8 @@ def deserialize(data, callback, _path="", format_type="json", cache: ArrayCache 
                     name: attributes[name]
                     for name in (
                         "gaussian",
-                        "binding",
+                        "parent",
+                        "weights",
                         "rest_rotations",
                         "rest_scales",
                         "shape",
@@ -1015,18 +1016,6 @@ def deserialize(data, callback, _path="", format_type="json", cache: ArrayCache 
                     deserialize(value, callback, f"{_path}.{attr}" if _path else attr, format_type, cache),
                 )
             return ns
-
-        if type_name == "DeformableVisualBinding" and data.get("__module__") == DeformableVisualBinding.__module__:
-            attributes = {
-                attr: deserialize(value, callback, f"{_path}.{attr}" if _path else attr, format_type, cache)
-                for attr, value in data["attributes"].items()
-            }
-            return DeformableVisualBinding(
-                kind=attributes["kind"],
-                parent=attributes["parent"],
-                weights=attributes.get("weights"),
-                local_offsets=attributes.get("local_offsets"),
-            )
 
         if type_name == "DeformableVisualMesh" and data.get("__module__") == DeformableVisualMesh.__module__:
             attributes = {

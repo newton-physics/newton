@@ -177,48 +177,13 @@ class DeformableVisualMesh:
         return len(self._rest_vertices)
 
 
-class DeformableVisualBinding:
-    """Payload-neutral binding from visual points to simulation drivers.
-
-    Gaussian fields currently support tetrahedral bindings only. Visual meshes
-    store their binding arrays directly on :class:`DeformableVisualMesh`.
-
-    .. experimental::
-
-        Deformable visual APIs may change without a formal deprecation cycle.
-    """
-
-    def __init__(
-        self,
-        kind: DeformableVisualMesh.Kind,
-        parent: wp.array[wp.int32],
-        weights: wp.array[wp.vec4] | wp.array[wp.vec3] | None = None,
-        local_offsets: wp.array[wp.vec3] | None = None,
-    ) -> None:
-        """Store a visual-to-simulation binding.
-
-        Args:
-            kind: Simulation element kind driving the visual points.
-            parent: Driver index for each visual point.
-            weights: Barycentric weights for triangle or tetrahedron bindings.
-            local_offsets: Body-local binding offsets [m].
-        """
-        self.kind = kind
-        """Embedding kind."""
-        self.parent = parent
-        """Per-visual-point driver index, shape [point_count]."""
-        self.weights = weights
-        """Barycentric weights for triangle or tet bindings, or ``None``."""
-        self.local_offsets = local_offsets
-        """Body-local offsets [m] for rigid body bindings, or ``None``."""
-
-
 class DeformableVisualGaussian:
     """A Gaussian field whose samples are bound to a deformable body.
 
-    Instances are immutable model output created by
-    :meth:`newton.ModelBuilder.add_deformable_visual_gaussian`. Current sample
-    transforms and scales are stored separately in :class:`DeformableVisuals`.
+    Instances are model output created by
+    :meth:`newton.ModelBuilder.add_deformable_visual_gaussian`. Treat their
+    binding and rest arrays as read-only, like those on :class:`DeformableVisualMesh`.
+    Current transforms and scales are stored separately in :class:`DeformableVisuals`.
 
     .. experimental::
 
@@ -229,10 +194,12 @@ class DeformableVisualGaussian:
     def __init__(
         self,
         gaussian: Gaussian,
-        binding: DeformableVisualBinding,
+        parent: wp.array[wp.int32],
+        weights: wp.array[wp.vec4],
         rest_rotations: wp.array[wp.quat],
         rest_scales: wp.array[wp.vec3],
         shape: int,
+        *,
         world: int = -1,
         label: str = "",
         index: int = -1,
@@ -244,7 +211,8 @@ class DeformableVisualGaussian:
 
         Args:
             gaussian: Immutable rest Gaussian appearance.
-            binding: Binding from Gaussian centers to simulation drivers.
+            parent: Simulation tetrahedron index per Gaussian, shape [count].
+            weights: Four barycentric weights per Gaussian, shape [count, 4].
             rest_rotations: Rest Gaussian orientations, shape [count].
             rest_scales: Rest Gaussian axis scales [m], shape [count, 3].
             shape: Render-only Gaussian shape index.
@@ -257,16 +225,12 @@ class DeformableVisualGaussian:
         """
         self.gaussian = gaussian
         """Immutable rest Gaussian appearance."""
-        self.binding = binding
-        """Binding from Gaussian centers to simulation drivers."""
-        self.kind = binding.kind
+        self.kind = DeformableVisualMesh.Kind.TETRAHEDRON
         """Embedding kind (see :class:`DeformableVisualMesh.Kind`)."""
-        self.parent = binding.parent
-        """Per-Gaussian simulation driver indices, shape [count]."""
-        self.weights = binding.weights
-        """Barycentric weights, or ``None`` for non-barycentric bindings."""
-        self.local_offsets = binding.local_offsets
-        """Body-local offsets [m], or ``None`` for non-body bindings."""
+        self.parent = parent
+        """Per-Gaussian simulation tetrahedron indices, shape [count]."""
+        self.weights = weights
+        """Barycentric weights, shape [count, 4]."""
         self.rest_rotations = rest_rotations
         """Rest Gaussian orientations, shape [count]."""
         self.rest_scales = rest_scales
