@@ -53,13 +53,14 @@ class TestInertia(unittest.TestCase):
             density=1000, vertices=vertices, indices=indices, is_solid=True
         )
 
-        self.assertAlmostEqual(mass_0, 1000.0, delta=1e-6)
+        # The tetrahedra are summed in float32, so mass is exact only to float32 resolution.
+        self.assertAlmostEqual(mass_0, 1000.0, delta=1e-3)
         self.assertAlmostEqual(volume_0, 1.0, delta=1e-6)
         assert_np_equal(np.array(com_0), np.array([0.5, 0.5, 0.5]), tol=1e-6)
 
         # Check against analytical inertia (unit cube has half-extents 0.5)
         mass_box, com_box, I_box = compute_inertia_box(1000.0, 0.5, 0.5, 0.5)
-        self.assertAlmostEqual(mass_box, mass_0, delta=1e-6)
+        self.assertAlmostEqual(mass_box, mass_0, delta=1e-3)
         assert_np_equal(np.array(com_box), np.zeros(3), tol=1e-6)
         assert_np_equal(np.array(I_0), np.array(I_box), tol=1e-4)
 
@@ -85,7 +86,7 @@ class TestInertia(unittest.TestCase):
         )
 
         # Inertia values should be the same as before
-        self.assertAlmostEqual(mass_1, mass_0, delta=1e-6)
+        self.assertAlmostEqual(mass_1, mass_0, delta=1e-3)
         self.assertAlmostEqual(volume_1, volume_0, delta=1e-6)
         assert_np_equal(np.array(com_1), np.array([0.5, 0.5, 0.5]), tol=1e-6)
         assert_np_equal(np.array(I_1), np.array(I_0), tol=1e-4)
@@ -675,6 +676,62 @@ class TestInertia(unittest.TestCase):
         # Check each diagonal with its own element-specific scale
         for i in range(3):
             self.assertAlmostEqual(I_an_np[i, i], I_ref[i, i], delta=tol * abs(I_ref[i, i]))
+
+    def test_mesh_inertia_far_from_origin(self):
+        """Mesh mass properties must not depend on where the vertices sit relative to the mesh origin."""
+        density = 1000.0
+        hx, hy, hz = 0.05, 0.03, 0.02
+        box = newton.Mesh.create_box(hx, hy, hz, compute_inertia=False)
+        vertices = np.array(box.vertices)
+        indices = np.array(box.indices)
+
+        m_ref, _, I_ref = compute_inertia_box(density, hx, hy, hz)
+        I_ref = np.array(I_ref).reshape(3, 3)
+        _, _, I_hollow_ref, vol_hollow_ref = compute_inertia_mesh(
+            density, vertices, indices, is_solid=False, thickness=0.002
+        )
+        I_hollow_ref = np.array(I_hollow_ref).reshape(3, 3)
+
+        offsets = np.array([[1.0, 0.0, 0.0], [5.0, -3.0, 2.0], [20.0, 20.0, 20.0], [-100.0, 50.0, 30.0]])
+        for offset in offsets:
+            with self.subTest(offset=offset):
+                mass, com, inertia, _ = compute_inertia_mesh(density, vertices + offset, indices, is_solid=True)
+                self.assertAlmostEqual(mass, m_ref, delta=1.0e-4 * m_ref)
+                assert_np_equal(np.array(com), offset, tol=1.0e-5 * np.linalg.norm(offset))
+                assert_np_equal(np.array(inertia).reshape(3, 3), I_ref, tol=1.0e-3 * np.max(I_ref))
+
+                _, com, inertia, vol = compute_inertia_mesh(
+                    density, vertices + offset, indices, is_solid=False, thickness=0.002
+                )
+                self.assertAlmostEqual(vol, vol_hollow_ref, delta=1.0e-4 * vol_hollow_ref)
+                assert_np_equal(np.array(com), offset, tol=1.0e-5 * np.linalg.norm(offset))
+                assert_np_equal(np.array(inertia).reshape(3, 3), I_hollow_ref, tol=1.0e-3 * np.max(I_hollow_ref))
+
+        # An unreferenced vertex far away must not shift the reference point and collapse
+        # the integrated geometry.
+        offset = np.array([2.0, 2.0, 2.0])
+        outlier = np.vstack([vertices + offset, [[1.0e8, 1.0e8, 1.0e8]]])
+        mass, com, inertia, _ = compute_inertia_mesh(density, outlier, indices, is_solid=True)
+        self.assertAlmostEqual(mass, m_ref, delta=1.0e-4 * m_ref)
+        assert_np_equal(np.array(com), offset, tol=1.0e-5 * np.linalg.norm(offset))
+        assert_np_equal(np.array(inertia).reshape(3, 3), I_ref, tol=1.0e-3 * np.max(I_ref))
+
+        _, com, inertia, vol = compute_inertia_mesh(density, outlier, indices, is_solid=False, thickness=0.002)
+        self.assertAlmostEqual(vol, vol_hollow_ref, delta=1.0e-4 * vol_hollow_ref)
+        assert_np_equal(np.array(com), offset, tol=1.0e-5 * np.linalg.norm(offset))
+        assert_np_equal(np.array(inertia).reshape(3, 3), I_hollow_ref, tol=1.0e-3 * np.max(I_hollow_ref))
+
+        # A non-watertight mesh has no well-defined volume, but its result must still not
+        # depend on where it sits, including across the point where its bounds reach the origin.
+        open_indices = indices.reshape(-1, 3)[:-2].flatten()
+        corner = -vertices.min(axis=0)
+        m_open, _, I_open, _ = compute_inertia_mesh(density, vertices + corner, open_indices, is_solid=True)
+        I_open = np.array(I_open).reshape(3, 3)
+        for offset in (corner + np.array([0.0, 0.0, 1.0e-6]), corner + np.array([3.0, 0.0, 0.0]), np.zeros(3)):
+            with self.subTest(open_offset=offset):
+                mass, _, inertia, _ = compute_inertia_mesh(density, vertices + offset, open_indices, is_solid=True)
+                self.assertAlmostEqual(mass, m_open, delta=1.0e-4 * abs(m_open))
+                assert_np_equal(np.array(inertia).reshape(3, 3), I_open, tol=1.0e-3 * np.max(np.abs(I_open)))
 
 
 if __name__ == "__main__":
