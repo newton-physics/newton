@@ -10,12 +10,12 @@ import warp as wp
 
 import newton
 from newton._src.geometry.types import SH_C0
-from newton._src.sensors.sensor_camera_render.types import LightType
-from newton._src.sensors.sensor_camera_render.utils import Utils
+from newton._src.render.types import LightType
+from newton._src.render.utils import Utils
 from newton.sensors import (
     SensorCamera,
 )
-from newton.tests.unittest_utils import get_test_devices
+from newton.tests.unittest_utils import get_test_devices, requires
 
 # Transform placing a camera at the origin looking down -Z (identity pose). A
 # camera with this transform sees a sphere placed at z = -2.
@@ -736,21 +736,23 @@ class TestSensorCamera(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "camera_rays must be on the model device"):
             camera.update(state, cuda_transforms, cpu_rays)
 
-    def test_fully_transparent_shape_does_not_occlude(self) -> None:
+    def test_fully_transparent_shape_does_not_occlude(self, device: str = "cpu", backend: str = "warp") -> None:
         """A shape with opacity 0 is skipped, so the shape behind it stays visible."""
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         ball_body = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 0.0, -3.0), q=wp.quat_identity()))
         ball = builder.add_shape_sphere(ball_body, radius=0.5, color=(1.0, 0.0, 0.0))
         helper_body = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 0.0, -1.5), q=wp.quat_identity()))
         helper = builder.add_shape_box(helper_body, hx=1.0, hy=1.0, hz=0.05, opacity=0.0)
-        model = builder.finalize(device="cpu")
-        camera = SensorCamera(model)
-        rays = self._rays(8, 8, fov=math.radians(40.0))
-        depth = wp.zeros((1, 8, 8), dtype=wp.float32, device="cpu")
-        shape_index = wp.zeros((1, 8, 8), dtype=wp.uint32, device="cpu")
+        model = builder.finalize(device=device)
+        if backend == "optix":
+            model.bvh_build_shapes(model.state(), backend="optix")
+        camera = SensorCamera(model, backend=backend)
+        rays = self._rays(8, 8, fov=math.radians(40.0), device=device)
+        depth = wp.zeros((1, 8, 8), dtype=wp.float32, device=device)
+        shape_index = wp.zeros((1, 8, 8), dtype=wp.uint32, device=device)
         camera.update(
             model.state(),
-            self._identity_transforms(1),
+            self._identity_transforms(1, device),
             rays,
             depth_image=depth,
             shape_index_image=shape_index,
@@ -759,6 +761,27 @@ class TestSensorCamera(unittest.TestCase):
         self.assertEqual(int(shape_index.numpy()[0, 4, 4]), ball)
         self.assertNotIn(helper, np.unique(shape_index.numpy()))
         self.assertAlmostEqual(float(depth.numpy()[0, 4, 4]), 2.5, delta=0.05)
+
+    def test_camera_inside_box_sees_its_walls(self, device: str = "cpu", backend: str = "warp") -> None:
+        """A camera inside a box sees the box's walls with the default backface culling."""
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        box = builder.add_shape_box(body=-1, hx=1.0, hy=1.0, hz=1.0)
+        model = builder.finalize(device=device)
+        if backend == "optix":
+            model.bvh_build_shapes(model.state(), backend="optix")
+        camera = SensorCamera(model, backend=backend)
+        depth = wp.zeros((1, 8, 8), dtype=wp.float32, device=device)
+        shape_index = wp.zeros((1, 8, 8), dtype=wp.uint32, device=device)
+        camera.update(
+            model.state(),
+            self._identity_transforms(1, device),
+            self._rays(8, 8, fov=math.radians(40.0), device=device),
+            depth_image=depth,
+            shape_index_image=shape_index,
+        )
+
+        np.testing.assert_array_equal(shape_index.numpy(), box)
+        self.assertAlmostEqual(float(depth.numpy()[0, 4, 4]), 1.0, delta=0.05)
 
     def test_update_renders_from_camera_transforms(self) -> None:
         """Verify SensorCamera renders from the camera transforms passed to update."""
@@ -788,7 +811,7 @@ class TestSensorCamera(unittest.TestCase):
         camera.update(state, camera_transforms, rays, depth_image=depth)
         self.assertEqual(float(depth.numpy()[center]), 0.0)
 
-    def test_convex_hull_renders_like_its_mesh(self) -> None:
+    def test_convex_hull_renders_like_its_mesh(self, device: str = "cpu", backend: str = "warp") -> None:
         """Verify convex-hull shapes render, matching the same geometry added as a triangle mesh.
 
         The box mesh has per-face vertices with normals and UVs, which the hull's collision mesh
@@ -803,16 +826,18 @@ class TestSensorCamera(unittest.TestCase):
                 builder.add_shape_convex_hull(-1, mesh=mesh)
             else:
                 builder.add_shape_mesh(-1, mesh=mesh)
-            model = builder.finalize(device="cpu")
-            camera = SensorCamera(model)
+            model = builder.finalize(device=device)
+            if backend == "optix":
+                model.bvh_build_shapes(model.state(), backend="optix")
+            camera = SensorCamera(model, backend=backend)
             # Camera 2 m above the origin looking down -Z at the box's top face (z = 0.1 m).
             above = np.array([[0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 1.0]], dtype=np.float32)
             depth = camera.allocate_image_depth(1, width, height)
             normal = camera.allocate_image_normal(1, width, height)
             camera.update(
                 model.state(),
-                wp.array(above, dtype=wp.transformf, device="cpu"),
-                self._rays(width, height, math.radians(30.0)),
+                wp.array(above, dtype=wp.transformf, device=device),
+                self._rays(width, height, math.radians(30.0), device=device),
                 depth_image=depth,
                 normal_image=normal,
             )
@@ -1727,6 +1752,203 @@ class TestSensorCamera(unittest.TestCase):
 
                 self.assertGreater(float(depth.numpy()[0, height // 2, width // 2]), 0.0)
 
+    def test_tiled_render_order_accepts_partial_tiles(self) -> None:
+        """Verify tiled rendering matches view-priority output when tiles do not divide the image."""
+        model, camera = self._build_sphere_scene()
+        state = model.state()
+        width, height = 17, 11
+        rays = self._rays(width, height, fov=math.radians(20.0))
+        transforms = self._identity_transforms(1)
+
+        outputs = []
+        for render_config in (
+            SensorCamera.RenderConfig(render_order=SensorCamera.RenderOrder.VIEW_PRIORITY),
+            SensorCamera.RenderConfig(render_order=SensorCamera.RenderOrder.TILED, tile_width=8, tile_height=5),
+        ):
+            color = camera.allocate_image_color(1, width, height)
+            depth = camera.allocate_image_depth(1, width, height)
+            camera.update(state, transforms, rays, color_image=color, depth_image=depth, render_config=render_config)
+            outputs.append((color.numpy(), depth.numpy()))
+
+        (reference_color, reference_depth), (tiled_color, tiled_depth) = outputs
+        self.assertGreater(int(np.count_nonzero(reference_depth > 0.0)), 0)
+        np.testing.assert_array_equal(tiled_color, reference_color)
+        np.testing.assert_array_equal(tiled_depth, reference_depth)
+
+    def test_renders_flat_heightfield_from_above(self) -> None:
+        """Verify heightfield shapes are rendered and fill the view from above."""
+        # Flat heightfield at z=1 spanning [-2, 2]^2.
+        data = np.full((3, 3), 1.0, dtype=np.float32)
+        heightfield = newton.Heightfield(data=data, nrow=3, ncol=3, hx=2.0, hy=2.0, min_z=1.0, max_z=1.0)
+        res = 16
+        for device in get_test_devices():
+            with self.subTest(device=device):
+                builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+                builder.add_shape_heightfield(heightfield=heightfield)
+                model = builder.finalize(device=device)
+                state = model.state()
+
+                camera = SensorCamera(model)
+                # 30-deg fov: the footprint half-extent at depth 4 is 4*tan(15deg)=1.07 < 2,
+                # so the terrain fills the whole frame.
+                rays = self._rays(res, res, fov=math.radians(30.0), device=device)
+                # Camera 5 m above the origin with identity orientation looks straight down (-Z).
+                transforms = wp.array(
+                    [wp.transform(wp.vec3(0.0, 0.0, 5.0), wp.quat_identity())], dtype=wp.transformf, device=device
+                )
+                depth = camera.allocate_image_depth(1, res, res)
+                camera.update(state, transforms, rays, depth_image=depth)
+
+                d = depth.numpy()[0]
+                hit = int(np.count_nonzero(d > 0.0))
+                # The surface sits at min_z, so a bottom cap coplanar with it would make rays miss (issue #4452).
+                self.assertEqual(hit, res * res, msg=f"heightfield should fill the view; only {hit}/{res * res} hit")
+                # Every ray sees the flat surface at z=1 from z=5: depth ~4, up to ~4.25 toward the frame edges.
+                self.assertGreater(float(d.min()), 3.9)
+                self.assertLess(float(d.max()), 4.4)
+                self.assertAlmostEqual(float(d[res // 2, res // 2]), 4.0, delta=0.05)
+
+    def test_multiworld_particles_render_consistently(self) -> None:
+        """Verify particle depth is identical across translated worlds.
+
+        Catches incorrect per-world particle BVH index mapping, which renders
+        wrong depth and, on CUDA, can cause illegal memory accesses.
+        """
+        world_count, spacing = 4, 10.0
+        width, height = 32, 24
+        radius = 0.04
+        blueprint = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        blueprint.default_particle_radius = radius
+        blueprint.add_particle_grid(
+            pos=wp.vec3(-0.4, -0.4, 0.1),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0),
+            dim_x=8,
+            dim_y=8,
+            dim_z=2,
+            cell_x=0.1,
+            cell_y=0.1,
+            cell_z=0.1,
+            mass=0.0,
+            jitter=0.0,
+            radius_mean=radius,
+            radius_std=0.0,
+        )
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        for world_id in range(world_count):
+            builder.add_world(blueprint, xform=wp.transform(wp.vec3(world_id * spacing, 0.0, 0.0), wp.quat_identity()))
+
+        for device in get_test_devices():
+            with self.subTest(device=device):
+                model = builder.finalize(device=device)
+                camera = SensorCamera(model, default_render_config=SensorCamera.RenderConfig(max_distance=10.0))
+                rays = self._rays(width, height, fov=math.radians(60.0), device=device)
+                # One camera per world, placed above that world's particle block.
+                transforms = wp.array(
+                    [wp.transform(wp.vec3(w * spacing, 0.0, 3.0), wp.quat_identity()) for w in range(world_count)],
+                    dtype=wp.transformf,
+                    device=device,
+                )
+                depth = camera.allocate_image_depth(world_count, width, height)
+                camera.update(model.state(), transforms, rays, depth_image=depth)
+
+                depth_np = depth.numpy()
+                self.assertGreater(int(np.count_nonzero(depth_np[0] > 0.0)), 0)
+                for w in range(1, world_count):
+                    # Agreement up to fp32 differences introduced by the world translations.
+                    np.testing.assert_allclose(depth_np[w], depth_np[0], rtol=0.0, atol=1e-4)
+
+    def test_render_config_toggles_particles_beside_cloth(self) -> None:
+        """Verify ``enable_particles`` hides standalone particles but keeps cloth rendered as triangles."""
+        from newton._src.render.raytrace import (  # noqa: PLC0415
+            PARTICLES_SHAPE_ID,
+            TRIANGLE_MESH_SHAPE_ID,
+        )
+
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        builder.add_cloth_grid(
+            pos=wp.vec3(2.0, 0.0, 0.0),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0),
+            dim_x=2,
+            dim_y=2,
+            cell_x=0.1,
+            cell_y=0.1,
+            mass=0.1,
+            fix_top=True,
+        )
+        builder.add_particle(pos=wp.vec3(0.0, 0.0, -2.0), vel=wp.vec3(0.0), mass=1.0, radius=0.25)
+        model = builder.finalize(device="cpu")
+        state = model.state()
+        camera = SensorCamera(model)
+        rays = self._rays(1, 1, fov=math.radians(30.0))
+        cloth_vertex = model.particle_q.numpy()[0]
+        cloth_transforms = wp.array(
+            [wp.transform(wp.vec3(*cloth_vertex[:2], cloth_vertex[2] + 0.5), wp.quat_identity())],
+            dtype=wp.transformf,
+            device="cpu",
+        )
+
+        def render(transforms, **config):
+            depth = camera.allocate_image_depth(1, 1, 1)
+            shape_index = camera.allocate_image_shape_index(1, 1, 1)
+            camera.update(
+                state,
+                transforms,
+                rays,
+                depth_image=depth,
+                shape_index_image=shape_index,
+                render_config=SensorCamera.RenderConfig(max_distance=10.0, **config),
+            )
+            return float(depth.numpy()[0, 0, 0]), int(shape_index.numpy()[0, 0, 0])
+
+        self.assertEqual(render(self._identity_transforms(1), enable_particles=False)[0], 0.0)
+        depth, shape_index = render(self._identity_transforms(1), enable_particles=True)
+        self.assertGreater(depth, 0.0)
+        self.assertEqual(shape_index, int(PARTICLES_SHAPE_ID))
+        depth, shape_index = render(cloth_transforms, enable_particles=True, enable_backface_culling=False)
+        self.assertGreater(depth, 0.0)
+        self.assertEqual(shape_index, int(TRIANGLE_MESH_SHAPE_ID))
+
+    def test_volume_deformable_renders_surface_not_particles(self) -> None:
+        """Verify a volume deformable renders its surface triangles instead of its particles."""
+        from newton._src.render.raytrace import TRIANGLE_MESH_SHAPE_ID  # noqa: PLC0415
+
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        builder.add_soft_grid(
+            pos=wp.vec3(-0.1, -0.1, -2.1),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0),
+            dim_x=2,
+            dim_y=2,
+            dim_z=2,
+            cell_x=0.1,
+            cell_y=0.1,
+            cell_z=0.1,
+            density=1000.0,
+            k_mu=1.0,
+            k_lambda=1.0,
+            k_damp=0.0,
+            particle_radius=0.25,
+        )
+        model = builder.finalize(device="cpu")
+        camera = SensorCamera(model)
+        depth = camera.allocate_image_depth(1, 1, 1)
+        shape_index = camera.allocate_image_shape_index(1, 1, 1)
+        camera.update(
+            model.state(),
+            self._identity_transforms(1),
+            self._rays(1, 1, fov=math.radians(30.0)),
+            depth_image=depth,
+            shape_index_image=shape_index,
+            render_config=SensorCamera.RenderConfig(
+                enable_backface_culling=False, enable_particles=True, max_distance=10.0
+            ),
+        )
+
+        self.assertGreater(float(depth.numpy()[0, 0, 0]), 0.0)
+        self.assertEqual(int(shape_index.numpy()[0, 0, 0]), int(TRIANGLE_MESH_SHAPE_ID))
+
     def test_multiple_sensor_cameras_render_same_model(self) -> None:
         """Verify multiple independent SensorCamera instances can render the same model."""
         width, height = 8, 6
@@ -1748,7 +1970,7 @@ class TestSensorCamera(unittest.TestCase):
         self.assertGreater(float(depth_a.numpy()[0, height // 2, width // 2]), 0.0)
         self.assertGreater(float(depth_b.numpy()[0, height // 2, width // 2]), 0.0)
 
-    # --- Rendering output channels (ported from SensorTiledCamera coverage) ---
+    # --- Rendering output channels ---
 
     @staticmethod
     def _shaded_sphere_model(color: tuple[float, float, float] = (0.5, 0.5, 0.5)) -> newton.Model:
@@ -2075,6 +2297,23 @@ class TestSensorCamera(unittest.TestCase):
         ) / 0.75
         self.assertGreater(abs(expected - per_splat_decode), 0.05)
         np.testing.assert_allclose(color, [expected] * 3, atol=1e-4)
+
+
+def _optix_variant(test):
+    @requires("warp_optix")
+    @unittest.skipUnless(wp.is_cuda_available(), "requires CUDA")
+    def run(self):
+        test(self, device="cuda:0", backend="optix")
+
+    return run
+
+
+for _name in (
+    "test_fully_transparent_shape_does_not_occlude",
+    "test_convex_hull_renders_like_its_mesh",
+    "test_camera_inside_box_sees_its_walls",
+):
+    setattr(TestSensorCamera, f"{_name}_optix", _optix_variant(getattr(TestSensorCamera, _name)))
 
 
 class TestSensorCameraDeformable(unittest.TestCase):

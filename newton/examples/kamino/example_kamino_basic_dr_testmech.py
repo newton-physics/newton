@@ -19,10 +19,12 @@ import warp as wp
 
 import newton
 import newton.examples
+from newton.examples.kamino.utils.ldl import add_ldl_arguments, configure_ldl
 
 
 class Example:
     def __init__(self, viewer: newton.viewer.ViewerBase, args=None):
+        """Build the Kamino DR test mechanism with the requested solver options."""
         # Set simulation run-time configurations
         self.fps = 50
         self.sim_dt = 0.001
@@ -73,6 +75,7 @@ class Example:
         self.config.padmm.dual_tolerance = 1e-6
         self.config.padmm.compl_tolerance = 1e-6
         self.config.padmm.rho_0 = 0.01
+        configure_ldl(self.config, args)
         self.solver = newton.solvers.SolverKamino(self.model, config=self.config)
 
         # Create state and control data containers
@@ -134,6 +137,8 @@ class Example:
             np.maximum(self._position_max, positions, out=self._position_max)
 
     def test_final(self):
+        """Check finite states and the example's motion and constraint criteria."""
+        assert np.isfinite(self.state_0.body_qd.numpy()).all(), "Body velocities must remain finite"
         poses = self.state_0.body_q.numpy()
         assert np.isfinite(poses).all(), "Non-finite body poses"
 
@@ -161,7 +166,9 @@ class Example:
 
     @staticmethod
     def create_parser():
+        """Create simulation arguments, including optional Kamino LDL backend and ordering selection."""
         parser = newton.examples.create_parser()
+        add_ldl_arguments(parser)
         newton.examples.add_world_count_arg(parser)
         parser.set_defaults(world_count=1)
         return parser

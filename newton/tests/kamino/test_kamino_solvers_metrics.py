@@ -16,8 +16,7 @@ from newton._src.solvers.kamino._src.kinematics.jacobians import SparseSystemJac
 from newton._src.solvers.kamino._src.solvers.metrics import SolutionMetrics
 from newton._src.solvers.kamino._src.solvers.padmm import PADMMSolver
 from newton._src.solvers.kamino._src.solvers.padmm.types import PADMMData
-from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
-from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino import setup_test_output, setup_tests, test_context
 from newton.tests.kamino.test_kamino_solvers_padmm import TestSetup
 from newton.tests.kamino.utils.extract import (
     extract_cts_jacobians,
@@ -25,6 +24,7 @@ from newton.tests.kamino.utils.extract import (
     extract_info_vectors,
     extract_problem_vector,
 )
+from newton.tests.unittest_utils import NewtonTestCase
 from newton.tests.utils.basics import build_box_on_plane, build_boxes_hinged
 from newton.tests.utils.testing import build_free_joint_test, build_unary_revolute_joint_test
 
@@ -250,25 +250,16 @@ def compute_metrics_numpy(problem: DualProblem, solver_data: PADMMData) -> dict[
 ###
 
 
-class TestSolverMetrics(unittest.TestCase):
+class TestSolverMetrics(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose  # Set to True for detailed output
+
+        setup_test_output(self, verbose=self.verbose)
+
         self.seed = 42
-
-        # Set debug-level logging to print verbose test output to console
-        if self.verbose:
-            set_log_level(logging.DEBUG)
-            logger.debug("\n")  # Add newline before test output for better readability
-        else:
-            reset_log_level()
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
 
     def _evaluate_contact_residuals(self, contacts: list[tuple[int, int, float]]) -> tuple[np.ndarray, np.ndarray]:
         """Evaluate contact residuals from explicitly supplied signed distances."""
@@ -500,7 +491,7 @@ class TestSolverMetrics(unittest.TestCase):
         )
 
         # Create the PADMM solver
-        solver = PADMMSolver(model=test.model, use_acceleration=False, collect_info=True)
+        solver = PADMMSolver(model=test.model, problem=test.problem, use_acceleration=False, collect_info=True)
 
         # Creating a default solver metrics evaluator from the test model
         metrics = SolutionMetrics(model=test.model)
@@ -589,7 +580,7 @@ class TestSolverMetrics(unittest.TestCase):
         )
 
         # Create the PADMM solver
-        solver = PADMMSolver(model=test.model, use_acceleration=False, collect_info=True)
+        solver = PADMMSolver(model=test.model, problem=test.problem, use_acceleration=False, collect_info=True)
 
         # Creating a default solver metrics evaluator from the test model
         metrics = SolutionMetrics(model=test.model)
@@ -678,7 +669,7 @@ class TestSolverMetrics(unittest.TestCase):
         )
 
         # Create the PADMM solver
-        solver = PADMMSolver(model=test.model, use_acceleration=False, collect_info=True)
+        solver = PADMMSolver(model=test.model, problem=test.problem, use_acceleration=False, collect_info=True)
 
         # Creating a default solver metrics evaluator from the test model
         metrics = SolutionMetrics(model=test.model)
@@ -755,7 +746,7 @@ class TestSolverMetrics(unittest.TestCase):
         )
 
         # Create the PADMM solver
-        solver = PADMMSolver(model=test.model, use_acceleration=False, collect_info=True)
+        solver = PADMMSolver(model=test.model, problem=test.problem, use_acceleration=False, collect_info=True)
 
         # Creating a default solver metrics evaluator from the test model
         metrics_dense = SolutionMetrics(model=test.model)
@@ -798,7 +789,9 @@ class TestSolverMetrics(unittest.TestCase):
         solver.solve(problem=test.problem)
         integrate_euler_semi_implicit(model=test.model, data=test.data)
 
+        # Match the uniform regularization of the dense Delassus matrix after the solve
         solver._initialize()
+        solver.data.state.rho_scale.fill_(1.0)
         solver._update_sparse_regularization(problem_sparse)
         problem_sparse.delassus.update()
 

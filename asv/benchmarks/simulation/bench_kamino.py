@@ -58,7 +58,7 @@ class G1SCC:
     explicitly with ``uvx --with virtualenv asv run --bench G1SCC``.
     """
 
-    version = "2"  # Measure consecutive samples from one warmed simulation.
+    version = "3"  # Retain speculative contacts and validate settled body velocities.
     params = [[4, 512]]
     param_names = ["world_count"]
     number = 1
@@ -68,6 +68,7 @@ class G1SCC:
     timeout = 600
 
     def setup(self, world_count):
+        """Prepare and settle a G1 SCC simulation with a pinned LLTBRCM backend."""
         if wp.get_cuda_device_count() == 0:
             raise SkipNotImplemented
 
@@ -78,7 +79,9 @@ class G1SCC:
         from newton.examples.robot.example_robot_g1 import Example  # noqa: PLC0415
         from newton.viewer import ViewerNull  # noqa: PLC0415
 
-        args = Example.create_parser().parse_args(["--solver", "kamino", "--world-count", str(world_count)])
+        args = Example.create_parser().parse_args(
+            ["--solver", "kamino", "--bilateral-solver-type", "LLTBRCM", "--world-count", str(world_count)]
+        )
         with wp.ScopedDevice("cuda:0"):
             self.example = Example(ViewerNull(), args)
             for _ in range(100):
@@ -87,11 +90,13 @@ class G1SCC:
         self._world_count = world_count
 
     def time_simulate(self, world_count):
+        """Measure 200 consecutive frames from the warmed simulation."""
         for _ in range(200):
             self.example.step()
         wp.synchronize_device(self.example.model.device)
 
     def teardown(self, world_count):
+        """Validate the settled robot poses and velocities after each timing sample."""
         self.example.test_final()
 
 
@@ -122,7 +127,7 @@ class _KpiBenchmark(_SimulationMetricTracks):
 
 
 class FastMetricsDRLegs(_SimulationMetricTracksUnparameterized):
-    version = "2"  # effort limits now enforced for implicit PD (#3990) -> new ASV series
+    version = "3"  # Each sample starts with one untimed frame.
     num_frames = 25
     robot = "dr_legs"
     samples = 2
@@ -139,7 +144,7 @@ class FastMetricsDRLegs(_SimulationMetricTracksUnparameterized):
 
 
 class KpiDRLegs(_KpiBenchmark):
-    version = "2"  # effort limits now enforced for implicit PD (#3990) -> new ASV series
+    version = "3"  # Each sample starts with one untimed frame.
     params: ClassVar[list[list[int]]] = [[4096]]
     num_frames = 25
     robot = "dr_legs"
