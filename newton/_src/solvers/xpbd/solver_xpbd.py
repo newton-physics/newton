@@ -599,13 +599,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                         device=model.device,
                     )
 
-                if body_f_tmp is state_in.body_f:
-                    self.integrate_bodies(model, state_in, state_out, dt, self.angular_damping)
-                else:
-                    body_f_prev = state_in.body_f
-                    state_in.body_f = body_f_tmp
-                    self.integrate_bodies(model, state_in, state_out, dt, self.angular_damping)
-                    state_in.body_f = body_f_prev
+                self.integrate_bodies(model, state_in, state_out, dt, self.angular_damping, body_f=body_f_tmp)
 
                 if self.enable_restitution:
                     body_q_pre_solve = wp.clone(state_out.body_q)
