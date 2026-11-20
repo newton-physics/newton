@@ -1395,8 +1395,12 @@ def accumulate_spring_force_and_hessian(
                 wp.atomic_add(particle_hessians, v1, hessian)
 
 
-@wp.func
-def accumulate_elasticity_force_and_hessian(
+# Warp 1.18 added the explicit inlining hint.
+_inline_vbd_func = wp.func(inline=True) if tuple(int(v) for v in wp.__version__.split(".")[:2]) >= (1, 18) else wp.func
+
+
+@_inline_vbd_func
+def _accumulate_membrane(
     particle_index: int,
     dt: float,
     pos_prev: wp.array[wp.vec3],
@@ -1405,20 +1409,11 @@ def accumulate_elasticity_force_and_hessian(
     tri_poses: wp.array[wp.mat22],
     tri_materials: wp.array2d[float],
     tri_areas: wp.array[float],
-    edge_indices: wp.array2d[wp.int32],
-    edge_rest_angles: wp.array[float],
-    edge_rest_length: wp.array[float],
-    edge_bending_properties: wp.array2d[float],
-    tet_indices: wp.array2d[wp.int32],
-    tet_poses: wp.array[wp.mat33],
-    tet_materials: wp.array2d[float],
     particle_adjacency: MeshAdjacencyData,
     f: wp.vec3,
     h: wp.mat33,
-):
-    """Add the membrane, bending, and tet elasticity force and Hessian incident to a particle."""
+) -> tuple[wp.vec3, wp.mat33]:
     if tri_indices.shape[0] > 0:
-        # elastic force and hessian
         for i_adj_tri in range(get_vertex_num_adjacent_faces(particle_adjacency, particle_index)):
             tri_index, vertex_order = get_vertex_adjacent_face_id_order(particle_adjacency, particle_index, i_adj_tri)
 
@@ -1455,13 +1450,28 @@ def accumulate_elasticity_force_and_hessian(
 
                 f = f + f_tri
                 h = h + h_tri
+    return f, h
 
+
+@_inline_vbd_func
+def _accumulate_bending(
+    particle_index: int,
+    dt: float,
+    pos_prev: wp.array[wp.vec3],
+    pos: wp.array[wp.vec3],
+    edge_indices: wp.array2d[wp.int32],
+    edge_rest_angles: wp.array[float],
+    edge_rest_length: wp.array[float],
+    edge_bending_properties: wp.array2d[float],
+    particle_adjacency: MeshAdjacencyData,
+    f: wp.vec3,
+    h: wp.mat33,
+) -> tuple[wp.vec3, wp.mat33]:
     if edge_indices.shape[0] > 0:
         for i_adj_edge in range(get_vertex_num_adjacent_edges(particle_adjacency, particle_index)):
             nei_edge_index, vertex_order_on_edge = get_vertex_adjacent_edge_id_order(
                 particle_adjacency, particle_index, i_adj_edge
             )
-            # vertex is on the edge; otherwise it only effects the bending energy n
             if edge_bending_properties[nei_edge_index, 0] > 0.0:
                 f_edge, h_edge = evaluate_dihedral_angle_based_bending_force_hessian(
                     nei_edge_index,
@@ -1478,6 +1488,58 @@ def accumulate_elasticity_force_and_hessian(
 
                 f = f + f_edge
                 h = h + h_edge
+    return f, h
+
+
+@wp.func
+def accumulate_elasticity_force_and_hessian(
+    particle_index: int,
+    dt: float,
+    pos_prev: wp.array[wp.vec3],
+    pos: wp.array[wp.vec3],
+    tri_indices: wp.array2d[wp.int32],
+    tri_poses: wp.array[wp.mat22],
+    tri_materials: wp.array2d[float],
+    tri_areas: wp.array[float],
+    edge_indices: wp.array2d[wp.int32],
+    edge_rest_angles: wp.array[float],
+    edge_rest_length: wp.array[float],
+    edge_bending_properties: wp.array2d[float],
+    tet_indices: wp.array2d[wp.int32],
+    tet_poses: wp.array[wp.mat33],
+    tet_materials: wp.array2d[float],
+    particle_adjacency: MeshAdjacencyData,
+    f: wp.vec3,
+    h: wp.mat33,
+):
+    """Add the membrane, bending, and tet elasticity force and Hessian incident to a particle."""
+    f, h = _accumulate_membrane(
+        particle_index,
+        dt,
+        pos_prev,
+        pos,
+        tri_indices,
+        tri_poses,
+        tri_materials,
+        tri_areas,
+        particle_adjacency,
+        f,
+        h,
+    )
+
+    f, h = _accumulate_bending(
+        particle_index,
+        dt,
+        pos_prev,
+        pos,
+        edge_indices,
+        edge_rest_angles,
+        edge_rest_length,
+        edge_bending_properties,
+        particle_adjacency,
+        f,
+        h,
+    )
 
     if tet_indices.shape[0] > 0:
         # solve tet elasticity
@@ -2431,11 +2493,7 @@ def make_solve_elasticity_tile(include_triangles: bool, include_tets: bool, two_
     return solve_elasticity_tile_kernel
 
 
-# Warp 1.18 added the explicit inlining hint.
-_inline_tet_func = wp.func(inline=True) if tuple(int(v) for v in wp.__version__.split(".")[:2]) >= (1, 18) else wp.func
-
-
-@_inline_tet_func
+@_inline_vbd_func
 def _scalar_native_tet_head(
     adjacency: wp.array[wp.int32],
     begin: int,
@@ -2449,7 +2507,7 @@ def _scalar_native_tet_head(
     return entry
 
 
-@_inline_tet_func
+@_inline_vbd_func
 def _scalar_native_material(tet_id: int, materials: wp.array2d[float]):
     material = wp.vec3()
     if tet_id >= 0:
@@ -2466,7 +2524,7 @@ class _ScalarTetInputs:
     material: wp.vec3
 
 
-@_inline_tet_func
+@_inline_vbd_func
 def _scalar_native_vertices(tet_id: int, indices: wp.array2d[wp.int32]):
     vertices = wp.vec4i()
     if tet_id >= 0:
@@ -2474,7 +2532,7 @@ def _scalar_native_vertices(tet_id: int, indices: wp.array2d[wp.int32]):
     return vertices
 
 
-@_inline_tet_func
+@_inline_vbd_func
 def _scalar_native_stage_tet(
     entry: wp.vec2i,
     material: wp.vec3,
@@ -2504,7 +2562,7 @@ class _ScalarTetPoints:
     previous3: wp.vec3
 
 
-@_inline_tet_func
+@_inline_vbd_func
 def _scalar_native_stage_points(stencil: _ScalarTetInputs, pos: wp.array[wp.vec3], pos_prev: wp.array[wp.vec3]):
     points = _ScalarTetPoints()
     if stencil.active:
@@ -2520,7 +2578,7 @@ def _scalar_native_stage_points(stencil: _ScalarTetInputs, pos: wp.array[wp.vec3
     return points
 
 
-@_inline_tet_func
+@_inline_vbd_func
 def _scalar_native_project_column(
     left: wp.vec3, right: float, diag: wp.vec3, shape: wp.vec3, stiffness: float, volume: float
 ):
@@ -2528,7 +2586,7 @@ def _scalar_native_project_column(
     return entries[0] * shape[0] + entries[1] * shape[1] + entries[2] * shape[2]
 
 
-@_inline_tet_func
+@_inline_vbd_func
 def _scalar_native_project_entry(
     left: wp.vec3, right: wp.vec3, diagonal: float, shape: wp.vec3, stiffness: float, volume: float
 ):
@@ -2538,7 +2596,7 @@ def _scalar_native_project_entry(
     return shape[0] * col0 + shape[1] * col1 + shape[2] * col2
 
 
-@_inline_tet_func
+@_inline_vbd_func
 def _scalar_native_damping_upper(gradient: wp.vec3):
     dx = gradient[0]
     dy = gradient[1]
@@ -2546,7 +2604,7 @@ def _scalar_native_damping_upper(gradient: wp.vec3):
     return wp.spatial_vector(dx * dx, dx * dy, dx * dz, dy * dy, dy * dz, dz * dz)
 
 
-@_inline_tet_func
+@_inline_vbd_func
 def _scalar_native_tet_damping(
     points: _ScalarTetPoints,
     deformation: wp.mat33,
@@ -2618,7 +2676,7 @@ def _scalar_native_tet_damping(
     return force, hessian
 
 
-@_inline_tet_func
+@_inline_vbd_func
 def _scalar_native_evaluate_tet(
     points: _ScalarTetPoints,
     v_order: int,
@@ -2628,20 +2686,16 @@ def _scalar_native_evaluate_tet(
     damping: float,
     dt: float,
 ) -> tuple[wp.vec3, wp.mat33]:
-    # ============ Get Vertices ============
     v0 = points.current0
     v1 = points.current1
     v2 = points.current2
     v3 = points.current3
 
-    # ============ Compute rest volume from Dm_inv ============
     rest_volume = 1.0 / (wp.determinant(Dm_inv) * 6.0)
 
-    # ============ Deformation Gradient ============
     Ds = wp.matrix_from_cols(v1 - v0, v2 - v0, v3 - v0)
     F = Ds * Dm_inv
 
-    # ============ Flatten F to vec9 ============
     f = vec9(
         F[0, 0],
         F[1, 0],
@@ -2654,7 +2708,6 @@ def _scalar_native_evaluate_tet(
         F[2, 2],
     )
 
-    # ============ Useful Quantities ============
     J = wp.determinant(F)
     # Convert Lamé parameters to stable Neo-Hookean parameters per Smith et al.
     # 2018, §3.4 (eq. 13): the symbols (mu, lambda) appearing in the NH energy
@@ -2662,7 +2715,6 @@ def _scalar_native_evaluate_tet(
     # gives mu_NH = mu_Lamé, lambda_NH = lambda_Lamé + mu_Lamé.
     mu_nh = mu
     lmbd_nh = lmbd + mu
-    # Guard against division by zero in lambda_NH
     lmbd_safe = wp.sign(lmbd_nh) * wp.max(wp.abs(lmbd_nh), 1e-6)
     alpha = 1.0 + mu_nh / lmbd_safe
     # Compute cofactor (adjugate) matrix directly for numerical stability when J ≈ 0
@@ -2680,16 +2732,13 @@ def _scalar_native_evaluate_tet(
         cof[2, 2],
     )
 
-    # ============ Stress ============
     s = lmbd_nh * (J - alpha)
     P_vec = rest_volume * (mu_nh * f + s * cof_vec)
 
-    # ============ Hessian ============
     # The full elastic Hessian also has an s * d^2 J / dF^2 term, but its
     # contribution to VBD's per-vertex 3x3 block is identically zero:
     # the Levi-Civita tensor in d^2 J / dF^2 contracts against (m^a x m^a),
     # which vanishes. Drop it; the remaining two terms are SPD by inspection.
-    # ============ Assemble Pointwise Force ============
     if v_order == 0:
         m = wp.vec3(
             -(Dm_inv[0, 0] + Dm_inv[1, 0] + Dm_inv[2, 0]),
@@ -2723,7 +2772,6 @@ def _scalar_native_evaluate_tet(
         _scalar_native_project_entry(row2, row2, mu_nh, m, lmbd_nh, rest_volume),
     )
 
-    # ============ Damping ============
     if damping > 0.0:
         force, hessian = _scalar_native_tet_damping(
             points,
@@ -2740,7 +2788,7 @@ def _scalar_native_evaluate_tet(
     return force, hessian
 
 
-@_inline_tet_func
+@_inline_vbd_func
 def _scalar_native_accumulate_elasticity(
     particle_index: int,
     dt: float,
@@ -2780,70 +2828,36 @@ def _scalar_native_accumulate_elasticity(
     second_vertices = _scalar_native_vertices(second_entry[0], tet_indices)
     next_vertices = _scalar_native_vertices(next_entry[0], tet_indices)
 
-    if tri_indices.shape[0] > 0:
-        # elastic force and hessian
-        for i_adj_tri in range(get_vertex_num_adjacent_faces(particle_adjacency, particle_index)):
-            tri_index, vertex_order = get_vertex_adjacent_face_id_order(particle_adjacency, particle_index, i_adj_tri)
-
-            # fmt: off
-            if wp.static("connectivity" in VBD_DEBUG_PRINTING_OPTIONS):
-                wp.printf(
-                    "particle: %d | num_adj_faces: %d | ",
-                    particle_index,
-                    get_vertex_num_adjacent_faces(particle_adjacency, particle_index),
-                )
-                wp.printf("i_face: %d | face id: %d | v_order: %d | ", i_adj_tri, tri_index, vertex_order)
-                wp.printf(
-                    "face: %d %d %d\n",
-                    tri_indices[tri_index, 0],
-                    tri_indices[tri_index, 1],
-                    tri_indices[tri_index, 2],
-                )
-            # fmt: on
-
-            if tri_materials[tri_index, 0] > 0.0 or tri_materials[tri_index, 1] > 0.0:
-                f_tri, h_tri = evaluate_neo_hookean_membrane_force_hessian(
-                    tri_index,
-                    vertex_order,
-                    pos,
-                    pos_prev,
-                    tri_indices,
-                    tri_poses[tri_index],
-                    tri_areas[tri_index],
-                    tri_materials[tri_index, 0],
-                    tri_materials[tri_index, 1],
-                    tri_materials[tri_index, 2],
-                    dt,
-                )
-
-                f = f + f_tri
-                h = h + h_tri
+    f, h = _accumulate_membrane(
+        particle_index,
+        dt,
+        pos_prev,
+        pos,
+        tri_indices,
+        tri_poses,
+        tri_materials,
+        tri_areas,
+        particle_adjacency,
+        f,
+        h,
+    )
 
     current = _scalar_native_stage_tet(first_entry, first_material, first_vertices, tet_poses)
     current_points = _scalar_native_stage_points(current, pos, pos_prev)
 
-    if edge_indices.shape[0] > 0:
-        for i_adj_edge in range(get_vertex_num_adjacent_edges(particle_adjacency, particle_index)):
-            nei_edge_index, vertex_order_on_edge = get_vertex_adjacent_edge_id_order(
-                particle_adjacency, particle_index, i_adj_edge
-            )
-            # vertex is on the edge; otherwise it only effects the bending energy n
-            if edge_bending_properties[nei_edge_index, 0] > 0.0:
-                f_edge, h_edge = evaluate_dihedral_angle_based_bending_force_hessian(
-                    nei_edge_index,
-                    vertex_order_on_edge,
-                    pos,
-                    pos_prev,
-                    edge_indices,
-                    edge_rest_angles,
-                    edge_rest_length,
-                    edge_bending_properties[nei_edge_index, 0],
-                    edge_bending_properties[nei_edge_index, 1],
-                    dt,
-                )
-
-                f = f + f_edge
-                h = h + h_edge
+    f, h = _accumulate_bending(
+        particle_index,
+        dt,
+        pos_prev,
+        pos,
+        edge_indices,
+        edge_rest_angles,
+        edge_rest_length,
+        edge_bending_properties,
+        particle_adjacency,
+        f,
+        h,
+    )
 
     for slot in range(num_adj_tets):
         ahead_entry = _scalar_native_tet_head(adjacency, tet_begin, slot + 4, num_adj_tets)
