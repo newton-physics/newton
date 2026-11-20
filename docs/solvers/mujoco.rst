@@ -1451,8 +1451,9 @@ Geom ``condim`` maps to :attr:`~newton.ModelBuilder.ShapeConfig.friction_mode`:
 converts the modes back. USD ``mjc:condim`` maps through
 :class:`~newton.usd.SchemaResolverMjc`, or through the registered MuJoCo
 custom attributes. The ``mujoco:condim`` custom attribute is deprecated:
-values set in code override the friction mode at
-:meth:`~newton.ModelBuilder.finalize` with a deprecation warning, and
+per-shape values set in code override the friction mode at
+:meth:`~newton.ModelBuilder.finalize` with a deprecation warning, a changed
+default applies to shapes left at ``SLIDING``, and
 ``model.mujoco.condim`` is a copy of the friction modes; values written to it
 are applied when it is next read or a solver is constructed.
 
