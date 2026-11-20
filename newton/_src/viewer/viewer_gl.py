@@ -1679,6 +1679,9 @@ class ViewerGL(ViewerBase):
     def _log_triangles(self, state: nt.State) -> None:
         if not self.model.particle_count:
             return
+        if not self.model.tri_count and (not self.show_particles or self._layer_force_hidden()):
+            # Nothing would be drawn; allocate display buffers once particles are shown.
+            return
         from .viewer_deformables import DeformableDisplay  # noqa: PLC0415
 
         display = self._workspace_deformables

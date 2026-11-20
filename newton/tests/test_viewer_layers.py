@@ -147,6 +147,22 @@ class TestViewerLayers(unittest.TestCase):
                         workspace.select_from_screen(32, 24, lambda x, y: (x, y))
                         self.assertEqual(workspace.selected, ("body", body))
 
+    def test_gl_hidden_particles_allocate_no_display_buffers(self) -> None:
+        """Keep particle-only display buffers lazy until particles are shown."""
+        viewer = _make_headless_viewer_gl_or_skip(self)
+        self.addCleanup(viewer.close)
+        builder = newton.ModelBuilder()
+        for i in range(4):
+            builder.add_particle(pos=wp.vec3(float(i), 0.0, 0.0), vel=wp.vec3(0), mass=1.0, radius=0.1)
+        viewer.set_model(builder.finalize(device="cpu"))
+        state = viewer.model.state()
+        viewer.show_particles = False
+        viewer.log_state(state)
+        self.assertIsNone(viewer._workspace_deformables)
+        viewer.show_particles = True
+        viewer.log_state(state)
+        self.assertIsNotNone(viewer._workspace_deformables)
+
     def test_gl_viewport_modes_cover_all_model_layers(self) -> None:
         """Apply global modes and grids to inactive layers, including replacement models."""
         viewer = _make_headless_viewer_gl_or_skip(self)
@@ -170,6 +186,17 @@ class TestViewerLayers(unittest.TestCase):
             viewer.set_model(builder.finalize(device="cpu"))
             states[name] = viewer.model.state()
             viewer.log_state(states[name])
+
+        # Until the user picks a mode, the application's display settings apply.
+        viewer.show_visual = False
+        viewer.renderer.draw_wireframe = True
+        controls.sync()
+        self.assertFalse(viewer.show_visual)
+        self.assertTrue(viewer.renderer.draw_wireframe)
+        self.assertEqual(controls.mode, "wire")
+        viewer.show_visual = True
+        viewer.renderer.draw_wireframe = False
+        controls._mode_chosen = True
 
         for mode in ("xray", "collision", "wire", "visual"):
             with self.subTest(mode=mode):

@@ -51,6 +51,9 @@ class ViewportControls:
         self.proximity_range = 3.0
         self.adaptive_detail = True
         self.margin_mode = 0
+        # The application's display settings apply until the user picks a mode or margin.
+        self._mode_chosen = False
+        self._margin_chosen = False
         self.surface_grid = True
         self.joint_gizmo_scale: float = 1.0
         self.joint_gizmo_auto_size: bool = True
@@ -82,6 +85,15 @@ class ViewportControls:
         viewer.renderer.draw_wireframe = mode == "wire"
         viewer.renderer._physics_xray = mode == "xray"
 
+    def _application_mode(self) -> str:
+        """Name the viewport mode matching the active layer's application-set display flags."""
+        viewer = self.workspace.viewer
+        if viewer.renderer.draw_wireframe:
+            return "wire"
+        if viewer.show_collision and not viewer.show_visual:
+            return "collision"
+        return "visual"
+
     def _set_layer_option(self, name: str, value: object) -> None:
         """Update a shared display choice without changing the active logging layer."""
         viewer = self.workspace.viewer
@@ -104,8 +116,15 @@ class ViewportControls:
         models = tuple((layer.layer_id, layer.model) for layer in layers)
         if models != self._models:
             self._models = models
-            self.set_mode(self.mode)
-            self._set_layer_option("sdf_margin_mode", viewer.SDFMarginMode(self.margin_mode))
+            # Extend an explicit choice to new layers; otherwise reflect what the application set.
+            if self._mode_chosen:
+                self.set_mode(self.mode)
+            else:
+                self.mode = self._application_mode()
+            if self._margin_chosen:
+                self._set_layer_option("sdf_margin_mode", viewer.SDFMarginMode(self.margin_mode))
+            else:
+                self.margin_mode = int(viewer.sdf_margin_mode)
         visible_models = tuple(
             dict.fromkeys(layer.model for layer in layers if layer.visible and layer.model is not None)
         )
@@ -254,6 +273,7 @@ class ViewportControls:
                 if widgets.icon_button(
                     "##mode_" + mode, icon, label, active=self.mode == mode, size=24, flat=not (hovered or expanded)
                 ):
+                    self._mode_chosen = True
                     self.set_mode(mode)
             ui.same_line(spacing=5 * s)
             ui.set_cursor_pos_y(row_y)
@@ -357,6 +377,7 @@ class ViewportControls:
         )
         if edit.changed:
             self.margin_mode = edit.value
+            self._margin_chosen = True
             self._set_layer_option("sdf_margin_mode", viewer.SDFMarginMode(edit.value))
 
     def _render_menu(self) -> None:

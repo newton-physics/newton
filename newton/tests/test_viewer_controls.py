@@ -1289,6 +1289,13 @@ class TestViewerProperties(unittest.TestCase):
         for device in get_test_devices(mode="basic"):
             with self.subTest(device=device):
                 model = builder.finalize(device=device)
+                model.add_attribute(
+                    "pairs",
+                    wp.array(np.arange(6, dtype=np.float32).reshape(3, 2), dtype=float, device=device),
+                    Frequency.ONCE,
+                    Assignment.STATE,
+                    namespace="probe",
+                )
                 viewer = ViewerNull()
                 viewer.set_model(model)
                 history = FrameHistory(viewer)
@@ -1330,6 +1337,9 @@ class TestViewerProperties(unittest.TestCase):
                 history.end_frame()
                 self.assertIsNot(shown, state)
                 np.testing.assert_array_equal(shown.probe.sample.numpy(), [7.0])
+                # Multidimensional storage keeps its full shape.
+                self.assertEqual(shown.probe.pairs.shape, (3, 2))
+                np.testing.assert_array_equal(shown.probe.pairs.numpy(), np.arange(6).reshape(3, 2))
                 np.testing.assert_array_equal(history.restore_control().probe.drive.numpy(), [11.0])
                 # Replay never records or alters the live objects.
                 self.assertEqual(len(history.frames), 2)
@@ -1404,6 +1414,42 @@ class TestViewerProperties(unittest.TestCase):
                 record = next(iter(history.frames[-1].contact_records.values()))
                 self.assertIsNotNone(record.state_key)
                 self.assertFalse(record.state)
+
+                # Replay rebuilds logged observables through the solver that
+                # produced them, without the optional set_solver() binding.
+                solver = newton.solvers.SolverXPBD(model)
+                observables = solver.observables(
+                    contacts=contacts, kinds={newton.solvers.SolverBase.ObservableKind.CONTACT_F}
+                )
+                self.assertIsNone(viewer._inspection_components.get("solver"))
+                observed = FrameHistory(viewer)
+                for time in (0.0, 1.0):
+                    observed.begin_frame(time)
+                    observed.contacts(contacts, state, observables)
+                    observed.end_frame()
+                observed.select(0)
+                observed.begin_frame(1.0)
+                shown_contacts, _, shown_observables = observed.contacts(contacts, state, None)
+                observed.end_frame()
+                self.assertIsNotNone(shown_observables)
+                self.assertIsNot(shown_observables, observables)
+                self.assertIs(shown_observables.contacts, shown_contacts)
+
+                # Replay reproduces cleared and populated batches regardless of the live arguments.
+                markers = FrameHistory(viewer)
+                for time, logged in ((0.0, points), (1.0, None), (2.0, points)):
+                    markers.begin_frame(time)
+                    markers.arrays("points", "markers", {"points": logged, "radii": 0.1})
+                    markers.end_frame()
+                for index, live, expected in ((0, None, [[4.0, 5.0, 6.0]]), (1, points, None)):
+                    markers.select(index)
+                    markers.begin_frame(3.0)
+                    shown_points = markers.arrays("points", "markers", {"points": live, "radii": 0.1})
+                    markers.end_frame()
+                    if expected is None:
+                        self.assertIsNone(shown_points["points"])
+                    else:
+                        np.testing.assert_array_equal(shown_points["points"].numpy(), expected)
 
                 # Every logged array counts toward the bound before readback.
                 first = next(iter(frame.states.values()))

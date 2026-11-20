@@ -642,6 +642,7 @@ inspection uses the objects supplied through ``log_state`` and ``log_contacts``:
     builder.add_ground_plane()
     model = builder.finalize()
     state_0, state_1 = model.state(), model.state()
+    contact_state = model.state()  # collision input poses for log_contacts()
     control = model.control()
     solver = SolverXPBD(model)
     pipeline = newton.CollisionPipeline(model)
@@ -657,12 +658,13 @@ inspection uses the objects supplied through ``log_state`` and ``log_contacts``:
             state_0.clear_forces()
             viewer.apply_forces(state_0)
             pipeline.collide(state_0, contacts)
+            contact_state.assign(state_0)
             solver.step(state_0, state_1, control, contacts, dt)
             state_0, state_1 = state_1, state_0
             time += dt
         viewer.begin_frame(time)
         viewer.log_state(state_0)
-        viewer.log_contacts(contacts, state_0)
+        viewer.log_contacts(contacts, contact_state)
         viewer.end_frame()
     viewer.close()
 
@@ -678,8 +680,8 @@ These calls are the inspector's only inputs: the viewer never reads attributes
 of an application or example object. ``newton.examples.run`` follows the same
 contract, passing an example's ``control``, ``solver``, and collision pipeline
 to the setters after constructing it and then running the loop above. Without
-``set_solver``, collision pipelines held directly by the solver are still
-inspected.
+``set_collision_pipeline``, collision pipelines held directly by the solver
+passed to ``set_solver`` are inspected.
 
 Editing, history, and rebuilding
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

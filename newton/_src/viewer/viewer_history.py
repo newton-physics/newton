@@ -7,7 +7,6 @@ from __future__ import annotations
 
 from bisect import bisect_left
 from dataclasses import dataclass, field
-from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -76,9 +75,11 @@ def _restore_component(component: object, template: object, fields: Mapping[str,
         if original is None:
             # The logged component no longer has this field; nothing can display it.
             continue
+        # NumPy appends vector and matrix element dimensions to the storage shape.
+        shape = values.shape[: original.ndim]
         array = getattr(target, name, None)
-        if array is None or len(array) != len(values):
-            array = wp.empty(len(values), dtype=original.dtype, device=original.device)
+        if array is None or array.shape != shape or array.dtype != original.dtype:
+            array = wp.empty(shape, dtype=original.dtype, device=original.device)
             setattr(target, name, array)
         array.assign(values)
 
@@ -111,6 +112,21 @@ HistoryKey = tuple[str, str, "Hashable"]
 
 
 @dataclass
+class RecordedArray:
+    """Host copy of one logged Warp array, with what is needed to allocate its display storage."""
+
+    values: np.ndarray
+    dtype: Any
+    device: wp.Device
+    ndim: int
+
+    @classmethod
+    def snapshot(cls, array: wp.array[Any]) -> RecordedArray:
+        """Copy a logged array to the host."""
+        return cls(_snapshot_array(array), array.dtype, array.device, array.ndim)
+
+
+@dataclass
 class ContactRecord:
     """Active contact rows and solver observables of one :meth:`ViewerBase.log_contacts` call."""
 
@@ -122,6 +138,8 @@ class ContactRecord:
     """Key of a State logged in the same frame, when the contacts use that State."""
     state: dict[str, np.ndarray] = field(default_factory=dict)
     """Declared arrays of a separate contact State, such as the collision input poses."""
+    observables_source: SolverBase.Observables | None = None
+    """Logged observables container, whose solver allocates replay observables of the same kinds."""
 
 
 @dataclass
@@ -137,8 +155,12 @@ class HistoryFrame:
     states: dict[HistoryKey, dict[str, np.ndarray]] = field(default_factory=dict)
     """Declared arrays of each logged State."""
     contact_records: dict[HistoryKey, ContactRecord] = field(default_factory=dict)
-    arrays: dict[HistoryKey, dict[str, np.ndarray]] = field(default_factory=dict)
-    """Array arguments of logged points and lines, keyed by their logged names."""
+    arrays: dict[HistoryKey, dict[str, Any]] = field(default_factory=dict)
+    """Arguments of logged points and lines, keyed by their logged names.
+
+    Warp arrays are :class:`RecordedArray` copies; ``None`` and uniform values
+    are kept as passed, so replay reproduces cleared and uniform arguments.
+    """
     control: dict[str, np.ndarray] = field(default_factory=dict)
     """Declared arrays of the inspected Control at the end of the frame."""
     size: int = 0
@@ -364,7 +386,7 @@ class FrameHistory:
             )
             self._loaded.pop(key, None)
             self._display.pop(("observables", *key[1:]), None)
-        display_observables = self._display_observables(key, display, observables) if record.observables else None
+        display_observables = self._display_observables(key, display, record) if record.observables else None
         if not self._loaded_now(key):
             display.rigid_contact_count.assign(np.array([record.rigid_count], dtype=np.int32))
             display.soft_contact_count.assign(np.array([record.soft_count], dtype=np.int32))
@@ -387,17 +409,22 @@ class FrameHistory:
         return display, state, display_observables
 
     def _display_observables(
-        self, key: HistoryKey, contacts: Contacts, observables: SolverBase.Observables | None
+        self, key: HistoryKey, contacts: Contacts, record: ContactRecord
     ) -> SolverBase.Observables | None:
-        """Allocate replay observables from the inspected solver, bound to the display contacts."""
+        """Allocate replay observables bound to the display contacts.
+
+        The solver that produced the logged observables allocates them, so replay
+        does not depend on the optional set_solver() binding.
+        """
         observables_key = ("observables", *key[1:])
         display = self._display.get(observables_key)
-        if display is not None or observables is None:
+        if display is not None:
             return display
-        solver = self.viewer._inspection_components.get("solver")
-        if solver is None or solver.model is not self.model:
+        source = record.observables_source
+        solver = source._solver
+        if solver is None:
             return None
-        display = solver.observables(kinds=observables.kinds, contacts=contacts, requires_grad=False)
+        display = solver.observables(kinds=source.kinds, contacts=contacts, requires_grad=False)
         self._display[observables_key] = display
         self._loaded.pop(key, None)
         return display
@@ -440,6 +467,7 @@ class FrameHistory:
             {name: self._snapshot_observable(array, ranges) for name, (array, ranges) in observable_arrays.items()},
             state_key,
             {name: _snapshot_array(array) for name, array in state_arrays.items()},
+            observables if observable_arrays else None,
         )
         frame.contact_records[key] = record
         frame.size += sum(
@@ -450,27 +478,42 @@ class FrameHistory:
             frame.soft_self_contacts = self._soft_self_contact_count(contacts) if self.model.particle_count else 0
 
     def arrays(self, kind: str, name: str, arrays: dict[str, Any]) -> dict[str, Any]:
-        """Record the Warp array arguments of a named logging call, or substitute replayed arrays.
+        """Record the arguments of a named logging call, or substitute the replayed frame's arguments.
 
-        Non-array arguments, such as uniform colors or radii, pass through.
+        Replay is independent of the live call's arguments: recorded arrays get
+        their own display storage, and recorded ``None`` or uniform values replace
+        the live ones.
         """
         key = self._key(kind, name)
-        live = {arg: value for arg, value in arrays.items() if isinstance(value, wp.array)}
         if self._pending is not None:
-            if self._reserve(self._pending, sum(a.capacity for a in live.values())):
-                saved = {arg: _snapshot_array(value) for arg, value in live.items()}
+            live = [value for value in arrays.values() if isinstance(value, wp.array)]
+            if self._reserve(self._pending, sum(a.capacity for a in live)):
+                saved = {
+                    arg: RecordedArray.snapshot(value) if isinstance(value, wp.array) else value
+                    for arg, value in arrays.items()
+                }
                 self._pending.arrays[key] = saved
-                self._pending.size += sum(a.nbytes for a in saved.values())
+                self._pending.size += sum(v.values.nbytes for v in saved.values() if isinstance(v, RecordedArray))
             return arrays
         fields = self._replay.arrays.get(key) if self._replay is not None else None
         if fields is None:
             return arrays
-        display = self._display.get(key)
-        if display is None:
-            display = self._display[key] = SimpleNamespace()
-        if not self._loaded_now(key):
-            _restore_component(display, SimpleNamespace(**live), fields)
-        return {**arrays, **{arg: getattr(display, arg) for arg in fields if hasattr(display, arg)}}
+        display = self._display.setdefault(key, {})
+        loaded = self._loaded_now(key)
+        result = dict(arrays)
+        for arg, value in fields.items():
+            if not isinstance(value, RecordedArray):
+                result[arg] = value
+                continue
+            shape = value.values.shape[: value.ndim]
+            array = display.get(arg)
+            if array is None or array.shape != shape or array.dtype != value.dtype:
+                array = display[arg] = wp.empty(shape, dtype=value.dtype, device=value.device)
+                array.assign(value.values)
+            elif not loaded:
+                array.assign(value.values)
+            result[arg] = array
+        return result
 
     # -- recorded metrics ------------------------------------------------------------
 
