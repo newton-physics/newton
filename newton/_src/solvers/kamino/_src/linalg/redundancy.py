@@ -285,26 +285,15 @@ def _update_shifts(
 @wp.kernel
 def _update_reference(
     # Inputs:
-    num_rows: wp.array[wp.int32],
     pivot_rows: wp.array[wp.int32],
-    shifted: wp.array2d[wp.int32],
-    shifts: wp.array2d[wp.float32],
     eigenvalue: wp.array[wp.float32],
     # Outputs:
     reference: wp.array[wp.float32],
 ):
-    """
-    Keep the eigenvalue of the eliminated worlds whose shifted rows did not change, given by their shifts before
-    the update, as the reference of their next checks.
-    """
+    """Keep the eigenvalue of the kept rows of the eliminated worlds as the reference of their next checks."""
     wid = wp.tid()
-    if pivot_rows[wid] == 0:
-        return
-    changed = wp.int32(0)
-    for i in range(num_rows[wid]):
-        if wp.where(shifts[wid, i] != 0.0, 1, 0) != shifted[wid, i]:
-            changed = 1
-    reference[wid] = wp.where(changed == 0, eigenvalue[wid], wp.float32(0.0))
+    if pivot_rows[wid] > 0:
+        reference[wid] = eigenvalue[wid]
 
 
 @wp.kernel
@@ -372,6 +361,7 @@ def _copy_unordered_block(
 def _order_shifted_rows_last(
     # Inputs:
     num_rows: wp.array[wp.int32],
+    selected: wp.array[wp.int32],
     shifted: wp.array2d[wp.int32],
     initialized: wp.array[wp.int32],
     ordering: wp.array[wp.int32],
@@ -382,11 +372,11 @@ def _order_shifted_rows_last(
     order: wp.array2d[wp.int32],
 ):
     """
-    Order the kept rows of the initialized worlds first and their shifted rows last, each in the order of
-    ``ordering``, which holds the rows of each world with a stride of ``max_rows``.
+    Order the kept rows of the initialized and ``selected`` worlds first and their shifted rows last, each in the
+    order of ``ordering``, which holds the rows of each world with a stride of ``max_rows``.
     """
     wid = wp.tid()
-    n = wp.where(initialized[wid] != 0, num_rows[wid], 0)
+    n = wp.where(initialized[wid] != 0 and selected[wid] > 0, num_rows[wid], 0)
     base = wid * shifted.shape[1]
     kept = wp.int32(0)
     for i in range(n):
@@ -431,7 +421,9 @@ def _copy_shifted_block(
     n = factor_dim[wid]
     if i >= n or j >= n:
         return
-    value = diagonal[wid, i] + _row_shift(diagonal[wid, i], shifted[wid, i])
+    # NOTE: The regularization keeps the factorization finite when the elimination misses a dependent row
+    d = diagonal[wid, i]
+    value = (1.0 + FLOAT32_EPS) * d + _row_shift(d, shifted[wid, i])
     if i != j:
         start = row_offset[wid] * (ld[wid] + 1)
         value = A[wid, start + wp.max(i, j) * ld[wid] + wp.min(i, j)]
@@ -691,7 +683,7 @@ def _make_check_kernel():
             for c in range(m, k + 1):
                 schur += L_i[k, c] * L_i[k, c]
             d = wp.max(diagonal[wid, order[wid, k]], FLOAT32_EPS)
-            if not ((schur - d) / d <= _SHIFTED_ROW_MARGIN * threshold):
+            if not ((schur - (1.0 + FLOAT32_EPS) * d) / d <= _SHIFTED_ROW_MARGIN * threshold):
                 independent += 1
         failed = wp.tile_sum(wp.tile(independent))[0]
 
@@ -1025,6 +1017,7 @@ class RedundantRowShift:
         self._initialized = wp.zeros(num_worlds, dtype=wp.int32, device=device)
         self._eigenvalue = wp.zeros(num_worlds, dtype=wp.float32, device=device)
         self._reference = wp.zeros(num_worlds, dtype=wp.float32, device=device)
+        self._recheck_rows = wp.zeros(num_worlds, dtype=wp.int32, device=device)
         self.pivot_rows = wp.zeros(num_worlds, dtype=wp.int32, device=device)
         """The number of block rows of each world to eliminate again after the last check, zero if it passed."""
         self.refactor_dim = wp.zeros(num_worlds, dtype=wp.int32, device=device)
@@ -1235,11 +1228,14 @@ class RedundantRowShift:
             block_dim=self.block_dim,
             device=self.shifted.device,
         )
-        if reuse:
+
+        # Check the new shifted rows of the eliminated worlds, for the reference eigenvalue of their next checks
+        if self._factor is not None:
+            self._check_blocks(num_rows, self._recheck_rows)
             wp.launch(
                 _update_reference,
                 dim=self.num_worlds,
-                inputs=[self._num_rows, self.pivot_rows, self.shifted, self.shifts, self._eigenvalue],
+                inputs=[num_rows, self._eigenvalue],
                 outputs=[self._reference],
                 device=self.shifted.device,
             )
@@ -1261,6 +1257,10 @@ class RedundantRowShift:
             raise ValueError("Checking the shifted rows requires `check`.")
         if self._source is None:
             raise ValueError("The blocks must be loaded or assembled first.")
+        self._check_blocks(self._num_rows, self.pivot_rows)
+
+    def _check_blocks(self, selected: wp.array, pivot_rows: wp.array):
+        """Checks the shifted rows of the ``selected`` worlds, and writes the worlds failing it to ``pivot_rows``."""
         rows = max(self.max_rows, 1)
         device = self._factor.device
 
@@ -1284,7 +1284,7 @@ class RedundantRowShift:
         wp.launch(
             _order_shifted_rows_last,
             dim=self.num_worlds,
-            inputs=[self._num_rows, self.shifted, self._initialized, self._ordering],
+            inputs=[self._num_rows, selected, self.shifted, self._initialized, self._ordering],
             outputs=[self._factor_dim, self._num_kept, self._position, self._order],
             device=device,
         )
@@ -1347,7 +1347,7 @@ class RedundantRowShift:
                 self._rhs,
                 self._iterate,
             ],
-            outputs=[self.pivot_rows, self._eigenvalue],
+            outputs=[pivot_rows, self._eigenvalue],
             block_dim=_CHECK_BLOCK_DIM,
             device=device,
         )

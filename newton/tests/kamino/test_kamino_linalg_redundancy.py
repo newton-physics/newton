@@ -298,8 +298,8 @@ class TestRedundantRowCheck(NewtonTestCase):
         flags[0, np.flatnonzero(flags[0])[0]] = 0
         self.assertTrue(self.check(flags)[0])
 
-    def test_06_reference_of_unchanged_rows(self):
-        """Check that valid rows failing the check pass the next checks, until they become dependent."""
+    def test_06_reference_of_eliminated_rows(self):
+        """Check that the rows kept by an elimination pass the next checks, until they become dependent."""
         rows = 24
         problem = RedundantProblem(dims=[rows], offsets=[0], num_rows=[rows], num_redundant=[0], device=self.device)
         shift = RedundantRowShift(1, rows, threshold=1e-5, check=True, device=self.device)
@@ -310,25 +310,24 @@ class TestRedundantRowCheck(NewtonTestCase):
             D = np.eye(rows) - (1.0 - eigenvalue) * np.outer(v, v)
             problem.D_in[0, : rows * rows] = D.astype(np.float32).ravel()
 
-        # Check that the valid rows fail, and that the elimination keeps them as the reference
+        # Check that the elimination keeps the valid rows, with their eigenvalue below the threshold as reference
         set_eigenvalue(8e-6)
         problem.detect(shift)
         self.assertEqual(int(shift.shifted.numpy().sum()), 0)
-        problem.detect(shift, reuse=True)
-        self.assertGreater(int(shift.pivot_rows.numpy()[0]), 0)
-        eigenvalue = float(shift._eigenvalue.numpy()[0])
-        self.assertGreater(eigenvalue, 0.0)
-        self.assertLess(eigenvalue, 1e-5)
-        self.assertEqual(float(shift._reference.numpy()[0]), eigenvalue)
+        reference = float(shift._reference.numpy()[0])
+        self.assertGreater(reference, 0.0)
+        self.assertLess(reference, 1e-5)
 
-        # Check that the same rows now pass, also with a smaller eigenvalue, but not once they become dependent
+        # Check that the same rows pass, also with a smaller eigenvalue, but not once they become dependent
         for value, passes in ((8e-6, True), (4e-6, True), (0.0, False)):
             with self.subTest(eigenvalue=value):
                 set_eigenvalue(value)
                 problem.detect(shift, reuse=True)
                 self.assertEqual(int(shift.pivot_rows.numpy()[0]) == 0, passes)
+
+        # Check that the new elimination drops the dependent row and updates the reference
         self.assertEqual(int(shift.shifted.numpy().sum()), 1)
-        self.assertEqual(float(shift._reference.numpy()[0]), 0.0)
+        self.assertGreater(float(shift._reference.numpy()[0]), 1e-5)
 
 
 class TestRedundantRowFactorCheck(NewtonTestCase):
