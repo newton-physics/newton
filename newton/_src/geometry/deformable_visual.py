@@ -202,6 +202,37 @@ class GaussianBinding:
         weights: np.ndarray | None = None
         """Finite signed barycentric weights, shape [count, 4], summing to one per row."""
 
+    @dataclass(frozen=True, kw_only=True)
+    class Triangle:
+        """Follow a surface's in-plane deformation while preserving normal thickness.
+
+        The triangle's unit normal supplies the third axis. The Gaussian's
+        bind-pose offset from the surface is preserved under rigid motion.
+        Supply both ``parent`` and ``weights``, or omit both for automatic embedding.
+        """
+
+        tri_range: tuple[int, int]
+        """Owning [start, end) triangle range in the builder."""
+        parent: list[int] | np.ndarray | None = None
+        """Builder triangle index per Gaussian, shape [count]."""
+        weights: np.ndarray | None = None
+        """Finite signed barycentric weights, shape [count, 3], summing to one per row."""
+
+
+def _gaussian_bind_poses(corners: np.ndarray) -> np.ndarray:
+    """Invert triangle or tetrahedron bind frames without using solver rest poses."""
+    edges = corners[:, 1:] - corners[:, :1]
+    if corners.shape[1] == 3:
+        normal = np.cross(edges[:, 0], edges[:, 1])
+        length = np.linalg.norm(normal, axis=1, keepdims=True)
+        if np.any(length == 0):
+            raise ValueError("degenerate_parent: Gaussian bind triangle is degenerate")
+        edges = np.concatenate((edges, (normal / length)[:, None]), axis=1)
+    basis = np.transpose(edges, (0, 2, 1))
+    if np.any(np.abs(np.linalg.det(basis)) <= 1.0e-20):
+        raise ValueError("degenerate_parent: Gaussian bind element is degenerate")
+    return np.linalg.inv(basis).astype(np.float32)
+
 
 class DeformableVisualGaussian:
     """A Gaussian field whose samples are bound to a deformable body.
@@ -226,6 +257,7 @@ class DeformableVisualGaussian:
         rest_scales: wp.array[wp.vec3],
         shape: int,
         *,
+        kind: DeformableVisualMesh.Kind = DeformableVisualMesh.Kind.TETRAHEDRON,
         world: int = -1,
         label: str = "",
         index: int = -1,
@@ -237,11 +269,12 @@ class DeformableVisualGaussian:
 
         Args:
             gaussian: Immutable rest Gaussian appearance.
-            parent: Simulation tetrahedron index per Gaussian, shape [count].
-            weights: Four barycentric weights per Gaussian, shape [count, 4].
+            parent: Simulation element index per Gaussian, shape [count].
+            weights: Barycentric weights, shape [count, 4]; triangle rows end in zero.
             rest_rotations: Rest Gaussian orientations, shape [count].
             rest_scales: Rest Gaussian axis scales [m], shape [count, 3].
             shape: Render-only Gaussian shape index.
+            kind: Triangle or tetrahedron binding.
             world: Owning model world, or ``-1`` for global visuals.
             label: Display label.
             index: Stable index in :attr:`newton.Model.deformable_visual_gaussians`.
@@ -251,12 +284,12 @@ class DeformableVisualGaussian:
         """
         self.gaussian = gaussian
         """Immutable rest Gaussian appearance."""
-        self.kind = DeformableVisualMesh.Kind.TETRAHEDRON
+        self.kind = DeformableVisualMesh.Kind(kind)
         """Embedding kind (see :class:`DeformableVisualMesh.Kind`)."""
         self.parent = parent
-        """Per-Gaussian simulation tetrahedron indices, shape [count]."""
+        """Per-Gaussian simulation element indices, shape [count]."""
         self.weights = weights
-        """Barycentric weights, shape [count, 4]."""
+        """Barycentric weights, shape [count, 4]; the fourth value is zero for triangles."""
         self.rest_rotations = rest_rotations
         """Rest Gaussian orientations, shape [count]."""
         self.rest_scales = rest_scales
@@ -291,6 +324,7 @@ class _GaussianBindings:
 
     parent: wp.array[wp.int32]
     source: wp.array[wp.int32]
+    kind: wp.array[wp.int32]
     bind_poses: wp.array[wp.mat33]
     weights: wp.array[wp.vec4]
     rest_offsets: wp.array[wp.vec3]
@@ -300,24 +334,40 @@ class _GaussianBindings:
 
 @wp.func
 def _skin_gaussian_sample(
-    particle_q: wp.array[wp.vec3], tet_indices: wp.array2d[wp.int32], bindings: _GaussianBindings, i: int
+    particle_q: wp.array[wp.vec3],
+    tri_indices: wp.array2d[wp.int32],
+    tet_indices: wp.array2d[wp.int32],
+    bindings: _GaussianBindings,
+    i: int,
 ):
     """Return the current transform [m, unit quaternion] and axis scales [m] of sample ``i``."""
-    tet = bindings.parent[i]
+    parent = bindings.parent[i]
     s = bindings.source[i]
-    q0 = particle_q[tet_indices[tet, 0]]
-    q1 = particle_q[tet_indices[tet, 1]]
-    q2 = particle_q[tet_indices[tet, 2]]
-    q3 = particle_q[tet_indices[tet, 3]]
+    q0 = wp.vec3(0.0)
+    q1 = wp.vec3(0.0)
+    q2 = wp.vec3(0.0)
+    q3 = wp.vec3(0.0)
+    normal_axis = wp.vec3(0.0)
+    if bindings.kind[s] == int(DeformableVisualMesh.Kind.TRIANGLE):
+        q0 = particle_q[tri_indices[parent, 0]]
+        q1 = particle_q[tri_indices[parent, 1]]
+        q2 = particle_q[tri_indices[parent, 2]]
+        normal_axis = wp.normalize(wp.cross(q1 - q0, q2 - q0))
+    else:
+        q0 = particle_q[tet_indices[parent, 0]]
+        q1 = particle_q[tet_indices[parent, 1]]
+        q2 = particle_q[tet_indices[parent, 2]]
+        q3 = particle_q[tet_indices[parent, 3]]
+        normal_axis = q3 - q0
     # The deformation gradient since binding carries the rest ellipsoid's axes and the center's offset
     # from the barycentric point; the SVD of the deformed axes gives a proper rotation and the scales.
-    deformation_gradient = wp.matrix_from_cols(q1 - q0, q2 - q0, q3 - q0) * bindings.bind_poses[s]
+    deformation_gradient = wp.matrix_from_cols(q1 - q0, q2 - q0, normal_axis) * bindings.bind_poses[s]
     w = bindings.weights[s]
     center = w[0] * q0 + w[1] * q1 + w[2] * q2 + w[3] * q3 + deformation_gradient * bindings.rest_offsets[s]
     rest_scale = bindings.rest_scales[s]
     axes = deformation_gradient * wp.quat_to_matrix(bindings.rest_rotations[s]) * wp.diag(rest_scale)
     rotation, singular_values, _ = wp.svd3(axes)
-    # A flattened tetrahedron must not produce a zero scale; keep a sliver of the rest size.
+    # A flattened element must not produce a zero scale; keep a sliver of the rest size.
     floor = 1.0e-4 * wp.min(wp.min(rest_scale[0], rest_scale[1]), rest_scale[2])
     scales = wp.vec3(
         wp.max(wp.abs(singular_values[0]), floor),
@@ -330,6 +380,7 @@ def _skin_gaussian_sample(
 @wp.kernel(enable_backward=False)
 def _skin_deformable_visual_gaussians(
     particle_q: wp.array[wp.vec3],
+    tri_indices: wp.array2d[wp.int32],
     tet_indices: wp.array2d[wp.int32],
     bindings: _GaussianBindings,
     out_transforms: wp.array[wp.transform],
@@ -338,19 +389,20 @@ def _skin_deformable_visual_gaussians(
     out_offset: int,
 ):
     i = wp.tid()
-    transform, scales = _skin_gaussian_sample(particle_q, tet_indices, bindings, start + i)
+    transform, scales = _skin_gaussian_sample(particle_q, tri_indices, tet_indices, bindings, start + i)
     out_transforms[out_offset + i] = transform
     out_scales[out_offset + i] = scales
 
 
 class _DeformableGaussianBatch:
-    """Bindings and rest appearance of every Gaussian field of a model, concatenated: a tetrahedron
+    """Bindings and rest appearance of every Gaussian field of a model, concatenated: an element
     index per sample, and weights, bind-time frame, rest offset, orientation and scales stored once
     per prototype (``source`` maps samples to them) however many copies exist; one launch."""
 
     def __init__(
         self,
         parents: Sequence[np.ndarray],
+        kinds: Sequence[DeformableVisualMesh.Kind],
         weights: Sequence[np.ndarray],
         prototypes: Sequence[int],
         bind_poses: Sequence[np.ndarray],
@@ -371,19 +423,23 @@ class _DeformableGaussianBatch:
         sources: list[np.ndarray] = []
         self.prototype_ranges: list[tuple[int, int]] = []
         shared_count = 0
-        for prototype, field_weights, poses, offsets, rotations, scales in zip(
-            prototypes, weights, bind_poses, rest_offsets, rest_rotations, rest_scales, strict=True
+        for prototype, kind, field_weights, poses, offsets, rotations, scales in zip(
+            prototypes, kinds, weights, bind_poses, rest_offsets, rest_rotations, rest_scales, strict=True
         ):
             if prototype not in ranges:
                 ranges[prototype] = (shared_count, shared_count + len(field_weights))
                 shared_count = ranges[prototype][1]
+                packed_weights = np.asarray(field_weights, dtype=np.float32)
+                if packed_weights.shape[1] == 3:
+                    packed_weights = np.pad(packed_weights, ((0, 0), (0, 1)))
                 shared.append(
                     (
-                        np.asarray(field_weights, dtype=np.float32).reshape(-1, 4),
+                        packed_weights.reshape(-1, 4),
                         np.asarray(poses, dtype=np.float32).reshape(-1, 3, 3),
                         np.asarray(offsets, dtype=np.float32).reshape(-1, 3),
                         np.asarray(rotations, dtype=np.float32).reshape(-1, 4),
                         np.asarray(scales, dtype=np.float32).reshape(-1, 3),
+                        np.full(len(field_weights), int(kind), dtype=np.int32),
                     )
                 )
             self.prototype_ranges.append(ranges[prototype])
@@ -402,6 +458,7 @@ class _DeformableGaussianBatch:
         self.bindings.rest_offsets = upload([a[2] for a in shared], wp.vec3, (0, 3))
         self.bindings.rest_rotations = upload([a[3] for a in shared], wp.quat, (0, 4))
         self.bindings.rest_scales = upload([a[4] for a in shared], wp.vec3, (0, 3))
+        self.bindings.kind = upload([a[5] for a in shared], wp.int32, (0,))
 
     @classmethod
     def from_visuals(cls, model: Model) -> _DeformableGaussianBatch:
@@ -423,6 +480,7 @@ class _DeformableGaussianBatch:
         rest_poses = model.tet_poses.numpy() if any(field._bind_poses is None for field in fields) else None
         batch = cls(
             parents,
+            [field.kind for field in fields],
             [field.weights.numpy() for field in fields],
             prototypes,
             [
@@ -466,7 +524,7 @@ class _DeformableGaussianBatch:
         wp.launch(
             _skin_deformable_visual_gaussians,
             dim=self.count,
-            inputs=[state.particle_q, model.tet_indices, self.bindings],
+            inputs=[state.particle_q, model.tri_indices, model.tet_indices, self.bindings],
             outputs=[out_transforms, out_scales, 0, 0],
             device=self.device,
         )

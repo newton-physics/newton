@@ -74,6 +74,7 @@ from ..geometry.deformable_visual import (
     GaussianBinding,
     _DeformableGaussianBatch,
     _DeformableVisualSkinBatches,
+    _gaussian_bind_poses,
 )
 from ..geometry.flags import MeshProperties
 from ..geometry.inertia import (
@@ -15563,16 +15564,16 @@ class ModelBuilder:
         self,
         gaussian: Gaussian,
         *,
-        binding: GaussianBinding.Tetrahedron,
+        binding: GaussianBinding.Tetrahedron | GaussianBinding.Triangle,
         label: str = "",
     ) -> int:
-        """Attach a Gaussian field to a volumetric deformable for rendering.
+        """Attach a Gaussian field to a deformable volume or surface for rendering.
 
-        Gaussian centers are embedded in the owning tetrahedra. A render-only
+        Gaussian centers and ellipsoids follow the binding's elements. A render-only
         Gaussian shape is created automatically; it adds no collision geometry,
         mass, or constraints.
 
-        Add the visual in the same world scope as its driving tetrahedra,
+        Add the visual in the same world scope as its driving elements,
         before :meth:`end_world`. For replication, attach visuals to the
         prototype before calling :meth:`replicate` or :meth:`add_world`.
         Global drivers are supported when :attr:`current_world` is ``-1``.
@@ -15580,13 +15581,14 @@ class ModelBuilder:
         Args:
             gaussian: Rest Gaussian appearance and center positions [m].
             binding: Simulation elements and optional precomputed weights. See
-                :class:`~newton.geometry.GaussianBinding.Tetrahedron`.
+                :class:`~newton.geometry.GaussianBinding`.
             label: Display label.
 
         Returns:
             Stable index in :attr:`newton.Model.deformable_visual_gaussians`.
 
         Raises:
+            TypeError: If ``gaussian`` or ``binding`` has an unsupported type.
             ValueError: If the binding or Gaussian data is invalid, or the
                 driving particles do not all belong to :attr:`current_world`.
 
@@ -15613,25 +15615,33 @@ class ModelBuilder:
         if np.any(gaussian.scales <= 0.0):
             raise ValueError("add_deformable_visual_gaussian: Gaussian scales must be positive")
 
-        if not isinstance(binding, GaussianBinding.Tetrahedron):
-            raise TypeError("binding must be GaussianBinding.Tetrahedron")
+        if isinstance(binding, GaussianBinding.Tetrahedron):
+            kind = DeformableVisualMesh.Kind.TETRAHEDRON
+            owning_range = {"tet_range": binding.tet_range}
+            topology = self.tet_indices
+        elif isinstance(binding, GaussianBinding.Triangle):
+            kind = DeformableVisualMesh.Kind.TRIANGLE
+            owning_range = {"tri_range": binding.tri_range}
+            topology = self.tri_indices
+        else:
+            raise TypeError("binding must be GaussianBinding.Tetrahedron or GaussianBinding.Triangle")
         prepared = self._prepare_deformable_visual_binding(
             gaussian.positions,
-            kind=DeformableVisualMesh.Kind.TETRAHEDRON,
-            tet_range=binding.tet_range,
+            kind=kind,
+            **owning_range,
             parent=binding.parent,
             weights=binding.weights,
             allow_negative=True,
         )
         # The backing shape uses current_world; its drivers must have the same ownership.
         worlds = {
-            self.particle_world[particle] for tet in np.unique(prepared["parent"]) for particle in self.tet_indices[tet]
+            self.particle_world[particle] for element in np.unique(prepared["parent"]) for particle in topology[element]
         }
         if worlds != {self.current_world}:
             raise ValueError(
                 f"add_deformable_visual_gaussian: drivers belong to worlds {sorted(worlds)}, "
                 f"but current world is {self.current_world}. "
-                "Add the visual in the same world scope as its tetrahedra."
+                "Add the visual in the same world scope as its driving elements."
             )
         shape = self.add_shape_gaussian(-1, gaussian=gaussian, label=label or None)
         self._deformable_visual_gaussians.append(
@@ -15877,6 +15887,7 @@ class ModelBuilder:
         positions: np.ndarray | None = None,
         *,
         particle_start: int = 0,
+        operation: str = "add_deformable_visual_mesh",
     ) -> tuple[np.ndarray, np.ndarray]:
         """Project each visual vertex onto its closest owning simulation triangle.
 
@@ -15902,7 +15913,7 @@ class ModelBuilder:
         denom = d00 * d11 - d01 * d01
         nonsingular = np.abs(denom) > 1.0e-20
         if not np.any(nonsingular):
-            raise ValueError("add_deformable_visual_mesh: owning triangle range contains no non-degenerate triangle")
+            raise ValueError(f"{operation}: owning triangle range contains no non-degenerate triangle")
         valid = np.flatnonzero(nonsingular)
         mesh = wp.Mesh(
             wp.array(particles, dtype=wp.vec3, device="cpu"),
@@ -16103,22 +16114,23 @@ class ModelBuilder:
                 offsets = spec["_bind_offsets"]
             else:
                 parents = np.asarray(spec["parent"], dtype=np.int64)
-                bound_tets, sample_tet = np.unique(parents, return_inverse=True)
-                tets = np.asarray([self.tet_indices[t] for t in bound_tets.tolist()], dtype=np.int64)
-                corner_ids = np.unique(tets)
+                bound_elements, sample_element = np.unique(parents, return_inverse=True)
+                topology = self.tri_indices if spec["kind"] == DeformableVisualMesh.Kind.TRIANGLE else self.tet_indices
+                elements = np.asarray([topology[t] for t in bound_elements.tolist()], dtype=np.int64)
+                corner_ids = np.unique(elements)
                 corners = pack_warp_values([self.particle_q[i] for i in corner_ids.tolist()], wp.vec3).astype(
                     np.float64
                 )
-                corners = corners[np.searchsorted(corner_ids, tets)]
-                edges = np.stack([corners[:, i] - corners[:, 0] for i in (1, 2, 3)], axis=2)
-                poses = np.linalg.inv(edges)[sample_tet]
+                corners = corners[np.searchsorted(corner_ids, elements)]
+                poses = _gaussian_bind_poses(corners)[sample_element]
                 # Composition translates the particles and the field's display shape together.
                 placement = np.asarray(self.shape_transform[spec["shape"]], dtype=np.float64)
                 centers = np.asarray(spec["gaussian"].positions, dtype=np.float64) + placement[:3]
-                offsets = centers - np.einsum("ni,nij->nj", spec["weights"], corners[sample_tet])
+                offsets = centers - np.einsum("ni,nij->nj", spec["weights"], corners[sample_element])
             bind_data.append((np.asarray(poses, dtype=np.float32), np.asarray(offsets, dtype=np.float32)))
         batch = _DeformableGaussianBatch(
             [spec["parent"] for spec in specs],
+            [spec["kind"] for spec in specs],
             [spec["weights"] for spec in specs],
             prototypes,
             [bind_data[p][0] for p in prototypes],
@@ -16132,6 +16144,7 @@ class ModelBuilder:
             parent, weights = batch.visual_arrays(index)
             start, end = batch.prototype_ranges[index]
             visual = DeformableVisualGaussian(
+                kind=spec["kind"],
                 gaussian=spec["gaussian"],
                 parent=parent,
                 weights=weights,

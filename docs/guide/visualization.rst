@@ -542,7 +542,7 @@ or cable segment bodies. They add no mass or collision. Register them with
 their evaluated points and normals. The skinned-mesh visibility control is
 independent of the coarse simulation surface.
 
-Gaussian fields can follow tetrahedra through
+Gaussian fields can follow tetrahedra or triangles through
 :meth:`~newton.ModelBuilder.add_deformable_visual_gaussian`. Their centers,
 orientations, and scales deform; opacity and spherical-harmonic appearance do
 not. :class:`~newton.sensors.SensorCamera` renders these fields. GL, RTX, and
@@ -552,12 +552,12 @@ USD import preserves the authored spherical-harmonic color space when it
 transforms the field into the simulation frame.
 
 Gaussian evaluation uses one batch across all fields. Replicated copies share
-their bind data, but each copy reads its own tetrahedra and has separate output.
+their bind data, but each copy reads its own simulation elements and has separate output.
 The binding keeps a center's offset from its barycentric point, so samples
 outside the simulation mesh keep their authored positions. Authored USD bind
 poses take precedence over the initial particle positions and solver rest shape.
 
-Add a Gaussian visual in the same world scope as its driving tetrahedra,
+Add a Gaussian visual in the same world scope as its driving elements,
 before :meth:`~newton.ModelBuilder.end_world`. For replicated scenes, attach
 the visual to the prototype before replication. Global drivers and visuals
 can both be created in global scope. Attachment to a different world is
@@ -603,6 +603,26 @@ matching tetrahedron and reorder the weights. Omit both arguments to let
 Newton compute the binding. Explicit Gaussian weights may be negative to
 extrapolate beyond a tetrahedron. Automatically computed bindings and visual
 mesh bindings remain non-negative.
+
+For a cloth or another triangle surface, use
+:class:`~newton.geometry.GaussianBinding.Triangle` instead:
+
+.. code-block:: python
+
+    binding = newton.geometry.GaussianBinding.Triangle(
+        tri_range=(tri_start, builder.tri_count),
+        parent=triangle_ids,   # One builder triangle index per Gaussian.
+        weights=weights3,     # Three weights per row, summing to one.
+    )
+    visual_index = builder.add_deformable_visual_gaussian(gaussian, binding=binding)
+
+Omit ``parent`` and ``weights`` to compute the surface binding automatically.
+The Gaussian follows in-plane stretch, shear, and rotation. Its thickness along
+the triangle's unit normal is preserved: a surface has no volume from which to
+infer thickness changes. Centers above or below the surface keep their bind-pose
+offset. Each triangle must be non-degenerate at bind time. Both binding types
+use the same output buffers and camera calls. Rod and MPM bindings are not yet
+supported.
 
 Both paths share :class:`~newton.geometry.DeformableVisuals`. Allocate it once and update
 it after simulation. A viewer or camera can also evaluate its own buffers when

@@ -44,6 +44,7 @@ DEFAULT_AMBIENT_GROUND_COLOR = (0.05, 0.05, 0.06)
 @wp.kernel(enable_backward=False)
 def _write_deformable_gaussians(
     particle_q: wp.array[wp.vec3],
+    tri_indices: wp.array2d[wp.int32],
     tet_indices: wp.array2d[wp.int32],
     bindings: _GaussianBindings,
     shared_transforms: wp.array[wp.transform],
@@ -66,7 +67,7 @@ def _write_deformable_gaussians(
         transform = shared_transforms[i]
         scales = shared_scales[i]
     else:
-        transform, scales = _skin_gaussian_sample(particle_q, tet_indices, bindings, i)
+        transform, scales = _skin_gaussian_sample(particle_q, tri_indices, tet_indices, bindings, i)
     field = sample_field[i]
     local = i - field_start[field]
     data = gaussians[first_field_entry + field]
@@ -189,6 +190,7 @@ class _DeformableGaussianRenderData:
             dim=self.batch.count,
             inputs=[
                 state.particle_q,
+                model.tri_indices,
                 model.tet_indices,
                 self.batch.bindings,
                 visuals.gaussian_transforms if visuals is not None else None,

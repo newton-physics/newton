@@ -270,7 +270,21 @@ class TestDeformableVisualGaussianUSDImport(unittest.TestCase):
         return tet
 
     @staticmethod
-    def _add_gaussian(stage, path, positions, *, parent=None, weights=None):
+    def _add_surface(stage, path):
+        """Add a single-triangle surface body."""
+        from pxr import UsdGeom
+
+        UsdGeom.Xform.Define(stage, path).GetPrim().AddAppliedSchema("PhysicsDeformableBodyAPI")
+        mesh = UsdGeom.Mesh.Define(stage, f"{path}/Sim")
+        mesh.CreatePointsAttr([(0, 0, 0), (1, 0, 0), (0, 1, 0)])
+        mesh.CreateFaceVertexCountsAttr([3])
+        mesh.CreateFaceVertexIndicesAttr([0, 1, 2])
+        mesh.GetPrim().AddAppliedSchema("PhysicsSurfaceDeformableSimAPI")
+        mesh.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
+        return mesh
+
+    @staticmethod
+    def _add_gaussian(stage, path, positions, *, parent=None, weights=None, triangle=False):
         """Add one Gaussian field with optional authored embedding data."""
         from pxr import Sdf
 
@@ -278,11 +292,11 @@ class TestDeformableVisualGaussianUSDImport(unittest.TestCase):
         gaussian.CreateAttribute("positions", Sdf.ValueTypeNames.Point3fArray).Set(positions)
         gaussian.CreateAttribute("scales", Sdf.ValueTypeNames.Float3Array).Set([(0.05, 0.04, 0.03)] * len(positions))
         if parent is not None:
-            gaussian.CreateAttribute("newton:deformableSkin:tetIndices", Sdf.ValueTypeNames.IntArray).Set(parent)
+            name = "triIndices" if triangle else "tetIndices"
+            gaussian.CreateAttribute(f"newton:deformableSkin:{name}", Sdf.ValueTypeNames.IntArray).Set(parent)
         if weights is not None:
-            gaussian.CreateAttribute("newton:deformableSkin:influenceWeights", Sdf.ValueTypeNames.Float4Array).Set(
-                weights
-            )
+            dtype = Sdf.ValueTypeNames.Float3Array if triangle else Sdf.ValueTypeNames.Float4Array
+            gaussian.CreateAttribute("newton:deformableSkin:influenceWeights", dtype).Set(weights)
         return gaussian
 
     def test_imports_authored_tet_embedding_without_static_duplicate(self):
@@ -338,14 +352,19 @@ class TestDeformableVisualGaussianUSDImport(unittest.TestCase):
         stage = self._stage()
         self._add_volume(stage, "/World/Bear")
         self._add_gaussian(stage, "/World/Bear/Gaussian", [(0.25, 0.25, 0.25)])
+        self._add_surface(stage, "/World/Cloth")
+        self._add_gaussian(stage, "/World/Cloth/Gaussian", [(0.25, 0.25, 0.0)])
 
         builder = newton.ModelBuilder()
         builder.add_particle(wp.vec3(10.0), wp.vec3(0.0), 1.0)
         builder.add_usd(stage, root_path="/World")
-        visual = builder.finalize().deformable_visual_gaussians[0]
+        model = builder.finalize(device="cpu")
+        visual, surface = model.deformable_visual_gaussians
 
         np.testing.assert_array_equal(visual.parent.numpy(), [0])
         np.testing.assert_allclose(visual.weights.numpy(), [[0.25, 0.25, 0.25, 0.25]])
+        self.assertEqual(surface.kind, newton.geometry.DeformableVisualMesh.Kind.TRIANGLE)
+        np.testing.assert_allclose(surface.weights.numpy(), [[0.5, 0.25, 0.25, 0.0]])
 
     def test_authored_embedding_follows_retained_tetrahedra(self):
         """Remap surviving USD tet IDs and skip visuals bound to a removed tet."""
@@ -580,8 +599,19 @@ class TestDeformableVisualGaussianUSDImport(unittest.TestCase):
         tet.GetPrim().CreateAttribute("physics:deformablePose:bind:points", Sdf.ValueTypeNames.Point3fArray).Set(
             bind.tolist()
         )
-        for name, x, color_space in (("Gaussian", 0.2, "lin_rec709_scene"), ("SRGB", 0.5, "srgb_rec709_scene")):
-            gaussian = self._add_gaussian(stage, f"/World/Soft/{name}", [(x, 0.2, 0.2)])
+        self._add_surface(stage, "/World/Cloth")
+        for body, name, x, color_space in (
+            ("Soft", "Gaussian", 0.2, "lin_rec709_scene"),
+            ("Cloth", "SRGB", 0.5, "srgb_rec709_scene"),
+        ):
+            gaussian = self._add_gaussian(
+                stage,
+                f"/World/{body}/{name}",
+                [(x, 0.2, 0.2)],
+                parent=[0] if body == "Cloth" else None,
+                weights=[(0.3, 0.5, 0.2)] if body == "Cloth" else None,
+                triangle=body == "Cloth",
+            )
             radiance = gaussian.CreateAttribute(
                 "radiance:sphericalHarmonicsCoefficients", Sdf.ValueTypeNames.Float3Array
             )
@@ -618,6 +648,12 @@ class TestDeformableVisualGaussianUSDImport(unittest.TestCase):
             depth = sensor.allocate_image_depth(render_model.world_count, 16, 16)
             rgb = sensor.allocate_image_color_hdr(render_model.world_count, 16, 16)
             sensor.update(render_state, cameras, rays, depth_image=depth, hdr_color_image=rgb)
+            if render_model.device.is_cuda:
+                before = rgb.numpy().copy()
+                with wp.ScopedCapture(device=render_model.device) as capture:
+                    sensor.update(render_state, cameras, rays, depth_image=depth, hdr_color_image=rgb)
+                wp.capture_launch(capture.graph)
+                np.testing.assert_allclose(rgb.numpy(), before, atol=1e-6)
             np.testing.assert_array_equal(render_model.shape_source_ptr.numpy(), shape_sources)
             return depth.numpy(), rgb.numpy()
 
@@ -639,6 +675,9 @@ class TestDeformableVisualGaussianUSDImport(unittest.TestCase):
                 playback.load_model(restored)
                 self.assertIsInstance(restored.deformable_visual_gaussians[0], newton.geometry.DeformableVisualGaussian)
                 self.assertEqual(restored.deformable_visual_gaussians[0].graphics_path, "/World/Soft/Gaussian")
+                self.assertEqual(
+                    restored.deformable_visual_gaussians[1].kind, newton.geometry.DeformableVisualMesh.Kind.TRIANGLE
+                )
                 self.assertEqual(
                     [visual.gaussian.sh_color_space for visual in restored.deformable_visual_gaussians],
                     [newton.utils.ColorSpace.LINEAR, newton.utils.ColorSpace.SRGB],
@@ -682,6 +721,65 @@ class TestDeformableVisualGaussianUSDImport(unittest.TestCase):
 
 class TestDeformableVisualGaussianEvaluation(unittest.TestCase):
     """Reusable current Gaussian transforms and scales."""
+
+    def test_triangle_binding_preserves_thickness(self):
+        """Mix surface and volume bindings across worlds, including captured updates."""
+        prototype = _soft_builder()
+        prototype.add_deformable_visual_gaussian(
+            newton.Gaussian(positions=[[0.25, 0.25, 0.25]]),
+            binding=newton.geometry.GaussianBinding.Tetrahedron(tet_range=(0, prototype.tet_count)),
+        )
+        first = prototype.particle_count
+        for point in ((2, 0, 0), (3, 0, 0), (2, 1, 0)):
+            prototype.add_particle(wp.vec3(*point), wp.vec3(0), 1.0)
+        triangle = prototype.tri_count
+        prototype.add_triangle(first, first + 1, first + 2)
+        center = np.array([[2.6, 0.6, 0.2]], dtype=np.float32)
+        scales = np.array([[0.08, 0.12, 0.04]], dtype=np.float32)
+        prototype.add_deformable_visual_gaussian(
+            newton.Gaussian(positions=center, scales=scales),
+            binding=newton.geometry.GaussianBinding.Triangle(
+                tri_range=(triangle, triangle + 1),
+                parent=[triangle],
+                weights=np.array([[-0.2, 0.6, 0.6]], dtype=np.float32),
+            ),
+        )
+        builder = newton.ModelBuilder()
+        builder.replicate(prototype, 2, spacing=(4, 0, 0))
+        for device in get_test_devices():
+            with self.subTest(device=device):
+                model = builder.finalize(device=device)
+                state = model.state()
+                rest = state.particle_q.numpy().copy()
+                offset = rest[0] - np.asarray(prototype.particle_q[0])
+                visuals = newton.geometry.DeformableVisuals(model).update(state)
+                baseline = visuals.gaussian_transforms.numpy().copy()
+                np.testing.assert_allclose(baseline[1, :3], center[0] + offset, atol=1e-6)
+                graph = None
+                if device.is_cuda:
+                    with wp.ScopedCapture(device=device) as capture:
+                        visuals.update(state)
+                    graph = capture.graph
+                rotation = _quat_matrix(wp.quat_from_axis_angle(wp.vec3(1, 0, 0), 0.6))
+                # In-plane shear/stretch should not scale the normal thickness.
+                for deformation in (np.eye(3), rotation, rotation @ np.array([[1.5, 0.2, 0], [0, 0.7, 0], [0, 0, 1]])):
+                    positions = rest.copy()
+                    positions[first : first + 3] = (
+                        (positions[first : first + 3] - offset) @ deformation.T + offset + [0, 0, 0.3]
+                    )
+                    state.particle_q.assign(positions)
+                    if graph is None:
+                        visuals.update(state)
+                    else:
+                        wp.capture_launch(graph)
+                    actual = visuals.gaussian_transforms.numpy()
+                    np.testing.assert_allclose(actual[[0, 2, 3]], baseline[[0, 2, 3]], atol=1e-6)
+                    np.testing.assert_allclose(
+                        actual[1, :3], (center @ deformation.T)[0] + offset + [0, 0, 0.3], atol=1e-6
+                    )
+                    axes = _quat_matrix(actual[1, 3:]) @ np.diag(visuals.gaussian_scales.numpy()[1])
+                    expected = deformation @ np.diag(scales[0])
+                    np.testing.assert_allclose(axes @ axes.T, expected @ expected.T, atol=1e-6)
 
     def test_outside_samples_keep_authored_centers(self):
         """Preserve off-proxy samples through affine motion and independent world updates."""

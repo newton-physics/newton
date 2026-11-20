@@ -425,12 +425,16 @@ Known gaps of the experimental importer, tracked as follow-ups:
   (mixed authoring warns).
 * **Graphics geometry** -- graphics Mesh prims can import as visual meshes; see
   :ref:`usd-deformable-visual-import` for what is imported and skipped.
-* **Gaussian graphics (experimental)** -- a volume-owned
-  ``ParticleField3DGaussianSplat`` can use automatic tet embedding or paired
+* **Gaussian graphics (experimental)** -- a volume-owned or surface-owned
+  ``ParticleField3DGaussianSplat`` can use automatic embedding or paired
   ``newton:deformableSkin:tetIndices`` and
   ``newton:deformableSkin:influenceWeights`` attributes. Each Gaussian has one
   tet index local to the owning simulation mesh and four weights. These are
   temporary Newton attributes, not standard USD deformable schema fields.
+  Surfaces use ``newton:deformableSkin:triIndices`` and three influence weights
+  instead. Triangle IDs address the imported simulation triangles, not polygon
+  face IDs. Explicit weights may be signed and must sum to one. Surface bindings
+  preserve thickness along the triangle normal while following in-plane deformation.
   Import remaps authored tet indices when it skips invalid tetrahedra. A
   Gaussian visual referencing a skipped tetrahedron is logged and skipped.
   Centers must be authored in the visual bind configuration. The simulation

@@ -961,6 +961,7 @@ def deserialize(data, callback, _path="", format_type="json", cache: ArrayCache 
                 for attr, value in data["attributes"].items()
             }
             visual = DeformableVisualGaussian(
+                kind=attributes.get("kind", DeformableVisualMesh.Kind.TETRAHEDRON),
                 **{
                     name: attributes[name]
                     for name in (
@@ -977,7 +978,7 @@ def deserialize(data, callback, _path="", format_type="json", cache: ArrayCache 
                         "sim_path",
                         "graphics_path",
                     )
-                }
+                },
             )
             visual._bind_poses = attributes.get("_bind_poses")
             visual._bind_offsets = attributes.get("_bind_offsets")
