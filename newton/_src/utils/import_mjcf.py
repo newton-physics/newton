@@ -1566,45 +1566,45 @@ def parse_mjcf(
         if "zaxis" in attrib:
             zaxis = np.array(attrib["zaxis"].split(), dtype=float)
             zaxis /= np.linalg.norm(zaxis)
-            axis = np.array([-zaxis[1], zaxis[0], 0.0])
-            axis_norm_sq = np.dot(axis, axis)
-            # Match MuJoCo's mjuu_z2quat, including mjuu_normvec's mjEPS cutoff.
-            if axis_norm_sq < 1e-14:
-                axis = np.array([1.0, 0.0, 0.0])
-                axis_norm = 0.0
-            else:
-                axis_norm = np.sqrt(axis_norm_sq)
-                axis /= axis_norm
-            half_angle = 0.5 * np.arctan2(axis_norm, zaxis[2])
-            return wp.quat(*(axis * np.sin(half_angle)), np.cos(half_angle))
+            return quat_from_zaxis(zaxis)
         return wp.quat_identity()
+
+    def quat_from_zaxis(zaxis: np.ndarray) -> wp.quat:
+        """Rotate local +Z onto the unit vector ``zaxis`` like MuJoCo's ``mjuu_z2quat``."""
+        axis = np.array([-zaxis[1], zaxis[0], 0.0])
+        axis_norm_sq = np.dot(axis, axis)
+        # Match MuJoCo's mjuu_z2quat, including mjuu_normvec's mjEPS cutoff.
+        if axis_norm_sq < 1e-14:
+            axis = np.array([1.0, 0.0, 0.0])
+            axis_norm = 0.0
+        else:
+            axis_norm = np.sqrt(axis_norm_sq)
+            axis /= axis_norm
+        half_angle = 0.5 * np.arctan2(axis_norm, zaxis[2])
+        return wp.quat(*(axis * np.sin(half_angle)), np.cos(half_angle))
 
     def parse_fromto_transform(
         attrib, incoming_xform: wp.transform | None = None, zero_length_error: str | None = None
     ) -> tuple[wp.transform, float]:
         """Parse a MuJoCo fromto segment into its transform and half-length."""
-        values = parse_vec(attrib, "fromto", (0.0, 0.0, 0.0, 1.0, 0.0, 0.0))
-        start = wp.vec3(values[0:3]) * scale
-        end = wp.vec3(values[3:6]) * scale
+        values = np.array(parse_vec(attrib, "fromto", (0.0, 0.0, 0.0, 1.0, 0.0, 0.0)), dtype=np.float64)
+        start = values[0:3]
+        end = values[3:6]
 
-        position = (start + end) * 0.5
+        position = wp.vec3(*((start + end) * 0.5 * scale))
         # Match MuJoCo's compiler, which points local +Z from the second endpoint to the first.
         direction = start - end
-        length = wp.length(direction)
-        # MuJoCo rejects fromto segments shorter than 1e-7; longer short segments keep their length.
+        length = float(np.linalg.norm(direction))
+        # MuJoCo rejects authored fromto segments shorter than 1e-7, so test the length before
+        # applying the import scale; longer short segments keep their length.
         if length < 1.0e-7:
             if zero_length_error is not None:
                 raise ValueError(zero_length_error)
             local_xform = wp.transform(position, wp.quat_identity())
             half_length = 0.0
         else:
-            direction /= length
-            if float(direction[2]) < -0.999999:
-                rotation = wp.quat(1.0, 0.0, 0.0, 0.0)
-            else:
-                rotation = wp.quat_between_vectors(wp.vec3(0.0, 0.0, 1.0), direction)
-            local_xform = wp.transform(position, rotation)
-            half_length = float(length) * 0.5
+            local_xform = wp.transform(position, quat_from_zaxis(direction / length))
+            half_length = length * 0.5 * scale
 
         # Build the segment frame locally, then compose it with the parent frame so the parent's
         # rotation about the segment axis is kept (MuJoCo composes the frame after the segment).

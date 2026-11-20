@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import itertools
 import os
 import struct
 import tempfile
@@ -7259,12 +7260,15 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
         """Verify box and ellipsoid geoms with fromto span the segment like native MuJoCo."""
         import mujoco
 
-        for geom_type in ("box", "ellipsoid"):
+        # The second segment points within 0.08 degrees of -Z, where the axis must keep its tilt.
+        for geom_type, fromto in itertools.product(
+            ("box", "ellipsoid"), ("0.1 0.2 0.3  0.4 0.6 0.8", "0.0006 0.0008 -1  0 0 0")
+        ):
             for size in ("0.05", "0.05 0.07"):
-                with self.subTest(geom_type=geom_type, size=size):
+                with self.subTest(geom_type=geom_type, fromto=fromto, size=size):
                     mjcf = f"""<mujoco model="fromto_shape">
     <worldbody>
-        <geom name="g" type="{geom_type}" fromto="0.1 0.2 0.3  0.4 0.6 0.8" size="{size}"/>
+        <geom name="g" type="{geom_type}" fromto="{fromto}" size="{size}"/>
     </worldbody>
 </mujoco>"""
                     mj_model = mujoco.MjModel.from_xml_string(mjcf)
@@ -7365,10 +7369,13 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
         <geom name="g" type="box" fromto="0 0 2.5e-7  0 0 -2.5e-7" size="0.05"/>
     </worldbody>
 </mujoco>"""
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf)
-        idx = builder.shape_label.index("fromto_short/worldbody/g")
-        self.assertAlmostEqual(float(builder.shape_scale[idx][2]), 2.5e-7, delta=1e-9)
+        for scale in (1.0, 0.1):
+            with self.subTest(scale=scale):
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(mjcf, scale=scale)
+                idx = builder.shape_label.index("fromto_short/worldbody/g")
+                # The 1e-7 cutoff applies to the authored segment, before the import scale.
+                self.assertAlmostEqual(float(builder.shape_scale[idx][2]), 2.5e-7 * scale, delta=1e-10 * scale)
 
     def test_actuator_mode_inference_from_actuator_type(self):
         """Test that JointTargetMode is correctly inferred from MJCF actuator types."""
