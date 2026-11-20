@@ -831,6 +831,36 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
         return point
 
     @wp.func
+    def edge_spans_witness(
+        start: wp.vec2,
+        end: wp.vec2,
+        deepest_depth: float,
+        deepest_center: wp.vec3,
+        tangent_x: wp.vec3,
+        tangent_y: wp.vec3,
+        projector_a: BodyProjector,
+        projector_b: BodyProjector,
+        normal: wp.vec3,
+    ) -> bool:
+        """Check whether an interior edge point reproduces the deepest center and depth."""
+        edge = end - start
+        length_sq = wp.length_sq(edge)
+        along = -wp.dot(start, edge)
+        cross = start[0] * edge[1] - start[1] * edge[0]
+        # The tangent plane is centered at the deepest witness. Measure lateral
+        # error relative to the length of the candidate support edge.
+        if along <= 0.0 or along >= length_sq or cross * cross > 1.0e-8 * length_sq * length_sq:
+            return False
+        # Projection onto either supporting plane is affine along the edge.
+        tangent_point = start + (along / length_sq) * edge
+        point = deepest_center + tangent_point[0] * tangent_x + tangent_point[1] * tangent_y
+        point_a = body_projector_project(projector_a, point, normal)
+        point_b = body_projector_project(projector_b, point, normal)
+        center_error = 0.5 * (point_a + point_b) - deepest_center
+        depth_error = wp.dot(point_b - point_a, normal) - deepest_depth
+        return wp.length_sq(center_error) <= 1.0e-8 * length_sq and depth_error * depth_error <= 1.0e-10 * length_sq
+
+    @wp.func
     def extract_4_point_contact_manifolds(
         m_a: wp.array[wp.vec2],
         m_a_count: int,
@@ -853,7 +883,8 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
         position_b: wp.vec3,
         quaternion_a: wp.quat,
         quaternion_b: wp.quat,
-    ) -> tuple[int, float]:
+        deepest_depth: float,
+    ) -> tuple[int, bool]:
         """
         Extract up to 4 contact points from two convex contact polygons and write them immediately.
 
@@ -884,9 +915,7 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
             quaternion_b: Orientation of shape B (for post_process_contact).
 
         Returns:
-            Tuple of (loop_count, normal_dot) where:
-            - loop_count: Number of valid contact points written (0-4)
-            - normal_dot: Absolute dot product of polygon normals
+            Number of clipped points written (0-4) and whether the deepest witness is still needed.
         """
 
         normal_dot = wp.abs(wp.dot(projector_a.normal, projector_b.normal))
@@ -903,6 +932,7 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
             MAX_CLIP_VERTEX_MERGE_DISTANCE,
         )
 
+        redundant = bool(False)
         loop_count = trim_all_in_place(m_a, m_a_count, m_b, m_b_count)
 
         loop_count = remove_zero_length_edges(m_b, loop_count, merge_distance)
@@ -915,6 +945,9 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
             else:
                 result = wp.vec4i(0, 1, 2, 3)
 
+            # Store which clipped endpoints penetrate without keeping projected points
+            # live across the contact writer. Each bit corresponds to a polygon vertex.
+            penetrating_mask = int(0)
             for i in range(loop_count):
                 ia = int(result[i])
 
@@ -925,6 +958,8 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
                 b = body_projector_project(projector_b, p_local, normal_local)
                 contact_point_local = 0.5 * (a + b)
                 signed_distance = wp.dot(b - a, normal_local)
+
+                penetrating_mask |= int(signed_distance <= 0.0) << i
 
                 # Transform from A-local to world space
                 contact_point_world = wp.quat_rotate(orientation_a, contact_point_local) + position_a_world
@@ -939,11 +974,35 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
                     contact_data, geom_a, position_a, quaternion_a, geom_b, position_b, quaternion_b
                 )
                 writer_func(contact_data, writer_data, -1)
+
+            # Two penetrating endpoints are required to support the deepest point.
+            if (
+                (penetrating_mask & (penetrating_mask - 1)) != 0
+                and should_include_deepest_contact(normal_dot)
+                and (geom_a.shape_type == int(GeoType.BOX) or geom_a.shape_type == int(GeoType.CONVEX_MESH))
+                and (geom_b.shape_type == int(GeoType.BOX) or geom_b.shape_type == int(GeoType.CONVEX_MESH))
+            ):
+                for i in range(loop_count):
+                    j = (i + 1) % loop_count
+                    if (penetrating_mask & (1 << i)) != 0 and (penetrating_mask & (1 << j)) != 0:
+                        if edge_spans_witness(
+                            m_b[int(result[i])],
+                            m_b[int(result[j])],
+                            deepest_depth,
+                            center_local,
+                            cross_vector_1,
+                            cross_vector_2,
+                            projector_a,
+                            projector_b,
+                            normal_local,
+                        ):
+                            redundant = True
+                            break
         else:
             normal_dot = 0.0
             loop_count = 0
 
-        return loop_count, normal_dot
+        return loop_count, should_include_deepest_contact(normal_dot) and not redundant
 
     @wp.func
     def point_in_contact_polygon(
@@ -1218,7 +1277,7 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
         feature_b_flat = not planar_b or contact_feature_supports_anchor(plane_tracker_b, p_b)
         if a_count < 2 or b_count < 2 or not feature_a_flat or not feature_b_flat:
             count_out = 0
-            normal_dot = 0.0
+            include_deepest = True
             # A tessellated feature that is not flat to EPS can still rest on a
             # verified face. Its sampled support points then give exact
             # vertex-face contacts instead of a single deepest contact.
@@ -1317,9 +1376,9 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
                 )
             if not valid_planes:
                 count_out = 0
-                normal_dot = 0.0
+                include_deepest = True
             else:
-                num_manifold_points, normal_dot = extract_4_point_contact_manifolds(
+                num_manifold_points, include_deepest = extract_4_point_contact_manifolds(
                     a_buffer,
                     a_count,
                     b_buffer,
@@ -1341,10 +1400,11 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
                     position_b_ws,
                     quaternion_a_ws,
                     quaternion_b_ws,
+                    wp.dot(p_b - p_a, normal),
                 )
                 count_out = wp.min(num_manifold_points, 4)
 
-        if should_include_deepest_contact(normal_dot) or count_out == 0:
+        if include_deepest or count_out == 0:
             deepest_center_local = 0.5 * (p_a + p_b)
             deepest_signed_distance = wp.dot(p_b - p_a, normal)
 
