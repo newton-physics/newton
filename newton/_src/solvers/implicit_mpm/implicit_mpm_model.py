@@ -946,6 +946,8 @@ class ImplicitMPMModel:
         self.collider_body_inv_inertia = body_inv_inertia
         self.collider_body_q = body_q
         self._collider_meshes = collider_meshes  # Keep a ref so that meshes are not garbage collected
+        # Generated model geometry is rigid; caller-supplied meshes may deform.
+        self._collider_generated = tuple(body_id is not None for body_id in collider_body_ids)
         self.deformable_collider_vertex_ranges = [
             (collider_id, collider_particle_offsets[collider_id], collider_particle_offsets[collider_id + 1])
             for collider_id in range(collider_count)
