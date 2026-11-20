@@ -1,1 +1,1 @@
-Tune CUDA resource use for convex collision queries without changing geometric tolerances. No API changes or migration are required.
+Improve utilization of dense CUDA lean convex queries while retaining the original thread-block sizes, register budgets, and sparse-query distribution. Geometric tolerances are unchanged. No API changes or migration are required.

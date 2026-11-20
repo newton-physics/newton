@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Fixed-storage contact queries for overlapping ellipsoids."""
+"""Fixed-storage contact queries for ellipsoids."""
 
 import warp as wp
 
@@ -43,18 +43,19 @@ _contact_func = wp.func(inline=False) if tuple(int(v) for v in wp.__version__.sp
 def collide_ellipsoids(
     radii_a: wp.vec3, radii_b: wp.vec3, rotation_b: wp.quat, position_b: wp.vec3
 ) -> tuple[bool, float, wp.vec3, wp.vec3]:
-    """Return a certified overlap or leave the pair to the general convex solver.
+    """Return a certified contact or leave the pair to the general convex solver.
 
     Both witnesses and the midpoint are expressed in A's frame. A sphere uses
     three equal radii. The return values are success, signed distance, midpoint,
-    and the unit normal from A to B. Separated and ill-conditioned pairs return
-    failure rather than supplying provisional contacts.
+    and the unit normal from A to B. Ill-conditioned pairs return failure rather
+    than supplying provisional contacts.
 
     Minimize the support-plane depth on the unit sphere with a two-dimensional
     Newton step. A local minimum alone does not certify penetration depth.
-    Interior tangent balls provide a lower bound, and the support plane gives
-    an upper bound; accept only when these agree within the accuracy budget.
-    Witnesses must also agree with the reported normal within that budget.
+    For overlaps, interior tangent balls provide a lower bound, and the support
+    plane gives an upper bound. For separated pairs, the support witnesses and
+    separating plane bound the distance. Accept only when the bounds agree
+    within the accuracy budget and the witnesses agree with the reported normal.
     """
     normal = wp.vec3(1.0, 0.0, 0.0)
     center = wp.vec3(0.0)
@@ -87,8 +88,6 @@ def collide_ellipsoids(
             direction = wp.normalize(direction)
             _, _, delta = _support_pair(a, b, rotation_b, position, direction)
             depth = wp.dot(delta, direction)
-            if depth <= 0.0:
-                return False, 0.0, center, normal
             if depth < bound:
                 bound = depth
                 normal = direction
@@ -97,8 +96,13 @@ def collide_ellipsoids(
         point_a, point_b, delta = _support_pair(a, b, rotation_b, position, normal)
         depth = wp.dot(delta, normal)
         distance = wp.length(delta)
-        if depth <= 0.0 or distance == 0.0:
+        if distance == 0.0:
             return False, 0.0, center, normal
+        if depth < 0.0:
+            # A separating plane lower-bounds distance, while its support
+            # witnesses upper-bound it. Reuse the query when both agree.
+            if distance + depth <= accuracy and wp.length(delta - depth * normal) <= 2e-7 * tolerance:
+                return True, -depth * scale, 0.5 * scale * (point_a + point_b), normal
         axis = wp.vec3(1.0, 0.0, 0.0)
         if wp.abs(normal[0]) > 0.7:
             axis = wp.vec3(0.0, 1.0, 0.0)

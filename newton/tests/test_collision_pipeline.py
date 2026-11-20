@@ -8081,7 +8081,21 @@ def test_small_hull_broad_phase_bounds(test, device):
                 )
             expected_vertices.append(np.asarray(mesh.vertices, dtype=np.float64))
         builder.end_world()
-    model = builder.finalize(device=device)
+    # Retain excluded parent geometry to exercise prefix-view classification.
+    prefix_body_count = builder.body_count
+    prefix_shape_count = builder.shape_count
+    builder.begin_world()
+    body = builder.add_body()
+    builder.add_shape_sphere(body, radius=0.1)
+    builder.end_world()
+    parent = builder.finalize(device=device)
+    model = ModelView(parent, "prefix")
+    model.body_count = prefix_body_count
+    model.shape_count = prefix_shape_count
+    model.shape_contact_pairs = wp.array(
+        [[2 * world, 2 * world + 1] for world in range(64)], dtype=wp.vec2i, device=device
+    )
+    test.assertGreater(len(model.shape_source), model.shape_count)
     state = model.state()
     pipeline = newton.CollisionPipeline(model)
     contacts = pipeline.contacts()

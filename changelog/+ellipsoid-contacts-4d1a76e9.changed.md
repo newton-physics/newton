@@ -1,1 +1,1 @@
-Accelerate sphere-ellipsoid and ellipsoid-ellipsoid overlaps with fixed-storage contact queries while retaining the general convex fallback for unresolved pairs. No API or configuration changes are required.
+Accelerate sphere-ellipsoid and ellipsoid-ellipsoid contacts with fixed-storage queries for overlaps and near-gap pairs while retaining the general convex fallback for unresolved pairs. No API or configuration changes are required.

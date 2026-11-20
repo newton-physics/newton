@@ -33,7 +33,7 @@ def _query_pairs(
 
 
 def test_constructed_contacts(test, device):
-    """Verify known depths and reject uncertified local penetration minima."""
+    """Verify signed distances and reject uncertified local penetration minima."""
     inputs = []
     references = []
     directions = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, -2.0, 3.0]])
@@ -86,11 +86,13 @@ def test_constructed_contacts(test, device):
         device=device,
     )
     successes, distances, centers, normals = solved.numpy(), distances.numpy(), centers.numpy(), normals.numpy()
+    separated_solved = 0
     for i, (normal, scale, depth, matrix, allow_fallback) in enumerate(references):
         with test.subTest(case=i, scale=scale, depth=depth):
             if depth < 0.0:
-                test.assertFalse(successes[i])
-                continue
+                if not successes[i]:
+                    continue
+                separated_solved += 1
             if allow_fallback and not successes[i]:
                 continue
             test.assertTrue(successes[i])
@@ -101,6 +103,7 @@ def test_constructed_contacts(test, device):
             pb = matrix.T @ (centers[i] + 0.5 * distances[i] * normals[i] - positions[i])
             test.assertAlmostEqual(np.linalg.norm(pa / a[i]), 1.0, delta=1e-5)
             test.assertAlmostEqual(np.linalg.norm(pb / b[i]), 1.0, delta=1e-5)
+    test.assertGreater(separated_solved, 0)
 
 
 class TestEllipsoidContact(unittest.TestCase):

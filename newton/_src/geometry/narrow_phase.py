@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import contextlib
-import inspect
 import math
 from typing import Any
 
@@ -101,8 +100,7 @@ from ..utils.heightfield import (
 from .penetration import create_solve_box_penetration
 
 _SPARSE_GJK_PAIR_CAPACITY_THRESHOLD = 1_000_000
-_CUDA_MAX_REGISTERS_SUPPORTED = "cuda_max_registers" in inspect.signature(wp.kernel).parameters
-_FUSED_CUDA_RESOURCE_PAIR_THRESHOLD = 1_024
+_DENSE_GJK_PAIR_COUNT_THRESHOLD = 1_024
 
 
 @wp.func
@@ -780,6 +778,13 @@ def create_narrow_phase_primitive_kernel(
             smooth_pair = False
             if wp.static(_ellipsoid_contacts):
                 smooth_pair = (type_a == GeoType.SPHERE or type_a == GeoType.ELLIPSOID) and type_b == GeoType.ELLIPSOID
+                if smooth_pair:
+                    offset = wp.transform_get_translation(shape_transform[shape_b]) - wp.transform_get_translation(
+                        shape_transform[shape_a]
+                    )
+                    radius_sum = wp.max(scale_a) + wp.max(scale_b)
+                    # Disjoint enclosing spheres cannot use the smooth query.
+                    smooth_pair = wp.length_sq(offset) <= radius_sum * radius_sum
             if not smooth_pair and (
                 type_a >= GeoType.ELLIPSOID
                 or type_b == GeoType.CONE
@@ -1186,7 +1191,6 @@ def create_narrow_phase_kernel_gjk_mpr(
     support_func: Any = None,
     post_process_contact: Any = None,
     speculative: bool = False,
-    _cuda_max_registers: int | None = None,
     _direct_box_contacts: bool = False,
     _dense_query_packing: bool = False,
 ):
@@ -1207,16 +1211,12 @@ def create_narrow_phase_kernel_gjk_mpr(
     _module = f"narrow_phase_gjk_mpr_{external_aabb}_{speculative}_{writer_func.__name__}_{_sf}_{_ppc}"
     if _dense_query_packing:
         _module += "_dense"
-    kernel_options = {}
     if _direct_box_contacts:
         _module += "_direct_boxes"
-    if _cuda_max_registers is not None:
-        _module += f"_r{_cuda_max_registers}"
-        kernel_options["cuda_max_registers"] = _cuda_max_registers
     accelerated_support = support_func in (support_map_accelerated, support_map_lean_accelerated)
     provider_type = AcceleratedSupportMapDataProvider if accelerated_support else SupportMapDataProvider
 
-    @wp.kernel(enable_backward=False, module=_module, **kernel_options)
+    @wp.kernel(enable_backward=False, module=_module)
     def narrow_phase_kernel_gjk_mpr(
         candidate_pair: wp.array[wp.vec2i],
         candidate_pair_count: wp.array[int],
@@ -1254,12 +1254,14 @@ def create_narrow_phase_kernel_gjk_mpr(
         block_dim = wp.block_dim()
         num_blocks = total_num_threads // block_dim
         if wp.static(_dense_query_packing):
-            if num_work_items >= _FUSED_CUDA_RESOURCE_PAIR_THRESHOLD:
+            if num_work_items >= _DENSE_GJK_PAIR_COUNT_THRESHOLD:
                 # Keep sparse batches distributed across the original blocks.
-                # Dense batches share each warp without reducing solver work.
+                # Pack dense batches without reducing their solver work.
                 # Retain enough independent blocks to hide query latency.
-                items_per_warp = block_dim // 2
-                packed_blocks = wp.max(num_blocks // 4, (num_work_items + items_per_warp - 1) // items_per_warp)
+                items_per_block_target = block_dim // 2
+                packed_blocks = wp.max(
+                    num_blocks // 4, (num_work_items + items_per_block_target - 1) // items_per_block_target
+                )
                 num_blocks = wp.min(num_blocks, packed_blocks)
         block_index = tid // block_dim
         lane = tid - block_index * block_dim
@@ -2717,22 +2719,9 @@ class NarrowPhase:
         speculative: bool = False,
         contact_writer_supports_speculative: bool = False,
         _group_reduction: GroupReductionConfig | None = None,
-        _direct_box_contacts: bool = False,
-        _tetrahedron_separation: bool = False,
-        _ellipsoid_contacts: bool = False,
     ) -> None:
         """
         Initialize NarrowPhase with pre-allocated buffers.
-
-        ``_direct_box_contacts`` enables aligned-box witnesses in fused and split
-        kernels. CollisionPipeline selects it for box-and-plane scenes to avoid
-        adding instruction-cache pressure to mixed-shape kernels.
-
-        ``_tetrahedron_separation`` enables conservative local-frame bounds
-        tests before routing tetrahedral pairs to convex queries.
-
-        ``_ellipsoid_contacts`` enables a fixed-storage contact query for
-        sphere-ellipsoid and ellipsoid-ellipsoid pairs before general queries.
 
         Args:
             max_candidate_pairs: Maximum number of candidate pairs from broad phase
@@ -2813,6 +2802,82 @@ class NarrowPhase:
             contact_writer_supports_speculative: Whether a custom contact writer performs exact speculative-contact
                 admission. Required when ``speculative`` and ``contact_writer_warp_func`` are both provided.
         """
+        self._initialize(
+            max_candidate_pairs=max_candidate_pairs,
+            max_triangle_pairs=max_triangle_pairs,
+            max_mesh_mesh_pairs=max_mesh_mesh_pairs,
+            max_mesh_plane_pairs=max_mesh_plane_pairs,
+            reduce_contacts=reduce_contacts,
+            device=device,
+            shape_aabb_lower=shape_aabb_lower,
+            shape_aabb_upper=shape_aabb_upper,
+            shape_voxel_resolution=shape_voxel_resolution,
+            contact_writer_warp_func=contact_writer_warp_func,
+            hydroelastic_sdf=hydroelastic_sdf,
+            has_meshes=has_meshes,
+            has_heightfields=has_heightfields,
+            use_lean_gjk_mpr=use_lean_gjk_mpr,
+            convex_support_acceleration=convex_support_acceleration,
+            has_generic_convex_pairs=has_generic_convex_pairs,
+            sparse_gjk_pairs=sparse_gjk_pairs,
+            split_gjk_mpr=split_gjk_mpr,
+            candidate_pair_work_estimate=candidate_pair_work_estimate,
+            mesh_sdf_texture_only=mesh_sdf_texture_only,
+            mesh_sdf_identity_scale_only=mesh_sdf_identity_scale_only,
+            sdf_texture_paired_samples=sdf_texture_paired_samples,
+            deterministic=deterministic,
+            contact_max=contact_max,
+            verify_buffers=verify_buffers,
+            contact_reduction_hashtable_size_factor=contact_reduction_hashtable_size_factor,
+            speculative=speculative,
+            contact_writer_supports_speculative=contact_writer_supports_speculative,
+            _group_reduction=_group_reduction,
+        )
+
+    @classmethod
+    def _create_for_pipeline(cls, **kwargs) -> NarrowPhase:
+        """Construct a narrow phase with topology-derived private specializations."""
+        instance = cls.__new__(cls)
+        instance._initialize(**kwargs)
+        return instance
+
+    def _initialize(
+        self,
+        *,
+        max_candidate_pairs: int,
+        max_triangle_pairs: int = 1000000,
+        max_mesh_mesh_pairs: int | None = None,
+        max_mesh_plane_pairs: int | None = None,
+        reduce_contacts: bool = True,
+        device: Devicelike | None = None,
+        shape_aabb_lower: wp.array[wp.vec3] | None = None,
+        shape_aabb_upper: wp.array[wp.vec3] | None = None,
+        shape_voxel_resolution: wp.array[wp.vec3i] | None = None,
+        contact_writer_warp_func: Any | None = None,
+        hydroelastic_sdf: HydroelasticSDF | None = None,
+        has_meshes: bool = True,
+        has_heightfields: bool = False,
+        use_lean_gjk_mpr: bool = False,
+        convex_support_acceleration: bool = True,
+        has_generic_convex_pairs: bool = True,
+        sparse_gjk_pairs: bool | None = None,
+        split_gjk_mpr: bool = False,
+        candidate_pair_work_estimate: int | None = None,
+        mesh_sdf_texture_only: bool = False,
+        mesh_sdf_identity_scale_only: bool = False,
+        sdf_texture_paired_samples: bool = True,
+        deterministic: bool = False,
+        contact_max: int | None = None,
+        verify_buffers: bool = True,
+        contact_reduction_hashtable_size_factor: float = 0.25,
+        speculative: bool = False,
+        contact_writer_supports_speculative: bool = False,
+        _group_reduction: GroupReductionConfig | None = None,
+        _direct_box_contacts: bool = False,
+        _tetrahedron_separation: bool = False,
+        _ellipsoid_contacts: bool = False,
+    ) -> None:
+        """Apply the pipeline-selected specializations."""
         self.max_candidate_pairs = max_candidate_pairs
         self.max_triangle_pairs = max_triangle_pairs
         if max_mesh_mesh_pairs is not None and max_mesh_mesh_pairs < 0:
@@ -2932,21 +2997,6 @@ class NarrowPhase:
         if candidate_pair_work_estimate < 0:
             raise ValueError("candidate_pair_work_estimate must be non-negative or None")
         self.split_gjk_mpr = device_obj.is_cuda and has_generic_convex_pairs and split_gjk_mpr
-        # Limit the large fused query's register footprint without changing its
-        # numerical checks. Keep CPU, analytic-only, and split pipelines intact.
-        # LLVM CUDA ignores register limits, so retain its original launch too.
-        fused_register_limit = (
-            128
-            if device_obj.is_cuda
-            and has_generic_convex_pairs
-            and candidate_pair_work_estimate >= _FUSED_CUDA_RESOURCE_PAIR_THRESHOLD
-            and not self.split_gjk_mpr
-            and _CUDA_MAX_REGISTERS_SUPPORTED
-            and not wp.config.llvm_cuda
-            else None
-        )
-        self._fused_block_dim = 32 if fused_register_limit is not None else self.block_dim
-        self._primitive_block_dim = self._fused_block_dim
         # Create the appropriate kernel variants
         # Primitive kernel handles lightweight primitives and routes remaining pairs
         self.primitive_kernel = create_narrow_phase_primitive_kernel(
@@ -2969,10 +3019,13 @@ class NarrowPhase:
                 support_func=support_map_lean_accelerated if convex_support_acceleration else support_map_lean,
                 post_process_contact=post_process_minkowski_only,
                 speculative=speculative,
-                _cuda_max_registers=fused_register_limit,
                 _direct_box_contacts=_direct_box_contacts,
                 _dense_query_packing=(
-                    fused_register_limit is not None
+                    device_obj.is_cuda
+                    and has_generic_convex_pairs
+                    and candidate_pair_work_estimate >= _DENSE_GJK_PAIR_COUNT_THRESHOLD
+                    and not self.split_gjk_mpr
+                    and not wp.config.llvm_cuda
                     and not (has_meshes or has_heightfields or hydroelastic_sdf is not None)
                     and _group_reduction is None
                 ),
@@ -2983,7 +3036,6 @@ class NarrowPhase:
                 contact_func,
                 support_func=support_map_accelerated if convex_support_acceleration else support_map,
                 speculative=speculative,
-                _cuda_max_registers=fused_register_limit,
                 _direct_box_contacts=_direct_box_contacts,
             )
 
@@ -3440,7 +3492,7 @@ class NarrowPhase:
                         self.total_num_threads,
                     ],
                     device=device,
-                    block_dim=self._fused_block_dim,
+                    block_dim=self.block_dim,
                     record_tape=False,
                 )
 
@@ -3486,7 +3538,6 @@ class NarrowPhase:
         shape_body: wp.array[wp.int32] | None = None,
         writer_data: Any,
         device: Devicelike | None = None,  # Device to launch on
-        _counters_prepared: bool = False,
     ) -> None:
         """
         Launch narrow phase collision detection with a custom contact writer struct.
@@ -3556,8 +3607,94 @@ class NarrowPhase:
             shape_body: Per-shape body index, required with group reduction.
             writer_data: Custom struct instance for contact writing (type must match the custom writer function)
             device: Device to launch on
-            _counters_prepared: Whether the caller already cleared the routed-work counters.
         """
+        self._launch_custom_write(
+            candidate_pair=candidate_pair,
+            candidate_pair_count=candidate_pair_count,
+            shape_types=shape_types,
+            shape_data=shape_data,
+            shape_transform=shape_transform,
+            shape_source=shape_source,
+            shape_support_data=shape_support_data,
+            support_lut=support_lut,
+            support_vertex_offsets=support_vertex_offsets,
+            support_neighbors=support_neighbors,
+            shape_mesh_properties=shape_mesh_properties,
+            mesh_boundary_flags=mesh_boundary_flags,
+            shape_mesh_boundary_start=shape_mesh_boundary_start,
+            shape_sdf_index=shape_sdf_index,
+            shape_gap=shape_gap,
+            shape_base_gap=shape_base_gap,
+            shape_collision_radius=shape_collision_radius,
+            shape_flags=shape_flags,
+            shape_collision_aabb_lower=shape_collision_aabb_lower,
+            shape_collision_aabb_upper=shape_collision_aabb_upper,
+            shape_voxel_resolution=shape_voxel_resolution,
+            shape_interior_point=shape_interior_point,
+            texture_sdf_data=texture_sdf_data,
+            shape_heightfield_index=shape_heightfield_index,
+            heightfield_data=heightfield_data,
+            heightfield_elevations=heightfield_elevations,
+            mesh_edge_indices=mesh_edge_indices,
+            mesh_edge_centers=mesh_edge_centers,
+            mesh_edge_halves=mesh_edge_halves,
+            shape_edge_range=shape_edge_range,
+            hydroelastic_shape_sdf_data_prepared=hydroelastic_shape_sdf_data_prepared,
+            shape_linear_velocity=shape_linear_velocity,
+            shape_angular_velocity=shape_angular_velocity,
+            collision_update_dt=collision_update_dt,
+            max_speculative_extension=max_speculative_extension,
+            body_q=body_q,
+            shape_body=shape_body,
+            writer_data=writer_data,
+            device=device,
+        )
+
+    def _launch_custom_write(
+        self,
+        *,
+        candidate_pair: wp.array[wp.vec2i],  # Maybe colliding pairs
+        candidate_pair_count: wp.array[wp.int32],  # Size one array
+        shape_types: wp.array[wp.int32],  # All shape types, pairs index into it
+        shape_data: wp.array[wp.vec4],  # Shape data (scale xyz, margin w)
+        shape_transform: wp.array[wp.transform],  # In world space
+        shape_source: wp.array[wp.uint64],  # The index into the source array, type define by shape_types
+        shape_support_data: wp.array[wp.vec4i] | None = None,
+        support_lut: wp.array[wp.int32] | None = None,
+        support_vertex_offsets: wp.array[wp.int32] | None = None,
+        support_neighbors: wp.array[wp.int32] | None = None,
+        shape_mesh_properties: wp.array[wp.int32] | None = None,  # Per-shape mesh property bitfield
+        mesh_boundary_flags: wp.array[wp.uint8] | None = None,  # Packed per-face open-boundary bits
+        shape_mesh_boundary_start: wp.array[wp.int32] | None = None,  # Per-shape start into the bits
+        shape_sdf_index: wp.array[wp.int32],  # Per-shape index into texture_sdf_data (-1 for none)
+        shape_gap: wp.array[wp.float32],  # per-shape contact gap (detection threshold)
+        shape_base_gap: wp.array[wp.float32] | None = None,
+        shape_collision_radius: wp.array[wp.float32],  # per-shape collision radius for AABB fallback
+        shape_flags: wp.array[wp.int32],  # per-shape flags (includes ShapeFlags.HYDROELASTIC)
+        shape_collision_aabb_lower: wp.array[wp.vec3],  # Local-space AABB lower bounds
+        shape_collision_aabb_upper: wp.array[wp.vec3],  # Local-space AABB upper bounds
+        shape_voxel_resolution: wp.array[wp.vec3i],  # Voxel grid resolution per shape
+        shape_interior_point: wp.array[wp.vec3] | None = None,  # Local-space interior points
+        texture_sdf_data: wp.array[TextureSDFData] | None = None,  # Compact texture SDF data table
+        shape_heightfield_index: wp.array[wp.int32] | None = None,
+        heightfield_data: wp.array[HeightfieldData] | None = None,
+        heightfield_elevations: wp.array[wp.float32] | None = None,
+        mesh_edge_indices: wp.array[wp.vec2i] | None = None,
+        mesh_edge_centers: wp.array[wp.vec4] | None = None,
+        mesh_edge_halves: wp.array[wp.vec4] | None = None,
+        shape_edge_range: wp.array[wp.vec2i] | None = None,
+        hydroelastic_shape_sdf_data_prepared: bool = False,
+        shape_linear_velocity: wp.array[wp.vec3] | None = None,
+        shape_angular_velocity: wp.array[wp.vec3] | None = None,
+        collision_update_dt: float = 0.0,
+        max_speculative_extension: float = 0.0,
+        body_q: wp.array[wp.transform] | None = None,
+        shape_body: wp.array[wp.int32] | None = None,
+        writer_data: Any,
+        device: Devicelike | None = None,  # Device to launch on
+        _counters_prepared: bool = False,
+    ) -> None:
+        """Launch with explicit ownership of the routed-work counter reset."""
         if device is None:
             device = self.device if self.device is not None else candidate_pair.device
         if shape_mesh_properties is None:
@@ -3652,7 +3789,7 @@ class NarrowPhase:
                 self._unit_scale_sdf_rescaled,
             ],
             device=device,
-            block_dim=self._primitive_block_dim,
+            block_dim=self.block_dim,
             record_tape=False,
         )
 

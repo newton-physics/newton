@@ -516,23 +516,6 @@ class TestModelView(unittest.TestCase):
         self.assertEqual(view.shape_flags.shape[0], 1)
         self.assertEqual(self.model.body_mass.shape[0], 2)
 
-    def test_prefix_collision_pipeline_ignores_parent_source_tail(self):
-        """Construct and run collisions when a prefix view retains its parent's source list."""
-        for device in get_test_devices():
-            with self.subTest(device=str(device)):
-                builder = newton.ModelBuilder()
-                for _ in range(2):
-                    body = builder.add_body()
-                    builder.add_shape_sphere(body, radius=0.1)
-                model = builder.finalize(device=device)
-                view = ModelView(model, "prefix")
-                view.body_count = 1
-                view.shape_count = 1
-                pipeline = newton.CollisionPipeline(view, broad_phase="nxn")
-                contacts = pipeline.contacts()
-                pipeline.collide(view.state(), contacts)
-                self.assertEqual(int(contacts.rigid_contact_count.numpy()[0]), 0)
-
     def test_control_uses_view_joint_arrays(self):
         """Create controls from the view's joint arrays."""
         view = ModelView(self.model, "test")

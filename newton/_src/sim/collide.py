@@ -2516,7 +2516,7 @@ class CollisionPipeline:
                     self.shape_pairs_filtered,
                     group_staging_capacity,
                 )
-            self.narrow_phase = NarrowPhase(
+            self.narrow_phase = NarrowPhase._create_for_pipeline(
                 max_candidate_pairs=self.shape_pairs_max,
                 max_triangle_pairs=max_triangle_pairs,
                 max_mesh_mesh_pairs=max_mesh_mesh_pairs,
@@ -3408,7 +3408,9 @@ class CollisionPipeline:
         writer_data.max_speculative_extension = max_speculative_extension
         # Run narrow phase with custom contact writer (writes directly to Contacts format)
         narrow_phase_extension_kwargs = {}
+        launch_narrow_phase = self.narrow_phase.launch_custom_write
         if type(self.narrow_phase).launch_custom_write is NarrowPhase.launch_custom_write:
+            launch_narrow_phase = self.narrow_phase._launch_custom_write
             narrow_phase_extension_kwargs.update(
                 mesh_edge_centers=model._mesh_edge_centers,
                 mesh_edge_halves=model._mesh_edge_halves,
@@ -3429,7 +3431,7 @@ class CollisionPipeline:
             )
         if self._reduces_body_pairs:
             narrow_phase_extension_kwargs.update(body_q=state.body_q, shape_body=model.shape_body)
-        self.narrow_phase.launch_custom_write(
+        launch_narrow_phase(
             candidate_pair=self.broad_phase_shape_pairs,
             candidate_pair_count=self.broad_phase_pair_count,
             shape_types=model.shape_type,
