@@ -1396,7 +1396,8 @@ def accumulate_spring_force_and_hessian(
 
 
 # Warp 1.18 added the explicit inlining hint.
-_inline_vbd_func = wp.func(inline=True) if tuple(int(v) for v in wp.__version__.split(".")[:2]) >= (1, 18) else wp.func
+_supports_func_inlining = tuple(int(v) for v in wp.__version__.split(".")[:2]) >= (1, 18)
+_inline_vbd_func = wp.func(inline=True) if _supports_func_inlining else wp.func
 
 
 @_inline_vbd_func
@@ -2891,6 +2892,12 @@ def _scalar_native_accumulate_elasticity(
     return f, h
 
 
+# The staged scalar loop relies on explicit inlining to keep its lookahead inexpensive.
+_accumulate_scalar_elasticity = (
+    _scalar_native_accumulate_elasticity if _supports_func_inlining else accumulate_elasticity_force_and_hessian
+)
+
+
 @wp.kernel(launch_bounds=(256, 1))
 def solve_elasticity(
     dt: float,
@@ -2941,7 +2948,7 @@ def solve_elasticity(
             f[0], f[1], f[2], h[0, 0], h[0, 1], h[0, 2], h[1, 0], h[1, 1], h[1, 2], h[2, 0], h[2, 1], h[2, 2],
         )
 
-    f, h = _scalar_native_accumulate_elasticity(
+    f, h = _accumulate_scalar_elasticity(
         particle_index,
         dt,
         pos_prev,
