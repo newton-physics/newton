@@ -11149,6 +11149,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             device=self.model.device,
         )
 
+        if self.use_mujoco_cpu:
+            self.mj_model.site_pos[:] = self.mjw_model.site_pos.numpy()[0]
+            self.mj_model.site_quat[:] = self.mjw_model.site_quat.numpy()[0]
+            self.mj_model.site_size[:] = self.mjw_model.site_size.numpy()
+            self._mujoco.mj_kinematics(self.mj_model, self.mj_data)
+
     def _publish_joint_limit_properties(self):
         """Retain notified limit parameters and promote edited MJCF-default gains."""
         if self.model.joint_dof_count == 0:

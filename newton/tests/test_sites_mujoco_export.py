@@ -40,33 +40,52 @@ class TestMuJoCoSiteExport(unittest.TestCase):
                 wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.5),
             ),
         )
-        model = builder.finalize()
-        solver = SolverMuJoCo(model, separate_worlds=True, disable_contacts=True)
+        for cpu in (False, True):
+            with self.subTest(cpu=cpu):
+                model = builder.finalize()
+                solver = SolverMuJoCo(model, separate_worlds=True, disable_contacts=True, use_mujoco_cpu=cpu)
 
-        def assert_site_poses_match_model() -> None:
-            site_shapes = np.flatnonzero(model.shape_flags.numpy() & int(newton.ShapeFlags.SITE))
-            shape_transforms = model.shape_transform.numpy()[site_shapes]
-            np.testing.assert_allclose(solver.mjw_model.site_pos.numpy()[:, 0], shape_transforms[:, :3], atol=1.0e-6)
-            np.testing.assert_allclose(solver.mjw_data.site_xpos.numpy()[:, 0], shape_transforms[:, :3], atol=1.0e-6)
+                def assert_site_poses_match_model(model, solver) -> None:
+                    site_shapes = np.flatnonzero(model.shape_flags.numpy() & int(newton.ShapeFlags.SITE))
+                    shape_transforms = model.shape_transform.numpy()[site_shapes]
+                    np.testing.assert_allclose(
+                        solver.mjw_model.site_pos.numpy()[:, 0], shape_transforms[:, :3], atol=1.0e-6
+                    )
 
-            expected_xmat = np.stack(
-                [np.asarray(wp.quat_to_matrix(wp.quat(*transform[3:]))).reshape(3, 3) for transform in shape_transforms]
-            )
-            np.testing.assert_allclose(solver.mjw_data.site_xmat.numpy()[:, 0], expected_xmat, atol=1.0e-6)
+                    expected_xmat = np.stack(
+                        [
+                            np.asarray(wp.quat_to_matrix(wp.quat(*transform[3:]))).reshape(3, 3)
+                            for transform in shape_transforms
+                        ]
+                    )
+                    if solver.use_mujoco_cpu:
+                        np.testing.assert_allclose(solver.mj_model.site_pos[0], shape_transforms[0, :3], atol=1e-6)
+                        np.testing.assert_allclose(
+                            solver.mj_model.site_quat[0], shape_transforms[0, [6, 3, 4, 5]], atol=1e-6
+                        )
+                        np.testing.assert_allclose(solver.mj_data.site_xpos[0], shape_transforms[0, :3], atol=1e-6)
+                        np.testing.assert_allclose(
+                            solver.mj_data.site_xmat[0].reshape(3, 3), expected_xmat[0], atol=1e-6
+                        )
+                    else:
+                        np.testing.assert_allclose(
+                            solver.mjw_data.site_xpos.numpy()[:, 0], shape_transforms[:, :3], atol=1e-6
+                        )
+                        np.testing.assert_allclose(solver.mjw_data.site_xmat.numpy()[:, 0], expected_xmat, atol=1e-6)
 
-        assert_site_poses_match_model()
+                assert_site_poses_match_model(model, solver)
 
-        transforms = [
-            wp.transform(
-                wp.vec3(-0.2 + i, 0.4 + 0.5 * i, 0.3 - 0.1 * i),
-                wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.2 + 0.15 * i),
-            )
-            for i in range(model.shape_count)
-        ]
-        model.shape_transform.assign(wp.array(transforms, dtype=wp.transform, device=model.device))
-        solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+                transforms = [
+                    wp.transform(
+                        wp.vec3(-0.2 + i, 0.4 + 0.5 * i, 0.3 - 0.1 * i),
+                        wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.2 + 0.15 * i),
+                    )
+                    for i in range(model.shape_count)
+                ]
+                model.shape_transform.assign(wp.array(transforms, dtype=wp.transform, device=model.device))
+                solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
 
-        assert_site_poses_match_model()
+                assert_site_poses_match_model(model, solver)
 
     def test_site_size_updates_at_runtime(self):
         """Propagate runtime shape_scale changes to MuJoCo site sizes."""
@@ -75,16 +94,26 @@ class TestMuJoCoSiteExport(unittest.TestCase):
         builder.add_site(body, type=GeoType.BOX, scale=(0.1, 0.2, 0.3), label="box_site")
         builder.add_site(body, type=GeoType.SPHERE, scale=(0.05, 0.05, 0.05), label="sphere_site")
 
-        model = builder.finalize()
-        solver = SolverMuJoCo(model)
+        for cpu in (False, True):
+            with self.subTest(cpu=cpu):
+                model = builder.finalize()
+                solver = SolverMuJoCo(model, use_mujoco_cpu=cpu)
 
-        np.testing.assert_allclose(solver.mjw_model.site_size.numpy(), [[0.1, 0.2, 0.3], [0.05, 0.05, 0.05]], atol=1e-6)
+                np.testing.assert_allclose(
+                    solver.mjw_model.site_size.numpy(), [[0.1, 0.2, 0.3], [0.05, 0.05, 0.05]], atol=1e-6
+                )
 
-        model.shape_scale.assign(wp.array([[0.4, 0.5, 0.6], [0.07, 0.0, 0.0]], dtype=wp.vec3, device=model.device))
-        solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+                model.shape_scale.assign(
+                    wp.array([[0.4, 0.5, 0.6], [0.07, 0.0, 0.0]], dtype=wp.vec3, device=model.device)
+                )
+                solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
 
-        # Zero components fall back to the first nonzero one, matching export.
-        np.testing.assert_allclose(solver.mjw_model.site_size.numpy(), [[0.4, 0.5, 0.6], [0.07, 0.07, 0.07]], atol=1e-6)
+                # Zero components fall back to the first nonzero one, matching export.
+                np.testing.assert_allclose(
+                    solver.mjw_model.site_size.numpy(), [[0.4, 0.5, 0.6], [0.07, 0.07, 0.07]], atol=1e-6
+                )
+                if cpu:
+                    np.testing.assert_allclose(solver.mj_model.site_size, solver.mjw_model.site_size.numpy(), atol=1e-6)
 
     def test_site_size_updates_batched_worlds(self):
         """Sync site sizes from uniform runtime scale updates across batched worlds."""
