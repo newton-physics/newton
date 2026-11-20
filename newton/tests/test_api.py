@@ -2,6 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import inspect
+import os
+import subprocess
+import sys
+import textwrap
 import typing as _t
 import unittest
 
@@ -90,6 +94,39 @@ def _check_builder_method_matches_importer_function_signature(func, method):
 
 
 class TestApi(unittest.TestCase):
+    def test_null_viewer_does_not_load_unused_backends(self):
+        """Keep an unusable optional backend from affecting the null viewer."""
+        environment = os.environ.copy()
+        for name in ("DISPLAY", "WAYLAND_DISPLAY", "PYGLET_HEADLESS"):
+            environment.pop(name, None)
+        script = textwrap.dedent("""
+            import importlib.abc
+            import sys
+
+            class UnavailableBackend(importlib.abc.MetaPathFinder):
+                def find_spec(self, fullname, path=None, target=None):
+                    if fullname == "rerun":
+                        raise RuntimeError("The unused Rerun backend cannot initialize")
+
+            sys.meta_path.insert(0, UnavailableBackend())
+            from newton.viewer import ViewerNull
+            viewer = ViewerNull(num_frames=1)
+            assert viewer.is_running()
+            viewer.begin_frame(0.0)
+            viewer.end_frame()
+            assert not viewer.is_running()
+            viewer.close()
+        """)
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_joint_target_layout_flag_removed(self):
         """Expose coordinate-shaped position targets without a layout switch."""
         import newton  # noqa: PLC0415

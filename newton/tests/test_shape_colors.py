@@ -667,6 +667,7 @@ class TestShapeColors(unittest.TestCase):
         self.assertFalse(transparent.hidden)
 
         renderer = RendererGL.__new__(RendererGL)
+        renderer._physics_xray = False
         opaque_objects, transparent_objects = renderer._split_transparent_objects(
             {"opaque": opaque, "transparent": transparent}, scene_has_transparency=True
         )
@@ -796,6 +797,12 @@ class TestShapeColors(unittest.TestCase):
     def test_render_scene_falls_back_to_alpha_blending_without_oit(self):
         """Render transparency with alpha blending when weighted OIT is unavailable."""
         renderer = RendererGL.__new__(RendererGL)
+        renderer._physics_xray = False
+        renderer._surface_grid_enabled = False
+        renderer._surface_grid_objects = ()
+        renderer._contact_labels = ()
+        renderer._joint_triangles = None
+        renderer._selection_instances = ()
         transparent_shader = MagicMock()
         renderer._shape_shader = MagicMock()
         renderer._shape_transparent_shader = transparent_shader
@@ -822,7 +829,9 @@ class TestShapeColors(unittest.TestCase):
 
         self.assertFalse(msaa_resolved)
         transparent_shader.set_oit_enabled.assert_called_once_with(False)
-        renderer._render_blended_transparent_objects.assert_called_once_with([("transparent", transparent_object)])
+        renderer._render_blended_transparent_objects.assert_called_once_with(
+            [("transparent", transparent_object)], shells=[], collisions=[], wires=[], envelopes={}
+        )
         renderer._render_transparent_objects.assert_not_called()
         # The opaque MSAA target stays multisampled; no early resolve is needed.
         renderer._resolve_msaa_frame.assert_not_called()
