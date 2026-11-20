@@ -333,7 +333,7 @@ class TestViewerGLGetFrame(unittest.TestCase):
                 with self.subTest(device=device, variants=variants):
                     model = (builder if variants else variant).finalize(device=device)
                     viewer.set_model(model)
-                    workspace.bind(None)
+                    workspace.bind()
                     for choice in (1, 0, 1) if variants else (0,):
                         if variants:
                             changed = model.select_body_variants(wp.array([choice], dtype=int, device=device))
@@ -363,7 +363,7 @@ class TestViewerGLGetFrame(unittest.TestCase):
                 ]
                 model = builder.finalize()
             viewer.set_model(model)
-            workspace.bind(None)
+            workspace.bind()
             viewer.show_collision = True
             viewer.show_visual = False
             viewer.begin_frame(0.0)
@@ -401,7 +401,7 @@ class TestViewerGLGetFrame(unittest.TestCase):
             with self.subTest(device=device):
                 model = builder.finalize(device=device)
                 viewer.set_model(model)
-                workspace.bind(None)
+                workspace.bind()
                 state = model.state()
                 contacts = newton.Contacts(4, 0, device=device)
                 contacts.rigid_contact_count.assign([3])
@@ -496,7 +496,7 @@ class TestViewerGLGetFrame(unittest.TestCase):
             with self.subTest(device=device):
                 model = builder.finalize(device=device)
                 viewer.set_model(model)
-                workspace.bind(None)
+                workspace.bind()
                 workspace.select(("body", 1))
                 workspace.select(("shape_texture", 0), toggle=True)
                 tree = workspace.tree
@@ -705,6 +705,77 @@ class TestViewerGLGetFrame(unittest.TestCase):
             self.assertIsNone(getattr(renderer, name), f"{name} was not released")
         for shader in xray:
             self.assertIsNone(shader.shader_program)
+
+    def test_gui_history_records_public_logging_calls(self) -> None:
+        """Record logged frames through ViewerGL and replay them without the application's objects."""
+        try:
+            import imgui_bundle  # noqa: F401
+        except ImportError as exc:
+            self.skipTest(f"Viewer UI dependencies not available: {exc}")
+        _viewer_gl_unavailable_error_types(self)
+        initialize_renderer = RendererGL.__init__
+
+        def initialize_offscreen(renderer: RendererGL, **kwargs: object) -> None:
+            kwargs["headless"] = True
+            initialize_renderer(renderer, **kwargs)
+
+        try:
+            with wp.ScopedDevice("cpu"), mock.patch.object(RendererGL, "__init__", initialize_offscreen):
+                viewer = ViewerGL(width=800, height=600)
+        except Exception as exc:
+            if _is_viewer_gl_unavailable_error(self, exc):
+                self.skipTest(f"ViewerGL display/backend not available: {exc}")
+            raise
+        self.addCleanup(viewer.close)
+        viewer.gui.ui.io.set_ini_filename("")
+        model = _make_box_model("cpu")
+        viewer.set_model(model)
+        state = model.state()
+        contacts = newton.Contacts(4, 0, device="cpu")
+        lines = wp.array([(0.0, 0.0, 0.0)], dtype=wp.vec3, device="cpu")
+
+        def frame(time: float) -> None:
+            viewer.begin_frame(time)
+            viewer.log_state(state)
+            viewer.log_contacts(contacts, state)
+            viewer.log_lines("trail", lines, lines, (1.0, 0.0, 0.0))
+            viewer.end_frame()
+
+        frame(0.0)
+        history = viewer.gui.workspace.history
+        self.assertIs(viewer._history, history)
+        # Recording is opt-in, so the default live path takes no snapshots.
+        self.assertFalse(history.recording)
+        self.assertFalse(history.frames)
+        history.set_recording(True)
+        for step in range(3):
+            state.body_q.fill_(wp.transform(wp.vec3(float(step), 0.0, 0.0), wp.quat_identity()))
+            frame(step / 60)
+        self.assertEqual(len(history.frames), 3)
+        recorded = history.frames[0]
+        layer = viewer._active_layer_id
+        # Only the application's own calls are recorded, not lines drawn by log_contacts().
+        self.assertEqual(set(recorded.arrays), {("lines", layer, "trail")})
+        self.assertEqual(len(recorded.states), 1)
+        self.assertEqual(len(recorded.contact_records), 1)
+
+        # Replay displays the recorded frame for the same calls; stepping
+        # advances playback and resumes only at the newest frame.
+        history.select(0)
+        viewer._paused = False
+        frame(2 / 60)
+        self.assertIsNot(viewer._last_state, state)
+        np.testing.assert_allclose(viewer._last_state.body_q.numpy()[0, :3], [0, 0, 0])
+        np.testing.assert_allclose(state.body_q.numpy()[0, :3], [2, 0, 0])
+        self.assertEqual(len(history.frames), 3)
+        self.assertFalse(viewer.should_step())
+        self.assertEqual(history.index, 1)
+        self.assertFalse(viewer.should_step())
+        self.assertEqual(history.index, 2)
+        self.assertTrue(viewer.should_step())
+        frame(3 / 60)
+        self.assertIs(viewer._last_state, state)
+        self.assertEqual(len(history.frames), 4)
 
     def test_gui_mode_and_legacy_callbacks(self) -> None:
         """Render the default workspace and opt-in legacy panels with real ImGui callbacks."""

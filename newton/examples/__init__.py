@@ -405,9 +405,6 @@ class _ExampleBrowser:
                         imgui.tree_pop()
 
         self.callback = _browser_ui
-        gui = getattr(viewer, "gui", None)
-        if gui is not None and hasattr(gui, "_workspace_example"):
-            gui._workspace_browser = self
         viewer.register_ui_callback(_browser_ui, position="panel")
         if hasattr(viewer, "set_reset_callback"):
             viewer.set_reset_callback(lambda: setattr(self, "_reset_requested", True))
@@ -424,11 +421,6 @@ class _ExampleBrowser:
             else:
                 self._reset_requested = True
         ui.separator()
-
-    def _register_ui(self, example):
-        """Re-register the example's GUI callback (panel callbacks survive clear_model)."""
-        if hasattr(example, "gui") and hasattr(self.viewer, "register_ui_callback"):
-            self.viewer.register_ui_callback(lambda ui, ex=example: ex.gui(ui), position="side")
 
     def draw_load_error(self, imgui: ModuleType) -> None:
         """Show the browser error inside the workspace without duplicating retry logic."""
@@ -498,23 +490,18 @@ class _ExampleBrowser:
                 with self.viewer._preserve_display_options(switching=True):
                     self._clear_viewer_scene()
                     self.current_module = None
-                    camera_revision = getattr(self.viewer, "_camera_revision", 0)
                     mod = importlib.import_module(module_path)
                     parser = getattr(mod.Example, "create_parser", create_parser)()
                     new_args = default_args(parser)
                     # Constructors may mutate their argument namespace.
                     initial_args = copy.deepcopy(new_args)
                     example = mod.Example(self.viewer, new_args)
-                    self._register_ui(example)
+                    _attach_example(self.viewer, example)
             except (Exception, SystemExit) as error:
                 self.report_error(error, module_path, phase="load", retry_switch=True)
                 return None, example_class
             self._initial_args = initial_args
             self.current_module = module_path
-            gui = getattr(self.viewer, "gui", None)
-            if gui is not None and hasattr(gui, "_frame_camera_pending"):
-                # Retain authored cameras; fit other models after the first state.
-                gui._frame_camera_pending = camera_revision == getattr(self.viewer, "_camera_revision", 0)
             logger.info("Loaded example %s", module_path.rsplit(".", 1)[-1])
             return example, type(example)
         finally:
@@ -538,7 +525,7 @@ class _ExampleBrowser:
                         parser = getattr(example_class, "create_parser", create_parser)()
                         args = default_args(parser)
                     new_example = example_class(self.viewer, args)
-                    self._register_ui(new_example)
+                    _attach_example(self.viewer, new_example)
             except (Exception, SystemExit) as error:
                 self.report_error(error, module_path, phase="reset")
                 return None
@@ -609,6 +596,37 @@ def _throttle_render_fps(
     return sleep_time
 
 
+def _attach_example(viewer, example) -> None:
+    """Register an example's GUI and expose its simulation components through the viewer's setters.
+
+    Examples conventionally name their components ``control`` and ``solver``
+    and store collision pipelines as direct attributes. Only components that
+    belong to the viewer's Model are supplied; everything else the viewer
+    inspects comes from the example's logging calls.
+    """
+    if hasattr(example, "gui") and hasattr(viewer, "register_ui_callback"):
+        viewer.register_ui_callback(lambda ui, ex=example: ex.gui(ui), position="side")
+    model = getattr(viewer, "model", None)
+    if model is None:
+        return
+    control = getattr(example, "control", None)
+    if isinstance(control, newton.Control):
+        viewer.set_control(control)
+    solver = getattr(example, "solver", None)
+    if isinstance(solver, newton.solvers.SolverBase) and solver.model is model:
+        viewer.set_solver(solver)
+    pipeline = next(
+        (
+            value
+            for value in vars(example).values()
+            if isinstance(value, newton.CollisionPipeline) and value.model is model
+        ),
+        None,
+    )
+    if pipeline is not None:
+        viewer.set_collision_pipeline(pipeline)
+
+
 def run(example, args):
     """Run an example, enabling browser recovery in interactive viewers.
 
@@ -643,9 +661,7 @@ def run(example, args):
         and (hasattr(viewer, "register_ui_callback") or hasattr(viewer, "_configure_example_browser"))
     )
     browser = _ExampleBrowser(viewer, args) if interactive else None
-
-    if hasattr(example, "gui") and hasattr(viewer, "register_ui_callback"):
-        viewer.register_ui_callback(lambda ui, ex=example: ex.gui(ui), position="side")
+    _attach_example(viewer, example)
 
     while viewer.is_running():
         frame_start_time = time.perf_counter()
@@ -668,23 +684,14 @@ def run(example, args):
             continue
 
         try:
-            gui = getattr(viewer, "gui", None)
-            if gui is not None and hasattr(gui, "_workspace_example"):
-                gui._workspace_example = example
-            workspace = getattr(gui, "workspace", None)
-            if workspace is not None:
-                workspace.bind(example)
-            if viewer.should_step() and (workspace is None or workspace.before_step()):
+            if viewer.should_step():
                 with wp.ScopedTimer("step", active=False):
                     example.step()
             if test_post_step:
                 example.test_post_step()
 
             with wp.ScopedTimer("render", active=False):
-                if workspace is None:
-                    example.render()
-                else:
-                    workspace.render_example()
+                example.render()
         except (Exception, SystemExit) as error:
             if browser is None:
                 # Test/benchmark failures must still propagate to the caller.

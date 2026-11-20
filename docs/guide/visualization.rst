@@ -408,8 +408,8 @@ depends on the viewer backend.
 
 Use a live viewer such as :class:`~newton.viewer.ViewerGL` to inspect the
 current scene and add :ref:`custom overlays <viewer-custom-visualization>` for
-contacts or other diagnostic data. Its example runner also offers bounded
-local history; see :ref:`viewer-inspection`. For persistent or external historical inspection, enable
+contacts or other diagnostic data. Its inspection workspace can also record
+bounded local history of logged frames; see :ref:`viewer-inspection`. For persistent or external historical inspection, enable
 ``keep_historical_data`` in :class:`~newton.viewer.ViewerRerun` to retain a
 timeline for the current viewer session, or use
 :ref:`ViewerFile <viewer-file-recording>` to create a persistent state-snapshot
@@ -437,7 +437,7 @@ All viewer backends inherit from :class:`~newton.viewer.ViewerBase` and share a 
 - :meth:`~newton.viewer.ViewerBase.end_frame` — finish the frame and present it
 - :meth:`~newton.viewer.ViewerBase.is_running` — check whether the viewer is still open (useful as a loop condition)
 - :meth:`~newton.viewer.ViewerBase.is_paused` — check whether the simulation is paused (toggled with ``SPACE`` in :class:`~newton.viewer.ViewerGL`)
-- :meth:`~newton.viewer.ViewerBase.should_step` — call exactly once per frame; returns ``True`` when running, or ``True`` once after a single-step request (triggered with ``.`` or the "Step" button in :class:`~newton.viewer.ViewerGL`) and ``False`` otherwise; prefer this over composing ``is_paused()`` manually
+- :meth:`~newton.viewer.ViewerBase.should_step` — call exactly once per frame; returns ``True`` when running, or ``True`` once after a single-step request (triggered with ``.`` or the "Step" button in :class:`~newton.viewer.ViewerGL`) and ``False`` otherwise, including while :class:`~newton.viewer.ViewerGL` replays recorded history; prefer this over composing ``is_paused()`` manually
 - :meth:`~newton.viewer.ViewerBase.set_rendering_paused` / :meth:`~newton.viewer.ViewerBase.is_rendering_paused` — freeze or resume the displayed image independently of simulation stepping in GL and RTX
 - :meth:`~newton.viewer.ViewerBase.close` — close the viewer and release resources
 
@@ -570,7 +570,7 @@ Interactive inspection in ViewerGL
 ----------------------------------
 
 ViewerGL presents an explorer, a central viewport, State / Control / Model
-properties, and a timeline when running through ``newton.examples.run``.
+properties, and a timeline of recorded frames.
 The explorer includes worlds, articulations, joints, bodies, shapes, deformable
 objects, custom attribute frequencies, and available geometry resources.
 Empty property categories are hidden. Custom attributes use their registered
@@ -668,18 +668,18 @@ inspection uses the objects supplied through ``log_state`` and ``log_contacts``:
 
 The setters retain references in the active viewer layer without copying
 arrays or stepping the simulation. Repeating a setter replaces only that
-component; passing ``None`` clears it, including any example-derived fallback.
-The solver and pipeline must belong to the active Model. Log the current State
-after each buffer swap; no State callback or separate registration is needed.
-The application owns all objects and stepping. Clearing or replacing a Model
-discards its inspected components and logged buffers.
+component; passing ``None`` clears it. The solver and pipeline must belong to
+the active Model. Log the current State after each buffer swap; no State
+callback or separate registration is needed. The application owns all objects
+and stepping. Clearing or replacing a Model discards its inspected components
+and logged buffers.
 
-The example runner supplies an internal adapter for conventional example
-attributes (``state_0`` or ``state``, ``control``, ``solver``, ``contacts``, and
-collision pipelines). Existing examples do not need registration calls.
-Explicit setters override discovery for their respective components. Custom
-loops use the setters and ordinary logging calls; the example-runner history
-and replay callbacks are not automatically installed in custom loops.
+These calls are the inspector's only inputs: the viewer never reads attributes
+of an application or example object. ``newton.examples.run`` follows the same
+contract, passing an example's ``control``, ``solver``, and collision pipeline
+to the setters after constructing it and then running the loop above. Without
+``set_solver``, collision pipelines held directly by the solver are still
+inspected.
 
 Editing, history, and rebuilding
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -694,11 +694,22 @@ Editing, history, and rebuilding
   playback reaches the latest frame before live simulation resumes. They
   are not solver checkpoints and cannot restart simulation from an arbitrary
   earlier time.
-* Recording is opt-in for compatible examples: enable **Record history** in
-  the timeline to retain display snapshots. Recording is bounded to
-  128 MiB and 60,000 display frames. A snapshot above 64 MiB stops recording
-  before state-array transfers. Recording copies selected state, control,
-  and contact arrays to the host. With recording off, no snapshots are taken.
+* Recording is opt-in: enable **Record history** in the timeline to retain
+  display snapshots. Between ``begin_frame`` and ``end_frame``, the viewer
+  copies the arrays the application passes to ``log_state``, ``log_contacts``
+  (including solver observables), ``log_points``, and ``log_lines`` to the host,
+  together with the Control from ``set_control``. Frames are keyed by the time
+  passed to ``begin_frame``, so a paused loop that renders the same time again
+  records nothing new. Recording is bounded to 128 MiB and 60,000 display
+  frames; a frame above 64 MiB stops recording before its arrays are
+  transferred. With recording off, no snapshots are taken.
+* While the timeline shows a recorded frame, the same logging calls display
+  that frame's data instead of their arguments, matched by call order within
+  the frame and by name for points and lines; the application's arrays are not
+  modified. Other logged data, such as shapes, scalars, and images, stays live.
+  ``should_step`` advances playback instead of returning ``True`` until the
+  newest frame is reached, so call it to keep the simulation from running ahead
+  during replay.
 * Topology editing and USD authoring are not provided by this inspector.
   Rebuild the Model, State, Control, Solver, and CollisionPipeline in the
   application, then call ``set_model`` and the relevant component setters again.
@@ -715,9 +726,8 @@ presentation and rendering:
 
     flowchart TD
         App[Application-owned simulation] --> Bind[Component setters and frame logging]
-        Adapter[Conventional example adapter] --> Bind
         Bind --> Data[Model tree and attribute metadata]
-        Adapter --> History[Bounded display history]
+        Bind --> History[Bounded history of logged frames]
         Data --> UI[ImGui explorer and property panels]
         History --> Timeline[ImGui timeline presenter]
         UI --> GL[OpenGL overlays and selection rendering]
@@ -861,8 +871,8 @@ Keys can be specified as single-character strings (``'w'``), special key names (
 
 :meth:`~newton.viewer.ViewerGL.register_ui_callback` adds custom imgui UI elements to the viewer.
 The ``position`` parameter controls placement: ``"side"`` (default), ``"stats"``, ``"free"``, or ``"panel"``.
-In the docked workspace, ``"panel"`` and ``"side"`` callbacks share the inspector's Example tab, named
-Custom when the viewer is driven by your own loop; ``"stats"`` callbacks draw in the viewport overlay:
+In the docked workspace, ``"panel"`` and ``"side"`` callbacks share the inspector's Controls tab;
+``"stats"`` callbacks draw in the viewport overlay:
 
 .. code-block:: python
 

@@ -148,7 +148,7 @@ class TestViewerCameraOrbit(unittest.TestCase):
         # BVH selections share the focus path, with their own world filter and
         # full bounds even when the overlay is hidden or its budget is small.
         model.bvh_build_shapes(viewer._last_state)
-        ws.tree, ws.example, ws.history = ModelTree(model), None, None
+        ws.tree, ws.history = ModelTree(model), None
         ws.selected = ("bvh", "shapes")
         bvhs = ws.tree.resources.bvhs
         bvhs.scope, bvhs.world, bvhs.limit, bvhs.show_bounds = 0, 0, 16, False

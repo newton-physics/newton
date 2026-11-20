@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from typing import Any
 
     from .gui.collision import CollisionInspector
-    from .viewer_types import TreeKey, ViewerExample
+    from .viewer_types import TreeKey
 
 
 class ModelTree:
@@ -38,7 +38,6 @@ class ModelTree:
         model: Model,
         world: int = 0,
         *,
-        example: ViewerExample | None = None,
         bindings: InspectionBindings | None = None,
     ) -> None:
         """Create resource catalogs and world roots, materializing only the initial world.
@@ -48,7 +47,7 @@ class ModelTree:
         solver resources without transferring live state here.
         """
         self.model = model
-        self.bindings = bindings if bindings is not None else InspectionBindings.from_example(example)
+        self.bindings = bindings if bindings is not None else InspectionBindings()
         self.children: defaultdict[TreeKey, list[TreeKey]] = defaultdict(list)
         self.labels: dict[TreeKey, str] = {}
         self.expanded: set[TreeKey] = set()
@@ -67,9 +66,9 @@ class ModelTree:
         from .viewer_frequencies import CustomFrequencyIndex  # noqa: PLC0415
         from .viewer_resources import GeometryInspector  # noqa: PLC0415
 
-        self.deformables = DeformableCatalog(model, example)
+        self.deformables = DeformableCatalog(model)
         self.custom = CustomFrequencyIndex(model)
-        self.resources = GeometryInspector(model, example, bindings=self.bindings)
+        self.resources = GeometryInspector(model, bindings=self.bindings)
         # These small boundary arrays scale with worlds, not scene objects.
         self.starts: dict[str, np.ndarray] = {}
         for kind in (*self.kinds, "particle"):

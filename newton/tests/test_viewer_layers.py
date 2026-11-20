@@ -113,24 +113,19 @@ class TestViewerLayers(unittest.TestCase):
         )
         workspace.rect = (0, 0, 64, 48)
         for device in [wp.get_device("cpu"), *wp.get_cuda_devices()[:1]]:
-            for kind in ("primary", "auxiliary", "cloth"):
+            for kind in ("primary", "cloth"):
                 with self.subTest(device=device, kind=kind):
                     builder = newton.ModelBuilder()
                     body = builder.add_body(xform=wp.transform((0, 1, 0), wp.quat_identity()))
                     builder.add_shape_sphere(body, radius=0.3)
-                    particles = newton.ModelBuilder() if kind == "auxiliary" else builder
                     points = ((-1, -1, -1), (1, -1, -1), (0, -1, 1)) if kind == "cloth" else ((0, -1, 0),)
                     for position in points:
-                        particles.add_particle(pos=wp.vec3(position), vel=wp.vec3(0), mass=1.0, radius=0.1)
+                        builder.add_particle(pos=wp.vec3(position), vel=wp.vec3(0), mass=1.0, radius=0.1)
                     if kind == "cloth":
                         builder.add_triangle(0, 1, 2)
                     model = builder.finalize(device=device)
-                    example = SimpleNamespace(model=model, viewer=viewer)
-                    if kind == "auxiliary":
-                        example.particle_model = particles.finalize(device=device)
-                        example.particle_state = example.particle_model.state()
                     viewer.set_model(model)
-                    workspace.bind(example)
+                    workspace.bind()
                     viewer.show_triangles = True
                     workspace.selection_mode = "body" if kind == "cloth" else "particle"
                     viewer.set_camera((0, -4, 0), 0, 0)
@@ -140,14 +135,6 @@ class TestViewerLayers(unittest.TestCase):
                         viewer.begin_frame(0.0)
                         viewer.log_state(model.state())
                         workspace._ensure_tree()
-                        if kind == "auxiliary":
-                            points, radii, hidden = workspace.tree.deformables.logged_points(
-                                workspace,
-                                example.particle_state.particle_q,
-                                example.particle_model.particle_radius,
-                                False,
-                            )
-                            viewer.log_points("sand", points, radii=radii, hidden=hidden or not visible)
                         viewer.end_frame()
                         workspace.select_from_screen(32, 24, lambda x, y: (x, y))
                         if kind == "cloth":

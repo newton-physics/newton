@@ -11,7 +11,7 @@ import unittest
 from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest import mock
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 import numpy as np
 import warp as wp
@@ -20,6 +20,7 @@ import newton
 from newton import Axis
 from newton._src.geometry.sdf_texture import TextureSDFData, create_empty_texture_sdf_data
 from newton._src.geometry.sdf_utils import SDF, SDFData
+from newton._src.viewer import viewer_history
 from newton._src.viewer.camera import Camera
 from newton._src.viewer.gui.collision import CollisionInspector
 from newton._src.viewer.gui.imgui_backend import ImGuiBackend
@@ -55,6 +56,16 @@ def _scale_history_display(
     i = wp.tid()
     display_body_q[i] = wp.transform(wp.transform_get_translation(body_q[i]) * 0.01, wp.quat_identity())
     display_particle_q[i] = particle_q[i] * 0.01
+
+
+def _record_frame(history: FrameHistory, time: float, *states: newton.State, contacts=None, observables=None) -> None:
+    """Record one frame through the same calls the viewer makes for log_state() and log_contacts()."""
+    history.begin_frame(time)
+    for state in states:
+        history.state(state)
+    if contacts is not None:
+        history.contacts(contacts, states[0], observables)
+    history.end_frame()
 
 
 def _offscreen_imgui_backend(test: unittest.TestCase) -> ImGuiBackend:
@@ -126,9 +137,9 @@ class TestViewerUI(unittest.TestCase):
         state = model.state()
         ws = ViewerWorkspace.__new__(ViewerWorkspace)
         ws.model = model
-        ws.viewer = SimpleNamespace(is_paused=lambda: True, _last_state=state)
-        ws.example = SimpleNamespace(state_0=state)
+        ws.viewer = SimpleNamespace(is_paused=lambda: True, _last_state=state, _inspection_components={})
         ws.history = ws._undo = ws._drag_undo = None
+        ws._bindings = ws._bindings_components = None
         ws._cache, ws._live_cache, ws._drafts = {}, {}, {}
         ws.gui = SimpleNamespace(ui=self.ui)
         ws.widgets = widgets = PhysicsWidgets(ws.gui)
@@ -237,11 +248,10 @@ class TestViewerUI(unittest.TestCase):
         model = builder.finalize(device="cpu")
         viewer = ViewerNull()
         viewer.set_model(model)
-        example = SimpleNamespace(viewer=viewer, model=model, state_0=model.state(), sim_time=0.0)
-        history = FrameHistory(example)
-        history.capture()
-        example.sim_time = 1.0
-        history.capture()
+        history = FrameHistory(viewer)
+        state = model.state()
+        for time in (0.0, 1.0):
+            _record_frame(history, time, state)
         self.assertEqual(len(history.frames), 2)
         timeline = TimelineView(history)
         viewer = ViewerGL.__new__(ViewerGL)
@@ -484,7 +494,7 @@ class TestViewerUI(unittest.TestCase):
 
 def _make_gl_state(paused: bool = False, step_requested: bool = False) -> ViewerGL:
     # Lightweight stand-in with just the fields ViewerGL.should_step() needs.
-    return SimpleNamespace(_paused=paused, _step_requested=step_requested)  # type: ignore[return-value]
+    return SimpleNamespace(_paused=paused, _step_requested=step_requested, _history=None)  # type: ignore[return-value]
 
 
 class TestViewerBaseShouldStep(unittest.TestCase):
@@ -699,8 +709,10 @@ class TestViewerShapeProperties(unittest.TestCase):
         self.assertEqual(bvhs.scope, 1)  # A model-wide resource includes every world by default.
         resource = bvhs.entries[("bvh", "shapes")].get()
         offsets = wp.array([(0, 0, 0), (10, 0, 0), (0, 15, 0)], dtype=wp.vec3, device="cpu")
-        viewer = SimpleNamespace(world_offsets=offsets, layer=SimpleNamespace(xform=wp.transform_identity()))
-        ws = SimpleNamespace(viewer=viewer, example=None)
+        viewer = SimpleNamespace(
+            world_offsets=offsets, layer=SimpleNamespace(xform=wp.transform_identity()), _last_state=None
+        )
+        ws = SimpleNamespace(viewer=viewer)
         empty_vec = wp.empty(0, dtype=wp.vec3, device="cpu")
         empty_int = wp.empty(0, dtype=int, device="cpu")
         for budget, query_count, group in ((9, 1, -1), (4, 4, -1), (9, 1, 1), (9, 1, 3)):
@@ -789,7 +801,8 @@ class TestViewerShapeProperties(unittest.TestCase):
         # Properties can be visible before the Scene tab is ever opened.
         # In particular the Examples tab remains selected after a switch.
         workspace = ViewerWorkspace.__new__(ViewerWorkspace)
-        workspace.model, workspace.tree, workspace.example = model, None, None
+        workspace.model, workspace.tree = model, None
+        workspace._bindings = workspace._bindings_components = None
         workspace.viewer = ViewerNull()
         workspace.selection, workspace.selected, workspace.message = set(), None, ""
         workspace.gui = SimpleNamespace(ui=SimpleNamespace(imgui=None))
@@ -811,6 +824,7 @@ class TestViewerShapeProperties(unittest.TestCase):
         workspace._cache = {}
         workspace._live_cache = {}
         workspace.viewer = ViewerNull()
+        workspace._bindings = workspace._bindings_components = None
         workspace.model = None
         workspace.world = 1
         workspace.widgets = SimpleNamespace(
@@ -828,7 +842,7 @@ class TestViewerShapeProperties(unittest.TestCase):
             ),
             mjc_geom_to_newton_shape=wp.array([[1, 3, -1], [1, 7, 9]], dtype=int, device="cpu"),
         )
-        workspace.example = SimpleNamespace(solver=solver)
+        workspace.viewer._inspection_components = {"solver": solver}
         for inverse in (None, wp.array([-1, 0, -1, 1, -1, -1, -1, 1, -1, 2], dtype=int, device="cpu")):
             with self.subTest(internal_contacts=inverse is None):
                 solver.newton_shape_to_mjc_geom = inverse
@@ -984,6 +998,7 @@ def _make_gl_running_state(headless: bool, num_frames: int | None, frame_count: 
         num_frames=num_frames,
         _frame_count=frame_count,
         _update=lambda: None,
+        _history=None,
     )
 
 
@@ -1109,9 +1124,10 @@ class TestViewerProperties(unittest.TestCase):
         viewer.activate("primary")
         viewer.set_model(model)
         viewer._last_state = state
+        viewer.set_solver(SolverXPBD(model))
         ws = ViewerWorkspace.__new__(ViewerWorkspace)
         ws.model, ws.viewer = model, viewer
-        ws.example = SimpleNamespace(state_0=state, solver=SolverXPBD(model))
+        ws._bindings = ws._bindings_components = None
         ws.history = ws._kinematic_state = ws._kinematic_indices = None
         ws._cache, ws._live_cache = {}, {}
         ws.selection = {("articulation", 0), ("joint", 1)}
@@ -1135,14 +1151,15 @@ class TestViewerProperties(unittest.TestCase):
         historical.joint_qd.assign(-expected_qd)
         newton.eval_fk(model, historical.joint_q, historical.joint_qd, historical)
         viewer._last_state = historical
-        ws.example.solver = None
-        ws.example.timeline = SimpleNamespace(frames=[0, 1], index=0)
+        viewer.set_solver(None)
+        ws.history = SimpleNamespace(replaying=True)
         ws._live_cache.clear()
         shown = ws.joint_display_state()
         np.testing.assert_allclose(shown.joint_q.numpy(), -expected_q, atol=1e-6)
         np.testing.assert_allclose(shown.joint_qd.numpy(), -expected_qd, atol=1e-6)
         np.testing.assert_array_equal(state.joint_q.numpy(), 0.0)
         np.testing.assert_array_equal(state.joint_qd.numpy(), 0.0)
+        ws.history = None
 
         # Custom loops register persistent components independently and log
         # the current state after each buffer swap, without an Example object.
@@ -1152,7 +1169,6 @@ class TestViewerProperties(unittest.TestCase):
         viewer.set_control(control)
         viewer.set_solver(solver)
         viewer.set_collision_pipeline(pipeline)
-        ws.example = None
         ws._drafts = {}
         viewer.log_state(state)
         self.assertIs(ws.live_state(), state)
@@ -1169,13 +1185,11 @@ class TestViewerProperties(unittest.TestCase):
         self.assertEqual(control.joint_target_q.ptr, pointer)
         np.testing.assert_allclose(control.joint_target_q.numpy()[0], 0.45)
 
-        # Replacing or clearing one component must preserve the others, even
-        # when a conventional example would otherwise supply a fallback.
+        # Replacing or clearing one component must preserve the others.
         replacement = model.control()
         viewer.set_control(replacement)
         self.assertIs(ws.bindings.control, replacement)
         self.assertIs(ws.bindings.solver, solver)
-        ws.example = SimpleNamespace(model=model, state_0=state, control=control, solver=solver, pipeline=pipeline)
         viewer.set_control(None)
         viewer.set_solver(None)
         viewer.set_collision_pipeline(None)
@@ -1186,7 +1200,6 @@ class TestViewerProperties(unittest.TestCase):
         viewer.set_solver(solver)
         viewer.set_collision_pipeline(pipeline)
         self.assertIs(ws.bindings.control, control)
-        self.assertTrue(ws._history_compatible)
 
         # Layers retain separate components and logged states. Invalid model
         # associations must not replace a valid existing component.
@@ -1215,18 +1228,13 @@ class TestViewerProperties(unittest.TestCase):
         self.assertIs(ws.bindings.solver, solver)
         self.assertIs(viewer._last_state, historical)
 
-        # Another layer can have identical array dimensions but a different
-        # topology. The conventional adapter must not expose the old controls.
+        # A rebuilt Model with identical array dimensions starts without the
+        # previous Model's components or logged State.
         rebuilt = builder.finalize(device="cpu")
         viewer.set_model(rebuilt)
         ws.model = rebuilt
-        ws.example = SimpleNamespace(model=model, state_0=state, control=control)
         self.assertIsNone(ws.bindings.control)
-        self.assertFalse(ws._history_compatible)
         self.assertIsNone(viewer._last_state)
-        ws.model = model
-        self.assertIs(ws.bindings.control, control)
-        self.assertTrue(ws._history_compatible)
 
     def test_element_selection_property_domains(self) -> None:
         builder = newton.ModelBuilder()
@@ -1254,8 +1262,8 @@ class TestViewerProperties(unittest.TestCase):
             domain = next(d for d in inspector.domains if d.frequency == frequency)
             self.assertEqual(list(domain.indices), [1])
 
-    def test_history_without_top_level_example_model(self) -> None:
-        """Preserve independent host snapshots and replay for nested CPU and CUDA models."""
+    def test_history_records_logged_frames(self) -> None:
+        """Snapshot logged State and the inspected Control, and replay them without touching live data."""
         builder = newton.ModelBuilder()
         builder.add_custom_attribute(
             newton.ModelBuilder.CustomAttribute(
@@ -1277,151 +1285,140 @@ class TestViewerProperties(unittest.TestCase):
                 default=5.0,
             )
         )
-        model = builder.finalize(device="cpu")
-        example = SimpleNamespace(viewer=SimpleNamespace(model=model), render=Mock())
-        history = FrameHistory(example)
-        self.assertIs(history.model, model)
-        history.capture()
-        self.assertFalse(history.frames)
-        history.render()
-        example.render.assert_called_once_with()
-
-        # A nested model must also work when the example exposes a recordable
-        # state. CPU NumPy views alias live storage; CUDA readbacks own host storage.
+        # CPU NumPy views alias live storage; CUDA readbacks own host storage.
         for device in get_test_devices(mode="basic"):
             with self.subTest(device=device):
-                current = model if device.is_cpu else builder.finalize(device=device)
-                example = SimpleNamespace(
-                    viewer=SimpleNamespace(model=current), state_0=current.state(), control=current.control()
-                )
-                example.state_0.solver_scratch = wp.zeros(1, device=device)
-                history = FrameHistory(example)
-                history.capture()
+                model = builder.finalize(device=device)
+                viewer = ViewerNull()
+                viewer.set_model(model)
+                history = FrameHistory(viewer)
+                self.assertIs(history.model, model)
+                # A frame that logs nothing records nothing.
+                history.begin_frame(0.0)
+                history.end_frame()
+                self.assertFalse(history.frames)
+
+                state, control = model.state(), model.control()
+                viewer.set_control(control)
+                state.solver_scratch = wp.zeros(1, device=device)
+                _record_frame(history, 0.0, state)
                 snapshot = history.frames[0]
-                self.assertNotIn("solver_scratch", snapshot.state)
-                example.state_0.probe.sample.fill_(7.0)
-                example.control.probe.drive.fill_(11.0)
+                key = next(iter(snapshot.states))
+                self.assertNotIn("solver_scratch", snapshot.states[key])
+                state.probe.sample.fill_(7.0)
+                control.probe.drive.fill_(11.0)
                 if device.is_cuda:
                     gc.collect()
-                np.testing.assert_array_equal(snapshot.state["probe:sample"], [3.0])
+                np.testing.assert_array_equal(snapshot.states[key]["probe:sample"], [3.0])
                 np.testing.assert_array_equal(snapshot.control["probe:drive"], [5.0])
-                example.sim_time = 1.0
-                history.capture()
-                history.index = 0
-                live_state, live_control = example.state_0, example.control
-                displayed = []
+                # Repeated renders at an unchanged time record nothing, unless
+                # an edit asks to replace the newest frame.
+                _record_frame(history, 0.0, state)
+                self.assertEqual(len(history.frames), 1)
+                history.replace_next_frame()
+                _record_frame(history, 0.0, state)
+                self.assertEqual(len(history.frames), 1)
+                np.testing.assert_array_equal(history.frames[0].states[key]["probe:sample"], [7.0])
+                state.probe.sample.fill_(9.0)
+                _record_frame(history, 1.0, state)
+                self.assertEqual(len(history.frames), 2)
 
-                def render_snapshot(
-                    example=example,
-                    history=history,
-                    live_state=live_state,
-                    live_control=live_control,
-                    displayed=displayed,
-                ):
-                    self.assertIsNot(example.state_0, live_state)
-                    self.assertIs(example.control, live_control)
-                    displayed.append(
-                        (example.state_0.probe.sample.numpy(), history.display_control.probe.drive.numpy())
-                    )
+                history.select(0)
+                self.assertTrue(history.replaying)
+                history.begin_frame(1.0)
+                shown = history.state(state)
+                history.end_frame()
+                self.assertIsNot(shown, state)
+                np.testing.assert_array_equal(shown.probe.sample.numpy(), [7.0])
+                np.testing.assert_array_equal(history.restore_control().probe.drive.numpy(), [11.0])
+                # Replay never records or alters the live objects.
+                self.assertEqual(len(history.frames), 2)
+                np.testing.assert_array_equal(state.probe.sample.numpy(), [9.0])
+                np.testing.assert_array_equal(control.probe.drive.numpy(), [11.0])
 
-                example.render = render_snapshot
-                history.render()
-                self.assertEqual(len(displayed), 1)
-                np.testing.assert_array_equal(displayed[0][0], [3.0])
-                np.testing.assert_array_equal(displayed[0][1], [5.0])
-                self.assertIs(example.state_0, live_state)
-                self.assertIs(example.control, live_control)
-                np.testing.assert_array_equal(live_state.probe.sample.numpy(), [7.0])
-                np.testing.assert_array_equal(live_control.probe.drive.numpy(), [11.0])
-
-    def test_history_auxiliary_display_states(self) -> None:
-        """Replay mixed/body-only display buffers without null GPU outputs or live-state mutations."""
+    def test_history_replays_each_logged_call(self) -> None:
+        """Match replayed States, contact States and points to their own logging calls within a frame."""
         builder = newton.ModelBuilder()
         builder.add_body(xform=wp.transform(wp.vec3(100, 0, 0), wp.quat_identity()))
+        builder.add_shape_sphere(0, radius=0.1)
         builder.add_particle(wp.vec3(0, 100, 0), wp.vec3(0), 1.0)
         for device in get_test_devices(mode="basic"):
             with self.subTest(device=device):
                 model = builder.finalize(device=device)
-                model.add_attribute(
-                    "sample", wp.full(1, 3.0, device=device), Frequency.ONCE, Assignment.STATE, namespace="probe"
-                )
-                example = SimpleNamespace(
-                    viewer=SimpleNamespace(model=model),
-                    state_0=model.state(),
-                    state_1=model.state(),
-                    viz_state=model.state(),
-                    contact_state=model.state(),
-                    body_display=newton.State(),
-                    shared_particles=model.state(),
-                    sim_time=0.0,
-                )
-                example.body_display.body_q = wp.clone(example.state_0.body_q)
-                example.shared_particles.particle_q = example.viz_state.particle_q
-                example.viz_state.solver_scratch = wp.zeros(1, device=device)
-                example.primary_alias, example.alternate_alias = example.state_0, example.state_1
-                example.viz_alias, example.contact_alias = example.viz_state, example.contact_state
-                originals = {name: value for name, value in vars(example).items() if isinstance(value, newton.State)}
-                history = FrameHistory(example)
-                history.capture()
-                example.state_0.body_q.fill_(wp.transform(wp.vec3(200, 0, 0), wp.quat_identity()))
-                example.state_0.particle_q.fill_(wp.vec3(0, 200, 0))
-                example.viz_state.probe.sample.fill_(7.0)
-                example.sim_time = 1.0
-                history.capture()
+                viewer = ViewerNull()
+                viewer.set_model(model)
+                history = FrameHistory(viewer)
+                state, display, contact_state = model.state(), model.state(), model.state()
+                # A partial State logged for display keeps only its own arrays.
+                display.particle_q = None
+                contacts = newton.Contacts(4, 0, device=device)
+                points = wp.array([(1.0, 2.0, 3.0)], dtype=wp.vec3, device=device)
+
+                def log(
+                    time: float,
+                    history: FrameHistory = history,
+                    state: newton.State = state,
+                    display: newton.State = display,
+                    contacts: newton.Contacts = contacts,
+                    contact_state: newton.State = contact_state,
+                    points: wp.array = points,
+                ) -> tuple[newton.State, newton.State, newton.Contacts, newton.State, object]:
+                    history.begin_frame(time)
+                    shown = history.state(state)
+                    shown_display = history.state(display)
+                    shown_contacts, shown_contact_state, _ = history.contacts(contacts, contact_state, None)
+                    shown_points = history.arrays("points", "markers", {"points": points, "radii": 0.1})
+                    history.end_frame()
+                    return shown, shown_display, shown_contacts, shown_contact_state, shown_points
+
+                log(0.0)
+                state.body_q.fill_(wp.transform(wp.vec3(200, 0, 0), wp.quat_identity()))
+                display.body_q.fill_(wp.transform(wp.vec3(300, 0, 0), wp.quat_identity()))
+                contact_state.body_q.fill_(wp.transform(wp.vec3(400, 0, 0), wp.quat_identity()))
+                points.fill_(wp.vec3(4.0, 5.0, 6.0))
+                log(1.0)
+                frame = history.frames[0]
+                self.assertEqual(len(frame.states), 2)
+                self.assertEqual(set(frame.arrays), {("points", viewer._active_layer_id, "markers")})
+
                 history.select(0)
+                shown, shown_display, shown_contacts, shown_contact_state, shown_points = log(1.0)
+                np.testing.assert_array_equal(shown.body_q.numpy()[0, :3], [100, 0, 0])
+                np.testing.assert_array_equal(shown_display.body_q.numpy()[0, :3], [100, 0, 0])
+                self.assertIsNone(getattr(shown_display, "particle_q", None))
+                np.testing.assert_array_equal(shown_contact_state.body_q.numpy()[0, :3], [100, 0, 0])
+                self.assertIsNot(shown_contacts, contacts)
+                self.assertEqual(shown_contacts.rigid_contact_count.numpy()[0], 0)
+                np.testing.assert_array_equal(shown_points["points"].numpy(), [[1.0, 2.0, 3.0]])
+                self.assertEqual(shown_points["radii"], 0.1)
+                # Live arguments are untouched.
+                np.testing.assert_array_equal(state.body_q.numpy()[0, :3], [200, 0, 0])
+                np.testing.assert_array_equal(contact_state.body_q.numpy()[0, :3], [400, 0, 0])
+                np.testing.assert_array_equal(points.numpy(), [[4.0, 5.0, 6.0]])
+                # Contacts logged with the frame's State alias it rather than copying it again.
+                history.select(1)
+                history.begin_frame(2.0)
+                history.state(state)
+                history.contacts(contacts, state, None)
+                history.end_frame()
+                record = next(iter(history.frames[-1].contact_records.values()))
+                self.assertIsNotNone(record.state_key)
+                self.assertFalse(record.state)
 
-                def render(
-                    *, example: SimpleNamespace = example, device: wp.Device = device, fail: bool = False
-                ) -> None:
-                    # Fail safely on missing output buffers before launching a
-                    # kernel: passing null destinations would poison CUDA.
-                    self.assertIsNotNone(example.viz_state.body_q)
-                    self.assertIsNotNone(example.viz_state.particle_q)
-                    self.assertIsNotNone(example.body_display.body_q)
-                    self.assertIsNotNone(example.shared_particles.body_q)
-                    self.assertIs(example.primary_alias, example.state_0)
-                    self.assertIs(example.alternate_alias, example.state_1)
-                    self.assertIs(example.viz_alias, example.viz_state)
-                    self.assertIs(example.contact_alias, example.contact_state)
-                    self.assertFalse(hasattr(example.viz_state, "solver_scratch"))
-                    np.testing.assert_array_equal(example.viz_state.probe.sample.numpy(), [3])
-                    np.testing.assert_array_equal(example.contact_state.probe.sample.numpy(), [3])
-                    wp.launch(
-                        _scale_history_display,
-                        dim=1,
-                        inputs=[example.state_0.body_q, example.state_0.particle_q],
-                        outputs=[example.viz_state.body_q, example.viz_state.particle_q],
-                        device=device,
-                    )
-                    wp.copy(example.body_display.body_q, example.viz_state.body_q)
-                    np.testing.assert_allclose(example.viz_state.body_q.numpy()[0, :3], [1, 0, 0])
-                    np.testing.assert_allclose(example.viz_state.particle_q.numpy()[0], [0, 1, 0])
-                    if fail:
-                        raise RuntimeError("display callback failed")
-
-                example.render = render
-                history.render()
-                example.render = lambda render=render: render(fail=True)
-                with self.assertRaisesRegex(RuntimeError, "display callback failed"):
-                    history.render()
-                for name, value in originals.items():
-                    self.assertIs(getattr(example, name), value)
-                np.testing.assert_array_equal(example.state_0.body_q.numpy()[0, :3], [200, 0, 0])
-                np.testing.assert_array_equal(example.state_0.particle_q.numpy()[0], [0, 200, 0])
-                np.testing.assert_array_equal(example.viz_state.body_q.numpy()[0, :3], [100, 0, 0])
-                np.testing.assert_array_equal(example.viz_state.particle_q.numpy()[0], [0, 100, 0])
-                np.testing.assert_array_equal(example.body_display.body_q.numpy()[0, :3], [100, 0, 0])
-                np.testing.assert_array_equal(example.viz_state.probe.sample.numpy(), [7])
-                self.assertEqual(
-                    set(history.frames[0].auxiliary_states), {"viz_state", "body_display", "shared_particles"}
-                )
-                # All auxiliary arrays count toward the bound before readback;
-                # aliases must not retain a second copy of an existing state.
-                limited = FrameHistory(example)
-                limited.memory_limit = 2 * history.frames[0].size - 1
-                with patch("newton._src.viewer.viewer_history._snapshot_array") as snapshot:
-                    limited.capture()
-                    snapshot.assert_not_called()
+                # Every logged array counts toward the bound before readback.
+                first = next(iter(frame.states.values()))
+                limited = FrameHistory(viewer)
+                # Room for the first State only; later calls must stop before any readback.
+                limited.memory_limit = 2 * sum(values.nbytes for values in first.values()) + 1
+                with patch(
+                    "newton._src.viewer.viewer_history._snapshot_array", wraps=viewer_history._snapshot_array
+                ) as snapshot:
+                    limited.begin_frame(0.0)
+                    limited.state(state)
+                    limited.state(display)
+                    limited.contacts(contacts, contact_state, None)
+                    limited.end_frame()
+                    self.assertEqual(snapshot.call_count, len(first))
                 self.assertFalse(limited.frames)
                 self.assertTrue(limited._recording_blocked)
 
@@ -1435,8 +1432,8 @@ class TestViewerProperties(unittest.TestCase):
         model = builder.finalize(device="cpu")
         ws = ViewerWorkspace.__new__(ViewerWorkspace)
         ws.model, ws.selected = model, ("joint", joint)
-        ws.viewer = SimpleNamespace(_last_state=model.state())
-        ws.example = SimpleNamespace(state_0=ws.viewer._last_state, control=model.control())
+        ws.viewer = SimpleNamespace(_last_state=model.state(), _inspection_components={"control": model.control()})
+        ws._bindings = ws._bindings_components = None
         ws.history = None
         ws._cache, ws._live_cache = {}, {}
         inspector = PropertyInspector(ws)
@@ -1609,8 +1606,10 @@ class TestViewerProperties(unittest.TestCase):
             self.assertEqual({n for n in fields if n.startswith("test:")}, {expected})
         ws = ViewerWorkspace.__new__(ViewerWorkspace)
         ws.model, ws.selected, ws.world = model, ("articulation", 0), 0
-        ws.viewer = SimpleNamespace(is_paused=lambda: True, _last_state=state)
-        ws.example = SimpleNamespace(state_0=state, state_1=other, control=control)
+        ws.viewer = SimpleNamespace(
+            is_paused=lambda: True, _last_state=state, _inspection_components={"control": control}
+        )
+        ws._bindings = ws._bindings_components = None
         ws._cache, ws._live_cache, ws._drafts = {}, {}, {}
         ws._undo = ws.history = None
         control.joint_target_q.fill_(0.15)
@@ -1621,13 +1620,14 @@ class TestViewerProperties(unittest.TestCase):
             {d.frequency for d in inspector.domains},
             {Frequency.ARTICULATION, Frequency.JOINT, Frequency.JOINT_COORD, Frequency.JOINT_DOF},
         )
-        before = state.body_q.numpy().copy()
+        before, untouched = state.body_q.numpy().copy(), other.body_q.numpy().copy()
         # Sibling coordinates deliberately disagree with the displayed body state.
         state.joint_q[3:4].fill_(1.2)
         self.assertTrue(ws.apply_edit(state, "joint_q", 1, [0.5], joint_index=1))
         np.testing.assert_array_equal(state.body_q.numpy()[[0, 3]], before[[0, 3]])
         self.assertGreater(np.linalg.norm(state.body_q.numpy()[[1, 2]] - before[[1, 2]]), 0.1)
-        np.testing.assert_array_equal(other.body_q.numpy(), state.body_q.numpy())
+        # Only the logged State is edited; other application States are not touched.
+        np.testing.assert_array_equal(other.body_q.numpy(), untouched)
         mask, _ = ws._joint_edit_mask(1)
         np.testing.assert_array_equal(mask.numpy(), [False, True, True, False])
         # Mutations are guarded at the write boundary, not just by disabled widgets.
@@ -1646,14 +1646,14 @@ class TestViewerProperties(unittest.TestCase):
         self.assertTrue(ws.apply_edit(*ws._undo[:4], joint_index=ws._undo[4], save_undo=False))
         self.assertTrue(control.test.enabled.numpy()[1])
         ws.viewer.is_paused = lambda: True
-        ws.example.timeline = SimpleNamespace(frames=[object(), object()], index=0)
+        ws.history = SimpleNamespace(replaying=True)
         self.assertFalse(ws.apply_edit(state, "joint_qd", 1, [2], joint_index=1))
         self.assertFalse(ws.apply_edit(control.test, "enabled", 0, [False]))
         ws.viewer.is_paused = lambda: False
         self.assertFalse(ws.apply_edit(control, "joint_target_q", 0, [1.0]))
         self.assertFalse(ws.apply_edit(control.test, "enabled", 0, [False]))
         ws.viewer.is_paused = lambda: True
-        del ws.example.timeline
+        ws.history = None
         self.assertTrue(ws.apply_edit(control.test, "enabled", 0, [False]))
         self.assertFalse(control.test.enabled.numpy()[0])
         self.assertTrue(ws.apply_edit(state.test, "offset", 2, [4, 5, 6]))
@@ -1674,17 +1674,18 @@ class TestViewerProperties(unittest.TestCase):
         self.assertEqual(pointers, (control.joint_target_q.ptr, control.test.enabled.ptr, control.drive.ptr))
         np.testing.assert_array_equal(state.body_q.numpy(), pose)
         self.assertIsNone(ws._undo)
-        ws.example.timeline = SimpleNamespace(frames=[object(), object()], index=0)
+        ws.history = SimpleNamespace(replaying=True)
         self.assertFalse(ws.reset_control(zero=True))
         np.testing.assert_array_equal(control.test.enabled.numpy(), True)
-        del ws.example.timeline
-        # A newly loaded example/Control gets its own baseline.
-        ws.example.control = model.control()
-        ws.example.control.joint_target_q.fill_(0.4)
+        ws.history = None
+        # A newly supplied Control gets its own baseline.
+        replacement = model.control()
+        ws.viewer._inspection_components = {"control": replacement}
+        replacement.joint_target_q.fill_(0.4)
         ws._capture_control_initial()
-        ws.example.control.joint_target_q.fill_(0.9)
+        replacement.joint_target_q.fill_(0.9)
         self.assertTrue(ws.reset_control())
-        np.testing.assert_allclose(ws.example.control.joint_target_q.numpy(), 0.4)
+        np.testing.assert_allclose(replacement.joint_target_q.numpy(), 0.4)
 
 
 class TestCollisionInspector(unittest.TestCase):
@@ -1730,19 +1731,14 @@ class TestCollisionInspector(unittest.TestCase):
                 viewer.set_model(model)
                 viewer.log_contacts(contacts, state)
                 viewer.is_paused = lambda: True
+                viewer.set_collision_pipeline(pipeline)
                 ws = SimpleNamespace(
-                    viewer=viewer,
-                    model=model,
-                    example=SimpleNamespace(collision_pipeline=pipeline, contacts=pipeline.contacts()),
-                    history=None,
-                    selected=None,
-                    _at_live_frame=lambda: True,
+                    viewer=viewer, model=model, history=None, selected=None, _at_live_frame=lambda: True
                 )
-                ws.bindings = InspectionBindings.from_example(ws.example)
+                ws.bindings = InspectionBindings(components=viewer._inspection_components)
                 ws.select = lambda key, workspace=ws: setattr(workspace, "selected", key)
                 inspector = CollisionInspector(ws)
-                # A logged frame takes precedence over an example's other
-                # contact buffer, including when the normal glyphs are hidden.
+                # Contacts come from the logged frame, including when the normal glyphs are hidden.
                 self.assertIs(inspector._contacts_buffer(), contacts)
                 tree = ModelTree(model)
                 inspector.attach(tree)
@@ -1934,20 +1930,19 @@ class TestCollisionInspector(unittest.TestCase):
                 self.assertNotIn(("collision_pairs", 0), inspector.groups)
                 self.assertEqual(inspector.candidate_pairs(("contact", 0)), ())
                 # Contacts alone are useful; no empty Collision root without either source.
-                ws.example.collision_pipeline = None
+                ws.bindings = InspectionBindings()
                 inspector.attach(tree)
                 inspector.sync(force=True)
                 self.assertIn(inspector.root, tree.labels)
                 self.assertFalse(inspector.pipelines)
                 viewer._last_contacts = None
-                ws.example.contacts = None
                 with patch.object(inspector, "read", wraps=inspector.read) as read:
                     inspector.attach(tree)
                     inspector.sync()
                     read.assert_not_called()
                 self.assertNotIn(inspector.root, tree.roots)
                 self.assertFalse(any(inspector.handles(key) for key in tree.labels))
-                ws.example.collision_pipeline = pipeline
+                ws.bindings = InspectionBindings(components=viewer._inspection_components)
                 inspector.attach(tree)
                 self.assertIn(inspector.root, tree.roots)
 

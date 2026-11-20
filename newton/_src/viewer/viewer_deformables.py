@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
     from newton._src.viewer.gui.workspace import ViewerWorkspace
     from newton._src.viewer.viewer_model_tree import ModelTree
-    from newton._src.viewer.viewer_types import TreeKey, ViewerExample
+    from newton._src.viewer.viewer_types import TreeKey
     from newton.viewer import ViewerBase
 
 
@@ -45,9 +45,8 @@ class DeformableObject:
 class ParticleSource:
     """Map a particle Model into a disjoint catalog ID range.
 
-    Coupled examples can log particles from an auxiliary Model. ``offset`` is
-    added only to explorer identities; simulation arrays keep their Model-local
-    indices. Logged points identify the displayed State without copying it.
+    ``offset`` is added only to explorer identities; simulation arrays keep
+    their Model-local indices.
     """
 
     def __init__(self, model: Model, offset: int) -> None:
@@ -102,15 +101,6 @@ def particle_bounds(points: wp.array[wp.vec3], bounds: wp.array2d[float]) -> Non
     for axis in range(3):
         wp.atomic_min(bounds, 0, axis, point[axis])
         wp.atomic_max(bounds, 1, axis, point[axis])
-
-
-@wp.kernel
-def _visible_particle_bounds(points: wp.array[wp.vec3], radii: wp.array[float], bounds: wp.array2d[float]) -> None:
-    i = wp.tid()
-    if radii[i] > 0.0:
-        for axis in range(3):
-            wp.atomic_min(bounds, 0, axis, points[i][axis] - radii[i])
-            wp.atomic_max(bounds, 1, axis, points[i][axis] + radii[i])
 
 
 @wp.kernel
@@ -238,39 +228,20 @@ def _pick_index(distances: wp.array[float], nearest: wp.array[float], index: wp.
 class DeformableCatalog:
     """Index deformable topology lazily and keep paged explorer identities stable.
 
-    The primary Model supplies surfaces and volumes. Auxiliary particle-only
-    Models exposed by conventional examples get disjoint particle ID ranges;
-    triangle and tetrahedron indices always refer to the primary Model.
+    The Model supplies particles, surfaces, and volumes.
     Topology caches live for one Model layout and are recreated on scene rebuild.
     """
 
     page_size = 256
 
-    def __init__(self, model: Model, example: ViewerExample | None = None) -> None:
-        """Discover primary and separately logged particle Models without copying live state.
+    def __init__(self, model: Model) -> None:
+        """Index the Model's particles without copying live state.
 
-        Allocate disjoint particle index ranges across sources. Topology,
-        element ordering, and explorer objects are populated on demand.
+        Topology, element ordering, and explorer objects are populated on demand.
         """
         self.model = model
-        self.example = example
         self.sources = [ParticleSource(model, 0)]
         self.particle_count = model.particle_count
-        # Some coupled examples log a separate particle model explicitly.
-        # Match its radius array at log_points(), never arbitrary debug points
-        # or solver coloring groups. No particle state is copied here.
-        seen = {id(model)}
-        for value in vars(example).values() if example is not None else ():
-            if (
-                isinstance(value, Model)
-                and id(value) not in seen
-                and value.particle_count
-                and not value.tri_count
-                and not value.tet_count
-            ):
-                self.sources.append(ParticleSource(value, self.particle_count))
-                self.particle_count += value.particle_count
-                seen.add(id(value))
         self.objects = []
         self.groups = {}
         self.hidden = set()
@@ -287,89 +258,6 @@ class DeformableCatalog:
         """Resolve a catalog-wide particle index through its source to a world or -1."""
         source = self.source(particle)
         return source.world_for(particle - source.offset)
-
-    def external_bounds(self) -> np.ndarray:
-        """Reduce visible secondary particle bounds on the device and return a host (2, 3) array.
-
-        Bounds use display coordinates. With no visible secondary points, the
-        lower and upper rows retain their positive and negative sentinel values.
-        """
-        bounds = wp.array([[1e30] * 3, [-1e30] * 3], dtype=float, device=self.model.device)
-        for source in self.sources[1:]:
-            if source.points is not None and not source.hidden:
-                wp.launch(
-                    _visible_particle_bounds,
-                    dim=source.model.particle_count,
-                    inputs=[source.display_points, source.display_radii],
-                    outputs=[bounds],
-                    device=self.model.device,
-                )
-        return bounds.numpy()
-
-    def logged_points(
-        self, workspace: ViewerWorkspace, points: wp.array[wp.vec3] | None, radii: wp.array[float] | None, hidden: bool
-    ) -> tuple[wp.array[wp.vec3] | None, wp.array[float] | None, bool]:
-        """Recognize secondary particle batches and apply display transforms and visibility.
-
-        Identify a source by its Model radius-array identity; unrelated logged
-        points pass through unchanged. Rebuild visibility only when its inputs
-        change and keep transformed positions in reusable device buffers.
-        """
-        source = next((source for source in self.sources[1:] if radii is source.model.particle_radius), None)
-        if source is None or len(points) != source.model.particle_count:
-            return points, radii, hidden
-        viewer, model = workspace.viewer, source.model
-        if source.points is not points:
-            source.points = points
-            source.state = next(
-                (
-                    state
-                    for state in vars(self.example).values()
-                    if isinstance(state, State) and state.particle_q is points
-                ),
-                None,
-            )
-        key = (
-            tuple(sorted(self.hidden)),
-            tuple(viewer._visible_worlds) if viewer._visible_worlds is not None else None,
-        )
-        if source.visibility_key != key:
-            visible = np.ones(model.particle_count, dtype=np.int32)
-            for obj_key in self.hidden:
-                indices = np.asarray(self.objects[obj_key[1]].particles, dtype=int)
-                indices = indices[(indices >= source.offset) & (indices < source.end)] - source.offset
-                visible[indices] = 0
-            if viewer._visible_worlds is not None:
-                for world in range(model.world_count):
-                    if world not in viewer._visible_worlds:
-                        for a, b in source.ranges(world):
-                            visible[a:b] = 0
-            source.visible = wp.array(visible, dtype=int, device=model.device)
-            source.any_visible = bool(visible.any())
-            source.visibility_key = key
-        source.hidden = hidden or not source.any_visible
-        if not hasattr(source, "display_points"):
-            source.display_points = wp.empty_like(points)
-            source.display_radii = wp.empty_like(radii)
-            source.empty_offsets = wp.empty(0, dtype=wp.vec3, device=model.device)
-            source.empty_flags = wp.empty(0, dtype=int, device=model.device)
-        if not source.hidden:
-            wp.launch(
-                _display_all_particles,
-                dim=len(points),
-                inputs=[
-                    points,
-                    model.particle_world,
-                    viewer.world_offsets if viewer.world_offsets is not None else source.empty_offsets,
-                    viewer.layer.xform,
-                    radii,
-                    model.particle_flags if model.particle_flags is not None else source.empty_flags,
-                    source.visible,
-                ],
-                outputs=[source.display_points, source.display_radii],
-                device=model.device,
-            )
-        return source.display_points, source.display_radii, source.hidden
 
     def topology(self, kind: str) -> np.ndarray:
         """Cache host triangle or tetrahedron indices, preferring existing host adjacency over a device copy."""
@@ -444,8 +332,6 @@ class DeformableCatalog:
                 label = "Tet mesh" if len(tet) else "Triangle mesh"
                 self._add(tree, folder, DeformableObject(kind, label, world, mesh_particles, tri, tet))
             loose.append(np.setdiff1d(particles, mesh_particles, assume_unique=True))
-        for source in self.sources[1:]:
-            loose.extend(np.arange(a, b, dtype=np.int32) + source.offset for a, b in source.ranges(world))
         if tree.children[folder]:
             tree.children[root].append(folder)
         if loose:

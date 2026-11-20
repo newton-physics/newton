@@ -962,8 +962,7 @@ class ViewerBase(ABC):
     def _set_inspection_component(self, name: str, component: object | None) -> None:
         """Replace one layer-owned reference and invalidate inspection discovery.
 
-        An explicit None suppresses conventional example discovery for that
-        component. Replace the mapping so cached inspection bindings retain their old
+        Replace the mapping so cached inspection bindings retain their old
         references and can detect when solver or pipeline resources change.
         """
         if self.model is None:

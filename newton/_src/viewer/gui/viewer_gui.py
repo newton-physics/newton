@@ -32,6 +32,8 @@ from . import theme
 from .imgui_backend import ImGuiBackend
 
 if TYPE_CHECKING:
+    from types import ModuleType
+
     from numpy.typing import ArrayLike
     from pyglet.window import Window
 
@@ -97,9 +99,10 @@ class ViewerGui:
             # Attach before constructing an example, so importer diagnostics survive loading.
             self.console_capture = ConsoleCapture(attach=capture_logs)
             window.push_handlers(on_close=self.close_console)
-        self._workspace_example = None
-        self._workspace_browser = None
-        """Example browser drawn by the workspace explorer instead of its ``"panel"`` callback."""
+        self._example_tree: dict[str, list[tuple[str, str]]] | None = None
+        """Example names and module paths by category, from the example runner's browser hook."""
+        self._example_switch: Callable[[str], None] | None = None
+        self._example_current: str | None = None
         self._frame_camera_pending = False
         self._selection_press = None
 
@@ -481,16 +484,6 @@ class ViewerGui:
                 return
 
         bounds = viewer._get_scene_bounds()
-        if workspace is not None and workspace.tree is not None and len(workspace.tree.deformables.sources) > 1:
-            # Coupled examples may log particles from an auxiliary Model rather
-            # than a viewer layer. Its catalog already tracks displayed bounds.
-            external = workspace.tree.deformables.external_bounds()
-            if np.isfinite(external).all() and (external[1] >= external[0]).all():
-                bounds = (
-                    external
-                    if bounds is None
-                    else (np.minimum(bounds[0], external[0]), np.maximum(bounds[1], external[1]))
-                )
         if bounds is None:
             if viewer.model is None:
                 return
@@ -1008,10 +1001,43 @@ class ViewerGui:
         """
         self._ui_callbacks["side"] = []
         self._ui_callbacks["free"] = []
-        self._workspace_example = None
         self._frame_camera_pending = False
         if self.workspace is not None:
-            self.workspace.detach_example()
+            self.workspace.detach()
+
+    def configure_example_browser(
+        self, tree: dict[str, list[tuple[str, str]]], callback: Callable[[str], None]
+    ) -> None:
+        """List examples in the workspace explorer, or in a legacy sidebar header.
+
+        Args:
+            tree: Example names and module paths grouped by category.
+            callback: Function called with the selected module path.
+        """
+        first = self._example_tree is None
+        self._example_tree, self._example_switch = tree, callback
+        if first and not self.workspace_enabled:
+            self.register_ui_callback(self._draw_example_browser, position="panel")
+
+    def select_example(self, module_path: str) -> None:
+        """Request a switch to an example and highlight it in the browser."""
+        self._example_current = module_path
+        if self._example_switch is not None:
+            self._example_switch(module_path)
+
+    def _draw_example_browser(self, imgui: ModuleType) -> None:
+        """Draw the legacy sidebar's collapsible example tree."""
+        tree = self._example_tree
+        if not tree:
+            return
+        imgui.set_next_item_open(False, imgui.Cond_.appearing)
+        if imgui.collapsing_header("Examples"):
+            for category in sorted(tree):
+                if imgui.tree_node(category):
+                    for name, module_path in tree[category]:
+                        if imgui.selectable(name, module_path == self._example_current)[0]:
+                            self.select_example(module_path)
+                    imgui.tree_pop()
 
     def show_loading_splash(self, text: str | None = None) -> None:
         """Display a centered Newton's-cradle loading splash.
@@ -1293,7 +1319,7 @@ class ViewerGui:
                 from .workspace import ViewerWorkspace  # noqa: PLC0415
 
                 self.workspace = ViewerWorkspace(self)
-            self.workspace.bind(self._workspace_example)
+            self.workspace.bind()
             self.workspace.draw()
             self._render_gizmos()
             if self._ui_callbacks["stats"]:

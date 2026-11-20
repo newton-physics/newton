@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import ctypes
 import enum
+import functools
+import inspect
 import re
 import time
 from collections.abc import Callable, Iterator, Sequence
@@ -28,6 +30,7 @@ from .picking import Picking
 from .plot_logger import PlotLogger
 from .utils import OPAQUE_OPACITY_THRESHOLD, gaussian_display_colors
 from .viewer import _DEFAULT_LAYER_ID, Layer, ViewerBase
+from .viewer_history import FrameHistory
 from .wind import Wind
 
 
@@ -175,6 +178,52 @@ def _compute_shape_vbo_xforms(
     )
 
 
+_RECORDED_ARRAYS = {"points": ("points", "radii", "colors"), "lines": ("starts", "ends", "colors")}
+
+
+def _recorded(kind: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """Pass the application's outermost logging calls of one kind through the viewer history.
+
+    Calls made while another logging call runs, such as the lines drawn by
+    log_contacts(), are viewer output rather than application data and are
+    neither recorded nor replaced.
+    """
+
+    def decorate(method: Callable[..., Any]) -> Callable[..., Any]:
+        signature = inspect.signature(method)
+
+        @functools.wraps(method)
+        def wrapper(self: ViewerGL, *args: Any, **kwargs: Any) -> Any:
+            history = self._history
+            if history is not None and history.frame_open and not self._history_depth:
+                bound = signature.bind(self, *args, **kwargs)
+                arguments = bound.arguments
+                if kind == "state":
+                    arguments["state"] = history.state(arguments["state"])
+                elif kind == "contacts":
+                    contacts, state, observables = history.contacts(
+                        arguments["contacts"], arguments["state"], arguments.get("observables")
+                    )
+                    arguments.update(contacts=contacts, state=state)
+                    if observables is not None or "observables" in arguments:
+                        arguments["observables"] = observables
+                else:
+                    names = _RECORDED_ARRAYS[kind]
+                    arguments.update(
+                        history.arrays(kind, arguments["name"], {name: arguments.get(name) for name in names})
+                    )
+                args, kwargs = bound.args[1:], bound.kwargs
+            self._history_depth += 1
+            try:
+                return method(self, *args, **kwargs)
+            finally:
+                self._history_depth -= 1
+
+        return wrapper
+
+    return decorate
+
+
 class ViewerGL(ViewerBase):
     """
     OpenGL-based interactive viewer for Newton physics models.
@@ -284,6 +333,14 @@ class ViewerGL(ViewerBase):
         self._displayed_frame = FrameCache()
         self._ui_capture_frame = FrameCache()
         self._has_rendered_frame = False
+        self._history: FrameHistory | None = None
+        """Display history recorded from logging calls; owned by the inspection workspace."""
+        self._history_depth = 0
+        # Scenes that replace a cleared Model are framed on their first state
+        # unless they set a camera themselves.
+        self._camera_revision = 0
+        self._scene_camera_revision = 0
+        self._frame_next_model = False
 
         super().__init__()
         self.show_contact_pairs = True
@@ -440,8 +497,7 @@ class ViewerGL(ViewerBase):
         Register a UI callback to be rendered during the UI phase.
 
         In the default workspace GUI, ``"panel"`` and then ``"side"`` callbacks
-        draw in the inspector's Example tab, or a Custom tab in loops outside
-        :func:`newton.examples.run`. ``"stats"`` callbacks draw in the viewport
+        draw in the inspector's Controls tab. ``"stats"`` callbacks draw in the viewport
         statistics overlay and ``"rendering"`` callbacks in the viewport display
         settings. With ``legacy_gui=True``, positions refer to the sidebar.
 
@@ -651,6 +707,8 @@ class ViewerGL(ViewerBase):
             self.gui.clear_example_callbacks()
 
         super().clear_model()
+        self._frame_next_model = True
+        self._scene_camera_revision = self._camera_revision
 
     @override
     def _init_layer_state(self, layer: Layer) -> None:
@@ -685,6 +743,11 @@ class ViewerGL(ViewerBase):
             self.gui.preload_kernels(model.device)
 
         super().set_model(model)
+
+        if model is not None and self._frame_next_model:
+            self._frame_next_model = False
+            if self.gui is not None:
+                self.gui._frame_camera_pending = True
 
         if self.gui is not None:
             # Reading shape_flags back from the device belongs here, not in the
@@ -986,7 +1049,7 @@ class ViewerGL(ViewerBase):
             yaw: The camera yaw [deg]. If None, the current yaw is kept.
         """
         self.camera.pos = self.camera._as_vec3(pos)
-        self._camera_revision = getattr(self, "_camera_revision", 0) + 1
+        self._camera_revision += 1
         if pitch is not None:
             self.camera.pitch = max(min(pitch, 89.0), -89.0)
         if yaw is not None:
@@ -1369,6 +1432,7 @@ class ViewerGL(ViewerBase):
         )
 
     @override
+    @_recorded("lines")
     def log_lines(
         self,
         name: str,
@@ -1706,6 +1770,7 @@ class ViewerGL(ViewerBase):
             yield points[visible], radii[visible, None]
 
     @override
+    @_recorded("points")
     def log_points(
         self,
         name: str,
@@ -1740,9 +1805,6 @@ class ViewerGL(ViewerBase):
             point_mesh = self._create_point_mesh()
 
         num_points = len(points)
-        workspace = getattr(self.gui, "workspace", None)
-        if workspace is not None and workspace.tree is not None and workspace.tree.model is self.model:
-            points, radii, hidden = workspace.tree.deformables.logged_points(workspace, points, radii, hidden)
         object_recreated = False
         if name not in self.objects:
             # Start with a reasonable default.
@@ -2061,6 +2123,7 @@ class ViewerGL(ViewerBase):
         wp.synchronize_stream(wp.get_stream(self.device))
 
     @override
+    @_recorded("state")
     def log_state(self, state: nt.State):
         """
         Log the current simulation state for rendering.
@@ -2196,11 +2259,34 @@ class ViewerGL(ViewerBase):
         """
         Begin a new frame (calls parent implementation).
 
+        With history recording enabled in the inspection workspace, the State,
+        contacts, points, and lines logged until :meth:`end_frame` are recorded
+        for this time. While the timeline replays history, those logging calls
+        display the recorded frame instead of their arguments.
+
         Args:
-            time: Current simulation time.
+            time: Current simulation time [s].
         """
         super().begin_frame(time)
         self._gizmo_log = {}
+        if self._history is not None:
+            self._history.begin_frame(time)
+
+    @override
+    @_recorded("contacts")
+    def log_contacts(
+        self,
+        contacts: nt.Contacts,
+        state: nt.State,
+        *,
+        observables: nt.solvers.SolverBase.Observables | None = None,
+    ):
+        """Render contact visualizations; see :meth:`ViewerBase.log_contacts`.
+
+        While the timeline replays history, the recorded contacts, contact
+        State, and solver observables of that frame are displayed instead.
+        """
+        super().log_contacts(contacts, state, observables=observables)
 
     @override
     def end_frame(self):
@@ -2214,6 +2300,8 @@ class ViewerGL(ViewerBase):
         destroyed results in a crash (access violation).  Therefore we check
         whether an exit was requested and early-out before touching GL if so.
         """
+        if self._history is not None:
+            self._history.end_frame()
         self._update()
         self._frame_count += 1
 
@@ -2263,18 +2351,10 @@ class ViewerGL(ViewerBase):
             self.camera.width = self.renderer._screen_width
             self.camera.height = self.renderer._screen_height
         if self.gui and self.gui._frame_camera_pending and self._last_state is not None:
-            tree = getattr(getattr(self.gui, "workspace", None), "tree", None)
-            pending_particles = tree is not None and any(
-                source.points is None for source in tree.deformables.sources[1:]
-            )
-            # The lazy explorer is built after the first log_points call.
-            # Allow one frame to associate secondary models before fitting.
-            if pending_particles and not getattr(self.gui, "_frame_camera_waiting_for_particles", False):
-                self.gui._frame_camera_waiting_for_particles = True
-            else:
+            self.gui._frame_camera_pending = False
+            # A scene that set its own camera after the previous one was cleared keeps it.
+            if self._camera_revision == self._scene_camera_revision:
                 self.gui.frame_camera_on_model(selection=False)
-                self.gui._frame_camera_pending = False
-                self.gui._frame_camera_waiting_for_particles = False
         if self.renderer.has_exit():
             return
 
@@ -2473,14 +2553,30 @@ class ViewerGL(ViewerBase):
         Return True if the loop should advance one step.
 
         Consumes a pending single-step request, so call exactly once per frame.
+        While the inspection timeline replays recorded history, the step advances
+        playback instead and this returns False; stepping resumes once playback
+        reaches the newest recorded frame.
         """
-        if not self._paused:
-            self._step_requested = False
-            return True
-        if self._step_requested:
-            self._step_requested = False
-            return True
-        return False
+        if self._paused and not self._step_requested:
+            return False
+        self._step_requested = False
+        history = self._history
+        if history is not None and history.replaying:
+            history.advance(1 if not self._paused else 1 / history.playback_speed)
+            return False
+        return True
+
+    def _configure_example_browser(
+        self, tree: dict[str, list[tuple[str, str]]], callback: Callable[[str], None]
+    ) -> None:
+        """List Newton examples in the GUI for the example runner.
+
+        Args:
+            tree: Example names and module paths grouped by category.
+            callback: Function called with the selected module path.
+        """
+        if self.gui is not None:
+            self.gui.configure_example_browser(tree, callback)
 
     def set_reset_callback(self, callback: Callable[[], None] | None) -> None:
         """Register a callback invoked when the user clicks the Reset button.
@@ -2503,7 +2599,7 @@ class ViewerGL(ViewerBase):
             self.gui.close_console()
         workspace = getattr(getattr(self, "gui", None), "workspace", None)
         if workspace is not None:
-            workspace.detach_example()
+            workspace.detach()
         if self._image_logger is not None:
             self._image_logger.clear()
         self._destroy_render_geometry()

@@ -9,10 +9,10 @@ Keep viewport picking and selection outlines synchronized with body variants and
 Refresh geometry properties and BVH references when shape variants change, respect
 particle visibility during picking, and apply viewport display modes across layers.
 Inspect and edit custom joint-frequency attributes using their own namespace and row width.
-Preserve complete auxiliary render states during history replay, including mixed rigid/deformable scenes.
+Record history from the application's `log_state()`, `log_contacts()`, `log_points()` and `log_lines()` calls and replay it through those calls, pausing stepping through `ViewerBase.should_step()` until playback reaches the newest frame.
 Frame scenes and selections from displayed geometry when rendering uses different units from the collision model.
 Filter contact glyphs to selected shapes and bodies by default, with a toggle to show all contacts.
 Show logged per-body and per-world solver observables, such as `solver_residual`, read-only in the State tab, and list a solver's supported observable kinds in the Solver tab.
 Add experimental `ViewerBase.set_control()`, `set_solver()`, and
-`set_collision_pipeline()` methods for inspecting custom simulation loops,
-with State and Contacts supplied through the existing frame logging methods.
+`set_collision_pipeline()` methods; with the existing frame logging methods,
+they are the inspector's only inputs, for examples and custom loops alike.
