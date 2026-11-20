@@ -381,6 +381,8 @@ def _solve_cell_contacts_gs_generic(
 
 _ContactScalar8 = wp.types.vector(length=8, dtype=float)
 _ContactIndex8 = wp.types.vector(length=8, dtype=int)
+_ContactVectors4 = wp.types.matrix(shape=(4, 3), dtype=float)
+_ContactWeights4 = wp.types.matrix(shape=(4, 8), dtype=float)
 
 
 @wp.func
@@ -408,7 +410,13 @@ def solve_cell_contacts_gs(
 
     first = cell_rows[beg]
     full_rows = bool(True)
-    for entry in range(beg, end):
+    check_end = end - (end - beg) % 8
+    for check_entry in range(beg, check_end, 8):
+        for k in range(8):
+            check_row = cell_rows[check_entry + k]
+            if offsets[check_row + 1] - offsets[check_row] != 8:
+                full_rows = False
+    for entry in range(check_end, end):
         row = cell_rows[entry]
         if offsets[row + 1] - offsets[row] != 8:
             full_rows = False
@@ -448,23 +456,92 @@ def solve_cell_contacts_gs(
         vy[k] = v[1]
         vz[k] = v[2]
 
-    for entry in range(beg, end):
-        i = cell_rows[entry]
-        w = diagonal[i]
-        if w > 0.0 and friction[i] >= 0.0:
-            weights = _ContactScalar8()
-            for k in range(8):
-                weights[k] = values[offsets[i] + k]
-            u0 = wp.vec3(wp.dot(weights, vx), wp.dot(weights, vy), wp.dot(weights, vz)) - boundary_velocity[i]
-            n = normal[i]
-            u = solve_coulomb_isotropic(friction[i], n, u0 - (impulse[i] + adhesion[i] * n) * w)
-            delta = (u - u0) / w
-            impulse[i] += delta
-            delta_impulse[i] = delta
-            mw = wp.cw_mul(mass, weights)
-            vx += mw * delta[0]
-            vy += mw * delta[1]
-            vz += mw * delta[2]
+    contact_quad_end = end - (end - beg) % 4
+    for contact_entry in range(beg, contact_quad_end, 4):
+        quad_rows = wp.vec4i()
+        quad_diagonal = wp.vec4()
+        quad_friction = wp.vec4()
+        quad_adhesion = wp.vec4()
+        quad_normal = _ContactVectors4()
+        quad_boundary = _ContactVectors4()
+        quad_impulse = _ContactVectors4()
+        quad_weights = _ContactWeights4()
+        # Stage four contacts before applying their velocity updates in GS order.
+        for slot in range(4):
+            row_id = cell_rows[contact_entry + slot]
+            quad_rows[slot] = row_id
+            row_diagonal = diagonal[row_id]
+            row_friction = friction[row_id]
+            quad_diagonal[slot] = row_diagonal
+            quad_friction[slot] = row_friction
+            if row_diagonal > 0.0 and row_friction >= 0.0:
+                quad_impulse[slot] = impulse[row_id]
+                quad_normal[slot] = normal[row_id]
+                quad_boundary[slot] = boundary_velocity[row_id]
+                quad_adhesion[slot] = adhesion[row_id]
+                for k in range(8):
+                    quad_weights[slot, k] = values[offsets[row_id] + k]
+        distinct_rows = (
+            quad_rows[0] != quad_rows[1]
+            and quad_rows[0] != quad_rows[2]
+            and quad_rows[0] != quad_rows[3]
+            and quad_rows[1] != quad_rows[2]
+            and quad_rows[1] != quad_rows[3]
+            and quad_rows[2] != quad_rows[3]
+        )
+        for slot in range(4):
+            contact_row = quad_rows[slot]
+            contact_diagonal = quad_diagonal[slot]
+            if contact_diagonal > 0.0 and quad_friction[slot] >= 0.0:
+                contact_previous_impulse = quad_impulse[slot]
+                # A repeated row must see the impulse written by the preceding visit.
+                if not distinct_rows:
+                    contact_previous_impulse = impulse[contact_row]
+                contact_weights = quad_weights[slot]
+                contact_velocity = (
+                    wp.vec3(wp.dot(contact_weights, vx), wp.dot(contact_weights, vy), wp.dot(contact_weights, vz))
+                    - quad_boundary[slot]
+                )
+                normal_vector = quad_normal[slot]
+                projected_velocity = solve_coulomb_isotropic(
+                    quad_friction[slot],
+                    normal_vector,
+                    contact_velocity
+                    - (contact_previous_impulse + quad_adhesion[slot] * normal_vector) * contact_diagonal,
+                )
+                delta_velocity = (projected_velocity - contact_velocity) / contact_diagonal
+                impulse[contact_row] = contact_previous_impulse + delta_velocity
+                delta_impulse[contact_row] = delta_velocity
+                weighted_mass = wp.cw_mul(mass, contact_weights)
+                vx += weighted_mass * delta_velocity[0]
+                vy += weighted_mass * delta_velocity[1]
+                vz += weighted_mass * delta_velocity[2]
+    for contact_entry in range(contact_quad_end, end):
+        contact_row = cell_rows[contact_entry]
+        contact_diagonal = diagonal[contact_row]
+        contact_friction = friction[contact_row]
+        contact_weights = _ContactScalar8()
+        if contact_diagonal > 0.0 and contact_friction >= 0.0:
+            for contact_lane in range(8):
+                contact_weights[contact_lane] = values[offsets[contact_row] + contact_lane]
+        if contact_diagonal > 0.0 and contact_friction >= 0.0:
+            contact_velocity = (
+                wp.vec3(wp.dot(contact_weights, vx), wp.dot(contact_weights, vy), wp.dot(contact_weights, vz))
+                - boundary_velocity[contact_row]
+            )
+            normal_vector = normal[contact_row]
+            projected_velocity = solve_coulomb_isotropic(
+                contact_friction,
+                normal_vector,
+                contact_velocity - (impulse[contact_row] + adhesion[contact_row] * normal_vector) * contact_diagonal,
+            )
+            delta_velocity = (projected_velocity - contact_velocity) / contact_diagonal
+            impulse[contact_row] += delta_velocity
+            delta_impulse[contact_row] = delta_velocity
+            weighted_mass = wp.cw_mul(mass, contact_weights)
+            vx += weighted_mass * delta_velocity[0]
+            vy += weighted_mass * delta_velocity[1]
+            vz += weighted_mass * delta_velocity[2]
 
     for k in range(8):
         velocity[nodes[k]] = wp.vec3(vx[k], vy[k], vz[k])
