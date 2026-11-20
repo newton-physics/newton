@@ -13,7 +13,7 @@ from typing import Any
 from newton._src.usd.utils import _resolve_asset_path, get_applied_api_schemas
 
 from ..exceptions import NewtonDeprecationWarning, NewtonWarning
-from ..utils.deprecation import RemovedAttribute, warn_deprecation
+from ..utils.deprecation import warn_deprecation
 from .batteries import BatteryBase, BatteryConstantResistance
 from .clamping import (
     ClampingBase,
@@ -90,9 +90,6 @@ class ActuatorParsed:
     """Joint target path (USD prim path of the driven joint)."""
     battery_path: str | None = None
     """USD prim path of the battery the actuator draws from, or ``None``."""
-
-    controller_class = RemovedAttribute("drive_class", removed_in="1.8")
-    controller_kwargs = RemovedAttribute("drive_kwargs", removed_in="1.8")
 
     def __post_init__(self) -> None:
         if self.component_specs is None:
