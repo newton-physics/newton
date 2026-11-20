@@ -1368,7 +1368,7 @@ class ViewerWorkspace:
             tree.expanded.clear()
             tree.rebuild()
         ui.same_line()
-        count = sum(getattr(m, kind + "_count", 0) for kind in tree.kinds) + len(getattr(m, "_deformable_objects", ()))
+        count = sum(getattr(m, kind + "_count", 0) for kind in tree.kinds) + m.surface_count + m.volume_count
         count += sum(tree.custom.counts.values())
         worlds = "world" if m.world_count == 1 else "worlds"
         objects = "object" if count == 1 else "objects"

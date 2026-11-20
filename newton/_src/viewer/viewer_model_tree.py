@@ -344,7 +344,7 @@ class ModelTree:
             for key, label in self.custom.search(query):
                 self.labels[key] = label
                 matches[self.world_for(key)].append((key, 1))
-            for _kind, name, world, *_ranges in getattr(self.model, "_deformable_objects", ()):
+            for _kind, name, world, *_ranges in self.deformables.records:
                 if query in name.casefold():
                     self.ensure_world(world)
             parts = query.split()

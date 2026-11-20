@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import cached_property
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -250,6 +251,20 @@ class DeformableCatalog:
         self._materials = {}
         self._element_order = {}
 
+    @cached_property
+    def records(self) -> tuple[tuple[str, str, int, int, int, int, int], ...]:
+        """Read each authored surface and volume's native ranges once per Model."""
+        records = []
+        for kind, element in (("surface", "tri"), ("volume", "tet")):
+            labels = getattr(self.model, f"{kind}_label")
+            if labels:
+                columns = [
+                    getattr(self.model, f"{kind}_{name}").numpy().tolist()
+                    for name in ("world", "particle_start", "particle_end", f"{element}_start", f"{element}_end")
+                ]
+                records.extend((kind, *record) for record in zip(labels, *columns, strict=True))
+        return tuple(records)
+
     def source(self, particle: int) -> ParticleSource:
         """Find the source containing a valid catalog-wide particle index."""
         return next(source for source in self.sources if source.offset <= particle < source.end)
@@ -303,8 +318,7 @@ class DeformableCatalog:
         triangles = self.topology("tri")
         tetrahedra = self.topology("tet")
         covered = []
-        records = getattr(self.model, "_deformable_objects", ())
-        for kind, label, w, p0, p1, e0, e1 in records:
+        for kind, label, w, p0, p1, e0, e1 in self.records:
             if w != world:
                 continue
             tri = range(e0, e1) if kind == "surface" else self.elements_in_range("tri", p0, p1)

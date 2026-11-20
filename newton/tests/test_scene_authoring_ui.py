@@ -770,7 +770,7 @@ class TestSceneAuthoringUI(unittest.TestCase):
 
     @requires("imgui_bundle", "pxr.Usd", "newton_usd_schemas")
     def test_deformable_controls_and_paused_particle_stroke(self):
-        """Create native cloth and publish one bounded, collider-cleared MPM brush gesture."""
+        """Edit separate deformables picked in the viewport and publish a paused particle stroke."""
         from imgui_bundle import imgui
 
         previous_context = imgui.get_current_context()
@@ -820,6 +820,16 @@ class TestSceneAuthoringUI(unittest.TestCase):
                 native_mouse(point, False)
                 render(2)
 
+            def scene_pixel(position):
+                matrix = (
+                    viewer.camera.get_projection_matrix().reshape(4, 4).T
+                    @ viewer.camera.get_view_matrix().reshape(4, 4).T
+                )
+                clip = matrix @ np.array((*position, 1))
+                ndc = clip[:2] / clip[3]
+                x, y, width, height = viewer.gui.workspace.rect
+                return x + (ndc[0] + 1) * width / 2, y + (1 - ndc[1]) * height / 2
+
             def track(original):
                 def draw(owner, label, *args, **kwargs):
                     result = original(owner, label, *args, **kwargs)
@@ -840,16 +850,30 @@ class TestSceneAuthoringUI(unittest.TestCase):
                 cloth = editor.objects[0]
                 self.assertEqual(cloth.kind.value, "cloth")
                 self.assertGreater(editor.model.tri_count, 0)
-                self.assertEqual(viewer.gui.workspace.selected, ("particle", 0))
-                model, builds = editor.model, editor.rebuild_count
-                density = targets["Density"]
-                native_mouse(density, True)
-                native_mouse((density[0] - 120, density[1]))
-                self.assertNotEqual(editor.get_object(cloth.id).density, cloth.density)
-                self.assertIs(editor.model, model)
-                native_mouse((density[0] - 120, density[1]), False)
+                self.assertEqual(editor.selected_id, cloth.id)
+                soft_id = editor.add_deformable(
+                    "soft",
+                    position=(cloth.position[0] + 1.5, cloth.position[1], cloth.position[2] + 0.55),
+                    size=(0.5, 0.5, 0.5),
+                    resolution=2,
+                )
                 render(2)
-                self.assertEqual(editor.rebuild_count, builds + 1)
+                soft = editor.get_object(soft_id)
+                for obj, neighbor, kind in ((cloth, soft, "surface"), (soft, cloth, "volume")):
+                    click(scene_pixel(obj.position))
+                    self.assertEqual(editor.selected_id, obj.id)
+                    self.assertEqual(viewer.gui.workspace.selected[0], kind)
+                    original_neighbor = editor.get_object(neighbor.id)
+                    model, builds = editor.model, editor.rebuild_count
+                    density = targets["Density"]
+                    native_mouse(density, True)
+                    native_mouse((density[0] - 120, density[1]))
+                    self.assertNotEqual(editor.get_object(obj.id).density, obj.density)
+                    self.assertIs(editor.model, model)
+                    native_mouse((density[0] - 120, density[1]), False)
+                    render(2)
+                    self.assertEqual(editor.rebuild_count, builds + 1)
+                    self.assertEqual(editor.get_object(neighbor.id), original_neighbor)
                 editor.close()
 
                 devices = get_cuda_test_devices()[:1]
@@ -883,14 +907,7 @@ class TestSceneAuthoringUI(unittest.TestCase):
                         render()
                         click(targets["Paint particles"])
                     self.assertTrue(panel.brush_enabled)
-                    matrix = (
-                        viewer.camera.get_projection_matrix().reshape(4, 4).T
-                        @ viewer.camera.get_view_matrix().reshape(4, 4).T
-                    )
-                    clip = matrix @ np.array((0, 0, 0.4, 1))
-                    ndc = clip[:2] / clip[3]
-                    x, y, width, height = viewer.gui.workspace.rect
-                    point = (x + (ndc[0] + 1) * width / 2, y + (1 - ndc[1]) * height / 2)
+                    point = scene_pixel((0, 0, 0.4))
                     model, builds = editor.model, editor.rebuild_count
                     camera = (tuple(viewer.camera.pos), viewer.camera.pitch, viewer.camera.yaw)
                     native_mouse(point, True)

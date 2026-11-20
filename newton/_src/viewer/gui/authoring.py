@@ -230,7 +230,13 @@ class AuthoringPanel:
                 keys = [("shape", index) for index in range(*bindings[self.editor.selected_id].shapes)]
                 if not keys:
                     start, end = bindings[self.editor.selected_id].particles
-                    keys = [("particle", start)] if end > start else []
+                    if end > start:
+                        self.workspace._ensure_tree()
+                        tree = self.workspace.tree
+                        owner = tree.deformables.owner(tree, start) if tree is not None else None
+                        keys = [
+                            owner if owner is not None and owner[0] in ("surface", "volume") else ("particle", start)
+                        ]
             self.workspace.select(keys[0] if keys else None)
             for selected in keys[1:]:
                 self.workspace.select(selected, toggle=True)
@@ -240,11 +246,19 @@ class AuthoringPanel:
             selected = self.workspace.selected
             object_id = None
             if selected is not None:
-                if selected[0] == "particle":
-                    object_id = next(
-                        (object_id for start, end, object_id in self._particle_objects if start <= selected[1] < end),
-                        None,
-                    )
+                tree = self.workspace.tree
+                if tree is not None and selected[0] in ("particle", "surface", "volume", "tri", "tet", "particle_set"):
+                    particles = tree.deformables.elements(selected)[0]
+                    if len(particles):
+                        first, last = particles[0], particles[-1]
+                        object_id = next(
+                            (
+                                object_id
+                                for start, end, object_id in self._particle_objects
+                                if start <= first <= last < end
+                            ),
+                            None,
+                        )
                 if selected[0] == "shape":
                     object_id = self._shape_objects.get(selected[1])
                     if object_id is None and self.workspace.tree is not None:

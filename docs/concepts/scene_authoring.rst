@@ -267,8 +267,10 @@ apply this resistance without adding rolling constraints to every mesh contact.
 XPBD continues to use its native contact model.
 
 The editor owns a standalone Model, State, and solver for each scene. The VBD
-preset supports mixed rigid and deformable authoring. The MPM preset supports
-particle strokes against stationary rigid colliders.
+preset supports two-way contacts between dynamic rigid bodies and deformables
+with compatible collision shapes. Cloth and soft-body self-contact is disabled
+in this preset. The MPM preset supports particle strokes against stationary
+rigid colliders.
 
 The design follows the distinction between inexpensive live edits and explicit
 recompilation found in
