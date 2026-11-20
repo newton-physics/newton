@@ -85,38 +85,23 @@ def integrate_active_fraction(
 
 
 @fem.integrand
-def integrate_collider_fraction(
+def integrate_particle_scalar(
     s: fem.Sample,
-    domain: fem.Domain,
     phi: fem.Field,
-    sdf: fem.Field,
-    inv_cell_volume: float,
-):
-    return phi(s) * wp.where(sdf(s) <= 0.0, inv_cell_volume, 0.0)
-
-
-@fem.integrand
-def integrate_collider_fraction_apic(
-    s: fem.Sample,
     domain: fem.Domain,
-    phi: fem.Field,
-    sdf: fem.Field,
-    sdf_gradient: fem.Field,
     inv_cell_volume: float,
+    particle_flags: wp.array[wp.int32],
+    values: wp.array[float],
 ):
-    # APIC collider fraction prediction
-    node_count = fem.node_count(sdf, s)
-    pos = domain(s)
-    min_sdf = float(INFINITY)
-    for k in range(node_count):
-        s_node = fem.at_node(sdf, s, k)
-        sdf_value = sdf(s_node, k)
-        sdf_gradient_value = sdf_gradient(s_node, k)
+    """Active-particle volume integral of a per-particle scalar (one where ``values`` is null) against the
+    nonnegative part of ``phi``, in cell volumes; needs generic assembly to clamp each node's shape function."""
+    if ~particle_flags[s.qp_index] & newton.ParticleFlags.ACTIVE:
+        return 0.0
 
-        node_offset = pos - domain(s_node)
-        min_sdf = wp.min(min_sdf, sdf_value + wp.dot(sdf_gradient_value, node_offset))
-
-    return phi(s) * wp.where(min_sdf <= 0.0, inv_cell_volume, 0.0)
+    value = float(1.0)
+    if values:
+        value = values[s.qp_index]
+    return wp.max(phi(s), 0.0) * value * inv_cell_volume
 
 
 @fem.integrand
@@ -137,6 +122,21 @@ def integrate_mass(
     # which are completely ignored during transfers.
     density = wp.where(particle_density[s.qp_index] > 0.0, particle_density[s.qp_index], INFINITY)
     return phi(s) * density * inv_cell_volume
+
+
+@wp.kernel
+def inertial_delassus_scale(
+    densities: wp.array[float],
+    dt_sq_over_dx_sq: float,
+    scale: wp.array[float],
+):
+    """Inertial Delassus scale dt^2 / (rho dx^2) of a full cell [1/Pa] for each density; a unit density keeps it
+    positive without positive-density material."""
+    i = wp.tid()
+    density = densities[i]
+    if density <= 0.0:
+        density = 1.0
+    scale[i] = dt_sq_over_dx_sq / density
 
 
 @fem.integrand
@@ -547,18 +547,26 @@ def strain_delta_form(
 
 
 @wp.kernel
-def compute_unilateral_strain_offset(
-    max_fraction: float,
-    particle_volume: wp.array[float],
-    collider_volume: wp.array[float],
-    node_volume: wp.array[float],
+def add_critical_strain_offset(
+    eigenvectors: wp.array3d[float],
+    critical_strain_offset: wp.array[float],
     unilateral_strain_offset: wp.array[float],
 ):
-    i = wp.tid()
+    """Add the critical packing bound of each strain mode, which only ever relaxes compression.
 
-    spherical_part = max_fraction * (node_volume[i] - collider_volume[i]) - particle_volume[i]
-    spherical_part = wp.max(spherical_part, 0.0)
-    unilateral_strain_offset[i] = spherical_part
+    The bound rotates with the strain basis like other dual vectors, then clamps to
+    nonnegative values per mode. ``eigenvectors`` may be empty for an untransformed basis.
+    """
+    i = wp.tid()
+    offset = critical_strain_offset[i]
+    if eigenvectors.shape[0] > 0:
+        nodes_per_element = eigenvectors.shape[1]
+        element = i // nodes_per_element
+        local_node = i - element * nodes_per_element
+        offset = float(0.0)
+        for k in range(nodes_per_element):
+            offset += eigenvectors[element, local_node, k] * critical_strain_offset[element * nodes_per_element + k]
+    unilateral_strain_offset[i] += wp.max(offset, 0.0)
 
 
 @wp.func

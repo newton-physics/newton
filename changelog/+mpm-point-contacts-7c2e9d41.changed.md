@@ -1,0 +1,1 @@
+Keep the particles closest to collider contact in each cell of the capped `"picN"` collider bases of `SolverImplicitMPM`: resting contacts first, then approaching particles by time to impact, instead of the first N particles in cell order.
