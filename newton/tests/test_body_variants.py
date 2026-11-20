@@ -1,7 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-import importlib.util
 import unittest
 from dataclasses import replace
 
@@ -9,7 +8,13 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
+from newton.tests.unittest_utils import (
+    MUJOCO_MODULES,
+    add_function_test,
+    get_cuda_test_devices,
+    get_test_devices,
+    requires,
+)
 
 
 def _variant(kind: str, mu: float = 1.0, mu_static: float | None = None, tag: int = 0) -> newton.ModelBuilder:
@@ -312,7 +317,7 @@ class TestBodyVariants(unittest.TestCase):
         viewer.notify_model_changed(_select(model, [1], bodies=[1]))
         self.assertEqual(rendered_shapes(), [0, 2, 3, 4])
 
-    @unittest.skipUnless(importlib.util.find_spec("viser"), "Requires viser")
+    @requires("viser")
     def test_viser_follows_selection(self):
         """Batches that lose all their rows stay valid in ViewerViser."""
         model = _scene(2).finalize(device="cpu")
@@ -430,8 +435,6 @@ def test_mujoco_rest_height_follows_selection(test, device):
     np.testing.assert_allclose(heights, [0.25, 0.1], atol=0.02)
 
     with test.assertRaises(NotImplementedError):
-        solver.render_mujoco_viewer()
-    with test.assertRaises(NotImplementedError):
         newton.solvers.SolverMuJoCo(model, use_mujoco_contacts=True)
 
 
@@ -443,7 +446,7 @@ def test_selection_replays_from_cuda_graph(test, device):
     model = scene.finalize(device=device)
     mujoco = newton.solvers.SolverMuJoCo(model, use_mujoco_contacts=False)
     vbd = newton.solvers.SolverVBD(
-        model, rigid_compliant_alm=True, rigid_soft_enable_dat=True, collision_pipeline=newton.CollisionPipeline(model)
+        model, rigid_soft_enable_dat=True, collision_pipeline=newton.CollisionPipeline(model)
     )
     cube_radius = vbd._rigid_dat_body_bounding_radius.numpy()[0]
 
@@ -500,18 +503,26 @@ def test_steel_torsion_covers_variants(test, device):
 
 devices = get_test_devices()
 add_function_test(TestBodyVariants, "test_contacts_follow_selection", test_contacts_follow_selection, devices=devices)
-add_function_test(TestBodyVariants, "test_rows_keep_their_role", test_rows_keep_their_role, devices=devices)
+add_function_test(
+    TestBodyVariants,
+    "test_rows_keep_their_role",
+    test_rows_keep_their_role,
+    devices=devices,
+    requires=MUJOCO_MODULES,
+)
 add_function_test(
     TestBodyVariants,
     "test_selection_replays_from_cuda_graph",
     test_selection_replays_from_cuda_graph,
     devices=get_cuda_test_devices(),
+    requires=MUJOCO_MODULES,
 )
 add_function_test(
     TestBodyVariants,
     "test_mujoco_rest_height_follows_selection",
     test_mujoco_rest_height_follows_selection,
     devices=devices,
+    requires=MUJOCO_MODULES,
 )
 add_function_test(
     TestBodyVariants,

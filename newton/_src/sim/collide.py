@@ -33,7 +33,6 @@ from ..geometry.contact_reduction_body_pairs import (
 )
 from ..geometry.contact_reduction_global import CONTACT_ID_BITS, MAX_GROUP_ID
 from ..geometry.contact_sort import ContactSorter
-from ..geometry.differentiable_contacts import launch_differentiable_contact_augment
 from ..geometry.flags import MeshProperties, ShapeFlags
 from ..geometry.kernels import create_soft_contacts
 from ..geometry.narrow_phase import NarrowPhase
@@ -1664,12 +1663,6 @@ def _warn_full_surface_fallbacks(model: Model, capable: np.ndarray) -> None:
     )
 
 
-@wp.kernel(enable_backward=False)
-def _reserve_contact_gap(authored: wp.array[float], reserve: float, gap: wp.array[float]):
-    shape = wp.tid()
-    gap[shape] = wp.max(authored[shape], reserve)
-
-
 class CollisionPipeline:
     """
     Full-featured collision pipeline with GJK/MPR narrow phase and pluggable broad phase.
@@ -1706,19 +1699,28 @@ class CollisionPipeline:
         and heightfield contacts keep the per-shape-pair reduction that
         ``reduce_contacts`` selects.
 
+        Automatic coverage uses fixed body-local collider-group bounds and
+        shares the SDF reducer's normalized voxel grid. Near-contact and speculative
+        layers have independent cells. Cells with separation
+        variation above ``1e-5`` of the reference group's largest extent keep
+        all their contacts. Contacts outside the bounds, or without a finite
+        reference group, also pass through. An explicit ``cell_size`` retains
+        the legacy projected grid without this depth-variation safeguard.
+
         It is an approximation with scene-dependent support error and possible
         upward torsional-friction bias; validate tipping- and yaw-sensitive
-        tasks.  Only solvers with
-        :attr:`~newton.solvers.SolverBase.supports_body_pair_reduced_contacts`
-        accept the reduced buffers.  Sticky contact matching and hydroelastic
-        contacts are rejected at construction.
+        tasks. The output uses the ordinary contact-row contract consumed by
+        Newton solvers, like mesh/SDF reduction. Sticky contact matching and
+        hydroelastic contacts are rejected at construction.
 
         .. experimental::
         """
 
-        cell_size: float = 0.25
-        """Spatial cell edge [m] that keeps separated same-normal patches of one body pair
-        independently represented."""
+        cell_size: float | None = None
+        """Use automatic body-local voxel coverage by default, with no length parameter.
+
+        An explicit spatial cell edge [m] selects the legacy projected grid.
+        """
         hashtable_size_factor: float = 1.0
         """Multiplier on the group-table capacity, which is derived from the model's contact-pair topology
         rather than from ``max_triangle_pairs``.  If the table is too small, the affected frames keep every
@@ -1731,13 +1733,13 @@ class CollisionPipeline:
         def __post_init__(self):
             """Validate configuration before any device allocation."""
             try:
-                cell_size = float(self.cell_size)
+                cell_size = None if self.cell_size is None else float(self.cell_size)
                 hashtable_size_factor = float(self.hashtable_size_factor)
             except (TypeError, ValueError) as error:
                 raise TypeError("BodyPairReductionConfig numeric fields must be real numbers") from error
             with np.errstate(over="ignore", under="ignore", invalid="ignore"):
-                cell_size_f32 = float(np.float32(cell_size))
-            if not np.isfinite(cell_size_f32) or cell_size_f32 <= 0.0:
+                cell_size_f32 = None if cell_size is None else float(np.float32(cell_size))
+            if cell_size_f32 is not None and (not np.isfinite(cell_size_f32) or cell_size_f32 <= 0.0):
                 raise ValueError("BodyPairReductionConfig.cell_size must be finite and > 0 at float32 precision")
             if not np.isfinite(hashtable_size_factor) or hashtable_size_factor <= 0.0:
                 raise ValueError("BodyPairReductionConfig.hashtable_size_factor must be finite and > 0")
@@ -1864,11 +1866,9 @@ class CollisionPipeline:
                 collision/solver time. Set ``soft_contact_max`` to size storage explicitly;
                 this does not reduce the number of feature pairs queried.
                 See :ref:`full-surface-mesh-contact-costs`.
-            requires_grad: Whether pipeline-generated soft contacts and the
-                deprecated automatic rigid-contact outputs require gradients.
-                If None, uses ``model.requires_grad``. Explicit calls to
-                :func:`newton.eval_rigid_contact_kinematics` do not
-                depend on this flag.
+            requires_grad: Whether pipeline-generated soft contacts require gradients.
+                If None, uses ``model.requires_grad``. Rigid-contact gradients come from
+                :func:`newton.eval_rigid_contact_kinematics` and do not depend on this flag.
             broad_phase:
                 Either a broad phase mode string ("explicit", "nxn", "sap") or
                 a prebuilt broad phase instance for expert usage.
@@ -1916,13 +1916,16 @@ class CollisionPipeline:
                 .. experimental::
 
                     The ``"sticky"`` mode may change without prior notice.
-            contact_matching_pos_threshold: World-space distance threshold [m]
-                between the previous and current contact midpoints
-                ``0.5 * (world(point0) + world(point1))``.  Contacts whose
-                midpoint moves more than this are considered broken. In sticky mode,
-                instead compare each saved body-local witness, transformed by the
-                current body pose, with its fresh contact point. The contact is
-                broken if either witness moves farther than this distance.
+            contact_matching_pos_threshold: World-space distance threshold [m].
+                In latest mode, compare the previous and current contact midpoints
+                ``0.5 * (world(point0) + world(point1))``; movement beyond the
+                threshold breaks the match. In sticky mode,
+                compare both transported body-local witnesses with their fresh
+                points, or match a travelling contact when the changes in one
+                body's world-oriented witness offset and in the world-space
+                witness separation stay within this threshold. A matched contact
+                keeps fresh geometry if either transported witness exceeds the
+                threshold; its identity is retained.
                 Defaults to ``0.0005``.
             contact_matching_normal_dot_threshold: Minimum dot product between
                 old and new contact normals for a match.
@@ -2076,8 +2079,6 @@ class CollisionPipeline:
         self.include_static_kinematic_pairs = include_static_kinematic_pairs
         self.speculative_contact_gap_max = speculative_contact_gap_max
         self._speculative_enabled = speculative_contact_gap_max is not None
-        self._scheduled_shape_gap = None
-        self._scheduled_gap_active = False
         contact_writer = write_contact_speculative if self._speculative_enabled else write_contact
 
         unit_scale_sdf_shapes = None
@@ -2705,10 +2706,11 @@ class CollisionPipeline:
         return self._body_pair_reduction
 
     def refresh_body_pair_reduction_groups(self):
-        """Rebuild body-pair reduction groups from the model's current shape materials.
+        """Rebuild body-pair material groups and fixed local coverage bounds.
 
         Groups are built at construction.  Call this outside CUDA graph capture
-        after changing ``shape_material_*`` or a grouped per-shape attribute.
+        after changing ``shape_material_*``, a grouped per-shape attribute, or
+        local collider transforms or margins. Automatic coverage bounds refresh in place.
         No-op when body-pair reduction is disabled.
 
         .. experimental::
@@ -2720,7 +2722,7 @@ class CollisionPipeline:
         shape_group, group_count = build_reduction_groups(self.model, self.body_pair_reduction.material_attributes)
         if group_count > MAX_GROUP_ID + 1:
             raise ValueError(f"body_pair_reduction supports at most {MAX_GROUP_ID + 1} groups, got {group_count}")
-        self._body_pair_reducer.refresh_groups(shape_group)
+        self._body_pair_reducer.refresh_groups(shape_group, self.model)
 
     @property
     def rigid_contact_max(self) -> int:
@@ -2786,13 +2788,6 @@ class CollisionPipeline:
 
         Returns:
             A newly allocated contacts buffer sized for this pipeline.
-
-        .. experimental::
-
-            If ``requires_grad`` is true, deprecated rigid-contact distance and
-            point compatibility arrays are allocated. New code should allocate
-            only the outputs it needs and pass them to
-            :func:`newton.eval_rigid_contact_kinematics`.
         """
         detector = self._soft_self_contact_detector
         soft_self_contact = detector is not None
@@ -3064,16 +3059,11 @@ class CollisionPipeline:
 
         Safe to call inside a :class:`wp.Tape` context.  The non-differentiable
         broad-phase and narrow-phase kernels are launched with tape recording
-        hardcoded ``record_tape=False`` internally.  The differentiable kernels
-        (soft-contact generation and rigid-contact augmentation) are recorded on
-        the tape so that gradients flow through ``state.body_q`` and
-        ``state.particle_q``.
-
-        For backward compatibility, when ``requires_grad=True`` the deprecated
-        ``contacts.rigid_contact_diff_*`` arrays are populated by a lightweight
-        augmentation kernel. New code should call
-        :func:`newton.eval_rigid_contact_kinematics` explicitly
-        after collision detection to reconstruct only the quantities it needs.
+        hardcoded ``record_tape=False`` internally.  The differentiable
+        soft-contact generation kernels are recorded on the tape so that
+        gradients flow through ``state.body_q`` and ``state.particle_q``.
+        Call :func:`newton.eval_rigid_contact_kinematics` after collision
+        detection for differentiable rigid-contact quantities.
 
         .. experimental::
 
@@ -3160,26 +3150,10 @@ class CollisionPipeline:
             search_gap = model.shape_gap
 
         shape_gap = model.shape_gap
-        if self._scheduled_gap_active:
-            shape_gap = self._scheduled_shape_gap
-            wp.launch(
-                _reserve_contact_gap,
-                dim=model.shape_count,
-                inputs=[model.shape_gap, 0.5 * float(self.speculative_contact_gap_max)],
-                outputs=[shape_gap],
-                device=self.device,
-                record_tape=False,
-            )
-            search_gap = shape_gap
-            speculative_active = False
-            # Keep the horizon for predictive manifold reduction: nearby
-            # receding features must not displace approaching mesh/SDF features.
-
         # Rigid contact detection -- broad phase + narrow phase.
         # These kernels hardcode record_tape=False internally so they are
         # never captured on an active wp.Tape.  The differentiable
-        # augmentation and soft-contact kernels that follow are tape-safe
-        # and recorded normally.
+        # soft-contact kernels that follow are tape-safe and recorded normally.
 
         # Eager calls copy the sticky rescale flag to the host and raise on a copy from an earlier call; never syncs.
         check_unit_scale_sdf = self._shape_unit_scale_sdf.shape[0] > 0 and not wp.get_device(self.device).is_capturing
@@ -3220,9 +3194,7 @@ class CollisionPipeline:
             record_tape=False,
         )
 
-        # Scheduled passes need velocities for reduction, but their AABBs
-        # already include the full distance reserve.
-        if speculative_active or self._scheduled_gap_active:
+        if speculative_active:
             wp.launch(
                 kernel=compute_shape_velocities,
                 dim=model.shape_count,
@@ -3237,7 +3209,7 @@ class CollisionPipeline:
                     model.shape_collision_radius,
                     shape_gap,
                     collision_update_dt,
-                    0.0 if self._scheduled_gap_active else max_speculative_extension,
+                    max_speculative_extension,
                 ],
                 outputs=[
                     self._shape_linear_velocity,
@@ -3556,16 +3528,6 @@ class CollisionPipeline:
                 contact_generation=contacts.contact_generation,
                 device=self.device,
                 **sticky_offsets,
-            )
-
-        # Differentiable contact augmentation: reconstruct world-space contact
-        # quantities through body_q so that gradients flow via wp.Tape.
-        if self.requires_grad and contacts._rigid_contact_diff_distance is not None:
-            launch_differentiable_contact_augment(
-                contacts=contacts,
-                body_q=state.body_q,
-                shape_body=model.shape_body,
-                device=self.device,
             )
 
         # Generate soft contacts for particles and shapes
