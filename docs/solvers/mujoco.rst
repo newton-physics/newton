@@ -483,6 +483,16 @@ API:
   compile-time contact dynamics and the legacy unit-mass numerical
   ``convert_solref(ke, kd, 1, 1)`` round-trip in ``geom_solref``.
 
+On USD import, a shape that takes ``shape_material_ke`` /
+``shape_material_kd`` from its own ``mjc:solref`` and is in
+``SOLREF_MODE_RAW`` stores them multiplied by the mass of its body (the
+surviving body when fixed joints are collapsed).
+``mjc:solref`` gives per-unit-mass gains (``1/s^2`` and ``1/s``); the body mass
+is a resting-contact estimate of the effective mass that turns them into the
+force-space gains other solvers expect. :class:`~newton.solvers.SolverMuJoCo`
+uses the raw ``mujoco.solref`` for these shapes, so it is unaffected. Static
+shapes and shapes in the other two modes keep the unscaled values.
+
 .. _mujoco-contact-solref-conversion:
 
 Contact ``solref`` conversion
