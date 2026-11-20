@@ -425,6 +425,12 @@ class ViewerGL(ViewerBase):
         """
         Register a UI callback to be rendered during the UI phase.
 
+        In the default workspace GUI, ``"panel"`` and then ``"side"`` callbacks
+        draw in the inspector's Example tab, or a Custom tab in loops outside
+        :func:`newton.examples.run`. ``"stats"`` callbacks draw in the viewport
+        statistics overlay and ``"rendering"`` callbacks in the viewport display
+        settings. With ``legacy_gui=True``, positions refer to the sidebar.
+
         Args:
             callback: Function to be called during UI rendering
             position: Position where the UI should be rendered. One of:

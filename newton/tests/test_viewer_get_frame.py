@@ -786,6 +786,9 @@ class TestViewerGLGetFrame(unittest.TestCase):
                         calls.append("timeline_gui")
 
                     viewer.register_ui_callback(timeline_gui, position="free")
+                    if not legacy:
+                        # Keep the inspector docked in this 800 px window on HiDPI desktops too.
+                        gui.ui.refresh_dpi(1.0)
                     for frame in range(2):
                         viewer.begin_frame(frame / 60)
                         viewer.log_state(state)
@@ -805,9 +808,9 @@ class TestViewerGLGetFrame(unittest.TestCase):
                     else:
                         self.assertIsNotNone(gui.workspace)
                         self.assertIsNotNone(viewer.renderer._workspace_rect)
-                        self.assertIn("free", calls)
-                        self.assertIn("stats", calls)
-                        self.assertIn("timeline_gui", calls)
+                        # Custom loops without newton.examples.run() still draw
+                        # every registered position, including the default "side".
+                        self.assertEqual(calls[-5:], ["panel", "side", "stats", "free", "timeline_gui"])
                         self.assertFalse(gui.workspace.timeline_options["recording"])
 
                     # Render clipped text, widgets, and user images into an isolated target.

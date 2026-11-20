@@ -95,6 +95,8 @@ class ViewerGui:
             self.console_capture = ConsoleCapture()
             window.push_handlers(on_close=self.close_console)
         self._workspace_example = None
+        self._workspace_browser = None
+        """Example browser drawn by the workspace explorer instead of its ``"panel"`` callback."""
         self._frame_camera_pending = False
         self._selection_press = None
 

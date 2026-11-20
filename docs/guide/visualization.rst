@@ -858,7 +858,9 @@ Keys can be specified as single-character strings (``'w'``), special key names (
 **Custom UI panels:**
 
 :meth:`~newton.viewer.ViewerGL.register_ui_callback` adds custom imgui UI elements to the viewer.
-The ``position`` parameter controls placement: ``"side"`` (default), ``"stats"``, ``"free"``, or ``"panel"``:
+The ``position`` parameter controls placement: ``"side"`` (default), ``"stats"``, ``"free"``, or ``"panel"``.
+In the docked workspace, ``"panel"`` and ``"side"`` callbacks share the inspector's Example tab, named
+Custom when the viewer is driven by your own loop; ``"stats"`` callbacks draw in the viewport overlay:
 
 .. code-block:: python
 

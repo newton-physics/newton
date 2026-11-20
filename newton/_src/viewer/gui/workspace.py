@@ -182,6 +182,8 @@ class ViewerWorkspace:
         self._reveal_selection = False
         self._focus_properties = False
         self._focus_environment = False
+        # Custom loops have no example tabs to compete with; show their UI once.
+        self._custom_tab_shown = False
         self._focus_scene = False
         self.timeline_options = {
             "recording": False,
@@ -961,7 +963,7 @@ class ViewerWorkspace:
                 120,
                 700,
             )
-        browser = getattr(self.gui, "_workspace_browser", None)
+        browser = self.gui._workspace_browser
         if browser is not None and browser.load_error is not None:
             error_width = max(1, min(540 * s, self.rect[2] - 24 * s))
             if self._window(
@@ -1267,36 +1269,32 @@ class ViewerWorkspace:
             self._focus_scene = False
             self._scene_tree()
             ui.end_tab_item()
-        if self.widgets.tab_item("Examples")[0]:
-            browser = getattr(self.gui, "_workspace_browser", None)
-            if browser is None:
-                for callback in self.gui._ui_callbacks["panel"]:
-                    callback(ui)
-            else:
-                ui.set_next_item_width(-1)
-                _, self.example_search = ui.input_text_with_hint(
-                    "##example_search", "Find an example...", self.example_search
-                )
-                if self.example_search != self._example_query:
-                    query = self.example_search.casefold()
-                    self._example_rows = [
-                        (category, name, path)
-                        for category, entries in browser._tree.items()
-                        for name, path in entries
-                        if query in f"{category} {name}".casefold()
-                    ]
-                    self._example_query = self.example_search
-                ui.text_disabled(f"{len(self._example_rows)} examples")
-                if ui.begin_child("##example_rows"):
-                    clipper = ui.ListClipper()
-                    clipper.begin(len(self._example_rows))
-                    while clipper.step():
-                        for row in range(clipper.display_start, clipper.display_end):
-                            category, name, path = self._example_rows[row]
-                            if ui.selectable(f"{category} / {name}", path == browser.current_module)[0]:
-                                browser.switch_target = path
-                    clipper.end()
-                ui.end_child()
+        browser = self.gui._workspace_browser
+        if browser is not None and self.widgets.tab_item("Examples")[0]:
+            ui.set_next_item_width(-1)
+            _, self.example_search = ui.input_text_with_hint(
+                "##example_search", "Find an example...", self.example_search
+            )
+            if self.example_search != self._example_query:
+                query = self.example_search.casefold()
+                self._example_rows = [
+                    (category, name, path)
+                    for category, entries in browser._tree.items()
+                    for name, path in entries
+                    if query in f"{category} {name}".casefold()
+                ]
+                self._example_query = self.example_search
+            ui.text_disabled(f"{len(self._example_rows)} examples")
+            if ui.begin_child("##example_rows"):
+                clipper = ui.ListClipper()
+                clipper.begin(len(self._example_rows))
+                while clipper.step():
+                    for row in range(clipper.display_start, clipper.display_end):
+                        category, name, path = self._example_rows[row]
+                        if ui.selectable(f"{category} / {name}", path == browser.current_module)[0]:
+                            browser.switch_target = path
+                clipper.end()
+            ui.end_child()
             ui.end_tab_item()
         ui.end_tab_bar()
 
@@ -1841,13 +1839,33 @@ class ViewerWorkspace:
             if self.widgets.tab_item("Solver")[0]:
                 self._solver_properties()
                 ui.end_tab_item()
-            if callable(getattr(self.example, "gui", None)) and self.widgets.tab_item("Example", accent=True)[0]:
+            callbacks = self._custom_callbacks()
+            label = "Example" if self.example is not None else "Custom"
+            focus = bool(callbacks) and self.example is None and not self._custom_tab_shown
+            self._custom_tab_shown |= focus
+            flags = ui.TabItemFlags_.set_selected if focus else 0
+            if callbacks and self.widgets.tab_item(label, accent=True, flags=flags)[0]:
                 ui.begin_disabled(self.history is not None and self.history.replaying)
-                for callback in self.gui._ui_callbacks["side"]:
+                for callback in callbacks:
                     callback(ui)
                 ui.end_disabled()
                 ui.end_tab_item()
             ui.end_tab_bar()
+
+    def _custom_callbacks(self) -> list[Callable[[Any], None]]:
+        """Return ``"panel"`` then ``"side"`` UI callbacks for the inspector's custom tab.
+
+        The explorer draws the example browser itself, and the viewer's Layers
+        header has nothing to show until a second layer exists.
+        """
+        browser = self.gui._workspace_browser
+        panels = [
+            callback
+            for callback in self.gui._ui_callbacks["panel"]
+            if not (browser is not None and callback == browser.callback)
+            and not (callback == self.viewer._ui_populate_layers_panel and len(self.viewer.layers) <= 1)
+        ]
+        return panels + self.gui._ui_callbacks["side"]
 
     def _environment(self) -> None:
         """Keep scene forces accessible independently of the current selection."""
