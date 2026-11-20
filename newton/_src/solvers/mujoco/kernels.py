@@ -51,6 +51,12 @@ def safe_div(x: float, y: float) -> float:
 
 
 @wp.func
+def upper_tri_index(n: int, i: int, j: int) -> int:
+    """Return the index of ``(i, j)`` in an upper triangle without its diagonal."""
+    return (i * (2 * n - i - 3)) // 2 + j - 1
+
+
+@wp.func
 def orthogonals(a: wp.vec3):
     y = wp.vec3(0.0, 1.0, 0.0)
     z = wp.vec3(0.0, 0.0, 1.0)
@@ -138,13 +144,32 @@ def contact_params(
     geom_friction: wp.array2d[wp.vec3],
     geom_margin: wp.array2d[float],
     geom_gap: wp.array2d[float],
+    pair_dim: wp.array[int],
+    pair_solref: wp.array2d[wp.vec2],
+    pair_solreffriction: wp.array2d[wp.vec2],
+    pair_solimp: wp.array2d[vec5],
+    pair_margin: wp.array2d[float],
+    pair_gap: wp.array2d[float],
+    pair_friction: wp.array2d[vec5],
     geoms: wp.vec2i,
+    pairid: int,
     worldid: int,
 ):
     # See function contact_params in mujoco_warp, file collision_core.py
 
     g1 = geoms[0]
     g2 = geoms[1]
+
+    if pairid >= 0:
+        pair_worldid = worldid % pair_solref.shape[0]
+        margin = pair_margin[pair_worldid, pairid]
+        gap = pair_gap[pair_worldid, pairid]
+        condim = pair_dim[pairid]
+        friction = wp.max(pair_friction[pair_worldid, pairid], vec5(MJ_MINMU))
+        solref = pair_solref[pair_worldid, pairid]
+        solreffriction = pair_solreffriction[pair_worldid, pairid]
+        solimp = pair_solimp[pair_worldid, pairid]
+        return margin, gap, condim, friction, solref, solreffriction, solimp, 0.5
 
     p1 = geom_priority[g1]
     p2 = geom_priority[g2]
@@ -520,6 +545,14 @@ def convert_newton_contacts_to_mjwarp_kernel(
     geom_friction: wp.array2d[wp.vec3],
     geom_margin: wp.array2d[float],
     geom_gap: wp.array2d[float],
+    nxn_pairid: wp.array[wp.vec2i],
+    pair_dim: wp.array[int],
+    pair_solref: wp.array2d[wp.vec2],
+    pair_solreffriction: wp.array2d[wp.vec2],
+    pair_solimp: wp.array2d[vec5],
+    pair_margin: wp.array2d[float],
+    pair_gap: wp.array2d[float],
+    pair_friction: wp.array2d[vec5],
     # Newton shape-material force-space inputs (issue #2009)
     shape_material_ke: wp.array[float],
     shape_material_kd: wp.array[float],
@@ -677,12 +710,17 @@ def convert_newton_contacts_to_mjwarp_kernel(
         frame = make_frame(n)
 
         geoms = wp.vec2i(geom_a, geom_b)
+        geom_lo = wp.min(geom_a, geom_b)
+        geom_hi = wp.max(geom_a, geom_b)
+        pairid = -1
+        if geom_lo != geom_hi:
+            pairid = nxn_pairid[upper_tri_index(geom_condim.shape[0], geom_lo, geom_hi)][0]
 
         worldid = body_a // bodies_per_world
         if body_a < 0:
             worldid = body_b // bodies_per_world
 
-        margin, _gap, condim, friction, solref, solreffriction, solimp, mix = contact_params(
+        margin, gap, condim, friction, solref, solreffriction, solimp, mix = contact_params(
             geom_condim,
             geom_priority,
             geom_solmix,
@@ -691,9 +729,21 @@ def convert_newton_contacts_to_mjwarp_kernel(
             geom_friction,
             geom_margin,
             geom_gap,
+            pair_dim,
+            pair_solref,
+            pair_solreffriction,
+            pair_solimp,
+            pair_margin,
+            pair_gap,
+            pair_friction,
             geoms,
+            pairid,
             worldid,
         )
+
+        if pairid >= 0 and dist >= margin + gap:
+            tid_to_cid[tid] = -1
+            return
 
         if rigid_contact_stiffness:
             friction_scale = rigid_contact_friction[tid]
@@ -710,7 +760,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
                     friction[1] = wp.max(MJ_MINMU, friction[1])
 
         # Resolve frictionless rows before selecting the normal-gain factor.
-        if shape_material_kf and is_elliptic:
+        if pairid < 0 and shape_material_kf and is_elliptic:
             kf1 = shape_material_kf[shape_a]
             kf2 = shape_material_kf[shape_b]
             kf = mix * kf1 + (1.0 - mix) * kf2
@@ -731,7 +781,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
         # solref averaging and recompute the solref from the combined
         # two-body factor. See docs/solvers/mujoco.rst > "Shape-material
         # contact stiffness and damping" for the mechanism.
-        if shape_mjc_solref_mode:
+        if pairid < 0 and shape_mjc_solref_mode:
             mode_a = shape_mjc_solref_mode[shape_a]
             mode_b = shape_mjc_solref_mode[shape_b]
             if mode_a == SOLREF_MODE_FORCE_SPACE and mode_b == SOLREF_MODE_FORCE_SPACE:
