@@ -4405,6 +4405,55 @@ def Xform "NotPSD" (
         self.assertTrue(any("not positive semidefinite" in m and "NotPSD" in m for m in warning_messages))
 
     @requires("pxr.Usd")
+    def test_newton_inertia_empty_is_no_opinion(self):
+        """An authored empty newton:inertia defers to physics:diagonalInertia without a warning."""
+        from pxr import Usd
+
+        usd_content = """#usda 1.0
+(
+    upAxis = "Z"
+)
+
+def PhysicsScene "physicsScene"
+{
+}
+
+def Xform "EmptyTensor" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI", "NewtonMassAPI"]
+)
+{
+    double3 xformOp:translate = (0, 0, 1)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    float physics:mass = 3.0
+    float3 physics:diagonalInertia = (0.5, 1.0, 1.5)
+    double[] newton:inertia = []
+
+    def Sphere "Collider" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double radius = 0.5
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            builder = newton.ModelBuilder()
+            builder.add_usd(stage)
+
+        warning_messages = [str(w.message) for w in caught]
+        self.assertFalse(any("newton:inertia" in m for m in warning_messages), warning_messages)
+
+        body_id = builder.body_label.index("/EmptyTensor")
+        self.assertAlmostEqual(builder.body_mass[body_id], 3.0, places=5)
+        inertia = np.array(builder.body_inertia[body_id]).reshape(3, 3)
+        np.testing.assert_allclose(inertia, np.diag([0.5, 1.0, 1.5]), atol=1e-5)
+
+    @requires("pxr.Usd")
     def test_import_usd_gravcomp(self):
         """Test parsing of gravcomp from USD"""
         from pxr import Sdf, Usd, UsdPhysics
