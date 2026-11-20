@@ -394,12 +394,13 @@ class _NarrowPhaseSetupMixin:
             wp.full(len(geom_list), wp.vec3i(4, 4, 4), dtype=wp.vec3i),  # shape_voxel_resolution
         )
 
-    def _run_narrow_phase(self, geom_list, pairs, **launch_kwargs):
+    def _run_narrow_phase(self, geom_list, pairs, *, max_contacts=None, **launch_kwargs):
         """Run narrow phase on given geometry and pairs.
 
         Args:
             geom_list: List of geometry descriptions
             pairs: List of (i, j) tuples indicating which geometries to test
+            max_contacts: Output capacity, defaulting to ten contacts per pair.
 
         Returns:
             Tuple of (contact_count, contact_pairs, positions, normals, penetrations, tangents)
@@ -421,7 +422,8 @@ class _NarrowPhaseSetupMixin:
         candidate_pair = wp.array(np.array(pairs, dtype=np.int32).reshape(-1, 2), dtype=wp.vec2i)
         candidate_pair_count = wp.array([len(pairs)], dtype=wp.int32)
 
-        max_contacts = len(pairs) * 10
+        if max_contacts is None:
+            max_contacts = len(pairs) * 10
         contact_pair = wp.zeros(max_contacts, dtype=wp.vec2i)
         contact_position = wp.zeros(max_contacts, dtype=wp.vec3)
         contact_normal = wp.zeros(max_contacts, dtype=wp.vec3)
@@ -1923,6 +1925,51 @@ class TestNarrowPhase(_NarrowPhaseSetupMixin, unittest.TestCase):
     def test_mesh_mesh_scaled_separated_positive_penetration(self):
         """Scaled mesh-mesh contacts should stay positive when truly separated."""
         self._assert_mesh_mesh_scaled_separated_positive_penetration(self.narrow_phase)
+
+    def test_mesh_mesh_at_gap_with_sub_ulp_margins(self):
+        """Both mesh-SDF routes admit equality after adding the two margins."""
+        device = wp.get_device()
+        half_size = 2.0**-10
+        gap = 0.125
+        # Each margin is half an ulp of the pair gap, so adding either one
+        # to the gap first rounds it away. Their sum is exactly one ulp.
+        margin = 2.0**-27
+        mesh = newton.Mesh.create_box(half_size, half_size, half_size, duplicate_vertices=False)
+        mesh_id = mesh.finalize()
+        edges = wp.array(mesh.edges, dtype=wp.vec2i, device=device)
+        ranges = wp.array([(0, len(mesh.edges))] * 2, dtype=wp.vec2i, device=device)
+        shape = {"type": GeoType.MESH, "source": mesh_id, "cutoff": 0.5 * gap, "data": ([1.0] * 3, margin)}
+        for reduce_contacts in (False, True):
+            self.narrow_phase = NarrowPhase(
+                max_candidate_pairs=1, max_triangle_pairs=64, reduce_contacts=reduce_contacts, device=device
+            )
+            for extra, expected in ((0.0, True), (2.0 * margin, False)):
+                with self.subTest(reduce_contacts=reduce_contacts, extra=extra):
+                    x = 2.0 * half_size + gap + 2.0 * margin + extra
+                    shifted = {**shape, "transform": ([x, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0])}
+                    count, *_ = self._run_narrow_phase(
+                        [shape, shifted], [(0, 1)], max_contacts=64, mesh_edge_indices=edges, shape_edge_range=ranges
+                    )
+                    self.assertEqual(count > 0, expected)
+
+        # The rounded pair gap can exceed the two independently expanded
+        # AABBs, even when one shape has zero margin.
+        builder = newton.ModelBuilder()
+        builder.add_shape_mesh(
+            -1,
+            mesh=mesh,
+            xform=wp.transform(wp.vec3(-gap - half_size, 0, 0)),
+            cfg=builder.ShapeConfig(gap=gap, margin=0.0),
+        )
+        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.add_shape_mesh(body, mesh=mesh, cfg=builder.ShapeConfig(density=0.0, gap=3 * 2.0**-28, margin=2.0**-30))
+        model = builder.finalize(device=device)
+        pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
+        state, contacts = model.state(), pipeline.contacts()
+        for separation, expected in ((2.0**-26, True), (2.0**-25, False)):
+            state.body_q.assign([wp.transform(wp.vec3(half_size + separation, 0, 0))])
+            pipeline.collide(state, contacts)
+            self.assertEqual(int(contacts.rigid_contact_count.numpy()[0]) > 0, expected)
 
     def test_mesh_mesh_scaled_separated_positive_penetration_no_reduction(self):
         """Scaled mesh-mesh separation should stay positive when reduction is disabled."""
