@@ -10,6 +10,7 @@ import warp as wp
 import warp.fem as fem
 
 import newton
+from newton._src.solvers.implicit_mpm.implicit_mpm_solver_kernels import NODE_KEY_SENTINEL
 from newton._src.solvers.implicit_mpm.solver_implicit_mpm import ImplicitMPMScratchpad
 from newton.solvers import SolverImplicitMPM
 from newton.tests.unittest_utils import add_function_test, get_selected_cuda_test_devices, get_test_devices
@@ -471,6 +472,7 @@ def test_rebuildable_sparse_warmstarts_collider_impulses(test, device):
     """Carry grid collider impulses across in-place rebuilds, matching a sparse grid allocated each step.
 
     Two separate worlds with different gravities keep their own impulses, and a masked reset clears only one.
+    Material and collider changes invalidate the populated native contact history.
     """
     spacing = 0.025
     local = newton.ModelBuilder(up_axis=newton.Axis.Z)
@@ -525,7 +527,34 @@ def test_rebuildable_sparse_warmstarts_collider_impulses(test, device):
                 solver.step(state, state, None, None, 1.0 / 120.0)
             else:
                 wp.capture_launch(graph)
-        return state.particle_q.numpy()
+        positions = state.particle_q.numpy()
+        if max_active_cell_count > 0 and not capture:
+            # Keep the convergence endpoint unchanged and reuse its real contacts
+            # for lifecycle checks, instead of simulating another fixture.
+            original_radius = float(model.particle_radius.numpy()[0])
+            try:
+                for index, (label, invalidate) in enumerate(
+                    (
+                        (
+                            "material properties",
+                            lambda: solver.notify_model_changed(newton.ModelFlags.MODEL_PROPERTIES),
+                        ),
+                        ("colliders", lambda: solver.setup_collider(model=model)),
+                        ("support radius", lambda: solver.set_particle_radius(0.9 * original_radius)),
+                    )
+                ):
+                    with test.subTest(invalidate=label):
+                        if index:
+                            solver.step(state, state, None, None, 1.0 / 120.0)
+                        history = solver._last_step_data
+                        test.assertTrue(np.any(history.impulse_values.numpy() != 0.0))
+                        test.assertTrue(np.any(history.impulse_keys.numpy() != int(NODE_KEY_SENTINEL)))
+                        invalidate()
+                        np.testing.assert_array_equal(history.impulse_values.numpy(), 0.0)
+                        np.testing.assert_array_equal(history.impulse_keys.numpy(), int(NODE_KEY_SENTINEL))
+            finally:
+                solver.set_particle_radius(original_radius)
+        return positions
 
     reference = settle(-1)
     test.assertGreater(reference[:, 2].min(), -0.5 * spacing)

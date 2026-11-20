@@ -55,6 +55,7 @@ Newton Physics
    MuJoCo <solvers/mujoco>
    Kamino <solvers/kamino>
    VBD <solvers/vbd>
+   Implicit MPM Runtime Controls <solvers/implicit_mpm>
 
 .. toctree::
    :maxdepth: 1
