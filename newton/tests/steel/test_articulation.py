@@ -2269,7 +2269,7 @@ def test_captured_spring_notifications_apply_in_place_edits(test, device):
 
 
 def test_springs_skip_unsupported_joint_types(test, device, solve_mode="serial"):
-    """Keep stiffness only on tree PRISMATIC, REVOLUTE and D6 DOFs, across construction and notifications."""
+    """Keep stiffness only on tree PRISMATIC, REVOLUTE and D6 DOFs and warn about the rest, across construction and notifications."""
     builder, loop_joint = _build_square_loop("revolute")
     inertia = wp.mat33(np.eye(3) * 0.01)
     links = [
@@ -2285,20 +2285,41 @@ def test_springs_skip_unsupported_joint_types(test, device, solve_mode="serial")
         builder.add_joint_revolute(parent=links[1], child=links[2], parent_xform=hinge, axis=newton.Axis.Z),
     ]
     builder.add_articulation(joints)
+    # A REVOLUTE joint in no articulation, whose child is in none either, is not simulated.
+    unowned_link = builder.add_link(
+        xform=wp.transform(wp.vec3(5.0, 0.0, 1.0), wp.quat_identity()), mass=0.5, inertia=inertia
+    )
+    builder.add_joint_revolute(parent=-1, child=unowned_link, axis=newton.Axis.Z)
     builder.joint_stiffness = [5.0] * builder.joint_dof_count
     model = builder.finalize(device=device)
-    # The square's four tree hinges and the finger hinge carry springs; the loop, FREE and BALL joints do not.
+    # The square's four tree hinges and the finger hinge carry springs; the loop, FREE, BALL and unowned joints do not.
     qd_start = model.joint_qd_start.numpy()
     sprung = np.zeros(model.joint_dof_count, dtype=bool)
     sprung[qd_start[joints[2]]] = True
     sprung[: qd_start[loop_joint]] = True
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", newton.NewtonWarning)
-        solver = SolverSteel(model, solve_mode=solve_mode)
-        np.testing.assert_array_equal(solver._passive_spring_stiffness.numpy(), np.where(sprung, 5.0, 0.0))
-        model.joint_stiffness.fill_(7.0)
-        solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
+
+    def warnings_of(call, *patterns):
+        """Run ``call`` and assert it emits exactly one NewtonWarning per pattern, in order."""
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            result = call()
+        test.assertEqual([w.category for w in caught], [newton.NewtonWarning] * len(patterns), caught)
+        for w, pattern in zip(caught, patterns, strict=True):
+            test.assertRegex(str(w.message), pattern)
+        return result
+
+    # The REVOLUTE loop warns about its own inputs; the FREE, BALL and unowned joints' 10 DOFs warn here.
+    expected = ("loop-closing REVOLUTE joint .* spring stiffness", "stiffness on 10 DOF")
+    solver = warnings_of(lambda: SolverSteel(model, solve_mode=solve_mode), *expected)
+    np.testing.assert_array_equal(solver._passive_spring_stiffness.numpy(), np.where(sprung, 5.0, 0.0))
+    model.joint_stiffness.fill_(7.0)
+    warnings_of(lambda: solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES), *expected)
     np.testing.assert_array_equal(solver._passive_spring_stiffness.numpy(), np.where(sprung, 7.0, 0.0))
+
+    builder, _ = _build_square_loop("ball")
+    builder.joint_stiffness = [5.0] * builder.joint_dof_count
+    model = builder.finalize(device=device)
+    warnings_of(lambda: SolverSteel(model, solve_mode=solve_mode), "stiffness on 3 DOF")
 
 
 def test_registration_adds_no_spring_attributes(test, device):
