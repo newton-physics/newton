@@ -595,15 +595,14 @@ class PADMMSolverConfig:
 
     dual_residual_mode: Literal["standard", "delassus"] = field(default="delassus", kw_only=True)
     """
-    The definition of the dual residual `r_dual` between consecutive iterates.\n
-    - `"standard"`: The ADMM residual `eta * (x - x_p) + rho * (y - y_p)`, with the penalty `rho` of each row.\n
-    - `"delassus"`: The change `D @ (x - x_p)` of the constraint-space velocity, obtained without an
-      additional matrix-vector product from the right-hand side of the linear system. It is insensitive
-      to the drift of the impulses along the null space of the Delassus operator, e.g. due to redundant
-      constraints, which may otherwise prevent convergence.\n
+    The definition of the dual residual `r_dual` between consecutive iterates.
+
+    - `"standard"`: The ADMM residual `eta * (x - x_p) + rho * (y - y_p)`, with the penalty `rho` of each row.
+    - `"delassus"`: The change `D @ (x - x_p)` of the constraint-space velocity, which ignores the drift of
+      the impulses along the null space of the Delassus matrix, e.g. due to redundant constraints.
+
     Both are scaled by the inverse preconditioner. The setting of the first world applies to all worlds.
-    With iterative linear solvers, the `"standard"` residual is always used, see `detect_redundant_kinematics`.
-    Defaults to `"delassus"`.
+    The `"standard"` residual is always used with iterative linear solvers. Defaults to `"delassus"`.
     """
 
     compl_tolerance: float = 1e-6
@@ -741,65 +740,45 @@ class PADMMSolverConfig:
 
     detect_redundant_kinematics: bool = field(default=True, kw_only=True)
     """
-    Whether to drop the numerically redundant kinematic joint constraints from the Delassus matrix
-    using a diagonal shift.\n
-    Redundant kinematic constraints, e.g. in closed kinematic loops, make the Delassus matrix singular, which
-    can prevent convergence and make long solves diverge. Before each factorization, the kinematic joint rows
-    of each world are eliminated as in a Cholesky factorization, picking the row with the largest relative
-    pivot first. The rows whose relative pivot is below `redundant_kinematics_pivot_threshold` are dropped by
-    doubling their diagonal, which makes the Delassus matrix positive definite on the joint constraints. The
-    dropped rows then carry no impulse, while the other rows still enforce their constraints, so the motion is
-    unchanged. The implicit joint dynamics rows are never dropped. See `reuse_redundant_kinematics_set` for how
-    the dropped rows follow the configurations of the system.\n
-    The detection can be safely turned off for systems known to have no redundant kinematic constraints.
-    It is turned off automatically for models without closed kinematic loops, e.g. articulated systems,
-    whose kinematic constraints are never redundant.\n
-    NOTE: With iterative linear solvers, e.g. with sparse dynamics, the detection, the Delassus dual residual and
-    the unpenalized bilateral rows are turned off, which keeps their original handling of redundant constraints.
-    These solvers never factorize the singular Delassus matrix, and leave its null space mostly unresolved without
-    affecting the motion. The shift makes them resolve it within their few iterations, which prevents PADMM from
-    converging, while the Delassus dual residual can stop PADMM before the motion is accurate.\n
+    Whether to drop the numerically redundant kinematic joint constraints, e.g. of closed kinematic loops,
+    which make the Delassus matrix singular and can prevent convergence.
+
+    The dropped rows carry no impulse, while the kept rows still enforce all joint constraints, so the motion
+    is unchanged. The detection only runs for models with closed kinematic loops, and is turned off with
+    iterative linear solvers. See :class:`RedundantRowShift` for details.
+
     The setting of the first world applies to all worlds. Defaults to `True`.
     """
 
     redundant_kinematics_pivot_threshold: float = field(default=1e-5, kw_only=True)
     """
-    The relative pivot below which `detect_redundant_kinematics` drops a kinematic joint constraint.\n
-    The relative pivot of a row is the squared sine of the angle between the row and the span of the rows
-    eliminated before it, in the metric of the inverse mass matrix, so it does not depend on the units or the
-    scaling of the rows. The default separates the exact redundancies, which float32 rounding lifts to about
-    `1e-6`, from the independent rows of a very large majority of systems, and should not need to be changed.
-    The setting of the first world applies to all worlds. Must be in the range (0, 1). Defaults to `1e-5`.
+    The relative pivot below which `detect_redundant_kinematics` drops a kinematic joint constraint.
+
+    The relative pivot does not depend on the units or the scaling of the rows, and the default should not
+    need to be changed. The setting of the first world applies to all worlds. Must be in the range (0, 1).
+    Defaults to `1e-5`.
     """
 
     reuse_redundant_kinematics_set: bool = field(default=True, kw_only=True)
     """
-    Whether to keep the set of kinematic joint constraints dropped at the previous step while it remains valid.\n
-    At every step, the previous set is checked for kept rows that became dependent, or dropped rows that became
-    independent, and only the worlds that fail the check repeat the detection, which avoids most of its cost.
-    The kept rows of a reused set are always independent, and the dropped rows are dependent up to a hysteresis
-    of ten times `redundant_kinematics_pivot_threshold`. Disabling the reuse repeats the detection in every world
-    at every step, which is mostly useful for debugging.\n
-    With the `LLTB` and `LLTBRCM` linear solvers and dense dynamics, the check reads the Cholesky factor of the
-    Delassus matrix, and the worlds that fail it are factorized again. Otherwise, the kinematic joint block is
-    factorized separately for the check.\n
-    NOTE: The check on the factor of the Delassus matrix compares each dropped row with all the other rows,
-    including joint dynamics rows, limits and contacts. When these span a dropped row that became independent of
-    the kinematic rows, e.g. when leaving a configuration with more redundant rows, the row can remain dropped
-    for a few steps, and the joint constraint it carries is not enforced until then.\n
+    Whether to keep the kinematic joint constraints dropped at the previous step while they remain valid.
+
+    The dropped rows are checked at every step, and only the worlds that fail the check repeat the detection,
+    which avoids most of its cost. Disabling the reuse is mostly useful for debugging. With the `LLTB` and
+    `LLTBRCM` linear solvers, the check reads the Cholesky factor of the Delassus matrix, which can keep a row
+    dropped for a few steps after it became independent. See :class:`RedundantRowShift` for details.
+
     The setting of the first world applies to all worlds. Defaults to `True`.
     """
 
     unpenalized_bilateral_rows: bool = field(default=True, kw_only=True)
     """
     Whether to remove the ALM penalty from the bilateral joint constraints, i.e. the joint dynamics and
-    kinematic rows.\n
-    The projection onto the feasible set leaves the impulses of bilateral constraints unchanged, so the penalty
-    only acts as an additional proximal regularization of these rows, which slows down their convergence.
-    Without it, they are solved exactly at each iteration, up to the proximal regularization `eta`, and the
-    iterations only resolve the other constraints. This requires a well-conditioned Delassus matrix on the
-    joint constraints, i.e. a system without redundant kinematic constraints, or `detect_redundant_kinematics`.\n
-    Turned off with iterative linear solvers, see `detect_redundant_kinematics`. Defaults to `True`.
+    kinematic rows, which are then solved exactly at each iteration up to the proximal regularization `eta`.
+
+    This speeds up convergence, but requires a Delassus matrix that is well-conditioned on the joint
+    constraints, i.e. a system without redundant kinematic constraints, or `detect_redundant_kinematics`.
+    Turned off with iterative linear solvers. Defaults to `True`.
     """
 
     @override

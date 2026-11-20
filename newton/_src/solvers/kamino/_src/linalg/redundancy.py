@@ -878,6 +878,7 @@ class RedundantRowShift:
     the row and the span of the rows eliminated before it, so it does not depend on the row scaling.
     The rows whose relative pivot is below ``threshold`` are numerically redundant. Their pivot is shifted
     by their original diagonal before the elimination proceeds, and the same shift is stored in :attr:`shifts`.
+    In float32, rounding lifts the relative pivots of exactly redundant rows to about ``1e-6``.
 
     The matrix shifted by :attr:`shifts` is positive definite on the block and can be factorized in any order.
     Since each shifted row lies in the span of the other rows of the block, the solutions of consistent systems
@@ -903,7 +904,9 @@ class RedundantRowShift:
     checks the factor without the regularization of the block, and :meth:`eliminate` repeats the elimination of
     the failed worlds, which must then be refactorized. The coupling of the block with the other rows can also
     lower the eigenvalue, e.g. with hyperstatic contacts, which the elimination of the block cannot fix, and the
-    reference applies in the same way.
+    reference applies in the same way. Conversely, the other rows can span a shifted row that became independent
+    of the block, e.g. when leaving a configuration with more redundant rows, which then remains shifted for a
+    few calls, while the constraint it carries is not enforced.
 
     Args:
         num_worlds: The number of worlds.
