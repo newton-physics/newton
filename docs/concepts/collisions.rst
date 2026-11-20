@@ -1108,6 +1108,41 @@ Two approaches available:
 2. **SDF-based** (recommended): Uses precomputed signed distance fields for fast queries.
    For mesh shapes, call ``mesh.build_sdf(...)`` once and reuse the mesh.
 
+When a rounded, closed mesh probe straddles a thin wall, Newton can publish a
+single contact on the shorter exit path. Both shapes need texture SDFs and
+the probe surface must be connected. A mesh query verifies the two locally
+planar wall faces and the swept probe footprint.
+Each collision update uses the current geometry. Once the overlap is shallow,
+the ordinary SDF contacts take over.
+Between updates, translation and rotation may reuse a recovery contact only
+while the entire swept probe remains inside the verified corridor.
+Broad contact patches, ambiguous exits, and nearby features that intrude on the
+footprint use the ordinary manifold. The same fallback applies when the probe
+has more than 4,096 vertices or the swept query visits more than 128 wall
+triangles. The default recovery table can also fall back after 32 hash probes.
+With ``deterministic=True``, the table reserves space for all eligible pairs
+and probes until it finds a slot. This keeps recovery contact selection
+repeatable within the collision buffer capacities. A complete crossing can
+leave the shapes separated, so no discrete overlap remains to recover.
+
+Solvers and :class:`~sensors.SensorContact` read the same two surface witnesses
+and separation normal from the contact buffer. XPBD and VBD bound positional
+correction while the probe is deeply embedded. XPBD skips restitution on the
+recovery contact. VBD can support an external load while limiting the outward
+correction per step using a temporary hard normal constraint. Steel bounds
+the penetration used for its corrective velocity and skips restitution on
+recovery contacts. The semi-implicit and Featherstone solvers use a bounded
+penetration depth for the elastic contact force.
+MuJoCo Warp with Newton contacts temporarily
+uses recovery stiffness and damping to limit its separation speed, then resumes
+the ordinary contact material response. Hydroelastic pairs follow the
+pressure-based contact model.
+
+When capturing a solver-only CUDA graph, allocate the contact buffer with
+:meth:`~CollisionPipeline.contacts` or run the pipeline once on a manually
+allocated buffer before capture. Recapture the graph if switching pipelines
+replaces the buffer's recovery storage.
+
 .. warning::
    If SDF is not precomputed, mesh-mesh contacts fall back to on-the-fly BVH distance queries
    which are **significantly slower**. For production use with complex meshes, precompute and
@@ -1428,9 +1463,6 @@ For hydroelastic and SDF-based contacts, use :class:`~geometry.HydroelasticSDF.C
    * - ``anchor_contact``
      - Adds an anchor contact at the center of pressure for each normal bin to better preserve moments.
        Default: False.
-   * - ``margin_contact_area``
-     - Deprecated area used for speculative-contact activation stiffness.
-       It remains effective during the deprecation period. Default: 0.01.
 
 .. _Shape Configuration:
 
@@ -2229,8 +2261,8 @@ Hydroelastic contacts use the same three margin-and-gap bands described in
 
 Contacts in the gap region are speculative. Their separation is nonnegative,
 so they do not produce force in the current state. Newton assigns them a contact
-stiffness using the two materials' hydroelastic stiffness and the deprecated
-``margin_contact_area`` compatibility setting.
+stiffness from the two materials' hydroelastic stiffness and a fixed
+activation area of 0.01 m\ :sup:`2`.
 
 To recover the closest equivalent of the earlier geometric-surface behavior,
 set both ``margin=0.0`` and ``gap=0.0`` on the participating shapes. This is a
@@ -2302,8 +2334,8 @@ same pressure law on the hydroelastic faces; no separate linear stiffness law is
 applied to reduced penetrating contacts. The evaluated pressure is stored once
 per buffered face because the pair separation does not contain either shape's
 individual SDF depth. Speculative contacts do not use this stored pressure;
-their activation stiffness uses the declared ``kh`` values and the deprecated
-``margin_contact_area`` compatibility setting.
+their activation stiffness uses the declared ``kh`` values and a fixed
+activation area of 0.01 m\ :sup:`2`.
 
 See :github:`newton/examples/contacts/example_nut_bolt_hydro.py` for a worked
 example.
