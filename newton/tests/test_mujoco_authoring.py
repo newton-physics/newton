@@ -914,13 +914,16 @@ class TestMuJoCoEntityAuthoring(unittest.TestCase):
                 )
                 builder = newton.ModelBuilder()
                 builder.add_world(blueprint)
-                builder.replicate(blueprint, 2, xforms=[placement, placement])
+                builder.replicate(blueprint, 3, xforms=[placement, placement, wp.transform_identity()])
                 anchors = builder.custom_attributes["mujoco:equality_constraint_anchor"].values
-                np.testing.assert_allclose(anchors[2:], np.tile(placement.p, (4, 1)), atol=1e-6)
+                np.testing.assert_allclose(anchors[2:6], np.tile(placement.p, (4, 1)), atol=1e-6)
                 relposes = builder.custom_attributes["mujoco:equality_constraint_relpose"].values
                 np.testing.assert_allclose(
-                    [pose.q for pose in relposes[3::2]], np.tile(wp.quat_inverse(placement.q), (2, 1)), atol=1e-6
+                    [pose.q for pose in relposes[3:6:2]], np.tile(wp.quat_inverse(placement.q), (2, 1)), atol=1e-6
                 )
+                # finalize() warns about columns shorter than the equality count.
+                self.assertEqual(len(anchors), builder._equality_constraint_count)
+                self.assertEqual(len(relposes), builder._equality_constraint_count)
 
     @requires(*MUJOCO_MODULES)
     def test_weld_preserves_each_world_initial_pose(self):

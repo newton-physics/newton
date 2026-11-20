@@ -4720,7 +4720,8 @@ class ModelBuilder:
             attr = self._eq_attr(f"equality_constraint_{name}")
             if attr.values is None:
                 attr.values = []
-            attr.values.extend([None] * max(0, row + 1 - len(attr.values)))
+            # Full length: finalize() warns about a partially populated column.
+            attr.values.extend([None] * (self._equality_constraint_count - len(attr.values)))
             attr.values[row] = value
 
         for row in range(start, start + count):
