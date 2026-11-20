@@ -5689,7 +5689,7 @@ class ModelBuilder:
 
         Per-DOF MJCF joint provenance is recorded in ``model.mujoco.joint_dof_label`` in Newton's
         linear-first DOF order as ``"{body_label}/{raw_joint_name}"`` (preserving unsanitized MJCF
-        joint names, or ``"{body_name}_joint_{idx}"`` / ``"freejoint"`` when unnamed). Native
+        joint names, or ``"{body_name}_joint_{idx}"`` / ``"{body_name}_freejoint"`` when unnamed). Native
         ``ball`` and ``free`` joints append ``:rotX``..``:rotZ`` and ``:transX``..``:rotZ`` axis
         suffixes, whereas converted three-hinge ball joints retain the individual hinge names.
         Synthetic base joints added by ``floating`` or ``base_joint`` overrides leave DOF labels
@@ -14084,7 +14084,6 @@ class ModelBuilder:
         parent_xform: Transform | None = None,
         child_xform: Transform | None = None,
         parent: int = -1,
-        custom_attributes: dict[str, Any] | None = None,
     ) -> int:
         """
         Internal helper for importers to create base joints.
@@ -14151,17 +14150,10 @@ class ModelBuilder:
             # FREE joint (floating=True always requires parent==-1, validated above)
             # Note: We don't pass parent_xform here because add_joint_free initializes joint_q from body_q[child]
             # and the caller (e.g., URDF importer) will set the correct joint_q values afterward
-            return self.add_joint_free(child, label=label, custom_attributes=custom_attributes)
+            return self.add_joint_free(child, label=label)
         else:
             # FIXED joint (floating=False or floating=None with parent body)
-            return self.add_joint_fixed(
-                parent,
-                child,
-                parent_xform=parent_xform,
-                child_xform=child_xform,
-                label=label,
-                custom_attributes=custom_attributes,
-            )
+            return self.add_joint_fixed(parent, child, parent_xform=parent_xform, child_xform=child_xform, label=label)
 
     def request_contact_attributes(self, *attributes: str) -> None:
         """Request optional contact attributes on the finalized model.
