@@ -33,7 +33,7 @@ from newton._src.geometry.kernels import triangle_closest_point
 from newton._src.geometry.sdf_planar_recovery import MeshRecoveryData, active_recovery_contact, recovery_step_depth
 from newton._src.geometry.soft_contacts_mesh import _soft_contact_force_enabled, _SoftContactFilterData
 from newton._src.math import orthonormal_basis, quat_velocity
-from newton._src.sim import JointType
+from newton._src.sim import JointType, ShapeFrictionMode
 from newton._src.sim.articulation import eval_angular_coordinates
 from newton._src.sim.contacts import contact_surface_point, contact_surface_separation
 from newton._src.solvers.rod_kernels import (
@@ -44,7 +44,7 @@ from newton._src.solvers.rod_kernels import (
     rod_bend_twist_delta,
     rod_bend_twist_jacobian_z_from_measure,
 )
-from newton._src.solvers.solver import integrate_rigid_body
+from newton._src.solvers.solver import contact_friction_mode, integrate_rigid_body
 from newton._src.solvers.vbd.interval_arithmetic import (
     rigid_point_plane_signed_distance_derivative_interval,
     rigid_point_plane_signed_distance_interval,
@@ -707,15 +707,22 @@ def _average_rigid_contact_material(
     mu1: float,
     mu_torsional1: float,
     mu_rolling1: float,
+    friction_mode: int,
 ):
     """Average material properties for a rigid contact pair.
 
     ke, kd: arithmetic mean.
-    mu, mu_torsional, mu_rolling: geometric mean.
+    mu, mu_torsional, mu_rolling: geometric mean, zero unless ``friction_mode`` enables the component.
     """
     avg_ke, avg_kd, avg_mu = _average_contact_material(ke0, kd0, mu0, ke1, kd1, mu1)
     avg_mu_torsional = wp.sqrt(mu_torsional0) * wp.sqrt(mu_torsional1)
     avg_mu_rolling = wp.sqrt(mu_rolling0) * wp.sqrt(mu_rolling1)
+    if friction_mode < int(ShapeFrictionMode.SLIDING):
+        avg_mu = 0.0
+    if friction_mode < int(ShapeFrictionMode.TORSIONAL):
+        avg_mu_torsional = 0.0
+    if friction_mode < int(ShapeFrictionMode.TORSIONAL_ROLLING):
+        avg_mu_rolling = 0.0
     return avg_ke, avg_kd, avg_mu, avg_mu_torsional, avg_mu_rolling
 
 
@@ -4504,6 +4511,7 @@ def init_body_body_contact_materials(
     shape_material_mu: wp.array[float],
     shape_material_mu_torsional: wp.array[float],
     shape_material_mu_rolling: wp.array[float],
+    shape_material_friction_mode: wp.array[wp.int32],
     # Outputs
     contact_material_kd: wp.array[float],
     contact_material_mu: wp.array[wp.vec3],
@@ -4534,6 +4542,7 @@ def init_body_body_contact_materials(
         shape_material_mu[shape_id_1],
         shape_material_mu_torsional[shape_id_1],
         shape_material_mu_rolling[shape_id_1],
+        contact_friction_mode(shape_material_friction_mode, shape_id_0, shape_id_1),
     )
 
     contact_material_kd[i] = avg_kd
@@ -4555,6 +4564,7 @@ def init_body_body_contacts_alm(
     shape_material_mu: wp.array[float],
     shape_material_mu_torsional: wp.array[float],
     shape_material_mu_rolling: wp.array[float],
+    shape_material_friction_mode: wp.array[wp.int32],
     restore_compliant_tangent_warmstart: int,
     # Pipeline-owned correspondence and VBD-owned cross-step state
     match_index: wp.array[wp.int32],
@@ -4611,6 +4621,7 @@ def init_body_body_contacts_alm(
         shape_material_mu[s1],
         shape_material_mu_torsional[s1],
         shape_material_mu_rolling[s1],
+        contact_friction_mode(shape_material_friction_mode, s0, s1),
     )
     contact_material_ke[i] = avg_ke
     contact_material_kd[i] = avg_kd
@@ -4875,6 +4886,7 @@ def init_body_particle_contacts(
     shape_material_ke: wp.array[float],
     shape_material_kd: wp.array[float],
     shape_material_mu: wp.array[float],
+    shape_material_friction_mode: wp.array[wp.int32],
     body_particle_contact_material_ke: wp.array[float],
     body_particle_contact_material_kd: wp.array[float],
     body_particle_contact_material_mu: wp.array[float],
@@ -4903,6 +4915,8 @@ def init_body_particle_contacts(
 
     body_particle_contact_material_ke[i] = avg_ke
     body_particle_contact_material_kd[i] = avg_kd
+    if contact_friction_mode(shape_material_friction_mode, shape_idx, -1) == int(ShapeFrictionMode.NONE):
+        avg_mu = 0.0
     body_particle_contact_material_mu[i] = avg_mu
 
 

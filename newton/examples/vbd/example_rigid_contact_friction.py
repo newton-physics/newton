@@ -62,7 +62,15 @@ class Example:
         )
 
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, -self.gravity))
-        ground_cfg = builder.ShapeConfig(ke=1.0e5, kd=100.0, mu=0.5, mu_torsional=0.005, mu_rolling=0.005)
+        # The ground enables every friction component; each lane selects its own through the coefficients.
+        ground_cfg = builder.ShapeConfig(
+            ke=1.0e5,
+            kd=100.0,
+            mu=0.5,
+            mu_torsional=0.005,
+            mu_rolling=0.005,
+            friction_mode=newton.ShapeFrictionMode.TORSIONAL_ROLLING,
+        )
         builder.add_ground_plane(cfg=ground_cfg)
         self.rows = (0.9, 0.4, 0.0, -0.5, -0.9)
         labels = (

@@ -21,6 +21,7 @@ import warp as wp
 import newton
 from newton import BodyFlags, JointType, Mesh, ModelFlags, NewtonDeprecationWarning, NewtonWarning
 from newton._src.core.types import vec5
+from newton._src.sim.enums import friction_mode_from_condim
 from newton._src.solvers.mujoco.constants import (
     DEFAULT_LIMIT_SOLREF,
     MJ_MINVAL,
@@ -7906,27 +7907,66 @@ class TestMuJoCoAttributes(unittest.TestCase):
 
     @requires(*MUJOCO_MODULES)
     def test_custom_attributes_from_code(self):
+        """Map shape friction modes to condim and fold deprecated mujoco:condim values into the modes."""
+        mode = newton.ShapeFrictionMode
+
+        def build(legacy_condim):
+            builder = newton.ModelBuilder()
+            newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
+            joints = []
+            parent = -1
+            for i, friction_mode in enumerate((mode.NONE, mode.SLIDING, mode.TORSIONAL, mode.TORSIONAL_ROLLING)):
+                body = builder.add_link()
+                joints.append(builder.add_joint_revolute(parent, body, axis=(0.0, 0.0, 1.0)))
+                cfg = newton.ModelBuilder.ShapeConfig(friction_mode=friction_mode)
+                custom_attributes = {"mujoco:condim": legacy_condim[i]} if i in legacy_condim else None
+                builder.add_shape_box(body=body, hx=0.1, hy=0.1, hz=0.1, cfg=cfg, custom_attributes=custom_attributes)
+                parent = body
+            builder.add_articulation(joints)
+            return builder
+
+        model = build({}).finalize()
+        solver = SolverMuJoCo(model, separate_worlds=False)
+        np.testing.assert_array_equal(solver.mjw_model.geom_condim.numpy(), [1, 3, 4, 6])
+
+        # Deprecated values override the mode, including MuJoCo's default of 3
+        with self.assertWarnsRegex(NewtonDeprecationWarning, "mujoco:condim custom attribute is deprecated"):
+            model = build({1: 6, 2: 4, 3: 3}).finalize()
+        np.testing.assert_array_equal(model.shape_material_friction_mode.numpy(), [0, 3, 2, 1])
+        solver = SolverMuJoCo(model, separate_worlds=False)
+        np.testing.assert_array_equal(solver.mjw_model.geom_condim.numpy(), [1, 6, 4, 3])
+        # A changed default applies to the shapes left at the sliding mode
         builder = newton.ModelBuilder()
         newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
-        b0 = builder.add_link()
-        j0 = builder.add_joint_revolute(-1, b0, axis=(0.0, 0.0, 1.0))
-        builder.add_shape_box(body=b0, hx=0.1, hy=0.1, hz=0.1, custom_attributes={"mujoco:condim": 6})
-        b1 = builder.add_link()
-        j1 = builder.add_joint_revolute(b0, b1, axis=(0.0, 0.0, 1.0))
-        builder.add_shape_box(body=b1, hx=0.1, hy=0.1, hz=0.1, custom_attributes={"mujoco:condim": 4})
-        b2 = builder.add_link()
-        j2 = builder.add_joint_revolute(b1, b2, axis=(0.0, 0.0, 1.0))
-        builder.add_shape_box(body=b2, hx=0.1, hy=0.1, hz=0.1)
-        builder.add_articulation([j0, j1, j2])
-        model = builder.finalize()
+        builder.custom_attributes["mujoco:condim"].default = 4
+        body = builder.add_body()
+        builder.add_shape_box(body=body, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_shape_box(
+            body=body, hx=0.1, hy=0.1, hz=0.1, cfg=newton.ModelBuilder.ShapeConfig(friction_mode=mode.NONE)
+        )
+        with self.assertWarns(NewtonDeprecationWarning):
+            modes = builder.finalize().shape_material_friction_mode.numpy()
+        np.testing.assert_array_equal(modes, [mode.TORSIONAL, mode.NONE])
 
-        # Should work fine with single world
+        # The deprecated model attribute reads the modes, and values written to it reach the next solver
+        with self.assertWarnsRegex(NewtonDeprecationWarning, "mujoco:condim custom attribute is deprecated"):
+            np.testing.assert_array_equal(model.mujoco.condim.numpy(), [1, 6, 4, 3])
+        with self.assertWarns(NewtonDeprecationWarning):
+            model.mujoco.condim.fill_(4)
         solver = SolverMuJoCo(model, separate_worlds=False)
-
-        assert hasattr(model, "mujoco")
-        assert hasattr(model.mujoco, "condim")
-        assert np.allclose(model.mujoco.condim.numpy(), [6, 4, 3])
-        assert np.allclose(solver.mjw_model.geom_condim.numpy(), [6, 4, 3])
+        np.testing.assert_array_equal(solver.mjw_model.geom_condim.numpy(), [4, 4, 4, 4])
+        # A retained array keeps reaching later solvers, also on CPU, where numpy() returns a view
+        cpu_model = build({}).finalize(device="cpu")
+        with self.assertWarns(NewtonDeprecationWarning):
+            condim = cpu_model.mujoco.condim
+        for value in (4, 6):
+            condim.fill_(value)
+            solver = SolverMuJoCo(cpu_model, separate_worlds=False)
+            np.testing.assert_array_equal(solver.mjw_model.geom_condim.numpy(), [value] * 4)
+        with self.assertWarns(NewtonDeprecationWarning):
+            model.mujoco.condim = wp.array([1, 3, 4, 6], dtype=wp.int32)
+            np.testing.assert_array_equal(model.mujoco.condim.numpy(), [1, 3, 4, 6])
+        np.testing.assert_array_equal(model.shape_material_friction_mode.numpy(), [0, 1, 2, 3])
 
     @requires(*MUJOCO_MODULES)
     def test_custom_attributes_from_mjcf(self):
@@ -7952,10 +7992,17 @@ class TestMuJoCoAttributes(unittest.TestCase):
         builder.add_mjcf(mjcf)
         model = builder.finalize()
         solver = SolverMuJoCo(model, separate_worlds=False)
-        assert hasattr(model, "mujoco")
-        assert hasattr(model.mujoco, "condim")
-        assert np.allclose(model.mujoco.condim.numpy(), [6, 4, 3])
-        assert np.allclose(solver.mjw_model.geom_condim.numpy(), [6, 4, 3])
+        mode = newton.ShapeFrictionMode
+        np.testing.assert_array_equal(
+            model.shape_material_friction_mode.numpy(), [mode.TORSIONAL_ROLLING, mode.TORSIONAL, mode.SLIDING]
+        )
+        np.testing.assert_array_equal(solver.mjw_model.geom_condim.numpy(), [6, 4, 3])
+
+        # The importer leaves the deprecated attribute unset, so a value set in code still overrides the mode
+        builder.custom_attributes["mujoco:condim"].values = {0: 3}
+        with self.assertWarns(NewtonDeprecationWarning):
+            model = builder.finalize()
+        self.assertEqual(model.shape_material_friction_mode.numpy()[0], mode.SLIDING)
 
     @requires(*MUJOCO_MODULES)
     def test_custom_attributes_from_urdf(self):
@@ -7995,15 +8042,16 @@ class TestMuJoCoAttributes(unittest.TestCase):
             </joint>
         </robot>
         """
+        # condim needs no registered MuJoCo attributes
         builder = newton.ModelBuilder()
-        newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
         builder.add_urdf(urdf)
         model = builder.finalize()
         solver = SolverMuJoCo(model, separate_worlds=False)
-        assert hasattr(model, "mujoco")
-        assert hasattr(model.mujoco, "condim")
-        assert np.allclose(model.mujoco.condim.numpy(), [6, 4, 3])
-        assert np.allclose(solver.mjw_model.geom_condim.numpy(), [6, 4, 3])
+        mode = newton.ShapeFrictionMode
+        np.testing.assert_array_equal(
+            model.shape_material_friction_mode.numpy(), [mode.TORSIONAL_ROLLING, mode.TORSIONAL, mode.SLIDING]
+        )
+        np.testing.assert_array_equal(solver.mjw_model.geom_condim.numpy(), [6, 4, 3])
 
     @requires("pxr.Usd", *MUJOCO_MODULES)
     def test_custom_attributes_from_usd(self):
@@ -8033,10 +8081,10 @@ class TestMuJoCoAttributes(unittest.TestCase):
         model = builder.finalize()
         with self.assertWarnsRegex(UserWarning, "standalone world roots"):
             solver = SolverMuJoCo(model, separate_worlds=False)
-        assert hasattr(model, "mujoco")
-        assert hasattr(model.mujoco, "condim")
-        assert np.allclose(model.mujoco.condim.numpy(), [6])
-        assert np.allclose(solver.mjw_model.geom_condim.numpy(), [6])
+        np.testing.assert_array_equal(
+            model.shape_material_friction_mode.numpy(), [newton.ShapeFrictionMode.TORSIONAL_ROLLING]
+        )
+        np.testing.assert_array_equal(solver.mjw_model.geom_condim.numpy(), [6])
 
     def test_invalid_tendon_joint_range_remains_unowned(self):
         """Keep a tendon unowned when its joint range exceeds the available rows."""
@@ -14583,7 +14631,7 @@ class TestMuJoCoSolverForceSpaceContactSolref(unittest.TestCase):
         )
         builder.add_shape_sphere(body, radius=radius, cfg=cfg)
         model = builder.finalize()
-        model.mujoco.condim.fill_(condim)
+        model.shape_material_friction_mode.fill_(int(friction_mode_from_condim(condim)))
         if not per_contact:
             self._make_force_space(model)
         solver = SolverMuJoCo(

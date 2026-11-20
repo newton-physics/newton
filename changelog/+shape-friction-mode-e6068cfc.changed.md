@@ -1,0 +1,1 @@
+Apply `mu_torsional` and `mu_rolling` in `SolverXPBD` only on contacts whose `ShapeFrictionMode` enables them; the default `SLIDING` mode ignores them, as `SolverMuJoCo` already did. Set `builder.default_shape_cfg.friction_mode = newton.ShapeFrictionMode.TORSIONAL_ROLLING` before adding shapes to restore the previous behavior.

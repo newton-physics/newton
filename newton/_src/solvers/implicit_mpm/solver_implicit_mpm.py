@@ -1926,7 +1926,8 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             collider_meshes: Warp triangular meshes used as colliders.
             collider_body_ids: For dynamic colliders, per-mesh body ids.
             collider_margins: Per-mesh signed distance offsets (m).
-            collider_friction: Per-mesh Coulomb friction coefficients.
+            collider_friction: Per-mesh Coulomb friction coefficients. They replace the shapes' values,
+                also for shapes whose friction mode is :attr:`~newton.ShapeFrictionMode.NONE`.
             collider_adhesion: Per-mesh adhesion (Pa).
             collider_projection_threshold: Per-mesh projection threshold (m).
             collider_particle_ids: For deformable mesh colliders, model particle ids corresponding to each mesh vertex.

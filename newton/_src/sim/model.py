@@ -584,6 +584,7 @@ class Model:
         "shape_material_restitution": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_material_mu_torsional": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_material_mu_rolling": AttributeSpec(AttributeFrequency.SHAPE),
+        "shape_material_friction_mode": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_material_kh": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_gap": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_type": AttributeSpec(AttributeFrequency.SHAPE),
@@ -1063,6 +1064,11 @@ class Model:
         """Shape torsional friction coefficient [m] (resistance to spinning at contact point), shape [shape_count], float."""
         self.shape_material_mu_rolling: wp.array[wp.float32] | None = None
         """Shape rolling friction coefficient [m] (resistance to rolling motion), shape [shape_count], float."""
+        self.shape_material_friction_mode: wp.array[wp.int32] | None = None
+        """Shape friction mode, shape [shape_count], int.
+
+        Values are :class:`~newton.ShapeFrictionMode`. Solvers may cache the mode
+        when they are constructed, so changing it is not supported."""
         self.shape_material_kh: wp.array[wp.float32] | None = None
         """Shape hydroelastic stiffness coefficient [N/m^3], shape [shape_count], float.
         Under the default linear pressure law, contact force scales with

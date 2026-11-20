@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from copy import copy
@@ -15,8 +16,21 @@ from typing import Any, ClassVar
 import warp as wp
 
 from ..core.reset import normalize_reset_world_mask
+from ..exceptions import NewtonWarning
 from ..geometry import ParticleFlags
-from ..sim import BodyFlags, CollisionPipeline, Contacts, Control, Model, ModelBuilder, ModelFlags, State, StateFlags
+from ..sim import (
+    BodyFlags,
+    CollisionPipeline,
+    Contacts,
+    Control,
+    Model,
+    ModelBuilder,
+    ModelFlags,
+    ShapeFrictionMode,
+    State,
+    StateFlags,
+)
+from ..utils.deprecation import external_stacklevel
 
 
 def _set_module_options_if_changed(options: dict[str, Any], module: Any) -> bool:
@@ -222,6 +236,36 @@ _CONTACT_FREQUENCIES = frozenset(
         Model.AttributeFrequency.CONTACT_SOFT,
     )
 )
+
+
+@wp.func
+def contact_friction_mode(shape_material_friction_mode: wp.array[wp.int32], shape_a: int, shape_b: int) -> int:
+    """Return the :class:`~newton.ShapeFrictionMode` of a rigid contact, the higher of its shapes' modes."""
+    if not shape_material_friction_mode:
+        return int(ShapeFrictionMode.SLIDING)
+    mode = int(-1)
+    if shape_a >= 0:
+        mode = shape_material_friction_mode[shape_a]
+    if shape_b >= 0:
+        mode = wp.max(mode, shape_material_friction_mode[shape_b])
+    if mode < 0:
+        mode = int(ShapeFrictionMode.SLIDING)
+    return mode
+
+
+def warn_unsupported_friction_modes(model: Model, supported: ShapeFrictionMode, solver_name: str) -> None:
+    """Warn once when shapes enable friction components that a solver ignores."""
+    if not model.shape_count or model.shape_material_friction_mode is None:
+        return
+    highest = int(model.shape_material_friction_mode.numpy().max())
+    if highest <= int(supported):
+        return
+    warnings.warn(
+        f"{solver_name} does not support {ShapeFrictionMode(highest).name} friction; contacts use "
+        f"{supported.name} friction instead.",
+        NewtonWarning,
+        stacklevel=external_stacklevel(),
+    )
 
 
 def _contact_row_count(frequency: Model.AttributeFrequency, contacts: Contacts) -> int:

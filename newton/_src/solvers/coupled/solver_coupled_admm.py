@@ -16,7 +16,8 @@ import warp as wp
 
 from ...geometry.flags import ShapeFlags
 from ...math import quat_between_vectors_robust
-from ...sim import BodyFlags, JointType, ModelFlags, StateFlags
+from ...sim import BodyFlags, JointType, ModelFlags, ShapeFrictionMode, StateFlags
+from ..solver import warn_unsupported_friction_modes
 from .admm_contact_stream import (
     AdmmContactStream,
     AdmmContactType,
@@ -2161,6 +2162,8 @@ class SolverCoupledADMM(SolverCoupled):
         self._admm_rigid_rigid_contact_specs = [
             spec for spec in rr_specs if matching_pair(spec.owner_a, spec.owner_b) is not None
         ]
+        if self._admm_rigid_rigid_contact_specs:
+            warn_unsupported_friction_modes(self.model, ShapeFrictionMode.SLIDING, "SolverCoupledADMM")
         self._admm_particle_particle_contact_specs = [
             spec for spec in pp_specs if matching_pair(spec.owner_a, spec.owner_b) is not None
         ]
@@ -3085,6 +3088,7 @@ class SolverCoupledADMM(SolverCoupled):
                     buf_a.body_effective_mass,
                     buf_b.body_effective_mass,
                     self.model.shape_material_mu,
+                    self.model.shape_material_friction_mode,
                     1 if use_contact_matching else 0,
                     float(self._coupling.contact_matching_force_scale),
                     int(group.count),
@@ -3179,6 +3183,7 @@ class SolverCoupledADMM(SolverCoupled):
                         body_buf.body_effective_mass,
                         particle_buf.particle_effective_mass,
                         self.model.shape_material_mu,
+                        self.model.shape_material_friction_mode,
                         float(self.model.particle_mu),
                         int(group.count),
                         group.active_count,

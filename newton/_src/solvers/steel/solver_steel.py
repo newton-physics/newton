@@ -20,10 +20,21 @@ from ...core.types import MAXVAL, override
 from ...exceptions import NewtonDeprecationWarning, NewtonWarning
 from ...geometry.flags import MeshProperties, ShapeFlags
 from ...geometry.utils import _scan_scratch_size, scan_with_total
-from ...sim import BodyFlags, Contacts, Control, JointType, Model, ModelBuilder, ModelFlags, State, StateFlags
+from ...sim import (
+    BodyFlags,
+    Contacts,
+    Control,
+    JointType,
+    Model,
+    ModelBuilder,
+    ModelFlags,
+    ShapeFrictionMode,
+    State,
+    StateFlags,
+)
 from ...sim.articulation import eval_fk, eval_jacobian, eval_mass_matrix
 from ..coupled.interface import CouplingInterface
-from ..solver import SolverBase
+from ..solver import SolverBase, warn_unsupported_friction_modes
 from . import contact_compliance as _contact_compliance
 from ._testing import current_kernel_overrides
 from .contact_torsion import (
@@ -1720,7 +1731,8 @@ class SolverSteel(SolverBase, CouplingInterface):
 
         - ``steel:min_torsional_patch_radius`` [m] is the effective spin radius of the
           shape's contacts (``physxCollision:minTorsionalPatchRadius``, default 0, no
-          torsion). PhysX also scales a radius with the penetration depth through
+          torsion). A positive radius needs a :attr:`~newton.ModelBuilder.ShapeConfig.friction_mode`
+          of ``TORSIONAL`` or ``TORSIONAL_ROLLING``, which the USD importer selects with it. PhysX also scales a radius with the penetration depth through
           ``physxCollision:torsionalPatchRadius``; this solver does not.
 
         One per-DOF attribute makes joint friction grow with the load the joint transmits, see
@@ -2236,7 +2248,8 @@ class SolverSteel(SolverBase, CouplingInterface):
                 normal. It has no effect on friction patch rows, which act at their anchors.
             contact_torsion_device: Experimental contact torsion is enabled at construction
                 when any shape has a positive ``steel:min_torsional_patch_radius`` (see
-                :meth:`register_custom_attributes`). It adds one angular row per contact group
+                :meth:`register_custom_attributes`), which needs a torsional or rolling
+                :attr:`~newton.ModelBuilder.ShapeConfig.friction_mode`. It adds one angular row per contact group
                 of an articulated body, about the group's normal, bounded by
                 ``r * (mu * N - sliding)``: sliding and spin share one Coulomb budget, ``N`` is
                 the final solved load of the group's normal rows, and ``r`` is the largest
@@ -2608,6 +2621,19 @@ class SolverSteel(SolverBase, CouplingInterface):
                 stacklevel=2,
             )
         configure_contact_torsion(self)
+        warn_unsupported_friction_modes(model, ShapeFrictionMode.TORSIONAL, "SolverSteel")
+        torsion_radius = self._contact_torsion_shape_radius
+        if model.shape_count and model.shape_material_friction_mode is not None:
+            radii = torsion_radius.numpy() if torsion_radius is not None else np.zeros(model.shape_count)
+            if np.any(
+                (model.shape_material_friction_mode.numpy() >= int(ShapeFrictionMode.TORSIONAL)) & (radii <= 0.0)
+            ):
+                warnings.warn(
+                    "SolverSteel applies torsional friction only to contacts of shapes with a positive "
+                    "steel:min_torsional_patch_radius; the other contacts use sliding friction.",
+                    NewtonWarning,
+                    stacklevel=2,
+                )
         self._nesterov_momentum = bool(nesterov_momentum)
         if self._nesterov_momentum and (
             articulated_contact_response != "immediate" or self._row_schedule != "interleaved"
@@ -10068,6 +10094,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                     self._prescribed_articulation,
                     self._articulation_origin,
                     self._shape_mu,
+                    model.shape_material_friction_mode,
                     self._shape_restitution,
                     self._friction_patches.view,
                     *self._contact_anchor_args,
@@ -10222,6 +10249,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                         self._prescribed_articulation,
                         int(self._has_contact_target_velocity),
                         self._shape_mu,
+                        model.shape_material_friction_mode,
                         self._contact_slots_needed,
                         self._shape_restitution,
                         self._friction_patches.view,
@@ -11374,6 +11402,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 self._prescribed_articulation,
                 self._articulation_origin,
                 self._shape_mu,
+                model.shape_material_friction_mode,
                 self._shape_restitution,
                 self._contact_slots_needed,
                 *self._contact_anchor_args,

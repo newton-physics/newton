@@ -350,7 +350,8 @@ LOX contact extensions
 ----------------------
 
 Enable these features through ``config.lox`` after selecting
-``dynamics_solver="lox"``. They are disabled by default.
+``dynamics_solver="lox"``. They are disabled by default, except spatial
+friction, which follows the shapes' friction modes.
 
 * ``contact_compliance=True`` turns contacts with a positive per-contact
   stiffness ``k`` [N/m] (:attr:`newton.Contacts.rigid_contact_stiffness`) into
@@ -367,11 +368,15 @@ Enable these features through ``config.lox`` after selecting
   velocity, which better preserves energy in speculative impacts. Restitution
   applies either way: by default, the bounce target is fixed at the beginning of
   the step.
-* ``contact_spatial_friction=True`` accounts for the shape ``mu_torsional`` and
-  ``mu_rolling`` coefficients, both in metres. Sliding, torsion, and rolling
-  share one elliptic friction budget. Contacts with zero angular coefficients
-  retain the classical 3D contact solve. Kamino's primitive collision pipeline
-  provides no angular coefficients.
+* Spatial friction applies the shape ``mu_torsional`` and ``mu_rolling``
+  coefficients, both in metres, on contacts whose
+  :attr:`~newton.ModelBuilder.ShapeConfig.friction_mode` is ``TORSIONAL`` or
+  ``TORSIONAL_ROLLING``. It is enabled automatically when any shape uses one of these
+  modes. Sliding, torsion, and rolling share one elliptic friction budget.
+  Contacts with zero angular coefficients retain the classical 3D contact
+  solve. Kamino's primitive collision pipeline provides no angular
+  coefficients. The ``contact_spatial_friction`` option, which enabled spatial
+  friction on every contact, is deprecated.
 
 Heterogeneous worlds
 --------------------

@@ -49,6 +49,7 @@ newton
    Rod
    SDF
    ShapeFlags
+   ShapeFrictionMode
    State
    StateFlags
    TendonGuide

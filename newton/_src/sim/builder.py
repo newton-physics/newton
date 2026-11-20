@@ -101,6 +101,7 @@ from .enums import (
     BodyFlags,
     JointTargetMode,
     JointType,
+    ShapeFrictionMode,
 )
 from .graph_coloring import (
     ColoringAlgorithm,
@@ -1197,6 +1198,12 @@ class ModelBuilder:
         """The coefficient of torsional friction [m] (resistance to spinning at contact point)."""
         mu_rolling: float = 0.0001
         """The coefficient of rolling friction [m] (resistance to rolling motion)."""
+        friction_mode: ShapeFrictionMode = ShapeFrictionMode.SLIDING
+        """The friction components the shape enables in rigid contacts, see :class:`~newton.ShapeFrictionMode`.
+
+        :attr:`mu_torsional` and :attr:`mu_rolling` only act in contacts whose
+        mode includes them. Solvers may cache the mode when they are constructed,
+        so changing it in a finalized model is not supported."""
         margin: float = 0.0
         """Outward offset from the shape's surface [m] for collision detection.
         Extends the effective collision surface outward by this amount. When two shapes collide,
@@ -1344,6 +1351,12 @@ class ModelBuilder:
                         f"mu_static must be >= mu (got mu_static={self.mu_static}, mu={self.mu}). "
                         "Leave mu_static as None for a single friction coefficient."
                     )
+            try:
+                ShapeFrictionMode(self.friction_mode)
+            except ValueError:
+                raise ValueError(
+                    f"friction_mode must be a ShapeFrictionMode value (got {self.friction_mode!r})."
+                ) from None
 
             if self.sdf_target_voxel_size is not None and (
                 not math.isfinite(self.sdf_target_voxel_size) or self.sdf_target_voxel_size <= 0.0
@@ -2294,6 +2307,8 @@ class ModelBuilder:
         """Torsional friction coefficients accumulated for :attr:`Model.shape_material_mu_torsional`."""
         self.shape_material_mu_rolling: list[float] = []
         """Rolling friction coefficients accumulated for :attr:`Model.shape_material_mu_rolling`."""
+        self.shape_material_friction_mode: list[int] = []
+        """Friction modes accumulated for :attr:`Model.shape_material_friction_mode`."""
         self.shape_material_kh: list[float] = []
         """Hydroelastic stiffness values accumulated for :attr:`Model.shape_material_kh`."""
         self.shape_gap: list[float] = []
@@ -6946,8 +6961,9 @@ class ModelBuilder:
 
         A row takes everything authored on the variant shape it holds: geometry, flags, color,
         opacity, materials, and model-assigned shape custom attributes. It keeps its label, world,
-        collision group, and filter pairs, so the i-th colliders of all variants must share a
-        collision group. An
+        collision group, friction mode, and filter pairs, so the i-th colliders of all variants must
+        share a collision group and a :attr:`~ShapeConfig.friction_mode`, as must shapes that
+        collide with particles only. An
         empty row has its collision and visibility flags cleared, so it neither collides nor
         renders. Variant shapes are expressed in the variant body's frame, which maps onto
         ``body``'s frame; the variant body's pose, joints, and other entities are ignored, as are
@@ -6973,7 +6989,7 @@ class ModelBuilder:
         Raises:
             IndexError: If ``body`` or ``initial`` is out of range.
             ValueError: If ``body`` already has variants, ``labels`` does not match ``variants``,
-                colliders held by the same row have different collision groups, a shape custom
+                colliders held by the same row have different collision groups or friction modes, a shape custom
                 attribute is declared differently than here or in another variant, shapes of a later
                 world or trailing global shapes were added after ``body``'s world, or a variant
                 builder is this builder, declares variants itself, uses a different up axis, does
@@ -7033,6 +7049,7 @@ class ModelBuilder:
             for candidate in row.candidates:
                 flags |= int(candidate.values["shape_flags"])
             self.shape_flags[shape] = flags
+            self.shape_material_friction_mode[shape] = row.friction_mode
             self.body_shapes[body].append(shape)
             if flags & ShapeFlags.COLLIDE_SHAPES:
                 self._add_joint_collision_filter_pairs(shape, body)
@@ -9963,6 +9980,7 @@ class ModelBuilder:
         self.shape_material_restitution.append(cfg.restitution)
         self.shape_material_mu_torsional.append(cfg.mu_torsional)
         self.shape_material_mu_rolling.append(cfg.mu_rolling)
+        self.shape_material_friction_mode.append(int(cfg.friction_mode))
         self.shape_material_kh.append(cfg.kh)
         self.shape_gap.append(cfg.gap if cfg.gap is not None else self.rigid_gap)
         self.shape_collision_group.append(cfg.collision_group)
@@ -11054,6 +11072,7 @@ class ModelBuilder:
                             restitution=self.shape_material_restitution[shape],
                             mu_torsional=self.shape_material_mu_torsional[shape],
                             mu_rolling=self.shape_material_mu_rolling[shape],
+                            friction_mode=ShapeFrictionMode(self.shape_material_friction_mode[shape]),
                             kh=self.shape_material_kh[shape],
                             margin=self.shape_margin[shape],
                             is_solid=self.shape_is_solid[shape],
@@ -16350,6 +16369,7 @@ class ModelBuilder:
             m.shape_material_mu_rolling = wp.array(
                 self.shape_material_mu_rolling, dtype=wp.float32, requires_grad=requires_grad
             )
+            m.shape_material_friction_mode = wp.array(self.shape_material_friction_mode, dtype=wp.int32)
             m.shape_material_kh = wp.array(self.shape_material_kh, dtype=wp.float32, requires_grad=requires_grad)
             m.shape_gap = wp.array(self.shape_gap, dtype=wp.float32, requires_grad=requires_grad)
 
@@ -17869,6 +17889,7 @@ _ARRAY_BACKED_ATTRIBUTE_DTYPES: dict[str, Any] = {
     "shape_material_restitution": wp.float32,
     "shape_material_mu_torsional": wp.float32,
     "shape_material_mu_rolling": wp.float32,
+    "shape_material_friction_mode": wp.int32,
     "shape_material_kh": wp.float32,
     "shape_gap": wp.float32,
     "shape_is_solid": wp.bool,

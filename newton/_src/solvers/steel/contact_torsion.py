@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Bounded, local-only spin resistance with an explicit per-shape effective radius.
 
-Only shapes with a positive ``steel:min_torsional_patch_radius`` get torsion. This diagnostic adds one angular
+Only shapes with a positive ``steel:min_torsional_patch_radius`` and a torsional friction mode get torsion. This diagnostic adds one angular
 row per coherent contact group, not one full torque budget per witness. With
 point friction a group is a coplanar cluster of one exact shape pair, and every
 member carries its own tangent pair. With persistent friction patches a group is
@@ -22,6 +22,7 @@ import warp as wp
 
 from ...exceptions import NewtonWarning
 from ...geometry import GeoType
+from ...sim import ShapeFrictionMode
 from .kernels import (
     _CONTACT_END_GAP_SLOP,
     PGS_CONSTRAINT_TYPE_CONTACT,
@@ -75,6 +76,13 @@ def configure_contact_torsion(solver):
         shapes = np.concatenate((shapes, rows))
     if not np.all(np.isfinite(radii)) or np.any(radii < 0.0):
         raise ValueError("steel:min_torsional_patch_radius must be finite and non-negative [m]")
+    modes = model.shape_material_friction_mode.numpy()
+    without_torsion = np.unique(shapes[(radii > 0.0) & (modes[shapes] < int(ShapeFrictionMode.TORSIONAL))]).tolist()
+    if without_torsion:
+        raise ValueError(
+            "steel:min_torsional_patch_radius needs ShapeFrictionMode.TORSIONAL or TORSIONAL_ROLLING; "
+            f"set ShapeConfig.friction_mode of shapes {without_torsion}"
+        )
     enabled = bool(np.any(radii > 0.0))
     if enabled:
         unsupported = np.unique(shapes[(radii > 0.0) & ~np.isin(types, _SUPPORTED_TYPES)]).tolist()

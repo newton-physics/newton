@@ -35,6 +35,7 @@ import warp as wp
 
 from .....math import safe_div
 from .....sim.contacts import Contacts, contact_surface_point, contact_surface_separation
+from .....sim.enums import ShapeFrictionMode
 from .....sim.model import Model
 from .....sim.state import State
 from ..core.bodies import is_immovable_for_kamino
@@ -1478,6 +1479,7 @@ def convert_contacts_newton_to_kamino(
     cull_speculative_contacts: bool = DEFAULT_CULL_SPECULATIVE_CONTACTS,
     kinematic_only_immovable: bool = False,
     contact_dead_zone: float = 1.0e-6,
+    geom_friction_mode: wp.array[wp.int32] | None = None,
 ):
     """
     Converts Newton's :class:`Contacts` to Kamino's :class:`ContactsKamino` format.
@@ -1528,6 +1530,9 @@ def convert_contacts_newton_to_kamino(
         contact_dead_zone:
             Margin-shifted distance [m] up to which a contact counts as touching and is
             not culled; should match ``ConstraintStabilizationConfig.delta``.
+        geom_friction_mode:
+            Per-geometry :class:`~newton.ShapeFrictionMode` used to remove
+            friction components the contact pairs do not enable, or ``None``.
     """
     # Skip conversion if there are no contacts to convert or no capacity to store them.
     if contacts_out.model_max_contacts_host == 0 or contacts_in.rigid_contact_max == 0:
@@ -1633,6 +1638,49 @@ def convert_contacts_newton_to_kamino(
             contacts_out.remap,
         ],
         device=model.device,
+    )
+    apply_contact_friction_modes(contacts_out, geom_friction_mode)
+
+
+@wp.kernel(enable_backward=False)
+def _apply_contact_friction_modes(
+    model_active_contacts: wp.array[wp.int32],
+    gid_AB: wp.array[wp.vec2i],
+    geom_friction_mode: wp.array[wp.int32],
+    material: wp.array[wp.vec2f],
+    angular_friction: wp.array[wp.vec2f],
+):
+    cid = wp.tid()
+    if cid >= model_active_contacts[0]:
+        return
+    gids = gid_AB[cid]
+    mode = wp.max(geom_friction_mode[gids[0]], geom_friction_mode[gids[1]])
+    if mode == int(ShapeFrictionMode.NONE):
+        material[cid] = wp.vec2f(0.0, material[cid][1])
+    angular = angular_friction[cid]
+    if mode < int(ShapeFrictionMode.TORSIONAL):
+        angular[0] = 0.0
+    if mode < int(ShapeFrictionMode.TORSIONAL_ROLLING):
+        angular[1] = 0.0
+    angular_friction[cid] = angular
+
+
+def apply_contact_friction_modes(contacts: ContactsKamino, geom_friction_mode: wp.array[wp.int32] | None) -> None:
+    """Remove the friction components that the contacts' geometry pairs do not enable.
+
+    Args:
+        contacts: Contacts whose friction coefficients are restricted in place.
+        geom_friction_mode: Per-geometry :class:`~newton.ShapeFrictionMode`, or
+            ``None`` when every contact keeps all its coefficients.
+    """
+    if geom_friction_mode is None or contacts.model_max_contacts_host == 0:
+        return
+    wp.launch(
+        _apply_contact_friction_modes,
+        dim=contacts.model_max_contacts_host,
+        inputs=[contacts.model_active_contacts, contacts.gid_AB, geom_friction_mode],
+        outputs=[contacts.material, contacts.angular_friction],
+        device=contacts.device,
     )
 
 
