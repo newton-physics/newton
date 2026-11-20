@@ -11,6 +11,11 @@ renderer performance:
 - ``franka_cabinet``: Isaac Lab's Franka cabinet (open-drawer) scene.
 - ``quadruped``: an ANYmal D quadruped in its nominal standing pose.
 - ``shapes_256``: a grid of 256 primitive shapes.
+- ``cloth``: a 32x32-vertex cloth (1,922 triangles) draped over a sphere.
+- ``particles``: a cloud of 1,000 particles in an open box.
+
+The deformable scenes also time ``update_render``: each iteration moves every particle, refits the
+shapes and the camera's scene, and renders, since deformables pay for an update every frame.
 
 Each scene is described once as a :class:`ScenePreset` in :data:`SCENES` and is
 shared between the ASV benchmark classes and the preview image generator, so
@@ -201,6 +206,73 @@ def _build_shapes_256() -> newton.ModelBuilder:
     return builder
 
 
+_CLOTH_VERTICES = 32
+_PARTICLE_CLOUD_SIDE = 10
+
+
+def _build_cloth() -> newton.ModelBuilder:
+    """A 32x32-vertex cloth sagging over a sphere."""
+    builder = newton.ModelBuilder()
+    body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.5), wp.quat_identity()))
+    builder.add_shape_sphere(body, radius=0.45, color=(0.27, 0.47, 0.67))
+    cell = 1.6 / (_CLOTH_VERTICES - 1)
+    builder.add_cloth_grid(
+        pos=wp.vec3(-0.8, -0.8, 1.0),
+        rot=wp.quat_identity(),
+        vel=wp.vec3(0.0),
+        dim_x=_CLOTH_VERTICES - 1,
+        dim_y=_CLOTH_VERTICES - 1,
+        cell_x=cell,
+        cell_y=cell,
+        mass=0.01,
+        color=(0.93, 0.40, 0.47),
+    )
+    # Sag the cloth over the sphere so it starts draped.
+    for i, q in enumerate(builder.particle_q):
+        x, y = float(q[0]), float(q[1])
+        builder.particle_q[i] = (x, y, 0.55 + 0.45 * math.exp(-2.5 * (x * x + y * y)))
+    return builder
+
+
+def _build_particles() -> newton.ModelBuilder:
+    """A 10x10x10 cloud of particles in an open box."""
+    builder = newton.ModelBuilder()
+    for x, y, half in ((0.0, 0.62, (0.6, 0.02, 0.3)), (0.0, -0.62, (0.6, 0.02, 0.3))):
+        builder.add_shape_box(
+            -1,
+            xform=wp.transform(wp.vec3(x, y, 0.3), wp.quat_identity()),
+            hx=half[0],
+            hy=half[1],
+            hz=half[2],
+            color=(0.6, 0.6, 0.65),
+        )
+    rng = np.random.default_rng(1234)
+    spacing = 1.0 / _PARTICLE_CLOUD_SIDE
+    for i in range(_PARTICLE_CLOUD_SIDE**3):
+        ix, iy, iz = i % _PARTICLE_CLOUD_SIDE, (i // _PARTICLE_CLOUD_SIDE) % _PARTICLE_CLOUD_SIDE, i // 100
+        jitter = rng.uniform(-0.2, 0.2, 3) * spacing
+        builder.add_particle(
+            wp.vec3(
+                (ix - 4.5) * spacing + jitter[0],
+                (iy - 4.5) * spacing + jitter[1],
+                0.1 + iz * spacing + jitter[2],
+            ),
+            wp.vec3(0.0),
+            0.01,
+            radius=0.04,
+        )
+    return builder
+
+
+@wp.kernel(enable_backward=False)
+def _move_particles(rest: wp.array[wp.vec3f], frame: wp.int32, amplitude: wp.float32, q: wp.array[wp.vec3f]):
+    """Procedural motion standing in for a solver: a traveling wave over every particle."""
+    i = wp.tid()
+    p = rest[i]
+    phase = 0.15 * float(frame) + 3.0 * p[0] + 2.0 * p[1] + 0.01 * float(i % 997)
+    q[i] = p + amplitude * wp.vec3f(0.3 * wp.sin(phase), 0.3 * wp.cos(1.3 * phase), wp.sin(phase))
+
+
 @dataclass(frozen=True)
 class ScenePreset:
     """A benchmark scene: one world's worth of content plus a camera pose."""
@@ -217,6 +289,9 @@ class ScenePreset:
     light_direction: tuple[float, float, float] | None = None
     """Directional-light travel direction; ``None`` uses the sensor default."""
 
+    motion_amplitude: float = 0.0
+    """Amplitude [m] of the procedural particle motion of ``update_render``; 0 for rigid scenes."""
+
 
 SCENES: dict[str, ScenePreset] = {
     "quadruped": ScenePreset(_build_quadruped, camera_eye=(2.2, 2.2, 1.1), camera_target=(0.0, 0.0, 0.45)),
@@ -229,6 +304,12 @@ SCENES: dict[str, ScenePreset] = {
         light_direction=(-1.0, -0.4, -0.45),
     ),
     "shapes_256": ScenePreset(_build_shapes_256, camera_eye=(9.0, 9.0, 6.0), camera_target=(0.0, 0.0, 0.0)),
+    "cloth": ScenePreset(
+        _build_cloth, camera_eye=(2.0, 1.6, 1.6), camera_target=(0.0, 0.0, 0.5), motion_amplitude=0.08
+    ),
+    "particles": ScenePreset(
+        _build_particles, camera_eye=(1.8, 1.4, 1.3), camera_target=(0.0, 0.0, 0.4), motion_amplitude=0.03
+    ),
 }
 
 
@@ -303,8 +384,26 @@ class _SensorCameraSceneRig:
         if backend == "optix":
             self.model.bvh_build_shapes(self.state, backend="optix")
         self.model.bvh_build_particles(self.state, bvh_constructor=BVH_CONSTRUCTOR)
+        self.backend = backend
+        self.motion_amplitude = preset.motion_amplitude
+        self.rest_particle_q = wp.clone(self.state.particle_q) if self.model.particle_count else None
+        self.frame = 0
         # Static benchmark scene: synchronize render-only state once up front and
         # let render() skip the per-frame sync so it measures rendering only.
+        self.sensor.sync_deformable_meshes(self.state)
+
+    def update(self):
+        """Move the particles, then refit the shapes and the camera's scene to the new state."""
+        self.frame += 1
+        if self.rest_particle_q is not None:
+            wp.launch(
+                _move_particles,
+                dim=self.model.particle_count,
+                inputs=[self.rest_particle_q, self.frame, self.motion_amplitude],
+                outputs=[self.state.particle_q],
+                device=self.model.device,
+            )
+        self.model.bvh_refit_shapes(self.state, backend=self.backend)
         self.sensor.sync_deformable_meshes(self.state)
 
     def render(self, color: bool = True, depth: bool = True):
@@ -403,6 +502,33 @@ class SensorCameraShapes256(_SceneBenchmark):
     params = ([64], [4096], [50])
 
 
+class _DeformableSceneBenchmark(_SceneBenchmark):
+    """Adds the per-frame update of a deforming scene to the static render timings."""
+
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    def time_update(self, resolution: int, world_count: int, iterations: int):
+        for _ in range(iterations):
+            self.rig.update()
+        wp.synchronize()
+
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    def time_update_render(self, resolution: int, world_count: int, iterations: int):
+        for _ in range(iterations):
+            self.rig.update()
+            self.rig.render(color=True, depth=True)
+        wp.synchronize()
+
+
+class SensorCameraCloth(_DeformableSceneBenchmark):
+    scene = "cloth"
+    params = ([64], [4096], [50])
+
+
+class SensorCameraParticles(_DeformableSceneBenchmark):
+    scene = "particles"
+    params = ([64], [4096], [50])
+
+
 PREVIEW_WORLD_COUNTS = (1, 16)
 
 
@@ -464,6 +590,8 @@ if __name__ == "__main__":
         "FastSensorCameraPixel": FastSensorCameraPixel,
         "SensorCameraQuadruped": SensorCameraQuadruped,
         "SensorCameraShapes256": SensorCameraShapes256,
+        "SensorCameraCloth": SensorCameraCloth,
+        "SensorCameraParticles": SensorCameraParticles,
     }
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)

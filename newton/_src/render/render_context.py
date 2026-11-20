@@ -79,13 +79,10 @@ class RenderContext:
     ):
         """Create a render context for a Newton simulation model.
 
-        Populates shape, triangle, and texture data from *model*. BVH
-        acceleration structures for shapes and particles live on
-        :class:`~newton.Model` and are built for the initial state by
-        :meth:`~newton.ModelBuilder.finalize`; refit them via
-        :meth:`~newton.Model.bvh_refit_shapes` and
-        :meth:`~newton.Model.bvh_refit_particles` before later frames that
-        change geometry.
+        Populates shape, triangle, and texture data from *model*. The context traces
+        one scene of shapes, standalone particles and deformable triangles; :meth:`update`
+        refits it from the state and from
+        the model's shapes, which :meth:`~newton.Model.bvh_refit_shapes` refits.
 
         Args:
             model: Newton simulation model providing shapes and particles.
@@ -481,13 +478,10 @@ class RenderContext:
         model's world count. At least one output image must be supplied; all
         non-``None`` output arrays must have shape ``(view_count, height, width)``.
 
-        Shape and particle BVHs on the model are built for the initial state by
-        :meth:`~newton.ModelBuilder.finalize`. Before later frames that change
-        geometry, refit them via
-        :meth:`~newton.Model.bvh_refit_shapes` and
-        :meth:`~newton.Model.bvh_refit_particles` before calling this
-        method. The OptiX backend instead traces :attr:`~newton.Model.optix_shapes`, built with
-        ``bvh_build_shapes(state, backend="optix")`` and refit with
+        Renders the scene as of the last :meth:`update`, building it from *state* if there
+        was none. Refit the model's shapes with :meth:`~newton.Model.bvh_refit_shapes`
+        before that update; the OptiX backend traces :attr:`~newton.Model.optix_shapes`, built
+        with ``bvh_build_shapes(state, backend="optix")`` and refit with
         ``bvh_refit_shapes(state, backend="optix")``.
 
         Args:

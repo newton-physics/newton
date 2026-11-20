@@ -119,7 +119,9 @@ attributes, and usage examples.
   visual meshes render too; see :ref:`deformable-visual-camera-output`. Installing ``newton[optix]`` enables
   experimental OptiX ray tracing with ``backend="optix"``; build its shapes with
   ``model.bvh_build_shapes(state, backend="optix")`` and refit them with
-  ``model.bvh_refit_shapes(state, backend="optix")``.
+  ``model.bvh_refit_shapes(state, backend="optix")``. Each camera traces its shapes, standalone particles and
+  deformable surfaces in one traversal of a single acceleration structure, which it refits from the state on every
+  :meth:`~newton.sensors.SensorCamera.update`.
 
 Camera Rays from USD and Calibration Data
 -----------------------------------------
@@ -160,8 +162,8 @@ read the attributes you use in your pipeline and pass the numeric values into th
 
    color = camera.allocate_image_color(view_count, 640, 480)
 
-   # update() syncs deformable-mesh points from state by default; refit the
-   # shape/particle BVHs first on any frame whose geometry moved.
+   # update() syncs particles and deformable-mesh points from state by default;
+   # refit the shape BVH first on any frame whose shapes moved.
    camera.update(state, camera_transforms, camera_rays, color_image=color)
 
 For OpenCV-calibrated pinhole cameras, call

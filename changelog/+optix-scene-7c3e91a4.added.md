@@ -1,0 +1,1 @@
+Add particle and deformable surface support to the experimental OptiX `SensorCamera` backend. With a `warp-optix` that supports triangle clusters, deformable surfaces are rebuilt as clusters every frame.
