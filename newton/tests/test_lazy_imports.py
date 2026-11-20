@@ -106,8 +106,10 @@ class TestLazySolverImports(unittest.TestCase):
     def test_first_mujoco_import_does_not_pin_caller(self):
         """Verify that the first MuJoCo import releases the stack that triggered it."""
         code = (
-            "import gc, weakref\n"
+            "import gc, os, sys, weakref\n"
             "import newton\n"
+            "os.environ['MUJOCO_GL'] = 'glfw'\n"
+            "sys.modules['glfw'] = None  # MuJoCo only stores the error when its GL backend fails to import\n"
             "class Local: pass\n"
             "def caller():\n"
             "    local = Local()\n"
