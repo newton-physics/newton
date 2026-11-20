@@ -103,6 +103,7 @@ def kernel_test_box_normal(
 
 
 def test_ray_intersect_box_edge_normal(test: TestRaycast, device: str):
+    """Verify ray-box edge hits return a unit face normal."""
     out_t = wp.zeros(1, dtype=float, device=device)
     out_n = wp.zeros(1, dtype=wp.vec3, device=device)
     size = wp.vec3(0.30, 0.24, 0.04)
