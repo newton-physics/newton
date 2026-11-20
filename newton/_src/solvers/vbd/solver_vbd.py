@@ -291,6 +291,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         - Joint-owned mimic relationships are supported for PRISMATIC, REVOLUTE, and D6 joints.
           They contribute implicit finite-stiffness rows to the body solve, using
           ``rigid_joint_linear_ke`` or ``rigid_joint_angular_ke`` for each follower coordinate.
+          Angular rows within about 6 degrees of a multi-axis D6 gimbal lock are softened to stay finite.
           After changing mimic properties, call :meth:`notify_model_changed` with
           :attr:`~newton.ModelFlags.JOINT_PROPERTIES` to clear mimic history.
           If the solver was constructed without supported mimics, rebuild it after adding the first one.
@@ -1083,9 +1084,10 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 "joint_mimic_joint",
                 "joint_mimic_coeffs",
                 "body_com",
-                "body_colors",
             ):
                 setattr(self._joint_mimics, name, getattr(model, name))
+            # Use the colors VBD solves by; model.body_colors may be unset when groups are assigned directly.
+            self._joint_mimics.body_colors = self._body_color
             self._joint_mimics.linear_ke = self.rigid_joint_linear_ke
             self._joint_mimics.angular_ke = self.rigid_joint_angular_ke
             self._joint_mimics.lambda_ = wp.zeros((model.joint_count, 6), dtype=float, device=self.device)
@@ -1577,7 +1579,14 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             self._refresh_rod_rest_bend_twist_cache()
         if self._has_joint_mimics:
             if flags & ModelFlags.JOINT_PROPERTIES:
-                for name in ("joint_enabled", "joint_X_p", "joint_X_c", "joint_mimic_joint", "joint_mimic_coeffs"):
+                for name in (
+                    "joint_enabled",
+                    "joint_X_p",
+                    "joint_X_c",
+                    "joint_axis",
+                    "joint_mimic_joint",
+                    "joint_mimic_coeffs",
+                ):
                     setattr(self._joint_mimics, name, getattr(self.model, name))
                 self._joint_mimics.lambda_.zero_()
             if flags & ModelFlags.JOINT_DOF_PROPERTIES:
@@ -4020,6 +4029,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                         self.body_inv_mass_effective,
                         self.body_inv_inertia_effective,
                         1.0 / (dt * dt),
+                        self.rigid_avbd_gamma,
                     ],
                     device=self.device,
                 )

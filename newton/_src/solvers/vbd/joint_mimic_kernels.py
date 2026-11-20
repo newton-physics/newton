@@ -229,8 +229,9 @@ def seed_joint_mimic_rho(
     body_inv_mass: wp.array[float],
     body_inv_inertia: wp.array[wp.mat33],
     inv_dt_sq: float,
+    lambda_retention: float,
 ):
-    """Fix each mimic row's ALM penalty for the step from its inverse-Delassus support."""
+    """Retain mimic multipliers and fix each row's ALM penalty from its inverse-Delassus support."""
     follower = wp.tid()
     if not _active(data, follower):
         return
@@ -251,3 +252,4 @@ def seed_joint_mimic_rho(
         if mobility > 0.0:
             support = inv_dt_sq / mobility
         data.rho[follower, component] = _bilateral_auto_rho(support, row.stiffness)
+        data.lambda_[follower, component] = lambda_retention * data.lambda_[follower, component]

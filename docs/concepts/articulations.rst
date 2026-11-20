@@ -255,7 +255,10 @@ finite-stiffness rows in its rigid-body solve. Their forces and Hessians are
 solved together with structural joints and contacts. Linear and angular mimic
 coordinates use ``rigid_joint_linear_ke`` and ``rigid_joint_angular_ke``,
 respectively. VBD captures these structural stiffnesses
-at construction; rebuild the solver after changing them. Increase the solver's
+at construction; rebuild the solver after changing them. Within about 6 degrees
+of a multi-axis D6 gimbal lock, where the Euler coordinates are ill-conditioned,
+VBD softens the affected angular mimic rows to keep the solve finite.
+Increase the solver's
 ``iterations`` setting when tighter convergence is needed. Both solvers act on
 the follower and reference joints, so forces applied to the follower also affect
 the reference.
