@@ -347,18 +347,6 @@ def prepare_jacobi_preconditioner_kernel(
 
 
 @wp.kernel
-def PD_jacobi_step_kernel(
-    rhs: wp.array[wp.vec3],
-    x_in: wp.array[wp.vec3],
-    inv_A_diag: wp.array[wp.mat33],
-    # outputs
-    x_out: wp.array[wp.vec3],
-):
-    tid = wp.tid()
-    x_out[tid] = x_in[tid] + inv_A_diag[tid] * rhs[tid]
-
-
-@wp.kernel
 def nonlinear_step_kernel(
     x_in: wp.array[wp.vec3],
     # outputs

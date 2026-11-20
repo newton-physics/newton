@@ -37,6 +37,7 @@ from .solver_kernels import (
     _store_dual_wrench,
     _update_splitting_dual,
     _write_integrator_body_inputs,
+    _write_lox_world_residual,
     _write_world_status,
 )
 from .types import LOXData, ProjectionAcceleration
@@ -505,6 +506,29 @@ class LOXSolver:
         self._store_dual_wrench()
         self._write_accepted_dynamics()
 
+    def write_world_residual(self, world_residual: wp.array[wp.float32]) -> None:
+        """Write the convergence residual of each world relative to the stopping tolerances.
+
+        The value is the largest tolerance-scaled residual of the last convergence check
+        of the latest solve, so values at most one satisfy every tolerance. Failed worlds
+        report infinity. Requires adaptive iterations; fixed iterations skip the check.
+
+        Args:
+            world_residual: Output array with at least ``num_worlds`` entries.
+
+        Raises:
+            RuntimeError: If the solver runs a fixed number of iterations.
+        """
+        if self._config.fixed_iterations:
+            raise RuntimeError("LOX reports no world residual with fixed iterations.")
+        wp.launch(
+            _write_lox_world_residual,
+            dim=self._model.info.num_worlds,
+            inputs=[self._data.status, self._data.residuals.r_total],
+            outputs=[world_residual],
+            device=self._device,
+        )
+
     def build_dual_solution(
         self,
         model: ModelKamino,
@@ -603,6 +627,7 @@ class LOXSolver:
                 residuals.r_cross_iterate,
                 residuals.r_unilateral,
                 residuals.r_lagged,
+                residuals.r_total,
                 residuals.r_primal,
                 residuals.r_dual,
                 self._problem.data.box_rows.world_residual_max,
@@ -935,6 +960,7 @@ class LOXSolver:
                 splitting.world_active,
                 splitting.world_converged,
                 iteration_condition,
+                residuals.r_total,
             ],
             device=self._device,
         )

@@ -7,23 +7,23 @@ import unittest
 
 import warp as wp
 
+import newton
 from newton._src.solvers.kamino._src.utils.world_equivalence import DiscreteSignature, compute_equivalence_classes
-from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino import setup_test_output, setup_tests, test_context
+from newton.tests.unittest_utils import NewtonTestCase
 
 ###
 # Tests
 ###
 
 
-class TestEquivalenceClasses(unittest.TestCase):
+class TestEquivalenceClasses(NewtonTestCase):
     def setUp(self):
         # Configs
+        setup_test_output(self)
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
-
-    def tearDown(self):
-        self.default_device = None
 
     def test_01_discrete_signature_equivalence(self):
         # Create some discrete signatures
@@ -105,6 +105,7 @@ class TestEquivalenceClasses(unittest.TestCase):
 
 if __name__ == "__main__":
     # Test setup
+    newton.utils.setup_console_logging()
     setup_tests()
 
     # Run all tests

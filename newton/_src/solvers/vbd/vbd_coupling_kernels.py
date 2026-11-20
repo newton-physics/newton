@@ -71,6 +71,10 @@ def _harvest_vbd_proxy_wrenches_kernel(
     contact_point0_world: wp.array[wp.vec3],
     contact_point1_world: wp.array[wp.vec3],
     contact_force_on_body1: wp.array[wp.vec3],
+    contact_pure_torque_on_body1: wp.array[wp.vec3],
+    contact_normal: wp.array[wp.vec3],
+    contact_offset0: wp.array[wp.vec3],
+    contact_offset1: wp.array[wp.vec3],
     dst_body_inv_mass: wp.array[float],
     dst_body_flags: wp.array[wp.int32],
     body_local_to_proxy_global: wp.array[int],
@@ -112,22 +116,35 @@ def _harvest_vbd_proxy_wrenches_kernel(
         return
 
     force_on_b1 = contact_force_on_body1[contact_id]
+    pure_torque_on_b1 = contact_pure_torque_on_body1[contact_id]
     if is_proxy1 == 1:
         proxy_local_id = body1
         proxy_global_id = proxy_global1
         contact_point = contact_point1_world[contact_id]
+        contact_offset = contact_offset1[contact_id]
         force_on_proxy = force_on_b1
+        pure_torque_on_proxy = pure_torque_on_b1
     else:
         proxy_local_id = body0
         proxy_global_id = proxy_global0
         contact_point = contact_point0_world[contact_id]
+        contact_offset = contact_offset0[contact_id]
         force_on_proxy = -force_on_b1
+        pure_torque_on_proxy = -pure_torque_on_b1
 
     if proxy_global_id < 0 or proxy_global_id >= out_proxy_body_f.shape[0]:
         return
 
     com_world = wp.transform_point(body_q[proxy_local_id], body_com[proxy_local_id])
-    torque = wp.cross(contact_point - com_world, force_on_proxy)
+    # Normal force acts at the support point; sliding acts at the surface point.
+    offset_world = wp.transform_vector(body_q[proxy_local_id], contact_offset)
+    n = contact_normal[contact_id]
+    normal_force = n * wp.dot(n, force_on_proxy)
+    torque = (
+        wp.cross(contact_point - com_world, force_on_proxy)
+        - wp.cross(offset_world, normal_force)
+        + pure_torque_on_proxy
+    )
     wp.atomic_add(out_proxy_body_f, proxy_global_id, wp.spatial_vector(force_on_proxy, torque))
 
 
@@ -145,7 +162,7 @@ def _harvest_vbd_body_particle_contact_forces_on_proxy_bodies_kernel(
     friction_epsilon: float,
     rigid_body_particle_contact_use_log_barrier: bool,
     contact_damping_bidirectional: bool,
-    body_particle_contact_penalty_k: wp.array[float],
+    body_particle_contact_material_ke: wp.array[float],
     body_particle_contact_material_kd: wp.array[float],
     body_particle_contact_material_mu: wp.array[float],
     body_particle_contact_count: wp.array[int],
@@ -222,7 +239,7 @@ def _harvest_vbd_body_particle_contact_forces_on_proxy_bodies_kernel(
             particle_q,
             particle_q_prev,
             particle_radius,
-            body_particle_contact_penalty_k[contact_idx],
+            body_particle_contact_material_ke[contact_idx],
             body_particle_contact_material_kd[contact_idx],
             body_particle_contact_material_mu[contact_idx],
             friction_epsilon,
@@ -329,7 +346,7 @@ def _harvest_vbd_proxy_particle_body_contact_forces_kernel(
     body_particle_contact_count: wp.array[int],
     contact_filter: _SoftContactFilterData,
     body_particle_contact_particle: wp.array[int],
-    body_particle_contact_penalty_k: wp.array[float],
+    body_particle_contact_material_ke: wp.array[float],
     body_particle_contact_material_kd: wp.array[float],
     body_particle_contact_material_mu: wp.array[float],
     shape_body: wp.array[wp.int32],
@@ -374,7 +391,7 @@ def _harvest_vbd_proxy_particle_body_contact_forces_kernel(
         particle_q[particle_idx],
         particle_q_prev[particle_idx],
         contact_idx,
-        body_particle_contact_penalty_k[contact_idx],
+        body_particle_contact_material_ke[contact_idx],
         body_particle_contact_material_kd[contact_idx],
         body_particle_contact_material_mu[contact_idx],
         friction_epsilon,

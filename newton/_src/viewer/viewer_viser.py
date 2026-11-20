@@ -661,12 +661,11 @@ class ViewerViser(ViewerBase):
         layer._shape_instance_batches_by_name = {}
         layer._packed_shape_world_xforms = None
         layer._packed_shape_groups = []
+        layer._dynamic_shape_count = 0
+        layer._packed_shape_xforms_host = None
         layer._packed_shape_colors_host = None
-        layer._packed_shape_colors_device = None
-        layer._shape_colors_changed_device = None
+        layer._shape_appearance_changed_device = None
         layer._packed_shape_opacities_host = None
-        layer._packed_shape_opacities_device = None
-        layer._shape_opacities_changed_device = None
 
     @override
     def set_model(self, model: newton.Model | None):
@@ -733,13 +732,12 @@ class ViewerViser(ViewerBase):
         self._shape_instance_batches_by_name = {batch.name: batch for batch in batches}
         total = sum(len(batch.xforms) for batch in batches)
         self._packed_shape_groups = []
+        self._dynamic_shape_count = sum(len(batch.xforms) for batch in batches if not batch.static)
+        self._packed_shape_xforms_host = None
         self._packed_shape_world_xforms = None
         self._packed_shape_colors_host = None
-        self._packed_shape_colors_device = None
-        self._shape_colors_changed_device = None
+        self._shape_appearance_changed_device = None
         self._packed_shape_opacities_host = None
-        self._packed_shape_opacities_device = None
-        self._shape_opacities_changed_device = None
         if total == 0:
             return
 
@@ -754,12 +752,7 @@ class ViewerViser(ViewerBase):
             self._packed_shape_groups.append((batch, offset, count))
             offset += count
         self._packed_shape_world_xforms = packed
-        if self.model_shape_color is not None:
-            self._packed_shape_colors_device = wp.empty_like(self.model_shape_color)
-            self._shape_colors_changed_device = wp.zeros(1, dtype=wp.int32, device=self.device)
-        if self.model_shape_opacity is not None:
-            self._packed_shape_opacities_device = wp.empty_like(self.model_shape_opacity)
-            self._shape_opacities_changed_device = wp.zeros(1, dtype=wp.int32, device=self.device)
+        self._shape_appearance_changed_device = wp.zeros(2, dtype=wp.int32, device=self.device)
 
     @override
     def set_world_offsets(self, spacing: tuple[float, float, float] | list[float] | wp.vec3) -> None:
@@ -2280,7 +2273,8 @@ class ViewerViser(ViewerBase):
                 # Viser suppresses unchanged properties, including array values.
                 handle.batched_positions = positions
                 handle.batched_wxyzs = quats_wxyz
-                handle.batched_scales = batched_scales
+                if batched_scales is not instance["scales"]:
+                    handle.batched_scales = batched_scales
                 instance["scales"] = batched_scales
                 if use_trimesh:
                     # Re-export the textured asset only when its material changes.
@@ -2340,7 +2334,10 @@ class ViewerViser(ViewerBase):
 
     @override
     def log_state(self, state: newton.State) -> None:
-        """Log simulation state with packed model-shape transfers.
+        """Log moving shapes; reuse stationary transforms until the model changes.
+
+        Set ``model_changed = True`` after editing static model transforms in place.
+        Layer transforms and world-spacing setters invalidate them automatically.
 
         Args:
             state: Current simulation state.
@@ -2355,92 +2352,69 @@ class ViewerViser(ViewerBase):
             self._render_picking_line()
             return
 
-        self._sync_shape_colors_from_model()
-        self._sync_shape_opacities_from_model()
+        from .kernels import update_model_shape_xforms  # noqa: PLC0415
+        from .viewer_viser_kernels import detect_shape_appearance_changes  # noqa: PLC0415
 
-        from .kernels import detect_shape_color_changes, update_model_shape_xforms  # noqa: PLC0415
-        from .viewer_viser_kernels import detect_shape_opacity_changes  # noqa: PLC0415
+        refresh_static = self.model_changed or self._packed_shape_xforms_host is None
+        count = len(packed) if refresh_static else self._dynamic_shape_count
+        if count:
+            wp.launch(
+                kernel=update_model_shape_xforms,
+                dim=count,
+                inputs=[
+                    self.model.shape_transform,
+                    self.model.shape_body,
+                    state.body_q,
+                    self.model.shape_world,
+                    self.world_offsets,
+                    self.layer.xform,
+                    self._slot_to_shape_wp,
+                ],
+                outputs=[packed],
+                device=self.device,
+                record_tape=False,
+            )
+            if refresh_static:
+                self._packed_shape_xforms_host = to_numpy(packed).copy()
+            else:
+                self._packed_shape_xforms_host[:count] = to_numpy(packed[:count])
 
+        self._shape_appearance_changed_device.zero_()
         wp.launch(
-            kernel=update_model_shape_xforms,
+            kernel=detect_shape_appearance_changes,
             dim=len(packed),
-            inputs=[
-                self.model.shape_transform,
-                self.model.shape_body,
-                state.body_q,
-                self.model.shape_world,
-                self.world_offsets,
-                self.layer.xform,
-                self._slot_to_shape_wp,
-            ],
-            outputs=[packed],
+            inputs=[self.model.shape_color, self.model.shape_opacity, self._slot_to_shape_wp],
+            outputs=[self.model_shape_color, self.model_shape_opacity, self._shape_appearance_changed_device],
             device=self.device,
             record_tape=False,
         )
-
-        packed_xforms = to_numpy(packed)
-        packed_colors = None
-        colors_changed = self.model_changed or self._packed_shape_colors_host is None
-        if (
-            self.model_shape_color is not None
-            and not colors_changed
-            and self._packed_shape_colors_device is not None
-            and self._shape_colors_changed_device is not None
-        ):
-            self._shape_colors_changed_device.fill_(0)
-            wp.launch(
-                kernel=detect_shape_color_changes,
-                dim=len(self.model_shape_color),
-                inputs=[
-                    self.model_shape_color,
-                    self._packed_shape_colors_device,
-                ],
-                outputs=[self._shape_colors_changed_device],
-                device=self.device,
-                record_tape=False,
-            )
-            colors_changed = bool(self._shape_colors_changed_device.numpy()[0])
-        if self.model_shape_color is not None and colors_changed:
-            packed_colors = to_numpy(self.model_shape_color)
-            self._packed_shape_colors_host = packed_colors.copy()
-            if self._packed_shape_colors_device is None:
-                self._packed_shape_colors_device = wp.empty_like(self.model_shape_color)
-            wp.copy(self._packed_shape_colors_device, self.model_shape_color)
-
-        opacities_changed = self.model_changed or self._packed_shape_opacities_host is None
-        if (
-            self.model_shape_opacity is not None
-            and not opacities_changed
-            and self._packed_shape_opacities_device is not None
-            and self._shape_opacities_changed_device is not None
-        ):
-            self._shape_opacities_changed_device.fill_(0)
-            wp.launch(
-                kernel=detect_shape_opacity_changes,
-                dim=len(self.model_shape_opacity),
-                inputs=[self.model_shape_opacity, self._packed_shape_opacities_device],
-                outputs=[self._shape_opacities_changed_device],
-                device=self.device,
-                record_tape=False,
-            )
-            opacities_changed = bool(self._shape_opacities_changed_device.numpy()[0])
-        if self.model_shape_opacity is not None and opacities_changed:
-            self._packed_shape_opacities_host = to_numpy(self.model_shape_opacity).copy()
-            if self._packed_shape_opacities_device is None:
-                self._packed_shape_opacities_device = wp.empty_like(self.model_shape_opacity)
-            wp.copy(self._packed_shape_opacities_device, self.model_shape_opacity)
-        packed_colors = self._packed_shape_colors_host
-        packed_opacities = self._packed_shape_opacities_host
+        changed = self._shape_appearance_changed_device.numpy()
+        colors_changed = self.model_changed or self._packed_shape_colors_host is None or bool(changed[0])
+        opacities_changed = self.model_changed or self._packed_shape_opacities_host is None or bool(changed[1])
+        packed_colors = to_numpy(self.model_shape_color).copy() if colors_changed else self._packed_shape_colors_host
+        packed_opacities = (
+            to_numpy(self.model_shape_opacity).copy() if opacities_changed else self._packed_shape_opacities_host
+        )
+        # Commit snapshots after logging succeeds so a failed frame resends appearance.
+        self._packed_shape_colors_host = None
+        self._packed_shape_opacities_host = None
         layer_hidden = self._layer_force_hidden()
 
         for shapes, offset, count in self._packed_shape_groups:
             visible = (
-                self._should_show_shape(shapes.flags, shapes.static, shapes.geo_type)
-                and not layer_hidden
-                and len(shapes.model_shapes) > 0
+                self._should_show_shape(shapes.flags, shapes.static, shapes.geo_type) and not layer_hidden and count > 0
             )
-            xforms = packed_xforms[offset : offset + count]
             handle = self._scene_handles.get(self._qualify(shapes.name))
+            if (
+                handle is not None
+                and visible == handle.visible
+                and (
+                    not visible
+                    or (shapes.static and not refresh_static and not colors_changed and not opacities_changed)
+                )
+            ):
+                continue
+            xforms = self._packed_shape_xforms_host[offset : offset + count]
             # A newly shown batch may have missed earlier color updates.
             send_colors = colors_changed or handle is None or not handle.visible
             colors = packed_colors[offset : offset + count] if packed_colors is not None and send_colors else None
@@ -2448,33 +2422,24 @@ class ViewerViser(ViewerBase):
             opacities = packed_opacities[offset : offset + count] if packed_opacities is not None else None
             materials = shapes.materials if self.model_changed else None
 
-            if shapes.geo_type == newton.GeoType.CAPSULE:
-                self.log_capsules(
-                    shapes.name,
-                    shapes.mesh,
-                    xforms,
-                    shapes.scales,
-                    colors,
-                    materials,
-                    opacities=opacities,
-                    hidden=not visible,
-                )
-            else:
-                self.log_instances(
-                    shapes.name,
-                    shapes.mesh,
-                    xforms,
-                    shapes.scales,
-                    colors,
-                    materials,
-                    opacities=opacities,
-                    hidden=not visible,
-                )
+            log = self.log_capsules if shapes.geo_type == newton.GeoType.CAPSULE else self.log_instances
+            log(
+                shapes.name,
+                shapes.mesh,
+                xforms,
+                shapes.scales,
+                colors,
+                materials,
+                opacities=opacities,
+                hidden=not visible,
+            )
             shapes.colors_changed = False
             shapes.opacities_changed = False
 
         self._log_gaussian_shapes(state)
         self._log_non_shape_state(state)
+        self._packed_shape_colors_host = packed_colors
+        self._packed_shape_opacities_host = packed_opacities
         self.model_changed = False
         self._render_picking_line()
 
