@@ -3038,7 +3038,8 @@ class SolverCoupled(SolverBase, CouplingInterface):
             self._step_coupled(state_in, state_out, control, contacts, dt)
         finally:
             self._active_observables = None
-        _copy_state(state_in, state_out)
+        # External force inputs are never written to the output state.
+        _copy_state(state_in, state_out, copy_forces=False)
         self._reconcile_state(state_out)
         if observables is not None:
             self._reconcile_observables(observables)
@@ -4147,14 +4148,20 @@ def _copy_state_to_entry(src: State, dst: State, entry: SolverEntry) -> int:
     return _sync_free_root_joint_state(entry, dst)
 
 
-def _copy_state(src: State, dst: State) -> None:
-    """Copy all matching state arrays from *src* to *dst*."""
+def _copy_state(src: State, dst: State, *, copy_forces: bool = True) -> None:
+    """Copy all matching state arrays from *src* to *dst*.
+
+    Args:
+        src: Source state.
+        dst: Destination state.
+        copy_forces: Whether to copy the ``body_f`` and ``particle_f`` force inputs.
+    """
     if src is dst:
         return
     if src.body_q is not None and dst.body_q is not None:
         _copy_prefix(dst.body_q, src.body_q, "body_q")
         _copy_prefix(dst.body_qd, src.body_qd, "body_qd")
-    if dst.body_f is not None:
+    if copy_forces and dst.body_f is not None:
         if src.body_f is not None:
             _copy_prefix(dst.body_f, src.body_f, "body_f")
         else:
@@ -4162,7 +4169,7 @@ def _copy_state(src: State, dst: State) -> None:
     if src.particle_q is not None and dst.particle_q is not None:
         _copy_prefix(dst.particle_q, src.particle_q, "particle_q")
         _copy_prefix(dst.particle_qd, src.particle_qd, "particle_qd")
-    if dst.particle_f is not None:
+    if copy_forces and dst.particle_f is not None:
         if src.particle_f is not None:
             _copy_prefix(dst.particle_f, src.particle_f, "particle_f")
         else:
