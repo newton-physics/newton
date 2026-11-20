@@ -2431,7 +2431,453 @@ def make_solve_elasticity_tile(include_triangles: bool, include_tets: bool, two_
     return solve_elasticity_tile_kernel
 
 
-@wp.kernel
+# Warp 1.18 added the explicit inlining hint.
+_inline_tet_func = wp.func(inline=True) if tuple(int(v) for v in wp.__version__.split(".")[:2]) >= (1, 18) else wp.func
+
+
+@_inline_tet_func
+def _scalar_native_tet_head(
+    adjacency: wp.array[wp.int32],
+    begin: int,
+    slot: int,
+    count: int,
+):
+    entry = wp.vec2i(-1, 0)
+    if slot < count:
+        offset = begin + slot * 2
+        entry = wp.vec2i(adjacency[offset], adjacency[offset + 1])
+    return entry
+
+
+@_inline_tet_func
+def _scalar_native_material(tet_id: int, materials: wp.array2d[float]):
+    material = wp.vec3()
+    if tet_id >= 0:
+        material = wp.vec3(materials[tet_id, 0], materials[tet_id, 1], materials[tet_id, 2])
+    return material
+
+
+@wp.struct
+class _ScalarTetInputs:
+    active: bool
+    order: int
+    vertices: wp.vec4i
+    pose: wp.mat33
+    material: wp.vec3
+
+
+@_inline_tet_func
+def _scalar_native_vertices(tet_id: int, indices: wp.array2d[wp.int32]):
+    vertices = wp.vec4i()
+    if tet_id >= 0:
+        vertices = wp.vec4i(indices[tet_id, 0], indices[tet_id, 1], indices[tet_id, 2], indices[tet_id, 3])
+    return vertices
+
+
+@_inline_tet_func
+def _scalar_native_stage_tet(
+    entry: wp.vec2i,
+    material: wp.vec3,
+    vertices: wp.vec4i,
+    poses: wp.array[wp.mat33],
+) -> _ScalarTetInputs:
+    tet = _ScalarTetInputs()
+    tet.active = material[0] > 0.0 or material[1] > 0.0
+    if tet.active:
+        tet_id = entry[0]
+        tet.order = entry[1]
+        tet.vertices = vertices
+        tet.pose = poses[tet_id]
+        tet.material = material
+    return tet
+
+
+@wp.struct
+class _ScalarTetPoints:
+    current0: wp.vec3
+    current1: wp.vec3
+    current2: wp.vec3
+    current3: wp.vec3
+    previous0: wp.vec3
+    previous1: wp.vec3
+    previous2: wp.vec3
+    previous3: wp.vec3
+
+
+@_inline_tet_func
+def _scalar_native_stage_points(stencil: _ScalarTetInputs, pos: wp.array[wp.vec3], pos_prev: wp.array[wp.vec3]):
+    points = _ScalarTetPoints()
+    if stencil.active:
+        points.current0 = pos[stencil.vertices[0]]
+        points.current1 = pos[stencil.vertices[1]]
+        points.current2 = pos[stencil.vertices[2]]
+        points.current3 = pos[stencil.vertices[3]]
+        if stencil.material[2] > 0.0:
+            points.previous0 = pos_prev[stencil.vertices[0]]
+            points.previous1 = pos_prev[stencil.vertices[1]]
+            points.previous2 = pos_prev[stencil.vertices[2]]
+            points.previous3 = pos_prev[stencil.vertices[3]]
+    return points
+
+
+@_inline_tet_func
+def _scalar_native_project_column(
+    left: wp.vec3, right: float, diag: wp.vec3, shape: wp.vec3, stiffness: float, volume: float
+):
+    entries = volume * (diag + stiffness * (right * left))
+    return entries[0] * shape[0] + entries[1] * shape[1] + entries[2] * shape[2]
+
+
+@_inline_tet_func
+def _scalar_native_project_entry(
+    left: wp.vec3, right: wp.vec3, diagonal: float, shape: wp.vec3, stiffness: float, volume: float
+):
+    col0 = _scalar_native_project_column(left, right[0], wp.vec3(diagonal, 0.0, 0.0), shape, stiffness, volume)
+    col1 = _scalar_native_project_column(left, right[1], wp.vec3(0.0, diagonal, 0.0), shape, stiffness, volume)
+    col2 = _scalar_native_project_column(left, right[2], wp.vec3(0.0, 0.0, diagonal), shape, stiffness, volume)
+    return shape[0] * col0 + shape[1] * col1 + shape[2] * col2
+
+
+@_inline_tet_func
+def _scalar_native_damping_upper(gradient: wp.vec3):
+    dx = gradient[0]
+    dy = gradient[1]
+    dz = gradient[2]
+    return wp.spatial_vector(dx * dx, dx * dy, dx * dz, dy * dy, dy * dz, dz * dz)
+
+
+@_inline_tet_func
+def _scalar_native_tet_damping(
+    points: _ScalarTetPoints,
+    deformation: wp.mat33,
+    rest_inverse: wp.mat33,
+    shape: wp.vec3,
+    rest_volume: float,
+    damping: float,
+    dt: float,
+    force: wp.vec3,
+    hessian: wp.mat33,
+) -> tuple[wp.vec3, wp.mat33]:
+    inv_dt = 1.0 / dt
+    edges_prev = wp.matrix_from_cols(
+        points.previous1 - points.previous0,
+        points.previous2 - points.previous0,
+        points.previous3 - points.previous0,
+    )
+    deformation_prev = edges_prev * rest_inverse
+    f0 = wp.vec3(deformation[0, 0], deformation[1, 0], deformation[2, 0])
+    f1 = wp.vec3(deformation[0, 1], deformation[1, 1], deformation[2, 1])
+    f2 = wp.vec3(deformation[0, 2], deformation[1, 2], deformation[2, 2])
+    f0_prev = wp.vec3(deformation_prev[0, 0], deformation_prev[1, 0], deformation_prev[2, 0])
+    f1_prev = wp.vec3(deformation_prev[0, 1], deformation_prev[1, 1], deformation_prev[2, 1])
+    f2_prev = wp.vec3(deformation_prev[0, 2], deformation_prev[1, 2], deformation_prev[2, 2])
+
+    rate = (wp.dot(f0, f0) - wp.dot(f0_prev, f0_prev)) * inv_dt
+    gradient = 2.0 * shape[0] * f0
+    f_damp = rate * gradient
+    gram = _scalar_native_damping_upper(gradient)
+
+    rate = (wp.dot(f0, f1) - wp.dot(f0_prev, f1_prev)) * inv_dt
+    gradient = shape[0] * f1 + shape[1] * f0
+    f_damp = f_damp + 2.0 * rate * gradient
+    gram = gram + 2.0 * _scalar_native_damping_upper(gradient)
+
+    rate = (wp.dot(f0, f2) - wp.dot(f0_prev, f2_prev)) * inv_dt
+    gradient = shape[0] * f2 + shape[2] * f0
+    f_damp = f_damp + 2.0 * rate * gradient
+    gram = gram + 2.0 * _scalar_native_damping_upper(gradient)
+
+    rate = (wp.dot(f1, f1) - wp.dot(f1_prev, f1_prev)) * inv_dt
+    gradient = 2.0 * shape[1] * f1
+    f_damp = f_damp + rate * gradient
+    gram = gram + _scalar_native_damping_upper(gradient)
+
+    rate = (wp.dot(f1, f2) - wp.dot(f1_prev, f2_prev)) * inv_dt
+    gradient = shape[1] * f2 + shape[2] * f1
+    f_damp = f_damp + 2.0 * rate * gradient
+    gram = gram + 2.0 * _scalar_native_damping_upper(gradient)
+
+    rate = (wp.dot(f2, f2) - wp.dot(f2_prev, f2_prev)) * inv_dt
+    gradient = 2.0 * shape[2] * f2
+    f_damp = f_damp + rate * gradient
+    gram = gram + _scalar_native_damping_upper(gradient)
+
+    damping_gram = wp.mat33(
+        gram[0],
+        gram[1],
+        gram[2],
+        gram[1],
+        gram[3],
+        gram[4],
+        gram[2],
+        gram[4],
+        gram[5],
+    )
+    force = force - rest_volume * damping * f_damp
+    hessian = hessian + rest_volume * damping * inv_dt * damping_gram
+    return force, hessian
+
+
+@_inline_tet_func
+def _scalar_native_evaluate_tet(
+    points: _ScalarTetPoints,
+    v_order: int,
+    Dm_inv: wp.mat33,
+    mu: float,
+    lmbd: float,
+    damping: float,
+    dt: float,
+) -> tuple[wp.vec3, wp.mat33]:
+    # ============ Get Vertices ============
+    v0 = points.current0
+    v1 = points.current1
+    v2 = points.current2
+    v3 = points.current3
+
+    # ============ Compute rest volume from Dm_inv ============
+    rest_volume = 1.0 / (wp.determinant(Dm_inv) * 6.0)
+
+    # ============ Deformation Gradient ============
+    Ds = wp.matrix_from_cols(v1 - v0, v2 - v0, v3 - v0)
+    F = Ds * Dm_inv
+
+    # ============ Flatten F to vec9 ============
+    f = vec9(
+        F[0, 0],
+        F[1, 0],
+        F[2, 0],
+        F[0, 1],
+        F[1, 1],
+        F[2, 1],
+        F[0, 2],
+        F[1, 2],
+        F[2, 2],
+    )
+
+    # ============ Useful Quantities ============
+    J = wp.determinant(F)
+    # Convert Lamé parameters to stable Neo-Hookean parameters per Smith et al.
+    # 2018, §3.4 (eq. 13): the symbols (mu, lambda) appearing in the NH energy
+    # are not directly the Lamé parameters; matching the small-strain limit
+    # gives mu_NH = mu_Lamé, lambda_NH = lambda_Lamé + mu_Lamé.
+    mu_nh = mu
+    lmbd_nh = lmbd + mu
+    # Guard against division by zero in lambda_NH
+    lmbd_safe = wp.sign(lmbd_nh) * wp.max(wp.abs(lmbd_nh), 1e-6)
+    alpha = 1.0 + mu_nh / lmbd_safe
+    # Compute cofactor (adjugate) matrix directly for numerical stability when J ≈ 0
+    cof = compute_cofactor(F)
+
+    cof_vec = vec9(
+        cof[0, 0],
+        cof[1, 0],
+        cof[2, 0],
+        cof[0, 1],
+        cof[1, 1],
+        cof[2, 1],
+        cof[0, 2],
+        cof[1, 2],
+        cof[2, 2],
+    )
+
+    # ============ Stress ============
+    s = lmbd_nh * (J - alpha)
+    P_vec = rest_volume * (mu_nh * f + s * cof_vec)
+
+    # ============ Hessian ============
+    # The full elastic Hessian also has an s * d^2 J / dF^2 term, but its
+    # contribution to VBD's per-vertex 3x3 block is identically zero:
+    # the Levi-Civita tensor in d^2 J / dF^2 contracts against (m^a x m^a),
+    # which vanishes. Drop it; the remaining two terms are SPD by inspection.
+    # ============ Assemble Pointwise Force ============
+    if v_order == 0:
+        m = wp.vec3(
+            -(Dm_inv[0, 0] + Dm_inv[1, 0] + Dm_inv[2, 0]),
+            -(Dm_inv[0, 1] + Dm_inv[1, 1] + Dm_inv[2, 1]),
+            -(Dm_inv[0, 2] + Dm_inv[1, 2] + Dm_inv[2, 2]),
+        )
+    elif v_order == 1:
+        m = wp.vec3(Dm_inv[0, 0], Dm_inv[0, 1], Dm_inv[0, 2])
+    elif v_order == 2:
+        m = wp.vec3(Dm_inv[1, 0], Dm_inv[1, 1], Dm_inv[1, 2])
+    else:
+        m = wp.vec3(Dm_inv[2, 0], Dm_inv[2, 1], Dm_inv[2, 2])
+
+    force = wp.vec3(
+        -(P_vec[0] * m[0] + P_vec[3] * m[1] + P_vec[6] * m[2]),
+        -(P_vec[1] * m[0] + P_vec[4] * m[1] + P_vec[7] * m[2]),
+        -(P_vec[2] * m[0] + P_vec[5] * m[1] + P_vec[8] * m[2]),
+    )
+    row0 = wp.vec3(cof[0, 0], cof[0, 1], cof[0, 2])
+    row1 = wp.vec3(cof[1, 0], cof[1, 1], cof[1, 2])
+    row2 = wp.vec3(cof[2, 0], cof[2, 1], cof[2, 2])
+    hessian = wp.mat33(
+        _scalar_native_project_entry(row0, row0, mu_nh, m, lmbd_nh, rest_volume),
+        _scalar_native_project_entry(row0, row1, 0.0, m, lmbd_nh, rest_volume),
+        _scalar_native_project_entry(row0, row2, 0.0, m, lmbd_nh, rest_volume),
+        _scalar_native_project_entry(row1, row0, 0.0, m, lmbd_nh, rest_volume),
+        _scalar_native_project_entry(row1, row1, mu_nh, m, lmbd_nh, rest_volume),
+        _scalar_native_project_entry(row1, row2, 0.0, m, lmbd_nh, rest_volume),
+        _scalar_native_project_entry(row2, row0, 0.0, m, lmbd_nh, rest_volume),
+        _scalar_native_project_entry(row2, row1, 0.0, m, lmbd_nh, rest_volume),
+        _scalar_native_project_entry(row2, row2, mu_nh, m, lmbd_nh, rest_volume),
+    )
+
+    # ============ Damping ============
+    if damping > 0.0:
+        force, hessian = _scalar_native_tet_damping(
+            points,
+            F,
+            Dm_inv,
+            m,
+            rest_volume,
+            damping,
+            dt,
+            force,
+            hessian,
+        )
+
+    return force, hessian
+
+
+@_inline_tet_func
+def _scalar_native_accumulate_elasticity(
+    particle_index: int,
+    dt: float,
+    pos_prev: wp.array[wp.vec3],
+    pos: wp.array[wp.vec3],
+    tri_indices: wp.array2d[wp.int32],
+    tri_poses: wp.array[wp.mat22],
+    tri_materials: wp.array2d[float],
+    tri_areas: wp.array[float],
+    edge_indices: wp.array2d[wp.int32],
+    edge_rest_angles: wp.array[float],
+    edge_rest_length: wp.array[float],
+    edge_bending_properties: wp.array2d[float],
+    tet_indices: wp.array2d[wp.int32],
+    tet_poses: wp.array[wp.mat33],
+    tet_materials: wp.array2d[float],
+    particle_adjacency: MeshAdjacencyData,
+    f: wp.vec3,
+    h: wp.mat33,
+):
+    """Add the membrane, bending, and tet elasticity force and Hessian incident to a particle."""
+    adjacency = particle_adjacency.v_adj_tets
+    tet_begin = int(0)
+    num_adj_tets = int(0)
+    if tet_indices.shape[0] > 0:
+        tet_begin = particle_adjacency.v_adj_tets_offsets[particle_index]
+        tet_end = particle_adjacency.v_adj_tets_offsets[particle_index + 1]
+        num_adj_tets = (tet_end - tet_begin) >> 1
+    first_entry = _scalar_native_tet_head(adjacency, tet_begin, 0, num_adj_tets)
+    second_entry = _scalar_native_tet_head(adjacency, tet_begin, 1, num_adj_tets)
+    next_entry = _scalar_native_tet_head(adjacency, tet_begin, 2, num_adj_tets)
+    distant_entry = _scalar_native_tet_head(adjacency, tet_begin, 3, num_adj_tets)
+    first_material = _scalar_native_material(first_entry[0], tet_materials)
+    second_material = _scalar_native_material(second_entry[0], tet_materials)
+    next_material = _scalar_native_material(next_entry[0], tet_materials)
+    first_vertices = _scalar_native_vertices(first_entry[0], tet_indices)
+    second_vertices = _scalar_native_vertices(second_entry[0], tet_indices)
+    next_vertices = _scalar_native_vertices(next_entry[0], tet_indices)
+
+    if tri_indices.shape[0] > 0:
+        # elastic force and hessian
+        for i_adj_tri in range(get_vertex_num_adjacent_faces(particle_adjacency, particle_index)):
+            tri_index, vertex_order = get_vertex_adjacent_face_id_order(particle_adjacency, particle_index, i_adj_tri)
+
+            # fmt: off
+            if wp.static("connectivity" in VBD_DEBUG_PRINTING_OPTIONS):
+                wp.printf(
+                    "particle: %d | num_adj_faces: %d | ",
+                    particle_index,
+                    get_vertex_num_adjacent_faces(particle_adjacency, particle_index),
+                )
+                wp.printf("i_face: %d | face id: %d | v_order: %d | ", i_adj_tri, tri_index, vertex_order)
+                wp.printf(
+                    "face: %d %d %d\n",
+                    tri_indices[tri_index, 0],
+                    tri_indices[tri_index, 1],
+                    tri_indices[tri_index, 2],
+                )
+            # fmt: on
+
+            if tri_materials[tri_index, 0] > 0.0 or tri_materials[tri_index, 1] > 0.0:
+                f_tri, h_tri = evaluate_neo_hookean_membrane_force_hessian(
+                    tri_index,
+                    vertex_order,
+                    pos,
+                    pos_prev,
+                    tri_indices,
+                    tri_poses[tri_index],
+                    tri_areas[tri_index],
+                    tri_materials[tri_index, 0],
+                    tri_materials[tri_index, 1],
+                    tri_materials[tri_index, 2],
+                    dt,
+                )
+
+                f = f + f_tri
+                h = h + h_tri
+
+    current = _scalar_native_stage_tet(first_entry, first_material, first_vertices, tet_poses)
+    current_points = _scalar_native_stage_points(current, pos, pos_prev)
+
+    if edge_indices.shape[0] > 0:
+        for i_adj_edge in range(get_vertex_num_adjacent_edges(particle_adjacency, particle_index)):
+            nei_edge_index, vertex_order_on_edge = get_vertex_adjacent_edge_id_order(
+                particle_adjacency, particle_index, i_adj_edge
+            )
+            # vertex is on the edge; otherwise it only effects the bending energy n
+            if edge_bending_properties[nei_edge_index, 0] > 0.0:
+                f_edge, h_edge = evaluate_dihedral_angle_based_bending_force_hessian(
+                    nei_edge_index,
+                    vertex_order_on_edge,
+                    pos,
+                    pos_prev,
+                    edge_indices,
+                    edge_rest_angles,
+                    edge_rest_length,
+                    edge_bending_properties[nei_edge_index, 0],
+                    edge_bending_properties[nei_edge_index, 1],
+                    dt,
+                )
+
+                f = f + f_edge
+                h = h + h_edge
+
+    for slot in range(num_adj_tets):
+        ahead_entry = _scalar_native_tet_head(adjacency, tet_begin, slot + 4, num_adj_tets)
+        ahead_material = _scalar_native_material(distant_entry[0], tet_materials)
+        ahead_vertices = _scalar_native_vertices(distant_entry[0], tet_indices)
+        following = _scalar_native_stage_tet(second_entry, second_material, second_vertices, tet_poses)
+        following_points = _scalar_native_stage_points(following, pos, pos_prev)
+        if current.active:
+            f_tet, h_tet = _scalar_native_evaluate_tet(
+                current_points,
+                current.order,
+                current.pose,
+                current.material[0],
+                current.material[1],
+                current.material[2],
+                dt,
+            )
+            f += f_tet
+            h += h_tet
+
+        current = following
+        current_points = following_points
+        second_entry = next_entry
+        second_material = next_material
+        second_vertices = next_vertices
+        next_entry = distant_entry
+        next_material = ahead_material
+        next_vertices = ahead_vertices
+        distant_entry = ahead_entry
+
+    return f, h
+
+
+@wp.kernel(launch_bounds=(256, 1))
 def solve_elasticity(
     dt: float,
     particle_ids_in_color: wp.array[wp.int32],
@@ -2481,7 +2927,7 @@ def solve_elasticity(
             f[0], f[1], f[2], h[0, 0], h[0, 1], h[0, 2], h[1, 0], h[1, 1], h[1, 2], h[2, 0], h[2, 1], h[2, 2],
         )
 
-    f, h = accumulate_elasticity_force_and_hessian(
+    f, h = _scalar_native_accumulate_elasticity(
         particle_index,
         dt,
         pos_prev,
