@@ -431,6 +431,8 @@ Known gaps of the experimental importer, tracked as follow-ups:
   ``newton:deformableSkin:influenceWeights`` attributes. Each Gaussian has one
   tet index local to the owning simulation mesh and four weights. These are
   temporary Newton attributes, not standard USD deformable schema fields.
+  Import remaps authored tet indices when it skips invalid tetrahedra. A
+  Gaussian visual referencing a skipped tetrahedron is logged and skipped.
   Centers must be authored in the visual bind configuration. The simulation
   bind pose drives both center motion and covariance deformation, separately
   from the solver's rest shape. See :ref:`deformable-visual-rendering`.

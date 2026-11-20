@@ -358,6 +358,19 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
             "particle": (soft_p0, builder.particle_count),
             "tet": (soft_t0, builder.tet_count),
         }
+        if (
+            is_volume_deformable
+            and ctx.prims.visual_gaussians
+            and builder.tet_count - soft_t0 != len(simulation_indices)
+        ):
+            # Authored Gaussian bindings still address the original USD tetrahedra.
+            kept = rest_sources
+            if kept is None:
+                _, volumes = _tet_geometry(world_vertices, simulation_indices)
+                kept = np.flatnonzero(volumes > 0.0)
+            tet_map = np.full(len(simulation_indices), -1, dtype=np.int32)
+            tet_map[kept] = np.arange(soft_t0, builder.tet_count, dtype=np.int32)
+            ctx.volume_tet_map[path] = tet_map
         # Marked proposal deformables always supply the resolved density explicitly;
         # bare TetMeshes retain their legacy material-then-builder-default behavior.
         effective_density = add_soft_mesh_kwargs.get("density", tetmesh_for_builder.density)

@@ -128,7 +128,7 @@ def _record_cable_visual_bind_poses(ctx, rod, bodies, point_sources):
             ctx.cable_visual_bind_errors[body] = str(exc)
 
 
-def _read_gaussian_embedding(prim, tet_range: tuple[int, int], count: int):
+def _read_gaussian_embedding(prim, tet_range: tuple[int, int], count: int, tet_map: np.ndarray | None):
     """Read experimental tet-index and barycentric-weight attributes."""
     parent_attr = prim.GetAttribute("newton:deformableSkin:tetIndices")
     weights_attr = prim.GetAttribute("newton:deformableSkin:influenceWeights")
@@ -145,7 +145,14 @@ def _read_gaussian_embedding(prim, tet_range: tuple[int, int], count: int):
         raise ValueError("tetIndices and influenceWeights must have one row per Gaussian")
     # USD indices address the simulation TetMesh locally; Newton's builder uses
     # absolute indices so independently imported bodies can share one builder.
-    parent = parent + int(tet_range[0])
+    if tet_map is None:
+        parent = parent + int(tet_range[0])
+    else:
+        if np.any(parent < 0) or np.any(parent >= len(tet_map)):
+            raise ValueError("tetIndices references a tetrahedron outside the owning volume")
+        parent = tet_map[parent]
+        if np.any(parent < 0):
+            raise ValueError("tetIndices references a tetrahedron skipped during volume import")
     return parent, weights
 
 
@@ -333,7 +340,9 @@ def _deformable_import_visual(ctx: _DeformableImportContext) -> None:
                 if sim_path not in sim_positions:
                     sim_positions[sim_path] = _sim_bind_positions(ctx, sim_path, ranges["particle"])
                 positions = sim_positions[sim_path]
-                parent, weights = _read_gaussian_embedding(prim, tet_range, gaussian.count)
+                parent, weights = _read_gaussian_embedding(
+                    prim, tet_range, gaussian.count, ctx.volume_tet_map.get(sim_path)
+                )
                 if parent is None:
                     parent, weights = builder._embed_visual_vertices_in_tets(
                         gaussian.positions,

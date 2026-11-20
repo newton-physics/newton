@@ -1504,3 +1504,5 @@ class _DeformableImportContext:
     cable_visual_sim_paths: set[str] = field(default_factory=set)
     cable_visual_bind_points: dict[str, np.ndarray | None] = field(default_factory=dict)
     path_deformable_visual_map: dict[str, int] = field(default_factory=dict)
+    # Authored tet IDs -> builder IDs (-1 for skipped tets), only when import compacts a volume.
+    volume_tet_map: dict[str, np.ndarray] = field(default_factory=dict)

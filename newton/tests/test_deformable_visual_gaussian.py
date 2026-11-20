@@ -345,6 +345,56 @@ class TestDeformableVisualGaussianUSDImport(unittest.TestCase):
         np.testing.assert_array_equal(visual.parent.numpy(), [0])
         np.testing.assert_allclose(visual.weights.numpy(), [[0.25, 0.25, 0.25, 0.25]])
 
+    def test_authored_embedding_follows_retained_tetrahedra(self):
+        """Remap surviving USD tet IDs and skip visuals bound to a removed tet."""
+        from pxr import Sdf
+
+        unit = np.array([(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1)], dtype=np.float32)
+        points = np.concatenate([unit + np.array([2 * i, 0, 0]) for i in range(3)])
+        for with_rest in (False, True):
+            with self.subTest(with_rest=with_rest):
+                stage = self._stage()
+                tet = self._add_volume(stage, "/World/Toy")
+                tet.GetPointsAttr().Set(points.tolist())
+                tet.GetTetVertexIndicesAttr().Set([(0, 2, 1, 3), (4, 5, 6, 7), (8, 9, 10, 11)])
+                if with_rest:
+                    tet.GetPrim().CreateAttribute("physics:restShapePoints", Sdf.ValueTypeNames.Point3fArray).Set(
+                        points.tolist()
+                    )
+                    tet.GetPrim().CreateAttribute("physics:restTetVertexIndices", Sdf.ValueTypeNames.Int4Array).Set(
+                        np.arange(12).reshape(3, 4).tolist()
+                    )
+                for name, parent in (("Kept", 1), ("Last", 2), ("Removed", 0)):
+                    self._add_gaussian(
+                        stage,
+                        f"/World/Toy/{name}",
+                        [(2 * parent + 0.25, 0.25, 0.25)],
+                        parent=[parent],
+                        weights=[(0.25,) * 4],
+                    )
+                builder = _soft_builder()
+                tet_start, particle_start = builder.tet_count, builder.particle_count
+                with self.assertLogs("newton", level="WARNING") as logs:
+                    result = builder.add_usd(stage)
+                model = builder.finalize(device="cpu")
+                fields = model.deformable_visual_gaussians
+                self.assertEqual([field.label for field in fields], ["/World/Toy/Kept", "/World/Toy/Last"])
+                np.testing.assert_array_equal(fields[0].parent.numpy(), [tet_start])
+                np.testing.assert_array_equal(fields[1].parent.numpy(), [tet_start + 1])
+                self.assertNotIn("/World/Toy/Removed", result["path_shape_map"])
+                self.assertIn("tetrahedron skipped during volume import", "\n".join(logs.output))
+
+                state = model.state()
+                visuals = newton.geometry.DeformableVisuals(model).update(state)
+                before = visuals.gaussian_transforms.numpy()[:, :3].copy()
+                moved = state.particle_q.numpy().copy()
+                moved[particle_start + 4 : particle_start + 8, 2] += 1.0
+                state.particle_q.assign(moved)
+                visuals.update(state)
+                expected = before.copy()
+                expected[0, 2] += 1.0
+                np.testing.assert_allclose(visuals.gaussian_transforms.numpy()[:, :3], expected, atol=1e-6)
+
     def test_malformed_embedding_is_skipped_without_static_fallback(self):
         """Do not leave a frozen Gaussian when the deformable binding is malformed."""
         stage = self._stage()
