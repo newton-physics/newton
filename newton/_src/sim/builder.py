@@ -15585,7 +15585,8 @@ class ModelBuilder:
                 :attr:`~newton.geometry.DeformableVisualMesh.Kind.TETRAHEDRON`.
             tet_range: Owning ``[start, end)`` tetrahedron range.
             parent: Optional precomputed parent tetrahedron per Gaussian.
-            weights: Optional four barycentric weights per Gaussian.
+            weights: Optional four barycentric weights per Gaussian. Finite signed
+                weights are accepted for extrapolation and must sum to one.
             label: Display label.
 
         Returns:
@@ -15627,6 +15628,7 @@ class ModelBuilder:
             tet_range=tet_range,
             parent=parent,
             weights=weights,
+            allow_negative=True,
         )
         # The backing shape uses current_world; its drivers must have the same ownership.
         worlds = {
@@ -15666,6 +15668,7 @@ class ModelBuilder:
         curve=None,
         bodies=None,
         body_poses=None,
+        allow_negative=False,
     ) -> dict:
         """Build one binding shared by mesh and Gaussian visuals."""
         point_count = len(points)
@@ -15706,7 +15709,12 @@ class ModelBuilder:
                 elif parent is None or weights is None:
                     raise ValueError("add_deformable_visual_mesh: parent and weights must be passed together")
                 parent, weights = self._validate_visual_embedding(
-                    parent, weights, point_count, owning_range, 3 if triangle else 4
+                    parent,
+                    weights,
+                    point_count,
+                    owning_range,
+                    3 if triangle else 4,
+                    allow_negative=allow_negative,
                 )
         return {"kind": kind, "parent": parent, "weights": weights, "local_offsets": local_offsets}
 
@@ -15779,6 +15787,8 @@ class ModelBuilder:
         point_count: int,
         owning_range: tuple[int, int],
         arity: int,
+        *,
+        allow_negative: bool = False,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Validate precomputed per-vertex parents and barycentric weights."""
         parent = Mesh._normalize_indices(parent)
@@ -15792,12 +15802,15 @@ class ModelBuilder:
             raise ValueError(
                 f"add_deformable_visual_mesh: parent indices must lie within the owning range [{lo}, {hi})"
             )
-        if not np.all(np.isfinite(weights)) or np.any(weights < -1.0e-4):
-            raise ValueError("add_deformable_visual_mesh: weights must be finite and non-negative")
+        if not np.all(np.isfinite(weights)):
+            raise ValueError("visual embedding: weights must be finite")
+        if not allow_negative and np.any(weights < -1.0e-4):
+            raise ValueError("add_deformable_visual_mesh: weights must be non-negative")
         if not np.allclose(weights.sum(axis=1), 1.0, rtol=0.0, atol=1.0e-4):
             raise ValueError("add_deformable_visual_mesh: barycentric weights must sum to one")
-        # Accepted roundoff must not scale translations or extrapolate points.
-        np.maximum(weights, 0.0, out=weights)
+        # Mesh embeddings remain convex; explicit Gaussian bindings may extrapolate.
+        if not allow_negative:
+            np.maximum(weights, 0.0, out=weights)
         weights /= weights.sum(axis=1, keepdims=True)
         return parent, weights
 

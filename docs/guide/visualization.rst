@@ -593,10 +593,12 @@ To reuse a precomputed binding, supply both ``parent`` and ``weights``.
 ``parent`` has one **tetrahedron index**, in the builder's index space, per
 Gaussian. It does not contain the tetrahedron's four particle indices.
 For local tetrahedron IDs, add ``tet_start``. Each row of ``weights`` has four
-non-negative values that sum to one, ordered like that tetrahedron's particle
+finite values that sum to one, ordered like that tetrahedron's particle
 indices. If an importer stores four particle IDs per sample, first find the
 matching tetrahedron and reorder the weights. Omit both arguments to let
-Newton compute the binding.
+Newton compute the binding. Explicit Gaussian weights may be negative to
+extrapolate beyond a tetrahedron. Automatically computed bindings and visual
+mesh bindings remain non-negative.
 
 Both paths share :class:`~newton.geometry.DeformableVisuals`. Allocate it once and update
 it after simulation. A viewer or camera can also evaluate its own buffers when

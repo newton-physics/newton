@@ -754,11 +754,12 @@ class TestDeformableVisualGaussianEvaluation(unittest.TestCase):
         np.testing.assert_allclose(np.sort(scales[0]), np.sort(rest_scale[0]), atol=1.0e-6)
 
     def test_shear_updates_full_covariance(self):
-        """Preserve the independently computed Gaussian covariance under affine shear."""
+        """Preserve a signed embedding and its covariance under affine shear."""
         builder = _soft_builder()
         tet_indices = np.asarray(builder.tet_indices, dtype=np.int32).reshape(-1, 4)
         rest_particles = np.asarray(builder.particle_q, dtype=np.float32)
-        center = rest_particles[tet_indices[0]].mean(axis=0, keepdims=True)
+        weights = np.array([[-0.2, 0.4, 0.4, 0.4]], dtype=np.float32)
+        center = weights @ rest_particles[tet_indices[0]]
         rest_scale = np.array([[0.08, 0.13, 0.21]], dtype=np.float32)
         gaussian = newton.Gaussian(positions=center, scales=rest_scale)
         builder.add_deformable_visual_gaussian(
@@ -766,9 +767,10 @@ class TestDeformableVisualGaussianEvaluation(unittest.TestCase):
             kind="tetrahedron",
             tet_range=(0, builder.tet_count),
             parent=[0],
-            weights=np.full((1, 4), 0.25, dtype=np.float32),
+            weights=weights,
         )
         model = builder.finalize()
+        np.testing.assert_allclose(model.deformable_visual_gaussians[0].weights.numpy(), weights)
         state = model.state()
         shear = np.array([[1.0, 0.35, 0.0], [0.0, 1.0, 0.2], [0.0, 0.0, 0.7]], dtype=np.float32)
         state.particle_q.assign(rest_particles @ shear.T)
