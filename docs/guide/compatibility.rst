@@ -131,9 +131,10 @@ targets, and simulation behavior that user code or simulations may rely on.
   :ref:`deprecation-policy`.
 * **Deprecated**: A feature scheduled for removal in a future release.
   Remains fully functional during the deprecation window.
-* **Removed**: A feature no longer in the library.  Attempting to use
-  it raises an error.  Removals are breaking changes, but not all
-  breaking changes are removals.
+* **Removed**: A feature no longer in the library.  Newton usually keeps
+  no dedicated error for it: code that still uses it behaves as it would
+  for any name that does not exist.  Removals are breaking changes, but
+  not all breaking changes are removals.
 
 .. _deprecation-policy:
 
@@ -155,8 +156,8 @@ Assuming a feature is deprecated in release ``1.2.0``:
   ``CHANGELOG.md``.
 * ``1.2.x`` (micro releases): deprecated feature remains fully
   functional.
-* ``1.3.0`` or later: feature is eligible for removal.  Using it then
-  raises an error.
+* ``1.3.0`` or later: feature is eligible for removal.  Once removed, it
+  is gone without a dedicated error.
 
 How deprecations and breaking changes are communicated
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

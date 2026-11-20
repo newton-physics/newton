@@ -35,7 +35,12 @@ from newton._src.solvers.mujoco.enums import (
 )
 from newton._src.solvers.mujoco.equality import _add_equality_constraint
 from newton._src.solvers.mujoco.geometry import build_shape_layout, compile_layout_collision_masks
-from newton._src.solvers.mujoco.kernels import convert_solref, update_body_inertia_kernel
+from newton._src.solvers.mujoco.kernels import (
+    convert_solref,
+    quat_rotate_inv_normalized,
+    quat_rotate_normalized,
+    update_body_inertia_kernel,
+)
 from newton._src.solvers.mujoco.utils import MJC_OBJ_BODY, MJC_OBJ_JOINT, MjcEqualityTargetKind
 from newton.examples import get_asset
 from newton.solvers import SolverMuJoCo
@@ -43,9 +48,19 @@ from newton.tests.unittest_utils import (
     MUJOCO_MODULES,
     assert_np_equal,
     count_initial_contacts,
+    get_test_devices,
     patch_sys_module,
     requires,
 )
+
+
+@wp.kernel
+def _quat_rotate_normalized_kernel(
+    q: wp.array[wp.quat], v: wp.array[wp.vec3], rotated: wp.array[wp.vec3], rotated_inv: wp.array[wp.vec3]
+):
+    i = wp.tid()
+    rotated[i] = quat_rotate_normalized(q[i], v[i])
+    rotated_inv[i] = quat_rotate_inv_normalized(q[i], v[i])
 
 
 def _add_deprecated_mimic_constraint(
@@ -6980,6 +6995,49 @@ class TestMuJoCoKernels(unittest.TestCase):
         frame = np.array(wp.quat_to_matrix(wp.quat(x, y, z, w))).reshape(3, 3)
         np.testing.assert_allclose(frame @ np.diag(principal.numpy()[0, 0]) @ frame.T, inertia, rtol=1e-5, atol=1e-23)
 
+    def test_quat_rotate_normalized_rounds_once(self):
+        """Match the float64 rotation by ``q / |q|`` to within one float32 rounding.
+
+        A rotation evaluated in float32 is off by several ulp, which is what
+        accumulates when :class:`SolverMuJoCo` syncs FREE and BALL joints every step.
+        """
+        rng = np.random.default_rng(0)
+        count = 2048
+        unit = rng.normal(size=(count, 4)).astype(np.float32)
+        unit /= np.linalg.norm(unit, axis=1, keepdims=True)
+        q = np.concatenate(
+            [
+                unit,
+                unit * np.float32(1.0 + 3.0e-5),  # near unit norm
+                unit * np.float32(0.5),  # far from unit norm
+                np.tile(np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32), (count, 1)),
+                np.zeros((count, 4), dtype=np.float32),  # no rotation instead of NaN
+            ]
+        )
+        v = (rng.normal(size=(len(q), 3)) * 10.0 ** rng.uniform(-3.0, 3.0, size=(len(q), 1))).astype(np.float32)
+
+        qd, vd = q.astype(np.float64), v.astype(np.float64)
+        norm_sq = np.sum(qd * qd, axis=1, keepdims=True)
+        scale = np.divide(2.0, norm_sq, out=np.zeros_like(norm_sq), where=norm_sq > 0.0)
+        for device in get_test_devices():
+            with self.subTest(device=str(device)):
+                rotated = wp.empty(len(q), dtype=wp.vec3, device=device)
+                rotated_inv = wp.empty(len(q), dtype=wp.vec3, device=device)
+                wp.launch(
+                    _quat_rotate_normalized_kernel,
+                    dim=len(q),
+                    inputs=[wp.array(q, dtype=wp.quat, device=device), wp.array(v, dtype=wp.vec3, device=device)],
+                    outputs=[rotated, rotated_inv],
+                    device=device,
+                )
+                for sign, result in ((1.0, rotated), (-1.0, rotated_inv)):
+                    u, w = sign * qd[:, :3], qd[:, 3:]
+                    uv = np.cross(u, vd)
+                    expected = vd + scale * (w * uv + np.cross(u, uv))
+                    ulp = np.spacing(np.abs(expected).max(axis=1, keepdims=True).astype(np.float32))
+                    error = np.abs(result.numpy().astype(np.float64) - expected) / ulp
+                    self.assertLessEqual(error.max(), 0.51)
+
 
 @requires(*MUJOCO_MODULES)
 class TestMuJoCoConversion(unittest.TestCase):
@@ -10863,6 +10921,115 @@ class TestMuJoCoSolverFreeJointNonWorldParent(unittest.TestCase):
         self.assertEqual(len(mjc_warnings), 1)
         self.assertEqual(mjc_warnings[0].category, newton.NewtonWarning)
         self.assertIn("floater", str(mjc_warnings[0].message))
+
+
+@requires(*MUJOCO_MODULES)
+class TestMuJoCoSolverStateSync(unittest.TestCase):
+    """SolverMuJoCo's per-step qpos/qvel sync must not bias FREE or BALL joint state."""
+
+    # Float32 rotation whose |q|^2 - 1 is +8.1e-8, so the anchor-frame conversions
+    # see a non-unit quaternion on every step.
+    PARENT_XFORM = wp.transform((1.0, -0.5, 0.25), wp.quat(0.08189196, 0.0, 0.57195348, 0.81618810))
+    CHILD_ROT = wp.quat_rpy(-0.3, 0.2, 0.1)
+
+    def _build(self, joint_type: JointType, com=(0.0, 0.0, 0.0), anchored: bool = True):
+        """Build a torque-free isotropic body on a FREE or BALL joint.
+
+        ``com`` is in the body frame. With ``anchored=False`` the joint anchors
+        are identity transforms.
+        """
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        body = builder.add_link(mass=1.0, com=wp.vec3(*com), inertia=wp.mat33(0.1 * np.eye(3)))
+        parent_xform = self.PARENT_XFORM if anchored else wp.transform_identity()
+        if joint_type == JointType.FREE:
+            child_xform = wp.transform((-0.2, 0.4, 0.1), self.CHILD_ROT) if anchored else wp.transform_identity()
+            joint = builder.add_joint_free(child=body, parent_xform=parent_xform, child_xform=child_xform)
+        else:
+            # Anchor at the COM so the isotropic body stays torque-free.
+            child_xform = wp.transform((0.0, 0.0, 0.0), self.CHILD_ROT)
+            joint = builder.add_joint_ball(parent=-1, child=body, parent_xform=parent_xform, child_xform=child_xform)
+        builder.add_articulation([joint])
+        return builder.finalize()
+
+    def _step(self, model, steps: int = 200, dt: float = 1.0e-3):
+        """Step ``model`` from its default joint state, syncing MuJoCo every step, and return the final state."""
+        solver = SolverMuJoCo(model, disable_contacts=True)
+        state_0, state_1 = model.state(), model.state()
+        control = model.control()
+        for _ in range(steps):
+            solver.step(state_0, state_1, control, None, dt)
+            state_0, state_1 = state_1, state_0
+        return state_0
+
+    def _run(self, joint_type: JointType, qd, joint_pos=None):
+        """Return the initial and final ``(joint_q, joint_qd)`` of a synced run.
+
+        ``qd`` and ``joint_pos`` are in the parent anchor frame.
+        """
+        model = self._build(joint_type)
+        if joint_pos is not None:
+            q = model.joint_q.numpy()
+            q[0:3] = joint_pos
+            model.joint_q.assign(q)
+        joint_qd = model.joint_qd.numpy()
+        joint_qd[: len(qd)] = qd
+        model.joint_qd.assign(joint_qd)
+        initial = (model.joint_q.numpy().copy(), model.joint_qd.numpy().copy())
+        final = self._step(model)
+        return initial, (final.joint_q.numpy(), final.joint_qd.numpy())
+
+    def test_free_joint_velocity_preserved(self):
+        """Keep a torque-free FREE body's angular and COM velocity constant across synced steps.
+
+        ``|q|^2 - 1`` of MuJoCo Warp's float32-normalized quaternion is biased
+        positive, so rotating qvel with ``wp.quat_rotate`` on every push and pull
+        used to grow ``|omega|`` by up to ``4 (|q|^2 - 1)`` per step.
+        """
+        (_, initial_qd), (_, final_qd) = self._run(JointType.FREE, qd=[0.5, 0.0, 0.0, 0.0, 3.0, 0.0])
+        np.testing.assert_allclose(final_qd[3:6], initial_qd[3:6], atol=3.0e-5)
+        np.testing.assert_allclose(final_qd[0:3], initial_qd[0:3], atol=5.0e-6)
+
+    def test_free_joint_com_offset_matches_identity_anchors(self):
+        """Match a spinning FREE body with a COM offset under rotated and identity anchors.
+
+        With rotated anchors the push composes the world rotation from the
+        anchors while the pull reads MuJoCo Warp's renormalized ``qpos``, so the
+        two rotate ``body_com`` by quaternions of different norm, and the
+        ``omega x com`` lever arm used to stop cancelling. MuJoCo Warp's own
+        integration error for an off-COM spin is the same in both runs, so the
+        difference in world-frame COM velocity isolates the sync.
+        """
+        com = (0.1, 0.0, 0.0)
+        anchored = self._build(JointType.FREE, com=com)
+        joint_qd = anchored.joint_qd.numpy()
+        joint_qd[0:6] = [0.5, 0.0, 0.0, 0.0, 3.0, 0.0]
+        anchored.joint_qd.assign(joint_qd)
+        initial = anchored.state()
+        newton.eval_fk(anchored, anchored.joint_q, anchored.joint_qd, initial)
+
+        # With identity anchors the FREE coordinates are the body pose and its world-frame COM twist.
+        reference = self._build(JointType.FREE, com=com, anchored=False)
+        reference.joint_q.assign(initial.body_q.numpy()[0])
+        reference.joint_qd.assign(initial.body_qd.numpy()[0])
+
+        anchored_v = self._step(anchored).body_qd.numpy()[0][0:3]
+        reference_v = self._step(reference).body_qd.numpy()[0][0:3]
+        np.testing.assert_allclose(anchored_v, reference_v, atol=3.0e-6)
+
+    def test_ball_joint_spin_rate_preserved(self):
+        """Keep a torque-free BALL body's angular velocity constant across synced steps."""
+        (_, initial_qd), (_, final_qd) = self._run(JointType.BALL, qd=[0.0, 3.0, 0.0])
+        np.testing.assert_allclose(final_qd[0:3], initial_qd[0:3], atol=3.0e-5)
+
+    def test_free_joint_position_preserved_at_rest(self):
+        """Keep a FREE body at rest 3 m from a rotated parent anchor in place across synced steps.
+
+        The anchor transforms are applied to the position on every push and
+        pull, so a non-unit anchor quaternion used to scale the anchor-relative
+        position by up to ``1 + 4 (|q|^2 - 1)`` per step.
+        """
+        (initial_q, _), (final_q, _) = self._run(JointType.FREE, qd=[0.0] * 6, joint_pos=(3.0, 0.0, 0.0))
+        np.testing.assert_allclose(final_q[0:3], initial_q[0:3], atol=3.0e-5)
 
 
 @requires(*MUJOCO_MODULES)
