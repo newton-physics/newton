@@ -1463,9 +1463,6 @@ For hydroelastic and SDF-based contacts, use :class:`~geometry.HydroelasticSDF.C
    * - ``anchor_contact``
      - Adds an anchor contact at the center of pressure for each normal bin to better preserve moments.
        Default: False.
-   * - ``margin_contact_area``
-     - Deprecated area used for speculative-contact activation stiffness.
-       It remains effective during the deprecation period. Default: 0.01.
 
 .. _Shape Configuration:
 
@@ -2264,8 +2261,8 @@ Hydroelastic contacts use the same three margin-and-gap bands described in
 
 Contacts in the gap region are speculative. Their separation is nonnegative,
 so they do not produce force in the current state. Newton assigns them a contact
-stiffness using the two materials' hydroelastic stiffness and the deprecated
-``margin_contact_area`` compatibility setting.
+stiffness from the two materials' hydroelastic stiffness and a fixed
+activation area of 0.01 m\ :sup:`2`.
 
 To recover the closest equivalent of the earlier geometric-surface behavior,
 set both ``margin=0.0`` and ``gap=0.0`` on the participating shapes. This is a
@@ -2337,8 +2334,8 @@ same pressure law on the hydroelastic faces; no separate linear stiffness law is
 applied to reduced penetrating contacts. The evaluated pressure is stored once
 per buffered face because the pair separation does not contain either shape's
 individual SDF depth. Speculative contacts do not use this stored pressure;
-their activation stiffness uses the declared ``kh`` values and the deprecated
-``margin_contact_area`` compatibility setting.
+their activation stiffness uses the declared ``kh`` values and a fixed
+activation area of 0.01 m\ :sup:`2`.
 
 See :github:`newton/examples/contacts/example_nut_bolt_hydro.py` for a worked
 example.
