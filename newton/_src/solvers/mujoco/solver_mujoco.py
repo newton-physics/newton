@@ -1514,6 +1514,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 articulation_owner_resolver=cls._resolve_mujoco_tendon_wrap_owners,
             )
         )
+        builder.add_custom_frequency(ModelBuilder.CustomFrequency(name="keyframe", namespace="mujoco"))
+        builder.add_custom_frequency(ModelBuilder.CustomFrequency(name="keyframe_value", namespace="mujoco"))
         # endregion custom frequencies
 
         # region geom attributes
@@ -3487,6 +3489,76 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             )
         )
 
+        # region keyframe attributes
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="keyframe_label",
+                frequency="mujoco:keyframe",
+                dtype=str,
+                default="",
+                namespace="mujoco",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="keyframe_world",
+                frequency="mujoco:keyframe",
+                dtype=wp.int32,
+                default=-1,
+                namespace="mujoco",
+                references="world",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="keyframe_time",
+                frequency="mujoco:keyframe",
+                dtype=wp.float32,
+                default=0.0,
+                namespace="mujoco",
+            )
+        )
+        for slice_prefix in ("q", "qd", "act", "ctrl"):
+            builder.add_custom_attribute(
+                ModelBuilder.CustomAttribute(
+                    name=f"keyframe_{slice_prefix}_adr",
+                    frequency="mujoco:keyframe",
+                    dtype=wp.int32,
+                    default=-1,
+                    namespace="mujoco",
+                    references="mujoco:keyframe_value",
+                )
+            )
+            builder.add_custom_attribute(
+                ModelBuilder.CustomAttribute(
+                    name=f"keyframe_{slice_prefix}_num",
+                    frequency="mujoco:keyframe",
+                    dtype=wp.int32,
+                    default=0,
+                    namespace="mujoco",
+                )
+            )
+        for offset_name in ("keyframe_q_offset", "keyframe_qd_offset"):
+            builder.add_custom_attribute(
+                ModelBuilder.CustomAttribute(
+                    name=offset_name,
+                    frequency="mujoco:keyframe",
+                    dtype=wp.int32,
+                    default=0,
+                    namespace="mujoco",
+                )
+            )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="keyframe_value",
+                frequency="mujoco:keyframe_value",
+                dtype=wp.float32,
+                default=0.0,
+                namespace="mujoco",
+            )
+        )
+        # endregion keyframe attributes
+
     def _init_flexes(self, model: Model, spec: Any, shape_mapping: dict[int, str], particles: np.ndarray) -> list[Any]:
         """
         Initialize MuJoCo flexes from Newton particles and their tetrahedra, triangles, and springs.
@@ -4553,6 +4625,185 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             actuator_count += 1
 
         return actuator_count
+
+    def _export_keyframes_to_spec(
+        self,
+        model: Model,
+        spec: Any,
+        template_world: int,
+        separate_worlds: bool,
+        actuator_custom_attr_idx: np.ndarray,
+    ) -> bool:
+        """Export template-world ``mujoco:keyframe`` entries onto ``spec``."""
+        keyframe_count = model.custom_frequency_counts.get("mujoco:keyframe", 0)
+        mujoco_attrs = getattr(model, "mujoco", None)
+        if keyframe_count == 0 or mujoco_attrs is None or not hasattr(mujoco_attrs, "keyframe_time"):
+            return False
+
+        keyframe_world_attr = getattr(mujoco_attrs, "keyframe_world", None)
+        keyframe_world = (
+            keyframe_world_attr.numpy()
+            if keyframe_world_attr is not None
+            else np.full(keyframe_count, -1, dtype=np.int32)
+        )
+        if separate_worlds:
+            selected_keys = [
+                k
+                for k in range(keyframe_count)
+                if int(keyframe_world[k]) == template_world or int(keyframe_world[k]) < 0
+            ]
+        else:
+            selected_keys = list(range(keyframe_count))
+        if not selected_keys:
+            return False
+
+        keyframe_labels = getattr(mujoco_attrs, "keyframe_label", None)
+        keyframe_time = mujoco_attrs.keyframe_time.numpy()
+        q_adr = mujoco_attrs.keyframe_q_adr.numpy()
+        q_num = mujoco_attrs.keyframe_q_num.numpy()
+        qd_adr = mujoco_attrs.keyframe_qd_adr.numpy()
+        qd_num = mujoco_attrs.keyframe_qd_num.numpy()
+        act_adr = mujoco_attrs.keyframe_act_adr.numpy()
+        act_num = mujoco_attrs.keyframe_act_num.numpy()
+        ctrl_adr = mujoco_attrs.keyframe_ctrl_adr.numpy()
+        ctrl_num = mujoco_attrs.keyframe_ctrl_num.numpy()
+        q_off_attr = getattr(mujoco_attrs, "keyframe_q_offset", None)
+        qd_off_attr = getattr(mujoco_attrs, "keyframe_qd_offset", None)
+        q_off = q_off_attr.numpy() if q_off_attr is not None else np.zeros(keyframe_count, dtype=np.int32)
+        qd_off = qd_off_attr.numpy() if qd_off_attr is not None else np.zeros(keyframe_count, dtype=np.int32)
+        val_attr = getattr(mujoco_attrs, "keyframe_value", None)
+        values = val_attr.numpy() if val_attr is not None else np.empty(0, dtype=np.float32)
+
+        nq = self.mj_model.nq
+        nv = self.mj_model.nv
+        na = self.mj_model.na
+        nu = self.mj_model.nu
+        n_template_joints = self.mj_q_start.shape[0]
+        dof_ref = getattr(mujoco_attrs, "dof_ref", None)
+
+        act_world_attr = getattr(mujoco_attrs, "actuator_world", None)
+        total_act_rows = model.custom_frequency_counts.get("mujoco:actuator", 0)
+        if act_world_attr is not None and separate_worlds:
+            act_world_np = act_world_attr.numpy()
+            template_act_rows = np.flatnonzero((act_world_np == template_world) | (act_world_np < 0))
+        else:
+            template_act_rows = np.arange(total_act_rows, dtype=np.int32)
+        row_to_ordinal = {int(r): idx for idx, r in enumerate(template_act_rows)}
+
+        actdim_attr = getattr(mujoco_attrs, "actuator_actdim", None)
+        dyntype_attr = getattr(mujoco_attrs, "actuator_dyntype", None)
+        actdim_np = actdim_attr.numpy() if actdim_attr is not None else None
+        dyntype_np = dyntype_attr.numpy() if dyntype_attr is not None else None
+        ordinal_act_start = np.zeros(len(template_act_rows) + 1, dtype=np.int32)
+        for idx, r in enumerate(template_act_rows):
+            r_int = int(r)
+            dim = -1 if actdim_np is None else int(actdim_np[r_int])
+            if dim < 0:
+                dim = 1 if (dyntype_np is not None and int(dyntype_np[r_int]) != 0) else 0
+            ordinal_act_start[idx + 1] = ordinal_act_start[idx] + dim
+
+        base_joint_q = model.joint_q.numpy().copy()
+        base_joint_qd = model.joint_qd.numpy().copy()
+        used_key_names: set[str] = set()
+
+        qpos_wp = wp.empty((1, nq), dtype=wp.float32, device=model.device)
+        qvel_wp = wp.empty((1, nv), dtype=wp.float32, device=model.device)
+
+        for k in selected_keys:
+            raw_name = keyframe_labels[k] if isinstance(keyframe_labels, list) and k < len(keyframe_labels) else ""
+            key_name = str(raw_name).strip() if raw_name is not None else ""
+            if key_name:
+                dedup = key_name
+                suffix = 1
+                while dedup in used_key_names:
+                    dedup = f"{key_name}_{suffix}"
+                    suffix += 1
+                used_key_names.add(dedup)
+                key_name = dedup
+
+            kq_adr, kq_num, kq_off = int(q_adr[k]), int(q_num[k]), int(q_off[k])
+            kqd_adr, kqd_num, kqd_off = int(qd_adr[k]), int(qd_num[k]), int(qd_off[k])
+            if nq > 0 or nv > 0:
+                jq_np = base_joint_q.copy()
+                jqd_np = base_joint_qd.copy()
+                if kq_adr >= 0 and kq_num > 0 and kq_off + kq_num <= len(jq_np):
+                    jq_np[kq_off : kq_off + kq_num] = values[kq_adr : kq_adr + kq_num]
+                if kqd_adr >= 0 and kqd_num > 0 and kqd_off + kqd_num <= len(jqd_np):
+                    jqd_np[kqd_off : kqd_off + kqd_num] = values[kqd_adr : kqd_adr + kqd_num]
+                qpos_wp.assign(self.mj_model.qpos0[None, :].astype(np.float32))
+                qvel_wp.zero_()
+                if n_template_joints > 0:
+                    wp.launch(
+                        convert_warp_coords_to_mj_kernel,
+                        dim=(1, n_template_joints),
+                        inputs=[
+                            wp.array(jq_np, dtype=wp.float32, device=model.device),
+                            wp.array(jqd_np, dtype=wp.float32, device=model.device),
+                            None,
+                            n_template_joints,
+                            model.joint_type,
+                            model.joint_q_start,
+                            model.joint_qd_start,
+                            model.joint_dof_dim,
+                            model.joint_child,
+                            model.joint_X_p,
+                            model.joint_X_c,
+                            model.joint_axis,
+                            model.body_com,
+                            dof_ref,
+                            self.mj_q_start,
+                            self.mj_qd_start,
+                            None,
+                            True,
+                        ],
+                        outputs=[qpos_wp, qvel_wp, None, None, None],
+                        device=model.device,
+                    )
+                mjc_qpos = qpos_wp.numpy()[0].tolist()
+                mjc_qvel = qvel_wp.numpy()[0].tolist()
+            else:
+                mjc_qpos = []
+                mjc_qvel = []
+
+            mjc_ctrl = [0.0] * nu
+            kctrl_adr, kctrl_num = int(ctrl_adr[k]), int(ctrl_num[k])
+            if nu > 0 and kctrl_adr >= 0 and kctrl_num > 0:
+                ctrl_slice = values[kctrl_adr : kctrl_adr + kctrl_num]
+                for a in range(nu):
+                    src_row = int(actuator_custom_attr_idx[a])
+                    ord_idx = row_to_ordinal.get(src_row)
+                    if ord_idx is not None and ord_idx < len(ctrl_slice):
+                        mjc_ctrl[a] = float(ctrl_slice[ord_idx])
+
+            mjc_act = [0.0] * na
+            kact_adr, kact_num = int(act_adr[k]), int(act_num[k])
+            if na > 0 and kact_adr >= 0 and kact_num > 0:
+                act_slice = values[kact_adr : kact_adr + kact_num]
+                for a in range(nu):
+                    a_dim = int(self.mj_model.actuator_actnum[a])
+                    if a_dim <= 0:
+                        continue
+                    a_adr = int(self.mj_model.actuator_actadr[a])
+                    src_row = int(actuator_custom_attr_idx[a])
+                    ord_idx = row_to_ordinal.get(src_row)
+                    if ord_idx is not None:
+                        src_act_adr = int(ordinal_act_start[ord_idx])
+                        if src_act_adr + a_dim <= len(act_slice):
+                            for d in range(a_dim):
+                                mjc_act[a_adr + d] = float(act_slice[src_act_adr + d])
+
+            key_kwargs: dict[str, Any] = {
+                "time": float(keyframe_time[k]),
+                "qpos": mjc_qpos,
+                "qvel": mjc_qvel,
+                "act": mjc_act,
+                "ctrl": mjc_ctrl,
+            }
+            if key_name:
+                key_kwargs["name"] = key_name
+            spec.add_key(**key_kwargs)
+
+        return True
 
     def __init__(
         self,
@@ -9492,6 +9743,16 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 )
         self.mj_q_start = wp.array(mj_q_start_np, dtype=wp.int32, device=model.device)
         self.mj_qd_start = wp.array(mj_qd_start_np, dtype=wp.int32, device=model.device)
+        if self._export_keyframes_to_spec(model, spec, first_world, separate_worlds, actuator_custom_attr_idx):
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore", message=r".*is not rigid and has no equality constraints or passive forces"
+                )
+                self.mj_model = spec.compile()
+            self._canonical_bvh_aabb = self.mj_model.bvh_aabb.copy()
+            self._canonical_body_ipos = self.mj_model.body_ipos.copy()
+            self._canonical_body_iquat = self.mj_model.body_iquat.copy()
+            self.mj_data = mujoco.MjData(self.mj_model)
         # Slide-joint coordinates of each particle body, or -1 for pinned particles and
         # particles without a body, whose state the solver leaves untouched.
         particle_body = np.array([-1 if body is None else body.id for body in particle_bodies], dtype=np.int32)
@@ -12002,6 +12263,46 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                             f"identical actuator template parameters (mujoco:{name}) across worlds."
                         )
             dcmotor.validate_worlds(model, rows, dcmotor_type=SolverMuJoCo.CtrlType.DCMOTOR)
+
+        keyframe_world_attribute = getattr(model.mujoco, "keyframe_world", None)
+        if keyframe_world_attribute is not None and model.custom_frequency_counts.get("mujoco:keyframe", 0) > 0:
+            keyframe_world = keyframe_world_attribute.numpy()
+            kf_rows = np.flatnonzero((keyframe_world >= 0) & (keyframe_world < world_count))
+            if len(kf_rows) > 0:
+                kf_counts = np.bincount(keyframe_world[kf_rows], minlength=world_count)
+                if np.any(kf_counts != kf_counts[0]):
+                    raise ValueError(
+                        "SolverMuJoCo with separate_worlds=True requires identical keyframes across worlds."
+                    )
+                kf_rows_by_world = kf_rows[np.argsort(keyframe_world[kf_rows], kind="stable")].reshape(
+                    world_count, kf_counts[0]
+                )
+                kf_labels = getattr(model.mujoco, "keyframe_label", None)
+                kf_time = model.mujoco.keyframe_time.numpy()
+                kf_vals_attr = getattr(model.mujoco, "keyframe_value", None)
+                kf_vals = kf_vals_attr.numpy() if kf_vals_attr is not None else np.empty(0, dtype=np.float32)
+
+                def _world_keyframes_signature(w_rows: np.ndarray) -> list[tuple[Any, ...]]:
+                    sig = []
+                    for r in w_rows:
+                        r_int = int(r)
+                        lbl = kf_labels[r_int] if isinstance(kf_labels, list) and r_int < len(kf_labels) else ""
+                        slices: list[tuple[float, ...]] = []
+                        for prefix in ("q", "qd", "act", "ctrl"):
+                            adr = int(getattr(model.mujoco, f"keyframe_{prefix}_adr").numpy()[r_int])
+                            num = int(getattr(model.mujoco, f"keyframe_{prefix}_num").numpy()[r_int])
+                            slices.append(
+                                tuple(float(v) for v in kf_vals[adr : adr + num]) if adr >= 0 and num > 0 else ()
+                            )
+                        sig.append((lbl, float(kf_time[r_int]), *slices))
+                    return sig
+
+                ref_sig = _world_keyframes_signature(kf_rows_by_world[0])
+                for w in range(1, world_count):
+                    if _world_keyframes_signature(kf_rows_by_world[w]) != ref_sig:
+                        raise ValueError(
+                            "SolverMuJoCo with separate_worlds=True requires identical keyframes across worlds."
+                        )
 
         # --- Check entity count homogeneity ---
         # Count entities per world (excluding global shapes)

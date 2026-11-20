@@ -13318,5 +13318,190 @@ class TestImportMjcfHeightfieldOrientation(unittest.TestCase):
             np.testing.assert_allclose(imported_grid(png, {"terrain.png": png_payload}), flipped)
 
 
+class TestImportMjcfKeyframes(unittest.TestCase):
+    @requires(*MUJOCO_MODULES)
+    def test_mjcf_keyframes_import_and_solver_export(self):
+        """Import MJCF <keyframe> across free/ball/merged joints, muscles, scale, and SolverMuJoCo export."""
+        import mujoco
+
+        mjcf = """<mujoco model="keyframe_roundtrip">
+          <compiler angle="degree"/>
+          <option timestep="0.002" gravity="0 0 -9.81" integrator="Euler">
+            <flag contact="disable"/>
+          </option>
+          <worldbody>
+            <frame pos="0.1 0 0">
+              <body name="root" pos="0 0 0.8">
+                <freejoint name="root_free"/>
+                <inertial pos="0.05 -0.02 0.03" mass="1.5" diaginertia="0.02 0.03 0.04"/>
+                <geom type="sphere" size="0.08"/>
+                <site name="s_root" pos="0 0 0"/>
+                <body name="shoulder" pos="0 0 -0.2">
+                  <joint name="sh_ball" type="ball" pos="0 0 0.05" damping="0.1"/>
+                  <geom type="capsule" size="0.03 0.1" mass="0.4"/>
+                  <body name="forearm" pos="0 0 -0.25">
+                    <joint name="el_slide" type="slide" axis="0 0 1" ref="0.02" range="-0.2 0.2"/>
+                    <joint name="el_hinge" type="hinge" axis="0 1 0" ref="30" range="-90 90"/>
+                    <geom type="capsule" size="0.025 0.08" mass="0.3"/>
+                    <site name="s_tip" pos="0 0 -0.1"/>
+                  </body>
+                </body>
+              </body>
+            </frame>
+          </worldbody>
+          <tendon>
+            <spatial name="arm_tendon">
+              <site site="s_root"/>
+              <site site="s_tip"/>
+            </spatial>
+          </tendon>
+          <actuator>
+            <position name="hinge_pos" joint="el_hinge" kp="20" ctrlrange="-1.5 1.5"/>
+            <velocity name="slide_vel" joint="el_slide" kv="5" ctrlrange="-0.5 0.5"/>
+            <muscle name="bicep" tendon="arm_tendon" force="100" lengthrange="0.15 0.75"/>
+          </actuator>
+          <keyframe>
+            <key name="home" time="0.25"
+                 qpos="0.2 -0.1 0.9 0.9238795 0.3826834 0 0  0.9659258 0 0.258819 0  -0.05 0.8"
+                 qvel="0.3 -0.2 0.1 0.4 -0.5 0.6  -0.2 0.3 -0.1  -0.15 1.1"
+                 act="0.65"
+                 ctrl="0.7 -0.2 0.65"/>
+            <key time="0.5"/>
+          </keyframe>
+        </mujoco>"""
+
+        native_model = mujoco.MjModel.from_xml_string(mjcf)
+        self.assertEqual(native_model.nkey, 2)
+
+        blueprint = newton.ModelBuilder()
+        blueprint.add_mjcf(mjcf, ctrl_direct=False)
+        builder = newton.ModelBuilder()
+        builder.replicate(blueprint, 2)
+        model = builder.finalize(device="cpu")
+
+        self.assertEqual(model.custom_frequency_counts.get("mujoco:keyframe", 0), 4)
+        np.testing.assert_array_equal(model.mujoco.keyframe_world.numpy(), [0, 0, 1, 1])
+        self.assertEqual(model.mujoco.keyframe_label, ["home", "", "home", ""])
+        np.testing.assert_allclose(model.mujoco.keyframe_time.numpy(), [0.25, 0.5, 0.25, 0.5])
+
+        solver = SolverMuJoCo(
+            model,
+            use_mujoco_cpu=False,
+            integrator="euler",
+            separate_worlds=True,
+            disable_contacts=True,
+            kinematic_switchable_roots=False,
+        )
+        self.assertEqual(solver.mj_model.nkey, 2)
+        self.assertEqual(solver.mj_model.key(0).name, "home")
+        self.assertEqual(solver.mj_model.key(1).name, "")
+        np.testing.assert_allclose(solver.mj_model.key_time, native_model.key_time, atol=1e-6)
+        np.testing.assert_allclose(solver.mj_model.key_qpos, native_model.key_qpos, atol=1e-6)
+        np.testing.assert_allclose(solver.mj_model.key_qvel, native_model.key_qvel, atol=1e-6)
+        np.testing.assert_allclose(solver.mj_model.key_act, native_model.key_act, atol=1e-6)
+        act_perm = solver.mjc_actuator_to_newton_actuator_idx.numpy()
+        np.testing.assert_allclose(solver.mj_model.key_ctrl, native_model.key_ctrl[:, act_perm], atol=1e-6)
+
+        direct_bp = newton.ModelBuilder()
+        direct_bp.add_mjcf(mjcf, ctrl_direct=True)
+        direct_rep = newton.ModelBuilder()
+        direct_rep.replicate(direct_bp, 2)
+        direct_model = direct_rep.finalize(device="cpu")
+        direct_solver = SolverMuJoCo(
+            direct_model,
+            use_mujoco_cpu=False,
+            integrator="euler",
+            separate_worlds=True,
+            disable_contacts=True,
+            kinematic_switchable_roots=False,
+        )
+        np.testing.assert_allclose(direct_solver.mj_model.key_ctrl, native_model.key_ctrl, atol=1e-6)
+
+        # Initialize Newton state + mjw_data.act + control from imported keyframe 0 and verify 5-step parity vs native!
+        kf_vals = direct_model.mujoco.keyframe_value.numpy()
+        state_in = direct_model.state()
+        state_out = direct_model.state()
+        q0_adr = int(direct_model.mujoco.keyframe_q_adr.numpy()[0])
+        q0_num = int(direct_model.mujoco.keyframe_q_num.numpy()[0])
+        qd0_adr = int(direct_model.mujoco.keyframe_qd_adr.numpy()[0])
+        qd0_num = int(direct_model.mujoco.keyframe_qd_num.numpy()[0])
+        act0_adr = int(direct_model.mujoco.keyframe_act_adr.numpy()[0])
+        act0_num = int(direct_model.mujoco.keyframe_act_num.numpy()[0])
+        ctrl0_adr = int(direct_model.mujoco.keyframe_ctrl_adr.numpy()[0])
+        ctrl0_num = int(direct_model.mujoco.keyframe_ctrl_num.numpy()[0])
+
+        q_single = kf_vals[q0_adr : q0_adr + q0_num]
+        qd_single = kf_vals[qd0_adr : qd0_adr + qd0_num]
+        act_single = kf_vals[act0_adr : act0_adr + act0_num]
+        ctrl_single = kf_vals[ctrl0_adr : ctrl0_adr + ctrl0_num]
+        state_in.joint_q.assign(np.tile(q_single, 2))
+        state_in.joint_qd.assign(np.tile(qd_single, 2))
+        newton.eval_fk(direct_model, state_in.joint_q, state_in.joint_qd, state_in)
+        direct_solver.mjw_data.act.assign(np.tile(act_single, (2, 1)))
+
+        control = direct_model.control()
+        control.mujoco.ctrl.assign(np.tile(ctrl_single, 2))
+
+        native_data = mujoco.MjData(native_model)
+        mujoco.mj_resetDataKeyframe(native_model, native_data, 0)
+        for _ in range(5):
+            mujoco.mj_step(native_model, native_data)
+            direct_solver.step(state_in, state_out, control, None, dt=float(native_model.opt.timestep))
+            state_in, state_out = state_out, state_in
+        mujoco.mj_forward(native_model, native_data)
+
+        body_q_np = state_in.body_q.numpy().reshape(2, 3, 7)
+        for w in range(2):
+            np.testing.assert_allclose(direct_solver.mjw_data.qpos.numpy()[w], native_data.qpos, atol=1e-5)
+            np.testing.assert_allclose(direct_solver.mjw_data.qvel.numpy()[w], native_data.qvel, atol=5e-5, rtol=1e-4)
+            for mjc_b in range(1, native_model.nbody):
+                np.testing.assert_allclose(body_q_np[w, mjc_b - 1, :3], native_data.xpos[mjc_b], atol=1e-5)
+
+        # Verify scale=2.0 scales slide coordinates, slide velocities, and slide joint-unit controls.
+        scaled_builder = newton.ModelBuilder()
+        scaled_builder.add_mjcf(mjcf, scale=2.0, ctrl_direct=False)
+        scaled_model = scaled_builder.finalize(device="cpu")
+        scaled_vals = scaled_model.mujoco.keyframe_value.numpy()
+        sq_adr = int(scaled_model.mujoco.keyframe_q_adr.numpy()[0])
+        sq_num = int(scaled_model.mujoco.keyframe_q_num.numpy()[0])
+        sc_adr = int(scaled_model.mujoco.keyframe_ctrl_adr.numpy()[0])
+        sc_num = int(scaled_model.mujoco.keyframe_ctrl_num.numpy()[0])
+        # Forearm slide qpos = (-0.05 - 0.02) * 2.0 = -0.14
+        self.assertAlmostEqual(float(scaled_vals[sq_adr : sq_adr + sq_num][-2]), -0.14, places=5)
+        # slide_vel ctrl = -0.2 * 2.0 = -0.4
+        self.assertAlmostEqual(float(scaled_vals[sc_adr : sc_adr + sc_num][1]), -0.4, places=5)
+
+        # Heterogeneous keyframes across worlds raise ValueError when separate_worlds=True.
+        mismatch_builder = newton.ModelBuilder()
+        mismatch_builder.replicate(blueprint, 2)
+        mismatch_builder.custom_attributes["mujoco:keyframe_time"].values[2] = 9.0
+        with self.assertRaisesRegex(ValueError, "identical keyframes"):
+            SolverMuJoCo(mismatch_builder.finalize(device="cpu"), separate_worlds=True, disable_contacts=True)
+
+        # Malformed <key qpos="..."> length raises ValueError.
+        bad_mjcf = """<mujoco>
+          <worldbody><body><joint name="h" type="hinge"/><geom size="0.1"/></body></worldbody>
+          <keyframe><key name="bad" qpos="0.1 0.2"/></keyframe>
+        </mujoco>"""
+        with self.assertRaisesRegex(ValueError, "qpos has 2 values, expected 1"):
+            newton.ModelBuilder().add_mjcf(bad_mjcf)
+
+        # Hinge-before-slide on one body reorders to linear-before-angular in Newton keyframe_value.
+        reorder_mjcf = """<mujoco>
+          <worldbody><body>
+            <joint name="h" type="hinge" axis="0 1 0"/>
+            <joint name="s" type="slide" axis="0 0 1"/>
+            <geom size="0.1"/>
+          </body></worldbody>
+          <keyframe><key name="k0" qpos="0.9 -0.25" qvel="1.5 -0.4"/></keyframe>
+        </mujoco>"""
+        reorder_builder = newton.ModelBuilder()
+        reorder_builder.add_mjcf(reorder_mjcf)
+        reorder_model = reorder_builder.finalize(device="cpu")
+        rv = reorder_model.mujoco.keyframe_value.numpy()
+        np.testing.assert_allclose(rv[:2], [-0.25, 0.9], atol=1e-6)
+        np.testing.assert_allclose(rv[2:4], [-0.4, 1.5], atol=1e-6)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
