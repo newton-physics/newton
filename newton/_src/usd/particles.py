@@ -750,6 +750,7 @@ def import_particles(
             mass=payload.masses,
             radius=payload.radii,
             custom_attributes=payload.material,
+            label=payload.path,
         )
         ranges[payload.path] = (start, builder.particle_count)
     return ranges, scene_prim

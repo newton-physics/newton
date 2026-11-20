@@ -473,8 +473,9 @@ For more information about USD integration and the schema resolver system, see :
 Values per deformable object
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-USD imports record curves, surfaces, and volumes, but do not yet read custom
-values at ``CURVE``, ``SURFACE``, or ``VOLUME`` frequency. Unassigned rows keep
+USD imports record curves, surfaces, volumes, and point sets, but do not yet
+read custom values at ``CURVE``, ``SURFACE``, ``VOLUME``, or ``POINT_SET``
+frequency. Unassigned rows keep
 the registered attribute's default. This limitation does not affect ordinary
 deformable material parsing or the supported per-particle, per-tetrahedron,
 and per-triangle custom arrays on a ``TetMesh``.
@@ -996,9 +997,10 @@ or articulation IDs, default references for existing rows follow the same remap
 as explicit values. References to removed objects become ``-1``. These operations
 do not change the declared default for rows added later.
 
-Use ``Model.AttributeFrequency.CURVE``, ``SURFACE``, or ``VOLUME`` to reference
-built-in deformable objects. The strings ``"curve"``, ``"surface"``, and
-``"volume"`` refer to custom frequencies, regardless of registration order.
+Use ``Model.AttributeFrequency.CURVE``, ``SURFACE``, ``VOLUME``, or
+``POINT_SET`` to reference built-in deformable objects. The strings
+``"curve"``, ``"surface"``, ``"volume"``, and ``"point_set"`` refer to custom
+frequencies, regardless of registration order.
 Existing built-in strings such as ``"body"`` and ``"world"`` remain supported.
 Registering an attribute does not rewrite its ``references`` field. Finalized
 model metadata uses enum values for built-in references and strings for custom

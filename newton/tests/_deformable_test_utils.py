@@ -55,6 +55,24 @@ def _add_volume(builder, label=None, grid=False):
         )
 
 
+def _add_point_set(builder, label=None):
+    """Add a four-particle grid, which records one point set."""
+    builder.add_particle_grid(
+        pos=wp.vec3(0.0, 0.0, 4.0),
+        rot=wp.quat_identity(),
+        vel=wp.vec3(0.0),
+        dim_x=2,
+        dim_y=2,
+        dim_z=1,
+        cell_x=0.1,
+        cell_y=0.1,
+        cell_z=0.1,
+        mass=1.0,
+        jitter=0.0,
+        label=label,
+    )
+
+
 def _add_test_anchored_cable(builder, label="anchored_curve"):
     """Add a two-segment cable fixed to the world for collapse tests."""
     bodies, joints = builder.add_rod(

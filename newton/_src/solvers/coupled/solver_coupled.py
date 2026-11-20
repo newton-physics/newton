@@ -1591,7 +1591,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         frequency = model.AttributeFrequency
         orders = {}
         range_maps = {}
-        for family_frequency in (frequency.CURVE, frequency.SURFACE, frequency.VOLUME):
+        for family_frequency in (frequency.CURVE, frequency.SURFACE, frequency.VOLUME, frequency.POINT_SET):
             count = model._attribute_frequency_count(family_frequency)
             keep = np.ones(count, dtype=bool)
             if count:
@@ -1987,6 +1987,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         view.curve_count = len(compact.order(frequency.CURVE))
         view.surface_count = len(compact.order(frequency.SURFACE))
         view.volume_count = len(compact.order(frequency.VOLUME))
+        view.point_set_count = len(compact.order(frequency.POINT_SET))
 
         projections_by_frequency = self._compact_projections_by_frequency(compact, shape_order=shape_order)
         self._set_compact_custom_frequency_counts(view, projections_by_frequency)

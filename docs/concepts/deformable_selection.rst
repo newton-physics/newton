@@ -11,15 +11,18 @@ Deformable Selection
    The deformable selection views may change while the API is developed.
 
 Use :class:`~newton.selection.DeformableCurveView`,
-:class:`~newton.selection.DeformableSurfaceView`, or
-:class:`~newton.selection.DeformableVolumeView` to find deformables in a finalized
-model and read or update their state. The class selects the geometric family:
+:class:`~newton.selection.DeformableSurfaceView`,
+:class:`~newton.selection.DeformableVolumeView`, or
+:class:`~newton.selection.DeformablePointSetView` to find deformables in a
+finalized model and read or update their state. The class selects the
+geometric family:
 
 .. code-block:: python
 
     import newton
     from newton.selection import (
         DeformableCurveView,
+        DeformablePointSetView,
         DeformableSurfaceView,
         DeformableVolumeView,
     )
@@ -27,6 +30,7 @@ model and read or update their state. The class selects the geometric family:
     curves = DeformableCurveView(model, "*/gripper_cable")
     surfaces = DeformableSurfaceView(model, "*/table_cloth")
     volumes = DeformableVolumeView(model, "*/soft_toy")
+    point_sets = DeformablePointSetView(model, "*/sand_pile")
 
 Patterns accept glob strings, lists of globs, and compiled regular expressions,
 as in :class:`~newton.selection.ArticulationView`. A broad pattern selects only
@@ -53,11 +57,13 @@ and a soft volume can share a label without sharing a selection:
     volumes.ranges(newton.Model.AttributeFrequency.TETRAHEDRON)
 
 Currently, curve views expose rod body transforms and velocities, with body and
-joint ranges. Surface and volume views share particle methods: positions,
-velocities, inverse masses, and flags. Both expose particle ranges, but surface
-views also expose triangle and edge ranges, while volume views expose tetrahedron
-ranges. A family does not prescribe a solver or storage layout. Particle-based
-curves and solver-owned MPM data are not supported yet.
+joint ranges. Surface, volume, and point-set views share particle methods:
+positions, velocities, inverse masses, and flags. All three expose particle
+ranges; surface views also expose triangle and edge ranges, and volume views
+expose tetrahedron ranges. A family does not prescribe a solver or storage
+layout. Particle-based curves are not supported yet. Solver-owned per-particle
+state, such as MPM deformation history, has no view accessor; use a point-set
+view's particle ranges to address it.
 
 Read and reset state
 --------------------
@@ -94,7 +100,7 @@ Save independent reset buffers during setup, then use them to reset the state:
 Read particle properties
 ------------------------
 
-Surface and volume views also read :attr:`~newton.Model.particle_inv_mass` and
+Surface, volume, and point-set views also read :attr:`~newton.Model.particle_inv_mass` and
 :attr:`~newton.Model.particle_flags`. Pass a Model, not a State. Both results have
 shape ``(count, particle_count)``, with the same rows and particle
 order as the position getter. Inverse masses use ``wp.float32`` in [1/kg]; flags

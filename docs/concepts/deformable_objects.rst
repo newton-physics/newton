@@ -7,8 +7,8 @@ Deformable Objects
 ==================
 
 Each deformable object has a label, a world index, and ranges identifying its
-simulation elements. The families describe geometry: curves, surfaces, and
-volumes. Native construction and supported USD imports record these objects
+simulation elements. The families describe geometry: curves, surfaces,
+volumes, and point sets. Native construction and supported USD imports record these objects
 on the builder. Finalization exposes their labels, worlds, and ranges on the model.
 
 The sections below explain what each family records. See :ref:`usd_parsing`
@@ -24,12 +24,13 @@ Builder labels and worlds
 .. experimental::
 
    The builder's ``curve_label`` / ``curve_world``, ``surface_label`` /
-   ``surface_world``, and ``volume_label`` / ``volume_world`` lists may change
-   without the normal deprecation period.
+   ``surface_world``, ``volume_label`` / ``volume_world``, and
+   ``point_set_label`` / ``point_set_world`` lists may change without the
+   normal deprecation period.
 
 Each pair contains one label and world index per deformable object. Native
 construction records explicit labels or generates names such as ``curve_0``,
-``surface_0``, and ``volume_0``. USD imports use the simulation prim's path, or
+``surface_0``, ``volume_0``, and ``point_set_0``. USD imports use the simulation prim's path, or
 the graph identifier for welded curves. Labels may repeat. An index in these
 lists identifies a deformable object, not a body or particle.
 
@@ -59,8 +60,9 @@ Model labels and ranges
 
 .. experimental::
 
-   The model's ``curve_*``, ``surface_*``, and ``volume_*`` label, world,
-   count, and range attributes may change without the normal deprecation period.
+   The model's ``curve_*``, ``surface_*``, ``volume_*``, and ``point_set_*``
+   label, world, count, and range attributes may change without the normal
+   deprecation period.
 
 :meth:`~newton.ModelBuilder.finalize` copies the labels, worlds, and simulation
 ranges to public :class:`~newton.Model` attributes without reordering the
@@ -272,3 +274,25 @@ or tetrahedron.
 Supported USD volume imports record each simulation ``TetMesh`` prim once,
 using its prim path as the label. Native and USD-created volumes use the same
 model attributes and :class:`~newton.selection.DeformableVolumeView`.
+
+Point sets
+----------
+
+A point set contains particles without connectivity, such as a granular,
+snow, or fluid material. :meth:`~newton.ModelBuilder.add_particle_grid` records
+one point set per call. :meth:`~newton.ModelBuilder.add_particles` records one
+only when it receives a ``label``, because other constructors also add
+particles through it. Particles added without a label belong to no point set.
+The builder stores its label and world in ``point_set_label`` and
+``point_set_world``.
+
+The model exposes ``point_set_label``, ``point_set_world``, and
+``point_set_count``. Its ranges are ``point_set_particle_start/end``. A point
+set index identifies the complete material body, not an individual particle.
+
+Supported USD simulation ``Points`` imports, such as MPM materials, record each
+prim once, using its prim path as the label. The ``path_particle_map`` returned
+by :meth:`~newton.ModelBuilder.add_usd` remains an import-time snapshot of the
+source builder; the recorded point sets follow later composition. Native and
+USD-created point sets use the same model attributes and
+:class:`~newton.selection.DeformablePointSetView`.

@@ -62,6 +62,7 @@ TOCTREE_DIR = "_generated"  # sub-folder inside OUTPUT_DIR
 # These public views inherit their API from private, undocumented base classes.
 CLASS_TEMPLATES = {
     "newton.selection.DeformableCurveView": "class.rst",
+    "newton.selection.DeformablePointSetView": "class.rst",
     "newton.selection.DeformableSurfaceView": "class.rst",
     "newton.selection.DeformableVolumeView": "class.rst",
 }
