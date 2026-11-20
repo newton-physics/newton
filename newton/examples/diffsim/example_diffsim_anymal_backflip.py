@@ -61,8 +61,8 @@ kernels here avoid them: spline segments are bracketed on the host
 (``_bracket``), fixed paw sets are statically unrolled, prefix values are
 built by chained per-element launches (``cum_sum_kernel`` /
 ``cum_max_kernel``), and the knee minimum is an integer argmin pre-pass
-followed by a differentiable gather. ``test_final`` finite-difference-checks
-these patterns.
+followed by a differentiable gather. ``newton/tests/test_diffsim_anymal_backflip_losses.py``
+finite-difference-checks these patterns.
 
 Success criteria:
 - Phase A: a clean crouch (depth ~0.32 m, upright, knees clear of the ground).
@@ -665,7 +665,6 @@ class Rollout:
             # are chained per-element launches into the cum_* arrays
             self.wy_arr = wp.zeros(n + 1, dtype=wp.float32, requires_grad=True)
             self.z_arr = wp.zeros(n + 1, dtype=wp.float32, requires_grad=True)
-            self.paw_arr = wp.zeros(n + 1, dtype=wp.float32, requires_grad=True)
             self.cum_wy_arr = wp.zeros(n + 1, dtype=wp.float32, requires_grad=True)
             self.cum_z_arr = wp.zeros(n + 1, dtype=wp.float32, requires_grad=True)
             self.cum_paw_arr = wp.zeros(n + 1, dtype=wp.float32, requires_grad=True)
@@ -832,8 +831,6 @@ class Example:
         self.knee_pts_body_arr = wp.array(knee_pts_body, dtype=wp.int32)
         self.knee_pts_local_arr = wp.array(np.array(knee_pts_local, dtype=np.float32), dtype=wp.vec3)
         self.n_knee_pts = len(knee_pts_body)
-        self.kp_body = np.array(knee_pts_body, dtype=np.int32)
-        self.kp_local = np.array(knee_pts_local, dtype=np.float64)
 
         # paw points: the four foot spheres' lowest points (center - radius)
         paw_pts = [
@@ -916,28 +913,6 @@ class Example:
         s0 = contacts.rigid_contact_shape0.numpy()[:n_c]
         s1 = contacts.rigid_contact_shape1.numpy()[:n_c]
         return int(sum(1 for k in range(n_c) if s0[k] in self.foot_shapes or s1[k] in self.foot_shapes))
-
-    def _min_zs(self, body_q_np):
-        """(min knee-point z, min paw z) - numpy twin of the loss kernels."""
-        out = np.empty(len(self.kp_local))
-        for b in np.unique(self.kp_body):
-            sel = np.where(self.kp_body == b)[0]
-            xf = body_q_np[int(b)]
-            x, y, z, w = xf[3:]
-            R = np.array(
-                [
-                    [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
-                    [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
-                    [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
-                ]
-            )
-            out[sel] = (R @ self.kp_local[sel].T).T[:, 2] + xf[2]
-        min_p = float("inf")
-        for b, c, r in self.paw_pts_py:
-            xf = body_q_np[b]
-            pz = wp.transform_point(wp.transform(xf[:3], xf[3:]), c)[2] - r
-            min_p = min(min_p, pz)
-        return float(out.min()), min_p
 
     def _state_metrics(self, body_q0, body_qd0):
         """Root-body gate metrics: height, tilt, vertical and angular speed, as a dict."""
@@ -1076,14 +1051,14 @@ class Example:
                 wp.launch(
                     pawraw_state_kernel,
                     dim=1,
-                    inputs=[states[t].body_q, self.paw_body_arr, self.paw_center_arr, self.paw_r_arr, ro.paw_arr, t],
+                    inputs=[states[t].body_q, self.paw_body_arr, self.paw_center_arr, self.paw_r_arr, ro.minp_arr, t],
                 )
                 # prefix values as chained per-element launches (adjoint-exact;
                 # the in-kernel runtime-bound loops they replace measured with
                 # zero or garbage gradients - see the module docstring)
                 wp.launch(cum_sum_kernel, dim=1, inputs=[ro.wy_arr, ro.cum_wy_arr, t])
                 wp.launch(cum_max_kernel, dim=1, inputs=[ro.z_arr, ro.cum_z_arr, t])
-                wp.launch(cum_max_kernel, dim=1, inputs=[ro.paw_arr, ro.cum_paw_arr, t])
+                wp.launch(cum_max_kernel, dim=1, inputs=[ro.minp_arr, ro.cum_paw_arr, t])
                 wp.launch(
                     touchdown_att_kernel,
                     dim=1,
@@ -1100,7 +1075,7 @@ class Example:
                         ro.mink_arr,
                         # the state sample IS the state's lowest paw bottom:
                         # the kernel reads its min_p from it
-                        ro.paw_arr,
+                        ro.minp_arr,
                         ro.att_arr,
                         ro.cum_att_arr,
                         t,
@@ -1119,6 +1094,12 @@ class Example:
         else:
             for t in range(n + 1):
                 self._launch_knee_min(states[t], ro, t)
+                # read by the replay only (the landing loss takes its paw minimum in-kernel)
+                wp.launch(
+                    pawraw_state_kernel,
+                    dim=1,
+                    inputs=[states[t].body_q, self.paw_body_arr, self.paw_center_arr, self.paw_r_arr, ro.minp_arr, t],
+                )
                 wp.launch(
                     loss_land_state_kernel,
                     dim=1,
@@ -1199,24 +1180,24 @@ class Example:
     def _crouch_replay(self, ro, amps):
         """Replay the crouch phase for the given amplitudes; returns the end snapshot and metrics."""
         ro.loss(amps, self.snap)
+        # knee and paw minima over the full replay window (crouch + preview),
+        # as the loss computed them on the device
+        mink, minp = ro.mink_arr.numpy()[1:], ro.minp_arr.numpy()[1:]
+        grounded = minp < PAW_MASK_H
+        rep = {
+            "min_foot_rows": 10**9,
+            "knee_min": float(mink.min()),
+            "push_margin": float(mink[grounded].min()) if grounded.any() else 1e9,
+        }
         snap_end = None
-        rep = {"min_foot_rows": 10**9, "knee_front_min": 1e9, "knee_hind_min": 1e9, "push_margin": 1e9}
         for t in range(CR_N_EXT):
             if t % REPLAY_YIELD_EVERY == 0:
                 yield
             rows = self._foot_row_count(ro.contacts[t // COLLIDE_EVERY])
             rep["min_foot_rows"] = min(rep["min_foot_rows"], rows)
-            st = ro.states[t + 1]
-            bqd = st.body_q.numpy()
-            fz, hz = self._leg_knee_zs(bqd)
-            _, mp = self._min_zs(bqd)
-            m = self._state_metrics(bqd[0], st.body_qd.numpy()[0])
-            # knee mins over the FULL replay window (crouch + preview)
-            rep["knee_front_min"] = min(rep["knee_front_min"], fz)
-            rep["knee_hind_min"] = min(rep["knee_hind_min"], hz)
-            if mp < PAW_MASK_H:
-                rep["push_margin"] = min(rep["push_margin"], fz, hz)
             if t == CR_N - 1:
+                st = ro.states[t + 1]
+                m = self._state_metrics(st.body_q.numpy()[0], st.body_qd.numpy()[0])
                 snap_end = self._snapshot(st)
                 rep["z_end"] = m["z"]
                 rep["tilt_end_deg"] = float(np.degrees(m["tilt"]))
@@ -1224,30 +1205,13 @@ class Example:
                 rep["foot_rows_end"] = rows
         return snap_end, rep
 
-    def _leg_knee_zs(self, body_q_np):
-        """(min front knee z, min hind knee z) - absolute heights."""
-        out = np.empty(len(self.kp_local))
-        front = np.zeros(len(self.kp_local), dtype=bool)
-        for i, b in enumerate(self.kp_body):
-            xf = body_q_np[int(b)]
-            x, y, z, w = xf[3:]
-            R = np.array(
-                [
-                    [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
-                    [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
-                    [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
-                ]
-            )
-            out[i] = (R @ self.kp_local[i].T)[2] + xf[2]
-            front[i] = int(b) in (1, 2, 7, 8)  # LF/RF thigh+shank
-        return float(out[front].min()), float(out[~front].min())
-
     def _jump_replay(self, ro, amps, snap, record=False):
         """Fly the jump FROM THE CROUCH END (the ascent's anchor); graze-
         filtered touchdown detection (airborne = 5 foot-row-free steps; td =
         2 grounded steps AND descending near ground). Returns (td_snap or
         None, report)."""
         ro.loss(amps, snap)
+        mink, minp = ro.mink_arr.numpy(), ro.minp_arr.numpy()
         q_prev = wp.quat(snap[2][0][3:])
         pitch_cum = 0.0
         airborne_steps = 0
@@ -1268,7 +1232,7 @@ class Example:
             q_cur = wp.quat(bqd[0][3:])
             pitch_cum += float(newton.math.quat_velocity(q_cur, q_prev, 1.0)[1])
             q_prev = q_cur
-            min_k, mp = self._min_zs(bqd)
+            min_k, mp = float(mink[t + 1]), float(minp[t + 1])
             rep["apex"] = max(rep["apex"], m["z"])
             rep["paw_min"] = min(rep["paw_min"], mp)
             rep["min_foot_rows"] = min(rep["min_foot_rows"], rows)
@@ -1325,6 +1289,7 @@ class Example:
         ``rep["td_step"]``) so the frames stay evenly spaced across the
         touchdown boundary."""
         ro.loss(amps, snap)
+        mink, minp = ro.mink_arr.numpy(), ro.minp_arr.numpy()
         rep = {"knee_margin_min": 1e9, "bounce": 0.0, "blew_up": False, "min_foot_rows": 10**9, "paw_lift_max": 0.0}
         m = None
         bqd = None
@@ -1335,7 +1300,7 @@ class Example:
             st = ro.states[t + 1]
             bqd = st.body_q.numpy()
             m = self._state_metrics(bqd[0], st.body_qd.numpy()[0])
-            min_k, min_p = self._min_zs(bqd)
+            min_k, min_p = float(mink[t + 1]), float(minp[t + 1])
             rep["min_foot_rows"] = min(rep["min_foot_rows"], rows)
             if min_p < PAW_MASK_H:
                 rep["knee_margin_min"] = min(rep["knee_margin_min"], min_k)
@@ -1440,8 +1405,7 @@ class Example:
             and rep["tilt_end_deg"] < 20.0
             and rep["min_foot_rows"] > 0
             and rep["foot_rows_end"] > 0
-            and rep["knee_front_min"] >= KNEE_MARGIN_G - 0.005
-            and rep["knee_hind_min"] >= KNEE_MARGIN_G - 0.005
+            and rep["knee_min"] >= KNEE_MARGIN_G - 0.005
             and rep["push_margin"] >= -0.002
         )
         print(
@@ -1705,98 +1669,6 @@ class Example:
                 f"grad check {'q' if arr_idx == 0 else 'qd'}[{c}]: tape={gv:.5e} fd={fd:.5e} rel={rel:.2e}", flush=True
             )
 
-        # ---- loss-stage adjoint guard (module docstring: dynamic loops). The
-        # 2-step probe above never runs the losses' running minima and prefix
-        # patterns, so they are finite-difference-checked on a one-body scene.
-        pts_body_g = wp.array([0, 0, 0], dtype=wp.int32)
-        pts_local_g = wp.array(
-            np.array([[0.0, 0.0, -0.55], [0.0, 0.0, -0.5], [0.0, 0.0, -0.45]], dtype=np.float32), dtype=wp.vec3
-        )
-        paw_body_g = wp.array([0, 0, 0, 0], dtype=wp.int32)
-        paw_center_g = wp.array(
-            np.array([[0.0, 0.0, -0.495], [0.0, 0.0, -0.3], [0.0, 0.0, 1.0], [0.0, 0.0, 1.0]], dtype=np.float32),
-            dtype=wp.vec3,
-        )
-        paw_r_g = wp.array([0.0, 0.0, 0.0, 0.0], dtype=wp.float32)
-
-        def order_scene(dz):
-            """Guard scene: knee points 5/0/5 cm below the body origin, one paw
-            5 mm above ground - knee-margin violation and grounded mask both
-            active, so the order-term gradient is genuinely nonzero."""
-            body_q = wp.array(
-                np.array([[0.0, 0.0, 0.5 + dz, 0.0, 0.0, 0.0, 1.0]], dtype=np.float32),
-                dtype=wp.transform,
-                requires_grad=True,
-            )
-            argmin_arr = wp.zeros(1, dtype=wp.int32)
-            mink_arr = wp.zeros(1, dtype=wp.float32, requires_grad=True)
-            minp_arr = wp.zeros(1, dtype=wp.float32, requires_grad=True)
-            wp.launch(knee_argmin_kernel, dim=1, inputs=[body_q, pts_body_g, pts_local_g, 3, argmin_arr, 0])
-            wp.launch(knee_mingz_kernel, dim=1, inputs=[body_q, pts_body_g, pts_local_g, argmin_arr, mink_arr, 0])
-            wp.launch(pawraw_state_kernel, dim=1, inputs=[body_q, paw_body_g, paw_center_g, paw_r_g, minp_arr, 0])
-            loss_g = wp.zeros(1, dtype=wp.float32, requires_grad=True)
-            wp.launch(
-                order_state_g_kernel,
-                dim=1,
-                inputs=[mink_arr, minp_arr, 0, W_ORDER_A, KNEE_MARGIN_G, PAW_MASK_H, loss_g],
-            )
-            return body_q, loss_g
-
-        eps_g = 1.0e-4
-        _, loss_p = order_scene(eps_g)
-        _, loss_m = order_scene(-eps_g)
-        fd_pz = (float(loss_p.numpy()[0]) - float(loss_m.numpy()[0])) / (2 * eps_g)
-        tape_g = wp.Tape()
-        with tape_g:
-            body_q_g, loss_0 = order_scene(0.0)
-        tape_g.backward(loss_0)
-        g_pz = float(body_q_g.grad.numpy()[0][2])
-        tape_g.reset()
-        err_g = abs(g_pz - fd_pz)
-        rel_g = err_g / max(abs(fd_pz), 1e-12)
-        assert err_g <= 5e-5 or rel_g <= 0.15, (
-            f"loss-stage guard (order term): tape={g_pz:.5e} fd={fd_pz:.5e} rel={rel_g:.2e} - zero/garbage adjoint?"
-        )
-
-        def band_loss(z_max_val):
-            z_np = np.full(17, 1.5, dtype=np.float32)
-            z_np[9] = z_max_val
-            z_arr = wp.array(z_np)
-            cum_z = wp.zeros(17, dtype=wp.float32)
-            loss_b = wp.zeros(1, dtype=wp.float32)
-            for t in range(17):
-                wp.launch(cum_max_kernel, dim=1, inputs=[z_arr, cum_z, t])
-            wp.launch(loss_jump_band_kernel, dim=1, inputs=[cum_z, 16, loss_b, C_BAND, Z_GOOD, Z_LOW])
-            return float(loss_b.numpy()[0])
-
-        z_np_g = np.full(17, 1.5, dtype=np.float32)
-        z_np_g[9] = 2.0
-        z_arr_g = wp.array(z_np_g, requires_grad=True)
-        cum_z_g = wp.zeros(17, dtype=wp.float32, requires_grad=True)
-        tape_b = wp.Tape()
-        with tape_b:
-            loss_b = wp.zeros(1, dtype=wp.float32, requires_grad=True)
-            for t in range(17):
-                wp.launch(cum_max_kernel, dim=1, inputs=[z_arr_g, cum_z_g, t])
-            wp.launch(loss_jump_band_kernel, dim=1, inputs=[cum_z_g, 16, loss_b, C_BAND, Z_GOOD, Z_LOW])
-        tape_b.backward(loss_b)
-        g_z = z_arr_g.grad.numpy().copy()
-        tape_b.reset()
-        eps_b = 1.0e-3
-        fd_b = (band_loss(2.0 + eps_b) - band_loss(2.0 - eps_b)) / (2 * eps_b)
-        err_b = abs(float(g_z[9]) - fd_b)
-        rel_b = err_b / max(abs(fd_b), 1e-12)
-        leak_b = float(np.abs(np.where(np.arange(17) == 9, 0.0, g_z)).max())
-        assert err_b <= 5e-5 or rel_b <= 0.15, (
-            f"loss-stage guard (apex band): tape={g_z[9]:.5e} fd={fd_b:.5e} rel={rel_b:.2e} - zero/garbage adjoint?"
-        )
-        assert leak_b <= 1e-6 * max(abs(fd_b), 1.0), (
-            f"loss-stage guard (apex band): adjoint leaked off the max element (max|g| elsewhere = {leak_b:.2e})"
-        )
-        print(
-            f"loss-stage adjoint guard: order tape={g_pz:.5e} fd={fd_pz:.5e}; band tape={float(g_z[9]):.5e} fd={fd_b:.5e}",
-            flush=True,
-        )
         print("gradient check passed", flush=True)
 
         if self.result.get("land_settled"):
