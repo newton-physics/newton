@@ -1,1 +1,1 @@
-Recover rounded mesh–SDF probes embedded in locally planar thin walls, with bounded correction in MuJoCo Warp, Steel, XPBD, and VBD, including XPBD and VBD entries in coupled solvers.
+Recover rounded mesh–SDF probes embedded in locally planar thin walls, with bounded correction in MuJoCo Warp, Steel, XPBD, and VBD, including XPBD and VBD entries in coupled solvers. Preserve deterministic recovery contact selection when deterministic collision is enabled.

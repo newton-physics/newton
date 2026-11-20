@@ -3803,6 +3803,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
             filtered._mesh_recovery_contacts.keys = recovery.keys
             filtered._mesh_recovery_contacts.active_slots = recovery.active_slots
             filtered._mesh_recovery_contacts.contacts = recovery.contacts
+            filtered._mesh_recovery_contacts.deterministic = recovery.deterministic
         filtered._enable_rigid_soft_full_surface_contact = bool(
             contacts._enable_rigid_soft_full_surface_contact and has_particles
         )

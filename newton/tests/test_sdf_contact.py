@@ -10,6 +10,7 @@ import warp as wp
 
 import newton
 from newton._src.geometry.flags import MeshSignMethod
+from newton._src.geometry.hashtable import HASH_MIX_MULTIPLIER
 from newton._src.geometry.sdf_contact import (
     _create_sdf_contact_funcs,
     _recover_flat_texture_contact,
@@ -730,6 +731,62 @@ def test_planar_recovery_overflow(test, device):
         test.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
 
 
+def test_planar_recovery_deterministic_hash_contention(test, device):
+    """Recover every eligible pair when many pairs hash to the same slot."""
+    with wp.ScopedDevice(device):
+        wall, probe = test.loaded_wall_and_probe(device)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        cfg = builder.ShapeConfig(gap=0.0002, margin=0.0, density=0.0)
+        shape_count = 64
+        for _ in range(shape_count):
+            builder.add_shape_mesh(-1, mesh=wall, xform=wp.transform(wp.vec3(0.0005, 0.0, 0.0)), cfg=cfg)
+        for _ in range(shape_count):
+            body = builder.add_body(mass=0.05, inertia=wp.mat33(np.eye(3) * 1.0e-6))
+            builder.add_shape_mesh(body, mesh=probe, cfg=cfg)
+        model = builder.finalize()
+
+        # The 33 pairs need 128 hash slots at the recovery table's load factor.
+        # Choose a cluster that exceeds the ordinary 32-probe search limit.
+        buckets = [[] for _ in range(128)]
+        for a in range(shape_count):
+            for b in range(shape_count, 2 * shape_count):
+                key = (a << 32) | b
+                mixed = ((key ^ (key >> 33)) * int(HASH_MIX_MULTIPLIER)) & ((1 << 64) - 1)
+                buckets[(mixed ^ (mixed >> 33)) & 127].append((a, b))
+        pairs = sorted(max(buckets, key=len)[:33])
+        test.assertEqual(len(pairs), 33)
+        pipeline = newton.CollisionPipeline(
+            model,
+            broad_phase="explicit",
+            shape_pairs_filtered=wp.array(pairs, dtype=wp.vec2i),
+            deterministic=True,
+            rigid_contact_max=128,
+        )
+        contacts = pipeline.contacts()
+        state = model.state()
+
+        def verify_contacts():
+            count = int(contacts.rigid_contact_count.numpy()[0])
+            test.assertEqual(count, len(pairs))
+            np.testing.assert_array_equal(
+                np.column_stack(
+                    (contacts.rigid_contact_shape0.numpy()[:count], contacts.rigid_contact_shape1.numpy()[:count])
+                ),
+                pairs,
+            )
+            np.testing.assert_array_equal(
+                contacts.rigid_contact_normal.numpy()[:count], np.tile([-1, 0, 0], (count, 1))
+            )
+
+        pipeline.collide(state, contacts)
+        verify_contacts()
+        with wp.ScopedCapture() as capture:
+            pipeline.collide(state, contacts)
+        for _ in range(3):
+            wp.capture_launch(capture.graph)
+            verify_contacts()
+
+
 def test_planar_recovery_eligibility(test, device):
     """Keep disconnected probes and meshes without textures on the ordinary contact path."""
     with wp.ScopedDevice(device):
@@ -998,6 +1055,12 @@ add_function_test(
     TestSDFContact,
     "test_planar_recovery_overflow",
     test_planar_recovery_overflow,
+    devices=get_cuda_test_devices(),
+)
+add_function_test(
+    TestSDFContact,
+    "test_planar_recovery_deterministic_hash_contention",
+    test_planar_recovery_deterministic_hash_contention,
     devices=get_cuda_test_devices(),
 )
 add_function_test(

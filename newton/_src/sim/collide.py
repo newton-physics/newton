@@ -3115,10 +3115,17 @@ class CollisionPipeline:
 
     def _prepare_mesh_recovery(self, contacts):
         if self._mesh_recovery_pair_max and contacts.rigid_contact_max > 0:
-            capacity = 2 * min(self._mesh_recovery_pair_max, contacts.rigid_contact_max)
+            # A rejected write can still leave a claim. In deterministic mode
+            # size for every eligible pair so hash insertion order cannot drop one.
+            pair_max = self._mesh_recovery_pair_max
+            if not self.deterministic:
+                pair_max = min(pair_max, contacts.rigid_contact_max)
+            capacity = 2 * pair_max
             storage = contacts._mesh_recovery_contacts
-            if storage is None or storage.keys.shape[0] < capacity:
-                contacts._mesh_recovery_contacts = allocate_mesh_recovery(capacity, self.device)
+            if storage is None or storage.keys.shape[0] < capacity or storage.deterministic != self.deterministic:
+                contacts._mesh_recovery_contacts = allocate_mesh_recovery(
+                    capacity, self.device, deterministic=self.deterministic
+                )
             return contacts._mesh_recovery_contacts
         return None
 

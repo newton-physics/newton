@@ -323,6 +323,7 @@ class MeshRecoveryData:
     active_slots: wp.array[int]
     contacts: wp.array[MeshRecoveryContact]
     generation: wp.array[int]
+    deterministic: bool
 
 
 @cache
@@ -335,7 +336,7 @@ def empty_mesh_recovery(device_alias: str) -> MeshRecoveryData:
     return data
 
 
-def allocate_mesh_recovery(capacity: int, device) -> MeshRecoveryData:
+def allocate_mesh_recovery(capacity: int, device, *, deterministic: bool = False) -> MeshRecoveryData:
     """Allocate sparse solver metadata keyed by shape pair."""
     table = HashTable(capacity, device=device)
     data = MeshRecoveryData()
@@ -343,6 +344,7 @@ def allocate_mesh_recovery(capacity: int, device) -> MeshRecoveryData:
     data.active_slots = table.active_slots
     data.contacts = wp.empty(table.capacity, dtype=MeshRecoveryContact, device=device)
     data.generation = wp.zeros(1, dtype=int, device=device)
+    data.deterministic = deterministic
     return data
 
 
@@ -370,8 +372,13 @@ def pair_was_recovered(data: MeshRecoveryData, pair: wp.vec2i) -> bool:
 
 
 @wp.func
+def _recovery_probe_limit(data: MeshRecoveryData) -> int:
+    return data.keys.shape[0] if data.deterministic else _RECOVERY_MAX_PROBES
+
+
+@wp.func
 def _find_published_recovery(data: MeshRecoveryData, a: int, b: int) -> int:
-    slot = hashtable_find(_pair_key(a, b), data.keys, _RECOVERY_MAX_PROBES)
+    slot = hashtable_find(_pair_key(a, b), data.keys, _recovery_probe_limit(data))
     if slot >= 0 and data.contacts[slot].thickness > 0.0:
         return slot
     return -1
@@ -553,7 +560,9 @@ def get_compute_planar_recovery_contacts(writer_func):
             if not hit.valid:
                 continue
             key = _pair_key(a, b)
-            slot, inserted = hashtable_insert(key, recovery.keys, recovery.active_slots, _RECOVERY_MAX_PROBES)
+            slot, inserted = hashtable_insert(
+                key, recovery.keys, recovery.active_slots, _recovery_probe_limit(recovery)
+            )
             if not inserted:
                 continue
 
