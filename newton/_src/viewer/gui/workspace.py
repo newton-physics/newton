@@ -21,6 +21,7 @@ from ...sim.articulation import eval_fk, eval_ik
 from ...sim.enums import BodyFlags, JointType, ModelFlags
 from ...sim.model import Model
 from ...sim.state import State
+from ...solvers.solver import SolverBase
 from ..viewer_bindings import InspectionBindings
 from ..viewer_history import FrameHistory, _component_arrays
 from ..viewer_model_tree import ModelTree
@@ -2045,6 +2046,18 @@ class ViewerWorkspace:
                         w.number(label, value[0], integer=np.issubdtype(value.dtype, np.integer), reason=reason)
                     else:
                         w.array(label, value, reason=reason)
+        supported = solver.supported_observables if isinstance(solver, SolverBase) else frozenset()
+        if supported:
+            logged = self.viewer._last_contact_observables
+            logged = logged.kinds if logged is not None and logged.model is self.model else frozenset()
+            with w.group("Observables", default_open=False) as opened:
+                if opened:
+                    for kind in sorted(supported):
+                        w.text_value(
+                            kind.replace("_", " ").capitalize(),
+                            "Logged" if kind in logged else "Available",
+                            reason="Request solver observables and pass them to log_contacts() to inspect them.",
+                        )
         if mj is not None:
             mju = solver._mujoco
             with w.group("Methods") as opened:

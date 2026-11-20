@@ -1514,6 +1514,42 @@ class TestViewerProperties(unittest.TestCase):
             self.assertIsNone(inspector.reference_target(model, frequency, invalid))
         self.assertIsNone(inspector.reference_target(model, Frequency.SHAPE, model.shape_count))
 
+    def test_logged_solver_observables_follow_selection(self) -> None:
+        """List logged per-body observables for selected bodies and none for other domains."""
+        builder = newton.ModelBuilder()
+        bodies = [builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3))) for _ in range(2)]
+        for body in bodies:
+            builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+        model = builder.finalize(device="cpu")
+        solver = newton.solvers.SolverXPBD(model)
+        observables = solver.observables(kinds={solver.ObservableKind.BODY_PARENT_F})
+        ws = ViewerWorkspace.__new__(ViewerWorkspace)
+        ws.model, ws.selected, ws.selection = model, ("body", bodies[1]), {("body", bodies[1])}
+        ws.viewer = SimpleNamespace(_last_state=model.state(), _last_contact_observables=None)
+        ws._cache, ws._live_cache = {}, {}
+        inspector = PropertyInspector(ws)
+        inspector._contexts()
+        self.assertEqual(inspector._observables(), [])
+
+        ws.viewer._last_contact_observables = observables
+        fields = inspector._observables()
+        self.assertEqual([(field[1], list(field[0].indices)) for field in fields], [("body_parent_f", [bodies[1]])])
+        self.assertIs(fields[0][3], observables)
+        self.assertIs(fields[0][5], observables.body_parent_f)
+
+        ws.selected, ws.selection = ("shape", 0), {("shape", 0)}
+        inspector._contexts()
+        self.assertEqual(inspector._observables(), [])
+
+        # Observables from another Model are never matched to this selection.
+        other = builder.finalize(device="cpu")
+        ws.viewer._last_contact_observables = newton.solvers.SolverXPBD(other).observables(
+            kinds={solver.ObservableKind.BODY_PARENT_F}
+        )
+        ws.selected, ws.selection = ("body", bodies[0]), {("body", bodies[0])}
+        inspector._contexts()
+        self.assertEqual(inspector._observables(), [])
+
     def test_frequency_discovery_and_live_joint_edits(self) -> None:
         builder = newton.ModelBuilder()
         joints = []
