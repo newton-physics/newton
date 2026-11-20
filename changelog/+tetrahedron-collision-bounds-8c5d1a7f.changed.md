@@ -1,1 +1,0 @@
-Use tighter CUDA broad-phase bounds in scenes with many tetrahedral convex hulls to reduce unnecessary collision queries. Small scenes, other hull types, and CPU execution retain their existing bounds path. No API changes or migration are required.

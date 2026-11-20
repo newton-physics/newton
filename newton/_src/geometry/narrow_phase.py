@@ -69,7 +69,6 @@ from ..geometry.contact_reduction_global import (
     write_contact_to_reducer,
 )
 from ..geometry.contact_sort import ContactSorter
-from ..geometry.ellipsoid_contact import collide_ellipsoids
 from ..geometry.flags import ShapeFlags
 from ..geometry.mpr import create_solve_mpr, create_support_map_function
 from ..geometry.sdf_contact import (
@@ -511,7 +510,6 @@ def create_narrow_phase_primitive_kernel(
     sparse_gjk_pairs: bool = False,
     hydroelastic_enabled: bool = False,
     _tetrahedron_separation: bool = False,
-    _ellipsoid_contacts: bool = False,
 ):
     """
     Create a kernel for fast analytical collision detection of primitive shapes.
@@ -527,7 +525,6 @@ def create_narrow_phase_primitive_kernel(
         sparse_gjk_pairs: Preserve broad-phase pair indices in the GJK buffer.
         hydroelastic_enabled: Route hydroelastic pairs to the SDF-SDF pipeline.
         _tetrahedron_separation: Reject distant four-vertex hulls using padded local bounds.
-        _ellipsoid_contacts: Try fixed-storage sphere-ellipsoid and ellipsoid-ellipsoid contacts.
 
     Returns:
         A warp kernel for primitive collision detection
@@ -535,8 +532,6 @@ def create_narrow_phase_primitive_kernel(
     _module = f"narrow_phase_primitive_{writer_func.__name__}_{speculative}_{sparse_gjk_pairs}_{hydroelastic_enabled}"
     if _tetrahedron_separation:
         _module += "_tetrahedra"
-    if _ellipsoid_contacts:
-        _module += "_ellipsoids"
 
     @wp.func(module=_module)
     def _check_unit_scale_sdf(
@@ -782,17 +777,7 @@ def create_narrow_phase_primitive_kernel(
 
             # Route pairs without an analytical path before allocating contact
             # storage and walking the primitive dispatch chain.
-            smooth_pair = False
-            if wp.static(_ellipsoid_contacts):
-                smooth_pair = (type_a == GeoType.SPHERE or type_a == GeoType.ELLIPSOID) and type_b == GeoType.ELLIPSOID
-                if smooth_pair:
-                    offset = wp.transform_get_translation(shape_transform[shape_b]) - wp.transform_get_translation(
-                        shape_transform[shape_a]
-                    )
-                    radius_sum = wp.max(scale_a) + wp.max(scale_b)
-                    # Disjoint enclosing spheres cannot use the smooth query.
-                    smooth_pair = wp.length_sq(offset) <= radius_sum * radius_sum
-            if not smooth_pair and (
+            if (
                 type_a >= GeoType.ELLIPSOID
                 or type_b == GeoType.CONE
                 or (type_a == GeoType.CAPSULE and type_b > GeoType.CAPSULE and type_b != GeoType.CYLINDER)
@@ -1036,22 +1021,6 @@ def create_narrow_phase_primitive_kernel(
                     pos_a, sphere_radius, pos_b, box_rot, box_size
                 )
 
-            if wp.static(_ellipsoid_contacts):
-                if smooth_pair:
-                    radii_a = scale_a
-                    if is_sphere_a:
-                        radii_a = wp.vec3(scale_a[0])
-                    solved, distance, center, normal = collide_ellipsoids(
-                        radii_a,
-                        scale_b,
-                        wp.quat_inverse(quat_a) * quat_b,
-                        wp.quat_rotate_inv(quat_a, pos_b - pos_a),
-                    )
-                    if solved:
-                        contact_dist_0 = distance
-                        contact_pos_0 = pos_a + wp.quat_rotate(quat_a, center)
-                        contact_normal = wp.quat_rotate(quat_a, normal)
-
             # =====================================================================
             # Write all contacts (single write block for 0 to 4 contacts)
             # =====================================================================
@@ -1198,7 +1167,6 @@ def create_narrow_phase_kernel_gjk_mpr(
     support_func: Any = None,
     post_process_contact: Any = None,
     speculative: bool = False,
-    _direct_box_contacts: bool = False,
     _dense_query_packing: bool = False,
 ):
     """
@@ -1218,8 +1186,6 @@ def create_narrow_phase_kernel_gjk_mpr(
     _module = f"narrow_phase_gjk_mpr_{external_aabb}_{speculative}_{writer_func.__name__}_{_sf}_{_ppc}"
     if _dense_query_packing:
         _module += "_dense"
-    if _direct_box_contacts:
-        _module += "_direct_boxes"
     accelerated_support = support_func in (support_map_accelerated, support_map_lean_accelerated)
     provider_type = AcceleratedSupportMapDataProvider if accelerated_support else SupportMapDataProvider
 
@@ -1406,12 +1372,7 @@ def create_narrow_phase_kernel_gjk_mpr(
 
             # Find and write contacts using GJK/MPR
             wp.static(
-                create_find_contacts(
-                    writer_func,
-                    support_func=support_func,
-                    post_process_contact=post_process_contact,
-                    _direct_box_contacts=_direct_box_contacts,
-                )
+                create_find_contacts(writer_func, support_func=support_func, post_process_contact=post_process_contact)
             )(
                 pos_a,
                 pos_b,
@@ -1441,7 +1402,6 @@ def create_narrow_phase_kernels_gjk_mpr_split(
     support_func: Any = None,
     post_process_contact: Any = None,
     speculative: bool = False,
-    _direct_box_contacts: bool = False,
 ):
     """Create graph-capturable MPR, GJK/refinement, and manifold work-queue kernels."""
     if support_func is None:
@@ -1450,11 +1410,9 @@ def create_narrow_phase_kernels_gjk_mpr_split(
         post_process_contact = post_process_axial_on_discrete_contact
 
     support_funcs = create_support_map_function(support_func, use_precomputed_center=True)
-
-    def certificate(support):
-        return create_solve_box_penetration(support, _direct_box_contacts=_direct_box_contacts)
-
-    solve_mpr = create_solve_mpr(support_func, _support_funcs=support_funcs, depth_certificate=certificate)
+    solve_mpr = create_solve_mpr(
+        support_func, _support_funcs=support_funcs, depth_certificate=create_solve_box_penetration
+    )
     solve_gjk = create_solve_closest_distance(support_func, _support_funcs=support_funcs)
     prepare_pair = create_prepare_convex_pair(external_aabb, speculative)
     write_result = create_write_convex_query_result(
@@ -1463,8 +1421,6 @@ def create_narrow_phase_kernels_gjk_mpr_split(
     suffix = (
         f"{external_aabb}_{writer_func.__name__}_{support_func.__name__}_{post_process_contact.__name__}_{speculative}"
     )
-    if _direct_box_contacts:
-        suffix += "_direct_boxes"
     accelerated_support = support_func in (support_map_accelerated, support_map_lean_accelerated)
     provider_type = AcceleratedSupportMapDataProvider if accelerated_support else SupportMapDataProvider
 
@@ -1532,37 +1488,19 @@ def create_narrow_phase_kernels_gjk_mpr_split(
                 if wp.static(accelerated_support):
                     provider.support_lut = support_lut
                     provider.support_vertex_offsets = support_vertex_offsets
-                direct = False
-                point_a = wp.vec3(0.0)
-                point_b = wp.vec3(0.0)
-                normal = wp.vec3(0.0)
-                penetration = float(0.0)
-                seed = wp.vec3(0.0)
-                if wp.static(hasattr(solve_mpr, "direct")):
-                    direct, point_a, point_b, normal, penetration = wp.static(solve_mpr.direct)(
-                        query.geom_a,
-                        query.geom_b,
-                        query.relative_orientation_b,
-                        query.relative_position_b,
-                        query.enlarge,
-                        1e-5,
-                    )
-                collision = direct
-                witnesses_valid = direct
-                if not direct:
-                    collision, point_a, point_b, normal, penetration, seed, witnesses_valid = wp.static(
-                        solve_mpr.portal_core
-                    )(
-                        query.geom_a,
-                        query.geom_b,
-                        query.relative_orientation_b,
-                        query.relative_position_b,
-                        query.enlarge,
-                        provider,
-                        wp.vec3(0.0),
-                    )
+                collision, point_a, point_b, normal, penetration, seed, witnesses_valid = wp.static(
+                    solve_mpr.portal_core
+                )(
+                    query.geom_a,
+                    query.geom_b,
+                    query.relative_orientation_b,
+                    query.relative_position_b,
+                    query.enlarge,
+                    provider,
+                    wp.vec3(0.0),
+                )
                 refine_portal = False
-                if collision and not direct:
+                if collision:
                     if query.type_a != GeoType.PLANE and query.type_b != GeoType.PLANE:
                         query.geom_a.bounds_half = _penetration_bounds_half(
                             query.shape_a,
@@ -2709,9 +2647,7 @@ class NarrowPhase:
     contact writer function.
     """
 
-    _direct_box_contacts = False
     _tetrahedron_separation = False
-    _ellipsoid_contacts = False
 
     def __init__(
         self,
@@ -2957,7 +2893,6 @@ class NarrowPhase:
             sparse_gjk_pairs=self.sparse_gjk_pairs,
             hydroelastic_enabled=hydroelastic_sdf is not None,
             _tetrahedron_separation=self._tetrahedron_separation,
-            _ellipsoid_contacts=self._ellipsoid_contacts,
         )
         # GJK/MPR kernel handles remaining convex-convex pairs. Only models with cooked
         # support data select the accelerated support function; other models
@@ -2971,7 +2906,6 @@ class NarrowPhase:
                 support_func=support_map_lean_accelerated if convex_support_acceleration else support_map_lean,
                 post_process_contact=post_process_minkowski_only,
                 speculative=speculative,
-                _direct_box_contacts=self._direct_box_contacts,
                 _dense_query_packing=(
                     device_obj.is_cuda
                     and has_generic_convex_pairs
@@ -2988,7 +2922,6 @@ class NarrowPhase:
                 contact_func,
                 support_func=support_map_accelerated if convex_support_acceleration else support_map,
                 speculative=speculative,
-                _direct_box_contacts=self._direct_box_contacts,
             )
 
         if self.split_gjk_mpr:
@@ -3008,7 +2941,6 @@ class NarrowPhase:
                 support_func=split_support,
                 post_process_contact=split_post_process,
                 speculative=speculative,
-                _direct_box_contacts=self._direct_box_contacts,
             )
         else:
             self.narrow_phase_mpr_kernel = None
@@ -3254,8 +3186,13 @@ class NarrowPhase:
             else None
         )
         # Split-convex blocks distribute independent serial pair queries across
-        # lanes. Accelerated queries retain their one-warp worker budget.
-        # Wider exhaustive-support blocks avoid dense-queue throughput loss.
+        # lanes. Use one warp while preserving the block distribution; lanes
+        # grid-stride over larger block queues. That suits the accelerated
+        # hill-climb support map, whose per-pair cost is long and uneven. The
+        # exhaustive support scan is shorter and far more uniform, and does
+        # better with the full block: num_blocks is sized against self.block_dim,
+        # so the narrower block also launches a quarter of the threads used by
+        # the rest of the narrow phase, which throttles large replicated scenes.
         if device_obj.is_cuda:
             self.split_convex_block_dim = 32 if convex_support_acceleration else self.block_dim
         else:
@@ -4601,8 +4538,6 @@ class NarrowPhase:
 class _PipelineNarrowPhase(NarrowPhase):
     """Build kernel variants selected from the pipeline's collision topology."""
 
-    def __init__(self, *, direct_box_contacts: bool, tetrahedron_separation: bool, ellipsoid_contacts: bool, **kwargs):
-        self._direct_box_contacts = direct_box_contacts
+    def __init__(self, *, tetrahedron_separation: bool, **kwargs):
         self._tetrahedron_separation = tetrahedron_separation
-        self._ellipsoid_contacts = ellipsoid_contacts
         super().__init__(**kwargs)

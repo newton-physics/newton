@@ -153,7 +153,6 @@ def create_solve_convex_multi_contact(
     post_process_contact: Any,
     use_precomputed_center: bool = False,
     penetration_refiner: Any = None,
-    _direct_box_contacts: bool = False,
 ):
     """Create a fused MPR/GJK multi-contact solver.
 
@@ -163,7 +162,6 @@ def create_solve_convex_multi_contact(
         post_process_contact: Function that post-processes generated contacts.
         use_precomputed_center: Whether the geometry data supplies a cached center.
         penetration_refiner: Optional physical-proxy result refinement function.
-        _direct_box_contacts: Enable closed-form witnesses for aligned boxes.
 
     Returns:
         The specialized contact solver.
@@ -171,11 +169,9 @@ def create_solve_convex_multi_contact(
 
     # Create support functions ONCE — shared between MPR and GJK.
     support_funcs = create_support_map_function(support_func, use_precomputed_center)
-
-    def certificate(support):
-        return create_solve_box_penetration(support, _direct_box_contacts=_direct_box_contacts)
-
-    solve_mpr = create_solve_mpr(support_func, _support_funcs=support_funcs, depth_certificate=certificate)
+    solve_mpr = create_solve_mpr(
+        support_func, _support_funcs=support_funcs, depth_certificate=create_solve_box_penetration
+    )
     solve_gjk = create_solve_closest_distance(support_func, _support_funcs=support_funcs)
     has_penetration_refiner = penetration_refiner is not None
 
@@ -305,7 +301,6 @@ def create_solve_convex_single_contact(
     post_process_contact: Any,
     use_precomputed_center: bool = False,
     penetration_refiner: Any = None,
-    _direct_box_contacts: bool = False,
 ):
     """Create a fused MPR/GJK single-contact solver.
 
@@ -315,7 +310,6 @@ def create_solve_convex_single_contact(
         post_process_contact: Function that post-processes generated contacts.
         use_precomputed_center: Whether the geometry data supplies a cached center.
         penetration_refiner: Optional physical-proxy result refinement function.
-        _direct_box_contacts: Enable closed-form witnesses for aligned boxes.
 
     Returns:
         The specialized contact solver.
@@ -323,11 +317,9 @@ def create_solve_convex_single_contact(
 
     # Create support functions ONCE — shared between MPR and GJK.
     support_funcs = create_support_map_function(support_func, use_precomputed_center)
-
-    def certificate(support):
-        return create_solve_box_penetration(support, _direct_box_contacts=_direct_box_contacts)
-
-    solve_mpr = create_solve_mpr(support_func, _support_funcs=support_funcs, depth_certificate=certificate)
+    solve_mpr = create_solve_mpr(
+        support_func, _support_funcs=support_funcs, depth_certificate=create_solve_box_penetration
+    )
     solve_gjk = create_solve_closest_distance(support_func, _support_funcs=support_funcs)
     has_penetration_refiner = penetration_refiner is not None
 

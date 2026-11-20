@@ -95,7 +95,7 @@ class TestApi(unittest.TestCase):
         from newton.geometry import NarrowPhase  # noqa: PLC0415
 
         parameters = inspect.signature(NarrowPhase).parameters
-        for name in ("_direct_box_contacts", "_tetrahedron_separation", "_ellipsoid_contacts"):
+        for name in ("_tetrahedron_separation",):
             self.assertNotIn(name, parameters)
         self.assertNotIn("_counters_prepared", inspect.signature(NarrowPhase.launch_custom_write).parameters)
 
