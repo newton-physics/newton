@@ -13,7 +13,7 @@ from newton.solvers import SolverKamino
 from newton.tests.kamino import setup_test_output, setup_tests, test_context
 from newton.tests.unittest_utils import NewtonTestCase
 
-ROLLING = newton.ShapeFrictionMode.ROLLING
+TORSIONAL_ROLLING = newton.ShapeFrictionMode.TORSIONAL_ROLLING
 
 _CPU_QR_SKIP_REASON = (
     "warp.fem.linalg.symmetric_eigenvalues_qr can return NaN eigenvalues on the CPU for denormal "
@@ -196,7 +196,7 @@ class TestSolverKaminoLOXContacts(NewtonTestCase):
                     friction=friction,
                     torsional=torsional,
                     rolling=rolling,
-                    friction_mode=ROLLING,
+                    friction_mode=TORSIONAL_ROLLING,
                 )
                 solver = self._solver(model, method=method)
                 velocity = self._step(model, solver, dt=dt).body_qd.numpy()[0]
@@ -223,7 +223,7 @@ class TestSolverKaminoLOXContacts(NewtonTestCase):
         ):
             with self.subTest(motion=motion):
                 model = self._sphere(
-                    velocity=velocity, friction=0.5, torsional=0.005, rolling=0.002, friction_mode=ROLLING
+                    velocity=velocity, friction=0.5, torsional=0.005, rolling=0.002, friction_mode=TORSIONAL_ROLLING
                 )
                 config = SolverKamino.Config(dynamics_solver="lox", use_collision_detector=False)
                 config.lox.inertial_warmstart_fraction = 1.0
@@ -256,7 +256,7 @@ class TestSolverKaminoLOXContacts(NewtonTestCase):
         velocity = (0.0, 0.0, 0.0, 2.0, 0.0, 3.0)
         for friction_mode, legacy, damped_axes in (
             (mode.TORSIONAL, False, [False, True]),
-            (ROLLING, False, [True, True]),
+            (TORSIONAL_ROLLING, False, [True, True]),
             (mode.SLIDING, True, [True, True]),
             (mode.NONE, True, [False, False]),
         ):
@@ -281,7 +281,7 @@ class TestSolverKaminoLOXContacts(NewtonTestCase):
                     velocity=(0.0, 0.0, 0.0, 2.0, 0.0, 3.0),
                     torsional=0.02,
                     rolling=0.01,
-                    friction_mode=ROLLING,
+                    friction_mode=TORSIONAL_ROLLING,
                 )
                 solver = self._solver(model, compute_solution_metrics=enabled, contact_compliance=True)
                 self._step(model, solver, stiffness=1000.0)
@@ -301,7 +301,11 @@ class TestSolverKaminoLOXContacts(NewtonTestCase):
         with self.subTest(case="per_contact"):
             # Only the contact of world 1 has angular friction and drops out of its dual residuals
             model = self._sphere(
-                velocity=(0.0, 0.0, 0.0, 2.0, 0.0, 3.0), torsional=0.02, rolling=0.01, friction_mode=ROLLING, worlds=2
+                velocity=(0.0, 0.0, 0.0, 2.0, 0.0, 3.0),
+                torsional=0.02,
+                rolling=0.01,
+                friction_mode=TORSIONAL_ROLLING,
+                worlds=2,
             )
             world_0 = model.shape_world.numpy() == 0
             for name in ("shape_material_mu_torsional", "shape_material_mu_rolling"):
@@ -339,7 +343,7 @@ class TestSolverKaminoLOXContacts(NewtonTestCase):
                     velocity=(0.0, 0.0, -0.2, 1.0, 0.0, 2.0),
                     torsional=0.02,
                     rolling=0.01,
-                    friction_mode=ROLLING,
+                    friction_mode=TORSIONAL_ROLLING,
                 )
                 solver = self._solver(
                     model,
@@ -362,7 +366,7 @@ class TestSolverKaminoLOXContacts(NewtonTestCase):
 
     def test_selective_reset_cold_starts_reset_worlds(self):
         """Solve a reset world exactly as a new solver would, whatever its previous contact impulses."""
-        for friction_mode in (newton.ShapeFrictionMode.SLIDING, ROLLING):
+        for friction_mode in (newton.ShapeFrictionMode.SLIDING, TORSIONAL_ROLLING):
             with self.subTest(friction_mode=friction_mode):
                 model = self._sphere(
                     velocity=(1.0, -0.5, 0.0, 2.0, 1.0, 3.0),
@@ -394,7 +398,11 @@ class TestSolverKaminoLOXContacts(NewtonTestCase):
     def test_spatial_contact_permutation(self):
         """Keep each world's angular response when collision records change order."""
         model = self._sphere(
-            velocity=(0.0, 0.0, 0.0, 2.0, 0.0, 3.0), torsional=0.02, rolling=0.01, friction_mode=ROLLING, worlds=2
+            velocity=(0.0, 0.0, 0.0, 2.0, 0.0, 3.0),
+            torsional=0.02,
+            rolling=0.01,
+            friction_mode=TORSIONAL_ROLLING,
+            worlds=2,
         )
         solver = self._solver(model)
         state_in, state_out = model.state(), model.state()
@@ -463,7 +471,7 @@ class TestSolverKaminoLOXContacts(NewtonTestCase):
     def test_disappearing_contact_clears_angular_impulses(self):
         """Discard spatial contact impulses after a body separates from the plane."""
         model = self._sphere(
-            velocity=(0.0, 0.0, 0.0, 2.0, 0.0, 3.0), torsional=0.02, rolling=0.01, friction_mode=ROLLING
+            velocity=(0.0, 0.0, 0.0, 2.0, 0.0, 3.0), torsional=0.02, rolling=0.01, friction_mode=TORSIONAL_ROLLING
         )
         solver = self._solver(model)
         state_in = self._step(model, solver)

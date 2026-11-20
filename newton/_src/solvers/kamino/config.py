@@ -1428,7 +1428,7 @@ class LOXSolverConfig:
 
     .. deprecated:: 1.9
         Set :attr:`~newton.ModelBuilder.ShapeConfig.friction_mode` to
-        :attr:`~newton.ShapeFrictionMode.TORSIONAL` or :attr:`~newton.ShapeFrictionMode.ROLLING`
+        :attr:`~newton.ShapeFrictionMode.TORSIONAL` or :attr:`~newton.ShapeFrictionMode.TORSIONAL_ROLLING`
         on the shapes that need spatial friction instead; the solver then enables it
         automatically. When set, every contact keeps its torsional and rolling coefficients
         regardless of the shapes' friction modes.

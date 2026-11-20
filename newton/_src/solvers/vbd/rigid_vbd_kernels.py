@@ -720,7 +720,7 @@ def _average_rigid_contact_material(
         avg_mu = 0.0
     if friction_mode < int(ShapeFrictionMode.TORSIONAL):
         avg_mu_torsional = 0.0
-    if friction_mode < int(ShapeFrictionMode.ROLLING):
+    if friction_mode < int(ShapeFrictionMode.TORSIONAL_ROLLING):
         avg_mu_rolling = 0.0
     return avg_ke, avg_kd, avg_mu, avg_mu_torsional, avg_mu_rolling
 

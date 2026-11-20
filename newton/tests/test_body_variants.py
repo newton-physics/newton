@@ -97,7 +97,7 @@ class TestBodyVariants(unittest.TestCase):
     def test_select_body_variants(self):
         env = newton.ModelBuilder()
         body = env.add_body(xform=wp.transform((0.0, 0.0, 0.2), wp.quat_identity()), label="object")
-        rolling = newton.ShapeFrictionMode.ROLLING
+        rolling = newton.ShapeFrictionMode.TORSIONAL_ROLLING
         cube = _variant("cube", mu=0.9, tag=1, friction_mode=rolling)
         spheres = _variant("spheres", mu=0.2, mu_static=0.6, tag=2, friction_mode=rolling)
         spheres.shape_opacity[:] = [0.5, 0.5]

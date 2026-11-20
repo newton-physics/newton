@@ -371,7 +371,7 @@ friction, which follows the shapes' friction modes.
 * Spatial friction applies the shape ``mu_torsional`` and ``mu_rolling``
   coefficients, both in metres, on contacts whose
   :attr:`~newton.ModelBuilder.ShapeConfig.friction_mode` is ``TORSIONAL`` or
-  ``ROLLING``. It is enabled automatically when any shape uses one of these
+  ``TORSIONAL_ROLLING``. It is enabled automatically when any shape uses one of these
   modes. Sliding, torsion, and rolling share one elliptic friction budget.
   Contacts with zero angular coefficients retain the classical 3D contact
   solve. Kamino's primitive collision pipeline provides no angular

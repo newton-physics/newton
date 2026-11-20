@@ -387,7 +387,7 @@ def _resolve_physics_material(
     # An authored Newton coefficient enables its friction component.
     friction_mode = None
     if rolling_resolver is not None and rolling_resolver.name == "newton":
-        friction_mode = int(ShapeFrictionMode.ROLLING)
+        friction_mode = int(ShapeFrictionMode.TORSIONAL_ROLLING)
     elif torsional_resolver is not None and torsional_resolver.name == "newton":
         friction_mode = int(ShapeFrictionMode.TORSIONAL)
 

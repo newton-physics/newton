@@ -5993,10 +5993,10 @@ def Xform "Articulation" (
         cases = {
             "Default": ({}, None, mode.SLIDING),
             "MjcFrictionless": ({"mjc:condim": 1}, None, mode.NONE),
-            "MjcRolling": ({"mjc:condim": 6}, None, mode.ROLLING),
+            "MjcRolling": ({"mjc:condim": 6}, None, mode.TORSIONAL_ROLLING),
             "PhysxPatchRadius": ({"physxCollision:minTorsionalPatchRadius": 0.01}, None, mode.TORSIONAL),
             "NewtonTorsional": ({}, "torsional", mode.TORSIONAL),
-            "NewtonRolling": ({}, "rolling", mode.ROLLING),
+            "NewtonRolling": ({}, "rolling", mode.TORSIONAL_ROLLING),
             "MjcColliderKeepsCondim": ({"mjc:condim": 4}, "rolling", mode.TORSIONAL),
             "MjcColliderIgnoresPhysxRadius": (
                 {"mjc:condim": 3, "physxCollision:minTorsionalPatchRadius": 0.01},

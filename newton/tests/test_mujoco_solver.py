@@ -7892,7 +7892,7 @@ class TestMuJoCoAttributes(unittest.TestCase):
             newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
             joints = []
             parent = -1
-            for i, friction_mode in enumerate((mode.NONE, mode.SLIDING, mode.TORSIONAL, mode.ROLLING)):
+            for i, friction_mode in enumerate((mode.NONE, mode.SLIDING, mode.TORSIONAL, mode.TORSIONAL_ROLLING)):
                 body = builder.add_link()
                 joints.append(builder.add_joint_revolute(parent, body, axis=(0.0, 0.0, 1.0)))
                 cfg = newton.ModelBuilder.ShapeConfig(friction_mode=friction_mode)
@@ -7966,7 +7966,7 @@ class TestMuJoCoAttributes(unittest.TestCase):
         solver = SolverMuJoCo(model, separate_worlds=False)
         mode = newton.ShapeFrictionMode
         np.testing.assert_array_equal(
-            model.shape_material_friction_mode.numpy(), [mode.ROLLING, mode.TORSIONAL, mode.SLIDING]
+            model.shape_material_friction_mode.numpy(), [mode.TORSIONAL_ROLLING, mode.TORSIONAL, mode.SLIDING]
         )
         np.testing.assert_array_equal(solver.mjw_model.geom_condim.numpy(), [6, 4, 3])
 
@@ -8021,7 +8021,7 @@ class TestMuJoCoAttributes(unittest.TestCase):
         solver = SolverMuJoCo(model, separate_worlds=False)
         mode = newton.ShapeFrictionMode
         np.testing.assert_array_equal(
-            model.shape_material_friction_mode.numpy(), [mode.ROLLING, mode.TORSIONAL, mode.SLIDING]
+            model.shape_material_friction_mode.numpy(), [mode.TORSIONAL_ROLLING, mode.TORSIONAL, mode.SLIDING]
         )
         np.testing.assert_array_equal(solver.mjw_model.geom_condim.numpy(), [6, 4, 3])
 
@@ -8053,7 +8053,9 @@ class TestMuJoCoAttributes(unittest.TestCase):
         model = builder.finalize()
         with self.assertWarnsRegex(UserWarning, "standalone world roots"):
             solver = SolverMuJoCo(model, separate_worlds=False)
-        np.testing.assert_array_equal(model.shape_material_friction_mode.numpy(), [newton.ShapeFrictionMode.ROLLING])
+        np.testing.assert_array_equal(
+            model.shape_material_friction_mode.numpy(), [newton.ShapeFrictionMode.TORSIONAL_ROLLING]
+        )
         np.testing.assert_array_equal(solver.mjw_model.geom_condim.numpy(), [6])
 
     def test_invalid_tendon_joint_range_remains_unowned(self):

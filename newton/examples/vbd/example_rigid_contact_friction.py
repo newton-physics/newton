@@ -69,7 +69,7 @@ class Example:
             mu=0.5,
             mu_torsional=0.005,
             mu_rolling=0.005,
-            friction_mode=newton.ShapeFrictionMode.ROLLING,
+            friction_mode=newton.ShapeFrictionMode.TORSIONAL_ROLLING,
         )
         builder.add_ground_plane(cfg=ground_cfg)
         self.rows = (0.9, 0.4, 0.0, -0.5, -0.9)

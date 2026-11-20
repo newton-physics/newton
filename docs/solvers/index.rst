@@ -218,13 +218,13 @@ formulation.
 - ``friction_mode``: every built-in solver makes a contact frictionless when
   both of its shapes are ``NONE``, and a particle contact when its shape is
   (except :class:`~newton.solvers.SolverMuJoCo` flexes, see
-  :ref:`mujoco-flexes`). ``TORSIONAL`` and ``ROLLING`` are supported by
+  :ref:`mujoco-flexes`). ``TORSIONAL`` and ``TORSIONAL_ROLLING`` are supported by
   :class:`~newton.solvers.SolverXPBD`, :class:`~newton.solvers.SolverMuJoCo`,
   :class:`~newton.solvers.SolverVBD`, and :class:`~newton.solvers.SolverKamino`
   with the LOX backend (torsional and rolling friction share its elliptic
   friction budget). Other solvers apply sliding friction only, and warn if they
   solve rigid contacts. :class:`~newton.solvers.SolverSteel` provides
-  experimental torsion on ``TORSIONAL`` or ``ROLLING`` shapes that also set
+  experimental torsion on ``TORSIONAL`` or ``TORSIONAL_ROLLING`` shapes that also set
   ``steel:min_torsional_patch_radius``.
 - ``mu_torsional`` / ``mu_rolling``: :class:`~newton.solvers.SolverXPBD`,
   :class:`~newton.solvers.SolverMuJoCo`, :class:`~newton.solvers.SolverVBD`,

@@ -1731,7 +1731,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         - ``steel:min_torsional_patch_radius`` [m] is the effective spin radius of the
           shape's contacts (``physxCollision:minTorsionalPatchRadius``, default 0, no
           torsion). A positive radius needs a :attr:`~newton.ModelBuilder.ShapeConfig.friction_mode`
-          of ``TORSIONAL`` or ``ROLLING``, which the USD importer selects with it. PhysX also scales a radius with the penetration depth through
+          of ``TORSIONAL`` or ``TORSIONAL_ROLLING``, which the USD importer selects with it. PhysX also scales a radius with the penetration depth through
           ``physxCollision:torsionalPatchRadius``; this solver does not.
 
         One per-DOF attribute makes joint friction grow with the load the joint transmits, see

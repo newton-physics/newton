@@ -1660,7 +1660,7 @@ def _apply_contact_friction_modes(
     angular = angular_friction[cid]
     if mode < int(ShapeFrictionMode.TORSIONAL):
         angular[0] = 0.0
-    if mode < int(ShapeFrictionMode.ROLLING):
+    if mode < int(ShapeFrictionMode.TORSIONAL_ROLLING):
         angular[1] = 0.0
     angular_friction[cid] = angular
 

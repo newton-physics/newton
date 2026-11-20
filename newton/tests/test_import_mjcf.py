@@ -6415,7 +6415,7 @@ class TestImportMjcfSolverParams(unittest.TestCase):
         self.assertEqual(builder.shape_type[0], GeoType.SPHERE)
 
         # condim 6 inherited from the parent class 'collision' selects rolling friction
-        self.assertEqual(model.shape_material_friction_mode.numpy()[0], newton.ShapeFrictionMode.ROLLING)
+        self.assertEqual(model.shape_material_friction_mode.numpy()[0], newton.ShapeFrictionMode.TORSIONAL_ROLLING)
 
     def test_explicit_class_replaces_childclass(self):
         """Use an explicit class without retaining sibling childclass defaults."""
@@ -10439,7 +10439,7 @@ class TestMjcfDefaultCustomAttributes(unittest.TestCase):
         np.testing.assert_allclose(m.geom_solimp.numpy()[g_def], [0.8, 0.9, 0.01, 0.4, 1.0], atol=1e-4)
 
         g_cls = idx(f"{wb}/b_class/g_class")
-        self.assertEqual(friction_mode[g_cls], mode.ROLLING)
+        self.assertEqual(friction_mode[g_cls], mode.TORSIONAL_ROLLING)
         self.assertEqual(m.geom_priority.numpy()[g_cls], 5)
         self.assertAlmostEqual(float(m.geom_solmix.numpy()[g_cls]), 5.0, places=5)
         self.assertAlmostEqual(float(self.model.shape_gap.numpy()[g_cls]), 0.01, places=5)
@@ -10449,7 +10449,7 @@ class TestMjcfDefaultCustomAttributes(unittest.TestCase):
         self.assertEqual(friction_mode[g_ovr], mode.NONE)
 
         g_child = idx(f"{wb}/b_class/b_override/b_child/g_child")
-        self.assertEqual(friction_mode[g_child], mode.ROLLING)
+        self.assertEqual(friction_mode[g_child], mode.TORSIONAL_ROLLING)
         self.assertEqual(m.geom_priority.numpy()[g_child], 99)
         self.assertAlmostEqual(float(m.geom_solmix.numpy()[g_child]), 5.0, places=5)
         self.assertAlmostEqual(float(self.model.shape_gap.numpy()[g_child]), 0.05, places=5)

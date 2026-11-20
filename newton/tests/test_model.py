@@ -2548,7 +2548,7 @@ class TestShapeConfigValidation(unittest.TestCase):
         body = source.add_body()
         source.add_shape_sphere(body, radius=0.1, cfg=newton.ModelBuilder.ShapeConfig(friction_mode=mode.NONE))
         source.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
-        source.add_shape_capsule(body, cfg=newton.ModelBuilder.ShapeConfig(friction_mode=mode.ROLLING))
+        source.add_shape_capsule(body, cfg=newton.ModelBuilder.ShapeConfig(friction_mode=mode.TORSIONAL_ROLLING))
 
         builder = newton.ModelBuilder()
         builder.add_builder(source)

@@ -80,7 +80,7 @@ def configure_contact_torsion(solver):
     without_torsion = np.unique(shapes[(radii > 0.0) & (modes[shapes] < int(ShapeFrictionMode.TORSIONAL))]).tolist()
     if without_torsion:
         raise ValueError(
-            "steel:min_torsional_patch_radius needs ShapeFrictionMode.TORSIONAL or ROLLING; "
+            "steel:min_torsional_patch_radius needs ShapeFrictionMode.TORSIONAL or TORSIONAL_ROLLING; "
             f"set ShapeConfig.friction_mode of shapes {without_torsion}"
         )
     enabled = bool(np.any(radii > 0.0))

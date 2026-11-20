@@ -840,7 +840,7 @@ class SolverKamino(SolverBase, CouplingInterface):
             warn_deprecation(
                 "SolverKamino.Config.lox.contact_spatial_friction is deprecated in Newton 1.9; set "
                 "ModelBuilder.ShapeConfig.friction_mode to ShapeFrictionMode.TORSIONAL or "
-                "ShapeFrictionMode.ROLLING on the shapes that need spatial friction instead."
+                "ShapeFrictionMode.TORSIONAL_ROLLING on the shapes that need spatial friction instead."
             )
             return config, True
         modes = model.shape_material_friction_mode
@@ -912,7 +912,7 @@ class SolverKamino(SolverBase, CouplingInterface):
         if legacy_spatial_friction and geom_friction_mode is not None:
             # The deprecated option enables spatial friction on every contact with friction.
             modes = geom_friction_mode.numpy()
-            modes[modes > int(ShapeFrictionMode.NONE)] = int(ShapeFrictionMode.ROLLING)
+            modes[modes > int(ShapeFrictionMode.NONE)] = int(ShapeFrictionMode.TORSIONAL_ROLLING)
             geom_friction_mode.assign(modes)
             if not np.any(modes == int(ShapeFrictionMode.NONE)):
                 self._model_kamino.geoms.friction_mode = None

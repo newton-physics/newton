@@ -2418,14 +2418,14 @@ Shape material properties control contact resolution. Configure via :class:`~Mod
 
 :class:`~newton.ShapeFrictionMode` selects which friction components a
 contact applies: ``NONE`` (frictionless), ``SLIDING`` (``mu`` only),
-``TORSIONAL`` (adds ``mu_torsional``), or ``ROLLING`` (adds ``mu_rolling``).
+``TORSIONAL`` (adds ``mu_torsional``), or ``TORSIONAL_ROLLING`` (adds ``mu_rolling``).
 A contact uses the higher mode of its two shapes (in
 :class:`~newton.solvers.SolverMuJoCo`, a higher ``mujoco:geom_priority`` or an
 explicit contact pair decides instead) and then combines the coefficients of
 both shapes by the solver's usual rule, so torsional and rolling coefficients
 take effect only in contacts where a shape's mode enables them. To skip a
 lower component, set its coefficient to zero on both shapes, for example
-``ROLLING`` with ``mu_torsional=0``
+``TORSIONAL_ROLLING`` with ``mu_torsional=0``
 (:class:`~newton.solvers.SolverMuJoCo` keeps its minimum coefficient of 1e-5). A rigid contact is only frictionless
 when both shapes are ``NONE``. Particles have no mode and count as ``NONE``,
 so particle contacts follow the shape's mode, and the modes above ``SLIDING``
@@ -2561,7 +2561,7 @@ Extends ``PhysicsMaterialAPI`` with torsional/rolling friction
 (``newton:torsionalFriction``, ``newton:rollingFriction``) and contact response
 attributes. Authoring a torsional or rolling coefficient raises the
 :attr:`~ModelBuilder.ShapeConfig.friction_mode` of the shapes bound to the
-material to ``TORSIONAL`` or ``ROLLING``. Colliders that apply
+material to ``TORSIONAL`` or ``TORSIONAL_ROLLING``. Colliders that apply
 ``MjcCollisionAPI`` select friction components through ``mjc:condim`` alone.
 A positive PhysX ``physxCollision:minTorsionalPatchRadius`` ``r`` [m] selects
 ``TORSIONAL`` with ``mu_torsional = mu * r``, unless the material authors Newton

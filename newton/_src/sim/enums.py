@@ -175,11 +175,11 @@ class ShapeFrictionMode(IntEnum):
 
     The modes follow the contact models of grasping: frictionless point contact,
     point contact with sliding friction, and soft-finger contact that adds
-    torsional friction about the normal; ``ROLLING`` adds rolling resistance.
+    torsional friction about the normal; ``TORSIONAL_ROLLING`` adds rolling resistance.
     They correspond to MuJoCo's ``condim`` 1, 3, 4, and 6.
 
     Each mode includes the components of the lower modes. To leave out a lower
-    component, set its coefficient to zero; for example, ``ROLLING`` with
+    component, set its coefficient to zero; for example, ``TORSIONAL_ROLLING`` with
     :attr:`~newton.ModelBuilder.ShapeConfig.mu_torsional` of zero gives rolling
     resistance without torsional friction. A contact uses the higher mode of its
     two shapes (in :class:`~newton.solvers.SolverMuJoCo`, a higher
@@ -212,7 +212,7 @@ class ShapeFrictionMode(IntEnum):
     TORSIONAL = 2
     """Sliding friction and torsional friction about the contact normal."""
 
-    ROLLING = 3
+    TORSIONAL_ROLLING = 3
     """Sliding, torsional, and rolling friction."""
 
 

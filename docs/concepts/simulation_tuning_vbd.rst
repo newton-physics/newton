@@ -679,8 +679,8 @@ incomplete solve.
 **Torsional and rolling friction.** Body-body contacts resist spin about the
 contact normal when the
 :attr:`~newton.ModelBuilder.ShapeConfig.friction_mode` of either shape is
-``TORSIONAL`` or ``ROLLING``, and rolling in the contact plane when it is
-``ROLLING``; the default ``SLIDING`` mode applies neither.
+``TORSIONAL`` or ``TORSIONAL_ROLLING``, and rolling in the contact plane when it is
+``TORSIONAL_ROLLING``; the default ``SLIDING`` mode applies neither.
 :attr:`~newton.ModelBuilder.ShapeConfig.mu_torsional` and
 :attr:`~newton.ModelBuilder.ShapeConfig.mu_rolling` are lengths [m]: each
 torque limit is the coefficient times the normal force. Both coefficients

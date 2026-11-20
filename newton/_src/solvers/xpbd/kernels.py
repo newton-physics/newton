@@ -2073,7 +2073,7 @@ def _solve_body_contact_positions(
         mu = 0.0
     if friction_mode < int(ShapeFrictionMode.TORSIONAL):
         mu_torsional = 0.0
-    if friction_mode < int(ShapeFrictionMode.ROLLING):
+    if friction_mode < int(ShapeFrictionMode.TORSIONAL_ROLLING):
         mu_rolling = 0.0
 
     r_a = bx_a - wp.transform_point(X_wb_a, com_a)

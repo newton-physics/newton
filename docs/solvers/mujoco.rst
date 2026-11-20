@@ -1434,7 +1434,7 @@ namespace but does not map ``mjc:damping`` to the built-in property.
 
 Geom ``condim`` maps to :attr:`~newton.ModelBuilder.ShapeConfig.friction_mode`:
 ``condim`` 1, 3, 4, and 6 import as :class:`~newton.ShapeFrictionMode`
-``NONE``, ``SLIDING``, ``TORSIONAL``, and ``ROLLING``, and the solver
+``NONE``, ``SLIDING``, ``TORSIONAL``, and ``TORSIONAL_ROLLING``, and the solver
 converts the modes back. USD ``mjc:condim`` maps through
 :class:`~newton.usd.SchemaResolverMjc`, or through the registered MuJoCo
 custom attributes. The ``mujoco:condim`` custom attribute is deprecated:
