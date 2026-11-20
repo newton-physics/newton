@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -81,17 +80,13 @@ def _add_squared_residuals(residuals: wp.array2d[wp.float32], costs: wp.array[wp
     costs[row] += total
 
 
-@dataclass
-class _Kinematics:
-    """The model's articulation trees as one cuNLS topology whose link ``k`` is body ``k``."""
+def _build_kinematics(model: Model, limit: IKObjectiveJointLimit | None):
+    """The model's articulation trees as one cuNLS topology whose link ``k`` is body ``k``.
 
-    articulation: Any
-    """The ``pycunls.articulation.SceneArticulation``: topology and scene/topology index maps."""
-    loop_joints: np.ndarray
-    """Model indices of the loop-closing joints."""
-
-
-def _build_kinematics(pycunls, model: Model, limit: IKObjectiveJointLimit | None) -> _Kinematics:
+    Returns:
+        The ``pycunls.articulation.SceneArticulation`` (topology and scene/topology index maps)
+        and the model indices of the loop-closing joints.
+    """
     from pycunls.articulation import topology_from_joint_arrays  # noqa: PLC0415
 
     joint_type = model.joint_type.numpy()
@@ -139,7 +134,7 @@ def _build_kinematics(pycunls, model: Model, limit: IKObjectiveJointLimit | None
                 f"IKOptimizer.CUNLS does not support {JointType(joint_type[j]).name} loop-closing joints "
                 f"(joint {j}); supported are PRISMATIC, REVOLUTE, BALL and FIXED."
             )
-    return _Kinematics(scene, loop_joints)
+    return scene, loop_joints
 
 
 class IKOptimizerCuNLS:
@@ -233,8 +228,7 @@ class IKOptimizerCuNLS:
     # ------------------------------------------------------------------
     def _build_problem(self, pycunls, model: Model, objectives, limit: IKObjectiveJointLimit | None) -> None:
         n_batch = self.n_batch
-        kinematics = _build_kinematics(pycunls, model, limit)
-        scene = kinematics.articulation
+        scene, loop_joints = _build_kinematics(model, limit)
         self._pycunls = pycunls
         self._topology = scene.topology
         # The tree's coordinates are usually a contiguous block of joint_q: then the states read
@@ -253,14 +247,14 @@ class IKOptimizerCuNLS:
         self._target_gathers = []  # (kernel, inputs, output): per-row targets refreshed at each step
         self._has_constraints = False
         self._add_objective_factors(objectives)
-        self._add_loop_closure_factors(model, kinematics)
+        self._add_loop_closure_factors(model, scene, loop_joints)
         self._add_mimic_factors(model)
         for factor, rows in self._factors:
             self._problem.add_factor_batch(factor, [self._states], rows)
         # One subproblem per row: each converges and stops on its own. Its system is one dense
         # block; cuNLS's sparse Cholesky factors a batch of such blocks one warp each.
-        self._rows = wp.array(np.arange(n_batch, dtype=np.int32), dtype=wp.int32, device=self.device)
-        self._problem.set_problem_partition(n_batch, [self._rows])
+        self._row_ids = self._rows(1)
+        self._problem.set_problem_partition(n_batch, [self._row_ids])
         # Row t's state, for evaluating the objectives in compute_costs.
         ambient_bytes = 4 * self._topology.ambient_size
         base = self._states.state_device_ptr(0)
@@ -269,10 +263,15 @@ class IKOptimizerCuNLS:
         )
         self._solvers = {}  # iterations -> minimizer
 
-    def _per_row(self, values, count: int = 1) -> wp.array:
-        """Device float array repeating ``values`` for each of ``count`` factors per batch row."""
-        values = np.asarray(values, dtype=np.float32).reshape(-1)
-        return wp.array(np.tile(values, self.n_batch * count), dtype=wp.float32, device=self.device)
+    def _per_row(self, values, dtype=wp.float32) -> wp.array:
+        """Device array repeating ``values``, the data of one row's factors, for every batch row."""
+        values = np.asarray(values, dtype=wp.dtype_to_numpy(dtype)).reshape(-1)
+        return wp.array(np.tile(values, self.n_batch), dtype=dtype, device=self.device)
+
+    def _rows(self, per_row: int) -> wp.array:
+        """The batch row of each factor when every row has ``per_row`` consecutive factors."""
+        rows = np.repeat(np.arange(self.n_batch, dtype=np.int32), per_row)
+        return wp.array(rows, dtype=wp.int32, device=self.device)
 
     def _add_factor(self, factor, per_row: int = 1, *, constraint: bool = False) -> None:
         """Add ``per_row`` factors per batch row, consecutive factors on the same row."""
@@ -280,8 +279,7 @@ class IKOptimizerCuNLS:
         if constraint:
             factor = self._pycunls.ConstraintFactorBatch(factor, self._pycunls.ConstraintKind.Equality)
             self._has_constraints = True
-        instances = np.repeat(np.arange(self.n_batch, dtype=np.int32), per_row)
-        self._factors.append((factor, wp.array(instances, dtype=wp.int32, device=self.device)))
+        self._factors.append((factor, self._rows(per_row)))
 
     def _add_objective(self, factor, residual_size: int) -> None:
         self._add_factor(factor)
@@ -348,7 +346,7 @@ class IKOptimizerCuNLS:
             )
             self._add_objective(factor, 3)
 
-    def _add_loop_closure_factors(self, model: Model, kinematics: _Kinematics) -> None:
+    def _add_loop_closure_factors(self, model: Model, scene, loop_joints: np.ndarray) -> None:
         from pycunls.articulation import loop_closure  # noqa: PLC0415
 
         joint_type = model.joint_type.numpy()
@@ -358,10 +356,10 @@ class IKOptimizerCuNLS:
         frames = np.concatenate([model.joint_X_p.numpy(), model.joint_X_c.numpy()], axis=1)
         axis = model.joint_axis.numpy()
         qd_start = model.joint_qd_start.numpy()
-        link_of_body = kinematics.articulation.link_of_body
-        self._loops = []
+        link_of_body = scene.link_of_body
+        self._loops = []  # keeps the constraint rows' batches alive
         for kind in _LOOP_JOINT_TYPES:
-            joints = kinematics.loop_joints[joint_type[kinematics.loop_joints] == kind]
+            joints = loop_joints[joint_type[loop_joints] == kind]
             if len(joints) == 0:
                 continue
             m = len(joints)
@@ -372,19 +370,16 @@ class IKOptimizerCuNLS:
             loop = loop_closure(
                 self._topology,
                 self._pycunls.ArticulationJointType(int(kind)),
-                wp.array(np.tile(links.reshape(-1), self.n_batch).astype(np.int32), dtype=wp.int32, device=self.device),
-                self._per_row(frames[joints], m),
-                self._per_row(axis[qd_start[joints]], m) if has_axis else None,
+                self._per_row(links, dtype=wp.int32),
+                self._per_row(frames[joints]),
+                self._per_row(axis[qd_start[joints]]) if has_axis else None,
                 capacity=self.n_batch * m,
             )
             loop.set_num_active_factors(self.n_batch * m)
-            instances = wp.array(
-                np.repeat(np.arange(self.n_batch, dtype=np.int32), m), dtype=wp.int32, device=self.device
-            )
-            for constraint in loop.constraints:
-                self._factors.append((constraint, instances))
+            rows = self._rows(m)
+            self._factors += [(constraint, rows) for constraint in loop.constraints]
             self._has_constraints = True
-            self._loops.append(loop)  # keeps the row batches alive
+            self._loops.append(loop)
 
     def _add_mimic_factors(self, model: Model) -> None:
         if model.joint_mimic_joint is None:
@@ -410,9 +405,9 @@ class IKOptimizerCuNLS:
         m = len(pairs)
         factor = self._pycunls.MimicJointFactorBatch(
             self._topology,
-            wp.array(np.tile(pairs[:, 0].astype(np.int32), self.n_batch), dtype=wp.int32, device=self.device),
-            wp.array(np.tile(pairs[:, 1].astype(np.int32), self.n_batch), dtype=wp.int32, device=self.device),
-            self._per_row(pairs[:, 2:4], m),
+            self._per_row(pairs[:, 0], dtype=wp.int32),
+            self._per_row(pairs[:, 1], dtype=wp.int32),
+            self._per_row(pairs[:, 2:4]),
             self.n_batch * m,
         )
         self._add_factor(factor, m, constraint=True)

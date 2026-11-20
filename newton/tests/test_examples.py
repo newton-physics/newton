@@ -1286,18 +1286,10 @@ add_example_test(
 
 add_example_test(
     TestIKExamples,
-    name="ik.example_ik_delta_robot",
+    name="ik.example_ik_stewart_platform",
     devices=cuda_test_devices,
     use_viewer=True,
-    test_options={"requires": ("pycunls",), "num-frames": 600},
-)
-
-add_example_test(
-    TestIKExamples,
-    name="ik.example_ik_dr_legs",
-    devices=cuda_test_devices,
-    use_viewer=True,
-    test_options={"requires": ("git", "pycunls"), "num-frames": 300},
+    test_options={"requires": ("pycunls",), "num-frames": 400},
 )
 
 add_example_test(
