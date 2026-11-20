@@ -352,6 +352,7 @@ class ImplicitMPMModel:
         self.collider_body_mass = None
         self.collider_body_inv_inertia = None
         self.collider_body_q = None
+        self.collider_body_world = None
         self.deformable_collider_vertex_ranges: list[tuple[int, int, int]] = []
 
         self.notify_particle_material_changed()
@@ -988,6 +989,12 @@ class ImplicitMPMModel:
         self.collider_body_mass = body_mass
         self.collider_body_inv_inertia = body_inv_inertia
         self.collider_body_q = body_q
+        # External shared-grid colliders are global in the solver world namespace.
+        self.collider_body_world = (
+            wp.full(model.body_count, -1, dtype=int, device=model.device)
+            if model is not self.model and not self._separate_worlds
+            else model.body_world
+        )
         self._collider_meshes = collider_meshes  # Keep a ref so that meshes are not garbage collected
         self.deformable_collider_vertex_ranges = [
             (collider_id, collider_particle_offsets[collider_id], collider_particle_offsets[collider_id + 1])

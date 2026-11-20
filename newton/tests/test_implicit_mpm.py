@@ -2448,6 +2448,75 @@ def test_shared_solver_globalizes_external_multiworld_colliders(test, device):
     test.assertEqual(np.unique(collider.face_material_index.numpy()).shape[0], 2)
 
 
+def test_multiworld_masked_reset_uses_external_collider_body_world(test, device):
+    """Verify masked reset selects external collider bodies by the collider model's worlds."""
+    external_builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=(0.0, 0.0, 0.0))
+    local_builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=(0.0, 0.0, 0.0))
+    body = local_builder.add_body(xform=wp.transform(wp.vec3(0.0, 1.0, 0.0), wp.quat_identity()))
+    local_builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+    external_builder.add_world(local_builder)
+    external_builder.add_world(local_builder)
+    external_model = external_builder.finalize(device=device)
+    external_body_world = external_model.body_world.numpy()
+    np.testing.assert_array_equal(external_body_world, (0, 1))
+
+    # Particle models whose own body-to-world map differs from the collider model's:
+    # global bodies with mismatched/matching counts, then no bodies at all.
+    # Reject invalid pose counts before a masked reset can read out of bounds.
+    for particle_body_count, separate_worlds in ((3, True), (2, True), (0, True), (2, False)):
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=(0.0, 0.0, 0.0))
+        for _ in range(particle_body_count):
+            builder.add_body()
+        if separate_worlds:
+            model = _make_two_world_particle_model(device, builder=builder)
+        else:
+            # External collider worlds do not share the single-world solver namespace.
+            SolverImplicitMPM.register_custom_attributes(builder)
+            builder.add_world(_make_mpm_particle_builder(gravity=(0.0, 0.0, 0.0)))
+            model = builder.finalize(device=device)
+        np.testing.assert_array_equal(model.body_world.numpy(), np.full(particle_body_count, -1))
+
+        config = _make_mpm_config()
+        config.separate_worlds = separate_worlds
+        if not separate_worlds:
+            config.collider_basis = "pic"
+            config.strain_basis = "pic"
+        solver = SolverImplicitMPM(model, config)
+        solver.setup_collider(model=external_model)
+        state = model.state()
+        if particle_body_count == 3:
+            previous = solver._last_step_data.body_q_prev.numpy().copy()
+            for mask in (None, wp.array((True, True, True), dtype=wp.bool, device=device)):
+                with test.assertRaisesRegex(ValueError, r"state.body_q has shape .* expected \(2,\)"):
+                    solver.reset(state, world_mask=mask)
+                np.testing.assert_array_equal(solver._last_step_data.body_q_prev.numpy(), previous)
+        state.body_q = wp.clone(external_model.body_q)
+        solver.reset(state)
+
+        body_q = state.body_q.numpy()
+        body_q[:, 0] += 1.0
+        state.body_q.assign(body_q)
+        marker = np.zeros_like(body_q)
+        body_q_prev = solver._last_step_data.body_q_prev
+
+        masks = (
+            (((False, True, False), 1), ((False, False, True), -1))
+            if separate_worlds
+            else (((True, True), -1), ((True, False), 0), ((False, True), -1))
+        )
+        reset_worlds = external_body_world if separate_worlds else np.full(external_model.body_count, -1)
+        for world_mask, selected_world in masks:
+            body_q_prev.assign(marker)
+            solver.reset(state, world_mask=wp.array(world_mask, dtype=wp.bool, device=device))
+            expected = marker.copy()
+            expected[reset_worlds == selected_world] = body_q[reset_worlds == selected_world]
+            np.testing.assert_array_equal(
+                body_q_prev.numpy(),
+                expected,
+                err_msg=f"particle_body_count={particle_body_count}, world_mask={world_mask}",
+            )
+
+
 def test_pic_strain_basis_empty_cells(test, device):
     """Construct and step a particle-based strain basis on grids with empty cells.
 
@@ -3618,6 +3687,13 @@ add_function_test(
     TestImplicitMPM,
     "test_shared_solver_globalizes_external_multiworld_colliders",
     test_shared_solver_globalizes_external_multiworld_colliders,
+    devices=basic_devices,
+)
+
+add_function_test(
+    TestImplicitMPM,
+    "test_multiworld_masked_reset_uses_external_collider_body_world",
+    test_multiworld_masked_reset_uses_external_collider_body_world,
     devices=basic_devices,
 )
 
