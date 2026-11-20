@@ -993,6 +993,14 @@ accuracy as bodies move, and the solver warns at construction. Use
 ``integrator="implicitfast"`` or ``use_mujoco_contacts=True`` to avoid this
 limitation.
 
+Newton contacts also carry the surface velocity of meshes created with
+``enable_surface_velocity=True`` (see :class:`~newton.Mesh`), which the solver
+forwards to MuJoCo's per-contact ``surfacevel`` to drive the friction rows.
+They carry a linear velocity only, so torsional friction (``condim`` 4 and 6)
+treats a spinning mesh as still. MuJoCo's collision detection has no per-vertex
+surface velocity, so these meshes act as still surfaces with
+``use_mujoco_contacts=True``.
+
 Collision filtering
 ~~~~~~~~~~~~~~~~~~~
 
@@ -1155,6 +1163,11 @@ Request ``CONTACT_F`` with ``solver.observables(..., contacts=contacts)`` and pa
 the container to ``solver.step(..., observables=observables)``. Forces are written
 to ``observables.contact_f``; with ``use_mujoco_contacts=True``, the step also
 fills the supplied ``contacts`` with contact geometry. See :ref:`solver_observables`.
+
+For Newton contacts with thin-wall recovery, adhesion, or body-transmission
+actuators, construct the collision pipeline before the solver if using a custom contact capacity.
+When switching to a larger buffer, step once with it before capturing a CUDA
+graph so the solver can grow its contact mapping.
 
 Separated speculative contacts
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

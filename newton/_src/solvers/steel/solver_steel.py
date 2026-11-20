@@ -184,6 +184,7 @@ from .kernels import (
     preelim_correct_Y_for_size,
     preelim_project_velocity_for_size,
     preelim_setup_for_size,
+    prepare_contact_recovery,
     prepare_fused_diagonal_joint_limits,
     prepare_world_contact_rows,
     prepare_world_impulses,
@@ -6008,6 +6009,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._contact_slot = wp.zeros((max_contacts,), dtype=wp.int32, device=device)
         self._contact_art_a = wp.zeros((max_contacts,), dtype=wp.int32, device=device)
         self._contact_art_b = wp.zeros((max_contacts,), dtype=wp.int32, device=device)
+        self._contact_recovery_phi = wp.empty(max_contacts, dtype=float, device=device)
         self._contact_path = wp.zeros((max_contacts,), dtype=wp.int32, device=device)
         # Rows reserved by each contact: 1 (normal only) or 3 (normal and friction).
         self._contact_slots_needed = wp.zeros((max_contacts,), dtype=wp.int32, device=device)
@@ -9972,6 +9974,8 @@ class SolverSteel(SolverBase, CouplingInterface):
             self._sparse_diagonal_row_dof.fill_(-1)
 
         if contacts is not None and contacts.rigid_contact_max > 0:
+            recovery = contacts._mesh_recovery_contacts
+            recovery_phi = self._contact_recovery_phi if recovery is not None else None
             contact_build_threads = min(contacts.rigid_contact_max, _CONTACT_BUILD_THREAD_CAP)
             contact_geometry = [
                 contacts.rigid_contact_count,
@@ -9984,6 +9988,21 @@ class SolverSteel(SolverBase, CouplingInterface):
                 contacts.rigid_contact_margin0,
                 contacts.rigid_contact_margin1,
             ]
+            if recovery is not None:
+                wp.launch(
+                    prepare_contact_recovery,
+                    dim=contact_build_threads,
+                    inputs=[
+                        *contact_geometry,
+                        model.shape_body,
+                        state_in.body_q,
+                        recovery,
+                        contacts.contact_generation,
+                        self._baumgarte,
+                    ],
+                    outputs=[recovery_phi],
+                    device=model.device,
+                )
             if self._friction_anchors_enabled:
                 self._friction_patches.build(
                     model,
@@ -9994,6 +10013,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                     contact_gap_limit=self._contact_gap_limit,
                     friction_gap_limit=self._friction_gap,
                     frozen_bodies=frozen_bodies,
+                    recovery_phi=recovery_phi,
                     dt=dt,
                 )
             wp.launch(
@@ -10031,6 +10051,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                     int(self._ordered_rows),
                     self._contact_torsion_shape_radius if self._propagation_torsion_rows else self._no_torsion_radius,
                     int(self._propagation_torsion_rows),
+                    recovery_phi,
                 ],
                 outputs=[
                     self._contact_world,
@@ -10078,6 +10099,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                     self._friction_patches.view,
                     *self._contact_anchor_args,
                     self._rebound_velocity_threshold,
+                    recovery_phi,
                 ],
                 outputs=[
                     self._row_type,
@@ -10203,7 +10225,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                     )
 
             if self._propagation_active:
-                self._propagation_build_rows(state_in, state_aug, contacts, contact_build_threads)
+                self._propagation_build_rows(state_in, state_aug, contacts, contact_build_threads, recovery_phi)
                 if self._contact_warmstart:
                     self._gather_warmstart(contacts, route=2, dt=dt)
 
@@ -10234,6 +10256,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                         self._friction_anchor_beta,
                         *self._contact_anchor_args,
                         self._rebound_velocity_threshold,
+                        recovery_phi,
                     ],
                     outputs=[
                         self._mf_body_a,
@@ -11283,7 +11306,12 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._propagation_body_seen.zero_()
 
     def _propagation_build_rows(
-        self, state_in: State, state_aug: State, contacts: Contacts, contact_build_threads: int
+        self,
+        state_in: State,
+        state_aug: State,
+        contacts: Contacts,
+        contact_build_threads: int,
+        recovery_phi: wp.array[float] | None,
     ):
         """Fill the propagation rows of the allocated contacts and count them per world."""
         model = self.model
@@ -11381,6 +11409,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 self._friction_patches.view,
                 self._friction_anchor_beta,
                 self._rebound_velocity_threshold,
+                recovery_phi,
             ],
             outputs=[
                 self._propagation_body_a,

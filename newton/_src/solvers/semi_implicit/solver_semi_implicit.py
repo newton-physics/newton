@@ -162,6 +162,41 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
             with wp.ScopedDevice(model.device):
                 model.particle_grid.reserve(model.particle_count)
 
+        # State.body_f and State.particle_f are read-only step inputs; internal forces accumulate in
+        # these solver-owned work buffers instead. Differentiable steps allocate their own buffers.
+        self._body_f_work, self._particle_f_work = self._allocate_force_work(requires_grad=False)
+
+    def _allocate_force_work(self, requires_grad: bool) -> tuple[wp.array | None, wp.array | None]:
+        model = self.model
+        body_f = None
+        particle_f = None
+        if model.body_count:
+            body_f = wp.empty(
+                model.body_count, dtype=wp.spatial_vector, device=model.device, requires_grad=requires_grad
+            )
+        if model.particle_count:
+            particle_f = wp.empty(model.particle_count, dtype=wp.vec3, device=model.device, requires_grad=requires_grad)
+        return body_f, particle_f
+
+    def _force_work(self, state_in: State) -> tuple[wp.array | None, wp.array | None]:
+        """Return work buffers initialized with the external force inputs of ``state_in``.
+
+        A differentiable step gets new buffers: the tape keeps them alive, so each recorded step's
+        adjoint reads its own forces. Reused buffers would hold the last step's forces instead.
+        """
+        if state_in.requires_grad:
+            work = self._allocate_force_work(requires_grad=True)
+        else:
+            work = (self._body_f_work, self._particle_f_work)
+        for dst, src in zip(work, (state_in.body_f, state_in.particle_f), strict=True):
+            if dst is None:
+                continue
+            if src is None:
+                dst.zero_()
+            else:
+                wp.copy(dst, src)
+        return work
+
     @property
     def friction_smoothing(self) -> float:
         """Legacy value retained for attribute access; it has no effect on friction.
@@ -215,24 +250,12 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
         self._require_unreduced_contacts(contacts)
         self._apply_module_options()
         with wp.ScopedTimer("simulate", False):
-            particle_f = None
-            body_f = None
-
-            if state_in.particle_count:
-                particle_f = state_in.particle_f
-
-            if state_in.body_count:
-                body_f = state_in.body_f
-
             model = self.model
 
             if control is None:
                 control = model.control(clone_variables=False)
 
-            body_f_work = body_f
-            if body_f is not None and model.joint_count and control.joint_f is not None:
-                # Avoid accumulating joint_f into the persistent state body_f buffer.
-                body_f_work = wp.clone(body_f)
+            body_f, particle_f = self._force_work(state_in)
 
             # damped springs
             eval_spring_forces(model, state_in, particle_f)
@@ -251,7 +274,7 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
                 model,
                 state_in,
                 control,
-                body_f_work,
+                body_f,
                 self.joint_attach_ke,
                 self.joint_attach_kd,
                 self.joint_mimic_ke,
@@ -274,17 +297,10 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
                 eval_triangle_contact_forces(model, state_in, particle_f)
 
             # body contacts
-            eval_body_contact_forces(model, state_in, contacts, body_f_out=body_f_work)
+            eval_body_contact_forces(model, state_in, contacts, body_f_out=body_f)
 
             # particle shape contact
-            eval_particle_body_contact_forces(model, state_in, contacts, particle_f, body_f_work)
+            eval_particle_body_contact_forces(model, state_in, contacts, particle_f, body_f)
 
-            self.integrate_particles(model, state_in, state_out, dt)
-
-            if body_f_work is body_f:
-                self.integrate_bodies(model, state_in, state_out, dt, self.angular_damping)
-            else:
-                body_f_prev = state_in.body_f
-                state_in.body_f = body_f_work
-                self.integrate_bodies(model, state_in, state_out, dt, self.angular_damping)
-                state_in.body_f = body_f_prev
+            self.integrate_particles(model, state_in, state_out, dt, particle_f=particle_f)
+            self.integrate_bodies(model, state_in, state_out, dt, self.angular_damping, body_f=body_f)

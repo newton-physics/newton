@@ -128,6 +128,7 @@ def _prepare(
     q: wp.array[wp.transform],
     contact_gap_limit: float,
     friction_gap_limit: float,
+    recovery_phi: wp.array[float],
     frame: _PatchFrame,
     patches: FrictionPatches,
 ):
@@ -145,6 +146,8 @@ def _prepare(
     patches.next_contact[c] = -1
     patches.phi[c] = wp.vec2(0.0)
     if count[0] > shape0.shape[0] or c >= count[0] or c >= shape0.shape[0]:
+        return
+    if recovery_phi and wp.isinf(recovery_phi[c]):
         return
     sa = shape0[c]
     sb = shape1[c]
@@ -1417,6 +1420,7 @@ class _FrictionPatchState:
         contact_gap_limit=float("inf"),
         friction_gap_limit=float("inf"),
         frozen_bodies=None,
+        recovery_phi=None,
         dt=0.0,
     ):
         wp.launch(
@@ -1439,6 +1443,7 @@ class _FrictionPatchState:
                 state.body_q,
                 contact_gap_limit,
                 friction_gap_limit,
+                recovery_phi,
                 self.current,
                 self.view,
             ],

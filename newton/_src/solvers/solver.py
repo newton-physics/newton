@@ -1087,6 +1087,8 @@ class SolverBase:
         state_out: State,
         dt: float,
         angular_damping: float = 0.0,
+        *,
+        body_f: wp.array[wp.spatial_vector] | None = None,
     ) -> None:
         """
         Integrate the rigid bodies of the model.
@@ -1098,6 +1100,10 @@ class SolverBase:
             dt: The time step (typically in seconds).
             angular_damping: The angular damping factor.
                 Defaults to 0.0.
+            body_f: Total body wrenches [N, N·m] to integrate, shape (body_count,).
+                Solvers pass a scratch buffer here when they add internal forces to the
+                external :attr:`State.body_f <newton.State.body_f>` input. Defaults to
+                ``None``, which uses ``state_in.body_f``.
         """
         if model.body_count:
             wp.launch(
@@ -1106,7 +1112,7 @@ class SolverBase:
                 inputs=[
                     state_in.body_q,
                     state_in.body_qd,
-                    state_in.body_f,
+                    state_in.body_f if body_f is None else body_f,
                     model.body_com,
                     model.body_mass,
                     model.body_inertia,
@@ -1128,6 +1134,8 @@ class SolverBase:
         state_in: State,
         state_out: State,
         dt: float,
+        *,
+        particle_f: wp.array[wp.vec3] | None = None,
     ) -> None:
         """
         Integrate the particles of the model.
@@ -1137,6 +1145,10 @@ class SolverBase:
             state_in: The input state.
             state_out: The output state.
             dt: The time step (typically in seconds).
+            particle_f: Total particle forces [N] to integrate, shape (particle_count,).
+                Solvers pass a scratch buffer here when they add internal forces to the
+                external :attr:`State.particle_f <newton.State.particle_f>` input. Defaults to
+                ``None``, which uses ``state_in.particle_f``.
         """
         if model.particle_count:
             wp.launch(
@@ -1145,7 +1157,7 @@ class SolverBase:
                 inputs=[
                     state_in.particle_q,
                     state_in.particle_qd,
-                    state_in.particle_f,
+                    state_in.particle_f if particle_f is None else particle_f,
                     model.particle_inv_mass,
                     model.particle_flags,
                     model.particle_world,
@@ -1242,6 +1254,14 @@ class SolverBase:
     ) -> None:
         """
         Simulate the model for a given time step using the given control input.
+
+        :attr:`State.body_f <newton.State.body_f>` and
+        :attr:`State.particle_f <newton.State.particle_f>` are external force inputs.
+        Solvers read them from ``state_in`` and never write them in ``state_in`` or
+        ``state_out``; internal forces such as contact, joint, and elastic forces are
+        accumulated in solver-owned scratch buffers. Forces written once before a
+        sequence of substeps therefore act on every substep, and double-buffered states
+        may share the same force arrays.
 
         Args:
             state_in: The input state.

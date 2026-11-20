@@ -1386,13 +1386,22 @@ class TestAdmmExternalForces(unittest.TestCase):
         body_idx = rs  # only MuJoCo body
         body_mass = float(model_b.body_mass.numpy()[body_idx])
         upward_force = 5.0 * body_mass * 9.81  # 5 g upward wrench
+        output_body_f = np.full((model_b.body_count, 6), 0.25, dtype=np.float32)
+        output_particle_f = np.full((model_b.particle_count, 3), 0.5, dtype=np.float32)
         for _ in range(5):
             state_0.clear_forces()
             wrench = np.zeros((model_b.body_count, 6), dtype=np.float32)
             wrench[body_idx, 2] = upward_force  # linear z
             state_0.body_f = wp.array(wrench, dtype=wp.spatial_vector, device=model_b.device)
+            # Distinct output-state sentinels: solvers never write force inputs in either state.
+            state_1.body_f.assign(output_body_f)
+            state_1.particle_f.assign(output_particle_f)
             collision_pipeline.collide(state_0, contacts)
             solver_b.step(state_0, state_1, control, contacts, 1.0 / 60.0)
+            np.testing.assert_array_equal(state_0.body_f.numpy(), wrench)
+            np.testing.assert_array_equal(state_0.particle_f.numpy(), 0.0)
+            np.testing.assert_array_equal(state_1.body_f.numpy(), output_body_f)
+            np.testing.assert_array_equal(state_1.particle_f.numpy(), output_particle_f)
             state_0, state_1 = state_1, state_0
         z_with_force = state_0.body_q.numpy()[0, 2]
 

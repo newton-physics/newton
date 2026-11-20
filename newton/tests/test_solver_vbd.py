@@ -16,6 +16,7 @@ import warp as wp
 
 import newton
 from newton import NewtonDeprecationWarning
+from newton._src.geometry.sdf_planar_recovery import MeshRecoveryData
 from newton._src.geometry.soft_contacts_mesh import _SoftContactFilterData
 from newton._src.geometry.tri_mesh_collision import build_tri_mesh_collision_info
 from newton._src.solvers.vbd import particle_vbd_kernels, rigid_vbd_kernels
@@ -2027,6 +2028,11 @@ def _rigid_contact_structural_support_conditions_tangent_rho(test, device):
                 1.0,
                 100.0,
                 wp.array([1.0e9], dtype=float, device=device),
+                0.0,
+                MeshRecoveryData(),
+                wp.zeros(1, dtype=int, device=device),
+                wp.array([wp.transform_identity()], dtype=wp.transform, device=device),
+                None,
                 wp.zeros(1, dtype=wp.vec3, device=device),
             ],
             outputs=[
@@ -2358,6 +2364,8 @@ def _rigid_contact_dual_update_computes_lambda(test, device):
                 0.01,
                 contact_mu,
                 zeros3,
+                MeshRecoveryData(),
+                wp.zeros(1, dtype=int, device=device),
                 0.0,
                 contact_ke,
                 wp.array([wp.mat22(10.0, 10.0, 1.0, 0.0)] * 2, dtype=wp.mat22, device=device),
@@ -3428,6 +3436,8 @@ def _body_body_contact_damping_ignores_rho(test, device):
                 contact_lambda,
                 wp.zeros(4, dtype=wp.vec3, device=device),
                 contact_c0,
+                MeshRecoveryData(),
+                wp.zeros(1, dtype=int, device=device),
                 0.95,
                 False,
             ],

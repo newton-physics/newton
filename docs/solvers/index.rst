@@ -563,6 +563,34 @@ coupler also warns when both endpoints belong to one entry whose solver does not
 support attachments. Hard attachments require both endpoints in one VBD entry;
 the coupler raises an error for other ownership arrangements.
 
+.. _External forces:
+
+External Forces
+---------------
+
+:attr:`State.body_f <newton.State.body_f>` and
+:attr:`State.particle_f <newton.State.particle_f>` hold external forces that the
+caller applies. Every solver reads them from ``state_in`` and never writes them
+in ``state_in`` or ``state_out``; contact, joint, and elastic forces are
+accumulated in solver-owned buffers. Forces therefore persist until the caller
+clears them, so a force written once can act on every substep of a frame, and
+double-buffered states may share their force arrays:
+
+.. code-block:: python
+
+    state_1.body_f = state_0.body_f
+    state_1.particle_f = state_0.particle_f
+
+    state_0.clear_forces()
+    apply_external_forces(state_0)  # written once per frame
+    for _ in range(sim_substeps):
+        solver.step(state_0, state_1, control, contacts, sim_dt)
+        state_0, state_1 = state_1, state_0
+
+Forces that are recomputed every substep, such as viewer picking forces, still
+call :meth:`State.clear_forces() <newton.State.clear_forces>` before they are
+reapplied on each substep.
+
 .. _Differentiability:
 
 Differentiability
