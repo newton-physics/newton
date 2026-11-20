@@ -12,7 +12,7 @@ import numpy as np
 import warp as wp
 
 from ..core.reset import normalize_reset_world_mask
-from ..exceptions import NewtonDeprecationWarning, NewtonWarning
+from ..exceptions import NewtonWarning
 from ..geometry.broad_phase_nxn import BroadPhaseAllPairs, BroadPhaseExplicit
 from ..geometry.broad_phase_sap import BroadPhaseSAP
 from ..geometry.collision_core import compute_tight_aabb_from_support
@@ -1781,7 +1781,6 @@ class CollisionPipeline:
         include_static_kinematic_pairs: bool = True,
         soft_contact_max: int | None = None,
         soft_contact_gap: float | None = None,
-        soft_contact_margin: float | None = None,
         enable_rigid_soft_full_surface_contact: bool = False,
         requires_grad: bool | None = None,
         broad_phase: Literal["nxn", "sap", "explicit"]
@@ -1860,9 +1859,6 @@ class CollisionPipeline:
             soft_contact_gap: Detection-only distance [m] added to the
                 per-particle radius for particle-shape (soft) contact queries.
                 Defaults to 0.01.
-            soft_contact_margin: Deprecated alias of ``soft_contact_gap`` (the
-                value is detection-only slack on top of the particle radius,
-                i.e. a gap under the margin/gap convention).
             enable_rigid_soft_full_surface_contact: Generate soft contacts over the full soft-mesh
                 surface -- the edges and triangle interiors -- against rigid surfaces, in addition to
                 the per-vertex (particle) contacts. Catches rigid features that pass between soft
@@ -2057,17 +2053,7 @@ class CollisionPipeline:
                 rigid_contact_max = rigid_contact_estimate.capacity
                 _warn_large_rigid_contact_estimate(rigid_contact_estimate)
         self._rigid_contact_max = rigid_contact_max
-        if soft_contact_margin is not None:
-            if soft_contact_gap is not None:
-                raise ValueError("soft_contact_margin is a deprecated alias of soft_contact_gap; pass only one")
-            warnings.warn(
-                "The soft_contact_margin parameter of CollisionPipeline is deprecated; "
-                "use soft_contact_gap (same value: detection-only distance added to the particle radius).",
-                NewtonDeprecationWarning,
-                stacklevel=2,
-            )
-            soft_contact_gap = soft_contact_margin
-        elif soft_contact_gap is None:
+        if soft_contact_gap is None:
             soft_contact_gap = 0.01
         if soft_contact_gap < 0.0:
             raise ValueError(f"soft_contact_gap must be >= 0, got {soft_contact_gap}")
@@ -2797,25 +2783,6 @@ class CollisionPipeline:
         return self._soft_contact_max
 
     @property
-    def soft_contact_margin(self) -> float:
-        """Deprecated alias of :attr:`soft_contact_gap`."""
-        warnings.warn(
-            "CollisionPipeline.soft_contact_margin is deprecated; use soft_contact_gap.",
-            NewtonDeprecationWarning,
-            stacklevel=2,
-        )
-        return self.soft_contact_gap
-
-    @soft_contact_margin.setter
-    def soft_contact_margin(self, value: float) -> None:
-        warnings.warn(
-            "CollisionPipeline.soft_contact_margin is deprecated; use soft_contact_gap.",
-            NewtonDeprecationWarning,
-            stacklevel=2,
-        )
-        self.soft_contact_gap = value
-
-    @property
     def soft_contact_pair_count(self) -> int:
         """Number of precomputed (particle, shape) pairs launched for soft contacts.
 
@@ -2830,16 +2797,6 @@ class CollisionPipeline:
     def _has_rigid_soft_queries(self) -> bool:
         """Whether any rigid-soft contact pass has candidates, including full-surface passes."""
         return self._soft_contact_tids_size > 0 or self._soft_mesh_contact_data is not None
-
-    @property
-    def soft_rigid_contact_pair_count(self) -> int:
-        """Deprecated alias of :attr:`soft_contact_pair_count`."""
-        warnings.warn(
-            "CollisionPipeline.soft_rigid_contact_pair_count is deprecated; use soft_contact_pair_count.",
-            NewtonDeprecationWarning,
-            stacklevel=2,
-        )
-        return self.soft_contact_pair_count
 
     def contacts(self) -> Contacts:
         """
@@ -3134,7 +3091,6 @@ class CollisionPipeline:
         state: State,
         contacts: Contacts,
         *,
-        soft_contact_margin: float | None = None,
         soft_self_contact: bool = False,
         dt: float | None = None,
     ):
@@ -3157,10 +3113,6 @@ class CollisionPipeline:
         Args:
             state: The current simulation state.
             contacts: The contacts buffer to populate (will be cleared first).
-            soft_contact_margin: Deprecated; set ``soft_contact_gap`` on the
-                :class:`CollisionPipeline` constructor instead. When not
-                ``None``, the value is still honored for this call and a
-                :class:`DeprecationWarning` is emitted.
             soft_self_contact: Also run soft (cloth) self-contact detection
                 into ``contacts.soft_self_contact_data``. Requires
                 :meth:`init_soft_self_contact` to have been called. The
@@ -3207,16 +3159,7 @@ class CollisionPipeline:
 
         model = self.model
         # update any additional parameters
-        if soft_contact_margin is not None:
-            warnings.warn(
-                "The soft_contact_margin argument of CollisionPipeline.collide() is deprecated; "
-                "set soft_contact_gap on the CollisionPipeline constructor instead.",
-                NewtonDeprecationWarning,
-                stacklevel=2,
-            )
-            soft_contact_gap = soft_contact_margin
-        else:
-            soft_contact_gap = self.soft_contact_gap
+        soft_contact_gap = self.soft_contact_gap
         if self._speculative_enabled:
             if dt is None:
                 raise ValueError("dt must be provided when speculative contacts are enabled")
