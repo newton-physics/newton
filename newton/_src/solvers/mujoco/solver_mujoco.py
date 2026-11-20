@@ -156,7 +156,7 @@ from .kernels import (
     wake_changed_trees_kernel,
 )
 from .reference import build_ref_q, compute_body_poses_at_qref
-from .utils import solref_invalid_mask
+from .utils import import_mujoco_module, solref_invalid_mask
 
 if TYPE_CHECKING:
     from mujoco import MjData, MjModel
@@ -824,7 +824,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     # This is useful to debug import errors on Windows, for example
                     warnings.simplefilter("always", category=ImportWarning)
 
-                    import mujoco
+                    mujoco = import_mujoco_module()
+
                     import mujoco_warp
                     from mujoco_warp._src.types import ContactType
 
