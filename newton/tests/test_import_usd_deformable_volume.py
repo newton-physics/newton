@@ -564,7 +564,7 @@ class TestUSDDeformableVolume(unittest.TestCase):
         with builder defaults and a warning naming the recovery; the PhysX resolver reads it."""
         asset = os.path.join(os.path.dirname(__file__), "assets", "tetmesh_with_legacy_material.usda")
         builder = newton.ModelBuilder()
-        with self.assertWarnsRegex(newton.NewtonWarning, "ignoring legacy vendor-namespaced deformable material"):
+        with self.assertWarnsRegex(newton.NewtonWarning, "ignoring omniphysics:youngsModulus"):
             builder.add_usd(asset)
         k_mu, k_lambda, _k_damp = builder.tet_materials[0]
         self.assertEqual(k_mu, builder.default_tet_k_mu)
@@ -580,6 +580,38 @@ class TestUSDDeformableVolume(unittest.TestCase):
         self.assertAlmostEqual(k_mu, 3.0e5 / 2.6, delta=1.0)
         self.assertAlmostEqual(k_lambda, 3.0e5 * 0.3 / (1.3 * 0.4), delta=1.0)
         # density 40 over the unit tet (V = 1/6) -> total particle mass = 40 / 6.
+        self.assertAlmostEqual(sum(builder.particle_mass), 40.0 / 6.0, delta=1e-3)
+
+    def test_legacy_vendor_material_warning_names_changed_reads(self):
+        """The add_usd() warning names every attribute the vendor fallback used to read, and
+        stays silent when a redundant vendor attribute changes nothing."""
+        from pxr import Sdf, UsdShade
+
+        def build(apis, attrs):
+            stage = _deformable_stage()
+            tet = _author_unit_tet(stage, "/World/Soft")
+            material = UsdShade.Material.Define(stage, "/World/Material")
+            for api in apis:
+                material.GetPrim().AddAppliedSchema(api)
+            for name, value in attrs.items():
+                material.GetPrim().CreateAttribute(name, Sdf.ValueTypeNames.Float).Set(value)
+            UsdShade.MaterialBindingAPI.Apply(tet.GetPrim()).Bind(material, materialPurpose="physics")
+            builder = newton.ModelBuilder()
+            builder.add_usd(stage)
+            return builder
+
+        # A vendor density used to lift the material API gate for the canonical moduli too.
+        attrs = {"physics:youngsModulus": 3.0e5, "physics:poissonsRatio": 0.3, "omniphysics:density": 40.0}
+        with self.assertWarnsRegex(
+            newton.NewtonWarning, "ignoring physics:youngsModulus, physics:poissonsRatio, omniphysics:density"
+        ):
+            builder = build((), attrs)
+        self.assertEqual(builder.tet_materials[0][0], builder.default_tet_k_mu)
+
+        # Canonical base-material density is still read, so the vendor copy changes nothing.
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            builder = build(("PhysicsMaterialAPI",), {"physics:density": 40.0, "omniphysics:density": 80.0})
         self.assertAlmostEqual(sum(builder.particle_mass), 40.0 / 6.0, delta=1e-3)
 
     def test_bare_tetmesh_ignores_per_point_masses(self):

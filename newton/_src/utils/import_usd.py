@@ -804,13 +804,16 @@ def parse_usd(
         """Load and cache TetMesh data to avoid repeated USD extraction."""
         prim_path = str(prim.GetPath())
         if prim_path not in tetmesh_cache:
-            if not deformable_compat_ns and usd._material_authors_legacy_deformable_attrs(prim):
+            # Vendor attributes used to lift the material API gate for the canonical ones too.
+            if (
+                not deformable_compat_ns
+                and usd._material_authors_legacy_deformable_attrs(prim)
+                and (ignored := usd._ignored_tetmesh_material_attrs(prim))
+            ):
                 warnings.warn(
-                    f"{prim_path}: ignoring legacy vendor-namespaced deformable material attributes "
-                    "(omniphysics: / physxDeformableBody:) on a bound material without "
-                    "PhysicsVolumeDeformableMaterialAPI. Author canonical physics: attributes with "
-                    "the material API, or pass schema_resolvers=[..., SchemaResolverPhysx()] to "
-                    "read them.",
+                    f"{prim_path}: ignoring {', '.join(ignored)} on the bound material. Author "
+                    "canonical physics: attributes with PhysicsVolumeDeformableMaterialAPI, or pass "
+                    "schema_resolvers=[..., SchemaResolverPhysx()] to read them.",
                     NewtonWarning,
                     stacklevel=_external_warning_stacklevel(),
                 )
