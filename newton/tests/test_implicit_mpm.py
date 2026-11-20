@@ -1897,6 +1897,9 @@ def test_collider_face_materials(test, device):
     face_ids = np.unique(shape_solver.collider_face_materials(0).numpy())
     np.testing.assert_array_equal(face_ids, [0, 1])
     np.testing.assert_allclose(shape_solver.collider_materials(0)["adhesion"].numpy(), 7.0)
+    # An explicit collider friction replaces the shape values, including the frictionless one
+    shape_solver.setup_collider(collider_body_ids=[-1], collider_friction=[0.3])
+    np.testing.assert_allclose(shape_solver.collider_materials(0)["friction"].numpy(), 0.3, rtol=1.0e-6)
 
 
 def test_point_warmstart_unbinned_particles(test, device):
