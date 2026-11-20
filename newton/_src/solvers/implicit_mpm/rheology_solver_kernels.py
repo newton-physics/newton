@@ -1199,6 +1199,8 @@ def make_solve_strain_rows(
     max_entries: int,
 ):
     """Share the local stress solve and velocity updates across all GS layouts."""
+    gather8, scatter8 = _make_strain_block(8)
+    gather16, scatter16 = _make_strain_block(16)
     key = (
         has_viscosity,
         has_dilatancy,
@@ -1285,10 +1287,10 @@ def make_solve_strain_rows(
                 if wp.static(has_viscosity):
                     gather_begin = entries - entries % 16
                     for entry_base in range(0, gather_begin, 16):
-                        tau = wp.static(_make_strain_block(16)[0])(rows, row, entry_base, velocity, tau)
+                        tau = gather16(rows, row, entry_base, velocity, tau)
                 gather_end = entries - entries % 8
                 for entry_base in range(gather_begin, gather_end, 8):
-                    tau = wp.static(_make_strain_block(8)[0])(rows, row, entry_base, velocity, tau)
+                    tau = gather8(rows, row, entry_base, velocity, tau)
                 for entry_index in range(gather_end, entries):
                     node, weight = _strain_row_entry(rows, row, entry_index)
                     tau += _symmetric_part_op(weight, velocity[node])
@@ -1317,10 +1319,10 @@ def make_solve_strain_rows(
                     if wp.static(has_viscosity):
                         scatter_begin = n - n % 16
                         for entry_base in range(0, scatter_begin, 16):
-                            wp.static(_make_strain_block(16)[1])(rows, row, entry_base, ds, inv_mass, velocity)
+                            scatter16(rows, row, entry_base, ds, inv_mass, velocity)
                     scatter_end = n - n % 8
                     for entry_base in range(scatter_begin, scatter_end, 8):
-                        wp.static(_make_strain_block(8)[1])(rows, row, entry_base, ds, inv_mass, velocity)
+                        scatter8(rows, row, entry_base, ds, inv_mass, velocity)
                     for entry_index in range(scatter_end, n):
                         node, weight = _strain_row_entry(rows, row, entry_index)
                         dv = _symmetric_part_transposed_op(weight, ds)
