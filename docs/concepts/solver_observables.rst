@@ -584,7 +584,8 @@ contacts, and rigid-soft particle, edge, and face records against rigid shapes -
    or pass a selection without ``CONTACT_F`` to skip reporting on earlier substeps.
 3. Rows ``[0, rigid_contact_max)`` hold the body-body contacts (``i < rigid_contact_count``) when
    VBD integrates the rigid bodies: the force on body 0 by body 1 with its torque about body 0's
-   center of mass, the convention shared by every solver writing ``contact_f``. With
+   center of mass, the convention shared by every solver writing ``contact_f``. The torque
+   includes any torsional and rolling friction couple. With
    ``integrate_with_external_rigid_solver=True``, VBD's rigid rows are zero: request and consume
    the external solver's forces through its own observable container. Rows
    ``rigid_contact_max + i`` for ``i < soft_contact_count`` hold the rigid-soft records. Rows

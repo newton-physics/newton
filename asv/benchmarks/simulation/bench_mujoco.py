@@ -343,6 +343,7 @@ class FastNewtonOverheadHumanoid(_NewtonOverheadBenchmark):
 
 
 class FastAllegro(_KpiBenchmark):
+    version = "3"
     params = [[8192]]
     num_frames = 300
     robot = "allegro"
