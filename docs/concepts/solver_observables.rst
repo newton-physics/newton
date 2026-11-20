@@ -489,10 +489,8 @@ container, and pass it through the step:
 
 .. code-block:: python
 
-   imu = newton.sensors.SensorIMU(model, sites="imu_*", request_state_attributes=False)
-   contact_sensor = newton.sensors.SensorContact(
-       model, sensing_shapes="foot_*", request_contact_attributes=False
-   )
+   imu = newton.sensors.SensorIMU(model, sites="imu_*")
+   contact_sensor = newton.sensors.SensorContact(model, sensing_shapes="foot_*")
 
    kinds = imu.solver_observable_kinds | contact_sensor.solver_observable_kinds
    # Use contacts from a pipeline configured with a compatible capacity.
@@ -586,7 +584,8 @@ contacts, and rigid-soft particle, edge, and face records against rigid shapes -
    or pass a selection without ``CONTACT_F`` to skip reporting on earlier substeps.
 3. Rows ``[0, rigid_contact_max)`` hold the body-body contacts (``i < rigid_contact_count``) when
    VBD integrates the rigid bodies: the force on body 0 by body 1 with its torque about body 0's
-   center of mass, the convention shared by every solver writing ``contact_f``. With
+   center of mass, the convention shared by every solver writing ``contact_f``. The torque
+   includes any torsional and rolling friction couple. With
    ``integrate_with_external_rigid_solver=True``, VBD's rigid rows are zero: request and consume
    the external solver's forces through its own observable container. Rows
    ``rigid_contact_max + i`` for ``i < soft_contact_count`` hold the rigid-soft records. Rows
@@ -611,8 +610,7 @@ by the iterations.
 
 Soft self-contact forces are not exported. :class:`~newton.sensors.SensorContact` reads the
 rigid-contact rows, so it reports VBD's body-body contacts, but it does not read the soft rows.
-Construct it with ``request_contact_attributes=False`` and pass the container as
-``sensor.update(state_out, contacts, observables=observables)``.
+Pass the container as ``sensor.update(state_out, contacts, observables=observables)``.
 
 .. testcode::
 
@@ -704,12 +702,10 @@ The following compatibility paths remain available for a deprecation period:
 The request methods and legacy force export via ``update_contacts()`` emit
 :class:`DeprecationWarning`. MuJoCo and Kamino keep geometry-only ``update_contacts()``
 supported without a warning when ``contacts.force`` is ``None``.
-``SensorIMU`` and ``SensorContact`` retain their legacy
-``request_state_attributes=True`` and ``request_contact_attributes=True`` defaults
-during the deprecation period; explicitly pass ``False`` when using solver observables.
-Setting either option to ``True`` is deprecated in Newton 1.7 and emits one
-sensor-specific warning at the caller's location. Passing ``False`` does not
-emit a warning or request legacy fields.
+``SensorIMU`` and ``SensorContact`` read solver observables by default.
+Setting ``request_state_attributes=True`` or ``request_contact_attributes=True``
+is deprecated in Newton 1.7 and emits one sensor-specific warning at the caller's
+location. Omit both arguments; they will be removed together with the legacy fields.
 
 ``Contacts.EXTENDED_ATTRIBUTES`` and direct ``requested_attributes={"force"}``
 remain compatibility APIs. New integrations should not allocate

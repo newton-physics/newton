@@ -313,27 +313,45 @@ class TestGaussian(unittest.TestCase):
         self.assertNotEqual(srgb, linear)
         self.assertNotEqual(hash(srgb), hash(linear))
 
-    @requires("meshio")
     def test_gaussian_create_from_ply(self):
         """Read a 3DGS PLY: reorder wxyz rotations, exponentiate scales, squash opacities, keep the SH order."""
         names = ["x", "y", "z", "f_dc_0", "f_dc_1", "f_dc_2", *(f"f_rest_{i}" for i in range(9))]
         names += ["opacity", "scale_0", "scale_1", "scale_2", "rot_0", "rot_1", "rot_2", "rot_3"]
-        data = np.random.default_rng(0).standard_normal((4, len(names))).astype("<f4")
-        header = "ply\nformat binary_little_endian 1.0\nelement vertex 4\n"
-        header += "".join(f"property float {name}\n" for name in names) + "end_header\n"
-        with tempfile.TemporaryDirectory() as directory:
-            path = os.path.join(directory, "splats.ply")
-            with open(path, "wb") as file:
-                file.write(header.encode() + data.tobytes())
-            with patch_sys_module("open3d", None):  # importers no longer installs Open3D
-                gaussian = newton.Gaussian.create_from_ply(path)
+        data = np.random.default_rng(0).standard_normal((4, len(names))).astype(np.float32)
 
-        xyzw = data[:, [20, 21, 22, 19]]
-        assert_np_equal(gaussian.positions, data[:, :3])
-        assert_np_equal(gaussian.sh_coeffs, data[:, 3:15])
-        np.testing.assert_allclose(gaussian.opacities, 1.0 / (1.0 + np.exp(-data[:, 15])), rtol=1e-6)
-        np.testing.assert_allclose(gaussian.scales, np.exp(data[:, 16:19]), rtol=1e-6)
-        np.testing.assert_allclose(gaussian.rotations, xyzw / np.linalg.norm(xyzw, axis=1, keepdims=True), rtol=1e-6)
+        def ply(count: int, fmt: str) -> bytes:
+            header = f"ply\nformat {fmt} 1.0\nelement vertex {count}\n"
+            header += "".join(f"property float {name}\n" for name in names) + "end_header\n"
+            if fmt == "ascii":
+                return (
+                    header.encode() + "".join(" ".join(map(repr, row)) + "\n" for row in data[:count].tolist()).encode()
+                )
+            return header.encode() + data[:count].astype(">f4" if fmt == "binary_big_endian" else "<f4").tobytes()
+
+        with tempfile.TemporaryDirectory() as directory, patch_sys_module("open3d", None):
+            path = os.path.join(directory, "splats.ply")
+            for count, fmt in ((4, "binary_little_endian"), (4, "binary_big_endian"), (4, "ascii"), (1, "ascii")):
+                with self.subTest(count=count, fmt=fmt):
+                    with open(path, "wb") as file:
+                        file.write(ply(count, fmt))
+                    gaussian = newton.Gaussian.create_from_ply(path)
+                    rows = data[:count]
+                    xyzw = rows[:, [20, 21, 22, 19]]
+                    assert_np_equal(gaussian.positions, rows[:, :3])
+                    assert_np_equal(gaussian.sh_coeffs, rows[:, 3:15])
+                    np.testing.assert_allclose(gaussian.opacities, 1.0 / (1.0 + np.exp(-rows[:, 15])), rtol=1e-6)
+                    np.testing.assert_allclose(gaussian.scales, np.exp(rows[:, 16:19]), rtol=1e-6)
+                    np.testing.assert_allclose(
+                        gaussian.rotations, xyzw / np.linalg.norm(xyzw, axis=1, keepdims=True), rtol=1e-6
+                    )
+            complete = ply(4, "binary_little_endian")
+            header, body = ply(4, "ascii").split(b"end_header\n")
+            one_line = header + b"end_header\n" + body.replace(b"\n", b" ")
+            for malformed in (complete[: complete.index(b"property")], complete[:-8], one_line):
+                with open(path, "wb") as file:
+                    file.write(malformed)
+                with self.assertRaises(ValueError):
+                    newton.Gaussian.create_from_ply(path)
 
 
 class TestModelMesh(unittest.TestCase):
@@ -506,6 +524,7 @@ class TestModelMesh(unittest.TestCase):
         np.testing.assert_allclose(values.numpy(), np.array([[1.25, -2.5]] * 3, dtype=np.float32))
 
     def test_empty_sequence_custom_attribute_materializes_default_values(self):
+        """Preserve trailing dimensions for sequence defaults and authored rows."""
         attr = ModelBuilder.CustomAttribute(
             name="default_table_shape_attr",
             frequency=newton.Model.AttributeFrequency.SHAPE,
@@ -518,6 +537,26 @@ class TestModelMesh(unittest.TestCase):
 
         full_mock.assert_not_called()
         np.testing.assert_allclose(values.numpy(), np.array([[0.0, 1.0, 2.0]] * 2, dtype=np.float32))
+
+        for frequency, storage in (
+            ("table", [None, None, None]),
+            (newton.Model.AttributeFrequency.SHAPE, {0: [0.0, 1.0, 2.0]}),
+        ):
+            with self.subTest(frequency=frequency):
+                attr.frequency = frequency
+                attr.values = storage
+                values = attr.build_array(3, device="cpu", requires_grad=True)
+                self.assertTrue(values.requires_grad)
+                np.testing.assert_array_equal(values.numpy(), [[0.0, 1.0, 2.0]] * 3)
+
+        attr.default = [0.0]
+        attr.values = {0: [2.0], 1: [3.0]}
+        np.testing.assert_array_equal(attr.build_array(2, device="cpu").numpy(), [[2.0], [3.0]])
+        attr.default = 0.0
+        np.testing.assert_array_equal(attr.build_array(2, device="cpu").numpy(), [[2.0], [3.0]])
+        attr.frequency = newton.Model.AttributeFrequency.WORLD
+        attr.values = {-1: [0.0, 1.0, 2.0]}
+        np.testing.assert_array_equal(attr.build_array(3, device="cpu").numpy(), [[0.0, 1.0, 2.0]] * 3)
 
     def test_mesh_hash_uses_cached_sha_digest(self):
         mesh = newton.Mesh.create_box(
@@ -1203,13 +1242,9 @@ class TestModelMesh(unittest.TestCase):
             mesh = builder.shape_source[shape]
             self.assertEqual(len(mesh.vertices), mesh.maxhullvert)
 
+    @requires("coacd")
     def test_mesh_approximation_coacd_is_repeatable(self):
         """Decompose a nonconvex mesh with CoACD repeatedly and get identical hulls."""
-        try:
-            import coacd  # noqa: F401
-        except ImportError:
-            self.skipTest("Requires coacd")
-
         # A torus is nonconvex, so CoACD's parallel tree search has several cuts to choose from.
         rings, sides = 32, 12
         u, v = np.meshgrid(
@@ -4945,54 +4980,6 @@ class TestModelValidation(unittest.TestCase):
             control.clear()
         except Exception as e:
             self.fail(f"control.clear() raised {type(e).__name__}: {e}")
-
-
-class TestRemovedJointTargetAliases(unittest.TestCase):
-    """The 1.3-era ``joint_target_pos`` / ``joint_target_vel`` aliases are gone.
-
-    They are shadowed by tombstone descriptors rather than simply deleted so
-    that code written against the old API fails loudly. A plain deletion would
-    let ``obj.joint_target_pos = targets`` succeed as a fresh instance
-    attribute while ``joint_target_q`` stayed untouched, silently dropping the
-    requested targets.
-    """
-
-    ALIASES = (("joint_target_pos", "joint_target_q"), ("joint_target_vel", "joint_target_qd"))
-
-    def _owners(self):
-        builder = ModelBuilder()
-        base = builder.add_link(mass=1.0)
-        j = builder.add_joint_revolute(parent=-1, child=base, axis=newton.Axis.Z)
-        builder.add_articulation([j])
-        model = builder.finalize()
-        return (("Model", model), ("Control", model.control()), ("ModelBuilder", ModelBuilder()))
-
-    def test_assignment_raises_and_leaves_no_shadow_attribute(self):
-        """Verify assignment to a removed alias raises without shadowing."""
-        for label, obj in self._owners():
-            for alias, replacement in self.ALIASES:
-                with self.subTest(owner=label, alias=alias):
-                    with self.assertRaisesRegex(AttributeError, rf"{label}\.{alias}.*{replacement}"):
-                        setattr(obj, alias, [1.0, 2.0])
-                    self.assertNotIn(alias, vars(obj))
-
-    def test_read_raises(self):
-        """Verify reading a removed alias raises and names its replacement."""
-        for label, obj in self._owners():
-            for alias, replacement in self.ALIASES:
-                with self.subTest(owner=label, alias=alias):
-                    with self.assertRaisesRegex(AttributeError, rf"{label}\.{alias}.*{replacement}"):
-                        getattr(obj, alias)
-                    # Raising AttributeError on read keeps the usual probes well behaved.
-                    self.assertFalse(hasattr(obj, alias))
-                    self.assertEqual(getattr(obj, alias, "default"), "default")
-
-    def test_canonical_names_still_work(self):
-        """Verify replacement attributes remain readable."""
-        for label, obj in self._owners():
-            with self.subTest(owner=label):
-                self.assertIsNotNone(obj.joint_target_q)
-                self.assertIsNotNone(obj.joint_target_qd)
 
 
 class TestParentCollisionFilterWeldGroups(unittest.TestCase):
