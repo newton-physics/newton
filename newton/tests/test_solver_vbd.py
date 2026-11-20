@@ -5351,12 +5351,10 @@ def _capsule_axial_spin_dissipates_via_friction(test, device):
     test.assertLess(omega_x, 4.0, f"axial spin failed to dissipate (omega_x={omega_x:.4f}, v_y={v_y:.4f})")
 
 
-def _simulate_vbd_angular_friction(
-    device, channel, coefficient, friction_mode=newton.ShapeFrictionMode.TORSIONAL_ROLLING
-):
+def _simulate_vbd_angular_friction(device, channel, coefficient):
     """Simulate rotation resisted by one angular contact-friction channel."""
     builder = newton.ModelBuilder()
-    builder.default_shape_cfg.friction_mode = friction_mode
+    builder.default_shape_cfg.friction_mode = newton.ShapeFrictionMode.TORSIONAL_ROLLING
     builder.default_shape_cfg.ke = 5.0e5
     builder.default_shape_cfg.kd = 100.0
     builder.default_shape_cfg.mu = 0.0
@@ -5402,15 +5400,6 @@ def _angular_friction_slows_rotation_without_sliding(test, device):
         resisted = _simulate_vbd_angular_friction(device, channel, 0.05)
         test.assertGreater(unresisted, 6.0, msg=channel)
         test.assertLess(resisted, 0.7 * unresisted, msg=channel)
-
-
-def _angular_friction_requires_friction_mode(test, device):
-    """Verify each angular channel stays off below the friction mode that enables it."""
-    mode = newton.ShapeFrictionMode
-    for channel, disabled_mode in (("torsional", mode.SLIDING), ("rolling", mode.TORSIONAL)):
-        unresisted = _simulate_vbd_angular_friction(device, channel, 0.0)
-        disabled = _simulate_vbd_angular_friction(device, channel, 0.05, disabled_mode)
-        test.assertAlmostEqual(disabled, unresisted, delta=1.0e-3 * unresisted, msg=channel)
 
 
 def _rolling_friction_stores_no_torsional_couple(test, device):
@@ -7856,12 +7845,6 @@ add_function_test(
     TestSolverVBD,
     "test_angular_friction_slows_rotation_without_sliding",
     _angular_friction_slows_rotation_without_sliding,
-    devices=devices,
-)
-add_function_test(
-    TestSolverVBD,
-    "test_angular_friction_requires_friction_mode",
-    _angular_friction_requires_friction_mode,
     devices=devices,
 )
 add_function_test(
