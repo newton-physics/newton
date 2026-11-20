@@ -26,7 +26,7 @@ Success criteria:
   across the field and red ghost platforms appear above and below the real ones.
 - Every loop stays closed (gap under 1 mm); no actuator leaves its stroke.
 
-Requires cuNLS (``pip install newton[cunls-cu12]`` or ``newton[cunls-cu13]``).
+Requires cuNLS (``pip install newton[cunls]``; a CUDA 13 driver, R580 or newer).
 
 Runs:
 - `python -m newton.examples ik_stewart_platform`

@@ -46,11 +46,8 @@ sim = [
 ]
 
 # Optional cuNLS backend for inverse kinematics (IKOptimizer.CUNLS): closed loops, mimic joints and
-# hard joint limits. Pick the extra matching the CUDA major version of the driver.
-cunls-cu12 = [
-    "pycunls-cu12>=0.4.3; sys_platform == 'linux' and (platform_machine == 'x86_64' or platform_machine == 'aarch64')",
-]
-cunls-cu13 = [
+# hard joint limits. Its Python package is built with CUDA 13 (R580 or newer driver).
+cunls = [
     "pycunls-cu13>=0.4.3; sys_platform == 'linux' and (platform_machine == 'x86_64' or platform_machine == 'aarch64')",
 ]
 
