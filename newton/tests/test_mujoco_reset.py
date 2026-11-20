@@ -41,6 +41,65 @@ def _build_two_world_model(world_count: int = 2) -> newton.Model:
 
 @requires(*MUJOCO_MODULES)
 class TestMuJoCoReset(unittest.TestCase):
+    def test_reset_delayed_actuator_history(self):
+        """Reset delayed controls relative to current time, respecting the world mask."""
+        import mujoco
+        import mujoco_warp
+
+        asset = newton.ModelBuilder()
+        asset.add_mjcf_native("""<mujoco><option gravity="0 0 0" timestep=".001"/>
+            <worldbody><body><joint name="j"/><geom size=".1"/></body></worldbody>
+            <actuator><motor joint="j" delay=".0035" nsample="5" interp="linear"/></actuator></mujoco>""")
+        builder = newton.ModelBuilder()
+        builder.replicate(asset, 2)
+        model = builder.finalize()
+        mask = wp.array([True, False, False], dtype=wp.bool, device=model.device)
+        for cpu in (False, True):
+            for start_time in (0.0, 10.0):
+                with self.subTest(cpu=cpu, start_time=start_time):
+                    solver = SolverMuJoCo(model, use_mujoco_cpu=cpu, separate_worlds=True, disable_contacts=True)
+                    data = solver.mj_data if cpu else solver.mjw_data
+                    initial = data.history.copy() if cpu else data.history.numpy().copy()
+                    if cpu:
+                        data.time = start_time
+                        data.ctrl[:] = 1
+                    else:
+                        data.time.fill_(start_time)
+                        data.ctrl.fill_(1)
+                    for _ in range(4):
+                        if cpu:
+                            mujoco.mj_step(solver.mj_model, data)
+                        else:
+                            mujoco_warp.step(solver.mjw_model, data)
+                    stepped = data.history.copy() if cpu else data.history.numpy().copy()
+                    current_time = data.time if cpu else data.time.numpy()[0]
+                    state = model.state()
+                    solver.reset(state, world_mask=mask)
+                    if not cpu and model.device.is_cuda:
+                        with wp.ScopedCapture(device=model.device) as capture:
+                            solver.reset(state, world_mask=mask)
+                        wp.capture_launch(capture.graph)
+                    actual = data.history.copy() if cpu else data.history.numpy()
+                    expected = initial if cpu else initial[0].copy()
+                    adr = solver.mj_model.actuator_historyadr[0]
+                    expected[adr + 2 : adr + 7] += current_time
+                    np.testing.assert_allclose(actual if cpu else actual[0], expected, atol=1e-6)
+                    if not cpu:
+                        np.testing.assert_array_equal(actual[1], stepped[1])
+                    forces = []
+                    for _ in range(5):
+                        if cpu:
+                            data.ctrl[:] = 1
+                            mujoco.mj_step(solver.mj_model, data)
+                            forces.append(data.qfrc_actuator[0])
+                        else:
+                            data.ctrl.fill_(1)
+                            mujoco_warp.step(solver.mjw_model, data)
+                            forces.append(data.qfrc_actuator.numpy()[0, 0])
+                    np.testing.assert_allclose(forces[:3], 0, atol=1e-6)
+                    # At t=10, float32 timestamps resolve roughly 1e-3 of a timestep.
+                    np.testing.assert_allclose(forces[3:], [0.5, 1], atol=2e-3)
+
     def _setup_stepped_solver(self):
         self.model = _build_two_world_model(world_count=2)
         self.solver = SolverMuJoCo(self.model, iterations=2, ls_iterations=2)

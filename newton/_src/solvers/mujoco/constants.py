@@ -27,8 +27,11 @@ contact rows."""
 MJ_MINMU = 1.0e-5
 """MuJoCo's minimum friction coefficient clamp."""
 
-MJ_MINVAL = 2.220446049250313e-16
-"""MuJoCo's minimum positive scalar guard value."""
+FLOAT64_EPS = 2.220446049250313e-16
+"""Double-precision epsilon used by Newton's solver guards."""
+
+MJ_MINVAL = 1.0e-15
+"""MuJoCo's scalar floor, pinned against the native library in tests."""
 
 SOLREF_MODE_FORCE_SPACE = 0
 """Interpret joint-limit gains as Newton force-space ``joint_limit_ke``/``joint_limit_kd``."""
@@ -38,3 +41,33 @@ SOLREF_MODE_RAW = 1
 
 SOLREF_MODE_MJCF_DEFAULT = 2
 """Preserve MuJoCo's implicit joint-limit solref until Newton's generic gains are edited."""
+
+
+# Flags handled by Newton conversion; gravity and sleep use existing settings.
+_DISABLE_FLAGS = (
+    "constraint",
+    "equality",
+    "frictionloss",
+    "limit",
+    "contact",
+    "spring",
+    "damper",
+    "clampctrl",
+    "warmstart",
+    "actuation",
+    "refsafe",
+    "sensor",
+    "eulerdamp",
+    "nativeccd",
+    "island",
+    "multiccd",
+)
+
+
+_ENABLE_FLAGS = ("energy", "invdiscrete")
+
+
+_FLAG_DEFAULTS = dict.fromkeys(_DISABLE_FLAGS, True) | dict.fromkeys((*_ENABLE_FLAGS, "multiccd"), False)
+
+
+MJC_OBJ_SITE = 6

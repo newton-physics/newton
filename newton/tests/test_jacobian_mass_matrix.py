@@ -11,6 +11,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.sim.articulation import _iter_mass_matrix_blocks
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
@@ -681,6 +682,12 @@ def test_mass_matrix_with_mask(test, device):
 
     # Second articulation should have non-zero mass matrix
     test.assertNotEqual(H_np[1, 0, 0], 0.0)
+
+    full = newton.eval_mass_matrix(model, state).numpy()
+    blocks = list(_iter_mass_matrix_blocks(model, state, [1, 0], max_bytes=4))
+    test.assertEqual([indices for indices, _ in blocks], [[1], [0]])
+    for indices, matrix in blocks:
+        np.testing.assert_allclose(matrix, full[indices])
 
 
 def test_prismatic_joint_jacobian(test, device):

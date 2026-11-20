@@ -13,6 +13,7 @@ import xml.etree.ElementTree as ET
 from unittest import mock
 
 import newton.tests.unittest_utils as unittest_utils
+from newton.tests.compare_mjcf_importers import _ComparisonResult
 from newton.tests.thirdparty.unittest_parallel import _enable_strict_warnings
 from newton.tests.thirdparty.unittest_parallel import main as unittest_parallel_main
 
@@ -448,6 +449,28 @@ class TestNewtonTestCaseOutputContract(unittest.TestCase):
         self.assertTrue(stderr_capture.begin_called)
         self.assertTrue(stdout_capture.end_called)
         self.assertFalse(output_capture.active)
+
+
+class TestMjcfComparisonResults(unittest.TestCase):
+    def test_subtest_skip_preserves_failure(self):
+        """A later skipped subtest must not hide a failed comparison."""
+        for exception, status in ((AssertionError, "failed"), (ValueError, "error")):
+            with self.subTest(status=status):
+
+                class Sample(unittest.TestCase):
+                    failure_type = exception
+
+                    def runTest(self):
+                        with self.subTest(case="failure"):
+                            raise self.failure_type("intentional failure")
+                        with self.subTest(case="skip"):
+                            self.skipTest("intentional skip")
+
+                result = unittest.TextTestRunner(stream=io.StringIO(), resultclass=_ComparisonResult).run(Sample())
+                self.assertFalse(result.wasSuccessful())
+                self.assertEqual(result.records[0]["status"], status)
+                self.assertEqual(len(result.skipped), 1)
+                self.assertIn("intentional skip", result.records[0]["details"])
 
 
 class TestRequires(unittest.TestCase):
