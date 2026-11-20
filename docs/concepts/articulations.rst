@@ -90,8 +90,9 @@ energies. Supply explicit per-joint builder stiffnesses instead.
 :attr:`~newton.JointType.FREE` joint: seven ``joint_q`` coordinates for relative
 position and orientation, and six ``joint_qd`` entries for relative twist.
 :func:`newton.eval_fk` and :func:`newton.eval_ik` convert between joint and body
-state. :class:`newton.solvers.SolverVBD` is currently the only solver that
-evaluates the rod's constitutive response.
+state. :class:`newton.solvers.SolverVBD` and :class:`newton.solvers.SolverKamino`
+evaluate the rod's constitutive response; see :ref:`kamino-rod-joints` for the
+rod joint properties that Kamino supports.
 
 In :class:`newton.Rod`, ``points`` and ``quaternions`` define the initial
 centerline and segment orientations. Optional ``rest_points`` and
@@ -118,7 +119,9 @@ the relative rest rotation as a unit quaternion. For individual joints, specify
 ``rest_rotation`` on :meth:`newton.ModelBuilder.add_joint_rod`; its default is
 the initial relative anchor rotation. :class:`newton.solvers.SolverVBD` reads
 only the quaternion entries; direct edits to the three translation entries
-have no effect.
+have no effect. :class:`newton.solvers.SolverKamino` reads all seven entries,
+so edited translation entries set a rest shear and stretch offset between the
+anchors.
 
 Rod stiffness and damping use :attr:`newton.Model.joint_target_ke` and
 :attr:`newton.Model.joint_target_kd` in canonical XYZ linear/angular order:
@@ -456,7 +459,7 @@ Implementation details differ by coordinate formulation:
   kinematic bodies can therefore be softer under SemiImplicit.
 - :class:`~newton.solvers.SolverKamino` with ``dynamics_solver="lox"`` advances the pose of
   kinematic bodies with their prescribed :attr:`newton.State.body_qd` over the step, while its
-  PADMM and DVI backends keep the input :attr:`newton.State.body_q`. Under LOX, write a velocity
+  PADMM and SCC backends keep the input :attr:`newton.State.body_q`. Under LOX, write a velocity
   that reaches the target pose within the step.
 
 :class:`~newton.solvers.SolverMuJoCo` holds kinematic roots with a weld constraint to the world, and
@@ -813,8 +816,8 @@ Construction raises ``ValueError`` when the selection is not homogeneous. Pass
 
 - **Irregular layouts.** Worlds may differ outside the selected articulations, for
   example by holding additional bodies or articulations, so the selected rows are not
-  evenly spaced between worlds. Such layouts are addressed through explicit model
-  indices (:attr:`~newton.selection.ArticulationView.uses_explicit_model_indices`).
+  evenly spaced between or within worlds. Such layouts are addressed through explicit
+  model indices (:attr:`~newton.selection.ArticulationView.uses_explicit_model_indices`).
 - **Sparse views.** Matches may cover only some worlds. Worlds without matches are
   excluded from the leading dimension of all returned arrays, and
   :attr:`~newton.selection.ArticulationView.is_sparse` is ``True``.
@@ -839,11 +842,11 @@ Joint, coordinate, DOF, link, and shape layouts are checked independently. Both
 reads and writes raise ``AttributeError`` for an unavailable layout.
 A layout may contain gaps, but every match must have the same selected count and
 relative model positions and ownership (DOF/coordinate to joint and shape to link),
-and the matches' start indices must be uniformly strided within worlds. With
-``homogeneous=True`` they must also be uniformly strided between worlds;
-``homogeneous=False`` allows irregular spacing between worlds and addresses it through
-explicit model indices. Shapes may instead be interleaved with other shapes at
-different positions, as long as every match has the same shape count and owning links.
+and, with ``homogeneous=True``, the matches' start indices must be uniformly strided
+within and between worlds. ``homogeneous=False`` allows irregular spacing within and
+between worlds and addresses it through explicit model indices. Shapes may instead be
+interleaved with other shapes at different positions, as long as every match has the
+same shape count and owning links.
 
 Joint and link filters use the first match as their template. A filter selects the
 template position in every match: if another articulation inserts a link or joint

@@ -18,6 +18,7 @@ in a fixed order, so the seed is deterministic and identical blocks receive iden
 import warp as wp
 
 from ...core.types import vec6f
+from .system_kernels import block_matrix
 
 ###
 # Module interface
@@ -315,10 +316,10 @@ def _certified_bound(
 def _exclude_inertia_free_dofs(
     # Inputs:
     dim: wp.array[wp.int32],
-    mio: wp.array[wp.int32],
     vio: wp.array[wp.int32],
     # Outputs:
-    matrix: wp.array[wp.float32],
+    matrix: wp.array2d[wp.float32],
+    single_body_matrix: wp.array2d[wp.float32],
     dof_excluded: wp.array[wp.int32],
 ):
     """Give each DOF without inertia a unit pivot and exclude it from the structural Jacobians.
@@ -330,10 +331,11 @@ def _exclude_inertia_free_dofs(
     n = dim[block]
     if i >= n:
         return
-    diagonal = mio[block] + i * n + i
-    excluded = wp.where(matrix[diagonal] == 0.0, 1, 0)
+    diagonal = i * n + i
+    entries = block_matrix(matrix, single_body_matrix, block)
+    excluded = wp.where(entries[diagonal] == 0.0, 1, 0)
     if excluded != 0:
-        matrix[diagonal] = 1.0
+        entries[diagonal] = 1.0
     dof_excluded[vio[block] + i] = excluded
 
 

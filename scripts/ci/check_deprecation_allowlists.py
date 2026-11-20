@@ -2,10 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import sys
+import tomllib
 from collections.abc import Sequence
 from pathlib import Path
 
-import tomllib
 from packaging.requirements import InvalidRequirement, Requirement
 from packaging.utils import canonicalize_name
 from packaging.version import Version

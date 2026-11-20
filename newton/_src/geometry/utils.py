@@ -180,11 +180,28 @@ def compute_inertia_box_mesh(
         indices=np.asarray(indices).flatten().tolist(),
         is_solid=is_solid,
     )
+    return compute_inertia_box(volume, com, inertia_tensor)
 
+
+def compute_inertia_box(
+    volume: float, com: np.ndarray | wp.vec3, inertia: np.ndarray | wp.mat33
+) -> tuple[wp.vec3, wp.vec3, wp.quat]:
+    """Compute the equivalent inertia box of a body from its unit-density mass properties.
+
+    See :func:`compute_inertia_box_mesh` for the half-size formula.
+
+    Args:
+        volume: Volume [m^3], or the surface area [m^2] of a shell: the mass at unit density.
+        com: Center of mass [m].
+        inertia: Inertia tensor about the center of mass at unit density, shape ``(3, 3)``.
+
+    Returns:
+        Tuple of ``(center, half_extents, rotation)`` as returned by :func:`compute_inertia_box_mesh`.
+    """
     if volume < 1e-12:
         return wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()
 
-    inertia = np.array(inertia_tensor).reshape(3, 3)
+    inertia = np.array(inertia).reshape(3, 3)
     eigvals, eigvecs = np.linalg.eigh(inertia)
 
     # Sort eigenvalues (and eigenvectors) in ascending order.
@@ -203,81 +220,11 @@ def compute_inertia_box_mesh(
         arg = 6.0 * (eigvals[j] + eigvals[k] - eigvals[i]) / volume
         half_extents[i] = 0.5 * np.sqrt(max(arg, 0.0))
 
-    # Convert the eigenvector matrix (columns = principal axes in mesh frame)
-    # to a quaternion.
-    rotation = wp.quat_from_matrix(wp.mat33(*eigvecs.T.flatten().tolist()))
+    # The eigenvector matrix (columns = principal axes in mesh frame) rotates the
+    # principal-axis frame to the mesh frame; wp.mat33 takes its values row by row.
+    rotation = wp.quat_from_matrix(wp.mat33(*eigvecs.flatten().tolist()))
 
     return wp.vec3(*np.array(com)), wp.vec3(*half_extents), rotation
-
-
-def compute_pca_obb(vertices: np.ndarray) -> tuple[wp.transform, wp.vec3]:
-    """Compute the oriented bounding box of a set of vertices.
-
-    Args:
-        vertices: A numpy array of shape (N, 3) containing the vertex positions.
-
-    Returns:
-        A tuple containing:
-        - transform: The transform of the oriented bounding box
-        - extents: The half-extents of the box along its principal axes
-    """
-    if len(vertices) == 0:
-        return wp.transform_identity(), wp.vec3(0.0, 0.0, 0.0)
-    if len(vertices) == 1:
-        return wp.transform(wp.vec3(vertices[0]), wp.quat_identity()), wp.vec3(0.0, 0.0, 0.0)
-
-    # Center the vertices
-    center = np.mean(vertices, axis=0)
-    centered_vertices = vertices - center
-
-    # Compute covariance matrix with handling for degenerate cases
-    if len(vertices) < 3:
-        # For 2 points, create a line-aligned OBB
-        direction = centered_vertices[1] if len(vertices) > 1 else np.array([1, 0, 0])
-        direction = direction / np.linalg.norm(direction) if np.linalg.norm(direction) > 1e-6 else np.array([1, 0, 0])
-        # Create orthogonal basis
-        if abs(direction[0]) < 0.9:
-            perpendicular = np.cross(direction, [1, 0, 0])
-        else:
-            perpendicular = np.cross(direction, [0, 1, 0])
-        perpendicular = perpendicular / np.linalg.norm(perpendicular)
-        third = np.cross(direction, perpendicular)
-        eigenvectors = np.column_stack([direction, perpendicular, third])
-    else:
-        cov_matrix = np.cov(centered_vertices.T)
-        eigenvalues, eigenvectors = np.linalg.eigh(cov_matrix)
-        # Sort by eigenvalues in descending order
-        sorted_indices = np.argsort(eigenvalues)[::-1]
-        eigenvalues = eigenvalues[sorted_indices]
-        eigenvectors = eigenvectors[:, sorted_indices]
-
-        # Ensure right-handed coordinate system
-        if np.linalg.det(eigenvectors) < 0:
-            eigenvectors[:, 2] *= -1
-
-    # Project vertices onto principal axes
-    projected = centered_vertices @ eigenvectors
-
-    # Compute extents
-    min_coords = np.min(projected, axis=0)
-    max_coords = np.max(projected, axis=0)
-    extents = (max_coords - min_coords) / 2.0
-
-    # Calculate the center in the projected coordinate system
-    center_offset = (max_coords + min_coords) / 2.0
-    # Transform the center offset back to the original coordinate system
-    center = center + center_offset @ eigenvectors.T
-
-    # Convert rotation matrix to quaternion
-    # The rotation matrix should transform from the original coordinate system to the principal axes
-    # eigenvectors is the rotation matrix from original to principal axes
-    rotation_matrix = eigenvectors
-
-    # Convert to quaternion using Warp's quat_from_matrix function
-    # First convert numpy array to Warp matrix
-    orientation = wp.quat_from_matrix(wp.mat33(rotation_matrix))
-
-    return wp.transform(wp.vec3(center), orientation), wp.vec3(extents)
 
 
 def compute_inertia_obb(
@@ -435,6 +382,49 @@ def load_mesh(filename: str, method: str | None = None):
         if mesh is None or len(mesh[0]) == 0:
             raise ValueError(f"Failed to load mesh using method {method}")
         return mesh
+
+
+_PLY_TYPES = {"char": "i1", "uchar": "u1", "short": "i2", "ushort": "u2", "int": "i4", "uint": "u4", "float": "f4"}
+_PLY_TYPES |= {"int8": "i1", "uint8": "u1", "int16": "i2", "uint16": "u2", "int32": "i4", "uint32": "u4"}
+_PLY_TYPES |= {"int64": "i8", "uint64": "u8", "float32": "f4", "double": "f8", "float64": "f8"}
+_PLY_BYTE_ORDERS = {"ascii": "", "binary_little_endian": "<", "binary_big_endian": ">"}
+
+
+def _read_ply_vertices(filename: str) -> dict[str, np.ndarray]:
+    """Read the per-vertex properties of a PLY file, which must store its vertices first."""
+    with open(filename, "rb") as file:
+        order, count, fields, in_vertices = None, None, [], False
+        try:
+            if file.readline().split() != [b"ply"]:
+                raise KeyError("ply")
+            for line in iter(file.readline, b""):
+                tokens = line.decode("ascii").split()
+                if tokens[:1] == ["end_header"]:
+                    break
+                if tokens[:1] == ["format"]:
+                    order = _PLY_BYTE_ORDERS[tokens[1]]
+                elif tokens[:1] == ["element"]:
+                    in_vertices = count is None
+                    if in_vertices and tokens[1] != "vertex":
+                        raise KeyError(tokens[1])
+                    count = int(tokens[2]) if in_vertices else count
+                elif tokens[:1] == ["property"] and in_vertices:
+                    fields.append((tokens[2], order + _PLY_TYPES[tokens[1]]))
+            else:
+                raise IndexError("end_header")
+            if order == "":
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")  # NumPy warns about missing data; the shape check reports it
+                    table = np.loadtxt(file, dtype=np.float32, max_rows=count, ndmin=2)
+                if table.shape != (count, len(fields)):
+                    raise IndexError("data")
+                return {name: table[:, i] for i, (name, _) in enumerate(fields)}
+            table = np.fromfile(file, dtype=fields, count=count)
+            if len(table) != count:
+                raise IndexError("data")
+            return {name: table[name] for name, _ in fields}
+        except (IndexError, KeyError, TypeError, ValueError) as e:
+            raise ValueError(f"'{filename}' is not a PLY file with a complete vertex table.") from e
 
 
 def visualize_meshes(

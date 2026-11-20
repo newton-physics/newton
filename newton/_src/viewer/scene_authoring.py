@@ -444,6 +444,9 @@ class SceneEditor:
         self._preview_error: tuple | None = None
         self._placement_result = None
         self._placement_cache = None
+        attach = getattr(getattr(viewer, "gui", None), "set_scene_editor", None)
+        if attach is not None:
+            attach(self)
 
     @property
     def solver_type(self) -> Solver:
@@ -1459,6 +1462,8 @@ class SceneEditor:
             )
         # Surface asynchronous build errors before replacing the displayed scene.
         wp.synchronize_device(self.device)
+        camera = getattr(self.viewer, "camera", None) if old is not None else None
+        camera_pose = (tuple(camera.pos), camera.pitch, camera.yaw) if camera is not None else None
         try:
             self.viewer.set_model(candidate.model)
             self.viewer.set_control(candidate.control)
@@ -1471,6 +1476,11 @@ class SceneEditor:
                 self.viewer.set_solver(old.solver)
                 self.viewer.set_collision_pipeline(old.pipeline)
             raise
+        finally:
+            # An edit replaces the Model inside the same scene. An explicit
+            # camera pose takes precedence over the viewer's new-scene framing.
+            if camera_pose is not None:
+                self.viewer.set_camera(*camera_pose)
         self._publish(candidate)
         self._resolve_placement_history(candidate)
         self._objects = tuple(candidate.objects[obj.id] for obj in self._objects)
@@ -2043,6 +2053,9 @@ class SceneEditor:
         if self._closed:
             return
         self._closed = True
+        workspace = getattr(getattr(self.viewer, "gui", None), "workspace", None)
+        if workspace is not None and workspace.example is self:
+            workspace.set_scene_editor(None)
         for future in self._preparing.values():
             future.cancel()
         self._close_preparation_executor()

@@ -408,8 +408,8 @@ depends on the viewer backend.
 
 Use a live viewer such as :class:`~newton.viewer.ViewerGL` to inspect the
 current scene and add :ref:`custom overlays <viewer-custom-visualization>` for
-contacts or other diagnostic data. Its example runner also offers bounded
-local history; see :ref:`viewer-inspection`. For persistent or external historical inspection, enable
+contacts or other diagnostic data. Its inspection workspace can also record
+bounded local history of logged frames; see :ref:`viewer-inspection`. For persistent or external historical inspection, enable
 ``keep_historical_data`` in :class:`~newton.viewer.ViewerRerun` to retain a
 timeline for the current viewer session, or use
 :ref:`ViewerFile <viewer-file-recording>` to create a persistent state-snapshot
@@ -437,7 +437,7 @@ All viewer backends inherit from :class:`~newton.viewer.ViewerBase` and share a 
 - :meth:`~newton.viewer.ViewerBase.end_frame` — finish the frame and present it
 - :meth:`~newton.viewer.ViewerBase.is_running` — check whether the viewer is still open (useful as a loop condition)
 - :meth:`~newton.viewer.ViewerBase.is_paused` — check whether the simulation is paused (toggled with ``SPACE`` in :class:`~newton.viewer.ViewerGL`)
-- :meth:`~newton.viewer.ViewerBase.should_step` — call exactly once per frame; returns ``True`` when running, or ``True`` once after a single-step request (triggered with ``.`` or the "Step" button in :class:`~newton.viewer.ViewerGL`) and ``False`` otherwise; prefer this over composing ``is_paused()`` manually
+- :meth:`~newton.viewer.ViewerBase.should_step` — call exactly once per frame; returns ``True`` when running, or ``True`` once after a single-step request (triggered with ``.`` or the "Step" button in :class:`~newton.viewer.ViewerGL`) and ``False`` otherwise, including while :class:`~newton.viewer.ViewerGL` replays recorded history; prefer this over composing ``is_paused()`` manually
 - :meth:`~newton.viewer.ViewerBase.set_rendering_paused` / :meth:`~newton.viewer.ViewerBase.is_rendering_paused` — freeze or resume the displayed image independently of simulation stepping in GL and RTX
 - :meth:`~newton.viewer.ViewerBase.close` — close the viewer and release resources
 
@@ -570,7 +570,7 @@ Interactive inspection in ViewerGL
 ----------------------------------
 
 ViewerGL presents an explorer, a central viewport, State / Control / Model
-properties, and a timeline when running through ``newton.examples.run``.
+properties, and a timeline of recorded frames.
 The explorer includes worlds, articulations, joints, bodies, shapes, deformable
 objects, custom attribute frequencies, and available geometry resources.
 Empty property categories are hidden. Custom attributes use their registered
@@ -590,9 +590,11 @@ is distinguished from an unloaded contact. BVH overlays are bounded debug
 views of available current bounds, not an export of every backend's BVH nodes.
 
 Images and plots logged by the example appear as dockable tabs alongside the
-viewport. The console receives Newton Python logging records, with level
-filtering; warnings and errors open it automatically. Console capture preserves
-terminal output and application-configured logging handlers. Explicit display choices
+viewport. With ``ViewerGL(capture_logs=True)``, which the example runner
+passes, the console receives Newton Python logging records and Newton warnings,
+with level filtering; warnings and errors open it automatically. Console capture
+preserves terminal output and application-configured logging handlers. Without
+the opt-in, the viewer leaves logging configuration untouched. Explicit display choices
 survive example switches. A new scene keeps its authored camera pose.
 
 To use the previous sidebar GUI, construct the viewer with
@@ -600,6 +602,9 @@ To use the previous sidebar GUI, construct the viewer with
 overlay, floating image/plot windows, and UI callbacks without creating the
 docked inspection workspace. The keyword-only flag defaults to ``False`` and
 has no effect when ``headless=True``.
+The workspace panels add roughly 1–2 ms of CPU time per interactive frame
+compared with the legacy sidebar; use the legacy GUI when frame rate matters
+more than inspection.
 
 The workspace compiles its interaction kernels during construction and when
 binding a model on a different device, avoiding stalls on first selection or
@@ -637,6 +642,7 @@ inspection uses the objects supplied through ``log_state`` and ``log_contacts``:
     builder.add_ground_plane()
     model = builder.finalize()
     state_0, state_1 = model.state(), model.state()
+    contact_state = model.state()  # collision input poses for log_contacts()
     control = model.control()
     solver = SolverXPBD(model)
     pipeline = newton.CollisionPipeline(model)
@@ -652,29 +658,30 @@ inspection uses the objects supplied through ``log_state`` and ``log_contacts``:
             state_0.clear_forces()
             viewer.apply_forces(state_0)
             pipeline.collide(state_0, contacts)
+            contact_state.assign(state_0)
             solver.step(state_0, state_1, control, contacts, dt)
             state_0, state_1 = state_1, state_0
             time += dt
         viewer.begin_frame(time)
         viewer.log_state(state_0)
-        viewer.log_contacts(contacts, state_0)
+        viewer.log_contacts(contacts, contact_state)
         viewer.end_frame()
     viewer.close()
 
 The setters retain references in the active viewer layer without copying
 arrays or stepping the simulation. Repeating a setter replaces only that
-component; passing ``None`` clears it, including any example-derived fallback.
-The solver and pipeline must belong to the active Model. Log the current State
-after each buffer swap; no State callback or separate registration is needed.
-The application owns all objects and stepping. Clearing or replacing a Model
-discards its inspected components and logged buffers.
+component; passing ``None`` clears it. The solver and pipeline must belong to
+the active Model. Log the current State after each buffer swap; no State
+callback or separate registration is needed. The application owns all objects
+and stepping. Clearing or replacing a Model discards its inspected components
+and logged buffers.
 
-The example runner supplies an internal adapter for conventional example
-attributes (``state_0`` or ``state``, ``control``, ``solver``, ``contacts``, and
-collision pipelines). Existing examples do not need registration calls.
-Explicit setters override discovery for their respective components. Custom
-loops use the setters and ordinary logging calls; the example-runner history
-and replay callbacks are not automatically installed in custom loops.
+These calls are the inspector's only inputs: the viewer never reads attributes
+of an application or example object. ``newton.examples.run`` follows the same
+contract, passing an example's ``control``, ``solver``, and collision pipeline
+to the setters after constructing it and then running the loop above. Without
+``set_collision_pipeline``, collision pipelines held directly by the solver
+passed to ``set_solver`` are inspected.
 
 Editing, history, and rebuilding
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -689,11 +696,22 @@ Editing, history, and rebuilding
   playback reaches the latest frame before live simulation resumes. They
   are not solver checkpoints and cannot restart simulation from an arbitrary
   earlier time.
-* Recording is opt-in for compatible examples: enable **Record history** in
-  the timeline to retain display snapshots. Recording is bounded to
-  128 MiB and 60,000 display frames. A snapshot above 64 MiB stops recording
-  before state-array transfers. Recording copies selected state, control,
-  and contact arrays to the host. With recording off, no snapshots are taken.
+* Recording is opt-in: enable **Record history** in the timeline to retain
+  display snapshots. Between ``begin_frame`` and ``end_frame``, the viewer
+  copies the arrays the application passes to ``log_state``, ``log_contacts``
+  (including solver observables), ``log_points``, and ``log_lines`` to the host,
+  together with the Control from ``set_control``. Frames are keyed by the time
+  passed to ``begin_frame``, so a paused loop that renders the same time again
+  records nothing new. Recording is bounded to 128 MiB and 60,000 display
+  frames; a frame above 64 MiB stops recording before its arrays are
+  transferred. With recording off, no snapshots are taken.
+* While the timeline shows a recorded frame, the same logging calls display
+  that frame's data instead of their arguments, matched by call order within
+  the frame and by name for points and lines; the application's arrays are not
+  modified. Other logged data, such as shapes, scalars, and images, stays live.
+  ``should_step`` advances playback instead of returning ``True`` until the
+  newest frame is reached, so call it to keep the simulation from running ahead
+  during replay.
 * Topology editing and USD authoring are not provided by this inspector.
   Rebuild the Model, State, Control, Solver, and CollisionPipeline in the
   application, then call ``set_model`` and the relevant component setters again.
@@ -710,9 +728,8 @@ presentation and rendering:
 
     flowchart TD
         App[Application-owned simulation] --> Bind[Component setters and frame logging]
-        Adapter[Conventional example adapter] --> Bind
         Bind --> Data[Model tree and attribute metadata]
-        Adapter --> History[Bounded display history]
+        Bind --> History[Bounded history of logged frames]
         Data --> UI[ImGui explorer and property panels]
         History --> Timeline[ImGui timeline presenter]
         UI --> GL[OpenGL overlays and selection rendering]
@@ -855,7 +872,9 @@ Keys can be specified as single-character strings (``'w'``), special key names (
 **Custom UI panels:**
 
 :meth:`~newton.viewer.ViewerGL.register_ui_callback` adds custom imgui UI elements to the viewer.
-The ``position`` parameter controls placement: ``"side"`` (default), ``"stats"``, ``"free"``, or ``"panel"``:
+The ``position`` parameter controls placement: ``"side"`` (default), ``"stats"``, ``"free"``, or ``"panel"``.
+In the docked workspace, ``"panel"`` and ``"side"`` callbacks share the inspector's Controls tab;
+``"stats"`` callbacks draw in the viewport overlay:
 
 .. code-block:: python
 
@@ -903,22 +922,6 @@ Viewer controls:
 
 Orbit mode keeps the pivot fixed while the camera rotates around it. Use ``F`` to center the pivot on the model, ``Shift`` + middle drag to pan the pivot with the camera, and the mouse wheel to change the orbit distance.
 
-**Troubleshooting:**
-
-If you encounter an OpenGL context error on Linux with Wayland:
-
-.. code-block:: text
-
-    OpenGL.error.Error: Attempt to retrieve context when no valid context
-
-Set the PyOpenGL platform before running:
-
-.. code-block:: bash
-
-    export PYOPENGL_PLATFORM=glx
-
-This is a known issue when running OpenGL applications on Wayland display servers.
-
 RTX Viewer
 ~~~~~~~~~~
 
@@ -954,7 +957,8 @@ for runtime scene management, and ``usd-core``, in addition to ``pyglet`` for th
 ViewerRTX has been validated with the following renderer configurations:
 
 - ``ovrtx==0.5.1.385782`` with ``ovstage==0.2.1.385922`` (minimum-dependency CI; Isaac Lab 3.0)
-- ``ovrtx==0.6.0.1791947691`` with ``ovstage==0.3.0.1791986420`` (locked GPU CI configuration)
+- ``ovrtx==0.6.0.1791947691`` with ``ovstage==0.3.0.1791986420``
+- ``ovrtx==0.7.0.1794596436`` with ``ovstage==0.4.0.1794520352`` (locked GPU CI configuration)
 
 Only the exact pairs above are part of Newton's validated matrix. Upgrade ``ovrtx`` and ``ovstage``
 together to one of these pairs. Mixed release pairs are unvalidated; OVRTX 0.5.1 fails to start with OVStage 0.2.0.

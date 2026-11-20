@@ -5,14 +5,13 @@
 from __future__ import annotations
 
 import gc
-import importlib.util
 import inspect
 import sys
 import unittest
 from contextlib import nullcontext
 from types import ModuleType, SimpleNamespace
 from unittest import mock
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 import numpy as np
 import warp as wp
@@ -21,6 +20,7 @@ import newton
 from newton import Axis
 from newton._src.geometry.sdf_texture import TextureSDFData, create_empty_texture_sdf_data
 from newton._src.geometry.sdf_utils import SDF, SDFData
+from newton._src.viewer import viewer_history
 from newton._src.viewer.camera import Camera
 from newton._src.viewer.gui.collision import CollisionInspector
 from newton._src.viewer.gui.imgui_backend import ImGuiBackend
@@ -43,10 +43,10 @@ from newton._src.viewer.viewer_gl import ViewerGL
 from newton._src.viewer.viewer_history import FrameHistory
 from newton._src.viewer.viewer_model_tree import ModelTree
 from newton._src.viewer.viewer_null import ViewerNull
-from newton.tests.unittest_utils import get_test_devices, import_pyglet_window, patch_sys_module
+from newton.tests.unittest_utils import get_test_devices, import_pyglet_window, patch_sys_module, requires
 
 
-def _own_imgui_context(test: unittest.TestCase, imgui: ModuleType) -> None:
+def _own_imgui_context(test: unittest.TestCase, imgui: ModuleType):
     previous = imgui.get_current_context()
     context = imgui.create_context()
     imgui.set_current_context(context)
@@ -57,6 +57,7 @@ def _own_imgui_context(test: unittest.TestCase, imgui: ModuleType) -> None:
             imgui.set_current_context(previous)
 
     test.addCleanup(restore_context)
+    return context
 
 
 @wp.kernel
@@ -71,25 +72,39 @@ def _scale_history_display(
     display_particle_q[i] = particle_q[i] * 0.01
 
 
+def _record_frame(history: FrameHistory, time: float, *states: newton.State, contacts=None, observables=None) -> None:
+    """Record one frame through the same calls the viewer makes for log_state() and log_contacts()."""
+    history.begin_frame(time)
+    for state in states:
+        history.state(state)
+    if contacts is not None:
+        history.contacts(contacts, states[0], observables)
+    history.end_frame()
+
+
+def _offscreen_imgui_backend(test: unittest.TestCase) -> ImGuiBackend:
+    """Return a real ImGui backend and context without an OpenGL window or renderer."""
+    from imgui_bundle import imgui, imguizmo
+
+    context = _own_imgui_context(test, imgui)
+    ui = ImGuiBackend.__new__(ImGuiBackend)
+    ui.is_available, ui.imgui, ui.giz, ui._context = True, imgui, imguizmo.im_guizmo, context
+    ui._workspace_style, ui.key_press_filter, ui.dpi_scale = True, None, 1.0
+    ui.io = imgui.get_io()
+    ui.io.set_ini_filename("")
+    ui.io.display_size = (640, 480)
+    # Build draw lists without a GPU renderer.
+    ui.io.backend_flags |= imgui.BackendFlags_.renderer_has_textures
+    ui._frame_time = ui._frame_recovery_state = ui._pending_file_dialog = None
+    ui.section_errors = {}
+    return ui
+
+
+@requires("imgui_bundle")
 class TestViewerUI(unittest.TestCase):
     def setUp(self) -> None:
-        try:
-            from imgui_bundle import imgui, imguizmo
-        except ImportError as exc:
-            self.skipTest(f"Viewer UI dependencies not available: {exc}")
-
-        _own_imgui_context(self, imgui)
         # Exercise ImGui state without an OpenGL renderer or window.
-        self.ui = ImGuiBackend.__new__(ImGuiBackend)
-        self.ui._workspace_style = True
-        self.ui.imgui = imgui
-        self.ui.giz = imguizmo.im_guizmo
-        self.ui.io = imgui.get_io()
-        self.ui.io.set_ini_filename("")
-        self.ui.io.display_size = (640, 480)
-        self.ui.io.backend_flags |= imgui.BackendFlags_.renderer_has_textures
-        self.ui.is_available = True
-        self.ui._frame_time = None
+        self.ui = _offscreen_imgui_backend(self)
 
     def test_custom_joint_property_storage(self) -> None:
         """Native editors honor custom owners, flattened rows, and logical joint indices."""
@@ -133,9 +148,9 @@ class TestViewerUI(unittest.TestCase):
         state = model.state()
         ws = ViewerWorkspace.__new__(ViewerWorkspace)
         ws.model = model
-        ws.viewer = SimpleNamespace(is_paused=lambda: True, _last_state=state)
-        ws.example = SimpleNamespace(state_0=state)
+        ws.viewer = SimpleNamespace(is_paused=lambda: True, _last_state=state, _inspection_components={})
         ws.history = ws._undo = ws._drag_undo = None
+        ws._bindings = ws._bindings_components = None
         ws._cache, ws._live_cache, ws._drafts = {}, {}, {}
         ws.gui = SimpleNamespace(ui=self.ui)
         ws.widgets = widgets = PhysicsWidgets(ws.gui)
@@ -244,11 +259,10 @@ class TestViewerUI(unittest.TestCase):
         model = builder.finalize(device="cpu")
         viewer = ViewerNull()
         viewer.set_model(model)
-        example = SimpleNamespace(viewer=viewer, model=model, state_0=model.state(), sim_time=0.0)
-        history = FrameHistory(example)
-        history.capture()
-        example.sim_time = 1.0
-        history.capture()
+        history = FrameHistory(viewer)
+        state = model.state()
+        for time in (0.0, 1.0):
+            _record_frame(history, time, state)
         self.assertEqual(len(history.frames), 2)
         timeline = TimelineView(history)
         viewer = ViewerGL.__new__(ViewerGL)
@@ -306,6 +320,25 @@ class TestViewerUI(unittest.TestCase):
                         self.assertAlmostEqual(self.ui.imgui.get_time(), elapsed)
                     finally:
                         self.ui.imgui.end_frame()
+
+    def test_modifier_reset_on_focus_loss(self) -> None:
+        """Forget a modifier key whose release was missed while the window was unfocused."""
+        import_pyglet_window(shadow_window=False)
+        from pyglet.window import key
+
+        self.ui.window = mock.MagicMock()
+        self.ui._attach_input()
+        handlers = self.ui.window.push_handlers.call_args.kwargs
+        self.ui.io.config_input_trickle_event_queue = False
+
+        handlers["on_key_press"](key.LCTRL, 0)
+        handlers["on_deactivate"]()
+        self.ui.io.clear_input_keys()
+        handlers["on_key_press"](key.RCTRL, 0)
+        handlers["on_key_release"](key.RCTRL, 0)
+        self.ui.begin_frame()
+        self.ui.imgui.end_frame()
+        self.assertFalse(self.ui.io.key_ctrl)
 
     def test_dpi_scaling(self) -> None:
         """Keep style sizes stable on reapplication and restore them at scale one."""
@@ -472,7 +505,7 @@ class TestViewerUI(unittest.TestCase):
 
 def _make_gl_state(paused: bool = False, step_requested: bool = False) -> ViewerGL:
     # Lightweight stand-in with just the fields ViewerGL.should_step() needs.
-    return SimpleNamespace(_paused=paused, _step_requested=step_requested)  # type: ignore[return-value]
+    return SimpleNamespace(_paused=paused, _step_requested=step_requested, _history=None)  # type: ignore[return-value]
 
 
 class TestViewerBaseShouldStep(unittest.TestCase):
@@ -488,13 +521,13 @@ class TestViewerBaseShouldStep(unittest.TestCase):
             self.assertTrue(viewer.should_step())
 
 
-@unittest.skipUnless(importlib.util.find_spec("imgui_bundle"), "Requires imgui_bundle")
+@requires("imgui_bundle")
 class TestViewerGuiRecovery(unittest.TestCase):
     def test_callback_failure_leaves_next_frame_usable(self):
         """Unwind real ImGui windows and styles without a renderer or model."""
         from imgui_bundle import imgui, imguizmo
 
-        _own_imgui_context(self, imgui)
+        context = _own_imgui_context(self, imgui)
         io = imgui.get_io()
         io.set_ini_filename("")
         io.display_size = (320, 320)
@@ -508,6 +541,7 @@ class TestViewerGuiRecovery(unittest.TestCase):
         gui._loading_splash_active = False
         # Exercise the real backend's stack snapshots and recovery without OpenGL.
         gui.ui = ImGuiBackend.__new__(ImGuiBackend)
+        gui.ui._context = context
         gui.ui.is_available = True
         gui.ui.imgui = imgui
         gui.ui.io = io
@@ -553,6 +587,7 @@ class TestViewerCameraSpeed(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 viewer.camera_speed = value
 
+    @requires("pyglet")
     def test_gui_keyboard_movement_uses_viewer_camera_speed(self):
         """Move at the configured speed while keeping the orbit pivot centered."""
         camera = Camera(pos=(0.0, 0.0, 0.0))
@@ -563,6 +598,7 @@ class TestViewerCameraSpeed(unittest.TestCase):
         gui = ViewerGui.__new__(ViewerGui)
         gui._viewer = viewer
         gui.ui = None
+        gui._loading_splash_active = False
         gui._cam_vel = np.zeros(3, dtype=np.float32)
         gui._cam_damp_tau = 0.1
 
@@ -583,6 +619,7 @@ class TestViewerCameraSpeed(unittest.TestCase):
                 camera.orbit(0, 0)
                 np.testing.assert_allclose(camera.pos, position, atol=1e-6)
 
+    @requires("pyglet")
     def test_camera_deceleration_is_capped(self):
         """Check that the camera deceleration is capped to avoid flipping the camera velocity direction."""
         camera = Camera(pos=(0.0, 0.0, 0.0))
@@ -590,6 +627,7 @@ class TestViewerCameraSpeed(unittest.TestCase):
         gui = ViewerGui.__new__(ViewerGui)
         gui._viewer = viewer
         gui.ui = None
+        gui._loading_splash_active = False
         velocity_init = np.array([1.0, 0.0, 0.0], dtype=np.float32)  # Non-zero initial velocity
         gui._cam_vel = velocity_init.copy()
         gui._cam_damp_tau = 0.1
@@ -681,8 +719,10 @@ class TestViewerShapeProperties(unittest.TestCase):
         self.assertEqual(bvhs.scope, 1)  # A model-wide resource includes every world by default.
         resource = bvhs.entries[("bvh", "shapes")].get()
         offsets = wp.array([(0, 0, 0), (10, 0, 0), (0, 15, 0)], dtype=wp.vec3, device="cpu")
-        viewer = SimpleNamespace(world_offsets=offsets, layer=SimpleNamespace(xform=wp.transform_identity()))
-        ws = SimpleNamespace(viewer=viewer, example=None)
+        viewer = SimpleNamespace(
+            world_offsets=offsets, layer=SimpleNamespace(xform=wp.transform_identity()), _last_state=None
+        )
+        ws = SimpleNamespace(viewer=viewer)
         empty_vec = wp.empty(0, dtype=wp.vec3, device="cpu")
         empty_int = wp.empty(0, dtype=int, device="cpu")
         for budget, query_count, group in ((9, 1, -1), (4, 4, -1), (9, 1, 1), (9, 1, 3)):
@@ -771,7 +811,8 @@ class TestViewerShapeProperties(unittest.TestCase):
         # Properties can be visible before the Scene tab is ever opened.
         # In particular the Examples tab remains selected after a switch.
         workspace = ViewerWorkspace.__new__(ViewerWorkspace)
-        workspace.model, workspace.tree, workspace.example = model, None, None
+        workspace.model, workspace.tree = model, None
+        workspace._bindings = workspace._bindings_components = None
         workspace.viewer = ViewerNull()
         workspace.selection, workspace.selected, workspace.message = set(), None, ""
         workspace.gui = SimpleNamespace(ui=SimpleNamespace(imgui=None))
@@ -793,6 +834,7 @@ class TestViewerShapeProperties(unittest.TestCase):
         workspace._cache = {}
         workspace._live_cache = {}
         workspace.viewer = ViewerNull()
+        workspace._bindings = workspace._bindings_components = None
         workspace.model = None
         workspace.world = 1
         workspace.widgets = SimpleNamespace(
@@ -810,7 +852,7 @@ class TestViewerShapeProperties(unittest.TestCase):
             ),
             mjc_geom_to_newton_shape=wp.array([[1, 3, -1], [1, 7, 9]], dtype=int, device="cpu"),
         )
-        workspace.example = SimpleNamespace(solver=solver)
+        workspace.viewer._inspection_components = {"solver": solver}
         for inverse in (None, wp.array([-1, 0, -1, 1, -1, -1, -1, 1, -1, 2], dtype=int, device="cpu")):
             with self.subTest(internal_contacts=inverse is None):
                 solver.newton_shape_to_mjc_geom = inverse
@@ -846,76 +888,87 @@ class TestViewerShapeProperties(unittest.TestCase):
 class TestViewerGLShouldStep(unittest.TestCase):
     """ViewerGL.should_step() state machine: running, paused, and single-step."""
 
+    @requires("imgui_bundle", "pyglet")
     def test_gui_popup_owns_viewer_shortcuts(self) -> None:
-        """Keep popup keys from closing or changing the simulation without keyboard capture."""
+        """Keep popup keys from closing or changing the simulation without keyboard capture.
+
+        Drive real ImGui popup and text-input state with real pyglet key codes.
+        """
+        import_pyglet_window(shadow_window=False)
+        from pyglet.window import key
+
+        ui = _offscreen_imgui_backend(self)
+        imgui = ui.imgui
+        # Closing releases the GUI renderer; a window without a GL context skips that.
+        ui.window = SimpleNamespace(context=None)
         viewer = SimpleNamespace(_paused=False, _step_requested=False, show_ui=True, _display_options_user={})
         gui = ViewerGui.__new__(ViewerGui)
-        gui._viewer = viewer
+        gui._viewer, gui.ui, gui.show_ui = viewer, ui, True
         gui.workspace = gui.console_capture = None
-        popup = True
-        gui.ui = SimpleNamespace(
-            is_available=True,
-            io=SimpleNamespace(want_capture_keyboard=False, want_text_input=False),
-            imgui=SimpleNamespace(
-                is_popup_open=lambda *_: popup,
-                PopupFlags_=SimpleNamespace(any_popup=1),
-            ),
-        )
-        closed = []
+        gui._loading_splash_active = False
         framed = []
         gui.frame_camera_on_model = lambda: framed.append(True)
-        key = SimpleNamespace(GRAVE=1, MOD_CTRL=2, SPACE=3, PERIOD=4, H=5, F=6, ESCAPE=7)
-        with patch_sys_module("pyglet", SimpleNamespace(window=SimpleNamespace(key=key))):
-            for symbol in (key.ESCAPE, key.SPACE, key.PERIOD, key.H, key.F):
-                gui.handle_key_press(symbol, close_fn=lambda: closed.append(True))
-            self.assertFalse(closed)
-            self.assertFalse(framed)
-            self.assertFalse(viewer._paused)
-            self.assertFalse(viewer._step_requested)
-            self.assertTrue(viewer.show_ui)
-            popup = False
-            gui.handle_key_press(key.SPACE)
-            self.assertTrue(viewer._paused)
-            self.assertTrue(viewer._display_options_user["_paused"])
-            gui.handle_key_press(key.PERIOD)
-            self.assertTrue(viewer._step_requested)
-            gui.handle_key_press(key.ESCAPE, close_fn=lambda: closed.append(True))
-            self.assertEqual(closed, [True])
+        values = {"name": "abc", "value": 1.0}
 
-            # GUI focus and numeric editing leave viewer shortcuts available.
-            gui.workspace = SimpleNamespace(rect=(200, 40, 600, 400))
-            gui.ui.io = SimpleNamespace(
-                want_capture_keyboard=True,
-                want_capture_mouse=False,
-                want_text_input=False,
-                mouse_pos=(400, 200),
-            )
-            active = False
-            numeric = False
-            gui.ui.imgui.is_any_item_active = lambda: active
-            gui.ui.imgui.internal = SimpleNamespace(
-                get_active_id=lambda: 42,
-                temp_input_is_active=lambda _: numeric,
-                get_input_text_state=lambda _: SimpleNamespace(flags=0),
-            )
-            gui.ui.imgui.InputTextFlags_ = SimpleNamespace(chars_decimal=1, chars_scientific=2, chars_hexadecimal=4)
-            for mouse, text, item, capture_mouse, numeric in (
-                ((100, 200), False, False, True, False),
-                ((400, 200), True, True, False, False),
-                ((400, 200), False, True, False, False),
-                ((400, 200), False, False, True, False),
-                ((100, 200), True, True, True, True),
-            ):
-                gui.ui.io.mouse_pos, gui.ui.io.want_text_input = mouse, text
-                active, gui.ui.io.want_capture_mouse = item, capture_mouse
-                before = viewer._paused
+        def frame(popup: str | None = None, field: str | None = None) -> None:
+            """Submit one ImGui frame with an optional open popup or focused input field."""
+            ui.begin_frame()
+            imgui.begin("Inputs")
+            if popup == "open":
+                imgui.open_popup("menu")
+            if imgui.begin_popup("menu"):
+                if popup == "close":
+                    imgui.close_current_popup()
+                imgui.end_popup()
+            if field is not None:
+                imgui.set_keyboard_focus_here()
+            if field == "name":
+                _, values["name"] = imgui.input_text("##name", values["name"])
+            elif field == "value":
+                _, values["value"] = imgui.input_float("##value", values["value"])
+            imgui.end()
+            ui.end_frame()
+
+        closed = []
+        frame(popup="open")
+        self.assertTrue(imgui.is_popup_open("", imgui.PopupFlags_.any_popup))
+        for symbol in (key.ESCAPE, key.SPACE, key.PERIOD, key.H, key.F):
+            gui.handle_key_press(symbol, close_fn=lambda: closed.append(True))
+        self.assertFalse(closed)
+        self.assertFalse(framed)
+        self.assertFalse(viewer._paused)
+        self.assertFalse(viewer._step_requested)
+        self.assertTrue(gui.show_ui)
+
+        frame(popup="close")
+        frame()
+        self.assertFalse(imgui.is_popup_open("", imgui.PopupFlags_.any_popup))
+        gui.handle_key_press(key.SPACE)
+        self.assertTrue(viewer._paused)
+        self.assertTrue(viewer._display_options_user["_paused"])
+        gui.handle_key_press(key.PERIOD)
+        self.assertTrue(viewer._step_requested)
+        gui.handle_key_press(key.ESCAPE, close_fn=lambda: closed.append(True))
+        self.assertEqual(closed, [True])
+        self.assertFalse(ui.is_available)
+        ui.is_available = True
+
+        # String entry owns Space; numeric entry keeps viewer shortcuts but
+        # retains its decimal point and Escape cancellation.
+        for field, ignored in (("name", True), ("value", False)):
+            with self.subTest(field=field):
+                for _ in range(3):
+                    frame(field=field)
+                self.assertTrue(ui.io.want_text_input)
+                self.assertEqual(gui._numeric_text_input_active(), not ignored)
+                paused = viewer._paused
                 gui.handle_key_press(key.SPACE)
-                self.assertEqual(viewer._paused, before if text and not numeric else not before)
-            viewer._step_requested = False
-            gui.handle_key_press(key.PERIOD)
-            gui.handle_key_press(key.ESCAPE, close_fn=lambda: closed.append(True))
-            self.assertFalse(viewer._step_requested)
-            self.assertEqual(closed, [True])
+                self.assertEqual(viewer._paused, paused if ignored else not paused)
+                viewer._paused, viewer._step_requested = True, False
+                gui.handle_key_press(key.PERIOD)
+                gui.handle_key_press(key.ESCAPE, close_fn=lambda: closed.append(True))
+                self.assertFalse(viewer._step_requested)
+                self.assertEqual(closed, [True])
 
     def test_returns_true_when_running(self):
         v = _make_gl_state(paused=False, step_requested=False)
@@ -955,6 +1008,7 @@ def _make_gl_running_state(headless: bool, num_frames: int | None, frame_count: 
         num_frames=num_frames,
         _frame_count=frame_count,
         _update=lambda: None,
+        _history=None,
     )
 
 
@@ -1080,9 +1134,10 @@ class TestViewerProperties(unittest.TestCase):
         viewer.activate("primary")
         viewer.set_model(model)
         viewer._last_state = state
+        viewer.set_solver(SolverXPBD(model))
         ws = ViewerWorkspace.__new__(ViewerWorkspace)
         ws.model, ws.viewer = model, viewer
-        ws.example = SimpleNamespace(state_0=state, solver=SolverXPBD(model))
+        ws._bindings = ws._bindings_components = None
         ws.history = ws._kinematic_state = ws._kinematic_indices = None
         ws._cache, ws._live_cache = {}, {}
         ws.selection = {("articulation", 0), ("joint", 1)}
@@ -1106,14 +1161,15 @@ class TestViewerProperties(unittest.TestCase):
         historical.joint_qd.assign(-expected_qd)
         newton.eval_fk(model, historical.joint_q, historical.joint_qd, historical)
         viewer._last_state = historical
-        ws.example.solver = None
-        ws.example.timeline = SimpleNamespace(frames=[0, 1], index=0)
+        viewer.set_solver(None)
+        ws.history = SimpleNamespace(replaying=True)
         ws._live_cache.clear()
         shown = ws.joint_display_state()
         np.testing.assert_allclose(shown.joint_q.numpy(), -expected_q, atol=1e-6)
         np.testing.assert_allclose(shown.joint_qd.numpy(), -expected_qd, atol=1e-6)
         np.testing.assert_array_equal(state.joint_q.numpy(), 0.0)
         np.testing.assert_array_equal(state.joint_qd.numpy(), 0.0)
+        ws.history = None
 
         # Custom loops register persistent components independently and log
         # the current state after each buffer swap, without an Example object.
@@ -1123,7 +1179,6 @@ class TestViewerProperties(unittest.TestCase):
         viewer.set_control(control)
         viewer.set_solver(solver)
         viewer.set_collision_pipeline(pipeline)
-        ws.example = None
         ws._drafts = {}
         viewer.log_state(state)
         self.assertIs(ws.live_state(), state)
@@ -1140,13 +1195,11 @@ class TestViewerProperties(unittest.TestCase):
         self.assertEqual(control.joint_target_q.ptr, pointer)
         np.testing.assert_allclose(control.joint_target_q.numpy()[0], 0.45)
 
-        # Replacing or clearing one component must preserve the others, even
-        # when a conventional example would otherwise supply a fallback.
+        # Replacing or clearing one component must preserve the others.
         replacement = model.control()
         viewer.set_control(replacement)
         self.assertIs(ws.bindings.control, replacement)
         self.assertIs(ws.bindings.solver, solver)
-        ws.example = SimpleNamespace(model=model, state_0=state, control=control, solver=solver, pipeline=pipeline)
         viewer.set_control(None)
         viewer.set_solver(None)
         viewer.set_collision_pipeline(None)
@@ -1157,7 +1210,6 @@ class TestViewerProperties(unittest.TestCase):
         viewer.set_solver(solver)
         viewer.set_collision_pipeline(pipeline)
         self.assertIs(ws.bindings.control, control)
-        self.assertTrue(ws._history_compatible)
 
         # Layers retain separate components and logged states. Invalid model
         # associations must not replace a valid existing component.
@@ -1170,7 +1222,12 @@ class TestViewerProperties(unittest.TestCase):
         viewer.set_model(other_model)
         ws.model = other_model
         self.assertIsNone(ws.bindings.control)
-        for setter, component in ((viewer.set_solver, solver), (viewer.set_collision_pipeline, pipeline)):
+        for setter, component in (
+            (viewer.set_solver, solver),
+            (viewer.set_collision_pipeline, pipeline),
+            # Objects without a model get the documented error, not AttributeError.
+            (viewer.set_solver, object()),
+        ):
             with self.assertRaisesRegex(ValueError, "active model"):
                 setter(component)
         viewer.set_control(other_model.control())
@@ -1181,18 +1238,13 @@ class TestViewerProperties(unittest.TestCase):
         self.assertIs(ws.bindings.solver, solver)
         self.assertIs(viewer._last_state, historical)
 
-        # Another layer can have identical array dimensions but a different
-        # topology. The conventional adapter must not expose the old controls.
+        # A rebuilt Model with identical array dimensions starts without the
+        # previous Model's components or logged State.
         rebuilt = builder.finalize(device="cpu")
         viewer.set_model(rebuilt)
         ws.model = rebuilt
-        ws.example = SimpleNamespace(model=model, state_0=state, control=control)
         self.assertIsNone(ws.bindings.control)
-        self.assertFalse(ws._history_compatible)
         self.assertIsNone(viewer._last_state)
-        ws.model = model
-        self.assertIs(ws.bindings.control, control)
-        self.assertTrue(ws._history_compatible)
 
     def test_element_selection_property_domains(self) -> None:
         builder = newton.ModelBuilder()
@@ -1220,8 +1272,8 @@ class TestViewerProperties(unittest.TestCase):
             domain = next(d for d in inspector.domains if d.frequency == frequency)
             self.assertEqual(list(domain.indices), [1])
 
-    def test_history_without_top_level_example_model(self) -> None:
-        """Preserve independent host snapshots and replay for nested CPU and CUDA models."""
+    def test_history_records_logged_frames(self) -> None:
+        """Snapshot logged State and the inspected Control, and replay them without touching live data."""
         builder = newton.ModelBuilder()
         builder.add_custom_attribute(
             newton.ModelBuilder.CustomAttribute(
@@ -1243,151 +1295,186 @@ class TestViewerProperties(unittest.TestCase):
                 default=5.0,
             )
         )
-        model = builder.finalize(device="cpu")
-        example = SimpleNamespace(viewer=SimpleNamespace(model=model), render=Mock())
-        history = FrameHistory(example)
-        self.assertIs(history.model, model)
-        history.capture()
-        self.assertFalse(history.frames)
-        history.render()
-        example.render.assert_called_once_with()
-
-        # A nested model must also work when the example exposes a recordable
-        # state. CPU NumPy views alias live storage; CUDA readbacks own host storage.
-        for device in get_test_devices(mode="basic"):
-            with self.subTest(device=device):
-                current = model if device.is_cpu else builder.finalize(device=device)
-                example = SimpleNamespace(
-                    viewer=SimpleNamespace(model=current), state_0=current.state(), control=current.control()
-                )
-                example.state_0.solver_scratch = wp.zeros(1, device=device)
-                history = FrameHistory(example)
-                history.capture()
-                snapshot = history.frames[0]
-                self.assertNotIn("solver_scratch", snapshot.state)
-                example.state_0.probe.sample.fill_(7.0)
-                example.control.probe.drive.fill_(11.0)
-                if device.is_cuda:
-                    gc.collect()
-                np.testing.assert_array_equal(snapshot.state["probe:sample"], [3.0])
-                np.testing.assert_array_equal(snapshot.control["probe:drive"], [5.0])
-                example.sim_time = 1.0
-                history.capture()
-                history.index = 0
-                live_state, live_control = example.state_0, example.control
-                displayed = []
-
-                def render_snapshot(
-                    example=example,
-                    history=history,
-                    live_state=live_state,
-                    live_control=live_control,
-                    displayed=displayed,
-                ):
-                    self.assertIsNot(example.state_0, live_state)
-                    self.assertIs(example.control, live_control)
-                    displayed.append(
-                        (example.state_0.probe.sample.numpy(), history.display_control.probe.drive.numpy())
-                    )
-
-                example.render = render_snapshot
-                history.render()
-                self.assertEqual(len(displayed), 1)
-                np.testing.assert_array_equal(displayed[0][0], [3.0])
-                np.testing.assert_array_equal(displayed[0][1], [5.0])
-                self.assertIs(example.state_0, live_state)
-                self.assertIs(example.control, live_control)
-                np.testing.assert_array_equal(live_state.probe.sample.numpy(), [7.0])
-                np.testing.assert_array_equal(live_control.probe.drive.numpy(), [11.0])
-
-    def test_history_auxiliary_display_states(self) -> None:
-        """Replay mixed/body-only display buffers without null GPU outputs or live-state mutations."""
-        builder = newton.ModelBuilder()
-        builder.add_body(xform=wp.transform(wp.vec3(100, 0, 0), wp.quat_identity()))
-        builder.add_particle(wp.vec3(0, 100, 0), wp.vec3(0), 1.0)
+        # CPU NumPy views alias live storage; CUDA readbacks own host storage.
         for device in get_test_devices(mode="basic"):
             with self.subTest(device=device):
                 model = builder.finalize(device=device)
                 model.add_attribute(
-                    "sample", wp.full(1, 3.0, device=device), Frequency.ONCE, Assignment.STATE, namespace="probe"
+                    "pairs",
+                    wp.array(np.arange(6, dtype=np.float32).reshape(3, 2), dtype=float, device=device),
+                    Frequency.ONCE,
+                    Assignment.STATE,
+                    namespace="probe",
                 )
-                example = SimpleNamespace(
-                    viewer=SimpleNamespace(model=model),
-                    state_0=model.state(),
-                    state_1=model.state(),
-                    viz_state=model.state(),
-                    contact_state=model.state(),
-                    body_display=newton.State(),
-                    shared_particles=model.state(),
-                    sim_time=0.0,
-                )
-                example.body_display.body_q = wp.clone(example.state_0.body_q)
-                example.shared_particles.particle_q = example.viz_state.particle_q
-                example.viz_state.solver_scratch = wp.zeros(1, device=device)
-                example.primary_alias, example.alternate_alias = example.state_0, example.state_1
-                example.viz_alias, example.contact_alias = example.viz_state, example.contact_state
-                originals = {name: value for name, value in vars(example).items() if isinstance(value, newton.State)}
-                history = FrameHistory(example)
-                history.capture()
-                example.state_0.body_q.fill_(wp.transform(wp.vec3(200, 0, 0), wp.quat_identity()))
-                example.state_0.particle_q.fill_(wp.vec3(0, 200, 0))
-                example.viz_state.probe.sample.fill_(7.0)
-                example.sim_time = 1.0
-                history.capture()
+                viewer = ViewerNull()
+                viewer.set_model(model)
+                history = FrameHistory(viewer)
+                self.assertIs(history.model, model)
+                # A frame that logs nothing records nothing.
+                history.begin_frame(0.0)
+                history.end_frame()
+                self.assertFalse(history.frames)
+
+                state, control = model.state(), model.control()
+                viewer.set_control(control)
+                state.solver_scratch = wp.zeros(1, device=device)
+                _record_frame(history, 0.0, state)
+                snapshot = history.frames[0]
+                key = next(iter(snapshot.states))
+                self.assertNotIn("solver_scratch", snapshot.states[key])
+                state.probe.sample.fill_(7.0)
+                control.probe.drive.fill_(11.0)
+                if device.is_cuda:
+                    gc.collect()
+                np.testing.assert_array_equal(snapshot.states[key]["probe:sample"], [3.0])
+                np.testing.assert_array_equal(snapshot.control["probe:drive"], [5.0])
+                # Repeated renders at an unchanged time record nothing, unless
+                # an edit asks to replace the newest frame.
+                _record_frame(history, 0.0, state)
+                self.assertEqual(len(history.frames), 1)
+                history.replace_next_frame()
+                _record_frame(history, 0.0, state)
+                self.assertEqual(len(history.frames), 1)
+                np.testing.assert_array_equal(history.frames[0].states[key]["probe:sample"], [7.0])
+                state.probe.sample.fill_(9.0)
+                _record_frame(history, 1.0, state)
+                self.assertEqual(len(history.frames), 2)
+
                 history.select(0)
+                self.assertTrue(history.replaying)
+                history.begin_frame(1.0)
+                shown = history.state(state)
+                history.end_frame()
+                self.assertIsNot(shown, state)
+                np.testing.assert_array_equal(shown.probe.sample.numpy(), [7.0])
+                # Multidimensional storage keeps its full shape.
+                self.assertEqual(shown.probe.pairs.shape, (3, 2))
+                np.testing.assert_array_equal(shown.probe.pairs.numpy(), np.arange(6).reshape(3, 2))
+                np.testing.assert_array_equal(history.restore_control().probe.drive.numpy(), [11.0])
+                # Replay never records or alters the live objects.
+                self.assertEqual(len(history.frames), 2)
+                np.testing.assert_array_equal(state.probe.sample.numpy(), [9.0])
+                np.testing.assert_array_equal(control.probe.drive.numpy(), [11.0])
 
-                def render(
-                    *, example: SimpleNamespace = example, device: wp.Device = device, fail: bool = False
-                ) -> None:
-                    # Fail safely on missing output buffers before launching a
-                    # kernel: passing null destinations would poison CUDA.
-                    self.assertIsNotNone(example.viz_state.body_q)
-                    self.assertIsNotNone(example.viz_state.particle_q)
-                    self.assertIsNotNone(example.body_display.body_q)
-                    self.assertIsNotNone(example.shared_particles.body_q)
-                    self.assertIs(example.primary_alias, example.state_0)
-                    self.assertIs(example.alternate_alias, example.state_1)
-                    self.assertIs(example.viz_alias, example.viz_state)
-                    self.assertIs(example.contact_alias, example.contact_state)
-                    self.assertFalse(hasattr(example.viz_state, "solver_scratch"))
-                    np.testing.assert_array_equal(example.viz_state.probe.sample.numpy(), [3])
-                    np.testing.assert_array_equal(example.contact_state.probe.sample.numpy(), [3])
-                    wp.launch(
-                        _scale_history_display,
-                        dim=1,
-                        inputs=[example.state_0.body_q, example.state_0.particle_q],
-                        outputs=[example.viz_state.body_q, example.viz_state.particle_q],
-                        device=device,
-                    )
-                    wp.copy(example.body_display.body_q, example.viz_state.body_q)
-                    np.testing.assert_allclose(example.viz_state.body_q.numpy()[0, :3], [1, 0, 0])
-                    np.testing.assert_allclose(example.viz_state.particle_q.numpy()[0], [0, 1, 0])
-                    if fail:
-                        raise RuntimeError("display callback failed")
+    def test_history_replays_each_logged_call(self) -> None:
+        """Match replayed States, contact States and points to their own logging calls within a frame."""
+        builder = newton.ModelBuilder()
+        builder.add_body(xform=wp.transform(wp.vec3(100, 0, 0), wp.quat_identity()))
+        builder.add_shape_sphere(0, radius=0.1)
+        builder.add_particle(wp.vec3(0, 100, 0), wp.vec3(0), 1.0)
+        for device in get_test_devices(mode="basic"):
+            with self.subTest(device=device):
+                model = builder.finalize(device=device)
+                viewer = ViewerNull()
+                viewer.set_model(model)
+                history = FrameHistory(viewer)
+                state, display, contact_state = model.state(), model.state(), model.state()
+                # A partial State logged for display keeps only its own arrays.
+                display.particle_q = None
+                contacts = newton.Contacts(4, 0, device=device)
+                points = wp.array([(1.0, 2.0, 3.0)], dtype=wp.vec3, device=device)
 
-                example.render = render
-                history.render()
-                example.render = lambda render=render: render(fail=True)
-                with self.assertRaisesRegex(RuntimeError, "display callback failed"):
-                    history.render()
-                for name, value in originals.items():
-                    self.assertIs(getattr(example, name), value)
-                np.testing.assert_array_equal(example.state_0.body_q.numpy()[0, :3], [200, 0, 0])
-                np.testing.assert_array_equal(example.state_0.particle_q.numpy()[0], [0, 200, 0])
-                np.testing.assert_array_equal(example.viz_state.body_q.numpy()[0, :3], [100, 0, 0])
-                np.testing.assert_array_equal(example.viz_state.particle_q.numpy()[0], [0, 100, 0])
-                np.testing.assert_array_equal(example.body_display.body_q.numpy()[0, :3], [100, 0, 0])
-                np.testing.assert_array_equal(example.viz_state.probe.sample.numpy(), [7])
-                self.assertEqual(
-                    set(history.frames[0].auxiliary_states), {"viz_state", "body_display", "shared_particles"}
+                def log(
+                    time: float,
+                    history: FrameHistory = history,
+                    state: newton.State = state,
+                    display: newton.State = display,
+                    contacts: newton.Contacts = contacts,
+                    contact_state: newton.State = contact_state,
+                    points: wp.array = points,
+                ) -> tuple[newton.State, newton.State, newton.Contacts, newton.State, object]:
+                    history.begin_frame(time)
+                    shown = history.state(state)
+                    shown_display = history.state(display)
+                    shown_contacts, shown_contact_state, _ = history.contacts(contacts, contact_state, None)
+                    shown_points = history.arrays("points", "markers", {"points": points, "radii": 0.1})
+                    history.end_frame()
+                    return shown, shown_display, shown_contacts, shown_contact_state, shown_points
+
+                log(0.0)
+                state.body_q.fill_(wp.transform(wp.vec3(200, 0, 0), wp.quat_identity()))
+                display.body_q.fill_(wp.transform(wp.vec3(300, 0, 0), wp.quat_identity()))
+                contact_state.body_q.fill_(wp.transform(wp.vec3(400, 0, 0), wp.quat_identity()))
+                points.fill_(wp.vec3(4.0, 5.0, 6.0))
+                log(1.0)
+                frame = history.frames[0]
+                self.assertEqual(len(frame.states), 2)
+                self.assertEqual(set(frame.arrays), {("points", viewer._active_layer_id, "markers")})
+
+                history.select(0)
+                shown, shown_display, shown_contacts, shown_contact_state, shown_points = log(1.0)
+                np.testing.assert_array_equal(shown.body_q.numpy()[0, :3], [100, 0, 0])
+                np.testing.assert_array_equal(shown_display.body_q.numpy()[0, :3], [100, 0, 0])
+                self.assertIsNone(getattr(shown_display, "particle_q", None))
+                np.testing.assert_array_equal(shown_contact_state.body_q.numpy()[0, :3], [100, 0, 0])
+                self.assertIsNot(shown_contacts, contacts)
+                self.assertEqual(shown_contacts.rigid_contact_count.numpy()[0], 0)
+                np.testing.assert_array_equal(shown_points["points"].numpy(), [[1.0, 2.0, 3.0]])
+                self.assertEqual(shown_points["radii"], 0.1)
+                # Live arguments are untouched.
+                np.testing.assert_array_equal(state.body_q.numpy()[0, :3], [200, 0, 0])
+                np.testing.assert_array_equal(contact_state.body_q.numpy()[0, :3], [400, 0, 0])
+                np.testing.assert_array_equal(points.numpy(), [[4.0, 5.0, 6.0]])
+                # Contacts logged with the frame's State alias it rather than copying it again.
+                history.select(1)
+                history.begin_frame(2.0)
+                history.state(state)
+                history.contacts(contacts, state, None)
+                history.end_frame()
+                record = next(iter(history.frames[-1].contact_records.values()))
+                self.assertIsNotNone(record.state_key)
+                self.assertFalse(record.state)
+
+                # Replay rebuilds logged observables through the solver that
+                # produced them, without the optional set_solver() binding.
+                solver = newton.solvers.SolverXPBD(model)
+                observables = solver.observables(
+                    contacts=contacts, kinds={newton.solvers.SolverBase.ObservableKind.CONTACT_F}
                 )
-                # All auxiliary arrays count toward the bound before readback;
-                # aliases must not retain a second copy of an existing state.
-                limited = FrameHistory(example)
-                limited.memory_limit = 2 * history.frames[0].size - 1
-                with patch("newton._src.viewer.viewer_history._snapshot_array") as snapshot:
-                    limited.capture()
-                    snapshot.assert_not_called()
+                self.assertIsNone(viewer._inspection_components.get("solver"))
+                observed = FrameHistory(viewer)
+                for time in (0.0, 1.0):
+                    observed.begin_frame(time)
+                    observed.contacts(contacts, state, observables)
+                    observed.end_frame()
+                observed.select(0)
+                observed.begin_frame(1.0)
+                shown_contacts, _, shown_observables = observed.contacts(contacts, state, None)
+                observed.end_frame()
+                self.assertIsNotNone(shown_observables)
+                self.assertIsNot(shown_observables, observables)
+                self.assertIs(shown_observables.contacts, shown_contacts)
+
+                # Replay reproduces cleared and populated batches regardless of the live arguments.
+                markers = FrameHistory(viewer)
+                for time, logged in ((0.0, points), (1.0, None), (2.0, points)):
+                    markers.begin_frame(time)
+                    markers.arrays("points", "markers", {"points": logged, "radii": 0.1})
+                    markers.end_frame()
+                for index, live, expected in ((0, None, [[4.0, 5.0, 6.0]]), (1, points, None)):
+                    markers.select(index)
+                    markers.begin_frame(3.0)
+                    shown_points = markers.arrays("points", "markers", {"points": live, "radii": 0.1})
+                    markers.end_frame()
+                    if expected is None:
+                        self.assertIsNone(shown_points["points"])
+                    else:
+                        np.testing.assert_array_equal(shown_points["points"].numpy(), expected)
+
+                # Every logged array counts toward the bound before readback.
+                first = next(iter(frame.states.values()))
+                limited = FrameHistory(viewer)
+                # Room for the first State only; later calls must stop before any readback.
+                limited.memory_limit = 2 * sum(values.nbytes for values in first.values()) + 1
+                with patch(
+                    "newton._src.viewer.viewer_history._snapshot_array", wraps=viewer_history._snapshot_array
+                ) as snapshot:
+                    limited.begin_frame(0.0)
+                    limited.state(state)
+                    limited.state(display)
+                    limited.contacts(contacts, contact_state, None)
+                    limited.end_frame()
+                    self.assertEqual(snapshot.call_count, len(first))
                 self.assertFalse(limited.frames)
                 self.assertTrue(limited._recording_blocked)
 
@@ -1401,8 +1488,8 @@ class TestViewerProperties(unittest.TestCase):
         model = builder.finalize(device="cpu")
         ws = ViewerWorkspace.__new__(ViewerWorkspace)
         ws.model, ws.selected = model, ("joint", joint)
-        ws.viewer = SimpleNamespace(_last_state=model.state())
-        ws.example = SimpleNamespace(state_0=ws.viewer._last_state, control=model.control())
+        ws.viewer = SimpleNamespace(_last_state=model.state(), _inspection_components={"control": model.control()})
+        ws._bindings = ws._bindings_components = None
         ws.history = None
         ws._cache, ws._live_cache = {}, {}
         inspector = PropertyInspector(ws)
@@ -1501,6 +1588,42 @@ class TestViewerProperties(unittest.TestCase):
             self.assertIsNone(inspector.reference_target(model, frequency, invalid))
         self.assertIsNone(inspector.reference_target(model, Frequency.SHAPE, model.shape_count))
 
+    def test_logged_solver_observables_follow_selection(self) -> None:
+        """List logged per-body observables for selected bodies and none for other domains."""
+        builder = newton.ModelBuilder()
+        bodies = [builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3))) for _ in range(2)]
+        for body in bodies:
+            builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+        model = builder.finalize(device="cpu")
+        solver = newton.solvers.SolverXPBD(model)
+        observables = solver.observables(kinds={solver.ObservableKind.BODY_PARENT_F})
+        ws = ViewerWorkspace.__new__(ViewerWorkspace)
+        ws.model, ws.selected, ws.selection = model, ("body", bodies[1]), {("body", bodies[1])}
+        ws.viewer = SimpleNamespace(_last_state=model.state(), _last_contact_observables=None)
+        ws._cache, ws._live_cache = {}, {}
+        inspector = PropertyInspector(ws)
+        inspector._contexts()
+        self.assertEqual(inspector._observables(), [])
+
+        ws.viewer._last_contact_observables = observables
+        fields = inspector._observables()
+        self.assertEqual([(field[1], list(field[0].indices)) for field in fields], [("body_parent_f", [bodies[1]])])
+        self.assertIs(fields[0][3], observables)
+        self.assertIs(fields[0][5], observables.body_parent_f)
+
+        ws.selected, ws.selection = ("shape", 0), {("shape", 0)}
+        inspector._contexts()
+        self.assertEqual(inspector._observables(), [])
+
+        # Observables from another Model are never matched to this selection.
+        other = builder.finalize(device="cpu")
+        ws.viewer._last_contact_observables = newton.solvers.SolverXPBD(other).observables(
+            kinds={solver.ObservableKind.BODY_PARENT_F}
+        )
+        ws.selected, ws.selection = ("body", bodies[0]), {("body", bodies[0])}
+        inspector._contexts()
+        self.assertEqual(inspector._observables(), [])
+
     def test_frequency_discovery_and_live_joint_edits(self) -> None:
         builder = newton.ModelBuilder()
         joints = []
@@ -1539,8 +1662,10 @@ class TestViewerProperties(unittest.TestCase):
             self.assertEqual({n for n in fields if n.startswith("test:")}, {expected})
         ws = ViewerWorkspace.__new__(ViewerWorkspace)
         ws.model, ws.selected, ws.world = model, ("articulation", 0), 0
-        ws.viewer = SimpleNamespace(is_paused=lambda: True, _last_state=state)
-        ws.example = SimpleNamespace(state_0=state, state_1=other, control=control)
+        ws.viewer = SimpleNamespace(
+            is_paused=lambda: True, _last_state=state, _inspection_components={"control": control}
+        )
+        ws._bindings = ws._bindings_components = None
         ws._cache, ws._live_cache, ws._drafts = {}, {}, {}
         ws._undo = ws.history = None
         control.joint_target_q.fill_(0.15)
@@ -1551,13 +1676,14 @@ class TestViewerProperties(unittest.TestCase):
             {d.frequency for d in inspector.domains},
             {Frequency.ARTICULATION, Frequency.JOINT, Frequency.JOINT_COORD, Frequency.JOINT_DOF},
         )
-        before = state.body_q.numpy().copy()
+        before, untouched = state.body_q.numpy().copy(), other.body_q.numpy().copy()
         # Sibling coordinates deliberately disagree with the displayed body state.
         state.joint_q[3:4].fill_(1.2)
         self.assertTrue(ws.apply_edit(state, "joint_q", 1, [0.5], joint_index=1))
         np.testing.assert_array_equal(state.body_q.numpy()[[0, 3]], before[[0, 3]])
         self.assertGreater(np.linalg.norm(state.body_q.numpy()[[1, 2]] - before[[1, 2]]), 0.1)
-        np.testing.assert_array_equal(other.body_q.numpy(), state.body_q.numpy())
+        # Only the logged State is edited; other application States are not touched.
+        np.testing.assert_array_equal(other.body_q.numpy(), untouched)
         mask, _ = ws._joint_edit_mask(1)
         np.testing.assert_array_equal(mask.numpy(), [False, True, True, False])
         # Mutations are guarded at the write boundary, not just by disabled widgets.
@@ -1576,14 +1702,14 @@ class TestViewerProperties(unittest.TestCase):
         self.assertTrue(ws.apply_edit(*ws._undo[:4], joint_index=ws._undo[4], save_undo=False))
         self.assertTrue(control.test.enabled.numpy()[1])
         ws.viewer.is_paused = lambda: True
-        ws.example.timeline = SimpleNamespace(frames=[object(), object()], index=0)
+        ws.history = SimpleNamespace(replaying=True)
         self.assertFalse(ws.apply_edit(state, "joint_qd", 1, [2], joint_index=1))
         self.assertFalse(ws.apply_edit(control.test, "enabled", 0, [False]))
         ws.viewer.is_paused = lambda: False
         self.assertFalse(ws.apply_edit(control, "joint_target_q", 0, [1.0]))
         self.assertFalse(ws.apply_edit(control.test, "enabled", 0, [False]))
         ws.viewer.is_paused = lambda: True
-        del ws.example.timeline
+        ws.history = None
         self.assertTrue(ws.apply_edit(control.test, "enabled", 0, [False]))
         self.assertFalse(control.test.enabled.numpy()[0])
         self.assertTrue(ws.apply_edit(state.test, "offset", 2, [4, 5, 6]))
@@ -1604,20 +1730,22 @@ class TestViewerProperties(unittest.TestCase):
         self.assertEqual(pointers, (control.joint_target_q.ptr, control.test.enabled.ptr, control.drive.ptr))
         np.testing.assert_array_equal(state.body_q.numpy(), pose)
         self.assertIsNone(ws._undo)
-        ws.example.timeline = SimpleNamespace(frames=[object(), object()], index=0)
+        ws.history = SimpleNamespace(replaying=True)
         self.assertFalse(ws.reset_control(zero=True))
         np.testing.assert_array_equal(control.test.enabled.numpy(), True)
-        del ws.example.timeline
-        # A newly loaded example/Control gets its own baseline.
-        ws.example.control = model.control()
-        ws.example.control.joint_target_q.fill_(0.4)
+        ws.history = None
+        # A newly supplied Control gets its own baseline.
+        replacement = model.control()
+        ws.viewer._inspection_components = {"control": replacement}
+        replacement.joint_target_q.fill_(0.4)
         ws._capture_control_initial()
-        ws.example.control.joint_target_q.fill_(0.9)
+        replacement.joint_target_q.fill_(0.9)
         self.assertTrue(ws.reset_control())
-        np.testing.assert_allclose(ws.example.control.joint_target_q.numpy(), 0.4)
+        np.testing.assert_allclose(replacement.joint_target_q.numpy(), 0.4)
 
 
 class TestCollisionInspector(unittest.TestCase):
+    @requires("imgui_bundle")
     def test_paused_collision_inspection(self) -> None:
         """Inspect all broadphases lazily and preserve contact attribute row domains."""
         frequency, assignment = newton.Model.AttributeFrequency, newton.Model.AttributeAssignment
@@ -1660,19 +1788,14 @@ class TestCollisionInspector(unittest.TestCase):
                 viewer.set_model(model)
                 viewer.log_contacts(contacts, state)
                 viewer.is_paused = lambda: True
+                viewer.set_collision_pipeline(pipeline)
                 ws = SimpleNamespace(
-                    viewer=viewer,
-                    model=model,
-                    example=SimpleNamespace(collision_pipeline=pipeline, contacts=pipeline.contacts()),
-                    history=None,
-                    selected=None,
-                    _at_live_frame=lambda: True,
+                    viewer=viewer, model=model, history=None, selected=None, _at_live_frame=lambda: True
                 )
-                ws.bindings = InspectionBindings.from_example(ws.example)
+                ws.bindings = InspectionBindings(components=viewer._inspection_components)
                 ws.select = lambda key, workspace=ws: setattr(workspace, "selected", key)
                 inspector = CollisionInspector(ws)
-                # A logged frame takes precedence over an example's other
-                # contact buffer, including when the normal glyphs are hidden.
+                # Contacts come from the logged frame, including when the normal glyphs are hidden.
                 self.assertIs(inspector._contacts_buffer(), contacts)
                 tree = ModelTree(model)
                 inspector.attach(tree)
@@ -1722,10 +1845,14 @@ class TestCollisionInspector(unittest.TestCase):
                 # Opening a shape's contact list must not select a contact or
                 # make F jump away from the shape. Pagination is only for rows.
                 ws.selected = ("shape", 0)
-                ui = SimpleNamespace(push_id=lambda *_: None, pop_id=lambda: None, selectable=lambda *_: (False,))
-                ws.gui = SimpleNamespace(ui=SimpleNamespace(imgui=ui))
-                ws.widgets.label = lambda *_args, **_kwargs: None
+                ws.gui = SimpleNamespace(ui=_offscreen_imgui_backend(self))
+                ws.widgets = PhysicsWidgets(ws.gui)
+                imgui = ws.gui.ui.imgui
+                ws.gui.ui.begin_frame()
+                imgui.begin("Contacts")
                 inspector.draw_contact_list(SimpleNamespace(_page=lambda rows: rows[:1]), ws.selected)
+                imgui.end()
+                ws.gui.ui.end_frame()
                 self.assertIsNone(inspector.active_contact)
                 self.assertEqual(inspector.focus_points(), [])
                 inspector.visible_contacts = ()
@@ -1819,23 +1946,17 @@ class TestCollisionInspector(unittest.TestCase):
                 self.assertEqual(fields["probe:weights"][1:], (0, 2))
                 # Collapsing the built-in fields must not turn their None
                 # namespace into an invalid custom-attribute tab label.
-                tabs = []
-                ws.widgets = SimpleNamespace(
-                    group=lambda _: nullcontext(False),
-                    tab_item=lambda label, tabs=tabs: (tabs.append(label) or False,),
-                )
-                ws.gui = SimpleNamespace(
-                    ui=SimpleNamespace(
-                        imgui=SimpleNamespace(
-                            separator_text=lambda _: None,
-                            begin_tab_bar=lambda _: True,
-                            end_tab_bar=lambda: None,
-                        )
-                    )
-                )
                 ws.selected = ("contact", 0)
-                inspector.draw_contact(None, ws.selected)
-                self.assertEqual(tabs, ["probe"])
+                with (
+                    patch.object(ws.widgets, "group", return_value=nullcontext(False)),
+                    patch.object(ws.widgets, "tab_item", wraps=ws.widgets.tab_item) as tab_item,
+                ):
+                    ws.gui.ui.begin_frame()
+                    imgui.begin("Contact")
+                    inspector.draw_contact(PropertyInspector(ws), ws.selected)
+                    imgui.end()
+                    ws.gui.ui.end_frame()
+                self.assertEqual([call.args[0] for call in tab_item.call_args_list], ["probe"])
                 ws.selected = None
                 soft = {
                     name: (start, count)
@@ -1866,20 +1987,19 @@ class TestCollisionInspector(unittest.TestCase):
                 self.assertNotIn(("collision_pairs", 0), inspector.groups)
                 self.assertEqual(inspector.candidate_pairs(("contact", 0)), ())
                 # Contacts alone are useful; no empty Collision root without either source.
-                ws.example.collision_pipeline = None
+                ws.bindings = InspectionBindings()
                 inspector.attach(tree)
                 inspector.sync(force=True)
                 self.assertIn(inspector.root, tree.labels)
                 self.assertFalse(inspector.pipelines)
                 viewer._last_contacts = None
-                ws.example.contacts = None
                 with patch.object(inspector, "read", wraps=inspector.read) as read:
                     inspector.attach(tree)
                     inspector.sync()
                     read.assert_not_called()
                 self.assertNotIn(inspector.root, tree.roots)
                 self.assertFalse(any(inspector.handles(key) for key in tree.labels))
-                ws.example.collision_pipeline = pipeline
+                ws.bindings = InspectionBindings(components=viewer._inspection_components)
                 inspector.attach(tree)
                 self.assertIn(inspector.root, tree.roots)
 
@@ -1907,16 +2027,14 @@ class TestCollisionInspector(unittest.TestCase):
                 self.assertTrue(np.any(high <= low))
 
 
+@requires("imgui_bundle", "pyglet")
 class TestViewerGizmos(unittest.TestCase):
     def setUp(self) -> None:
-        try:
-            from imgui_bundle import imgui, imguizmo
-        except ImportError:
-            self.skipTest("imgui_bundle is required")
+        from imgui_bundle import imgui, imguizmo
 
         self.imgui = imgui
         self.giz = imguizmo.im_guizmo
-        _own_imgui_context(self, imgui)
+        context = _own_imgui_context(self, imgui)
         self.io = imgui.get_io()
         self.io.set_ini_filename("")
         self.io.display_size = (800, 600)
@@ -1939,6 +2057,7 @@ class TestViewerGizmos(unittest.TestCase):
         self.gui._frame_key_down = self.gui._follow_held = self.gui._follow_latched = False
         self.gui._follow_center = None
         self.gui.ui = ImGuiBackend.__new__(ImGuiBackend)
+        self.gui.ui._context = context
         self.gui.ui.is_available = True
         self.gui.ui.imgui = imgui
         self.gui.ui.io = self.io

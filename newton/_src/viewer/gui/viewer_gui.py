@@ -32,10 +32,14 @@ from . import theme
 from .imgui_backend import ImGuiBackend
 
 if TYPE_CHECKING:
+    from types import ModuleType
+
     from numpy.typing import ArrayLike
     from pyglet.window import Window
 
     from newton.viewer import ViewerBase
+
+    from ..scene_authoring import SceneEditor
 
 
 # Width of the left sidebar in logical (96-DPI) pixels.
@@ -45,12 +49,15 @@ _SIDEBAR_WIDTH_PX = 300.0
 class ViewerGui:
     """Shared ImGui rendering for concrete viewers (GL / RTX)."""
 
-    def __init__(self, viewer: ViewerBase, window: Window, *, workspace_enabled: bool = False) -> None:
+    def __init__(
+        self, viewer: ViewerBase, window: Window, *, workspace_enabled: bool = False, capture_logs: bool = False
+    ) -> None:
         """Initialize the shared GUI backend, input routing, callbacks, and camera interaction state.
 
-        Workspace-enabled viewers compile interaction kernels and capture Newton
-        logs when the optional GUI backend is available. Workspace creation is
-        deferred until the first UI frame; legacy GUIs compile on demand.
+        Workspace-enabled viewers compile interaction kernels when the optional
+        GUI backend is available, and capture Newton logs in their console only
+        with ``capture_logs``. Workspace creation is deferred until the first UI
+        frame; legacy GUIs compile on demand.
         """
         self._viewer = viewer
         self.ui = ImGuiBackend(window, workspace_style=workspace_enabled)
@@ -92,9 +99,12 @@ class ViewerGui:
             self.ui.io.config_flags |= self.ui.imgui.ConfigFlags_.docking_enable
             self.ui.io.config_windows_move_from_title_bar_only = True
             # Attach before constructing an example, so importer diagnostics survive loading.
-            self.console_capture = ConsoleCapture()
+            self.console_capture = ConsoleCapture(attach=capture_logs)
             window.push_handlers(on_close=self.close_console)
-        self._workspace_example = None
+        self._example_tree: dict[str, list[tuple[str, str]]] | None = None
+        """Example names and module paths by category, from the example runner's browser hook."""
+        self._example_switch: Callable[[str], None] | None = None
+        self._example_current: str | None = None
         self._frame_camera_pending = False
         self._selection_press = None
 
@@ -188,7 +198,7 @@ class ViewerGui:
         if not self.is_available:
             return False
         if (
-            getattr(self, "_loading_splash_active", False)
+            self._loading_splash_active
             or (self.show_ui and getattr(self, "_gizmo_hovered", False))
             or (self.show_ui and getattr(self._viewer, "gizmo_is_using", False))
         ):
@@ -250,7 +260,7 @@ class ViewerGui:
     @property
     def following_selection(self) -> bool:
         """Report whether selection following is enabled by the held key or latched GUI toggle."""
-        return getattr(self, "_follow_held", False) or getattr(self, "_follow_latched", False)
+        return self._follow_held or self._follow_latched
 
     def stop_following_selection(self) -> None:
         """A changed selection or scene must not inherit another object's follow mode."""
@@ -265,7 +275,7 @@ class ViewerGui:
 
     def toggle_follow_selection(self) -> None:
         """Stop latched following or frame an eligible selection and begin following its center."""
-        if getattr(self, "_follow_latched", False):
+        if self._follow_latched:
             self.stop_following_selection()
         elif self.workspace is not None and self.workspace.can_follow_selection:
             self.frame_camera_on_model(contacts=False)
@@ -273,7 +283,7 @@ class ViewerGui:
 
     def update_camera_follow(self, is_key_down: Callable[[int], bool]) -> None:
         """Transport the orbit pivot with the displayed selection, without refitting it."""
-        if getattr(self, "_frame_key_down", False):
+        if self._frame_key_down:
             from pyglet.window import key
 
             if not is_key_down(key.F):
@@ -283,7 +293,7 @@ class ViewerGui:
         if self.workspace is None or not self.workspace.can_follow_selection:
             self.stop_following_selection()
             return
-        if not getattr(self, "_follow_latched", False) and self.should_ignore_keyboard_input():
+        if not self._follow_latched and self.should_ignore_keyboard_input():
             self._follow_held = False
             return
         bounds = self.workspace.selection_bounds(include_contacts=False, sync_selection=not self.show_ui)
@@ -319,16 +329,19 @@ class ViewerGui:
         if ui.internal.temp_input_is_active(active):
             return True
         state = ui.internal.get_input_text_state(active)
+        # InputScalar() filters characters with a callback and marks its
+        # editor with LocalizeDecimalPoint instead of the public Chars* flags.
         numeric = (
             ui.InputTextFlags_.chars_decimal
             | ui.InputTextFlags_.chars_scientific
             | ui.InputTextFlags_.chars_hexadecimal
+            | ui.internal.InputTextFlagsPrivate_.localize_decimal_point
         )
         return state is not None and bool(state.flags & numeric)
 
     def should_ignore_keyboard_input(self) -> bool:
         """Block shortcuts during loading, popups, or string entry while allowing them in numeric editors."""
-        if getattr(self, "_loading_splash_active", False):
+        if self._loading_splash_active:
             return True
         if not self.is_available or not self.show_ui:
             return False
@@ -476,16 +489,6 @@ class ViewerGui:
                 return
 
         bounds = viewer._get_scene_bounds()
-        if workspace is not None and workspace.tree is not None and len(workspace.tree.deformables.sources) > 1:
-            # Coupled examples may log particles from an auxiliary Model rather
-            # than a viewer layer. Its catalog already tracks displayed bounds.
-            external = workspace.tree.deformables.external_bounds()
-            if np.isfinite(external).all() and (external[1] >= external[0]).all():
-                bounds = (
-                    external
-                    if bounds is None
-                    else (np.minimum(bounds[0], external[0]), np.maximum(bounds[1], external[1]))
-                )
         if bounds is None:
             if viewer.model is None:
                 return
@@ -613,12 +616,16 @@ class ViewerGui:
         if picking is None or camera is None or viewer._last_state is None:
             return False
         fb_x, fb_y = to_framebuffer_coords(x, y)
-        rect = getattr(getattr(viewer, "renderer", None), "_workspace_rect", None)
+        rect = self._viewport_rect()
         if rect is not None:
             fb_x, fb_y = fb_x - rect[0], fb_y - rect[1]
         ray_start, ray_dir = camera.get_world_ray(fb_x, fb_y)
         picking.pick(viewer._last_state, ray_start, ray_dir)
         return True
+
+    def _viewport_rect(self) -> tuple[int, int, int, int] | None:
+        """Return the docked GL viewport in framebuffer pixels, or None when the scene fills the window."""
+        return self._viewer.renderer._workspace_rect if self.workspace is not None else None
 
     def update_picking_from_screen(self, x: float, y: float, to_framebuffer_coords) -> bool:
         """Update an active pick with a viewport-local ray; return False if no active picker or camera exists."""
@@ -630,7 +637,7 @@ class ViewerGui:
         if picking is None or camera is None:
             return False
         fb_x, fb_y = to_framebuffer_coords(x, y)
-        rect = getattr(getattr(viewer, "renderer", None), "_workspace_rect", None)
+        rect = self._viewport_rect()
         if rect is not None:
             fb_x, fb_y = fb_x - rect[0], fb_y - rect[1]
         ray_start, ray_dir = camera.get_world_ray(fb_x, fb_y)
@@ -720,7 +727,7 @@ class ViewerGui:
             window = getattr(renderer, "window", None)
             if window is not None and hasattr(window, "get_size"):
                 _, h = window.get_size()
-                viewport = getattr(renderer, "_workspace_rect", None)
+                viewport = self._viewport_rect()
                 if viewport is not None:
                     framebuffer_height = max(float(renderer._screen_height), 1.0)
                     height = max(viewport[3] * h / framebuffer_height, 1.0)
@@ -833,7 +840,7 @@ class ViewerGui:
             self.show_ui = not self.show_ui
             self._viewer._display_options_user["show_ui"] = self.show_ui
         elif symbol == pyglet.window.key.F:
-            if not getattr(self, "_frame_key_down", False):
+            if not self._frame_key_down:
                 self._frame_key_down = True
                 self.frame_camera_on_model()
                 # Follow the spatial owner even when F framed a contact on it.
@@ -845,6 +852,8 @@ class ViewerGui:
                 )
         elif symbol == pyglet.window.key.ESCAPE and close_fn is not None:
             self.close_console()
+            # Release the GUI renderer before close_fn destroys the window's GL context.
+            self.ui.shutdown()
             close_fn()
 
     def handle_key_release(self, symbol: int) -> None:
@@ -1003,10 +1012,54 @@ class ViewerGui:
         """
         self._ui_callbacks["side"] = []
         self._ui_callbacks["free"] = []
-        self._workspace_example = None
         self._frame_camera_pending = False
         if self.workspace is not None:
-            self.workspace.detach_example()
+            self.workspace.detach()
+
+    def set_scene_editor(self, editor: SceneEditor | None) -> None:
+        """Attach the optional authoring UI, creating its workspace before the first frame."""
+        if not self.workspace_enabled or not self.is_available:
+            return
+        if self.workspace is None and editor is not None:
+            from .workspace import ViewerWorkspace  # noqa: PLC0415
+
+            self.workspace = ViewerWorkspace(self)
+        if self.workspace is not None:
+            self.workspace.set_scene_editor(editor)
+
+    def configure_example_browser(
+        self, tree: dict[str, list[tuple[str, str]]], callback: Callable[[str], None]
+    ) -> None:
+        """List examples in the workspace explorer, or in a legacy sidebar header.
+
+        Args:
+            tree: Example names and module paths grouped by category.
+            callback: Function called with the selected module path.
+        """
+        first = self._example_tree is None
+        self._example_tree, self._example_switch = tree, callback
+        if first and not self.workspace_enabled:
+            self.register_ui_callback(self._draw_example_browser, position="panel")
+
+    def select_example(self, module_path: str) -> None:
+        """Request a switch to an example and highlight it in the browser."""
+        self._example_current = module_path
+        if self._example_switch is not None:
+            self._example_switch(module_path)
+
+    def _draw_example_browser(self, imgui: ModuleType) -> None:
+        """Draw the legacy sidebar's collapsible example tree."""
+        tree = self._example_tree
+        if not tree:
+            return
+        imgui.set_next_item_open(False, imgui.Cond_.appearing)
+        if imgui.collapsing_header("Examples"):
+            for category in sorted(tree):
+                if imgui.tree_node(category):
+                    for name, module_path in tree[category]:
+                        if imgui.selectable(name, module_path == self._example_current)[0]:
+                            self.select_example(module_path)
+                    imgui.tree_pop()
 
     def show_loading_splash(self, text: str | None = None) -> None:
         """Display a centered Newton's-cradle loading splash.
@@ -1288,7 +1341,7 @@ class ViewerGui:
                 from .workspace import ViewerWorkspace  # noqa: PLC0415
 
                 self.workspace = ViewerWorkspace(self)
-            self.workspace.bind(self._workspace_example)
+            self.workspace.bind()
             self.workspace.draw()
             self._render_gizmos()
             if self.workspace.authoring is not None:

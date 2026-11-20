@@ -3,7 +3,6 @@
 
 """Physical and transactional contracts of the opt-in authoring scene."""
 
-import importlib.util
 import json
 import tempfile
 import time
@@ -16,7 +15,7 @@ import warp as wp
 
 from newton import BodyFlags, CollisionPipeline, JointType, Mesh, ModelBuilder, ShapeFlags, eval_ik
 from newton.solvers import SolverMuJoCo
-from newton.tests.unittest_utils import get_cuda_test_devices
+from newton.tests.unittest_utils import MUJOCO_MODULES, get_cuda_test_devices, has_module, requires
 from newton.viewer import SceneEditor, ViewerNull
 
 
@@ -222,7 +221,7 @@ class TestSceneAuthoring(unittest.TestCase):
         for _ in range(60):
             editor.step()
             self.assertLess(np.linalg.norm(editor.state_0.body_qd.numpy()[:, :3], axis=1).max(), 10.0)
-        if importlib.util.find_spec("pxr"):
+        if has_module("pxr.Usd"):
             with tempfile.TemporaryDirectory() as directory:
                 output = Path(directory) / "safe-reset.usda"
                 editor.save_usd(output)
@@ -263,7 +262,7 @@ class TestSceneAuthoring(unittest.TestCase):
         editor.reset_scene()
         np.testing.assert_allclose(editor.get_pose(object_id)[0], (2, 0, 3), atol=1e-6)
 
-    @unittest.skipUnless(importlib.util.find_spec("pxr"), "Requires the USD importer dependency")
+    @requires("pxr.Usd")
     def test_failed_usd_transaction_keeps_working_runtime(self):
         """Reject an unsupported USD without losing the existing simulation."""
         editor = self.make_editor()
@@ -385,7 +384,7 @@ class TestSceneAuthoring(unittest.TestCase):
             editor.before_frame()
             self.assertIsNone(editor.error)
 
-    @unittest.skipUnless(importlib.util.find_spec("pxr"), "Requires the USD importer dependency")
+    @requires("pxr.Usd")
     def test_static_usd_plane_supports_dynamic_objects(self):
         """Keep an imported zero-volume static collider physical and editable."""
         from pxr import Usd, UsdGeom, UsdPhysics
@@ -419,7 +418,7 @@ class TestSceneAuthoring(unittest.TestCase):
             self.assertGreater(editor.get_object(placed).position[2], 1.5)
             self.assertLess(editor.get_object(placed).position[2], 1.6)
 
-    @unittest.skipUnless(importlib.util.find_spec("pxr"), "Requires the USD importer dependency")
+    @requires("pxr.Usd")
     def test_safe_usd_placement_uses_bounds_and_rolls_back(self):
         """Place offset assets as a batch and retain unresolved authoring data on failed publication."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
@@ -504,7 +503,7 @@ class TestSceneAuthoring(unittest.TestCase):
                     editor.get_pose(object_id)[0], editor.get_object(object_id).position, atol=1e-6
                 )
 
-    @unittest.skipUnless(importlib.util.find_spec("pxr"), "Requires the USD importer dependency")
+    @requires("pxr.Usd")
     def test_usd_roundtrip_and_plain_geometry_get_real_physics(self):
         """Import a bare USD cube as a physical prop and reopen its authored scene."""
         editor = self.make_editor()
@@ -655,7 +654,7 @@ class TestSceneAuthoring(unittest.TestCase):
             self.assertEqual(native.get_object(added).mass, 7)
             self.assertAlmostEqual(native.model.body_mass.numpy()[body], 7, places=6)
 
-    @unittest.skipUnless(importlib.util.find_spec("pxr"), "Requires the USD importer dependency")
+    @requires("pxr.Usd")
     def test_topology_changes_preserve_fixed_joint_asset_controls(self):
         """Preserve compatible controls and initialize changed or replaced joints from native defaults."""
         from pxr import Usd, UsdPhysics
@@ -779,7 +778,7 @@ class TestSceneAuthoring(unittest.TestCase):
             for field in expected:
                 np.testing.assert_array_equal(getattr(editor.control, field).numpy(), getattr(defaults, field).numpy())
 
-    @unittest.skipUnless(importlib.util.find_spec("pxr"), "Requires the USD importer dependency")
+    @requires("pxr.Usd")
     def test_preparation_worker_failure_recovery_and_close(self):
         """Retain the running scene after a real worker exit, recover, and terminate owned workers on close."""
         editor = self.make_editor()
@@ -862,9 +861,7 @@ class TestSceneAuthoring(unittest.TestCase):
         self.assertTrue(np.isfinite(editor.state_0.body_q.numpy()).all())
         self.assertEqual(editor.rebuild_count, 1)
 
-    @unittest.skipUnless(
-        importlib.util.find_spec("mujoco") and importlib.util.find_spec("mujoco_warp"), "Requires MuJoCo"
-    )
+    @requires(*MUJOCO_MODULES)
     def test_mujoco_cpu_edits_and_native_contacts(self):
         """Use lazy native CPU physics, preserving authored edits and exported contacts."""
         directory = tempfile.TemporaryDirectory()
@@ -937,7 +934,7 @@ class TestSceneAuthoring(unittest.TestCase):
         editor.before_frame()
         np.testing.assert_array_equal(editor.state_0.body_q.numpy(), before)
 
-        if importlib.util.find_spec("pxr"):
+        if has_module("pxr.Usd"):
             from pxr import Usd, UsdGeom, UsdPhysics
 
             path = Path(directory.name) / "platform.usda"
@@ -964,14 +961,14 @@ class TestSceneAuthoring(unittest.TestCase):
             self.assertGreater(solver.mj_data.ncon, 0)
             self.assertAlmostEqual(editor.get_pose(box)[0][2], 1.25, delta=0.03)
 
-    @unittest.skipUnless(importlib.util.find_spec("mujoco_warp"), "Requires MuJoCo Warp")
+    @requires(*MUJOCO_MODULES)
     def test_mujoco_edits_preserve_state_and_handle_capacity(self):
         """Keep CUDA authoring edits coherent with MuJoCo and stop before publishing incomplete physics."""
         devices = get_cuda_test_devices()[:1]
         if not devices:
             self.skipTest("Requires a CUDA device")
         plane_path = None
-        if importlib.util.find_spec("pxr"):
+        if has_module("pxr.Usd"):
             from pxr import Usd, UsdGeom
 
             directory = tempfile.TemporaryDirectory()

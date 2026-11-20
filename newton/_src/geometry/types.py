@@ -2682,9 +2682,7 @@ class Gaussian:
                 (default: :attr:`SortingMode.RAY_HIT_DISTANCE`).
             sh_color_space: Color space of evaluated SH radiance. Defaults to
                 sRGB (display-encoded); pass :attr:`~newton.utils.ColorSpace.LINEAR`
-                for scene-linear radiance. Only :class:`~newton.sensors.SensorCamera`
-                honors this; the deprecated :class:`~newton.sensors.SensorTiledCamera`
-                ignores it.
+                for scene-linear radiance.
         """
 
         self._positions = np.ascontiguousarray(np.asarray(positions, dtype=np.float32).reshape(-1, 3))
@@ -2855,7 +2853,7 @@ class Gaussian:
             Gaussian.Data struct containing the Warp arrays.
         """
 
-        from ..sensors.sensor_camera_render.gaussians import compute_gaussian_bvh_bounds  # noqa: PLC0415
+        from ..render.gaussians import compute_gaussian_bvh_bounds  # noqa: PLC0415
 
         with wp.ScopedDevice(device):
             warp_data = Gaussian.Data()
@@ -2896,7 +2894,7 @@ class Gaussian:
         Raises:
             RuntimeError: If :meth:`finalize` has not been called yet.
         """
-        from ..sensors.warp_raytrace.gaussians import compute_gaussian_bvh_bounds  # noqa: PLC0415
+        from ..render.gaussians import compute_gaussian_bvh_bounds  # noqa: PLC0415
 
         if self._warp_bvh is None or self._warp_data is None:
             raise RuntimeError("Gaussian.bvh_refit() requires Gaussian.finalize() to have been called first.")
@@ -2921,7 +2919,7 @@ class Gaussian:
         (``scale_0..2``, stored as log-scale), opacities (logit-space),
         and SH coefficients (``f_dc_*``, ``f_rest_*``). Converts log-scale
         and logit-opacity to linear values. SH radiance is treated as sRGB
-        unless ``sh_color_space`` says otherwise. Requires Open3D 0.20 or newer.
+        unless ``sh_color_space`` says otherwise.
 
         Args:
             filename: Path to a ``.ply`` file in standard 3DGS format.
@@ -2933,46 +2931,35 @@ class Gaussian:
         Returns:
             A new :class:`Gaussian` instance.
         """
-        import open3d as o3d
+        from .utils import _read_ply_vertices  # noqa: PLC0415
 
-        if tuple(int(part) for part in o3d.__version__.split(".")[:2]) < (0, 20):
-            raise ImportError(f"Gaussian.create_from_ply requires open3d>=0.20, found {o3d.__version__}")
+        attrs = _read_ply_vertices(filename)
 
-        pcd = o3d.t.io.read_point_cloud(filename)
-        point_attrs = {name: np.asarray(tensor.numpy(), dtype=np.float32) for name, tensor in pcd.point.items()}
+        def columns(prefix: str) -> np.ndarray | None:
+            names = sorted((n for n in attrs if n.startswith(prefix)), key=lambda n: int(n[len(prefix) :]))
+            return np.stack([attrs[n] for n in names], axis=1).astype(np.float32) if names else None
 
-        positions = point_attrs.get("positions")
-        if positions is None:
-            raise ValueError("PLY Gaussian point cloud is missing required 'positions' attribute")
-        positions = np.ascontiguousarray(positions.reshape(-1, 3))
-        count = positions.shape[0]
+        if not all(axis in attrs for axis in "xyz"):
+            raise ValueError(f"PLY file '{filename}' has no vertex positions.")
+        positions = np.stack([attrs[axis] for axis in "xyz"], axis=1).astype(np.float32)
 
-        rotations = None
-        if "rot" in point_attrs:
-            # Open3D stores quaternions as wxyz.
-            rotations = np.ascontiguousarray(point_attrs["rot"].reshape(count, 4)[:, [1, 2, 3, 0]])
+        rotations = columns("rot_")
+        if rotations is not None:
+            rotations = rotations[:, [1, 2, 3, 0]]  # stored as wxyz
             rotations /= np.maximum(np.linalg.norm(rotations, axis=1, keepdims=True), 1e-12)
 
-        scales = None
-        if "scale" in point_attrs:
-            scales = point_attrs["scale"].reshape(count, 3)
-            # Open3D converts scales to linear only when all 3DGS attributes are present.
-            if not all(name in point_attrs for name in ("opacity", "rot", "f_dc")):
-                scales = np.exp(scales)
-            scales = np.ascontiguousarray(scales)
+        scales = columns("scale_")
+        if scales is not None:
+            scales = np.exp(scales)
 
         opacities = None
-        if "opacity" in point_attrs:
-            opacities = 1.0 / (1.0 + np.exp(-point_attrs["opacity"].reshape(-1)))
+        if "opacity" in attrs:
+            opacities = 1.0 / (1.0 + np.exp(-attrs["opacity"].astype(np.float32)))
 
-        sh_coeffs = None
-        if "f_dc" in point_attrs:
-            sh_coeffs = point_attrs["f_dc"].reshape(count, 3)
-            if "f_rest" in point_attrs:
-                # Open3D stores f_rest basis-major (N, K, 3); restore the file's channel-major order.
-                sh_rest = point_attrs["f_rest"].reshape(count, -1, 3).transpose(0, 2, 1).reshape(count, -1)
-                sh_coeffs = np.concatenate([sh_coeffs, sh_rest], axis=1)
-            sh_coeffs = np.ascontiguousarray(sh_coeffs)
+        sh_coeffs = columns("f_dc_")
+        sh_rest = columns("f_rest_")
+        if sh_coeffs is not None and sh_rest is not None:
+            sh_coeffs = np.concatenate([sh_coeffs, sh_rest], axis=1)
 
         return Gaussian(
             positions=positions,

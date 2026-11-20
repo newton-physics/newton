@@ -215,6 +215,14 @@ class MeshGL:
         # Store references to input buffers and rendering data
         self.device = device
         self.hidden = hidden
+        # Inspection display state assigned by the viewer workspace.
+        self._physics_role: str | None = None
+        """X-ray role: ``"visual"``, ``"collision"``, ``"deformable"``, or None."""
+        self._physics_static = False
+        self._surface_grid = 0
+        """Adaptive surface-grid mode for wireframe and X-ray views; 0 disables it."""
+        self._display_lod = None
+        """Distance-based detail levels for large SDF isosurfaces, or None."""
         self.backface_culling = backface_culling
         self.dynamic = dynamic
 
@@ -773,6 +781,12 @@ class MeshInstancerGL:
         self.mesh = mesh
         self.device = mesh.device
         self.hidden = False
+        # Inspection display state assigned by the viewer workspace.
+        self._physics_role: str | None = None
+        """X-ray role: ``"visual"``, ``"collision"``, ``"deformable"``, or None."""
+        self._physics_static = False
+        self._surface_grid = 0
+        """Adaptive surface-grid mode for wireframe and X-ray views; 0 disables it."""
         self.instance_transform_buffer = None
         self.instance_color_buffer = None
         self.instance_material_buffer = None
@@ -1177,6 +1191,18 @@ class RendererGL:
     # The shaders target GLSL 330 core.
     MIN_GL_VERSION = (3, 3)
 
+    # Lazily created inspection shaders; close() releases each one that exists.
+    _INSPECTION_SHADERS = (
+        "_selection_outline",
+        "_selection_surface_shader",
+        "_joint_shader",
+        "_contact_label_shader",
+        "_physics_contact_shader",
+        "_surface_grid_shader",
+        "_physics_collision_shader",
+        "_physics_shell_shader",
+    )
+
     @staticmethod
     def _check_gl_version(context):
         import pyglet
@@ -1213,6 +1239,17 @@ class RendererGL:
         return cls._fallback_texture
 
     def __init__(self, title="Newton", screen_width=1920, screen_height=1080, vsync=True, headless=None, device=None):
+        # Declared first so close() can release them after a partial initialization.
+        for name in self._INSPECTION_SHADERS:
+            setattr(self, name, None)
+        # Inspection display state, set by the viewer workspace.
+        self._physics_xray = False
+        """Draw collision, visual and deformable roles with the X-ray inspection passes."""
+        self._workspace_rect: tuple[int, int, int, int] | None = None
+        """Framebuffer rectangle of the docked viewport, or None for the whole window."""
+        self._surface_grid_enabled = False
+        """Overlay adaptive surface grids on objects with a nonzero ``_surface_grid``."""
+        self._surface_grid_objects = ()
         self.draw_sky = True
         self.draw_fps = True
         self.draw_shadows = True
@@ -1249,17 +1286,6 @@ class RendererGL:
         # for a proper irradiance map that we don't precompute yet.
         self.ambient_sky = (0.8, 0.8, 0.85)
         self.ambient_ground = (0.3, 0.3, 0.35)
-
-        # On Wayland, PyOpenGL defaults to EGL which cannot see the GLX context
-        # that pyglet creates via XWayland. Force GLX so both libraries agree.
-        # Must be set before PyOpenGL is first imported (platform is selected
-        # once at import time).
-        if "PYOPENGL_PLATFORM" not in os.environ:
-            # WAYLAND_DISPLAY is the primary indicator; XDG_SESSION_TYPE is
-            # checked as a fallback for sessions where the socket is not yet set.
-            is_wayland = bool(os.environ.get("WAYLAND_DISPLAY")) or os.environ.get("XDG_SESSION_TYPE") == "wayland"
-            if is_wayland:
-                os.environ["PYOPENGL_PLATFORM"] = "glx"
 
         try:
             import pyglet
@@ -1386,8 +1412,6 @@ class RendererGL:
         self._frame_depth_texture = None
         self._frame_fbo = None
         self._frame_pbo = None
-        self._selection_outline = None
-        self._selection_surface_shader = None
         self._selection_instances = ()
         self._oit_fbo = None
         self._oit_accum_texture = None
@@ -1449,7 +1473,7 @@ class RendererGL:
         from .surface_grid import SurfaceGridShader  # noqa: PLC0415
 
         self._make_current()
-        for name, factory in (
+        factories = (
             ("_selection_outline", SelectionOutline),
             ("_selection_surface_shader", SelectionSurfaceShader),
             ("_joint_shader", JointGlyphShader),
@@ -1458,10 +1482,12 @@ class RendererGL:
             ("_surface_grid_shader", SurfaceGridShader),
             ("_physics_collision_shader", PhysicsSurfaceShader),
             ("_physics_shell_shader", PhysicsShellShader),
-            ("_oit_resolve_shader", OITResolveShader),
-        ):
-            if getattr(self, name, None) is None:
+        )
+        for name, factory in factories:
+            if getattr(self, name) is None:
                 setattr(self, name, factory(self.gl))
+        if self._oit_resolve_shader is None:
+            self._oit_resolve_shader = OITResolveShader(self.gl)
         if self._shape_transparent_shader is None:
             self._shape_transparent_shader = ShaderShape(self.gl, enable_transparency=True)
 
@@ -1524,7 +1550,7 @@ class RendererGL:
 
     def _get_scene_viewport(self) -> tuple[int, int, int, int]:
         """Return the visible scene rectangle in framebuffer pixels."""
-        return getattr(self, "_workspace_rect", None) or (0, 0, self._screen_width, self._screen_height)
+        return self._workspace_rect or (0, 0, self._screen_width, self._screen_height)
 
     def render(self, camera, objects, lines=None, wireframe_shapes=None, arrows=None):
         gl = RendererGL.gl
@@ -1553,7 +1579,7 @@ class RendererGL:
         self._projection_matrix = self.camera.get_projection_matrix()
         # Preparing a level may lazily add cached prototypes to the object map.
         for obj in tuple(objects.values()):
-            lod = getattr(getattr(obj, "mesh", None), "_display_lod", None)
+            lod = obj.mesh._display_lod if isinstance(obj, MeshInstancerGL) else None
             if lod is not None and not obj.hidden:
                 lod.prepare(self, obj)
         # Contact glyphs use the same analytic disks in every display mode.
@@ -1759,25 +1785,11 @@ class RendererGL:
 
     def close(self):
         self._make_current()
-        if getattr(self, "_selection_outline", None) is not None:
-            self._selection_outline.destroy()
-            self._selection_outline = None
-        if getattr(self, "_selection_surface_shader", None) is not None:
-            self._selection_surface_shader.destroy()
-            self._selection_surface_shader = None
-        if getattr(self, "_joint_shader", None) is not None:
-            self._joint_shader.destroy()
-            self._joint_shader = None
-
-        if getattr(self, "_contact_label_shader", None) is not None:
-            self._contact_label_shader.destroy()
-            self._contact_label_shader = None
-        if getattr(self, "_surface_grid_shader", None) is not None:
-            self._surface_grid_shader.destroy()
-            self._surface_grid_shader = None
-        if getattr(self, "_physics_contact_shader", None) is not None:
-            self._physics_contact_shader.destroy()
-            self._physics_contact_shader = None
+        for name in self._INSPECTION_SHADERS:
+            shader = getattr(self, name)
+            if shader is not None:
+                shader.destroy()
+                setattr(self, name, None)
 
         if not self.headless:
             self.app.event_loop.dispatch_event("on_exit")
@@ -2310,7 +2322,7 @@ class RendererGL:
         camera_pos = np.array(self.camera.pos, dtype=np.float32)
         light_pos = self._sun_direction * extents
         light_target = np.zeros(3, dtype=np.float32)
-        if getattr(self, "_physics_xray", False):
+        if self._physics_xray:
             # Spend the existing map's texels on the inspected region. A fixed
             # 20 m map cannot resolve contact shadows on centimeter-scale links.
             # Keep the light's depth range independent of this lateral zoom so
@@ -2341,7 +2353,7 @@ class RendererGL:
         scene_draws = []
         try:
             for obj in shadow_objects.values():
-                lod = getattr(getattr(obj, "mesh", None), "_display_lod", None)
+                lod = obj.mesh._display_lod if isinstance(obj, MeshInstancerGL) else None
                 if lod is not None and not obj.hidden:
                     scene_draws.append((obj, obj._lod_draws))
                     obj._lod_draws = lod.shadow_draws(self, obj)
@@ -2369,7 +2381,7 @@ class RendererGL:
             enable_shadows=self.draw_shadows,
             # Keep contact edges precise while letting light through the
             # inspection view, including its opaque ground and support planes.
-            shadow_strength=0.45 if getattr(self, "_physics_xray", False) else 1.0,
+            shadow_strength=0.45 if self._physics_xray else 1.0,
             shadow_texture=self._shadow_texture,
             light_space_matrix=self._light_space_matrix,
             light_color=self._light_color,
@@ -2405,15 +2417,15 @@ class RendererGL:
 
         opaque_objects, transparent_objects = self._split_transparent_objects(objects, scene_has_transparency)
         self._surface_grid_objects = (
-            tuple(obj for obj in objects.values() if not obj.hidden and getattr(obj, "_surface_grid", 0))
-            if getattr(self, "_surface_grid_enabled", False)
+            tuple(obj for obj in objects.values() if not obj.hidden and obj._surface_grid)
+            if self._surface_grid_enabled
             else ()
         )
         shells, collisions = [], []
-        if getattr(self, "_physics_xray", False):
+        if self._physics_xray:
             normal_transparent = []
             for name, obj in transparent_objects:
-                role = getattr(obj, "_physics_role", None)
+                role = obj._physics_role
                 if role in ("visual", "deformable"):
                     if not obj.hidden:
                         shells.append((name, obj))
@@ -2458,10 +2470,7 @@ class RendererGL:
                 k: v
                 for k, v in objects.items()
                 if getattr(v, "draw_edge", True)
-                and not (
-                    getattr(self, "_physics_xray", False)
-                    and getattr(v, "_physics_role", None) in ("visual", "collision", "deformable")
-                )
+                and not (self._physics_xray and v._physics_role in ("visual", "collision", "deformable"))
             }
             self._edge_shader.update(
                 view_matrix=self._view_matrix,
@@ -2478,7 +2487,7 @@ class RendererGL:
             gl.glDisable(gl.GL_POLYGON_OFFSET_LINE)
 
         envelopes = {}
-        if wireframe_shapes and getattr(self, "_physics_xray", False):
+        if wireframe_shapes and self._physics_xray:
             envelopes = {
                 name: obj for name, obj in wireframe_shapes.items() if "/sdf_margin_wf/" in name and not obj.hidden
             }
@@ -2494,19 +2503,19 @@ class RendererGL:
         if wireframe_shapes:
             self._render_wireframe_shapes(wireframe_shapes)
         if contact_disks:
-            if getattr(self, "_physics_contact_shader", None) is None:
+            if self._physics_contact_shader is None:
                 from .physics_view import PhysicsContactShader  # noqa: PLC0415
 
                 self._physics_contact_shader = PhysicsContactShader(gl)
             self._physics_contact_shader.render(self, contact_disks)
         if getattr(self, "_contact_labels", ()):
-            if getattr(self, "_contact_label_shader", None) is None:
+            if self._contact_label_shader is None:
                 from .contact_labels import ContactLabels  # noqa: PLC0415
 
                 self._contact_label_shader = ContactLabels(gl)
             self._contact_label_shader.render(self, self._contact_labels)
         if getattr(self, "_joint_triangles", None) is not None:
-            if getattr(self, "_joint_shader", None) is None:
+            if self._joint_shader is None:
                 from .joint_glyphs import JointGlyphShader  # noqa: PLC0415
 
                 self._joint_shader = JointGlyphShader(gl)
@@ -2696,7 +2705,7 @@ class RendererGL:
         meshes = [obj for obj, index in getattr(self, "_selection_instances", ()) if index == -1]
         if not meshes:
             return
-        if getattr(self, "_selection_surface_shader", None) is None:
+        if self._selection_surface_shader is None:
             from .selection import SelectionSurfaceShader  # noqa: PLC0415
 
             self._selection_surface_shader = SelectionSurfaceShader(self.gl)
@@ -2705,7 +2714,7 @@ class RendererGL:
     def _render_surface_grid(self, *, oit: bool) -> None:
         if not self._surface_grid_objects:
             return
-        if getattr(self, "_surface_grid_shader", None) is None:
+        if self._surface_grid_shader is None:
             from .surface_grid import SurfaceGridShader  # noqa: PLC0415
 
             self._surface_grid_shader = SurfaceGridShader(self.gl)
@@ -2714,7 +2723,7 @@ class RendererGL:
     def _render_physics_collisions(
         self, objects: Sequence[MeshInstancerGL], *, opaque: bool, oit: bool = False, visual: bool = False
     ) -> None:
-        if getattr(self, "_physics_collision_shader", None) is None:
+        if self._physics_collision_shader is None:
             from .physics_view import PhysicsSurfaceShader  # noqa: PLC0415
 
             self._physics_collision_shader = PhysicsSurfaceShader(self.gl)
@@ -2725,7 +2734,7 @@ class RendererGL:
     ) -> None:
         if not collision and not wire_only:
             self._render_physics_collisions(objects, opaque=False, oit=oit, visual=True)
-        if getattr(self, "_physics_shell_shader", None) is None:
+        if self._physics_shell_shader is None:
             from .physics_view import PhysicsShellShader  # noqa: PLC0415
 
             self._physics_shell_shader = PhysicsShellShader(self.gl)
@@ -2767,7 +2776,7 @@ class RendererGL:
                 # per-contact data. Near witnesses stay clear; distant connectors
                 # recede while preserving scene depth and selection color.
                 fade_distance = 0.0
-                if witness and getattr(self, "_physics_xray", False):
+                if witness and self._physics_xray:
                     # Connectors are narrow diagnostics, so let them recede
                     # sooner than the much broader surface shells.
                     fade_distance = (
@@ -2847,7 +2856,7 @@ class RendererGL:
             gl.glUniform1i(self._wireframe_shader.loc_oit, oit)
             gl.glUniform1f(self._wireframe_shader.loc_reference, 1.0 / max(self.camera.pivot_distance, 1e-6))
             for name, shape in wireframe_shapes.items():
-                adaptive = getattr(self, "_physics_xray", False) and "/sdf_margin_wf/" in name
+                adaptive = self._physics_xray and "/sdf_margin_wf/" in name
                 gl.glUniform1f(self._wireframe_shader.loc_adaptive, float(height) if adaptive else 0.0)
                 gl.glUniform1f(self._wireframe_shader.loc_alpha, 0.48 if adaptive else 0.7)
                 gl.glUniform1f(
@@ -2870,8 +2879,8 @@ class RendererGL:
         check_gl_error()
 
     def _object_has_transparency(self, obj, *, for_shadow: bool = False) -> bool:
-        if getattr(self, "_physics_xray", False):
-            role = getattr(obj, "_physics_role", None)
+        if self._physics_xray:
+            role = obj._physics_role
             # Proximity is a viewing aid; physical shadows must stay stable as
             # the camera moves. Still respect genuinely hidden/alpha materials.
             if role in ("visual", "collision", "deformable") and not for_shadow:

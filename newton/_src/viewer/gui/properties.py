@@ -18,6 +18,7 @@ from ...geometry.types import GeoType
 from ...sim.enums import JointTargetMode, JointType
 from ...sim.model import Model
 from ...sim.state import State
+from ...solvers.solver import SolverBase
 from ..viewer_attributes import (
     Assignment,
     AttributeRows,
@@ -259,10 +260,13 @@ class PropertyInspector:
             component: self._collect(component)
             for component in (Assignment.STATE, Assignment.CONTROL, Assignment.MODEL)
         }
+        observed = self._observables()
         available = [
             component
             for component, groups in components.items()
-            if groups or (component == Assignment.MODEL and self._counts())
+            if groups
+            or (component == Assignment.MODEL and self._counts())
+            or (component == Assignment.STATE and observed)
         ]
         contact_owner = (
             len(ws.selection) == 1
@@ -285,6 +289,10 @@ class PropertyInspector:
                 if w.tab_item(title, flags=ui.TabItemFlags_.set_selected if component == fallback else 0)[0]:
                     self.component = component
                     self._component(component, components[component])
+                    if component == Assignment.STATE and observed:
+                        with w.group("Solver observables") as opened:
+                            if opened:
+                                self._fields(observed, component)
                     ui.end_tab_item()
             if contact_owner and w.tab_item("Contacts")[0]:
                 self.component = "contacts"
@@ -301,6 +309,28 @@ class PropertyInspector:
                 if ws.apply_edit(owner, attr, start, values, joint_index=joint, save_undo=False):
                     ws._undo = None
             ui.end_disabled()
+
+    def _observables(self) -> list[tuple[AttributeRows, str, Model.AttributeSpec, object, str, Any]]:
+        """Match the last logged solver observables to the selected non-contact row domains.
+
+        Contact observables belong to the Contacts tab. Only one-dimensional
+        arrays whose rows follow a selected frequency are listed; per-world
+        values exclude the trailing global-world entry.
+        """
+        ws = self.workspace
+        observables = ws.viewer._last_contact_observables
+        if observables is None or observables.model is not ws.model:
+            return []
+        contact = (Frequency.CONTACT, Frequency.CONTACT_RIGID, Frequency.CONTACT_SOFT)
+        result = []
+        for name, field in observables._observable_fields().values():
+            value = getattr(observables, name)
+            if field.frequency in contact or not isinstance(value, wp.array) or value.ndim != 1:
+                continue
+            for domain in self.domains:
+                if domain.model is ws.model and domain.frequency == field.frequency and not domain.joints:
+                    result.append((domain, name, Model.AttributeSpec(field.frequency), observables, name, value))
+        return result
 
     def _counts(self) -> dict[str, int]:
         """Return nonzero Model frequency counts for root or group selection; otherwise return an empty mapping."""
@@ -601,6 +631,9 @@ class PropertyInspector:
             reason = "Solver state. Edit joint coordinates to change articulated body motion."
         if spec.references is not None and component != Assignment.MODEL:
             reason = "Reference indices are read only."
+        if isinstance(owner, SolverBase.Observables):
+            editable = False
+            reason = "Solver output of the last logged step."
         if joint is not None:
             kind = JointType(int(ws.read(model, "joint_type", joint)[0]))
             art = int(ws.read(model, "joint_articulation", joint)[0])

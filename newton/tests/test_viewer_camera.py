@@ -25,6 +25,7 @@ from newton._src.viewer.gui.workspace import ViewerWorkspace
 from newton._src.viewer.viewer_model_tree import ModelTree
 from newton._src.viewer.viewer_navigation import SelectionNavigation
 from newton.tests.test_viewer_get_frame import _make_headless_viewer_gl_or_skip
+from newton.tests.unittest_utils import requires
 from newton.viewer import ViewerGL, ViewerNull
 
 
@@ -36,6 +37,7 @@ def _assert_vec_close(test, actual, expected, tol=1.0e-6):
     np.testing.assert_allclose(_as_np(actual), np.array(expected, dtype=float), atol=tol, rtol=0.0)
 
 
+@requires("pyglet")
 class TestViewerCameraOrbit(unittest.TestCase):
     def test_follow_selection_hold_toggle_and_orbit(self) -> None:
         import pyglet
@@ -49,7 +51,7 @@ class TestViewerCameraOrbit(unittest.TestCase):
         viewer = SimpleNamespace(camera=camera, model=True, is_rendering_paused=lambda: False)
         gui = ViewerGui.__new__(ViewerGui)
         gui._viewer, gui.ui = viewer, None
-        gui._loading_splash_active = False
+        gui._loading_splash_active = gui._frame_key_down = gui._follow_held = gui._follow_latched = False
         gui._cam_vel = np.zeros(3)
         gui._camera_orbit_sensitivity = 0.1
         gui._camera_drag_buttons = 0
@@ -146,7 +148,7 @@ class TestViewerCameraOrbit(unittest.TestCase):
         # BVH selections share the focus path, with their own world filter and
         # full bounds even when the overlay is hidden or its budget is small.
         model.bvh_build_shapes(viewer._last_state)
-        ws.tree, ws.example, ws.history = ModelTree(model), None, None
+        ws.tree, ws.history = ModelTree(model), None
         ws.selected = ("bvh", "shapes")
         bvhs = ws.tree.resources.bvhs
         bvhs.scope, bvhs.world, bvhs.limit, bvhs.show_bounds = 0, 0, 16, False

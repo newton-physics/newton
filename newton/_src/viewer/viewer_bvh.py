@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     from newton import Gaussian, Heightfield, Mesh, Model, State
     from newton._src.viewer.gui.workspace import ViewerWorkspace
     from newton._src.viewer.viewer_model_tree import ModelTree
-    from newton._src.viewer.viewer_types import TreeKey, ViewerExample
+    from newton._src.viewer.viewer_types import TreeKey
     from newton.viewer import ViewerBase
 
 
@@ -238,12 +238,10 @@ class BvhResources:
     meshes = ("bvh_collection", "meshes")
     page_size = 128
 
-    def __init__(
-        self, model: Model, example: ViewerExample | None = None, *, bindings: InspectionBindings | None = None
-    ) -> None:
+    def __init__(self, model: Model, *, bindings: InspectionBindings | None = None) -> None:
         """Initialize lazy BVH discovery and per-selection drawing caches for one Model."""
-        self.model, self.example = model, example
-        self.bindings = bindings if bindings is not None else InspectionBindings.from_example(example)
+        self.model = model
+        self.bindings = bindings if bindings is not None else InspectionBindings()
         self.entries = {}
         self._mesh_ids = None
         self._source_pages = {}
@@ -338,7 +336,7 @@ class BvhResources:
         # Inspect known owners, never recursively traverse a model's object graph.
         """Find additional collision and sensor BVHs on known owners.
 
-        Inspect only immediate attributes of the example, Model, and solver;
+        Inspect only immediate attributes of the Model and the inspected solver;
         avoid recursively walking their object graphs. Keep owner references so
         later inspection resolves the current resource rather than a snapshot.
         """
@@ -348,7 +346,7 @@ class BvhResources:
             if detector is not None and id(detector) not in seen:
                 seen.add(id(detector))
                 self._add_detector(tree, detector, name)
-        for owner in (self.example, self.model, self.bindings.solver):
+        for owner in (self.model, self.bindings.solver):
             for name, value in vars(owner).items() if hasattr(owner, "__dict__") else ():
                 if id(value) in seen:
                     continue
@@ -362,10 +360,6 @@ class BvhResources:
                     self._add_detector(tree, value, name)
                 context = getattr(value, "_render_context", None)
                 triangle_attr = "_triangle_mesh"
-                # The deprecated tiled camera still owns a separate surface BVH.
-                if context is None and getattr(value, "model", None) is self.model:
-                    context = getattr(value, "_SensorTiledCamera__render_context", None)
-                    triangle_attr = "triangle_mesh"
                 if context is not None and getattr(context, "_model", self.model) is self.model:
                     if getattr(context, triangle_attr, None) is not None:
                         node = ("bvh", (name, "surface"))
@@ -599,12 +593,8 @@ class BvhResources:
 
     @staticmethod
     def _state(ws: ViewerWorkspace) -> State | None:
-        """Prefer the last displayed State, falling back to conventional example state attributes."""
-        return (
-            getattr(ws.viewer, "_last_state", None)
-            or getattr(ws.example, "state_0", None)
-            or getattr(ws.example, "state", None)
-        )
+        """Return the last State passed to log_state(), or None."""
+        return ws.viewer._last_state
 
     def _refit(self, resource: wp.Bvh | wp.Mesh, state: State | None) -> None:
         # Most examples never query these model BVHs after finalization. Keep

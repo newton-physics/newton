@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import unittest
-from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
@@ -194,34 +193,33 @@ class TestLogContacts(unittest.TestCase):
         )
         viewer.contact_normal_scale = 1.0
 
+        def log_frame(
+            history: FrameHistory, time: float, contacts: newton.Contacts, state: newton.State, observables=None
+        ) -> tuple[newton.Contacts, newton.State, object]:
+            # The same substitution ViewerGL applies to the application's log_contacts() call.
+            history.begin_frame(time)
+            shown = history.contacts(contacts, state, observables)
+            viewer.log_contacts(shown[0], shown[1], observables=shown[2])
+            history.end_frame()
+            return shown
+
         # Replay must bind forces to its own Contacts storage without changing
         # the live solver's force arrays or contact identity.
-        example = SimpleNamespace(
-            viewer=viewer,
-            solver=solver,
-            state=model.state(),
-            contacts=contacts,
-            solver_observables=observables,
-            sim_time=0.0,
-        )
-        example.render = lambda: viewer.log_contacts(
-            example.contacts, example.state, observables=example.solver_observables
-        )
-        history = FrameHistory(example)
-        history.capture()
+        viewer.set_solver(solver)
+        history = FrameHistory(viewer)
+        live_state = model.state()
+        log_frame(history, 0.0, contacts, live_state, observables)
         observables.contact_f.zero_()
-        example.sim_time = 1.0 / 60.0
-        history.capture()
+        log_frame(history, 1.0 / 60.0, contacts, live_state, observables)
         history.select(0)
-        history.render()
-        solver.validate_observables(history.display_observables, history.display_contacts)
+        shown_contacts, _, shown_observables = log_frame(history, 1.0 / 60.0, contacts, live_state, observables)
+        solver.validate_observables(shown_observables, shown_contacts)
         assert_np_equal(viewer._contact_disk_colors.numpy(), loaded_colors)
-        self.assertIs(example.solver_observables, observables)
-        self.assertIs(example.contacts, contacts)
-        self.assertIsNot(history.display_contacts, contacts)
+        self.assertIsNot(shown_observables, observables)
+        self.assertIsNot(shown_contacts, contacts)
         self.assertFalse(np.any(observables.contact_f.numpy()))
         history.select(1)
-        history.render()
+        log_frame(history, 1.0 / 60.0, contacts, live_state, observables)
         assert_np_equal(viewer._contact_disk_colors.numpy(), unloaded_colors)
 
         # Paired glyphs use both body-local witnesses, including static bodies,
@@ -289,22 +287,16 @@ class TestLogContacts(unittest.TestCase):
         contacts.force = None
         # VBD corrects input poses in place. Replay must retain the separate
         # collision input poses, rather than relocating witnesses to state_out.
-        example = SimpleNamespace(
-            viewer=viewer, state=model.state(), contact_state=state, contacts=contacts, sim_time=0.0
-        )
-        example.state.body_q.assign([wp.transform_identity()] * model.body_count)
-        example.render = lambda: viewer.log_contacts(example.contacts, example.contact_state)
-        history = FrameHistory(example)
-        history.capture()
+        history = FrameHistory(viewer)
+        log_frame(history, 0.0, contacts, state)
         saved_poses = state.body_q.numpy().copy()
         state.body_q.assign([wp.transform_identity()] * model.body_count)
-        example.sim_time = 1.0 / 60.0
-        history.capture()
+        log_frame(history, 1.0 / 60.0, contacts, state)
         history.select(0)
-        history.render()
+        _, shown_state, _ = log_frame(history, 1.0 / 60.0, contacts, state)
         assert_np_equal(viewer._contact_disk_xforms.numpy()[:, :3], np.asarray(expected_points), tol=2.0e-6)
-        self.assertIs(example.contact_state, state)
-        assert_np_equal(state.body_q.numpy(), example.state.body_q.numpy())
+        self.assertIsNot(shown_state, state)
+        assert_np_equal(state.body_q.numpy(), np.asarray([wp.transform_identity()] * model.body_count))
         state.body_q.assign(saved_poses)
         # Opposing witnesses remain visible when the normal arrow is disabled.
         viewer.show_contact_normals = False

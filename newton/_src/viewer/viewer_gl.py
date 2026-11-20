@@ -5,9 +5,10 @@ from __future__ import annotations
 
 import ctypes
 import enum
+import functools
+import inspect
 import re
 import time
-import warnings
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import nullcontext
 from importlib import metadata
@@ -20,8 +21,6 @@ import warp as wp
 import newton as nt
 
 from ..core.types import Axis, override
-from ..exceptions import NewtonDeprecationWarning
-from ..utils.deprecation import deprecate_nonkeyword_arguments
 from ..utils.render import copy_rgb_frame_uint8
 from .camera import Camera
 from .gl.frame_cache import FrameCache
@@ -32,6 +31,7 @@ from .picking import Picking
 from .plot_logger import PlotLogger
 from .utils import OPAQUE_OPACITY_THRESHOLD, gaussian_display_colors
 from .viewer import _DEFAULT_LAYER_ID, Layer, ViewerBase
+from .viewer_history import FrameHistory
 from .wind import Wind
 
 
@@ -179,6 +179,52 @@ def _compute_shape_vbo_xforms(
     )
 
 
+_RECORDED_ARRAYS = {"points": ("points", "radii", "colors"), "lines": ("starts", "ends", "colors")}
+
+
+def _recorded(kind: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """Pass the application's outermost logging calls of one kind through the viewer history.
+
+    Calls made while another logging call runs, such as the lines drawn by
+    log_contacts(), are viewer output rather than application data and are
+    neither recorded nor replaced.
+    """
+
+    def decorate(method: Callable[..., Any]) -> Callable[..., Any]:
+        signature = inspect.signature(method)
+
+        @functools.wraps(method)
+        def wrapper(self: ViewerGL, *args: Any, **kwargs: Any) -> Any:
+            history = self._history
+            if history is not None and history.frame_open and not self._history_depth:
+                bound = signature.bind(self, *args, **kwargs)
+                arguments = bound.arguments
+                if kind == "state":
+                    arguments["state"] = history.state(arguments["state"])
+                elif kind == "contacts":
+                    contacts, state, observables = history.contacts(
+                        arguments["contacts"], arguments["state"], arguments.get("observables")
+                    )
+                    arguments.update(contacts=contacts, state=state)
+                    if observables is not None or "observables" in arguments:
+                        arguments["observables"] = observables
+                else:
+                    names = _RECORDED_ARRAYS[kind]
+                    arguments.update(
+                        history.arrays(kind, arguments["name"], {name: arguments.get(name) for name in names})
+                    )
+                args, kwargs = bound.args[1:], bound.kwargs
+            self._history_depth += 1
+            try:
+                return method(self, *args, **kwargs)
+            finally:
+                self._history_depth -= 1
+
+        return wrapper
+
+    return decorate
+
+
 class ViewerGL(ViewerBase):
     """
     OpenGL-based interactive viewer for Newton physics models.
@@ -237,6 +283,7 @@ class ViewerGL(ViewerBase):
         *,
         enable_cuda_interop: ViewerGL.CudaInterop = CudaInterop.DYNAMIC_MESH,
         legacy_gui: bool = False,
+        capture_logs: bool = False,
     ):
         """
         Initialize the OpenGL viewer and UI.
@@ -259,6 +306,15 @@ class ViewerGL(ViewerBase):
             legacy_gui: Use the legacy sidebar, statistics overlay, and floating
                 image/plot windows instead of the docked inspection workspace.
                 Defaults to False. Has no effect in headless mode.
+            capture_logs: Mirror ``newton`` log records and Newton warnings into
+                the workspace console until :meth:`close`. This adds a handler
+                to the ``newton`` logger and routes :class:`~newton.NewtonWarning`
+                through it; existing terminal output and application handlers
+                are unchanged. Defaults to False, leaving logging configuration
+                to the application. Has no effect in headless mode or with
+                ``legacy_gui``.
+
+                .. experimental::
         """
         self._plot_logger = PlotLogger(plot_history_size, get_window=lambda: self.renderer.window)
         if num_frames is not None:
@@ -279,23 +335,34 @@ class ViewerGL(ViewerBase):
         self._ui_capture_frame = FrameCache()
         self._has_rendered_frame = False
         self._model_geometry_stash: dict[tuple, MeshGL] = {}
+        self._history: FrameHistory | None = None
+        """Display history recorded from logging calls; owned by the inspection workspace."""
+        self._history_depth = 0
+        # Scenes that replace a cleared Model are framed on their first state
+        # unless they set a camera themselves.
+        self._camera_revision = 0
+        self._scene_camera_revision = 0
+        self._frame_next_model = False
 
         super().__init__()
         self.show_contact_pairs = True
         self.show_contact_labels = True
+        """Number contacts while paused with a Contacts inspector tab open."""
         self.contact_selection_only: bool = True
         """Restrict contact glyphs to selected shapes/bodies in the inspection workspace."""
         self.camera_slowdown = 2.0
 
         self.renderer = RendererGL(vsync=vsync, screen_width=width, screen_height=height, headless=headless)
         try:
-            self._setup_viewer(headless, paused, num_frames, legacy_gui=legacy_gui)
+            self._setup_viewer(headless, paused, num_frames, legacy_gui=legacy_gui, capture_logs=capture_logs)
         except BaseException:
             # Close the renderer's window, as RendererGL does when its own setup fails.
             self.renderer.close()
             raise
 
-    def _setup_viewer(self, headless: bool, paused: bool, num_frames: int | None, *, legacy_gui: bool) -> None:
+    def _setup_viewer(
+        self, headless: bool, paused: bool, num_frames: int | None, *, legacy_gui: bool, capture_logs: bool = False
+    ) -> None:
         """Set up the camera, input handling, and UI around the new renderer."""
         self.renderer.set_title("Newton Viewer")
         self._image_logger = ImageLogger(device=self.device)
@@ -326,7 +393,9 @@ class ViewerGL(ViewerBase):
 
         # Only create UI in non-headless mode to avoid OpenGL context dependency
         if not headless:
-            self.gui = ViewerGui(self, self.renderer.window, workspace_enabled=not legacy_gui)
+            self.gui = ViewerGui(
+                self, self.renderer.window, workspace_enabled=not legacy_gui, capture_logs=capture_logs
+            )
             self.renderer.window.push_handlers(on_scale=self._on_window_scale)
         else:
             self.gui = None
@@ -428,6 +497,11 @@ class ViewerGL(ViewerBase):
     ):
         """
         Register a UI callback to be rendered during the UI phase.
+
+        In the default workspace GUI, ``"panel"`` and then ``"side"`` callbacks
+        draw in the inspector's Controls tab. ``"stats"`` callbacks draw in the viewport
+        statistics overlay and ``"rendering"`` callbacks in the viewport display
+        settings. With ``legacy_gui=True``, positions refer to the sidebar.
 
         Args:
             callback: Function to be called during UI rendering
@@ -635,6 +709,8 @@ class ViewerGL(ViewerBase):
             self.gui.clear_example_callbacks()
 
         super().clear_model()
+        self._frame_next_model = True
+        self._scene_camera_revision = self._camera_revision
 
     @override
     def _init_layer_state(self, layer: Layer) -> None:
@@ -682,6 +758,11 @@ class ViewerGL(ViewerBase):
             self._model_geometry_stash = {}
             for mesh in retained.values():
                 mesh.destroy()
+
+        if model is not None and self._frame_next_model:
+            self._frame_next_model = False
+            if self.gui is not None:
+                self.gui._frame_camera_pending = True
 
         if self.gui is not None:
             # Reading shape_flags back from the device belongs here, not in the
@@ -831,11 +912,15 @@ class ViewerGL(ViewerBase):
 
     def _populate_sdf_isomesh_instances(self) -> None:
         super()._populate_sdf_isomesh_instances()
+        # Distance-based detail only serves interactive inspection; captured
+        # frames and the legacy GUI keep full-resolution isosurfaces.
+        if self.gui is None or not self.gui.workspace_enabled:
+            return
         from .gl.mesh_lod import SdfMeshLOD  # noqa: PLC0415
 
         for batch in self._sdf_isomesh_instances.values():
             mesh = self.objects[batch.mesh]
-            if mesh.num_indices > 300_000 and not hasattr(mesh, "_display_lod"):
+            if mesh.num_indices > 300_000 and mesh._display_lod is None:
                 mesh._display_lod = SdfMeshLOD(self, batch)
 
     def _rebuild_gl_shape_caches(self):
@@ -979,7 +1064,7 @@ class ViewerGL(ViewerBase):
             yaw: The camera yaw [deg]. If None, the current yaw is kept.
         """
         self.camera.pos = self.camera._as_vec3(pos)
-        self._camera_revision = getattr(self, "_camera_revision", 0) + 1
+        self._camera_revision += 1
         if pitch is not None:
             self.camera.pitch = max(min(pitch, 89.0), -89.0)
         if yaw is not None:
@@ -1402,6 +1487,7 @@ class ViewerGL(ViewerBase):
         )
 
     @override
+    @_recorded("lines")
     def log_lines(
         self,
         name: str,
@@ -1652,6 +1738,9 @@ class ViewerGL(ViewerBase):
     def _log_triangles(self, state: nt.State) -> None:
         if not self.model.particle_count:
             return
+        if not self.model.tri_count and (not self.show_particles or self._layer_force_hidden()):
+            # Nothing would be drawn; allocate display buffers once particles are shown.
+            return
         from .viewer_deformables import DeformableDisplay  # noqa: PLC0415
 
         display = self._workspace_deformables
@@ -1743,6 +1832,7 @@ class ViewerGL(ViewerBase):
             yield points[visible], radii[visible, None]
 
     @override
+    @_recorded("points")
     def log_points(
         self,
         name: str,
@@ -1777,9 +1867,6 @@ class ViewerGL(ViewerBase):
             point_mesh = self._create_point_mesh()
 
         num_points = len(points)
-        workspace = getattr(self.gui, "workspace", None)
-        if workspace is not None and workspace.tree is not None and workspace.tree.model is self.model:
-            points, radii, hidden = workspace.tree.deformables.logged_points(workspace, points, radii, hidden)
         object_recreated = False
         if name not in self.objects:
             # Start with a reasonable default.
@@ -2098,6 +2185,7 @@ class ViewerGL(ViewerBase):
         wp.synchronize_stream(wp.get_stream(self.device))
 
     @override
+    @_recorded("state")
     def log_state(self, state: nt.State):
         """
         Log the current simulation state for rendering.
@@ -2233,11 +2321,34 @@ class ViewerGL(ViewerBase):
         """
         Begin a new frame (calls parent implementation).
 
+        With history recording enabled in the inspection workspace, the State,
+        contacts, points, and lines logged until :meth:`end_frame` are recorded
+        for this time. While the timeline replays history, those logging calls
+        display the recorded frame instead of their arguments.
+
         Args:
-            time: Current simulation time.
+            time: Current simulation time [s].
         """
         super().begin_frame(time)
         self._gizmo_log = {}
+        if self._history is not None:
+            self._history.begin_frame(time)
+
+    @override
+    @_recorded("contacts")
+    def log_contacts(
+        self,
+        contacts: nt.Contacts,
+        state: nt.State,
+        *,
+        observables: nt.solvers.SolverBase.Observables | None = None,
+    ):
+        """Render contact visualizations; see :meth:`ViewerBase.log_contacts`.
+
+        While the timeline replays history, the recorded contacts, contact
+        State, and solver observables of that frame are displayed instead.
+        """
+        super().log_contacts(contacts, state, observables=observables)
 
     @override
     def end_frame(self):
@@ -2251,6 +2362,8 @@ class ViewerGL(ViewerBase):
         destroyed results in a crash (access violation).  Therefore we check
         whether an exit was requested and early-out before touching GL if so.
         """
+        if self._history is not None:
+            self._history.end_frame()
         self._update()
         self._frame_count += 1
 
@@ -2300,18 +2413,10 @@ class ViewerGL(ViewerBase):
             self.camera.width = self.renderer._screen_width
             self.camera.height = self.renderer._screen_height
         if self.gui and self.gui._frame_camera_pending and self._last_state is not None:
-            tree = getattr(getattr(self.gui, "workspace", None), "tree", None)
-            pending_particles = tree is not None and any(
-                source.points is None for source in tree.deformables.sources[1:]
-            )
-            # The lazy explorer is built after the first log_points call.
-            # Allow one frame to associate secondary models before fitting.
-            if pending_particles and not getattr(self.gui, "_frame_camera_waiting_for_particles", False):
-                self.gui._frame_camera_waiting_for_particles = True
-            else:
+            self.gui._frame_camera_pending = False
+            # A scene that set its own camera after the previous one was cleared keeps it.
+            if self._camera_revision == self._scene_camera_revision:
                 self.gui.frame_camera_on_model(selection=False)
-                self.gui._frame_camera_pending = False
-                self.gui._frame_camera_waiting_for_particles = False
         if self.renderer.has_exit():
             return
 
@@ -2359,13 +2464,11 @@ class ViewerGL(ViewerBase):
                 self.gui.on_rendering_paused()
 
     @override
-    @deprecate_nonkeyword_arguments
     def get_frame(
         self,
         *,
         output: wp.array3d[wp.uint8] | None = None,
         render_ui: bool = False,
-        target_image: wp.array3d[wp.uint8] | None = None,
     ) -> wp.array3d[wp.uint8]:
         """
         Retrieve the last rendered frame.
@@ -2374,16 +2477,11 @@ class ViewerGL(ViewerBase):
         CUDA-OpenGL interoperability, while CPU viewers read the PBO into host
         memory.
 
-        .. deprecated:: 1.7
-            ``target_image`` and passing optional arguments positionally are
-            deprecated. Use ``get_frame(output=..., render_ui=...)`` instead.
-
         Args:
             output:
                 Optional pre-allocated Warp array with shape `(height, width, 3)`
                 and dtype `wp.uint8`. If `None`, a new array will be created.
             render_ui: Whether to render the UI.
-            target_image: Deprecated alias for ``output``.
 
         Returns:
             wp.array: RGB image data on the viewer device with shape
@@ -2392,19 +2490,8 @@ class ViewerGL(ViewerBase):
                 If supplied, returns ``output``.
 
         Raises:
-            TypeError: Both ``output`` and ``target_image`` are supplied.
             RuntimeError: Rendering is paused before an image has been displayed.
         """
-        if target_image is not None:
-            if output is not None:
-                raise TypeError("Specify only one of `output` and `target_image`")
-            warnings.warn(
-                "ViewerGL.get_frame(target_image=...) is deprecated as of Newton 1.7; use output=... instead.",
-                NewtonDeprecationWarning,
-                stacklevel=3,
-            )
-            output = target_image
-
         if self.is_rendering_paused() and not self._has_rendered_frame:
             raise RuntimeError("Frame capture requires at least one displayed frame")
 
@@ -2528,14 +2615,30 @@ class ViewerGL(ViewerBase):
         Return True if the loop should advance one step.
 
         Consumes a pending single-step request, so call exactly once per frame.
+        While the inspection timeline replays recorded history, the step advances
+        playback instead and this returns False; stepping resumes once playback
+        reaches the newest recorded frame.
         """
-        if not self._paused:
-            self._step_requested = False
-            return True
-        if self._step_requested:
-            self._step_requested = False
-            return True
-        return False
+        if self._paused and not self._step_requested:
+            return False
+        self._step_requested = False
+        history = self._history
+        if history is not None and history.replaying:
+            history.advance(1 if not self._paused else 1 / history.playback_speed)
+            return False
+        return True
+
+    def _configure_example_browser(
+        self, tree: dict[str, list[tuple[str, str]]], callback: Callable[[str], None]
+    ) -> None:
+        """List Newton examples in the GUI for the example runner.
+
+        Args:
+            tree: Example names and module paths grouped by category.
+            callback: Function called with the selected module path.
+        """
+        if self.gui is not None:
+            self.gui.configure_example_browser(tree, callback)
 
     def set_reset_callback(self, callback: Callable[[], None] | None) -> None:
         """Register a callback invoked when the user clicks the Reset button.
@@ -2558,7 +2661,7 @@ class ViewerGL(ViewerBase):
             self.gui.close_console()
         workspace = getattr(getattr(self, "gui", None), "workspace", None)
         if workspace is not None:
-            workspace.detach_example()
+            workspace.detach()
         if self._image_logger is not None:
             self._image_logger.clear()
         self._destroy_render_geometry()

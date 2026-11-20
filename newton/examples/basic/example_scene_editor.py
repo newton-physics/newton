@@ -39,6 +39,13 @@ class Example(SceneEditor):
         solver = args.solver or ("mujoco" if wp.get_device().is_cuda else "xpbd")
         super().__init__(viewer, solver=solver, device=args.device)
         self._mcp = None
+        try:
+            self._initialize_scene(viewer, args)
+        except BaseException:
+            self.close()
+            raise
+
+    def _initialize_scene(self, viewer, args):
         if args.mcp_info is not None and args.mcp_port is None:
             raise ValueError("--mcp-info requires --mcp-port")
         if args.scene:

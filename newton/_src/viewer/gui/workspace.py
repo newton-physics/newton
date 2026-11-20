@@ -21,6 +21,7 @@ from ...sim.articulation import eval_fk, eval_ik
 from ...sim.enums import BodyFlags, JointType, ModelFlags
 from ...sim.model import Model
 from ...sim.state import State
+from ...solvers.solver import SolverBase
 from ..viewer_bindings import InspectionBindings
 from ..viewer_history import FrameHistory, _component_arrays
 from ..viewer_model_tree import ModelTree
@@ -36,7 +37,8 @@ if TYPE_CHECKING:
     from numpy.typing import ArrayLike
 
     from newton._src.viewer.gui.viewer_gui import ViewerGui
-    from newton._src.viewer.viewer_types import TreeKey, ViewerExample
+    from newton._src.viewer.scene_authoring import SceneEditor
+    from newton._src.viewer.viewer_types import TreeKey
 
 
 @wp.kernel
@@ -117,9 +119,10 @@ class ViewerWorkspace:
     attribute metadata to widgets. This class connects those services to ImGui
     and authorizes edits; it does not construct or rebuild Models or solvers.
 
-    Scene-owned caches and history are released on rebinding, while presentation
-    preferences survive example switches. Explicit simulation bindings support
-    inspection without adopting the example runner's history lifecycle.
+    Components come only from the viewer's public channels: the setters for
+    Control, solver, and collision pipeline, and frame logging for State and
+    Contacts. History records those logged frames. Scene-owned caches and history
+    are released when the Model changes, while presentation preferences survive.
     """
 
     def __init__(self, gui: ViewerGui) -> None:
@@ -127,8 +130,9 @@ class ViewerWorkspace:
         self.gui = gui
         self.widgets = PhysicsWidgets(gui)
         self.viewer = gui._viewer
-        self.example: ViewerExample | None = None
         self.history: FrameHistory | None = None
+        self._bindings: InspectionBindings | None = None
+        self._bindings_components = None
         self.model: Model | None = None
         self.tree: ModelTree | None = None
         self.world = 0
@@ -159,6 +163,7 @@ class ViewerWorkspace:
         self.rect = (0, 0, 1, 1)
         self.dockspace = ViewerDockspace(self)
         self.authoring = None
+        self.example: SceneEditor | None = None
         self._new_scene_engine = 0
         self._cache = {}
         self._live_cache = {}
@@ -183,6 +188,8 @@ class ViewerWorkspace:
         self._reveal_selection = False
         self._focus_properties = False
         self._focus_environment = False
+        # Custom loops have no example tabs to compete with; show their UI once.
+        self._custom_tab_shown = False
         self._focus_scene = False
         self.timeline_options = {
             "recording": False,
@@ -207,23 +214,11 @@ class ViewerWorkspace:
 
     @property
     def bindings(self) -> InspectionBindings:
-        """Use explicit application bindings before the conventional example adapter."""
-        components = getattr(self.viewer, "_inspection_components", None)
-        key = (id(self.model), id(self.example), id(components))
-        if getattr(self, "_bindings_key", None) != key:
-            candidate = InspectionBindings.from_example(self.example)
-            compatible = self.model is None or candidate.matches_model(self.model)
-            self._bindings = InspectionBindings.from_example(
-                self.example if compatible else None, components=components
-            )
-            # The example runner records its own buffers. Explicit setters may
-            # expose those same objects without disabling the existing timeline.
-            self._history_compatible = (
-                compatible
-                and self._bindings.control is getattr(self.example, "control", None)
-                and self._bindings.solver is getattr(self.example, "solver", None)
-            )
-            self._bindings_key = key
+        """Return the components supplied through the active layer's public setters."""
+        components = self.viewer._inspection_components
+        if self._bindings is None or self._bindings_components is not components:
+            self._bindings = InspectionBindings(components=components)
+            self._bindings_components = components
         return self._bindings
 
     def save_preferences(self) -> None:
@@ -241,19 +236,20 @@ class ViewerWorkspace:
         self.save_preferences()
         if authoring := getattr(self, "authoring", None):
             authoring._placement_query = None
-        self._active_timeline = self.history = None
+        self._set_history(FrameHistory(self.viewer) if self.model is not None else None)
         self._cache.clear()
         self._live_cache.clear()
         self._last_timeline_cursor = None
 
-    def detach_example(self) -> None:
+    def detach(self) -> None:
         """Keep UI choices while releasing scene-owned state and history."""
         self.save_preferences()
         if self.tree is not None:
             self.tree.resources.bvhs.close(self.viewer)
         self.gui.ui.section_errors.clear()
-        self._active_timeline = self.history = self.example = self.model = self.tree = None
-        self._bindings = self._bindings_key = None
+        self._set_history(None)
+        self.model = self.tree = None
+        self._bindings = self._bindings_components = None
         if inspector := getattr(self, "property_inspector", None):
             inspector.clear()
         self.viewport_controls.clear_scene()
@@ -279,28 +275,25 @@ class ViewerWorkspace:
                 if hasattr(timeline, name):
                     setattr(timeline, name, value)
 
-    def bind(self, example: ViewerExample | None) -> None:
-        """Refresh the active scene, preserving preferences across example changes.
+    def _set_history(self, history: FrameHistory | None) -> None:
+        """Install the history that the viewer records logged frames into, and its timeline view."""
+        if history is self.history:
+            return
+        self.save_preferences()
+        self.history = self.viewer._history = history
+        self._active_timeline = None
+        if history is not None:
+            self._bind_timeline(TimelineView(history))
 
-        Called during drawing as well as example setup, so unchanged bindings
-        reuse their tree and history. A different Model discards topology,
-        selection, and display buffers before inspection resumes.
+    def bind(self) -> None:
+        """Refresh the active scene, preserving preferences across Model changes.
+
+        Called every drawn frame, so unchanged bindings reuse their tree and
+        history. A different Model discards topology, selection, history, and
+        display buffers before inspection resumes.
         """
-        if example is not self.example or (example is None and self.authoring is not None):
-            editor = getattr(example, "scene_editor", None)
-            if self.authoring is not None and self.authoring.editor is not editor:
-                self.close_authoring()
-            if editor is not None and self.authoring is None:
-                from .authoring import AuthoringPanel  # noqa: PLC0415
-
-                self.authoring = AuthoringPanel(self, editor)
-            self.save_preferences()
-            self._active_timeline = None
-            self.history = None
-        self.example = example
         if self.model is not self.viewer.model:
-            self.save_preferences()
-            self._active_timeline = self.history = None
+            self._set_history(None)
             if self.tree is not None:
                 self.tree.resources.bvhs.close(self.viewer)
             self.model = self.viewer.model
@@ -313,40 +306,29 @@ class ViewerWorkspace:
             self.world = 0
             self.select(None)
             self._tree_pending = True
+            if self.model is not None:
+                self._set_history(FrameHistory(self.viewer))
         self._capture_control_initial()
         if self.authoring is not None:
             self.authoring.poll()
-        if example is not None and self.model is not None and self._history_compatible:
-            timeline = getattr(example, "timeline", None)
-            if timeline is None:
-                if self.history is None:
-                    self.history = FrameHistory(example)
-                    self._bind_timeline(TimelineView(self.history))
-                    self.history.capture()
-                timeline = self._active_timeline
-                if not isinstance(timeline, TimelineView) or timeline.history is not self.history:
-                    timeline = TimelineView(self.history)
-            self._bind_timeline(timeline)
-        elif self.history is not None or self._active_timeline is not None:
-            self.save_preferences()
-            self._active_timeline = self.history = None
+
+    def set_scene_editor(self, editor: SceneEditor | None) -> None:
+        """Attach an optional authoring presenter without discovering application objects."""
+        if editor is self.example:
+            return
+        self.close_authoring()
+        if editor is not None:
+            from .authoring import AuthoringPanel  # noqa: PLC0415
+
+            self.authoring = AuthoringPanel(self, editor)
+            self.example = editor
 
     def close_authoring(self) -> None:
         """Release optional authoring services and textures before replacing their owner."""
         if self.authoring is not None:
             self.authoring.close()
             self.authoring = None
-
-    def before_step(self) -> bool:
-        """Advance replay and return whether the example runner may step live physics.
-
-        Reaching the newest snapshot still consumes this playback tick. The next
-        call permits simulation to continue from its untouched live state.
-        """
-        if self.history is not None and self.history.replaying:
-            self.history.advance(1 if not self.viewer.is_paused() else 1 / self.history.playback_speed)
-            return False
-        return True
+        self.example = None
 
     def notify_model_changed(self, model: Model, flags: ModelFlags | int) -> None:
         """Refresh shape inspection after an explicit Model change notification.
@@ -386,15 +368,6 @@ class ViewerWorkspace:
             self.selection = selection - {selected}
             self.select(selected, toggle=True)
 
-    def render_example(self) -> None:
-        """Capture a live frame or render the selected snapshot through the example."""
-        if self.history is None:
-            self.example.render()
-        else:
-            if not self.history.replaying:
-                self.history.capture()
-            self.history.render()
-
     def _ensure_tree(self) -> None:
         """Initialize scene metadata for any consumer, regardless of visible tabs."""
         if self.model is None:
@@ -419,7 +392,7 @@ class ViewerWorkspace:
             else:
                 self.tree.bindings = self.tree.resources.bvhs.bindings = bindings
         if self.tree is None:
-            self.tree = ModelTree(self.model, world=getattr(self, "world", 0), example=self.example, bindings=bindings)
+            self.tree = ModelTree(self.model, bindings=bindings)
             for name, value in getattr(self, "_bvh_options", {}).items():
                 setattr(self.tree.resources.bvhs, name, value)
         self.collision.attach(self.tree)
@@ -802,7 +775,7 @@ class ViewerWorkspace:
         state = viewer._last_state
         if model is None or state is None:
             return
-        self.bind(self.example)
+        self.bind()
         px, py = to_framebuffer_coords(x, y)
         rect = viewer.renderer._workspace_rect
         if rect is not None:
@@ -935,8 +908,8 @@ class ViewerWorkspace:
         started = perf_counter()
         ui = self.gui.ui.imgui
         self.console.poll_warnings()
-        self.bind(self.example)
-        timeline = getattr(self.example, "timeline", self.history)
+        self.bind()
+        timeline = self.history
         cursor = (id(timeline), timeline.index) if timeline is not None else None
         # Property readouts need not synchronize the device at render frequency.
         # Scrubbing while paused must bypass that throttle to show the chosen frame.
@@ -1005,13 +978,6 @@ class ViewerWorkspace:
                 120,
                 700,
             )
-        browser = getattr(self.gui, "_workspace_browser", None)
-        if browser is not None and browser.load_error is not None:
-            error_width = max(1, min(540 * s, self.rect[2] - 24 * s))
-            if self._window(
-                "##example_load_error", left + (self.rect[2] - error_width) / 2, top + 24 * s, error_width, 210 * s
-            ):
-                browser.draw_load_error(ui)
             ui.end()
         timeline = self._active_timeline
         if self._window("##workspace_timeline", 0, h - bottom - status, w, bottom):
@@ -1346,36 +1312,32 @@ class ViewerWorkspace:
             self._focus_scene = False
             self._scene_tree()
             ui.end_tab_item()
-        if self.widgets.tab_item("Examples")[0]:
-            browser = getattr(self.gui, "_workspace_browser", None)
-            if browser is None:
-                for callback in self.gui._ui_callbacks["panel"]:
-                    callback(ui)
-            else:
-                ui.set_next_item_width(-1)
-                _, self.example_search = ui.input_text_with_hint(
-                    "##example_search", "Find an example...", self.example_search
-                )
-                if self.example_search != self._example_query:
-                    query = self.example_search.casefold()
-                    self._example_rows = [
-                        (category, name, path)
-                        for category, entries in browser._tree.items()
-                        for name, path in entries
-                        if query in f"{category} {name}".casefold()
-                    ]
-                    self._example_query = self.example_search
-                ui.text_disabled(f"{len(self._example_rows)} examples")
-                if ui.begin_child("##example_rows"):
-                    clipper = ui.ListClipper()
-                    clipper.begin(len(self._example_rows))
-                    while clipper.step():
-                        for row in range(clipper.display_start, clipper.display_end):
-                            category, name, path = self._example_rows[row]
-                            if ui.selectable(f"{category} / {name}", path == browser.current_module)[0]:
-                                browser.switch_target = path
-                    clipper.end()
-                ui.end_child()
+        tree = self.gui._example_tree
+        if tree and self.widgets.tab_item("Examples")[0]:
+            ui.set_next_item_width(-1)
+            _, self.example_search = ui.input_text_with_hint(
+                "##example_search", "Find an example...", self.example_search
+            )
+            if self.example_search != self._example_query:
+                query = self.example_search.casefold()
+                self._example_rows = [
+                    (category, name, path)
+                    for category, entries in tree.items()
+                    for name, path in entries
+                    if query in f"{category} {name}".casefold()
+                ]
+                self._example_query = self.example_search
+            ui.text_disabled(f"{len(self._example_rows)} examples")
+            if ui.begin_child("##example_rows"):
+                clipper = ui.ListClipper()
+                clipper.begin(len(self._example_rows))
+                while clipper.step():
+                    for row in range(clipper.display_start, clipper.display_end):
+                        category, name, path = self._example_rows[row]
+                        if ui.selectable(f"{category} / {name}", path == self.gui._example_current)[0]:
+                            self.gui.select_example(path)
+                clipper.end()
+            ui.end_child()
             ui.end_tab_item()
         ui.end_tab_bar()
 
@@ -1805,13 +1767,7 @@ class ViewerWorkspace:
 
     def _at_live_frame(self) -> bool:
         """Report whether the displayed timeline is at its latest frame rather than a historical snapshot."""
-        timeline = getattr(self.example, "timeline", self.history)
-        return not (
-            timeline is not None
-            and (
-                getattr(timeline, "replaying", False) or (timeline.frames and timeline.index < len(timeline.frames) - 1)
-            )
-        )
+        return self.history is None or not self.history.replaying
 
     def can_edit_state(self) -> bool:
         """Allow state mutation only while paused at the newest retained frame."""
@@ -1866,7 +1822,7 @@ class ViewerWorkspace:
         self._live_cache.clear()
         self._drafts.clear()
         if self.history is not None and self.viewer.is_paused():
-            self.history.capture(replace=True)
+            self.history.replace_next_frame()
         self.message = ""
         return True
 
@@ -1920,13 +1876,30 @@ class ViewerWorkspace:
             if self.widgets.tab_item("Solver")[0]:
                 self._solver_properties()
                 ui.end_tab_item()
-            if callable(getattr(self.example, "gui", None)) and self.widgets.tab_item("Example", accent=True)[0]:
+            callbacks = self._custom_callbacks()
+            label = "Controls"
+            focus = bool(callbacks) and not self._custom_tab_shown
+            self._custom_tab_shown |= focus
+            flags = ui.TabItemFlags_.set_selected if focus else 0
+            if callbacks and self.widgets.tab_item(label, accent=True, flags=flags)[0]:
                 ui.begin_disabled(self.history is not None and self.history.replaying)
-                for callback in self.gui._ui_callbacks["side"]:
+                for callback in callbacks:
                     callback(ui)
                 ui.end_disabled()
                 ui.end_tab_item()
             ui.end_tab_bar()
+
+    def _custom_callbacks(self) -> list[Callable[[Any], None]]:
+        """Return ``"panel"`` then ``"side"`` UI callbacks for the inspector's Controls tab.
+
+        The viewer's Layers header has nothing to show until a second layer exists.
+        """
+        panels = [
+            callback
+            for callback in self.gui._ui_callbacks["panel"]
+            if not (callback == self.viewer._ui_populate_layers_panel and len(self.viewer.layers) <= 1)
+        ]
+        return panels + self.gui._ui_callbacks["side"]
 
     def _environment(self) -> None:
         """Keep scene forces accessible independently of the current selection."""
@@ -1942,13 +1915,8 @@ class ViewerWorkspace:
         wind = getattr(self.viewer, "wind", None)
         if wind is None or not m.particle_count:
             return
-        timeline = getattr(self.example, "timeline", self.history)
-        historical = timeline is not None and timeline.frames and timeline.index < len(timeline.frames) - 1
-        # Coupled entry views have compacted particle ids and deliberately omit
-        # viewer forces; their controls must not imply that those forces apply.
-        combined = getattr(self.example, "_coupled_view_name", "combined") == "combined"
-        editable = not historical and combined
-        reason = "Return to the live frame to edit wind." if historical else "Select the combined view to apply wind."
+        editable = self._at_live_frame()
+        reason = "Return to the live frame to edit wind."
         with w.group("Wind") as opened:
             if opened:
                 for label, name, speed, bounds, unit in (
@@ -2125,6 +2093,18 @@ class ViewerWorkspace:
                         w.number(label, value[0], integer=np.issubdtype(value.dtype, np.integer), reason=reason)
                     else:
                         w.array(label, value, reason=reason)
+        supported = solver.supported_observables if isinstance(solver, SolverBase) else frozenset()
+        if supported:
+            logged = self.viewer._last_contact_observables
+            logged = logged.kinds if logged is not None and logged.model is self.model else frozenset()
+            with w.group("Observables", default_open=False) as opened:
+                if opened:
+                    for kind in sorted(supported):
+                        w.text_value(
+                            kind.replace("_", " ").capitalize(),
+                            "Logged" if kind in logged else "Available",
+                            reason="Request solver observables and pass them to log_contacts() to inspect them.",
+                        )
         if mj is not None:
             mju = solver._mujoco
             with w.group("Methods") as opened:
@@ -2189,7 +2169,7 @@ class ViewerWorkspace:
 
     def live_state(self) -> State | None:
         """Resolve the application live State through the bindings, falling back to the last logged State."""
-        return self.bindings.live_state(getattr(self.viewer, "_last_state", None))
+        return self.viewer._last_state
 
     def joint_display_state(self) -> State | SimpleNamespace | None:
         """Recover reduced coordinates for maximal-coordinate solvers on demand."""
@@ -2197,8 +2177,7 @@ class ViewerWorkspace:
         shown = getattr(self.viewer, "_last_state", None)
         if state is None:
             return shown
-        timeline = getattr(self.example, "timeline", self.history)
-        historical = timeline is not None and timeline.frames and timeline.index < len(timeline.frames) - 1
+        historical = not self._at_live_frame()
         maximal = type(self.bindings.solver).__name__ in (
             "SolverXPBD",
             "SolverVBD",
@@ -2343,20 +2322,10 @@ class ViewerWorkspace:
         target.assign(values)
         if joint_state:
             eval_fk(self.model, owner.joint_q, owner.joint_qd, owner, indices=indices, joint_mask=mask)
-            other = getattr(self.example, "state_1", None)
-            if other is not None and other is not owner:
-                for name in ("joint_q", "joint_qd", "body_q", "body_qd"):
-                    if getattr(other, name, None) is not None and getattr(owner, name, None) is not None:
-                        wp.copy(getattr(other, name), getattr(owner, name))
-            timeline = getattr(self.example, "timeline", None)
-            if timeline is not None and hasattr(self.example, "_record_current_state"):
-                timeline.begin_batch()
-                self.example._record_current_state()
-                timeline.flush(self.example.sim_time)
         # Running edits are recorded with the next simulation frame. Avoid
         # downloading a second full snapshot on every control drag event.
         if self.history is not None and self.viewer.is_paused():
-            self.history.capture(replace=True)
+            self.history.replace_next_frame()
         if not control and (authoring := getattr(self, "authoring", None)):
             authoring._placement_query = None
         self._live_cache.clear()

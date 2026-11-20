@@ -44,21 +44,15 @@ CUDA_REQUIRED_EXAMPLES = {
 
 
 def _step_and_render(example, num_frames):
+    # Browser switches and resets already attached the example's GUI and components.
     viewer = example.viewer
     gui = getattr(viewer, "gui", None)
-    workspace = getattr(gui, "workspace", None)
-    if workspace is not None:
-        gui._workspace_example = example
-        workspace.bind(example)
     for _ in range(num_frames):
-        if viewer.should_step() and (workspace is None or workspace.before_step()) and hasattr(example, "step"):
+        if viewer.should_step() and hasattr(example, "step"):
             example.step()
         if hasattr(example, "render"):
-            if workspace is None:
-                example.render()
-            else:
-                workspace.render_example()
-        if workspace is not None and gui.ui.section_errors:
+            example.render()
+        if gui is not None and gui.ui.section_errors:
             raise RuntimeError(f"Example GUI failed: {gui.ui.section_errors}")
 
 

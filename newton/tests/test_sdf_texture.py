@@ -734,6 +734,53 @@ def test_texture_sdf_gradient_accuracy(test, device):
     test.assertLess(s["nb_angle_median"], 0.5, f"Contact-zone median gradient angle: {s['nb_angle_median']:.2f} deg")
     test.assertLess(s["nb_angle_p95"], 15.0, f"Contact-zone p95 gradient angle: {s['nb_angle_p95']:.2f} deg")
 
+    # Angles alone hide a coarse-grid derivative scaled by the fine-grid
+    # spacing. Check magnitude against the actual interpolated scalar field.
+    slots = tex_sdf.subgrid_start_slots.numpy()
+    lower, upper = np.array(tex_sdf.sdf_box_lower), np.array(tex_sdf.sdf_box_upper)
+    voxel = np.array(tex_sdf.voxel_size)
+    regions = {}
+    for label, mask in (("fine", slots < int(SLOT_LINEAR)), ("coarse", slots >= int(SLOT_LINEAR))):
+        blocks = np.argwhere(mask)[:24]
+        test.assertGreater(len(blocks), 0, f"The fixture needs {label} cells")
+        regions[label] = lower + (blocks * tex_sdf.subgrid_size + np.array([3.271, 4.381, 2.413])) * voxel
+    regions["extrapolated"] = np.array(
+        [
+            [upper[0] + 0.1, upper[1] - 0.02, 0.1],
+            [upper[0] + 0.1, upper[1] + 0.1, upper[2] - 0.02],
+            [lower[0] - 0.1, lower[1] + 0.02, 0.1],
+        ]
+    )
+    for label, points in regions.items():
+        with test.subTest(region=label):
+            queries = wp.array(points.astype(np.float32), dtype=wp.vec3, device=device)
+            analytical = wp.empty(len(points), dtype=wp.vec3, device=device)
+            distances = wp.empty(len(points), dtype=float, device=device)
+            wp.launch(
+                _sample_texture_sdf_grad_kernel,
+                dim=len(points),
+                inputs=[tex_sdf, queries],
+                outputs=[distances, analytical],
+                device=device,
+            )
+            # Separate analytical and scalar sampling avoids a combined-kernel
+            # CUDA compilation issue on supported Warp 1.17.
+            h = float(voxel.min() * 0.01)
+            offsets = np.eye(3, dtype=np.float32) * h
+            stencil = np.stack((points[:, None, :] + offsets, points[:, None, :] - offsets), axis=2)
+            stencil_queries = wp.array(stencil.reshape(-1, 3).astype(np.float32), dtype=wp.vec3, device=device)
+            samples = wp.empty(len(points) * 6, dtype=float, device=device)
+            wp.launch(
+                _sample_texture_sdf_kernel,
+                dim=len(samples),
+                inputs=[tex_sdf, stencil_queries],
+                outputs=[samples],
+                device=device,
+            )
+            values = samples.numpy().reshape(len(points), 3, 2)
+            numerical = (values[:, :, 0] - values[:, :, 1]) / (2.0 * h)
+            np.testing.assert_allclose(analytical.numpy(), numerical, rtol=3e-3, atol=2e-3)
+
 
 def test_texture_sdf_paired_hw_gradient_matches_scalar(test, device):
     """Match paired hardware-gradient samples to the scalar stencil."""

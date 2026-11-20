@@ -5,7 +5,6 @@
 
 import asyncio
 import base64
-import importlib.util
 import json
 import socket
 import tempfile
@@ -25,12 +24,12 @@ from newton._src.viewer.gui.viewer_gui import ViewerGui
 from newton.examples.basic.example_scene_editor import Example
 from newton.solvers import SolverMuJoCo
 from newton.tests.test_viewer_get_frame import _make_headless_viewer_gl_or_skip
-from newton.tests.unittest_utils import get_cuda_test_devices
+from newton.tests.unittest_utils import MUJOCO_MODULES, get_cuda_test_devices, has_module, requires
 from newton.viewer import SceneEditor, SceneEditorMCP, ViewerNull
 
-_HAS_MCP = importlib.util.find_spec("mcp") is not None and importlib.util.find_spec("uvicorn") is not None
+_MCP_MODULES = ("mcp", "uvicorn", "httpx2")
 
-if _HAS_MCP:
+if all(has_module(module) for module in _MCP_MODULES):
     import httpx2
     from mcp import Client
     from mcp.client.streamable_http import streamable_http_client
@@ -125,17 +124,9 @@ class _SceneSession:
         if not self.native:
             self.bridge.before_frame()
         self.editor.before_frame()
-        gui = getattr(self.viewer, "gui", None)
-        if gui is not None:
-            gui._workspace_example = self.editor
-            if gui.workspace is not None:
-                gui.workspace.bind(self.editor)
-        if self.native and self.viewer.should_step() and (gui is None or gui.workspace.before_step()):
+        if self.native and self.viewer.should_step():
             self.editor.step()
-        if gui is not None and gui.workspace is not None:
-            gui.workspace.render_example()
-        else:
-            self.editor.render()
+        self.editor.render()
         if not self.native:
             self.bridge.after_frame()
 
@@ -157,7 +148,7 @@ class _SceneSession:
         return result.structured_content
 
 
-@unittest.skipUnless(_HAS_MCP, "Requires the optional MCP SDK and HTTP server")
+@requires(*_MCP_MODULES)
 class TestSceneAuthoringMCP(unittest.TestCase):
     def test_atomic_batches_guards_recovery_and_shutdown(self):
         """Apply real MCP batches once, reject unsafe edits, and recover from a failed USD."""
@@ -314,7 +305,7 @@ class TestSceneAuthoringMCP(unittest.TestCase):
                 ("get_viewport", {}),
             ):
                 self.assertTrue(scene.call(tool, arguments).is_error)
-            if importlib.util.find_spec("pxr") is not None:
+            if has_module("pxr.Usd"):
                 path = Path(scene.directory.name) / "scene.usda"
                 scene.data("save_scene", {"path": str(path)})
                 contents = path.read_bytes()
@@ -395,7 +386,7 @@ class TestSceneAuthoringMCP(unittest.TestCase):
                 socket.create_connection((address.hostname, address.port), timeout=0.2)
 
 
-@unittest.skipUnless(_HAS_MCP, "Requires the optional MCP SDK and HTTP server")
+@requires(*_MCP_MODULES, "PIL.Image", "imgui_bundle", "pyglet")
 class TestSceneAuthoringMCPViewport(unittest.TestCase):
     def test_owner_thread_pixels_camera_and_paused_steps(self):
         """Capture real PNG pixels on the GL owner and execute each requested step once."""
@@ -414,9 +405,7 @@ class TestSceneAuthoringMCPViewport(unittest.TestCase):
 
         self.addCleanup(restore_context)
         cuda = get_cuda_test_devices()
-        use_mujoco = bool(cuda) and all(
-            importlib.util.find_spec(module) is not None for module in ("mujoco", "mujoco_warp")
-        )
+        use_mujoco = bool(cuda) and all(has_module(module) for module in MUJOCO_MODULES)
         solver = "mujoco" if use_mujoco else "xpbd"
         with wp.ScopedDevice(cuda[0] if use_mujoco else "cpu"):
             viewer = _make_headless_viewer_gl_or_skip(self, width=640, height=480)
@@ -511,7 +500,7 @@ class TestSceneAuthoringMCPViewport(unittest.TestCase):
                     self.assertEqual(scene.editor.revision, revision)
                     self.assertAlmostEqual(scene.editor.sim_time, live_time)
             history.select(len(history.frames) - 1)
-            if use_mujoco and importlib.util.find_spec("pxr") is not None:
+            if use_mujoco and has_module("pxr.Usd"):
                 from pxr import Usd, UsdGeom, UsdPhysics
 
                 path = Path(scene.directory.name) / "static-plane.usda"

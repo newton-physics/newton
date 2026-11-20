@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Bounded render-frame history for conventional Newton examples."""
+"""Bounded display history recorded from the viewer's logging calls."""
 
 from __future__ import annotations
 
@@ -13,17 +13,19 @@ import numpy as np
 import warp as wp
 
 from ..sim.contacts import Contacts
+from ..sim.control import Control
 from ..sim.model import Model
 from ..sim.state import State
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Hashable, Mapping, Sequence
     from typing import Any
 
     from numpy.typing import ArrayLike
 
-    from newton._src.viewer.viewer_types import ViewerExample
     from newton.solvers import SolverBase
+
+    from .viewer import ViewerBase
 
 
 def _component_arrays(component: object | None, *, model: Model | None = None) -> dict[str, wp.array[Any]]:
@@ -37,9 +39,9 @@ def _component_arrays(component: object | None, *, model: Model | None = None) -
         if isinstance(value, wp.array):
             arrays[name] = value
         elif isinstance(value, Model.AttributeNamespace):
-            for field, array in vars(value).items():
-                if not field.startswith("_") and isinstance(array, wp.array):
-                    arrays[f"{name}:{field}"] = array
+            for field_name, array in vars(value).items():
+                if not field_name.startswith("_") and isinstance(array, wp.array):
+                    arrays[f"{name}:{field_name}"] = array
     if model is not None:
         # Solvers can attach scratch arrays allocated inside CUDA graphs. Their
         # pointers need not be accessible outside graph execution. Only declared
@@ -59,19 +61,25 @@ def _snapshot_array(array: wp.array[Any]) -> np.ndarray:
     return values.copy() if array.device.is_cpu else values
 
 
-def _restore_component(component: object, live: object, fields: dict[str, np.ndarray]) -> None:
+def _restore_component(component: object, template: object, fields: Mapping[str, np.ndarray]) -> None:
+    """Upload recorded fields into display storage shaped like the logged component."""
     for qualified, values in fields.items():
         name = qualified
-        target, source = component, live
+        target, source = component, template
         if ":" in name:
             namespace, name = name.split(":", 1)
             if not hasattr(target, namespace):
                 setattr(target, namespace, Model.AttributeNamespace(namespace))
-            target, source = getattr(target, namespace), getattr(source, namespace)
+            target, source = getattr(target, namespace), getattr(source, namespace, None)
+        original = getattr(source, name, None)
+        if original is None:
+            # The logged component no longer has this field; nothing can display it.
+            continue
+        # NumPy appends vector and matrix element dimensions to the storage shape.
+        shape = values.shape[: original.ndim]
         array = getattr(target, name, None)
-        original = getattr(source, name)
-        if array is None or array.shape != original.shape:
-            array = wp.empty_like(original)
+        if array is None or array.shape != shape or array.dtype != original.dtype:
+            array = wp.empty(shape, dtype=original.dtype, device=original.device)
             setattr(target, name, array)
         array.assign(values)
 
@@ -99,35 +107,74 @@ def _count_self_contact_pairs(
         wp.atomic_add(result, 1, count)
 
 
+HistoryKey = tuple[str, str, "Hashable"]
+"""``(call kind, viewer layer, call key)``; the key is a per-frame call ordinal or a logged object name."""
+
+
+@dataclass
+class RecordedArray:
+    """Host copy of one logged Warp array, with what is needed to allocate its display storage."""
+
+    values: np.ndarray
+    dtype: Any
+    device: wp.Device
+    ndim: int
+
+    @classmethod
+    def snapshot(cls, array: wp.array[Any]) -> RecordedArray:
+        """Copy a logged array to the host."""
+        return cls(_snapshot_array(array), array.dtype, array.device, array.ndim)
+
+
+@dataclass
+class ContactRecord:
+    """Active contact rows and solver observables of one :meth:`ViewerBase.log_contacts` call."""
+
+    arrays: dict[str, np.ndarray]
+    rigid_count: int
+    soft_count: int
+    observables: dict[str, np.ndarray] = field(default_factory=dict)
+    state_key: HistoryKey | None = None
+    """Key of a State logged in the same frame, when the contacts use that State."""
+    state: dict[str, np.ndarray] = field(default_factory=dict)
+    """Declared arrays of a separate contact State, such as the collision input poses."""
+    observables_source: SolverBase.Observables | None = None
+    """Logged observables container, whose solver allocates replay observables of the same kinds."""
+
+
 @dataclass
 class HistoryFrame:
-    """Host-side display snapshot, not a resumable solver checkpoint.
+    """Host-side display snapshot of one rendered frame, not a resumable solver checkpoint.
 
-    Component dictionaries contain copied NumPy arrays keyed by attribute name
-    (``namespace:name`` for custom attributes). Contact and observable arrays
-    retain active rows only; solver scratch data and internal state are excluded.
+    Arrays are copied NumPy data keyed by attribute name (``namespace:name`` for
+    custom attributes). Contact and observable arrays retain active rows only.
     """
 
     time: float
-    """Simulation time in seconds."""
-    state: dict[str, np.ndarray]
-    contacts: dict[str, np.ndarray]
-    size: int
+    """Simulation time passed to :meth:`ViewerBase.begin_frame` [s]."""
+    states: dict[HistoryKey, dict[str, np.ndarray]] = field(default_factory=dict)
+    """Declared arrays of each logged State."""
+    contact_records: dict[HistoryKey, ContactRecord] = field(default_factory=dict)
+    arrays: dict[HistoryKey, dict[str, Any]] = field(default_factory=dict)
+    """Arguments of logged points and lines, keyed by their logged names.
+
+    Warp arrays are :class:`RecordedArray` copies; ``None`` and uniform values
+    are kept as passed, so replay reproduces cleared and uniform arguments.
+    """
+    control: dict[str, np.ndarray] = field(default_factory=dict)
+    """Declared arrays of the inspected Control at the end of the frame."""
+    size: int = 0
     """Bytes occupied by copied array data, excluding Python container overhead."""
     touching: int = 0
-    depth_mm: float = 0
     body_speed: float = float("nan")
     particle_speed: float = float("nan")
     soft_shape_contacts: int = 0
     soft_self_contacts: int = 0
-    observables: dict[str, np.ndarray] = field(default_factory=dict)
-    auxiliary_states: dict[str, dict[str, np.ndarray]] = field(default_factory=dict)
-    """Declared arrays for additional States used by the example's render callback."""
-    state_aliases: dict[str, str] = field(default_factory=dict)
-    """Map alias attribute names to their canonical primary, contact, or auxiliary State name."""
-    control: dict[str, np.ndarray] = field(default_factory=dict)
-    contact_state: dict[str, np.ndarray] = field(default_factory=dict)
-    """Declared collision input State arrays when distinct from the displayed State."""
+
+    @property
+    def contacts(self) -> dict[str, np.ndarray]:
+        """Return the recorded contact arrays of the frame's first log_contacts() call."""
+        return next(iter(self.contact_records.values())).arrays if self.contact_records else {}
 
     @property
     def soft_touching(self) -> int:
@@ -136,27 +183,31 @@ class HistoryFrame:
 
 
 class FrameHistory:
-    """Record bounded example display snapshots without rewinding the solver.
+    """Record bounded snapshots of what the application logs, and substitute them on replay.
 
-    Capture copies declared arrays to the host at rendered frame boundaries.
-    Replay uploads a selected snapshot into separate display buffers and invokes
-    the example's render callback. The live simulation remains at the newest
-    frame and can step again only after playback reaches that frame.
+    Between :meth:`begin_frame` and :meth:`end_frame`, the viewer passes the
+    arguments of the application's own ``log_state()``, ``log_contacts()``,
+    ``log_points()`` and ``log_lines()`` calls through :meth:`state`,
+    :meth:`contacts` and :meth:`arrays`. While recording a new live frame, these
+    copy the logged arrays to the host and return the live arguments. While
+    replaying, they return display buffers holding the selected frame's data,
+    matched to the same call by kind, layer, and per-frame ordinal or name.
+    Calls without a recording pass through, so they show live data.
 
-    This adapter relies on conventional example attributes, not arbitrary solver
-    checkpoints. Memory and frame limits evict the oldest snapshots; ``index``
-    is relative to retained frames and ``first_frame`` counts evicted frames.
+    The application's objects are never read outside those calls or modified.
+    Replay does not rewind a solver: the live simulation stays at the newest
+    frame and steps again only after playback reaches it. Memory and frame
+    limits evict the oldest snapshots; ``index`` is relative to retained frames
+    and ``first_frame`` counts evicted frames.
     """
 
     contact_fields = ("shape0", "shape1", "point0", "point1", "offset0", "offset1", "normal", "margin0", "margin1")
     soft_contact_fields = ("indices", "particle", "barycentric", "shape", "body_pos", "body_vel", "normal")
 
-    def __init__(self, example: ViewerExample) -> None:
-        """Initialize bounded display history for the example without capturing a frame yet."""
-        self.example = example
-        # Examples may keep their model inside a simulation object. The viewer
-        # owns the model for the displayed layer.
-        self.model = example.viewer.model
+    def __init__(self, viewer: ViewerBase) -> None:
+        """Initialize empty history for the viewer's current Model without recording a frame."""
+        self.viewer = viewer
+        self.model = viewer.model
         self.frames: list[HistoryFrame] = []
         self.index = 0
         self.first_frame = 0
@@ -168,25 +219,307 @@ class FrameHistory:
         self.recording = True
         self._recording_blocked = False
         self.message = ""
-        self.display_state = None
-        self.display_contact_state = None
-        self.display_control = None
-        self.display_auxiliary_states: dict[str, State] = {}
-        self.display_contacts = None
-        self.display_observables = None
-        self._observables_source = None
-        self.loaded_index = -1
+        self.dt = 1.0 / 60.0
+        self.frame_open = False
+        """True between begin_frame() and end_frame(), when application logging calls are recorded."""
+        self.display_control: Control | None = None
+        self._pending: HistoryFrame | None = None
+        self._replay: HistoryFrame | None = None
+        self._replace_next = False
+        self._ordinals: dict[tuple[str, str], int] = {}
+        self._logged_states: dict[int, HistoryKey] = {}
+        self._display: dict[HistoryKey, Any] = {}
+        self._loaded: dict[HistoryKey, int] = {}
         self._self_contact_counts = None
-        self.dt = float(getattr(example, "frame_dt", 1 / 60))
+        self._plot_values = np.empty((self.max_frames + 64, 5), dtype=np.float64)
+        self._plot_revision = 0
+        self._plot_cache_key = None
+        self._plot_cache = None
+
+    @property
+    def replaying(self) -> bool:
+        """Report whether the selected retained frame precedes the newest live frame."""
+        return bool(self.frames) and self.index < len(self.frames) - 1
+
+    def select(self, index: int) -> None:
+        """Clamp the requested retained-frame index; keep zero when history is empty."""
+        self.index = max(0, min(int(index), len(self.frames) - 1))
+
+    def advance(self, steps: float = 1) -> None:
+        """Advance playback by speed-scaled steps, carrying fractional progress between calls."""
+        self._playback_fraction += steps * self.playback_speed
+        steps = int(self._playback_fraction)
+        self._playback_fraction -= steps
+        self.select(self.index + steps)
+
+    def replace_next_frame(self) -> None:
+        """Record the next frame even at an unchanged time, replacing the newest snapshot.
+
+        Used after edits while paused, so the timeline shows the edited live state.
+        """
+        self._replace_next = True
+
+    # -- frame boundaries ---------------------------------------------------------
+
+    def begin_frame(self, time: float) -> None:
+        """Start a replayed frame, a recorded live frame, or a pass-through frame at simulation time [s]."""
+        self.frame_open = True
+        self._ordinals.clear()
+        self._logged_states.clear()
+        self._pending = None
+        self._replay = self.frames[self.index] if self.replaying else None
+        if self._replay is not None or not self.recording or self._recording_blocked:
+            return
+        time = float(time)
+        if not self.frames or time != self.frames[-1].time or self._replace_next:
+            self._pending = HistoryFrame(time)
+
+    def end_frame(self) -> None:
+        """Commit a recorded frame, evicting old snapshots to stay within the memory and frame limits."""
+        self.frame_open = False
+        frame, self._pending, self._replay = self._pending, None, None
+        if frame is None or not (frame.states or frame.contact_records or frame.arrays):
+            return
+        control = self.viewer._inspection_components.get("control")
+        arrays = _component_arrays(control, model=self.model)
+        if not self._reserve(frame, sum(a.capacity for a in arrays.values())):
+            return
+        frame.control = {name: _snapshot_array(array) for name, array in arrays.items()}
+        frame.size += sum(a.nbytes for a in frame.control.values())
+        replace_last = bool(self.frames) and frame.time == self.frames[-1].time
+        self._replace_next = False
+        if replace_last:
+            self.bytes_used -= self.frames.pop().size
+        self.frames.append(frame)
+        self.record_plot_frame(frame)
+        self.bytes_used += frame.size
+        remove = 0
+        while (self.bytes_used > self.memory_limit or len(self.frames) - remove > self.max_frames) and remove < len(
+            self.frames
+        ) - 1:
+            self.bytes_used -= self.frames[remove].size
+            remove += 1
+        if remove:
+            del self.frames[:remove]
+            self.first_frame += remove
+        if len(self.frames) > 1:
+            self.dt = max(1e-9, self.frames[-1].time - self.frames[-2].time)
+        self.index = len(self.frames) - 1
+        self._loaded.clear()
+
+    def _key(self, kind: str, name: Hashable | None = None) -> HistoryKey:
+        """Identify a logging call by kind, active layer, and name or per-frame ordinal."""
+        layer = self.viewer._active_layer_id
+        if name is None:
+            name = self._ordinals.get((kind, layer), 0)
+            self._ordinals[kind, layer] = name + 1
+        return kind, layer, name
+
+    def _reserve(self, frame: HistoryFrame, size: int) -> bool:
+        """Stop recording before a device-to-host transfer would exceed the per-frame snapshot limit."""
+        if frame.size + size <= self.memory_limit // 2:
+            return True
+        self.message = "A frame exceeds the 64 MiB snapshot limit. Recording stopped."
+        self._recording_blocked = True
+        self._pending = None
+        return False
+
+    def _loaded_now(self, key: HistoryKey) -> bool:
+        """Return whether a display buffer already holds the selected frame, marking it loaded."""
+        if self._loaded.get(key) == self.index:
+            return True
+        self._loaded[key] = self.index
+        return False
+
+    # -- logging calls -------------------------------------------------------------
+
+    def state(self, state: State) -> State:
+        """Record a logged State, or return the display State of the replayed frame."""
+        key = self._key("state")
+        self._logged_states[id(state)] = key
+        if self._pending is not None:
+            self._record_state(key, state)
+            return state
+        if self._replay is None or key not in self._replay.states:
+            return state
+        return self._display_state(key, state, self._replay.states[key])
+
+    def _record_state(self, key: HistoryKey, state: State) -> None:
+        frame = self._pending
+        arrays = _component_arrays(state, model=self.model)
+        if not self._reserve(frame, sum(a.capacity for a in arrays.values())):
+            return
+        saved = {name: _snapshot_array(array) for name, array in arrays.items()}
+        frame.states[key] = saved
+        frame.size += sum(a.nbytes for a in saved.values())
+        if len(frame.states) == 1:
+            frame.body_speed = self.mean_speed(saved.get("body_qd"))
+            frame.particle_speed = self.mean_speed(saved.get("particle_qd"))
+
+    def _display_state(self, key: HistoryKey, template: State, fields: Mapping[str, np.ndarray]) -> State:
+        display = self._display.get(key)
+        if display is None:
+            display = self._display[key] = State()
+        if not self._loaded_now(key):
+            _restore_component(display, template, fields)
+        return display
+
+    def contacts(
+        self, contacts: Contacts, state: State, observables: SolverBase.Observables | None
+    ) -> tuple[Contacts, State, SolverBase.Observables | None]:
+        """Record logged contacts, or return display contacts, State and observables of the replayed frame."""
+        key = self._key("contacts")
+        if self._pending is not None:
+            self._record_contacts(key, contacts, state, observables)
+            return contacts, state, observables
+        record = self._replay.contact_records.get(key) if self._replay is not None else None
+        if record is None:
+            return contacts, state, observables
+        display = self._display.get(key)
+        if (
+            display is None
+            or display.rigid_contact_max < contacts.rigid_contact_max
+            or display.soft_contact_max < contacts.soft_contact_max
+        ):
+            display = self._display[key] = Contacts(
+                contacts.rigid_contact_max, contacts.soft_contact_max, device=contacts.rigid_contact_count.device
+            )
+            self._loaded.pop(key, None)
+            self._display.pop(("observables", *key[1:]), None)
+        display_observables = self._display_observables(key, display, record) if record.observables else None
+        if not self._loaded_now(key):
+            display.rigid_contact_count.assign(np.array([record.rigid_count], dtype=np.int32))
+            display.soft_contact_count.assign(np.array([record.soft_count], dtype=np.int32))
+            for name, values in record.arrays.items():
+                getattr(display, name)[: len(values)].assign(values)
+            if display_observables is not None:
+                for name, values in record.observables.items():
+                    array = getattr(display_observables, name)
+                    offset = 0
+                    for start, n in self._observable_ranges(
+                        display_observables, name, array, display, record.rigid_count, record.soft_count
+                    ):
+                        if n:
+                            array[start : start + n].assign(values[offset : offset + n])
+                        offset += n
+        if record.state_key is not None and self._replay is not None and record.state_key in self._replay.states:
+            state = self._display_state(record.state_key, state, self._replay.states[record.state_key])
+        elif record.state:
+            state = self._display_state(("contact_state", *key[1:]), state, record.state)
+        return display, state, display_observables
+
+    def _display_observables(
+        self, key: HistoryKey, contacts: Contacts, record: ContactRecord
+    ) -> SolverBase.Observables | None:
+        """Allocate replay observables bound to the display contacts.
+
+        The solver that produced the logged observables allocates them, so replay
+        does not depend on the optional set_solver() binding.
+        """
+        observables_key = ("observables", *key[1:])
+        display = self._display.get(observables_key)
+        if display is not None:
+            return display
+        source = record.observables_source
+        solver = source._solver
+        if solver is None:
+            return None
+        display = solver.observables(kinds=source.kinds, contacts=contacts, requires_grad=False)
+        self._display[observables_key] = display
+        self._loaded.pop(key, None)
+        return display
+
+    def _record_contacts(
+        self, key: HistoryKey, contacts: Contacts, state: State, observables: SolverBase.Observables | None
+    ) -> None:
+        frame = self._pending
+        counters = contacts.contact_counters.numpy()
+        count = min(int(counters[0]), contacts.rigid_contact_max)
+        soft_count = min(int(counters[1]), contacts.soft_contact_max)
+        arrays = {}
+        for prefix, fields, n in (
+            ("rigid_contact_", self.contact_fields, count),
+            ("soft_contact_", self.soft_contact_fields, soft_count),
+        ):
+            for suffix in fields if n else ():
+                array = getattr(contacts, prefix + suffix, None)
+                if array is not None:
+                    arrays[prefix + suffix] = (array, n)
+        observable_arrays = {}
+        if observables is not None and observables.model is self.model:
+            for name, array in vars(observables).items():
+                if not name.startswith("_") and isinstance(array, wp.array):
+                    ranges = self._observable_ranges(observables, name, array, contacts, count, soft_count)
+                    observable_arrays[name] = (array, ranges)
+        state_key = self._logged_states.get(id(state))
+        state_arrays = _component_arrays(state, model=self.model) if state_key is None else {}
+        size = (
+            sum(n * array.strides[0] for array, n in arrays.values())
+            + sum(sum(n for _, n in ranges) * array.strides[0] for array, ranges in observable_arrays.values())
+            + sum(a.capacity for a in state_arrays.values())
+        )
+        if not self._reserve(frame, size):
+            return
+        record = ContactRecord(
+            {name: _snapshot_array(array[:n]) for name, (array, n) in arrays.items()},
+            count,
+            soft_count,
+            {name: self._snapshot_observable(array, ranges) for name, (array, ranges) in observable_arrays.items()},
+            state_key,
+            {name: _snapshot_array(array) for name, array in state_arrays.items()},
+            observables if observable_arrays else None,
+        )
+        frame.contact_records[key] = record
+        frame.size += sum(
+            a.nbytes for a in (*record.arrays.values(), *record.observables.values(), *record.state.values())
+        )
+        if len(frame.contact_records) == 1:
+            frame.touching, frame.soft_shape_contacts = count, soft_count
+            frame.soft_self_contacts = self._soft_self_contact_count(contacts) if self.model.particle_count else 0
+
+    def arrays(self, kind: str, name: str, arrays: dict[str, Any]) -> dict[str, Any]:
+        """Record the arguments of a named logging call, or substitute the replayed frame's arguments.
+
+        Replay is independent of the live call's arguments: recorded arrays get
+        their own display storage, and recorded ``None`` or uniform values replace
+        the live ones.
+        """
+        key = self._key(kind, name)
+        if self._pending is not None:
+            live = [value for value in arrays.values() if isinstance(value, wp.array)]
+            if self._reserve(self._pending, sum(a.capacity for a in live)):
+                saved = {
+                    arg: RecordedArray.snapshot(value) if isinstance(value, wp.array) else value
+                    for arg, value in arrays.items()
+                }
+                self._pending.arrays[key] = saved
+                self._pending.size += sum(v.values.nbytes for v in saved.values() if isinstance(v, RecordedArray))
+            return arrays
+        fields = self._replay.arrays.get(key) if self._replay is not None else None
+        if fields is None:
+            return arrays
+        display = self._display.setdefault(key, {})
+        loaded = self._loaded_now(key)
+        result = dict(arrays)
+        for arg, value in fields.items():
+            if not isinstance(value, RecordedArray):
+                result[arg] = value
+                continue
+            shape = value.values.shape[: value.ndim]
+            array = display.get(arg)
+            if array is None or array.shape != shape or array.dtype != value.dtype:
+                array = display[arg] = wp.empty(shape, dtype=value.dtype, device=value.device)
+                array.assign(value.values)
+            elif not loaded:
+                array.assign(value.values)
+            result[arg] = array
+        return result
+
+    # -- recorded metrics ------------------------------------------------------------
 
     def _soft_self_contact_count(self, contacts: Contacts) -> int:
         """Count stored self-contact pairs without copying collision buffers to the CPU."""
-        info = getattr(contacts, "soft_self_contact_data", None)
-        solver = getattr(self.example, "solver", None)
-        if info is None and getattr(solver, "particle_enable_self_contact", False):
-            info = getattr(getattr(solver, "_pipeline_contacts", None), "soft_self_contact_data", None)
-            if info is None:
-                info = getattr(getattr(solver, "trimesh_collision_detector", None), "collision_info", None)
+        info = contacts.soft_self_contact_data
         if info is None:
             return 0
         if self._self_contact_counts is None:
@@ -209,35 +542,19 @@ class FrameHistory:
         )
         return int(self._self_contact_counts.numpy().sum())
 
-    @property
-    def replaying(self) -> bool:
-        """Report whether the selected retained frame precedes the newest live frame."""
-        return bool(self.frames) and self.index < len(self.frames) - 1
-
-    def select(self, index: int) -> None:
-        """Clamp the requested retained-frame index; keep zero when history is empty."""
-        self.index = max(0, min(int(index), len(self.frames) - 1))
-
-    def advance(self, steps: float = 1) -> None:
-        """Advance playback by speed-scaled steps, carrying fractional progress between calls."""
-        self._playback_fraction += steps * self.playback_speed
-        steps = int(self._playback_fraction)
-        self._playback_fraction -= steps
-        self.select(self.index + steps)
-
     @staticmethod
     def _observable_ranges(
         observables: SolverBase.Observables,
         name: str,
         array: wp.array[Any],
-        rigid_capacity: int,
+        contacts: Contacts,
         count: int,
         soft_count: int,
     ) -> tuple[tuple[int, int], ...]:
         """Retain active contact rows while preserving each observable's row domain."""
         frequency = observables.get_attribute_frequency(name)
         if frequency == Model.AttributeFrequency.CONTACT:
-            return ((0, count), (rigid_capacity, soft_count))
+            return ((0, count), (contacts.rigid_contact_max, soft_count))
         if frequency == Model.AttributeFrequency.CONTACT_RIGID:
             return ((0, count),)
         if frequency == Model.AttributeFrequency.CONTACT_SOFT:
@@ -259,247 +576,19 @@ class FrameHistory:
             return array[:0].numpy() if len(array) else array.numpy()
         return np.concatenate(parts)
 
-    def capture(self, *, replace: bool = False) -> None:
-        """Copy the current example frame, evicting old snapshots to stay bounded.
-
-        Args:
-            replace: Permit replacing the newest snapshot at the same simulation
-                time, for example after an edit while paused. Otherwise repeated
-                renders at that time do not trigger another capture.
-
-        Oversized snapshots stop recording rather than transferring unbounded
-        device data. A successful capture moves the cursor to the newest frame.
-        """
-        if not self.recording or self._recording_blocked:
-            return
-        example = self.example
-        time = float(getattr(example, "sim_time", 0.0))
-        replace_last = bool(self.frames) and time == self.frames[-1].time
-        if replace_last and not replace:
-            return
-        state = getattr(example, "state_0", getattr(example, "state", None))
-        if state is None:
-            self.message = "This example does not expose a recordable state."
-            self._recording_blocked = True
-            return
-        arrays = _component_arrays(state, model=self.model)
-        control_arrays = _component_arrays(getattr(example, "control", None), model=self.model)
-        contact_state = getattr(example, "contact_state", None)
-        contact_state_arrays = _component_arrays(contact_state, model=self.model) if contact_state is not state else {}
-        contact_state_bytes = sum(a.capacity for a in contact_state_arrays.values())
-        # Render callbacks may scale or populate a mixed body/particle State.
-        # Replay must preserve its complete declared layout, not just particles;
-        # an omitted destination array can otherwise cause an invalid GPU write.
-        auxiliary_states = {}
-        state_aliases = {}
-        owners = {id(state): "state_0"}
-        for name in ("state_1", "contact_state"):
-            value = getattr(example, name, None)
-            if isinstance(value, State):
-                owners.setdefault(id(value), name)
-        for name, value in vars(example).items():
-            if name in ("state", "state_0", "state_1", "contact_state") or not isinstance(value, State):
-                continue
-            if id(value) in owners:
-                state_aliases[name] = owners[id(value)]
-                continue
-            owners[id(value)] = name
-            auxiliary_states[name] = _component_arrays(value, model=self.model)
-        auxiliary_bytes = sum(a.capacity for fields in auxiliary_states.values() for a in fields.values())
-        # Reject oversized snapshots before any device-to-host transfer.
-        control_bytes = sum(a.capacity for a in control_arrays.values())
-        if (
-            sum(a.capacity for a in arrays.values()) + auxiliary_bytes + control_bytes + contact_state_bytes
-            > self.memory_limit // 2
-        ):
-            self.message = "A state exceeds the 64 MiB snapshot limit. Recording stopped."
-            self._recording_blocked = True
-            return
-        contacts = getattr(example, "contacts", None)
-        contact_arrays = {}
-        count = soft_count = 0
-        if contacts is not None:
-            counters = contacts.contact_counters.numpy()
-            count = min(int(counters[0]), contacts.rigid_contact_max)
-            soft_count = min(int(counters[1]), contacts.soft_contact_max)
-            for prefix, fields, n in (
-                ("rigid_contact_", self.contact_fields, count),
-                ("soft_contact_", self.soft_contact_fields, soft_count),
-            ):
-                if n:
-                    for suffix in fields:
-                        name = prefix + suffix
-                        array = getattr(contacts, name, None)
-                        if array is not None:
-                            contact_arrays[name] = (array, n)
-        observables = getattr(example, "solver_observables", None)
-        observable_arrays = {}
-        if observables is not None:
-            for name, array in vars(observables).items():
-                if not name.startswith("_") and isinstance(array, wp.array):
-                    ranges = self._observable_ranges(
-                        observables, name, array, contacts.rigid_contact_max if contacts else 0, count, soft_count
-                    )
-                    observable_arrays[name] = (array, ranges)
-        size = (
-            sum(a.capacity for a in arrays.values())
-            + auxiliary_bytes
-            + control_bytes
-            + contact_state_bytes
-            + sum(n * array.strides[0] for array, n in contact_arrays.values())
-            + sum(sum(n for _, n in ranges) * array.strides[0] for array, ranges in observable_arrays.values())
-        )
-        if size > self.memory_limit // 2:
-            self.message = "State and contacts exceed the 64 MiB snapshot limit. Recording stopped."
-            self._recording_blocked = True
-            return
-        saved_state = {name: _snapshot_array(array) for name, array in arrays.items()}
-        saved_control = {name: _snapshot_array(array) for name, array in control_arrays.items()}
-        saved_contact_state = {name: _snapshot_array(array) for name, array in contact_state_arrays.items()}
-        saved_auxiliary_states = {
-            name: {field: _snapshot_array(array) for field, array in fields.items()}
-            for name, fields in auxiliary_states.items()
-        }
-        saved_contacts = {name: _snapshot_array(array[:n]) for name, (array, n) in contact_arrays.items()}
-        saved_observables = {
-            name: self._snapshot_observable(array, ranges) for name, (array, ranges) in observable_arrays.items()
-        }
-        size = sum(a.nbytes for a in (*saved_state.values(), *saved_contacts.values(), *saved_observables.values()))
-        size += sum(a.nbytes for fields in saved_auxiliary_states.values() for a in fields.values())
-        size += sum(a.nbytes for a in saved_control.values())
-        size += sum(a.nbytes for a in saved_contact_state.values())
-        frame = HistoryFrame(
-            time,
-            saved_state,
-            saved_contacts,
-            size,
-            count,
-            body_speed=self.mean_speed(saved_state.get("body_qd")),
-            particle_speed=self.mean_speed(saved_state.get("particle_qd")),
-            soft_shape_contacts=soft_count,
-            soft_self_contacts=self._soft_self_contact_count(contacts) if self.model.particle_count else 0,
-            observables=saved_observables,
-            auxiliary_states=saved_auxiliary_states,
-            state_aliases=state_aliases,
-            control=saved_control,
-            contact_state=saved_contact_state,
-        )
-        if replace_last:
-            self.bytes_used -= self.frames.pop().size
-        self.frames.append(frame)
-        self.record_plot_frame(frame)
-        self.bytes_used += size
-        remove = 0
-        while (self.bytes_used > self.memory_limit or len(self.frames) - remove > self.max_frames) and remove < len(
-            self.frames
-        ) - 1:
-            self.bytes_used -= self.frames[remove].size
-            remove += 1
-        if remove:
-            del self.frames[:remove]
-            self.first_frame += remove
-        if len(self.frames) > 1:
-            self.dt = max(1e-9, self.frames[-1].time - self.frames[-2].time)
-        self.index = len(self.frames) - 1
-        self.loaded_index = -1
-
-    def render(self) -> None:
-        """Render live data or temporarily substitute the selected historical frame.
-
-        Replay buffers are uploaded only when the cursor or their storage changes.
-        Conventional example state/contact/time references are restored in a
-        finally block, including when rendering fails. The callback must only
-        render: these snapshots omit solver state required to resume stepping.
-        """
-        example = self.example
-        if not self.replaying:
-            example.render()
-            return
-        frame = self.frames[self.index]
-        if self.display_state is None:
-            self.display_state = self.model.state()
-        if frame.control and self.display_control is None:
-            self.display_control = self.model.control(clone_variables=True)
-        count = frame.touching
-        soft_count = frame.soft_shape_contacts
-        observables = getattr(example, "solver_observables", None)
-        live_contacts = getattr(example, "contacts", None)
-        # Solver-allocated observables enforce both storage identity and
-        # capacity. Give replay its own normally allocated container and bind
-        # it to separate contacts; never rebind or overwrite live observables.
-        if observables is not self._observables_source:
-            self.display_observables = None
-            self._observables_source = observables
-            self.display_contacts = None
-            self.loaded_index = -1
-        rigid_capacity, soft_capacity = (
-            (live_contacts.rigid_contact_max, live_contacts.soft_contact_max)
-            if observables is not None and live_contacts is not None
-            else (max(1, count), soft_count)
-        )
-        if (
-            self.display_contacts is None
-            or self.display_contacts.rigid_contact_max < rigid_capacity
-            or self.display_contacts.soft_contact_max < soft_capacity
-        ):
-            self.display_contacts = Contacts(rigid_capacity, soft_capacity, device=self.model.device)
-            self.display_observables = None
-            self.loaded_index = -1
-        if observables is not None and self.display_observables is None:
-            self.display_observables = example.solver.observables(
-                kinds=observables.kinds, contacts=self.display_contacts, requires_grad=False
-            )
-        if self.loaded_index != self.index:
-            live_state = getattr(example, "state_0", getattr(example, "state", None))
-            _restore_component(self.display_state, live_state, frame.state)
-            if frame.contact_state:
-                # Contact witnesses use the collision input frame, which can
-                # precede solver corrections to the displayed body poses.
-                if self.display_contact_state is None:
-                    self.display_contact_state = State()
-                _restore_component(self.display_contact_state, example.contact_state, frame.contact_state)
-            if frame.control:
-                _restore_component(self.display_control, example.control, frame.control)
-            for name, fields in frame.auxiliary_states.items():
-                if name not in self.display_auxiliary_states:
-                    self.display_auxiliary_states[name] = State()
-                _restore_component(self.display_auxiliary_states[name], getattr(example, name), fields)
-            self.display_contacts.rigid_contact_count.assign(np.array([count], dtype=np.int32))
-            self.display_contacts.soft_contact_count.assign(np.array([soft_count], dtype=np.int32))
-            for name, values in frame.contacts.items():
-                getattr(self.display_contacts, name)[: len(values)].assign(values)
-            for name, values in frame.observables.items():
-                array = getattr(self.display_observables, name)
-                ranges = self._observable_ranges(
-                    self.display_observables, name, array, self.display_contacts.rigid_contact_max, count, soft_count
-                )
-                offset = 0
-                for start, n in ranges:
-                    if n:
-                        array[start : start + n].assign(values[offset : offset + n])
-                    offset += n
-            self.loaded_index = self.index
-        saved = {}
-        display = {
-            "state_0": self.display_state,
-            "state_1": self.display_state,
-            "state": self.display_state,
-            "contact_state": self.display_contact_state if frame.contact_state else self.display_state,
-            "contacts": self.display_contacts,
-            "solver_observables": self.display_observables,
-            "sim_time": frame.time,
-        }
-        display.update({name: self.display_auxiliary_states[name] for name in frame.auxiliary_states})
-        display.update({name: display[owner] for name, owner in frame.state_aliases.items()})
-        try:
-            for name, value in display.items():
-                if hasattr(example, name):
-                    saved[name] = getattr(example, name)
-                    setattr(example, name, value)
-            example.render()
-        finally:
-            for name, value in saved.items():
-                setattr(example, name, value)
+    def restore_control(self) -> Control | None:
+        """Return the selected frame's recorded Control, uploaded to display storage, or None."""
+        frame = self.frames[self.index] if self.frames else None
+        if frame is None or not frame.control:
+            return None
+        control = self.viewer._inspection_components.get("control")
+        if control is None:
+            return None
+        if self.display_control is None:
+            self.display_control = Control()
+        if not self._loaded_now(("control", "", "")):
+            _restore_component(self.display_control, control, frame.control)
+        return self.display_control
 
     @staticmethod
     def mean_speed(velocity: ArrayLike | None) -> float:
@@ -510,19 +599,17 @@ class FrameHistory:
         return float(np.sqrt(np.einsum("ij,ij->i", linear, linear)).mean(dtype=np.float64))
 
     def record_plot_frame(self, frame: HistoryFrame) -> None:
-        # A fixed ring keeps plot work independent of retained state size.
         """Store the latest frame contact counts and speeds in the fixed-size activity ring."""
-        if not hasattr(self, "_plot_values"):
-            self._plot_values = np.empty((self.max_frames + 64, 5), dtype=np.float64)
+        # A fixed ring keeps plot work independent of retained state size.
         index = (self.first_frame + len(self.frames) - 1) % len(self._plot_values)
         self._plot_values[index] = (
             frame.touching,
-            getattr(frame, "soft_shape_contacts", 0),
-            getattr(frame, "soft_self_contacts", 0),
+            frame.soft_shape_contacts,
+            frame.soft_self_contacts,
             frame.body_speed,
             frame.particle_speed,
         )
-        self._plot_revision = getattr(self, "_plot_revision", 0) + 1
+        self._plot_revision += 1
 
     def plot_samples(self, low: int, high: int, bins: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Reduce an inclusive retained-frame range to approximately ``bins`` samples.
@@ -531,8 +618,8 @@ class FrameHistory:
         series. Contacts use maxima to preserve brief impacts; motion uses means.
         All inputs come from the host-side plot ring, with no device readback.
         """
-        key = (self.first_frame, low, high, bins, getattr(self, "_plot_revision", 0))
-        if getattr(self, "_plot_cache_key", None) != key:
+        key = (self.first_frame, low, high, bins, self._plot_revision)
+        if self._plot_cache_key != key:
             indices = np.arange(low, high + 1)
             values = self._plot_values[(self.first_frame + indices) % len(self._plot_values)]
             # Anchor bins to absolute frame numbers, including through eviction.
@@ -562,4 +649,4 @@ class FrameHistory:
             self._recording_blocked = False
             self.frames.clear()
             self.index = self.bytes_used = self.first_frame = 0
-            self.loaded_index = -1
+            self._loaded.clear()

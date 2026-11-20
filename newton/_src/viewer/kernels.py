@@ -381,7 +381,12 @@ def compute_contact_lines(
         return
     shape_a = contact_shape0[tid]
     shape_b = contact_shape1[tid]
-    if shape_a == shape_b or (selected_shapes and not (selected_shapes[shape_a] or selected_shapes[shape_b])):
+    if shape_a == shape_b or shape_a < 0 or shape_b < 0:
+        line_start[tid] = nan_line
+        line_end[tid] = nan_line
+        opposing_point[tid] = nan_line
+        return
+    if selected_shapes and not (selected_shapes[shape_a] or selected_shapes[shape_b]):
         line_start[tid] = nan_line
         line_end[tid] = nan_line
         opposing_point[tid] = nan_line
@@ -507,7 +512,12 @@ def compute_contact_disk_transforms(
 
     shape_a = contact_shape0[tid]
     shape_b = contact_shape1[tid]
-    if shape_a == shape_b or (selected_shapes and not (selected_shapes[shape_a] or selected_shapes[shape_b])):
+    if shape_a == shape_b or shape_a < 0 or shape_b < 0:
+        transforms[glyph] = zero_xform
+        scales[glyph] = zero_vec
+        colors[glyph] = zero_vec
+        return
+    if selected_shapes and not (selected_shapes[shape_a] or selected_shapes[shape_b]):
         transforms[glyph] = zero_xform
         scales[glyph] = zero_vec
         colors[glyph] = zero_vec
@@ -622,7 +632,11 @@ def compute_contact_force_arrows(
 
     shape_a = contact_shape0[tid]
     shape_b = contact_shape1[tid]
-    if shape_a == shape_b or (selected_shapes and not (selected_shapes[shape_a] or selected_shapes[shape_b])):
+    if shape_a == shape_b or shape_a < 0 or shape_b < 0:
+        line_start[tid] = nan_line
+        line_end[tid] = nan_line
+        return
+    if selected_shapes and not (selected_shapes[shape_a] or selected_shapes[shape_b]):
         line_start[tid] = nan_line
         line_end[tid] = nan_line
         return

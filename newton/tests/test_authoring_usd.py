@@ -22,10 +22,10 @@ from newton._src.viewer.authoring_usd import (
     save_scene,
     template_bounds,
 )
-from newton.tests.unittest_utils import USD_AVAILABLE
+from newton.tests.unittest_utils import requires
 
 
-@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+@requires("pxr.Usd")
 class TestAuthoringUsd(unittest.TestCase):
     @staticmethod
     def object(kind="box", **changes):

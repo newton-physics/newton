@@ -201,7 +201,7 @@ class TestSelectionCacheLifetime(unittest.TestCase):
         # stale reads would return these values
         old_q.fill_(wp.transform((7.0, 7.0, 7.0), wp.quat_identity()))
         old_qd.fill_(wp.spatial_vector(7.0, 7.0, 7.0, 7.0, 7.0, 7.0))
-        old_q_values = old_q.numpy()
+        old_q_values = old_q.numpy().copy()
         transforms = view.get_link_transforms(state_out)
         velocities = view.get_link_velocities(state_out)
         assert_np_equal(transforms.numpy().reshape(-1, 7), state_out.body_q.numpy())

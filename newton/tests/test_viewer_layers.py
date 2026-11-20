@@ -16,6 +16,7 @@ from newton._src.viewer.viewer import ViewerBase
 from newton._src.viewer.viewer_rtx import ViewerRTX
 from newton._src.viewer.viewer_viser import ViewerViser
 from newton.tests.test_viewer_get_frame import _make_headless_viewer_gl_or_skip
+from newton.tests.unittest_utils import requires
 from newton.viewer import ViewerNull
 
 
@@ -112,24 +113,19 @@ class TestViewerLayers(unittest.TestCase):
         )
         workspace.rect = (0, 0, 64, 48)
         for device in [wp.get_device("cpu"), *wp.get_cuda_devices()[:1]]:
-            for kind in ("primary", "auxiliary", "cloth"):
+            for kind in ("primary", "cloth"):
                 with self.subTest(device=device, kind=kind):
                     builder = newton.ModelBuilder()
                     body = builder.add_body(xform=wp.transform((0, 1, 0), wp.quat_identity()))
                     builder.add_shape_sphere(body, radius=0.3)
-                    particles = newton.ModelBuilder() if kind == "auxiliary" else builder
                     points = ((-1, -1, -1), (1, -1, -1), (0, -1, 1)) if kind == "cloth" else ((0, -1, 0),)
                     for position in points:
-                        particles.add_particle(pos=wp.vec3(position), vel=wp.vec3(0), mass=1.0, radius=0.1)
+                        builder.add_particle(pos=wp.vec3(position), vel=wp.vec3(0), mass=1.0, radius=0.1)
                     if kind == "cloth":
                         builder.add_triangle(0, 1, 2)
                     model = builder.finalize(device=device)
-                    example = SimpleNamespace(model=model, viewer=viewer)
-                    if kind == "auxiliary":
-                        example.particle_model = particles.finalize(device=device)
-                        example.particle_state = example.particle_model.state()
                     viewer.set_model(model)
-                    workspace.bind(example)
+                    workspace.bind()
                     viewer.show_triangles = True
                     workspace.selection_mode = "body" if kind == "cloth" else "particle"
                     viewer.set_camera((0, -4, 0), 0, 0)
@@ -139,14 +135,6 @@ class TestViewerLayers(unittest.TestCase):
                         viewer.begin_frame(0.0)
                         viewer.log_state(model.state())
                         workspace._ensure_tree()
-                        if kind == "auxiliary":
-                            points, radii, hidden = workspace.tree.deformables.logged_points(
-                                workspace,
-                                example.particle_state.particle_q,
-                                example.particle_model.particle_radius,
-                                False,
-                            )
-                            viewer.log_points("sand", points, radii=radii, hidden=hidden or not visible)
                         viewer.end_frame()
                         workspace.select_from_screen(32, 24, lambda x, y: (x, y))
                         if kind == "cloth":
@@ -158,6 +146,22 @@ class TestViewerLayers(unittest.TestCase):
                         viewer.log_state(model.state())
                         workspace.select_from_screen(32, 24, lambda x, y: (x, y))
                         self.assertEqual(workspace.selected, ("body", body))
+
+    def test_gl_hidden_particles_allocate_no_display_buffers(self) -> None:
+        """Keep particle-only display buffers lazy until particles are shown."""
+        viewer = _make_headless_viewer_gl_or_skip(self)
+        self.addCleanup(viewer.close)
+        builder = newton.ModelBuilder()
+        for i in range(4):
+            builder.add_particle(pos=wp.vec3(float(i), 0.0, 0.0), vel=wp.vec3(0), mass=1.0, radius=0.1)
+        viewer.set_model(builder.finalize(device="cpu"))
+        state = viewer.model.state()
+        viewer.show_particles = False
+        viewer.log_state(state)
+        self.assertIsNone(viewer._workspace_deformables)
+        viewer.show_particles = True
+        viewer.log_state(state)
+        self.assertIsNotNone(viewer._workspace_deformables)
 
     def test_gl_viewport_modes_cover_all_model_layers(self) -> None:
         """Apply global modes and grids to inactive layers, including replacement models."""
@@ -182,6 +186,17 @@ class TestViewerLayers(unittest.TestCase):
             viewer.set_model(builder.finalize(device="cpu"))
             states[name] = viewer.model.state()
             viewer.log_state(states[name])
+
+        # Until the user picks a mode, the application's display settings apply.
+        viewer.show_visual = False
+        viewer.renderer.draw_wireframe = True
+        controls.sync()
+        self.assertFalse(viewer.show_visual)
+        self.assertTrue(viewer.renderer.draw_wireframe)
+        self.assertEqual(controls.mode, "wire")
+        viewer.show_visual = True
+        viewer.renderer.draw_wireframe = False
+        controls._mode_chosen = True
 
         for mode in ("xray", "collision", "wire", "visual"):
             with self.subTest(mode=mode):
@@ -434,6 +449,7 @@ class TestViewerLayers(unittest.TestCase):
         self.assertEqual(list(viewer.layers), ["__default__"])
         self.assertEqual(viewer.layer.name_prefix, "")
 
+    @requires("pyglet")
     def test_rtx_remove_layer_with_sibling_fails_loudly(self):
         """RTX should not silently wipe sibling layers during clear_model()."""
         viewer = _MinimalRTXViewer()
@@ -446,6 +462,7 @@ class TestViewerLayers(unittest.TestCase):
         self.assertIn("A", viewer.layers)
         self.assertIn("B", viewer.layers)
 
+    @requires("pyglet")
     def test_rtx_borrowed_stage_disables_deformable_overlays(self):
         """Leave a borrowed stage's deformable presentation visible by itself."""
         viewer = _MinimalRTXViewer()
@@ -454,6 +471,7 @@ class TestViewerLayers(unittest.TestCase):
         self.assertFalse(viewer.show_triangles)
         self.assertFalse(viewer.show_deformable_visual_meshes)
 
+    @requires("pyglet")
     def test_rtx_deformable_state_hides_and_restores_geometry(self):
         """Queue current skinned points when a hidden runtime mesh is shown again."""
         builder = newton.ModelBuilder()
@@ -481,6 +499,7 @@ class TestViewerLayers(unittest.TestCase):
         self.assertTrue(viewer._pending_mesh_visibility[name])
         np.testing.assert_array_equal(viewer._pending_mesh_points[name], [[0, 0, 2], [1, 0, 2], [0, 1, 2]])
 
+    @requires("pyglet")
     def test_rtx_clear_all_layers_allows_layered_scene_reset(self):
         """RTX can reset a complete layered scene while keeping single-layer clear guarded."""
         viewer = _MinimalRTXViewer()

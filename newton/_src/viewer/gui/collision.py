@@ -156,14 +156,8 @@ class CollisionInspector:
         tree.rebuild()
 
     def _contacts_buffer(self) -> Contacts | None:
-        """Prefer explicitly logged Contacts over the example fallback, or return None."""
-        ws = self.workspace
-        logged = getattr(ws.viewer, "_last_contacts", None)
-        bound = ws.bindings.contacts
-        for value in (logged, bound):
-            if isinstance(value, Contacts):
-                return value
-        return None
+        """Return the Contacts most recently passed to log_contacts(), or None."""
+        return self.workspace.viewer._last_contacts
 
     def _sources(self) -> list[tuple[str, CollisionPipeline]]:
         """Resolve collision pipelines associated with the workspace Model through its bindings."""
@@ -191,7 +185,7 @@ class CollisionInspector:
             return
         if not self._interested and not force:
             return
-        timeline = getattr(ws.example, "timeline", ws.history)
+        timeline = ws.history
         contacts = self._contacts_buffer()
         paused = ws.viewer.is_paused()
         token = (
@@ -475,7 +469,7 @@ class CollisionInspector:
         for name, value in vars(self.contacts).items():
             if name.startswith(prefix) and isinstance(value, wp.array) and len(value) > index:
                 if not self.workspace._at_live_frame():
-                    timeline = getattr(self.workspace.example, "timeline", self.workspace.history)
+                    timeline = self.workspace.history
                     if timeline is None or name not in timeline.frames[timeline.index].contacts:
                         continue
                 suffix = name[len(prefix) :]
@@ -554,7 +548,7 @@ class CollisionInspector:
             ui.text_wrapped(
                 "Buffers describe the last collision pass; inspecting them does not run collision detection."
             )
-            if getattr(getattr(ws.example, "solver", None), "use_mujoco_contacts", False):
+            if getattr(ws.bindings.solver, "use_mujoco_contacts", False):
                 ui.text_wrapped("The solver uses internal contacts. This Newton pipeline may not have been executed.")
             bvhs = ws.tree.resources.bvhs
             if bvhs.root in ws.tree.labels and w.button("Inspect BVHs", small=True):

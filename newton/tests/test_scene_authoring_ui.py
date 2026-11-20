@@ -4,7 +4,6 @@
 """Native authoring interaction coverage, separate from CPU document tests."""
 
 import hashlib
-import importlib.util
 import json
 import threading
 import time
@@ -23,7 +22,7 @@ from newton.examples import _ExampleBrowser
 from newton.examples.basic.example_scene_editor import Example
 from newton.tests import test_viewer_assets
 from newton.tests.test_viewer_get_frame import _make_headless_viewer_gl_or_skip
-from newton.tests.unittest_utils import get_cuda_test_devices
+from newton.tests.unittest_utils import get_cuda_test_devices, has_module
 
 
 class TestSceneAuthoringUI(unittest.TestCase):
@@ -45,7 +44,7 @@ class TestSceneAuthoringUI(unittest.TestCase):
 
         self.addCleanup(restore_context)
         devices = get_cuda_test_devices()[:1]
-        mujoco = bool(devices) and all(importlib.util.find_spec(name) for name in ("mujoco", "mujoco_warp"))
+        mujoco = bool(devices) and all(has_module(name) for name in ("mujoco", "mujoco_warp"))
         with wp.ScopedDevice(devices[0] if mujoco else "cpu"):
             viewer = _make_headless_viewer_gl_or_skip(self, width=1280, height=900)
             self.addCleanup(viewer.close)
@@ -64,15 +63,9 @@ class TestSceneAuthoringUI(unittest.TestCase):
             def render(count=1, *, simulate=False):
                 for _ in range(count):
                     editor.before_frame()
-                    viewer.gui._workspace_example = editor
-                    if viewer.gui.workspace is not None:
-                        viewer.gui.workspace.bind(editor)
-                    if simulate and viewer.should_step() and viewer.gui.workspace.before_step():
+                    if simulate and viewer.should_step():
                         editor.step()
-                    if simulate:
-                        viewer.gui.workspace.render_example()
-                    else:
-                        editor.render()
+                    editor.render()
                     self.assertFalse(viewer.gui.ui.section_errors)
 
             def native_mouse(x, y, down=None, *, simulate=False):
@@ -459,7 +452,7 @@ class TestSceneAuthoringUI(unittest.TestCase):
             render()
             self.assertEqual(editor.get_object(edited.id).position, original.position)
 
-            if importlib.util.find_spec("pxr") is not None:
+            if has_module("pxr"):
                 # Reuse the real HTTP package/cache fixture. Only worker timing
                 # is controlled: parsing, metadata, USD import and native input
                 # all follow their production paths.
@@ -681,9 +674,9 @@ class TestSceneAuthoringUI(unittest.TestCase):
                 queue_download()
                 history = workspace.history
                 history.set_recording(True)
-                history.capture()
+                render()
                 editor.step()
-                history.capture()
+                render()
                 history.select(0)
                 self.assertTrue(history.replaying)
                 document = editor.objects
@@ -769,7 +762,8 @@ class TestSceneAuthoringUI(unittest.TestCase):
             self.assertIsNot(workspace.history, history)
             self.assertIsNone(workspace.selected)
             self.assertIsNone(panel._file_drop_handler)
-            workspace.bind(None)
+            editor.close()
+            workspace.bind()
             self.assertIsNone(workspace.authoring)
             self.assertIsNone(panel._file_drop_handler)
 

@@ -10,14 +10,20 @@ from unittest.mock import Mock, patch
 import numpy as np
 import warp as wp
 
+import newton
 from newton._src.solvers.kamino._src.core.types import vec6f
-from newton._src.solvers.kamino._src.solvers.dvi import sparse
-from newton._src.solvers.kamino._src.solvers.dvi.coupling import PackedCoupling
-from newton._src.solvers.kamino._src.solvers.dvi.joint_blocks import JointBlockSolver
+from newton._src.solvers.kamino._src.solvers.scc import sparse
+from newton._src.solvers.kamino._src.solvers.scc.coupling import PackedCoupling
+from newton._src.solvers.kamino._src.solvers.scc.joint_blocks import JointBlockSolver
+from newton.tests.kamino import setup_test_output, setup_tests
 from newton.tests.kamino.test_kamino_joint_blocks import _fixture, _packed_matrix
+from newton.tests.unittest_utils import NewtonTestCase
 
 
-class TestKaminoPackedCoupling(unittest.TestCase):
+class TestKaminoPackedCoupling(NewtonTestCase):
+    def setUp(self):
+        setup_test_output(self)
+
     def test_fallback_keeps_materialized_rhs(self):
         """Ignore the packed cache when dispatch selects the original bilateral solver."""
         state = SimpleNamespace(
@@ -67,7 +73,7 @@ class TestKaminoPackedCoupling(unittest.TestCase):
         if not wp.get_cuda_device_count():
             self.skipTest("Packed response requires CUDA tile kernels")
         device = wp.get_cuda_devices()[0]
-        path, problem, matrices, matrix, mio, bvio, rio, _, scale, storage = _fixture(device)
+        path, problem, matrices, matrix, bvio, rio, _, scale, storage = _fixture(device)
         n, nu = 16, 6
         rng = np.random.default_rng(61293)
 
@@ -132,7 +138,7 @@ class TestKaminoPackedCoupling(unittest.TestCase):
         path.data.solution = SimpleNamespace(lambdas=floats(impulses))
         sparse._build_sparse_bilateral_row_nzb_topology(path, problem)
         blocks = JointBlockSolver.create(path)
-        blocks._matrix.assign(_packed_matrix(blocks, matrix, mio, 20))
+        blocks._matrix.assign(_packed_matrix(blocks, matrix, 20))
         blocks.prepare(path, problem)
         packed = PackedCoupling(path, blocks)
         order = blocks._schedule["order"].numpy()
@@ -207,4 +213,6 @@ class TestKaminoPackedCoupling(unittest.TestCase):
 
 
 if __name__ == "__main__":
+    newton.utils.setup_console_logging()
+    setup_tests()
     unittest.main()

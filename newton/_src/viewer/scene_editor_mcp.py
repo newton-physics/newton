@@ -83,7 +83,6 @@ class SceneEditorMCP:
         self._queue = queue.Queue(maxsize=16)
         self._pending = []
         self._frame = 0
-        self._live_time = editor.sim_time
         self._closed = False
         self._failure = None
         self._last_edit_request = None
@@ -169,7 +168,7 @@ class SceneEditorMCP:
             request.cancelled.set()
             request.future.cancel()
             raise
-        except asyncio.TimeoutError as error:
+        except TimeoutError as error:
             request.cancelled.set()
             withdrawn = request.future.cancel()
             state = "withdrawn before execution" if withdrawn else "already started; inspect get_scene before retrying"
@@ -417,7 +416,7 @@ class SceneEditorMCP:
                 runtime is not None and (runtime.solver is not None or not runtime.model.joint_count)
             ),
             "frame": self._frame,
-            "sim_time": self._live_time if replaying else editor.sim_time,
+            "sim_time": editor.sim_time,
             "display_time": history.frames[history.index].time if replaying else editor.sim_time,
             "pending": editor.pending,
             "busy": editor.busy,
@@ -438,8 +437,6 @@ class SceneEditorMCP:
             raise RuntimeError("MCP commands must be pumped on the viewer thread")
         if self._closed:
             return
-        # FrameHistory substitutes display time only inside the render callback.
-        self._live_time = self.editor.sim_time
         for _ in range(4):
             try:
                 request = self._queue.get_nowait()

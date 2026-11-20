@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import ctypes
+import logging
 import sys
 import tempfile
 import unittest
@@ -24,7 +25,7 @@ from newton._src.viewer.kernels import compact
 from newton._src.viewer.viewer_gl import ViewerGL
 from newton._src.viewer.viewer_joint_selection import _JointDrawList
 from newton._src.viewer.viewer_navigation import SelectionNavigation
-from newton.tests.unittest_utils import import_pyglet_window
+from newton.tests.unittest_utils import import_pyglet_window, requires
 
 
 def _viewer_gl_unavailable_error_types(test: unittest.TestCase) -> tuple[type[BaseException], ...]:
@@ -187,6 +188,27 @@ class _FakeGL:
             raise RuntimeError("pixel buffer must be bound during readback")
         ctypes.memmove(data, self.pixels.ctypes.data, self.pixels.nbytes)
         self.readback_count += 1
+
+
+def _gl_gen_texture(gl: ModuleType) -> int:
+    """Create a texture name with pyglet's GL bindings."""
+    texture = gl.GLuint()
+    gl.glGenTextures(1, ctypes.byref(texture))
+    return texture.value
+
+
+def _gl_get_integer(gl: ModuleType, name: int) -> int:
+    """Read one integer of GL state with pyglet's GL bindings."""
+    value = gl.GLint()
+    gl.glGetIntegerv(name, ctypes.byref(value))
+    return value.value
+
+
+def _gl_read_rgba(gl: ModuleType, width: int, height: int) -> np.ndarray:
+    """Read the bound framebuffer as bottom-up RGBA rows."""
+    pixels = np.empty((height, width, 4), dtype=np.uint8)
+    gl.glReadPixels(0, 0, width, height, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, pixels.ctypes.data_as(ctypes.c_void_p))
+    return pixels
 
 
 class TestViewerGLGetFrame(unittest.TestCase):
@@ -404,7 +426,7 @@ class TestViewerGLGetFrame(unittest.TestCase):
                 with self.subTest(device=device, variants=variants):
                     model = (builder if variants else variant).finalize(device=device)
                     viewer.set_model(model)
-                    workspace.bind(None)
+                    workspace.bind()
                     for choice in (1, 0, 1) if variants else (0,):
                         if variants:
                             changed = model.select_body_variants(wp.array([choice], dtype=int, device=device))
@@ -434,7 +456,7 @@ class TestViewerGLGetFrame(unittest.TestCase):
                 ]
                 model = builder.finalize()
             viewer.set_model(model)
-            workspace.bind(None)
+            workspace.bind()
             viewer.show_collision = True
             viewer.show_visual = False
             viewer.begin_frame(0.0)
@@ -472,7 +494,7 @@ class TestViewerGLGetFrame(unittest.TestCase):
             with self.subTest(device=device):
                 model = builder.finalize(device=device)
                 viewer.set_model(model)
-                workspace.bind(None)
+                workspace.bind()
                 state = model.state()
                 contacts = newton.Contacts(4, 0, device=device)
                 contacts.rigid_contact_count.assign([3])
@@ -567,7 +589,7 @@ class TestViewerGLGetFrame(unittest.TestCase):
             with self.subTest(device=device):
                 model = builder.finalize(device=device)
                 viewer.set_model(model)
-                workspace.bind(None)
+                workspace.bind()
                 workspace.select(("body", 1))
                 workspace.select(("shape_texture", 0), toggle=True)
                 tree = workspace.tree
@@ -768,6 +790,86 @@ class TestViewerGLGetFrame(unittest.TestCase):
                 for module, before in zip(modules, executables, strict=True):
                     self.assertEqual(module.execs, before, f"{module.name} reloaded on first interaction")
 
+        # Closing releases every preloaded inspection program, including the X-ray passes.
+        renderer = viewer.renderer
+        xray = [renderer._physics_collision_shader, renderer._physics_shell_shader]
+        viewer.close()
+        for name in RendererGL._INSPECTION_SHADERS:
+            self.assertIsNone(getattr(renderer, name), f"{name} was not released")
+        for shader in xray:
+            self.assertIsNone(shader.shader_program)
+
+    def test_gui_history_records_public_logging_calls(self) -> None:
+        """Record logged frames through ViewerGL and replay them without the application's objects."""
+        try:
+            import imgui_bundle  # noqa: F401
+        except ImportError as exc:
+            self.skipTest(f"Viewer UI dependencies not available: {exc}")
+        _viewer_gl_unavailable_error_types(self)
+        initialize_renderer = RendererGL.__init__
+
+        def initialize_offscreen(renderer: RendererGL, **kwargs: object) -> None:
+            kwargs["headless"] = True
+            initialize_renderer(renderer, **kwargs)
+
+        try:
+            with wp.ScopedDevice("cpu"), mock.patch.object(RendererGL, "__init__", initialize_offscreen):
+                viewer = ViewerGL(width=800, height=600)
+        except Exception as exc:
+            if _is_viewer_gl_unavailable_error(self, exc):
+                self.skipTest(f"ViewerGL display/backend not available: {exc}")
+            raise
+        self.addCleanup(viewer.close)
+        viewer.gui.ui.io.set_ini_filename("")
+        model = _make_box_model("cpu")
+        viewer.set_model(model)
+        state = model.state()
+        contacts = newton.Contacts(4, 0, device="cpu")
+        lines = wp.array([(0.0, 0.0, 0.0)], dtype=wp.vec3, device="cpu")
+
+        def frame(time: float) -> None:
+            viewer.begin_frame(time)
+            viewer.log_state(state)
+            viewer.log_contacts(contacts, state)
+            viewer.log_lines("trail", lines, lines, (1.0, 0.0, 0.0))
+            viewer.end_frame()
+
+        frame(0.0)
+        history = viewer.gui.workspace.history
+        self.assertIs(viewer._history, history)
+        # Recording is opt-in, so the default live path takes no snapshots.
+        self.assertFalse(history.recording)
+        self.assertFalse(history.frames)
+        history.set_recording(True)
+        for step in range(3):
+            state.body_q.fill_(wp.transform(wp.vec3(float(step), 0.0, 0.0), wp.quat_identity()))
+            frame(step / 60)
+        self.assertEqual(len(history.frames), 3)
+        recorded = history.frames[0]
+        layer = viewer._active_layer_id
+        # Only the application's own calls are recorded, not lines drawn by log_contacts().
+        self.assertEqual(set(recorded.arrays), {("lines", layer, "trail")})
+        self.assertEqual(len(recorded.states), 1)
+        self.assertEqual(len(recorded.contact_records), 1)
+
+        # Replay displays the recorded frame for the same calls; stepping
+        # advances playback and resumes only at the newest frame.
+        history.select(0)
+        viewer._paused = False
+        frame(2 / 60)
+        self.assertIsNot(viewer._last_state, state)
+        np.testing.assert_allclose(viewer._last_state.body_q.numpy()[0, :3], [0, 0, 0])
+        np.testing.assert_allclose(state.body_q.numpy()[0, :3], [2, 0, 0])
+        self.assertEqual(len(history.frames), 3)
+        self.assertFalse(viewer.should_step())
+        self.assertEqual(history.index, 1)
+        self.assertFalse(viewer.should_step())
+        self.assertEqual(history.index, 2)
+        self.assertTrue(viewer.should_step())
+        frame(3 / 60)
+        self.assertIs(viewer._last_state, state)
+        self.assertEqual(len(history.frames), 4)
+
     def test_gui_mode_and_legacy_callbacks(self) -> None:
         """Render the default workspace and opt-in legacy panels with real ImGui callbacks."""
         try:
@@ -803,16 +905,27 @@ class TestViewerGLGetFrame(unittest.TestCase):
                     # Native GUI tests must neither load nor overwrite a user's
                     # persisted window sizes in the working directory.
                     gui.ui.io.set_ini_filename("")
-                    from OpenGL import GL  # noqa: PLC0415 - optional GL dependency, after context creation
+                    # Use pyglet's GL bindings, like the viewer; PyOpenGL is not a dependency.
+                    from pyglet import gl
 
-                    image_texture = int(GL.glGenTextures(1))
-                    GL.glBindTexture(GL.GL_TEXTURE_2D, image_texture)
-                    GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MIN_FILTER, GL.GL_NEAREST)
-                    GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MAG_FILTER, GL.GL_NEAREST)
+                    image_texture = _gl_gen_texture(gl)
+                    gl.glBindTexture(gl.GL_TEXTURE_2D, image_texture)
+                    gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_NEAREST)
+                    gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_NEAREST)
                     pixels = np.array(
                         [[[255, 0, 0, 255], [0, 255, 0, 255]], [[0, 0, 255, 255], [255, 255, 255, 255]]], dtype=np.uint8
                     )
-                    GL.glTexImage2D(GL.GL_TEXTURE_2D, 0, GL.GL_RGBA8, 2, 2, 0, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE, pixels)
+                    gl.glTexImage2D(
+                        gl.GL_TEXTURE_2D,
+                        0,
+                        gl.GL_RGBA8,
+                        2,
+                        2,
+                        0,
+                        gl.GL_RGBA,
+                        gl.GL_UNSIGNED_BYTE,
+                        pixels.ctypes.data_as(ctypes.c_void_p),
+                    )
                     calls = []
                     for position in ("panel", "side", "stats", "free"):
 
@@ -838,6 +951,9 @@ class TestViewerGLGetFrame(unittest.TestCase):
                         calls.append("timeline_gui")
 
                     viewer.register_ui_callback(timeline_gui, position="free")
+                    if not legacy:
+                        # Keep the inspector docked in this 800 px window on HiDPI desktops too.
+                        gui.ui.refresh_dpi(1.0)
                     for frame in range(2):
                         viewer.begin_frame(frame / 60)
                         viewer.log_state(state)
@@ -857,55 +973,49 @@ class TestViewerGLGetFrame(unittest.TestCase):
                     else:
                         self.assertIsNotNone(gui.workspace)
                         self.assertIsNotNone(viewer.renderer._workspace_rect)
-                        self.assertIn("free", calls)
-                        self.assertIn("stats", calls)
-                        self.assertIn("timeline_gui", calls)
+                        # Only the application may opt into mirroring Newton logs.
+                        self.assertFalse(gui.console_capture.attached)
+                        self.assertNotIn(gui.console_capture.buffer, logging.getLogger("newton").handlers)
+                        # Custom loops without newton.examples.run() still draw
+                        # every registered position, including the default "side".
+                        self.assertEqual(calls[-5:], ["panel", "side", "stats", "free", "timeline_gui"])
                         self.assertFalse(gui.workspace.timeline_options["recording"])
 
-                    # Compare actual clipped text/widgets with the upstream
-                    # renderer, using identical draw data and an isolated target.
-                    from imgui_bundle.python_backends.pyglet_backend import PygletProgrammablePipelineRenderer
-
-                    previous_fbo = int(GL.glGetIntegerv(GL.GL_FRAMEBUFFER_BINDING))
-                    texture = GL.glGenTextures(1)
-                    framebuffer = GL.glGenFramebuffers(1)
+                    # Render clipped text, widgets, and user images into an isolated target.
+                    previous_fbo = _gl_get_integer(gl, gl.GL_FRAMEBUFFER_BINDING)
+                    texture = _gl_gen_texture(gl)
+                    framebuffer = gl.GLuint()
+                    gl.glGenFramebuffers(1, ctypes.byref(framebuffer))
                     try:
-                        GL.glBindTexture(GL.GL_TEXTURE_2D, texture)
-                        GL.glTexImage2D(
-                            GL.GL_TEXTURE_2D, 0, GL.GL_RGBA8, 800, 600, 0, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE, None
+                        gl.glBindTexture(gl.GL_TEXTURE_2D, texture)
+                        gl.glTexImage2D(
+                            gl.GL_TEXTURE_2D, 0, gl.GL_RGBA8, 800, 600, 0, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, None
                         )
-                        GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, framebuffer)
-                        GL.glFramebufferTexture2D(
-                            GL.GL_FRAMEBUFFER, GL.GL_COLOR_ATTACHMENT0, GL.GL_TEXTURE_2D, texture, 0
+                        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, framebuffer)
+                        gl.glFramebufferTexture2D(
+                            gl.GL_FRAMEBUFFER, gl.GL_COLOR_ATTACHMENT0, gl.GL_TEXTURE_2D, texture, 0
                         )
-                        self.assertEqual(GL.glCheckFramebufferStatus(GL.GL_FRAMEBUFFER), GL.GL_FRAMEBUFFER_COMPLETE)
-                        images = []
-                        for render in (
-                            lambda data, gui=gui: PygletProgrammablePipelineRenderer.render(gui.ui.impl, data),
-                            gui.ui.impl.render,
-                        ):
-                            GL.glDisable(GL.GL_SCISSOR_TEST)
-                            GL.glClearColor(0.1, 0.2, 0.3, 1.0)
-                            GL.glClear(GL.GL_COLOR_BUFFER_BIT)
-                            render(imgui.get_draw_data())
-                            images.append(GL.glReadPixels(0, 0, 800, 600, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE))
-                        np.testing.assert_array_equal(
-                            np.frombuffer(images[0], np.uint8), np.frombuffer(images[1], np.uint8)
-                        )
-                        image = np.frombuffer(images[1], np.uint8).reshape(600, 800, 4)
-                        np.testing.assert_array_equal(image[600 - 416, 32], [255, 0, 0, 255])
+                        self.assertEqual(gl.glCheckFramebufferStatus(gl.GL_FRAMEBUFFER), gl.GL_FRAMEBUFFER_COMPLETE)
+                        gl.glDisable(gl.GL_SCISSOR_TEST)
+                        gl.glClearColor(0.1, 0.2, 0.3, 1.0)
+                        gl.glClear(gl.GL_COLOR_BUFFER_BIT)
+                        gui.ui.render()
+                        image = _gl_read_rgba(gl, 800, 600)
+                        # The native renderer may filter user images linearly; allow
+                        # half-pixel blending with the neighboring texel.
+                        np.testing.assert_allclose(image[600 - 416, 32], [255, 0, 0, 255], atol=8)
 
                         # Rendering the UI must preserve independent alpha blend
                         # factors used by scene transparency passes.
-                        GL.glBlendFuncSeparate(GL.GL_ONE, GL.GL_ZERO, GL.GL_ZERO, GL.GL_ONE)
+                        gl.glBlendFuncSeparate(gl.GL_ONE, gl.GL_ZERO, gl.GL_ZERO, gl.GL_ONE)
                         gui.ui.render()
                         for name, value in (
-                            (GL.GL_BLEND_SRC_RGB, GL.GL_ONE),
-                            (GL.GL_BLEND_DST_RGB, GL.GL_ZERO),
-                            (GL.GL_BLEND_SRC_ALPHA, GL.GL_ZERO),
-                            (GL.GL_BLEND_DST_ALPHA, GL.GL_ONE),
+                            (gl.GL_BLEND_SRC_RGB, gl.GL_ONE),
+                            (gl.GL_BLEND_DST_RGB, gl.GL_ZERO),
+                            (gl.GL_BLEND_SRC_ALPHA, gl.GL_ZERO),
+                            (gl.GL_BLEND_DST_ALPHA, gl.GL_ONE),
                         ):
-                            self.assertEqual(int(GL.glGetIntegerv(name)), value)
+                            self.assertEqual(_gl_get_integer(gl, name), value)
 
                         if not legacy:
                             # Reuse this context to check actual cached-icon
@@ -943,20 +1053,25 @@ class TestViewerGLGetFrame(unittest.TestCase):
                                     atlas.draw(draw, "unknown", (0, 0), size, scale=scale, color=0xFFFFFFFF)
                                 )
                                 gui.ui.end_frame()
-                                GL.glDisable(GL.GL_SCISSOR_TEST)
-                                GL.glClearColor(0, 0, 0, 1)
-                                GL.glClear(GL.GL_COLOR_BUFFER_BIT)
+                                gl.glDisable(gl.GL_SCISSOR_TEST)
+                                gl.glClearColor(0, 0, 0, 1)
+                                gl.glClear(gl.GL_COLOR_BUFFER_BIT)
                                 gui.ui.render()
-                                pixels = np.frombuffer(
-                                    GL.glReadPixels(0, 0, 800, 600, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE), np.uint8
-                                ).reshape(600, 800, 4)[::-1]
+                                pixels = _gl_read_rgba(gl, 800, 600)[::-1]
                                 first = pixels[100 : 100 + size, 100 : 100 + size, :3]
                                 self.assertGreater(np.count_nonzero(first[..., 0] > 128), size * size // 4)
                                 self.assertGreater(first[..., 0].sum(), first[..., 1].sum())
                                 self.assertGreater(first[..., 1].sum(), first[..., 2].sum())
+                                # Drivers may round edge coverage differently at
+                                # another screen offset, so allow a few levels.
                                 for copy in (1, 2):
-                                    np.testing.assert_array_equal(
-                                        pixels[100 : 100 + size, 100 + 40 * copy : 100 + 40 * copy + size, :3], first
+                                    np.testing.assert_allclose(
+                                        pixels[100 : 100 + size, 100 + 40 * copy : 100 + 40 * copy + size, :3].astype(
+                                            np.int16
+                                        ),
+                                        first.astype(np.int16),
+                                        atol=2,
+                                        rtol=0,
                                     )
                             # Clipped property labels should still batch as text,
                             # without a separate GPU scissor command per field.
@@ -982,21 +1097,19 @@ class TestViewerGLGetFrame(unittest.TestCase):
                                 imgui.end()
                                 imgui.pop_style_var(2)
                                 gui.ui.end_frame()
-                                GL.glDisable(GL.GL_SCISSOR_TEST)
-                                GL.glClearColor(0, 0, 0, 1)
-                                GL.glClear(GL.GL_COLOR_BUFFER_BIT)
+                                gl.glDisable(gl.GL_SCISSOR_TEST)
+                                gl.glClearColor(0, 0, 0, 1)
+                                gl.glClear(gl.GL_COLOR_BUFFER_BIT)
                                 gui.ui.render()
-                                pixels = np.frombuffer(
-                                    GL.glReadPixels(0, 0, 800, 600, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE), np.uint8
-                                ).reshape(600, 800, 4)[::-1, :, :3]
+                                pixels = _gl_read_rgba(gl, 800, 600)[::-1, :, :3]
                                 x, y = int(origin.x), int(origin.y)
                                 self.assertGreater(np.count_nonzero(pixels[y : y + 200, x : x + label_width]), 0)
                                 self.assertEqual(np.count_nonzero(pixels[y : y + 200, x + label_width : x + 280]), 0)
                                 self.assertEqual(command_count, 1)
                     finally:
-                        GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, previous_fbo)
-                        GL.glDeleteFramebuffers(1, [framebuffer])
-                        GL.glDeleteTextures([texture])
+                        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, previous_fbo)
+                        gl.glDeleteFramebuffers(1, ctypes.byref(framebuffer))
+                        gl.glDeleteTextures(1, ctypes.byref(gl.GLuint(texture)))
 
                     # Model switches clear old images but must keep the image
                     # presentation alive for the next example in both GUIs.
@@ -1014,15 +1127,15 @@ class TestViewerGLGetFrame(unittest.TestCase):
                         self.assertTrue(any(command.get_tex_id() == texture_id for command in commands))
                 finally:
                     if image_texture is not None:
-                        GL.glDeleteTextures([image_texture])
+                        gl.glDeleteTextures(1, ctypes.byref(gl.GLuint(image_texture)))
                     icon_texture = viewer.gui.ui.icon_atlas._texture
                     icon_texture_id = icon_texture.id if icon_texture is not None else None
                     viewer.gui.ui.shutdown()
                     if icon_texture_id is not None:
-                        self.assertFalse(GL.glIsTexture(icon_texture_id))
+                        self.assertFalse(gl.glIsTexture(icon_texture_id))
+                    # Shutdown also destroys the viewer's ImGui context, so GUI
+                    # fonts, style and time do not leak into other ImGui tests.
                     viewer.close()
-                    # Do not leak GUI fonts/style/time into other ImGui tests.
-                    imgui.destroy_context()
 
     def test_joint_stroke_outline_preserves_arc_color_and_occlusion(self) -> None:
         """Keep tilted angle arcs clear at different zooms without drawing through geometry."""
@@ -1072,12 +1185,10 @@ class TestViewerGLGetFrame(unittest.TestCase):
         renderer.render(viewer.camera, viewer.objects)
         np.testing.assert_array_equal(viewer.get_frame().numpy(), scene)
 
+    @requires("pyglet")
     def test_backend_error_types_do_not_force_window_import(self):
         """Verify backend error discovery does not import pyglet.window."""
-        try:
-            import pyglet
-        except ImportError as exc:
-            self.skipTest(f"ViewerGL dependencies not available: {exc}")
+        import pyglet
 
         class _WindowProxy:
             _module = None
@@ -1572,15 +1683,6 @@ class TestViewerGLGetFrame(unittest.TestCase):
             self.assertIs(viewer.get_frame(output=output), output)
             np.testing.assert_array_equal(output.numpy(), frame.numpy())
 
-            with self.assertWarnsRegex(DeprecationWarning, "target_image.*output"):
-                self.assertIs(viewer.get_frame(target_image=output), output)
-            with self.assertWarnsRegex(DeprecationWarning, "Passing 'output' positionally"):
-                self.assertIs(viewer.get_frame(output), output)
-            with self.assertWarnsRegex(DeprecationWarning, "Passing 'output', 'render_ui' positionally"):
-                self.assertIs(viewer.get_frame(output, False), output)
-            with self.assertRaisesRegex(TypeError, "output.*target_image"):
-                viewer.get_frame(output=output, target_image=output)
-
         np.testing.assert_array_equal(
             frame.numpy(),
             np.array(
@@ -1592,7 +1694,7 @@ class TestViewerGLGetFrame(unittest.TestCase):
             ),
         )
         self.assertEqual(frame.device, wp.get_device("cpu"))
-        self.assertEqual(fake_gl.readback_count, 5)
+        self.assertEqual(fake_gl.readback_count, 2)
 
     def test_texture_affine_transform_matches_authored_coordinates(self):
         """Apply a UsdTransform2d affine mapping exactly once before GL sampling."""
@@ -1705,6 +1807,8 @@ class TestViewerGLMinimumVersion(unittest.TestCase):
                 raise
             self.skipTest(f"pyglet window backend not available: {exc}")
         self.pyglet = pyglet
+        # RendererGL caches its GL module, which is not pyglet.gl after a failed pyglet import.
+        RendererGL.initialize_gl()
 
     @staticmethod
     def _gl_1_1_context():
@@ -1718,7 +1822,7 @@ class TestViewerGLMinimumVersion(unittest.TestCase):
         """Verify a driver below the minimum OpenGL version is rejected without opening a window."""
         pyglet = self.pyglet
         with (
-            mock.patch.object(pyglet.gl, "current_context", self._gl_1_1_context()),
+            mock.patch.object(RendererGL.gl, "current_context", self._gl_1_1_context()),
             mock.patch.object(pyglet.window, "Window") as window,
             self.assertRaisesRegex(pyglet.gl.ContextException, r"OpenGL 3\.3 .*OpenGL 1\.1\.0 \(GDI Generic\)"),
         ):
@@ -1730,7 +1834,7 @@ class TestViewerGLMinimumVersion(unittest.TestCase):
         pyglet = self.pyglet
         window = mock.Mock(context=self._gl_1_1_context())
         with (
-            mock.patch.object(pyglet.gl, "current_context", None),
+            mock.patch.object(RendererGL.gl, "current_context", None),
             mock.patch.object(pyglet.window, "Window", return_value=window),
             self.assertRaises(pyglet.gl.ContextException),
         ):

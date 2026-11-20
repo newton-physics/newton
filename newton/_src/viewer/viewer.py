@@ -192,7 +192,9 @@ class ViewerBase(ABC):
         self._camera_speed = 4.0
         self._rendering_paused = False
         self.show_contact_pairs = False
+        """Draw contact mode disks at both witness points of each rigid contact; ViewerGL defaults to ``True``."""
         self.show_contact_lines = True
+        """Connect paired witness points with a line while :attr:`show_contact_pairs` is enabled."""
         # Built-in display controls record explicit edits for example switching.
         # Constructor defaults must not become preferences for later examples.
         # Contact force scale is stored as a gain relative to model calibration.
@@ -568,6 +570,9 @@ class ViewerBase(ABC):
         elif not isinstance(xform, wp.transform):
             raise TypeError(type_error)
         self._layers[layer_id].xform = xform
+        self._layers[layer_id].model_changed = True
+        if layer_id == self._active_layer_id:
+            self.model_changed = True
 
     @staticmethod
     def _is_identity_transform(xform: wp.transform) -> bool:
@@ -899,9 +904,6 @@ class ViewerBase(ABC):
     def set_control(self, control: newton.Control | None) -> None:
         """Set the Control inspected in the active viewer layer.
 
-        .. experimental::
-            ``set_control`` may change without the normal deprecation period.
-
         Call after :meth:`set_model`. Retains a reference without copying arrays
         or changing other inspected components. Clearing or replacing the Model
         clears this reference. ViewerGL exposes the inputs in its inspector;
@@ -913,14 +915,13 @@ class ViewerBase(ABC):
 
         Raises:
             RuntimeError: No model has been set.
+
+        .. experimental::
         """
         self._set_inspection_component("control", control)
 
     def set_solver(self, solver: SolverBase | None) -> None:
         """Set the solver inspected in the active viewer layer.
-
-        .. experimental::
-            ``set_solver`` may change without the normal deprecation period.
 
         Call after :meth:`set_model`. Retains a reference for ViewerGL settings
         and resource inspection; the application still owns and steps the solver.
@@ -933,14 +934,13 @@ class ViewerBase(ABC):
         Raises:
             RuntimeError: No model has been set.
             ValueError: The solver uses another model.
+
+        .. experimental::
         """
         self._set_inspection_component("solver", solver)
 
     def set_collision_pipeline(self, pipeline: newton.CollisionPipeline | None) -> None:
         """Set the collision pipeline inspected in the active viewer layer.
-
-        .. experimental::
-            ``set_collision_pipeline`` may change without the normal deprecation period.
 
         Call after :meth:`set_model`. Retains a reference for ViewerGL broadphase
         and narrowphase inspection without running collision detection. Supply
@@ -954,19 +954,24 @@ class ViewerBase(ABC):
         Raises:
             RuntimeError: No model has been set.
             ValueError: The pipeline uses another model.
+
+        .. experimental::
         """
         self._set_inspection_component("collision_pipeline", pipeline)
 
     def _set_inspection_component(self, name: str, component: object | None) -> None:
         """Replace one layer-owned reference and invalidate inspection discovery.
 
-        An explicit None suppresses conventional example discovery for that
-        component. Replace the mapping so cached inspection bindings retain their old
+        Replace the mapping so cached inspection bindings retain their old
         references and can detect when solver or pipeline resources change.
         """
         if self.model is None:
             raise RuntimeError("Call set_model() before setting inspection components.")
-        if name in ("solver", "collision_pipeline") and component is not None and component.model is not self.model:
+        if (
+            name in ("solver", "collision_pipeline")
+            and component is not None
+            and getattr(component, "model", None) is not self.model
+        ):
             raise ValueError(f"{name} must belong to the viewer's active model")
         if name not in self._inspection_components or self._inspection_components[name] is not component:
             self._inspection_components = {**self._inspection_components, name: component}
@@ -1271,6 +1276,7 @@ class ViewerBase(ABC):
 
         # Convert to warp array
         self.world_offsets = wp.array(full_offsets, dtype=wp.vec3, device=self.device)
+        self.model_changed = True
 
     def _estimate_scene_scale(self) -> float:
         """Estimate a characteristic body size in world units.
@@ -3393,7 +3399,14 @@ class ViewerBase(ABC):
         packed arrays.
         """
         variant_instances = self._variant_instances()
+
         batches = list(self._shape_instances.values())
+        order = np.argsort([batch.static for batch in batches], kind="stable")
+        if variant_instances is not None:
+            instances, ordinals = variant_instances
+            variant_instances = instances, np.argsort(order)[ordinals]
+        batches = [batches[i] for i in order]
+        self._shape_instances = dict(sorted(self._shape_instances.items(), key=lambda item: item[1].static))
         for batch in batches:
             if getattr(batch, "_populated", None) is None:
                 # Created for variant rows after population.

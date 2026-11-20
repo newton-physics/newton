@@ -141,9 +141,11 @@ class ConsoleBuffer(logging.Handler):
 class ConsoleCapture:
     """Own a viewer's log sink and share scoped warning routing with other viewers.
 
-    The first capture installs the Newton warning hook; the last close restores
-    it only if no other code has replaced it. Logger verbosity is increased only
-    on request and restored with the same ownership check. Call close when the
+    Logging belongs to the application, so a capture changes nothing global
+    unless the application opts in with ``attach=True``. The first attached
+    capture installs the Newton warning hook; the last close restores it only
+    if no other code has replaced it. Logger verbosity is increased only on
+    request and restored with the same ownership check. Call close when the
     viewer is disposed so global hooks do not retain an obsolete GUI sink.
     """
 
@@ -153,11 +155,19 @@ class ConsoleCapture:
     _previous_level: ClassVar[int | None] = None
     _owned_level: ClassVar[int | None] = None
 
-    def __init__(self) -> None:
-        """Attach a per-viewer Newton log buffer and install the shared warning hook for the first capture."""
+    def __init__(self, *, attach: bool) -> None:
+        """Create a per-viewer log buffer, attaching it and the shared warning hook only when requested.
+
+        Args:
+            attach: Add the buffer to the ``newton`` logger and route Newton
+                warnings through it. Without it, the buffer stays empty.
+        """
         self.buffer = ConsoleBuffer()
         self.logger = logging.getLogger("newton")
-        self.closed = False
+        self.attached = attach
+        self.closed = not attach
+        if not attach:
+            return
         cls = type(self)
         if not cls._active:
             cls._previous_level = self.logger.level
@@ -206,7 +216,7 @@ class ConsoleCapture:
         # Display filtering never discards already captured records. Enable extra
         # verbosity only when the user explicitly asks to see it.
         """Lower the Newton logger threshold only when additional verbosity is explicitly requested."""
-        if self.logger.getEffectiveLevel() > level:
+        if self.attached and not self.closed and self.logger.getEffectiveLevel() > level:
             self.logger.setLevel(level)
             type(self)._owned_level = level
 
@@ -346,6 +356,16 @@ class ViewerConsole:
     def draw(self, workspace: ViewerWorkspace) -> None:
         """Draw filters and log rows, update read position, and handle entry selection, copy, and context actions."""
         ui, s = workspace.gui.ui.imgui, workspace.widgets.scale
+        if not self.capture.attached:
+            workspace.widgets.label("Console", height=24 * s)
+            ui.same_line(max(ui.get_cursor_pos_x(), ui.get_window_width() - 34 * s))
+            if workspace.widgets.icon_button("##console_close", "close", "Hide console", size=24):
+                self.open = False
+            ui.text_wrapped(
+                "Newton log capture is off. Construct ViewerGL(capture_logs=True) "
+                "to show Newton log records and warnings here."
+            )
+            return
         self.refresh()
         self._last_seen = self.capture.buffer.sequence
         # One compact toolbar with a stable baseline at every DPI.
