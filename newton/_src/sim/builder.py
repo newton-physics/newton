@@ -4759,6 +4759,7 @@ class ModelBuilder:
                 if has_batteries:
                     self._merge_builder_batteries(builder, entity_offsets["actuator"], world)
         self.actuator_count += copy_count * counts["actuator"]
+        self._model_finalizers.update(builder._model_finalizers)
 
         eq_count = builder._equality_constraint_count
         if eq_count:
