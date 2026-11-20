@@ -6730,7 +6730,7 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
         </body>
     </worldbody>
     <equality>
-        <connect name="pin" body1="link1" body2="link2" anchor="0.1 0.2 0.3"
+        <connect name="pin" body1="base" body2="link2" anchor="0.1 0.2 0.3"
                  solref="0.04 0.7" solimp="0.8 0.9 0.002 0.6 3"/>
         <weld name="lock_to_world" body1="link2" relpose="0.2 0.3 0.4 0.9238795 0 0 0.3826834"
               torquescale="2.5" active="false"
@@ -7004,11 +7004,15 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
             <body name="link" pos="0 0 1">
                 <joint name="j1" type="hinge" axis="1 0 0"/>
                 <geom type="sphere" size="0.05"/>
+                <body name="tip" pos="0 0 1">
+                    <joint name="j2" type="hinge" axis="0 1 0"/>
+                    <geom type="sphere" size="0.05"/>
+                </body>
             </body>
         </body>
     </worldbody>
     <equality>
-        <connect name="pin" body1="base" body2="link" anchor="0.1 0.2 0.3"/>
+        <connect name="pin" body1="base" body2="tip" anchor="0.1 0.2 0.3"/>
         <weld name="lock" body1="link" active="false" torquescale="2.5"/>
         <joint name="couple" joint1="j1" joint2="root" polycoef="0.5 1.5 0.1 0.05 0.02"/>
     </equality>

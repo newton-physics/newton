@@ -9553,7 +9553,7 @@ def Xform "Articulation" (
             joint2_prim.CreateAttribute("mjc:solimp", Sdf.ValueTypeNames.DoubleArray).Set([0.6, 0.7, 0.004, 0.5, 1.5])
 
             connect = UsdPhysics.SphericalJoint.Define(stage, "/World/Articulation/EqualityConnect")
-            connect.CreateBody0Rel().SetTargets([link1.GetPath()])
+            connect.CreateBody0Rel().SetTargets([root.GetPath()])
             connect.CreateBody1Rel().SetTargets([link2.GetPath()])
             connect.CreateLocalPos0Attr().Set(Gf.Vec3f(0.1, 0.2, 0.3))
             connect.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
