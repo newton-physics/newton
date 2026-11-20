@@ -1322,6 +1322,67 @@ def test_sticky_matched_rows_replayed(test, device):
             )
 
 
+def test_sticky_rotating_body_far_from_origin(test, device):
+    """A rotating body's changing local witness can stay fixed relative to its axle."""
+    with wp.ScopedDevice(device):
+        world = wp.full(2, -1, dtype=wp.int32)
+        matcher = ContactMatcher(
+            capacity=1,
+            sorter=ContactSorter(1),
+            shape_world=world,
+            world_count=0,
+            shape_index_bits=1,
+            sub_key_bits=1,
+            sticky=True,
+            device=device,
+        )
+        keys = wp.zeros(1, dtype=wp.int64)
+        zero, one = wp.zeros(1, dtype=wp.int32), wp.ones(1, dtype=wp.int32)
+        bodies = wp.array([0, 1], dtype=wp.int32)
+        normal = wp.array([(0.0, 0.0, 1.0)], dtype=wp.vec3)
+        point = wp.array([(0.1235, 0.0, 0.0)], dtype=wp.vec3)
+        origin = (32768.0, 0.0, 0.0)
+        pose = wp.transform(origin, wp.quat_identity())
+        poses = wp.array([pose, pose], dtype=wp.transform)
+        matcher.save_sorted_state(
+            keys,
+            one,
+            point,
+            point,
+            zero,
+            one,
+            normal,
+            poses,
+            bodies,
+            buffer_id=0,
+            contact_generation=one,
+            sorted_offset0=normal,
+            sorted_offset1=normal,
+            device=device,
+        )
+        # After a half turn about z the same world-oriented lever arm has
+        # the opposite sign in the rotating body's coordinates.
+        poses.assign([pose, wp.transform(origin, wp.quat(0.0, 0.0, 1.0, 0.0))])
+        rotated = wp.array([(-0.1235, 0.0, 0.0)], dtype=wp.vec3)
+        result = wp.full(1, MATCH_NOT_FOUND, dtype=wp.int32)
+        matcher.match(
+            sort_keys=keys,
+            contact_count=one,
+            point0=point,
+            point1=rotated,
+            shape0=zero,
+            shape1=one,
+            normal=normal,
+            body_q=poses,
+            shape_body=bodies,
+            match_index_out=result,
+            buffer_id=1,
+            match_generation_out=wp.zeros(1, dtype=wp.int32),
+            device=device,
+        )
+        test.assertEqual(int(result.numpy()[0]), 0)
+
+
 def _build_rolling_cylinder_scene(device, *, plane_first):
     """Build a penetrating cylinder-plane contact with either shape ordering."""
     builder = newton.ModelBuilder()
@@ -1713,6 +1774,12 @@ add_function_test(
 
 add_function_test(
     TestContactMatchingSticky, "test_sticky_matched_rows_replayed", test_sticky_matched_rows_replayed, devices=devices
+)
+add_function_test(
+    TestContactMatchingSticky,
+    "test_sticky_rotating_body_far_from_origin",
+    test_sticky_rotating_body_far_from_origin,
+    devices=devices,
 )
 add_function_test(
     TestContactMatchingSticky,
