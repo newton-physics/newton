@@ -5465,6 +5465,53 @@ class TestActuatorBuilder(unittest.TestCase):
         self.assertEqual(result2["actuator_count"], 0)
 
     @requires("pxr.Usd")
+    def test_from_usd_instanceable(self):
+        """Actuators and batteries under instanceable prims import like the uninstanced asset."""
+        from pxr import UsdPhysics
+
+        test_dir = os.path.join(os.path.dirname(__file__), "assets")
+
+        def load(asset, instanceable):
+            stage = Usd.Stage.CreateInMemory()
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            for i in range(2):
+                robot = stage.DefinePrim(f"/World/Robot{i}")
+                robot.GetReferences().AddReference(os.path.join(test_dir, asset), "/World/Robot")
+                robot.SetInstanceable(instanceable)
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+            result = parse_usd(builder, stage)
+            actuator_dofs = {
+                actuator: dof
+                for entry in builder.actuator_entries.values()
+                for actuator, dof in zip(entry.actuator_indices, entry.indices, strict=True)
+            }
+            dof_start = [builder.joint_qd_start[joint] for joint in builder.articulation_start]
+            dof_start.append(builder.joint_dof_count)
+            # Actuators are added in stage order, so each robot owns the next half of them.
+            per_robot = len(actuator_dofs) // 2
+            robot_dofs = []
+            for i, label in enumerate(builder.articulation_label):
+                self.assertEqual(label, f"/World/Robot{i}")
+                dofs = [actuator_dofs[actuator] for actuator in range(i * per_robot, (i + 1) * per_robot)]
+                for dof in dofs:
+                    self.assertIn(dof, range(dof_start[i], dof_start[i + 1]), label)
+                robot_dofs.append([dof - dof_start[i] for dof in dofs])
+            self.assertEqual(robot_dofs[0], robot_dofs[1])
+            model = builder.finalize()
+            batteries = [
+                (battery.num_batteries, battery.actuator_start.numpy().tolist(), battery.actuators.numpy().tolist())
+                for battery in model.batteries
+            ]
+            return result["actuator_count"], builder.joint_count, robot_dofs, batteries
+
+        for asset, actuator_count, battery_count in (("actuator_test.usda", 4, 0), ("actuator_bam_test.usda", 6, 2)):
+            with self.subTest(asset=asset):
+                expected = load(asset, instanceable=False)
+                self.assertEqual(expected[0], actuator_count)
+                self.assertEqual(sum(num_batteries for num_batteries, _, _ in expected[3]), battery_count)
+                self.assertEqual(load(asset, instanceable=True), expected)
+
+    @requires("pxr.Usd")
     def test_from_usd_schema_plugin_not_loaded(self):
         """parse_actuator_prim works when the USD schema plugin is not registered.
 

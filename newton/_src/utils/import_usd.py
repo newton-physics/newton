@@ -2885,7 +2885,9 @@ def parse_usd(
         for path, idx in path_joint_map.items()
         if idx < len(builder.joint_q_start)
     }
-    for prim in Usd.PrimRange(stage.GetPrimAtPath(root_path)):
+    # Include instance proxies so actuators and batteries under instanceable prims are imported
+    # together with the joints they drive, which the joint traversal above also reaches.
+    for prim in Usd.PrimRange(stage.GetPrimAtPath(root_path), Usd.TraverseInstanceProxies()):
         prim_path = str(prim.GetPath())
         if any(re.match(pattern, prim_path) for pattern in ignore_paths):
             continue
