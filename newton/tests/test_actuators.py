@@ -5465,6 +5465,34 @@ class TestActuatorBuilder(unittest.TestCase):
         self.assertEqual(result2["actuator_count"], 0)
 
     @requires("pxr.Usd")
+    def test_from_usd_instanceable(self):
+        """Actuators and batteries under instanceable prims import like the uninstanced asset."""
+        from pxr import UsdPhysics
+
+        test_dir = os.path.join(os.path.dirname(__file__), "assets")
+
+        def load(asset, instanceable):
+            stage = Usd.Stage.CreateInMemory()
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            for i in range(2):
+                robot = stage.DefinePrim(f"/World/Robot{i}")
+                robot.GetReferences().AddReference(os.path.join(test_dir, asset), "/World/Robot")
+                robot.SetInstanceable(instanceable)
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+            result = parse_usd(builder, stage)
+            model = builder.finalize()
+            dofs = sorted(int(dof) for actuator in model.actuators for dof in actuator.indices.numpy())
+            battery_actuators = [battery.actuators.numpy().tolist() for battery in model.batteries]
+            return result["actuator_count"], builder.joint_count, dofs, battery_actuators
+
+        for asset, actuator_count, battery_count in (("actuator_test.usda", 4, 0), ("actuator_bam_test.usda", 6, 1)):
+            with self.subTest(asset=asset):
+                expected = load(asset, instanceable=False)
+                self.assertEqual(expected[0], actuator_count)
+                self.assertEqual(len(expected[3]), battery_count)
+                self.assertEqual(load(asset, instanceable=True), expected)
+
+    @requires("pxr.Usd")
     def test_from_usd_schema_plugin_not_loaded(self):
         """parse_actuator_prim works when the USD schema plugin is not registered.
 
