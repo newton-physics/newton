@@ -6040,7 +6040,6 @@ def Xform "Articulation" (
         )
 
     @requires("pxr.Usd")
-    @requires("pxr.Usd")
     def test_bound_material_supplies_the_friction_pair(self):
         """A bound material sets mu and mu_static together: staticFriction counts only above dynamicFriction,
         an unauthored one (UsdPhysics default 0) does not fall back to the builder default mu_static, and an
