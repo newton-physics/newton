@@ -17,6 +17,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Programming Language :: Python :: 3 :: Only",
     "Environment :: GPU :: NVIDIA CUDA",
     "Environment :: GPU :: NVIDIA CUDA :: 12",
@@ -40,8 +41,8 @@ optix = [
 # Core simulation dependencies
 sim = [
     # MuJoCo simulation
-    "mujoco-warp~=3.17.0; (sys_platform != 'win32' or platform_machine != 'ARM64')",  # MuJoCo, warp-accelerated
-    "mujoco~=3.17.0; (sys_platform != 'win32' or platform_machine != 'ARM64')",       # MuJoCo physics engine
+    "mujoco-warp~=4.0.1; (sys_platform != 'win32' or platform_machine != 'ARM64')",  # MuJoCo, warp-accelerated
+    "mujoco-core~=4.0.1; (sys_platform != 'win32' or platform_machine != 'ARM64')",  # MuJoCo physics engine
 ]
 
 # Optional ONNX policy inference for neural actuators and RL policy examples.
@@ -64,14 +65,15 @@ importers = [
     "pycollada>=0.9",              # transitive dependency of trimesh for COLLADA (.dae) mesh support
     "Pillow>=11.3.0",
     "resolve-robotics-uri-py>=0.5.1",  # for resolving file://, package://, and model:// URIs
-    "open3d>=0.20.0; (sys_platform != 'darwin' or platform_machine == 'arm64') and (sys_platform != 'win32' or platform_machine != 'ARM64')",  # no Intel macOS or Windows ARM64 wheels
 
     # USD core libraries
     "usd-core>=25.5,<26.12 ; platform_machine != 'aarch64' and python_version < '3.15' and (sys_platform != 'win32' or platform_machine != 'ARM64')",
+    # USD Exchange has no Python 3.14 wheels; USD Core 26.11 adds Linux ARM64 wheels.
+    "usd-core>=26.11,<26.12 ; platform_machine == 'aarch64' and python_version >= '3.14' and python_version < '3.15'",
     "usd-exchange>=2.3.0,<4 ; platform_machine == 'aarch64' and python_version < '3.14'",
 
     # Newton USD Schemas
-    "newton-usd-schemas>=0.6.0",
+    "newton-usd-schemas>=0.7.0",
 ]
 
 # Remeshing dependencies (for SurfaceReconstructor)
@@ -119,6 +121,7 @@ dev = [
     "newton[examples]",      # includes examples, which pulls in sim and visualization
     "coverage[toml]>=7.8.0", # for code coverage testing
     "viser>=1.1.1",          # exercise browser viewer interactions in CPU and GPU CI
+    "newton[remesh]",        # Open3D and pyfqmr, so the remeshing tests run
 ]
 
 # Documentation dependencies

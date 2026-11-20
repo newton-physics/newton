@@ -102,12 +102,12 @@ can inherit ``model.vbd`` settings.
        last resort, see :ref:`vbd-jitter-pipeline`.
      - Runtime grows linearly. Does not fix a stiffness-ratio problem.
    * - ``friction_epsilon`` (1e-2)
-     - Threshold for small sliding speeds [m/s]. Sets particle friction
-       smoothing length to ``friction_epsilon`` x ``dt``; also regularizes
-       the compliant-ALM body-body friction solve.
-     - Particle friction chatters at rest.
-     - Slow particle creep under tangential load when large; affects
-       finite-iteration convergence for compliant-ALM body-body contacts.
+     - Threshold for small sliding speeds [m/s]. Sets the friction smoothing
+       length to ``friction_epsilon`` x ``dt``
+       for particle and rigid-soft contacts.
+     - Particle or rigid-soft friction chatters at rest.
+     - Larger values permit slow creep under tangential load. Does not affect
+       compliant-ALM rigid-rigid contacts.
    * - ``dat_conservative_bound_relaxation`` (0.85)
      - Scale of both truncations: how close to its division plane a vertex may
        go, and the radius cap of 0.5 x this x query radius.
@@ -203,10 +203,8 @@ can inherit ``model.vbd`` settings.
        solver after changes.
 
 Deprecated aliases remain for one release cycle: ``particle_self_contact_radius``
-(legacy radius and margin pair), ``particle_collision_detection_interval``
-(now the self-contact slot of the collision schedule) and
-``particle_conservative_bound_relaxation`` (now
-``dat_conservative_bound_relaxation``). New code should not use them. Passing a
+(legacy radius and margin pair) and ``particle_collision_detection_interval``
+(now the self-contact slot of the collision schedule). New code should not use them. Passing a
 margin without a gap also triggers the legacy meaning of the margin and a
 deprecation warning, so always pass both.
 
@@ -677,12 +675,27 @@ before increasing ``mu``. VBD mixes body-body ``ke`` and ``kd`` with an
 arithmetic mean and ``mu`` with a geometric mean, so one stiff shape can
 dominate normal stiffness while a shape with ``mu=0`` makes its pairs
 frictionless. Unexpected slip can also come from missing contacts or an
-incomplete solve. Leave ``friction_epsilon`` at its default initially;
-it does not change the Coulomb limit set by ``mu``.
+incomplete solve.
+
+**Torsional and rolling friction.** Body-body contacts resist spin about the
+contact normal and rolling in the contact plane.
+:attr:`~newton.ModelBuilder.ShapeConfig.mu_torsional` and
+:attr:`~newton.ModelBuilder.ShapeConfig.mu_rolling` are lengths [m]: each
+torque limit is the coefficient times the normal force. Both defaults are
+nonzero. Pair coefficients use the geometric mean, so zero on either shape
+disables that channel. For small parts and thin cables, reduce the
+coefficients or set them to zero if angular resistance is too strong.
 
 **Body coloring.** VBD updates bodies in the same color group in parallel.
 Automatic coloring uses joint and tendon connections, but does not include
 contacts. Contacting bodies may share a color, which can slow convergence.
+Compliant-ALM contacts between two dynamic bodies of the same color use a
+doubled solve metric to bound their simultaneous corrections. This can improve
+stability in dense contact networks, but those pairs may need more iterations.
+Bodies in different color groups are updated sequentially, so their contact
+solve metrics are not doubled.
+Damped grasps with same-color contacts can still fail at higher iteration
+counts.
 For small scenes with predictable contacts, consider splitting
 existing groups in ``builder.body_color_groups`` to separate frequently
 contacting bodies. Make these edits after ``builder.color()`` and before
@@ -735,6 +748,9 @@ behave as follows:
      - Replay eligible contact geometry. Restore normal multipliers;
        tangential memory comes from the replayed material anchor.
        This matching mode is experimental.
+
+Both matching modes also restore torsional and rolling multipliers, projected
+to the current contact frame and torque limits.
 
 For a baseline, set ``rigid_contact_history=False`` explicitly. Use
 ``contact_matching="disabled"`` unless rigid detection uses ``ITERATIONS``,
