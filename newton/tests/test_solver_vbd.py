@@ -5837,7 +5837,7 @@ def _tet_only_elasticity_eligibility_matches_active_materials(test, device):
     test.assertFalse(_is_tet_only_elasticity_model(empty_model))
 
 
-def _make_tets_sharing_vertex(count, device):
+def _make_tets_sharing_vertex(count, device, shear=0.0):
     vertices = [wp.vec3(0.0, 0.0, 0.0)]
     indices = []
     for tet_index in range(count):
@@ -5846,7 +5846,7 @@ def _make_tets_sharing_vertex(count, device):
         vertices.extend(
             (
                 wp.vec3(scale, 0.0, 0.0),
-                wp.vec3(0.0, scale, 0.0),
+                wp.vec3(shear * scale, scale, 0.0),
                 wp.vec3(0.0, 0.0, scale),
             )
         )
@@ -5916,7 +5916,7 @@ def _make_tet_accumulation_kernel(accumulate):
 
 def _scalar_tet_lookahead_matches_reference(test, device):
     """Match force and Hessian across inactive, prefetched and trailing tet slots."""
-    model = _make_tets_sharing_vertex(6, device)
+    model = _make_tets_sharing_vertex(6, device, shear=0.2)
     adjacency = model.soft_mesh_adjacency_device
     begin, end = adjacency.v_adj_tets_offsets.numpy()[:2]
     tet_ids = adjacency.v_adj_tets.numpy()[begin:end:2]
