@@ -1183,7 +1183,12 @@ class TestViewerProperties(unittest.TestCase):
         viewer.set_model(other_model)
         ws.model = other_model
         self.assertIsNone(ws.bindings.control)
-        for setter, component in ((viewer.set_solver, solver), (viewer.set_collision_pipeline, pipeline)):
+        for setter, component in (
+            (viewer.set_solver, solver),
+            (viewer.set_collision_pipeline, pipeline),
+            # Objects without a model get the documented error, not AttributeError.
+            (viewer.set_solver, object()),
+        ):
             with self.assertRaisesRegex(ValueError, "active model"):
                 setter(component)
         viewer.set_control(other_model.control())

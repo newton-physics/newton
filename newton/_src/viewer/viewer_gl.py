@@ -278,6 +278,7 @@ class ViewerGL(ViewerBase):
         super().__init__()
         self.show_contact_pairs = True
         self.show_contact_labels = True
+        """Number contacts while paused with a Contacts inspector tab open."""
         self.contact_selection_only: bool = True
         """Restrict contact glyphs to selected shapes/bodies in the inspection workspace."""
         self.camera_slowdown = 2.0
