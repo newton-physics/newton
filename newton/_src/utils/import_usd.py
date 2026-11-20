@@ -2008,7 +2008,7 @@ def parse_usd(
             inertia_tensor_val = (
                 usd.get_attribute(prim, "newton:inertia") if usd.has_applied_api_schema(prim, "NewtonMassAPI") else None
             )
-            has_inertia_tensor = inertia_tensor_val is not None
+            has_inertia_tensor = inertia_tensor_val is not None and len(inertia_tensor_val) > 0
             if has_inertia_tensor:
                 if len(inertia_tensor_val) != 6:
                     warnings.warn(
