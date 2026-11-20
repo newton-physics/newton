@@ -5480,13 +5480,29 @@ class TestActuatorBuilder(unittest.TestCase):
                 robot.SetInstanceable(instanceable)
             builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
             result = parse_usd(builder, stage)
+            actuator_dofs = {
+                actuator: dof
+                for entry in builder.actuator_entries.values()
+                for actuator, dof in zip(entry.actuator_indices, entry.indices, strict=True)
+            }
+            dof_start = [builder.joint_qd_start[joint] for joint in builder.articulation_start]
+            dof_start.append(builder.joint_dof_count)
+            # Actuators are added in stage order, so each robot owns the next half of them.
+            per_robot = len(actuator_dofs) // 2
+            robot_dofs = []
+            for i, label in enumerate(builder.articulation_label):
+                self.assertEqual(label, f"/World/Robot{i}")
+                dofs = [actuator_dofs[actuator] for actuator in range(i * per_robot, (i + 1) * per_robot)]
+                for dof in dofs:
+                    self.assertIn(dof, range(dof_start[i], dof_start[i + 1]), label)
+                robot_dofs.append([dof - dof_start[i] for dof in dofs])
+            self.assertEqual(robot_dofs[0], robot_dofs[1])
             model = builder.finalize()
-            dofs = sorted(int(dof) for actuator in model.actuators for dof in actuator.indices.numpy())
             batteries = [
                 (battery.num_batteries, battery.actuator_start.numpy().tolist(), battery.actuators.numpy().tolist())
                 for battery in model.batteries
             ]
-            return result["actuator_count"], builder.joint_count, dofs, batteries
+            return result["actuator_count"], builder.joint_count, robot_dofs, batteries
 
         for asset, actuator_count, battery_count in (("actuator_test.usda", 4, 0), ("actuator_bam_test.usda", 6, 2)):
             with self.subTest(asset=asset):
