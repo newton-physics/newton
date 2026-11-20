@@ -180,6 +180,51 @@ Both support dense and sparse operators and bilateral Schur elimination.
 See the :class:`~newton.solvers.SolverKamino` configuration reference for
 subsolver selection and iteration controls.
 
+Configuring Kamino from USD
+---------------------------
+
+Register Kamino's custom attributes before importing the asset, then construct
+the solver from the finalized model.
+
+.. code-block:: python
+
+   builder = newton.ModelBuilder()
+   newton.solvers.SolverKamino.register_custom_attributes(builder)
+   builder.add_usd("scene.usda")
+   model = builder.finalize()
+   solver = newton.solvers.SolverKamino(model)
+
+For example, add these settings to the asset's ``PhysicsScene``.
+
+.. code-block:: usda
+
+   def PhysicsScene "Scene" (
+       prepend apiSchemas = ["NewtonKaminoSccSceneAPI"]
+   )
+   {
+       uniform token newton:kamino:dynamicsSolver = "scc"
+       uniform token newton:kamino:scc:unilateral:numericalSolver = "apgd"
+       uniform int newton:kamino:scc:unilateral:apgd:maxIterations = 96
+       uniform bool newton:kamino:constraints:contactCompliance = true
+   }
+
+Import uses the selected physics scene's default-time values. Author
+``newton:kamino:dynamicsSolver = "scc"`` to select SCC independently of API
+order. Reading solver selection from the SCC schema defaults requires a version
+of ``newton-usd-schemas`` that provides ``NewtonKaminoSccSceneAPI``. An
+explicitly authored scene setting takes precedence over the corresponding
+fallback passed to ``SolverKamino.Config.from_model()``. SCC disables
+preconditioning. Passing a complete config directly to the solver uses that
+config.
+
+The SCC schema exposes the bilateral factorization, warmstarting, PGS and APGD
+controls, and convergence tolerance. The controls for the selected unilateral
+method are applied. ``newton:maxSolverIterations`` sets the outer alternating
+iteration limit. Both Kamino scene APIs support independent contact and
+joint-limit compliance, recovery times and recovery speed caps. An authored
+``-inf`` recovery time selects the engine default. Contact and joint-limit gains
+come from the existing material and joint schemas.
+
 Constraint recovery and material compliance
 -------------------------------------------
 
@@ -284,9 +329,6 @@ cap to zero.
 This conversion preserves rigid-row recovery. Enabling finite stiffness can
 introduce elastic deflection or bounce, so material gains must suit the intended
 motion rather than reproduce rigid-contact trajectories exactly.
-
-The new settings are configured through Python. USD schema and importer
-extensions for these settings are deferred to a separate change.
 
 The shared recovery/compliance settings currently support PADMM and SCC.
 LOX rejects non-default values for these new settings and retains its existing
