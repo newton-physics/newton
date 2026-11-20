@@ -145,6 +145,8 @@ class Example:
         mpm_options.critical_fraction = 0.0
         mpm_options.air_drag = 1.0
         mpm_options.collider_velocity_mode = "backward"
+        # Push sand that foot strikes drive into the ground back out within about one frame
+        mpm_options.collider_recovery_time = 0.02
 
         # setup solvers
         self.solver = newton.solvers.SolverMuJoCo(
