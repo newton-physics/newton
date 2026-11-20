@@ -220,11 +220,6 @@ _ACTUATOR_ENTRY_DELAY_ARGS_UNSET = object()
 _ACTUATOR_ENTRY_DELAY_ARGS_DEPRECATION_MSG = (
     "ModelBuilder.ActuatorEntry.delay_args is deprecated in Newton 1.9; use input_processor_args instead."
 )
-_JOINT_TWIST_LIMIT_DEPRECATION_MSG = (
-    "ModelBuilder.joint_twist_lower and ModelBuilder.joint_twist_upper are deprecated in Newton 1.7 and "
-    "will be removed in a future release. They were never used; limit joint rotations with the per-DOF "
-    "limits of ModelBuilder.JointDofConfig instead."
-)
 _ADD_MUSCLE_DEPRECATION_MSG = (
     "ModelBuilder.add_muscle() is deprecated in Newton 1.9 and will be removed in a future release. "
     "Legacy muscles ignore their parameters and are only evaluated by SolverSemiImplicit. "
@@ -2560,10 +2555,6 @@ class ModelBuilder:
         self.joint_friction: list[float] = []
         """Joint friction values accumulated for :attr:`Model.joint_friction`."""
 
-        # Created on first access so a fresh builder has no merge-managed list for them.
-        self._deprecated_joint_twist_lower: list[float] | None = None
-        self._deprecated_joint_twist_upper: list[float] | None = None
-
         self.joint_enabled: list[bool] = []
         """Joint enabled flags accumulated for :attr:`Model.joint_enabled`."""
 
@@ -4110,42 +4101,6 @@ class ModelBuilder:
         The number of articulations in the model.
         """
         return len(self.articulation_start)
-
-    @property
-    def joint_twist_lower(self) -> list[float]:
-        """Lower twist limits, never used by :meth:`finalize` or any solver.
-
-        .. deprecated:: 1.7
-            Limit joint rotations with the per-DOF limits of :class:`JointDofConfig` instead.
-        """
-        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-        if self._deprecated_joint_twist_lower is None:
-            self._deprecated_joint_twist_lower = []
-        return self._deprecated_joint_twist_lower
-
-    @joint_twist_lower.setter
-    def joint_twist_lower(self, value: list[float]) -> None:
-        # stacklevel skips ModelBuilder.__setattr__ to report the caller.
-        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=3)
-        self._deprecated_joint_twist_lower = value
-
-    @property
-    def joint_twist_upper(self) -> list[float]:
-        """Upper twist limits, never used by :meth:`finalize` or any solver.
-
-        .. deprecated:: 1.7
-            Limit joint rotations with the per-DOF limits of :class:`JointDofConfig` instead.
-        """
-        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-        if self._deprecated_joint_twist_upper is None:
-            self._deprecated_joint_twist_upper = []
-        return self._deprecated_joint_twist_upper
-
-    @joint_twist_upper.setter
-    def joint_twist_upper(self, value: list[float]) -> None:
-        # stacklevel skips ModelBuilder.__setattr__ to report the caller.
-        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=3)
-        self._deprecated_joint_twist_upper = value
 
     @staticmethod
     def _quat_from_axis_targets(t_x: float, t_y: float, t_z: float) -> tuple[float, float, float, float]:
