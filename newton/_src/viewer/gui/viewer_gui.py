@@ -45,12 +45,15 @@ _SIDEBAR_WIDTH_PX = 300.0
 class ViewerGui:
     """Shared ImGui rendering for concrete viewers (GL / RTX)."""
 
-    def __init__(self, viewer: ViewerBase, window: Window, *, workspace_enabled: bool = False) -> None:
+    def __init__(
+        self, viewer: ViewerBase, window: Window, *, workspace_enabled: bool = False, capture_logs: bool = False
+    ) -> None:
         """Initialize the shared GUI backend, input routing, callbacks, and camera interaction state.
 
-        Workspace-enabled viewers compile interaction kernels and capture Newton
-        logs when the optional GUI backend is available. Workspace creation is
-        deferred until the first UI frame; legacy GUIs compile on demand.
+        Workspace-enabled viewers compile interaction kernels when the optional
+        GUI backend is available, and capture Newton logs in their console only
+        with ``capture_logs``. Workspace creation is deferred until the first UI
+        frame; legacy GUIs compile on demand.
         """
         self._viewer = viewer
         self.ui = ImGuiBackend(window, workspace_style=workspace_enabled)
@@ -92,7 +95,7 @@ class ViewerGui:
             self.ui.io.config_flags |= self.ui.imgui.ConfigFlags_.docking_enable
             self.ui.io.config_windows_move_from_title_bar_only = True
             # Attach before constructing an example, so importer diagnostics survive loading.
-            self.console_capture = ConsoleCapture()
+            self.console_capture = ConsoleCapture(attach=capture_logs)
             window.push_handlers(on_close=self.close_console)
         self._workspace_example = None
         self._workspace_browser = None

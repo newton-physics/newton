@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import ctypes
+import logging
 import sys
 import unittest
 from importlib import import_module
@@ -808,6 +809,9 @@ class TestViewerGLGetFrame(unittest.TestCase):
                     else:
                         self.assertIsNotNone(gui.workspace)
                         self.assertIsNotNone(viewer.renderer._workspace_rect)
+                        # Only the application may opt into mirroring Newton logs.
+                        self.assertFalse(gui.console_capture.attached)
+                        self.assertNotIn(gui.console_capture.buffer, logging.getLogger("newton").handlers)
                         # Custom loops without newton.examples.run() still draw
                         # every registered position, including the default "side".
                         self.assertEqual(calls[-5:], ["panel", "side", "stats", "free", "timeline_gui"])

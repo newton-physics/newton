@@ -590,9 +590,11 @@ is distinguished from an unloaded contact. BVH overlays are bounded debug
 views of available current bounds, not an export of every backend's BVH nodes.
 
 Images and plots logged by the example appear as dockable tabs alongside the
-viewport. The console receives Newton Python logging records, with level
-filtering; warnings and errors open it automatically. Console capture preserves
-terminal output and application-configured logging handlers. Explicit display choices
+viewport. With ``ViewerGL(capture_logs=True)``, which the example runner
+passes, the console receives Newton Python logging records and Newton warnings,
+with level filtering; warnings and errors open it automatically. Console capture
+preserves terminal output and application-configured logging handlers. Without
+the opt-in, the viewer leaves logging configuration untouched. Explicit display choices
 survive example switches. A new scene keeps its authored camera pose.
 
 To use the previous sidebar GUI, construct the viewer with

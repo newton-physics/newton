@@ -115,7 +115,19 @@ class TestLoggingDefaults(unittest.TestCase):
         """GUI observers mirror logs/warnings without suppressing or duplicating output."""
         from newton._src.viewer.gui.console import ConsoleCapture  # noqa: PLC0415
 
-        first, second = ConsoleCapture(), ConsoleCapture()
+        # Without an explicit application opt-in, a capture changes no logging state.
+        newton_logger = logging.getLogger("newton")
+        handlers, showwarning = list(newton_logger.handlers), warnings.showwarning
+        detached = ConsoleCapture(attach=False)
+        detached.request_level(logging.DEBUG)
+        self.assertEqual(newton_logger.handlers, handlers)
+        self.assertIs(warnings.showwarning, showwarning)
+        self.assertNotEqual(newton_logger.level, logging.DEBUG)
+        self.assertEqual(self._capture((logging.INFO, "not captured")), ("not captured\n", ""))
+        self.assertEqual(detached.buffer.snapshot()[1], ())
+        detached.close()
+
+        first, second = ConsoleCapture(attach=True), ConsoleCapture(attach=True)
         self.addCleanup(first.close)
         self.addCleanup(second.close)
         stdout, stderr = io.StringIO(), io.StringIO()
@@ -148,7 +160,6 @@ class TestLoggingDefaults(unittest.TestCase):
         logging.getLogger().removeHandler(handler)
         self.assertEqual(self._capture((logging.INFO, "second viewer remains")), ("second viewer remains\n", ""))
         self.assertEqual(second.buffer.snapshot()[1][-1].message, "second viewer remains")
-        newton_logger = logging.getLogger("newton")
         saved_level = newton_logger.level
         try:
             newton_logger.setLevel(logging.ERROR)

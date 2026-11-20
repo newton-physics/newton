@@ -233,6 +233,7 @@ class ViewerGL(ViewerBase):
         *,
         enable_cuda_interop: ViewerGL.CudaInterop = CudaInterop.DYNAMIC_MESH,
         legacy_gui: bool = False,
+        capture_logs: bool = False,
     ):
         """
         Initialize the OpenGL viewer and UI.
@@ -255,6 +256,15 @@ class ViewerGL(ViewerBase):
             legacy_gui: Use the legacy sidebar, statistics overlay, and floating
                 image/plot windows instead of the docked inspection workspace.
                 Defaults to False. Has no effect in headless mode.
+            capture_logs: Mirror ``newton`` log records and Newton warnings into
+                the workspace console until :meth:`close`. This adds a handler
+                to the ``newton`` logger and routes :class:`~newton.NewtonWarning`
+                through it; existing terminal output and application handlers
+                are unchanged. Defaults to False, leaving logging configuration
+                to the application. Has no effect in headless mode or with
+                ``legacy_gui``.
+
+                .. experimental::
         """
         self._plot_logger = PlotLogger(plot_history_size, get_window=lambda: self.renderer.window)
         if num_frames is not None:
@@ -285,13 +295,15 @@ class ViewerGL(ViewerBase):
 
         self.renderer = RendererGL(vsync=vsync, screen_width=width, screen_height=height, headless=headless)
         try:
-            self._setup_viewer(headless, paused, num_frames, legacy_gui=legacy_gui)
+            self._setup_viewer(headless, paused, num_frames, legacy_gui=legacy_gui, capture_logs=capture_logs)
         except BaseException:
             # Close the renderer's window, as RendererGL does when its own setup fails.
             self.renderer.close()
             raise
 
-    def _setup_viewer(self, headless: bool, paused: bool, num_frames: int | None, *, legacy_gui: bool) -> None:
+    def _setup_viewer(
+        self, headless: bool, paused: bool, num_frames: int | None, *, legacy_gui: bool, capture_logs: bool = False
+    ) -> None:
         """Set up the camera, input handling, and UI around the new renderer."""
         self.renderer.set_title("Newton Viewer")
         self._image_logger = ImageLogger(device=self.device)
@@ -322,7 +334,9 @@ class ViewerGL(ViewerBase):
 
         # Only create UI in non-headless mode to avoid OpenGL context dependency
         if not headless:
-            self.gui = ViewerGui(self, self.renderer.window, workspace_enabled=not legacy_gui)
+            self.gui = ViewerGui(
+                self, self.renderer.window, workspace_enabled=not legacy_gui, capture_logs=capture_logs
+            )
             self.renderer.window.push_handlers(on_scale=self._on_window_scale)
         else:
             self.gui = None
