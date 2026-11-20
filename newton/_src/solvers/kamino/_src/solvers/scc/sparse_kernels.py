@@ -509,6 +509,7 @@ def _color_compact_contact_groups(
     sorted_to_unsorted_map: wp.array[int32],
     contacts_cid: wp.array[int32],
     inequality_bodies: wp.array[wp.vec2i],
+    body_color_nodes: wp.array[int32],
     body_color_masks: wp.array[wp.uint64],
     compact_group_starts: wp.array[int32],
     group_colors: wp.array[int32],
@@ -541,22 +542,9 @@ def _color_compact_contact_groups(
         contact_id = sorted_to_unsorted_map[compact_group_starts[group]]
         pair = inequality_bodies[uio + contacts_cid[contact_id]]
         cached_group_pairs[group] = pair
-        forbidden = wp.uint64(0)
-        if pair[0] >= int32(0):
-            forbidden |= body_color_masks[pair[0]]
-        if pair[1] >= int32(0):
-            forbidden |= body_color_masks[pair[1]]
-        color = _lowest_set_color(wp.int64(forbidden) ^ wp.int64(-1))
-        if color < int32(0):
-            color = num_colors
+        color = _greedy_color(pair, body_color_nodes, body_color_masks, num_colors)
         group_colors[group] = color
         num_colors = wp.max(num_colors, color + int32(1))
-        if color < int32(64):
-            color_bit = wp.uint64(1) << wp.uint64(color)
-            if pair[0] >= int32(0):
-                body_color_masks[pair[0]] |= color_bit
-            if pair[1] >= int32(0):
-                body_color_masks[pair[1]] |= color_bit
     inequality_num_colors[0] = num_colors
     for color in range(num_colors + int32(1)):
         inequality_color_starts[uio + color] = int32(0)
@@ -644,6 +632,40 @@ def _lowest_set_color(mask: wp.int64) -> wp.int32:
     ...
 
 
+@wp.func
+def _greedy_color(
+    pair: wp.vec2i,
+    body_color_nodes: wp.array[int32],
+    body_color_masks: wp.array[wp.uint64],
+    num_colors: int32,
+) -> int32:
+    """Return the lowest color free at both nodes of ``pair`` and claim it.
+
+    Negative body ids (the world) impose no constraint. When all 64 mask colors
+    are taken, ``num_colors`` is returned: a fresh color is always conflict-free
+    and avoids a superlinear search in dense manifolds that share a body.
+    """
+    node_a = int32(-1)
+    node_b = int32(-1)
+    forbidden = wp.uint64(0)
+    if pair[0] >= int32(0):
+        node_a = body_color_nodes[pair[0]]
+        forbidden |= body_color_masks[node_a]
+    if pair[1] >= int32(0):
+        node_b = body_color_nodes[pair[1]]
+        forbidden |= body_color_masks[node_b]
+    color = _lowest_set_color(wp.int64(forbidden) ^ wp.int64(-1))
+    if color < int32(0):
+        color = num_colors
+    if color < int32(64):
+        color_bit = wp.uint64(1) << wp.uint64(color)
+        if node_a >= int32(0):
+            body_color_masks[node_a] |= color_bit
+        if node_b >= int32(0):
+            body_color_masks[node_b] |= color_bit
+    return color
+
+
 @wp.kernel
 def _color_mapped_scc_inequalities(
     problem_nbc: wp.array[int32],
@@ -651,6 +673,7 @@ def _color_mapped_scc_inequalities(
     problem_nc: wp.array[int32],
     problem_uio: wp.array[int32],
     inequality_bodies: wp.array[wp.vec2i],
+    body_color_nodes: wp.array[int32],
     body_color_masks: wp.array[wp.uint64],
     inequality_colors: wp.array[int32],
     inequality_num_colors: wp.array[int32],
@@ -662,6 +685,11 @@ def _color_mapped_scc_inequalities(
     This favors the many-small-world workload. Unusually high-degree graphs
     that exhaust 64 colors assign fresh colors without a color cap. The same
     pass emits compact color ranges shared by dense and sparse PGS.
+
+    ``body_color_nodes`` maps each body to the graph node it colors against.
+    Distinct nodes per body give body coloring; mapping every body of an
+    articulation to one node keeps same-color inequalities decoupled in the
+    bilateral Schur complement.
     """
     wid = wp.tid()
     nu = problem_nbc[wid] + problem_nl[wid] + problem_nc[wid]
@@ -669,25 +697,9 @@ def _color_mapped_scc_inequalities(
     num_colors = int32(0)
     for uid in range(nu):
         pair = inequality_bodies[uio + uid]
-        forbidden = wp.uint64(0)
-        if pair[0] >= int32(0):
-            forbidden |= body_color_masks[pair[0]]
-        if pair[1] >= int32(0):
-            forbidden |= body_color_masks[pair[1]]
-
-        color = _lowest_set_color(wp.int64(forbidden) ^ wp.int64(-1))
-        if color < int32(0):
-            # A fresh color is always conflict-free and avoids a superlinear
-            # search in dense manifolds that share a body.
-            color = num_colors
+        color = _greedy_color(pair, body_color_nodes, body_color_masks, num_colors)
         inequality_colors[uio + uid] = color
         num_colors = wp.max(num_colors, color + int32(1))
-        if color < int32(64):
-            color_bit = wp.uint64(1) << wp.uint64(color)
-            if pair[0] >= int32(0):
-                body_color_masks[pair[0]] |= color_bit
-            if pair[1] >= int32(0):
-                body_color_masks[pair[1]] |= color_bit
 
     inequality_num_colors[wid] = num_colors
 
@@ -718,6 +730,7 @@ def _group_mapped_scc_inequalities(
     problem_nc: wp.array[int32],
     problem_uio: wp.array[int32],
     inequality_bodies: wp.array[wp.vec2i],
+    body_color_nodes: wp.array[int32],
     body_color_masks: wp.array[wp.uint64],
     inequality_colors: wp.array[int32],
     inequality_num_colors: wp.array[int32],
@@ -727,7 +740,12 @@ def _group_mapped_scc_inequalities(
     inequality_order: wp.array[int32],
     use_contact_order: wp.bool,
 ):
-    """Color consecutive contact groups and emit group ranges for sparse PGS."""
+    """Color consecutive contact groups and emit group ranges for sparse PGS.
+
+    Groups share a body pair; colors are assigned over ``body_color_nodes``
+    as in :func:`_color_mapped_scc_inequalities`, because the general sparse
+    PGS kernel updates the groups of one color in parallel.
+    """
     wid = wp.tid()
     nbc = problem_nbc[wid]
     nl = problem_nl[wid]
@@ -746,21 +764,8 @@ def _group_mapped_scc_inequalities(
         grouped = ordered_id > contact_uid_start and pair[0] == previous_pair[0] and pair[1] == previous_pair[1]
         color = previous_color
         if not grouped:
-            forbidden = wp.uint64(0)
-            if pair[0] >= int32(0):
-                forbidden |= body_color_masks[pair[0]]
-            if pair[1] >= int32(0):
-                forbidden |= body_color_masks[pair[1]]
-            color = _lowest_set_color(wp.int64(forbidden) ^ wp.int64(-1))
-            if color < int32(0):
-                color = num_colors
+            color = _greedy_color(pair, body_color_nodes, body_color_masks, num_colors)
             num_colors = wp.max(num_colors, color + int32(1))
-            if color < int32(64):
-                color_bit = wp.uint64(1) << wp.uint64(color)
-                if pair[0] >= int32(0):
-                    body_color_masks[pair[0]] |= color_bit
-                if pair[1] >= int32(0):
-                    body_color_masks[pair[1]] |= color_bit
         inequality_colors[uio + uid] = color
         previous_color = color
         previous_pair = pair
