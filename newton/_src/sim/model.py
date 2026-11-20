@@ -379,7 +379,11 @@ class Model:
         SPRING = 13
         """Attribute frequency follows the number of springs (see :attr:`~newton.Model.spring_count`)."""
         CONSTRAINT_MIMIC = 14
-        """Attribute frequency follows the number of mimic constraints (see :attr:`~newton.Model.constraint_mimic_count`)."""
+        """Attribute frequency of the removed mimic constraints; it has no entries.
+
+        .. deprecated:: 1.9
+            Mimic constraints were removed; see :meth:`~newton.ModelBuilder.set_joint_mimic`.
+        """
         WORLD = 15
         """Attribute frequency follows the number of worlds plus the global world.
 
@@ -763,7 +767,7 @@ class Model:
         "joint_effort_limit": AttributeSpec(AttributeFrequency.JOINT_DOF),
         "joint_friction": AttributeSpec(AttributeFrequency.JOINT_DOF),
         "joint_velocity_limit": AttributeSpec(AttributeFrequency.JOINT_DOF),
-        # articulations and deprecated mimic constraints
+        # articulations
         "articulation_start": AttributeSpec(
             AttributeFrequency.ARTICULATION,
             references=AttributeFrequency.JOINT,
@@ -832,22 +836,6 @@ class Model:
         "volume_tet_end": AttributeSpec(
             AttributeFrequency.VOLUME, references=AttributeFrequency.TETRAHEDRON, compaction_policy="end"
         ),
-        "constraint_mimic_joint0": AttributeSpec(
-            AttributeFrequency.CONSTRAINT_MIMIC,
-            references=AttributeFrequency.JOINT,
-        ),
-        "constraint_mimic_joint1": AttributeSpec(
-            AttributeFrequency.CONSTRAINT_MIMIC,
-            references=AttributeFrequency.JOINT,
-        ),
-        "constraint_mimic_coef0": AttributeSpec(AttributeFrequency.CONSTRAINT_MIMIC),
-        "constraint_mimic_coef1": AttributeSpec(AttributeFrequency.CONSTRAINT_MIMIC),
-        "constraint_mimic_enabled": AttributeSpec(AttributeFrequency.CONSTRAINT_MIMIC),
-        "constraint_mimic_label": AttributeSpec(AttributeFrequency.CONSTRAINT_MIMIC),
-        "constraint_mimic_world": AttributeSpec(
-            AttributeFrequency.CONSTRAINT_MIMIC,
-            references=AttributeFrequency.WORLD,
-        ),
     }
 
     _ATTRIBUTE_FREQUENCY_COUNT_ATTRS: ClassVar[dict[AttributeFrequency, str]] = {
@@ -866,7 +854,6 @@ class Model:
         AttributeFrequency.TENDON: "tendon_count",
         AttributeFrequency.TENDON_GUIDE: "tendon_guide_count",
         AttributeFrequency.TENDON_SEGMENT: "tendon_segment_count",
-        AttributeFrequency.CONSTRAINT_MIMIC: "constraint_mimic_count",
         AttributeFrequency.WORLD: "world_count",
         AttributeFrequency.ATTACHMENT_PARTICLE_BODY: "attachment_particle_body_count",
         AttributeFrequency.ACTUATOR: "actuator_count",
@@ -1801,49 +1788,6 @@ class Model:
         world ``0`` also in models built without explicit worlds.
         """
 
-        self.constraint_mimic_joint0: wp.array[wp.int32] | None = None
-        """Follower indices for sparse mimic constraints, shape [constraint_mimic_count], int.
-
-        .. deprecated:: 1.7
-            Use :attr:`joint_mimic_joint` and :meth:`ModelBuilder.set_joint_mimic` instead.
-        """
-        self.constraint_mimic_joint1: wp.array[wp.int32] | None = None
-        """Reference indices for sparse mimic constraints, shape [constraint_mimic_count], int.
-
-        .. deprecated:: 1.7
-            Use :attr:`joint_mimic_joint` and :meth:`ModelBuilder.set_joint_mimic` instead.
-        """
-        self.constraint_mimic_coef0: wp.array[wp.float32] | None = None
-        """Offset coefficients for sparse mimic constraints, shape [constraint_mimic_count], float.
-
-        .. deprecated:: 1.7
-            Use :attr:`joint_mimic_coeffs` and :meth:`ModelBuilder.set_joint_mimic` instead.
-        """
-        self.constraint_mimic_coef1: wp.array[wp.float32] | None = None
-        """Multiplier coefficients for sparse mimic constraints, shape [constraint_mimic_count], float.
-
-        .. deprecated:: 1.7
-            Use :attr:`joint_mimic_coeffs` and :meth:`ModelBuilder.set_joint_mimic` instead.
-        """
-        self.constraint_mimic_enabled: wp.array[wp.bool] | None = None
-        """Active flags for sparse mimic constraints, shape [constraint_mimic_count], bool.
-
-        .. deprecated:: 1.7
-            Use :meth:`ModelBuilder.set_joint_mimic` to configure joint-owned mimic metadata instead.
-        """
-        self.constraint_mimic_label: list[str] = []
-        """Sparse mimic constraint labels, shape [constraint_mimic_count], str.
-
-        .. deprecated:: 1.7
-            Use :meth:`ModelBuilder.set_joint_mimic` to configure joint-owned mimic metadata instead.
-        """
-        self.constraint_mimic_world: wp.array[wp.int32] | None = None
-        """World indices for sparse mimic constraints, shape [constraint_mimic_count], int.
-
-        .. deprecated:: 1.7
-            Use :meth:`ModelBuilder.set_joint_mimic` to configure joint-owned mimic metadata instead.
-        """
-
         self.particle_count: int = 0
         """Total number of particles in the system."""
         self.body_count: int = 0
@@ -1882,12 +1826,6 @@ class Model:
         """Total number of position degrees of freedom of all joints."""
         self.joint_constraint_count: int = 0
         """Total number of joint constraints of all joints."""
-        self.constraint_mimic_count: int = 0
-        """Total number of sparse mimic constraints in the system.
-
-        .. deprecated:: 1.7
-            Use :attr:`joint_mimic_joint` to identify joints with joint-owned mimic metadata instead.
-        """
 
         # indices of particles sharing the same color
         self.particle_color_groups: list[wp.array[wp.int32]] = []
@@ -2108,7 +2046,7 @@ class Model:
         "joint_coord": AttributeFrequency.JOINT_COORD,
         "joint_constraint": AttributeFrequency.JOINT_CONSTRAINT,
         "articulation": AttributeFrequency.ARTICULATION,
-        "constraint_mimic": AttributeFrequency.CONSTRAINT_MIMIC,
+        "constraint_mimic": AttributeFrequency.CONSTRAINT_MIMIC,  # deprecated
         "particle": AttributeFrequency.PARTICLE,
         "edge": AttributeFrequency.EDGE,
         "triangle": AttributeFrequency.TRIANGLE,
@@ -2862,6 +2800,8 @@ class Model:
             Model.AttributeFrequency.CONTACT_SOFT,
         ):
             self._get_contact_capacity()
+        if frequency == Model.AttributeFrequency.CONSTRAINT_MIMIC:
+            return 0  # deprecated frequency of the removed mimic constraints
         count_attr = Model._ATTRIBUTE_FREQUENCY_COUNT_ATTRS.get(frequency)
         if count_attr is None:
             raise ValueError(f"Unsupported attribute frequency: {frequency!r}")

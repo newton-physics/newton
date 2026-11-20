@@ -3,7 +3,6 @@
 
 """Experimental passive-island sleeping of SolverSteel."""
 
-import functools
 import inspect
 import sys
 import unittest
@@ -1392,8 +1391,8 @@ def test_solver_body_attribute_notification_wakes_its_island(test, device):
 
 def test_mimic_articulation_stays_awake(test, device):
     """Keep an articulation with mimic rows awake while an independent box sleeps."""
-    for legacy in (False, True):
-        with test.subTest(legacy_constraint_mimic=legacy):
+    for equality in (False, True):
+        with test.subTest(joint_equality=equality):
             builder = newton.ModelBuilder()
             builder.add_ground_plane()
             base = builder.add_link(xform=wp.transform((0.0, 0.0, 0.05), wp.quat_identity()))
@@ -1410,13 +1409,8 @@ def test_mimic_articulation_stays_awake(test, device):
                     )
                 )
             builder.add_articulation(joints)
-            if legacy:
-                _expect_one_warning(
-                    test,
-                    newton.NewtonDeprecationWarning,
-                    r"add_constraint_mimic\(\) is deprecated",
-                    functools.partial(builder.add_constraint_mimic, joint0=joints[2], joint1=joints[1]),
-                )
+            if equality:
+                newton.solvers.mujoco.add_equality_joint(builder, joints[2], joints[1])
             else:
                 builder.set_joint_mimic(joints[2], joints[1])
             box = builder.add_body(xform=wp.transform((2.0, 0.0, 0.1), wp.quat_identity()))

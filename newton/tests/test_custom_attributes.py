@@ -69,6 +69,20 @@ class TestCustomAttributes(unittest.TestCase):
 
         return {"base": base, "link1": link1, "link2": link2, "joint1": joint1, "joint2": joint2}
 
+    def test_constraint_mimic_frequency_is_deprecated(self):
+        """Keep the frequency of the removed mimic constraints declarable, with a warning."""
+        builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(newton.NewtonDeprecationWarning, "CONSTRAINT_MIMIC"):
+            builder.add_custom_attribute(
+                newton.ModelBuilder.CustomAttribute(
+                    name="x",
+                    namespace="t",
+                    dtype=wp.float32,
+                    frequency=newton.Model.AttributeFrequency.CONSTRAINT_MIMIC,
+                )
+            )
+        builder.finalize(device="cpu")
+
     def test_body_custom_attributes(self):
         """Test BODY frequency custom attributes with multiple data types and assignments."""
         builder = ModelBuilder()

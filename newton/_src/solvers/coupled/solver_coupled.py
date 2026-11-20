@@ -1435,10 +1435,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
         real_joint_order = [joint for joint in joint_order if joint not in free_root_cuts]
         body_set = set(body_order)
         joint_set = set(real_joint_order)
-        joint_global_to_local = {
-            global_id: local_id for local_id, global_id in enumerate(joint_order) if global_id not in free_root_cuts
-        }
-
         joint_parent = model.joint_parent.numpy() if model.joint_count else np.empty(0, dtype=np.int32)
         joint_child = model.joint_child.numpy() if model.joint_count else np.empty(0, dtype=np.int32)
         for joint in real_joint_order:
@@ -1459,10 +1455,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
         articulation_order = self._compact_articulation_order(view, real_joint_order, joint_set)
         if articulation_order is None:
             return None, "the selected joints do not contain complete enabled articulations"
-
-        mimic_order = self._compact_mimic_constraint_order(joint_global_to_local)
-        if mimic_order is None:
-            return None, "the selected mimic constraints are not grouped by world"
 
         joint_q_start = model.joint_q_start.numpy()
         joint_qd_start = model.joint_qd_start.numpy()
@@ -1545,13 +1537,13 @@ class SolverCoupled(SolverBase, CouplingInterface):
             model.AttributeFrequency.JOINT_CONSTRAINT: joint_constraint_order,
             model.AttributeFrequency.SHAPE: shape_order,
             model.AttributeFrequency.ARTICULATION: articulation_order,
-            model.AttributeFrequency.CONSTRAINT_MIMIC: mimic_order,
             model.AttributeFrequency.PARTICLE: particle_order,
             model.AttributeFrequency.EDGE: list(range(model.edge_count)) if keep_deformables else [],
             model.AttributeFrequency.TRIANGLE: list(range(model.tri_count)) if keep_deformables else [],
             model.AttributeFrequency.TETRAHEDRON: list(range(model.tet_count)) if keep_deformables else [],
             model.AttributeFrequency.SPRING: list(range(model.spring_count)) if keep_deformables else [],
             model.AttributeFrequency.ATTACHMENT_PARTICLE_BODY: attachment_order,
+            model.AttributeFrequency.CONSTRAINT_MIMIC: [],  # deprecated, has no entries
             # WORLD rows include the global world -1 after the local worlds.
             model.AttributeFrequency.WORLD: list(range(model.world_count + 1)),
         }
@@ -1857,25 +1849,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
             return None
         return getattr(namespace, attr_name, None)
 
-    def _compact_mimic_constraint_order(self, joint_global_to_local: dict[int, int]) -> list[int] | None:
-        model = self.model
-        if model.constraint_mimic_count == 0:
-            return []
-        joint0 = model.constraint_mimic_joint0.numpy()
-        joint1 = model.constraint_mimic_joint1.numpy()
-        selected = {
-            constraint
-            for constraint in range(model.constraint_mimic_count)
-            if int(joint0[constraint]) in joint_global_to_local and int(joint1[constraint]) in joint_global_to_local
-        }
-        return self._ordered_world_subset(
-            selected,
-            model.constraint_mimic_world,
-            None,
-            model.constraint_mimic_count,
-            "mimic constraints",
-        )
-
     def _body_particle_attachment_rows(
         self,
         body_set: set[int],
@@ -1960,7 +1933,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
         visible_shape_order = compact.order(frequency.SHAPE)
         shape_order = list(range(model.shape_count))
         articulation_order = compact.order(frequency.ARTICULATION)
-        mimic_order = compact.order(frequency.CONSTRAINT_MIMIC)
         edge_order = compact.order(frequency.EDGE)
         tri_order = compact.order(frequency.TRIANGLE)
         tet_order = compact.order(frequency.TETRAHEDRON)
@@ -1976,7 +1948,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
         view.joint_constraint_count = len(joint_constraint_order)
         view.shape_count = model.shape_count
         view.articulation_count = len(articulation_order)
-        view.constraint_mimic_count = len(mimic_order)
         view.spring_count = len(spring_order)
         view.attachment_particle_body_count = len(attachment_order)
         view.tri_count = len(tri_order)
@@ -3887,7 +3858,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
             if frequency in (model_frequency.ONCE, model_frequency.WORLD):
                 return True
         if flags & int(ModelFlags.CONSTRAINT_PROPERTIES):
-            if frequency in (model_frequency.CONSTRAINT_MIMIC, model_frequency.ATTACHMENT_PARTICLE_BODY):
+            if frequency == model_frequency.ATTACHMENT_PARTICLE_BODY:
                 return True
             if any(token in attribute.name for token in ("constraint", ":eq_", "mimic")):
                 return True

@@ -9,7 +9,6 @@ import re
 import subprocess
 import sys
 import unittest
-import warnings
 from unittest import mock
 
 import numpy as np
@@ -788,11 +787,9 @@ def test_deterministic_bilateral_rows_follow_element_order(test, device):
     """Give a world's mimic rows, then its loop-closure rows, their slots in element order."""
     mimic_count = 512
     builder = _build_four_bar()
-    # Many rows on one follower need the deprecated API; joint-owned mimics allow one per joint.
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DeprecationWarning)
-        for _ in range(mimic_count):
-            builder.add_constraint_mimic(joint0=1, joint1=0, coef0=0.0, coef1=1.0)
+    # Many rows on one follower need joint equalities; joint-owned mimics allow one per joint.
+    for _ in range(mimic_count):
+        newton.solvers.mujoco.add_equality_joint(builder, 1, 0)
     model = builder.finalize(device=device)
     solver = SolverSteel(model, deterministic=RUN_TO_RUN, articulation_constraint_max=mimic_count + 64)
     state = model.state()

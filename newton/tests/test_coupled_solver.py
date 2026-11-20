@@ -4743,6 +4743,8 @@ class TestSolverCoupledVBDColoring(unittest.TestCase):
         add_attribute("linkage_history", "test:linkage", wp.float32, assignment=newton.Model.AttributeAssignment.STATE)
         add_attribute("entity_body", "test:entity", wp.int32, references="body")
         add_attribute("link_entity", "test:link", wp.int32, references="test:entity")
+        with self.assertWarns(newton.NewtonDeprecationWarning):
+            add_attribute("body_mimic", newton.Model.AttributeFrequency.BODY, wp.int32, references="constraint_mimic")
         add_attribute(
             "state_seed",
             newton.Model.AttributeFrequency.BODY,
