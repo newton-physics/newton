@@ -2115,6 +2115,7 @@ class TetMesh:
         ``compat_namespaces`` warns when this ignores attributes authored on the bound material.
         Pass an explicit list (e.g. ``newton.usd.DEFORMABLE_LEGACY_NAMESPACES``) to read the
         canonical and the listed vendor namespaces off any bound material.
+        One deprecated exception to the default is described under ``compat_namespaces``.
 
         Example:
 
@@ -2136,6 +2137,11 @@ class TetMesh:
                 ``physics:`` material attributes, lifting the ``PhysicsVolumeDeformableMaterialAPI``
                 gate. ``None`` (the default) and ``()`` are canonical-only; only ``None`` warns
                 about ignored attributes.
+
+                .. deprecated:: 1.9
+                    ``None`` still reads vendor-namespaced values without a ``physics:`` counterpart
+                    from a material that applies ``PhysicsVolumeDeformableMaterialAPI``. A future
+                    release ignores them.
 
         Returns:
             A :class:`newton.TetMesh` with vertex positions and tet connectivity.

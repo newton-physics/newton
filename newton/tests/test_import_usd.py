@@ -13952,10 +13952,16 @@ def Xform "World" ()
                 self.assertAlmostEqual(tm_legacy.k_mu[0], 300000.0 / (2.0 * 1.3), places=0)
                 self.assertAlmostEqual(tm_legacy.density, 40.0)
 
-        # Vendor values on a material WITH the API are ignored too, in favor of the proposal fallbacks.
-        with self.assertWarnsRegex(newton.NewtonWarning, "ignoring omniphysics:youngsModulus"):
-            tm_vendor_api = usd.get_tetmesh(stage.GetPrimAtPath("/World/VendorApiBody"))
-        self.assertIsNone(tm_vendor_api.density)
+        # Vendor values on a material WITH the API never warned before, so the default keeps
+        # reading them for a deprecation window; explicit () ignores them.
+        vendor_api = stage.GetPrimAtPath("/World/VendorApiBody")
+        with self.assertWarnsRegex(newton.NewtonDeprecationWarning, "reading omniphysics:youngsModulus"):
+            tm_vendor_api = usd.get_tetmesh(vendor_api)
+        self.assertAlmostEqual(tm_vendor_api.k_mu[0], 300000.0 / (2.0 * 1.3), places=0)
+        self.assertAlmostEqual(tm_vendor_api.density, 40.0)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            self.assertIsNone(usd.get_tetmesh(vendor_api, compat_namespaces=()).density)
 
         # A canonical material, and base-material density, are read by default and must NOT warn.
         with warnings.catch_warnings():

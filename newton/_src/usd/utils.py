@@ -17,7 +17,7 @@ import warp as wp
 from ..core._warnings import _external_warning_stacklevel
 from ..core.host_transform import _builtin
 from ..core.types import Axis, AxisType
-from ..exceptions import NewtonWarning
+from ..exceptions import NewtonDeprecationWarning, NewtonWarning
 from ..geometry import Gaussian
 from ..sim.model import Model
 from ..utils.color import ColorSpace, color_linear_to_srgb
@@ -884,6 +884,7 @@ def get_tetmesh(
     ``compat_namespaces`` warns when this ignores attributes authored on the bound material.
     Pass an explicit list (e.g. ``newton.usd.DEFORMABLE_LEGACY_NAMESPACES``) to read the
     canonical and the listed vendor namespaces off any bound material.
+    One deprecated exception to the default is described under ``compat_namespaces``.
 
     Example:
 
@@ -906,17 +907,34 @@ def get_tetmesh(
             gate. ``None`` (the default) and ``()`` are canonical-only; only ``None`` warns
             about ignored attributes.
 
+            .. deprecated:: 1.9
+                ``None`` still reads vendor-namespaced values without a ``physics:`` counterpart
+                from a material that applies ``PhysicsVolumeDeformableMaterialAPI``. A future
+                release ignores them.
+
     Returns:
         A :class:`newton.TetMesh` with vertex positions and tet connectivity.
     """
+    ignored = _ignored_tetmesh_material_attrs(prim) if compat_namespaces is None else []
+    # The earlier default never warned about vendor values on a volume-API material.
+    deprecated_read = bool(ignored) and has_applied_api_schema(
+        _find_physics_material_prim(prim), "PhysicsVolumeDeformableMaterialAPI"
+    )
     tetmesh = _get_tetmesh(
         prim,
-        compat_namespaces=() if compat_namespaces is None else compat_namespaces,
+        compat_namespaces=DEFORMABLE_LEGACY_NAMESPACES if deprecated_read else (compat_namespaces or ()),
         load_custom_attributes=_load_custom_attributes,
         load_material=True,
     )
-    ignored = _ignored_tetmesh_material_attrs(prim) if compat_namespaces is None else None
-    if ignored:
+    if deprecated_read:
+        warnings.warn(
+            f"{prim.GetPath()}: reading {', '.join(ignored)} from the bound material by default is "
+            "deprecated; a future release ignores them. Author canonical physics: attributes, or "
+            "pass compat_namespaces=newton.usd.DEFORMABLE_LEGACY_NAMESPACES to keep reading them.",
+            NewtonDeprecationWarning,
+            stacklevel=_external_warning_stacklevel(),
+        )
+    elif ignored:
         warnings.warn(
             f"{prim.GetPath()}: ignoring {', '.join(ignored)} on the bound material. Author "
             "canonical physics: attributes with PhysicsVolumeDeformableMaterialAPI, or pass "
