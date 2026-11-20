@@ -414,6 +414,8 @@ class Model:
         """Experimental frequency for recorded deformable volumes (see :attr:`~newton.Model.volume_count`)."""
         ACTUATOR = 26
         """Attribute frequency follows the number of actuators (see :attr:`~newton.Model.actuator_count`)."""
+        CAMERA = 27
+        """Attribute frequency follows the number of model cameras (see :attr:`~newton.Model.camera_count`)."""
 
     @dataclass(frozen=True)
     class AttributeSpec:
@@ -478,6 +480,16 @@ class Model:
                 raise ValueError(f"Attribute compaction policy {self.compaction_policy!r} requires a reference domain")
 
     _CORE_ATTRIBUTE_SPECS: ClassVar[dict[str, AttributeSpec]] = {
+        "camera_label": AttributeSpec(AttributeFrequency.CAMERA),
+        "camera_world": AttributeSpec(AttributeFrequency.CAMERA, references=AttributeFrequency.WORLD),
+        "camera_body": AttributeSpec(AttributeFrequency.CAMERA, references=AttributeFrequency.BODY),
+        "camera_transform": AttributeSpec(AttributeFrequency.CAMERA),
+        "camera_lens_type": AttributeSpec(AttributeFrequency.CAMERA),
+        "camera_focal_length": AttributeSpec(AttributeFrequency.CAMERA),
+        "camera_aperture": AttributeSpec(AttributeFrequency.CAMERA),
+        "camera_aperture_offset": AttributeSpec(AttributeFrequency.CAMERA),
+        "camera_clipping_range": AttributeSpec(AttributeFrequency.CAMERA),
+        "camera_pixel_aspect_ratio": AttributeSpec(AttributeFrequency.CAMERA),
         "tendon_label": AttributeSpec(AttributeFrequency.TENDON),
         "tendon_world": AttributeSpec(AttributeFrequency.TENDON, references=AttributeFrequency.WORLD),
         "tendon_start": AttributeSpec(
@@ -855,6 +867,7 @@ class Model:
         AttributeFrequency.TETRAHEDRON: "tet_count",
         AttributeFrequency.SPRING: "spring_count",
         AttributeFrequency.TENDON: "tendon_count",
+        AttributeFrequency.CAMERA: "camera_count",
         AttributeFrequency.TENDON_GUIDE: "tendon_guide_count",
         AttributeFrequency.TENDON_SEGMENT: "tendon_segment_count",
         AttributeFrequency.CONSTRAINT_MIMIC: "constraint_mimic_count",
@@ -1263,6 +1276,39 @@ class Model:
         """Particle spring activation [dimensionless], shape [spring_count], float."""
         self.spring_constraint_lambdas: wp.array[wp.float32] | None = None
         """Lagrange multipliers for spring constraints (internal use)."""
+
+        # cameras
+        self.camera_count: int = 0
+        """Number of model cameras."""
+        self.camera_label: list[str] = []
+        """Camera labels, shape (camera_count,)."""
+        self.camera_world: wp.array[wp.int32] | None = None
+        """Owning world of each camera, shape [camera_count], int. ``-1`` is the global world;
+        a global camera is rendered once in every world, just as global shapes appear in every world."""
+        self.camera_body: wp.array[wp.int32] | None = None
+        """Parent body of each camera, shape [camera_count], int. ``-1`` means the camera is fixed."""
+        self.camera_transform: wp.array[wp.transformf] | None = None
+        """Camera frame relative to its parent body, or its world pose for fixed cameras [m, unitless quaternion],
+        shape [camera_count], transform. The camera looks along its local -Z axis with +Y up."""
+        self.camera_lens_type: wp.array[wp.int32] | None = None
+        """Lens type of each camera (:class:`~newton.CameraLensType`), shape [camera_count], int."""
+        self.camera_focal_length: wp.array[wp.float32] | None = None
+        """Focal length of each pinhole camera [m], shape [camera_count], float."""
+        self.camera_aperture: wp.array[wp.vec2f] | None = None
+        """Horizontal and vertical aperture (sensor size) of each pinhole camera [m], shape [camera_count], vec2.
+        A zero component is derived from the rendered image aspect ratio. When both are set and the image
+        aspect ratio differs, the aperture is expanded to it, like USD's default ``expandAperture`` policy.
+        Both use the pixel shape in :attr:`camera_pixel_aspect_ratio`."""
+        self.camera_aperture_offset: wp.array[wp.vec2f] | None = None
+        """Horizontal and vertical principal-point offset of each pinhole camera [m], shape [camera_count], vec2."""
+        self.camera_clipping_range: wp.array[wp.vec2f] | None = None
+        """Near and far clip distance of each camera [m], shape [camera_count], vec2. For ``PINHOLE`` cameras
+        they are depths along the camera's -Z axis (planar clipping, as in USD and MJCF) for rays projected from
+        the camera's intrinsics, and distances along each ray for rays a sensor gives the camera explicitly."""
+        self.camera_pixel_aspect_ratio: wp.array[wp.float32] | None = None
+        """Pixel width over pixel height of each pinhole camera [unitless], shape [camera_count], float.
+        ``1`` means square pixels. The image resolution is not part of the camera; the sensor that renders it
+        chooses it."""
 
         # tendons (cable-driven mechanisms)
         self.tendon_count: int = 0

@@ -212,6 +212,7 @@ class RenderState:
     render_normal: bool = False
     render_albedo: bool = False
     render_hdr_color: bool = False
+    has_view_clip: bool = False
 
 
 @dataclass(unsafe_hash=True)
