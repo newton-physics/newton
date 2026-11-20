@@ -68,7 +68,7 @@ class ProjectionAcceleration(IntEnum):
     """Plain projection sweeps."""
 
     APGD = 1
-    """Restarted Nesterov extrapolation; requires the Jacobi schedule."""
+    """Restarted Nesterov extrapolation."""
 
     ANDERSON = 2
     """One safeguarded Anderson direction per projection sweep."""
@@ -814,7 +814,7 @@ class AndersonData:
 
 
 class APGDData:
-    """Momentum state of APGD-accelerated Jacobi projection.
+    """Momentum state of APGD-accelerated projection.
 
     Args:
         problem_data: Rows and body data of the LOX problem.
@@ -828,6 +828,8 @@ class APGDData:
         spatial = rows.angular_reaction is not None
         self.theta = wp.ones(world_count, dtype=wp.float32, device=device)
         """Momentum parameter of each world."""
+        self.history = wp.zeros(world_count, dtype=wp.int32, device=device)
+        """Whether each world holds the row history of the previous splitting iteration."""
         self.beta = wp.zeros(world_count, dtype=wp.float32, device=device)
         """Extrapolation factor of each world."""
         self.restart_dot = wp.zeros(world_count, dtype=wp.float32, device=device)

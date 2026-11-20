@@ -30,6 +30,8 @@ from .projection_kernels import (
     _prepare_contact_blocks,
     _prepare_physical_spatial_contacts,
     _prepare_spatial_contacts,
+    _regularize_contact_solve_blocks,
+    _scale_contact_reactions,
     _warmstart_box_rows,
     _warmstart_contacts,
     _warmstart_spatial_contacts,
@@ -88,7 +90,7 @@ class ProjectionSchedule:
     Args:
         problem_data: Box rows, contacts, and body incidence of the LOX problem.
         color_count: Maximum number of Gauss--Seidel colors; one selects Jacobi.
-        acceleration: Acceleration of the projection sweeps; APGD requires the Jacobi schedule.
+        acceleration: Acceleration of the projection sweeps.
     """
 
     def __init__(
@@ -101,6 +103,16 @@ class ProjectionSchedule:
         self.device = problem_data.device
         self._data = ProjectionData(problem_data, color_count, acceleration)
         self._acceleration = acceleration
+        self.contact_proximal_regularization = 0.0
+        """Relative proximal regularization of the diagonal of the local contact solve blocks."""
+        self.contact_proximal_target: wp.array[wp.vec3f] | None = None
+        """Scaled warm-start reaction of each contact, the proximal target of the first iterations, or ``None``."""
+        self.contact_proximal_warmstart_scale = 1.0
+        """Scale of the warm-start reactions that form the proximal target."""
+        self.contact_proximal_target_iterations = 0
+        """Number of first splitting iterations that pull toward the proximal target."""
+        self.iteration_count: wp.array[wp.int32] | None = None
+        """Splitting iterations performed so far by each world."""
         data = self._data
         self.coloring = RowColoring(problem_data, data.coloring) if data.coloring is not None else None
         self.color_count = data.coloring.color_count if data.coloring is not None else 1
@@ -153,6 +165,30 @@ class ProjectionSchedule:
     # Public API
     ###
 
+    def configure_proximal_target(self, scale: float, iterations: int, iteration_count: wp.array[wp.int32]) -> None:
+        """Pull the local contact solves of the first ``iterations`` splitting iterations toward ``scale`` times
+        the warm-start reactions, with the proximal weight of :attr:`contact_proximal_regularization`."""
+        rows = self.problem_data.contact_rows
+        if iterations <= 0 or self.contact_proximal_regularization <= 0.0 or rows.capacity == 0:
+            return
+        self.contact_proximal_warmstart_scale = float(scale)
+        self.contact_proximal_target_iterations = int(iterations)
+        self.iteration_count = iteration_count
+        self.contact_proximal_target = wp.zeros(rows.capacity, dtype=wp.vec3f, device=self.device)
+
+    def set_proximal_target(self) -> None:
+        """Set the proximal target from the warm-start reactions of the time step."""
+        if self.contact_proximal_target is None:
+            return
+        rows = self.problem_data.contact_rows
+        wp.launch(
+            _scale_contact_reactions,
+            dim=rows.capacity,
+            inputs=[rows.reaction, self.contact_proximal_warmstart_scale],
+            outputs=[self.contact_proximal_target],
+            device=self.device,
+        )
+
     def prepare(self, inverse_weight: wp.array[mat66f], world_failed: wp.array[wp.bool]) -> None:
         """Color the rows and prepare the local blocks for the current body weights.
 
@@ -177,6 +213,8 @@ class ProjectionSchedule:
             self._prepare_blocks(inverse_weight, p.body_incidence, None, None, None, world_failed)
         if self.anderson is not None:
             self.anderson.reset()
+        if self.apgd is not None:
+            self.apgd.reset()
 
     def project(
         self,
@@ -194,7 +232,7 @@ class ProjectionSchedule:
 
         Args:
             iterations: Number of sweeps; a colored sweep visits every color once.
-            recycle: Whether Anderson retains its direction from the previous splitting iteration.
+            recycle: Whether the acceleration carries its state from the previous splitting iteration.
             world_active: Worlds to project.
             world_failed: Failure flag of each world.
             body_world: World of each body.
@@ -202,13 +240,18 @@ class ProjectionSchedule:
         """
         self._begin_outer_iteration(world_active, recycle=recycle)
         if self._by_world:
-            self._project_by_world(iterations, world_active, self._weights, projected_twist, world_failed)
+            self._project_by_world(iterations, recycle, world_active, self._weights, projected_twist, world_failed)
             return
 
         if self.apgd is not None:
-            self.apgd.begin(world_active)
+            self.apgd.begin(world_active, recycle=recycle)
         self._warmstart(world_active, self._weights, world_failed)
         self._apply(body_world, world_active, world_failed, projected_twist)
+        if self.apgd is not None and recycle:
+            # The extrapolation deferred from the last sweep of the previous splitting iteration;
+            # a world without row history restarts its momentum here and stays at its warm start
+            self.apgd.extrapolate(world_active, world_failed, self._weights, self._data.twist_delta)
+            self._apply(body_world, world_active, world_failed, projected_twist)
 
         if self.anderson is not None:
             self.anderson.begin_map(world_active, world_failed)
@@ -243,6 +286,13 @@ class ProjectionSchedule:
         weights.inverse_weight = inverse_weight
         weights.box_response = p.box_rows.response
         weights.contact_response = p.contact_rows.response
+        regularization = self.contact_proximal_regularization
+        weights.proximal_weight = regularization / (1.0 + regularization)
+        if self.contact_proximal_target is not None:
+            weights.contact_world = p.contact_rows.world
+            weights.contact_proximal_target = self.contact_proximal_target
+            weights.iteration_count = self.iteration_count
+            weights.proximal_iterations = self.contact_proximal_target_iterations
         return weights
 
     def _prepare_blocks(self, inverse_weight, occupancy, box_color, contact_color, smoothing_occupancy, world_failed):
@@ -311,6 +361,18 @@ class ProjectionSchedule:
                 ],
                 device=self.device,
             )
+            if self.contact_proximal_regularization > 0.0:
+                blocks = [self._data.contact_delassus]
+                if smoothing:
+                    blocks.append(self._data.contact_smoothing_delassus)
+                for block in blocks:
+                    wp.launch(
+                        _regularize_contact_solve_blocks,
+                        dim=rows.capacity,
+                        inputs=[rows.world, rows.local, rows.world_count, self.contact_proximal_regularization],
+                        outputs=[block],
+                        device=self.device,
+                    )
             return
         # Spatial contacts apply the inverse weights directly
         self._prepare_spatial_blocks(inverse_weight, occupancy, contact_color, self._data.spatial_blocks, world_failed)
@@ -357,6 +419,7 @@ class ProjectionSchedule:
                 rows.normal_compliance,
                 occupancy,
                 inverse_weight,
+                self.contact_proximal_regularization,
             ],
             outputs=[
                 spatial_blocks.delassus,
@@ -508,7 +571,7 @@ class ProjectionSchedule:
             device=self.device,
         )
 
-    def _project_by_world(self, iterations, world_active, weights, projected_twist, world_failed) -> None:
+    def _project_by_world(self, iterations, recycle, world_active, weights, projected_twist, world_failed) -> None:
         p = self.problem_data
         coloring = self._data.coloring
         spatial = self._data.spatial_blocks
@@ -527,6 +590,7 @@ class ProjectionSchedule:
             inputs=[
                 iterations,
                 self.color_count,
+                recycle,
                 p.world_body_offset,
                 p.world_body_count,
                 p.box_rows.capacity,

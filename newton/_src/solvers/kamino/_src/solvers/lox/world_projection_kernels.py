@@ -860,6 +860,7 @@ def make_project_by_world_kernel(
         # Inputs:
         iterations: wp.int32,
         color_count: wp.int32,
+        recycle: wp.bool,
         world_body_offset: wp.array[wp.int32],
         world_body_count: wp.array[wp.int32],
         box_capacity: wp.int32,
@@ -918,8 +919,10 @@ def make_project_by_world_kernel(
         Colored worlds sweep their colors in order and finish with one Jacobi
         smoothing sweep; Jacobi worlds sweep all their rows at once. With
         Anderson acceleration, each iteration is one map whose
-        image is mixed along the stored direction; with APGD, every Jacobi sweep
-        but the last is extrapolated. Each block sweeps the projected twists of its
+        image is mixed along the stored direction; with APGD, every sweep but
+        the last is extrapolated, and ``recycle`` keeps the momentum and row
+        history of the previous splitting iteration and applies the deferred
+        extrapolation of its last sweep after the warm start. Each block sweeps the projected twists of its
         world in shared memory, and runs box rows and contacts on separate warps.
         """
         wid, tid = wp.tid()
@@ -935,25 +938,28 @@ def make_project_by_world_kernel(
         )
         _load_world_twists(wid, tid, world_body_offset, world_body_count, projected_twist, world_twist)
 
+        keep_history = False
         if wp.static(apgd):
-            initialize_world_apgd(
-                wid,
-                tid,
-                world_box_offset,
-                world_box_count,
-                world_contact_offset,
-                world_contact_count,
-                box_lower,
-                box_upper,
-                contact_body_a,
-                contact_body_b,
-                contact_friction,
-                angular_friction,
-                box_reaction,
-                contact_reaction,
-                angular_reaction,
-                acceleration_state,
-            )
+            keep_history = recycle and acceleration_state.history[wid] == 1
+            if not keep_history:
+                initialize_world_apgd(
+                    wid,
+                    tid,
+                    world_box_offset,
+                    world_box_count,
+                    world_contact_offset,
+                    world_contact_count,
+                    box_lower,
+                    box_upper,
+                    contact_body_a,
+                    contact_body_b,
+                    contact_friction,
+                    angular_friction,
+                    box_reaction,
+                    contact_reaction,
+                    angular_reaction,
+                    acceleration_state,
+                )
 
         # Apply the existing reactions before the first sweep, clamping the spatial reactions into their cone.
         local, stride = _first_box_row(tid, world_box_count[wid], world_contact_count[wid], contact_row_cost)
@@ -1021,6 +1027,40 @@ def make_project_by_world_kernel(
             )
 
         theta = wp.float32(1.0)
+        if wp.static(apgd):
+            if recycle:
+                theta = acceleration_state.theta[wid]
+            if keep_history:
+                # The extrapolation deferred from the last sweep of the previous splitting iteration
+                theta = extrapolate_world(
+                    wid,
+                    tid,
+                    theta,
+                    world_box_offset,
+                    world_box_count,
+                    world_contact_offset,
+                    world_contact_count,
+                    box_body_a,
+                    box_body_b,
+                    box_jacobian_a,
+                    box_jacobian_b,
+                    contact_body_a,
+                    contact_body_b,
+                    contact_jacobian_a,
+                    contact_jacobian_b,
+                    contact_frame,
+                    contact_friction,
+                    angular_friction,
+                    box_reaction,
+                    contact_reaction,
+                    angular_reaction,
+                    acceleration_state,
+                    weights,
+                    twist_delta,
+                )
+                _apply_world_delta(
+                    wid, tid, world_body_offset, world_body_count, world_failed, twist_delta, world_twist
+                )
         for iteration in range(iterations):
             if wp.static(colored):
                 for color in range(color_count):
@@ -1252,6 +1292,10 @@ def make_project_by_world_kernel(
             )
             _apply_world_delta(wid, tid, world_body_offset, world_body_count, world_failed, twist_delta, world_twist)
 
+        if wp.static(apgd):
+            if tid == 0:
+                acceleration_state.theta[wid] = theta
+                acceleration_state.history[wid] = wp.int32(recycle)
         _store_world_twists(wid, tid, world_body_offset, world_body_count, world_twist, projected_twist)
 
     return project_by_world

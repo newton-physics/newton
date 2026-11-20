@@ -568,6 +568,13 @@ class LOXSolver:
             self._config.gauss_seidel_max_colors,
             ProjectionAcceleration.from_string(self._config.projection_acceleration),
         )
+        self._projection.contact_proximal_regularization = self._config.contact_proximal_regularization
+        # The first eighth of the splitting iterations pull toward the scaled warm start
+        self._projection.configure_proximal_target(
+            self._config.contact_proximal_warmstart_scale,
+            max(1, self._config.max_iterations // 8),
+            self._data.state.iteration_count,
+        )
 
     def _initialize_splitting(
         self,
@@ -664,6 +671,7 @@ class LOXSolver:
             contact_dead_zone=constraints.delta,
             structural_warmstart_scale=structural_warmstart_scale,
         )
+        self._projection.set_proximal_target()
 
     def _estimate_joint_penalty_scale(self, time_step: float, warn_failures: bool) -> None:
         """Seed the joint penalty scale from the current rigid state at the uniform ``time_step``.
@@ -810,7 +818,7 @@ class LOXSolver:
             return
         self._projection.project(
             self._config.projection_sweeps_per_iteration,
-            self._config.projection_anderson_recycle,
+            self._config.projection_acceleration_recycle,
             self._data.state.world_active,
             self._data.state.world_failed,
             self._model.bodies.wid,
