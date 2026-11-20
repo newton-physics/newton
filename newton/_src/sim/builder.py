@@ -161,6 +161,16 @@ def _convex_hull_interior_point(vertices: np.ndarray, indices: np.ndarray | None
     return mean + (volumes[:, None] * tris.sum(axis=1)).sum(axis=0) / (4.0 * total)
 
 
+def _as_vec3(value: Vec3) -> wp.vec3:
+    """Return ``value`` as a ``wp.vec3``, skipping the conversion if it already is one."""
+    return value if isinstance(value, wp.vec3) else wp.vec3(*value)
+
+
+def _as_quat(value: Quat) -> wp.quat:
+    """Return ``value`` as a ``wp.quat``, skipping the conversion if it already is one."""
+    return value if isinstance(value, wp.quat) else wp.quat(*value)
+
+
 def _validate_opacity(value: Any, value_name: str) -> float:
     """Return a finite display opacity in [0, 1]."""
     opacity = float(value)
@@ -12456,9 +12466,9 @@ class ModelBuilder:
         resolved_opacity = _validate_opacity(1.0 if opacity is None else opacity, "Triangle opacity")
 
         # compute basis for 2D rest pose
-        p = self.particle_q[i]
-        q = self.particle_q[j]
-        r = self.particle_q[k]
+        p = _as_vec3(self.particle_q[i])
+        q = _as_vec3(self.particle_q[j])
+        r = _as_vec3(self.particle_q[k])
 
         qp = q - p
         rp = r - p
@@ -12722,13 +12732,13 @@ class ModelBuilder:
         edge_kd = edge_kd if edge_kd is not None else self.default_edge_kd
 
         # compute rest angle
-        x3 = self.particle_q[k]
-        x4 = self.particle_q[l]
+        x3 = _as_vec3(self.particle_q[k])
+        x4 = _as_vec3(self.particle_q[l])
         if rest is None:
             rest = 0.0
             if i != -1 and j != -1:
-                x1 = self.particle_q[i]
-                x2 = self.particle_q[j]
+                x1 = _as_vec3(self.particle_q[i])
+                x2 = _as_vec3(self.particle_q[j])
 
                 n1 = wp.normalize(wp.cross(x3 - x1, x4 - x1))
                 n2 = wp.normalize(wp.cross(x4 - x2, x3 - x2))
@@ -13120,7 +13130,7 @@ class ModelBuilder:
         #     p = wp.quat_rotate(rot, v * scale) + pos
         #     self.add_particle(p, vel, 0.0, radius=particle_radius)
         vertices_np = np.array(vertices) * scale
-        rot_mat_np = np.array(wp.quat_to_matrix(rot), dtype=np.float32).reshape(3, 3)
+        rot_mat_np = np.array(wp.quat_to_matrix(_as_quat(rot)), dtype=np.float32).reshape(3, 3)
         verts_3d_np = np.dot(vertices_np, rot_mat_np.T) + pos
         self.add_particles(
             verts_3d_np.tolist(),
@@ -13241,7 +13251,7 @@ class ModelBuilder:
         points = np.stack(np.meshgrid(px, py, pz)).reshape(3, -1).T
 
         # apply transform to points
-        rot_mat = wp.quat_to_matrix(rot)
+        rot_mat = wp.quat_to_matrix(_as_quat(rot))
         points = points @ np.array(rot_mat).reshape(3, 3).T + np.array(pos)
         velocity = np.broadcast_to(np.array(vel).reshape(1, 3), points.shape)
 
@@ -13378,6 +13388,8 @@ class ModelBuilder:
         start_tet = self.tet_count
 
         mass = cell_x * cell_y * cell_z * density
+        pos = _as_vec3(pos)
+        rot = _as_quat(rot)
 
         for z in range(dim_z + 1):
             for y in range(dim_y + 1):
@@ -13639,7 +13651,8 @@ class ModelBuilder:
         start_vertex = len(self.particle_q)
         start_tet = self.tet_count
 
-        pos = wp.vec3(pos[0], pos[1], pos[2])
+        pos = _as_vec3(pos)
+        rot = _as_quat(rot)
         # add particles
         for vi, v in enumerate(vertices):
             p = wp.quat_rotate(rot, wp.vec3(v[0], v[1], v[2]) * scale) + pos
