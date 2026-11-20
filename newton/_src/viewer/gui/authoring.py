@@ -11,6 +11,7 @@ Ordinary inspection workspaces never import this module.
 from __future__ import annotations
 
 from collections import OrderedDict
+from itertools import islice
 from pathlib import Path
 from time import perf_counter
 from typing import TYPE_CHECKING
@@ -20,6 +21,7 @@ import warp as wp
 
 from ...core.host_transform import transform_assign
 from ...geometry.raycast import intersect_ray
+from ..authoring_deformables import MAX_PARTICLES
 from . import theme
 from .widgets import PropertyEdit
 
@@ -41,6 +43,7 @@ class AuthoringPanel:
     payload_type = "NEWTON_SCENE_ASSET"
     gizmo_name = "/authoring/transform"
     thumbnail_limit = 48
+    brush_point_limit = 10_000
     primitives = (
         ("box", "Box", (1.0, 1.0, 1.0)),
         ("sphere", "Sphere", (0.8, 0.8, 0.8)),
@@ -74,7 +77,7 @@ class AuthoringPanel:
         self._dialog_action: str | None = None
         self._dialog_request = None
         self._scale = 1.0
-        self._dynamic = True
+        self._dynamic = editor.solver_type.value != "mpm"
         self._color = theme.ACCENT[:3]
         self._show_gizmo = True
         self._gizmo_mode = 0
@@ -92,8 +95,20 @@ class AuthoringPanel:
         self._body_map_key = None
         self._body_objects = {}
         self._shape_objects = {}
+        self._particle_objects = []
         self._last_selection = None
         self._last_editor_selection = None
+        self._brush_enabled = False
+        self._brush_radius = 0.15
+        self._brush_spacing = 0.04
+        self._brush_density = 1500.0
+        self._brush_layers = 2
+        self._brush_active = False
+        self._brush_points = set()
+        self._brush_origin = None
+        self._brush_last = None
+        self._brush_epoch = None
+        self._brush_failed = False
         self._window = workspace.viewer.renderer.window
         self._file_drop_handler = None
         if "on_file_drop" in getattr(self._window, "event_types", ()):
@@ -119,7 +134,18 @@ class AuthoringPanel:
 
     @property
     def interacting(self) -> bool:
-        return self._gizmo_active or self._field_edit or self._drag_preview
+        return self._gizmo_active or self._field_edit or self._drag_preview or self._brush_active
+
+    @property
+    def brush_enabled(self) -> bool:
+        """Reserve left viewport input for the explicitly selected, paused paint tool."""
+        return (
+            self._brush_enabled
+            and self.editor.solver_type.value == "mpm"
+            and self.editor.model is not None
+            and self.workspace.viewer.is_paused()
+            and self.editable
+        )
 
     def _run(self, action: Callable, *args, **kwargs):
         """Keep authoring errors visible without tearing down the simulation UI."""
@@ -191,12 +217,20 @@ class AuthoringPanel:
             self._shape_objects = {
                 shape: obj.id for obj in objects if obj.id in bindings for shape in range(*bindings[obj.id].shapes)
             }
+            self._particle_objects = [
+                (*bindings[obj.id].particles, obj.id)
+                for obj in objects
+                if obj.id in bindings and bindings[obj.id].particles[0] < bindings[obj.id].particles[1]
+            ]
             self._body_map_key = key
         if rebuilt or self.editor.selected_id != self._last_editor_selection:
             indices = self.editor.body_indices(self.editor.selected_id) if self.editor.selected_id else ()
             keys = [("body", index) for index in indices]
             if not keys and self.editor.selected_id in bindings:
                 keys = [("shape", index) for index in range(*bindings[self.editor.selected_id].shapes)]
+                if not keys:
+                    start, end = bindings[self.editor.selected_id].particles
+                    keys = [("particle", start)] if end > start else []
             self.workspace.select(keys[0] if keys else None)
             for selected in keys[1:]:
                 self.workspace.select(selected, toggle=True)
@@ -206,6 +240,11 @@ class AuthoringPanel:
             selected = self.workspace.selected
             object_id = None
             if selected is not None:
+                if selected[0] == "particle":
+                    object_id = next(
+                        (object_id for start, end, object_id in self._particle_objects if start <= selected[1] < end),
+                        None,
+                    )
                 if selected[0] == "shape":
                     object_id = self._shape_objects.get(selected[1])
                     if object_id is None and self.workspace.tree is not None:
@@ -289,7 +328,7 @@ class AuthoringPanel:
             position=position,
             size=size,
             color=self._color,
-            dynamic=self._dynamic,
+            dynamic=self._dynamic and self.editor.solver_type.value != "mpm",
         )
         if object_id is not None:
             self._run(self.editor.place_object, object_id)
@@ -347,6 +386,8 @@ class AuthoringPanel:
         engine = "XPBD"
         if self.editor.solver_type.value == "mujoco":
             engine = "MuJoCo CPU" if self.editor.device.is_cpu else "MuJoCo Warp"
+        elif self.editor.solver_type.value in ("vbd", "mpm"):
+            engine = self.editor.solver_type.value.upper()
         ui.text_disabled(f"Solver: {engine}")
         ui.spacing()
         if w.icon_button("##author_open", "folder", "Open authored scene", size=24):
@@ -365,11 +406,14 @@ class AuthoringPanel:
             self._run(self.editor.reset_scene)
         ui.spacing()
         if ui.begin_tab_bar("##authoring_tabs"):
-            for title, content in (
+            tabs = (
                 ("Create", self._draw_create),
                 ("Assets", self._draw_assets),
                 ("Scene", self._draw_scene),
-            ):
+            )
+            if self.editor.solver_type.value == "mpm":
+                tabs += (("Paint", self._draw_brush_controls),)
+            for title, content in tabs:
                 if w.tab_item(title)[0]:
                     ui.begin_child("##authoring_" + title, ui.ImVec2(0, 0))
                     try:
@@ -392,15 +436,27 @@ class AuthoringPanel:
             if self._card(title, kind, width, 102 * s, index + 1):
                 self._add_primitive(kind)
         ui.end_disabled()
+        if self.editor.solver_type.value == "vbd":
+            ui.spacing()
+            with w.group("Deformables") as opened:
+                if opened:
+                    ui.begin_disabled(not self.editable)
+                    for kind, title in (("cloth", "Cloth sheet"), ("cable", "Cable"), ("soft", "Soft block")):
+                        if w.button(title, ui.ImVec2(-1, 28 * s)):
+                            self._add_deformable(kind)
+                    ui.end_disabled()
         ui.spacing()
         with w.group("New objects") as opened:
             if opened:
                 edit = w.number("Scale", self._scale, editable=True, bounds=(0.02, 100), speed=0.01)
                 if edit.changed:
                     self._scale = float(edit.value)
-                _, self._dynamic = ui.checkbox("Dynamic", self._dynamic)
-                if ui.is_item_hovered():
-                    ui.set_tooltip("Dynamic objects fall and collide. Fixed objects stay in place.")
+                if self.editor.solver_type.value == "mpm":
+                    ui.text_disabled("Rigid props are stationary MPM colliders.")
+                else:
+                    _, self._dynamic = ui.checkbox("Dynamic", self._dynamic)
+                    if ui.is_item_hovered():
+                        ui.set_tooltip("Dynamic objects fall and collide. Fixed objects stay in place.")
                 _, color = ui.color_edit3("Color", list(self._color))
                 self._color = tuple(color)
         ui.spacing()
@@ -408,6 +464,182 @@ class AuthoringPanel:
             self._open_dialog("import")
         ui.text_wrapped("Drop a local USD file anywhere in the window to import it.")
         self._draw_status()
+
+    def _add_deformable(self, kind: str) -> None:
+        sizes = {"cloth": (1.0, 1.0, 0.02), "cable": (1.0, 0.02, 0.02), "soft": (0.5, 0.5, 0.5)}
+        position = self.world_position(lift=0.25 if kind != "soft" else 0.5)
+        object_id = self._run(self.editor.add_deformable, kind, position=position, size=sizes[kind])
+        if object_id is not None:
+            self.select(object_id)
+
+    def _draw_brush_controls(self) -> None:
+        ui, w = self.ui, self.widgets
+        _, self._brush_enabled = ui.checkbox("Paint particles", self._brush_enabled)
+        for label, field, bounds, integer, unit in (
+            ("Radius", "_brush_radius", (0.01, 2.0), False, "m"),
+            ("Spacing", "_brush_spacing", (0.005, 0.2), False, "m"),
+            ("Depth (layers)", "_brush_layers", (1, 8), True, ""),
+            ("Density", "_brush_density", (1, 20000), False, "kg/m³"),
+        ):
+            edit = w.number(
+                label, getattr(self, field), editable=not self._brush_active, bounds=bounds, integer=integer, unit=unit
+            )
+            if edit.changed:
+                setattr(self, field, int(edit.value) if integer else float(edit.value))
+        ui.text_wrapped("Pause physics, then paint with the left mouse button. Release to add one undoable stroke.")
+        ui.text_disabled(
+            f"Depth {self._brush_layers * self._brush_spacing:.3g} m · {len(self._brush_points):,} samples"
+        )
+        ui.text_wrapped("At most 10,000 samples per stroke and 50,000 per scene. Oversized strokes are rejected.")
+        self._draw_status()
+
+    def _sample_brush(self, point: np.ndarray) -> None:
+        """Accumulate deterministic lattice cells, bounded independently of frame rate."""
+        if self._brush_failed:
+            return
+        point = self._brush_surface(point)
+        if point is None:
+            self._brush_failed = True
+            return
+        axis = int(self.editor.model.up_axis)
+        lateral = [index for index in range(3) if index != axis]
+        spacing, radius = self._brush_spacing, self._brush_radius
+        if radius < spacing:
+            self._brush_failed = True
+            self.message = "Brush radius must be at least the spacing. Increase radius or reduce spacing."
+            return
+        lo = np.ceil((point[lateral] - radius) / spacing).astype(int)
+        hi = np.floor((point[lateral] + radius) / spacing).astype(int)
+        if int(np.prod(hi - lo + 1)) * self._brush_layers > 4 * self.brush_point_limit:
+            self._brush_failed = True
+        else:
+            xy = np.stack(
+                np.meshgrid(np.arange(lo[0], hi[0] + 1), np.arange(lo[1], hi[1] + 1), indexing="ij"), axis=-1
+            ).reshape(-1, 2)
+            xy = xy[np.sum((xy * spacing - point[lateral]) ** 2, axis=1) <= radius**2]
+            bottom = int(np.ceil(point[axis] / spacing))
+            samples = np.empty((len(xy), self._brush_layers, 3), dtype=int)
+            samples[:, :, lateral] = xy[:, None, :]
+            samples[:, :, axis] = bottom + np.arange(self._brush_layers)
+            additions = {tuple(int(value) for value in sample) for sample in samples.reshape(-1, 3)}
+            used = sum(len(obj.points) for obj in self.editor.objects if obj.kind.value == "particles")
+            limit = min(self.brush_point_limit, MAX_PARTICLES - used)
+            if len(self._brush_points | additions) > limit:
+                self._brush_failed = True
+            else:
+                self._brush_points.update(additions)
+        if self._brush_failed:
+            self.message = (
+                "This stroke exceeds the particle budget. Release, then use a smaller radius or larger spacing."
+            )
+
+    def _brush_surface(self, point: np.ndarray) -> np.ndarray | None:
+        """Clear the complete footprint using the editor's cached native rigid bounds."""
+        axis = int(self.editor.model.up_axis)
+        base = point.copy()
+        base[axis] = 0.0
+        hi = np.full(3, self._brush_radius + self._brush_spacing * 0.5)
+        lo = -hi.copy()
+        lo[axis], hi[axis] = 0.0, self._brush_layers * self._brush_spacing
+        try:
+            resolved = self.editor._preview_bounds(base, (lo, hi), theme.ACCENT[:3], placement=True)
+        except ValueError as error:
+            self.message = str(error)
+            return None
+        finally:
+            self.editor.clear_preview()
+        return np.asarray(resolved)
+
+    def _finish_brush(self, *, commit: bool = False) -> None:
+        if not self._brush_active:
+            return
+        if self._brush_epoch == self.editor._document_epoch:
+            if commit and self._brush_points and not self._brush_failed:
+                points = np.asarray(sorted(self._brush_points), dtype=float) * self._brush_spacing
+                points[:, int(self.editor.model.up_axis)] += self._brush_spacing * 0.5
+                points -= self._brush_origin
+                object_id = self._run(
+                    self.editor.add_deformable,
+                    "particles",
+                    position=tuple(self._brush_origin),
+                    points=tuple(map(tuple, points)),
+                    thickness=self._brush_spacing,
+                    density=self._brush_density,
+                )
+                if object_id is not None:
+                    self.select(object_id)
+            self.editor.end_edit()
+        self._brush_active = False
+        self._brush_points.clear()
+        self._brush_origin = self._brush_last = self._brush_epoch = None
+
+    def _draw_brush(self) -> None:
+        """Draw a bounded host preview; publish one stroke only after releasing left input."""
+        ui = self.ui
+        if (
+            not self.brush_enabled
+            or self.ui.get_drag_drop_payload_py_id() is not None
+            or (self._brush_active and self._brush_epoch != self.editor._document_epoch)
+        ):
+            self._finish_brush()
+            return
+        hovered = ui.is_item_hovered(ui.HoveredFlags_.allow_when_blocked_by_active_item)
+        if hovered:
+            mouse = ui.get_io().mouse_pos
+            point = self._brush_surface(np.asarray(self.world_position((mouse.x, mouse.y))))
+            if point is None:
+                self._finish_brush()
+                return
+            if ui.is_mouse_clicked(0) and self.editor._edit_before is None:
+                self.editor.begin_edit()
+                self._brush_active = True
+                self._brush_failed = False
+                self._brush_epoch = self.editor._document_epoch
+                self._brush_origin = point.copy()
+                self._brush_last = point.copy()
+                self.message = ""
+                self._sample_brush(point)
+            if self._brush_active and ui.is_mouse_down(0):
+                distance = float(np.linalg.norm(point - self._brush_last))
+                step = max(self._brush_spacing, self._brush_radius * 0.35)
+                if distance >= step:
+                    count = int(distance // step)
+                    if count > self.brush_point_limit:
+                        self._brush_failed = True
+                        self.message = "Stroke is too long. Release and use a shorter stroke."
+                    else:
+                        direction = (point - self._brush_last) / distance
+                        for sample in self._brush_last + np.arange(1, count + 1)[:, None] * step * direction:
+                            self._sample_brush(sample)
+                        self._brush_last += count * step * direction
+            axis = int(self.editor.model.up_axis)
+            lateral = [index for index in range(3) if index != axis]
+            angles = np.linspace(0, 2 * np.pi, 33)
+            ring = np.tile(point, (len(angles), 1))
+            ring[:, lateral] += self._brush_radius * np.column_stack((np.cos(angles), np.sin(angles)))
+            preview = (
+                np.asarray(tuple(islice(self._brush_points, 256)), dtype=float).reshape(-1, 3) * self._brush_spacing
+            )
+            preview[:, axis] += self._brush_spacing * 0.5
+            camera = self.workspace.viewer.camera
+            matrix = camera.get_projection_matrix().reshape(4, 4).T @ camera.get_view_matrix().reshape(4, 4).T
+            vertices = np.concatenate((ring, preview), axis=0)
+            clip = np.column_stack((vertices, np.ones(len(vertices)))) @ matrix.T
+            if np.all(clip[:, 3] > 0):
+                x, y, width, height = self.workspace.rect
+                screen = clip[:, :2] / clip[:, 3:4]
+                screen = np.column_stack((x + (screen[:, 0] + 1) * width / 2, y + (1 - screen[:, 1]) * height / 2))
+                draw = ui.get_window_draw_list()
+                draw.push_clip_rect(ui.ImVec2(x, y), ui.ImVec2(x + width, y + height), True)
+                color = self.widgets.color(theme.CONSOLE_WARNING if self._brush_failed else theme.ACCENT)
+                draw.add_polyline([ui.ImVec2(*p) for p in screen[: len(ring)]], color, thickness=2.0, flags=0)
+                for p in screen[len(ring) :]:
+                    draw.add_circle_filled(ui.ImVec2(*p), 2, color, 6)
+                draw.pop_clip_rect()
+        if self._brush_active and ui.is_mouse_released(0):
+            if hovered:
+                self._sample_brush(point)
+            self._finish_brush(commit=True)
 
     def _ensure_assets(self) -> AssetLibrary:
         if self.assets is None:
@@ -640,7 +872,7 @@ class AuthoringPanel:
                         scale=value,
                         color=obj.color,
                     )
-                else:
+                elif obj.kind.value in {kind for kind, _, _ in self.primitives}:
                     self.editor.preview_primitive(
                         obj.kind.value, position=self._pose(object_id)[0], size=value, color=obj.color
                     )
@@ -669,6 +901,20 @@ class AuthoringPanel:
                 ui.text_disabled("Move and rotate directly in the viewport.")
             return
         obj = self.editor.get_object(object_id)
+        generated = obj.kind.value in ("cloth", "cable", "soft", "particles")
+        template = (
+            next(
+                (
+                    value.builder
+                    for key, value in reversed(self.editor._templates.items())
+                    if key[:2] == (obj.source, obj.size)
+                ),
+                None,
+            )
+            if obj.kind.value == "usd"
+            else None
+        )
+        imported_deformable = template is not None and (template.particle_count > 0 or bool(template.curve_label))
         ui.text_colored(ui.ImVec4(*theme.ACCENT), "OBJECT PROPERTIES")
         ui.push_id(object_id)
         ui.begin_disabled(not self.editable)
@@ -703,6 +949,18 @@ class AuthoringPanel:
                 elif obj.kind.value in ("cylinder", "capsule"):
                     edit = w.vec2("Diameter / height", (size[0], size[2]), editable=True, labels=("D", "H"), unit="m")
                     edit.value = (float(edit.value[0]), float(edit.value[0]), float(edit.value[1]))
+                elif obj.kind.value == "cloth":
+                    edit = w.vec2("Size", size[:2], editable=True, unit="m")
+                    edit.value = (float(edit.value[0]), float(edit.value[1]), float(size[2]))
+                elif obj.kind.value == "cable":
+                    edit = w.number("Length", float(size[0]), editable=True, bounds=(0.01, 1000), unit="m")
+                    edit.value = (float(edit.value), float(size[1]), float(size[2]))
+                elif imported_deformable:
+                    edit = None
+                    ui.text_wrapped("Edit the source USD to change this deformable's geometry or material.")
+                elif obj.kind.value == "particles":
+                    edit = None
+                    ui.text_disabled(f"{len(obj.points):,} authored samples")
                 else:
                     edit = w.vec3(
                         "Scale" if obj.kind.value == "usd" else "Size",
@@ -710,23 +968,66 @@ class AuthoringPanel:
                         editable=True,
                         unit="" if obj.kind.value == "usd" else "m",
                     )
-                self._apply_edit(object_id, "size", edit)
+                if edit is not None:
+                    self._apply_edit(object_id, "size", edit)
         with w.group("Material") as opened:
-            if opened:
-                changed, color = ui.color_edit3("Color", list(obj.color))
-                self._apply_edit(
-                    object_id,
-                    "color",
-                    PropertyEdit(color, changed, ui.is_item_activated(), ui.is_item_deactivated_after_edit()),
-                )
-                changed, visible = ui.checkbox("Visible", obj.visible)
-                if changed:
-                    self._run(self.editor.update_object, object_id, visible=visible)
-                self._apply_edit(
-                    object_id, "friction", w.number("Friction", obj.friction, editable=True, bounds=(0, 10))
-                )
+            if opened and not imported_deformable:
+                if not generated:
+                    changed, color = ui.color_edit3("Color", list(obj.color))
+                    self._apply_edit(
+                        object_id,
+                        "color",
+                        PropertyEdit(color, changed, ui.is_item_activated(), ui.is_item_deactivated_after_edit()),
+                    )
+                    changed, visible = ui.checkbox("Visible", obj.visible)
+                    if changed:
+                        self._run(self.editor.update_object, object_id, visible=visible)
+                if not generated or obj.kind.value in ("particles", "cable"):
+                    self._apply_edit(
+                        object_id,
+                        "friction",
+                        w.number(
+                            "Internal friction" if obj.kind.value == "particles" else "Friction",
+                            obj.friction,
+                            editable=True,
+                            bounds=(0, 10),
+                        ),
+                    )
         with w.group("Physics") as opened:
-            if opened:
+            if opened and imported_deformable:
+                ui.text_disabled("Physical properties come from the source USD.")
+            elif opened and generated:
+                for field, title, bounds, unit in (
+                    ("density", "Density", (1, 20000), "kg/m³"),
+                    ("stiffness", "Young's modulus", (1, 1.0e9), "Pa"),
+                ):
+                    self._apply_edit(
+                        object_id, field, w.number(title, getattr(obj, field), editable=True, bounds=bounds, unit=unit)
+                    )
+                if obj.kind.value != "particles":
+                    self._apply_edit(
+                        object_id,
+                        "resolution",
+                        w.number(
+                            "Resolution",
+                            obj.resolution,
+                            editable=True,
+                            integer=True,
+                            bounds=(2, 16 if obj.kind.value == "soft" else 32),
+                        ),
+                    )
+                if obj.kind.value != "soft":
+                    title = "Thickness" if obj.kind.value == "cloth" else "Diameter"
+                    self._apply_edit(
+                        object_id,
+                        "thickness",
+                        w.number(title, obj.thickness, editable=True, bounds=(0.001, 1), unit="m"),
+                    )
+                    if obj.kind.value == "particles" and ui.is_item_hovered():
+                        ui.set_tooltip(
+                            "Changes particle diameter and volume; the authored sample positions stay fixed."
+                        )
+            elif opened:
                 changed, dynamic = ui.checkbox("Dynamic", obj.dynamic)
                 if changed:
                     self._run(self.editor.update_object, object_id, dynamic=dynamic)
@@ -777,6 +1078,7 @@ class AuthoringPanel:
     def drop_target(self) -> None:
         """Accept our palette payload on the just-submitted viewport image."""
         ui = self.ui
+        self._draw_brush()
         payload = ui.get_drag_drop_payload_py_id()
         if payload is None or payload.type != self.payload_type or payload.data_id not in self._payloads:
             self._drag_asset_id = None
@@ -918,6 +1220,7 @@ class AuthoringPanel:
         binding = runtime.bindings.get(object_id) if runtime is not None else None
         if (
             not self._show_gizmo
+            or self.brush_enabled
             or not self.editable
             or object_id is None
             or binding is None
@@ -965,6 +1268,7 @@ class AuthoringPanel:
 
     def cancel_interaction(self) -> None:
         """Finish the current edit when the window or its authoring panels lose focus."""
+        self._finish_brush()
         self._finish_gizmo()
         if self._field_edit:
             self.editor.end_edit()

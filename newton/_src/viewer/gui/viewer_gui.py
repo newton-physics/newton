@@ -676,6 +676,10 @@ class ViewerGui:
             workspace = getattr(self, "workspace", None)
             dockspace = getattr(workspace, "dockspace", None)
             in_viewport = self.show_ui and dockspace is not None and dockspace.viewport_hovered
+            authoring = getattr(workspace, "authoring", None)
+            if button == mouse.LEFT and in_viewport and authoring is not None and authoring.brush_enabled:
+                self._selection_press = None
+                return
             # The docked viewport is an ImGui image, but its presses belong to
             # the scene unless the current frame gave them to a gizmo.
             if (self.ui.io.mouse_down_owned[mouse_index[button]] and not in_viewport) or (

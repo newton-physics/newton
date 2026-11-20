@@ -91,14 +91,18 @@ class SceneEditorMCP:
             "Newton Scene Editor",
             log_level="WARNING",
             instructions=(
-                "Inspect get_scene and get_viewport before editing. Object IDs are stable; body indices are not. "
+                "Inspect get_scene and get_viewport before editing. Object IDs are stable; body/particle indices are not. "
                 "get_scene identifies the solver and device: mujoco uses native MuJoCo on CPU and MuJoCo Warp on CUDA; "
-                "xpbd is XPBD. Native MuJoCo convex-hulls collision meshes. "
+                "xpbd is XPBD, vbd supports cloth/cables/soft bodies, and mpm supports particle strokes on CUDA. "
+                "MPM rigid objects must be stationary (dynamic=false). Native MuJoCo convex-hulls collision meshes. "
                 "physics_ready distinguishes a published scene from physics initialized by Play or an explicit step. "
                 "Positions and sizes are world Z-up metres, rotations are XYZW quaternions, mass is kilograms. "
                 "Use the observed revision for apply_edits and undo_redo. Batch edits into one request. "
                 "A pending document is not yet a compiled scene: inspect pending, busy and error until ready. "
                 "Object pose_kind distinguishes live_root poses from authored_root fallbacks for independent assemblies. "
+                "Deformable observations summarize particle ranges, not individual deformed positions. "
+                "add_deformable points are local metres and create-only; density is kg/m³, stiffness Pa, thickness metres. "
+                "Particle thickness is sampling spacing and diameter; particle friction is internal material friction. "
                 "A failed import retains the previous runtime; undo_redo can discard the failed document. "
                 "These tools control this simulation editor, not physical robot hardware."
             ),
@@ -191,6 +195,10 @@ class SceneEditorMCP:
             friction: float | None = Field(default=None, ge=0)
             dynamic: bool | None = None
             visible: bool | None = None
+            resolution: int | None = Field(default=None, gt=0, strict=True)
+            density: float | None = Field(default=None, gt=0)
+            stiffness: float | None = Field(default=None, gt=0)
+            thickness: float | None = Field(default=None, gt=0)
 
         class AddPrimitive(BaseModel):
             model_config = ConfigDict(extra="forbid")
@@ -206,6 +214,20 @@ class SceneEditorMCP:
             properties: Properties = Field(default_factory=Properties)
             place: bool = True
 
+        class DeformableProperties(Properties):
+            position: tuple[float, float, float]
+
+        class AddDeformable(BaseModel):
+            model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+            operation: Literal["add_deformable"]
+            kind: Literal["cloth", "cable", "soft", "particles"]
+            properties: DeformableProperties
+            points: tuple[tuple[float, float, float], ...] = Field(default=(), max_length=1024)
+            place: Literal[False] = Field(
+                default=False,
+                description="Deformables require an explicit position; automatic placement is unsupported.",
+            )
+
         class Update(BaseModel):
             model_config = ConfigDict(extra="forbid")
             operation: Literal["update"]
@@ -217,7 +239,7 @@ class SceneEditorMCP:
             operation: Literal["remove"]
             object_id: str
 
-        edit_type = Annotated[AddPrimitive | AddUSD | Update | Remove, Field(discriminator="operation")]
+        edit_type = Annotated[AddPrimitive | AddUSD | AddDeformable | Update | Remove, Field(discriminator="operation")]
         read = ToolAnnotations(read_only_hint=True, destructive_hint=False, open_world_hint=False)
         write = ToolAnnotations(read_only_hint=False, destructive_hint=True, open_world_hint=False)
 
@@ -261,7 +283,12 @@ class SceneEditorMCP:
         async def apply_edits(
             edits: Annotated[list[edit_type], Field(min_length=1, max_length=64)], expected_revision: int
         ) -> dict[str, Any]:
-            """Prevalidate and stage one undoable edit batch using the observed revision. USD preparation may be pending."""
+            """Stage one atomic undoable batch. add_deformable supports VBD cloth/cable/soft or MPM particle points.
+
+            Deformables require an explicit world position and place=False.
+            Points are create-only local coordinates, bounded to 1024 per object
+            and the HTTP request-size limit. USD preparation may be pending.
+            """
             return await self._submit("edits", edits=edits, expected_revision=expected_revision)
 
         @server.tool(annotations=write)
@@ -322,9 +349,11 @@ class SceneEditorMCP:
                     fields["overrides"] = tuple(
                         sorted(set(obj.overrides) | (fields.keys() & {"mass", "friction", "dynamic"}))
                     )
-                obj = editor._validate(dataclasses.replace(obj, **fields))
+                obj = editor._validate(dataclasses.replace(obj, **fields), previous=obj)
             else:
                 source = None
+                if editor.solver_type == editor.Solver.MPM and operation in ("add_primitive", "add_usd"):
+                    fields.setdefault("dynamic", False)
                 if operation == "add_usd":
                     source = str(Path(edit.source).expanduser().resolve())
                     if not Path(source).is_file():
@@ -334,6 +363,9 @@ class SceneEditorMCP:
                     fields.setdefault("color", (1.0, 1.0, 1.0))
                 else:
                     kind = editor.Shape(edit.kind)
+                    if operation == "add_deformable":
+                        fields["points"] = edit.points
+                        fields.setdefault("color", (1.0, 1.0, 1.0))
                 name = fields.pop("name", Path(source).stem if source else kind.value.title())
                 obj = editor._validate(
                     editor.Object(id=uuid.uuid4().hex, name=name, kind=kind, source=source, **fields)
@@ -343,6 +375,7 @@ class SceneEditorMCP:
             objects[obj.id] = obj
             changed.append(obj.id)
         document = tuple(objects.values())
+        editor._check_point_budget(document)
         if document != editor.objects:
             editor.begin_edit()
             try:
@@ -413,7 +446,14 @@ class SceneEditorMCP:
             "solver": editor.solver_type.value,
             "device": str(editor.device),
             "physics_ready": bool(
-                runtime is not None and (runtime.solver is not None or not runtime.model.joint_count)
+                runtime is not None
+                and (
+                    runtime.solver is not None
+                    or not (
+                        runtime.model.particle_count
+                        or (editor.solver_type != editor.Solver.MPM and runtime.model.joint_count)
+                    )
+                )
             ),
             "frame": self._frame,
             "sim_time": editor.sim_time,
@@ -473,11 +513,20 @@ class SceneEditorMCP:
                         raise ValueError("Object offset must be nonnegative")
                     rows = []
                     for obj in self.editor.objects[offset : offset + arguments["limit"]]:
-                        row = dataclasses.asdict(obj)
+                        row = {
+                            field.name: getattr(obj, field.name)
+                            for field in dataclasses.fields(obj)
+                            if field.name != "points"
+                        }
+                        row["point_count"] = len(obj.points)
                         row["kind"] = obj.kind.value
                         row["live_position"], row["live_rotation"] = self.editor.get_pose(obj.id)
                         runtime = self.editor._runtime
                         binding = runtime.bindings.get(obj.id) if runtime is not None else None
+                        row["particle_range"] = binding.particles if binding is not None else None
+                        row["particle_count"] = (
+                            binding.particles[1] - binding.particles[0] if binding is not None else None
+                        )
                         row["pose_kind"] = "live_root" if binding and binding.follows_body else "authored_root"
                         rows.append(row)
                     result = {**stamp, "objects": rows, "total_objects": len(self.editor.objects)}

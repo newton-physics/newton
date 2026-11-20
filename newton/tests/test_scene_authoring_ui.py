@@ -18,11 +18,12 @@ import warp as wp
 from newton import ModelBuilder, ModelFlags
 from newton._src.viewer.gui.authoring import intersect_ray
 from newton._src.viewer.gui.viewer_gui import ViewerGui
+from newton._src.viewer.gui.widgets import PhysicsWidgets
 from newton.examples import _ExampleBrowser
 from newton.examples.basic.example_scene_editor import Example
 from newton.tests import test_viewer_assets
 from newton.tests.test_viewer_get_frame import _make_headless_viewer_gl_or_skip
-from newton.tests.unittest_utils import get_cuda_test_devices, has_module
+from newton.tests.unittest_utils import get_cuda_test_devices, has_module, requires
 
 
 class TestSceneAuthoringUI(unittest.TestCase):
@@ -766,6 +767,182 @@ class TestSceneAuthoringUI(unittest.TestCase):
             workspace.bind()
             self.assertIsNone(workspace.authoring)
             self.assertIsNone(panel._file_drop_handler)
+
+    @requires("imgui_bundle", "pxr.Usd", "newton_usd_schemas")
+    def test_deformable_controls_and_paused_particle_stroke(self):
+        """Create native cloth and publish one bounded, collider-cleared MPM brush gesture."""
+        from imgui_bundle import imgui
+
+        previous_context = imgui.get_current_context()
+        context = imgui.create_context()
+        imgui.set_current_context(context)
+
+        def restore_context():
+            imgui.destroy_context(context)
+            if previous_context is not None:
+                imgui.set_current_context(previous_context)
+
+        self.addCleanup(restore_context)
+        targets = {}
+        with wp.ScopedDevice("cpu"):
+            viewer = _make_headless_viewer_gl_or_skip(self, width=1280, height=900)
+            self.addCleanup(viewer.close)
+            viewer._paused = True
+            viewer.gui = ViewerGui(viewer, viewer.renderer.window, workspace_enabled=True)
+            viewer.gui.ui.io.set_ini_filename("")
+            editor = Example(
+                viewer, Example.create_parser().parse_args(["--empty", "--solver", "vbd", "--device", "cpu"])
+            )
+            self.addCleanup(editor.close)
+
+            def render(count=1, *, simulate=False):
+                for _ in range(count):
+                    editor.before_frame()
+                    if simulate and viewer.should_step():
+                        editor.step()
+                    editor.render()
+                    self.assertFalse(editor.error)
+                    self.assertFalse(viewer.gui.ui.section_errors)
+
+            def native_mouse(point, down=None):
+                window = viewer.renderer.window
+                window.dispatch_event("on_mouse_motion", point[0], window.height - point[1], 0, 0)
+                if down is not None:
+                    window.dispatch_event(
+                        "on_mouse_press" if down else "on_mouse_release", point[0], window.height - point[1], 1, 0
+                    )
+                window.dispatch_events()
+                render()
+
+            def click(point):
+                native_mouse(point)
+                native_mouse(point, True)
+                native_mouse(point, False)
+                render(2)
+
+            def track(original):
+                def draw(owner, label, *args, **kwargs):
+                    result = original(owner, label, *args, **kwargs)
+                    lo, hi = owner.ui.get_item_rect_min(), owner.ui.get_item_rect_max()
+                    targets[label] = ((lo.x + hi.x) / 2, (lo.y + hi.y) / 2)
+                    return result
+
+                return draw
+
+            with (
+                mock.patch.object(PhysicsWidgets, "button", track(PhysicsWidgets.button)),
+                mock.patch.object(PhysicsWidgets, "number", track(PhysicsWidgets.number)),
+                mock.patch.object(PhysicsWidgets, "tab_item", track(PhysicsWidgets.tab_item)),
+            ):
+                render(4)
+                click(targets["Cloth sheet"])
+                self.assertEqual(len(editor.objects), 1)
+                cloth = editor.objects[0]
+                self.assertEqual(cloth.kind.value, "cloth")
+                self.assertGreater(editor.model.tri_count, 0)
+                self.assertEqual(viewer.gui.workspace.selected, ("particle", 0))
+                model, builds = editor.model, editor.rebuild_count
+                density = targets["Density"]
+                native_mouse(density, True)
+                native_mouse((density[0] - 120, density[1]))
+                self.assertNotEqual(editor.get_object(cloth.id).density, cloth.density)
+                self.assertIs(editor.model, model)
+                native_mouse((density[0] - 120, density[1]), False)
+                render(2)
+                self.assertEqual(editor.rebuild_count, builds + 1)
+                editor.close()
+
+                devices = get_cuda_test_devices()[:1]
+                if not devices:
+                    return
+                with wp.ScopedDevice(devices[0]):
+                    editor = Example(
+                        viewer,
+                        Example.create_parser().parse_args(
+                            ["--empty", "--solver", "mpm", "--device", devices[0].alias]
+                        ),
+                    )
+                    self.addCleanup(editor.close)
+                    editor.add_primitive("box", position=(0, 0, 0.2), size=(0.4, 0.4, 0.4), dynamic=False)
+                    editor.commit()
+                    viewer.set_camera(pos=(5, -7, 4), pitch=-23, yaw=125)
+                    render(4)
+                    click(targets["Paint"])
+                    panel = viewer.gui.workspace.authoring
+                    # Enable the actual checkbox through its native item rectangle.
+                    checkbox = imgui.checkbox
+
+                    def track_checkbox(label, *args):
+                        result = checkbox(label, *args)
+                        if label == "Paint particles":
+                            lo, hi = imgui.get_item_rect_min(), imgui.get_item_rect_max()
+                            targets[label] = ((lo.x + hi.x) / 2, (lo.y + hi.y) / 2)
+                        return result
+
+                    with mock.patch.object(imgui, "checkbox", track_checkbox):
+                        render()
+                        click(targets["Paint particles"])
+                    self.assertTrue(panel.brush_enabled)
+                    matrix = (
+                        viewer.camera.get_projection_matrix().reshape(4, 4).T
+                        @ viewer.camera.get_view_matrix().reshape(4, 4).T
+                    )
+                    clip = matrix @ np.array((0, 0, 0.4, 1))
+                    ndc = clip[:2] / clip[3]
+                    x, y, width, height = viewer.gui.workspace.rect
+                    point = (x + (ndc[0] + 1) * width / 2, y + (1 - ndc[1]) * height / 2)
+                    model, builds = editor.model, editor.rebuild_count
+                    camera = (tuple(viewer.camera.pos), viewer.camera.pitch, viewer.camera.yaw)
+                    native_mouse(point, True)
+                    self.assertTrue(panel._brush_active)
+                    native_mouse((point[0] + 25, point[1]))
+                    samples = len(panel._brush_points)
+                    render(4)
+                    self.assertGreater(samples, 0)
+                    self.assertEqual(len(panel._brush_points), samples)
+                    self.assertIs(editor.model, model)
+                    self.assertEqual(editor.model.particle_count, 0)
+                    self.assertEqual(editor.rebuild_count, builds)
+                    self.assertEqual((tuple(viewer.camera.pos), viewer.camera.pitch, viewer.camera.yaw), camera)
+                    native_mouse((point[0] + 25, point[1]), False)
+                    render(2)
+                    self.assertFalse(panel._brush_active)
+                    self.assertEqual(len(editor.objects), 2)
+                    stroke = editor.objects[-1]
+                    self.assertEqual(stroke.kind.value, "particles")
+                    self.assertEqual(editor.rebuild_count, builds + 1)
+                    self.assertEqual(editor.model.particle_count, len(stroke.points))
+                    positions = editor.state_0.particle_q.numpy()
+                    self.assertTrue(np.isfinite(positions).all())
+                    self.assertGreater(float(positions[:, 2].min()), 0.4 + stroke.thickness / 2)
+                    np.testing.assert_allclose(editor.model.particle_mass.numpy(), stroke.density * stroke.thickness**3)
+                    editor.undo()
+                    render(2)
+                    self.assertEqual(len(editor.objects), 1)
+                    self.assertEqual(editor.model.particle_count, 0)
+                    editor.redo()
+                    render(2)
+                    self.assertEqual(editor.objects[-1], stroke)
+                    panel._brush_radius, panel._brush_spacing, panel._brush_layers = 2.0, 0.005, 8
+                    model = editor.model
+                    native_mouse(point, True)
+                    self.assertTrue(panel._brush_failed)
+                    native_mouse(point, False)
+                    render(2)
+                    self.assertIs(editor.model, model)
+                    self.assertEqual(len(editor.objects), 2)
+                    self.assertIn("budget", panel.message)
+                    self.assertIsNone(editor._edit_before)
+                    panel._brush_radius, panel._brush_spacing, panel._brush_layers = 0.15, 0.04, 2
+                    native_mouse(point, True)
+                    self.assertTrue(panel._brush_active)
+                    viewer.renderer.window.dispatch_event("on_deactivate")
+                    viewer.renderer.window.dispatch_events()
+                    render(2)
+                    self.assertFalse(panel._brush_active)
+                    self.assertIsNone(editor._edit_before)
+                    self.assertIs(editor.model, model)
+                    self.assertEqual(len(editor.objects), 2)
 
 
 if __name__ == "__main__":

@@ -35,8 +35,11 @@ from ..geometry.flags import ShapeFlags
 from ..geometry.types import GeoType, Heightfield, Mesh
 from ..sim.builder import ModelBuilder
 from ..utils.color import color_srgb_to_linear
+from .authoring_deformables import DEFORMABLE_KINDS, validate_deformable, write_deformable
 
 _MARKER = "newtonSceneAuthoring"
+_SOLVER_MARKER = "newtonSceneAuthoringSolver"
+_SOLVERS = frozenset({"xpbd", "mujoco", "vbd", "mpm"})
 _GROUND_FRICTION = 0.8
 _SPHERE_ROLLING_FRICTION = 0.005
 
@@ -121,7 +124,13 @@ def _ensure_articulation_roots(stage):
         roots.add(ancestor)
 
 
-def _open_asset(source: str):
+def _is_deformable_prim(prim) -> bool:
+    return prim.GetTypeName() == "TetMesh" or any(
+        "Deformable" in schema or "Particle" in schema for schema in prim.GetPrimTypeInfo().GetAppliedAPISchemas()
+    )
+
+
+def _open_asset(source: str, *, allow_deformables: bool = False):
     from pxr import Sdf, Usd, UsdGeom, UsdPhysics
 
     path = str(Path(source).expanduser().resolve())
@@ -142,6 +151,7 @@ def _open_asset(source: str):
             if selection in names:
                 variants.SetVariantSelection(selection)
     _make_instances_editable(stage)
+    has_deformables = False
     for prim in stage.Traverse():
         if prim.IsA(UsdGeom.Xformable) and UsdGeom.Xformable(prim).GetResetXformStack():
             raise ValueError(f"Scene authoring does not support resetXformStack at {prim.GetPath()}")
@@ -149,10 +159,25 @@ def _open_asset(source: str):
         # Bare TetMesh has legacy soft-body semantics in native import. Points
         # and curves require an explicit simulation API; untagged grasp guides
         # and other annotations are harmless rigid-asset metadata.
-        if prim.GetTypeName() == "TetMesh" or any("Deformable" in schema or "Particle" in schema for schema in schemas):
-            raise ValueError(
-                f"Scene authoring supports rigid USD assets only; unsupported simulation at {prim.GetPath()}"
-            )
+        if allow_deformables and any(
+            "NewtonMPM" in schema or schema == "NewtonPointsDeformableSimAPI" for schema in schemas
+        ):
+            raise ValueError("Import MPM particles through the particle authoring tools, not as a VBD asset")
+        if _is_deformable_prim(prim):
+            has_deformables = True
+            if not allow_deformables:
+                raise ValueError(
+                    f"Scene authoring supports rigid USD assets only; unsupported simulation at {prim.GetPath()}"
+                )
+            if prim.IsA(UsdGeom.Xformable):
+                linear = np.asarray(UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default()))[
+                    :3, :3
+                ]
+                if (
+                    not np.allclose(linear @ linear.T, np.eye(3), rtol=1.0e-6, atol=1.0e-6)
+                    or np.linalg.det(linear) <= 0
+                ):
+                    raise ValueError("Imported deformables require unit scale without reflection or shear")
     linear_unit = UsdGeom.GetStageMetersPerUnit(stage)
     mass_unit = UsdPhysics.GetStageKilogramsPerUnit(stage)
     if not math.isfinite(linear_unit) or linear_unit <= 0 or not math.isfinite(mass_unit) or mass_unit <= 0:
@@ -161,6 +186,8 @@ def _open_asset(source: str):
     # can be converted by a world scale; articulated or authored inertial data
     # requires a complete physical-parameter conversion, which is not supported.
     if not math.isclose(linear_unit, 1.0) or not math.isclose(mass_unit, 1.0):
+        if has_deformables:
+            raise ValueError("Imported deformables require metersPerUnit=1 and kilogramsPerUnit=1")
         for prim in stage.Traverse():
             if prim.HasAPI(UsdPhysics.RigidBodyAPI) or prim.HasAPI(UsdPhysics.MassAPI) or prim.IsA(UsdPhysics.Joint):
                 raise ValueError(
@@ -230,17 +257,23 @@ def _source_scale(stage, scale, linear_unit):
     return tuple(value * linear_unit for value in values)
 
 
-def prepare_usd(source: str, *, scale=(1.0, 1.0, 1.0), mujoco: bool = False) -> ModelBuilder:
-    """Import a rigid USD asset as a caller-owned, read-only builder template.
+def prepare_usd(
+    source: str, *, scale=(1.0, 1.0, 1.0), mujoco: bool = False, allow_deformables: bool = False
+) -> ModelBuilder:
+    """Import a USD asset as a caller-owned, read-only builder template.
 
     Preserve bodies, joints, colliders, and visuals through native USD import.
     Visual/static assets are converted to meters; non-SI authored rigid physics
     is rejected. Placement uses a Z-up frame and scale uses that frame's axes.
+    ``allow_deformables`` opts into native VBD geometry with unit scales and SI
+    units; external MPM scenes require their own solver configuration.
     """
     from pxr import Gf, UsdGeom, UsdPhysics
 
-    stage, _, linear_unit = _open_asset(source)
+    stage, _, linear_unit = _open_asset(source, allow_deformables=allow_deformables)
     factors = _source_scale(stage, scale, linear_unit)
+    if allow_deformables and factors != (1.0, 1.0, 1.0) and any(_is_deformable_prim(prim) for prim in stage.Traverse()):
+        raise ValueError("Imported deformables require unit object scale")
     if factors != (1.0, 1.0, 1.0):
         pending = list(stage.GetPseudoRoot().GetChildren())
         while pending:
@@ -261,9 +294,9 @@ def prepare_usd(source: str, *, scale=(1.0, 1.0, 1.0), mujoco: bool = False) -> 
 
         SolverMuJoCo.register_custom_attributes(builder)
     builder.add_usd(stage, collapse_fixed_joints=False)
-    if builder.particle_count or builder.tri_count or builder.tet_count:
+    if not allow_deformables and (builder.particle_count or builder.tri_count or builder.tet_count):
         raise ValueError("Scene authoring supports rigid USD assets only")
-    if not builder.shape_count:
+    if not builder.shape_count and not (allow_deformables and builder.particle_count):
         raise ValueError(f"USD asset contains no supported rigid or visual geometry: {source}")
     return builder
 
@@ -277,6 +310,8 @@ def template_bounds(builder: ModelBuilder) -> tuple[np.ndarray, np.ndarray] | No
     retain the unshrunk geometry for a conservative result. If there are no
     rigid colliders, include visual geometry. Bodyless templates include every
     shape because scene authoring promotes all their geometry to colliders.
+    Particle positions contribute their collision radii, including templates
+    with no rigid shapes.
 
     Return ``None`` when the selected geometry is empty, unbounded, unsupported,
     or has nonfinite bounds; explicit asset import can still proceed without a
@@ -293,6 +328,13 @@ def template_bounds(builder: ModelBuilder) -> tuple[np.ndarray, np.ndarray] | No
     }
     aggregate_lower = np.full(3, np.inf)
     aggregate_upper = np.full(3, -np.inf)
+    if builder.particle_count:
+        points = np.asarray(builder.particle_q, dtype=np.float64)
+        radii = np.asarray(builder.particle_radius, dtype=np.float64).reshape(-1, 1)
+        if not np.isfinite(points).all() or not np.isfinite(radii).all() or np.any(radii < 0):
+            return None
+        aggregate_lower = np.min(points - radii, axis=0)
+        aggregate_upper = np.max(points + radii, axis=0)
     for index in selected:
         kind = builder.shape_type[index]
         scale = wp.vec3(builder.shape_scale[index])
@@ -366,13 +408,19 @@ def _definition(obj) -> dict[str, Any]:
         "visible": obj.visible,
         "overrides": getattr(obj, "overrides", ("mass", "friction", "dynamic")),
     }
+    if definition["kind"] in DEFORMABLE_KINDS:
+        for name in ("resolution", "density", "stiffness", "thickness", "points"):
+            if hasattr(obj, name):
+                definition[name] = getattr(obj, name)
     _validate_definition(definition)
     definition["source"] = str(Path(obj.source).expanduser().resolve()) if obj.source else None
     definition["mass"], definition["friction"] = float(obj.mass), float(obj.friction)
     return {key: list(value) if isinstance(value, tuple) else value for key, value in definition.items()}
 
 
-def _validate_definition(definition: dict[str, Any], *, normalize_rotation: bool = False) -> dict[str, Any]:
+def _validate_definition(
+    definition: dict[str, Any], *, normalize_rotation: bool = False, check_points: bool = True
+) -> dict[str, Any]:
     """Validate a fresh object dictionary without accessing files or importing USD.
 
     Canonicalize vectors and explicit overrides to tuples. Editor inputs may
@@ -400,7 +448,7 @@ def _validate_definition(definition: dict[str, Any], *, normalize_rotation: bool
         if not isinstance(definition[field], str) or not definition[field].strip():
             raise ValueError(f"Scene object {field} must be a nonempty string")
     kind = definition["kind"]
-    if not isinstance(kind, str) or kind not in {"box", "sphere", "capsule", "cylinder", "usd"}:
+    if not isinstance(kind, str) or kind not in {"box", "sphere", "capsule", "cylinder", "usd", *DEFORMABLE_KINDS}:
         raise ValueError(f"Unsupported scene object kind: {kind}")
     if not all(isinstance(definition[field], bool) for field in ("dynamic", "visible")):
         raise ValueError("Dynamic and visible flags must be booleans")
@@ -449,15 +497,20 @@ def _validate_definition(definition: dict[str, Any], *, normalize_rotation: bool
     if any(value not in {"mass", "friction", "dynamic"} for value in overrides):
         raise ValueError("Unknown USD physical property override")
     definition["overrides"] = tuple(sorted(set(overrides)))
+    if kind in DEFORMABLE_KINDS:
+        validate_deformable(definition, check_points=check_points)
+    elif definition.get("points"):
+        raise ValueError("Only MPM particle strokes accept explicit points")
     return definition
 
 
-def _write_references(stage, path, definition):
+def _write_references(stage, path, definition, *, allow_deformables: bool = False):
     from pxr import Gf, Usd, UsdGeom, UsdPhysics, UsdShade
 
-    source_stage, source, linear_unit = _open_asset(definition["source"])
+    source_stage, source, linear_unit = _open_asset(definition["source"], allow_deformables=allow_deformables)
+    native_deformable = any(_is_deformable_prim(prim) for prim in source_stage.Traverse())
     factors = _source_scale(source_stage, definition["size"], linear_unit)
-    template = prepare_usd(source, scale=definition["size"])
+    template = prepare_usd(source, scale=definition["size"], allow_deformables=allow_deformables)
     overrides = set(definition.get("overrides", ("mass", "friction", "dynamic")))
     promote = not template.body_count
     asset = UsdGeom.Xform.Define(stage, f"{path}/Asset")
@@ -507,8 +560,14 @@ def _write_references(stage, path, definition):
                 prim.CreateAttribute(attribute.GetName(), attribute.GetTypeName(), attribute.IsCustom()).SetConnections(
                     [remap(target) for target in connections]
                 )
-        if "dynamic" in overrides and prim.HasAPI(UsdPhysics.RigidBodyAPI):
+        if not native_deformable and "dynamic" in overrides and prim.HasAPI(UsdPhysics.RigidBodyAPI):
             UsdPhysics.RigidBodyAPI(prim).CreateKinematicEnabledAttr(not definition["dynamic"])
+    if native_deformable:
+        if overrides:
+            raise ValueError("Edit imported deformable physical properties in their source USD material")
+        if definition["color"] != [1.0, 1.0, 1.0]:
+            _tint_reference(asset.GetPrim(), definition["color"])
+        return
     if promote:
         UsdPhysics.RigidBodyAPI.Apply(asset.GetPrim()).CreateKinematicEnabledAttr(not definition["dynamic"])
         geometry_paths = set(template.shape_label)
@@ -591,7 +650,7 @@ def _tint_reference(root, tint):
         attribute.SetColorSpace("lin_rec709_scene")
 
 
-def save_scene(path: str | os.PathLike, objects: Iterable) -> None:
+def save_scene(path: str | os.PathLike, objects: Iterable, *, solver: str | None = None) -> None:
     """Atomically write authored objects using standard USD geometry and physics.
 
     Custom data stores editor definitions and stable IDs, never a private
@@ -602,6 +661,8 @@ def save_scene(path: str | os.PathLike, objects: Iterable) -> None:
     from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade, Vt
 
     destination = Path(path).expanduser().resolve()
+    if solver is not None and solver not in _SOLVERS:
+        raise ValueError(f"Unsupported authoring solver profile: {solver}")
     if destination.suffix.lower() not in {".usd", ".usda", ".usdc"}:
         raise ValueError("Scene destination must end in .usd, .usda, or .usdc")
     definitions = [_definition(obj) for obj in objects]
@@ -622,6 +683,8 @@ def save_scene(path: str | os.PathLike, objects: Iterable) -> None:
     UsdGeom.SetStageMetersPerUnit(stage, 1.0)
     UsdPhysics.SetStageKilogramsPerUnit(stage, 1.0)
     stage.GetRootLayer().customLayerData = {_MARKER: 1}
+    if solver is not None:
+        stage.GetRootLayer().customLayerData = {_MARKER: 1, _SOLVER_MARKER: solver}
     world = UsdGeom.Xform.Define(stage, "/World")
     stage.SetDefaultPrim(world.GetPrim())
     UsdPhysics.Scene.Define(stage, "/World/PhysicsScene")
@@ -639,15 +702,19 @@ def save_scene(path: str | os.PathLike, objects: Iterable) -> None:
     for index, definition in enumerate(definitions):
         object_path = f"/World/Object_{index}"
         obj = UsdGeom.Xform.Define(stage, object_path)
-        obj.GetPrim().SetCustomDataByKey(_MARKER, json.dumps(definition, allow_nan=False))
+        metadata = {key: value for key, value in definition.items() if key != "points"}
+        obj.GetPrim().SetCustomDataByKey(_MARKER, json.dumps(metadata, allow_nan=False))
         obj.GetPrim().SetDisplayName(definition["name"])
         obj.AddTranslateOp(UsdGeom.XformOp.PrecisionDouble).Set(Gf.Vec3d(*definition["position"]))
         x, y, z, w = definition["rotation"]
         obj.AddOrientOp(UsdGeom.XformOp.PrecisionDouble).Set(Gf.Quatd(w, Gf.Vec3d(x, y, z)))
         obj.CreateVisibilityAttr(UsdGeom.Tokens.inherited if definition["visible"] else UsdGeom.Tokens.invisible)
         kind, size = definition["kind"], definition["size"]
+        if kind in DEFORMABLE_KINDS:
+            write_deformable(stage, object_path, definition)
+            continue
         if kind == "usd":
-            _write_references(stage, object_path, definition)
+            _write_references(stage, object_path, definition, allow_deformables=solver == "vbd")
             continue
         geometry_path = f"{object_path}/Geometry"
         if kind == "box":
@@ -692,6 +759,19 @@ def save_scene(path: str | os.PathLike, objects: Iterable) -> None:
             os.unlink(temporary)
 
 
+def scene_solver(path: str | os.PathLike) -> str | None:
+    """Read an authored solver profile without changing the scene-load result contract."""
+    from pxr import Sdf
+
+    layer = Sdf.Layer.FindOrOpen(str(Path(path).expanduser().resolve()))
+    if layer is None:
+        raise ValueError(f"Cannot open USD scene: {path}")
+    solver = layer.customLayerData.get(_SOLVER_MARKER)
+    if solver is not None and solver not in _SOLVERS:
+        raise ValueError(f"Unsupported authoring solver profile: {solver}")
+    return solver
+
+
 def load_scene(path: str | os.PathLike) -> list[dict[str, Any]]:
     """Read definitions from an authored scene; reject ordinary USD assets distinctly."""
     from pxr import Usd
@@ -710,6 +790,11 @@ def load_scene(path: str | os.PathLike) -> list[dict[str, Any]]:
         if encoded is not None:
             try:
                 definition = json.loads(encoded)
+                if isinstance(definition, dict) and definition.get("kind") == "particles":
+                    geometry = stage.GetPrimAtPath(prim.GetPath().AppendChild("Geometry"))
+                    attribute = geometry.GetAttribute("points") if geometry else None
+                    points = attribute.Get() if attribute else None
+                    definition["points"] = [list(point) for point in points] if points is not None else []
                 _validate_definition(definition)
                 definitions.append(
                     {key: list(value) if isinstance(value, tuple) else value for key, value in definition.items()}

@@ -105,7 +105,7 @@ class _SceneSession:
             )
             self.editor = Example(viewer, args)
         else:
-            self.editor = SceneEditor(viewer, device="cpu")
+            self.editor = SceneEditor(viewer, device="cpu", solver=solver)
         test.addCleanup(self.editor.close)
         self.editor.add_primitive("box", name="Initial", position=(0, 0, 1))
         self.editor.commit()
@@ -384,6 +384,100 @@ class TestSceneAuthoringMCP(unittest.TestCase):
             self.assertFalse(scene.bridge.info_file.exists())
             with self.assertRaises(OSError):
                 socket.create_connection((address.hostname, address.port), timeout=0.2)
+
+    def test_deformable_batches_and_compact_scene_inspection(self):
+        """Author native cloth through HTTP while retaining atomic edits and bounded observations."""
+        with wp.ScopedDevice("cpu"):
+            viewer = ViewerNull()
+            self.addCleanup(viewer.close)
+            scene = _SceneSession(self, viewer, solver="vbd")
+            initial = scene.data("get_scene")
+            created = scene.data(
+                "apply_edits",
+                {
+                    "expected_revision": initial["revision"],
+                    "edits": [
+                        {
+                            "operation": "add_deformable",
+                            "kind": "cloth",
+                            "properties": {
+                                "name": "Cloth",
+                                "position": [2, 0, 2],
+                                "size": [1, 1, 1],
+                                "resolution": 3,
+                                "density": 500,
+                                "stiffness": 40000,
+                                "thickness": 0.02,
+                            },
+                        }
+                    ],
+                },
+            )
+            self.assertEqual(created["solver"], "vbd")
+            self.assertEqual(created["model_generation"], initial["model_generation"] + 1)
+            object_id = created["changed_object_ids"][0]
+            inspected = scene.data("get_scene")
+            cloth = next(obj for obj in inspected["objects"] if obj["id"] == object_id)
+            self.assertEqual(cloth["kind"], "cloth")
+            self.assertEqual(cloth["resolution"], 3)
+            self.assertEqual(cloth["point_count"], 0)
+            self.assertNotIn("points", cloth)
+            start, end = cloth["particle_range"]
+            self.assertGreater(end, start)
+            self.assertEqual(cloth["particle_count"], end - start)
+            self.assertEqual(end, scene.editor.model.particle_count)
+            positions = scene.editor.state_0.particle_q.numpy()[start:end]
+            self.assertTrue(np.isfinite(positions).all())
+            np.testing.assert_allclose(positions.mean(axis=0), [2, 0, 2], atol=1e-6)
+            document, revision, model = scene.editor.objects, scene.editor.revision, scene.editor.model
+            rejected = scene.call(
+                "apply_edits",
+                {
+                    "expected_revision": revision,
+                    "edits": [
+                        {"operation": "update", "object_id": object_id, "properties": {"name": "Discard"}},
+                        {
+                            "operation": "add_deformable",
+                            "kind": "particles",
+                            "properties": {"position": [0, 0, 1]},
+                            "points": [[0, 0, 0]],
+                        },
+                    ],
+                },
+            )
+            self.assertTrue(rejected.is_error)
+            self.assertEqual(scene.editor.objects, document)
+            self.assertEqual(scene.editor.revision, revision)
+            self.assertIs(scene.editor.model, model)
+            self.assertTrue(
+                scene.call(
+                    "apply_edits",
+                    {
+                        "expected_revision": revision,
+                        "edits": [
+                            {"operation": "update", "object_id": object_id, "properties": {"points": [[0, 0, 0]]}}
+                        ],
+                    },
+                ).is_error
+            )
+            changed = scene.data(
+                "apply_edits",
+                {
+                    "expected_revision": revision,
+                    "edits": [
+                        {
+                            "operation": "update",
+                            "object_id": object_id,
+                            "properties": {"resolution": 4, "density": 550, "stiffness": 45000, "thickness": 0.03},
+                        }
+                    ],
+                },
+            )
+            obj = scene.editor.get_object(object_id)
+            self.assertEqual((obj.resolution, obj.density, obj.stiffness, obj.thickness), (4, 550, 45000, 0.03))
+            self.assertEqual(changed["model_generation"], created["model_generation"] + 1)
+            scene.data("undo_redo", {"direction": "undo", "expected_revision": changed["revision"]})
+            self.assertEqual(scene.editor.objects, document)
 
 
 @requires(*_MCP_MODULES, "PIL.Image", "imgui_bundle", "pyglet")

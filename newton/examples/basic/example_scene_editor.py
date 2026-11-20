@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Build and edit a physical scene with primitives, USD, and SimReady assets.
+"""Build and edit a physical scene with primitives, deformables, and USD assets.
 
 Command: python -m newton.examples scene_editor
 """
@@ -36,7 +36,11 @@ class Example(SceneEditor):
         return parser
 
     def __init__(self, viewer, args):
-        solver = args.solver or ("mujoco" if wp.get_device().is_cuda else "xpbd")
+        solver = args.solver
+        if solver is None and args.scene:
+            solver = self.saved_solver(args.scene)
+        if solver is None:
+            solver = "mujoco" if wp.get_device().is_cuda else "xpbd"
         super().__init__(viewer, solver=solver, device=args.device)
         self._mcp = None
         try:
@@ -50,7 +54,7 @@ class Example(SceneEditor):
             raise ValueError("--mcp-info requires --mcp-port")
         if args.scene:
             self.load_usd(args.scene)
-        elif not args.empty:
+        elif not args.empty and self.solver_type != self.Solver.MPM:
             self.add_primitive(
                 "box", name="Plinth", position=(0, 0, 0.2), size=(2, 2, 0.4), color=(0.28, 0.33, 0.39), dynamic=False
             )
@@ -76,7 +80,7 @@ class Example(SceneEditor):
                     ).strip()
                 except (OSError, subprocess.SubprocessError):
                     pass
-            engine = "XPBD"
+            engine = self.solver_type.value.upper()
             if self.solver_type is self.Solver.MUJOCO:
                 engine = "MuJoCo CPU" if self.device.is_cpu else "MuJoCo Warp"
             window.set_caption(f"Newton Scene Editor · {engine} [{revision}]")

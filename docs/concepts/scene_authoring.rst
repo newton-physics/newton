@@ -38,12 +38,18 @@ The ``examples`` extra includes the native viewer and USD import dependencies:
    uv run --extra examples -m newton.examples scene_editor --scene scene.usda
    uv run --extra examples -m newton.examples scene_editor --solver mujoco --device cpu
    uv run --extra examples -m newton.examples scene_editor --solver xpbd --device cpu
+   uv run --extra examples -m newton.examples scene_editor --solver vbd --device cpu --empty
+   uv run --extra examples -m newton.examples scene_editor --solver mpm --device cuda:0 --empty
 
 ``--solver mujoco`` selects native MuJoCo on a CPU device and MuJoCo Warp on
 a CUDA device. The solver and device are fixed for the editor session. The
 window title and authoring header identify the active solver. When constructing :class:`~newton.viewer.SceneEditor`
 directly, pass ``solver="mujoco", device="cpu"`` for native MuJoCo or select a
 CUDA device for MuJoCo Warp; the class retains XPBD as its default.
+Use VBD on CPU or CUDA for an authoring scene with rigid bodies, cloth, cables,
+and soft bodies. MPM requires CUDA and accepts static rigid colliders. The
+workspace's **New scene** menu exposes both presets. With ``--scene``, the example
+selects a saved scene's preset unless you pass ``--solver``.
 An empty or static world with no joints needs
 no solver. The example opens paused. MuJoCo Warp is constructed on the first
 Play or single-step after a topology commit; browsing and placement do not
@@ -92,24 +98,37 @@ The window title identifies the source commit at launch, with ``-dirty`` for
 tracked local edits. Installed wheels show the package version. Restart the
 application to load subsequent Python changes.
 
-The left panel has three tabs:
+The left panel provides the following tools.
 
 * **Create** adds boxes, spheres, capsules, and cylinders. Click a card to place
   an object near the viewport center, or drag it onto the scene. A
   collision-bounds outline follows the pointer. Scale, color, and Dynamic
   configure new primitives. **Import USD** and local file drops add USD assets.
+  In a VBD scene, this panel also adds cloth sheets, segmented cables, and
+  tetrahedral soft blocks.
 * **Assets** searches the SimReady catalog. Select a card to inspect its source
   and available license information. Drag a card or its large inspector preview
   into the viewport, double-click it, or choose **Place in scene** to download
   and import it.
 * **Scene** lists authored objects and filters them by name. Select an object
   here or in the viewport. Its context menu offers Duplicate and Delete.
+* **Paint** is available in MPM scenes. Pause playback and enable the brush.
+  Adjust brush radius, sample spacing, layers, and density, then drag over
+  the scene to deposit particles. The stamp clears the highest rigid collider
+  under its footprint. The preview stays responsive during the gesture. Release
+  to add the stroke as one object and one undo action.
 
 The right panel edits the selected object's name, position, rotation, dimensions,
 color, visibility, friction, mass, and Dynamic setting. Move and Rotate handles
 edit its live pose directly in the viewport. A handle gesture pauses simulation
 temporarily, then restores its previous playback state. **Visible** controls
 rendering; collision remains enabled. A fixed object remains a physical collider.
+Generated deformables expose physical dimensions and resolution where relevant,
+density in kg/m³, Young's modulus in Pa, and thickness or diameter in metres
+where the native schema supports it. Cables expose contact friction, and MPM
+particles expose internal friction.
+These settings affect the simulation and are written to the exported USD geometry
+and bound physics materials.
 
 The authoring toolbar provides Open, Save, Undo, Redo, and Reset. Undo and Redo
 operate on authored edits; they do not rewind unrelated simulation motion.
@@ -148,7 +167,7 @@ placements while retaining downloaded packages in the cache.
 Fast edits and structural changes
 ---------------------------------
 
-Pose, color, visibility, and friction edits update existing Model and State
+For rigid scenes, pose, color, visibility, and friction edits update existing Model and State
 buffers. Moving several objects in one frame synchronizes joint coordinates
 once after all poses have been updated. Composed rotations stay normalized
 during paused drags. Primitive dimensions, USD scale, mass,
@@ -180,6 +199,12 @@ IDs identify objects across model replacement; compiled body indices must be
 resolved again after a commit. Matching bodies retain live state. Joint controls
 are preserved only when the source, joint type, and coordinate layout remain
 compatible; changed joints retain their imported defaults.
+Generated deformable parameter edits build one replacement runtime on release.
+Unchanged particle ranges retain live positions and velocities. Geometry changes
+involving a particle range reseed that range from its authored geometry. VBD and
+MPM solver setup waits for the first step. The MPM model retains compatible
+particle histories when a stroke is added. The scene limits painted samples
+to 50,000.
 The current simulation continues during downloads and background preparation.
 Cached templates track local referenced layers and asset files, including
 missing optional assets. Reimporting, previewing, or reopening an authored
@@ -241,11 +266,9 @@ rolling-friction length of 0.005 m; MuJoCo's six-dimensional sphere contacts
 apply this resistance without adding rolling constraints to every mesh contact.
 XPBD continues to use its native contact model.
 
-This ownership boundary is deliberate. The editor does not mutate arbitrary
-examples' private solvers or captured CUDA graphs. Solvers beyond XPBD and
-MuJoCo (native CPU or Warp), replicated
-training environments, deformable authoring, and editing an existing Isaac Lab
-simulation are outside this application's supported scope.
+The editor owns a standalone Model, State, and solver for each scene. The VBD
+preset supports mixed rigid and deformable authoring. The MPM preset supports
+particle strokes against stationary rigid colliders.
 
 The design follows the distinction between inexpensive live edits and explicit
 recompilation found in
@@ -275,13 +298,20 @@ unchanged.
 
 Assets containing authored rigid-body, joint, or mass data must declare
 ``metersPerUnit=1`` and ``kilogramsPerUnit=1``. Geometry without authored physics
-can be converted from other stage length units. Particle and deformable
-simulation, legacy ``TetMesh`` simulation, and ``resetXformStack`` are rejected.
+can be converted from other stage length units. VBD accepts native cloth, cable,
+and volume deformable USD assets authored at unit scale in SI units. Import an
+authored MPM editor document to reopen multiple strokes. Rigid presets reject
+deformable assets, including legacy ``TetMesh`` simulation.
+``resetXformStack`` is unsupported in all presets.
 Harmless grasp-marker curves and point annotations are permitted. Dynamic
 planes and heightfields are unsupported.
 
-Export uses standard OpenUSD geometry and physics schemas, with editor metadata
-for stable IDs and authored values. USD assets remain references to their
+Export uses OpenUSD geometry and native physics schemas, with editor metadata
+for stable IDs and editable parameters. Cloth uses ``Mesh``, cables use
+``BasisCurves``, soft blocks use ``TetMesh``, and strokes use ``Points``.
+Strokes also write Newton's MPM scene and material schemas. The editor and USD
+export share the same geometry and material generation, and Newton's native
+USD importer consumes that data. USD assets remain references to their
 source packages, so retain those packages when moving a saved scene.
 Save rejects destinations that alias an imported source or any of its local
 dependencies, preventing self-references
@@ -370,9 +400,12 @@ quaternions. Read the observed scene revision before submitting mutations:
        the image's longest edge. During replay,
        ``display_time`` identifies the selected frame and ``sim_time`` remains live.
    * - ``apply_edits``
-     - A typed batch of ``add_primitive``, ``add_usd``, ``update``, and ``remove``
-       operations, with the observed ``expected_revision``. Adds use safe
-       placement by default; ``place=False`` retains exact coordinates.
+     - A typed batch of ``add_primitive``, ``add_usd``, ``add_deformable``,
+       ``update``, and ``remove`` with the observed ``expected_revision``.
+       Primitives and USD assets use safe placement by default. Generated
+       deformables accept an explicit XYZ position, and MPM strokes accept up
+       to 1,024 local XYZ samples per operation. Inspect sample counts and
+       material parameters with ``get_scene``.
    * - ``undo_redo``
      - Undo or redo one authored batch, including recovery from failed imports.
    * - ``set_camera``

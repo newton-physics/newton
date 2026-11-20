@@ -34,6 +34,7 @@ from ..geometry.bvh import (
 from ..sim import BodyFlags, CollisionPipeline, JointType, Model, ModelBuilder, ModelFlags, eval_ik
 from ..sim.collide import compute_shape_aabbs
 from ..solvers.xpbd import SolverXPBD
+from .authoring_deformables import DEFORMABLE_KINDS, MAX_PARTICLES, MPM_VOXEL_SIZE, build_deformable
 from .authoring_usd import (
     _GROUND_FRICTION,
     _SPHERE_ROLLING_FRICTION,
@@ -43,6 +44,7 @@ from .authoring_usd import (
     load_scene,
     prepare_usd,
     save_scene,
+    scene_solver,
     template_bounds,
 )
 
@@ -52,6 +54,13 @@ if TYPE_CHECKING:
     from .viewer import ViewerBase
 
 logger = logging.getLogger(__name__)
+_MPM_STATE_FIELDS = (
+    "particle_qd_grad",
+    "particle_elastic_strain",
+    "particle_Jp",
+    "particle_stress",
+    "particle_transform",
+)
 
 
 @wp.kernel
@@ -163,7 +172,7 @@ def _init_asset_worker() -> None:
     wp.set_device("cpu")
 
 
-def _prepare_asset_payload(source: str, size: tuple, mujoco: bool = False) -> bytes:
+def _prepare_asset_payload(source: str, size: tuple, mujoco: bool = False, allow_deformables: bool = False) -> bytes:
     try:
         from pxr import Sdf
 
@@ -172,7 +181,7 @@ def _prepare_asset_payload(source: str, size: tuple, mujoco: bool = False) -> by
             layer = Sdf.Layer.Find(path)
             if layer is not None:
                 layer.Reload()
-        template = SceneEditor._prepare_template(source, size, mujoco=mujoco)
+        template = SceneEditor._prepare_template(source, size, mujoco=mujoco, allow_deformables=allow_deformables)
         # Parsing is complete. Local importer callbacks are not pickleable;
         # retain values and reference remappers needed by native add_builder.
         template.builder.custom_attributes = {
@@ -242,6 +251,20 @@ def _move_world_shapes(
 
 
 @wp.kernel
+def _translate_particles(
+    start: int,
+    offset: wp.vec3,
+    initial: wp.array[wp.vec3],
+    live: wp.array[wp.vec3],
+    other: wp.array[wp.vec3],
+):
+    index = start + wp.tid()
+    initial[index] += offset
+    live[index] += offset
+    other[index] += offset
+
+
+@wp.kernel
 def _move_world_anchors(
     start: int,
     delta: wp.transform,
@@ -305,6 +328,7 @@ class _Binding:
     joints: tuple[int, int]
     reference: tuple[float, ...] | None
     follows_body: bool
+    particles: tuple[int, int]
 
 
 @dataclasses.dataclass
@@ -328,11 +352,12 @@ class _Runtime:
 
 
 class SceneEditor:
-    """Author a rigid scene while owning its simulation and compiled resources.
+    """Author a scene while owning its simulation and compiled resources.
 
-    This entire class is **experimental**. It owns an XPBD or MuJoCo scene,
-    rather than mutating another application's solver or graphs. MuJoCo uses
-    its native CPU backend on CPU and MuJoCo Warp on CUDA.
+    This entire class is **experimental**. The editor owns its solver and
+    states. VBD supports cloth, rods and tetrahedral volumes. The MPM preset
+    supports painted particles and stationary rigid colliders on CUDA.
+    MuJoCo uses its native CPU backend on CPU and MuJoCo Warp on CUDA.
     Positions and dimensions use metres, rotations use XYZW quaternions, and
     masses use kilograms. Pose, color, visibility, and friction edits retain
     Model/State storage. Add/remove, geometry, mass, and motion-type changes
@@ -349,6 +374,8 @@ class SceneEditor:
 
         XPBD = "xpbd"
         MUJOCO = "mujoco"
+        VBD = "vbd"
+        MPM = "mpm"
 
     class Shape(enum.Enum):
         """Geometry categories supported by the experimental authoring scene."""
@@ -358,6 +385,10 @@ class SceneEditor:
         CAPSULE = "capsule"
         CYLINDER = "cylinder"
         USD = "usd"
+        CLOTH = "cloth"
+        CABLE = "cable"
+        SOFT = "soft"
+        PARTICLES = "particles"
 
     @dataclasses.dataclass(frozen=True)
     class Object:
@@ -387,6 +418,16 @@ class SceneEditor:
         """Absolute root USD path, present only for USD assets."""
         visible: bool = True
         """Rendering visibility, independent of collision participation."""
+        resolution: int = 8
+        """Cells per axis of a cloth or soft block, or segments of a cable."""
+        density: float = 1000.0
+        """Authored deformable material density [kg/m³]."""
+        stiffness: float = 50_000.0
+        """Authored deformable material Young's modulus [Pa]."""
+        thickness: float = 0.02
+        """Cloth thickness, cable diameter, or particle sampling spacing and diameter [m]."""
+        points: tuple[tuple[float, float, float], ...] = ()
+        """Authored MPM sample positions in object-local coordinates [m]."""
         overrides: tuple[str, ...] = ()
         """Explicit USD mass, friction, or dynamic overrides; otherwise retain native values."""
 
@@ -408,6 +449,10 @@ class SceneEditor:
         self.viewer = viewer
         self.device = wp.get_device(device)
         self._solver_type = self.Solver(solver)
+        if self._solver_type == self.Solver.MPM and not self.device.is_cuda:
+            raise ValueError("The scene editor's MPM preset requires a CUDA device")
+        if self._solver_type == self.Solver.MPM:
+            viewer.show_particles = True
         self._mujoco_cpu = self._solver_type == self.Solver.MUJOCO and self.device.is_cpu
         self.scene_editor = self
         self.frame_dt = 1.0 / 60.0
@@ -493,14 +538,45 @@ class SceneEditor:
             self.get_object(object_id)
         self.selected_id = object_id
 
-    @staticmethod
-    def _validate(obj: Object) -> Object:
+    def _validate(self, obj: Object, *, previous: Object | None = None) -> Object:
         definition = vars(obj).copy()
         definition["kind"] = obj.kind.value
-        _validate_definition(definition, normalize_rotation=True)
-        return dataclasses.replace(
-            obj, **{name: definition[name] for name in ("position", "rotation", "size", "color", "overrides")}
+        _validate_definition(
+            definition,
+            normalize_rotation=True,
+            check_points=previous is None or obj.points is not previous.points,
         )
+        if obj.kind == self.Shape.PARTICLES:
+            if self.solver_type != self.Solver.MPM:
+                raise ValueError("Particle strokes require an MPM scene")
+        elif obj.kind.value in DEFORMABLE_KINDS:
+            if self.solver_type != self.Solver.VBD:
+                raise ValueError("Cloth, cables and soft bodies require a VBD scene")
+        elif self.solver_type == self.Solver.MPM and obj.dynamic:
+            raise ValueError("An MPM scene accepts rigid objects as stationary colliders")
+        return dataclasses.replace(
+            obj,
+            **{
+                name: definition[name]
+                for name in (
+                    "position",
+                    "rotation",
+                    "size",
+                    "color",
+                    "overrides",
+                    "points",
+                    "density",
+                    "stiffness",
+                    "thickness",
+                )
+                if name in definition
+            },
+        )
+
+    @staticmethod
+    def _check_point_budget(objects: tuple[Object, ...]) -> None:
+        if sum(len(obj.points) for obj in objects) > MAX_PARTICLES:
+            raise ValueError(f"A scene can contain at most {MAX_PARTICLES:,} authored MPM particles")
 
     @staticmethod
     def _vector(values, count: int, name: str) -> tuple:
@@ -545,8 +621,8 @@ class SceneEditor:
             Stable object ID, valid across structural commits.
         """
         kind = self.Shape(kind)
-        if kind == self.Shape.USD:
-            raise ValueError("Use add_usd() for USD assets")
+        if kind == self.Shape.USD or kind.value in DEFORMABLE_KINDS:
+            raise ValueError("Use add_usd() or add_deformable() for this object type")
         obj = self._validate(
             self.Object(
                 uuid.uuid4().hex,
@@ -561,6 +637,65 @@ class SceneEditor:
         )
         self._remember()
         self._objects += (obj,)
+        self.selected_id = obj.id
+        self._topology_dirty = True
+        self._changed()
+        return obj.id
+
+    def add_deformable(
+        self,
+        kind: Shape | str,
+        *,
+        position: tuple[float, float, float] = (0.0, 0.0, 1.0),
+        size: tuple[float, float, float] = (1.0, 1.0, 1.0),
+        resolution: int = 8,
+        density: float = 1000.0,
+        stiffness: float = 50_000.0,
+        thickness: float = 0.02,
+        friction: float = 0.6,
+        points: tuple[tuple[float, float, float], ...] = (),
+        name: str | None = None,
+    ) -> str:
+        """Stage generated deformable geometry in a compatible scene preset.
+
+        Args:
+            kind: Cloth, cable, soft, or particles.
+            position: Authored reset origin in the Z-up scene [m].
+            size: Cloth width and length (XY), cable length (X), or soft block dimensions [m].
+            resolution: Cells per active axis, or segments along a cable.
+            density: Material density [kg/m³].
+            stiffness: Material Young's modulus [Pa].
+            thickness: Cloth thickness, cable diameter, or particle spacing and diameter [m].
+            friction: Contact friction for cables, or internal friction for MPM particles.
+            points: Local MPM sample positions [m].
+            name: Display name.
+
+        Returns:
+            Stable object ID.
+        """
+        kind = self.Shape(kind)
+        if kind.value not in DEFORMABLE_KINDS:
+            raise ValueError("Choose cloth, cable, soft, or particles")
+        obj = self._validate(
+            self.Object(
+                uuid.uuid4().hex,
+                name or kind.value.title(),
+                kind,
+                position=position,
+                size=size,
+                color=(1.0, 1.0, 1.0),
+                resolution=resolution,
+                density=density,
+                stiffness=stiffness,
+                thickness=thickness,
+                friction=friction,
+                points=points,
+            )
+        )
+        objects = (*self._objects, obj)
+        self._check_point_budget(objects)
+        self._remember()
+        self._objects = objects
         self.selected_id = obj.id
         self._topology_dirty = True
         self._changed()
@@ -594,6 +729,8 @@ class SceneEditor:
                 position=position,
                 color=(1.0, 1.0, 1.0),
                 source=str(path),
+                dynamic=self.solver_type != self.Solver.MPM,
+                overrides=("dynamic",) if self.solver_type == self.Solver.MPM else (),
             )
         )
         self._remember()
@@ -605,27 +742,29 @@ class SceneEditor:
         return obj.id
 
     def update_object(self, object_id: str, **fields) -> None:
-        """Queue supported edits; transforms and appearance retain compiled storage.
+        """Queue supported edits to an authored object.
 
         Args:
             object_id: Stable authored identity.
             **fields: Editable :class:`Object` values. ID, kind, source, and the
-                internal override record cannot be changed. Size, mass, and
-                dynamic require a structural commit. Placement edits target
-                the live pose and also update the authored reset pose.
+                internal override record cannot be changed. Rigid size, mass,
+                and motion type need a structural commit. Deformable geometry
+                and material edits also need a structural commit.
         """
         before = self.get_object(object_id)
         allowed = {field.name for field in dataclasses.fields(before)} - {"id", "kind", "source", "overrides"}
         if unknown := set(fields) - allowed:
             raise ValueError(f"Unsupported authored fields: {', '.join(sorted(unknown))}")
-        after = self._validate(dataclasses.replace(before, **fields))
+        after = self._validate(dataclasses.replace(before, **fields), previous=before)
         if after.kind == self.Shape.USD:
             overrides = set(before.overrides) | (set(fields) & {"mass", "friction", "dynamic"})
             after = dataclasses.replace(after, overrides=tuple(sorted(overrides)))
         if after == before:
             return
+        objects = tuple(after if item.id == object_id else item for item in self._objects)
+        self._check_point_budget(objects)
         self._remember()
-        self._objects = tuple(after if item.id == object_id else item for item in self._objects)
+        self._objects = objects
         if self._structure(before) != self._structure(after):
             self._topology_dirty = True
         else:
@@ -635,7 +774,7 @@ class SceneEditor:
     def place_object(self, object_id: str) -> None:
         """Queue conservative, collision-free insertion of a newly staged object.
 
-        Raise its complete native shape bounds along the scene's up axis above
+        Raise its native geometry bounds along the scene's up axis above
         occupied footprints when committed. Explicit adds and USD loads retain
         their exact positions unless this experimental operation is requested.
         Infinite planes require explicit placement instead.
@@ -643,7 +782,9 @@ class SceneEditor:
         Args:
             object_id: Stable ID of an added object that has not yet been committed.
         """
-        self.get_object(object_id)
+        obj = self.get_object(object_id)
+        if obj.kind.value in DEFORMABLE_KINDS:
+            raise ValueError("Set the initial position of deformables explicitly")
         if self._runtime is not None and object_id in self._runtime.bindings:
             raise ValueError("Automatic placement requires a newly added object")
         if object_id not in self._placement_requests:
@@ -674,8 +815,10 @@ class SceneEditor:
             position=(position[0] + 0.4, position[1] + 0.4, position[2]),
             rotation=rotation,
         )
+        objects = (*self._objects, duplicate)
+        self._check_point_budget(objects)
         self._remember()
-        self._objects += (duplicate,)
+        self._objects = objects
         self.selected_id = duplicate.id
         self._topology_dirty = True
         self._changed()
@@ -694,6 +837,7 @@ class SceneEditor:
         self._edit_before = None
 
     def _restore_document(self, objects: tuple[Object, ...]) -> None:
+        self._check_point_budget(objects)
         objects = self._resolved_defaults(objects)
         old = {obj.id: obj for obj in self._objects}
         new = {obj.id: obj for obj in objects}
@@ -724,12 +868,24 @@ class SceneEditor:
             self._undo.append(self._objects)
             self._restore_document(self._redo.pop())
 
-    @staticmethod
-    def _structure(obj: Object) -> tuple:
-        overrides = (
-            tuple(name in obj.overrides for name in ("mass", "dynamic")) if obj.kind == SceneEditor.Shape.USD else ()
-        )
-        return obj.kind, obj.size, obj.source, obj.mass, obj.dynamic, overrides
+    def _structure(self, obj: Object) -> tuple:
+        overrides = tuple(name in obj.overrides for name in ("mass", "dynamic")) if obj.kind == self.Shape.USD else ()
+        result = (obj.kind, obj.size, obj.source, obj.mass, obj.dynamic, overrides)
+        if obj.kind.value in DEFORMABLE_KINDS:
+            return (
+                *result,
+                obj.position,
+                obj.rotation,
+                obj.resolution,
+                obj.density,
+                obj.stiffness,
+                obj.thickness,
+                obj.points,
+                obj.friction,
+            )
+        if self.solver_type == self.Solver.MPM or (self.solver_type == self.Solver.VBD and obj.kind == self.Shape.USD):
+            return (*result, obj.position, obj.rotation, obj.friction)
+        return result
 
     def _commit_signature(self) -> tuple:
         records = []
@@ -758,11 +914,13 @@ class SceneEditor:
         return key
 
     @staticmethod
-    def _prepare_template(source: str, size: tuple, *, mujoco: bool = False) -> _AssetTemplate:
+    def _prepare_template(
+        source: str, size: tuple, *, mujoco: bool = False, allow_deformables: bool = False
+    ) -> _AssetTemplate:
         logger.info("Preparing USD asset %s", source)
         with wp.ScopedDevice("cpu"):
             dependencies = _dependency_snapshot(_asset_dependencies(source))
-            builder = prepare_usd(source, scale=size, mujoco=mujoco)
+            builder = prepare_usd(source, scale=size, mujoco=mujoco, allow_deformables=allow_deformables)
             template = _AssetTemplate(builder, template_bounds(builder), dependencies)
             if not _template_is_current(template):
                 raise ValueError("USD dependencies changed during preparation; retry the import")
@@ -788,16 +946,13 @@ class SceneEditor:
             return key
         if self._executor is None:
             self._executor = self._create_preparation_executor()
+        arguments = (obj.source, obj.size, self.solver_type == self.Solver.MUJOCO, self.solver_type == self.Solver.VBD)
         try:
-            self._preparing[key] = self._executor.submit(
-                _prepare_asset_payload, obj.source, obj.size, self.solver_type == self.Solver.MUJOCO
-            )
+            self._preparing[key] = self._executor.submit(_prepare_asset_payload, *arguments)
         except BrokenProcessPool:
             self._close_preparation_executor()
             self._executor = self._create_preparation_executor()
-            self._preparing[key] = self._executor.submit(
-                _prepare_asset_payload, obj.source, obj.size, self.solver_type == self.Solver.MUJOCO
-            )
+            self._preparing[key] = self._executor.submit(_prepare_asset_payload, *arguments)
         return key
 
     @staticmethod
@@ -910,7 +1065,7 @@ class SceneEditor:
 
     def _refresh_contacts_for_inspection(self) -> None:
         runtime = self._runtime
-        if runtime is None or not runtime.contacts_dirty:
+        if runtime is None or not runtime.contacts_dirty or self.solver_type == self.Solver.MPM:
             return
         workspace = getattr(getattr(self.viewer, "gui", None), "workspace", None)
         if workspace is not None and workspace.example is not self:
@@ -994,13 +1149,20 @@ class SceneEditor:
     def _add_asset(self, builder: ModelBuilder, obj: Object) -> Object:
         template = self._template(obj)
         obj = self._resolved_defaults((obj,))[0]
-        if template.particle_count:
-            raise ValueError("Scene authoring currently supports rigid USD assets, not particles or deformables")
+        if template.particle_count or template.curve_label:
+            if self.solver_type != self.Solver.VBD:
+                raise ValueError("USD cloth, cables and soft bodies require a VBD scene")
+            if obj.overrides:
+                raise ValueError("Edit the USD material or mass schema for a referenced deformable asset")
+            builder.add_builder(
+                template, xform=wp.transform(obj.position, obj.rotation), label_prefix=f"objects/{obj.id}/"
+            )
+            return obj
         start = builder.body_count
         if not template.body_count:
             if not template.shape_count:
                 raise ValueError("The USD asset contains no supported rigid geometry")
-            if self.solver_type == self.Solver.MUJOCO and not obj.dynamic:
+            if self.solver_type in (self.Solver.MUJOCO, self.Solver.MPM) and not obj.dynamic:
                 start_shape = builder.shape_count
                 builder.add_builder(
                     template, xform=wp.transform(obj.position, obj.rotation), label_prefix=f"objects/{obj.id}/"
@@ -1068,14 +1230,20 @@ class SceneEditor:
             from ..solvers.mujoco.solver_mujoco import SolverMuJoCo  # noqa: PLC0415
 
             SolverMuJoCo.register_custom_attributes(builder)
+        elif self.solver_type == self.Solver.MPM:
+            from ..solvers.implicit_mpm import SolverImplicitMPM  # noqa: PLC0415
+
+            SolverImplicitMPM.register_custom_attributes(builder)
         builder.add_ground_plane(cfg=ModelBuilder.ShapeConfig(mu=_GROUND_FRICTION), color=(0.28, 0.31, 0.34))
         bindings = {}
         objects = {}
         for authored in self._objects:
             obj = authored
-            b, s, j = builder.body_count, builder.shape_count, builder.joint_count
+            b, s, j, p = builder.body_count, builder.shape_count, builder.joint_count, builder.particle_count
             if obj.kind == self.Shape.USD:
                 obj = self._add_asset(builder, obj)
+            elif obj.kind.value in DEFORMABLE_KINDS:
+                build_deformable(builder, dict(vars(obj), kind=obj.kind.value), label_prefix=f"objects/{obj.id}")
             else:
                 self._add_primitive(builder, obj)
             objects[obj.id] = obj
@@ -1085,11 +1253,20 @@ class SceneEditor:
                 placement = wp.transform(obj.position, obj.rotation)
                 reference = tuple(wp.transform_multiply(wp.transform_inverse(placement), builder.body_q[b]))
                 roots = [k for k in range(j, builder.joint_count) if builder.joint_parent[k] == -1]
-                follows = len(roots) == 1 and builder.joint_type[roots[0]] == JointType.FREE
+                follows = (
+                    builder.particle_count == p and len(roots) == 1 and builder.joint_type[roots[0]] == JointType.FREE
+                )
                 follows &= all(body >= b for body in builder.shape_body[s:])
             bindings[obj.id] = _Binding(
-                (b, builder.body_count), (s, builder.shape_count), (j, builder.joint_count), reference, follows
+                (b, builder.body_count),
+                (s, builder.shape_count),
+                (j, builder.joint_count),
+                reference,
+                follows,
+                (p, builder.particle_count),
             )
+        if self.solver_type == self.Solver.VBD:
+            builder.color()
         model = builder.finalize(device=self.device)
         runtime = _Runtime(
             model,
@@ -1105,7 +1282,7 @@ class SceneEditor:
             wp.clone(model.shape_opacity),
             wp.clone(model.shape_material_mu),
         )
-        runtime.pipeline = CollisionPipeline(model)
+        runtime.pipeline = CollisionPipeline(model, soft_contact_max=0 if self.solver_type == self.Solver.MPM else None)
         runtime.contacts = runtime.pipeline.contacts()
         for obj in objects.values():
             self._apply_appearance(runtime, obj)
@@ -1114,6 +1291,16 @@ class SceneEditor:
     def _create_solver(self, model: Model, contact_max: int) -> tuple[SolverBase | None, SolverBase.Observables | None]:
         if self.solver_type == self.Solver.XPBD:
             return SolverXPBD(model, iterations=8), None
+        if self.solver_type == self.Solver.VBD:
+            from ..solvers.vbd import SolverVBD  # noqa: PLC0415
+
+            return SolverVBD(model, iterations=8), None
+        if self.solver_type == self.Solver.MPM:
+            from ..solvers.implicit_mpm import SolverImplicitMPM  # noqa: PLC0415
+
+            if not model.particle_count:
+                return None, None
+            return SolverImplicitMPM(model, config=SolverImplicitMPM.Config(voxel_size=MPM_VOXEL_SIZE)), None
         # MuJoCo requires a joint; static-only scenes need no solver.
         if not model.joint_count:
             return None, None
@@ -1140,6 +1327,12 @@ class SceneEditor:
             moved = (obj.position, obj.rotation) != (previous_obj.position, previous_obj.rotation)
             delta = wp.transform_identity()
             old_binding, new_binding = old.bindings[object_id], new.bindings[object_id]
+            self._preserve_particle_state(old, new, obj, previous_obj, moved=moved)
+            if (
+                obj.kind == self.Shape.CABLE
+                and (moved or (obj.size, obj.resolution) != (previous_obj.size, previous_obj.resolution))
+            ) or (moved and new_binding.particles[1] > new_binding.particles[0]):
+                continue
             changed_pivot = (
                 old_binding.follows_body and new_binding.follows_body and old_binding.reference != new_binding.reference
             )
@@ -1214,6 +1407,43 @@ class SceneEditor:
                         source,
                         dest_offset=int(starts_new[joint]),
                         src_offset=int(starts_old[previous]),
+                        count=count,
+                    )
+
+    def _preserve_particle_state(
+        self, old: _Runtime, new: _Runtime, obj: Object, previous: Object, *, moved: bool
+    ) -> None:
+        """Keep compatible particle ranges through model replacement; reseed changed geometry."""
+        start, end = new.bindings[obj.id].particles
+        previous_start, previous_end = old.bindings[obj.id].particles
+        count = end - start
+        if not count or count != previous_end - previous_start or moved:
+            return
+        if (obj.size, obj.resolution, obj.points) != (previous.size, previous.resolution, previous.points):
+            return
+        copy_history = self.solver_type == self.Solver.MPM and (
+            obj.density,
+            obj.thickness,
+            obj.stiffness,
+            obj.friction,
+        ) == (previous.density, previous.thickness, previous.stiffness, previous.friction)
+        source = old.state_0
+        for target in (new.state_0, new.state_1):
+            for field in ("particle_q", "particle_qd"):
+                wp.copy(
+                    getattr(target, field),
+                    getattr(source, field),
+                    dest_offset=start,
+                    src_offset=previous_start,
+                    count=count,
+                )
+            if copy_history:
+                for field in _MPM_STATE_FIELDS:
+                    wp.copy(
+                        getattr(target.mpm, field),
+                        getattr(source.mpm, field),
+                        dest_offset=start,
+                        src_offset=previous_start,
                         count=count,
                     )
 
@@ -1294,20 +1524,33 @@ class SceneEditor:
         for object_id in requested:
             start, end = runtime.bindings[object_id].shapes
             occupied[start:end] = occupied[start + model.shape_count : end + model.shape_count] = False
+        if any(
+            runtime.bindings[object_id].particles[1] > runtime.bindings[object_id].particles[0]
+            for object_id in requested
+        ):
+            particles = model.particle_q.numpy()
+            radii = model.particle_radius.numpy()[:, None]
         axis, clearance = int(model.up_axis), 0.001
         lateral = [index for index in range(3) if index != axis]
         for object_id in requested:
             binding, obj = runtime.bindings[object_id], runtime.objects[object_id]
             shapes = slice(*binding.shapes)
             rows = np.r_[np.arange(shapes.start, shapes.stop), np.arange(shapes.start, shapes.stop) + model.shape_count]
-            if shapes.start == shapes.stop or infinite[shapes].any():
+            particle_range = slice(*binding.particles)
+            has_particles = particle_range.stop > particle_range.start
+            if (shapes.start == shapes.stop and not has_particles) or infinite[shapes].any():
                 raise ValueError("Automatic placement requires bounded geometry; place infinite planes explicitly")
             physical = np.arange(shapes.start, shapes.stop)
             if colliding[physical].any():
                 physical = physical[colliding[physical]]
-            lo, hi = lower[physical].min(axis=0), upper[physical].max(axis=0)
+            lo = lower[physical].min(axis=0, initial=np.inf)
+            hi = upper[physical].max(axis=0, initial=-np.inf)
+            if has_particles:
+                points, radius = particles[particle_range], radii[particle_range]
+                lo = np.minimum(lo, (points - radius).min(axis=0))
+                hi = np.maximum(hi, (points + radius).max(axis=0))
             if not np.isfinite([lo, hi]).all():
-                raise ValueError("Automatic placement requires finite shape bounds")
+                raise ValueError("Automatic placement requires finite geometry bounds")
             footprint = occupied & np.all(upper[:, lateral] >= lo[lateral] - clearance, axis=1)
             footprint &= np.all(lower[:, lateral] <= hi[lateral] + clearance, axis=1)
             supports = [0.0]
@@ -1344,12 +1587,26 @@ class SceneEditor:
                         ],
                         device=self.device,
                     )
-                wp.launch(
-                    _move_world_shapes,
-                    shapes.stop - shapes.start,
-                    inputs=[shapes.start, delta, model.shape_body, model.shape_transform],
-                    device=self.device,
-                )
+                if shapes.stop > shapes.start:
+                    wp.launch(
+                        _move_world_shapes,
+                        shapes.stop - shapes.start,
+                        inputs=[shapes.start, delta, model.shape_body, model.shape_transform],
+                        device=self.device,
+                    )
+                if has_particles:
+                    wp.launch(
+                        _translate_particles,
+                        particle_range.stop - particle_range.start,
+                        inputs=[
+                            particle_range.start,
+                            wp.vec3(*translation),
+                            model.particle_q,
+                            runtime.state_0.particle_q,
+                            runtime.state_1.particle_q,
+                        ],
+                        device=self.device,
+                    )
                 start, end = binding.joints
                 if end > start:
                     wp.launch(
@@ -1464,8 +1721,11 @@ class SceneEditor:
         wp.synchronize_device(self.device)
         camera = getattr(self.viewer, "camera", None) if old is not None else None
         camera_pose = (tuple(camera.pos), camera.pitch, camera.yaw) if camera is not None else None
+        show_particles = getattr(self.viewer, "show_particles", True)
         try:
             self.viewer.set_model(candidate.model)
+            if self.solver_type == self.Solver.MPM:
+                self.viewer.show_particles = show_particles
             self.viewer.set_control(candidate.control)
             self.viewer.set_solver(candidate.solver)
             self.viewer.set_collision_pipeline(candidate.pipeline)
@@ -1628,10 +1888,10 @@ class SceneEditor:
         if moved:
             self._sync_coordinates(runtime)
             eval_ik(runtime.model, runtime.model, runtime.model.joint_q, runtime.model.joint_qd)
-        if self.solver_type == self.Solver.MUJOCO and runtime.solver is not None and changed:
+        if self.solver_type in (self.Solver.MUJOCO, self.Solver.VBD) and runtime.solver is not None and changed:
             runtime.solver.notify_model_changed(changed)
         if moved:
-            if self.solver_type == self.Solver.MUJOCO:
+            if self.solver_type != self.Solver.XPBD:
                 runtime.contacts_dirty = True
                 runtime.contacts.contact_counters.zero_()
             else:
@@ -1654,16 +1914,18 @@ class SceneEditor:
             for attempt in range(4):
                 pipeline.collide(runtime.state_0, contacts)
                 counters = contacts.contact_counters.numpy()
-                count = int(counters[0])
-                if count < 0:
-                    raise RuntimeError("Rigid contact count exceeded supported indexing")
-                if count <= contacts.rigid_contact_max and not counters[2:].any():
+                count, soft_count = (int(value) for value in counters[:2])
+                if min(count, soft_count) < 0:
+                    raise RuntimeError("Contact count exceeded supported indexing")
+                rigid_full = count > contacts.rigid_contact_max or bool(counters[2])
+                soft_full = soft_count > contacts.soft_contact_max or bool(counters[3])
+                if not rigid_full and not soft_full:
                     if pipeline is not runtime.pipeline:
                         if runtime is self._runtime:
                             self.viewer.set_collision_pipeline(pipeline)
                             if self.solver_type == self.Solver.MUJOCO and not self._mujoco_cpu:
                                 self.viewer.set_solver(None)
-                        previous = runtime.contacts.rigid_contact_max
+                        previous = runtime.contacts.rigid_contact_max, runtime.contacts.soft_contact_max
                         runtime.pipeline, runtime.contacts = pipeline, contacts
                         if self.solver_type == self.Solver.MUJOCO and not self._mujoco_cpu:
                             runtime.solver = runtime.observables = None
@@ -1675,21 +1937,35 @@ class SceneEditor:
                         if runtime is self._runtime:
                             self.collision_pipeline, self.contacts = pipeline, contacts
                             self.solver = runtime.solver
-                        logger.warning(
-                            "Expanded rigid contact capacity from %d to %d; retained all %d contacts",
-                            previous,
-                            contacts.rigid_contact_max,
-                            count,
-                        )
+                        if previous[0] != contacts.rigid_contact_max:
+                            logger.warning(
+                                "Expanded rigid contact capacity from %d to %d; retained all %d contacts",
+                                previous[0],
+                                contacts.rigid_contact_max,
+                                count,
+                            )
+                        if previous[1] != contacts.soft_contact_max:
+                            logger.warning(
+                                "Expanded soft contact capacity from %d to %d; retained all %d contacts",
+                                previous[1],
+                                contacts.soft_contact_max,
+                                soft_count,
+                            )
                     return True
                 if attempt == 3:
                     raise RuntimeError(
-                        f"Rigid contacts remain incomplete after three growth attempts (count={count}, capacity={contacts.rigid_contact_max}, overflow={counters[2:].tolist()})"
+                        f"Contacts remain incomplete after three growth attempts "
+                        f"(rigid={count}/{contacts.rigid_contact_max}, "
+                        f"soft={soft_count}/{contacts.soft_contact_max}, overflow={counters[2:].tolist()})"
                     )
                 pipeline = CollisionPipeline(
                     runtime.model,
-                    rigid_contact_max=max(2 * contacts.rigid_contact_max, 2 * count),
-                    soft_contact_max=contacts.soft_contact_max,
+                    rigid_contact_max=max(1, 2 * contacts.rigid_contact_max, 2 * count)
+                    if rigid_full
+                    else contacts.rigid_contact_max,
+                    soft_contact_max=max(1, 2 * contacts.soft_contact_max, 2 * soft_count)
+                    if soft_full
+                    else contacts.soft_contact_max,
                     publish_capacity=False,
                 )
                 contacts = pipeline.contacts()
@@ -1771,15 +2047,23 @@ class SceneEditor:
         self._placement_cache = None
         if self._runtime is not None:
             runtime = self._runtime
-            if runtime.model.body_count:
-                for state in (runtime.state_0, runtime.state_1):
+            for state in (runtime.state_0, runtime.state_1):
+                if runtime.model.body_count:
                     wp.copy(state.body_q, runtime.model.body_q)
                     state.body_qd.zero_()
                     state.body_f.zero_()
+                if runtime.model.particle_count:
+                    wp.copy(state.particle_q, runtime.model.particle_q)
+                    wp.copy(state.particle_qd, runtime.model.particle_qd)
+                    state.particle_f.zero_()
             self._sync_coordinates(runtime)
-            if runtime.solver is not None:
+            if self.solver_type == self.Solver.MPM:
+                if runtime.solver is not None:
+                    for state in (runtime.state_0, runtime.state_1):
+                        runtime.solver.reset(state)
+            elif runtime.solver is not None:
                 runtime.solver.reset(runtime.state_0, flags=0)
-            if self.solver_type == self.Solver.MUJOCO:
+            if self.solver_type != self.Solver.XPBD:
                 runtime.contacts_dirty = True
                 runtime.contacts.contact_counters.zero_()
             else:
@@ -1797,10 +2081,12 @@ class SceneEditor:
             runtime = self._runtime
         if runtime is None:
             return
-        if runtime.solver is None and not runtime.model.joint_count:
+        mpm = self.solver_type == self.Solver.MPM
+        has_elements = runtime.model.particle_count or (not mpm and runtime.model.joint_count)
+        if runtime.solver is None and not has_elements:
             self.sim_time += self.frame_dt
             return
-        if self.solver_type == self.Solver.MUJOCO and runtime.solver is None:
+        if runtime.solver is None:
             with self._loading("Starting physics…") as ready:
                 if ready:
                     self._step_impl(runtime)
@@ -1812,7 +2098,7 @@ class SceneEditor:
         for substep in range(self.sim_substeps):
             runtime.state_0.clear_forces()
             self.viewer.apply_forces(runtime.state_0)
-            if not self._mujoco_cpu and not self._collide(runtime):
+            if not self._mujoco_cpu and self.solver_type != self.Solver.MPM and not self._collide(runtime):
                 self._sync_coordinates(runtime)
                 self._publish(runtime)
                 self.sim_time += substep * dt
@@ -1823,11 +2109,20 @@ class SceneEditor:
                     self.viewer.set_solver(solver)
                 except (ImportError, MemoryError, OSError, RuntimeError, TypeError, ValueError) as error:
                     self.sim_time += substep * dt
-                    self._pause_physics(runtime, f"MuJoCo could not start: {error}")
+                    engine = "MuJoCo" if self.solver_type == self.Solver.MUJOCO else self.solver_type.value.upper()
+                    self._pause_physics(runtime, f"{engine} could not start: {error}")
                     return
                 runtime.solver, runtime.observables = solver, observables
                 self.solver = solver
-            self._step_solver(runtime, dt)
+            try:
+                self._step_solver(runtime, dt)
+            except (MemoryError, RuntimeError, ValueError) as error:
+                if self.solver_type != self.Solver.MPM:
+                    raise
+                self._publish(runtime)
+                self.sim_time += substep * dt
+                self._pause_physics(runtime, f"MPM could not complete the step: {error}")
+                return
             if runtime.observables is not None:
                 overflow = runtime.observables.overflow.numpy()
                 if overflow.any():
@@ -1838,7 +2133,7 @@ class SceneEditor:
                     self._pause_physics(runtime, f"MuJoCo Warp capacity overflow: {overflow.tolist()}")
                     return
             runtime.state_0, runtime.state_1 = runtime.state_1, runtime.state_0
-        if self.solver_type == self.Solver.XPBD:
+        if self.solver_type in (self.Solver.XPBD, self.Solver.VBD):
             self._sync_coordinates(runtime)
         if self._mujoco_cpu:
             self._update_cpu_contacts(runtime)
@@ -1920,6 +2215,7 @@ class SceneEditor:
                 kind=self.Shape.USD,
                 source=str(Path(source).expanduser().resolve()),
                 size=scale,
+                dynamic=self.solver_type != self.Solver.MPM,
             )
         )
         key = self._template_key(obj)
@@ -2023,7 +2319,7 @@ class SceneEditor:
 
     def save_usd(self, path: str | Path) -> None:
         """Export the authored document using standard USD geometry/physics schemas."""
-        save_scene(path, self._objects)
+        save_scene(path, self._objects, solver=self.solver_type.value)
         self.status = f"Saved {Path(path).name}"
 
     def load_usd(self, path: str | Path) -> None:
@@ -2038,6 +2334,7 @@ class SceneEditor:
         )
         if len({obj.id for obj in objects}) != len(objects):
             raise ValueError("Scene document contains duplicate object IDs")
+        self._check_point_budget(objects)
         self._remember()
         self._restore_document(objects)
         # Explicit Open refreshes dependencies even when authored records match.
@@ -2047,6 +2344,12 @@ class SceneEditor:
         for obj in objects:
             if obj.kind == self.Shape.USD:
                 self._schedule_template(obj)
+
+    @staticmethod
+    def saved_solver(path: str | Path) -> Solver | None:
+        """Return the physics preset stored in an authored USD document, if present."""
+        solver = scene_solver(path)
+        return SceneEditor.Solver(solver) if solver is not None else None
 
     def close(self) -> None:
         """Cancel pending preparation; retain already compiled state for caller inspection."""
@@ -2066,3 +2369,5 @@ class SceneEditor:
             raise AssertionError("The authoring scene was not initialized")
         if self.model.body_count and not np.isfinite(self._runtime.state_0.body_q.numpy()).all():
             raise AssertionError("The authored scene contains non-finite body poses")
+        if self.model.particle_count and not np.isfinite(self._runtime.state_0.particle_q.numpy()).all():
+            raise AssertionError("The authored scene contains non-finite particle positions")
