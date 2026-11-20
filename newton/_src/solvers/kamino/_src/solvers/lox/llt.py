@@ -99,11 +99,10 @@ def make_llt_blocked_rcm_traversal_solve_kernel(block_size: int):
         # Inputs:
         dim: wp.array[wp.int32],
         ld: wp.array[wp.int32],
-        mio: wp.array[wp.int32],
         vio: wp.array[wp.int32],
         tpo: wp.array[wp.int32],
         P: wp.array[wp.int32],
-        L: wp.array[wp.float32],
+        L_storage: wp.array2d[wp.float32],
         tile_traversal: wp.array[wp.int32],
         b: wp.array[wp.float32],
         # Outputs:
@@ -112,14 +111,14 @@ def make_llt_blocked_rcm_traversal_solve_kernel(block_size: int):
         x: wp.array[wp.float32],
     ):
         tid, tid_block = wp.tid()
+        L = L_storage[tid]
         num_threads_per_block = wp.block_dim()
 
         n_i = dim[tid]
-        L_i_start = mio[tid]
         v_i_start = vio[tid]
         traversal_start = 2 * tpo[tid]
 
-        L_i_ptr = get_float32_array_offset_ptr(L, L_i_start)
+        L_i_ptr = get_float32_array_offset_ptr(L, 0)
         b_i_ptr = get_float32_array_offset_ptr(b, v_i_start)
         y_i_ptr = get_float32_array_offset_ptr(y, v_i_start)
         x_hat_i_ptr = get_float32_array_offset_ptr(x_hat, v_i_start)
@@ -254,7 +253,6 @@ class LLTBlockedRCMTraversalSolver(LLTBlockedRCMSolver):
             inputs=[
                 info.dim,
                 self._stride(),
-                info.mio,
                 info.vio,
                 self._tpo,
                 self._P,
