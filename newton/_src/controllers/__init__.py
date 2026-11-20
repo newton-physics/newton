@@ -3,6 +3,7 @@
 
 from .controller import ControllerBase
 from .impl import (
+    ControllerAdmittance,
     ControllerDifferentialIK,
     ControllerDifferentialIKModelFree,
     ControllerJointImpedance,
@@ -13,6 +14,7 @@ from .impl import (
 )
 
 __all__ = [
+    "ControllerAdmittance",
     "ControllerBase",
     "ControllerDifferentialIK",
     "ControllerDifferentialIKModelFree",
