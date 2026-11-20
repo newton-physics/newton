@@ -5088,6 +5088,7 @@ class TestSCCSparseDecoupledJointRows(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
+        setup_test_output(self)
 
     def test_sparse_matches_dense_on_armature_dominant_chain(self):
         """Match dense SCC with friction and effort-limited PD on every joint of an armature-dominant chain."""
