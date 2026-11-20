@@ -1427,8 +1427,10 @@ such as MJCF ``solreflimit`` or USD ``mjc:solreflimit`` remain in the
 joint-limit gains.
 
 MuJoCo joint ``damping`` maps to :attr:`~newton.Model.joint_damping`;
-``stiffness`` maps to :attr:`~newton.Model.joint_stiffness`, and scalar
-``springref - ref`` maps to :attr:`~newton.Model.joint_rest_q`.
+``stiffness`` maps to :attr:`~newton.Model.joint_stiffness`, scalar
+``springref - ref`` maps to :attr:`~newton.Model.joint_rest_q`, and mesh
+``mjc:inertia`` (default ``"legacy"`` on ``MjcMeshCollisionAPI`` prims) maps
+to MuJoCo's mesh inertia modes.
 When importing MuJoCo-authored USD, opt into that mapping explicitly::
 
     from newton.usd import SchemaResolverMjc, SchemaResolverNewton

@@ -13,6 +13,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
+import numpy as np
 import warp as wp
 
 from ..core import quat_between_axes
@@ -20,10 +21,12 @@ from ..core.types import Axis
 from ..exceptions import NewtonWarning
 from ..geometry import ShapeFlags
 from ..sim.builder import ModelBuilder
+from ..utils import import_mjcf
 from . import utils as usd
 from ._collision_filters import _collect_filtered_pairs
 from ._mass_properties import _is_enabled_collider
 from ._resolution_policy import (
+    _resolve_mesh_inertia,
     _resolve_physics_material,
     _resolve_shape_contact,
     _resolve_shape_hydroelastic,
@@ -31,6 +34,7 @@ from ._resolution_policy import (
     _resolve_shape_sdf,
     _resolve_shape_shell,
 )
+from ._visuals import _geometry_path
 from .schema_resolver import PrimType
 from .schemas import SchemaResolverMjc, SchemaResolverNewton, SchemaResolverPhysx
 
@@ -64,6 +68,8 @@ class _ColliderProperties:
     shell_thickness: float | None
     maxhullvert: int | None = None
     approximation: str | None = None
+    mesh_inertia: str | None = None
+    inertia_hullvert: int = 0
 
 
 def _parse_colliders(
@@ -149,6 +155,83 @@ def _parse_colliders(
     share_instance_properties = all(type(resolver) in _PRIM_LOCAL_RESOLVERS for resolver in R.resolvers)
     # Colliders under one instance or body share their ancestors' authored scale products.
     authored_scale_cache: dict[Any, tuple[Any, bool]] = {}
+    # Post-scale unit-density mass properties for mjc:inertia modes, keyed by geometry and scale.
+    mjc_mesh_inertia_cache: dict[
+        tuple[str, tuple[float, float, float], str, int],
+        tuple[float, np.ndarray, np.ndarray] | None,
+    ] = {}
+    # Maps geometry path -> whether the mesh has authored faces (after one-time orientation check).
+    exact_orientation_checked: dict[str, bool] = {}
+
+    def _get_mjc_mesh_inertia(
+        prim: Usd.Prim,
+        mesh_scale: Any,
+        mode: str,
+        inertia_hullvert: int,
+    ) -> tuple[float, np.ndarray, np.ndarray] | None:
+        """Compute and cache post-scale unit-density mass properties for an ``mjc:inertia`` mode.
+
+        Returns ``None`` when ``mode == "exact"`` and the mesh has faces, so Newton's native
+        signed-volume mesh inertia path handles scaling directly.
+        """
+        geom_path = _geometry_path(prim)
+        scale_key = (float(mesh_scale[0]), float(mesh_scale[1]), float(mesh_scale[2]))
+        key = (geom_path, scale_key, mode, inertia_hullvert)
+        if key in mjc_mesh_inertia_cache:
+            return mjc_mesh_inertia_cache[key]
+
+        if mode == "exact":
+            has_faces = exact_orientation_checked.get(geom_path)
+            if has_faces is None:
+                hull_mesh = visuals.get_mesh_cached(prim, load_uvs=False, load_normals=False, compute_inertia=False)
+                has_faces = len(hull_mesh.indices) >= 3
+                exact_orientation_checked[geom_path] = has_faces
+                if has_faces:
+                    hull_vertices = np.asarray(hull_mesh.vertices, dtype=np.float64)
+                    faces = np.asarray(hull_mesh.indices, dtype=np.int64).reshape(-1, 3)
+                    if import_mjcf._has_inconsistent_orientation(hull_vertices, faces):
+                        logger.warning(
+                            "USD mesh %r has faces with inconsistent orientation, which MuJoCo rejects for "
+                            'mjc:inertia="exact"; Newton uses its exact signed volume anyway.',
+                            str(prim.GetPath()),
+                        )
+            if has_faces:
+                mjc_mesh_inertia_cache[key] = None
+                return None
+
+        hull_mesh = visuals.get_mesh_cached(prim, load_uvs=False, load_normals=False, compute_inertia=False)
+        hull_vertices = np.asarray(hull_mesh.vertices, dtype=np.float64)
+        faces = np.asarray(hull_mesh.indices, dtype=np.int64).reshape(-1, 3)
+
+        scale_np = np.asarray(scale_key, dtype=np.float64)
+        scaled_vertices = hull_vertices * scale_np
+        if len(faces) == 0:
+            faces = import_mjcf._mesh_hull_faces(scaled_vertices, inertia_hullvert, hull_vertices)
+        elif scale_np[0] * scale_np[1] * scale_np[2] < 0.0:
+            faces = faces[:, [0, 2, 1]]
+
+        properties = (
+            None
+            if faces is None
+            else import_mjcf._mesh_mass_properties(scaled_vertices, faces, mode, inertia_hullvert, hull_vertices)
+        )
+        if properties is None:
+            logger.warning(
+                'USD mesh %r has too little surface area or volume for mjc:inertia="%s" and adds no mass; '
+                "MuJoCo rejects it.%s",
+                str(prim.GetPath()),
+                mode,
+                "" if mode == "shell" else ' Use mjc:inertia="shell" to give a surface mesh mass.',
+            )
+            result: tuple[float, np.ndarray, np.ndarray] = (
+                0.0,
+                np.zeros(3, dtype=np.float64),
+                np.zeros((3, 3), dtype=np.float64),
+            )
+        else:
+            result = properties
+        mjc_mesh_inertia_cache[key] = result
+        return result
 
     # Approximated colliders whose prim is viewport geometry, and which therefore keep
     # their authored topology as a visual shape. See the approximation pass below.
@@ -240,6 +323,13 @@ def _parse_colliders(
                             verbose=verbose,
                         )
                         mesh_properties["approximation"] = usd.get_attribute(prim, "physics:approximation", None)
+                        mesh_inertia, inertia_hullvert = _resolve_mesh_inertia(prim, R, verbose=verbose)
+                        if mesh_inertia is not None:
+                            shape_is_solid = mesh_inertia != "shell"
+                            inertia_margin = margin_val
+                            shell_thickness_val = None
+                        mesh_properties["mesh_inertia"] = mesh_inertia
+                        mesh_properties["inertia_hullvert"] = inertia_hullvert
                     collider_properties = _ColliderProperties(
                         enabled=_is_enabled_collider(prim),
                         margin=margin_val,
@@ -319,6 +409,22 @@ def _parse_colliders(
                 inertia_margin = collider_properties.inertia_margin
                 shell_thickness_val = collider_properties.shell_thickness
 
+                unit_mass_properties = (
+                    _get_mjc_mesh_inertia(
+                        prim,
+                        shape_spec.meshScale,
+                        collider_properties.mesh_inertia,
+                        collider_properties.inertia_hullvert,
+                    )
+                    if (
+                        key == UsdPhysics.ObjectType.MeshShape
+                        and collider_properties.mesh_inertia is not None
+                        and collider_is_enabled
+                        and body_id >= 0
+                    )
+                    else None
+                )
+
                 if shape_already_added:
                     builder.shape_collision_group[path_shape_map[path]] = collision_group
                     imported_rigid_collider_groups[path] = collision_groups
@@ -330,6 +436,7 @@ def _parse_colliders(
                         density=shape_density,
                         is_solid=shape_is_solid,
                         thickness=inertia_margin,
+                        unit_mass_properties=unit_mass_properties,
                     )
                     if verbose:
                         logger.info("Shape at %s already added; skipping duplicate geometry.", path)
@@ -427,19 +534,30 @@ def _parse_colliders(
                     # the collider itself is visible, or it is viewport geometry whose
                     # authored topology is about to be split off as a visual shape.
                     maxhullvert = collider_properties.maxhullvert
+                    compute_mesh_inertia = unit_mass_properties is None and collider_is_enabled
                     if collider_is_visible or splits_off_visual_copy:
                         # Drawn colliders should render with the same visual material metadata
                         # as visual-only mesh imports.
-                        mesh = visuals.get_mesh_with_visual_material(prim, path_name=path, maxhullvert=maxhullvert)
+                        mesh = visuals.get_mesh_with_visual_material(
+                            prim,
+                            path_name=path,
+                            maxhullvert=maxhullvert,
+                            compute_inertia=compute_mesh_inertia,
+                        )
                     else:
                         # Not viewport-drawn, but the viewer still draws these under show_collision /
                         # show_static, so the mesh still carries the resolved material.
-                        mesh = visuals.get_mesh_with_material(prim, maxhullvert=maxhullvert)
+                        mesh = visuals.get_mesh_with_material(
+                            prim,
+                            maxhullvert=maxhullvert,
+                            compute_inertia=compute_mesh_inertia,
+                        )
                     # add_shape_mesh() rejects SDF cfg fields on meshes; strip them and
                     # write the SDF intent to the builder lists, deferring the build to finalize().
                     mesh_shape_params = dict(shape_params)
                     mesh_shape_params["cfg"] = replace(
                         shape_params["cfg"],
+                        density=0.0 if unit_mass_properties is not None else shape_params["cfg"].density,
                         sdf_max_resolution=None,
                         sdf_target_voxel_size=None,
                         sdf_narrow_band_range=(-0.1, 0.1),
@@ -452,6 +570,23 @@ def _parse_colliders(
                         mesh=mesh,
                         **mesh_shape_params,
                     )
+                    if (
+                        unit_mass_properties is not None
+                        and shape_density > 0.0
+                        and body_id >= 0
+                        and not builder.body_lock_inertia[body_id]
+                    ):
+                        unit_mass, unit_com, unit_inertia = unit_mass_properties
+                        if unit_mass > 0.0:
+                            density_val = float(shape_density)
+                            com_body = wp.transform_point(shape_xform, wp.vec3(unit_com))
+                            builder._update_body_mass(
+                                body_id,
+                                density_val * unit_mass,
+                                wp.mat33(unit_inertia * density_val),
+                                com_body,
+                                shape_xform.q,
+                            )
                     builder.shape_sdf_max_resolution[shape_id] = sdf_max_resolution
                     builder.shape_sdf_target_voxel_size[shape_id] = sdf_target_voxel_size
                     builder.shape_sdf_narrow_band_range[shape_id] = sdf_narrow_band_range
@@ -527,6 +662,7 @@ def _parse_colliders(
                     is_solid=shape_is_solid,
                     thickness=inertia_margin,
                     mesh_source=mesh if key == UsdPhysics.ObjectType.MeshShape else None,
+                    unit_mass_properties=unit_mass_properties,
                 )
 
                 _collect_filtered_pairs(prim, authored_filtered_path_pairs)

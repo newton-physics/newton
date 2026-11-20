@@ -173,7 +173,9 @@ The common pattern across formats is:
 For format-specific details, see:
 
 - **USD**: :ref:`usd_parsing` — covers the ``MassAPI`` precedence cascade,
-  ``ComputeMassProperties`` callback, and collider density priority.
+  ``ComputeMassProperties`` callback, collider density priority, and MuJoCo
+  ``mjc:inertia`` mesh mass modes (via :class:`~newton.usd.SchemaResolverMjc`
+  on ``MjcMeshCollisionAPI`` prims).
 - **MJCF**: :meth:`~newton.ModelBuilder.add_mjcf` — follows MuJoCo semantics
   where ``<inertial>`` fully overrides geom-derived mass (via
   ``lock_inertia``), and geoms contribute via density when ``<inertial>`` is

@@ -752,6 +752,8 @@ such as ``lin_ap1_scene``, ``acescg``, ``srgb_ap1_scene`` or
 ``acescg``) and as sRGB otherwise, and a warning naming the prim or attribute
 is logged. The import itself does not fail.
 
+.. _usd_mass_inertia_precedence:
+
 Mass and Inertia Precedence
 ---------------------------
 
@@ -787,9 +789,14 @@ authoring a schema fallback value is equivalent to leaving the attribute unautho
    b. Otherwise, Newton derives unit-density collider mass information from collider
       geometry.  When ``NewtonMassAPI`` is applied to the collider, ``newton:massModel``
       controls whether inertia is derived from the full volume (``"solid"``, default) or a
-      thin shell at the surface (``"shell"``).  For shell shapes,
-      ``newton:shellThickness`` sets the wall thickness [m] measured inward from the outer
-      surface; the sentinel ``-inf`` (default) falls back to ``newton:contactMargin``.
+      thin shell at the surface (``"shell"``).  For ``newton:massModel = "shell"`` (or
+      ``mjc:shellinertia = true`` without ``mjc:inertia``), ``newton:shellThickness`` sets
+      the wall thickness [m] measured inward from the outer surface; the sentinel ``-inf``
+      (default) falls back to ``newton:contactMargin`` and density remains volumetric
+      [kg/m³].  By contrast, MuJoCo's ``mjc:inertia = "shell"`` on ``MjcMeshCollisionAPI``
+      meshes follows MuJoCo's zero-thickness surface-area formula: unit-density mass equals
+      surface area [m²], so collider/material density acts as area density [kg/m²] and
+      shell thickness / contact margin are not used.
 
    A collider is skipped (with warning) only if neither path provides usable collider mass
    information.
@@ -932,6 +939,9 @@ The table below shows MuJoCo attribute remapping examples, including both direct
    * - ``mjc:gap``
      - ``gap``
      - Direct mapping
+   * - ``mjc:inertia``
+     - ``mesh_inertia``
+     - Mesh collider inertia mode (``"legacy"``, ``"exact"``, ``"convex"``, or ``"shell"``), defaulting to ``"legacy"`` when ``MjcMeshCollisionAPI`` is applied and no ``mass_model`` (``newton:massModel`` / ``mjc:shellinertia``) is authored; other USD meshes keep Newton's exact signed-volume inertia. Computed after shape scale (picking limited convex hulls before scale via ``mjc:maxhullvert`` or ``newton:maxHullVertices``). ``"shell"`` uses MuJoCo's zero-thickness surface-area inertia (density in kg/m²); see :ref:`usd_mass_inertia_precedence`.
 
 **Example USD with remapped attributes:**
 

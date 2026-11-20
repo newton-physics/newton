@@ -180,6 +180,7 @@ class _UsdMassProperties:
         shape_scale: wp.vec3,
         shape_src: Mesh | None,
         shape_axis=None,
+        unit_mass_properties: tuple[float, np.ndarray, np.ndarray] | None = None,
     ):
         """Build unit-density collider mass information from effective collider MassAPI properties.
 
@@ -210,7 +211,10 @@ class _UsdMassProperties:
                 )
             return None
 
-        shape_volume, _, _ = compute_inertia_shape(shape_geo_type, shape_scale, shape_src, density=1.0)
+        if unit_mass_properties is not None:
+            shape_volume = unit_mass_properties[0]
+        else:
+            shape_volume, _, _ = compute_inertia_shape(shape_geo_type, shape_scale, shape_src, density=1.0)
         if shape_volume <= 0.0:
             warnings.warn(
                 f"Skipping collider {prim.GetPath()}: unable to derive positive collider volume from authored shape parameters.",
@@ -286,6 +290,7 @@ class _UsdMassProperties:
         shape_axis=None,
         is_solid: bool = True,
         thickness: float = 0.0,
+        unit_mass_properties: tuple[float, np.ndarray, np.ndarray] | None = None,
     ):
         """Build unit-density collider mass information from geometric shape parameters.
 
@@ -295,9 +300,12 @@ class _UsdMassProperties:
         """
         from pxr import Gf, UsdPhysics
 
-        shape_mass, shape_com, shape_inertia = compute_inertia_shape(
-            shape_geo_type, shape_scale, shape_src, density=1.0, is_solid=is_solid, thickness=thickness
-        )
+        if unit_mass_properties is not None:
+            shape_mass, shape_com, shape_inertia = unit_mass_properties
+        else:
+            shape_mass, shape_com, shape_inertia = compute_inertia_shape(
+                shape_geo_type, shape_scale, shape_src, density=1.0, is_solid=is_solid, thickness=thickness
+            )
         if shape_mass <= 0.0:
             warnings.warn(
                 f"Skipping collider {prim.GetPath()} in mass aggregation: unable to derive positive unit-density mass.",
@@ -326,12 +334,17 @@ class _UsdMassProperties:
         is_solid: bool,
         thickness: float,
         mesh_source: Mesh | None = None,
+        unit_mass_properties: tuple[float, np.ndarray, np.ndarray] | None = None,
     ):
         """Record collider mass information used by the rigid-body fallback callback."""
         from pxr import UsdPhysics
 
         body_path = str(shape_spec.rigidBody)
         if body_path not in self.bodies_requiring_mass_properties_fallback or not _is_enabled_collider(prim):
+            return
+
+        if unit_mass_properties is not None and unit_mass_properties[0] <= 0.0:
+            # Degenerate mjc:inertia meshes already logged a warning and contribute zero mass.
             return
 
         shape_geo_type = None
@@ -358,7 +371,8 @@ class _UsdMassProperties:
             shape_scale = wp.vec3(*shape_spec.meshScale)
             # Visual meshes retain source mass properties; reuse those without
             # treating expanded visual topology as a geometry-only cache entry.
-            shape_src = mesh_source if mesh_source is not None else self.get_mesh_cached(prim)
+            if unit_mass_properties is None:
+                shape_src = mesh_source if mesh_source is not None else self.get_mesh_cached(prim)
         if shape_geo_type is None:
             return
 
@@ -372,6 +386,7 @@ class _UsdMassProperties:
             shape_scale,
             shape_src,
             shape_axis,
+            unit_mass_properties=unit_mass_properties,
         )
         if mass_info is None:
             mass_info = self._build_from_shape_geometry(
@@ -384,6 +399,7 @@ class _UsdMassProperties:
                 shape_axis,
                 is_solid=is_solid,
                 thickness=thickness,
+                unit_mass_properties=unit_mass_properties,
             )
         if mass_info is not None:
             if path not in self.rigid_body_mass_info_map:
