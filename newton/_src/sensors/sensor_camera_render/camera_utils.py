@@ -120,7 +120,7 @@ def compute_camera_transforms_usd(
         raise ImportError("USD camera ray helpers require the pxr USD Python modules.") from e
 
     from ...core import Axis, quat_between_axes  # noqa: PLC0415
-    from ...usd.utils import get_transform  # noqa: PLC0415
+    from ...usd.utils import _get_camera_transform  # noqa: PLC0415
 
     camera_items = list(cameras) if _is_camera_sequence(cameras) else [cameras]
     if not camera_items:
@@ -134,7 +134,7 @@ def compute_camera_transforms_usd(
     transforms = []
     for usd_camera in usd_cameras:
         prim = usd_camera.GetPrim()
-        transform = get_transform(prim, local=False, xform_cache=xform_cache)
+        transform = _get_camera_transform(prim, local=False, xform_cache=xform_cache)
         if target_up_axis is not None:
             stage_up_axis = Axis.from_string(str(UsdGeom.GetStageUpAxis(prim.GetStage())))
             axis_xform = wp.transform(wp.vec3(0.0), quat_between_axes(stage_up_axis, target_up_axis))
