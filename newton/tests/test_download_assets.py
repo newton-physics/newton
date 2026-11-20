@@ -3,7 +3,6 @@
 
 import concurrent.futures
 import errno
-import hashlib
 import os
 import shutil
 import subprocess
@@ -26,14 +25,18 @@ except ImportError:
 
 from newton._src.utils.download_assets import (
     _TEMP_DIR_RE,
-    _cleanup_old_versions,
+    _cache_prefix,
     _cleanup_stale_temp_dirs,
     _find_cached_version,
     _find_parent_cache,
     _get_latest_commit_via_git,
+    _read_cached_ref,
+    _ref_key,
+    _ref_path,
     _safe_rename,
     _safe_rmtree,
     _temp_cache_path,
+    _write_cached_ref,
     clear_git_cache,
     download_git_folder,
 )
@@ -76,10 +79,16 @@ class TestDownloadAssets(unittest.TestCase):
         _safe_rmtree(self.remote_dir)
 
     def test_download_and_refresh(self):
-        # Initial download
-        p1 = download_git_folder(self.remote_dir, self.asset_rel, cache_dir=self.cache_dir, ref="main")
+        """Keep a stable path until the requested folder's contents change."""
+        # A trailing slash must work on a fresh cache, before parent-cache reuse is possible.
+        p1 = download_git_folder(self.remote_dir, f"{self.asset_rel}/", cache_dir=self.cache_dir, ref="main")
         self.assertTrue(p1.exists())
         self.assertEqual((p1 / "foo.txt").read_text(encoding="utf-8"), "v1\n")
+        for folder_path in (self.asset_rel, f"./{self.asset_rel}", self.asset_rel.replace("/", "\\") + "\\"):
+            with self.subTest(folder_path=folder_path):
+                cached = download_git_folder(self.remote_dir, folder_path, cache_dir=self.cache_dir, ref="main")
+                self.assertEqual(cached, p1)
+                self.assertEqual((cached / "foo.txt").read_text(encoding="utf-8"), "v1\n")
         # Navigate up past folder_path segments to reach the SHA-named cache root
         depth = len(Path(self.asset_rel).parts)
         cache_dir_1 = p1
@@ -94,7 +103,8 @@ class TestDownloadAssets(unittest.TestCase):
 
         # Invalidate TTL so the next call checks remote
         old_mtime = time.time() - 7200
-        os.utime(cache_dir_1, (old_mtime, old_mtime))
+        ref_path = _ref_path(Path(self.cache_dir), _ref_key(self.remote_dir, self.asset_rel, "main"))
+        os.utime(ref_path, (old_mtime, old_mtime))
 
         # Refresh — should get a NEW directory (different SHA)
         p2 = download_git_folder(self.remote_dir, self.asset_rel, cache_dir=self.cache_dir, ref="main")
@@ -105,8 +115,8 @@ class TestDownloadAssets(unittest.TestCase):
             cache_dir_2 = cache_dir_2.parent
         self.assertNotEqual(cache_dir_1, cache_dir_2)
 
-        # Old version should have been cleaned up (best-effort)
-        self.assertFalse(cache_dir_1.exists(), "Old cache dir should be cleaned up after new download")
+        # Previously returned paths must remain usable when another ref shares the cache.
+        self.assertEqual((p1 / "foo.txt").read_text(encoding="utf-8"), "v1\n")
 
         # Force refresh with same SHA — should return same directory
         p3 = download_git_folder(
@@ -117,6 +127,199 @@ class TestDownloadAssets(unittest.TestCase):
             cache_dir_3 = cache_dir_3.parent
         self.assertEqual(cache_dir_2, cache_dir_3)
         self.assertEqual((p3 / "foo.txt").read_text(encoding="utf-8"), "v2\n")
+
+        if sys.platform == "win32":
+            ref_path = _ref_path(Path(self.cache_dir), _ref_key(self.remote_dir, self.asset_rel, "main"))
+            temporary = _temp_cache_path(ref_path)
+            # Windows readers prevent replacement or deletion until their handles close.
+            for locked_path in (ref_path, temporary):
+                with self.subTest(locked_path=locked_path.name):
+                    temporary.touch()
+                    os.utime(ref_path, (old_mtime, old_mtime))
+                    expired_mtime = ref_path.stat().st_mtime
+                    with locked_path.open("rb"):
+                        cached = download_git_folder(self.remote_dir, self.asset_rel, self.cache_dir, ref="main")
+                        self.assertEqual(cached, p3)
+                        self.assertEqual((cached / "foo.txt").read_text(encoding="utf-8"), "v2\n")
+                        self.assertEqual(_read_cached_ref(cache_dir_3, ref_path.name), self.work.head.commit.hexsha)
+                        self.assertEqual(ref_path.stat().st_mtime, expired_mtime)
+                    temporary.unlink(missing_ok=True)
+
+    def test_downloads_literal_folder_paths(self):
+        """Download the repository root and special directory names by branch and commit SHA."""
+        folder_names = (".", "-models", "!models")
+        for folder in folder_names:
+            asset_path = Path(self.work_dir, folder, "asset.txt")
+            asset_path.parent.mkdir(exist_ok=True)
+            asset_path.write_text(f"{folder}\n", encoding="utf-8")
+            self.work.index.add([str(asset_path)])
+        commit = self.work.index.commit("Add root asset and directories with special names")
+        self.work.git.push("origin", "main")
+
+        with tempfile.TemporaryDirectory(prefix="nwtn_cache_sha_") as sha_cache_dir:
+            for ref, cache_dir in (("main", self.cache_dir), (commit.hexsha, sha_cache_dir)):
+                for folder in folder_names:
+                    with self.subTest(ref=ref, folder=folder):
+                        path = download_git_folder(self.remote_dir, folder, cache_dir, ref=ref)
+                        self.assertEqual((path / "asset.txt").read_text(encoding="utf-8"), f"{folder}\n")
+                        if folder == ".":
+                            self.assertEqual(path.parent, Path(cache_dir))
+                            self.assertTrue(path.name.endswith(f"_{commit.tree.hexsha}"))
+                            self.assertEqual(download_git_folder(self.remote_dir, "./", cache_dir, ref=ref), path)
+                        else:
+                            self.assertFalse((path.parent / "assets").exists())
+
+    def test_download_with_versioned_sparse_checkout(self):
+        """Download real assets with compatible sparse-checkout options at each version boundary."""
+        execute = git.Git.execute
+        installed_version = git.Git().version_info
+        for version in ((2, 34, 1), (2, 35, 0), (2, 36, 0)):
+            if version[:2] > installed_version[:2]:
+                continue  # The installed Git must support the options selected by the simulated version.
+            for mode, ref in (("branch", "main"), ("commit", self.work.head.commit.hexsha)):
+                commands = []
+
+                def record_execute(command_git, command, *args, commands=commands, **kwargs):
+                    if "sparse-checkout" in command:
+                        commands.append(command[command.index("sparse-checkout") + 1 :])
+                    return execute(command_git, command, *args, **kwargs)
+
+                with (
+                    self.subTest(version=version, mode=mode),
+                    mock.patch.object(git.Git, "version_info", new_callable=mock.PropertyMock, return_value=version),
+                    mock.patch.object(git.Git, "execute", new=record_execute),
+                ):
+                    cache_dir = Path(self.cache_dir, f"{version[1]}-{mode}")
+                    path = download_git_folder(self.remote_dir, self.asset_rel, cache_dir, ref=ref)
+                    self.assertEqual((path / "foo.txt").read_text(encoding="utf-8"), "v1\n")
+                    with git.Repo(path.parents[1]) as cached_repo:
+                        self.assertEqual(cached_repo.git.config("--bool", "core.sparseCheckoutCone"), "true")
+                    set_commands = [command for command in commands if command[0] == "set"]
+                    self.assertTrue(set_commands)
+                    for command in set_commands:
+                        if version < (2, 36):
+                            self.assertNotIn("--skip-checks", command)
+                        else:
+                            self.assertIn("--skip-checks", command)
+                        self.assertEqual(command[-2:], ["--", self.asset_rel])
+                        if version < (2, 35):
+                            self.assertNotIn("--cone", command)
+                        else:
+                            self.assertIn("--cone", command)
+                    if version < (2, 35):
+                        self.assertIn(["init", "--cone"], commands)
+
+    def test_download_long_asset_paths(self):
+        """Download long paths without the temporary checkout exceeding Windows path limits."""
+        prefix = _cache_prefix(self.remote_dir, self.asset_rel)
+        cache_dir = Path(self.cache_dir, "branch")
+        final_dir = cache_dir / f"{prefix}_{'a' * 40}"
+        padding = 230 - len(str(final_dir / self.asset_rel / "meshes" / "model.txt"))
+        if padding < 0:
+            self.skipTest("Test cache directory is too long to construct the path boundary")
+        relative_file = Path("meshes", "m" * padding + "model.txt")
+        asset_file = Path(self.work_dir, self.asset_rel) / relative_file
+        asset_file.parent.mkdir()
+        asset_file.write_text("long asset path\n", encoding="utf-8")
+        self.work.index.add([str(asset_file)])
+        commit = self.work.index.commit("Add asset near the Windows path limit")
+        self.work.git.push("origin", "main")
+
+        # The final file fits below MAX_PATH, but a full ref hash makes the temporary file exceed it.
+        git_config = {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.longpaths", "GIT_CONFIG_VALUE_0": "false"}
+        with mock.patch.dict(os.environ, git_config):
+            for mode, ref in (("branch", "main"), ("commit", commit.hexsha)):
+                with (
+                    self.subTest(mode=mode),
+                    mock.patch("newton._src.utils.download_assets._safe_rename", wraps=_safe_rename) as rename,
+                ):
+                    path = download_git_folder(self.remote_dir, self.asset_rel, Path(self.cache_dir, mode), ref=ref)
+                    self.assertEqual((path / relative_file).read_text(encoding="utf-8"), "long asset path\n")
+                    temporary, final = rename.call_args.args
+                    suffix = f"_p{os.getpid()}_t{threading.get_ident()}"
+                    self.assertLessEqual(len(temporary.name), len(final.name) + len(suffix))
+
+    def test_reuse_identical_content_across_refs(self):
+        """Reuse unchanged assets across commits, branches, and tags."""
+        first_commit = self.work.head.commit.hexsha
+        first = download_git_folder(self.remote_dir, f"./{self.asset_rel}", self.cache_dir, ref=first_commit)
+        first_root = first.parents[len(Path(self.asset_rel).parts) - 1]
+        tree_hash = (self.work.head.commit.tree / self.asset_rel).hexsha
+        self.assertTrue(first_root.name.endswith(f"_{tree_hash}"))
+
+        # A commit outside the requested folder must not duplicate the asset.
+        (Path(self.work_dir) / "README.md").write_text("unrelated change\n", encoding="utf-8")
+        self.work.index.add(["README.md"])
+        self.work.index.commit("Update unrelated file")
+        self.work.git.push("origin", "main")
+        second_commit = self.work.head.commit.hexsha
+        self.work.create_tag("same-assets", message="Same asset contents")
+        self.work.git.push("origin", "same-assets")
+
+        for ref in (second_commit, "main", "same-assets"):
+            with self.subTest(ref=ref):
+                path = download_git_folder(self.remote_dir, self.asset_rel, self.cache_dir, ref=ref)
+                self.assertEqual(path, first)
+                self.assertEqual((path / "foo.txt").read_text(encoding="utf-8"), "v1\n")
+
+        self.assertEqual(set(Path(self.cache_dir).iterdir()), {first_root, Path(self.cache_dir) / ".newton-refs"})
+
+        # Ref resolutions stay independent even when they share a content directory.
+        (Path(self.work_dir, self.asset_rel) / "foo.txt").write_text("v2\n", encoding="utf-8")
+        self.work.index.add([str(Path(self.work_dir, self.asset_rel) / "foo.txt")])
+        self.work.index.commit("Change asset contents")
+        self.work.git.push("origin", "main")
+        changed = download_git_folder(self.remote_dir, self.asset_rel, self.cache_dir, ref="main", force_refresh=True)
+        self.assertNotEqual(changed, first)
+        self.assertEqual((changed / "foo.txt").read_text(encoding="utf-8"), "v2\n")
+        with mock.patch("newton._src.utils.download_assets._get_latest_commit_via_git", return_value=None):
+            for ref in (first_commit, second_commit, "same-assets"):
+                with self.subTest(offline_ref=ref):
+                    old = download_git_folder(
+                        self.remote_dir, self.asset_rel, self.cache_dir, ref=ref, force_refresh=True
+                    )
+                    self.assertEqual(old, first)
+                    self.assertEqual((old / "foo.txt").read_text(encoding="utf-8"), "v1\n")
+
+        # Ref metadata can be unavailable even when the requested content is ready.
+        metadata_dir = _ref_path(Path(self.cache_dir), _ref_key(self.remote_dir, self.asset_rel, first_commit)).parent
+        metadata_dir.rename(metadata_dir.with_name("newton-refs-backup"))
+        metadata_dir.write_text("blocked", encoding="ascii")
+        reused = download_git_folder(self.remote_dir, self.asset_rel, self.cache_dir, ref=second_commit)
+        self.assertEqual(reused, first)
+        self.assertEqual((reused / "foo.txt").read_text(encoding="utf-8"), "v1\n")
+        self.assertEqual(metadata_dir.read_text(encoding="ascii"), "blocked")
+
+    def test_distinct_repository_folder_identities(self):
+        """Keep identical trees from distinct repository and folder pairs independently usable."""
+        for folder_path in ("baz", "bar_baz"):
+            target = Path(self.work_dir, folder_path)
+            shutil.copytree(Path(self.work_dir, self.asset_rel), target)
+            self.work.index.add([str(target / "foo.txt")])
+        self.work.index.commit("Add identical assets at different paths")
+        tree_hash = (self.work.head.commit.tree / "baz").hexsha
+        self.assertEqual(tree_hash, (self.work.head.commit.tree / "bar_baz").hexsha)
+
+        downloads = Path(self.cache_dir) / "downloads"
+        roots = set()
+        paths = []
+        # The first two requests used the same readable prefix; the third shares a basename.
+        for repo_path, folder_path in (("foo_bar.git", "baz"), ("foo.git", "bar_baz"), ("other/foo_bar.git", "baz")):
+            with self.subTest(repo_path=repo_path, folder_path=folder_path):
+                remote = Path(self.cache_dir) / "remotes" / repo_path
+                with git.Repo.clone_from(self.work_dir, remote, bare=True):
+                    pass
+                path = download_git_folder(str(remote), folder_path, downloads, ref="main")
+                self.assertEqual((path / "foo.txt").read_text(encoding="utf-8"), "v1\n")
+                self.assertEqual(path.name, folder_path)
+                self.assertTrue(path.parent.name.endswith(f"_{tree_hash}"))
+                self.assertNotIn(path.parent, roots)
+                roots.add(path.parent)
+                paths.append(path)
+
+        self.assertEqual(set(downloads.iterdir()), roots | {downloads / ".newton-refs"})
+        for path in paths:
+            self.assertEqual((path / "foo.txt").read_text(encoding="utf-8"), "v1\n")
 
     def test_global_asset_cache_directory(self):
         """Use the configured asset directory and preserve explicit overrides."""
@@ -136,6 +339,40 @@ class TestDownloadAssets(unittest.TestCase):
             config.cache_dir_assets = Path(self.cache_dir) / "relocated"
             relocated = newton.utils.download_asset(self.asset_rel, ref="main")
             self.assertTrue(relocated.is_relative_to(config.cache_dir_assets))
+
+    def test_parent_cache_refresh(self):
+        """Reuse a parent cache while resolving updates against its recorded commit."""
+        parent = download_git_folder(self.remote_dir, "assets", self.cache_dir, ref="main")
+        parent_root = parent.parent
+        parent_ref = _ref_path(Path(self.cache_dir), _ref_key(self.remote_dir, "assets", "main"))
+        old_mtime = time.time() - 7200
+
+        for expired in (False, True):
+            with self.subTest(expired=expired):
+                if expired:
+                    os.utime(parent_ref, (old_mtime, old_mtime))
+                child = download_git_folder(self.remote_dir, self.asset_rel, self.cache_dir, ref="main")
+                self.assertEqual(child, parent / "x")
+                self.assertEqual((child / "foo.txt").read_text(encoding="utf-8"), "v1\n")
+                self.assertEqual(set(Path(self.cache_dir).iterdir()), {parent_root, parent_ref.parent})
+
+        (Path(self.work_dir, self.asset_rel) / "foo.txt").write_text("v2\n", encoding="utf-8")
+        self.work.index.add([str(Path(self.work_dir, self.asset_rel) / "foo.txt")])
+        self.work.index.commit("Update nested asset")
+        self.work.git.push("origin", "main")
+        os.utime(parent_ref, (old_mtime, old_mtime))
+        child = download_git_folder(self.remote_dir, self.asset_rel, self.cache_dir, ref="main")
+        self.assertNotEqual(child, parent / "x")
+        self.assertEqual((child / "foo.txt").read_text(encoding="utf-8"), "v2\n")
+        self.assertEqual((parent / "x" / "foo.txt").read_text(encoding="utf-8"), "v1\n")
+
+    def test_missing_or_non_directory_asset(self):
+        """Reject missing paths and files without retaining incomplete downloads."""
+        for folder_path in ("missing", "assets/x/foo.txt"):
+            with self.subTest(folder_path=folder_path):
+                with self.assertRaises(RuntimeError):
+                    download_git_folder(self.remote_dir, folder_path, self.cache_dir, ref="main")
+                self.assertEqual(list(Path(self.cache_dir).iterdir()), [])
 
     def test_disabled_asset_cache_downloads_fresh(self):
         """Return independent usable downloads when persistent asset caching is disabled."""
@@ -224,10 +461,7 @@ class TestDownloadAssets(unittest.TestCase):
                 f.result()
 
         # All threads should have resolved to the same SHA directory
-        identity_hash = hashlib.md5(f"{self.remote_dir}#{self.asset_rel}#main".encode()).hexdigest()[:8]
-        repo_name = Path(self.remote_dir.rstrip("/")).stem
-        folder_name = self.asset_rel.replace("/", "_")
-        base_prefix = f"{repo_name}_{folder_name}_{identity_hash}"
+        base_prefix = _cache_prefix(self.remote_dir, self.asset_rel)
         entries = [
             e
             for e in Path(self.cache_dir).iterdir()
@@ -236,6 +470,9 @@ class TestDownloadAssets(unittest.TestCase):
             and not _TEMP_DIR_RE.search(e.name[len(base_prefix) :])
         ]
         self.assertEqual(len(entries), 1, f"Expected 1 cache dir, got {len(entries)}: {entries}")
+        ref_path = _ref_path(Path(self.cache_dir), _ref_key(self.remote_dir, self.asset_rel, "main"))
+        self.assertEqual(_read_cached_ref(entries[0], ref_path.name), self.work.head.commit.hexsha)
+        self.assertEqual(list(ref_path.parent.iterdir()), [ref_path])
 
     def test_within_ttl_skips_network(self):
         """Within TTL, return cached path without calling git ls-remote."""
@@ -248,22 +485,105 @@ class TestDownloadAssets(unittest.TestCase):
         self.assertEqual(p1, p2)
 
     def test_offline_returns_cached(self):
-        """When git ls-remote fails and cache exists, return cached version."""
-        p1 = download_git_folder(self.remote_dir, self.asset_rel, cache_dir=self.cache_dir, ref="main")
-        self.assertTrue(p1.exists())
-        depth = len(Path(self.asset_rel).parts)
-        cache_dir_1 = p1
-        for _ in range(depth):
-            cache_dir_1 = cache_dir_1.parent
-
-        # Expire TTL
+        """Throttle offline retries for direct and parent cache hits without changing content."""
+        parent = download_git_folder(self.remote_dir, "assets", cache_dir=self.cache_dir, ref="main")
+        ref_path = _ref_path(Path(self.cache_dir), _ref_key(self.remote_dir, "assets", "main"))
+        cached_commit = ref_path.read_text(encoding="ascii")
         old_mtime = time.time() - 7200
-        os.utime(cache_dir_1, (old_mtime, old_mtime))
 
-        # Simulate offline
-        with mock.patch("newton._src.utils.download_assets._get_latest_commit_via_git", return_value=None):
-            p2 = download_git_folder(self.remote_dir, self.asset_rel, cache_dir=self.cache_dir, ref="main")
-        self.assertEqual(p1, p2)
+        # Make the local remote unavailable so the real Git lookup fails immediately.
+        remote_head = Path(self.remote_dir) / "HEAD"
+        offline_head = remote_head.with_name("HEAD.offline")
+        remote_head.rename(offline_head)
+        try:
+            for folder_path in ("assets", self.asset_rel):
+                with self.subTest(folder_path=folder_path):
+                    os.utime(ref_path, (old_mtime, old_mtime))
+                    expected = parent.parent / folder_path
+                    with mock.patch(
+                        "newton._src.utils.download_assets._get_latest_commit_via_git",
+                        wraps=_get_latest_commit_via_git,
+                    ) as resolve:
+                        for _ in range(2):
+                            cached = download_git_folder(self.remote_dir, folder_path, self.cache_dir, ref="main")
+                            self.assertEqual(cached, expected)
+                            self.assertEqual((parent / "x" / "foo.txt").read_text(encoding="utf-8"), "v1\n")
+                        resolve.assert_called_once_with(self.remote_dir, "main")
+                        self.assertGreater(ref_path.stat().st_mtime, old_mtime)
+                        os.utime(ref_path, (old_mtime, old_mtime))
+                        self.assertEqual(
+                            download_git_folder(self.remote_dir, folder_path, self.cache_dir, ref="main"), expected
+                        )
+                        self.assertEqual(resolve.call_count, 2)
+                    self.assertGreater(ref_path.stat().st_mtime, old_mtime)
+                    self.assertEqual(ref_path.read_text(encoding="ascii"), cached_commit)
+
+            # Explicit refresh must still check the unavailable remote within the TTL.
+            with mock.patch(
+                "newton._src.utils.download_assets._get_latest_commit_via_git", wraps=_get_latest_commit_via_git
+            ) as resolve:
+                refreshed = download_git_folder(
+                    self.remote_dir, "assets", self.cache_dir, ref="main", force_refresh=True
+                )
+                self.assertEqual(refreshed, parent)
+                resolve.assert_called_once_with(self.remote_dir, "main")
+        finally:
+            offline_head.rename(remote_head)
+
+    def test_offline_check_does_not_reorder_versions(self):
+        """Keep a successful refresh current when older direct and parent checks fail later."""
+        parent = download_git_folder(self.remote_dir, "assets", self.cache_dir, ref="main")
+        key = _ref_key(self.remote_dir, "assets", "main")
+        old_mtime = time.time() - 7200
+        os.utime(_ref_path(Path(self.cache_dir), key), (old_mtime, old_mtime))
+        asset = Path(self.work_dir, self.asset_rel, "foo.txt")
+        asset.write_text("v2\n", encoding="utf-8")
+        self.work.index.add([str(asset)])
+        self.work.index.commit("Update asset while checks are pending")
+        self.work.git.push("origin", "main")
+
+        # Both workers select the old parent before the main thread publishes the new one.
+        started = threading.Barrier(3)
+        resume = threading.Event()
+        main_thread = threading.get_ident()
+
+        def resolve(url, ref):
+            if threading.get_ident() != main_thread:
+                started.wait(timeout=30)
+                self.assertTrue(resume.wait(timeout=30))
+            return _get_latest_commit_via_git(url, ref)
+
+        remote_head = Path(self.remote_dir) / "HEAD"
+        offline_head = remote_head.with_name("HEAD.offline")
+        with (
+            mock.patch("newton._src.utils.download_assets._get_latest_commit_via_git", side_effect=resolve),
+            concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor,
+        ):
+            futures = [
+                executor.submit(download_git_folder, self.remote_dir, folder, self.cache_dir, "main")
+                for folder in ("assets", self.asset_rel)
+            ]
+            try:
+                started.wait(timeout=30)
+                updated = download_git_folder(self.remote_dir, "assets", self.cache_dir, ref="main", force_refresh=True)
+                self.assertEqual((updated / "x" / "foo.txt").read_text(encoding="utf-8"), "v2\n")
+                # Ensure a late failed check gets a strictly later mtime even on coarse filesystems.
+                published_mtime = time.time() - 10
+                os.utime(_ref_path(Path(self.cache_dir), key), (published_mtime, published_mtime))
+                remote_head.rename(offline_head)
+            finally:
+                resume.set()
+            try:
+                for future, expected in zip(futures, (parent, parent / "x"), strict=True):
+                    self.assertEqual(future.result(timeout=30), expected)
+            finally:
+                offline_head.rename(remote_head)
+
+        for folder, expected in (("assets", updated), (self.asset_rel, updated / "x")):
+            with self.subTest(folder=folder):
+                cached = download_git_folder(self.remote_dir, folder, self.cache_dir, ref="main")
+                self.assertEqual(cached, expected)
+        self.assertEqual((parent / "x" / "foo.txt").read_text(encoding="utf-8"), "v1\n")
 
     def test_offline_no_cache_raises(self):
         """When git ls-remote fails and no cache exists, raise RuntimeError."""
@@ -284,36 +604,41 @@ class TestDownloadAssets(unittest.TestCase):
         """Retry a transient fetch from a clean temporary directory."""
         ref = self.work.head.commit.hexsha
         real_init = git.Repo.init
-        attempts = 0
-        incomplete_repo = mock.Mock()
-        incomplete_repo.git.fetch.side_effect = git.exc.GitCommandError(
-            "git fetch",
-            128,
-            stderr=b"error: RPC failed; HTTP 503\nfatal: expected 'packfile'",
-        )
-
-        def flaky_init(path, *args, **kwargs):
-            nonlocal attempts
-            attempts += 1
-            path = Path(path)
-            if attempts == 1:
-                path.mkdir(parents=True)
-                (path / "partial").write_text("incomplete", encoding="utf-8")
-                return incomplete_repo
-            self.assertFalse(path.exists())
-            return real_init(path, *args, **kwargs)
-
-        with (
-            mock.patch("git.Repo.init", side_effect=flaky_init),
-            mock.patch("newton._src.utils.download_assets.time.sleep") as mock_sleep,
+        for stderr in (
+            b"error: RPC failed; HTTP 503\nfatal: expected 'packfile'",
+            b"fatal: unable to access 'https://github.com/example/assets.git/': Could not resolve host: github.com",
+            b"fatal: unable to access 'https://github.com/example/assets.git/': Failed to connect to github.com port 443",
+            b"fatal: unable to access 'https://github.com/example/assets.git/': Connection timed out",
         ):
-            path = download_git_folder(self.remote_dir, self.asset_rel, cache_dir=self.cache_dir, ref=ref)
+            with self.subTest(stderr=stderr):
+                clear_git_cache(self.cache_dir)
+                attempts = 0
+                incomplete_repo = mock.Mock()
+                incomplete_repo.git.version_info = git.Git().version_info
+                incomplete_repo.git.fetch.side_effect = git.exc.GitCommandError("git fetch", 128, stderr=stderr)
 
-        self.assertEqual((path / "foo.txt").read_text(encoding="utf-8"), "v1\n")
-        self.assertEqual(attempts, 2)
-        incomplete_repo.git.fetch.assert_called_once_with("origin", ref, "--depth=1", "--filter=blob:none")
-        incomplete_repo.close.assert_called_once()
-        mock_sleep.assert_called_once_with(1.0)
+                def flaky_init(path, *args, incomplete_repo=incomplete_repo, **kwargs):
+                    nonlocal attempts
+                    attempts += 1
+                    path = Path(path)
+                    if attempts == 1:
+                        path.mkdir(parents=True)
+                        (path / "partial").write_text("incomplete", encoding="utf-8")
+                        return incomplete_repo
+                    self.assertFalse(path.exists())
+                    return real_init(path, *args, **kwargs)
+
+                with (
+                    mock.patch("git.Repo.init", side_effect=flaky_init),
+                    mock.patch("newton._src.utils.download_assets.time.sleep") as mock_sleep,
+                ):
+                    path = download_git_folder(self.remote_dir, self.asset_rel, cache_dir=self.cache_dir, ref=ref)
+
+                self.assertEqual((path / "foo.txt").read_text(encoding="utf-8"), "v1\n")
+                self.assertEqual(attempts, 2)
+                incomplete_repo.git.fetch.assert_called_once_with("origin", ref, "--depth=1", "--filter=blob:none")
+                incomplete_repo.close.assert_called_once()
+                mock_sleep.assert_called_once_with(1.0)
 
     def test_transient_clone_error_retries_from_clean_temp_dir(self):
         """Retry a transient clone from a clean temporary directory."""
@@ -509,24 +834,28 @@ class TestCleanupStaleTempDirs(unittest.TestCase):
         _safe_rmtree(self.base)
 
     def test_removes_old_temp_dirs(self):
-        """Orphaned temp dirs older than max_age are removed."""
-        old_temp = self.cache_path / f"{self.base_prefix}_deadbeef_p99999_t99999"
-        old_temp.mkdir(parents=True)
+        """Remove expired temporary directories with short and legacy hashes."""
+        old_temps = [self.cache_path / f"{self.base_prefix}_{'a' * size}_p99999_t99999" for size in (8, 16, 64)]
         old_mtime = time.time() - 7200
-        os.utime(old_temp, (old_mtime, old_mtime))
+        for old_temp in old_temps:
+            old_temp.mkdir()
+            os.utime(old_temp, (old_mtime, old_mtime))
 
         _cleanup_stale_temp_dirs(self.cache_path, self.base_prefix, max_age=3600)
 
-        self.assertFalse(old_temp.exists())
+        for old_temp in old_temps:
+            self.assertFalse(old_temp.exists())
 
     def test_preserves_recent_temp_dirs(self):
-        """Recent temp dirs (within max_age) are not removed."""
-        recent_temp = self.cache_path / f"{self.base_prefix}_deadbeef_p99999_t99999"
-        recent_temp.mkdir(parents=True)
+        """Preserve recent temporary directories with short and legacy hashes."""
+        recent_temps = [self.cache_path / f"{self.base_prefix}_{'a' * size}_p99999_t99999" for size in (8, 16, 64)]
+        for recent_temp in recent_temps:
+            recent_temp.mkdir()
 
         _cleanup_stale_temp_dirs(self.cache_path, self.base_prefix, max_age=3600)
 
-        self.assertTrue(recent_temp.exists())
+        for recent_temp in recent_temps:
+            self.assertTrue(recent_temp.exists())
 
     def test_ignores_non_temp_version_dirs(self):
         """Content-hash version dirs are NOT cleaned by temp cleanup."""
@@ -555,41 +884,96 @@ class TestFindCachedVersion(unittest.TestCase):
     def setUp(self):
         self.base = tempfile.mkdtemp(prefix="nwtn_find_")
         self.cache_path = Path(self.base)
-        self.base_prefix = "newton-assets_model_abc12345"
+        self.base_prefix = "newton-assets_model"
+        self.ref_key = _ref_key("http://example.git", "model", "main")
 
     def tearDown(self):
         _safe_rmtree(self.base)
 
+    @unittest.skipUnless(sys.platform == "win32", "Windows file-sharing semantics required")
+    def test_ref_write_retries_file_contention(self):
+        """Replace ref metadata after a Windows reader releases the file."""
+        directory = self.cache_path / f"{self.base_prefix}_{'a' * 40}"
+        directory.mkdir()
+        _write_cached_ref(directory, self.ref_key, "b" * 40)
+        path = _ref_path(self.cache_path, self.ref_key)
+        old_mtime = time.time() - 7200
+        os.utime(path, (old_mtime, old_mtime))
+
+        with path.open("rb") as reader:
+            # Release the real OS lock on the retry without relying on thread timing.
+            with mock.patch("newton._src.utils.download_assets.time.sleep", side_effect=lambda _: reader.close()):
+                _write_cached_ref(directory, self.ref_key, "c" * 40)
+
+        self.assertEqual(_read_cached_ref(directory, self.ref_key), "c" * 40)
+        self.assertGreater(path.stat().st_mtime, old_mtime)
+        self.assertEqual(_find_cached_version(self.cache_path, self.base_prefix, self.ref_key), directory)
+        self.assertEqual(list(path.parent.iterdir()), [path])
+
     def test_returns_none_when_no_match(self):
-        result = _find_cached_version(self.cache_path, self.base_prefix)
+        """Return no match when this request has not been cached."""
+        result = _find_cached_version(self.cache_path, self.base_prefix, self.ref_key)
         self.assertIsNone(result)
 
     def test_finds_single_cached_dir(self):
-        d = self.cache_path / f"{self.base_prefix}_deadbeef"
+        """Find a directory with a recorded resolution of the requested ref."""
+        d = self.cache_path / f"{self.base_prefix}_{'a' * 40}"
         d.mkdir()
-        result = _find_cached_version(self.cache_path, self.base_prefix)
+        _write_cached_ref(d, self.ref_key, "b" * 40)
+        result = _find_cached_version(self.cache_path, self.base_prefix, self.ref_key)
         self.assertEqual(result, d)
+        other_key = _ref_key("http://example.git", "model", "other-branch")
+        self.assertIsNone(_find_cached_version(self.cache_path, self.base_prefix, other_key))
+        for invalid in (
+            b"\xffinvalid",
+            b"missing directory",
+            f"{d.name}\ninvalid\n".encode(),
+            b"../outside\n" + b"b" * 40,
+        ):
+            with self.subTest(invalid=invalid):
+                _ref_path(self.cache_path, self.ref_key).write_bytes(invalid)
+                self.assertIsNone(_find_cached_version(self.cache_path, self.base_prefix, self.ref_key))
 
     def test_excludes_temp_dirs(self):
-        temp = self.cache_path / f"{self.base_prefix}_deadbeef_p1234_t5678"
+        """Exclude temporary directories even when they contain ref metadata."""
+        temp = self.cache_path / f"{self.base_prefix}_{'a' * 40}_p1234_t5678"
         temp.mkdir()
-        result = _find_cached_version(self.cache_path, self.base_prefix)
+        _write_cached_ref(temp, self.ref_key, "b" * 40)
+        result = _find_cached_version(self.cache_path, self.base_prefix, self.ref_key)
         self.assertIsNone(result)
 
-    def test_picks_newest_mtime_when_multiple(self):
-        old = self.cache_path / f"{self.base_prefix}_aaaa1111"
-        new = self.cache_path / f"{self.base_prefix}_bbbb2222"
+    def test_tracks_current_version_with_equal_mtimes(self):
+        """Select the last published resolution even when filesystem timestamps tie."""
+        old = self.cache_path / f"{self.base_prefix}_{'a' * 40}"
+        new = self.cache_path / f"{self.base_prefix}_{'b' * 40}"
         old.mkdir()
         new.mkdir()
-        old_mtime = time.time() - 7200
-        os.utime(old, (old_mtime, old_mtime))
-        result = _find_cached_version(self.cache_path, self.base_prefix)
+        old, new = list(self.cache_path.iterdir())
+        tied_mtime = int(time.time())
+        for directory, commit in ((old, "c" * 40), (new, "d" * 40)):
+            _write_cached_ref(directory, self.ref_key, commit)
+            os.utime(_ref_path(self.cache_path, self.ref_key), (tied_mtime, tied_mtime))
+        other_key = _ref_key("http://example.git", "model", "other-branch")
+        _write_cached_ref(old, other_key, "c" * 40)
+        result = _find_cached_version(self.cache_path, self.base_prefix, self.ref_key)
         self.assertEqual(result, new)
+        self.assertEqual(_find_cached_version(self.cache_path, self.base_prefix, other_key), old)
+        self.assertIsNone(_read_cached_ref(old, self.ref_key))
+        self.assertEqual(_read_cached_ref(new, self.ref_key), "d" * 40)
+
+        # A later resolution can legitimately return to a previously cached version.
+        _write_cached_ref(old, self.ref_key, "c" * 40)
+        os.utime(_ref_path(self.cache_path, self.ref_key), (tied_mtime, tied_mtime))
+        self.assertEqual(_find_cached_version(self.cache_path, self.base_prefix, self.ref_key), old)
+        old.rmdir()
+        self.assertIsNone(_find_cached_version(self.cache_path, self.base_prefix, self.ref_key))
 
     def test_ignores_unrelated_dirs(self):
-        unrelated = self.cache_path / "other-repo_model_abc12345_deadbeef"
+        """Ignore directories belonging to a different repository prefix."""
+        unrelated = self.cache_path / f"other-repo_model_{'a' * 40}"
         unrelated.mkdir()
-        result = _find_cached_version(self.cache_path, self.base_prefix)
+        _write_cached_ref(unrelated, self.ref_key, "b" * 40)
+        result = _find_cached_version(self.cache_path, self.base_prefix, self.ref_key)
         self.assertIsNone(result)
 
 
@@ -601,32 +985,36 @@ class TestFindParentCache(unittest.TestCase):
     def tearDown(self):
         _safe_rmtree(self.base)
 
-    def test_finds_parent_with_sha_suffix(self):
-        """Parent cache with SHA suffix is found for subfolder request."""
-        parent_hash = hashlib.md5(b"http://example.git#unitree_g1#main").hexdigest()[:8]
-        parent_dir = self.cache_path / f"repo_unitree_g1_{parent_hash}_abcd1234"
+    def test_finds_parent_with_tree_hash(self):
+        """Find a parent containing the requested subfolder at the same ref."""
+        parent_key = _ref_key("http://example.git", "unitree_g1", "main")
+        base_prefix = _cache_prefix("http://example.git", "unitree_g1")
+        parent_dir = self.cache_path / f"{base_prefix}_{'a' * 40}"
         (parent_dir / "unitree_g1" / "usd").mkdir(parents=True)
-        (parent_dir / ".git").mkdir()
+        _write_cached_ref(parent_dir, parent_key, "b" * 40)
 
-        result = _find_parent_cache(self.cache_path, "repo", "unitree_g1/usd", "main", "http://example.git")
+        result = _find_parent_cache(self.cache_path, "unitree_g1/usd", "main", "http://example.git")
         self.assertIsNotNone(result)
-        parent, target = result
+        parent, target, key = result
         self.assertEqual(parent, parent_dir)
+        self.assertEqual(key, parent_key)
         self.assertTrue(target.exists())
+        self.assertIsNone(_find_parent_cache(self.cache_path, "unitree_g1/usd", "other-branch", "http://example.git"))
 
     def test_returns_none_when_subfolder_missing(self):
         """Returns None if parent exists but subfolder does not."""
-        parent_hash = hashlib.md5(b"http://example.git#unitree_g1#main").hexdigest()[:8]
-        parent_dir = self.cache_path / f"repo_unitree_g1_{parent_hash}_abcd1234"
+        parent_key = _ref_key("http://example.git", "unitree_g1", "main")
+        base_prefix = _cache_prefix("http://example.git", "unitree_g1")
+        parent_dir = self.cache_path / f"{base_prefix}_{'a' * 40}"
         parent_dir.mkdir(parents=True)
-        (parent_dir / ".git").mkdir()
+        _write_cached_ref(parent_dir, parent_key, "b" * 40)
 
-        result = _find_parent_cache(self.cache_path, "repo", "unitree_g1/usd", "main", "http://example.git")
+        result = _find_parent_cache(self.cache_path, "unitree_g1/usd", "main", "http://example.git")
         self.assertIsNone(result)
 
     def test_returns_none_for_single_path(self):
         """Single-segment paths have no parent to check."""
-        result = _find_parent_cache(self.cache_path, "repo", "unitree_g1", "main", "http://example.git")
+        result = _find_parent_cache(self.cache_path, "unitree_g1", "main", "http://example.git")
         self.assertIsNone(result)
 
 
@@ -682,48 +1070,6 @@ class TestGetLatestCommitViaGit(unittest.TestCase):
     def test_nonexistent_ref_returns_none(self):
         result = _get_latest_commit_via_git(self.remote_dir, "no-such-branch")
         self.assertIsNone(result)
-
-
-class TestCleanupOldVersions(unittest.TestCase):
-    def setUp(self):
-        self.base = tempfile.mkdtemp(prefix="nwtn_oldver_")
-        self.cache_path = Path(self.base)
-        self.base_prefix = "repo_asset_abc12345"
-
-    def tearDown(self):
-        _safe_rmtree(self.base)
-
-    def test_removes_old_version_dirs(self):
-        old = self.cache_path / f"{self.base_prefix}_aaaa1111"
-        current = self.cache_path / f"{self.base_prefix}_bbbb2222"
-        old.mkdir()
-        current.mkdir()
-
-        _cleanup_old_versions(self.cache_path, self.base_prefix, current)
-
-        self.assertFalse(old.exists())
-        self.assertTrue(current.exists())
-
-    def test_preserves_temp_dirs(self):
-        temp = self.cache_path / f"{self.base_prefix}_aaaa1111_p1234_t5678"
-        current = self.cache_path / f"{self.base_prefix}_bbbb2222"
-        temp.mkdir()
-        current.mkdir()
-
-        _cleanup_old_versions(self.cache_path, self.base_prefix, current)
-
-        self.assertTrue(temp.exists())
-        self.assertTrue(current.exists())
-
-    def test_ignores_unrelated_dirs(self):
-        unrelated = self.cache_path / "other_asset_xyz_aaaa1111"
-        current = self.cache_path / f"{self.base_prefix}_bbbb2222"
-        unrelated.mkdir()
-        current.mkdir()
-
-        _cleanup_old_versions(self.cache_path, self.base_prefix, current)
-
-        self.assertTrue(unrelated.exists())
 
 
 if __name__ == "__main__":

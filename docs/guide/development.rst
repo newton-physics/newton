@@ -226,6 +226,37 @@ To generate a coverage report:
 
 The file ``htmlcov/index.html`` can be opened with a web browser to view the coverage report.
 
+Optional dependencies in tests
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The test suite must pass when optional dependencies are not installed, for
+example on platforms without wheels for them; tests that need one skip
+instead. CI runs the suite with only the required dependencies installed. To
+run it without optional dependencies locally:
+
+.. code-block:: console
+
+    uv run --isolated --no-dev -m newton.tests
+
+In new tests, declare a requirement with the helpers in
+``newton.tests.unittest_utils``. Lint rejects ``importlib.util.find_spec``, and
+``except ImportError`` fallbacks, which some older tests still use, skip a
+broken install as if it were missing; the helpers fail the tests that need it
+instead:
+
+- ``@requires("scipy")`` on a test method, test function, or test class.
+  Decorate a class only when every test in it needs the module. Use
+  ``"pxr.Usd"`` for USD and ``*MUJOCO_MODULES`` for ``SolverMuJoCo``.
+- ``requires(*MUJOCO_MODULES)(lambda model: newton.solvers.SolverMuJoCo(...))``
+  for solver factories passed to ``add_function_test``, which skips only the
+  tests generated for that solver.
+- ``"requires": (...)`` in the ``test_options`` of an example test.
+- ``has_module(...)`` for other conditional logic.
+
+List every optional module a test needs, not only the first one it imports;
+a test with only one of two requirements declared fails on a platform that
+has the other.
+
 Code formatting and linting
 ---------------------------
 
@@ -672,6 +703,34 @@ Every example must implement ``test_final()``; it may additionally implement
 after the example completes. An example without a callable ``test_final()``
 raises ``NotImplementedError`` in CI.
 
+Embedded success criteria
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Keep each example's teaching description, success criteria, and run commands
+in its module docstring. Common criteria apply to every listed run; indent
+additional observations below the command they apply to:
+
+.. code-block:: python
+
+    """Demonstrate an example behavior.
+
+    Success criteria:
+    - The mechanism remains upright.
+
+    Runs:
+    - `python -m newton.examples my_example`
+    - `python -m newton.examples my_example --solver xpbd`
+      - The XPBD solver completes the same motion.
+    """
+
+``python -m newton.examples --describe <example_name>`` prints the docstring
+without importing or executing the example. Validate descriptions, commands,
+and declared option names with
+``uv run --extra dev -m newton.tests -k test_example_spec``.
+
+Shared visual QA procedures live in ``.agents/skills/example-testing/``;
+these human criteria do not imply equivalent automated assertions.
+
 Discovery and registration
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -816,10 +875,9 @@ Simulation benchmark metrics
 
 The nightly robot and policy simulation benchmarks publish several metrics from one cached benchmark run. This
 includes the batched MuJoCo and Kamino KPI workloads, the non-policy DR Legs workload, the pretrained Anymal
-workload, and the XPBD quadruped workload. Companion ``FastMetrics*`` classes reuse the exact factories, scenes,
-solvers, and frame counts of existing aggregate benchmarks. Rendering, IK, inverse dynamics, CPU-backend
-regression, material/contact microbenchmarks, and startup benchmarks are not experience-collection workloads and
-are outside this metric set.
+workload, and the XPBD quadruped workload. Rendering, IK, inverse dynamics, CPU-backend regression,
+material/contact microbenchmarks, and startup benchmarks are not experience-collection workloads and are outside
+this metric set.
 
 Let ``F`` be the number of measured frames across all samples, ``S`` the number of physics substeps per frame,
 ``W`` the world count, ``dt`` the physics timestep in seconds, ``T`` the synchronized complete-step wall time in
@@ -833,12 +891,11 @@ seconds, and ``T_physics`` the workload's synchronized internal physics time. Th
 * steady-state GPU memory in ``MiB``; and
 * mean and maximum MuJoCo solver iteration counts across worlds at the final frame of each measured sample.
 
-The existing KPI mean world-step series keeps its ``track_simulate`` name and definition, and existing
-``time_simulate`` aggregate series remain unchanged. ``world_count`` remains an ASV parameter where applicable,
-while ``sim_dt`` and ``sim_substeps`` are also recorded as tracked values so dashboard results retain the
-configuration needed to interpret throughput and real-time factor. The existing KPI mean series continues to use
-each workload's internal physics timer. Throughput, real-time factor, and p95 metrics time and synchronize the
-complete ``step()`` operation, including any policy or control work it performs.
+The existing KPI mean world-step series keeps its ``track_simulate`` name and definition. ``world_count`` remains
+an ASV parameter where applicable, while ``sim_dt`` and ``sim_substeps`` are also recorded as tracked values so
+dashboard results retain the configuration needed to interpret throughput and real-time factor. The existing KPI
+mean series continues to use each workload's internal physics timer. Throughput, real-time factor, and p95 metrics
+time and synchronize the complete ``step()`` operation, including any policy or control work it performs.
 
 GPU memory is the decrease in ``Device.free_memory`` between a baseline immediately before the first finalized
 workload is created and a measurement after initialization, CUDA graph capture, and the first complete measured

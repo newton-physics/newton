@@ -11,8 +11,8 @@ Native routed-tendon USD authoring and MuJoCo lowering below are design sketches
 not implemented APIs. Existing MuJoCo-provider tendon import is supported separately.
 ```
 
-Newton's tendon model represents a massless cable routed through points on
-rigid bodies. It complements Newton's rod-based cable model: rods discretize
+Newton's tendon model represents a massless cable routed through guides attached
+to rigid bodies or the world. It complements Newton's rod-based cable model: rods discretize
 the cable itself into massive bodies, while a tendon stores only its route and
 applies forces to the bodies along that route.
 
@@ -26,14 +26,20 @@ routing state.
 
 Pass a complete ordered list of {class}`~newton.TendonGuide` entries to
 {meth}`~newton.ModelBuilder.add_tendon`. A guide describes the cable's interaction
-with a body; it is not an articulation link. Every guide after the first owns
+with a body or the world; it is not an articulation link. Every guide after the first owns
 the incoming straight segment, so its `compliance`, `damping`, and `rest_length`
 describe that segment. The first guide has no incoming segment: non-default
 values there are rejected. For a linear span, compliance is `1 / stiffness`
 (m/N versus N/m); zero compliance requests an inextensible XPBD constraint.
 
 The builder validates the entire route before changing any tendon arrays.
-At least two guides are required, all attached to bodies in the same world.
+At least two guides are required, all belonging to the same simulation world.
+Use `TendonGuide(body=-1, ...)` for a world-attached anchor, pinhole, or roller.
+Its offset and axis are world-space coordinates, and it belongs to the builder's
+current world. Body-attached guides retain body-local offsets and axes.
+When using `add_world` or `replicate`, author world-attached routes in the source
+builder. Adding them afterward does not infer ownership from a copied body's
+world: outside a world context, new world-attached guides belong to world `-1`.
 Routes are open and do not implicitly form loops. Internal anchors are allowed;
 they prevent material transfer between their incoming and outgoing spans.
 
@@ -42,15 +48,13 @@ import newton
 
 builder = newton.ModelBuilder()
 
-anchor_body = builder.add_body(mass=0.0)
-guide_body = builder.add_body(mass=0.0)
 payload_body = builder.add_body(mass=1.0)
 
 tendon = builder.add_tendon(
     [
-        newton.TendonGuide(body=anchor_body, offset=(-1.0, 0.0, 0.0)),
+        newton.TendonGuide(body=-1, offset=(-1.0, 0.0, 0.0)),
         newton.TendonGuide(
-            body=guide_body,
+            body=-1,
             guide_type=newton.TendonGuideType.PINHOLE,
             offset=(0.0, 0.0, 1.0),
             mu=0.1,
@@ -80,7 +84,9 @@ than its guide range.
 
 `add_builder`, `add_world`, and `replicate` copy guide and segment data and remap
 body indices. Local offsets and axes follow the copied body transforms;
-fixed-joint collapse transforms them into the retained body's frame.
+fixed-joint collapse transforms them into the retained body's frame, or world
+space when the body is merged into the world. Placement transforms apply directly
+to world-attached guides when composing or replicating builders.
 
 ## Guide types
 
@@ -110,6 +116,11 @@ step. `orientation` determines which signed side of the neighboring bypass
 span engages the roller. `tendon_activation_tol` on the solver adds a
 radius-relative activation gap to prevent state chattering near tangency.
 
+A candidate can cross zero wrap during a step before the next routing update
+bypasses it. Material bookkeeping uses signed wrap arcs during this transition
+so that splitting and merging spans does not create or remove cable material.
+This does not make negative wraps a supported persistent route.
+
 Dynamic routing currently supports isolated rolling candidates only.
 Consecutive dynamic roller guides, endpoint candidates, and route reordering
 are not supported.
@@ -119,9 +130,16 @@ are not supported.
 Both tendon-capable solvers expose these controls:
 
 - `tendon_max_sweeps`: maximum capstan material-relaxation sweeps per solver
-  iteration.
-- `tendon_settle_tol`: relative tension-change tolerance for stopping those
-  sweeps early.
+  iteration (default `256`). It accepts positive 32-bit integers; long routes
+  may require a larger budget.
+- `tendon_settle_tol`: relative final capstan-force residual tolerance for
+  stopping sweeps early. Zero disables early-out, including the absolute tolerance.
+- `tendon_settle_atol`: absolute final capstan-force residual tolerance in
+  newtons (default `1.0e-6`). Each guide must satisfy
+  `error <= atol + tol * max(T_left, T_right)`. Slipping guides must reach
+  the appropriate friction boundary; sticking guides must stay inside it.
+  At a span's minimum rest length, only feasible transfer directions are checked;
+  a depleted span cannot supply more material, but it can receive material again.
 - `tendon_activation_tol`: radius-relative activation gap for dynamic
   rollers. The default is `2.0e-3`.
 
@@ -130,9 +148,20 @@ the same routed material state as body force and positive-semidefinite local
 Hessian contributions. VBD approximates zero segment compliance with
 `1.0e-8 m/N`.
 
-XPBD applies `joint_linear_relaxation` to tendon stretch and rolling-slip
-corrections. As with other parallel XPBD constraints, the value may need
-adjustment for strongly coupled routes.
+Material sweeps first apply the roller's no-slip displacement, then project
+the adjacent span tensions into the capstan bounds. Each guide reprojects
+its net transfer, allowing later sweeps to undo excessive slip caused by
+earlier neighbor updates. A taut cable can stick inside the bounds; an
+unloaded cable does not gain grip solely from a high friction coefficient.
+Driven rollers therefore need cable loading or pre-tension to transmit
+torque. For pre-tension, set incoming-span `rest_length` values shorter than
+their initial free-span lengths; automatic rest lengths (`-1`) do not add
+pre-tension.
+
+XPBD applies `joint_linear_relaxation` to tendon stretch corrections.
+Rolling slip bounds the accumulated spin reaction and applies its change,
+including retraction when tension falls. As with other parallel XPBD
+constraints, relaxation may need adjustment for strongly coupled routes.
 
 ### Reading tension (experimental diagnostics)
 
@@ -234,12 +263,29 @@ and reject unsupported semantics rather than silently discard them.
 - Segment compliance applies to the straight free spans. Wrapped arc length is
   included in material transport but is not independently stretchable.
 - Free-span rest lengths are limited to at least `1.0e-6 m` during material
-  transfer and dynamic-route transitions.
+  transfer and dynamic-route transitions. If enforcing this floor adds material
+  beyond float32 roundoff at the accepted pose, XPBD and VBD emit an `ERROR`
+  diagnostic identifying the tendon and added length. This can happen when
+  growing wrapped arcs exhaust the available material, or material transfers
+  have not converged. The diagnostic also runs during CUDA graph replay, without
+  host synchronization. It does not stop the simulation or repair the material
+  budget; reported rest lengths and tensions are invalid after this error.
 - Fixed roller wraps must remain in `[0, pi]`. Zero wrap is a valid tangent
   boundary; crossing below zero or beyond pi is unsupported and emits a
   diagnostic from the accepted pose. The diagnostic does not repair the route.
 - Dynamic candidates cannot change their authored order or attach between
   non-neighboring guides.
+- Circular neighbors with parallel axes use an exact common tangent, including
+  when their centers are axially offset. Overlapping circles
+  can have a valid external tangent; an internal tangent requires their center
+  distance projected into the roller plane to exceed the sum of their radii.
+  A dynamic guide with a missing or collapsed initial bypass starts inactive.
+  Later undefined bypasses preserve its previous active state. Tilted-axis bypass
+  tangents use an iterative solve; if it does not converge within the geometric and float32
+  precision tolerance, routing emits a diagnostic, keeps the previous active
+  state, and retries at the next substep. An impossible accepted roller span
+  emits a diagnostic; preserving its previous attachment points does not make
+  that geometry physically valid.
 - Native tendon data is not imported from USD/MuJoCo.
 - Tendon actuation is not part of {class}`~newton.Control`, and tendon
   diagnostics are solver-owned rather than part of {class}`~newton.State`.

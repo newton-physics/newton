@@ -256,8 +256,10 @@ class Mesh:
         self.maxhullvert = maxhullvert
         self._cached_hash = None
         self._cached_render_attribute_hash = None
+        self._local_bounds: tuple[np.ndarray, np.ndarray] | None = None
         self._texture_hash = None
         self._edges = None
+        self._canonical_ids = None
         self._collision_edges: np.ndarray | None = None
         self._is_watertight: bool | None = None
         self.sdf = sdf
@@ -418,19 +420,25 @@ class Mesh:
         compute_uvs: bool = True,
         compute_inertia: bool = True,
     ) -> "Mesh":
-        """Create a capsule mesh.
+        """Create a capsule mesh with shared equators and pole vertices.
+
+        Positive-radius meshes are watertight. A zero radius produces degenerate
+        geometry for compatibility with zero-size shapes.
 
         Args:
-            radius [m]: Radius of the capsule hemispheres and cylindrical body.
-            half_height [m]: Half-height of the cylindrical section.
+            radius [m]: Nonnegative radius of the capsule hemispheres and cylindrical body.
+            half_height [m]: Nonnegative half-height of the cylindrical section. Zero creates a sphere.
             up_axis: Long axis as a ``newton.Axis`` value.
-            segments: Tessellation resolution for both caps and body.
+            segments: Tessellation resolution for both caps and body, at least 3.
             compute_normals: If ``True``, generate per-vertex normals.
             compute_uvs: If ``True``, generate per-vertex UV coordinates.
             compute_inertia: If ``True``, compute mesh mass properties.
 
         Returns:
             A capsule mesh.
+
+        Raises:
+            ValueError: If the dimensions, segment count, or up axis are invalid.
         """
         from ..utils.mesh import create_mesh_capsule  # noqa: PLC0415
 
@@ -1185,10 +1193,19 @@ class Mesh:
         """
         self._cached_hash = None
         self._cached_render_attribute_hash = None
+        self._local_bounds = None
         self._edges = None
+        self._canonical_ids = None
         self._collision_edges = None
         self._is_watertight = None
         self._finalized_meshes = {}
+
+    def _get_local_bounds(self) -> tuple[np.ndarray, np.ndarray]:
+        """Return the cached lower and upper corners [m] of the vertex AABB, as float64 arrays."""
+        if self._local_bounds is None:
+            vertices = np.asarray(self._vertices, dtype=np.float64)
+            self._local_bounds = (vertices.min(axis=0), vertices.max(axis=0))
+        return self._local_bounds
 
     @property
     def vertices(self):
@@ -1216,11 +1233,22 @@ class Mesh:
         """Per-vertex canonical IDs that fold geometrically coincident vertices
         together. Vertex positions are quantized to the nearest 1e-7 m bucket
         before hashing, so vertices closer than 100 nm collapse to one id."""
-        q = np.round(self._vertices * 1e7).astype(np.int64)
-        q_contig = np.ascontiguousarray(q)
-        void_verts = q_contig.view(np.dtype((np.void, q_contig.dtype.itemsize * q_contig.shape[1])))
-        _, canonical = np.unique(void_verts, return_inverse=True)
-        return canonical.ravel()
+        if self._canonical_ids is None:
+            q = np.round(self._vertices * 1e7).astype(np.int64)
+            q_contig = np.ascontiguousarray(q)
+            void_verts = q_contig.view(np.dtype((np.void, q_contig.dtype.itemsize * q_contig.shape[1])))
+            _, canonical = np.unique(void_verts, return_inverse=True)
+            self._canonical_ids = canonical.ravel()
+        return self._canonical_ids
+
+    @staticmethod
+    def _edge_keys(lo: np.ndarray, hi: np.ndarray, count: int) -> np.ndarray:
+        """Pack (min, max) canonical vertex id pairs into one int64 key per edge.
+
+        Sorting a 1-D int64 array is several times faster than sorting the
+        equivalent 16-byte void view, and keeps the same ordering.
+        """
+        return lo.astype(np.int64) * np.int64(max(count, 1)) + hi.astype(np.int64)
 
     @property
     def edges(self) -> np.ndarray:
@@ -1246,10 +1274,9 @@ class Mesh:
                 canon_edges[k::3, 1] = np.maximum(ca, cb)
                 orig_edges[k::3, 0] = tris[:, a]
                 orig_edges[k::3, 1] = tris[:, b]
-            # Deduplicate via void view (fast 1-D unique)
-            canon_edges = np.ascontiguousarray(canon_edges)
-            void_edges = canon_edges.view(np.dtype((np.void, canon_edges.dtype.itemsize * 2)))
-            _, first_idx = np.unique(void_edges, return_index=True)
+            # Deduplicate on packed int64 keys (fast 1-D unique)
+            keys = self._edge_keys(canon_edges[:, 0], canon_edges[:, 1], int(canonical.max()) + 1)
+            _, first_idx = np.unique(keys, return_index=True)
             first_idx.sort()
             self._edges = orig_edges[first_idx]
         return self._edges
@@ -1532,9 +1559,8 @@ class Mesh:
             for k, (a, b) in enumerate(((0, 1), (1, 2), (0, 2))):
                 pairs[k::3, 0] = np.minimum(c[:, a], c[:, b])
                 pairs[k::3, 1] = np.maximum(c[:, a], c[:, b])
-            pairs_contig = np.ascontiguousarray(pairs)
-            void_edges = pairs_contig.view(np.dtype((np.void, pairs_contig.dtype.itemsize * 2)))
-            _, counts = np.unique(void_edges, return_counts=True)
+            keys = self._edge_keys(pairs[:, 0], pairs[:, 1], int(c.max()) + 1)
+            _, counts = np.unique(keys, return_counts=True)
             self._is_watertight = bool(np.all(counts == 2))
         return self._is_watertight
 
@@ -2611,9 +2637,7 @@ class Gaussian:
                 (default: :attr:`SortingMode.RAY_HIT_DISTANCE`).
             sh_color_space: Color space of evaluated SH radiance. Defaults to
                 sRGB (display-encoded); pass :attr:`~newton.utils.ColorSpace.LINEAR`
-                for scene-linear radiance. Only :class:`~newton.sensors.SensorCamera`
-                honors this; the deprecated :class:`~newton.sensors.SensorTiledCamera`
-                ignores it.
+                for scene-linear radiance.
         """
 
         self._positions = np.ascontiguousarray(np.asarray(positions, dtype=np.float32).reshape(-1, 3))
@@ -2784,7 +2808,7 @@ class Gaussian:
             Gaussian.Data struct containing the Warp arrays.
         """
 
-        from ..sensors.sensor_camera_render.gaussians import compute_gaussian_bvh_bounds  # noqa: PLC0415
+        from ..render.gaussians import compute_gaussian_bvh_bounds  # noqa: PLC0415
 
         with wp.ScopedDevice(device):
             warp_data = Gaussian.Data()
@@ -2825,7 +2849,7 @@ class Gaussian:
         Raises:
             RuntimeError: If :meth:`finalize` has not been called yet.
         """
-        from ..sensors.warp_raytrace.gaussians import compute_gaussian_bvh_bounds  # noqa: PLC0415
+        from ..render.gaussians import compute_gaussian_bvh_bounds  # noqa: PLC0415
 
         if self._warp_bvh is None or self._warp_data is None:
             raise RuntimeError("Gaussian.bvh_refit() requires Gaussian.finalize() to have been called first.")
@@ -2850,7 +2874,7 @@ class Gaussian:
         (``scale_0..2``, stored as log-scale), opacities (logit-space),
         and SH coefficients (``f_dc_*``, ``f_rest_*``). Converts log-scale
         and logit-opacity to linear values. SH radiance is treated as sRGB
-        unless ``sh_color_space`` says otherwise. Requires Open3D 0.20 or newer.
+        unless ``sh_color_space`` says otherwise.
 
         Args:
             filename: Path to a ``.ply`` file in standard 3DGS format.
@@ -2862,46 +2886,35 @@ class Gaussian:
         Returns:
             A new :class:`Gaussian` instance.
         """
-        import open3d as o3d
+        from .utils import _read_ply_vertices  # noqa: PLC0415
 
-        if tuple(int(part) for part in o3d.__version__.split(".")[:2]) < (0, 20):
-            raise ImportError(f"Gaussian.create_from_ply requires open3d>=0.20, found {o3d.__version__}")
+        attrs = _read_ply_vertices(filename)
 
-        pcd = o3d.t.io.read_point_cloud(filename)
-        point_attrs = {name: np.asarray(tensor.numpy(), dtype=np.float32) for name, tensor in pcd.point.items()}
+        def columns(prefix: str) -> np.ndarray | None:
+            names = sorted((n for n in attrs if n.startswith(prefix)), key=lambda n: int(n[len(prefix) :]))
+            return np.stack([attrs[n] for n in names], axis=1).astype(np.float32) if names else None
 
-        positions = point_attrs.get("positions")
-        if positions is None:
-            raise ValueError("PLY Gaussian point cloud is missing required 'positions' attribute")
-        positions = np.ascontiguousarray(positions.reshape(-1, 3))
-        count = positions.shape[0]
+        if not all(axis in attrs for axis in "xyz"):
+            raise ValueError(f"PLY file '{filename}' has no vertex positions.")
+        positions = np.stack([attrs[axis] for axis in "xyz"], axis=1).astype(np.float32)
 
-        rotations = None
-        if "rot" in point_attrs:
-            # Open3D stores quaternions as wxyz.
-            rotations = np.ascontiguousarray(point_attrs["rot"].reshape(count, 4)[:, [1, 2, 3, 0]])
+        rotations = columns("rot_")
+        if rotations is not None:
+            rotations = rotations[:, [1, 2, 3, 0]]  # stored as wxyz
             rotations /= np.maximum(np.linalg.norm(rotations, axis=1, keepdims=True), 1e-12)
 
-        scales = None
-        if "scale" in point_attrs:
-            scales = point_attrs["scale"].reshape(count, 3)
-            # Open3D converts scales to linear only when all 3DGS attributes are present.
-            if not all(name in point_attrs for name in ("opacity", "rot", "f_dc")):
-                scales = np.exp(scales)
-            scales = np.ascontiguousarray(scales)
+        scales = columns("scale_")
+        if scales is not None:
+            scales = np.exp(scales)
 
         opacities = None
-        if "opacity" in point_attrs:
-            opacities = 1.0 / (1.0 + np.exp(-point_attrs["opacity"].reshape(-1)))
+        if "opacity" in attrs:
+            opacities = 1.0 / (1.0 + np.exp(-attrs["opacity"].astype(np.float32)))
 
-        sh_coeffs = None
-        if "f_dc" in point_attrs:
-            sh_coeffs = point_attrs["f_dc"].reshape(count, 3)
-            if "f_rest" in point_attrs:
-                # Open3D stores f_rest basis-major (N, K, 3); restore the file's channel-major order.
-                sh_rest = point_attrs["f_rest"].reshape(count, -1, 3).transpose(0, 2, 1).reshape(count, -1)
-                sh_coeffs = np.concatenate([sh_coeffs, sh_rest], axis=1)
-            sh_coeffs = np.ascontiguousarray(sh_coeffs)
+        sh_coeffs = columns("f_dc_")
+        sh_rest = columns("f_rest_")
+        if sh_coeffs is not None and sh_rest is not None:
+            sh_coeffs = np.concatenate([sh_coeffs, sh_rest], axis=1)
 
         return Gaussian(
             positions=positions,
@@ -2918,7 +2931,8 @@ class Gaussian:
         """Load Gaussian splat data from a USD prim.
 
         Reads positions from attributes: `positions`, `orientations`, `scales`, `opacities` and `radiance:sphericalHarmonicsCoefficients`.
-        The (possibly inherited) USD color space of the SH radiance selects :attr:`sh_color_space`:
+        The USD color space of the SH coefficient attribute that is read (the single-precision attribute,
+        or the half-precision one when only that has a value) selects :attr:`sh_color_space`:
         untagged, ``srgb_rec709_scene`` and ``srgb_rec709_display`` radiance is :attr:`~newton.utils.ColorSpace.SRGB`, and
         ``lin_rec709_scene`` and other Rec.709 linear names are :attr:`~newton.utils.ColorSpace.LINEAR`.
         Other color spaces are imported without conversion and a warning is logged; see the

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import logging
 from enum import IntEnum
 from typing import TYPE_CHECKING
 
@@ -16,7 +17,6 @@ from .....sim import JointTargetMode
 from .....sim.model import Model
 from .....sim.shape_contact_pairs import _shape_contact_pair_override, _shape_contact_pair_topology
 from ....coupled.model_view import ModelView
-from ..utils import logger as msg
 from .bodies import (
     RigidBodiesModel,
     convert_body_origin_to_com,
@@ -35,6 +35,7 @@ from .joints import (
     has_dynamic_cts_wp,
     has_effort_cts_wp,
     has_friction_cts_wp,
+    has_rod_dynamic_cts_wp,
 )
 from .materials import MaterialDescriptor, MaterialManager
 from .shapes import max_contacts_for_shape_pair
@@ -43,6 +44,8 @@ from .types import mat63f, to_warp_int32_array, vec6f
 
 if TYPE_CHECKING:
     from ..core.model import ModelKamino, ModelKaminoInfo
+
+logger = logging.getLogger(__name__)
 
 ###
 # Module interface
@@ -80,6 +83,7 @@ class StructuralUpdateViolation(IntEnum):
     IMMOVABILITY_FLIP = 6
     FRICTION_CTS = 7
     EFFORT_CTS = 8
+    CARTESIAN_HANDEDNESS = 9
 
 
 ###
@@ -93,19 +97,24 @@ def compute_body_immovability_kernel(
     newton_body_inv_mass: wp.array[wp.float32],
     newton_body_inv_inertia: wp.array[wp.mat33f],
     newton_body_flags: wp.array[wp.int32],
+    kinematic_only_immovable: wp.bool,
     # Outputs:
     kamino_body_is_immovable: wp.array[wp.int32],
 ):
     """Bake Kamino's per-body immovability decision from Newton's arrays.
 
     A body is immovable if it is physically massless (zero inverse mass and
-    zero inverse inertia) or flagged KINEMATIC / PROXY. The result is written
-    once at build and kept constant for the solver's lifetime; runtime flips
-    are rejected via ``StructuralUpdateViolation.IMMOVABILITY_FLIP``.
+    zero inverse inertia) or flagged KINEMATIC. Dynamics solvers that
+    simulate massless bodies only treat KINEMATIC bodies as immovable. The
+    result is written once at build and kept constant for the solver's lifetime;
+    runtime flips are rejected via ``StructuralUpdateViolation.IMMOVABILITY_FLIP``.
     """
     body_id = wp.tid()
     if is_immovable_for_kamino(
-        newton_body_inv_mass[body_id], newton_body_inv_inertia[body_id], newton_body_flags[body_id]
+        newton_body_inv_mass[body_id],
+        newton_body_inv_inertia[body_id],
+        newton_body_flags[body_id],
+        kinematic_only_immovable,
     ):
         kamino_body_is_immovable[body_id] = 1
     else:
@@ -139,7 +148,7 @@ def refresh_masked_body_inertia(
     kamino_body_is_immovable: wp.array[wp.int32],
     kamino_body_inv_mass: wp.array[wp.float32],
     kamino_body_inv_inertia: wp.array[wp.mat33f],
-    device: wp.context.Device | str,
+    device: wp.Device | str,
 ) -> None:
     """Refresh Kamino's masked inverse mass / inertia copies from Newton's.
 
@@ -213,6 +222,7 @@ def material_first_shape_kernel(
 @wp.kernel
 def validate_material_update_kernel(
     shape_friction: wp.array[wp.float32],
+    shape_static_friction: wp.array[wp.float32],
     shape_restitution: wp.array[wp.float32],
     geom_material: wp.array[wp.int32],
     first_shape: wp.array[wp.int32],
@@ -226,6 +236,7 @@ def validate_material_update_kernel(
     representative = first_shape[material]
     if (
         shape_friction[shape] != shape_friction[representative]
+        or shape_static_friction[shape] != shape_static_friction[representative]
         or shape_restitution[shape] != shape_restitution[representative]
     ):
         wp.atomic_min(conflict_material, 0, material)
@@ -235,6 +246,7 @@ def validate_material_update_kernel(
 def update_materials_kernel(
     # Inputs:
     shape_friction: wp.array[wp.float32],
+    shape_static_friction: wp.array[wp.float32],
     shape_restitution: wp.array[wp.float32],
     first_shape: wp.array[wp.int32],
     shape_count: int,
@@ -254,12 +266,13 @@ def update_materials_kernel(
     shape = first_shape[material]
     if shape < shape_count:
         friction = shape_friction[shape]
+        friction_static = shape_static_friction[shape]
         restitution[material] = shape_restitution[shape]
-        static_friction[material] = friction
+        static_friction[material] = friction_static
         dynamic_friction[material] = friction
         if material == 0:
             pair_restitution[0] = shape_restitution[shape]
-            pair_static_friction[0] = friction
+            pair_static_friction[0] = friction_static
             pair_dynamic_friction[0] = friction
 
 
@@ -314,6 +327,8 @@ def validate_joint_dof_updates_kernel(
                 joint_armature[dof],
                 joint_damping[dof],
             )
+            if joint_dof_type[tid] == JointDoFType.ROD:
+                dynamic_required = has_rod_dynamic_cts_wp(joint_target_ke[dof], joint_target_kd[dof])
             dynamic_built = dynamic_row < dynamic_row_end and dynamic_cts_axis[dynamic_row] == axis
             if dynamic_required != dynamic_built:
                 wp.atomic_min(violations, StructuralUpdateViolation.DYNAMIC_CTS, tid)
@@ -376,12 +391,13 @@ def validate_joint_axes_kernel(
     # Outputs:
     violations: wp.array[wp.int32],
 ):
-    """Find the first universal or gimbal joint with invalid axis configuration."""
+    """Find the first universal, gimbal, or Cartesian joint with invalid axis configuration."""
     joint = wp.tid()
     dof_type = joint_dof_type[joint]
     is_universal = dof_type == JointDoFType.UNIVERSAL
     is_gimbal = dof_type == JointDoFType.GIMBAL or dof_type == JointDoFType.GIMBAL_LEFT_HANDED
-    if not is_universal and not is_gimbal:
+    is_cartesian = dof_type == JointDoFType.CARTESIAN
+    if not is_universal and not is_gimbal and not is_cartesian:
         return
 
     dof_start = joint_qd_start[joint]
@@ -398,7 +414,7 @@ def validate_joint_axes_kernel(
         and wp.abs(wp.dot(axis_1, axis_1) - 1.0) <= 1.0e-6
         and wp.abs(wp.dot(axis_0, axis_1)) <= 1.0e-6
     )
-    if is_gimbal:
+    if is_gimbal or is_cartesian:
         axis_2 = joint_axis[dof_start + 2]
         valid = (
             valid
@@ -411,8 +427,12 @@ def validate_joint_axes_kernel(
         )
         if valid:
             left_handed = wp.dot(wp.cross(axis_0, axis_1), axis_2) < 0.0
-            expected_left_handed = dof_type == JointDoFType.GIMBAL_LEFT_HANDED
-            if left_handed != expected_left_handed:
+            if is_cartesian:
+                # The Cartesian joint frame is built from the three axes, so they must form a rotation.
+                if left_handed:
+                    wp.atomic_min(violations, StructuralUpdateViolation.CARTESIAN_HANDEDNESS, joint)
+                    return
+            elif left_handed != (dof_type == JointDoFType.GIMBAL_LEFT_HANDED):
                 wp.atomic_min(violations, StructuralUpdateViolation.GIMBAL_HANDEDNESS, joint)
                 return
     if not valid:
@@ -426,6 +446,7 @@ def validate_body_immovability_updates_kernel(
     body_inv_inertia: wp.array[wp.mat33f],
     body_flags: wp.array[wp.int32],
     built_is_immovable: wp.array[wp.int32],
+    kinematic_only_immovable: wp.bool,
     # Outputs:
     violations: wp.array[wp.int32],
 ):
@@ -435,12 +456,14 @@ def validate_body_immovability_updates_kernel(
     ``is_immovable_for_kamino``): joint culling, contact culling, and the
     masking of ``inv_m_i`` / ``inv_i_I_i`` all key on the cached
     ``bodies.is_immovable`` snapshot. Flipping it at runtime, either by making
-    a body massless (or restoring its mass) or by toggling its KINEMATIC/PROXY
+    a body massless (or restoring its mass) or by toggling its KINEMATIC
     flag, would silently corrupt those layouts. We surface it as a single
     structural-update violation.
     """
     body = wp.tid()
-    current_immovable = is_immovable_for_kamino(body_inv_mass[body], body_inv_inertia[body], body_flags[body])
+    current_immovable = is_immovable_for_kamino(
+        body_inv_mass[body], body_inv_inertia[body], body_flags[body], kinematic_only_immovable
+    )
     if current_immovable != (built_is_immovable[body] != 0):
         wp.atomic_min(violations, StructuralUpdateViolation.IMMOVABILITY_FLIP, body)
 
@@ -511,8 +534,6 @@ def rigid_bodies_indexing_kernel(
 @wp.kernel
 def joint_conversion_kernel(
     # Inputs:
-    model_joint_world: wp.array[wp.int32],
-    model_joint_world_start: wp.array[wp.int32],
     model_joint_parent: wp.array[wp.int32],
     model_joint_child: wp.array[wp.int32],
     model_joint_type: wp.array[wp.int32],
@@ -531,7 +552,6 @@ def joint_conversion_kernel(
     joint_limit_upper: wp.array[wp.float32],
     body_is_immovable: wp.array[wp.int32],
     # Outputs:
-    joint_jid: wp.array[wp.int32],
     joint_dof_type: wp.array[wp.int32],
     joint_act_type: wp.array[wp.int32],
     joint_dof_act_types: wp.array[wp.int32],
@@ -547,9 +567,6 @@ def joint_conversion_kernel(
 ):
     # Retrieve the joint index
     joint_id = wp.tid()
-
-    world_id = model_joint_world[joint_id]
-    joint_jid[joint_id] = joint_id - model_joint_world_start[world_id]
 
     # Determine Kamino joint type
     type_j = model_joint_type[joint_id]
@@ -604,6 +621,8 @@ def joint_conversion_kernel(
             model_joint_armature[dof],
             model_joint_damping[dof],
         )
+        if dof_type_j == JointDoFType.ROD:
+            dynamic = has_rod_dynamic_cts_wp(model_joint_target_ke[dof], model_joint_target_kd[dof])
         friction = has_friction_cts_wp(dof_type_j, model_joint_friction[dof])
         if dynamic:
             num_dynamic_cts_j += 1
@@ -620,7 +639,7 @@ def joint_conversion_kernel(
     joint_act_type[joint_id] = act_type_j
 
     # A joint between two bodies that Kamino treats as immovable (both massless
-    # and/or flagged KINEMATIC/PROXY) contributes only structurally singular
+    # and/or flagged KINEMATIC) contributes only structurally singular
     # Delassus rows that cannot affect any body's motion, so we cull all its
     # constraint rows regardless of joint-DoF regularization (armature, damping,
     # implicit PD). The joint entry is preserved with zero counts so joint
@@ -934,6 +953,8 @@ def pack_joint_constraint_axes_kernel(
             model_joint_armature[dof],
             model_joint_damping[dof],
         )
+        if dof_type == JointDoFType.ROD:
+            dynamic = has_rod_dynamic_cts_wp(model_joint_target_ke[dof], model_joint_target_kd[dof])
         friction = has_friction_cts_wp(dof_type, model_joint_friction[dof])
         effort = has_effort_cts_wp(
             act_type,
@@ -1102,6 +1123,7 @@ def validate_model_structural_updates(
     check_actuation: bool,
     check_axes: bool,
     check_body_immovability: bool,
+    kinematic_only_immovable: bool = False,
 ) -> int:
     """Validate that runtime edits preserve Kamino's structural layout.
 
@@ -1112,11 +1134,12 @@ def validate_model_structural_updates(
     - :attr:`StructuralUpdateViolation.LIMIT_FINITE`: finite-limit state changed
     - :attr:`StructuralUpdateViolation.ACTUATION_PARTITION`: passive/actuated partition changed
     - :attr:`StructuralUpdateViolation.INVALID_TARGET_MODE`: unsupported target-mode combination
-    - :attr:`StructuralUpdateViolation.NONORTHONORMAL_AXES`: nonorthonormal universal/gimbal axes
+    - :attr:`StructuralUpdateViolation.NONORTHONORMAL_AXES`: nonorthonormal universal/Cartesian/gimbal axes
     - :attr:`StructuralUpdateViolation.GIMBAL_HANDEDNESS`: gimbal axis handedness changed
     - :attr:`StructuralUpdateViolation.IMMOVABILITY_FLIP`: a body's Kamino immovability status changed
     - :attr:`StructuralUpdateViolation.FRICTION_CTS`: joint friction constraint topology changed
     - :attr:`StructuralUpdateViolation.EFFORT_CTS`: effort-row topology changed
+    - :attr:`StructuralUpdateViolation.CARTESIAN_HANDEDNESS`: left-handed Cartesian axes
 
     An entry equal to the maximum of the body, joint, and DoF counts indicates that no
     violation of that type was found.
@@ -1132,7 +1155,9 @@ def validate_model_structural_updates(
         check_actuation: Whether to check the actuation updates.
         check_axes: Whether to check universal and gimbal axes.
         check_body_immovability: Whether to check that no body's immovability
-            status changed (via mass, inertia, or KINEMATIC/PROXY flag flip).
+            status changed (via mass, inertia, or KINEMATIC flag flip).
+        kinematic_only_immovable: Whether only KINEMATIC bodies were built as immovable,
+            see :func:`convert_rigid_bodies`.
 
     Returns:
         The sentinel value indicating no violations.
@@ -1208,6 +1233,7 @@ def validate_model_structural_updates(
                 model.body_inv_inertia,
                 model.body_flags,
                 built_is_immovable,
+                kinematic_only_immovable,
                 # Outputs:
                 violations,
             ],
@@ -1252,7 +1278,7 @@ def _validate_joint_axes(
     joint_dof_type: wp.array[wp.int32],
     violations: wp.array[wp.int32],
 ) -> None:
-    """Validate universal and gimbal axes before Warp frame conversion."""
+    """Validate universal, gimbal, and Cartesian axes before Warp frame conversion."""
     violations.fill_(model.joint_count)
     if model.joint_count > 0:
         wp.launch(
@@ -1274,7 +1300,7 @@ def _validate_joint_axes(
         raise ValueError(
             f"Invalid joint configuration for SolverKamino:\n"
             f"  - joint {invalid_joint} ({model.joint_label[invalid_joint]!r}): "
-            "universal and gimbal axes must be unit length and orthogonal"
+            "universal, Cartesian, and gimbal axes must be unit length and orthogonal"
         )
     invalid_joint = int(violations_np[StructuralUpdateViolation.GIMBAL_HANDEDNESS])
     if invalid_joint < model.joint_count:
@@ -1282,6 +1308,14 @@ def _validate_joint_axes(
             f"Invalid joint configuration for SolverKamino:\n"
             f"  - joint {invalid_joint} ({model.joint_label[invalid_joint]!r}): "
             "gimbal axes must preserve the solver's original handedness"
+        )
+    invalid_joint = int(violations_np[StructuralUpdateViolation.CARTESIAN_HANDEDNESS])
+    if invalid_joint < model.joint_count:
+        raise ValueError(
+            f"Invalid joint configuration for SolverKamino:\n"
+            f"  - joint {invalid_joint} ({model.joint_label[invalid_joint]!r}): "
+            "three translational axes must form a right-handed set, unlike those of a USD D6 joint "
+            "whose physics:body1 is the world"
         )
 
 
@@ -1364,7 +1398,8 @@ def convert_model_materials(
     """Update Kamino's material properties in place from Newton shape materials.
 
     Recomputes per-material friction and restitution from
-    ``model.shape_material_mu`` and ``model.shape_material_restitution`` while
+    ``model.shape_material_mu``, ``model.shape_material_mu_static`` and
+    ``model.shape_material_restitution`` while
     preserving the material arrays referenced by Kamino's collision detector.
 
     Args:
@@ -1387,6 +1422,7 @@ def convert_model_materials(
         inputs=[
             # Inputs:
             model.shape_material_mu,
+            model.shape_material_mu_static,
             model.shape_material_restitution,
             model_kamino.geoms.material,
             first_shape,
@@ -1410,6 +1446,7 @@ def convert_model_materials(
         inputs=[
             # Inputs:
             model.shape_material_mu,
+            model.shape_material_mu_static,
             model.shape_material_restitution,
             first_shape,
             model.shape_count,
@@ -1429,6 +1466,7 @@ def convert_rigid_bodies(
     model: Model | ModelView,
     model_size: SizeKamino,
     model_info: ModelKaminoInfo,
+    kinematic_only_immovable: bool = False,
 ) -> RigidBodiesModel:
     """
     Converts the rigid bodies from a Newton model into Kamino's format. The function
@@ -1440,6 +1478,9 @@ def convert_rigid_bodies(
         model: Newton model.
         model_size: Model size object, to be filled in by the function.
         model_info: Model info object, to be filled in by the function.
+        kinematic_only_immovable: Whether only KINEMATIC bodies are immovable. Dynamics
+            solvers that simulate massless bodies set it, so that Kamino keeps their
+            joints, limits, and inertia.
 
     Returns:
         Fully converted rigid bodies model in Kamino's format.
@@ -1478,7 +1519,7 @@ def convert_rigid_bodies(
     q_i_0 = wp.empty((model.body_count,), dtype=wp.transformf, device=model.device)
     convert_body_origin_to_com(model.body_com, model.body_q, q_i_0)
 
-    # Bake Kamino's per-body immovability decision once (kinematic/proxy or
+    # Bake Kamino's per-body immovability decision once (kinematic or
     # already massless) and mask its owned inverse mass / inertia copies with
     # it. See ``is_immovable_for_kamino`` for the predicate. Newton's arrays
     # are never mutated. Runtime flips are rejected via
@@ -1488,7 +1529,7 @@ def convert_rigid_bodies(
         wp.launch(
             kernel=compute_body_immovability_kernel,
             dim=model.body_count,
-            inputs=[model.body_inv_mass, model.body_inv_inertia, model.body_flags],
+            inputs=[model.body_inv_mass, model.body_inv_inertia, model.body_flags, kinematic_only_immovable],
             outputs=[body_is_immovable],
             device=model.device,
         )
@@ -1566,7 +1607,7 @@ def _warn_ignored_free_joint_friction(
         > positive_friction_prefix[qd_start_np[free_joint_ids]]
     )
     for jid in free_joint_ids[free_joint_has_friction].tolist():
-        msg.warning("Ignoring joint friction on FREE joint %d (%r).", jid, model.joint_label[jid])
+        logger.warning("Ignoring joint friction on FREE joint %d (%r).", jid, model.joint_label[jid])
 
 
 def _validate_model_joint_pd_gains(model: Model | ModelView) -> None:
@@ -1613,7 +1654,6 @@ def convert_joints(
 
     # Create joint property arrays
     with wp.ScopedDevice(model.device):
-        joint_jid = wp.empty(shape=(model.joint_count,), dtype=wp.int32)
         joint_dof_type = wp.zeros(shape=(model.joint_count,), dtype=wp.int32)
         joint_act_type = wp.zeros(shape=(model.joint_count,), dtype=wp.int32)
         joint_dof_act_types = wp.zeros(shape=(model.joint_dof_count,), dtype=wp.int32)
@@ -1640,8 +1680,6 @@ def convert_joints(
         dim=model.joint_count,
         inputs=[
             # Inputs:
-            model.joint_world,
-            model.joint_world_start,
             model.joint_parent,
             model.joint_child,
             model.joint_type,
@@ -1660,7 +1698,6 @@ def convert_joints(
             model.joint_limit_upper,
             model_bodies.is_immovable,
             # Outputs:
-            joint_jid,
             joint_dof_type,
             joint_act_type,
             joint_dof_act_types,
@@ -2069,7 +2106,6 @@ def convert_joints(
         num_joints=model.joint_count,
         label=model.joint_label,
         wid=model.joint_world,
-        jid=joint_jid,  # TODO: Remove
         dof_type=joint_dof_type,
         act_type=joint_act_type,
         dof_act_types=joint_dof_act_types,
@@ -2083,6 +2119,8 @@ def convert_joints(
         X_Fj=joint_X_F,
         q_j_min=model.joint_limit_lower,
         q_j_max=model.joint_limit_upper,
+        limit_ke=model.joint_limit_ke,
+        limit_kd=model.joint_limit_kd,
         dq_j_max=model.joint_velocity_limit,
         tau_j_max=model.joint_effort_limit,
         a_j=model.joint_armature,
@@ -2090,6 +2128,7 @@ def convert_joints(
         f_j=model.joint_friction,
         k_p_j=model.joint_target_ke,
         k_d_j=model.joint_target_kd,
+        q_j_rest=model.joint_rest_q,
         q_j_0=model.joint_q,
         dq_j_0=model.joint_qd,
         num_coords=joint_num_coords,
@@ -2131,17 +2170,19 @@ def register_materials(model: Model, materials_manager: MaterialManager) -> np.n
         NumPy array of material indices for each geom.
     """
     # Set up material parameter dictionary
-    material_param_indices: dict[tuple[float, float], int] = {}
+    material_param_indices: dict[tuple[float, float, float], int] = {}
     for i, material in enumerate(materials_manager.materials):
         # Adding already existing (default) materials from material manager, making sure the values
         # undergo the same transformation as any material parameters in the Newton model (conversion
         # to np.float32)
-        mu = float(np.float32(material.static_friction))
+        mu = float(np.float32(material.dynamic_friction))
+        mu_static = float(np.float32(material.static_friction))
         restitution = float(np.float32(material.restitution))
-        material_param_indices[(mu, restitution)] = i
+        material_param_indices[(mu, mu_static, restitution)] = i
 
     # Newton material parameters
     shape_friction = model.shape_material_mu.numpy().tolist()
+    shape_static_friction = model.shape_material_mu_static.numpy().tolist()
     shape_restitution = model.shape_material_restitution.numpy().tolist()
     # Mapping from geom to material index
     geom_material = np.zeros((model.shape_count,), dtype=int)
@@ -2150,14 +2191,14 @@ def register_materials(model: Model, materials_manager: MaterialManager) -> np.n
 
     for s in range(model.shape_count):
         # Check if material with these parameters already exists
-        material_desc = (shape_friction[s], shape_restitution[s])
+        material_desc = (shape_friction[s], shape_static_friction[s], shape_restitution[s])
         if material_desc in material_param_indices:
             material_id = material_param_indices[material_desc]
         else:
             material = MaterialDescriptor(
                 name=f"{model.shape_label[s]}_material",
                 restitution=shape_restitution[s],
-                static_friction=shape_friction[s],
+                static_friction=shape_static_friction[s],
                 dynamic_friction=shape_friction[s],
                 # wid=shape_world_np[s],
             )
@@ -2248,6 +2289,10 @@ def convert_geometries(
         params=model.shape_scale,
         offset=offset,
         material=geom_material,
+        stiffness=model.shape_material_ke,
+        damping=model.shape_material_kd,
+        torsional_friction=model.shape_material_mu_torsional,
+        rolling_friction=model.shape_material_mu_rolling,
         group=model.shape_collision_group,
         gap=model.shape_gap,
         margin=model.shape_margin,

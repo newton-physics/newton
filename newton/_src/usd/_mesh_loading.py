@@ -169,6 +169,7 @@ def get_mesh(
     compute_inertia: bool = True,
     apply_stage_units: bool = True,
     load_visual_materials: bool = True,
+    return_source_point_indices: Literal[False] = False,
 ) -> Mesh: ...
 
 
@@ -189,6 +190,7 @@ def get_mesh(
     compute_inertia: bool = True,
     apply_stage_units: bool = True,
     load_visual_materials: bool = True,
+    return_source_point_indices: Literal[False] = False,
 ) -> tuple[Mesh, np.ndarray | None]: ...
 
 
@@ -210,6 +212,7 @@ def get_mesh(
     apply_stage_units: bool = True,
     prim: Usd.Prim,
     load_visual_materials: bool = True,
+    return_source_point_indices: Literal[False] = False,
 ) -> Mesh: ...
 
 
@@ -231,7 +234,51 @@ def get_mesh(
     apply_stage_units: bool = True,
     prim: Usd.Prim,
     load_visual_materials: bool = True,
+    return_source_point_indices: Literal[False] = False,
 ) -> tuple[Mesh, np.ndarray | None]: ...
+
+
+@overload
+def get_mesh(
+    source: Usd.Prim,
+    *,
+    load_normals: bool = False,
+    load_uvs: bool = False,
+    maxhullvert: int | None = None,
+    face_varying_normal_conversion: Literal[
+        "vertex_averaging", "angle_weighted", "vertex_splitting"
+    ] = "vertex_splitting",
+    vertex_splitting_angle_threshold_deg: float = 25.0,
+    preserve_facevarying_uvs: bool = False,
+    return_uv_indices: bool = False,
+    root_path: None = None,
+    compute_inertia: bool = True,
+    apply_stage_units: bool = True,
+    load_visual_materials: bool = True,
+    return_source_point_indices: Literal[True],
+) -> tuple[Mesh, np.ndarray | None, np.ndarray]: ...
+
+
+@overload
+def get_mesh(
+    source: None = None,
+    *,
+    load_normals: bool = False,
+    load_uvs: bool = False,
+    maxhullvert: int | None = None,
+    face_varying_normal_conversion: Literal[
+        "vertex_averaging", "angle_weighted", "vertex_splitting"
+    ] = "vertex_splitting",
+    vertex_splitting_angle_threshold_deg: float = 25.0,
+    preserve_facevarying_uvs: bool = False,
+    return_uv_indices: bool = False,
+    root_path: None = None,
+    compute_inertia: bool = True,
+    apply_stage_units: bool = True,
+    prim: Usd.Prim,
+    load_visual_materials: bool = True,
+    return_source_point_indices: Literal[True],
+) -> tuple[Mesh, np.ndarray | None, np.ndarray]: ...
 
 
 @deprecate_nonkeyword_arguments
@@ -252,7 +299,8 @@ def get_mesh(
     apply_stage_units: bool = True,
     prim: Usd.Prim | None = None,
     load_visual_materials: bool = True,
-) -> Mesh | tuple[Mesh, np.ndarray | None]:
+    return_source_point_indices: bool = False,
+) -> Mesh | tuple[Mesh, np.ndarray | None] | tuple[Mesh, np.ndarray | None, np.ndarray]:
     """
     Load a triangle mesh from a USD mesh prim, stage, file path, or URL.
 
@@ -327,7 +375,8 @@ def get_mesh(
             UVs when available. For faceVarying UVs and
             ``preserve_facevarying_uvs=True``, these indices reference the
             face-varying UV array. Only supported for a single
-            ``UsdGeom.Mesh`` prim when ``root_path`` is None.
+            ``UsdGeom.Mesh`` prim when ``root_path`` is None. See
+            ``return_source_point_indices`` for the combined return.
         root_path: USD prim path to use as the merge root for stage, file path,
             URL, or non-mesh prim sources. Defaults to the stage pseudo-root for
             stages and paths, or the provided prim for non-mesh prim sources.
@@ -347,10 +396,44 @@ def get_mesh(
             geometry is needed. If ``load_uvs`` is True, the material's shader
             network may still be inspected to select the UV primvar used by
             the texture.
+        return_source_point_indices: If True, return
+            ``(mesh, uv_indices, source_point_indices)``. The second item is
+            ``None`` unless UV indices are requested and available.
+            ``source_point_indices`` is an int32 array with one entry per output
+            vertex, indexing the original USD ``points`` array. Split vertices
+            repeat their source point index; an unchanged vertex layout returns
+            ``arange(point_count)``. This lets
+            callers map other per-point data, such as bind poses, to the loaded
+            mesh. Only supported for a single ``UsdGeom.Mesh`` prim with no
+            ``root_path``.
+
+            .. experimental::
+                This option may change without a formal deprecation cycle.
 
     Returns:
-        newton.Mesh: The loaded mesh, or ``(mesh, uv_indices)`` if
-        ``return_uv_indices`` is True.
+        The loaded mesh, with the requested index arrays:
+
+        .. list-table::
+            :header-rows: 1
+
+            * - ``return_uv_indices``
+              - ``return_source_point_indices``
+              - Return value
+            * - ``False``
+              - ``False``
+              - ``mesh``
+            * - ``True``
+              - ``False``
+              - ``(mesh, uv_indices)``
+            * - ``False``
+              - ``True``
+              - ``(mesh, None, source_point_indices)``
+            * - ``True``
+              - ``True``
+              - ``(mesh, uv_indices, source_point_indices)``
+
+        ``uv_indices`` is ``None`` when not requested or unavailable. Source point
+        indices always have one entry per output vertex when requested.
     """
     from .utils import resolve_material_properties_for_prim  # noqa: PLC0415
 
@@ -372,6 +455,8 @@ def get_mesh(
         )
     )
     if should_load_source:
+        if return_source_point_indices:
+            raise ValueError("return_source_point_indices is only supported when loading a single UsdGeom.Mesh prim.")
         if return_uv_indices:
             raise ValueError("return_uv_indices is only supported when loading a single UsdGeom.Mesh prim.")
         return _get_mesh_from_source(
@@ -397,11 +482,22 @@ def get_mesh(
 
     mesh = UsdGeom.Mesh(prim)
 
-    points = np.array(mesh.GetPointsAttr().Get(), dtype=np.float64)
-    indices = np.array(mesh.GetFaceVertexIndicesAttr().Get(), dtype=np.int32)
+    authored_points = mesh.GetPointsAttr().Get()
+    authored_indices = mesh.GetFaceVertexIndicesAttr().Get()
     counts = mesh.GetFaceVertexCountsAttr().Get()
+    if authored_points is None or authored_indices is None or counts is None:
+        # The render mesh is read at the default time code; time samples alone are
+        # rejected instead of failing later with an unrelated reshape error.
+        raise ValueError(
+            f"Mesh prim '{prim.GetPath()}' has no default-time points, faceVertexIndices, or faceVertexCounts."
+        )
+    points = np.array(authored_points, dtype=np.float64)
+    indices = np.array(authored_indices, dtype=np.int32)
     source_points = points
     source_indices = indices
+    # Source point of every current vertex, gathered alongside ``points`` wherever the
+    # layout changes so per-point data such as bind poses can follow the loaded mesh.
+    source_point_indices = np.arange(len(points), dtype=np.int32) if return_source_point_indices else None
 
     uvs = None
     uvs_interpolation = None
@@ -524,9 +620,11 @@ def get_mesh(
                     if not uvs_facevarying:
                         corner_uvs = corner_uvs[indices]
 
-                points, indices, normals, uvs = _split_corners_into_vertices(
+                points, indices, normals, uvs, split_sources = _split_corners_into_vertices(
                     points, indices, Ndir, corner_uvs, vertex_splitting_angle_threshold_deg
                 )
+                if return_source_point_indices:
+                    source_point_indices = source_point_indices[split_sources]
                 # Vertex splitting creates a new per-vertex layout (and UVs
                 # if available). Skip the later faceVarying UV split to avoid
                 # dropping/duplicating UVs.
@@ -593,6 +691,8 @@ def get_mesh(
             else:
                 if not preserve_facevarying_uvs:
                     points_original = points
+                    if return_source_point_indices:
+                        source_point_indices = source_point_indices[indices[corner_flat]]
                     points = points_original[indices[corner_flat]]
                     if normals is not None:
                         if len(normals) == len(points_original):
@@ -621,6 +721,8 @@ def get_mesh(
         normals = np.repeat(face_normals, 3, axis=0)
         vertex_indices = faces.reshape(-1)
         points = points[vertex_indices]
+        if return_source_point_indices:
+            source_point_indices = source_point_indices[vertex_indices]
         if (
             uvs is not None
             and uv_indices is None
@@ -667,6 +769,8 @@ def get_mesh(
             is_solid=mesh_out.is_solid,
         )
         mesh_out.has_inertia = True
+    if return_source_point_indices:
+        return mesh_out, uv_indices, source_point_indices
     if return_uv_indices:
         return mesh_out, uv_indices
     return mesh_out
@@ -852,13 +956,292 @@ def _expand_indexed_primvar(
     return values[indices]
 
 
+# Upper bound on per-chunk cluster slots (groups x largest group size) in the batched pass.
+_CLUSTER_CHUNK_SLOTS = 1 << 20
+# Below this many active groups, a lockstep round costs more than clustering corners one by one.
+_CLUSTER_SEQUENTIAL_GROUPS = 16
+
+
+def _cluster_split_groups(
+    split_groups: np.ndarray,
+    starts: np.ndarray,
+    group_sizes: np.ndarray,
+    group_vertices: np.ndarray,
+    order: np.ndarray,
+    grouped_dirs: np.ndarray,
+    grouped_uvs: np.ndarray | None,
+    provisional_of_corner: np.ndarray,
+    *,
+    first_id: int,
+    cos_thresh: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray | None]:
+    """Greedily cluster the corners of each split vertex group, many groups in lockstep.
+
+    Round ``k`` places the ``k``-th corner of every group that has one, so each group
+    still sees its corners in order: a corner joins the first of the group's clusters,
+    in creation order, whose mean direction is within the threshold and whose UV
+    matches, otherwise it starts a new cluster. The arithmetic is elementwise float64 in
+    the order of a scalar loop, so results do not depend on how groups are batched.
+    Groups are batched by size so per-batch cluster storage stays bounded even when a
+    few vertices have many corners.
+
+    Args:
+        split_groups: Indices of the groups to cluster, ascending.
+        starts: First grouped-corner index of every group.
+        group_sizes: Corner count of every group.
+        group_vertices: Source vertex of every group.
+        order: Original corner index of every grouped corner.
+        grouped_dirs: Unit corner normals in grouped order, shape [corner_count, 3].
+        grouped_uvs: Corner UVs in grouped order, shape [corner_count, channels], or ``None``.
+        provisional_of_corner: Provisional output vertex of every grouped corner, filled in
+            place for the corners of ``split_groups``.
+        first_id: First provisional vertex id to assign.
+        cos_thresh: Cosine of the clustering threshold angle.
+
+    Returns:
+        Per new vertex, in group order and then cluster creation order: the original
+        index of the corner that created it, its source vertex, the sum of its corner
+        directions as float64 [3], and its UV (``None`` when ``grouped_uvs`` is ``None``).
+    """
+    group_count = len(split_groups)
+    if group_count == 0:
+        empty_uvs = None if grouped_uvs is None else grouped_uvs[:0]
+        empty_index = np.zeros(0, dtype=np.int64)
+        return empty_index, empty_index, np.zeros((0, 3), dtype=np.float64), empty_uvs
+
+    group_begin = starts[split_groups].astype(np.int64)
+    sizes = group_sizes[split_groups].astype(np.int64)
+    dirs = np.asarray(grouped_dirs, dtype=np.float64)
+
+    # Batch groups by descending size; a batch's slots are its group count times its first size.
+    by_size = np.argsort(-sizes, kind="stable")
+    cluster_count = np.zeros(group_count, dtype=np.int64)
+    corner_parts, cluster_parts = [], []
+    batch_start = 0
+    while batch_start < group_count:
+        batch_end = min(group_count, batch_start + max(1, _CLUSTER_CHUNK_SLOTS // int(sizes[by_size[batch_start]])))
+        batch = by_size[batch_start:batch_end]
+        counts, corner_part, cluster_part = _cluster_group_batch(
+            group_begin[batch], sizes[batch], order, dirs, grouped_uvs, cos_thresh
+        )
+        cluster_count[batch] = counts
+        corner_parts.append((np.repeat(batch, sizes[batch]), *corner_part))
+        cluster_parts.append((np.repeat(batch, counts), *cluster_part))
+        batch_start = batch_end
+
+    # Number clusters by group, then creation order, after the single-cluster groups.
+    first_cluster_id = first_id + np.concatenate(([0], np.cumsum(cluster_count)[:-1]))
+    for batch_group, grouped_corner, cluster_index in corner_parts:
+        provisional_of_corner[grouped_corner] = first_cluster_id[batch_group] + cluster_index
+
+    cluster_group = np.concatenate([part[0] for part in cluster_parts])
+    cluster_index = np.concatenate([part[1] for part in cluster_parts])
+    group_major = np.lexsort((cluster_index, cluster_group))
+    split_creation = np.concatenate([part[2] for part in cluster_parts])[group_major]
+    split_dir_sums = np.concatenate([part[3] for part in cluster_parts])[group_major]
+    split_uvs = None
+    if grouped_uvs is not None:
+        split_uvs = np.concatenate([part[4] for part in cluster_parts])[group_major]
+    split_vertices = np.repeat(group_vertices[split_groups], cluster_count)
+    return split_creation, split_vertices, split_dir_sums, split_uvs
+
+
+def _cluster_group_tail(
+    corner_begin: int,
+    corner_end: int,
+    sums: list[list[float]],
+    uvs: list[list[float]] | None,
+    creators: list[int],
+    order: np.ndarray,
+    dirs: np.ndarray,
+    grouped_uvs: np.ndarray | None,
+    cos_thresh: float,
+) -> tuple[list[list[float]], list[list[float]] | None, list[int], list[int]]:
+    """Cluster one group's remaining corners one by one, continuing from its current clusters.
+
+    Uses the same float64 arithmetic and operation order as the lockstep rounds.
+
+    Args:
+        corner_begin: First remaining grouped-corner index.
+        corner_end: One past the group's last grouped-corner index.
+        sums: Direction sum [3] of each existing cluster, updated in place.
+        uvs: UV of each existing cluster, updated in place, or ``None``.
+        creators: Original index of each existing cluster's creating corner, updated in place.
+        order: Original corner index of every grouped corner.
+        dirs: Unit corner normals in grouped order as float64, shape [corner_count, 3].
+        grouped_uvs: Corner UVs in grouped order, or ``None``.
+        cos_thresh: Cosine of the clustering threshold angle.
+
+    Returns:
+        The updated cluster sums, UVs, and creators, and the cluster index of each remaining corner.
+    """
+    joined = []
+    corner_uvs = None if grouped_uvs is None else grouped_uvs[corner_begin:corner_end].tolist()
+    for offset, (dir_x, dir_y, dir_z) in enumerate(dirs[corner_begin:corner_end].tolist()):
+        corner_uv = None if corner_uvs is None else corner_uvs[offset]
+        for cluster, cluster_sum in enumerate(sums):
+            sum_x, sum_y, sum_z = cluster_sum
+            scale = max(math.sqrt(sum_x * sum_x + sum_y * sum_y + sum_z * sum_z), 1e-30)
+            if (sum_x * dir_x + sum_y * dir_y + sum_z * dir_z) / scale < cos_thresh:
+                continue
+            if corner_uv is not None and uvs[cluster] != corner_uv:
+                continue
+            cluster_sum[0] = sum_x + dir_x
+            cluster_sum[1] = sum_y + dir_y
+            cluster_sum[2] = sum_z + dir_z
+            joined.append(cluster)
+            break
+        else:
+            joined.append(len(sums))
+            sums.append([dir_x, dir_y, dir_z])
+            if uvs is not None:
+                uvs.append(corner_uv)
+            creators.append(int(order[corner_begin + offset]))
+    return sums, uvs, creators, joined
+
+
+def _cluster_group_batch(
+    group_begin: np.ndarray,
+    sizes: np.ndarray,
+    order: np.ndarray,
+    dirs: np.ndarray,
+    grouped_uvs: np.ndarray | None,
+    cos_thresh: float,
+) -> tuple[np.ndarray, tuple[np.ndarray, np.ndarray], tuple[np.ndarray, ...]]:
+    """Cluster one batch of groups, sorted by descending size, in lockstep rounds.
+
+    Args:
+        group_begin: First grouped-corner index of each group in the batch.
+        sizes: Corner count of each group, in descending order.
+        order: Original corner index of every grouped corner.
+        dirs: Unit corner normals in grouped order as float64, shape [corner_count, 3].
+        grouped_uvs: Corner UVs in grouped order, or ``None``.
+        cos_thresh: Cosine of the clustering threshold angle.
+
+    Returns:
+        The cluster count per group; per corner of the batch in group order, its grouped
+        corner index and cluster index; and per cluster in group-major creation order,
+        its cluster index, creating corner, direction sum, and UV (when ``grouped_uvs``
+        is not ``None``).
+    """
+    group_count = len(sizes)
+    uv_channels = 0 if grouped_uvs is None else grouped_uvs.shape[1]
+    # Clusters per group never exceed its corner count, which bounds the storage.
+    max_clusters = int(sizes[0])
+    capacity = min(4, max_clusters)
+    cluster_sums = np.zeros((group_count, capacity, 3), dtype=np.float64)
+    cluster_creator = np.zeros((group_count, capacity), dtype=np.int64)
+    cluster_uvs = None if grouped_uvs is None else np.zeros((group_count, capacity, uv_channels), grouped_uvs.dtype)
+    cluster_count = np.zeros(group_count, dtype=np.int64)
+    corner_offset = np.concatenate(([0], np.cumsum(sizes)[:-1]))
+    cluster_of_corner = np.empty(int(sizes.sum()), dtype=np.int64)
+
+    for rank in range(max_clusters):
+        # Sizes descend, so the groups that still have a corner at this rank form a prefix.
+        active = np.arange(int(np.searchsorted(-sizes, -rank, side="left")))
+        if len(active) <= _CLUSTER_SEQUENTIAL_GROUPS:
+            # Few high-valence groups remain; finish them corner by corner from their current clusters.
+            tails = []
+            for group in active.tolist():
+                tails.append(
+                    _cluster_group_tail(
+                        int(group_begin[group]) + rank,
+                        int(group_begin[group]) + int(sizes[group]),
+                        cluster_sums[group, : cluster_count[group]].tolist(),
+                        None if cluster_uvs is None else cluster_uvs[group, : cluster_count[group]].tolist(),
+                        cluster_creator[group, : cluster_count[group]].tolist(),
+                        order,
+                        dirs,
+                        grouped_uvs,
+                        cos_thresh,
+                    )
+                )
+            needed = max([capacity, *(len(tail[0]) for tail in tails)])
+            if needed > capacity:
+                grow = needed - capacity
+                capacity = needed
+                cluster_sums = np.concatenate([cluster_sums, np.zeros((group_count, grow, 3), np.float64)], axis=1)
+                cluster_creator = np.concatenate([cluster_creator, np.zeros((group_count, grow), np.int64)], axis=1)
+                if cluster_uvs is not None:
+                    cluster_uvs = np.concatenate(
+                        [cluster_uvs, np.zeros((group_count, grow, uv_channels), cluster_uvs.dtype)], axis=1
+                    )
+            for group, (sums, uvs, creators, joined) in zip(active.tolist(), tails, strict=True):
+                count = len(sums)
+                cluster_sums[group, :count] = sums
+                cluster_creator[group, :count] = creators
+                if cluster_uvs is not None:
+                    cluster_uvs[group, :count] = uvs
+                cluster_count[group] = count
+                start = int(corner_offset[group]) + rank
+                cluster_of_corner[start : start + len(joined)] = joined
+            break
+        corner = group_begin[active] + rank
+        dir_x, dir_y, dir_z = dirs[corner, 0], dirs[corner, 1], dirs[corner, 2]
+        counts = cluster_count[active]
+        width = int(counts.max())
+
+        joined = np.full(len(active), -1, dtype=np.int64)
+        if width > 0:
+            sums = cluster_sums[active, :width]
+            sum_x, sum_y, sum_z = sums[..., 0], sums[..., 1], sums[..., 2]
+            scale = np.maximum(np.sqrt(sum_x * sum_x + sum_y * sum_y + sum_z * sum_z), 1e-30)
+            dot = sum_x * dir_x[:, None] + sum_y * dir_y[:, None] + sum_z * dir_z[:, None]
+            # A corner joins unless it is strictly outside the threshold, as in the scalar loop.
+            matches = ~(dot / scale < cos_thresh)
+            matches &= np.arange(width)[None, :] < counts[:, None]
+            if cluster_uvs is not None:
+                matches &= np.all(cluster_uvs[active, :width] == grouped_uvs[corner][:, None, :], axis=2)
+            has_match = matches.any(axis=1)
+            joined[has_match] = np.argmax(matches[has_match], axis=1)
+
+        joining = joined >= 0
+        join_groups, join_clusters = active[joining], joined[joining]
+        # The sum update is elementwise in the same order as the scalar loop.
+        cluster_sums[join_groups, join_clusters, 0] += dir_x[joining]
+        cluster_sums[join_groups, join_clusters, 1] += dir_y[joining]
+        cluster_sums[join_groups, join_clusters, 2] += dir_z[joining]
+
+        new_groups = active[~joining]
+        new_clusters = cluster_count[new_groups]
+        if len(new_groups) and int(new_clusters.max()) >= capacity:
+            grow = min(capacity, max_clusters - capacity)
+            capacity += grow
+            cluster_sums = np.concatenate([cluster_sums, np.zeros((group_count, grow, 3), np.float64)], axis=1)
+            cluster_creator = np.concatenate([cluster_creator, np.zeros((group_count, grow), np.int64)], axis=1)
+            if cluster_uvs is not None:
+                cluster_uvs = np.concatenate(
+                    [cluster_uvs, np.zeros((group_count, grow, uv_channels), cluster_uvs.dtype)], axis=1
+                )
+        new_corners = corner[~joining]
+        cluster_sums[new_groups, new_clusters, 0] = dir_x[~joining]
+        cluster_sums[new_groups, new_clusters, 1] = dir_y[~joining]
+        cluster_sums[new_groups, new_clusters, 2] = dir_z[~joining]
+        cluster_creator[new_groups, new_clusters] = order[new_corners]
+        if cluster_uvs is not None:
+            cluster_uvs[new_groups, new_clusters] = grouped_uvs[new_corners]
+        cluster_count[new_groups] += 1
+        joined[~joining] = new_clusters
+        cluster_of_corner[corner_offset[active] + rank] = joined
+
+    corner_group = np.repeat(np.arange(group_count), sizes)
+    grouped_corner = group_begin[corner_group] + (np.arange(len(cluster_of_corner)) - corner_offset[corner_group])
+
+    valid = np.arange(capacity)[None, :] < cluster_count[:, None]
+    cluster_index = np.broadcast_to(np.arange(capacity), valid.shape)[valid]
+    clusters = (cluster_index, cluster_creator[valid], cluster_sums[valid])
+    if cluster_uvs is not None:
+        clusters = (*clusters, cluster_uvs[valid])
+    return cluster_count, (grouped_corner, cluster_of_corner), clusters
+
+
 def _split_corners_into_vertices(
     points: np.ndarray,
     indices: np.ndarray,
     corner_dirs: np.ndarray,
     corner_uvs: np.ndarray | None,
     angle_threshold_deg: float,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray | None]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray | None, np.ndarray]:
     """Duplicate vertices whose faceVarying corners disagree in normal direction or UV.
 
     The corners of a vertex are clustered greedily in corner order: a corner joins the
@@ -885,13 +1268,14 @@ def _split_corners_into_vertices(
         angle_threshold_deg: Maximum angle between a corner normal and its cluster mean [deg].
 
     Returns:
-        Split positions, the remapped corner indices, the per-vertex normals, and the
-        per-vertex UVs (``None`` when ``corner_uvs`` is ``None``).
+        Split positions, the remapped corner indices, the per-vertex normals, the
+        per-vertex UVs (``None`` when ``corner_uvs`` is ``None``), and the index of the
+        source point each split position was copied from.
     """
     corner_count = len(indices)
     if corner_count == 0:
         empty_uvs = None if corner_uvs is None else corner_uvs[:0]
-        return points[:0], indices.copy(), np.zeros((0, 3), dtype=np.float32), empty_uvs
+        return points[:0], indices.copy(), np.zeros((0, 3), dtype=np.float32), empty_uvs, indices.copy()
 
     cos_thresh = math.cos(math.radians(angle_threshold_deg))
     cos_half_thresh = math.cos(math.radians(angle_threshold_deg) * 0.5)
@@ -923,50 +1307,23 @@ def _split_corners_into_vertices(
     provisional_of_group[simple_groups] = np.arange(len(simple_groups))
     provisional_of_corner = provisional_of_group[group_of_corner]
 
-    next_id = len(simple_groups)
-    split_creation: list[int] = []
-    split_vertices: list[int] = []
-    split_dir_sums: list[tuple[float, float, float]] = []
-    split_uvs: list[tuple[float, ...]] = []
-    for group in np.flatnonzero(~single_cluster):
-        begin = int(starts[group])
-        end = begin + int(group_sizes[group])
-        source_vertex = int(group_vertices[group])
-        clusters: list[list] = []
-        for corner in range(begin, end):
-            dir_x, dir_y, dir_z = (float(value) for value in grouped_dirs[corner])
-            corner_uv = None if grouped_uvs is None else tuple(grouped_uvs[corner].tolist())
-            for cluster in clusters:
-                sum_x, sum_y, sum_z = cluster[0], cluster[1], cluster[2]
-                # Scalar arithmetic rounds this dot product differently from the
-                # equivalent NumPy expression (which uses FMA and a scaled norm), so a
-                # corner sitting exactly on the threshold can cluster either way.
-                scale = max(math.sqrt(sum_x * sum_x + sum_y * sum_y + sum_z * sum_z), 1e-30)
-                if (sum_x * dir_x + sum_y * dir_y + sum_z * dir_z) / scale < cos_thresh:
-                    continue
-                if corner_uv is not None and cluster[3] != corner_uv:
-                    continue
-                cluster[0] = sum_x + dir_x
-                cluster[1] = sum_y + dir_y
-                cluster[2] = sum_z + dir_z
-                provisional_of_corner[corner] = cluster[4]
-                break
-            else:
-                clusters.append([dir_x, dir_y, dir_z, corner_uv, next_id])
-                provisional_of_corner[corner] = next_id
-                split_creation.append(int(order[corner]))
-                split_vertices.append(source_vertex)
-                if corner_uv is not None:
-                    split_uvs.append(corner_uv)
-                next_id += 1
-        # Cluster order matches the id order assigned above.
-        split_dir_sums.extend((cluster[0], cluster[1], cluster[2]) for cluster in clusters)
-
-    creation_corners = np.concatenate([order[starts[simple_groups]], np.asarray(split_creation, dtype=np.int64)])
-    source_vertices = np.concatenate([group_vertices[simple_groups], np.asarray(split_vertices, dtype=np.int64)])
-    new_dir_sums = np.concatenate(
-        [dir_sums[simple_groups], np.asarray(split_dir_sums, dtype=np.float64).reshape(-1, 3)]
+    split_groups = np.flatnonzero(~single_cluster)
+    split_creation, split_vertices, split_dir_sums, split_uvs = _cluster_split_groups(
+        split_groups,
+        starts,
+        group_sizes,
+        group_vertices,
+        order,
+        grouped_dirs,
+        grouped_uvs,
+        provisional_of_corner,
+        first_id=len(simple_groups),
+        cos_thresh=cos_thresh,
     )
+
+    creation_corners = np.concatenate([order[starts[simple_groups]], split_creation])
+    source_vertices = np.concatenate([group_vertices[simple_groups], split_vertices.astype(indices.dtype)])
+    new_dir_sums = np.concatenate([dir_sums[simple_groups], split_dir_sums])
 
     # Number the output vertices by the corner that created them, matching the order a
     # purely sequential pass over the corners would produce.
@@ -976,17 +1333,17 @@ def _split_corners_into_vertices(
 
     new_indices = np.empty(corner_count, dtype=indices.dtype)
     new_indices[order] = final_of_provisional[provisional_of_corner]
-    new_points = points[source_vertices[provisional_in_final_order]]
+    new_sources = source_vertices[provisional_in_final_order]
+    new_points = points[new_sources]
     ordered_sums = new_dir_sums[provisional_in_final_order]
     lengths = np.clip(np.linalg.norm(ordered_sums, axis=1, keepdims=True), 1e-30, None)
     new_normals = (ordered_sums / lengths).astype(np.float32)
 
     new_uvs = None
     if grouped_uvs is not None:
-        split_uv_rows = np.asarray(split_uvs, dtype=grouped_uvs.dtype).reshape(-1, grouped_uvs.shape[1])
-        new_uvs = np.concatenate([grouped_uvs[starts[simple_groups]], split_uv_rows])[provisional_in_final_order]
+        new_uvs = np.concatenate([grouped_uvs[starts[simple_groups]], split_uvs])[provisional_in_final_order]
 
-    return new_points, new_indices, new_normals, new_uvs
+    return new_points, new_indices, new_normals, new_uvs, new_sources
 
 
 def _triangulate_face_varying_indices(counts: Sequence[int], flip_winding: bool) -> np.ndarray:

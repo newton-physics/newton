@@ -4,12 +4,14 @@
 """Unit tests for the base classes in linalg/sparse.py"""
 
 import gc
+import logging
 import unittest
 import weakref
 
 import numpy as np
 import warp as wp
 
+import newton
 from newton._src.solvers.kamino._src.linalg.blas import (
     block_sparse_ATA_inv_diagonal_2d,
     block_sparse_gemv,
@@ -19,16 +21,18 @@ from newton._src.solvers.kamino._src.linalg.blas import (
 )
 from newton._src.solvers.kamino._src.linalg.sparse_matrix import BlockDType, BlockSparseMatrices
 from newton._src.solvers.kamino._src.linalg.sparse_operator import BlockSparseLinearOperators
-from newton._src.solvers.kamino._src.utils import logger as msg
 from newton._src.solvers.kamino._src.utils.sparse import sparseplot
-from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino import setup_test_output, setup_tests, test_context
+from newton.tests.unittest_utils import NewtonTestCase
+
+logger = logging.getLogger(__name__)
 
 ###
 # Tests
 ###
 
 
-class TestBlockDType(unittest.TestCase):
+class TestBlockDType(NewtonTestCase):
     def setUp(self):
         # Configs
         if not test_context.setup_done:
@@ -37,17 +41,7 @@ class TestBlockDType(unittest.TestCase):
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose  # Set to True for verbose output
 
-        # Set debug-level logging to print verbose test output to console
-        if self.verbose:
-            print("\n")  # Add newline before test output for better readability
-            msg.set_log_level(msg.LogLevel.INFO)
-        else:
-            msg.reset_log_level()
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            msg.reset_log_level()
+        setup_test_output(self, verbose=self.verbose)
 
     ###
     # Construction Tests
@@ -123,7 +117,7 @@ class TestBlockDType(unittest.TestCase):
         self.assertEqual(warp_matrix_type._wp_scalar_type_, wp.float32)
 
 
-class TestBlockSparseMatrices(unittest.TestCase):
+class TestBlockSparseMatrices(NewtonTestCase):
     def setUp(self):
         # Configs
         if not test_context.setup_done:
@@ -131,19 +125,10 @@ class TestBlockSparseMatrices(unittest.TestCase):
         self.seed = 42
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose  # Set to True for verbose output
+
+        setup_test_output(self, verbose=self.verbose)
+
         self.plot = test_context.verbose  # Set to True to plot sparse matrices
-
-        # Set debug-level logging to print verbose test output to console
-        if self.verbose:
-            print("\n")  # Add newline before test output for better readability
-            msg.set_log_level(msg.LogLevel.INFO)
-        else:
-            msg.reset_log_level()
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            msg.reset_log_level()
 
     ###
     # Construction Tests
@@ -338,14 +323,14 @@ class TestBlockSparseMatrices(unittest.TestCase):
         bsm.num_nzb.assign(num_nzb_np)
         bsm.nzb_coords.assign(nzb_coords_np)
         bsm.nzb_values.view(dtype=wp.float32).assign(nzb_values_np)
-        msg.info("bsm.max_of_max_dims:\n%s", bsm.max_of_max_dims)
-        msg.info("bsm.max_dims:\n%s", bsm.max_dims)
-        msg.info("bsm.dims:\n%s", bsm.dims)
-        msg.info("bsm.max_nzb:\n%s", bsm.max_nzb)
-        msg.info("bsm.num_nzb:\n%s", bsm.num_nzb)
-        msg.info("bsm.nzb_start:\n%s", bsm.nzb_start)
-        msg.info("bsm.nzb_coords:\n%s", bsm.nzb_coords)
-        msg.info("bsm.nzb_values:\n%s", bsm.nzb_values)
+        logger.debug("bsm.max_of_max_dims:\n%s", bsm.max_of_max_dims)
+        logger.debug("bsm.max_dims:\n%s", bsm.max_dims)
+        logger.debug("bsm.dims:\n%s", bsm.dims)
+        logger.debug("bsm.max_nzb:\n%s", bsm.max_nzb)
+        logger.debug("bsm.num_nzb:\n%s", bsm.num_nzb)
+        logger.debug("bsm.nzb_start:\n%s", bsm.nzb_start)
+        logger.debug("bsm.nzb_coords:\n%s", bsm.nzb_coords)
+        logger.debug("bsm.nzb_values:\n%s", bsm.nzb_values)
 
         # Check host device data
         self.assertEqual(bsm.max_of_max_dims, (2, 12))
@@ -366,7 +351,7 @@ class TestBlockSparseMatrices(unittest.TestCase):
         # Convert to list of numpy arrays for easier verification
         bsm_np = bsm.numpy()
         for i in range(bsm.num_matrices):
-            msg.info("bsm_np[%d]:\n%s", i, bsm_np[i])
+            logger.debug("bsm_np[%d]:\n%s", i, bsm_np[i])
             if self.plot:
                 sparseplot(bsm_np[i], title=f"bsm_np[{i}]")
 
@@ -378,12 +363,12 @@ class TestBlockSparseMatrices(unittest.TestCase):
         # Convert again to list of numpy arrays for easier verification
         bsm_np = bsm.numpy()
         for i in range(bsm.num_matrices):
-            msg.info("bsm_np[%d]:\n%s", i, bsm_np[i])
+            logger.debug("bsm_np[%d]:\n%s", i, bsm_np[i])
             if self.plot:
                 sparseplot(bsm_np[i], title=f"bsm_np[{i}]")
 
 
-class TestBlockSparseMatrixOperations(unittest.TestCase):
+class TestBlockSparseMatrixOperations(NewtonTestCase):
     def setUp(self):
         # Configs
         if not test_context.setup_done:
@@ -391,23 +376,14 @@ class TestBlockSparseMatrixOperations(unittest.TestCase):
         self.epsilon = 1e-5  # Threshold for matvec product test
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose  # Set to True for verbose output
+
+        setup_test_output(self, verbose=self.verbose)
+
         self.plot = test_context.verbose  # Set to True to plot sparse matrices
 
         # Random number generation.
         self.seed = 42
         self.rng = None
-
-        # Set debug-level logging to print verbose test output to console
-        if self.verbose:
-            print("\n")  # Add newline before test output for better readability
-            msg.set_log_level(msg.LogLevel.INFO)
-        else:
-            msg.reset_log_level()
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            msg.reset_log_level()
 
     ###
     # Test Helpers
@@ -975,6 +951,7 @@ class TestBlockSparseMatrixOperations(unittest.TestCase):
 
 if __name__ == "__main__":
     # Test setup
+    newton.utils.setup_console_logging()
     setup_tests()
 
     # Run all tests

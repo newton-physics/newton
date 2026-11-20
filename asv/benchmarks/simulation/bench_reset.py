@@ -99,7 +99,6 @@ class _Reset:
         self.state_out = self.example.state_1
         self.device = self.example.model.device
         assert not self.solver.use_mujoco_cpu
-        assert self.solver.update_data_interval == 1
         assert not self.solver.enable_sleeping
 
         self.selected = np.zeros(world_count, dtype=bool)

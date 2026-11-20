@@ -1,20 +1,27 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Contact Sensor
-#
-# Shows how to use the SensorContact class to evaluate contact forces,
-# including per-counterpart breakdowns.
-# The flap has a contact sensor registering the total contact force of
-# the objects on top. The plates' sensors register per-counterpart forces
-# for the cube and the ball to detect which object touched which plate. Each
-# plate will light up when touched by the matching object.
-#
-#
-# Command: python -m newton.examples sensor_contact
-#
-###########################################################################
+"""Example Contact Sensor
+
+Shows how to use the SensorContact class to evaluate contact forces,
+including per-counterpart breakdowns.
+The flap has a contact sensor registering the total contact force of
+the objects on top. The plates' sensors register per-counterpart forces
+for the cube and the ball to detect which object touched which plate. Each
+plate will light up when touched by the matching object.
+
+Success criteria:
+- An orange sphere and blue box start on a flap that rotates downward; the objects fall and roll
+  over inclined plates toward the ground.
+- The first inclined plate turns blue when touched by the matching box; the second turns orange when
+  touched by the matching sphere.
+- The scene resets and repeats, clearing previous contact indicators.
+- The Flap Contact Force plot updates while the objects contact the flap and returns to zero after
+  they leave it.
+
+Runs:
+- `python -m newton.examples sensor_contact`
+"""
 
 import numpy as np
 import warp as wp
@@ -49,9 +56,7 @@ class Example:
         # finalize model
         self.model = builder.finalize()
 
-        self.flap_contact_sensor = SensorContact(
-            self.model, sensing_shapes="*Flap", verbose=True, request_contact_attributes=False
-        )
+        self.flap_contact_sensor = SensorContact(self.model, sensing_shapes="*Flap", verbose=True)
 
         # String patterns return matches in ascending shape index order.
         # Plate1 has a lower index than Plate2 (added first), so row 0 → Plate1, row 1 → Plate2.
@@ -63,16 +68,15 @@ class Example:
             counterpart_shapes=counterpart_labels,
             measure_total=False,
             verbose=True,
-            request_contact_attributes=False,
         )
         if self.solver_type == "kamino":
             solver_config = newton.solvers.SolverKamino.Config.from_model(
-                self.model, dynamics_solver="dvi", sparse_dynamics=True, sparse_jacobian=True
+                self.model, dynamics_solver="scc", sparse_dynamics=True, sparse_jacobian=True
             )
             solver_config.use_collision_detector = True
             solver_config.integrator = "moreau"
-            solver_config.dvi.max_alternating_iterations = 8
-            solver_config.dvi.use_schur_complement = True
+            solver_config.scc.max_alternating_iterations = 8
+            solver_config.scc.use_schur_complement = True
             self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
         else:
             self.solver = newton.solvers.SolverMuJoCo(

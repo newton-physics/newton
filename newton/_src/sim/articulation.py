@@ -403,6 +403,7 @@ def eval_joint_child_state(
 def eval_single_articulation_fk(
     joint_start: int,
     joint_end: int,
+    joint_order: wp.array[int],
     joint_articulation: wp.array[int],
     joint_q: wp.array[float],
     joint_qd: wp.array[float],
@@ -418,11 +419,19 @@ def eval_single_articulation_fk(
     body_com: wp.array[wp.vec3],
     body_flags: wp.array[wp.int32],
     body_flag_filter: int,
+    joint_mask: wp.array[bool],
     # outputs
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
 ):
-    for i in range(joint_start, joint_end):
+    for joint in range(joint_start, joint_end):
+        i = joint
+        if joint_order:
+            i = joint_order[joint]
+        if joint_mask:
+            if not joint_mask[i]:
+                # Descendants read the preserved parent pose and velocity from state.
+                continue
         articulation = joint_articulation[i]
         if articulation == -1:
             continue
@@ -477,6 +486,7 @@ def eval_single_articulation_fk(
 def eval_articulation_fk(
     articulation_start: wp.array[int],
     articulation_end: wp.array[int],
+    joint_order: wp.array[int],
     articulation_count: int,  # total number of articulations
     articulation_mask: wp.array[
         bool
@@ -497,6 +507,7 @@ def eval_articulation_fk(
     body_com: wp.array[wp.vec3],
     body_flags: wp.array[wp.int32],
     body_flag_filter: int,
+    joint_mask: wp.array[bool],
     # outputs
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
@@ -526,6 +537,7 @@ def eval_articulation_fk(
     eval_single_articulation_fk(
         joint_start,
         joint_end,
+        joint_order,
         joint_articulation,
         joint_q,
         joint_qd,
@@ -541,9 +553,21 @@ def eval_articulation_fk(
         body_com,
         body_flags,
         body_flag_filter,
+        joint_mask,
         # outputs
         body_q,
         body_qd,
+    )
+
+
+def _fk_prefers_tiled(model: Model) -> bool:
+    """Whether CUDA FK uses the level-parallel kernel for the model's articulations."""
+    from .articulation_cuda import FK_TILE_MIN_LEVEL_WIDTH  # noqa: PLC0415
+
+    return (
+        model.device.is_cuda
+        and model._fk_articulation_level_start is not None
+        and model._fk_level_capacity >= FK_TILE_MIN_LEVEL_WIDTH
     )
 
 
@@ -555,15 +579,26 @@ def eval_fk(
     mask: wp.array[bool] | None = None,
     indices: wp.array[int] | None = None,
     body_flag_filter: int = BodyFlags.ALL,
-):
+    *,
+    joint_mask: wp.array[bool] | None = None,
+) -> None:
     """
     Evaluates the model's forward kinematics given the joint coordinates and updates the state's body information (:attr:`State.body_q` and :attr:`State.body_qd`).
 
     The written :attr:`State.body_qd` values use Newton's public body-twist
     convention ``(v_com_world, omega_world)``.
 
-    Stale joint coordinates can overwrite simulated body state. Use
-    :func:`eval_ik` to refresh the input arrays from body state when needed.
+    To edit a branch while preserving the rest of a simulated articulation:
+    refresh stale joint coordinates with :func:`eval_ik` if needed, edit the
+    desired joint coordinates, and pass a ``joint_mask`` selecting the edited
+    joint and all descendants that should follow it. Use :attr:`Model.joint_ancestor`
+    to identify those descendants. Selecting only the edited joint leaves its
+    descendants' body poses and velocities unchanged.
+
+    An :func:`eval_ik` / full FK round trip can change unrelated bodies when
+    simulated poses or velocities do not exactly satisfy the joint constraints,
+    as well as through numerical roundoff. The joint mask preserves unselected
+    body state exactly instead of reconstructing it from joint coordinates.
 
     Args:
         model: The model to evaluate.
@@ -576,10 +611,26 @@ def eval_fk(
         body_flag_filter: Body flag filter controlling which bodies are written to in ``state.body_q`` and
             ``state.body_qd``. Default updates both dynamic and kinematic bodies. Bodies that do not
             match the filter retain their existing values; they are not zeroed or invalidated.
+        joint_mask: Optional bool array on ``model.device``, shape [joint_count]. Only selected joints
+            update their child bodies; unselected joints preserve the existing body pose and velocity.
+            This only selects FK writes and is independent of :attr:`Model.joint_enabled`.
+            Selected joints use their parents' current state, whether preserved or updated by this call.
+            Descendants are not selected automatically: include them to propagate an edit through a branch.
+            Intersects with ``mask`` or ``indices`` and ``body_flag_filter``. Supports autodiff and
+            graph capture, including changes to mask values between graph replays.
+
+    Raises:
+        ValueError: If both articulation filters are supplied, or ``joint_mask`` has the wrong dtype,
+            shape, or device.
     """
     # Validate inputs
     if mask is not None and indices is not None:
         raise ValueError("Cannot specify both mask and indices parameters")
+    if joint_mask is not None:
+        if joint_mask.dtype != wp.bool or joint_mask.shape != (model.joint_count,):
+            raise ValueError("joint_mask must be a bool array with shape (model.joint_count,)")
+        if joint_mask.device != model.device:
+            raise ValueError("joint_mask must be on the model device")
 
     # Determine launch dimensions
     if indices is not None:
@@ -590,7 +641,7 @@ def eval_fk(
     if num_articulations == 0:
         return
 
-    if model.device.is_cuda and model._fk_articulation_level_start is not None:
+    if _fk_prefers_tiled(model):
         requires_grad = (
             model.requires_grad
             or joint_q.requires_grad
@@ -608,6 +659,7 @@ def eval_fk(
             kernel = create_eval_articulation_fk_tile(
                 model._fk_level_capacity,
                 body_flag_filter == BodyFlags.ALL,
+                joint_mask is not None,
             )
             inputs = [
                 model._fk_articulation_level_start,
@@ -631,6 +683,7 @@ def eval_fk(
                 model.body_com,
                 model.body_flags,
                 body_flag_filter,
+                joint_mask,
             ]
             wp.launch_tiled(
                 kernel=kernel,
@@ -648,6 +701,7 @@ def eval_fk(
         inputs=[
             model.articulation_start,
             model.articulation_end,
+            model._fk_joint_order,
             model.articulation_count,
             mask,
             indices,
@@ -666,6 +720,7 @@ def eval_fk(
             model.body_com,
             model.body_flags,
             body_flag_filter,
+            joint_mask,
         ],
         outputs=[
             state.body_q,
@@ -675,47 +730,6 @@ def eval_fk(
         # Small blocks spread independent articulations across more SMs.
         block_dim=16 if model.max_joints_per_articulation <= 4 else 8,
     )
-
-
-@wp.kernel
-def compute_shape_world_transforms(
-    shape_transform: wp.array[wp.transform],
-    shape_body: wp.array[int],
-    body_q: wp.array[wp.transform],
-    # outputs
-    shape_world_transform: wp.array[wp.transform],
-):
-    """Compute world-space transforms for shapes by concatenating local shape
-    transforms with body transforms.
-
-    Args:
-        shape_transform: Local shape transforms in body frame,
-            shape [shape_count, 7]
-        shape_body: Body index for each shape, shape [shape_count]
-        body_q: Body transforms in world frame, shape [body_count, 7]
-        shape_world_transform: Output world transforms for shapes,
-            shape [shape_count, 7]
-    """
-    shape_idx = wp.tid()
-
-    # Get the local shape transform
-    X_bs = shape_transform[shape_idx]
-
-    # Get the body index for this shape
-    body_idx = shape_body[shape_idx]
-
-    # If shape is attached to a body (body_idx >= 0), concatenate transforms
-    if body_idx >= 0:
-        # Get the body transform in world space
-        X_wb = body_q[body_idx]
-
-        # Concatenate: world_transform = body_transform * shape_transform
-        X_ws = wp.transform_multiply(X_wb, X_bs)
-        shape_world_transform[shape_idx] = X_ws
-    else:
-        # Shape is not attached to a body (static shape), use local
-        # transform as world transform
-        shape_world_transform[shape_idx] = X_bs
 
 
 @wp.func
@@ -1121,27 +1135,33 @@ def jcalc_motion_subspace(
         joint_S_s[qd_start] = S_s
 
     elif joint_type_value == JointType.D6:
+        pos = wp.vec3()
         if lin_axis_count > 0:
             axis = joint_axis[qd_start + 0]
             S_s = transform_twist(X_pa_world, wp.spatial_vector(axis, wp.vec3()))
             joint_S_s[qd_start + 0] = S_s
+            pos += axis * joint_q[q_start + 0]
         if lin_axis_count > 1:
             axis = joint_axis[qd_start + 1]
             S_s = transform_twist(X_pa_world, wp.spatial_vector(axis, wp.vec3()))
             joint_S_s[qd_start + 1] = S_s
+            pos += axis * joint_q[q_start + 1]
         if lin_axis_count > 2:
             axis = joint_axis[qd_start + 2]
             S_s = transform_twist(X_pa_world, wp.spatial_vector(axis, wp.vec3()))
             joint_S_s[qd_start + 2] = S_s
+            pos += axis * joint_q[q_start + 2]
+        # FK translates before it rotates, so the angular axes pivot about the translated origin.
+        X_pivot = X_pa_world * wp.transform(pos, wp.quat_identity())
         iqd = qd_start + lin_axis_count
         iq = q_start + lin_axis_count
         if ang_axis_count == 1:
             axis = joint_axis[iqd]
-            joint_S_s[iqd] = transform_twist(X_pa_world, wp.spatial_vector(wp.vec3(), axis))
+            joint_S_s[iqd] = transform_twist(X_pivot, wp.spatial_vector(wp.vec3(), axis))
         if ang_axis_count == 2:
             a0, a1 = transform_2d_rotational_axes(joint_axis[iqd + 0], joint_axis[iqd + 1], joint_q[iq + 0])
-            joint_S_s[iqd + 0] = transform_twist(X_pa_world, wp.spatial_vector(wp.vec3(), a0))
-            joint_S_s[iqd + 1] = transform_twist(X_pa_world, wp.spatial_vector(wp.vec3(), a1))
+            joint_S_s[iqd + 0] = transform_twist(X_pivot, wp.spatial_vector(wp.vec3(), a0))
+            joint_S_s[iqd + 1] = transform_twist(X_pivot, wp.spatial_vector(wp.vec3(), a1))
         if ang_axis_count == 3:
             a0, a1, a2 = transform_3d_rotational_axes(
                 joint_axis[iqd + 0],
@@ -1150,9 +1170,9 @@ def jcalc_motion_subspace(
                 joint_q[iq + 0],
                 joint_q[iq + 1],
             )
-            joint_S_s[iqd + 0] = transform_twist(X_pa_world, wp.spatial_vector(wp.vec3(), a0))
-            joint_S_s[iqd + 1] = transform_twist(X_pa_world, wp.spatial_vector(wp.vec3(), a1))
-            joint_S_s[iqd + 2] = transform_twist(X_pa_world, wp.spatial_vector(wp.vec3(), a2))
+            joint_S_s[iqd + 0] = transform_twist(X_pivot, wp.spatial_vector(wp.vec3(), a0))
+            joint_S_s[iqd + 1] = transform_twist(X_pivot, wp.spatial_vector(wp.vec3(), a1))
+            joint_S_s[iqd + 2] = transform_twist(X_pivot, wp.spatial_vector(wp.vec3(), a2))
 
     elif joint_type_value == JointType.BALL:
         S_0 = transform_twist(X_pa_world, wp.spatial_vector(0.0, 0.0, 0.0, 1.0, 0.0, 0.0))
@@ -1375,38 +1395,6 @@ def eval_jacobian(
     return J
 
 
-@wp.func
-def transform_spatial_inertia(t: wp.transform, I: wp.spatial_matrix):
-    """Transform a spatial inertia tensor to a new coordinate frame.
-
-    Note: This is duplicated from featherstone/kernels.py to avoid circular imports.
-    """
-    t_inv = wp.transform_inverse(t)
-
-    q = wp.transform_get_rotation(t_inv)
-    p = wp.transform_get_translation(t_inv)
-
-    r1 = wp.quat_rotate(q, wp.vec3(1.0, 0.0, 0.0))
-    r2 = wp.quat_rotate(q, wp.vec3(0.0, 1.0, 0.0))
-    r3 = wp.quat_rotate(q, wp.vec3(0.0, 0.0, 1.0))
-
-    R = wp.matrix_from_cols(r1, r2, r3)
-    S = wp.skew(p) @ R
-
-    # fmt: off
-    T = wp.spatial_matrix(
-        R[0, 0], R[0, 1], R[0, 2], S[0, 0], S[0, 1], S[0, 2],
-        R[1, 0], R[1, 1], R[1, 2], S[1, 0], S[1, 1], S[1, 2],
-        R[2, 0], R[2, 1], R[2, 2], S[2, 0], S[2, 1], S[2, 2],
-        0.0, 0.0, 0.0, R[0, 0], R[0, 1], R[0, 2],
-        0.0, 0.0, 0.0, R[1, 0], R[1, 1], R[1, 2],
-        0.0, 0.0, 0.0, R[2, 0], R[2, 1], R[2, 2],
-    )
-    # fmt: on
-
-    return wp.mul(wp.mul(wp.transpose(T), I), T)
-
-
 @wp.kernel
 def compute_body_spatial_inertia(
     body_inertia: wp.array[wp.mat33],
@@ -1598,7 +1586,7 @@ def eval_articulation_body_inertia_about_root(
 
 
 @wp.kernel(enable_backward=False)
-def eval_articulation_composite_inertia(
+def eval_articulation_subtree_sum(
     articulation_level_start: wp.array[wp.int32],
     level_joint_start: wp.array[wp.int32],
     level_joints: wp.array[wp.int32],
@@ -1606,22 +1594,20 @@ def eval_articulation_composite_inertia(
     joint_parent: wp.array[int],
     joint_child: wp.array[int],
     # outputs
-    body_I_c: wp.array3d[float],
+    body_x: wp.array2d[float],
 ):
-    """Add each body's inertia into its parent's, deepest tree level first, one thread per (articulation, element).
+    """Add each body's row into its parent's, deepest tree level first, one thread per (articulation, element).
 
-    On return ``body_I_c[b]`` is the composite inertia of the subtree rooted at
-    ``b``. One thread sums one of the 36 matrix elements over the whole tree in a
-    fixed order, so the result is deterministic. ``body_I_c`` is a float view of
-    the spatial matrices, so each thread loads only its own element.
+    On return ``body_x[b]`` is the sum over the subtree rooted at ``b``. One
+    thread sums one element over the whole tree in a fixed order, so the result
+    is deterministic. ``body_x`` is a flat float view of per-body quantities,
+    such as spatial inertias or wrenches.
     """
     art_idx, element = wp.tid()
     if articulation_mask:
         if not articulation_mask[art_idx]:
             return
 
-    row = element // 6
-    col = element % 6
     level_begin = articulation_level_start[art_idx]
     level_end = articulation_level_start[art_idx + 1]
     # Level 0 holds the roots, whose parents are outside the articulation.
@@ -1630,7 +1616,7 @@ def eval_articulation_composite_inertia(
         for i in range(level_joint_start[level], level_joint_start[level + 1]):
             j = level_joints[i]
             parent = joint_parent[j]
-            body_I_c[parent, row, col] = body_I_c[parent, row, col] + body_I_c[joint_child[j], row, col]
+            body_x[parent, element] = body_x[parent, element] + body_x[joint_child[j], element]
 
 
 @wp.kernel(enable_backward=False)
@@ -2079,7 +2065,7 @@ def _eval_mass_matrix(
             device=model.device,
         )
         wp.launch(
-            kernel=eval_articulation_composite_inertia,
+            kernel=eval_articulation_subtree_sum,
             dim=(model.articulation_count, 36),
             inputs=[
                 model._fk_articulation_level_start,
@@ -2089,7 +2075,7 @@ def _eval_mass_matrix(
                 model.joint_parent,
                 model.joint_child,
             ],
-            outputs=[body_I_s.view(float)],
+            outputs=[body_I_s.view(float).reshape((model.body_count, 36))],
             device=model.device,
         )
         wp.launch(

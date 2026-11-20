@@ -15,6 +15,7 @@ from unittest.mock import Mock, patch
 import numpy as np
 import warp as wp
 from asv_runner.benchmarks.time import TimeBenchmark
+from asv_runner.statistics import compute_stats
 
 ASV_DIR = Path(__file__).parents[1]
 ROOT = ASV_DIR.parent
@@ -45,7 +46,7 @@ try:
         bench_mujoco,
         bench_quadruped_xpbd,
         bench_selection,
-        bench_sensor_tiled_camera,
+        bench_sensor_camera,
     )
 
     _DEFERRED_WORKLOAD_MODULES_AFTER_METRIC_IMPORT = {name: name in sys.modules for name in _DEFERRED_WORKLOAD_MODULES}
@@ -168,7 +169,19 @@ class TestSimulationBenchmarks(unittest.TestCase):
         """Cover selector crossovers, duplicate-heavy hulls, and every convex type."""
         self.assertEqual(
             tuple(bench_contacts.FastConvexCollision.params[0]),
-            (("hulls", 56), ("hulls_duplicate", 192), ("mixed", 64), ("mixed", 153), ("mixed", 191)),
+            (
+                ("hulls", 56),
+                ("hulls_duplicate", 192),
+                ("mixed", 64),
+                ("mixed", 153),
+                ("mixed", 191),
+                ("plane_hulls", 64),
+                ("plane_hulls", 512),
+                ("hulls_plane", 4),
+                ("hulls_plane", 56),
+                ("mixed_plane", 16),
+                ("mixed_plane", 64),
+            ),
         )
         self.assertEqual(
             {shape for pair in bench_contacts.MIXED_CONVEX_PAIR_TYPES for shape in pair},
@@ -206,7 +219,7 @@ class TestSimulationBenchmarks(unittest.TestCase):
             self.assertFalse(any(pattern.search(benchmark_name) for pattern in patterns), benchmark_name)
 
     def test_deformable_rigid_collision_benchmarks_stay_out_of_pr_gate(self):
-        """Keep large cases nightly and guard coarse cloth in the PR gate."""
+        """Keep nightly collisions out of the gate with finite timing statistics."""
         benchmark_names = (
             "simulation.bench_cloth.DeformableRigidCollision.time_collide",
             "simulation.bench_cloth.DeformableRigidCollisionScale.time_collide",
@@ -217,10 +230,14 @@ class TestSimulationBenchmarks(unittest.TestCase):
             with self.subTest(benchmark_name=benchmark_name):
                 self.assertIn(benchmark_name, inventory)
                 self.assertFalse(any(pattern.search(benchmark_name) for pattern in patterns))
-        self.assertEqual(bench_cloth.DeformableRigidCollision.repeat, 3)
-        self.assertEqual(bench_cloth.DeformableRigidCollisionScale.repeat, 1)
+                benchmark = inventory[benchmark_name]
+                sample_count = benchmark["rounds"] * benchmark["repeat"]
+                samples = [0.01 + 0.001 * index for index in range(sample_count)]
+                _, stats = compute_stats(samples, number=1)
+                self.assertTrue(np.isfinite([stats["ci_99_a"], stats["ci_99_b"]]).all())
         coarse_name = "simulation.bench_cloth.FastDeformableRigidCoarseCloth.time_collide"
         self.assertIn(coarse_name, inventory)
+        self.assertEqual(inventory[coarse_name]["rounds"], 2)
         self.assertTrue(any(pattern.search(coarse_name) for pattern in patterns))
         self.assertEqual(
             {case[1] for case in bench_cloth.FastDeformableRigidCoarseCloth.params[0]},
@@ -228,6 +245,7 @@ class TestSimulationBenchmarks(unittest.TestCase):
         )
         vbd_name = "simulation.bench_cloth.FastDeformableRigidCoarseClothVBD.time_simulate"
         self.assertIn(vbd_name, inventory)
+        self.assertEqual(inventory[vbd_name]["rounds"], 2)
         self.assertTrue(any(pattern.search(vbd_name) for pattern in patterns))
         self.assertIn(
             ("box_coarse_cloth_256", "box", 8, 256, 1, False),
@@ -571,21 +589,21 @@ class TestSimulationBenchmarks(unittest.TestCase):
 
         solver_cls.assert_called_once()
 
-    def test_g1_dvi_remains_available_outside_pr_gate(self):
+    def test_g1_scc_remains_available_outside_pr_gate(self):
         """Keep small and large G1 batches outside the PR gate with bounded sampling."""
         patterns = tuple(re.compile(selection) for selection in load_benchmark_patterns())
         for pr_gate in (False, True):
             inventory = self._discover_benchmarks(pr_gate=pr_gate)
-            benchmarks = [benchmark for benchmark in inventory if "G1DVI" in benchmark["name"]]
+            benchmarks = [benchmark for benchmark in inventory if "G1SCC" in benchmark["name"]]
             self.assertEqual(len(benchmarks), 1)
             benchmark = benchmarks[0]
             self.assertFalse(any(pattern.search(benchmark["name"]) for pattern in patterns))
             self.assertEqual(benchmark["params"], [["4", "512"]])
             self.assertEqual((benchmark["rounds"], benchmark["repeat"]), (1, 3))
 
-    def test_g1_dvi_builds_once_per_world_count(self):
+    def test_g1_scc_builds_once_per_world_count(self):
         """Avoid rebuilding and warming G1 for each ASV timing sample."""
-        workload = bench_kamino.G1DVI()
+        workload = bench_kamino.G1SCC()
         with (
             patch("newton.examples.robot.example_robot_g1.Example") as example_cls,
             patch.object(wp, "get_cuda_device_count", return_value=1),
@@ -624,13 +642,13 @@ class TestSimulationBenchmarks(unittest.TestCase):
             "simulation.bench_anymal.FastMetricsExampleAnymalPretrained.track_mean_world_step_time",
             "simulation.bench_teleop_mujoco.FastTeleopMuJoCo.time_teleop_loop",
             "simulation.bench_teleop_mujoco.FastTeleopMuJoCo.track_p95_loop_ms",
-            "simulation.bench_kamino.FastDRLegs.time_simulate",
+            "simulation.bench_kamino.FastMetricsDRLegs.track_mean_world_step_time",
             "simulation.bench_viewer.FastViewerGL.time_rendering_frame",
             "simulation.bench_mujoco.FastAllegro.track_p95_step_time",
             "simulation.bench_mujoco.FastAllegro.track_simulate",
-            "simulation.bench_sensor_tiled_camera.FastSensorTiledCamera.time_render_color_depth",
-            "simulation.bench_sensor_tiled_camera.FastSensorTiledCamera.time_render_depth_only",
-            "simulation.bench_sensor_tiled_camera.FastSensorTiledCameraPixel.time_render_color_depth",
+            "simulation.bench_sensor_camera.FastSensorCamera.time_render_color_depth",
+            "simulation.bench_sensor_camera.FastSensorCamera.time_render_depth_only",
+            "simulation.bench_sensor_camera.FastSensorCameraPixel.time_render_color_depth",
             "simulation.bench_inverse_dynamics.FastInverseDynamics.time_eval_inverse_dynamics_force",
         )
         dashboard_benchmarks = (
@@ -650,15 +668,7 @@ class TestSimulationBenchmarks(unittest.TestCase):
             "setup.bench_model.KpiInitializeSolver.track_initialize_solver",
             "simulation.bench_teleop_mujoco.TeleopMuJoCo.track_frame_overrun_pct",
             "simulation.bench_teleop_mujoco.FastTeleopMuJoCo.track_mean_loop_ms",
-            "simulation.bench_sensor_tiled_camera.FastSensorTiledCamera.time_render_color_only",
-            "simulation.bench_sensor_tiled_camera.FastSensorTiledCameraPixel.time_render_color_only",
-            "simulation.bench_sensor_tiled_camera.FastSensorTiledCameraPixel.time_render_depth_only",
-            # SensorCamera benchmarks stay out of the PR gate: the class is new in
-            # this PR, so it cannot be imported on the base commit for comparison.
-            "simulation.bench_sensor_camera.FastSensorCamera.time_render_color_depth",
             "simulation.bench_sensor_camera.FastSensorCamera.time_render_color_only",
-            "simulation.bench_sensor_camera.FastSensorCamera.time_render_depth_only",
-            "simulation.bench_sensor_camera.FastSensorCameraPixel.time_render_color_depth",
             "simulation.bench_sensor_camera.FastSensorCameraPixel.time_render_color_only",
             "simulation.bench_sensor_camera.FastSensorCameraPixel.time_render_depth_only",
             "simulation.bench_actuators.ActuatorG1.time_step",
@@ -677,7 +687,6 @@ class TestSimulationBenchmarks(unittest.TestCase):
     def test_pr_gate_caps_repeats_without_dropping_cases(self):
         """Keep full workloads with three timing samples in the PR gate."""
         cases = (
-            (bench_quadruped_xpbd.FastExampleQuadrupedXPBD, 10),
             (bench_selection.FastExampleSelectionCartpoleMuJoCo, 10),
             (bench_contacts.FastConvexCollision, 5),
         )
@@ -727,7 +736,7 @@ class TestSimulationBenchmarks(unittest.TestCase):
 
     def test_pr_camera_warmup_matches_selected_outputs(self):
         """Limit camera outputs and fixed repeats to the PR gate."""
-        prefix = "simulation.bench_sensor_tiled_camera.FastSensorTiledCamera"
+        prefix = "simulation.bench_sensor_camera.FastSensorCamera"
         full = {
             item["name"]: item for item in self._discover_benchmarks(pr_gate=False) if item["name"].startswith(prefix)
         }
@@ -747,21 +756,21 @@ class TestSimulationBenchmarks(unittest.TestCase):
         self.assertEqual({item["repeat"] for item in gated.values()}, {1})
 
         with patch.dict("os.environ", {"NEWTON_ASV_PR_GATE": "1"}):
-            self.assertFalse(bench_sensor_tiled_camera._pr_gate_skips_output(True, True, ((True, True),)))
-            self.assertTrue(bench_sensor_tiled_camera._pr_gate_skips_output(True, False, ((True, True),)))
+            self.assertFalse(bench_sensor_camera._pr_gate_skips_output(True, True, ((True, True),)))
+            self.assertTrue(bench_sensor_camera._pr_gate_skips_output(True, False, ((True, True),)))
         with patch.dict("os.environ", {}, clear=True):
-            self.assertFalse(bench_sensor_tiled_camera._pr_gate_skips_output(True, False, ((True, True),)))
+            self.assertFalse(bench_sensor_camera._pr_gate_skips_output(True, False, ((True, True),)))
 
         cases = (
-            (bench_sensor_tiled_camera.FastSensorTiledCamera, ((True, True), (False, True))),
-            (bench_sensor_tiled_camera.FastSensorTiledCameraPixel, ((True, True),)),
+            (bench_sensor_camera.FastSensorCamera, ((True, True), (False, True))),
+            (bench_sensor_camera.FastSensorCameraPixel, ((True, True),)),
         )
         for benchmark_cls, expected_modes in cases:
             with (
                 self.subTest(benchmark=benchmark_cls.__name__),
                 patch.dict("os.environ", {"NEWTON_ASV_PR_GATE": "1"}),
-                patch.object(bench_sensor_tiled_camera, "_TiledCameraSceneRig") as rig_cls,
-                patch.object(bench_sensor_tiled_camera.wp, "synchronize"),
+                patch.object(bench_sensor_camera, "_SensorCameraSceneRig") as rig_cls,
+                patch.object(bench_sensor_camera.wp, "synchronize"),
             ):
                 rig = rig_cls.return_value
                 benchmark_cls().setup(64, 4096, 50)
@@ -773,11 +782,11 @@ class TestSimulationBenchmarks(unittest.TestCase):
 
         with (
             patch.dict("os.environ", {}, clear=True),
-            patch.object(bench_sensor_tiled_camera, "_TiledCameraSceneRig") as rig_cls,
-            patch.object(bench_sensor_tiled_camera.wp, "synchronize"),
+            patch.object(bench_sensor_camera, "_SensorCameraSceneRig") as rig_cls,
+            patch.object(bench_sensor_camera.wp, "synchronize"),
         ):
             rig = rig_cls.return_value
-            bench_sensor_tiled_camera.FastSensorTiledCameraPixel().setup(64, 4096, 50)
+            bench_sensor_camera.FastSensorCameraPixel().setup(64, 4096, 50)
 
         self.assertEqual(
             tuple((call.kwargs["color"], call.kwargs["depth"]) for call in rig.render.call_args_list),

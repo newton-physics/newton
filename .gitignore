@@ -64,6 +64,8 @@ asv/html
 MUJOCO_LOG.TXT
 imgui.ini
 newton/tests/outputs/
+# Written to the working directory by the basic_plotting example
+/solver_convergence.png
 
 # Viser recordings
 docs/_static/recordings/

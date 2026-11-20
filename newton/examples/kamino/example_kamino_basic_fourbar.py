@@ -1,14 +1,19 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example for basic four-bar mechanism
-#
-# Shows how to simulate a basic four-bar linkage with multiple worlds using SolverKamino.
-#
-# Command: python -m newton.examples kamino_basic_fourbar --world-count 16
-#
-###########################################################################
+"""Example for basic four-bar mechanism
+
+Shows how to simulate a basic four-bar linkage with multiple worlds using SolverKamino.
+
+Success criteria:
+- Each setup consists of a table with a four-bar linkage sitting on top.
+- The user can grasp the four bar linkage, move it, and the four bar system react to external forces
+  while maintaining its integrity.
+
+Runs:
+- `python -m newton.examples kamino_basic_fourbar`
+- `python -m newton.examples kamino_basic_fourbar --world-count 16`
+"""
 
 import argparse
 
@@ -17,12 +22,14 @@ import warp as wp
 
 import newton
 import newton.examples
+from newton.examples.kamino.utils.ldl import add_ldl_arguments, configure_ldl
 from newton.tests import get_kamino_basics_asset
 from newton.tests.utils import basics
 
 
 class Example:
     def __init__(self, viewer: newton.viewer.ViewerBase, args=None):
+        """Build the Kamino four-bar linkage simulation with the requested solver options."""
         # Set simulation run-time configurations
         self.fps = 50
         self.frame_dt = 1.0 / self.fps
@@ -85,6 +92,7 @@ class Example:
         solver_config.padmm.contact_warmstart_method = "geom_pair_net_force"
 
         # Create the Kamino solver for the given model
+        configure_ldl(solver_config, args)
         self.solver = newton.solvers.SolverKamino(model=self.model, config=solver_config)
 
         # Create state, control, and contacts data containers
@@ -166,11 +174,15 @@ class Example:
         self.viewer.end_frame()
 
     def test_final(self):
-        pass  # TODO: Add some assertions here once we have a more meaningful test scenario
+        """Verify final body poses and velocities remain finite."""
+        assert np.isfinite(self.state_0.body_q.numpy()).all(), "Body poses must remain finite"
+        assert np.isfinite(self.state_0.body_qd.numpy()).all(), "Body velocities must remain finite"
 
     @staticmethod
     def create_parser():
+        """Create simulation arguments, including optional Kamino LDL backend and ordering selection."""
         parser = newton.examples.create_parser()
+        add_ldl_arguments(parser)
         newton.examples.add_world_count_arg(parser)
         parser.set_defaults(world_count=1)
         parser.add_argument(
@@ -183,6 +195,7 @@ class Example:
 
 
 if __name__ == "__main__":
+    newton.utils.setup_console_logging()
     parser = Example.create_parser()
     viewer, args = newton.examples.init(parser)
     newton.examples.run(Example(viewer, args), args)

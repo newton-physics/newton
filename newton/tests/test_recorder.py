@@ -237,7 +237,7 @@ def test_recorder_ringbuffer_save_load(test: TestRecorder, device):
                         new_recorder.deserialized_model[name] = new_recorder.deserialized_model.pop(f"_{name}")
                 restored_model = newton.Model(device=device)
                 with warnings.catch_warnings():
-                    warnings.simplefilter("error", newton.exceptions.NewtonDeprecationWarning)
+                    warnings.simplefilter("error", newton.NewtonDeprecationWarning)
                     new_recorder.playback_model(restored_model)
 
                 test.assertEqual(restored_model.body_count, model.body_count)
@@ -800,6 +800,11 @@ def test_real_model_recording_roundtrip(test: TestRecorder, device):
                 test.assertEqual(restored_model.body_count, model.body_count)
                 test.assertEqual(restored_model.joint_count, model.joint_count)
                 test.assertEqual(restored_model.shape_count, model.shape_count)
+
+                for attr_name in ("joint_stiffness", "joint_rest_q"):
+                    np.testing.assert_array_equal(
+                        getattr(restored_model, attr_name).numpy(), getattr(model, attr_name).numpy()
+                    )
 
                 # Verify MuJoCo attributes loaded (these use dynamic vec5 types).
                 # SolverMuJoCo.register_custom_attributes guarantees ``model.mujoco`` and

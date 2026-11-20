@@ -14,7 +14,15 @@ sorted keys for the ``(shape_a, shape_b)`` pair range — ignoring the
 range whose normal also passes the dot-product threshold.  "Closest" is
 measured in world space between the contact *midpoints*
 ``0.5 * (world(point0) + world(point1))``, i.e. symmetric in shape 0 and
-shape 1.  The result is a per-contact match index:
+shape 1. In sticky mode, previous body-local witnesses are instead transformed
+with the current poses and the larger drift of the two witnesses is compared,
+so shared body motion and normal compression do not age the contact history
+while a jump to another feature of a body does. A sticky contact also matches
+while it travels with one body's translation, like the contact of a rolling
+wheel, which stays below the axle while it moves around the wheel: that body's
+world-oriented witness offset and the world separation of the witnesses stay.
+Such a contact keeps its identity, and replay keeps its fresh geometry. The
+result is a per-contact match index:
 
 - ``>= 0``: index of the matched contact in the previous frame's sorted buffer.
 - ``MATCH_NOT_FOUND (-1)``: shape pair has no prior contacts.
@@ -70,8 +78,9 @@ The matcher owns its previous-frame state: sorted keys and uniqueness claims
 each), 40 bytes/contact in total.  None of it aliases the
 :class:`ContactSorter` scratch buffers, so a pipeline stage that runs between
 sorting and matching (for example a pass that compacts the sorted stream) may
-reuse that scratch without corrupting the history.  Sticky mode adds the
-body-frame points and offsets (48 bytes/contact) and replays the owned normal.
+reuse that scratch without corrupting the history. Sticky mode adds body-frame
+points and offsets, world-oriented witness offsets, and witness separation
+(84 bytes/contact), and replays the owned normal when its witnesses remain close.
 The optional contact report adds one ``int32`` flag per contact.
 
 Per-frame call order (inside :class:`~newton.CollisionPipeline`)::
@@ -99,6 +108,7 @@ import warp as wp
 from ..core.reset import reset_world_selected
 from ..core.types import Devicelike
 from .contact_sort import SORT_KEY_SENTINEL
+from .sdf_planar_recovery import MeshRecoveryData, empty_mesh_recovery, pair_was_recovered
 
 if TYPE_CHECKING:
     from .contact_sort import ContactSorter
@@ -224,6 +234,14 @@ class _MatchData:
     # shape 1's contact points, saved by the previous frame's save kernel.
     prev_keys: wp.array[wp.int64]
     prev_pos_world: wp.array[wp.vec3]
+    prev_point0: wp.array[wp.vec3]
+    prev_point1: wp.array[wp.vec3]
+    # Sticky mode: each witness's world-oriented offset from its body's origin,
+    # and the world-space separation of the two witnesses.
+    prev_offset_world0: wp.array[wp.vec3]
+    prev_offset_world1: wp.array[wp.vec3]
+    prev_separation: wp.array[wp.vec3]
+    sticky: int
     prev_normal: wp.array[wp.vec3]
     prev_count: wp.array[wp.int32]
     # ``[buffer id, contact generation]`` of the previous frame.
@@ -298,24 +316,20 @@ def _match_contacts_kernel(data: _MatchData):
 
     target_key = data.new_keys[tid]
 
-    # World-space midpoint of the two contact points (symmetric in shape 0 /
-    # shape 1).  Matches the quantity persisted by ``_save_sorted_state_kernel``
-    # for the previous frame, so both sides of ``diff`` below measure the same
-    # physical quantity.
     p0 = data.new_point0[tid]
-    bid0 = data.shape_body[data.new_shape0[tid]]
-    if bid0 == -1:
-        p0w = p0
-    else:
-        p0w = wp.transform_point(data.body_q[bid0], p0)
-
     p1 = data.new_point1[tid]
-    bid1 = data.shape_body[data.new_shape1[tid]]
-    if bid1 == -1:
-        p1w = p1
-    else:
+    bid0 = data.shape_body[shape0]
+    p0w = p0
+    offset0 = p0
+    if bid0 >= 0:
+        p0w = wp.transform_point(data.body_q[bid0], p0)
+        offset0 = wp.quat_rotate(wp.transform_get_rotation(data.body_q[bid0]), p0)
+    bid1 = data.shape_body[shape1]
+    p1w = p1
+    offset1 = p1
+    if bid1 >= 0:
         p1w = wp.transform_point(data.body_q[bid1], p1)
-
+        offset1 = wp.quat_rotate(wp.transform_get_rotation(data.body_q[bid1]), p1)
     new_pos_w = 0.5 * (p0w + p1w)
     new_n = data.new_normal[tid]
 
@@ -339,9 +353,28 @@ def _match_contacts_kernel(data: _MatchData):
     best_idx = int(-1)
     best_dist_sq = float(data.pos_threshold_sq)
     for old_idx in range(range_lo, range_hi):
-        old_pos = data.prev_pos_world[old_idx]
-        diff = new_pos_w - old_pos
-        dist_sq = wp.dot(diff, diff)
+        dist_sq = float(0.0)
+        if data.sticky != 0:
+            # A contact stays the same while it stays put on both bodies, or while it
+            # travels with one body's translation, like the contact of a rolling wheel.
+            # Rigid transforms preserve distance. Compare in each body's frame
+            # to avoid world-space rounding and unnecessary transforms.
+            on_bodies = wp.max(
+                wp.length_sq(p0 - data.prev_point0[old_idx]), wp.length_sq(p1 - data.prev_point1[old_idx])
+            )
+            # Travelling: one body's world-oriented witness offset and the world
+            # separation of the witnesses both stay.
+            travelling = wp.max(
+                wp.length_sq(p1w - p0w - data.prev_separation[old_idx]),
+                wp.min(
+                    wp.length_sq(offset0 - data.prev_offset_world0[old_idx]),
+                    wp.length_sq(offset1 - data.prev_offset_world1[old_idx]),
+                ),
+            )
+            dist_sq = wp.min(on_bodies, travelling)
+        else:
+            diff = new_pos_w - data.prev_pos_world[old_idx]
+            dist_sq = wp.dot(diff, diff)
 
         if dist_sq <= best_dist_sq:
             old_n = data.prev_normal[old_idx]
@@ -425,6 +458,7 @@ class _SaveStateData:
     src_normal: wp.array[wp.vec3]
     src_count: wp.array[wp.int32]
     src_generation: wp.array[wp.int32]
+    recovery: MeshRecoveryData
     buffer_id: int
 
     body_q: wp.array[wp.transform]
@@ -435,8 +469,12 @@ class _SaveStateData:
     dst_normal: wp.array[wp.vec3]
     dst_point0_body: wp.array[wp.vec3]
     dst_point1_body: wp.array[wp.vec3]
+    dst_offset_world0: wp.array[wp.vec3]
+    dst_offset_world1: wp.array[wp.vec3]
+    dst_separation: wp.array[wp.vec3]
     dst_offset0_body: wp.array[wp.vec3]
     dst_offset1_body: wp.array[wp.vec3]
+    dst_recovered: wp.array[wp.bool]
     dst_claim: wp.array[wp.int64]
     dst_prev_was_matched: wp.array[wp.int32]
     dst_count: wp.array[wp.int32]
@@ -447,20 +485,23 @@ class _SaveStateData:
 
 
 @wp.kernel(enable_backward=False)
-def _save_sorted_state_kernel(data: _SaveStateData):
+def _save_sorted_state_kernel(data: _SaveStateData, reset_world_mask: wp.array[wp.bool]):
     """Copy sorted contacts into the previous-frame buffers for next-frame matching.
 
-    The persisted ``dst_pos_world`` is the world-space *midpoint* of the two
-    contact points, so the next frame's match kernel compares a shape-symmetric
-    quantity.
+    Latest matching uses the world-space midpoint in ``dst_pos_world``;
+    sticky matching uses the body-local witnesses in ``dst_point0_body`` and
+    ``dst_point1_body``.
     """
     i = wp.tid()
+    # Matching and reporting have already consumed the mask; saving does not read it.
+    if i < reset_world_mask.shape[0]:
+        reset_world_mask[i] = False
     if i == 0:
         # An overflowing narrow phase counts past capacity; only stored rows are history.
         data.dst_count[0] = wp.min(data.src_count[0], data.dst_keys.shape[0])
         data.dst_frame[0] = data.buffer_id
         data.dst_frame[1] = data.src_generation[0]
-    if i < data.src_count[0]:
+    if i < wp.min(data.src_count[0], data.dst_keys.shape[0]):
         data.dst_keys[i] = data.src_keys[i]
         data.dst_claim[i] = _CLAIM_SENTINEL
         if data.has_report != 0:
@@ -486,8 +527,16 @@ def _save_sorted_state_kernel(data: _SaveStateData):
         if data.has_sticky != 0:
             data.dst_point0_body[i] = p0
             data.dst_point1_body[i] = p1
+            data.dst_offset_world0[i] = p0
+            if bid0 != -1:
+                data.dst_offset_world0[i] = p0w - wp.transform_get_translation(data.body_q[bid0])
+            data.dst_offset_world1[i] = p1
+            if bid1 != -1:
+                data.dst_offset_world1[i] = p1w - wp.transform_get_translation(data.body_q[bid1])
+            data.dst_separation[i] = p1w - p0w
             data.dst_offset0_body[i] = data.src_offset0[i]
             data.dst_offset1_body[i] = data.src_offset1[i]
+            data.dst_recovered[i] = pair_was_recovered(data.recovery, wp.vec2i(data.src_shape0[i], data.src_shape1[i]))
 
 
 # ------------------------------------------------------------------
@@ -515,6 +564,7 @@ class _ReplayData:
     """Bundled arrays for the sticky replay kernel."""
 
     match_index: wp.array[wp.int32]
+    recovery: MeshRecoveryData
     contact_count: wp.array[wp.int32]
 
     prev_point0: wp.array[wp.vec3]
@@ -522,6 +572,7 @@ class _ReplayData:
     prev_offset0: wp.array[wp.vec3]
     prev_offset1: wp.array[wp.vec3]
     prev_normal: wp.array[wp.vec3]
+    prev_recovered: wp.array[wp.bool]
 
     point0: wp.array[wp.vec3]
     point1: wp.array[wp.vec3]
@@ -546,6 +597,8 @@ def _replay_matched_kernel(data: _ReplayData):
     if idx < wp.int32(0):
         return  # MATCH_NOT_FOUND or MATCH_BROKEN -- keep new-frame data.
 
+    if data.prev_recovered[idx] or pair_was_recovered(data.recovery, wp.vec2i(data.shape0[tid], data.shape1[tid])):
+        return  # A recovery certificate applies only to its own frame's geometry.
     body0 = data.shape_body[data.shape0[tid]]
     body1 = data.shape_body[data.shape1[tid]]
     p0_world = data.point0[tid]
@@ -559,16 +612,12 @@ def _replay_matched_kernel(data: _ReplayData):
     if fresh_gap > wp.float32(0.0):
         return
 
-    # Body-local witnesses can leave the fresh contact when a body rotates.
-    a0_world = data.prev_point0[idx]
-    a1_world = data.prev_point1[idx]
-    if body0 >= wp.int32(0):
-        a0_world = wp.transform_point(data.body_q[body0], a0_world)
-    if body1 >= wp.int32(0):
-        a1_world = wp.transform_point(data.body_q[body1], a1_world)
-    if wp.length_sq(a0_world - p0_world) > data.pos_threshold_sq:
-        return
-    if wp.length_sq(a1_world - p1_world) > data.pos_threshold_sq:
+    # A contact that travelled with one body keeps its identity but not its old witnesses
+    # once they left the fresh contact points on their bodies.
+    if (
+        wp.length_sq(data.prev_point0[idx] - data.point0[tid]) > data.pos_threshold_sq
+        or wp.length_sq(data.prev_point1[idx] - data.point1[tid]) > data.pos_threshold_sq
+    ):
         return
 
     data.point0[tid] = data.prev_point0[idx]
@@ -639,7 +688,8 @@ class ContactMatcher:
     The matcher owns all previous-frame state: the sorted key cache, the
     per-prev claim word used by the ``atomic_min`` race that keeps new→prev
     injective, and the world-space contact midpoints and normals, 40 bytes per
-    contact in total.  It does not alias sorter scratch, so the history
+    contact for the common history. Sticky mode adds 84 bytes per contact.
+    It does not alias sorter scratch, so the history
     survives any pass that reuses that scratch between sorting and matching.
     When ``contact_report`` is disabled, the ``prev_was_matched`` flag array
     is skipped.
@@ -661,14 +711,18 @@ class ContactMatcher:
         pos_threshold: World-space distance threshold [m] between the
             previous and current contact midpoints
             ``0.5 * (world(point0) + world(point1))``.  Contacts whose midpoint
-            moved more than this between frames are considered broken. In sticky mode,
-            also bounds the distance between each saved witness and its fresh contact point.
+            moved more than this between frames are considered broken. In sticky
+            mode, match when both transported witnesses stay within this distance,
+            or when changes in one body's world-oriented witness offset and
+            the world-space witness separation stay within it. Matched contacts
+            keep fresh geometry if either transported witness exceeds this distance.
         normal_dot_threshold: Minimum dot product between old and new contact
             normals.  Below this the contact is considered broken.
         contact_report: Allocate the ``prev_was_matched`` flag array needed
             to enumerate broken contacts in :meth:`build_report`.
-        sticky: Allocate four extra per-contact ``wp.vec3`` buffers
-            (``point0``/``point1``/``offset0``/``offset1`` body-frame) used by
+        sticky: Allocate seven extra per-contact ``wp.vec3`` buffers:
+            body-frame points and offsets, world-oriented witness offsets,
+            and witness separation. These support travelling matches and
             :meth:`replay_matched`, which replays the owned previous normal.
             When ``False`` these attributes are ``None`` and no extra kernel
             launches are added.
@@ -740,13 +794,21 @@ class ContactMatcher:
             if sticky:
                 self._prev_point0 = wp.zeros(capacity, dtype=wp.vec3)
                 self._prev_point1 = wp.zeros(capacity, dtype=wp.vec3)
+                self._prev_offset_world0 = wp.zeros(capacity, dtype=wp.vec3)
+                self._prev_offset_world1 = wp.zeros(capacity, dtype=wp.vec3)
+                self._prev_separation = wp.zeros(capacity, dtype=wp.vec3)
                 self._prev_offset0 = wp.zeros(capacity, dtype=wp.vec3)
                 self._prev_offset1 = wp.zeros(capacity, dtype=wp.vec3)
+                self._prev_recovered = wp.empty(capacity, dtype=wp.bool)
             else:
                 self._prev_point0 = None
                 self._prev_point1 = None
+                self._prev_offset_world0 = None
+                self._prev_offset_world1 = None
+                self._prev_separation = None
                 self._prev_offset0 = None
                 self._prev_offset1 = None
+                self._prev_recovered = None
 
     # ------------------------------------------------------------------
     # Properties
@@ -836,7 +898,11 @@ class ContactMatcher:
 
         Distance is measured between world-space contact midpoints
         (``0.5 * (world(point0) + world(point1))``) so the metric is symmetric
-        in shape 0 / shape 1.
+        in shape 0 / shape 1. Sticky mode instead measures the larger distance
+        from each previous body-local witness, transformed by its current body
+        pose, to its fresh contact point. It also accepts travelling contacts
+        when changes in either body's world-oriented witness offset and in
+        the world-space witness separation stay within the threshold.
 
         Args:
             sort_keys: Current frame's sorted int64 keys (use
@@ -861,6 +927,12 @@ class ContactMatcher:
         data = _MatchData()
         data.prev_keys = self._prev_sorted_keys
         data.prev_pos_world = self._prev_pos_world
+        data.prev_point0 = self._prev_point0 if self._sticky else self._prev_pos_world
+        data.prev_point1 = self._prev_point1 if self._sticky else self._prev_pos_world
+        data.prev_offset_world0 = self._prev_offset_world0 if self._sticky else self._prev_pos_world
+        data.prev_offset_world1 = self._prev_offset_world1 if self._sticky else self._prev_pos_world
+        data.prev_separation = self._prev_separation if self._sticky else self._prev_pos_world
+        data.sticky = int(self._sticky)
         data.prev_normal = self._prev_normal
         data.prev_count = self._prev_count
         data.prev_frame = self._prev_frame
@@ -916,6 +988,7 @@ class ContactMatcher:
         contact_generation: wp.array[wp.int32],
         sorted_offset0: wp.array[wp.vec3] | None = None,
         sorted_offset1: wp.array[wp.vec3] | None = None,
+        recovery: MeshRecoveryData | None = None,
         device: Devicelike = None,
     ) -> None:
         """Save current frame's sorted contacts for next-frame matching.
@@ -945,6 +1018,7 @@ class ContactMatcher:
             contact_generation: That buffer's single-element contact generation.
             sorted_offset0, sorted_offset1: Required when sticky is enabled;
                 ignored otherwise.
+            recovery: Recovery certificates for the current contact frame.
             device: Device to launch on.
         """
         data = _SaveStateData()
@@ -956,6 +1030,7 @@ class ContactMatcher:
         data.src_normal = sorted_normal
         data.src_count = contact_count
         data.src_generation = contact_generation
+        data.recovery = recovery or empty_mesh_recovery(sorted_keys.device.alias)
         data.buffer_id = int(buffer_id)
         data.body_q = body_q
         data.shape_body = shape_body
@@ -965,6 +1040,7 @@ class ContactMatcher:
         data.dst_count = self._prev_count
         data.dst_frame = self._prev_frame
         data.dst_claim = self._prev_claim
+        data.dst_recovered = self._prev_recovered
 
         data.dst_prev_was_matched = self._prev_was_matched
         data.has_report = 1 if self._has_report else 0
@@ -975,6 +1051,9 @@ class ContactMatcher:
             data.src_offset1 = sorted_offset1
             data.dst_point0_body = self._prev_point0
             data.dst_point1_body = self._prev_point1
+            data.dst_offset_world0 = self._prev_offset_world0
+            data.dst_offset_world1 = self._prev_offset_world1
+            data.dst_separation = self._prev_separation
             data.dst_offset0_body = self._prev_offset0
             data.dst_offset1_body = self._prev_offset1
             data.has_sticky = 1
@@ -985,12 +1064,19 @@ class ContactMatcher:
             data.src_offset1 = sorted_point0
             data.dst_point0_body = self._prev_pos_world
             data.dst_point1_body = self._prev_pos_world
+            data.dst_offset_world0 = self._prev_pos_world
+            data.dst_offset_world1 = self._prev_pos_world
+            data.dst_separation = self._prev_pos_world
             data.dst_offset0_body = self._prev_pos_world
             data.dst_offset1_body = self._prev_pos_world
             data.has_sticky = 0
 
-        wp.launch(_save_sorted_state_kernel, dim=self._capacity, inputs=[data], device=device)
-        self._reset_world_mask.zero_()
+        wp.launch(
+            _save_sorted_state_kernel,
+            dim=max(self._capacity, self._reset_world_mask.shape[0], 1),
+            inputs=[data, self._reset_world_mask],
+            device=device,
+        )
 
     def replay_matched(
         self,
@@ -1008,6 +1094,7 @@ class ContactMatcher:
         margin1: wp.array[wp.float32],
         body_q: wp.array[wp.transform],
         shape_body: wp.array[wp.int32],
+        recovery: MeshRecoveryData,
         device: Devicelike = None,
     ) -> None:
         """Overwrite matched rows with the saved previous-frame contact geometry.
@@ -1016,8 +1103,10 @@ class ContactMatcher:
         run **after** :meth:`ContactSorter.sort_full` and **before**
         :meth:`save_sorted_state`.  Unmatched rows (``match_index < 0``) are
         left untouched so new contacts keep their fresh narrow-phase geometry.
-        Separated contacts and rows whose saved witnesses move more than
-        ``pos_threshold`` from the fresh witnesses also retain fresh geometry.
+        Matched separated contacts also retain fresh geometry, and so do matched
+        contacts whose saved witnesses moved more than ``pos_threshold`` from the fresh
+        ones on their bodies: a contact travelling with a rolling body keeps its
+        identity but takes its current geometry.
         Only ``point0``/``point1``/``offset0``/``offset1``/``normal`` are
         restored; other fields (``shape0``/``shape1``, margins, ...) are
         already identical for a matched contact.
@@ -1028,13 +1117,15 @@ class ContactMatcher:
             point0, point1, offset0, offset1, normal: Current-frame sorted
                 contact record to be overwritten on matched penetrating rows.
             shape0, shape1, margin0, margin1, body_q, shape_body: Current-frame
-                arrays used to validate separation and saved witness positions.
+                arrays used to validate separation.
+            recovery: Shape pairs whose freshly certified geometry must be preserved.
             device: Device to launch on.
         """
         if not self._sticky:
             raise ValueError("replay_matched requires the matcher to be constructed with sticky=True")
 
         data = _ReplayData()
+        data.recovery = recovery
         data.match_index = match_index
         data.contact_count = contact_count
         data.prev_point0 = self._prev_point0
@@ -1042,6 +1133,7 @@ class ContactMatcher:
         data.prev_offset0 = self._prev_offset0
         data.prev_offset1 = self._prev_offset1
         data.prev_normal = self._prev_normal
+        data.prev_recovered = self._prev_recovered
         data.point0 = point0
         data.point1 = point1
         data.offset0 = offset0
@@ -1053,8 +1145,8 @@ class ContactMatcher:
         data.margin1 = margin1
         data.body_q = body_q
         data.shape_body = shape_body
-
         data.pos_threshold_sq = self._pos_threshold_sq
+
         wp.launch(_replay_matched_kernel, dim=self._capacity, inputs=[data], device=device)
 
     def build_report(

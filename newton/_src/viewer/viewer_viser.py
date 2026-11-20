@@ -4,13 +4,16 @@
 from __future__ import annotations
 
 import collections
+import copy
 import inspect
 import logging
 import os
 import queue
+import re
 import time
 import warnings
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 from urllib.parse import urlparse
@@ -205,7 +208,8 @@ class ViewerViser(ViewerBase):
             return max(abs(float(maximum) - float(minimum)) / 100.0, 1.0e-6)
 
         def text(self, value: Any) -> None:
-            content = str(value)
+            # ImGui text is literal; retain that behavior in Markdown widgets.
+            content = re.sub(r"([\\`*_{}\[\]<>()#+.!|~-])", r"\\\1", str(value)).replace("\n", "  \n")
 
             def create(_key):
                 return self._add(lambda: self._viewer._server.gui.add_markdown(content))
@@ -615,20 +619,53 @@ class ViewerViser(ViewerBase):
         self._reset_camera_to_default(self._get_camera_up_axis())
 
     @override
+    @contextmanager
+    def _preserve_display_options(self, *, switching: bool = False) -> Iterator[None]:
+        """Preserve native wireframe choices and each client's view on reset."""
+        wireframe = self._display_options_user.get("wireframe") if switching else self._wireframe
+        if not switching:
+            camera_request = copy.deepcopy(self._camera_request)
+            camera_fov = self._camera_fov_radians
+            camera_pitch, camera_yaw = self._camera_pitch, self._camera_yaw
+            client_cameras = {
+                client_id: {
+                    name: copy.deepcopy(getattr(client.camera, name))
+                    for name in ("position", "look_at", "up_direction", "fov", "near", "far")
+                }
+                for client_id, client in self._server.get_clients().items()
+            }
+        try:
+            with super()._preserve_display_options(switching=switching):
+                yield
+        finally:
+            if wireframe is not None:
+                self._set_wireframe(wireframe)
+            if not switching:
+                self._camera_fov_radians = camera_fov
+                self._camera_pitch, self._camera_yaw = camera_pitch, camera_yaw
+                if camera_request is not None:
+                    self._set_camera_request(*camera_request)
+                # Client navigation is independent of the cached request used
+                # for new connections. Restore each connected view separately.
+                for client_id, client in self._server.get_clients().items():
+                    if client_id in client_cameras:
+                        with client.atomic():
+                            self._apply_attrs(client.camera, client_cameras[client_id])
+            self._sync_gui_controls()
+
+    @override
     def _init_extra_layer_state(self, layer):
         """Initialize Viser-specific per-layer interaction state."""
         super()._init_extra_layer_state(layer)
         layer.picking = None
-        layer._last_state = None
         layer._shape_instance_batches_by_name = {}
         layer._packed_shape_world_xforms = None
         layer._packed_shape_groups = []
+        layer._dynamic_shape_count = 0
+        layer._packed_shape_xforms_host = None
         layer._packed_shape_colors_host = None
-        layer._packed_shape_colors_device = None
-        layer._shape_colors_changed_device = None
+        layer._shape_appearance_changed_device = None
         layer._packed_shape_opacities_host = None
-        layer._packed_shape_opacities_device = None
-        layer._shape_opacities_changed_device = None
 
     @override
     def set_model(self, model: newton.Model | None):
@@ -640,9 +677,12 @@ class ViewerViser(ViewerBase):
         previous_up_axis = self._camera_up_axis
         super().set_model(model)
         self._build_packed_shape_arrays()
-        self.picking = Picking(model, world_offsets=self.world_offsets) if model is not None else None
+        self.picking = (
+            Picking(model, world_offsets=self.world_offsets, visible_worlds_mask=self._visible_worlds_mask)
+            if model is not None
+            else None
+        )
         if self.picking is not None:
-            self.picking.visible_worlds_mask = self._visible_worlds_mask
             try:
                 self.picking._load_kernels()
             except Exception:
@@ -651,6 +691,24 @@ class ViewerViser(ViewerBase):
         up_axis = self._get_camera_up_axis()
         if model is None or up_axis != previous_up_axis:
             self._reset_camera_to_default(up_axis)
+
+    @override
+    def notify_model_changed(self, flags: newton.ModelFlags | int) -> None:
+        if self.model is None or not flags & newton.ModelFlags.SHAPE_TYPE_AND_SOURCE:
+            return
+        # The picked point was on geometry that changed, as on clear_model().
+        self._remove_picking_control(self.layer.layer_id, release=True)
+        # Batches change their instance counts, so drop the previous batch handles.
+        for shapes in self._shape_instances.values():
+            name = self._qualify(shapes.name)
+            self._remove_plane_handles(name)
+            self._instances.pop(name, None)
+            handle = self._scene_handles.pop(name, None)
+            if handle is not None:
+                self._detach_picking_callback(handle)
+                handle.remove()
+        super().notify_model_changed(flags)
+        self._build_packed_shape_arrays()
 
     @override
     def set_visible_worlds(self, worlds: Sequence[int] | None) -> None:
@@ -674,13 +732,12 @@ class ViewerViser(ViewerBase):
         self._shape_instance_batches_by_name = {batch.name: batch for batch in batches}
         total = sum(len(batch.xforms) for batch in batches)
         self._packed_shape_groups = []
+        self._dynamic_shape_count = sum(len(batch.xforms) for batch in batches if not batch.static)
+        self._packed_shape_xforms_host = None
         self._packed_shape_world_xforms = None
         self._packed_shape_colors_host = None
-        self._packed_shape_colors_device = None
-        self._shape_colors_changed_device = None
+        self._shape_appearance_changed_device = None
         self._packed_shape_opacities_host = None
-        self._packed_shape_opacities_device = None
-        self._shape_opacities_changed_device = None
         if total == 0:
             return
 
@@ -688,16 +745,14 @@ class ViewerViser(ViewerBase):
         offset = 0
         for batch in batches:
             count = len(batch.xforms)
-            batch.world_xforms = packed[offset : offset + count]
+            # A variant batch can lose all its instances; Warp rejects empty slices.
+            batch.world_xforms = (
+                packed[offset : offset + count] if count else wp.empty(0, dtype=wp.transform, device=self.device)
+            )
             self._packed_shape_groups.append((batch, offset, count))
             offset += count
         self._packed_shape_world_xforms = packed
-        if self.model_shape_color is not None:
-            self._packed_shape_colors_device = wp.empty_like(self.model_shape_color)
-            self._shape_colors_changed_device = wp.zeros(1, dtype=wp.int32, device=self.device)
-        if self.model_shape_opacity is not None:
-            self._packed_shape_opacities_device = wp.empty_like(self.model_shape_opacity)
-            self._shape_opacities_changed_device = wp.zeros(1, dtype=wp.int32, device=self.device)
+        self._shape_appearance_changed_device = wp.zeros(2, dtype=wp.int32, device=self.device)
 
     @override
     def set_world_offsets(self, spacing: tuple[float, float, float] | list[float] | wp.vec3) -> None:
@@ -1234,7 +1289,7 @@ class ViewerViser(ViewerBase):
     def _picking_world_offset(layer, picking: Picking) -> np.ndarray:
         """Return the visual world offset for the currently picked body."""
         offset = np.zeros(3, dtype=np.float32)
-        body_idx = int(picking.pick_body.numpy()[0])
+        body_idx = picking.pick_body
         if body_idx < 0 or layer.world_offsets is None or layer.world_offsets.shape[0] == 0:
             return offset
         if layer.model is None or layer.model.body_world is None:
@@ -1285,8 +1340,7 @@ class ViewerViser(ViewerBase):
         """
         layer = self._layers[layer_id]
         picking = layer.picking
-        pick_state = picking.pick_state.numpy()
-        target = self._picking_point_to_visual(layer, picking, pick_state[0]["picking_target_world"])
+        target = self._picking_point_to_visual(layer, picking, picking.pick_target)
         self._remove_picking_control(layer_id, release=False)
         handle = self._server.scene.add_transform_controls(
             name=self._picking_control_path(layer_id),
@@ -1342,9 +1396,7 @@ class ViewerViser(ViewerBase):
         )
         offset = self._picking_world_offset(layer, layer.picking)
         target = np.asarray(point_with_offset).copy() - offset
-        pick_state = layer.picking.pick_state.numpy()
-        pick_state[0]["picking_target_world"] = target
-        layer.picking.pick_state.assign(pick_state)
+        layer.picking.pick_target = wp.vec3(*target)
 
     def _process_interaction_events(self) -> None:
         """Apply browser callbacks on the simulation thread between frames."""
@@ -1400,6 +1452,7 @@ class ViewerViser(ViewerBase):
                         self._end_gizmo_drag(name)
             elif event_type == "viewer_option":
                 _, attribute, value = event
+                self._display_options_user[attribute] = value
                 if attribute == "wireframe":
                     self._set_wireframe(value)
                 else:
@@ -2220,7 +2273,8 @@ class ViewerViser(ViewerBase):
                 # Viser suppresses unchanged properties, including array values.
                 handle.batched_positions = positions
                 handle.batched_wxyzs = quats_wxyz
-                handle.batched_scales = batched_scales
+                if batched_scales is not instance["scales"]:
+                    handle.batched_scales = batched_scales
                 instance["scales"] = batched_scales
                 if use_trimesh:
                     # Re-export the textured asset only when its material changes.
@@ -2280,7 +2334,10 @@ class ViewerViser(ViewerBase):
 
     @override
     def log_state(self, state: newton.State) -> None:
-        """Log simulation state with packed model-shape transfers.
+        """Log moving shapes; reuse stationary transforms until the model changes.
+
+        Set ``model_changed = True`` after editing static model transforms in place.
+        Layer transforms and world-spacing setters invalidate them automatically.
 
         Args:
             state: Current simulation state.
@@ -2295,88 +2352,69 @@ class ViewerViser(ViewerBase):
             self._render_picking_line()
             return
 
-        self._sync_shape_colors_from_model()
-        self._sync_shape_opacities_from_model()
-
         from .kernels import update_model_shape_xforms  # noqa: PLC0415
-        from .viewer_viser_kernels import detect_shape_color_changes, detect_shape_opacity_changes  # noqa: PLC0415
+        from .viewer_viser_kernels import detect_shape_appearance_changes  # noqa: PLC0415
 
+        refresh_static = self.model_changed or self._packed_shape_xforms_host is None
+        count = len(packed) if refresh_static else self._dynamic_shape_count
+        if count:
+            wp.launch(
+                kernel=update_model_shape_xforms,
+                dim=count,
+                inputs=[
+                    self.model.shape_transform,
+                    self.model.shape_body,
+                    state.body_q,
+                    self.model.shape_world,
+                    self.world_offsets,
+                    self.layer.xform,
+                    self._slot_to_shape_wp,
+                ],
+                outputs=[packed],
+                device=self.device,
+                record_tape=False,
+            )
+            if refresh_static:
+                self._packed_shape_xforms_host = to_numpy(packed).copy()
+            else:
+                self._packed_shape_xforms_host[:count] = to_numpy(packed[:count])
+
+        self._shape_appearance_changed_device.zero_()
         wp.launch(
-            kernel=update_model_shape_xforms,
+            kernel=detect_shape_appearance_changes,
             dim=len(packed),
-            inputs=[
-                self.model.shape_transform,
-                self.model.shape_body,
-                state.body_q,
-                self.model.shape_world,
-                self.world_offsets,
-                self.layer.xform,
-                self._slot_to_shape_wp,
-            ],
-            outputs=[packed],
+            inputs=[self.model.shape_color, self.model.shape_opacity, self._slot_to_shape_wp],
+            outputs=[self.model_shape_color, self.model_shape_opacity, self._shape_appearance_changed_device],
             device=self.device,
             record_tape=False,
         )
-
-        packed_xforms = to_numpy(packed)
-        packed_colors = None
-        colors_changed = self.model_changed or self._packed_shape_colors_host is None
-        if (
-            self.model_shape_color is not None
-            and not colors_changed
-            and self._packed_shape_colors_device is not None
-            and self._shape_colors_changed_device is not None
-        ):
-            self._shape_colors_changed_device.fill_(0)
-            wp.launch(
-                kernel=detect_shape_color_changes,
-                dim=len(self.model_shape_color),
-                inputs=[
-                    self.model_shape_color,
-                    self._packed_shape_colors_device,
-                ],
-                outputs=[self._shape_colors_changed_device],
-                device=self.device,
-                record_tape=False,
-            )
-            colors_changed = bool(self._shape_colors_changed_device.numpy()[0])
-        if self.model_shape_color is not None and colors_changed:
-            packed_colors = to_numpy(self.model_shape_color)
-            self._packed_shape_colors_host = packed_colors.copy()
-            if self._packed_shape_colors_device is None:
-                self._packed_shape_colors_device = wp.empty_like(self.model_shape_color)
-            wp.copy(self._packed_shape_colors_device, self.model_shape_color)
-
-        opacities_changed = self.model_changed or self._packed_shape_opacities_host is None
-        if (
-            self.model_shape_opacity is not None
-            and not opacities_changed
-            and self._packed_shape_opacities_device is not None
-            and self._shape_opacities_changed_device is not None
-        ):
-            self._shape_opacities_changed_device.fill_(0)
-            wp.launch(
-                kernel=detect_shape_opacity_changes,
-                dim=len(self.model_shape_opacity),
-                inputs=[self.model_shape_opacity, self._packed_shape_opacities_device],
-                outputs=[self._shape_opacities_changed_device],
-                device=self.device,
-                record_tape=False,
-            )
-            opacities_changed = bool(self._shape_opacities_changed_device.numpy()[0])
-        if self.model_shape_opacity is not None and opacities_changed:
-            self._packed_shape_opacities_host = to_numpy(self.model_shape_opacity).copy()
-            if self._packed_shape_opacities_device is None:
-                self._packed_shape_opacities_device = wp.empty_like(self.model_shape_opacity)
-            wp.copy(self._packed_shape_opacities_device, self.model_shape_opacity)
-        packed_colors = self._packed_shape_colors_host
-        packed_opacities = self._packed_shape_opacities_host
+        changed = self._shape_appearance_changed_device.numpy()
+        colors_changed = self.model_changed or self._packed_shape_colors_host is None or bool(changed[0])
+        opacities_changed = self.model_changed or self._packed_shape_opacities_host is None or bool(changed[1])
+        packed_colors = to_numpy(self.model_shape_color).copy() if colors_changed else self._packed_shape_colors_host
+        packed_opacities = (
+            to_numpy(self.model_shape_opacity).copy() if opacities_changed else self._packed_shape_opacities_host
+        )
+        # Commit snapshots after logging succeeds so a failed frame resends appearance.
+        self._packed_shape_colors_host = None
+        self._packed_shape_opacities_host = None
         layer_hidden = self._layer_force_hidden()
 
         for shapes, offset, count in self._packed_shape_groups:
-            visible = self._should_show_shape(shapes.flags, shapes.static, shapes.geo_type) and not layer_hidden
-            xforms = packed_xforms[offset : offset + count]
+            visible = (
+                self._should_show_shape(shapes.flags, shapes.static, shapes.geo_type) and not layer_hidden and count > 0
+            )
             handle = self._scene_handles.get(self._qualify(shapes.name))
+            if (
+                handle is not None
+                and visible == handle.visible
+                and (
+                    not visible
+                    or (shapes.static and not refresh_static and not colors_changed and not opacities_changed)
+                )
+            ):
+                continue
+            xforms = self._packed_shape_xforms_host[offset : offset + count]
             # A newly shown batch may have missed earlier color updates.
             send_colors = colors_changed or handle is None or not handle.visible
             colors = packed_colors[offset : offset + count] if packed_colors is not None and send_colors else None
@@ -2384,33 +2422,24 @@ class ViewerViser(ViewerBase):
             opacities = packed_opacities[offset : offset + count] if packed_opacities is not None else None
             materials = shapes.materials if self.model_changed else None
 
-            if shapes.geo_type == newton.GeoType.CAPSULE:
-                self.log_capsules(
-                    shapes.name,
-                    shapes.mesh,
-                    xforms,
-                    shapes.scales,
-                    colors,
-                    materials,
-                    opacities=opacities,
-                    hidden=not visible,
-                )
-            else:
-                self.log_instances(
-                    shapes.name,
-                    shapes.mesh,
-                    xforms,
-                    shapes.scales,
-                    colors,
-                    materials,
-                    opacities=opacities,
-                    hidden=not visible,
-                )
+            log = self.log_capsules if shapes.geo_type == newton.GeoType.CAPSULE else self.log_instances
+            log(
+                shapes.name,
+                shapes.mesh,
+                xforms,
+                shapes.scales,
+                colors,
+                materials,
+                opacities=opacities,
+                hidden=not visible,
+            )
             shapes.colors_changed = False
             shapes.opacities_changed = False
 
         self._log_gaussian_shapes(state)
         self._log_non_shape_state(state)
+        self._packed_shape_colors_host = packed_colors
+        self._packed_shape_opacities_host = packed_opacities
         self.model_changed = False
         self._render_picking_line()
 
@@ -2426,14 +2455,8 @@ class ViewerViser(ViewerBase):
         if not self.picking_enabled or self.picking is None or not self.picking.is_picking():
             self.log_lines("picking_line", None, None, None)
             return
-        body_idx = int(self.picking.pick_body.numpy()[0])
-        if body_idx < 0:
-            self.log_lines("picking_line", None, None, None)
-            return
-
-        pick_state = self.picking.pick_state.numpy()
-        anchor = self._picking_point_to_visual(self.layer, self.picking, pick_state[0]["picked_point_world"])
-        target = self._picking_point_to_visual(self.layer, self.picking, pick_state[0]["picking_target_world"])
+        anchor = self._picking_point_to_visual(self.layer, self.picking, self.picking.pick_point)
+        target = self._picking_point_to_visual(self.layer, self.picking, self.picking.pick_target)
         self.log_lines(
             "picking_line",
             np.asarray([anchor], dtype=np.float32),
@@ -2601,7 +2624,7 @@ class ViewerViser(ViewerBase):
         # pick-body sentinel controls whether graph replay applies a force.
         # Disabling picking releases that sentinel, including captured graphs.
         if self.picking is not None:
-            self.picking._apply_picking_force(state)
+            self.picking.apply_force(state)
 
     def save_recording(self):
         """
