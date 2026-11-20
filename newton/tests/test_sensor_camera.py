@@ -1488,9 +1488,10 @@ class TestSensorCamera(unittest.TestCase):
             model.bvh_build_shapes(state, backend="optix")
         camera = SensorCamera(model, backend=backend)
         rays = self._rays(1, 1, fov=math.radians(30.0), device=device)
-        cloth_vertex = model.particle_q.numpy()[0]
+        # Aim inside the first cloth quad: a ray through the boundary corner may miss with OptiX.
+        cloth_point = model.particle_q.numpy()[0] + np.array([0.025, 0.025, 0.0])
         cloth_transforms = wp.array(
-            [wp.transform(wp.vec3(*cloth_vertex[:2], cloth_vertex[2] + 0.5), wp.quat_identity())],
+            [wp.transform(wp.vec3(*cloth_point[:2], cloth_point[2] + 0.5), wp.quat_identity())],
             dtype=wp.transformf,
             device=device,
         )
@@ -1614,7 +1615,7 @@ class TestSensorCamera(unittest.TestCase):
         from newton._src.render.raytrace import PARTICLES_SHAPE_ID, TRIANGLE_MESH_SHAPE_ID  # noqa: PLC0415
 
         model = self._deformable_worlds(device)
-        for config in ({"enable_backface_culling": False}, {"enable_particles": False}):
+        for config in ({"enable_backface_culling": False}, {"enable_backface_culling": False, "enable_particles": False}):
             with self.subTest(**config):
                 depth, shape_index = self._render_deformable_worlds(model, "warp", **config)
                 # Every world sees its own particles, and only worlds with cloth see cloth.
