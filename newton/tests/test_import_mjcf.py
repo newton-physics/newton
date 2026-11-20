@@ -100,13 +100,17 @@ class TestImportMjcfBasic(unittest.TestCase):
             with self.subTest(intrinsics=name):
                 index = cameras[name]
                 camera_id = native.camera(name).id
-                self.assertEqual(builder.camera_resolution[index], tuple(native.cam_resolution[camera_id]))
                 focal = builder.camera_focal_length[index]
                 aperture = np.asarray(builder.camera_aperture[index])
                 offset = np.asarray(builder.camera_aperture_offset[index])
                 if name == "fov":
                     self.assertAlmostEqual(aperture[1] / (2.0 * focal), np.tan(np.pi / 6), places=6)
+                    self.assertEqual(builder.camera_pixel_aspect_ratio[index], 1.0)
                 else:
+                    # Pixel width over height in the image plane at the native resolution.
+                    extent = native.cam_sensorsize[camera_id] / native.cam_intrinsic[camera_id, :2]
+                    pixel = extent / native.cam_resolution[camera_id]
+                    self.assertAlmostEqual(builder.camera_pixel_aspect_ratio[index], pixel[0] / pixel[1], places=6)
                     # Projection ratios are invariant to Newton's single-focal-length encoding.
                     np.testing.assert_allclose(
                         focal / aperture,

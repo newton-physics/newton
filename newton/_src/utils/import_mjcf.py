@@ -2366,6 +2366,12 @@ def parse_mjcf(
                     "horizontal_aperture_offset": float(principal[0] * x_to_y) * scale,
                     "vertical_aperture_offset": float(principal[1]) * scale,
                 }
+                if resolution is not None:
+                    # The aperture spans the authored resolution exactly, which fixes the pixel shape.
+                    intrinsics["pixel_aspect_ratio"] = float(
+                        (intrinsics["horizontal_aperture"] * resolution[1])
+                        / (intrinsics["vertical_aperture"] * resolution[0])
+                    )
             else:
                 # fovy is in degrees regardless of the compiler angle setting.
                 intrinsics = {"fov": float(np.radians(float(camera_attrib.get("fovy", 45.0))))}
@@ -2379,7 +2385,6 @@ def parse_mjcf(
             builder.add_camera(
                 link,
                 xform=camera_xform,
-                resolution=resolution,
                 label=camera_label,
                 custom_attributes=camera_custom_attrs,
                 **intrinsics,

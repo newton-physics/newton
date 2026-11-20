@@ -254,7 +254,8 @@ def _import_usd_cameras(
 
     USD authors focal length and apertures in tenths of a scene unit and the clipping range in scene
     units; both are converted to meters with ``linear_unit``. A camera rendered by a ``UsdRender.Product``
-    takes its resolution from it, and its aperture is conformed to that image format.
+    has its aperture conformed to that image format and takes the product's pixel aspect ratio; the
+    product's resolution itself is not stored.
     """
     from pxr import Usd, UsdGeom, UsdPhysics
 
@@ -313,15 +314,19 @@ def _import_usd_cameras(
             logger.debug("Camera %s has no authored clippingRange; using the USD fallback %s.", path, (near, far))
         horizontal = float(camera.GetHorizontalApertureAttr().Get())
         vertical = float(camera.GetVerticalApertureAttr().Get())
-        resolution = None
+        pixel_aspect = 1.0
         image_format = resolutions.get(path)
         if image_format is not None:
-            resolution, policy, pixel_aspect = image_format
-            horizontal, vertical = _conform_usd_aperture(horizontal, vertical, resolution, policy, pixel_aspect)
+            resolution, policy, product_pixel_aspect = image_format
+            horizontal, vertical = _conform_usd_aperture(horizontal, vertical, resolution, policy, product_pixel_aspect)
+            if horizontal > 0.0 and vertical > 0.0:
+                # The conformed aperture spans the product's resolution exactly, which fixes the pixel shape
+                # (also for adjustPixelAspectRatio, which stretches the pixels instead of the aperture).
+                pixel_aspect = (horizontal * resolution[1]) / (vertical * resolution[0])
         elif path in resolutions:
             logger.warning(
                 "Camera %s is rendered by several RenderProducts with different image formats; "
-                "keeping its authored aperture without a resolution.",
+                "keeping its authored aperture with square pixels.",
                 path,
             )
         try:
@@ -334,7 +339,7 @@ def _import_usd_cameras(
                 horizontal_aperture_offset=float(camera.GetHorizontalApertureOffsetAttr().Get()) * lens_unit,
                 vertical_aperture_offset=float(camera.GetVerticalApertureOffsetAttr().Get()) * lens_unit,
                 clipping_range=(float(near) * linear_unit, float(far) * linear_unit),
-                resolution=resolution,
+                pixel_aspect_ratio=pixel_aspect,
                 label=path,
                 custom_attributes=usd.get_custom_attribute_values(prim, custom_attrs, context={"builder": builder})
                 if custom_attrs
@@ -485,10 +490,10 @@ def parse_usd(
         load_sites: If True, sites (prims with ``NewtonSiteAPI`` or ``MjcSiteAPI``) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
         load_cameras: If True, perspective ``UsdGeom.Camera`` prims are added as model cameras
             (see :meth:`~newton.ModelBuilder.add_camera`), attached to their nearest imported rigid-body
-            ancestor or fixed in the world. A camera rendered by one ``UsdRender.Product`` takes its
-            resolution and conforms its aperture to the product's image format; a camera rendered by
-            several products with different image formats keeps its authored aperture without a
-            resolution. An unauthored ``clippingRange`` uses the USD fallback of ``(1, 1000000)`` scene
+            ancestor or fixed in the world. A camera rendered by one ``UsdRender.Product`` has its aperture
+            conformed to the product's image format and takes its pixel aspect ratio (the resolution
+            itself stays with the sensor); a camera rendered by several products with different image
+            formats keeps its authored aperture with square pixels. An unauthored ``clippingRange`` uses the USD fallback of ``(1, 1000000)`` scene
             units, a 1 m near plane in meter-scale stages. Orthographic cameras are skipped and logged.
             Default is True.
         load_visual_shapes: If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by ``load_sites``). Default is True.

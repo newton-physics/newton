@@ -2290,8 +2290,8 @@ class ModelBuilder:
         """Aperture offsets [m] accumulated for :attr:`Model.camera_aperture_offset`."""
         self.camera_clipping_range: list[tuple[float, float]] = []
         """Clip ranges [m] accumulated for :attr:`Model.camera_clipping_range`."""
-        self.camera_resolution: list[tuple[int, int]] = []
-        """Nominal resolutions [px] accumulated for :attr:`Model.camera_resolution`."""
+        self.camera_pixel_aspect_ratio: list[float] = []
+        """Pixel aspect ratios accumulated for :attr:`Model.camera_pixel_aspect_ratio`."""
 
         # tendons (cable-driven mechanisms)
         self.tendon_label: list[str] = []
@@ -5341,10 +5341,10 @@ class ModelBuilder:
             load_sites: If True, sites (prims with ``NewtonSiteAPI`` or ``MjcSiteAPI``) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
             load_cameras: If True, perspective ``UsdGeom.Camera`` prims are added as model cameras
                 (see :meth:`~newton.ModelBuilder.add_camera`), attached to their nearest imported rigid-body
-                ancestor or fixed in the world. A camera rendered by one ``UsdRender.Product`` takes its
-                resolution and conforms its aperture to the product's image format; a camera rendered by
-                several products with different image formats keeps its authored aperture without a
-                resolution. An unauthored ``clippingRange`` uses the USD fallback of ``(1, 1000000)`` scene
+                ancestor or fixed in the world. A camera rendered by one ``UsdRender.Product`` has its aperture
+                conformed to the product's image format and takes its pixel aspect ratio (the resolution
+                itself stays with the sensor); a camera rendered by several products with different image
+                formats keeps its authored aperture with square pixels. An unauthored ``clippingRange`` uses the USD fallback of ``(1, 1000000)`` scene
                 units, a 1 m near plane in meter-scale stages. Orthographic cameras are skipped and logged.
                 Default is True.
             load_visual_shapes: If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by ``load_sites``). Default is True.
@@ -10390,7 +10390,7 @@ class ModelBuilder:
         horizontal_aperture_offset: float = 0.0,
         vertical_aperture_offset: float = 0.0,
         clipping_range: tuple[float, float] = (0.01, 1.0e6),
-        resolution: tuple[int, int] | None = None,
+        pixel_aspect_ratio: float = 1.0,
         label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
@@ -10419,10 +10419,8 @@ class ModelBuilder:
                 vertical aperture and the image aspect ratio.
             vertical_aperture: Sensor height [m]. ``None`` or 0 derives it from the
                 horizontal aperture and the image aspect ratio. When both apertures
-                are set, they map onto ``resolution``; at other image aspect ratios
-                the aperture is expanded to keep that pixel aspect ratio (square
-                pixels without a resolution), like USD's default ``expandAperture``
-                conform policy.
+                are set and the image aspect ratio differs, the aperture is expanded
+                to it, like USD's default ``expandAperture`` conform policy.
             horizontal_aperture_offset: Horizontal principal-point offset [m].
             vertical_aperture_offset: Vertical principal-point offset [m].
             clipping_range: Near and far clip distance [m]. For rays projected
@@ -10430,11 +10428,9 @@ class ModelBuilder:
                 axis (planar clipping, as in USD and MJCF); for rays a sensor gives
                 the camera explicitly they are distances along each ray. Hits outside
                 the range are misses.
-            resolution: Image size ``(width, height)`` [px] that the apertures map
-                onto exactly. When both apertures are set, it also fixes the pixel
-                aspect ratio kept at other image sizes. It is the default ``width``
-                and ``height`` of a :class:`~newton.sensors.SensorCamera` bound to the
-                camera. ``None`` leaves it unspecified.
+            pixel_aspect_ratio: Pixel width over pixel height [unitless]; 1 for
+                square pixels. The image resolution is chosen by the sensor that
+                renders the camera.
             label: Unique label; defaults to ``camera_{index}``.
             custom_attributes: Values of declared ``CAMERA``-frequency custom
                 attributes.
@@ -10472,21 +10468,18 @@ class ModelBuilder:
         camera_xform = wp.transform() if xform is None else wp.transform(*xform)
         aperture_offset = (float(horizontal_aperture_offset), float(vertical_aperture_offset))
         near, far = (float(v) for v in clipping_range)
+        pixel_aspect_ratio = float(pixel_aspect_ratio)
+        if not pixel_aspect_ratio > 0.0:
+            raise ValueError(f"pixel_aspect_ratio must be positive, got {pixel_aspect_ratio}")
         # Camera data is stored as float32: reject values that would overflow or underflow there.
         float32_max = float(np.finfo(np.float32).max)
-        values = (focal_length, horizontal, vertical, *aperture_offset, near, far)
+        values = (focal_length, horizontal, vertical, *aperture_offset, near, far, pixel_aspect_ratio)
         if not all(math.isfinite(v) and abs(v) <= float32_max for v in values):
             raise ValueError("Camera intrinsics and clipping_range must be finite float32 values")
-        if any(v > 0.0 and np.float32(v) == 0.0 for v in (focal_length, horizontal, vertical)):
-            raise ValueError("Camera focal length and apertures are too small for float32")
+        if any(v > 0.0 and np.float32(v) == 0.0 for v in (focal_length, horizontal, vertical, pixel_aspect_ratio)):
+            raise ValueError("Camera focal length, apertures and pixel aspect ratio are too small for float32")
         if not 0.0 <= near < far or not np.float32(near) < np.float32(far):
             raise ValueError(f"clipping_range must satisfy 0 <= near < far, got {clipping_range}")
-        if resolution is None:
-            width, height = 0, 0
-        else:
-            width, height = (int(v) for v in resolution)
-            if width <= 0 or height <= 0:
-                raise ValueError(f"resolution must be positive, got {resolution}")
 
         # Validate custom attributes before changing any camera array.
         for name in custom_attributes or {}:
@@ -10509,7 +10502,7 @@ class ModelBuilder:
         self.camera_aperture.append((horizontal, vertical))
         self.camera_aperture_offset.append(aperture_offset)
         self.camera_clipping_range.append((near, far))
-        self.camera_resolution.append((width, height))
+        self.camera_pixel_aspect_ratio.append(pixel_aspect_ratio)
         if custom_attributes:
             self._process_custom_attributes(
                 entity_index=camera,
@@ -16743,7 +16736,7 @@ class ModelBuilder:
             m.camera_aperture = wp.array(self.camera_aperture, dtype=wp.vec2f)
             m.camera_aperture_offset = wp.array(self.camera_aperture_offset, dtype=wp.vec2f)
             m.camera_clipping_range = wp.array(self.camera_clipping_range, dtype=wp.vec2f)
-            m.camera_resolution = wp.array(self.camera_resolution, dtype=wp.vec2i)
+            m.camera_pixel_aspect_ratio = wp.array(self.camera_pixel_aspect_ratio, dtype=wp.float32)
 
             # ---------------------
             # tendons

@@ -314,16 +314,15 @@ def model_camera_pinhole(
     focal_length: wp.float32,
     aperture: wp.vec2f,
     aperture_offset: wp.vec2f,
-    resolution: wp.vec2i,
+    pixel_aspect_ratio: wp.float32,
     image_aspect: wp.float32,
 ) -> wp.vec4f:
     """Return the pinhole projection of a model camera for an image of the given aspect ratio.
 
     This defines how the ``Model.camera_*`` intrinsics project, for every consumer of model
-    cameras. A zero aperture component follows the image aspect ratio (square pixels). With both
-    components set, the aperture keeps the pixel aspect ratio it has at ``resolution`` (square
-    pixels without one) and expands to the image aspect ratio, like USD's default
-    ``expandAperture`` conform policy.
+    cameras. Pixels have the camera's ``pixel_aspect_ratio`` (width over height). A zero aperture
+    component follows the image aspect ratio; with both components set, the aperture expands to
+    the image aspect ratio, like USD's default ``expandAperture`` conform policy.
 
     Returns:
         The horizontal and vertical aperture and principal-point offset, each divided by the focal
@@ -331,18 +330,16 @@ def model_camera_pinhole(
     """
     horizontal = aperture[0]
     vertical = aperture[1]
+    # Aspect ratio of the image in aperture units.
+    target = image_aspect * pixel_aspect_ratio
     if horizontal <= 0.0:
-        horizontal = vertical * image_aspect
+        horizontal = vertical * target
     elif vertical <= 0.0:
-        vertical = horizontal / image_aspect
+        vertical = horizontal / target
+    elif horizontal < vertical * target:
+        horizontal = vertical * target
     else:
-        target = image_aspect
-        if resolution[0] > 0 and resolution[1] > 0:
-            target = image_aspect * (horizontal * float(resolution[1])) / (vertical * float(resolution[0]))
-        if horizontal < vertical * target:
-            horizontal = vertical * target
-        else:
-            vertical = horizontal / target
+        vertical = horizontal / target
     return wp.vec4f(
         horizontal / focal_length,
         vertical / focal_length,

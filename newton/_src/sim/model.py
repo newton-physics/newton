@@ -495,7 +495,7 @@ class Model:
         "camera_aperture": AttributeSpec(AttributeFrequency.CAMERA),
         "camera_aperture_offset": AttributeSpec(AttributeFrequency.CAMERA),
         "camera_clipping_range": AttributeSpec(AttributeFrequency.CAMERA),
-        "camera_resolution": AttributeSpec(AttributeFrequency.CAMERA),
+        "camera_pixel_aspect_ratio": AttributeSpec(AttributeFrequency.CAMERA),
         "tendon_label": AttributeSpec(AttributeFrequency.TENDON),
         "tendon_world": AttributeSpec(AttributeFrequency.TENDON, references=AttributeFrequency.WORLD),
         "tendon_start": AttributeSpec(
@@ -1299,19 +1299,19 @@ class Model:
         """Focal length of each pinhole camera [m], shape [camera_count], float."""
         self.camera_aperture: wp.array[wp.vec2f] | None = None
         """Horizontal and vertical aperture (sensor size) of each pinhole camera [m], shape [camera_count], vec2.
-        A zero component is derived from the rendered image aspect ratio. When both are set, the aperture
-        maps onto :attr:`camera_resolution`; at other image aspect ratios it is expanded to keep that pixel
-        aspect ratio (square pixels without a resolution), like USD's default ``expandAperture`` policy."""
+        A zero component is derived from the rendered image aspect ratio. When both are set and the image
+        aspect ratio differs, the aperture is expanded to it, like USD's default ``expandAperture`` policy.
+        Both use the pixel shape in :attr:`camera_pixel_aspect_ratio`."""
         self.camera_aperture_offset: wp.array[wp.vec2f] | None = None
         """Horizontal and vertical principal-point offset of each pinhole camera [m], shape [camera_count], vec2."""
         self.camera_clipping_range: wp.array[wp.vec2f] | None = None
         """Near and far clip distance of each camera [m], shape [camera_count], vec2. For ``PINHOLE`` cameras
         they are depths along the camera's -Z axis (planar clipping, as in USD and MJCF) for rays projected from
         the camera's intrinsics, and distances along each ray for rays a sensor gives the camera explicitly."""
-        self.camera_resolution: wp.array[wp.vec2i] | None = None
-        """Image size (width, height) each camera's aperture maps onto exactly [px], shape [camera_count], vec2i.
-        It also fixes the pixel aspect ratio kept at other image sizes and is the default size of a bound
-        :class:`~newton.sensors.SensorCamera`. ``(0, 0)`` means unspecified."""
+        self.camera_pixel_aspect_ratio: wp.array[wp.float32] | None = None
+        """Pixel width over pixel height of each pinhole camera [unitless], shape [camera_count], float.
+        ``1`` means square pixels. The image resolution is not part of the camera; the sensor that renders it
+        chooses it."""
 
         # tendons (cable-driven mechanisms)
         self.tendon_count: int = 0

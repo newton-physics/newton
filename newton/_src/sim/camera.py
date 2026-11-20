@@ -4,11 +4,11 @@
 """Camera declarations stored on :class:`~newton.Model`.
 
 A model camera describes what an asset authors about a camera: the frame it
-is mounted in, the world it belongs to, its lens type and intrinsics, its clip
-range, and the nominal resolution its aperture maps onto. Rays and output images
-belong to the sensor that renders the camera (see
-:class:`~newton.sensors.SensorCamera`), which may render at another size or
-replace the camera's rays with its own.
+is mounted in, the world it belongs to, its lens type and intrinsics (including
+the pixel aspect ratio), and its clip range. The image resolution, rays and output
+images belong to the sensor that renders the camera (see
+:class:`~newton.sensors.SensorCamera`), which may also replace the camera's rays
+with its own.
 """
 
 from __future__ import annotations

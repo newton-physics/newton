@@ -78,7 +78,7 @@ def _compute_view_pinhole_kernel(
     camera_focal_length: wp.array[wp.float32],
     camera_aperture: wp.array[wp.vec2f],
     camera_aperture_offset: wp.array[wp.vec2f],
-    camera_resolution: wp.array[wp.vec2i],
+    camera_pixel_aspect_ratio: wp.array[wp.float32],
     aspect: wp.float32,
     out_pinhole: wp.array[wp.vec4f],
 ):
@@ -88,7 +88,7 @@ def _compute_view_pinhole_kernel(
         camera_focal_length[camera],
         camera_aperture[camera],
         camera_aperture_offset[camera],
-        camera_resolution[camera],
+        camera_pixel_aspect_ratio[camera],
         aspect,
     )
 
@@ -246,10 +246,10 @@ class SensorCamera:
             sites: Sites to render from, by label pattern or index. Sites only
                 provide a frame, so rays come from :meth:`set_camera_rays` or
                 :meth:`update`'s ``camera_rays``.
-            width: Image width [px]; defaults to the selected cameras' common
-                :attr:`~newton.Model.camera_resolution`.
-            height: Image height [px]; defaults to the selected cameras' common
-                :attr:`~newton.Model.camera_resolution`.
+            width: Image width [px] of every view; required with ``cameras`` or
+                ``sites``.
+            height: Image height [px] of every view; required with ``cameras`` or
+                ``sites``.
             sample_count: Rays per pixel. Values above 1 require
                 ``default_render_config`` to use :attr:`AntiAliasing.SSAA` or
                 :attr:`AntiAliasing.MSAA`.
@@ -361,15 +361,7 @@ class SensorCamera:
             raise ValueError("The selection produces no views (the model has no worlds)")
 
         if width is None or height is None:
-            if self._from_sites:
-                raise ValueError("width and height are required for site-bound sensors")
-            camera_resolution = model.camera_resolution.numpy()
-            resolution = {tuple(int(v) for v in camera_resolution[f]) for f in frames}
-            if len(resolution) != 1 or (0, 0) in resolution:
-                raise ValueError("width and height are required unless all selected cameras share a resolution")
-            (res_w, res_h) = resolution.pop()
-            width = res_w if width is None else width
-            height = res_h if height is None else height
+            raise ValueError("width and height are required with cameras or sites")
         if int(width) <= 0 or int(height) <= 0 or int(sample_count) <= 0:
             raise ValueError("width, height and sample_count must be positive")
         if int(sample_count) > 1 and AntiAliasing(self.default_render_config.anti_aliasing) == AntiAliasing.NONE:
@@ -447,7 +439,7 @@ class SensorCamera:
                 model.camera_focal_length,
                 model.camera_aperture,
                 model.camera_aperture_offset,
-                model.camera_resolution,
+                model.camera_pixel_aspect_ratio,
                 float(self.width) / float(self.height),
             ],
             outputs=[out],

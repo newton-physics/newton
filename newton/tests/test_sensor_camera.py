@@ -1194,13 +1194,13 @@ class TestSensorCamera(unittest.TestCase):
         world = newton.ModelBuilder()
         world.add_shape_sphere(-1, xform=wp.transform((0.0, 0.0, -2.0), wp.quat_identity()), radius=0.5)
         world.add_camera(-1, focal_length=0.05, horizontal_aperture=0.036, vertical_aperture=0.024, label="square")
-        # At its 36 x 12 px resolution this camera has pixels twice as tall as wide.
+        # Pixels twice as tall as wide: the aperture spans a 36 x 12 px image exactly.
         world.add_camera(
             -1,
             focal_length=0.05,
             horizontal_aperture=0.036,
             vertical_aperture=0.024,
-            resolution=(36, 12),
+            pixel_aspect_ratio=0.5,
             label="tall_pixels",
         )
         world.add_camera(-1, focal_length=0.05, vertical_aperture=0.024, label="vertical_only")
@@ -1312,6 +1312,10 @@ class TestSensorCamera(unittest.TestCase):
         for name in ("width", "height", "sample_count", "view_count", "view_camera", "view_site", "view_world"):
             self.assertIsNone(getattr(unbound, name), name)
 
+        # The image size belongs to the sensor, not the camera.
+        with self.assertRaisesRegex(ValueError, "width and height are required"):
+            SensorCamera(model, cameras="cam", width=4)
+
         # Several samples per pixel need an anti-aliasing mode that combines them.
         with self.assertRaisesRegex(ValueError, "sample_count > 1 requires"):
             SensorCamera(model, cameras="cam", width=4, height=4, sample_count=4)
@@ -1357,6 +1361,9 @@ class TestSensorCamera(unittest.TestCase):
             (ValueError, {"focal_length": float("nan"), "vertical_aperture": 0.02}),
             (ValueError, {"horizontal_aperture_offset": float("inf")}),
             (ValueError, {"clipping_range": (0.1, float("inf"))}),
+            (ValueError, {"pixel_aspect_ratio": 0.0}),
+            (ValueError, {"pixel_aspect_ratio": float("nan")}),
+            (ValueError, {"pixel_aspect_ratio": 1.0e-46}),
             (AttributeError, {"custom_attributes": {"test:missing": 1.0}}),
             (ValueError, {"custom_attributes": {"test:tag": 1.0}}),
             (Exception, {"xform": (1.0, 2.0)}),
@@ -1365,7 +1372,14 @@ class TestSensorCamera(unittest.TestCase):
             with self.subTest(**{k: str(v) for k, v in kwargs.items()}), self.assertRaises(error):
                 builder.add_camera(-1, **kwargs)
         self.assertEqual(builder.camera_count, 1)
-        for name in ("camera_label", "camera_world", "camera_body", "camera_transform", "camera_focal_length"):
+        for name in (
+            "camera_label",
+            "camera_world",
+            "camera_body",
+            "camera_transform",
+            "camera_focal_length",
+            "camera_pixel_aspect_ratio",
+        ):
             self.assertEqual(len(getattr(builder, name)), 1, name)
 
     @staticmethod

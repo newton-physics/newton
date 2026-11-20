@@ -2970,6 +2970,8 @@ def Xform "Root" (
         """Import UsdGeom.Camera prims and resolve render-product resolutions through RenderSettings."""
         from pxr import Usd
 
+        from newton._src.utils.import_usd import _usd_render_product_resolutions  # noqa: PLC0415
+
         stage = Usd.Stage.CreateInMemory()
         stage.GetRootLayer().ImportFromString(
             """#usda 1.0
@@ -3007,6 +3009,8 @@ def Xform "World"
     def Camera "Elsewhere" {}
     def Camera "Shared" {}
     def Camera "Agreeing" {}
+    def Camera "WidePixels" {}
+    def Camera "Stretched" {}
 }
 
 def Scope "Render"
@@ -3065,6 +3069,20 @@ def Scope "Render"
         rel camera = </World/Agreeing>
         int2 resolution = (200, 100)
     }
+
+    def RenderProduct "Wide"
+    {
+        rel camera = </World/WidePixels>
+        int2 resolution = (100, 100)
+        float pixelAspectRatio = 2
+    }
+
+    def RenderProduct "Stretch"
+    {
+        rel camera = </World/Stretched>
+        int2 resolution = (100, 100)
+        uniform token aspectRatioConformPolicy = "adjustPixelAspectRatio"
+    }
 }
 
 def Scope "Elsewhere"
@@ -3095,13 +3113,19 @@ def Scope "Elsewhere"
         np.testing.assert_allclose(builder.camera_clipping_range[mounted], (0.05, 20.0), atol=1e-6)
 
         # A product inherits an unauthored resolution from its settings, authored product values take
-        # precedence, standalone products use their own values, and schema fallbacks are ignored.
-        self.assertEqual(builder.camera_resolution[mounted], (320, 240))
-        self.assertEqual(builder.camera_resolution[cameras["/World/Overridden"]], (64, 48))
-        self.assertEqual(builder.camera_resolution[cameras["/World/Standalone"]], (200, 100))
-        self.assertEqual(builder.camera_resolution[cameras["/World/Unauthored"]], (0, 0))
-        # Render products are found anywhere in the stage, not only below /Render.
-        self.assertEqual(builder.camera_resolution[cameras["/World/Elsewhere"]], (32, 16))
+        # precedence, standalone products use their own values, and schema fallbacks are ignored. Render
+        # products are found anywhere in the stage, not only below /Render.
+        formats = _usd_render_product_resolutions(stage)
+        self.assertEqual(formats["/World/Body/Mount/Inherited"][0], (320, 240))
+        self.assertEqual(formats["/World/Overridden"][0], (64, 48))
+        self.assertEqual(formats["/World/Standalone"][0], (200, 100))
+        self.assertNotIn("/World/Unauthored", formats)
+        self.assertEqual(formats["/World/Elsewhere"][0], (32, 16))
+        # The resolution only conforms the aperture; the model stores the product's pixel shape.
+        np.testing.assert_allclose(builder.camera_aperture[cameras["/World/Elsewhere"]], (3.05816, 1.52908), rtol=1e-5)
+        for label, index in cameras.items():
+            if label not in ("/World/WidePixels", "/World/Stretched"):
+                self.assertAlmostEqual(builder.camera_pixel_aspect_ratio[index], 1.0, places=5, msg=label)
 
         # Apertures are conformed to the product's image format with its conform policy; without a
         # resolution the authored (here fallback) aperture is kept.
@@ -3116,9 +3140,21 @@ def Scope "Elsewhere"
 
         # Products with different image formats leave the authored aperture and no resolution; products
         # that agree are used like one product.
-        self.assertEqual(builder.camera_resolution[cameras["/World/Shared"]], (0, 0))
+        self.assertIsNone(formats["/World/Shared"])
         np.testing.assert_allclose(builder.camera_aperture[cameras["/World/Shared"]], fallback, rtol=1e-5)
-        self.assertEqual(builder.camera_resolution[cameras["/World/Agreeing"]], (200, 100))
+        self.assertEqual(formats["/World/Agreeing"][0], (200, 100))
+        np.testing.assert_allclose(
+            builder.camera_aperture[cameras["/World/Agreeing"]], (fallback[1] * 2.0, fallback[1]), rtol=1e-5
+        )
+
+        # An authored pixelAspectRatio is stored, and the conformed aperture spans the image with it.
+        # adjustPixelAspectRatio keeps the aperture and stretches the pixels instead.
+        wide = cameras["/World/WidePixels"]
+        self.assertAlmostEqual(builder.camera_pixel_aspect_ratio[wide], 2.0, places=5)
+        np.testing.assert_allclose(builder.camera_aperture[wide], (fallback[1] * 2.0, fallback[1]), rtol=1e-5)
+        stretched = cameras["/World/Stretched"]
+        self.assertAlmostEqual(builder.camera_pixel_aspect_ratio[stretched], fallback[0] / fallback[1], places=5)
+        np.testing.assert_allclose(builder.camera_aperture[stretched], fallback, rtol=1e-5)
 
         # An unauthored clippingRange keeps the USD fallback (1, 1e6) in scene units.
         np.testing.assert_allclose(builder.camera_clipping_range[cameras["/World/Shared"]], (1.0, 1.0e6), rtol=1e-6)
