@@ -23,6 +23,7 @@ from newton._src.geometry.kernels import (
     mesh_sdf,
     resolve_mesh_sign_method,
 )
+from newton._src.geometry.narrow_phase import _PipelineNarrowPhase
 from newton._src.geometry.sdf_contact import (
     compute_mesh_boundary_flags,
     sample_sdf_grad_using_mesh,
@@ -3241,7 +3242,7 @@ class TestShapePairsMaxScaling(unittest.TestCase):
                     "newton._src.sim.collide._compute_per_world_shape_pairs_max",
                     side_effect=AssertionError("explicit pairs already provide their own bound"),
                 ),
-                mock.patch("newton._src.sim.collide.NarrowPhase", wraps=NarrowPhase) as narrow_phase,
+                mock.patch("newton._src.sim.collide._PipelineNarrowPhase", wraps=_PipelineNarrowPhase) as narrow_phase,
             ):
                 shape_pairs = (
                     wp.array(np.array(pairs, dtype=np.int32).reshape(-1, 2), dtype=wp.vec2i, device="cpu")

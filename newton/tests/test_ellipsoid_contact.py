@@ -38,11 +38,14 @@ def test_constructed_contacts(test, device):
     references = []
     directions = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, -2.0, 3.0]])
     directions /= np.linalg.norm(directions, axis=1)[:, None]
-    for sphere, angle, normal, scale, depth in itertools.product(
+    cases = itertools.product(
         (False, True), (0.0, 0.63, 1.27), directions, (0.001, 1.0, 1000.0), (-0.01, 0.0001, 0.025)
-    ):
-        a = np.array([0.6, 0.6, 0.6] if sphere else [0.4, 0.7, 1.0])
-        b = np.array([0.8, 0.5, 0.6])
+    )
+
+    def add_case(a, b, angle, normal, scale, depth, allow_fallback):
+        a = np.asarray(a)
+        b = np.asarray(b)
+        normal = np.asarray(normal) / np.linalg.norm(normal)
         rotation = wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 2.0, 3.0)), angle)
         matrix = np.asarray(wp.quat_to_matrix(rotation), dtype=np.float64).reshape(3, 3)
         point_a = a * a * normal / np.linalg.norm(a * normal)
@@ -50,7 +53,14 @@ def test_constructed_contacts(test, device):
         point_b = b * b * local_normal_b / np.linalg.norm(b * local_normal_b)
         position = (point_a - matrix @ point_b - depth * normal) * scale
         inputs.append((a * scale, b * scale, rotation, position))
-        references.append((normal, scale, depth, matrix, False))
+        references.append((normal, scale, depth, matrix, allow_fallback))
+
+    for sphere, angle, normal, scale, depth in cases:
+        a = np.array([0.6, 0.6, 0.6] if sphere else [0.4, 0.7, 1.0])
+        b = np.array([0.8, 0.5, 0.6])
+        add_case(a, b, angle, normal, scale, depth, allow_fallback=depth < 0.0)
+    # The measured rotated near-gap workload must avoid a second convex query.
+    add_case([0.5] * 3, [1.0, 0.6, 0.3], 0.71, [1.0, 1.7, 0.4], 1.0, -0.005, allow_fallback=False)
     # This pair has multiple local minima. The reference direction gives a
     # shallower separating plane than the first local solution (about 0.72966).
     # Rejecting the pair is valid; accepting that deeper solution is not.
@@ -86,13 +96,8 @@ def test_constructed_contacts(test, device):
         device=device,
     )
     successes, distances, centers, normals = solved.numpy(), distances.numpy(), centers.numpy(), normals.numpy()
-    separated_solved = 0
     for i, (normal, scale, depth, matrix, allow_fallback) in enumerate(references):
         with test.subTest(case=i, scale=scale, depth=depth):
-            if depth < 0.0:
-                if not successes[i]:
-                    continue
-                separated_solved += 1
             if allow_fallback and not successes[i]:
                 continue
             test.assertTrue(successes[i])
@@ -103,7 +108,6 @@ def test_constructed_contacts(test, device):
             pb = matrix.T @ (centers[i] + 0.5 * distances[i] * normals[i] - positions[i])
             test.assertAlmostEqual(np.linalg.norm(pa / a[i]), 1.0, delta=1e-5)
             test.assertAlmostEqual(np.linalg.norm(pb / b[i]), 1.0, delta=1e-5)
-    test.assertGreater(separated_solved, 0)
 
 
 class TestEllipsoidContact(unittest.TestCase):

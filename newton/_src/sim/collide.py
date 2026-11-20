@@ -36,7 +36,7 @@ from ..geometry.contact_reduction_global import CONTACT_ID_BITS, MAX_GROUP_ID
 from ..geometry.contact_sort import ContactSorter
 from ..geometry.flags import MeshProperties, ShapeFlags
 from ..geometry.kernels import create_soft_contacts
-from ..geometry.narrow_phase import NarrowPhase
+from ..geometry.narrow_phase import NarrowPhase, _PipelineNarrowPhase
 from ..geometry.sdf_hydroelastic import HydroelasticSDF
 from ..geometry.soft_contacts_heightfield import _HEIGHTFIELD_CELLS_PER_TASK, launch_soft_heightfield_contacts
 from ..geometry.soft_contacts_mesh import (
@@ -2516,7 +2516,7 @@ class CollisionPipeline:
                     self.shape_pairs_filtered,
                     group_staging_capacity,
                 )
-            self.narrow_phase = NarrowPhase._create_for_pipeline(
+            self.narrow_phase = _PipelineNarrowPhase(
                 max_candidate_pairs=self.shape_pairs_max,
                 max_triangle_pairs=max_triangle_pairs,
                 max_mesh_mesh_pairs=max_mesh_mesh_pairs,
@@ -2531,9 +2531,9 @@ class CollisionPipeline:
                 has_meshes=has_meshes,
                 has_heightfields=has_heightfields,
                 use_lean_gjk_mpr=use_lean_gjk_mpr,
-                _direct_box_contacts=direct_box_contacts,
-                _tetrahedron_separation=tetrahedron_separation,
-                _ellipsoid_contacts=ellipsoid_contacts,
+                direct_box_contacts=direct_box_contacts,
+                tetrahedron_separation=tetrahedron_separation,
+                ellipsoid_contacts=ellipsoid_contacts,
                 convex_support_acceleration=model._convex_support_lut.shape[0] > 1,
                 has_generic_convex_pairs=has_generic_convex_pairs,
                 split_gjk_mpr=split_gjk_mpr,
@@ -3410,7 +3410,8 @@ class CollisionPipeline:
         narrow_phase_extension_kwargs = {}
         launch_narrow_phase = self.narrow_phase.launch_custom_write
         if type(self.narrow_phase).launch_custom_write is NarrowPhase.launch_custom_write:
-            launch_narrow_phase = self.narrow_phase._launch_custom_write
+            if model.shape_count:
+                launch_narrow_phase = self.narrow_phase._launch_with_prepared_counters
             narrow_phase_extension_kwargs.update(
                 mesh_edge_centers=model._mesh_edge_centers,
                 mesh_edge_halves=model._mesh_edge_halves,
@@ -3419,7 +3420,6 @@ class CollisionPipeline:
                 support_vertex_offsets=model._convex_support_vertex_offsets,
                 support_neighbors=model._convex_support_neighbors,
                 hydroelastic_shape_sdf_data_prepared=self._hydro_shape_sdf_data_prepared,
-                _counters_prepared=model.shape_count > 0,
             )
         if self._speculative_enabled:
             narrow_phase_extension_kwargs.update(
