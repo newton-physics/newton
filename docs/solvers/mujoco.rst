@@ -607,7 +607,11 @@ in the child body frame. These are different from Newton's parent-frame,
 COM-based DOF convention. Use :attr:`~newton.Control.joint_f` for forces in
 Newton's DOF convention.
 Additional actuators declared this way are appended after the joint-target
-actuators — see ``SolverMuJoCo._init_actuators``.
+actuators — see ``SolverMuJoCo._init_actuators``. Each compiled MuJoCo actuator's
+originating ``mujoco:actuator`` row in each world is exposed on
+:attr:`~newton.solvers.SolverMuJoCo.mjc_actuator_to_newton_actuator` (shape
+``[nworld, nu]``, with ``-1`` for synthesized ``JOINT_TARGET`` drives that have
+no authored ``mujoco:actuator`` row).
 
 MJCF ``<dcmotor>`` actuators follow this MuJoCo-specific path. The importer uses
 MuJoCo's native parser to resolve electrical, controller, thermal, cogging, and

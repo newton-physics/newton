@@ -1681,6 +1681,7 @@ def _target_quat_to_axis_angle(qx: float, qy: float, qz: float, qw: float) -> wp
 def apply_mjc_control_kernel(
     mjc_actuator_ctrl_source: wp.array[wp.int32],
     mjc_actuator_to_newton_idx: wp.array[wp.int32],
+    mjc_actuator_to_newton_actuator: wp.array2d[wp.int32],
     mjc_actuator_to_newton_target_q_idx: wp.array[wp.int32],
     mjc_actuator_to_target_q_axis_idx: wp.array[wp.int32],
     mjc_actuator_to_newton_ball_jnt: wp.array[wp.int32],
@@ -1693,7 +1694,6 @@ def apply_mjc_control_kernel(
     target_q_per_world: wp.int32,
     coords_per_world: wp.int32,
     dofs_per_world: wp.int32,
-    ctrls_per_world: wp.int32,
     joints_per_world: wp.int32,
     # outputs
     mj_ctrl: wp.array2d[wp.float32],
@@ -1714,7 +1714,7 @@ def apply_mjc_control_kernel(
     (mirroring the qpos / qvel bridges in :func:`convert_warp_coords_to_mj_kernel` BALL). The
     velocity case reuses the existing target-q lookup slot.
 
-    For CTRL_DIRECT (source=1), mjc_actuator_to_newton_idx is the ctrl index.
+    For CTRL_DIRECT (source=1), ``mjc_actuator_to_newton_actuator[world, actuator]`` indexes ``mujoco_ctrl``.
     """
     world, actuator = wp.tid()
     source = mjc_actuator_ctrl_source[actuator]
@@ -1792,8 +1792,8 @@ def apply_mjc_control_kernel(
                 w_mj = wp.quat_rotate(q_cj * wp.quat_inverse(r), w_newton)
                 mj_ctrl[world, actuator] = w_mj[axis_idx]
     else:  # CTRL_SOURCE_CTRL_DIRECT
-        world_ctrl_idx = world * ctrls_per_world + idx
-        if world_ctrl_idx < mujoco_ctrl.shape[0]:
+        world_ctrl_idx = mjc_actuator_to_newton_actuator[world, actuator]
+        if world_ctrl_idx >= 0 and world_ctrl_idx < mujoco_ctrl.shape[0]:
             mj_ctrl[world, actuator] = mujoco_ctrl[world_ctrl_idx]
 
 
@@ -2198,7 +2198,7 @@ def update_axis_properties_kernel(
 @wp.kernel
 def update_actuator_properties_kernel(
     mjc_actuator_ctrl_source: wp.array[wp.int32],
-    mjc_actuator_to_newton_actuator_idx: wp.array[wp.int32],
+    mjc_actuator_to_newton_actuator: wp.array2d[wp.int32],
     newton_actuator_ctrl_type: wp.array[wp.int32],
     newton_actuator_gainprm: wp.array[vec10],
     newton_actuator_biasprm: wp.array[vec10],
@@ -2209,7 +2209,6 @@ def update_actuator_properties_kernel(
     newton_actuator_actrange: wp.array[wp.vec2],
     newton_actuator_gear: wp.array[wp.spatial_vector],
     newton_actuator_cranklength: wp.array[float],
-    actuators_per_world: wp.int32,
     # outputs
     actuator_gain: wp.array2d[vec10],
     actuator_bias: wp.array2d[vec10],
@@ -2226,7 +2225,7 @@ def update_actuator_properties_kernel(
 
     Args:
         mjc_actuator_ctrl_source: 0=JOINT_TARGET, 1=CTRL_DIRECT
-        mjc_actuator_to_newton_actuator_idx: Index into Newton's mujoco:actuator arrays
+        mjc_actuator_to_newton_actuator: Per-world index into Newton's ``mujoco:actuator`` arrays
         newton_actuator_ctrl_type: Intrinsic actuator shortcut type
         newton_actuator_gainprm: Newton's model.mujoco.actuator_gainprm
         newton_actuator_biasprm: Newton's model.mujoco.actuator_biasprm
@@ -2237,16 +2236,13 @@ def update_actuator_properties_kernel(
         newton_actuator_actrange: Newton's model.mujoco.actuator_actrange
         newton_actuator_gear: Newton's model.mujoco.actuator_gear
         newton_actuator_cranklength: Newton's model.mujoco.actuator_cranklength
-        actuators_per_world: Number of actuators per world in Newton model
     """
     world, actuator = wp.tid()
     source = mjc_actuator_ctrl_source[actuator]
 
-    newton_actuator_idx = mjc_actuator_to_newton_actuator_idx[actuator]
-    if newton_actuator_idx < 0:
+    world_newton_idx = mjc_actuator_to_newton_actuator[world, actuator]
+    if world_newton_idx < 0:
         return
-
-    world_newton_idx = world * actuators_per_world + newton_actuator_idx
     actuator_ctrlrange[world, actuator] = newton_actuator_ctrlrange[world_newton_idx]
 
     if source != CTRL_SOURCE_CTRL_DIRECT:
