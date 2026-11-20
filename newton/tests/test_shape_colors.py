@@ -667,6 +667,7 @@ class TestShapeColors(unittest.TestCase):
         self.assertFalse(transparent.hidden)
 
         renderer = RendererGL.__new__(RendererGL)
+        renderer._physics_xray = False
         opaque_objects, transparent_objects = renderer._split_transparent_objects(
             {"opaque": opaque, "transparent": transparent}, scene_has_transparency=True
         )
@@ -796,6 +797,9 @@ class TestShapeColors(unittest.TestCase):
     def test_render_scene_falls_back_to_alpha_blending_without_oit(self):
         """Render transparency with alpha blending when weighted OIT is unavailable."""
         renderer = RendererGL.__new__(RendererGL)
+        renderer._physics_xray = False
+        renderer._surface_grid_enabled = False
+        renderer._surface_grid_objects = ()
         transparent_shader = MagicMock()
         renderer._shape_shader = MagicMock()
         renderer._shape_transparent_shader = transparent_shader

@@ -1689,6 +1689,7 @@ class TestViewerProperties(unittest.TestCase):
 
 
 class TestCollisionInspector(unittest.TestCase):
+    @requires("imgui_bundle")
     def test_paused_collision_inspection(self) -> None:
         """Inspect all broadphases lazily and preserve contact attribute row domains."""
         frequency, assignment = newton.Model.AttributeFrequency, newton.Model.AttributeAssignment

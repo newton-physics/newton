@@ -969,9 +969,16 @@ class TestViewerGLGetFrame(unittest.TestCase):
                                 self.assertGreater(np.count_nonzero(first[..., 0] > 128), size * size // 4)
                                 self.assertGreater(first[..., 0].sum(), first[..., 1].sum())
                                 self.assertGreater(first[..., 1].sum(), first[..., 2].sum())
+                                # Drivers may round edge coverage differently at
+                                # another screen offset, so allow a few levels.
                                 for copy in (1, 2):
-                                    np.testing.assert_array_equal(
-                                        pixels[100 : 100 + size, 100 + 40 * copy : 100 + 40 * copy + size, :3], first
+                                    np.testing.assert_allclose(
+                                        pixels[100 : 100 + size, 100 + 40 * copy : 100 + 40 * copy + size, :3].astype(
+                                            np.int16
+                                        ),
+                                        first.astype(np.int16),
+                                        atol=2,
+                                        rtol=0,
                                     )
                             # Clipped property labels should still batch as text,
                             # without a separate GPU scissor command per field.
