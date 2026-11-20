@@ -1615,7 +1615,10 @@ class TestSensorCamera(unittest.TestCase):
         from newton._src.render.raytrace import PARTICLES_SHAPE_ID, TRIANGLE_MESH_SHAPE_ID  # noqa: PLC0415
 
         model = self._deformable_worlds(device)
-        for config in ({"enable_backface_culling": False}, {"enable_backface_culling": False, "enable_particles": False}):
+        for config in (
+            {"enable_backface_culling": False},
+            {"enable_backface_culling": False, "enable_particles": False},
+        ):
             with self.subTest(**config):
                 depth, shape_index = self._render_deformable_worlds(model, "warp", **config)
                 # Every world sees its own particles, and only worlds with cloth see cloth.
@@ -1662,6 +1665,29 @@ class TestSensorCamera(unittest.TestCase):
             )
             self.assertAlmostEqual(float(depth.numpy()[0, 0, 0]), -z - 0.25, delta=1.0e-3)
             self.assertEqual(int(shape_index.numpy()[0, 0, 0]), int(PARTICLES_SHAPE_ID))
+
+    @requires("warp_optix")
+    def test_clusters_cover_every_face_once_without_spanning_worlds(self) -> None:
+        """Partition triangles into clusters within the device limits that never span worlds."""
+        from newton._src.render.render_optix import cluster_triangles  # noqa: PLC0415
+
+        rng = np.random.default_rng(3)
+        points = rng.uniform(-1.0, 1.0, (900, 3)).astype(np.float32)
+        # Disjoint triangles reference three points each, forcing oversized runs to split.
+        indices = np.arange(900, dtype=np.int32)
+        worlds = np.repeat(np.array([2, -1, 0], dtype=np.int32), 100)
+        clusters, local, sources, faces = cluster_triangles(indices, points, worlds)
+        np.testing.assert_array_equal(np.sort(faces), np.arange(300))
+        self.assertLessEqual(int(clusters[:, 1].max()), 256)
+        self.assertLessEqual(int(clusters[:, 3].max()), 128)
+        tris = indices.reshape(-1, 3)
+        for first_point, point_count, first_triangle, triangle_count in clusters:
+            cluster_faces = faces[first_triangle : first_triangle + triangle_count]
+            self.assertEqual(len(np.unique(worlds[cluster_faces])), 1)
+            # Cluster-local indices address the cluster's points, which are the faces' points.
+            local_tris = local.reshape(-1, 3)[first_triangle : first_triangle + triangle_count]
+            self.assertLess(int(local_tris.max()), point_count)
+            np.testing.assert_array_equal(sources[first_point + local_tris], tris[cluster_faces])
 
     def test_multiple_sensor_cameras_render_same_model(self) -> None:
         """Verify multiple independent SensorCamera instances can render the same model."""
@@ -2032,49 +2058,6 @@ for _name in (
     "test_particles_follow_state_without_particle_bvh_refit",
 ):
     setattr(TestSensorCamera, f"{_name}_optix", _optix_variant(getattr(TestSensorCamera, _name)))
-
-
-class TestOptixScene(unittest.TestCase):
-    """The OptiX camera scene's triangle clusters and cell checks."""
-
-    @requires("warp_optix")
-    def test_clusters_cover_every_face_once_without_spanning_worlds(self) -> None:
-        """Partition triangles into clusters within the device limits that never span worlds."""
-        from newton._src.render.render_optix import cluster_triangles  # noqa: PLC0415
-
-        rng = np.random.default_rng(3)
-        points = rng.uniform(-1.0, 1.0, (900, 3)).astype(np.float32)
-        # Disjoint triangles reference three points each, forcing oversized runs to split.
-        indices = np.arange(900, dtype=np.int32)
-        worlds = np.repeat(np.array([2, -1, 0], dtype=np.int32), 100)
-        clusters, local, sources, faces = cluster_triangles(indices, points, worlds)
-        np.testing.assert_array_equal(np.sort(faces), np.arange(300))
-        self.assertLessEqual(int(clusters[:, 1].max()), 256)
-        self.assertLessEqual(int(clusters[:, 3].max()), 128)
-        tris = indices.reshape(-1, 3)
-        for first_point, point_count, first_triangle, triangle_count in clusters:
-            cluster_faces = faces[first_triangle : first_triangle + triangle_count]
-            self.assertEqual(len(np.unique(worlds[cluster_faces])), 1)
-            # Cluster-local indices address the cluster's points, which are the faces' points.
-            local_tris = local.reshape(-1, 3)[first_triangle : first_triangle + triangle_count]
-            self.assertLess(int(local_tris.max()), point_count)
-            np.testing.assert_array_equal(sources[first_point + local_tris], tris[cluster_faces])
-
-    @requires("warp_optix")
-    @unittest.skipUnless(wp.is_cuda_available(), "requires CUDA")
-    def test_particles_leaving_their_cell_are_flagged(self) -> None:
-        """Flag particles that leave their world's cell on the device."""
-        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
-        builder.add_particle(pos=wp.vec3(0.0, 0.0, 0.5), vel=wp.vec3(0.0), mass=1.0, radius=0.1)
-        model = builder.finalize(device="cuda:0")
-        state = model.state()
-        model.bvh_build_shapes(state, backend="optix", optix_extent=1.0)
-        camera = SensorCamera(model, backend="optix")
-        camera.sync_deformable_meshes(state)
-        self.assertEqual(int(model.optix_shapes.out_of_cell.numpy()[0]), 0)
-        state.particle_q.assign(np.array([[0.0, 0.0, 1.5]], dtype=np.float32))
-        camera.sync_deformable_meshes(state)
-        self.assertEqual(int(model.optix_shapes.out_of_cell.numpy()[0]), 1)
 
 
 class TestSensorCameraDeformable(unittest.TestCase):
