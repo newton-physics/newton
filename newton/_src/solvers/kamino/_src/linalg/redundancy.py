@@ -13,8 +13,17 @@ import warp as wp
 
 from ..core.math import FLOAT32_EPS
 from ..core.types import vec6f
+from .factorize import rcm_batch
 from .factorize._array_ptr import get_float32_array_offset_ptr
-from .factorize.llt_blocked import llt_blocked_factorize, make_llt_blocked_factorize_kernel
+from .factorize.llt_blocked_rcm import (
+    llt_blocked_rcm_factorize,
+    llt_blocked_rcm_factorize_parallel,
+    llt_blocked_rcm_symbolic_fill_in,
+    make_llt_blocked_rcm_factorize_kernel,
+    make_llt_blocked_rcm_parallel_factorize_kernels,
+    make_llt_blocked_rcm_symbolic_fill_in_kernel,
+)
+from .factorize.llt_blocked_rcm_solver import PARALLEL_FACTORIZATION_MAX_BLOCKS_PER_SM
 from .sparse_matrix import BlockSparseMatrices
 
 ###
@@ -333,31 +342,105 @@ def _update_changed_shifts(
 
 
 @wp.kernel
-def _copy_shifted_block(
+def _copy_unordered_block(
     # Inputs:
     ld: wp.array[wp.int32],
     row_offset: wp.array[wp.int32],
     num_rows: wp.array[wp.int32],
     A: wp.array2d[wp.float32],
-    diagonal: wp.array2d[wp.float32],
+    ordering_valid: wp.array[wp.int32],
+    ordering_dim: wp.array[wp.int32],
+    # Outputs:
+    dims: wp.array[wp.int32],
+    block: wp.array2d[wp.float32],
+):
+    """Copy the off-diagonal entries of the blocks without a valid ordering, with a row stride of their dimension."""
+    wid, i, j = wp.tid()
+    n = num_rows[wid]
+    if i == 0 and j == 0:
+        dims[wid] = n
+    if (ordering_valid[wid] != 0 and ordering_dim[wid] == n) or i >= n or j >= n:
+        return
+    value = wp.float32(0.0)
+    if i != j:
+        start = row_offset[wid] * (ld[wid] + 1)
+        value = A[wid, start + wp.max(i, j) * ld[wid] + wp.min(i, j)]
+    block[wid, i * n + j] = value
+
+
+@wp.kernel
+def _order_shifted_rows_last(
+    # Inputs:
+    num_rows: wp.array[wp.int32],
     shifted: wp.array2d[wp.int32],
     initialized: wp.array[wp.int32],
+    ordering: wp.array[wp.int32],
     # Outputs:
     factor_dim: wp.array[wp.int32],
-    factor: wp.array2d[wp.float32],
+    num_kept: wp.array[wp.int32],
+    position: wp.array2d[wp.int32],
+    order: wp.array2d[wp.int32],
 ):
-    """Copy the shifted block of the initialized worlds, with a row stride of its dimension, for its factorization."""
-    wid, i, j = wp.tid()
+    """
+    Order the kept rows of the initialized worlds first and their shifted rows last, each in the order of
+    ``ordering``, which holds the rows of each world with a stride of ``max_rows``.
+    """
+    wid = wp.tid()
     n = wp.where(initialized[wid] != 0, num_rows[wid], 0)
-    if i == 0 and j == 0:
-        factor_dim[wid] = n
+    base = wid * shifted.shape[1]
+    kept = wp.int32(0)
+    for i in range(n):
+        kept += wp.where(shifted[wid, i] != 0, 0, 1)
+    next_kept = wp.int32(0)
+    next_shifted = kept
+    for h in range(n):
+        i = ordering[base + h]
+        k = next_kept
+        if shifted[wid, i] != 0:
+            k = next_shifted
+            next_shifted += 1
+        else:
+            next_kept += 1
+        position[wid, i] = k
+        order[wid, k] = i
+    factor_dim[wid] = n
+    num_kept[wid] = kept
+
+
+@wp.kernel
+def _copy_shifted_block(
+    # Inputs:
+    ld: wp.array[wp.int32],
+    row_offset: wp.array[wp.int32],
+    factor_dim: wp.array[wp.int32],
+    A: wp.array2d[wp.float32],
+    diagonal: wp.array2d[wp.float32],
+    shifted: wp.array2d[wp.int32],
+    position: wp.array2d[wp.int32],
+    tile_offset: wp.array[wp.int32],
+    tile_size: wp.int32,
+    # Outputs:
+    block: wp.array2d[wp.float32],
+    tile_pattern: wp.array[wp.int32],
+):
+    """
+    Copy the shifted block of each world, ordered by ``position``, with a row stride of its dimension,
+    and mark the tiles of its lower triangle holding non-zero entries.
+    """
+    wid, i, j = wp.tid()
+    n = factor_dim[wid]
     if i >= n or j >= n:
         return
     value = diagonal[wid, i] + _row_shift(diagonal[wid, i], shifted[wid, i])
     if i != j:
         start = row_offset[wid] * (ld[wid] + 1)
         value = A[wid, start + wp.max(i, j) * ld[wid] + wp.min(i, j)]
-    factor[wid, i * n + j] = value
+    row = position[wid, i]
+    col = position[wid, j]
+    block[wid, row * n + col] = value
+    if row >= col and value != 0.0:
+        num_tiles = (n + tile_size - 1) // tile_size
+        wp.atomic_max(tile_pattern, tile_offset[wid] + (row // tile_size) * num_tiles + col // tile_size, 1)
 
 
 @cache
@@ -497,10 +580,9 @@ def _make_shift_redundant_rows_kernel(block_dim: int, max_rows: int, shared: boo
 
 
 @cache
-def _make_triangular_solves():
-    """Create the in-place tiled solves with a lower Cholesky factor and its transpose of the checks."""
+def _make_triangular_solves(columns: int):
+    """Create the in-place tiled solves of ``columns`` right-hand sides with a lower Cholesky factor and its transpose."""
     tile = _CHECK_TILE
-    columns = _CHECK_COLUMNS
 
     @wp.func
     def forward(L_i: wp.array2d[wp.float32], X_i: wp.array2d[wp.float32], n: wp.int32, tid: wp.int32):
@@ -563,26 +645,25 @@ def _make_triangular_solves():
 def _make_check_kernel():
     """
     Create the kernel checking the shifted rows of each world from the Cholesky factor of its shifted block,
-    stored with a row stride of its dimension.
+    with the kept rows first and the shifted rows last, stored with a row stride of its dimension.
     """
     tile = _CHECK_TILE
-    columns = _CHECK_COLUMNS
-    forward, backward = _make_triangular_solves()
+    forward, backward = _make_triangular_solves(1)
 
     @wp.kernel(module="unique", enable_backward=False)
     def _check_shifted_rows(
         # Inputs:
         num_rows: wp.array[wp.int32],
         factor_dim: wp.array[wp.int32],
+        num_kept: wp.array[wp.int32],
+        order: wp.array2d[wp.int32],
         L: wp.array2d[wp.float32],
         diagonal: wp.array2d[wp.float32],
-        shifted: wp.array2d[wp.int32],
         reference: wp.array[wp.float32],
         threshold: wp.float32,
         # Scratch:
         X: wp.array3d[wp.float32],
         V: wp.array2d[wp.float32],
-        column_rows: wp.array2d[wp.int32],
         # Outputs:
         pivot_rows: wp.array[wp.int32],
         eigenvalue_out: wp.array[wp.float32],
@@ -596,84 +677,62 @@ def _make_check_kernel():
                 pivot_rows[wid] = rows
                 eigenvalue_out[wid] = 0.0
             return
-        padded = ((n + tile - 1) // tile) * tile
+        m = num_kept[wid]
         L_i = wp.array(ptr=get_float32_array_offset_ptr(L[wid], 0), shape=(n, n), dtype=wp.float32)
         X_i = X[wid]
         V_i = V[wid]
 
-        # Initialize the iterate with a fixed pseudo-random vector, and count the shifted rows
-        partial = wp.float32(0.0)
-        for h in range(tid, n, threads):
-            value = wp.randf(wp.rand_init(_ITERATE_SEED, h)) - 0.5
-            V_i[h] = value
-            partial += value * value
-        inv_norm = 1.0 / wp.sqrt(wp.tile_sum(wp.tile(partial))[0])
-        count = wp.int32(0)
-        for i in range(tid, n, threads):
-            count += shifted[wid, i]
-        num_shifted = wp.tile_sum(wp.tile(count))[0]
+        # A shifted row is independent if its Schur complement on the kept rows exceeds its shift
+        # NOTE: The Schur complement of the shifted rows is the product of the trailing block of the factor with
+        # its transpose, and its diagonal minus the shifts is the residual of each row on the span of the kept rows.
+        independent = wp.int32(0)
+        for k in range(m + tid, n, threads):
+            schur = wp.float32(0.0)
+            for c in range(m, k + 1):
+                schur += L_i[k, c] * L_i[k, c]
+            d = wp.max(diagonal[wid, order[wid, k]], FLOAT32_EPS)
+            if not ((schur - d) / d <= _SHIFTED_ROW_MARGIN * threshold):
+                independent += 1
+        failed = wp.tile_sum(wp.tile(independent))[0]
 
-        # Solve with the iterate of the inverse iterations in the first column, and the unit vectors of the
-        # shifted rows by chunks in the other columns
-        slots = columns - 1
-        passes = wp.max(_CHECK_ITERATIONS, (num_shifted + slots - 1) // slots)
-        rayleigh = wp.float32(0.0)
-        failed = wp.int32(0)
-        for p in range(passes):
-            iterate = p < _CHECK_ITERATIONS
-            for k in range(tid, padded * columns, threads):
-                h = k // columns
-                value = wp.float32(0.0)
-                if iterate and k - h * columns == 0 and h < n:
-                    K = diagonal[wid, h] + _row_shift(diagonal[wid, h], shifted[wid, h])
-                    value = wp.sqrt(wp.max(K, FLOAT32_EPS)) * V_i[h] * inv_norm
-                X_i[h, k - h * columns] = value
-            for c in range(tid, columns, threads):
-                column_rows[wid, c] = -1
-            _sync_threads()
-            if tid == 0:
-                k = wp.int32(0)
-                for i in range(n):
-                    if shifted[wid, i] != 0:
-                        c = 1 + k - p * slots
-                        if c >= 1 and c < columns:
-                            X_i[i, c] = 1.0
-                            column_rows[wid, c] = i
-                        k += 1
-            _sync_threads()
-            forward(L_i, X_i, n, tid)
-            backward(L_i, X_i, n, tid)
-            _sync_threads()
+        # Estimate the smallest eigenvalue of the Jacobi-scaled kept rows by inverse iterations
+        # NOTE: The rows of the factor beyond the kept rows are out of bounds, and loaded as zeros by the solves.
+        eigenvalue = wp.float32(1.0)
+        if m > 0:
+            L_kept = wp.array(ptr=get_float32_array_offset_ptr(L[wid], 0), shape=(m, n), dtype=wp.float32)
+            padded = ((m + tile - 1) // tile) * tile
+            partial = wp.float32(0.0)
+            for h in range(tid, m, threads):
+                value = wp.randf(wp.rand_init(_ITERATE_SEED, h)) - 0.5
+                V_i[h] = value
+                partial += value * value
+            inv_norm = 1.0 / wp.sqrt(wp.tile_sum(wp.tile(partial))[0])
+            rayleigh = wp.float32(0.0)
+            for _iteration in range(_CHECK_ITERATIONS):
+                for h in range(tid, padded, threads):
+                    value = wp.float32(0.0)
+                    if h < m:
+                        value = wp.sqrt(wp.max(diagonal[wid, order[wid, h]], FLOAT32_EPS)) * V_i[h] * inv_norm
+                    X_i[h, 0] = value
+                _sync_threads()
+                forward(L_kept, X_i, m, tid)
+                backward(L_kept, X_i, m, tid)
+                _sync_threads()
 
-            # Accumulate the Rayleigh quotient of the inverse of the Jacobi-scaled block
-            if iterate:
+                # Accumulate the Rayleigh quotient of the inverse
                 quotient = wp.float32(0.0)
                 norm = wp.float32(0.0)
-                for h in range(tid, n, threads):
-                    K = diagonal[wid, h] + _row_shift(diagonal[wid, h], shifted[wid, h])
+                for h in range(tid, m, threads):
                     x = V_i[h] * inv_norm
-                    z = wp.sqrt(wp.max(K, FLOAT32_EPS)) * X_i[h, 0]
+                    z = wp.sqrt(wp.max(diagonal[wid, order[wid, h]], FLOAT32_EPS)) * X_i[h, 0]
                     quotient += x * z
                     norm += z * z
                     V_i[h] = z
                 rayleigh = wp.tile_sum(wp.tile(quotient))[0]
                 inv_norm = 1.0 / wp.sqrt(wp.tile_sum(wp.tile(norm))[0])
-
-            # A shifted row is independent if its Schur complement exceeds its shift
-            # NOTE: The Schur complement is the residual of a ridge regression of the row on the other rows, with
-            # the coefficients -u_o / u_s of the column u of the inverse, penalized by the shifts of the other rows.
-            independent = wp.int32(0)
-            for c in range(1 + tid, columns, threads):
-                i = column_rows[wid, c]
-                if i >= 0:
-                    d = wp.max(diagonal[wid, i], FLOAT32_EPS)
-                    residual = (1.0 / X_i[i, c] - d) / d
-                    if not (residual <= _SHIFTED_ROW_MARGIN * threshold):
-                        independent += 1
-            failed += wp.tile_sum(wp.tile(independent))[0]
+            eigenvalue = 1.0 / rayleigh
 
         # The kept rows are dependent if the smallest eigenvalue is small, or much smaller than its reference
-        eigenvalue = 1.0 / rayleigh
         limit = threshold
         if reference[wid] > 0.0:
             limit = wp.min(threshold, _REFERENCE_MARGIN * reference[wid])
@@ -696,7 +755,7 @@ def _make_factor_check_kernel(permuted: bool):
     """
     tile = _CHECK_TILE
     columns = _CHECK_COLUMNS
-    forward, backward = _make_triangular_solves()
+    forward, backward = _make_triangular_solves(columns)
 
     @wp.func
     def original_row(perm: wp.array[wp.int32], vstart: wp.int32, h: wp.int32) -> wp.int32:
@@ -890,10 +949,11 @@ class RedundantRowShift:
     the host. On CUDA devices, the copy is kept in shared memory if it fits, and in global memory otherwise.
 
     Instead of repeating the elimination at every call, :meth:`detect` can reuse the shifted rows of the last
-    elimination, and check them from the Cholesky factor of the shifted block with :meth:`check`. The check
-    fails if the smallest eigenvalue of the Jacobi-scaled shifted block is below ``threshold``, i.e. if the
-    kept rows became dependent, or if the Schur complement of a shifted row exceeds its shift by ten times
-    ``threshold`` relative to its diagonal, i.e. if the shifted row became independent. The elimination is
+    elimination, and check them from the Cholesky factor of the shifted block with :meth:`check`, which orders
+    the shifted rows last. The check fails if the smallest eigenvalue of the Jacobi-scaled kept rows is below
+    ``threshold``, i.e. if the kept rows became dependent, or if the Schur complement of a shifted row on the
+    kept rows exceeds its shift by ten times ``threshold`` relative to its diagonal, i.e. if the shifted row
+    became independent of the kept rows. The elimination is
     then repeated for the failed worlds only. Since the relative pivots do not bound the smallest eigenvalue,
     valid shifted rows can fail the check. So, when the elimination of a failed world keeps the same rows, its
     eigenvalue becomes the reference of its next checks, which only fail below a tenth of it.
@@ -983,8 +1043,43 @@ class RedundantRowShift:
         self._factor = None
         if check:
             self._factor = wp.zeros((num_worlds, rows * rows), dtype=wp.float32, device=device)
+            self._ordered_block = wp.zeros((num_worlds, rows * rows), dtype=wp.float32, device=device)
             self._factor_dim = wp.zeros(num_worlds, dtype=wp.int32, device=device)
-            self._factor_kernel = make_llt_blocked_factorize_kernel(_FACTOR_BLOCK_SIZE)
+            self._num_kept = wp.zeros(num_worlds, dtype=wp.int32, device=device)
+            self._position = wp.zeros((num_worlds, rows), dtype=wp.int32, device=device)
+            self._order = wp.zeros((num_worlds, rows), dtype=wp.int32, device=device)
+
+            # Order the rows of the blocks once by reverse Cuthill-McKee, from the unordered copies in the factors
+            self._ordering = wp.zeros(num_worlds * rows, dtype=wp.int32, device=device)
+            self._ordering_dims = wp.zeros(num_worlds, dtype=wp.int32, device=device)
+            self._ordering_offsets = wp.array([w * rows for w in range(num_worlds)], dtype=wp.int32, device=device)
+            self._ordering_scratch = rcm_batch.allocate_rcm_batch_scratch(num_worlds * rows, num_worlds, device)
+            self._reorder = rcm_batch.create_rcm_batch_launch(
+                A_flat=self._factor,
+                perm_flat=self._ordering,
+                dims=self._ordering_dims,
+                vio=self._ordering_offsets,
+                scratch=self._ordering_scratch,
+                num_blocks=num_worlds,
+                max_dim=rows,
+                use_cuda_graph=False,
+                reuse_permutation=True,
+                device=device,
+            )
+
+            # Skip the tiles of zeros of the factors, and factorize the panels in parallel for few worlds
+            self._max_tiles = (rows + _FACTOR_BLOCK_SIZE - 1) // _FACTOR_BLOCK_SIZE
+            tiles = self._max_tiles**2
+            self._tile_pattern = wp.zeros(num_worlds * tiles, dtype=wp.int32, device=device)
+            self._tile_offset = wp.array([w * tiles for w in range(num_worlds)], dtype=wp.int32, device=device)
+            self._fill_in_kernel = make_llt_blocked_rcm_symbolic_fill_in_kernel(self._max_tiles)
+            self._parallel_factor = (
+                device.is_cuda and num_worlds < PARALLEL_FACTORIZATION_MAX_BLOCKS_PER_SM * device.sm_count
+            )
+            if self._parallel_factor:
+                self._factor_kernel = make_llt_blocked_rcm_parallel_factorize_kernels(_FACTOR_BLOCK_SIZE)
+            else:
+                self._factor_kernel = make_llt_blocked_rcm_factorize_kernel(_FACTOR_BLOCK_SIZE)
         self._max_dim = max_dim
         solve_rows = max(rows if check else 0, max_dim)
         if solve_rows > 0:
@@ -1169,29 +1264,72 @@ class RedundantRowShift:
         rows = max(self.max_rows, 1)
         device = self._factor.device
 
-        # Copy and factorize the shifted blocks
+        # Order the rows of the blocks by reverse Cuthill-McKee, if not done yet
         wp.launch(
-            _copy_shifted_block,
+            _copy_unordered_block,
             dim=(self.num_worlds, rows, rows),
             inputs=[
                 *self._source[:2],
                 self._num_rows,
                 self._source[2],
-                self._diagonal,
-                self.shifted,
-                self._initialized,
+                self._ordering_scratch["permutation_valid"],
+                self._ordering_scratch["permutation_dim"],
             ],
-            outputs=[self._factor_dim, self._factor],
+            outputs=[self._ordering_dims, self._factor],
             device=device,
         )
-        llt_blocked_factorize(
-            kernel=self._factor_kernel,
-            dim=self._factor_dim,
-            A=self._factor,
-            L=self._factor,
-            num_blocks=self.num_worlds,
-            block_dim=_FACTOR_BLOCK_DIM,
+        self._reorder()
+
+        # Copy the shifted blocks with the shifted rows last, and their tile pattern
+        wp.launch(
+            _order_shifted_rows_last,
+            dim=self.num_worlds,
+            inputs=[self._num_rows, self.shifted, self._initialized, self._ordering],
+            outputs=[self._factor_dim, self._num_kept, self._position, self._order],
+            device=device,
         )
+        self._tile_pattern.zero_()
+        wp.launch(
+            _copy_shifted_block,
+            dim=(self.num_worlds, rows, rows),
+            inputs=[
+                *self._source[:2],
+                self._factor_dim,
+                self._source[2],
+                self._diagonal,
+                self.shifted,
+                self._position,
+                self._tile_offset,
+                _FACTOR_BLOCK_SIZE,
+            ],
+            outputs=[self._ordered_block, self._tile_pattern],
+            device=device,
+        )
+
+        # Factorize the shifted blocks
+        llt_blocked_rcm_symbolic_fill_in(
+            kernel=self._fill_in_kernel,
+            dim=self._factor_dim,
+            tpo=self._tile_offset,
+            block_size=_FACTOR_BLOCK_SIZE,
+            tile_pattern=self._tile_pattern,
+            num_blocks=self.num_worlds,
+            device=device,
+        )
+        factor_args = {
+            "dim": self._factor_dim,
+            "tpo": self._tile_offset,
+            "A": self._ordered_block,
+            "tile_pattern": self._tile_pattern,
+            "L": self._factor,
+            "num_blocks": self.num_worlds,
+            "block_dim": _FACTOR_BLOCK_DIM,
+            "device": device,
+        }
+        if self._parallel_factor:
+            llt_blocked_rcm_factorize_parallel(kernels=self._factor_kernel, max_tiles=self._max_tiles, **factor_args)
+        else:
+            llt_blocked_rcm_factorize(kernel=self._factor_kernel, **factor_args)
 
         # Check the shifted rows from the factors
         wp.launch_tiled(
@@ -1200,14 +1338,14 @@ class RedundantRowShift:
             inputs=[
                 self._num_rows,
                 self._factor_dim,
+                self._num_kept,
+                self._order,
                 self._factor,
                 self._diagonal,
-                self.shifted,
                 self._reference,
                 wp.float32(self.threshold),
                 self._rhs,
                 self._iterate,
-                self._column_rows,
             ],
             outputs=[self.pivot_rows, self._eigenvalue],
             block_dim=_CHECK_BLOCK_DIM,
