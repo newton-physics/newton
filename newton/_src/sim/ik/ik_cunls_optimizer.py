@@ -33,8 +33,8 @@ def _import_pycunls():
         import pycunls  # noqa: PLC0415
     except ImportError as e:
         raise ImportError(
-            "IKOptimizer.CUNLS requires cuNLS. Install it with `pip install newton[cunls-cu12]` "
-            "(CUDA 12) or `pip install newton[cunls-cu13]` (CUDA 13)."
+            "IKOptimizer.CUNLS requires cuNLS. Install it with `pip install newton[cunls]` "
+            "(CUDA 13: an R580 or newer driver)."
         ) from e
     return pycunls
 
@@ -161,7 +161,7 @@ class IKOptimizerCuNLS:
     A position and a rotation objective on the same link are solved as one pose target.
     :meth:`compute_costs` returns the squared residuals cuNLS minimizes (orientation errors as
     rotation angles, independent of the quaternion sign; hard limits add nothing).
-    Requires the optional ``pycunls`` package (``newton[cunls-cu12]`` or ``newton[cunls-cu13]``).
+    Requires the optional ``pycunls`` package (``newton[cunls]``, CUDA 13).
 
     Args:
         model: Shared articulation model.
@@ -210,7 +210,9 @@ class IKOptimizerCuNLS:
         limits = [o for o in objectives if isinstance(o, IKObjectiveJointLimit)]
         if len(limits) > 1:
             raise ValueError("IKOptimizer.CUNLS accepts at most one IKObjectiveJointLimit.")
-        with wp.ScopedDevice(self.device):  # cuNLS allocates on the current CUDA device
+        # cuNLS objects built without device arrays (topology, states, solver) use the current
+        # device; the solves then run on the device of the states, whatever device is current.
+        with wp.ScopedDevice(self.device):
             self._build_problem(pycunls, model, objectives, limits[0] if limits else None)
 
         # Newton's objective contract: the optimizer gives each objective its batch layout (also
@@ -261,7 +263,7 @@ class IKOptimizerCuNLS:
         self._state_table = wp.array(
             base + ambient_bytes * np.arange(n_batch, dtype=np.uint64), dtype=wp.uint64, device=self.device
         )
-        self._solvers = {}  # iterations -> minimizer
+        self._solver = self._build_solver()
 
     def _per_row(self, values, dtype=wp.float32) -> wp.array:
         """Device array repeating ``values``, the data of one row's factors, for every batch row."""
@@ -412,32 +414,34 @@ class IKOptimizerCuNLS:
         )
         self._add_factor(factor, m, constraint=True)
 
-    def _solver(self, iterations: int):
-        solver = self._solvers.get(iterations)
-        if solver is None:
-            pycunls = self._pycunls
-            lm = pycunls.LevenbergMarquardtMinimizerOptions()
-            lm.base_options.max_num_iterations = iterations
-            lm.base_options.sparse_linear_solver_type = pycunls.SparseLinearSolverType.BlockSparseCholesky
-            # Absolute: residuals are meters and radians, so this stops at about 10 um. Much tighter
-            # sits at the float32 rounding of forward kinematics a few meters from the origin.
-            lm.base_options.cost_tolerance = 1.0e-10
-            lm.base_options.state_tolerance = 1.0e-10
-            options = pycunls.AugmentedLagrangianMinimizerOptions()
-            options.constraint_tolerance = self.constraint_tolerance
-            options.reuse_structure = True
-            if not self._has_constraints:
-                # `iterations` LM steps, nothing read back: the IKOptimizerLM contract. Constraints
-                # need the converging augmented Lagrangian: a fixed budget can leave them open.
-                options.real_time = True
-                options.max_outer_iterations = 1
-                options.inner_iterations = iterations
-                options.final_inner_iterations = iterations
-                options.inner_line_search_steps = 0
-                options.max_bound_refinements = 0
-            solver = pycunls.AugmentedLagrangianMinimizer(pycunls.LevenbergMarquardtMinimizer(lm), options)
-            self._solvers[iterations] = solver
-        return solver
+    def _build_solver(self):
+        """The augmented Lagrangian solver of every step (its budget is set per step)."""
+        pycunls = self._pycunls
+        options = pycunls.AugmentedLagrangianMinimizerOptions()
+        base = options.base_options
+        base.sparse_linear_solver_type = pycunls.SparseLinearSolverType.BlockSparseCholesky
+        # Absolute: residuals are meters and radians, so this stops at about 10 um. Much tighter
+        # sits at the float32 rounding of forward kinematics a few meters from the origin.
+        base.cost_tolerance = 1.0e-10
+        base.state_tolerance = 1.0e-10
+        base.reuse_structure = True
+        options.constraint_tolerance = self.constraint_tolerance
+        if not self._has_constraints:
+            # `iterations` LM steps, nothing read back: the IKOptimizerLM contract. Constraints
+            # need the converging augmented Lagrangian: a fixed budget can leave them open.
+            base.real_time = True
+            base.max_line_search_steps = 0
+            options.max_outer_iterations = 1
+            options.max_bound_refinements = 0
+        return pycunls.AugmentedLagrangianMinimizer(options)
+
+    def _set_iterations(self, iterations: int) -> None:
+        """The solver's budget: ``iterations`` per (full) inner solve. Changing it keeps the
+        structure set up by earlier steps."""
+        options = self._solver.options
+        if options.base_options.max_num_iterations != iterations:
+            options.base_options.max_num_iterations = iterations
+            self._solver.options = options
 
     # ------------------------------------------------------------------
     # Optimizer interface
@@ -478,8 +482,8 @@ class IKOptimizerCuNLS:
         for kernel, inputs, output in self._target_gathers:
             wp.launch(kernel, dim=self.n_batch, inputs=inputs, outputs=[output], device=self.device)
         self._set_states(joint_q_in, stream)
-        with wp.ScopedDevice(self.device):
-            self._solver(iterations).minimize(stream, self._problem)
+        self._set_iterations(iterations)
+        self._solver.minimize(stream, self._problem)
         if joint_q_in.ptr != joint_q_out.ptr:
             wp.copy(joint_q_out, joint_q_in)
         if self._coord_start is not None:
