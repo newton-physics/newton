@@ -1079,7 +1079,7 @@ class TestSensorCamera(unittest.TestCase):
                         np.testing.assert_allclose(self._unpack_rgb(albedo), expected * 255.0, atol=2)
 
             # Ordinary cloth still renders from the State buffer, without a camera-owned copy.
-            self.assertEqual(camera._render_context._triangle_mesh.points.ptr, state.particle_q.ptr)
+            self.assertEqual(camera._render_context._triangle_points.ptr, state.particle_q.ptr)
 
     def test_cloth_renders_triangle_colors_from_both_sides(self) -> None:
         """Verify two-sided depth, camera-facing normals, and per-face color under directional light."""
@@ -2034,7 +2034,7 @@ class TestSensorCameraDeformable(unittest.TestCase):
                     expected = model.tri_color.numpy()[0] * 255 if shown else [255, 255, 255]
                     np.testing.assert_allclose(TestSensorCamera._unpack_rgb(albedo)[0, 8, 8], expected, atol=2)
                     if choice == surfaces.SIMULATION_ONLY:
-                        self.assertEqual(camera._render_context._triangle_mesh.points.ptr, state.particle_q.ptr)
+                        self.assertEqual(camera._render_context._triangle_points.ptr, state.particle_q.ptr)
 
                         moved_state = model.state()
                         moved = moved_state.particle_q.numpy().copy()
@@ -2045,7 +2045,7 @@ class TestSensorCameraDeformable(unittest.TestCase):
                                 current, transforms, rays, world_indices=worlds, depth_image=depth, albedo_image=albedo
                             )
                             np.testing.assert_allclose(depth.numpy()[[0, 3], 8, 8], expected_depth, atol=0.03)
-                            self.assertEqual(camera._render_context._triangle_mesh.points.ptr, current.particle_q.ptr)
+                            self.assertEqual(camera._render_context._triangle_points.ptr, current.particle_q.ptr)
 
     def test_skinning_follows_state_and_capture(self):
         """Render cloth and skins from the state each update or sync uses, and replay captured updates."""

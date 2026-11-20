@@ -9,27 +9,21 @@ import warp as wp
 
 from ..core import MAXVAL
 from . import raytrace
-from .types import RenderConfig, RenderState
+from .types import RenderConfig, RenderState, SceneData
 
 if TYPE_CHECKING:
-    from ..geometry.optix import OptixShapes
+    from .render_optix import OptixScene
 
 
 def create_compute_lighting_function(
-    config: RenderConfig, state: RenderState, optix: OptixShapes | None = None
+    config: RenderConfig, state: RenderState, optix: OptixScene | None = None
 ) -> wp.Function:
     raytrace_first_hit = raytrace.create_first_hit_function(config, state, optix)
 
     @wp.func
     def compute_lighting(
         world_index: wp.int32,
-        bvh_shapes_size: wp.int32,
-        bvh_shapes_id: wp.uint64,
-        bvh_shapes_group_roots: wp.array[wp.int32],
-        bvh_particles_size: wp.int32,
-        bvh_particles_id: wp.uint64,
-        bvh_particles_group_roots: wp.array[wp.int32],
-        shape_enabled: wp.array[wp.uint32],
+        scene: SceneData,
         shape_types: wp.array[wp.int32],
         shape_sizes: wp.array[wp.vec3f],
         shape_transforms: wp.array[wp.transformf],
@@ -39,11 +33,6 @@ def create_compute_lighting_function(
         light_cast_shadow: wp.bool,
         light_position: wp.vec3f,
         light_orientation: wp.vec3f,
-        particles_position: wp.array[wp.vec3f],
-        particles_radius: wp.array[wp.float32],
-        topology_particle_mask: wp.array[wp.bool],
-        triangle_mesh_id: wp.uint64,
-        triangle_mesh_group_roots: wp.array[wp.int32],
         normal: wp.vec3f,
         hit_point: wp.vec3f,
     ) -> wp.float32:
@@ -90,23 +79,12 @@ def create_compute_lighting_function(
                 max_t = wp.float32(1.0e8)
 
             shadow_hit = raytrace_first_hit(
-                bvh_shapes_size,
-                bvh_shapes_id,
-                bvh_shapes_group_roots,
-                bvh_particles_size,
-                bvh_particles_id,
-                bvh_particles_group_roots,
+                scene,
                 world_index,
-                shape_enabled,
                 shape_types,
                 shape_sizes,
                 shape_transforms,
                 shape_source_ptr,
-                particles_position,
-                particles_radius,
-                topology_particle_mask,
-                triangle_mesh_id,
-                triangle_mesh_group_roots,
                 shadow_origin,
                 L,
                 max_t,

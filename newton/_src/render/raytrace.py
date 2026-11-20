@@ -10,10 +10,10 @@ import warp as wp
 from ..geometry import Gaussian, GeoType, raycast
 from ..geometry.bvh import BVH_SHAPE_INACTIVE
 from . import gaussians, render_optix
-from .types import MeshData, RenderConfig, RenderState
+from .types import MeshData, RenderConfig, RenderState, SceneData
 
 if TYPE_CHECKING:
-    from ..geometry.optix import OptixShapes
+    from .render_optix import OptixScene
 
 
 NO_HIT_SHAPE_ID = wp.uint32(0xFFFFFFFF)
@@ -93,6 +93,57 @@ def _mesh_hit_normal(
 
 
 @wp.func
+def ray_intersect_triangle(
+    ray_origin: wp.vec3f,
+    ray_dir: wp.vec3f,
+    p0: wp.vec3f,
+    p1: wp.vec3f,
+    p2: wp.vec3f,
+    enable_backface_culling: wp.bool,
+) -> tuple[wp.float32, wp.float32, wp.float32, wp.vec3f]:
+    """Ray-triangle intersection (Moller-Trumbore).
+
+    Returns ``(t, u, v, normal)`` with Warp's mesh barycentrics, ``hit = u * p0 + v * p1 + (1 - u - v) * p2``,
+    and the face normal oriented toward the ray origin; ``t`` is -1 on a miss. With
+    ``enable_backface_culling``, faces whose winding faces away from the ray are missed.
+    """
+    e1 = p1 - p0
+    e2 = p2 - p0
+    pvec = wp.cross(ray_dir, e2)
+    det = wp.dot(e1, pvec)
+    if det == 0.0 or (enable_backface_culling and det < 0.0):
+        return -1.0, 0.0, 0.0, wp.vec3f(0.0)
+    inv_det = 1.0 / det
+    tvec = ray_origin - p0
+    b1 = wp.dot(tvec, pvec) * inv_det
+    qvec = wp.cross(tvec, e1)
+    b2 = wp.dot(ray_dir, qvec) * inv_det
+    # A small tolerance keeps rays from slipping through shared edges.
+    eps = 1.0e-7
+    if b1 < -eps or b2 < -eps or b1 + b2 > 1.0 + eps:
+        return -1.0, 0.0, 0.0, wp.vec3f(0.0)
+    t = wp.dot(e2, qvec) * inv_det
+    if t < 0.0:
+        return -1.0, 0.0, 0.0, wp.vec3f(0.0)
+    normal = wp.normalize(wp.cross(e1, e2))
+    if det < 0.0:
+        normal = -normal
+    return t, 1.0 - b1 - b2, b1, normal
+
+
+@wp.func
+def triangle_face_normal(scene: SceneData, face: wp.int32, ray_dir: wp.vec3f) -> wp.vec3f:
+    """Face normal of a deformable triangle, oriented toward the ray origin."""
+    p0 = scene.triangle_points[scene.triangle_indices[face * 3 + 0]]
+    p1 = scene.triangle_points[scene.triangle_indices[face * 3 + 1]]
+    p2 = scene.triangle_points[scene.triangle_indices[face * 3 + 2]]
+    normal = wp.normalize(wp.cross(p1 - p0, p2 - p0))
+    if wp.dot(normal, ray_dir) > 0.0:
+        normal = -normal
+    return normal
+
+
+@wp.func
 def get_group_roots(group_roots: wp.array[wp.int32], world_index: wp.int32, want_global_world: wp.int32) -> wp.int32:
     if want_global_world != 0:
         return group_roots[group_roots.shape[0] - 1]
@@ -100,19 +151,23 @@ def get_group_roots(group_roots: wp.array[wp.int32], world_index: wp.int32, want
 
 
 def create_closest_hit_function(
-    config: RenderConfig, state: RenderState, with_normal: bool = True, optix: OptixShapes | None = None
+    config: RenderConfig, state: RenderState, with_normal: bool = True, optix: OptixScene | None = None
 ) -> wp.Function:
-    """Closest hit of a camera ray; without ``with_normal``, only the distance, shape and face are found."""
+    """Closest hit of a camera ray in the scene; without ``with_normal``, only the distance, item and face are found.
+
+    One traversal visits every scene item: shapes, standalone particles and deformable triangles.
+    """
+    if optix is not None:
+        return optix.create_closest_hit(config, state, with_normal)
+
     shade_gaussians = gaussians.create_shade_function(config, state)
+    has_particles = config.enable_particles and state.has_particles
 
     @wp.func
-    def closest_hit_shape(
-        closest_hit: ClosestHit,
-        bvh_shapes_size: wp.int32,
-        bvh_shapes_id: wp.uint64,
-        bvh_shapes_group_roots: wp.array[wp.int32],
+    def closest_hit(
+        scene: SceneData,
         world_index: wp.int32,
-        shape_enabled: wp.array[wp.uint32],
+        max_distance: wp.float32,
         shape_types: wp.array[wp.int32],
         shape_sizes: wp.array[wp.vec3f],
         shape_transforms: wp.array[wp.transformf],
@@ -124,92 +179,124 @@ def create_closest_hit_function(
         ray_dir_world: wp.vec3f,
         camera_forward: wp.vec3f,
     ) -> ClosestHit:
-        if bvh_shapes_size:
+        closest_hit = ClosestHit()
+        closest_hit.distance = max_distance
+        closest_hit.shape_index = NO_HIT_SHAPE_ID
+        closest_hit.color = wp.vec3f(0.0)
+
+        if scene.id:
             # int() makes the bound dynamic in Warp, preventing loop unrolling
             # that duplicates BVH traversal state and increases register pressure.
             for i in range(int(wp.static(2 if config.enable_global_world else 1))):
-                group_root = get_group_roots(bvh_shapes_group_roots, world_index, i)
+                group_root = get_group_roots(scene.world_roots, world_index, i)
                 if group_root < 0:
                     continue
 
                 gaussians_hit = wp.vector(length=wp.static(state.num_gaussians), dtype=wp.uint32)
                 num_gaussians_hit = wp.int32(0)
 
-                query = wp.bvh_query_ray(bvh_shapes_id, ray_origin_world, ray_dir_world, group_root)
-                shape_index = wp.int32(0)
+                query = wp.bvh_query_ray(scene.id, ray_origin_world, ray_dir_world, group_root)
+                item = wp.int32(0)
 
-                while wp.bvh_query_next(query, shape_index, closest_hit.distance):
-                    si = shape_enabled[shape_index]
-                    if si != BVH_SHAPE_INACTIVE:
-                        hit_distance = wp.float32(-1.0)
-                        hit_normal = wp.vec3f(0.0)
-                        hit_u = wp.float32(0.0)
-                        hit_v = wp.float32(0.0)
-                        hit_face_id = wp.int32(-1)
+                while wp.bvh_query_next(query, item, closest_hit.distance):
+                    hit_distance = wp.float32(-1.0)
+                    hit_normal = wp.vec3f(0.0)
+                    hit_u = wp.float32(0.0)
+                    hit_v = wp.float32(0.0)
+                    hit_face_id = wp.int32(-1)
+                    hit_id = NO_HIT_SHAPE_ID
 
-                        shape_type = shape_types[si]
-                        # Heightfields are triangulated meshes; RenderContext remaps
-                        # HFIELD -> MESH, so this branch renders them too.
-                        if shape_type == GeoType.MESH:
-                            if wp.static(with_normal):
-                                hit_distance, hit_normal, hit_u, hit_v, hit_face_id = _ray_intersect_mesh_smooth(
+                    if item < scene.shape_item_count:
+                        si = scene.item_shapes[item]
+                        if si != BVH_SHAPE_INACTIVE:
+                            hit_id = si
+                            shape_type = shape_types[si]
+                            # Heightfields are triangulated meshes; RenderContext remaps
+                            # HFIELD -> MESH, so this branch renders them too.
+                            if shape_type == GeoType.MESH:
+                                if wp.static(with_normal):
+                                    hit_distance, hit_normal, hit_u, hit_v, hit_face_id = _ray_intersect_mesh_smooth(
+                                        shape_transforms[si],
+                                        shape_sizes[si],
+                                        ray_origin_world,
+                                        ray_dir_world,
+                                        shape_source_ptr[si],
+                                        shape_mesh_data_ids[si],
+                                        mesh_data,
+                                        wp.static(config.enable_backface_culling),
+                                        closest_hit.distance,
+                                    )
+                                else:
+                                    ray_origin_local, ray_direction_local = raycast.map_ray_to_local(
+                                        shape_transforms[si], ray_origin_world, ray_dir_world, shape_sizes[si]
+                                    )
+                                    hit_distance, _normal, _u, _v, _face = raycast.ray_intersect_mesh_no_normal(
+                                        ray_origin_local,
+                                        ray_direction_local,
+                                        shape_sizes[si],
+                                        shape_source_ptr[si],
+                                        wp.static(config.enable_backface_culling),
+                                        closest_hit.distance,
+                                    )
+                            elif shape_type == GeoType.GAUSSIAN:
+                                if num_gaussians_hit < wp.static(state.num_gaussians):
+                                    gaussians_hit[num_gaussians_hit] = si
+                                    num_gaussians_hit += 1
+                            elif wp.static(with_normal):
+                                hit_distance, hit_normal = raycast.ray_intersect_shape(
                                     shape_transforms[si],
                                     shape_sizes[si],
+                                    shape_type,
                                     ray_origin_world,
                                     ray_dir_world,
-                                    shape_source_ptr[si],
-                                    shape_mesh_data_ids[si],
-                                    mesh_data,
                                     wp.static(config.enable_backface_culling),
-                                    closest_hit.distance,
                                 )
                             else:
-                                ray_origin_local, ray_direction_local = raycast.map_ray_to_local(
-                                    shape_transforms[si], ray_origin_world, ray_dir_world, shape_sizes[si]
-                                )
-                                hit_distance, _normal, _u, _v, _face = raycast.ray_intersect_mesh_no_normal(
-                                    ray_origin_local,
-                                    ray_direction_local,
+                                hit_distance, _normal = raycast.ray_intersect_shape_no_normal(
+                                    shape_transforms[si],
                                     shape_sizes[si],
-                                    shape_source_ptr[si],
+                                    shape_type,
+                                    ray_origin_world,
+                                    ray_dir_world,
                                     wp.static(config.enable_backface_culling),
-                                    closest_hit.distance,
                                 )
-                        elif shape_type == GeoType.GAUSSIAN:
-                            if num_gaussians_hit < wp.static(state.num_gaussians):
-                                gaussians_hit[num_gaussians_hit] = si
-                                num_gaussians_hit += 1
-                        elif wp.static(with_normal):
-                            hit_distance, hit_normal = raycast.ray_intersect_shape(
-                                shape_transforms[si],
-                                shape_sizes[si],
-                                shape_type,
+                    elif wp.static(state.has_particles) and item < scene.shape_item_count + scene.particle_item_count:
+                        if wp.static(has_particles):
+                            particle = scene.item_particles[item - scene.shape_item_count]
+                            hit_distance, hit_normal = raycast.ray_intersect_particle_sphere(
                                 ray_origin_world,
                                 ray_dir_world,
-                                wp.static(config.enable_backface_culling),
+                                scene.particle_positions[particle],
+                                scene.particle_radii[particle],
                             )
-                        else:
-                            hit_distance, _normal = raycast.ray_intersect_shape_no_normal(
-                                shape_transforms[si],
-                                shape_sizes[si],
-                                shape_type,
-                                ray_origin_world,
-                                ray_dir_world,
-                                wp.static(config.enable_backface_culling),
-                            )
+                            hit_id = PARTICLES_SHAPE_ID
+                            hit_face_id = particle
+                    elif wp.static(state.has_triangle_mesh):
+                        face = item - scene.shape_item_count - scene.particle_item_count
+                        hit_distance, hit_u, hit_v, hit_normal = ray_intersect_triangle(
+                            ray_origin_world,
+                            ray_dir_world,
+                            scene.triangle_points[scene.triangle_indices[face * 3 + 0]],
+                            scene.triangle_points[scene.triangle_indices[face * 3 + 1]],
+                            scene.triangle_points[scene.triangle_indices[face * 3 + 2]],
+                            wp.static(config.enable_backface_culling),
+                        )
+                        hit_id = TRIANGLE_MESH_SHAPE_ID
+                        # Albedo-only renders also need the face when textures are disabled.
+                        hit_face_id = face
 
-                        if hit_distance >= 0.0 and hit_distance < closest_hit.distance:
-                            closest_hit.distance = hit_distance
-                            closest_hit.shape_index = si
-                            if wp.static(with_normal):
-                                closest_hit.normal = hit_normal
-                                closest_hit.bary_u = hit_u
-                                closest_hit.bary_v = hit_v
-                                closest_hit.face_idx = hit_face_id
-                                closest_hit.color = wp.vec3f(0.0)
+                    if hit_distance >= 0.0 and hit_distance < closest_hit.distance:
+                        closest_hit.distance = hit_distance
+                        closest_hit.shape_index = hit_id
+                        closest_hit.face_idx = hit_face_id
+                        if wp.static(with_normal):
+                            closest_hit.normal = hit_normal
+                            closest_hit.bary_u = hit_u
+                            closest_hit.bary_v = hit_v
+                            closest_hit.color = wp.vec3f(0.0)
 
                 # Gaussians are shaded after the traversal: nested Warp BVH queries share
-                # stack data, and this also skips Gaussians hidden behind other shapes.
+                # stack data, and this also skips Gaussians hidden behind other items.
                 if num_gaussians_hit > 0:
                     for gi in range(num_gaussians_hit):
                         si = gaussians_hit[gi]
@@ -234,363 +321,86 @@ def create_closest_hit_function(
 
         return closest_hit
 
-    @wp.func
-    def closest_hit_particles(
-        closest_hit: ClosestHit,
-        bvh_particles_size: wp.int32,
-        bvh_particles_id: wp.uint64,
-        bvh_particles_group_roots: wp.array[wp.int32],
-        world_index: wp.int32,
-        particles_position: wp.array[wp.vec3f],
-        particles_radius: wp.array[wp.float32],
-        topology_particle_mask: wp.array[wp.bool],
-        ray_origin_world: wp.vec3f,
-        ray_dir_world: wp.vec3f,
-    ) -> ClosestHit:
-        if bvh_particles_size:
-            for i in range(int(wp.static(2 if config.enable_global_world else 1))):
-                group_root = get_group_roots(bvh_particles_group_roots, world_index, i)
-                if group_root < 0:
-                    continue
-
-                query = wp.bvh_query_ray(bvh_particles_id, ray_origin_world, ray_dir_world, group_root)
-                si = wp.int32(0)
-
-                while wp.bvh_query_next(query, si, closest_hit.distance):
-                    if topology_particle_mask[si]:
-                        continue
-
-                    hit_distance, hit_normal = raycast.ray_intersect_particle_sphere(
-                        ray_origin_world,
-                        ray_dir_world,
-                        particles_position[si],
-                        particles_radius[si],
-                    )
-
-                    if hit_distance >= 0.0 and hit_distance < closest_hit.distance:
-                        closest_hit.distance = hit_distance
-                        closest_hit.shape_index = PARTICLES_SHAPE_ID
-                        if wp.static(with_normal):
-                            closest_hit.normal = hit_normal
-                            closest_hit.face_idx = si
-
-        return closest_hit
-
-    @wp.func
-    def closest_hit_triangle_mesh(
-        closest_hit: ClosestHit,
-        triangle_mesh_id: wp.uint64,
-        triangle_mesh_group_roots: wp.array[wp.int32],
-        world_index: wp.int32,
-        ray_origin_world: wp.vec3f,
-        ray_dir_world: wp.vec3f,
-    ) -> ClosestHit:
-        if triangle_mesh_id:
-            # The triangle mesh is in world space.
-            for i in range(int(wp.static(2 if config.enable_global_world else 1))):
-                group_root = get_group_roots(triangle_mesh_group_roots, world_index, i)
-                if group_root < 0:
-                    continue
-
-                if wp.static(with_normal):
-                    hit_distance, hit_normal, bary_u, bary_v, face_idx = raycast.ray_intersect_mesh(
-                        ray_origin_world,
-                        ray_dir_world,
-                        wp.vec3f(1.0),
-                        triangle_mesh_id,
-                        wp.static(config.enable_backface_culling),
-                        closest_hit.distance,
-                        group_root,
-                    )
-                else:
-                    hit_distance, hit_normal, bary_u, bary_v, face_idx = raycast.ray_intersect_mesh_no_normal(
-                        ray_origin_world,
-                        ray_dir_world,
-                        wp.vec3f(1.0),
-                        triangle_mesh_id,
-                        wp.static(config.enable_backface_culling),
-                        closest_hit.distance,
-                        group_root,
-                    )
-                if hit_distance >= 0.0:
-                    closest_hit.distance = hit_distance
-                    closest_hit.shape_index = TRIANGLE_MESH_SHAPE_ID
-                    # Albedo-only renders also need the face when textures are disabled.
-                    closest_hit.face_idx = face_idx
-                    if wp.static(with_normal):
-                        # Shade the visible side when backface culling is disabled.
-                        if wp.dot(hit_normal, ray_dir_world) > 0.0:
-                            hit_normal = -hit_normal
-                        closest_hit.normal = hit_normal
-                        closest_hit.bary_u = bary_u
-                        closest_hit.bary_v = bary_v
-
-        return closest_hit
-
-    if optix is not None:
-        closest_hit_shape = render_optix.create_closest_hit(config, optix)
-
-    @wp.func
-    def closest_hit(
-        bvh_shapes_size: wp.int32,
-        bvh_shapes_id: wp.uint64,
-        bvh_shapes_group_roots: wp.array[wp.int32],
-        bvh_particles_size: wp.int32,
-        bvh_particles_id: wp.uint64,
-        bvh_particles_group_roots: wp.array[wp.int32],
-        world_index: wp.int32,
-        max_distance: wp.float32,
-        shape_enabled: wp.array[wp.uint32],
-        shape_types: wp.array[wp.int32],
-        shape_sizes: wp.array[wp.vec3f],
-        shape_transforms: wp.array[wp.transformf],
-        shape_source_ptr: wp.array[wp.uint64],
-        shape_mesh_data_ids: wp.array[wp.int32],
-        mesh_data: wp.array[MeshData],
-        particles_position: wp.array[wp.vec3f],
-        particles_radius: wp.array[wp.float32],
-        topology_particle_mask: wp.array[wp.bool],
-        triangle_mesh_id: wp.uint64,
-        triangle_mesh_group_roots: wp.array[wp.int32],
-        gaussians_data: wp.array[Gaussian.Data],
-        ray_origin_world: wp.vec3f,
-        ray_dir_world: wp.vec3f,
-        camera_forward: wp.vec3f,
-    ) -> ClosestHit:
-        closest_hit = ClosestHit()
-        closest_hit.distance = max_distance
-        closest_hit.shape_index = NO_HIT_SHAPE_ID
-        closest_hit.color = wp.vec3f(0.0)
-
-        closest_hit = closest_hit_triangle_mesh(
-            closest_hit, triangle_mesh_id, triangle_mesh_group_roots, world_index, ray_origin_world, ray_dir_world
-        )
-
-        closest_hit = closest_hit_shape(
-            closest_hit,
-            bvh_shapes_size,
-            bvh_shapes_id,
-            bvh_shapes_group_roots,
-            world_index,
-            shape_enabled,
-            shape_types,
-            shape_sizes,
-            shape_transforms,
-            shape_source_ptr,
-            shape_mesh_data_ids,
-            mesh_data,
-            gaussians_data,
-            ray_origin_world,
-            ray_dir_world,
-            camera_forward,
-        )
-
-        if wp.static(config.enable_particles) and wp.static(state.has_particles):
-            closest_hit = closest_hit_particles(
-                closest_hit,
-                bvh_particles_size,
-                bvh_particles_id,
-                bvh_particles_group_roots,
-                world_index,
-                particles_position,
-                particles_radius,
-                topology_particle_mask,
-                ray_origin_world,
-                ray_dir_world,
-            )
-
-        return closest_hit
-
     return closest_hit
 
 
-def create_first_hit_function(
-    config: RenderConfig, state: RenderState, optix: OptixShapes | None = None
-) -> wp.Function:
-
-    @wp.func
-    def first_hit_shape(
-        bvh_shapes_size: wp.int32,
-        bvh_shapes_id: wp.uint64,
-        bvh_shapes_group_roots: wp.array[wp.int32],
-        world_index: wp.int32,
-        shape_enabled: wp.array[wp.uint32],
-        shape_types: wp.array[wp.int32],
-        shape_sizes: wp.array[wp.vec3f],
-        shape_transforms: wp.array[wp.transformf],
-        shape_source_ptr: wp.array[wp.uint64],
-        ray_origin_world: wp.vec3f,
-        ray_dir_world: wp.vec3f,
-        max_dist: wp.float32,
-    ) -> wp.bool:
-        if bvh_shapes_size:
-            for i in range(int(wp.static(2 if config.enable_global_world else 1))):
-                group_root = get_group_roots(bvh_shapes_group_roots, world_index, i)
-                if group_root < 0:
-                    continue
-
-                query = wp.bvh_query_ray(bvh_shapes_id, ray_origin_world, ray_dir_world, group_root)
-                shape_index = wp.int32(0)
-
-                while wp.bvh_query_next(query, shape_index, max_dist):
-                    si = shape_enabled[shape_index]
-                    if si != BVH_SHAPE_INACTIVE:
-                        hit_dist = wp.float32(-1)
-
-                        shape_type = shape_types[si]
-                        # Heightfields are triangulated meshes; RenderContext remaps
-                        # HFIELD -> MESH, so this branch renders them too.
-                        if shape_type == GeoType.MESH:
-                            ray_origin_local, ray_direction_local = raycast.map_ray_to_local(
-                                shape_transforms[si], ray_origin_world, ray_dir_world, shape_sizes[si]
-                            )
-                            hit_dist = raycast.ray_intersect_mesh_anyhit(
-                                ray_origin_local,
-                                ray_direction_local,
-                                shape_source_ptr[si],
-                                max_dist,
-                            )
-                        else:
-                            hit_dist, _normal = raycast.ray_intersect_shape_no_normal(
-                                shape_transforms[si],
-                                shape_sizes[si],
-                                shape_type,
-                                ray_origin_world,
-                                ray_dir_world,
-                                wp.static(config.enable_backface_culling),
-                            )
-                        if hit_dist > -1 and hit_dist < max_dist:
-                            return True
-
-        return False
-
-    @wp.func
-    def first_hit_particles(
-        bvh_particles_size: wp.int32,
-        bvh_particles_id: wp.uint64,
-        bvh_particles_group_roots: wp.array[wp.int32],
-        world_index: wp.int32,
-        particles_position: wp.array[wp.vec3f],
-        particles_radius: wp.array[wp.float32],
-        topology_particle_mask: wp.array[wp.bool],
-        ray_origin_world: wp.vec3f,
-        ray_dir_world: wp.vec3f,
-        max_dist: wp.float32,
-    ) -> wp.bool:
-        if bvh_particles_size:
-            for i in range(int(wp.static(2 if config.enable_global_world else 1))):
-                group_root = get_group_roots(bvh_particles_group_roots, world_index, i)
-                if group_root < 0:
-                    continue
-
-                query = wp.bvh_query_ray(bvh_particles_id, ray_origin_world, ray_dir_world, group_root)
-                si = wp.int32(0)
-
-                while wp.bvh_query_next(query, si, max_dist):
-                    if topology_particle_mask[si]:
-                        continue
-
-                    hit_dist, _normal = raycast.ray_intersect_particle_sphere(
-                        ray_origin_world,
-                        ray_dir_world,
-                        particles_position[si],
-                        particles_radius[si],
-                    )
-
-                    if hit_dist > -1.0 and hit_dist < max_dist:
-                        return True
-
-        return False
-
-    @wp.func
-    def first_hit_triangle_mesh(
-        triangle_mesh_id: wp.uint64,
-        triangle_mesh_group_roots: wp.array[wp.int32],
-        world_index: wp.int32,
-        ray_origin_world: wp.vec3f,
-        ray_dir_world: wp.vec3f,
-        max_dist: wp.float32,
-    ) -> wp.bool:
-        if triangle_mesh_id:
-            # Triangle mesh is in world space; its local frame is the world frame (see
-            # closest_hit_triangle_mesh). Shadow rays only need any hit within ``max_dist``.
-            for i in range(int(wp.static(2 if config.enable_global_world else 1))):
-                group_root = get_group_roots(triangle_mesh_group_roots, world_index, i)
-                if group_root < 0:
-                    continue
-
-                hit_dist = raycast.ray_intersect_mesh_anyhit(
-                    ray_origin_world,
-                    ray_dir_world,
-                    triangle_mesh_id,
-                    max_dist,
-                    group_root,
-                )
-                if hit_dist >= 0.0:
-                    return True
-        return False
-
+def create_first_hit_function(config: RenderConfig, state: RenderState, optix: OptixScene | None = None) -> wp.Function:
+    """Whether anything in the scene blocks a shadow ray within ``max_distance``."""
     if optix is not None:
-        first_hit_shape = render_optix.create_first_hit(config, optix)
+        return optix.create_first_hit(config, state)
+
+    has_particles = config.enable_particles and state.has_particles
 
     @wp.func
     def first_hit(
-        bvh_shapes_size: wp.int32,
-        bvh_shapes_id: wp.uint64,
-        bvh_shapes_group_roots: wp.array[wp.int32],
-        bvh_particles_size: wp.int32,
-        bvh_particles_id: wp.uint64,
-        bvh_particles_group_roots: wp.array[wp.int32],
+        scene: SceneData,
         world_index: wp.int32,
-        shape_enabled: wp.array[wp.uint32],
         shape_types: wp.array[wp.int32],
         shape_sizes: wp.array[wp.vec3f],
         shape_transforms: wp.array[wp.transformf],
         shape_source_ptr: wp.array[wp.uint64],
-        particles_position: wp.array[wp.vec3f],
-        particles_radius: wp.array[wp.float32],
-        topology_particle_mask: wp.array[wp.bool],
-        triangle_mesh_id: wp.uint64,
-        triangle_mesh_group_roots: wp.array[wp.int32],
         ray_origin_world: wp.vec3f,
         ray_dir_world: wp.vec3f,
         max_distance: wp.float32,
     ) -> wp.bool:
-        if first_hit_triangle_mesh(
-            triangle_mesh_id, triangle_mesh_group_roots, world_index, ray_origin_world, ray_dir_world, max_distance
-        ):
-            return True
+        if scene.id:
+            for i in range(int(wp.static(2 if config.enable_global_world else 1))):
+                group_root = get_group_roots(scene.world_roots, world_index, i)
+                if group_root < 0:
+                    continue
 
-        if first_hit_shape(
-            bvh_shapes_size,
-            bvh_shapes_id,
-            bvh_shapes_group_roots,
-            world_index,
-            shape_enabled,
-            shape_types,
-            shape_sizes,
-            shape_transforms,
-            shape_source_ptr,
-            ray_origin_world,
-            ray_dir_world,
-            max_distance,
-        ):
-            return True
+                query = wp.bvh_query_ray(scene.id, ray_origin_world, ray_dir_world, group_root)
+                item = wp.int32(0)
 
-        if wp.static(config.enable_particles) and wp.static(state.has_particles):
-            if first_hit_particles(
-                bvh_particles_size,
-                bvh_particles_id,
-                bvh_particles_group_roots,
-                world_index,
-                particles_position,
-                particles_radius,
-                topology_particle_mask,
-                ray_origin_world,
-                ray_dir_world,
-                max_distance,
-            ):
-                return True
+                while wp.bvh_query_next(query, item, max_distance):
+                    hit_dist = wp.float32(-1.0)
+                    if item < scene.shape_item_count:
+                        si = scene.item_shapes[item]
+                        if si != BVH_SHAPE_INACTIVE:
+                            shape_type = shape_types[si]
+                            # Heightfields are triangulated meshes; RenderContext remaps
+                            # HFIELD -> MESH, so this branch renders them too.
+                            if shape_type == GeoType.MESH:
+                                ray_origin_local, ray_direction_local = raycast.map_ray_to_local(
+                                    shape_transforms[si], ray_origin_world, ray_dir_world, shape_sizes[si]
+                                )
+                                hit_dist = raycast.ray_intersect_mesh_anyhit(
+                                    ray_origin_local,
+                                    ray_direction_local,
+                                    shape_source_ptr[si],
+                                    max_distance,
+                                )
+                            else:
+                                hit_dist, _normal = raycast.ray_intersect_shape_no_normal(
+                                    shape_transforms[si],
+                                    shape_sizes[si],
+                                    shape_type,
+                                    ray_origin_world,
+                                    ray_dir_world,
+                                    wp.static(config.enable_backface_culling),
+                                )
+                    elif wp.static(state.has_particles) and item < scene.shape_item_count + scene.particle_item_count:
+                        if wp.static(has_particles):
+                            particle = scene.item_particles[item - scene.shape_item_count]
+                            hit_dist, _normal = raycast.ray_intersect_particle_sphere(
+                                ray_origin_world,
+                                ray_dir_world,
+                                scene.particle_positions[particle],
+                                scene.particle_radii[particle],
+                            )
+                    elif wp.static(state.has_triangle_mesh):
+                        face = item - scene.shape_item_count - scene.particle_item_count
+                        # Shadows hit both sides of deformable surfaces.
+                        hit_dist, _u, _v, _normal = ray_intersect_triangle(
+                            ray_origin_world,
+                            ray_dir_world,
+                            scene.triangle_points[scene.triangle_indices[face * 3 + 0]],
+                            scene.triangle_points[scene.triangle_indices[face * 3 + 1]],
+                            scene.triangle_points[scene.triangle_indices[face * 3 + 2]],
+                            False,
+                        )
+                    if hit_dist >= 0.0 and hit_dist < max_distance:
+                        return True
 
         return False
 

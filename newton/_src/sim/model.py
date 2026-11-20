@@ -2235,8 +2235,8 @@ class Model:
             backend: ``"warp"`` builds :attr:`bvh_shapes`; ``"optix"`` builds
                 :attr:`optix_shapes` (experimental).
             optix_extent: Half-width [m] of the region each world's shapes may occupy with
-                ``backend="optix"``. Defaults to twice the farthest reach of any non-plane shape
-                from the origin at build time, and at least 1 m. Larger values leave room for
+                ``backend="optix"``. Defaults to twice the farthest reach of any non-plane shape or
+                particle from the origin at build time, and at least 1 m. Larger values leave room for
                 motion but lower precision, since worlds are packed further apart in float32.
 
         Raises:
@@ -2521,6 +2521,13 @@ class Model:
         # Planes are intersected analytically, outside the cells.
         bounded = types[enabled] != GeoType.PLANE
         reach = np.abs(origins).max(axis=1, initial=0.0) + radii[enabled]
+        reach = reach[bounded]
+        if state.particle_q is not None and state.particle_count:
+            # Cameras trace particles and deformable surfaces in the same cells.
+            particle_reach = np.abs(state.particle_q.numpy()).max(axis=1)
+            if self.particle_radius is not None:
+                particle_reach = particle_reach + self.particle_radius.numpy()
+            reach = np.concatenate([reach, particle_reach])
         enabled = np.sort(enabled)
         shape_world = self.shape_world.numpy() if shape_count else np.empty(0, dtype=np.int32)
         plane = types[enabled] == GeoType.PLANE
@@ -2549,7 +2556,7 @@ class Model:
             planes=tuple(int(si) for si in enabled[plane & (shape_world[enabled] < 0)]),
             world_planes=wp.array(world_planes, dtype=wp.int32, device=device),
             # Room for shapes to move.
-            extent=extent or max(2.0 * float(reach[bounded].max(initial=0.0)), 1.0),
+            extent=extent or max(2.0 * float(reach.max(initial=0.0)), 1.0),
             out_of_cell=wp.zeros(1, dtype=wp.int32, device=device),
             grid=grid,
             world_count=self.world_count,
