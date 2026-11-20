@@ -19,7 +19,12 @@ import warp as wp
 
 from ..core.types import Devicelike
 from ..exceptions import NewtonDeprecationWarning, NewtonWarning
-from ..geometry.deformable_visual import DeformableVisualMesh, _DeformableVisualSkinBatches
+from ..geometry.deformable_visual import (
+    DeformableVisualGaussian,
+    DeformableVisualMesh,
+    _DeformableGaussianBatch,
+    _DeformableVisualSkinBatches,
+)
 from ..geometry.flags import ShapeFlags
 from ..geometry.inertia import _inverse_inertia_wp
 from ..utils.deprecation import warn_deprecation
@@ -1149,6 +1154,8 @@ class Model:
         """Number of gaussians."""
         self.gaussians_data = None
         """Data for Gaussian Splats, shape [gaussians_count], Gaussian.Data."""
+        self._gaussians = []
+        self._gaussian_bvhs = []
 
         # Shape and particle BVH structures and related fields
         self.bvh_shapes: wp.Bvh | None = None
@@ -1371,6 +1378,14 @@ class Model:
 
         self._deformable_visual_meshes: tuple[DeformableVisualMesh, ...] = ()
         self._deformable_visual_skin_batches: _DeformableVisualSkinBatches | None = None
+        self.deformable_visual_gaussians: list[DeformableVisualGaussian] = []
+        self._deformable_visual_gaussian_batch: _DeformableGaussianBatch | None = None
+        """Gaussian fields embedded in deformables for visualization and sensors.
+
+        .. experimental::
+            Deformable visual APIs may change without a formal deprecation cycle.
+        """
+
         self.muscle_start: wp.array[wp.int32] | None = None
         """Start index of the first muscle point per muscle, shape [muscle_count], int.
 
@@ -1867,6 +1882,12 @@ class Model:
 
         .. deprecated:: 1.9
             Legacy muscles are deprecated; see :meth:`ModelBuilder.add_muscle`.
+        """
+        self.deformable_visual_gaussian_count: int = 0
+        """Total number of deformable Gaussian visuals in the system.
+
+        .. experimental::
+            Deformable visual APIs may change without a formal deprecation cycle.
         """
         self.articulation_count: int = 0
         """Total number of articulations in the system."""
@@ -2757,6 +2778,12 @@ class Model:
         .. experimental::
         """
         return len(self._deformable_visual_meshes)
+
+    def _get_deformable_visual_gaussian_batch(self) -> _DeformableGaussianBatch:
+        """Return the Gaussian bindings, rebuilding recorded data once."""
+        if self._deformable_visual_gaussian_batch is None:
+            self._deformable_visual_gaussian_batch = _DeformableGaussianBatch.from_visuals(self)
+        return self._deformable_visual_gaussian_batch
 
     def _get_deformable_visual_skin_batches(self) -> _DeformableVisualSkinBatches:
         """Return the fixed skinning layout, rebuilding loaded recordings once."""

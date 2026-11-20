@@ -685,6 +685,10 @@ class TestDeformableVisualRecording(unittest.TestCase):
         _attach(builder, uvs=[[0, 0], [1, 0], [0, 1]], texture=image)
         scene = newton.ModelBuilder()
         scene.replicate(builder, 2)
+        # Imported provenance must survive recordings, even with changed labels.
+        scene._set_deformable_visual_source_paths(
+            0, body_path="/World/Cloth", sim_path="/World/Cloth/Sim", graphics_path="/World/Cloth/Skin"
+        )
         model = scene.finalize("cpu")
         state = model.state()
         state.particle_q.assign(state.particle_q.numpy().copy() + 2)
@@ -719,6 +723,8 @@ class TestDeformableVisualRecording(unittest.TestCase):
                         ):
                             self.assertEqual(mesh.kind, original.kind)
                             self.assertEqual(mesh.world, original.world)
+                            for path in ("_body_path", "_sim_path", "_graphics_path"):
+                                self.assertEqual(getattr(mesh, path), getattr(original, path))
                             np.testing.assert_array_equal(mesh.parent.numpy(), original.parent.numpy())
                             np.testing.assert_allclose(
                                 output.get_points(mesh).numpy(), expected.get_points(original).numpy()

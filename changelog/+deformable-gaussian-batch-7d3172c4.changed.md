@@ -1,0 +1,1 @@
+Evaluate deformable Gaussian fields in one batch, sharing bind data between replicated copies. Preserve authored sample centers outside the simulation mesh and use the authored USD bind pose when it differs from the initial particle positions.

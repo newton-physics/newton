@@ -1,0 +1,1 @@
+Restore Gaussian shapes from `ViewerFile` recordings with their device data and BVHs, writing an asset shared by several shapes once; a NumPy view that starts at another array's address is no longer written as a reference to that array in binary recordings.

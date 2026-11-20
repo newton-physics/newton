@@ -423,13 +423,22 @@ Known gaps of the experimental importer, tracked as follow-ups:
   collision in Newton yet: they warn and import colliding. A welded cable graph shares one
   shape configuration, so any collision-enabled member curve makes the whole graph collide
   (mixed authoring warns).
-* **Collision and graphics geometry** -- graphics Mesh prims can import as visual meshes; see
-  :ref:`usd-deformable-visual-import` for what is imported and skipped. A dedicated
-  point-based collider (every one warns) only toggles the simulation geometry's collision
-  as described above and never becomes a separate rigid shape. Deformable-owned geometry
-  is owned exclusively by the deformable importer: when a
-  deformable is skipped as kinematic or malformed it imports as nothing, with a warning,
-  rather than falling back to a rigid representation. A disabled
+* **Graphics geometry** -- graphics Mesh prims can import as visual meshes; see
+  :ref:`usd-deformable-visual-import` for what is imported and skipped.
+* **Gaussian graphics (experimental)** -- a volume-owned
+  ``ParticleField3DGaussianSplat`` can use automatic tet embedding or paired
+  ``newton:deformableSkin:tetIndices`` and
+  ``newton:deformableSkin:influenceWeights`` attributes. Each Gaussian has one
+  tet index local to the owning simulation mesh and four weights. These are
+  temporary Newton attributes, not standard USD deformable schema fields.
+  Centers must be authored in the visual bind configuration. The simulation
+  bind pose drives both center motion and covariance deformation, separately
+  from the solver's rest shape. See :ref:`deformable-visual-rendering`.
+* **Collision geometry** -- a dedicated point-based collider (every one warns) only
+  toggles the simulation geometry's collision as described above and never becomes a
+  separate rigid shape. Deformable-owned geometry is owned exclusively by the deformable
+  importer: when a deformable is skipped as kinematic or malformed it imports as nothing,
+  with a warning, rather than falling back to a rigid representation. A disabled
   (``physics:bodyEnabled = false``) deformable follows the rigid-body precedent instead:
   it is not simulated, but its collision geometry persists as static colliders (TetMesh
   and BasisCurves simulation geometry has no static representation and stays out).
@@ -631,6 +640,7 @@ Finding deformable visual geometry
 
 Use this reader to inspect visual geometry without creating a simulation:
 
+
 .. code-block:: python
 
    import newton.usd
@@ -695,14 +705,19 @@ Use the optional import result to look up a visual mesh by its USD path:
 The map contains only successfully imported visual meshes. Its indices describe
 this builder after import; it does not track copies made by later composition or
 replication. Imported meshes use their graphics prim path as their initial label;
-``world`` identifies each copy. USD namespaces are not rebased automatically.
+``world`` identifies each copy. The preview keeps source metadata internally for
+recording. To rebase labels and that metadata into cloned USD namespaces, pass
+``source_path_prefix`` and ``destination_path_prefixes`` to
+:meth:`ModelBuilder.replicate`. The import result map still describes the original import.
 
-Embeddings are computed at import time; authored per-vertex embedding weights
-are not imported. PointBased graphics other than meshes are skipped with a
-diagnostic and never become rigid shapes, and Gaussian graphics are not
-imported by this path.
+Mesh embeddings are computed at import time; authored per-vertex mesh embedding
+weights are not imported. The Gaussian extension described above is separate.
+Other PointBased graphics are skipped with a diagnostic and never become rigid
+shapes.
 Triangle bindings discard normal offsets; vertices outside a volume are
 clamped as described in the :ref:`visualization guide <deformable-visual-meshes>`.
+
+.. _usd-material-color-spaces:
 
 Material Color Spaces
 ---------------------

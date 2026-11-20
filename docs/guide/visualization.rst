@@ -174,7 +174,11 @@ simulation state without evaluating them. JSON and binary recordings rebuild
 their skinning batches on first use. Load into an empty Model to restore the
 recorded meshes. A finalized Model that already has meshes keeps them; the
 recording's driver counts and mesh layout must then match. Older physics-only
-recordings still load into a compatible model with meshes.
+recordings still load into a compatible model with meshes. Gaussian shapes are
+recorded with their asset's appearance, once per asset; each loaded model gets
+its own finalized copies on the device active during loading, and a recording
+made before Gaussian assets were recorded loads with a warning and no Gaussian
+data.
 
 .. list-table:: Skinned mesh support
    :header-rows: 1
@@ -523,6 +527,142 @@ All viewers support ``set_visible_worlds()`` to limit visualization to a subset 
     viewer.set_model(model)
     viewer.set_visible_worlds(range(4))
 
+.. _deformable-visual-rendering:
+
+Deformable Visual Meshes and Gaussians
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. experimental::
+
+    Deformable visual APIs may change without a formal deprecation cycle.
+
+Detailed visual meshes can follow simulation particles, triangles, tetrahedra,
+or cable segment bodies. They add no mass or collision. Register them with
+:meth:`~newton.ModelBuilder.add_deformable_visual_mesh`. Standard viewers draw
+their evaluated points and normals. The skinned-mesh visibility control is
+independent of the coarse simulation surface.
+
+Gaussian fields can follow tetrahedra through
+:meth:`~newton.ModelBuilder.add_deformable_visual_gaussian`. Their centers,
+orientations, and scales deform; opacity and spherical-harmonic appearance do
+not. :class:`~newton.sensors.SensorCamera` renders these fields. GL, RTX, and
+Viser do not yet draw the evaluated Gaussian data through ``log_state()``;
+show the camera image instead. Static Gaussian rendering is unchanged.
+USD import preserves the authored spherical-harmonic color space when it
+transforms the field into the simulation frame.
+
+Gaussian evaluation uses one batch across all fields. Replicated copies share
+their bind data, but each copy reads its own tetrahedra and has separate output.
+The binding keeps a center's offset from its barycentric point, so samples
+outside the simulation mesh keep their authored positions. Authored USD bind
+poses take precedence over the initial particle positions and solver rest shape.
+
+Add a Gaussian visual in the same world scope as its driving tetrahedra,
+before :meth:`~newton.ModelBuilder.end_world`. For replicated scenes, attach
+the visual to the prototype before replication. Global drivers and visuals
+can both be created in global scope. Attachment to a different world is
+rejected before a shape is added.
+
+An external importer can attach Gaussians after adding the simulation mesh.
+The mesh vertices and Gaussian centers, orientations, and scales must use the
+same rest coordinate frame. This small example uses already-transformed data:
+
+.. testcode:: deformable-visual-gaussian
+
+    prototype = newton.ModelBuilder()
+    tet_start = prototype.tet_count
+    prototype.add_soft_mesh(
+        pos=(0.0, 0.0, 0.0), rot=wp.quat_identity(), scale=1.0, vel=(0.0, 0.0, 0.0),
+        vertices=[(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1)], indices=[0, 1, 2, 3],
+        density=100.0, k_mu=1.0e4, k_lambda=1.0e4, k_damp=0.0,
+    )
+    gaussian = newton.Gaussian(positions=[[0.25, 0.25, 0.25]], scales=[[0.1, 0.1, 0.1]])
+    visual_index = prototype.add_deformable_visual_gaussian(
+        gaussian, kind="tetrahedron", tet_range=(tet_start, prototype.tet_count),
+        label="toy/splats",
+    )
+    builder = newton.ModelBuilder()
+    builder.replicate(prototype, 2)
+
+This creates the render-only Gaussian shape; do not also call
+:meth:`~newton.ModelBuilder.add_shape_gaussian` for the same visual.
+The returned index identifies the visual in this prototype, not in every
+later composed model.
+
+To reuse a precomputed binding, supply both ``parent`` and ``weights``.
+``parent`` has one **tetrahedron index**, in the builder's index space, per
+Gaussian. It does not contain the tetrahedron's four particle indices.
+For local tetrahedron IDs, add ``tet_start``. Each row of ``weights`` has four
+non-negative values that sum to one, ordered like that tetrahedron's particle
+indices. If an importer stores four particle IDs per sample, first find the
+matching tetrahedron and reorder the weights. Omit both arguments to let
+Newton compute the binding.
+
+Both paths share :class:`~newton.geometry.DeformableVisuals`. Allocate it once and update
+it after simulation. A viewer or camera can also evaluate its own buffers when
+no shared result is supplied.
+
+.. code-block:: python
+
+    visuals = newton.geometry.DeformableVisuals(model)
+    viewer.set_model(model)
+    viewer.set_deformable_visuals(visuals)
+
+    # After simulation updates state:
+    visuals.update(state)
+    viewer.log_state(state)
+    camera.update(state, camera_transforms, camera_rays,
+                  deformable_visuals=visuals, color_image=rgb)
+
+External renderers can read ``visuals.gaussian_transforms`` and
+``visuals.gaussian_scales`` on the device. Use
+:meth:`~newton.geometry.DeformableVisuals.get_gaussian_transforms` and
+:meth:`~newton.geometry.DeformableVisuals.get_gaussian_scales` for one visual.
+Each transform contains a center and orientation; a Warp kernel can extract
+the center with ``wp.transform_get_translation`` without a host copy.
+Create the shared output and camera for the same Model, and finish reading the
+output before the next update overwrites it.
+
+The camera's normal shape/particle BVH update requirements still apply; see
+:meth:`~newton.sensors.SensorCamera.update`. Visual evaluation reuses fixed
+device buffers. Binding is a one-time CPU operation and can be expensive for
+large meshes. Supply precomputed triangle or tet weights for large assets.
+
+Each camera owns its deformed Gaussian transforms, scales, and sample BVHs.
+It shares the asset's colors and opacity without changing the rest geometry.
+Supplying ``deformable_visuals`` skips Gaussian evaluation and uses those
+transforms and scales instead. The model's shape BVH is still shared: update
+each camera for the intended state before rendering. This does not provide
+independent concurrent snapshots of different states.
+
+Visual mesh textures are asset data. GL reuses them between geometry updates;
+do not mutate a visual texture image in place. Ordinary ``log_mesh()`` calls
+still upload image changes. Texture projection for UV-less skinned meshes is
+not supported yet; provide texture coordinates for textured visuals.
+
+:class:`~newton.viewer.ViewerFile` preserves mesh and Gaussian records in JSON
+and binary recordings, including Gaussian color-space metadata. Older recordings
+without that metadata use the Gaussian default, sRGB. Loading rebuilds Gaussian
+device data. Before camera rendering a loaded model, build its shape BVH with
+:meth:`~newton.Model.bvh_build_shapes` and its particle BVH if particles are
+enabled. See :ref:`usd_parsing` for imported graphics and bind-pose support.
+
+The combined camera example loads ``deformable_visual_mesh_camera.usda``.
+Its scene setup references numeric arrays in the adjacent
+``deformable_visual_mesh_camera_geometry.usdc`` file. Keep both files and
+``deformable_visual_uv_grid.png`` together when copying the asset.
+
+To inspect or edit the geometry, export the binary layer to a temporary text
+layer. Run from the repository root, edit the temporary file, then export it
+back. This preserves USD attribute types and avoids storing two copies of
+the arrays:
+
+.. code-block:: bash
+
+    uv run python -c 'from pxr import Sdf; Sdf.Layer.FindOrOpen("newton/examples/assets/deformable_visual_mesh_camera_geometry.usdc").Export("/tmp/deformable_visual_mesh_camera_geometry.usda")'
+    # Edit /tmp/deformable_visual_mesh_camera_geometry.usda, then:
+    uv run python -c 'from pxr import Sdf; Sdf.Layer.FindOrOpen("/tmp/deformable_visual_mesh_camera_geometry.usda").Export("newton/examples/assets/deformable_visual_mesh_camera_geometry.usdc")'
+
 .. _viewer-live-plots:
 
 Live Plots
@@ -743,7 +883,9 @@ presenting the result in a pyglet/OpenGL window.
 
 Debug geometry can be added before or after the first rendered frame using
 :meth:`~newton.viewer.ViewerBase.log_shapes`, :meth:`~newton.viewer.ViewerBase.log_points`,
-:meth:`~newton.viewer.ViewerBase.log_lines`, and :meth:`~newton.viewer.ViewerBase.log_arrows`.
+:meth:`~newton.viewer.ViewerBase.log_lines`, :meth:`~newton.viewer.ViewerBase.log_arrows`, and
+:meth:`~newton.viewer.ViewerBase.log_gaussian`; a Gaussian field keeps its splats until a
+different asset object is logged under its name.
 For custom markers, register a triangle mesh with :meth:`~newton.viewer.ViewerBase.log_mesh`
 and place it with :meth:`~newton.viewer.ViewerBase.log_instances`. Instance batches support
 changing counts, transforms, scales, colors, and visibility. RTX arrows have cylinder shafts
@@ -1029,6 +1171,14 @@ Instead of rendering in real-time, you can also render the simulation as a time-
 
     # Save and close the USD file
     viewer.close()
+
+Shown Gaussian shapes and fields are written as ``ParticleField3DGaussianSplat``
+prims, the schema :meth:`~newton.Gaussian.create_from_usd` reads: one prototype
+class prim per asset holds the appearance and extent, the field prims reference
+it with time-sampled placement and visibility, and higher-order spherical
+harmonics are stored one RGB triple per basis function (the usdVol layout), which
+the reader turns back into Newton's channel-major order. A renderer needs the
+particle-field plugin to draw them; plain usd-core saves the attributes.
 
 External Integrations
 ---------------------
