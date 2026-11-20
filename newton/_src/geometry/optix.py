@@ -173,7 +173,8 @@ def check_supported(model: Model) -> None:
         wo.get_context(model.device)
     except Exception as exc:
         raise UnsupportedError(f"OptiX is not supported on {model.device}: {exc}") from exc
-    if model.shape_count >= 1 << 24:
+    # The two highest instance IDs mark a camera's particles and deformable triangles.
+    if model.shape_count >= (1 << 24) - 2:
         raise UnsupportedError("OptiX shape instance IDs must fit in 24 bits")
     if model._variant_shape_source:
         raise UnsupportedError("The OptiX backend does not support shape variants")
@@ -235,8 +236,19 @@ def compute_optix_shape_instances_launch(model: Model, shapes: OptixShapes) -> N
     )
 
 
-def create_pipeline(shapes: OptixShapes, kernel: wp.Kernel, *, enable_backface_culling: bool = False) -> wo.Pipeline:
-    """Compile ``kernel`` as the ray generation program of a pipeline over ``shapes``."""
+def create_pipeline(
+    shapes: OptixShapes,
+    kernel: wp.Kernel,
+    *,
+    enable_backface_culling: bool = False,
+    particle_intersection: wp.Kernel | None = None,
+    clustered_geometry: bool = False,
+) -> wo.Pipeline:
+    """Compile ``kernel`` as the ray generation program of a pipeline over ``shapes``.
+
+    ``particle_intersection`` adds a third hit group, at SBT offset 2, for a camera's particles.
+    ``clustered_geometry`` allows tracing cluster geometry.
+    """
 
     @wp.kernel(module="unique", enable_backward=False)
     def intersect(
@@ -259,13 +271,18 @@ def create_pipeline(shapes: OptixShapes, kernel: wp.Kernel, *, enable_backface_c
         if distance >= wp.optix_get_ray_tmin():
             wp.optix_report_intersection(distance, wp.uint32(0), wp.uint32(0), wp.uint32(0))
 
+    hit_groups = {"triangles": wo.HitGroup(), "primitives": wo.HitGroup(intersection=intersect)}
+    if particle_intersection is not None:
+        hit_groups["particles"] = wo.HitGroup(intersection=particle_intersection)
+    options = {"clustered_geometry": True} if clustered_geometry else {}
     return wo.Pipeline(
         kernel,
         device=shapes.shape_types.device,
-        sbt=wo.SbtLayout(hit_groups={"triangles": wo.HitGroup(), "primitives": wo.HitGroup(intersection=intersect)}),
+        sbt=wo.SbtLayout(hit_groups=hit_groups),
         max_registers=_MAX_REGISTERS,
         module_options={"fast_math": kernel.module.options["fast_math"]},
         graph_flags=wo.TraversableGraphFlags.ALLOW_SINGLE_LEVEL_INSTANCING,
+        **options,
     )
 
 

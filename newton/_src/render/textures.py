@@ -60,6 +60,25 @@ def sample_texture_mesh_uvs(
 
 
 @wp.func
+def sample_texture_triangle_uvs(
+    bary_u: wp.float32,
+    bary_v: wp.float32,
+    face_id: wp.int32,
+    indices: wp.array[wp.int32],
+    uvs: wp.array[wp.vec2f],
+    texture_data: TextureData,
+) -> wp.vec3f:
+    """Sample a texture at a face of an indexed triangle list with per-vertex UVs."""
+    bary_w = 1.0 - bary_u - bary_v
+    uv = (
+        uvs[indices[face_id * 3 + 0]] * bary_u
+        + uvs[indices[face_id * 3 + 1]] * bary_v
+        + uvs[indices[face_id * 3 + 2]] * bary_w
+    )
+    return sample_texture_2d(flip_v(wp.cw_mul(uv, texture_data.repeat)), texture_data)
+
+
+@wp.func
 def sample_texture_cubic_projection_local(
     local: wp.vec3f,
     normal: wp.vec3f,

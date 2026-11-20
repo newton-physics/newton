@@ -16,6 +16,7 @@ from ..geometry.deformable_visual import DeformableVisualMesh, DeformableVisuals
 from ..sim import Model, State
 from ..utils import load_texture, normalize_texture
 from .render import create_kernel
+from .scene import SceneItems, WarpScene, model_shape_scene_data, standalone_particles
 from .types import (
     AntiAliasing,
     ClearData,
@@ -25,6 +26,7 @@ from .types import (
     RenderConfig,
     RenderOrder,
     RenderState,
+    SceneData,
     TextureData,
 )
 
@@ -98,14 +100,8 @@ class RenderContext:
 
         self._kernel_cache: dict[tuple, wp.Kernel] = {}
 
-        self._triangle_mesh: wp.Mesh | None = None
-        self._triangle_mesh_group_roots: wp.array[wp.int32] = wp.full(
-            model.world_count + 1, value=-1, dtype=wp.int32, device=self.device
-        )
-
         self._triangle_points: wp.array[wp.vec3f] | None = None
         self._triangle_indices: wp.array[wp.int32] | None = None
-        self._topology_particle_mask: wp.array[wp.bool] | None = None
 
         # Skinned meshes need a combined point buffer: simulation particles first,
         # then visual vertices. Without skins, retain the State's particle buffer.
@@ -113,11 +109,11 @@ class RenderContext:
         self._triangle_particle_count = 0
         self._skinned_vertex_count = 0
         self._skinned_points: wp.array[wp.vec3f] | None = None
-        self._triangle_groups: wp.array[wp.int32] | None = None
+        self._triangle_point_worlds: wp.array[wp.int32] | None = None
         self._triangle_mesh_uvs = wp.empty(0, dtype=wp.vec2f, device=self.device)
         self._triangle_mesh_texture_ids = wp.empty(0, dtype=wp.int32, device=self.device)
 
-        self._has_particles: bool = False
+        self._scene: WarpScene | OptixScene | None = None
 
         self._shape_texture_ids: wp.array[wp.int32] | None = None
         self._shape_mesh_data_ids: wp.array[wp.int32] | None = None
@@ -174,9 +170,8 @@ class RenderContext:
                 tri_particles = model.tri_indices.numpy()
                 self._triangle_particle_start = int(tri_particles.min())
                 self._triangle_particle_count = int(tri_particles.max()) + 1 - self._triangle_particle_start
+        topology_particle_mask = None
         if model.particle_q is not None and model.particle_q.shape[0]:
-            self._has_particles = True
-            self._render_state.has_particles = True
             topology_particle_mask = np.zeros(model.particle_q.shape[0], dtype=bool)
 
             def mask_topology_particles(indices: wp.array[wp.int32] | None):
@@ -187,9 +182,6 @@ class RenderContext:
                 # Hiding the coarse surface must not expose its particles as spheres.
                 mask_topology_particles(model.tri_indices)
                 mask_topology_particles(model.tet_indices)
-            self._topology_particle_mask = wp.array(
-                topology_particle_mask, dtype=wp.bool, device=model.particle_q.device
-            )
 
         if model.gaussians_data is not None:
             self._render_state.num_gaussians = model.gaussians_data.shape[0]
@@ -200,11 +192,29 @@ class RenderContext:
             if self._skinned_vertex_count:
                 self._skinned_points = self._triangle_points[self._triangle_particle_count :]
 
+        # Every non-shape item the camera traverses alongside the shapes.
+        item_particles = standalone_particles(model, topology_particle_mask)
+        triangle_worlds = None
+        if self._has_triangle_mesh:
+            point_worlds = self._triangle_point_worlds
+            if point_worlds is None:
+                point_worlds = model.particle_world
+            first_points = self._triangle_indices.numpy()[0::3]
+            triangle_worlds = wp.array(point_worlds.numpy()[first_points], dtype=wp.int32, device=self.device)
+            self._triangle_point_worlds = point_worlds
+        self._scene_items = SceneItems(
+            item_particles=wp.array(item_particles, dtype=wp.int32, device=self.device),
+            triangle_points=self._triangle_points if self._has_triangle_mesh else None,
+            triangle_indices=self._triangle_indices if self._has_triangle_mesh else None,
+            triangle_point_worlds=self._triangle_point_worlds,
+            triangle_worlds=triangle_worlds,
+        )
+        self._render_state.has_particles = self._scene_items.particle_count > 0
+        self._render_state.has_triangle_mesh = self._scene_items.triangle_count > 0
+
         if backend not in ("warp", "optix"):
             raise ValueError(f"backend must be 'warp' or 'optix', got {backend!r}")
         if backend == "optix":
-            if self._has_particles or self._has_triangle_mesh:
-                raise RuntimeError("The OptiX camera backend does not support particles or deformable surfaces")
             try:
                 from ..geometry import optix  # noqa: PLC0415
             except ImportError as exc:
@@ -268,11 +278,10 @@ class RenderContext:
         return self.model.shape_type
 
     def update(self, state: State, deformable_visuals: DeformableVisuals | None = None):
-        """Synchronize triangle-mesh points from the current simulation state.
+        """Synchronize deformable points from the current simulation state and refit the camera's scene.
 
-        Shape and particle BVHs are built by :meth:`~newton.ModelBuilder.finalize`
-        and refit separately via :meth:`~newton.Model.bvh_refit_shapes` and
-        :meth:`~newton.Model.bvh_refit_particles`.
+        The scene holds the model's shapes, as of their last :meth:`~newton.Model.bvh_refit_shapes`,
+        with the camera's standalone particles and deformable triangles, so refit the shapes first.
 
         Args:
             state: Current simulation state with particle positions and body transforms.
@@ -317,7 +326,7 @@ class RenderContext:
                         dest_offset=self._triangle_particle_count,
                         count=self._skinned_vertex_count,
                     )
-            self._sync_triangle_mesh()
+        self._refit_scene(state)
 
     def _up_vector(self) -> wp.vec3f:
         up = [0.0, 0.0, 0.0]
@@ -509,16 +518,10 @@ class RenderContext:
                 default :class:`RenderConfig` settings.
         """
         model = self.model
-        optix = None
         if self.backend == "optix":
             if self.device.stream.is_capturing:
                 raise RuntimeError("The OptiX camera backend does not support CUDA graph capture; use backend='warp'")
-            optix = model.optix_shapes
-            if optix is None:
-                raise RuntimeError(
-                    "The OptiX camera backend requires Model.bvh_build_shapes(state, backend='optix') to have been "
-                    "called first."
-                )
+            self._optix_shapes()
 
         if config is None:
             config = RenderContext.DEFAULT_RENDER_CONFIG
@@ -529,32 +532,22 @@ class RenderContext:
         if camera_rays.ndim == 4 and camera_rays.shape[2] > 1 and anti_aliasing == AntiAliasing.NONE:
             raise ValueError("anti_aliasing must be SSAA or MSAA for camera_rays with more than one sample")
 
-        if optix is not None:
-            has_shapes = optix.has_instances or bool(optix.planes)
-        else:
-            if model.shape_count > 0 and model.bvh_shape_enabled is None:
-                raise RuntimeError(
-                    "Shape BVH is missing. ModelBuilder.finalize() builds it for finalized models; "
-                    "call model.bvh_build_shapes(state) for manually populated models."
-                )
-            has_shapes = model.bvh_shape_count_enabled > 0
-            if has_shapes and (model.bvh_shapes is None or model.bvh_shapes_group_roots is None):
-                raise RuntimeError("Shape BVH is incomplete; rebuild it with model.bvh_build_shapes(state).")
-
-        has_particles = (
-            config.enable_particles
-            and self._render_state.has_particles
-            and self._has_particles
-            and state.particle_q is not None
-            and state.particle_q.shape[0] > 0
-        )
-        if has_particles and (model.bvh_particles is None or model.bvh_particles_group_roots is None):
+        if self.backend == "warp" and model.shape_count > 0 and model.bvh_shape_enabled is None:
             raise RuntimeError(
-                "Particle BVH is missing. ModelBuilder.finalize() builds it for finalized models; "
-                "call model.bvh_build_particles(state) for manually populated models."
+                "Shape BVH is missing. ModelBuilder.finalize() builds it for finalized models; "
+                "call model.bvh_build_shapes(state) for manually populated models."
             )
+        if (
+            self.backend == "warp"
+            and model.bvh_shape_count_enabled > 0
+            and (model.bvh_shapes is None or model.bvh_shapes_group_roots is None)
+        ):
+            raise RuntimeError("Shape BVH is incomplete; rebuild it with model.bvh_build_shapes(state).")
+        scene = self._scene_data(state)
+        optix = self._scene if self.backend == "optix" else None
+        has_planes = optix is not None and bool(optix.shapes.planes or optix.shapes.world_planes.shape[1])
 
-        if has_shapes or has_particles or self._has_triangle_mesh or self._has_gaussians:
+        if scene.id or has_planes or self._has_gaussians:
             height = camera_rays.shape[0]
             width = camera_rays.shape[1]
 
@@ -632,20 +625,15 @@ class RenderContext:
             # key (state/clear_data are snapshotted the same way on insert).
             # OptiX pipelines are cached on the shapes they trace, so a rebuild releases them.
             key_config = replace(config, block_dim=0)
+            # OptiX pipelines are cached on the scene they trace, so a rebuild releases them.
             cache = self._kernel_cache if optix is None else optix.pipelines
             render_kernel = cache.get((key_config, self._render_state, clear_data))
             if render_kernel is None:
                 # Copies: the factories capture them in wp.static, and shared modules may recompile.
                 render_kernel = create_kernel(replace(config), replace(self._render_state), replace(clear_data), optix)
                 if optix is not None:
-                    from ..geometry.optix import create_pipeline  # noqa: PLC0415
-
-                    render_kernel = create_pipeline(
-                        optix, render_kernel, enable_backface_culling=config.enable_backface_culling
-                    )
+                    render_kernel = optix.create_pipeline(render_kernel, config)
                 cache[(key_config, replace(self._render_state), replace(clear_data))] = render_kernel
-
-            particle_count = state.particle_q.shape[0] if has_particles else 0
 
             pixels_per_view = width * height
             if config.render_order == RenderOrder.TILED:
@@ -674,30 +662,16 @@ class RenderContext:
                     camera_rays,
                     camera_transforms,
                     world_indices,
-                    # Shape BVH
-                    model.bvh_shape_count_enabled if optix is None else 0,
-                    optix.id if optix is not None else (model.bvh_shapes.id if model.bvh_shapes is not None else 0),
-                    model.bvh_shapes_group_roots if optix is None else optix.world_planes.flatten(),
+                    scene,
                     # Shapes
-                    model._bvh_shape_active_leaves if optix is None else None,
                     self._get_shape_render_type(),  # HFIELD and CONVEX_MESH remapped to MESH
                     model.shape_scale,
                     model.shape_color,
-                    model.bvh_shape_world_transforms if optix is None else optix.shape_world_transforms,
+                    model.bvh_shape_world_transforms if optix is None else optix.shapes.shape_world_transforms,
                     model.shape_source_ptr,
                     self._shape_texture_ids,
                     self._shape_mesh_data_ids,
-                    # Particle BVH
-                    particle_count,
-                    model.bvh_particles.id if model.bvh_particles is not None else 0,
-                    model.bvh_particles_group_roots,
-                    # Particles
-                    state.particle_q if has_particles else None,
-                    model.particle_radius if has_particles else None,
-                    self._topology_particle_mask if has_particles else None,
                     # Triangle Mesh
-                    self._triangle_mesh.id if self._triangle_mesh is not None else 0,
-                    self._triangle_mesh_group_roots,
                     self._get_triangle_colors(),
                     self._triangle_mesh_uvs,
                     self._triangle_mesh_texture_ids,
@@ -742,44 +716,60 @@ class RenderContext:
         return self.model.gaussians_data is not None
 
     def _set_triangle_points(self, triangle_points: wp.array[wp.vec3f]) -> None:
-        if self._triangle_points is None or self._triangle_points.ptr != triangle_points.ptr:
-            self._triangle_mesh = None
         self._triangle_points = triangle_points
+        if getattr(self, "_scene_items", None) is not None:
+            self._scene_items.triangle_points = triangle_points
 
     def _set_triangle_indices(self, triangle_indices: wp.array[wp.int32]) -> None:
-        if self._triangle_indices is None or self._triangle_indices.ptr != triangle_indices.ptr:
-            self._triangle_mesh = None
         self._triangle_indices = triangle_indices
 
-    def _sync_triangle_mesh(self):
-        if self._triangle_mesh is None:
-            triangle_groups = self._triangle_groups
-            if triangle_groups is None:
-                triangle_indices_np = self._triangle_indices.reshape((-1, 3)).numpy()
-                particle_world_np = self.model.particle_world.numpy()
-                triangle_world_np = particle_world_np[triangle_indices_np[:, 0]]
-                triangle_groups_np = np.where(triangle_world_np < 0, self.world_count, triangle_world_np).astype(
-                    np.int32
-                )
-                triangle_groups = wp.array(triangle_groups_np, dtype=wp.int32, device=self.device)
+    @property
+    def _has_own_scene(self) -> bool:
+        """Whether the camera traverses its own scene, rather than only the model's shapes."""
+        items = self._scene_items
+        return items.particle_count > 0 or items.triangle_count > 0 or self.backend == "optix"
 
-            self._triangle_mesh = wp.Mesh(
-                self._triangle_points, self._triangle_indices, groups=triangle_groups, bvh_constructor="sah"
+    def _optix_shapes(self):
+        shapes = self.model.optix_shapes
+        if shapes is None:
+            raise RuntimeError(
+                "The OptiX camera backend requires Model.bvh_build_shapes(state, backend='optix') to have been "
+                "called first."
             )
+        return shapes
 
-            wp.launch(
-                kernel=RenderContext._compute_mesh_group_roots,
-                dim=self.world_count + 1,
-                inputs=[self._triangle_mesh.id, self._triangle_mesh_group_roots],
-                device=self.device,
-            )
+    def _refit_scene(self, state: State) -> None:
+        """Build the camera's scene on first use, or refit it to *state*."""
+        if not self._has_own_scene:
+            return
+        if self.backend == "optix":
+            from .render_optix import OptixScene  # noqa: PLC0415
+
+            if self.device.stream.is_capturing:
+                raise RuntimeError("The OptiX camera backend does not support CUDA graph capture; use backend='warp'")
+            shapes = self._optix_shapes()
+            if self._scene is None or self._scene.shapes is not shapes:
+                # Built from the current state, so it needs no refit.
+                self._scene = OptixScene(self.model, shapes, self._scene_items, state)
+            else:
+                self._scene.refit(state)
+            return
+        if self._scene is None:
+            self._scene = WarpScene(self.model, self._scene_items)
+        self._scene.refit(state)
+
+    def _scene_data(self, state: State) -> SceneData:
+        """The scene to render, built from *state* if the camera has not synced one yet."""
+        if not self._has_own_scene:
+            return model_shape_scene_data(self.model)
+        stale = self._scene is None
+        if self.backend == "optix":
+            stale = stale or self._scene.shapes is not self._optix_shapes()
         else:
-            self._triangle_mesh.refit()
-
-    @wp.kernel(enable_backward=False)
-    def _compute_mesh_group_roots(mesh_id: wp.uint64, out_group_roots: wp.array[wp.int32]):
-        group = wp.tid()
-        out_group_roots[group] = wp.mesh_get_group_root(mesh_id, group)
+            stale = stale or self._scene._shape_bvh is not self.model.bvh_shapes
+        if stale:
+            self._refit_scene(state)
+        return self._scene.scene_data(state)
 
     def _load_texture_and_mesh_data(
         self, model: Model, load_textures: bool, deformable_visual_meshes: Sequence[DeformableVisualMesh]
@@ -940,7 +930,7 @@ class RenderContext:
             vertex_worlds.append(np.full(end - start, mesh.world, dtype=np.int32))
 
         self._skinned_vertex_count = self._skin_batches.vertex_count
-        self._triangle_points = wp.empty(
+        self._triangle_points = wp.zeros(
             self._triangle_particle_count + self._skinned_vertex_count, dtype=wp.vec3f, device=self.device
         )
         indices_np = np.concatenate(triangle_indices)
@@ -950,10 +940,5 @@ class RenderContext:
             self._triangle_mesh_texture_ids = wp.array(
                 np.concatenate(triangle_texture_ids), dtype=wp.int32, device=self.device
             )
-        # Each face belongs to its first vertex's world; global faces (-1) share the extra group.
-        face_world_np = np.concatenate(vertex_worlds)[indices_np.reshape(-1, 3)[:, 0]]
-        self._triangle_groups = wp.array(
-            np.where(face_world_np < 0, self.world_count, face_world_np).astype(np.int32),
-            dtype=wp.int32,
-            device=self.device,
-        )
+        # Each face belongs to its first vertex's world.
+        self._triangle_point_worlds = wp.array(np.concatenate(vertex_worlds), dtype=wp.int32, device=self.device)
