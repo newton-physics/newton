@@ -7916,9 +7916,14 @@ class TestMuJoCoAttributes(unittest.TestCase):
         builder = newton.ModelBuilder()
         newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
         builder.custom_attributes["mujoco:condim"].default = 4
-        builder.add_shape_box(body=builder.add_body(), hx=0.1, hy=0.1, hz=0.1)
+        body = builder.add_body()
+        builder.add_shape_box(body=body, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_shape_box(
+            body=body, hx=0.1, hy=0.1, hz=0.1, cfg=newton.ModelBuilder.ShapeConfig(friction_mode=mode.NONE)
+        )
         with self.assertWarns(NewtonDeprecationWarning):
-            np.testing.assert_array_equal(builder.finalize().shape_material_friction_mode.numpy(), [mode.TORSIONAL])
+            modes = builder.finalize().shape_material_friction_mode.numpy()
+        np.testing.assert_array_equal(modes, [mode.TORSIONAL, mode.NONE])
 
         # The deprecated model attribute reads the modes, and values written to it reach the next solver
         with self.assertWarnsRegex(NewtonDeprecationWarning, "mujoco:condim custom attribute is deprecated"):

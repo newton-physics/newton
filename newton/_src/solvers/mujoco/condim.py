@@ -70,9 +70,11 @@ def finalize_condim(builder: ModelBuilder, model: Model, attr: ModelBuilder.Cust
     """Apply builder-authored ``mujoco:condim`` values to the friction modes and alias them on the model."""
     modes = model.shape_material_friction_mode.numpy()
     sliding = _FRICTION_MODE_CONDIM[ShapeFrictionMode.SLIDING]
-    # The values the attribute would hold: authored ones and a changed default override the mode.
+    # The values the attribute would hold: authored ones override the mode, and a changed default
+    # applies to the shapes left at the sliding mode.
     condim = np.full(builder.shape_count, attr.default, dtype=np.int32)
     authored = condim != sliding
+    authored[: len(modes)] &= modes == int(ShapeFrictionMode.SLIDING)
     for shape, value in (attr.values or {}).items():
         if value is not None:
             condim[shape] = value
