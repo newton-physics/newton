@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import contextlib
 import math
+from functools import wraps
 from typing import Any
 
 import warp as wp
@@ -83,7 +84,7 @@ from ..geometry.sdf_planar_recovery import (
     get_compute_planar_recovery_contacts,
 )
 from ..geometry.sdf_texture import TextureSDFData
-from ..geometry.simplex_solver import create_solve_closest_distance
+from ..geometry.simplex_solver import GJK_CUTOFF_TOLERANCE, coordinate_scale, create_solve_closest_distance
 from ..geometry.support_function import (
     AcceleratedSupportMapDataProvider,
     GenericShapeData,
@@ -104,6 +105,7 @@ from ..utils.heightfield import (
 from .penetration import create_solve_box_penetration
 
 _SPARSE_GJK_PAIR_CAPACITY_THRESHOLD = 1_000_000
+_DENSE_GJK_PAIR_COUNT_THRESHOLD = 1_024
 
 
 @wp.func
@@ -454,11 +456,60 @@ def _write_contact_simple_speculative(
     _write_contact_simple_at_index(contact_data, writer_data, index, normal, separation)
 
 
+@wp.func
+def _tetrahedra_separated(
+    source_a: wp.uint64,
+    source_b: wp.uint64,
+    scale_a: wp.vec3,
+    scale_b: wp.vec3,
+    pose_a: wp.transform,
+    pose_b: wp.transform,
+    threshold: float,
+) -> bool:
+    """Reject four-vertex hulls only when their padded bounds separate in A's frame."""
+    if source_a == wp.uint64(0) or source_b == wp.uint64(0):
+        return False
+    mesh_a = wp.mesh_get(source_a)
+    mesh_b = wp.mesh_get(source_b)
+    if mesh_a.points.shape[0] != 4 or mesh_b.points.shape[0] != 4:
+        return False
+    position_a = wp.transform_get_translation(pose_a)
+    position_b = wp.transform_get_translation(pose_b)
+    orientation_a = wp.transform_get_rotation(pose_a)
+    rotation = wp.quat_inverse(orientation_a) * wp.transform_get_rotation(pose_b)
+    position = wp.quat_rotate_inv(orientation_a, position_b - position_a)
+    first_a = wp.cw_mul(mesh_a.points[0], scale_a)
+    first_b = wp.cw_mul(mesh_b.points[0], scale_b)
+    magnitude = wp.max(1.0, coordinate_scale(position) + coordinate_scale(first_a) + coordinate_scale(first_b))
+    first_b = wp.quat_rotate(rotation, first_b) + position
+    lower_a = first_a
+    upper_a = first_a
+    lower_b = first_b
+    upper_b = first_b
+    for index in range(1, 4):
+        point_a = wp.cw_mul(mesh_a.points[index], scale_a)
+        point_b = wp.cw_mul(mesh_b.points[index], scale_b)
+        magnitude = wp.max(
+            magnitude, coordinate_scale(position) + coordinate_scale(point_a) + coordinate_scale(point_b)
+        )
+        point_b = wp.quat_rotate(rotation, point_b) + position
+        lower_a = wp.min(lower_a, point_a)
+        upper_a = wp.max(upper_a, point_a)
+        lower_b = wp.min(lower_b, point_b)
+        upper_b = wp.max(upper_b, point_b)
+    # Cover world-coordinate rounding even at zero gap, and cancellation
+    # while transforming offset source vertices into the relative frame.
+    world_scale = coordinate_scale(position_a) + coordinate_scale(position_b)
+    cutoff = wp.max(threshold, 0.0) + GJK_CUTOFF_TOLERANCE * world_scale + 1.0e-5 * magnitude
+    return wp.max(wp.max(lower_b - upper_a), wp.max(lower_a - upper_b)) > cutoff
+
+
 def create_narrow_phase_primitive_kernel(
     writer_func: Any,
     speculative: bool = False,
     sparse_gjk_pairs: bool = False,
     hydroelastic_enabled: bool = False,
+    _tetrahedron_separation: bool = False,
 ):
     """
     Create a kernel for fast analytical collision detection of primitive shapes.
@@ -473,11 +524,14 @@ def create_narrow_phase_primitive_kernel(
         speculative: Enable predictive contact admission.
         sparse_gjk_pairs: Preserve broad-phase pair indices in the GJK buffer.
         hydroelastic_enabled: Route hydroelastic pairs to the SDF-SDF pipeline.
+        _tetrahedron_separation: Reject distant four-vertex hulls using padded local bounds.
 
     Returns:
         A warp kernel for primitive collision detection
     """
     _module = f"narrow_phase_primitive_{writer_func.__name__}_{speculative}_{sparse_gjk_pairs}_{hydroelastic_enabled}"
+    if _tetrahedron_separation:
+        _module += "_tetrahedra"
 
     @wp.func(module=_module)
     def _check_unit_scale_sdf(
@@ -707,6 +761,19 @@ def create_narrow_phase_primitive_kernel(
                 if idx < shape_pairs_mesh.shape[0]:
                     shape_pairs_mesh[idx] = wp.vec2i(shape_a, shape_b)
                 continue
+
+            if wp.static(_tetrahedron_separation):
+                if type_a == GeoType.CONVEX_MESH and type_b == GeoType.CONVEX_MESH:
+                    if _tetrahedra_separated(
+                        shape_source[shape_a],
+                        shape_source[shape_b],
+                        scale_a,
+                        scale_b,
+                        shape_transform[shape_a],
+                        shape_transform[shape_b],
+                        shape_gap[shape_a] + shape_gap[shape_b] + data_a[3] + data_b[3],
+                    ):
+                        continue
 
             # Route pairs without an analytical path before allocating contact
             # storage and walking the primitive dispatch chain.
@@ -1100,6 +1167,7 @@ def create_narrow_phase_kernel_gjk_mpr(
     support_func: Any = None,
     post_process_contact: Any = None,
     speculative: bool = False,
+    _dense_query_packing: bool = False,
 ):
     """
     Create a GJK/MPR narrow phase kernel for complex convex shape collisions.
@@ -1116,6 +1184,8 @@ def create_narrow_phase_kernel_gjk_mpr(
     _sf = support_func.__name__ if support_func is not None else "default"
     _ppc = post_process_contact.__name__ if post_process_contact is not None else "default"
     _module = f"narrow_phase_gjk_mpr_{external_aabb}_{speculative}_{writer_func.__name__}_{_sf}_{_ppc}"
+    if _dense_query_packing:
+        _module += "_dense"
     accelerated_support = support_func in (support_map_accelerated, support_map_lean_accelerated)
     provider_type = AcceleratedSupportMapDataProvider if accelerated_support else SupportMapDataProvider
 
@@ -1156,6 +1226,16 @@ def create_narrow_phase_kernel_gjk_mpr(
 
         block_dim = wp.block_dim()
         num_blocks = total_num_threads // block_dim
+        if wp.static(_dense_query_packing):
+            if num_work_items >= _DENSE_GJK_PAIR_COUNT_THRESHOLD:
+                # Keep sparse batches distributed across the original blocks.
+                # Pack dense batches without reducing their solver work.
+                # Retain enough independent blocks to hide query latency.
+                items_per_block_target = block_dim // 2
+                packed_blocks = wp.max(
+                    num_blocks // 4, (num_work_items + items_per_block_target - 1) // items_per_block_target
+                )
+                num_blocks = wp.min(num_blocks, packed_blocks)
         block_index = tid // block_dim
         lane = tid - block_index * block_dim
 
@@ -2542,6 +2622,21 @@ def verify_narrow_phase_buffers(
             )
 
 
+def _with_counter_reset(launch):
+    @wraps(launch)
+    def launch_with_reset(self, **kwargs):
+        if (
+            self.has_generic_convex_pairs
+            or self.has_meshes
+            or self.has_heightfields
+            or self.hydroelastic_sdf is not None
+        ):
+            self._counter_array.zero_()
+        return launch(self, **kwargs)
+
+    return launch_with_reset
+
+
 class NarrowPhase:
     """Resolve broad-phase shape pairs into simulation contacts.
 
@@ -2551,6 +2646,8 @@ class NarrowPhase:
     processing candidate pairs, then writes final contacts through a configurable
     contact writer function.
     """
+
+    _tetrahedron_separation = False
 
     def __init__(
         self,
@@ -2801,6 +2898,7 @@ class NarrowPhase:
             speculative=speculative,
             sparse_gjk_pairs=self.sparse_gjk_pairs,
             hydroelastic_enabled=hydroelastic_sdf is not None,
+            _tetrahedron_separation=self._tetrahedron_separation,
         )
         # GJK/MPR kernel handles remaining convex-convex pairs. Only models with cooked
         # support data select the accelerated support function; other models
@@ -2814,6 +2912,15 @@ class NarrowPhase:
                 support_func=support_map_lean_accelerated if convex_support_acceleration else support_map_lean,
                 post_process_contact=post_process_minkowski_only,
                 speculative=speculative,
+                _dense_query_packing=(
+                    device_obj.is_cuda
+                    and has_generic_convex_pairs
+                    and candidate_pair_work_estimate >= _DENSE_GJK_PAIR_COUNT_THRESHOLD
+                    and not self.split_gjk_mpr
+                    and not wp.config.llvm_cuda
+                    and not (has_meshes or has_heightfields or hydroelastic_sdf is not None)
+                    and _group_reduction is None
+                ),
             )
         else:
             self.narrow_phase_kernel = create_narrow_phase_kernel_gjk_mpr(
@@ -3527,15 +3634,6 @@ class NarrowPhase:
         shape_linear_velocity = self._empty_vec3 if shape_linear_velocity is None else shape_linear_velocity
         shape_angular_velocity = self._empty_vec3 if shape_angular_velocity is None else shape_angular_velocity
 
-        # Clear counters only when a routed or split path consumes them.
-        if (
-            self.has_generic_convex_pairs
-            or self.has_meshes
-            or self.has_heightfields
-            or self.hydroelastic_sdf is not None
-        ):
-            self._counter_array.zero_()
-
         group_reducer_data = None
         contact_writer_data = writer_data
         if self._group_reduction is not None:
@@ -4192,6 +4290,10 @@ class NarrowPhase:
                 record_tape=False,
             )
 
+    # CollisionPipeline clears the same counters in its shape-bounds kernel.
+    _launch_with_prepared_counters = _launch_custom_write
+    launch_custom_write = _with_counter_reset(launch_custom_write)
+
     def launch(
         self,
         *,
@@ -4440,3 +4542,11 @@ class NarrowPhase:
                 contact_tangent=contact_tangent,
                 device=device,
             )
+
+
+class _PipelineNarrowPhase(NarrowPhase):
+    """Build kernel variants selected from the pipeline's collision topology."""
+
+    def __init__(self, *, tetrahedron_separation: bool, **kwargs):
+        self._tetrahedron_separation = tetrahedron_separation
+        super().__init__(**kwargs)
