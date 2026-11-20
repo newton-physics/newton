@@ -1,0 +1,1 @@
+Add optional task recording to `SolverCoupledADMM`: under a `cuda.stf` recording (Warp adapter), the coupled step issues its phases as tasks, so per-entry phases may overlap in the recorded CUDA graph. The step is unchanged when nothing is recorded or `cuda.stf` is not installed.
