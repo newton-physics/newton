@@ -158,12 +158,12 @@ class PADMMSolver:
     def __init__(
         self,
         model: ModelKamino | None = None,
+        problem: DualProblem | None = None,
         config: list[PADMMSolver.Config] | PADMMSolver.Config | None = None,
         warmstart: PADMMWarmStartMode = PADMMWarmStartMode.NONE,
         use_acceleration: bool = True,
         use_graph_conditionals: bool = True,
         collect_info: bool = False,
-        problem: DualProblem | None = None,
     ):
         """
         Initializes a PADMM solver.
@@ -173,8 +173,7 @@ class PADMMSolver:
 
         Args:
             model: The model for which to allocate the solver data.
-            limits: The limits container associated with the model.
-            contacts: The contacts container associated with the model.
+            problem: The dual problem to be solved. Required if a model is provided.
             config: The solver config to use.
             warmstart: The warm-start mode to use for the solver.
             use_acceleration: Set to `True` to enable Nesterov acceleration.
@@ -183,8 +182,6 @@ class PADMMSolver:
             collect_info: Set to `True` to enable collection of solver convergence info.
                 This setting is intended only for analysis and debugging purposes, as it
                 will increase memory consumption and reduce wall-clock time.
-            problem: The dual problem to be solved, if known at construction.
-                Required to drop the redundant joint constraints of sparse problems.
         """
 
         # Declare the internal solver config cache
@@ -217,12 +214,12 @@ class PADMMSolver:
         if model is not None:
             self.finalize(
                 model=model,
+                problem=problem,
                 config=config,
                 warmstart=warmstart,
                 use_acceleration=use_acceleration,
                 use_graph_conditionals=use_graph_conditionals,
                 collect_info=collect_info,
-                problem=problem,
             )
 
     ###
@@ -267,20 +264,19 @@ class PADMMSolver:
     def finalize(
         self,
         model: ModelKamino | None = None,
+        problem: DualProblem | None = None,
         config: list[PADMMSolver.Config] | PADMMSolver.Config | None = None,
         warmstart: PADMMWarmStartMode = PADMMWarmStartMode.NONE,
         use_acceleration: bool = True,
         use_graph_conditionals: bool = True,
         collect_info: bool = False,
-        problem: DualProblem | None = None,
     ):
         """
         Allocates the solver data structures on the specified device.
 
         Args:
             model: The model for which to allocate the solver data.
-            limits: The limits container associated with the model.
-            contacts: The contacts container associated with the model.
+            problem: The dual problem to be solved, on which all subsequent solves must be performed.
             config: The solver config to use.
             warmstart: The warm-start mode to use for the solver.
             use_acceleration: Set to `True` to enable Nesterov acceleration.
@@ -289,16 +285,15 @@ class PADMMSolver:
             collect_info: Set to `True` to enable collection of solver convergence info.
                 This setting is intended only for analysis and debugging purposes, as it
                 will increase memory consumption and reduce wall-clock time.
-            problem: The dual problem to be solved, if known at allocation.
-                Subsequent solves must then be performed on the same problem.
-                Required to drop the redundant joint constraints of sparse problems.
         """
 
-        # Ensure the model is valid
+        # Ensure the model and the problem are valid
         if model is None:
             raise ValueError("A model of type `ModelKamino` must be provided to allocate the Delassus operator.")
         elif not isinstance(model, ModelKamino):
             raise ValueError("Invalid model provided. Must be an instance of `ModelKamino`.")
+        if not isinstance(problem, DualProblem):
+            raise ValueError("A problem of type `DualProblem` must be provided.")
 
         # Cache references to the model size meta-data container and the dual problem
         self._size = model.size
@@ -316,7 +311,9 @@ class PADMMSolver:
             self._config = self._check_config(model, None)
 
         # Keep the standard handling of redundant constraints with iterative linear solvers
-        iterative = problem is not None and (problem.sparse or isinstance(problem.delassus.solver, IterativeSolver))
+        # NOTE: These leave the null space of the Delassus matrix mostly unresolved without affecting the motion,
+        # while the shift makes them resolve it inexactly and the Delassus dual residual misses their inaccuracy
+        iterative = problem.sparse or isinstance(problem.delassus.solver, IterativeSolver)
         if iterative and not self._redundancy_handling_with_iterative_solvers:
             self._config = [
                 dataclasses.replace(
@@ -384,10 +381,11 @@ class PADMMSolver:
             self._reuse_redundant_joints = self._config[0].reuse_redundant_kinematics_set
 
             # Check the reused rows on the factor of the blocked Cholesky solvers, and on the joint block otherwise
-            sparse = problem is not None and problem.sparse
-            solver = problem.delassus.solver if problem is not None and not sparse else None
-            self._check_factor = self._reuse_redundant_joints and isinstance(
-                solver, (LLTBlockedSolver, LLTBlockedRCMSolver)
+            sparse = problem.sparse
+            self._check_factor = (
+                self._reuse_redundant_joints
+                and not sparse
+                and isinstance(problem.delassus.solver, (LLTBlockedSolver, LLTBlockedRCMSolver))
             )
             self._redundant_joints = RedundantRowShift(
                 num_worlds=self._size.num_worlds,
@@ -536,12 +534,8 @@ class PADMMSolver:
         Args:
             problem: The dual forward dynamics problem to be solved.
         """
-        if self._problem is not None and problem is not self._problem:
+        if problem is not self._problem:
             raise ValueError("The problem must be the one provided to `finalize()`.")
-        if self._redundant_joints is not None and problem.sparse and self._problem is None:
-            raise ValueError(
-                "Dropping redundant joint constraints of sparse problems requires the problem at `finalize()`."
-            )
 
         # Pass the PADMM-owned tolerance array to the iterative linear solver (if present), so the
         # inexact-ADMM tolerance schedule (set in the convergence kernel) drives the inner solve.

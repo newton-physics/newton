@@ -317,12 +317,12 @@ class SolverKaminoImpl(SolverBase):
         elif self._config.dynamics_solver == "padmm":
             self._solver_fd = PADMMSolver(
                 model=self._model,
+                problem=self._problem_fd,
                 config=self._config.padmm,
                 warmstart=self._warmstart_mode,
                 use_acceleration=self._config.padmm.use_acceleration,
                 use_graph_conditionals=self._config.padmm.use_graph_conditionals,
                 collect_info=self._config.collect_solver_info,
-                problem=self._problem_fd,
             )
         elif self._config.dynamics_solver == "scc":
             # SCC consumes Kamino's unified joint, limit, and contact

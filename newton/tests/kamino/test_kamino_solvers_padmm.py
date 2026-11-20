@@ -516,8 +516,9 @@ class TestPADMMSolver(NewtonTestCase):
         # should result in a solver without any memory allocation.
         solver = PADMMSolver()
 
-        # Finalize the solver with a model
-        solver.finalize(test.model)
+        # Finalize the solver with a model and a problem, which is required
+        self.assertRaises(ValueError, solver.finalize, test.model)
+        solver.finalize(test.model, test.problem)
 
         # Check that the solver has been properly allocated
         self.assertIsNotNone(solver._size)
@@ -563,6 +564,7 @@ class TestPADMMSolver(NewtonTestCase):
                 # Create the PADMM solver
                 solver = PADMMSolver(
                     model=test.model,
+                    problem=test.problem,
                     config=config,
                     warmstart=PADMMWarmStartMode.NONE,
                     use_acceleration=False,
@@ -608,6 +610,7 @@ class TestPADMMSolver(NewtonTestCase):
         # Create the PADMM solver
         solver = PADMMSolver(
             model=test.model,
+            problem=test.problem,
             config=config,
             warmstart=PADMMWarmStartMode.NONE,
             use_acceleration=True,
@@ -652,6 +655,7 @@ class TestPADMMSolver(NewtonTestCase):
         # Create the ADMM solver
         solver = PADMMSolver(
             model=test.model,
+            problem=test.problem,
             config=config,
             warmstart=PADMMWarmStartMode.INTERNAL,
             use_acceleration=False,
@@ -702,6 +706,7 @@ class TestPADMMSolver(NewtonTestCase):
         # Create the ADMM solver
         solver = PADMMSolver(
             model=test.model,
+            problem=test.problem,
             config=config,
             warmstart=PADMMWarmStartMode.CONTAINERS,
             use_acceleration=False,
@@ -751,6 +756,7 @@ class TestPADMMSolver(NewtonTestCase):
         # Create the ADMM solver
         solver = PADMMSolver(
             model=test.model,
+            problem=test.problem,
             config=config,
             warmstart=PADMMWarmStartMode.INTERNAL,
             use_acceleration=True,
@@ -799,6 +805,7 @@ class TestPADMMSolver(NewtonTestCase):
         # Create the ADMM solver
         solver = PADMMSolver(
             model=test.model,
+            problem=test.problem,
             config=config,
             warmstart=PADMMWarmStartMode.CONTAINERS,
             use_acceleration=True,
@@ -834,7 +841,7 @@ class TestPADMMSolver(NewtonTestCase):
         test = TestSetup(builder_fn=basics.build_sphere_on_plane, max_world_contacts=1, device=self.default_device)
 
         # Create the PADMM solver
-        solver = PADMMSolver(model=test.model, collect_info=self.savefig)
+        solver = PADMMSolver(model=test.model, problem=test.problem, collect_info=self.savefig)
 
         # Solve the test problem
         test.build()
@@ -863,6 +870,7 @@ class TestPADMMSolver(NewtonTestCase):
                 )
                 solver = PADMMSolver(
                     model=test.model,
+                    problem=test.problem,
                     config=PADMMSolver.Config(
                         primal_tolerance=1.0e3,
                         dual_tolerance=1.0e3,
@@ -957,6 +965,7 @@ class TestPADMMSolver(NewtonTestCase):
 
         solver = PADMMSolver(
             model=test.model,
+            problem=test.problem,
             config=config,
             warmstart=PADMMWarmStartMode.NONE,
             use_acceleration=True,
@@ -1039,6 +1048,7 @@ class TestPADMMSolver(NewtonTestCase):
         test.build()
         solver = PADMMSolver(
             model=test.model,
+            problem=test.problem,
             config=config,
             warmstart=PADMMWarmStartMode.NONE,
             use_acceleration=True,
@@ -1091,6 +1101,7 @@ class TestPADMMSolver(NewtonTestCase):
                 test.build()
                 solver = PADMMSolver(
                     model=test.model,
+                    problem=test.problem,
                     config=configs,
                     warmstart=PADMMWarmStartMode.NONE,
                     use_acceleration=True,
@@ -1260,7 +1271,7 @@ class TestPADMMNullspaceRobustness(NewtonTestCase):
                         penalty_update_freq=1,
                     )
                     solver = PADMMSolver(
-                        model=test.model, config=config, problem=test.problem, use_acceleration=use_acceleration
+                        model=test.model, problem=test.problem, config=config, use_acceleration=use_acceleration
                     )
                     test.build()
 
@@ -1312,7 +1323,9 @@ class TestPADMMNullspaceRobustness(NewtonTestCase):
                             max_iterations=500,
                             dual_tolerance=fourbar_dual_tolerance(sparse),
                         )
-                        solver = PADMMSolver(model=test.model, config=config, use_acceleration=use_acceleration)
+                        solver = PADMMSolver(
+                            model=test.model, problem=test.problem, config=config, use_acceleration=use_acceleration
+                        )
                         test.build()
                         bases = delassus_null_bases(test.problem)
                         add_null_components(test.problem, test.problem.data.v_f, bases, 1e-4)
@@ -1336,7 +1349,7 @@ class TestPADMMNullspaceRobustness(NewtonTestCase):
                         max_iterations=500,
                         dual_tolerance=fourbar_dual_tolerance(sparse),
                     )
-                    solver = PADMMSolver(model=test.model, config=config, problem=test.problem)
+                    solver = PADMMSolver(model=test.model, problem=test.problem, config=config)
 
                     # Remove the null-space components of the free velocity
                     test.build()
@@ -1369,7 +1382,7 @@ class TestPADMMNullspaceRobustness(NewtonTestCase):
         for sparse in (False, True):
             test = make_redundant_fourbar(self.default_device, sparse)
             config = PADMMSolver.Config(max_iterations=1)
-            solver = PADMMSolver(model=test.model, config=config, problem=test.problem)
+            solver = PADMMSolver(model=test.model, problem=test.problem, config=config)
             test.build()
             D = [D.copy() for D in extract_delassus(test.problem.delassus, only_active_dims=True)]
             solver.coldstart()
@@ -1408,7 +1421,7 @@ class TestPADMMNullspaceRobustness(NewtonTestCase):
                     test = make_redundant_fourbar(self.default_device, sparse=False)
                     config = PADMMSolver.Config(unpenalized_bilateral_rows=unpenalized, max_iterations=500)
                     solver = PADMMSolver(
-                        model=test.model, config=config, problem=test.problem, use_acceleration=use_acceleration
+                        model=test.model, problem=test.problem, config=config, use_acceleration=use_acceleration
                     )
                     test.build()
                     solver.coldstart()
@@ -1450,7 +1463,7 @@ class TestPADMMNullspaceRobustness(NewtonTestCase):
                         max_iterations=500,
                         dual_tolerance=fourbar_dual_tolerance(sparse),
                     )
-                    solver = PADMMSolver(model=test.model, config=config, problem=test.problem)
+                    solver = PADMMSolver(model=test.model, problem=test.problem, config=config)
 
                     # The first solve detects the redundant rows, and the second one reuses them if enabled
                     for _ in range(2):
@@ -1496,7 +1509,7 @@ class TestPADMMNullspaceRobustness(NewtonTestCase):
                 test = TestSetup(
                     builder_fn=builder_fn, max_world_contacts=8, device=self.default_device, ground=False, **kwargs
                 )
-                solver = PADMMSolver(model=test.model, config=PADMMSolver.Config(), problem=test.problem)
+                solver = PADMMSolver(model=test.model, problem=test.problem, config=PADMMSolver.Config())
                 self.assertEqual(solver._redundant_joints is not None, has_loops)
 
         # A chain between two immovable bodies closes a loop through the world
@@ -1541,7 +1554,7 @@ class TestPADMMNullspaceRobustness(NewtonTestCase):
         """Check that the dense Delassus matrix after the solve, and the solver info, exclude the dropped row shifts."""
         test = make_redundant_fourbar(self.default_device, sparse=False)
         config = PADMMSolver.Config(max_iterations=50)
-        solver = PADMMSolver(model=test.model, config=config, problem=test.problem, collect_info=True)
+        solver = PADMMSolver(model=test.model, problem=test.problem, config=config, collect_info=True)
         test.build()
 
         # Add a null-space bias, which loads the dropped rows with impulses
@@ -1577,7 +1590,7 @@ class TestPADMMNullspaceRobustness(NewtonTestCase):
                 with self.subTest(sparse=sparse, linear_solver=linear_solver.__name__):
                     test = make_redundant_fourbar(self.default_device, sparse, linear_solver=linear_solver)
                     config = PADMMSolver.Config()
-                    solver = PADMMSolver(model=test.model, config=config, problem=test.problem)
+                    solver = PADMMSolver(model=test.model, problem=test.problem, config=config)
                     self.assertEqual(solver._redundant_joints is None, iterative)
                     self.assertEqual(solver._scale_joint_rho, not iterative)
                     self.assertEqual(solver._config[0].dual_residual_mode, "standard" if iterative else "delassus")
