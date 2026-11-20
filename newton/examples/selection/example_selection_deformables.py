@@ -1,15 +1,21 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Selection Deformables
-#
-# Selects labeled curves, surfaces, and volumes across replicated worlds.
-# Demonstrates per-world and deformable-object resets plus setup-time topology ranges.
-#
-# Command: python -m newton.examples selection_deformables
-#
-###########################################################################
+"""Reset selected cables, cloths, and soft cubes across replicated worlds.
+
+Use labeled deformable views and masks to reset positions and velocities.
+World indices start at zero.
+
+Success criteria:
+- Each world contains a hanging cable, two cloths, and a soft cube.
+- Every two seconds, even worlds reset their cable and primary cloth.
+- Odd worlds reset their secondary cloth and drop their soft cube from a higher position.
+- Resets restore selected velocities and leave unselected deformable objects unchanged.
+
+Runs:
+- `python -m newton.examples selection_deformables`
+- `python -m newton.examples selection_deformables --world-count 2`
+"""
 
 from __future__ import annotations
 
@@ -78,7 +84,6 @@ class Example:
             bend_stiffness=1.0e2,
             label="hanging_cable",
             wrap_in_articulation=True,
-            body_frame_origin="com",
         )
         pinned_body = curve_bodies[0]
         prototype.body_mass[pinned_body] = 0.0
