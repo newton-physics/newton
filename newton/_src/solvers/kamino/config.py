@@ -600,9 +600,9 @@ class PADMMSolverConfig:
     - `"delassus"`: The change `D @ (x - x_p)` of the constraint-space velocity, obtained without an
       additional matrix-vector product from the right-hand side of the linear system. It is insensitive
       to the drift of the impulses along the null space of the Delassus operator, e.g. due to redundant
-      constraints, which may otherwise prevent convergence. With an iterative linear solver, it also includes the
-      change of the linear solver residual, so `linear_solver_tolerance` should be well below `dual_tolerance`.\n
+      constraints, which may otherwise prevent convergence.\n
     Both are scaled by the inverse preconditioner. The setting of the first world applies to all worlds.
+    With iterative linear solvers, the `"standard"` residual is always used, see `detect_redundant_kinematics`.
     Defaults to `"delassus"`.
     """
 
@@ -751,11 +751,14 @@ class PADMMSolverConfig:
     dropped rows then carry no impulse, while the other rows still enforce their constraints, so the motion is
     unchanged. The implicit joint dynamics rows are never dropped. See `reuse_redundant_kinematics_set` for how
     the dropped rows follow the configurations of the system.\n
-    With sparse dynamics, the kinematic joint block of the Delassus matrix is assembled from the constraint
-    Jacobian, and the shift is added to the regularization of the linear solver.\n
     The detection can be safely turned off for systems known to have no redundant kinematic constraints.
     It is turned off automatically for models without closed kinematic loops, e.g. articulated systems,
-    whose kinematic constraints are never redundant.
+    whose kinematic constraints are never redundant.\n
+    NOTE: With iterative linear solvers, e.g. with sparse dynamics, the detection, the Delassus dual residual and
+    the unpenalized bilateral rows are turned off, which keeps their original handling of redundant constraints.
+    These solvers never factorize the singular Delassus matrix, and leave its null space mostly unresolved without
+    affecting the motion. The shift makes them resolve it within their few iterations, which prevents PADMM from
+    converging, while the Delassus dual residual can stop PADMM before the motion is accurate.\n
     The setting of the first world applies to all worlds. Defaults to `True`.
     """
 
@@ -796,7 +799,7 @@ class PADMMSolverConfig:
     Without it, they are solved exactly at each iteration, up to the proximal regularization `eta`, and the
     iterations only resolve the other constraints. This requires a well-conditioned Delassus matrix on the
     joint constraints, i.e. a system without redundant kinematic constraints, or `detect_redundant_kinematics`.\n
-    Defaults to `True`.
+    Turned off with iterative linear solvers, see `detect_redundant_kinematics`. Defaults to `True`.
     """
 
     @override

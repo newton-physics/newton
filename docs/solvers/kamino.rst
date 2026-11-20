@@ -180,6 +180,12 @@ PADMM handles them with three settings of ``config.padmm``:
   constraint velocity, which ignores impulse drift along the null space of the
   Delassus matrix (see `Inspecting terminal status`_).
 
+With the iterative linear solvers ``"CR"`` and ``"CRF"`` of
+``config.dynamics.linear_solver_type``, which sparse dynamics always uses, the
+three settings are turned off
+and PADMM keeps its standard handling of redundant constraints. These solvers
+never factorize the singular Delassus matrix, and are more accurate without them.
+
 The internal stress of a loop is then carried by the kept rows rather than
 split with minimum norm, so reported joint reactions can change when the
 dropped rows change at a singular configuration; the motion does not. The
@@ -462,7 +468,8 @@ residual definitions are backend-specific:
   [N·s or N·m·s].
   ``r_d = ||P^-1 D (x - x_prev)||_inf`` is the change of constraint velocity
   between iterates [m/s or rad/s], with ``D`` the preconditioned Delassus
-  matrix. With ``dual_residual_mode="standard"``, it is instead the ADMM dual
+  matrix. With ``dual_residual_mode="standard"`` or an iterative linear solver,
+  it is instead the ADMM dual
   residual ``r_d = ||P^-1 (eta (x - x_prev) + rho_i (y - y_prev))||_inf``, with
   ``rho_i`` the penalty of each row, which is zero on unpenalized bilateral
   joint rows. ``r_c`` is the maximum absolute impulse-velocity

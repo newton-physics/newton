@@ -11,6 +11,8 @@ See the :mod:`newton._src.solvers.kamino.solvers.padmm` module for a detailed de
 
 from __future__ import annotations
 
+import dataclasses
+
 import warp as wp
 
 from ......sim import ModelFlags
@@ -21,7 +23,7 @@ from ...core.size import SizeKamino
 from ...dynamics.dual import DualProblem
 from ...geometry.contacts import ContactsKamino
 from ...kinematics.limits import LimitsKamino
-from ...linalg import LLTBlockedRCMSolver, LLTBlockedSolver, RedundantRowShift
+from ...linalg import IterativeSolver, LLTBlockedRCMSolver, LLTBlockedSolver, RedundantRowShift
 from ...utils.tile import get_block_dim, get_tile_size
 from .kernels import (
     _apply_dual_preconditioner_to_solution,
@@ -145,6 +147,12 @@ class PADMMSolver:
     criteria, maximum iterations, and options for the linear solver and preconditioning.
 
     See :class:`PADMMSolverConfig` for the full list of configuration options and their descriptions.
+    """
+
+    _redundancy_handling_with_iterative_solvers: bool = False
+    """
+    Whether to keep the Delassus dual residual, the detection of redundant kinematic constraints and the
+    unpenalized bilateral rows with iterative linear solvers, for testing and experiments.
     """
 
     def __init__(
@@ -306,6 +314,19 @@ class PADMMSolver:
             self._config = self._check_config(model, config)
         elif len(self._config) == 0:
             self._config = self._check_config(model, None)
+
+        # Keep the standard handling of redundant constraints with iterative linear solvers
+        iterative = problem is not None and (problem.sparse or isinstance(problem.delassus.solver, IterativeSolver))
+        if iterative and not self._redundancy_handling_with_iterative_solvers:
+            self._config = [
+                dataclasses.replace(
+                    c,
+                    dual_residual_mode="standard",
+                    detect_redundant_kinematics=False,
+                    unpenalized_bilateral_rows=False,
+                )
+                for c in self._config
+            ]
 
         # Cache high-level solver options shared across all worlds
         self._warmstart = warmstart

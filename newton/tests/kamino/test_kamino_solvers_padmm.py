@@ -6,6 +6,7 @@
 import itertools
 import logging
 import unittest
+import unittest.mock
 from pathlib import Path
 from typing import Any
 
@@ -1201,6 +1202,11 @@ class TestPADMMNullspaceRobustness(NewtonTestCase):
 
         setup_test_output(self)
 
+        # Test the handling of redundant constraints with iterative linear solvers too
+        patcher = unittest.mock.patch.object(PADMMSolver, "_redundancy_handling_with_iterative_solvers", True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_00_delassus_dual_residual(self):
         """Check that the Delassus-weighted dual residual matches `P^{-1} D (x - x_p)` between consecutive iterates."""
         builders = {
@@ -1558,6 +1564,24 @@ class TestPADMMNullspaceRobustness(NewtonTestCase):
             v_plus_ref = (D[w] @ (lambdas[w] / P[w]) + v_f[w]) / P[w]
             self.assertTrue(np.all(np.isfinite(lambdas[w])) and np.all(np.isfinite(v_plus[w])))
             np.testing.assert_allclose(v_plus[w], v_plus_ref, rtol=0.0, atol=1e-4 * np.abs(v_plus_ref).max())
+
+    def test_08_iterative_solvers_keep_standard_handling(self):
+        """Check that iterative linear solvers turn off the handling of redundant constraints."""
+        cases = (
+            (False, LLTBlockedSolver, False),
+            (False, ConjugateResidualSolver, True),
+            (True, ConjugateResidualSolver, True),
+        )
+        with unittest.mock.patch.object(PADMMSolver, "_redundancy_handling_with_iterative_solvers", False):
+            for sparse, linear_solver, iterative in cases:
+                with self.subTest(sparse=sparse, linear_solver=linear_solver.__name__):
+                    test = make_redundant_fourbar(self.default_device, sparse, linear_solver=linear_solver)
+                    config = PADMMSolver.Config()
+                    solver = PADMMSolver(model=test.model, config=config, problem=test.problem)
+                    self.assertEqual(solver._redundant_joints is None, iterative)
+                    self.assertEqual(solver._scale_joint_rho, not iterative)
+                    self.assertEqual(solver._config[0].dual_residual_mode, "standard" if iterative else "delassus")
+                    self.assertEqual(config.dual_residual_mode, "delassus")
 
 
 ###
