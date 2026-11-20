@@ -764,6 +764,7 @@ def rotate_matrix_rows(
     eigenvectors: wp.array3d[float],
     mat_offsets: wp.array[int],
     mat_columns: wp.array[int],
+    mat_row_counts: wp.array[int],
     mat_values: wp.array[Any],
     mat_values_out: wp.array[Any],
 ):
@@ -772,7 +773,7 @@ def rotate_matrix_rows(
     nodes_per_elt = eigenvectors.shape[1]
     node_count = eigenvectors.shape[0] * nodes_per_elt
 
-    row = wps.bsr_row_index(mat_offsets, node_count, block)
+    row = wps.bsr_row_index(mat_offsets, node_count, block, mat_row_counts)
     if row == -1:
         return
 
@@ -878,6 +879,7 @@ def rotate_matrix_columns(
     eigenvectors: wp.array3d[float],
     mat_offsets: wp.array[int],
     mat_columns: wp.array[int],
+    mat_row_counts: wp.array[int],
     mat_values: wp.array[Any],
     mat_values_out: wp.array[Any],
 ):
@@ -886,7 +888,7 @@ def rotate_matrix_columns(
     nodes_per_elt = eigenvectors.shape[1]
     node_count = eigenvectors.shape[0] * nodes_per_elt
 
-    row = wps.bsr_row_index(mat_offsets, node_count, block)
+    row = wps.bsr_row_index(mat_offsets, node_count, block, mat_row_counts)
     if row == -1:
         return
 

@@ -444,6 +444,10 @@ class RheologyData:
             single shared solve.
         include_unconverged_strain: Whether the elastic strain increment
             includes the flow-rule residual of an unconverged solve.
+        has_compliance: Whether ``compliance_mat`` holds active entries, as a
+            host value or as a single-element device flag (nonzero when
+            active). During a graph capture, a device flag selects the solver
+            variant on the device; otherwise it is read once on the host.
     """
 
     strain_mat: sp.BsrMatrix
@@ -466,6 +470,7 @@ class RheologyData:
     strain_velocity_node_count: int = -1
     strain_nodes_per_cell: int = 0
     include_unconverged_strain: bool = False
+    has_compliance: bool | wp.array[wp.int32] = True
 
 
 @dataclass
@@ -601,6 +606,7 @@ class _DelassusOperator:
                 self.momentum.inv_volume,
                 self.rheology.compliance_mat.offsets,
                 self.rheology.compliance_mat.columns,
+                self.rheology.compliance_mat.row_counts,
                 self.rheology.compliance_mat.values,
                 batch_map,
                 mult,
@@ -694,6 +700,7 @@ class _DelassusOperator:
             inputs=[
                 self.rheology.compliance_mat.offsets,
                 self.rheology.compliance_mat.columns,
+                self.rheology.compliance_mat.row_counts,
                 self.rheology.compliance_mat.values,
                 self.rheology.strain_mat.offsets,
                 self.rheology.strain_mat.columns,
@@ -722,11 +729,16 @@ class _RheologySolver:
         split_mass: bool,
         temporary_store: fem.TemporaryStore | None = None,
         skip_factorization: bool = False,
+        compliance_variants: tuple[bool, ...] = (True,),
     ):
         self.delassus_operator = delassus_operator
         self.momentum = delassus_operator.momentum
         self.rheology = delassus_operator.rheology
         self.device = self.momentum.velocity.device
+
+        # Kernel variants recorded for the solve; ``use_compliance`` selects the one ``solve`` launches.
+        self._compliance_variants = compliance_variants
+        self.use_compliance = compliance_variants[-1]
 
         self.delta_stress = fem.borrow_temporary_like(self.rheology.stress, temporary_store)
         # Colored solvers only write active strain nodes; the residual reads every entry.
@@ -902,11 +914,41 @@ class _RheologySolver:
         batched=False,
         contacts: ColoredContacts | None = None,
         contact_nodes: int = 0,
-    ):
+    ) -> dict[bool, wp.Launch]:
+        return {
+            has_compliance: self._make_gs_solve_variant_launch(
+                rows,
+                launch_dim,
+                block_dim,
+                block_count,
+                has_compliance=has_compliance,
+                soa=soa,
+                colors_per_batch=colors_per_batch,
+                batched=batched,
+                contacts=contacts,
+                contact_nodes=contact_nodes,
+            )
+            for has_compliance in self._compliance_variants
+        }
+
+    def _make_gs_solve_variant_launch(
+        self,
+        rows,
+        launch_dim,
+        block_dim,
+        block_count,
+        *,
+        has_compliance: bool,
+        soa: bool,
+        colors_per_batch: int,
+        batched: bool,
+        contacts: ColoredContacts | None,
+        contact_nodes: int,
+    ) -> wp.Launch:
         kernel = make_gs_solve_kernel(
             has_viscosity=self.rheology.has_viscosity,
             has_dilatancy=self.rheology.has_dilatancy,
-            has_compliance_mat=self.rheology.compliance_mat.nnz > 0,
+            has_compliance_mat=has_compliance,
             strain_velocity_node_count=self.rheology.strain_velocity_node_count,
             strain_nodes_per_cell=self.rheology.strain_nodes_per_cell,
             max_entries=rows.columns.shape[0] if soa else self.rheology.strain_velocity_node_count,
@@ -928,6 +970,7 @@ class _RheologySolver:
                 self.rheology.strain_node_volume,
                 self.rheology.compliance_mat.offsets,
                 self.rheology.compliance_mat.columns,
+                self.rheology.compliance_mat.row_counts,
                 self.rheology.compliance_mat.values,
                 self.delassus_operator.delassus_diagonal,
                 self.delassus_operator.delassus_rotation,
@@ -957,8 +1000,14 @@ class _GaussSeidelSolver(_RheologySolver):
         delassus_operator: _DelassusOperator,
         temporary_store: fem.TemporaryStore | None = None,
         contact_solver: _SubgridContactSolver | None = None,
+        compliance_variants: tuple[bool, ...] = (True,),
     ) -> None:
-        super().__init__(delassus_operator, split_mass=False, temporary_store=temporary_store)
+        super().__init__(
+            delassus_operator,
+            split_mass=False,
+            temporary_store=temporary_store,
+            compliance_variants=compliance_variants,
+        )
 
         self.color_count = self.rheology.color_offsets.shape[0] - 1
 
@@ -1005,7 +1054,7 @@ class _GaussSeidelSolver(_RheologySolver):
             self.contacts.impulse = c.collider_impulse
             self.contacts.delta_impulse = contact_solver.delta_impulse
             self.contact_nodes = c.colored_velocity_nodes_per_cell
-        self.solve_local_launch = self._make_solve_launch(
+        self.solve_local_launches = self._make_solve_launch(
             temporary_store, color_launch_dim, color_block_dim, color_block_count
         )
 
@@ -1035,9 +1084,10 @@ class _GaussSeidelSolver(_RheologySolver):
         if self.contact_solver is not None and self.contact_solver.collision.rigidity_operator is not None:
             # Rows outside the active boundary cells must contribute no feedback.
             self.contact_solver.delta_impulse.zero_()
+        solve_local_launch = self.solve_local_launches[self.use_compliance]
         for color in range(self.color_count):
-            self.solve_local_launch.set_param_at_index(0, color)
-            self.solve_local_launch.launch()
+            solve_local_launch.set_param_at_index(0, color)
+            solve_local_launch.launch()
         if self.contact_solver is not None:
             self.contact_solver.apply_rigidity_operator()
 
@@ -1082,10 +1132,17 @@ class _BatchedGaussSeidelSolver(_RheologySolver):
         delassus_operator: _DelassusOperator,
         temporary_store: fem.TemporaryStore | None = None,
         n_batches: int | None = None,
+        compliance_variants: tuple[bool, ...] = (True,),
     ) -> None:
         # split_mass=False, skip_factorization=True — we compute the diagonal ourselves
         # with per-batch mass splitting after building the batch structures below
-        super().__init__(delassus_operator, split_mass=False, temporary_store=temporary_store, skip_factorization=True)
+        super().__init__(
+            delassus_operator,
+            split_mass=False,
+            temporary_store=temporary_store,
+            skip_factorization=True,
+            compliance_variants=compliance_variants,
+        )
 
         self.color_count = self.rheology.color_offsets.shape[0] - 1
         self.n_batches, self.colors_per_batch = _resolve_batched_gs_batching(self.color_count, n_batches)
@@ -1149,7 +1206,7 @@ class _BatchedGaussSeidelSolver(_RheologySolver):
 
         # (apply_stress_launch is set up after the per-batch transposed matrices)
 
-        self._solve_launch = self._make_gs_solve_launch(
+        self._solve_launches = self._make_gs_solve_launch(
             rows,
             color_launch_dim,
             color_block_dim,
@@ -1159,7 +1216,7 @@ class _BatchedGaussSeidelSolver(_RheologySolver):
             batched=True,
         )
         self._commit_launches = []
-        if self.rheology.compliance_mat.nnz > 0:
+        if True in self._compliance_variants:
             for bi in range(self.n_batches):
                 self._commit_launches.append(
                     wp.launch(
@@ -1294,10 +1351,11 @@ class _BatchedGaussSeidelSolver(_RheologySolver):
             self._initial_guess_launches[bi].launch()
 
     def solve(self):
+        solve_launch = self._solve_launches[self.use_compliance]
         for bi in range(self.n_batches):
-            self._solve_launch.set_param_at_index(0, bi)
-            self._solve_launch.launch()
-            if self._commit_launches:
+            solve_launch.set_param_at_index(0, bi)
+            solve_launch.launch()
+            if self.use_compliance:
                 self._commit_launches[bi].launch()
             self._scatter_launches[bi].launch()
 
@@ -1315,8 +1373,14 @@ class _JacobiSolver(_RheologySolver):
         self,
         delassus_operator: _DelassusOperator,
         temporary_store: fem.TemporaryStore | None = None,
+        compliance_variants: tuple[bool, ...] = (True,),
     ) -> None:
-        super().__init__(delassus_operator, split_mass=True, temporary_store=temporary_store)
+        super().__init__(
+            delassus_operator,
+            split_mass=True,
+            temporary_store=temporary_store,
+            compliance_variants=compliance_variants,
+        )
 
         self.apply_stress_launch = self.delassus_operator.apply_stress_delta(
             self.delta_stress,
@@ -1324,14 +1388,18 @@ class _JacobiSolver(_RheologySolver):
             record_cmd=True,
         )
 
-        # Solve kernel
+        self.solve_local_launches = {
+            has_compliance: self._make_jacobi_solve_launch(has_compliance) for has_compliance in compliance_variants
+        }
+
+    def _make_jacobi_solve_launch(self, has_compliance: bool) -> wp.Launch:
         jacobi_kernel = make_jacobi_solve_kernel(
             has_viscosity=self.rheology.has_viscosity,
             has_dilatancy=self.rheology.has_dilatancy,
-            has_compliance_mat=self.rheology.compliance_mat.nnz > 0,
+            has_compliance_mat=has_compliance,
             strain_velocity_node_count=self.rheology.strain_velocity_node_count,
         )
-        self.solve_local_launch = wp.launch(
+        return wp.launch(
             kernel=jacobi_kernel,
             dim=self.size,
             inputs=[
@@ -1339,6 +1407,7 @@ class _JacobiSolver(_RheologySolver):
                 self.rheology.strain_node_volume,
                 self.rheology.compliance_mat.offsets,
                 self.rheology.compliance_mat.columns,
+                self.rheology.compliance_mat.row_counts,
                 self.rheology.compliance_mat.values,
                 self.rheology.strain_mat.offsets,
                 self.rheology.strain_mat.columns,
@@ -1369,7 +1438,7 @@ class _JacobiSolver(_RheologySolver):
         self.apply_stress_launch.launch()
 
     def solve(self):
-        self.solve_local_launch.launch()
+        self.solve_local_launches[self.use_compliance].launch()
         # Add jacobi delta
         self.apply_stress_launch.launch()
         array_axpy(x=self.delta_stress, y=self.rheology.stress, alpha=1.0, beta=1.0)
@@ -1883,7 +1952,13 @@ def _run_solver_loop(
     use_graph: bool,
     verbose: bool,
     temporary_store: fem.TemporaryStore,
+    compliance_flag: wp.array[wp.int32] | None = None,
 ):
+    """Run the nonlinear iterations.
+
+    With a ``compliance_flag``, the solver records both kernel variants and a conditional
+    graph node selects one on the device (graph capture only).
+    """
     solve_graph = None
     convergence = None
     if tolerance > 0.0 and rheology_solver.rheology.strain_environment_offsets is not None:
@@ -1952,10 +2027,21 @@ def _run_solver_loop(
                     ],
                 )
 
+        def iterate(use_compliance: bool):
+            rheology_solver.use_compliance = use_compliance
+            wp.capture_while(condition, do_iteration_with_condition)
+
         device = rheology_solver.device
         if device.is_capturing:
             with _ScopedDisableGC():
-                wp.capture_while(condition, do_iteration_with_condition)
+                if compliance_flag is None:
+                    wp.capture_while(condition, do_iteration_with_condition)
+                else:
+                    wp.capture_if(
+                        compliance_flag,
+                        on_true=lambda: iterate(True),
+                        on_false=lambda: iterate(False),
+                    )
         else:
             with _ScopedDisableGC():
                 with wp.ScopedCapture(force_module_load=False) as capture:
@@ -2098,6 +2184,21 @@ def solve_rheology(
     """
 
     verbose = verbose if verbose is not None else wp.config.log_level <= wp.LOG_DEBUG
+
+    # Select the compliance kernel variants: on the host when known, on the device during graph capture.
+    device = momentum.velocity.device
+    compliance_flag = None
+    if rheology.compliance_mat.nnz == 0:
+        compliance_variants = (False,)
+    elif isinstance(rheology.has_compliance, wp.array):
+        if use_graph and device.is_capturing:
+            compliance_flag = rheology.has_compliance
+            compliance_variants = (False, True)
+        else:
+            compliance_variants = (bool(rheology.has_compliance.numpy()[0]),)
+    else:
+        compliance_variants = (bool(rheology.has_compliance),)
+
     subgrid_collisions = collision.colored_cell_offsets is not None or collision.collider_mat.nnz > 0
     if subgrid_collisions:
         contact_solver = _SubgridContactSolver(momentum, collision, temporary_store)
@@ -2158,7 +2259,10 @@ def solve_rheology(
     if len(solvers) > 1 and solvers[0] == "jacobi":
         # jacobi warmstart smoother
         old_v = wp.clone(momentum.velocity)
-        warmstart_solver = _JacobiSolver(delassus_operator, temporary_store)
+        # The compliance variant is exact for any compliance matrix, so the short smoother keeps a single variant.
+        warmstart_solver = _JacobiSolver(
+            delassus_operator, temporary_store, compliance_variants=(compliance_variants[-1],)
+        )
         warmstart_solver.apply_initial_guess()
         for _ in range(jacobi_warmstart_smoother_iterations):
             warmstart_solver.solve()
@@ -2181,9 +2285,16 @@ def solve_rheology(
     if collision.colored_cell_offsets is not None:
         if not issubclass(rheology_solver_class, _GaussSeidelSolver):
             raise ValueError("Colored cell contact requires GS or GS-SOA")
-        rheology_solver = rheology_solver_class(delassus_operator, temporary_store, contact_solver=contact_solver)
+        rheology_solver = rheology_solver_class(
+            delassus_operator,
+            temporary_store,
+            contact_solver=contact_solver,
+            compliance_variants=compliance_variants,
+        )
     else:
-        rheology_solver = rheology_solver_class(delassus_operator, temporary_store)
+        rheology_solver = rheology_solver_class(
+            delassus_operator, temporary_store, compliance_variants=compliance_variants
+        )
     rheology_solver.apply_initial_guess()
 
     solve_graph = _run_solver_loop(
@@ -2195,6 +2306,7 @@ def solve_rheology(
         use_graph,
         verbose,
         temporary_store,
+        compliance_flag=compliance_flag,
     )
 
     # release temporary storage

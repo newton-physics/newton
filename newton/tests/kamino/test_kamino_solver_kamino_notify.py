@@ -213,6 +213,7 @@ class TestKaminoNotifyModelChanged(NewtonTestCase):
             newton.ModelFlags.ACTUATOR_PROPERTIES,
             newton.ModelFlags.CONSTRAINT_PROPERTIES,
             newton.ModelFlags.TENDON_PROPERTIES,
+            newton.ModelFlags.PARTICLE_PROPERTIES,
         )
 
         for flag in noop_flags:
