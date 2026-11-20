@@ -5,6 +5,8 @@ import ast
 import hashlib
 import inspect
 import math
+import os
+import tempfile
 import textwrap
 import types
 import unittest
@@ -20,11 +22,12 @@ import warp as wp
 
 import newton
 import newton.utils
-from newton import ModelBuilder
+from newton import ModelBuilder, NewtonDeprecationWarning
 from newton._src.geometry.utils import transform_points
+from newton._src.solvers.coupled.model_view import ModelView
 from newton._src.solvers.mujoco.equality import _add_equality_constraint
 from newton._src.viewer.viewer_file import depointer_as_key, pointer_as_key, transfer_to_model
-from newton.tests.unittest_utils import assert_np_equal, patch_sys_module
+from newton.tests.unittest_utils import assert_np_equal, patch_sys_module, requires
 
 
 def _eq_set_value(builder, name, idx, value):
@@ -38,6 +41,65 @@ def _eq_set_value(builder, name, idx, value):
 
 
 class TestModelAttributeSpecs(unittest.TestCase):
+    def test_collision_edge_aliases_preserve_reads_and_writes(self):
+        """Warn on legacy edge-cache access while preserving array identity and writes."""
+        builder = ModelBuilder()
+        builder.add_shape_mesh(body=-1, mesh=newton.Mesh.create_box(0.1, 0.1, 0.1))
+        model = builder.finalize(device="cpu")
+        for name in ("mesh_edge_indices", "mesh_edge_centers", "mesh_edge_halves", "shape_edge_range"):
+            with self.subTest(attribute=name):
+                with self.assertWarnsRegex(NewtonDeprecationWarning, rf"Model\.{name}.*Newton 1\.8") as warning:
+                    original = getattr(model, name)
+                self.assertEqual(warning.filename, __file__)
+                self.assertIs(original, getattr(model, f"_{name}"))
+                replacement = wp.clone(original)
+                with self.assertWarnsRegex(NewtonDeprecationWarning, rf"Model\.{name}"):
+                    setattr(model, name, replacement)
+                self.assertIs(getattr(model, f"_{name}"), replacement)
+                with self.assertWarnsRegex(NewtonDeprecationWarning, rf"Model\.{name}"):
+                    getattr(model, name).zero_()
+                np.testing.assert_array_equal(getattr(model, f"_{name}").numpy(), 0)
+                with self.assertWarnsRegex(NewtonDeprecationWarning, rf"Model\.{name}"):
+                    setattr(model, name, None)
+                self.assertIsNone(getattr(model, f"_{name}"))
+
+    def test_collision_edge_aliases_follow_model_view_overrides(self):
+        """Resolve legacy edge-cache aliases through view-local canonical storage."""
+        builder = ModelBuilder()
+        builder.add_shape_mesh(body=-1, mesh=newton.Mesh.create_box(0.1, 0.1, 0.1))
+        model = builder.finalize(device="cpu")
+        view = ModelView(model, "test")
+        for name in ("mesh_edge_indices", "mesh_edge_centers", "mesh_edge_halves", "shape_edge_range"):
+            with self.subTest(attribute=name):
+                private_name = f"_{name}"
+                original = getattr(model, private_name)
+                replacement = wp.clone(original)
+                with self.assertWarnsRegex(NewtonDeprecationWarning, rf"Model\.{name}") as warning:
+                    setattr(view, name, replacement)
+                self.assertEqual(warning.filename, __file__)
+                self.assertIs(getattr(view, private_name), replacement)
+                with self.assertWarnsRegex(NewtonDeprecationWarning, rf"Model\.{name}") as warning:
+                    self.assertIs(getattr(view, name), replacement)
+                self.assertEqual(warning.filename, __file__)
+                self.assertIs(getattr(model, private_name), original)
+                self.assertNotIn(name, dict(model._iter_attribute_specs()))
+                self.assertIn(private_name, dict(model._iter_attribute_specs()))
+                self.assertEqual(model.get_attribute_frequency(name), model.get_attribute_frequency(private_name))
+
+    def test_collision_edge_internal_access_does_not_warn(self):
+        """Finalize and collide with packed edges without triggering legacy aliases."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", NewtonDeprecationWarning)
+            builder = ModelBuilder()
+            builder.add_ground_plane()
+            body = builder.add_body(xform=wp.transform((0.0, 0.0, 0.05), wp.quat_identity()))
+            builder.add_shape_mesh(body=body, mesh=newton.Mesh.create_box(0.1, 0.1, 0.1))
+            model = builder.finalize(device="cpu")
+            pipeline = newton.CollisionPipeline(model)
+            contacts = pipeline.contacts()
+            pipeline.collide(model.state(), contacts)
+            self.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
+
     def test_attribute_namespace_deprecated_alias_api(self):
         """Retain deprecated namespace aliases through their compatibility window."""
         namespace = newton.Model.AttributeNamespace("test")
@@ -76,9 +138,11 @@ class TestModelAttributeSpecs(unittest.TestCase):
                     f"Model.{count_attribute}. Add the count attribute or correct "
                     "Model._ATTRIBUTE_FREQUENCY_COUNT_ATTRS.",
                 )
+                # WORLD arrays end with an entry for global world -1.
+                global_entry = int(attribute_frequency == frequency.WORLD)
                 self.assertEqual(
                     model._attribute_frequency_count(attribute_frequency),
-                    getattr(model, count_attribute),
+                    getattr(model, count_attribute) + global_entry,
                     f"Model._attribute_frequency_count() must resolve Model.AttributeFrequency."
                     f"{attribute_frequency.name} through Model.{count_attribute}.",
                 )
@@ -128,6 +192,18 @@ class TestModelAttributeSpecs(unittest.TestCase):
             "Model attributes are missing AttributeSpec metadata. Add each listed attribute to "
             "Model._CORE_ATTRIBUTE_SPECS with the correct frequency, references, row width, and compaction policy.",
         )
+
+        # The shared registry also describes built-in State and Control storage.
+        frequency = newton.Model.AttributeFrequency
+        for name, expected_frequency in (
+            ("particle_q", frequency.PARTICLE),
+            ("particle_qd", frequency.PARTICLE),
+            ("particle_f", frequency.PARTICLE),
+            ("body_f", frequency.BODY),
+            ("joint_f", frequency.JOINT_DOF),
+        ):
+            with self.subTest(attribute=name):
+                self.assertEqual(model.get_attribute_frequency(name), expected_frequency)
 
 
 class TestParallelJointWarning(unittest.TestCase):
@@ -224,7 +300,67 @@ class TestModelBuilderBvhConstructor(unittest.TestCase):
         self.assertEqual(wp_bvh.call_args.kwargs["constructor"], "sah")
 
 
+class TestGaussian(unittest.TestCase):
+    def test_gaussian_sh_color_space_affects_identity(self):
+        """Default to sRGB and include the SH color space in Gaussian equality and hash."""
+        kwargs = {
+            "positions": np.zeros((1, 3), dtype=np.float32),
+            "sh_coeffs": np.zeros((1, 3), dtype=np.float32),
+        }
+        self.assertEqual(newton.Gaussian(**kwargs).sh_color_space, newton.utils.ColorSpace.SRGB)
+        srgb = newton.Gaussian(**kwargs, sh_color_space=newton.utils.ColorSpace.SRGB)
+        linear = newton.Gaussian(**kwargs, sh_color_space=newton.utils.ColorSpace.LINEAR)
+        self.assertNotEqual(srgb, linear)
+        self.assertNotEqual(hash(srgb), hash(linear))
+
+    def test_gaussian_create_from_ply(self):
+        """Read a 3DGS PLY: reorder wxyz rotations, exponentiate scales, squash opacities, keep the SH order."""
+        names = ["x", "y", "z", "f_dc_0", "f_dc_1", "f_dc_2", *(f"f_rest_{i}" for i in range(9))]
+        names += ["opacity", "scale_0", "scale_1", "scale_2", "rot_0", "rot_1", "rot_2", "rot_3"]
+        data = np.random.default_rng(0).standard_normal((4, len(names))).astype(np.float32)
+
+        def ply(count: int, fmt: str) -> bytes:
+            header = f"ply\nformat {fmt} 1.0\nelement vertex {count}\n"
+            header += "".join(f"property float {name}\n" for name in names) + "end_header\n"
+            if fmt == "ascii":
+                return (
+                    header.encode() + "".join(" ".join(map(repr, row)) + "\n" for row in data[:count].tolist()).encode()
+                )
+            return header.encode() + data[:count].astype(">f4" if fmt == "binary_big_endian" else "<f4").tobytes()
+
+        with tempfile.TemporaryDirectory() as directory, patch_sys_module("open3d", None):
+            path = os.path.join(directory, "splats.ply")
+            for count, fmt in ((4, "binary_little_endian"), (4, "binary_big_endian"), (4, "ascii"), (1, "ascii")):
+                with self.subTest(count=count, fmt=fmt):
+                    with open(path, "wb") as file:
+                        file.write(ply(count, fmt))
+                    gaussian = newton.Gaussian.create_from_ply(path)
+                    rows = data[:count]
+                    xyzw = rows[:, [20, 21, 22, 19]]
+                    assert_np_equal(gaussian.positions, rows[:, :3])
+                    assert_np_equal(gaussian.sh_coeffs, rows[:, 3:15])
+                    np.testing.assert_allclose(gaussian.opacities, 1.0 / (1.0 + np.exp(-rows[:, 15])), rtol=1e-6)
+                    np.testing.assert_allclose(gaussian.scales, np.exp(rows[:, 16:19]), rtol=1e-6)
+                    np.testing.assert_allclose(
+                        gaussian.rotations, xyzw / np.linalg.norm(xyzw, axis=1, keepdims=True), rtol=1e-6
+                    )
+            complete = ply(4, "binary_little_endian")
+            header, body = ply(4, "ascii").split(b"end_header\n")
+            one_line = header + b"end_header\n" + body.replace(b"\n", b" ")
+            for malformed in (complete[: complete.index(b"property")], complete[:-8], one_line):
+                with open(path, "wb") as file:
+                    file.write(malformed)
+                with self.assertRaises(ValueError):
+                    newton.Gaussian.create_from_ply(path)
+
+
 class TestModelMesh(unittest.TestCase):
+    def setUp(self):
+        """Keep backend stubs isolated from persistent mesh caches."""
+        cache_setting = mock.patch.object(newton.config, "cache_dir_meshes", None)
+        cache_setting.start()
+        self.addCleanup(cache_setting.stop)
+
     class _FakeDecompositionMesh:
         """Store mesh data passed to a fake decomposition backend."""
 
@@ -388,6 +524,7 @@ class TestModelMesh(unittest.TestCase):
         np.testing.assert_allclose(values.numpy(), np.array([[1.25, -2.5]] * 3, dtype=np.float32))
 
     def test_empty_sequence_custom_attribute_materializes_default_values(self):
+        """Preserve trailing dimensions for sequence defaults and authored rows."""
         attr = ModelBuilder.CustomAttribute(
             name="default_table_shape_attr",
             frequency=newton.Model.AttributeFrequency.SHAPE,
@@ -400,6 +537,26 @@ class TestModelMesh(unittest.TestCase):
 
         full_mock.assert_not_called()
         np.testing.assert_allclose(values.numpy(), np.array([[0.0, 1.0, 2.0]] * 2, dtype=np.float32))
+
+        for frequency, storage in (
+            ("table", [None, None, None]),
+            (newton.Model.AttributeFrequency.SHAPE, {0: [0.0, 1.0, 2.0]}),
+        ):
+            with self.subTest(frequency=frequency):
+                attr.frequency = frequency
+                attr.values = storage
+                values = attr.build_array(3, device="cpu", requires_grad=True)
+                self.assertTrue(values.requires_grad)
+                np.testing.assert_array_equal(values.numpy(), [[0.0, 1.0, 2.0]] * 3)
+
+        attr.default = [0.0]
+        attr.values = {0: [2.0], 1: [3.0]}
+        np.testing.assert_array_equal(attr.build_array(2, device="cpu").numpy(), [[2.0], [3.0]])
+        attr.default = 0.0
+        np.testing.assert_array_equal(attr.build_array(2, device="cpu").numpy(), [[2.0], [3.0]])
+        attr.frequency = newton.Model.AttributeFrequency.WORLD
+        attr.values = {-1: [0.0, 1.0, 2.0]}
+        np.testing.assert_array_equal(attr.build_array(3, device="cpu").numpy(), [[0.0, 1.0, 2.0]] * 3)
 
     def test_mesh_hash_uses_cached_sha_digest(self):
         mesh = newton.Mesh.create_box(
@@ -514,8 +671,8 @@ class TestModelMesh(unittest.TestCase):
             collision_mesh.indices.numpy(),
             np.array([0, 1, 2, 0, 2, 3], dtype=np.int32),
         )
-        edge_start, edge_count = model.shape_edge_range.numpy()[0]
-        collision_edges = model.mesh_edge_indices.numpy()[edge_start : edge_start + edge_count]
+        edge_start, edge_count = model._shape_edge_range.numpy()[0]
+        collision_edges = model._mesh_edge_indices.numpy()[edge_start : edge_start + edge_count]
         np.testing.assert_array_equal(
             collision_edges,
             np.array([[0, 1], [1, 2], [0, 2], [2, 3], [0, 3]], dtype=np.int32),
@@ -855,15 +1012,38 @@ class TestModelMesh(unittest.TestCase):
         )
         self.assertEqual(set(adj.edge_tri_indices[shared].tolist()), {0, 1})
 
-    def test_mesh_adjacency_legacy_api_removed(self):
-        # The dict-based API deprecated in 1.4 is gone: the `edges` accessor, its
-        # `Edge` record class, the `add_edge` shim, and the ctor `indices` alias.
-        adj = newton.utils.MeshAdjacency([[0, 1, 2], [0, 2, 3]])
-        self.assertFalse(hasattr(adj, "edges"))
-        self.assertFalse(hasattr(adj, "add_edge"))
-        self.assertFalse(hasattr(newton.utils.MeshAdjacency, "Edge"))
-        with self.assertRaises(TypeError):
-            newton.utils.MeshAdjacency(indices=[[0, 1, 2]])
+    def test_mesh_adjacency_coincident_faces(self):
+        """Keep the first two incident triangles when pre-numbered edges have equal opposite vertices."""
+        cases = {
+            "same_winding": ([[0, 1, 2], [0, 1, 2], [3, 4, 5]], 0),
+            "flipped_winding": ([[0, 1, 2], [0, 2, 1], [3, 4, 5]], 0),
+            # A duplicated face on a non-manifold edge: traversal order decides which two faces win.
+            "duplicate_then_third": ([[0, 1, 2], [0, 1, 2], [0, 1, 3]], 1),
+            "duplicate_around_third": ([[0, 1, 2], [0, 1, 3], [0, 2, 1]], 1),
+        }
+        for case, (tris, non_manifold_edges) in cases.items():
+            with self.subTest(case=case):
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    derived = newton.utils.MeshAdjacency(tris)
+                self.assertEqual(sum("non-manifold" in str(w.message) for w in caught), non_manifold_edges)
+                # The first two faces in traversal order own the doubled edge (0, 1).
+                doubled = next(i for i, e in enumerate(derived.edge_indices) if {int(e[2]), int(e[3])} == {0, 1})
+                np.testing.assert_array_equal(derived.edge_tri_indices[doubled], [0, 1])
+                # Interleave the edges and swap their endpoints to exercise caller-owned numbering.
+                order = np.arange(len(derived.edge_indices))[::-1]
+                edges = derived.edge_indices[order].copy()
+                edges[:, 2:4] = edges[:, 2:4][:, ::-1]
+                rebuilt = newton.utils.MeshAdjacency(tris, edge_indices=edges)
+                np.testing.assert_array_equal(rebuilt.edge_indices, edges)
+                np.testing.assert_array_equal(rebuilt.edge_tri_indices, derived.edge_tri_indices[order])
+                # Pre-numbered edges link a slot by its opposite vertex, so only the slots whose
+                # triangle holds one of the edge's two sides must agree with the derived maps.
+                sides = derived.edge_tri_indices[derived.tri_edge_indices]
+                owned = (derived.tri_edge_indices >= 0) & (sides == np.arange(len(tris))[:, None, None]).any(axis=2)
+                np.testing.assert_array_equal(
+                    rebuilt.tri_edge_indices[owned], np.argsort(order)[derived.tri_edge_indices[owned]]
+                )
 
     def test_mesh_adjacency_to_without_vertex_adjacency_warns(self):
         # to() before init_vertex_adjacency: uploads the topology maps, leaves v_adj_* None + warns.
@@ -896,6 +1076,7 @@ class TestModelMesh(unittest.TestCase):
         with self.assertRaises(ValueError):
             expand([1.0, 2.0], 3)
 
+    @requires("scipy")
     def test_mesh_approximation(self):
         def box_mesh(scale=(1.0, 1.0, 1.0), transform: wp.transform | None = None):
             mesh = newton.Mesh.create_box(
@@ -984,6 +1165,33 @@ class TestModelMesh(unittest.TestCase):
         model = builder.finalize(device="cpu")
         self.assertAlmostEqual(model.approx_attr.numpy()[visual_shape], keep_visual_attr, places=6)
 
+    @requires("scipy")
+    def test_mesh_approximation_shares_replacements_per_source_mesh(self):
+        """Share one convex-hull replacement per source mesh and keep hull-vertex limits distinct."""
+        sphere = newton.Mesh.create_sphere(1.0, num_latitudes=16, num_longitudes=16, compute_inertia=False)
+        shared = sphere.copy()
+        shared.maxhullvert = 64
+        limited = sphere.copy()
+        limited.maxhullvert = 8
+
+        builder = newton.ModelBuilder()
+        shapes = [
+            builder.add_shape_mesh(body=-1, mesh=shared),
+            builder.add_shape_mesh(body=-1, mesh=shared),
+            builder.add_shape_mesh(body=-1, mesh=limited),
+        ]
+        builder.approximate_meshes(method="convex_hull", shape_indices=shapes)
+
+        sources = [builder.shape_source[shape] for shape in shapes]
+        for shape in shapes:
+            self.assertEqual(builder.shape_type[shape], newton.GeoType.CONVEX_MESH)
+        # Shapes sharing one source mesh share one replacement mesh.
+        self.assertIs(sources[0], sources[1])
+        self.assertIsNot(sources[0], shared)
+        # Equal geometry with a different hull-vertex limit is remeshed separately.
+        self.assertLessEqual(len(sources[2].vertices), 8)
+        self.assertGreater(len(sources[0].vertices), 8)
+
     def test_mesh_approximation_coacd_uses_builder_default_cfg(self):
         builder = ModelBuilder()
         builder.default_mesh_approximation_cfg.coacd_threshold = 0.5
@@ -1013,6 +1221,7 @@ class TestModelMesh(unittest.TestCase):
             builder.approximate_meshes(method="coacd", shape_indices=[shape], threshold=0.2)
         self.assertEqual(captured["threshold"], 0.2)
 
+    @requires("scipy")
     def test_mesh_approximation_coacd_limits_hull_vertices(self):
         """Limit each CoACD part to the source mesh's maxhullvert."""
 
@@ -1033,6 +1242,38 @@ class TestModelMesh(unittest.TestCase):
             mesh = builder.shape_source[shape]
             self.assertEqual(len(mesh.vertices), mesh.maxhullvert)
 
+    @requires("coacd")
+    def test_mesh_approximation_coacd_is_repeatable(self):
+        """Decompose a nonconvex mesh with CoACD repeatedly and get identical hulls."""
+        # A torus is nonconvex, so CoACD's parallel tree search has several cuts to choose from.
+        rings, sides = 32, 12
+        u, v = np.meshgrid(
+            np.linspace(0.0, 2.0 * np.pi, rings, endpoint=False),
+            np.linspace(0.0, 2.0 * np.pi, sides, endpoint=False),
+            indexing="ij",
+        )
+        radius = 0.05 + 0.015 * np.cos(v)
+        vertices = np.stack((radius * np.cos(u), radius * np.sin(u), 0.015 * np.sin(v)), axis=-1).reshape(-1, 3)
+        i, j = np.meshgrid(np.arange(rings), np.arange(sides), indexing="ij")
+        a, b = i * sides + j, (i + 1) % rings * sides + j
+        c, d = (i + 1) % rings * sides + (j + 1) % sides, i * sides + (j + 1) % sides
+        indices = np.stack((a, b, c, a, c, d), axis=-1).reshape(-1)
+        torus = newton.Mesh(vertices, indices, compute_inertia=False)
+
+        def decompose():
+            builder = ModelBuilder()
+            builder.add_shape_mesh(body=-1, mesh=torus)
+            builder.approximate_meshes(method="coacd", raise_on_failure=True)
+            return [np.concatenate((m.vertices.ravel(), m.indices.ravel())) for m in builder.shape_source]
+
+        first = decompose()
+        for _ in range(2):
+            again = decompose()
+            self.assertEqual(len(again), len(first))
+            for part, expected in zip(again, first, strict=True):
+                np.testing.assert_array_equal(part, expected)
+
+    @requires("scipy")
     def test_mesh_approximation_coacd_unavailable_falls_back_to_convex_hull(self):
         builder = ModelBuilder()
         box = newton.Mesh.create_box(
@@ -1124,6 +1365,7 @@ class TestModelMesh(unittest.TestCase):
                 self.assertEqual(builder.shape_type[successful_shape], newton.GeoType.CONVEX_MESH)
                 self.assertEqual(fallback_meshes, [empty_mesh])
 
+    @requires("scipy")
     def test_mesh_approximation_empty_convex_decomposition_reaches_bounding_box_fallback(self):
         """Reach the bounding-box fallback when an empty decomposition is followed by a hull failure."""
 
@@ -1154,6 +1396,7 @@ class TestModelMesh(unittest.TestCase):
                 self.assertEqual(builder.shape_type[shape], newton.GeoType.BOX)
                 self.assertIsNone(builder.shape_source[shape])
 
+    @requires("scipy")
     def test_mesh_approximation_ignores_non_mesh_shapes(self):
         builder = ModelBuilder()
         box_prim = builder.add_shape_box(body=-1)
@@ -1171,6 +1414,7 @@ class TestModelMesh(unittest.TestCase):
         self.assertEqual(builder.shape_type[box_prim], newton.GeoType.BOX)
         self.assertEqual(builder.shape_type[mesh_shape], newton.GeoType.BOX)
 
+    @requires("scipy")
     def test_mesh_approximation_convex_hull_failure_falls_back_to_bounding_box(self):
         builder = ModelBuilder()
         box = newton.Mesh.create_box(
@@ -2026,6 +2270,51 @@ class TestModelMesh(unittest.TestCase):
         self.assertIn((1, 2), contact_pairs)
         self.assertEqual(len(contact_pairs), 7)
 
+    def test_removed_parent_child_filter_pairs_stay_removed(self):
+        """finalize() must not reinstate parent-child pairs removed from the public list.
+
+        Only the pairs between bodies that no joint connects directly (across weld groups) are
+        added in finalize(); the direct pairs are the list's, and the list is authoritative.
+        """
+
+        def build(weld: bool) -> tuple[ModelBuilder, int, int, int]:
+            robot = ModelBuilder()
+            root = robot.add_link()
+            root_shape = robot.add_shape_sphere(root, radius=0.2)
+            parent = root
+            if weld:
+                palm = robot.add_link()
+                robot.add_shape_sphere(palm, radius=0.2)
+                parent = palm
+            finger = robot.add_link()
+            finger_shape = robot.add_shape_sphere(finger, radius=0.2)
+            joints = [robot.add_joint_free(root)]
+            if weld:
+                joints.append(robot.add_joint_fixed(root, palm))
+            joints.append(robot.add_joint_revolute(parent, finger, axis=(0.0, 0.0, 1.0)))
+            robot.add_articulation(joints)
+            direct_pair = (robot.body_shapes[parent][0], finger_shape)
+            return robot, root_shape, finger_shape, direct_pair
+
+        for weld in (False, True):
+            for replicated in (False, True):
+                with self.subTest(weld=weld, replicated=replicated):
+                    robot, root_shape, finger_shape, direct_pair = build(weld)
+                    builder = robot
+                    if replicated:
+                        builder = ModelBuilder()
+                        builder.replicate(robot, 2)
+                    self.assertIn(direct_pair, builder.shape_collision_filter_pairs)
+                    builder.shape_collision_filter_pairs = [
+                        pair for pair in builder.shape_collision_filter_pairs if pair != direct_pair
+                    ]
+
+                    model = builder.finalize()
+
+                    self.assertNotIn(direct_pair, model.shape_collision_filter_pairs)
+                    # The root and the finger are joined through the weld group only.
+                    self.assertEqual((root_shape, finger_shape) in model.shape_collision_filter_pairs, weld)
+
     def test_collision_filter_fixed_to_world(self):
         """Bodies fixed to world via add_joint_fixed(parent=-1) should auto-filter
         their shapes against world-static shapes regardless of construction order
@@ -2250,6 +2539,61 @@ class TestShapeConfigValidation(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "density must be finite and >= 0"):
                     cfg.validate(shape_type=newton.GeoType.SPHERE)
 
+    def test_shape_config_rejects_invalid_mu_static(self):
+        """Reject a negative or non-finite static friction coefficient."""
+        for mu_static in (-0.5, float("nan"), float("inf")):
+            with self.subTest(mu_static=mu_static):
+                cfg = newton.ModelBuilder.ShapeConfig(mu=0.5, mu_static=mu_static)
+
+                with self.assertRaisesRegex(ValueError, "mu_static must be finite and >= 0"):
+                    cfg.validate(shape_type=newton.GeoType.SPHERE)
+
+    def test_shape_config_rejects_mu_static_below_mu(self):
+        """Reject a static coefficient below mu instead of correcting it quietly; an equal one is accepted."""
+        cfg = newton.ModelBuilder.ShapeConfig(mu=0.5, mu_static=0.3)
+        with self.assertRaisesRegex(ValueError, "mu_static must be >= mu"):
+            cfg.validate(shape_type=newton.GeoType.SPHERE)
+
+        builder = newton.ModelBuilder()
+        body = builder.add_body(mass=1.0)
+        with self.assertRaisesRegex(ValueError, "mu_static must be >= mu"):
+            builder.add_shape_sphere(body, radius=0.1, cfg=cfg)
+
+        newton.ModelBuilder.ShapeConfig(mu=0.5, mu_static=0.5).validate(shape_type=newton.GeoType.SPHERE)
+
+    def test_shape_material_mu_static_resolves_to_mu_when_unset(self):
+        """An unset mu_static is stored as the shape's mu, so the model never carries an "unset" marker."""
+        builder = newton.ModelBuilder()
+        body = builder.add_body()
+        builder.add_shape_sphere(body, radius=0.1, cfg=newton.ModelBuilder.ShapeConfig(mu=0.4))
+        builder.add_shape_sphere(body, radius=0.1, cfg=newton.ModelBuilder.ShapeConfig(mu=0.4, mu_static=0.9))
+        scene = newton.ModelBuilder()
+        scene.replicate(builder, copy_count=2)
+        model = scene.finalize()
+
+        np.testing.assert_allclose(model.shape_material_mu.numpy(), [0.4, 0.4, 0.4, 0.4])
+        np.testing.assert_allclose(model.shape_material_mu_static.numpy(), [0.4, 0.9, 0.4, 0.9])
+
+    def test_shape_material_mu_edited_in_the_builder_keeps_unset_mu_static_in_step(self):
+        """mu_static is resolved in finalize: an unset value follows a direct edit of the builder's mu, an explicit
+        value below the edited mu is rejected."""
+        builder = newton.ModelBuilder()
+        body = builder.add_body()
+        builder.add_shape_sphere(body, radius=0.1, cfg=newton.ModelBuilder.ShapeConfig(mu=0.0))
+        builder.add_shape_sphere(body, radius=0.1, cfg=newton.ModelBuilder.ShapeConfig(mu=0.4, mu_static=0.9))
+        builder.shape_material_mu[0] = 0.7
+        builder.shape_material_mu[1] = 0.5
+        model = builder.finalize(device="cpu")
+        np.testing.assert_allclose(model.shape_material_mu.numpy(), [0.7, 0.5])
+        np.testing.assert_allclose(model.shape_material_mu_static.numpy(), [0.7, 0.9])
+
+        builder = newton.ModelBuilder()
+        body = builder.add_body()
+        builder.add_shape_sphere(body, radius=0.1, cfg=newton.ModelBuilder.ShapeConfig(mu=0.4, mu_static=0.9))
+        builder.shape_material_mu[0] = 1.0
+        with self.assertRaisesRegex(ValueError, "is below shape_material_mu"):
+            builder.finalize(device="cpu")
+
     def test_shape_config_rejects_invalid_sdf_target_voxel_size(self):
         """Reject non-positive and non-finite target voxel sizes."""
         for target_voxel_size in (0.0, -0.01, float("nan"), float("inf"), float("-inf")):
@@ -2448,7 +2792,7 @@ class TestModelJoints(unittest.TestCase):
         self.assertAlmostEqual(float(target_q[int(q_starts[2]) + 3]), 1.0)
 
     def test_ball_free_per_axis_target_pos_preserved(self):
-        """``JointDofConfig.target_pos`` on BALL/FREE angular axes must flow
+        """``JointDofConfig.target_q`` on BALL/FREE angular axes must flow
         into the ``joint_target_q`` coord slice: the 3 angular scalars are
         interpreted as extrinsic ZYX Euler angles and converted to a unit
         quaternion via :meth:`ModelBuilder._quat_from_axis_targets`.
@@ -2458,18 +2802,18 @@ class TestModelJoints(unittest.TestCase):
 
         def _make_axes():
             return [
-                ModelBuilder.JointDofConfig(axis=newton.Axis.X, target_pos=ang_targets[0]),
-                ModelBuilder.JointDofConfig(axis=newton.Axis.Y, target_pos=ang_targets[1]),
-                ModelBuilder.JointDofConfig(axis=newton.Axis.Z, target_pos=ang_targets[2]),
+                ModelBuilder.JointDofConfig(axis=newton.Axis.X, target_q=ang_targets[0]),
+                ModelBuilder.JointDofConfig(axis=newton.Axis.Y, target_q=ang_targets[1]),
+                ModelBuilder.JointDofConfig(axis=newton.Axis.Z, target_q=ang_targets[2]),
             ]
 
         lin_targets = (1.5, -2.5, 3.5)
 
         def _make_linear_axes():
             return [
-                ModelBuilder.JointDofConfig(axis=newton.Axis.X, target_pos=lin_targets[0]),
-                ModelBuilder.JointDofConfig(axis=newton.Axis.Y, target_pos=lin_targets[1]),
-                ModelBuilder.JointDofConfig(axis=newton.Axis.Z, target_pos=lin_targets[2]),
+                ModelBuilder.JointDofConfig(axis=newton.Axis.X, target_q=lin_targets[0]),
+                ModelBuilder.JointDofConfig(axis=newton.Axis.Y, target_q=lin_targets[1]),
+                ModelBuilder.JointDofConfig(axis=newton.Axis.Z, target_q=lin_targets[2]),
             ]
 
         expected_quat = ModelBuilder._quat_from_axis_targets(*ang_targets)
@@ -2517,7 +2861,7 @@ class TestModelJoints(unittest.TestCase):
         builder = newton.ModelBuilder()
         pts = [wp.vec3(0.1 * i, 0.0, 1.0) for i in range(4)]
         rod = newton.Rod(pts, radius=0.02)
-        bodies, _joints = builder.add_rod(rod=rod, label="cable", wrap_in_articulation=True, body_frame_origin="com")
+        bodies, _joints = builder.add_rod(rod=rod, label="cable", wrap_in_articulation=True)
         builder.add_joint_ball(parent=-1, child=bodies[1], label="att")
         labels_before = sorted(builder.joint_label)
         builder.collapse_fixed_joints()
@@ -2534,7 +2878,7 @@ class TestModelJoints(unittest.TestCase):
         builder = newton.ModelBuilder()
         pts = [wp.vec3(0.1 * i, 0.0, 1.0) for i in range(4)]
         rod = newton.Rod(pts, radius=0.02)
-        bodies, _joints = builder.add_rod(rod=rod, label="cable", wrap_in_articulation=True, body_frame_origin="com")
+        bodies, _joints = builder.add_rod(rod=rod, label="cable", wrap_in_articulation=True)
         builder.add_joint_ball(parent=-1, child=bodies[1], label="att_a")
         with self.assertWarnsRegex(UserWarning, "undefined semantics"):
             builder.add_joint_ball(parent=-1, child=bodies[1], label="att_b")
@@ -2562,7 +2906,9 @@ class TestModelJoints(unittest.TestCase):
                     with self.assertWarnsRegex(UserWarning, "undefined semantics"):
                         builder.add_joint_ball(parent=p, child=c, label="ball")
                 keep = ["fix"] if order == "fixed_kept_first" else []
-                builder.collapse_fixed_joints(joints_to_keep=keep)
+                # "fix" parallels the child's free joint, so it is a FIXED loop-closing joint.
+                with self.assertWarnsRegex(newton.NewtonWarning, r"FIXED loop-closing joints \('fix'\)"):
+                    builder.collapse_fixed_joints(joints_to_keep=keep)
                 labels = list(builder.joint_label)
                 # add_body() gives each body a free joint; only assert on ours.
                 if order == "fixed_kept_first":
@@ -2590,7 +2936,7 @@ class TestModelJoints(unittest.TestCase):
         builder.add_joint_fixed(b0, b1)
         pts = [wp.vec3(0.1 * i, 0.0, 1.0) for i in range(4)]
         rod = newton.Rod(pts, radius=0.02)
-        bodies, _ = builder.add_rod(rod=rod, label="cable", wrap_in_articulation=True, body_frame_origin="com")
+        bodies, _ = builder.add_rod(rod=rod, label="cable", wrap_in_articulation=True)
         self.assertEqual(builder.curve_label, ["cable"])
         builder.add_joint_ball(parent=-1, child=bodies[-1], label="att")
         cable_labels_before = [builder.body_label[b] for b in bodies]
@@ -3836,6 +4182,26 @@ class TestModelJoints(unittest.TestCase):
         self.assertEqual(builder.joint_type[joint_id], newton.JointType.FIXED)
         self.assertEqual(builder.joint_parent[joint_id], parent_body)
 
+    def test_collapse_fixed_joints_preserves_com_inertia(self):
+        """Preserve inertia about the merged COM with offset and rotated inertial frames."""
+        builder = ModelBuilder()
+        root = builder.add_link(mass=1.0, com=wp.vec3(0, 0, 0.5), inertia=wp.mat33(np.diag([0.1, 0.2, 0.3])))
+        child = builder.add_link(mass=3.0, com=wp.vec3(1, 0, 0), inertia=wp.mat33(np.diag([0.4, 0.6, 0.8])))
+        root_joint = builder.add_joint_free(root)
+        fixed_joint = builder.add_joint_fixed(
+            root, child, parent_xform=wp.transform((0, 0, 2), wp.quat_from_axis_angle(wp.vec3(0, 0, 1), wp.pi / 2))
+        )
+        builder.add_articulation([root_joint, fixed_joint])
+        builder.collapse_fixed_joints()
+        self.assertEqual(builder.body_count, 1)
+        self.assertAlmostEqual(builder.body_mass[0], 4.0)
+        np.testing.assert_allclose(builder.body_com[0], [0, 0.75, 1.625], atol=1e-6)
+        expected = np.array([[3.1375, 0, 0], [0, 2.2875, -1.125], [0, -1.125, 1.85]])
+        np.testing.assert_allclose(np.asarray(builder.body_inertia[0]).reshape(3, 3), expected, atol=1e-6)
+        np.testing.assert_allclose(
+            np.asarray(builder.body_inv_inertia[0]).reshape(3, 3), np.linalg.inv(expected), atol=1e-6
+        )
+
 
 class TestModelWorld(unittest.TestCase):
     def test_add_world_with_open_edges(self):
@@ -4272,6 +4638,84 @@ class TestModelWorld(unittest.TestCase):
 
 
 class TestModelValidation(unittest.TestCase):
+    def test_finalize_rejects_nonfinite_contact_materials(self):
+        """Reject non-finite material values on shape-only and particle-only colliders."""
+        builder = ModelBuilder()
+        builder.add_shape_sphere(body=-1, label="valid")
+        for has_shape_collision in (True, False):
+            cfg = ModelBuilder.ShapeConfig(
+                has_shape_collision=has_shape_collision,
+                has_particle_collision=not has_shape_collision,
+            )
+            builder.add_shape_sphere(body=-1, cfg=cfg, label=f"collider_{builder.shape_count}")
+
+        material_names = ("ke", "kd", "kf", "ka", "mu", "restitution", "mu_torsional", "mu_rolling", "kh")
+        for name in material_names:
+            attribute = f"shape_material_{name}"
+            values = getattr(builder, attribute)
+            for shape in (1, 2):
+                original = values[shape]
+                for value in (float("nan"), float("inf"), float("-inf")):
+                    with self.subTest(attribute=attribute, shape=shape, value=value):
+                        values[shape] = value
+                        with self.assertRaisesRegex(
+                            ValueError, rf"{attribute}.*shape {shape}.*collider_{shape}.*finite"
+                        ):
+                            builder.finalize(device="cpu")
+                values[shape] = original
+
+        model = builder.finalize(device="cpu")
+        np.testing.assert_array_equal(model.shape_material_mu.numpy(), builder.shape_material_mu)
+
+        # Finiteness validation must not introduce positivity or unit-interval checks.
+        for value in (0.0, -0.2):
+            for name in material_names:
+                getattr(builder, f"shape_material_{name}")[1:] = [value, value]
+            model = builder.finalize(device="cpu")
+            for name in material_names:
+                with self.subTest(attribute=name, value=value):
+                    np.testing.assert_array_equal(
+                        getattr(model, f"shape_material_{name}").numpy()[1:], np.full(2, value, dtype=np.float32)
+                    )
+
+    def test_finalize_contact_material_validation_opt_out(self):
+        """Preserve validation opt-outs and ignore unused visual-only contact materials."""
+        self.assertEqual(ModelBuilder().finalize(device="cpu").shape_count, 0)
+        for kwargs in ({}, {"skip_validation_shapes": True}, {"skip_all_validations": True}):
+            with self.subTest(kwargs=kwargs):
+                builder = ModelBuilder()
+                cfg = ModelBuilder.ShapeConfig(
+                    mu=float("nan"),
+                    kh=float("nan"),
+                    has_shape_collision=bool(kwargs),
+                    has_particle_collision=False,
+                )
+                builder.add_shape_sphere(body=-1, cfg=cfg)
+                model = builder.finalize(device="cpu", **kwargs)
+                self.assertTrue(np.isnan(model.shape_material_mu.numpy()[0]))
+                self.assertTrue(np.isnan(model.shape_material_kh.numpy()[0]))
+
+    def test_finalize_contact_material_validation_replicated(self):
+        """Validate replicated material arrays without materializing them as lists."""
+        source = ModelBuilder()
+        source.add_shape_sphere(body=-1, label="sphere")
+        builder = ModelBuilder()
+        builder.replicate(source, 3)
+        for attribute, restored in (("shape_material_mu", 0.4), ("shape_material_kh", 1.0e5)):
+            with self.subTest(attribute=attribute):
+                with builder._raw_array_access():
+                    values = getattr(builder, attribute)
+                self.assertIsInstance(values, np.ndarray)
+                values[2] = float("nan")
+                with self.assertRaisesRegex(ValueError, rf"{attribute}.*shape 2.*sphere.*finite"):
+                    builder.finalize(device="cpu")
+                with builder._raw_array_access():
+                    self.assertIs(getattr(builder, attribute), values)
+            values[2] = restored
+        model = builder.finalize(device="cpu")
+        np.testing.assert_allclose(model.shape_material_mu.numpy(), [1.0, 1.0, 0.4])
+        np.testing.assert_allclose(model.shape_material_kh.numpy(), [1.0e10, 1.0e10, 1.0e5])
+
     def test_add_particles_rejects_mismatched_lengths(self):
         valid = {
             "pos": [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0)],
@@ -4538,52 +4982,226 @@ class TestModelValidation(unittest.TestCase):
             self.fail(f"control.clear() raised {type(e).__name__}: {e}")
 
 
-class TestRemovedJointTargetAliases(unittest.TestCase):
-    """The 1.3-era ``joint_target_pos`` / ``joint_target_vel`` aliases are gone.
+class TestParentCollisionFilterWeldGroups(unittest.TestCase):
+    """Parent-child collision filters cover weld groups, whatever the build order."""
 
-    They are shadowed by tombstone descriptors rather than simply deleted so
-    that code written against the old API fails loudly. A plain deletion would
-    let ``obj.joint_target_pos = targets`` succeed as a fresh instance
-    attribute while ``joint_target_q`` stayed untouched, silently dropping the
-    requested targets.
-    """
+    @staticmethod
+    def _link(builder, z, shape=True, cfg=None):
+        body = builder.add_link(
+            xform=wp.transform((0.0, 0.0, z), wp.quat_identity()), mass=1.0, inertia=wp.mat33(np.eye(3))
+        )
+        shape = builder.add_shape_sphere(body, radius=0.05, cfg=cfg) if shape else None
+        return body, shape
 
-    ALIASES = (("joint_target_pos", "joint_target_q"), ("joint_target_vel", "joint_target_qd"))
+    def _hand(self, builder, *, weld="fixed", filter_parent=True, order="bodies_first"):
+        """hand -(weld)- shapeless palm -(hinge)- finger, with a thumb base welded to the palm.
 
-    def _owners(self):
-        builder = ModelBuilder()
-        base = builder.add_link(mass=1.0)
-        j = builder.add_joint_revolute(parent=-1, child=base, axis=newton.Axis.Z)
-        builder.add_articulation([j])
-        model = builder.finalize()
-        return (("Model", model), ("Control", model.control()), ("ModelBuilder", ModelBuilder()))
+        Returns the shapes of hand, finger and thumb. ``order`` builds the same model with the
+        shapes before the joints, after them, or with the hinge added before the welds.
+        """
 
-    def test_assignment_raises_and_leaves_no_shadow_attribute(self):
-        """Verify assignment to a removed alias raises without shadowing."""
-        for label, obj in self._owners():
-            for alias, replacement in self.ALIASES:
-                with self.subTest(owner=label, alias=alias):
-                    with self.assertRaisesRegex(AttributeError, rf"{label}\.{alias}.*{replacement}"):
-                        setattr(obj, alias, [1.0, 2.0])
-                    self.assertNotIn(alias, vars(obj))
+        def add_weld(parent, child):
+            if weld == "fixed":
+                return builder.add_joint_fixed(parent, child)
+            return builder.add_joint_d6(parent, child, linear_axes=[], angular_axes=[])
 
-    def test_read_raises(self):
-        """Verify reading a removed alias raises and names its replacement."""
-        for label, obj in self._owners():
-            for alias, replacement in self.ALIASES:
-                with self.subTest(owner=label, alias=alias):
-                    with self.assertRaisesRegex(AttributeError, rf"{label}\.{alias}.*{replacement}"):
-                        getattr(obj, alias)
-                    # Raising AttributeError on read keeps the usual probes well behaved.
-                    self.assertFalse(hasattr(obj, alias))
-                    self.assertEqual(getattr(obj, alias, "default"), "default")
+        with_shapes = order != "joints_first"
+        hand, s_hand = self._link(builder, 1.0, with_shapes)
+        palm, _ = self._link(builder, 1.05, False)
+        finger, s_finger = self._link(builder, 1.1, with_shapes)
+        thumb, s_thumb = self._link(builder, 1.0, with_shapes)
+        joints = [builder.add_joint_free(hand)]
+        if order == "hinge_first":
+            joints.append(
+                builder.add_joint_revolute(palm, finger, axis=newton.Axis.Z, collision_filter_parent=filter_parent)
+            )
+            joints += [add_weld(hand, palm), add_weld(palm, thumb)]
+        else:
+            joints.append(add_weld(hand, palm))
+            joints.append(
+                builder.add_joint_revolute(palm, finger, axis=newton.Axis.Z, collision_filter_parent=filter_parent)
+            )
+            joints.append(add_weld(palm, thumb))
+        builder.add_articulation(joints)
+        if not with_shapes:
+            s_hand = builder.add_shape_sphere(hand, radius=0.05)
+            s_finger = builder.add_shape_sphere(finger, radius=0.05)
+            s_thumb = builder.add_shape_sphere(thumb, radius=0.05)
+        return s_hand, s_finger, s_thumb
 
-    def test_canonical_names_still_work(self):
-        """Verify replacement attributes remain readable."""
-        for label, obj in self._owners():
-            with self.subTest(owner=label):
-                self.assertIsNotNone(obj.joint_target_q)
-                self.assertIsNotNone(obj.joint_target_qd)
+    @staticmethod
+    def _pairs(model):
+        return set(model.shape_collision_filter_pairs)
+
+    def test_weld_groups_filter_as_one_body(self):
+        """A joint filters its child's weld group against its parent's; a filtering weld filters its group."""
+        for weld in ("fixed", "d6"):
+            for filter_parent in (True, False):
+                with self.subTest(weld=weld, collision_filter_parent=filter_parent):
+                    builder = newton.ModelBuilder()
+                    s_hand, s_finger, s_thumb = self._hand(builder, weld=weld, filter_parent=filter_parent)
+                    pairs = self._pairs(builder.finalize(device="cpu"))
+                    # the welds make hand, palm and thumb one group, filtered against itself
+                    self.assertIn((s_hand, s_thumb), pairs)
+                    # the hinge filters the finger against that whole group only when it filters
+                    self.assertEqual((s_hand, s_finger) in pairs, filter_parent)
+                    self.assertEqual((s_finger, s_thumb) in pairs, filter_parent)
+
+    def test_weld_group_filters_ignore_build_order(self):
+        """The same model yields the same filter pairs whether shapes or joints come first."""
+        for order in ("bodies_first", "joints_first", "hinge_first"):
+            with self.subTest(order=order):
+                builder = newton.ModelBuilder()
+                s_hand, s_finger, s_thumb = self._hand(builder, order=order)
+                pairs = self._pairs(builder.finalize(device="cpu"))
+                self.assertEqual(pairs, {(s_hand, s_finger), (s_hand, s_thumb), (s_finger, s_thumb)})
+
+    def test_non_filtering_weld_splits_its_group(self):
+        """A weld with ``collision_filter_parent=False`` keeps its parent and child in separate groups."""
+        for weld in ("fixed", "d6"):
+            with self.subTest(weld=weld):
+                builder = newton.ModelBuilder()
+                base, s_base = self._link(builder, 1.0)
+                mount, s_mount = self._link(builder, 1.05)
+                lid, s_lid = self._link(builder, 1.1)
+                flap, s_flap = self._link(builder, 1.15)
+                root = builder.add_joint_free(base)
+                if weld == "fixed":
+                    welds = [
+                        builder.add_joint_fixed(base, mount),
+                        builder.add_joint_fixed(mount, lid, collision_filter_parent=False),
+                    ]
+                else:
+                    welds = [
+                        builder.add_joint_d6(base, mount, linear_axes=[], angular_axes=[]),
+                        builder.add_joint_d6(
+                            mount, lid, linear_axes=[], angular_axes=[], collision_filter_parent=False
+                        ),
+                    ]
+                hinge = builder.add_joint_revolute(lid, flap, axis=newton.Axis.Z)
+                builder.add_articulation([root, *welds, hinge])
+                pairs = self._pairs(builder.finalize(device="cpu"))
+                # base and mount are one group; the lid is not part of it, so it collides with both
+                # and the hinge filters the flap against the lid alone
+                self.assertEqual(pairs, {(s_base, s_mount), (s_lid, s_flap)})
+
+    def test_weld_cycle_is_rejected(self):
+        """Fixed joints that close a ring of bodies make finalize() raise instead of loop."""
+        for ring in (2, 3, 5):
+            with self.subTest(ring=ring):
+                builder = newton.ModelBuilder()
+                bodies = [self._link(builder, 1.0 + 0.1 * i)[0] for i in range(ring)]
+                with warnings.catch_warnings():
+                    # A two-body ring is two parallel joints, which add_joint() warns about.
+                    warnings.filterwarnings("ignore", "Adding a FIXED joint .* another joint already connects")
+                    joints = [builder.add_joint_fixed(bodies[i - 1], bodies[i]) for i in range(ring)]
+                builder.add_articulation(joints)
+                with self.assertRaisesRegex(ValueError, "form a cycle"):
+                    builder.finalize(device="cpu")
+
+    def test_world_weld_is_not_a_group(self):
+        """Bodies welded to the world filter only their direct joints, as in MuJoCo."""
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        table, s_table = self._link(builder, 0.5)
+        bracket, s_bracket = self._link(builder, 0.6)
+        drawer, s_drawer = self._link(builder, 0.55)
+        to_world = builder.add_joint_fixed(-1, table)
+        weld = builder.add_joint_fixed(table, bracket)
+        hinge = builder.add_joint_revolute(table, drawer, axis=newton.Axis.Z)
+        builder.add_articulation([to_world, weld, hinge])
+        pairs = self._pairs(builder.finalize(device="cpu"))
+        self.assertIn((s_table, s_drawer), pairs)  # the hinge's direct parent
+        self.assertIn((s_table, s_bracket), pairs)  # the weld's direct pair
+        self.assertNotIn((s_bracket, s_drawer), pairs)  # no world weld group to expand to
+
+    def test_shape_opt_out_ignores_build_order(self):
+        """``ShapeConfig.collision_filter_parent=False`` keeps a shape out of the filter in either order."""
+        opt_out = newton.ModelBuilder.ShapeConfig(collision_filter_parent=False)
+        for shapes_first in (True, False):
+            with self.subTest(shapes_first=shapes_first):
+                builder = newton.ModelBuilder()
+                parent, s_parent = self._link(builder, 1.0, shapes_first)
+                child, _ = self._link(builder, 1.1, False)
+                if shapes_first:
+                    s_free = builder.add_shape_sphere(child, radius=0.05, cfg=opt_out)
+                    s_filtered = builder.add_shape_sphere(child, radius=0.05)
+                root = builder.add_joint_free(parent)
+                hinge = builder.add_joint_revolute(parent, child, axis=newton.Axis.Z)
+                builder.add_articulation([root, hinge])
+                if not shapes_first:
+                    s_parent = builder.add_shape_sphere(parent, radius=0.05)
+                    s_free = builder.add_shape_sphere(child, radius=0.05, cfg=opt_out)
+                    s_filtered = builder.add_shape_sphere(child, radius=0.05)
+                pairs = self._pairs(builder.finalize(device="cpu"))
+                self.assertEqual(pairs, {(s_parent, s_filtered)})
+                self.assertNotIn((s_parent, s_free), pairs)
+
+    def test_loop_closure_welds_do_not_form_groups(self):
+        """Fixed loop joints (MJCF equality welds) keep their direct pair but neither weld nor dissolve groups."""
+        builder = newton.ModelBuilder()
+        hand_a = self._hand(builder)
+        hand_b = self._hand(builder)
+        finger_a, finger_b = builder.shape_body[hand_a[1]], builder.shape_body[hand_b[1]]
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")  # parallel joint to the world next to the free joint
+            builder.add_joint_fixed(finger_a, finger_b)  # loop weld between the hands
+            builder.add_joint_fixed(-1, builder.shape_body[hand_a[0]])  # loop weld of hand A to the world
+        pairs = self._pairs(builder.finalize(device="cpu"))
+        expected = {(hand_a[1], hand_b[1])}  # the loop weld's own direct pair
+        for s_hand, s_finger, s_thumb in (hand_a, hand_b):
+            expected |= {(s_hand, s_finger), (s_hand, s_thumb), (s_finger, s_thumb)}
+        self.assertEqual(pairs, expected)
+
+    def test_replicated_worlds_keep_weld_group_filters(self):
+        """Weld-group pairs are completed for every world added from a template builder."""
+        template = newton.ModelBuilder()
+        s_hand, s_finger, s_thumb = self._hand(template)
+        builder = newton.ModelBuilder()
+        for _ in range(3):
+            builder.add_world(template)
+        model = builder.finalize(device="cpu")
+        expected = set()
+        for world in range(3):
+            offset = world * template.shape_count
+            expected |= {
+                (s_hand + offset, s_finger + offset),
+                (s_hand + offset, s_thumb + offset),
+                (s_finger + offset, s_thumb + offset),
+            }
+        self.assertEqual(self._pairs(model), expected)
+
+    def test_decomposed_shapes_keep_parent_filters(self):
+        """Convex parts from approximate_meshes() filter like their source shape, whichever comes first."""
+        mesh = newton.Mesh.create_box(0.05, duplicate_vertices=False, compute_normals=False, compute_uvs=False)
+
+        def split_in_three(backend_mesh, **_kwargs):
+            vertices, faces = np.asarray(backend_mesh.vertices), np.asarray(backend_mesh.faces)
+            return [(vertices.copy(), faces.copy()) for _ in range(3)]
+
+        module_name, fake_coacd = TestModelMesh._make_fake_decomposition_backend("coacd", split_in_three)
+        for decompose_first in (False, True):
+            with self.subTest(decompose_first=decompose_first):
+                builder = newton.ModelBuilder()
+                hand, s_hand = self._link(builder, 1.0)
+                palm, _ = self._link(builder, 1.05, False)
+                finger, _ = self._link(builder, 1.1, False)
+                s_finger = builder.add_shape_mesh(finger, mesh=mesh, label="finger")
+
+                def decompose(builder=builder, s_finger=s_finger):
+                    with patch_sys_module(module_name, fake_coacd):
+                        builder.approximate_meshes(method="coacd", shape_indices=[s_finger], raise_on_failure=True)
+
+                if decompose_first:
+                    decompose()
+                joints = [builder.add_joint_free(hand), builder.add_joint_fixed(hand, palm)]
+                joints.append(builder.add_joint_revolute(palm, finger, axis=newton.Axis.Z))
+                builder.add_articulation(joints)
+                if not decompose_first:
+                    decompose()
+                parts = (s_finger, *(builder.shape_label.index(f"finger_convex_{i}") for i in (1, 2)))
+                # every part of the finger is filtered against the hand through the shapeless weld
+                self.assertEqual(self._pairs(builder.finalize(device="cpu")), {(s_hand, part) for part in parts})
 
 
 if __name__ == "__main__":

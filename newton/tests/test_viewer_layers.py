@@ -4,6 +4,7 @@
 import unittest
 from unittest.mock import Mock, patch
 
+import numpy as np
 import warp as wp
 
 import newton
@@ -11,6 +12,7 @@ from newton._src.viewer.gl.frame_cache import FrameCache
 from newton._src.viewer.viewer import ViewerBase
 from newton._src.viewer.viewer_rtx import ViewerRTX
 from newton._src.viewer.viewer_viser import ViewerViser
+from newton.tests.unittest_utils import requires
 from newton.viewer import ViewerNull
 
 
@@ -79,9 +81,6 @@ class _MinimalRTXViewer(ViewerRTX):
         self._render_products = None
         self._displayed_frame = FrameCache()
         self._rtx = None
-        self._use_ovstage = True
-        self._transform_binding = None
-        self._all_instance_paths = []
         self._ovstage = None
         self._ovstage_attached = False
         self._ovstage_paths = None
@@ -296,6 +295,7 @@ class TestViewerLayers(unittest.TestCase):
         self.assertEqual(list(viewer.layers), ["__default__"])
         self.assertEqual(viewer.layer.name_prefix, "")
 
+    @requires("pyglet")
     def test_rtx_remove_layer_with_sibling_fails_loudly(self):
         """RTX should not silently wipe sibling layers during clear_model()."""
         viewer = _MinimalRTXViewer()
@@ -308,6 +308,44 @@ class TestViewerLayers(unittest.TestCase):
         self.assertIn("A", viewer.layers)
         self.assertIn("B", viewer.layers)
 
+    @requires("pyglet")
+    def test_rtx_borrowed_stage_disables_deformable_overlays(self):
+        """Leave a borrowed stage's deformable presentation visible by itself."""
+        viewer = _MinimalRTXViewer()
+        viewer._borrowed_stage = object()
+        viewer.clear_model()
+        self.assertFalse(viewer.show_triangles)
+        self.assertFalse(viewer.show_deformable_visual_meshes)
+
+    @requires("pyglet")
+    def test_rtx_deformable_state_hides_and_restores_geometry(self):
+        """Queue current skinned points when a hidden runtime mesh is shown again."""
+        builder = newton.ModelBuilder()
+        vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=np.float32)
+        for point in vertices:
+            builder.add_particle(tuple(point), (0, 0, 0), mass=1.0)
+        builder.add_deformable_visual_mesh(vertices, [0, 1, 2], kind="particle", parent=[0, 1, 2])
+        model = builder.finalize(device="cpu")
+        state = model.state()
+        viewer = _MinimalRTXViewer()
+        viewer.clear_model()
+        viewer.model = model
+        viewer.device = model.device
+        viewer._phase = viewer._PHASE_RENDER
+        name = "/model/deformable_visual_meshes/mesh_0"
+        viewer._mesh_prim_paths[name] = "/root" + name
+        viewer._point_batch_paths["/model/particles"] = "/root/model/particles"
+        viewer.show_deformable_visual_meshes = False
+        viewer.log_state(state)
+        self.assertFalse(viewer._pending_mesh_visibility[name])
+        self.assertNotIn(name, viewer._pending_mesh_points)
+        state.particle_q.assign(vertices + np.array([0, 0, 2], dtype=np.float32))
+        viewer.show_deformable_visual_meshes = True
+        viewer.log_state(state)
+        self.assertTrue(viewer._pending_mesh_visibility[name])
+        np.testing.assert_array_equal(viewer._pending_mesh_points[name], [[0, 0, 2], [1, 0, 2], [0, 1, 2]])
+
+    @requires("pyglet")
     def test_rtx_clear_all_layers_allows_layered_scene_reset(self):
         """RTX can reset a complete layered scene while keeping single-layer clear guarded."""
         viewer = _MinimalRTXViewer()

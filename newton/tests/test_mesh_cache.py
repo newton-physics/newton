@@ -141,6 +141,16 @@ def test_copy_does_not_share_finalized_meshes(test: TestMeshCache, device):
     # the original's cache entry is untouched by finalizing the copy
     test.assertEqual(mesh.finalize(device=device), mesh_id)
 
+    # in-place edits to the copy's properties leave the original untouched
+    mesh.color = [0.2, 0.4, 0.6]
+    copied = mesh.copy()
+    copied.inertia[0, 0] = 2.0
+    copied.com[0] = 1.0
+    copied.color[0] = 1.0
+    test.assertEqual(mesh.inertia[0, 0], 1.0)
+    test.assertEqual(mesh.com[0], 0.0)
+    test.assertAlmostEqual(mesh.color[0], 0.2)
+
 
 def test_in_place_edit_requires_invalidate_cache(test: TestMeshCache, device):
     """Verify invalidate_cache() refreshes the finalized mesh after in-place vertex edits.

@@ -55,6 +55,8 @@ audit counts, or other audit-only metadata; use those sources as evidence only.
    equivalent patches already present in the previous release. Use the normal
    `..` diff for changed files. If the final tag does not exist yet, use the
    latest RC tag or `upstream/release-X.Y` as the temporary target.
+   Audit example changes in this range for additional upgrade guidance using
+   the procedure below.
 5. Inspect the PRs behind candidate highlights. Commit subjects usually carry
    `(#NNNN)`; use PR bodies when needed to understand impact and any linked
    issues.
@@ -74,6 +76,43 @@ audit counts, or other audit-only metadata; use those sources as evidence only.
 8. Keep a review-ready release-branch draft. After tagging, refresh it against
    the final tag and inspect the workflow-created draft GitHub Release. Publish
    only after verifying the final artifact and links per `docs/guide/release.rst`.
+
+## Example Changes and Upgrade Guidance
+
+Before drafting, inspect changes to existing examples, including shared helpers,
+configuration, assets, and relevant test expectations, across the release range.
+Reuse release-audit or QA findings that cover the same base and target commits;
+on refresh, inspect only changes since that evidence was gathered.
+
+1. Summarize internally how many existing examples changed and which workflows
+   or solvers were affected. Separate additions, removals, renames, and cosmetic
+   or refactoring changes; change volume is not a compatibility metric.
+2. Identify adaptations required by changes to Newton APIs, defaults,
+   dependencies, or simulation behavior. Trace each to the underlying change and
+   PR, establish why it was necessary, and assess whether users need it too.
+3. Inspect available evidence, distinguishing source inspection from runtime
+   validation. Source tracing can confirm API migrations or documented default
+   changes; claims of preserved numerical behavior need relevant runtime evidence.
+   If necessity or behavior preservation is unclear, record the question in a
+   separate internal note or release-audit report, including any
+   unexplained retuning or relaxed assertions. Ask the release manager to arrange
+   targeted QA comparisons of the previous and adapted setups, using the previous
+   release as a reference. The release-audit skill does not run these comparisons.
+   Reuse existing QA results on notes refresh unless relevant changes require
+   revalidation. Do not present unconfirmed adjustments as upgrade advice. Keep
+   investigation details out of the public release-note draft.
+4. For confirmed downstream-relevant adaptations, explain who is affected, the
+   prior behavior or failure symptom, the required adjustment, and recommended
+   revalidation. Include a compact before/after example when useful, the
+   originating PR, and a release-tagged example link.
+
+Place confirmed upgrade guidance according to the Style rules below, including
+`## Notes` for compatibility or migration advice in any release. When confirmed
+upgrade guidance exists, summarize it in an internal-announcement bullet and
+link the public guidance when available. Link an existing upgrade guide if useful;
+drafting notes does not require creating one.
+Passing adapted examples or unchanged examples do not establish numerical
+equivalence, universal compatibility, or that no user action is required.
 
 ## Linking Rules
 

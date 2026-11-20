@@ -471,7 +471,7 @@ class TestInertia(unittest.TestCase):
         cases = [
             (GeoType.SPHERE, (0.5, 0.0, 0.0), 0.5, "sphere radius"),
             (GeoType.BOX, (0.5, 0.4, 0.3), 0.3, "box minimum half-extent"),
-            (GeoType.CAPSULE, (0.5, 0.2, 0.0), 0.2, "capsule half-height"),
+            (GeoType.CAPSULE, (0.5, 0.2, 0.0), 0.5, "capsule radius"),
             (GeoType.CYLINDER, (0.5, 0.2, 0.0), 0.2, "cylinder half-height"),
             (GeoType.CONE, (0.5, 0.2, 0.0), 0.2, "cone half-height"),
             (GeoType.ELLIPSOID, (0.5, 0.4, 0.3), 0.3, "ellipsoid minimum semi-axis"),
@@ -551,6 +551,87 @@ class TestInertia(unittest.TestCase):
         self.assertGreater(mass, 0.0)
         assert_np_equal(np.array(com), np.zeros(3), tol=1e-6)
         self.assertTrue(np.all(np.isfinite(np.array(inertia))))
+
+    def test_hollow_capsule_has_uniform_shell_thickness(self):
+        """Verify that a hollow capsule has the same wall thickness at the end caps as along the sides."""
+        density = 1000.0
+        radius = 0.5
+        half_height = 1.0
+        thickness = 0.1
+
+        mass, com, _ = compute_inertia_shape(
+            GeoType.CAPSULE, (radius, half_height, 0.0), None, density, is_solid=False, thickness=thickness
+        )
+
+        # Shell volume = capsule(radius, h) - capsule(radius - thickness, h): cylinder wall plus two hemispherical caps.
+        inner_radius = radius - thickness
+        volume = np.pi * 2.0 * half_height * (radius**2 - inner_radius**2) + 4.0 / 3.0 * np.pi * (
+            radius**3 - inner_radius**3
+        )
+        self.assertAlmostEqual(mass, density * volume, delta=1.0e-6 * density * volume)
+        assert_np_equal(np.array(com), np.zeros(3), tol=1.0e-6)
+
+    def test_hollow_capsule_without_cylinder_matches_hollow_sphere(self):
+        """Verify that a hollow capsule with zero half-height matches a hollow sphere."""
+        density = 1000.0
+        radius = 0.5
+        thickness = 0.1
+
+        m_cap, _, I_cap = compute_inertia_shape(
+            GeoType.CAPSULE, (radius, 0.0, 0.0), None, density, is_solid=False, thickness=thickness
+        )
+        m_sph, _, I_sph = compute_inertia_shape(
+            GeoType.SPHERE, (radius, 0.0, 0.0), None, density, is_solid=False, thickness=thickness
+        )
+
+        self.assertAlmostEqual(m_cap, m_sph, delta=1.0e-6 * m_sph)
+        assert_np_equal(np.array(I_cap), np.array(I_sph), tol=1.0e-5)
+
+    def test_hollow_capsule_inertia_matches_mesh_subtraction(self):
+        """Verify hollow capsule inertia against outer minus inner capsule meshes."""
+        density = 1000.0
+        radius = 0.5
+        half_height = 1.0
+        thickness = 0.1
+
+        m_an, _, I_an = compute_inertia_shape(
+            GeoType.CAPSULE, (radius, half_height, 0.0), None, density, is_solid=False, thickness=thickness
+        )
+
+        # Both capsules are centered at the origin, so their inertia tensors subtract directly.
+        def _mesh_inertia(r):
+            mesh = newton.Mesh.create_capsule(
+                r, half_height, up_axis=newton.Axis.Z, segments=256, compute_normals=False, compute_uvs=False
+            )
+            m, _, I, _ = compute_inertia_mesh(density, mesh.vertices, mesh.indices, is_solid=True)
+            return m, np.array(I).reshape(3, 3)
+
+        m_out, I_out = _mesh_inertia(radius)
+        m_in, I_in = _mesh_inertia(radius - thickness)
+        I_ref = I_out - I_in
+
+        tol = 0.01  # 1% relative tolerance for the tessellated reference
+        self.assertAlmostEqual(m_an, m_out - m_in, delta=tol * (m_out - m_in))
+        I_an_np = np.array(I_an).reshape(3, 3)
+        for i in range(3):
+            self.assertAlmostEqual(I_an_np[i, i], I_ref[i, i], delta=tol * I_ref[i, i])
+
+    def test_hollow_capsule_accepts_thickness_above_half_height(self):
+        """Verify that a capsule shell thicker than its half-height is accepted when it fits the radius."""
+        density = 1000.0
+        radius = 0.5
+        half_height = 0.2
+        thickness = 0.3
+
+        mass, _, _ = compute_inertia_shape(
+            GeoType.CAPSULE, (radius, half_height, 0.0), None, density, is_solid=False, thickness=thickness
+        )
+
+        inner_radius = radius - thickness
+        volume = np.pi * 2.0 * half_height * (radius**2 - inner_radius**2) + 4.0 / 3.0 * np.pi * (
+            radius**3 - inner_radius**3
+        )
+        self.assertAlmostEqual(mass, density * volume, delta=1.0e-6 * density * volume)
 
     def test_hollow_cone_inertia(self):
         """Test hollow cone inertia via compute_inertia_shape against mesh subtraction.

@@ -264,38 +264,43 @@ average or a per-pair limit.
      - Estimated typical count
      - Notes
    * - Triangle mesh--infinite plane
-     - 240
+     - 184
      - ``V_mesh``
      - About 40
      - At most one candidate per mesh vertex.
    * - Mesh/heightfield--sphere or ellipsoid
-     - 240
+     - 184
      - ``T_overlap``
      - About 40
      - At most one contact per overlapping triangle.
    * - Mesh/heightfield--other primitive or convex hull
-     - 240
+     - 184
      - ``5 * T_overlap``
      - About 40
      - Each overlapping triangle uses the convex manifold path.
    * - Mesh--mesh
-     - 240
+     - 184
      - ``E_A + E_B``
      - About 40
      - Uses edge-vs-SDF queries, with BVH distance fallback when needed.
    * - Heightfield--mesh
-     - 240
+     - 184
      - ``E_heightfield + E_mesh``
      - About 40
      - Uses the mesh/SDF route with on-the-fly heightfield evaluation.
    * - Hydroelastic SDF--SDF
-     - 240 by default
+     - 184 penetrating + 100 speculative
      - Geometry and buffer dependent
      - No fixed estimate
      - ``anchor_contact=True`` can add contacts beyond the reduced set.
 
-The reduced maximum follows the current 240-slot contact-reduction layout.
-Disabling reduction exposes the geometry-dependent candidate bounds shown above.
+The default contact-reduction layout uses twelve dodecahedral normal bins with
+six footprint slots and one depth slot each, plus 100 spatial depth slots:
+``12 * 7 + 100 = 184``. Mesh, heightfield, and SDF routes can retain seven
+additional predictive contacts when speculative contacts are enabled.
+Hydroelastic reduction keeps speculative faces in a separate spatial depth
+budget. Disabling reduction exposes the geometry-dependent candidate bounds
+shown above.
 
 **Common pair guidance**
 
@@ -528,7 +533,7 @@ out many copies of a template environment builder into separate worlds in one ca
     # Combined builder: global geometry + 1024 replicated worlds
     main = newton.ModelBuilder()
     main.add_ground_plane()  # global (world -1), shared across all worlds
-    main.replicate(env_builder, world_count=1024)
+    main.replicate(env_builder, copy_count=1024)
     model = main.finalize()
 
 .. note::
@@ -705,9 +710,22 @@ in the explicit filter-pair list.
 Filter pairs are automatically populated in several cases:
 
 - **Adjacent bodies**: Parent-child body pairs connected by joints (when
-  ``collision_filter_parent=True``). For USD joints with two explicit bodies,
-  ``physics:collisionEnabled`` controls this filter with inverse polarity; joints to world do not
-  create a body-pair filter. Also applies to max-coordinate jointed bodies.
+  ``collision_filter_parent=True``). The filter works on weld groups, like MuJoCo's: the
+  bodies joined by filtering fixed and zero-DOF tree joints count as one, so a joint filters its
+  child's weld group against its parent's weld group, and a filtering weld joint filters its
+  whole group against itself. A weld with ``collision_filter_parent=False`` keeps its parent and
+  child in separate groups: they collide, and a joint below one of them filters that side
+  alone. Loop-closure joints keep their direct pair only, and bodies welded to the world form no
+  group. The pairs are completed in
+  :meth:`~ModelBuilder.finalize`, so the order in which joints and shapes are added does not
+  matter, and shapes with ``ShapeConfig(collision_filter_parent=False)`` take no part. The pairs
+  of two bodies a joint connects directly stay as
+  :attr:`~ModelBuilder.shape_collision_filter_pairs` holds them, so removing them before
+  ``finalize()`` keeps those bodies colliding, and :meth:`~ModelBuilder.collapse_fixed_joints`
+  adds them for the bodies it merges. For USD
+  joints with two explicit bodies, ``physics:collisionEnabled`` controls this filter with
+  inverse polarity; joints to world do not create a body-pair filter. Also applies to
+  max-coordinate jointed bodies.
 - **Disabled self-collision**: All shape pairs within an articulation when ``enable_self_collisions=False``
 - **USD filtered pairs**: Pairs defined by ``physics:filteredPairs`` relationships in USD files
 - **USD collision disabled**: Shapes with ``physics:collisionEnabled=false`` (filtered against all other shapes)
@@ -1090,6 +1108,41 @@ Two approaches available:
 2. **SDF-based** (recommended): Uses precomputed signed distance fields for fast queries.
    For mesh shapes, call ``mesh.build_sdf(...)`` once and reuse the mesh.
 
+When a rounded, closed mesh probe straddles a thin wall, Newton can publish a
+single contact on the shorter exit path. Both shapes need texture SDFs and
+the probe surface must be connected. A mesh query verifies the two locally
+planar wall faces and the swept probe footprint.
+Each collision update uses the current geometry. Once the overlap is shallow,
+the ordinary SDF contacts take over.
+Between updates, translation and rotation may reuse a recovery contact only
+while the entire swept probe remains inside the verified corridor.
+Broad contact patches, ambiguous exits, and nearby features that intrude on the
+footprint use the ordinary manifold. The same fallback applies when the probe
+has more than 4,096 vertices or the swept query visits more than 128 wall
+triangles. The default recovery table can also fall back after 32 hash probes.
+With ``deterministic=True``, the table reserves space for all eligible pairs
+and probes until it finds a slot. This keeps recovery contact selection
+repeatable within the collision buffer capacities. A complete crossing can
+leave the shapes separated, so no discrete overlap remains to recover.
+
+Solvers and :class:`~sensors.SensorContact` read the same two surface witnesses
+and separation normal from the contact buffer. XPBD and VBD bound positional
+correction while the probe is deeply embedded. XPBD skips restitution on the
+recovery contact. VBD can support an external load while limiting the outward
+correction per step using a temporary hard normal constraint. Steel bounds
+the penetration used for its corrective velocity and skips restitution on
+recovery contacts. The semi-implicit and Featherstone solvers use a bounded
+penetration depth for the elastic contact force.
+MuJoCo Warp with Newton contacts temporarily
+uses recovery stiffness and damping to limit its separation speed, then resumes
+the ordinary contact material response. Hydroelastic pairs follow the
+pressure-based contact model.
+
+When capturing a solver-only CUDA graph, allocate the contact buffer with
+:meth:`~CollisionPipeline.contacts` or run the pipeline once on a manually
+allocated buffer before capture. Recapture the graph if switching pipelines
+replaces the buffer's recovery storage.
+
 .. warning::
    If SDF is not precomputed, mesh-mesh contacts fall back to on-the-fly BVH distance queries
    which are **significantly slower**. For production use with complex meshes, precompute and
@@ -1142,6 +1195,19 @@ collision prints a device warning, and a later :meth:`~newton.CollisionPipeline.
 call outside graph capture raises :class:`RuntimeError`; graph replays alone do not raise.
 Mesh-plane and mesh-convex contacts read the current scale directly and do not trigger
 this diagnostic.
+
+Changing :attr:`~newton.Model.shape_scale` on mesh, convex-mesh, or heightfield shapes also
+requires updating :attr:`~newton.Model.shape_collision_radius`,
+:attr:`~newton.Model.shape_collision_aabb_lower`, and
+:attr:`~newton.Model.shape_collision_aabb_upper` to match the new scale. The local collision
+bounds already include scale, and collision does not rescale them again; stale bounds can
+cause broadphase culling to omit candidate pairs. ``dynamic_shape_scale=True`` changes only
+unbaked texture-SDF queries and does not update these bounds or rebuild baked SDFs or
+heightfield collision data. To rebuild, recreate the affected shapes on a
+:class:`~newton.ModelBuilder` with the new scale, then call
+:meth:`~newton.ModelBuilder.finalize` and construct a new :class:`~newton.CollisionPipeline`.
+For explicitly prebuilt mesh SDFs, first rerun :meth:`~newton.Mesh.build_sdf` with
+the new scale before adding the mesh to the builder.
 
 **Edge simplification.** ``mesh.build_sdf(...)`` also runs a dihedral-angle pre-filter over
 the mesh's manifold edges and caches the surviving subset on the mesh; the SDF-mesh contact
@@ -1208,6 +1274,43 @@ with convex hulls, bounding boxes, or convex decompositions:
 Supported methods: ``"convex_hull"`` (default), ``"bounding_box"``, ``"bounding_sphere"``,
 ``"coacd"`` (convex decomposition), ``"vhacd"``.
 
+CoACD and V-HACD decompositions support opt-in disk caching for reuse across
+builders and processes, including automatic approximation during USD import.
+Mesh decomposition caching is disabled by default. Enable it by setting a
+directory through :mod:`newton.config` before importing a scene:
+
+.. code-block:: python
+
+    import newton
+
+    newton.config.cache_dir_meshes = ".cache/convex"
+    builder = newton.ModelBuilder()
+    builder.add_usd("robot.usda")  # Uses this cache for authored convex decompositions.
+
+    # Disable mesh decomposition caching for subsequent calls and imports.
+    newton.config.cache_dir_meshes = None
+
+Explicit ``cache_dir`` directories on :meth:`~ModelBuilder.approximate_meshes`
+override the global setting. Omitting the argument or passing ``None`` uses
+:attr:`config.cache_dir_meshes` at call time. Asset downloads are controlled
+independently by :attr:`config.cache_dir_assets` and remain cached by default in
+the Newton cache directory (``NEWTON_CACHE_PATH`` or the platform's user cache
+location). Setting that to ``None`` keeps each download in a fresh temporary
+directory until process exit. The asset cache environment default is read when
+Newton is imported. These settings do not affect
+:meth:`Mesh.build_sdf`, which retains its explicit, opt-in cache.
+
+Cache directories are created if needed. Entries include the source geometry, effective decomposition options
+(including the hull-vertex limit), backend versions, and cache format version in
+their keys. Shape scales, transforms, and materials are applied independently,
+so cached parts can be reused by differently configured shapes. Missing, corrupt,
+or incompatible entries are recomputed; cache I/O errors are logged without
+preventing approximation. Backend dependencies must still be installed. Failed
+decompositions and fallback hulls are not cached. Delete the directory to reclaim
+disk space. Other approximation methods ignore ``cache_dir``.
+
+Cache locations are runtime settings; they are not authored in USD.
+
 .. note::
    ``approximate_meshes()`` modifies the builder's shape geometry in-place. By default
    (``keep_visual_shapes=False``), the original mesh is replaced for both collision and
@@ -1228,6 +1331,94 @@ Contact reduction is enabled by default. For scenes with many mesh-mesh interact
 3. Representative contacts are selected to preserve coverage and depth cues
 
 To disable reduction, set ``reduce_contacts=False`` when creating the pipeline.
+
+Mesh/SDF depth coverage uses aspect-ratio-based voxel grids and normalized
+indexing, independent of the scene's length units. This also applies when
+body-pair reduction is disabled. Removing absolute length cutoffs and
+stabilizing normalized cell boundaries can change the retained contacts and
+simulation trajectories, especially for very small or degenerate geometry.
+No API or scene migration is required.
+
+**Body-pair contact reduction (opt-in):**
+
+Bodies built from many colliders (a foot made of several spheres or capsules, a
+hand of boxes) produce one manifold per shape pair, so a single physical patch
+can reach the solver as dozens of near-redundant contacts. Optional body-pair
+reduction reduces primitive and convex contacts per body pair in a group mode
+of the global contact reducer, before they are written. Enable it with
+``body_pair_reduction``:
+
+.. testcode:: body-pair-reduction
+
+    import newton
+
+    builder = newton.ModelBuilder()
+    builder.add_ground_plane()
+    model = builder.finalize()
+
+    pipeline = newton.CollisionPipeline(
+        model,
+        body_pair_reduction=newton.CollisionPipeline.BodyPairReductionConfig(),
+    )
+    contacts = pipeline.contacts()
+
+Contacts are grouped by body pair, material class, normal bin and spatial cell.
+By default, spatial coverage uses the same normalized voxel mapping and
+aspect-ratio-based grid sizing as SDF reduction, applied to fixed body-local
+collider-group bounds. Uniformly scaling the geometry does not require changing
+a cell size. The smaller finite dynamic group supplies the reference grid;
+an infinite ground plane never sets its scale. This is a runtime collision
+pipeline setting and does not add an authorable USD attribute.
+
+Each group keeps one depth representative, up to six sampled footprint extremes
+over all its contacts and up to six more over its touching contacts only, so
+speculative contacts cannot displace the support polygon. Mesh and
+heightfield contacts keep their per-shape-pair reduction. Only the kept
+contacts are written, and if a group cannot be registered in the table, the
+frame keeps every primitive and convex contact. It is an
+approximation: support is sampled, not exact, and keeping
+rim points can strengthen torsional friction. Selection is memoryless, so on
+curved or mesh supports the kept set can change between steps.
+
+Near-contact and speculative layers have independent coverage cells, so a distant
+speculative layer does not prevent reduction of a flat touching patch.
+The automatic mode conservatively keeps all contacts in cells whose
+separations vary by more than ``1e-5`` of the reference group's largest extent.
+This protects shallow touching regions from competing with deeper regions in
+the same cell. Contacts without a finite reference grid, or outside its fixed
+bounds, also pass through. These safeguards can reduce the savings on curved
+or tilted patches; they do not guarantee exact pressure or friction-torque
+distribution. An explicit ``cell_size`` selects the previous projected grid
+without the automatic depth-variation safeguard.
+
+Shapes on one body share a group only when their ``shape_material_*`` values
+and their per-shape custom attributes match;
+``BodyPairReductionConfig.material_attributes`` narrows
+the attributes that count. Call
+:meth:`~CollisionPipeline.refresh_body_pair_reduction_groups` after changing
+them or the local collider transforms or margins at runtime; this also refreshes
+the fixed coverage bounds, including shape margins.
+
+Buffers from the pipeline's :meth:`~CollisionPipeline.contacts` are stamped
+:attr:`~Contacts.rigid_contact_body_pair_reduced` when the scene has primitive
+or convex contact pairs; a scene of only meshes and heightfields reduces nothing
+by body pair and keeps unstamped buffers. A stamped buffer must be filled by
+its reducing pipeline. The rows use the ordinary Newton contact contract.
+Built-in consumers accept
+these rows just as they accept mesh/SDF-reduced contacts, including through
+solver-owned pipelines and coupled contact streams. Backends using their own
+collision detection must be configured to consume Newton contacts to use this
+reduction. As with mesh/SDF reduction, fewer points can change aggregate
+stiffness, load distribution, and friction torque; reduction does not rescale
+material stiffness or promise identical compliance to the unreduced point set.
+Body-pair reduction doesn't support ``contact_matching="sticky"`` or
+hydroelastic contacts. Keep it off when it doesn't reduce the end-to-end step time.
+To check, compare the step time and :attr:`~Contacts.rigid_contact_count` with it
+on and off: a count that stays near its unreduced value means little was reduced,
+or the group table was too small and frames kept every contact (raise
+``BodyPairReductionConfig.hashtable_size_factor``).
+
+This body-pair reduction API is experimental and may change without prior notice.
 
 **Configuring contact reduction (HydroelasticSDF.Config):**
 
@@ -1272,9 +1463,6 @@ For hydroelastic and SDF-based contacts, use :class:`~geometry.HydroelasticSDF.C
    * - ``anchor_contact``
      - Adds an anchor contact at the center of pressure for each normal bin to better preserve moments.
        Default: False.
-   * - ``margin_contact_area``
-     - Deprecated area used for speculative-contact activation stiffness.
-       It remains effective during the deprecation period. Default: 0.01.
 
 .. _Shape Configuration:
 
@@ -1294,7 +1482,7 @@ Shape collision behavior is controlled via :class:`~ModelBuilder.ShapeConfig`:
    * - ``collision_group``
      - Collision group ID. 0 disables collisions. Default: 1.
    * - ``collision_filter_parent``
-     - Filter collisions with adjacent body (parent in articulation or connected via joint). Default: True.
+     - Whether the shape takes part in parent-child filtering: a filtering joint of its body filters it against the shapes of the body on the joint's other side and of that body's weld group, in whichever order shape and joint are added. ``False`` keeps it colliding with them. Default: True.
    * - ``has_shape_collision``
      - Whether shape collides with other shapes. Default: True.
    * - ``has_particle_collision``
@@ -1476,21 +1664,33 @@ observed shape speed:
     )
     schedule.step()
 
-Any change in a collidable shape's linear or angular velocity triggers a
-refresh at the next substep. Slowing, stopping, or turning can increase the
-closing speed between shapes and require contacts that the earlier pass did
-not create. Shapes with rigid collision disabled do not affect the schedule
-or overflow reporting. The scheduler checks the final substep's output when
-reporting ``interval_overflow``.
+Collision detection keeps the pipeline's velocity-guided speculative extension
+for the selected time horizon. Scheduling does not add an all-direction contact
+reserve or change authored gaps and physical margins. The global point-speed
+bound determines refresh timing, not per-shape detection distances.
+
+Refreshes occur when the travel estimate approaches the configured distance
+cap, the previous horizon expires, or a routed shape's linear or angular
+velocity changes. After an observed velocity change, the next prediction
+horizon is one solver substep. Rotating shapes always use one-substep horizons:
+even constant angular velocity changes witness approach directions. Without
+rotation, the first substep may use a longer horizon. Gravity, braking, turning,
+and impacts can also require a refresh every substep.
+
+For explicit broad phase, the pair list determines which shapes affect the
+schedule, including listed shapes with rigid collision disabled; unlisted
+shapes do not affect it. Other broad phases use the rigid collision flags.
 
 The same ``step()`` call works directly or inside CUDA graph capture; callbacks
 must therefore be capture-safe and preallocate their storage. The scheduler
 always executes every configured solver substep. Its two states are ping-pong
 buffers, so the substep count must be even. ``schedule.interval_overflow`` is
-set when observed per-substep or accumulated travel exceeds the budget; in
-that case, increase the substep count or the speculative extension limit.
-Collision prediction horizons are capped at the next frame boundary, where
-contacts are always refreshed.
+set when observed per-substep or accumulated travel exceeds the configured
+distance cap, including motion observed after the final substep. This flag is
+not a continuous collision detection guarantee: unseen forces or impulses
+can invalidate a velocity forecast within a substep. Increase solver substeps
+when the expected motion requires it. Horizons are capped at the frame boundary,
+where contacts are always refreshed.
 
 Set ``collision_dt_max`` to cap the time between collision passes independently
 of the travel estimate. For example, ``1.0 / 120.0`` requests collision
@@ -1602,6 +1802,56 @@ Soft contacts are generated automatically when particles are present. They use a
     n_soft = contacts.soft_contact_count.numpy()[0]
     particles = contacts.soft_contact_particle.numpy()[:n_soft]
     shapes = contacts.soft_contact_shape.numpy()[:n_soft]
+
+With full-surface deformable-rigid mesh contacts enabled, detection retains
+the returned feature pairs, including endpoint contacts. :class:`~solvers.SolverVBD`
+selects force contributions inside each consuming kernel using its current particle
+and body positions, including during CUDA graph replay. Selection can change
+without another collision detection; it does not change the contact count,
+row order, or detected geometry. Coupling copies ownership and mesh provenance;
+the consuming solver evaluates eligibility. If the source contact buffer
+has overflowed, VBD bypasses geometric selection for stored mesh rows, including
+through coupling. A mesh row still needs a resolved inside/outside sign and at
+least one active soft participant to contribute forces.
+Rigid-soft division-plane constraints consume the detected rows independently
+of force selection.
+
+Reverse rigid-vertex/soft-triangle contacts test the soft target's neighbors
+and retain one eligible owner for a shared soft edge or vertex. They remain
+separate force contributions from soft-vertex/rigid-triangle queries.
+Full-surface mesh detection includes all rigid triangle edges, independently of
+SDF-selected edges. If the narrow vertex sign query fails, an expanded query
+supplies the sign for nearby vertex-triangle rows and, for an interior point, a
+recovery contact. Pairs whose sign remains unresolved are retained for DAT but
+do not contribute VBD forces until a subsequent detection resolves their sign.
+Edge penetration-recovery records are not ordinary edge-edge quadrature samples.
+
+.. _full-surface-mesh-contact-costs:
+
+Full-surface mesh contact costs
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Full-surface contact catches rigid features that can pass between deformable
+vertices, which is useful for coarse cloth. On finely tessellated or complex
+rigid meshes, however, retaining nearby feature pairs can produce many more
+records than particle-only contacts or SDF minimization. This increases contact
+storage and can substantially increase both collision detection and VBD solve
+time. Larger contact bands also admit more pairs. Profile the intended scene;
+the cost depends on mesh resolution, geometry, and contact density.
+
+:class:`CollisionPipeline` automatically estimates mesh contact storage. Set
+``soft_contact_max`` to choose the total soft-contact capacity explicitly.
+The estimate is not an upper bound: dense patches can still overflow. The mesh
+overflow warning prints the current ``soft_contact_max`` and the required count
+for that collision pass. Increase ``soft_contact_max`` to at least that count,
+and verify that contacts fit throughout the simulation before relying on the
+results; later frames may require more storage.
+
+This setting controls reserved storage, not the contact band or the number of
+feature pairs queried. Lowering capacity can save memory but produces incomplete
+contacts if it is too small; it is not a way to reduce query work while preserving
+the same contacts. The edge and vertex queries and the processing of their
+records remain a runtime cost even when the buffer is sized appropriately.
 
 .. _collision-frequency-in-the-simulation-loop:
 
@@ -1750,6 +2000,13 @@ and is consumed by the solver :meth:`~solvers.SolverBase.step` method for contac
      - Total number of soft contacts (single element). With full-surface contact off, this equals the per-particle contact count and is unchanged from earlier releases.
    * - ``soft_contact_indices``
      - Soft-side particle ids per contact, a ``vec3i`` with ``-1`` padding: ``(p, -1, -1)`` particle, ``(v0, v1, -1)`` edge, ``(v0, v1, v2)`` face. The number of non-negative slots gives the feature kind; pair with ``soft_contact_barycentric`` to recover the contact point.
+   * - ``soft_contact_rigid_indices``
+     - Rigid mesh primitive corners per contact, a ``vec3i`` of offsets into the
+       rigid mesh's triangle index buffer: ``(i0, i1, i2)`` for a triangle (VT),
+       ``(i0, -1, -1)`` for a vertex (TV), and ``(i0, i1, -1)`` for an edge (EE).
+       The shape is identified by ``soft_contact_shape``; ``-1`` pads unused
+       slots. Analytic, particle-only, and penetration-recovery point records
+       use ``(-1, -1, -1)``.
    * - ``soft_contact_particle``
      - Particle id for particle contacts (``-1`` for edge/face records) — the particle-only view of ``soft_contact_indices``, for solvers that consume particle contacts exclusively.
    * - ``soft_contact_barycentric``
@@ -1788,6 +2045,8 @@ and is consumed by the solver :meth:`~solvers.SolverBase.step` method for contac
    soft-contact rows (row ``rigid_contact_max + i`` for soft contact ``i``) for
    rigid-soft particle, edge, and face records. With an external rigid solver, VBD's
    rigid rows are zero; consume that solver's forces from its own observables.
+   Soft rows retain their detection indices; mesh rows rejected at the exported
+   configuration report zero force.
    See :ref:`vbd_contact_forces` for the sign and torque convention.
 
 Example usage:
@@ -1866,9 +2125,7 @@ helper and gradients do not flow through its direction.
     builder.add_ground_plane()
     model = builder.finalize(requires_grad=True)
 
-    # Disable deprecated automatic rigid-contact outputs. This also disables
-    # soft-contact gradients, which are independent of the helper below.
-    pipeline = newton.CollisionPipeline(model, requires_grad=False)
+    pipeline = newton.CollisionPipeline(model)
     contacts = pipeline.contacts()
     state = model.state(requires_grad=True)
     distance = wp.empty(
@@ -1893,17 +2150,6 @@ helper and gradients do not flow through its direction.
         )
     })
     grad_body_q = tape.gradients[state.body_q]
-
-Starting in Newton 1.6, the ``Contacts.rigid_contact_diff_*`` attributes are
-deprecated compatibility outputs. The distance and point arrays remain allocated
-and populated when the collision pipeline has ``requires_grad=True`` during the
-deprecation window.
-Allocate only the outputs you need and call
-:func:`newton.eval_rigid_contact_kinematics` explicitly to prepare
-for their removal. The deprecated ``rigid_contact_diff_normal`` attribute is
-already an alias for
-:attr:`~newton.Contacts.rigid_contact_normal` and does not allocate a duplicate
-array.
 
 .. _Creating Contacts:
 
@@ -2015,8 +2261,8 @@ Hydroelastic contacts use the same three margin-and-gap bands described in
 
 Contacts in the gap region are speculative. Their separation is nonnegative,
 so they do not produce force in the current state. Newton assigns them a contact
-stiffness using the two materials' hydroelastic stiffness and the deprecated
-``margin_contact_area`` compatibility setting.
+stiffness from the two materials' hydroelastic stiffness and a fixed
+activation area of 0.01 m\ :sup:`2`.
 
 To recover the closest equivalent of the earlier geometric-surface behavior,
 set both ``margin=0.0`` and ``gap=0.0`` on the participating shapes. This is a
@@ -2088,8 +2334,8 @@ same pressure law on the hydroelastic faces; no separate linear stiffness law is
 applied to reduced penetrating contacts. The evaluated pressure is stored once
 per buffered face because the pair separation does not contain either shape's
 individual SDF depth. Speculative contacts do not use this stored pressure;
-their activation stiffness uses the declared ``kh`` values and the deprecated
-``margin_contact_area`` compatibility setting.
+their activation stiffness uses the declared ``kh`` values and a fixed
+activation area of 0.01 m\ :sup:`2`.
 
 See :github:`newton/examples/contacts/example_nut_bolt_hydro.py` for a worked
 example.
@@ -2139,6 +2385,13 @@ Shape material properties control contact resolution. Configure via :class:`~Mod
      - 1.0
      - :attr:`~ModelBuilder.ShapeConfig.mu`
      - :attr:`~Model.shape_material_mu`
+   * - ``mu_static``
+     - Coefficient of static (break-away) friction; ``None`` keeps a single
+       coefficient (``mu``), and a value below ``mu`` is rejected. Not used by
+       any built-in solver yet.
+     - None
+     - :attr:`~ModelBuilder.ShapeConfig.mu_static`
+     - :attr:`~Model.shape_material_mu_static`
    * - ``ke``
      - Normal contact stiffness
      - 2.5e3
@@ -2202,6 +2455,85 @@ Example:
         restitution=0.5,  # Bouncy where supported
     )
 
+.. _Contact friction gain and adhesion:
+
+Friction gain and adhesion
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+This section covers rigid shape-shape contacts in the penalty contact model of
+:class:`~newton.solvers.SolverSemiImplicit` and
+:class:`~newton.solvers.SolverFeatherstone`, which average ``ke``, ``kd``,
+``kf``, ``ka`` and ``mu`` of the two shapes. Particle-shape contacts in these
+solvers work differently: ``kf`` is averaged with ``Model.soft_contact_kf``, the
+shape's ``ka`` is ignored in favor of ``Model.particle_adhesion``, and damping
+and friction also act inside the adhesion zone. For
+:class:`~newton.solvers.SolverMuJoCo`, see
+:ref:`mujoco-contact-friction-solreffriction`.
+
+Let :math:`d` be the contact-space distance :math:`d = s - m` from
+:ref:`margin and gap semantics <margin-gap-semantics>`, where :math:`s` is the
+surface distance and :math:`m` the pair margin, so :math:`d` is negative once
+the surfaces come within the pair margin. Let :math:`v_n` and :math:`v_t` be the
+normal and tangential relative velocities. Per contact, the normal force
+:math:`f_n` acts along the contact normal and is negative (repulsive) for
+:math:`d < 0` and positive (attractive) inside the adhesion zone:
+
+.. math::
+
+   f_n &= k_e \, d \qquad (d < k_a) \\
+   f_d &= k_d \, \min(v_n, 0) \qquad (d < 0) \\
+   \lVert f_t \rVert &= \min(k_f \, \lVert v_t \rVert,\, \mu |f_n + f_d|) \qquad (d < 0)
+
+**Friction gain** ``kf`` **[N·s/m]** is the slope of a viscous regularization
+of Coulomb friction: at low slip speed the friction force is
+:math:`k_f \lVert v_t \rVert`, so a body at rest on a slope creeps instead of
+sticking. With :math:`N` contacts carrying the load, the creep speed is roughly
+:math:`m g \sin\theta / (N k_f)`. At higher slip speed the force is capped at
+:math:`\mu |f_n + f_d|`, including normal damping. Friction opposes tangential
+relative motion. For positive ``kf``, the transition speed is
+:math:`\mu |f_n + f_d| / k_f`.
+
+The viscous branch evaluates :math:`k_f v_t` directly, so its velocity
+derivative remains well-defined at rest without a separate smoothing
+parameter. The force is continuous at the Coulomb limit, where its derivative
+changes between the viscous and capped branches.
+
+The solver argument and attribute ``friction_smoothing`` are deprecated in
+Newton 1.8 and have no effect on friction. Explicit constructor values and
+attribute reads or assignments emit a deprecation warning. Constructor calls
+and attribute access remain supported, and the attribute retains its last
+assigned value; all values use the corrected force law above. Remove its use
+and configure ``kf`` for the low-speed slope and ``mu`` for the Coulomb limit.
+
+- Larger ``kf`` gives less creep but stiffens the friction force. With these
+  explicit solvers, keep :math:`N k_f \, \Delta t / m_\text{eff}` well below 1,
+  where :math:`m_\text{eff}` is the effective mass of the lightest contact pair,
+  or reduce the time step.
+- Smaller ``kf`` is more stable but makes contacts slide and objects creep.
+- ``kf = 0`` disables friction.
+
+**Adhesion distance** ``ka`` **[m]** lets the normal force act before the
+surfaces come within the pair margin. Contacts are processed while
+:math:`d < k_a` instead of :math:`d < 0`, so the adhesion zone is
+:math:`m \le s < m + k_a`. For :math:`0 \le d < k_a`, :math:`f_n = k_e \, d` is
+attractive and grows linearly with :math:`d` up to about :math:`k_e \, k_a`
+per contact just inside :math:`d = k_a`. At :math:`d \ge k_a` the contact applies
+no force. Damping and friction only act while :math:`d < 0`.
+
+- ``ka = 0`` (the default) disables adhesion.
+- Use a small nonzero value for sticky or suction-like contacts, for example to
+  hold a light object against a gripper pad. Choose ``ka`` so that
+  :math:`N k_e \, k_a` exceeds the force you want to resist.
+- Adhesion only acts on contacts the collision pipeline reports, so the pair
+  gap ``gap_a + gap_b`` (see :ref:`margin and gap semantics <margin-gap-semantics>`)
+  must be at least the pair's averaged ``ka``.
+- The force jumps from about :math:`k_e \, k_a` to zero at the cutoff. Shapes
+  that enter the zone are pulled in and bounce, and damping only acts for
+  :math:`d < 0`, so large values make contacts lively. Explicit stepping across
+  the cutoff also adds an error of order :math:`k_e \, k_a \, |v_n| \, \Delta t`
+  per step, which can add or remove energy. Keep ``ka`` small relative to the
+  shape size.
+
 .. _USD Collision:
 
 USD Integration
@@ -2234,7 +2566,12 @@ attributes. The contact response attributes map to :class:`~ModelBuilder.ShapeCo
 fields as follows: ``newton:contactStiffness`` → ``ke``,
 ``newton:contactDamping`` → ``kd``, ``newton:contactFrictionGain`` → ``kf``,
 ``newton:contactAdhesion`` → ``ka``. A value of ``-inf`` means "use the engine's
-default" (see :ref:`Contact Material Properties`).
+default" (see :ref:`Contact Material Properties`). ``physics:dynamicFriction`` maps
+to ``mu``; ``physics:staticFriction`` maps to ``mu_static`` when it is larger than
+the dynamic coefficient (the material below imports ``mu=0.8``, ``mu_static=1.0``),
+and otherwise leaves a single coefficient (a positive value below the dynamic one is
+reported with a warning). A bound material supplies both coefficients; only colliders
+without one take ``mu`` and ``mu_static`` from the builder defaults.
 
 .. code-block:: usda
 
@@ -2305,6 +2642,20 @@ The overhead is small: fingerprint storage per contact, modified packing in
 the reduction, and one radix sort + gather pass per frame.  The sort is
 fully CUDA-graph-capturable.
 
+The key keeps bit 63 clear, so the two shape indices and the sub-key share 63
+bits.  Models with only primitive and convex shapes use a 3-bit sub-key, which
+leaves room for ``2**30`` shapes.  Models with meshes, heightfields,
+hydroelastic shapes or primitive shapes with an SDF use a 23-bit sub-key and
+fit at most ``2**20`` shapes in one key.  Above that, the key holds only the
+sub-key and the sort adds a second stable radix pass on a ``(shape_a, shape_b)``
+pair key, which gives the same contact order for one more radix sort per
+frame; contact matching then searches pair ranges on the pair key and breaks
+ties by sorted row index, following sub-key order within each pair. A
+deterministic :class:`~newton.geometry.NarrowPhase`
+built without ``shape_aabb_lower``/``shape_aabb_upper`` doesn't know the shape
+count, so it uses 20-bit shape fields and raises at launch for more than
+``2**20`` shapes.
+
 Hydroelastic contacts are covered by the same two mechanisms, using the
 marching-cubes voxel and face index as the fingerprint.  They additionally need
 a third one, because hydroelastic reduction is the only contact path that sums
@@ -2321,6 +2672,17 @@ contributions across threads:
 
 Together these give bit-exact repeatability across runs on the same GPU
 architecture when the consuming solver is deterministic as well.
+For example, :class:`~newton.solvers.SolverSteel` reserves its constraint rows
+in contact-buffer order when constructed with
+``deterministic=wp.DeterministicMode.RUN_TO_RUN``:
+
+.. code-block:: python
+
+    pipeline = newton.CollisionPipeline(model, deterministic=True)
+    solver = newton.solvers.SolverSteel(model, deterministic=wp.DeterministicMode.RUN_TO_RUN)
+
+See :doc:`determinism` for which solvers support deterministic mode and
+what it costs.
 
 .. note::
 
@@ -2341,7 +2703,8 @@ argument on :class:`~CollisionPipeline` selects one of three modes:
   frame and populate :attr:`Contacts.rigid_contact_match_index`, but keep the
   current frame's freshly generated contact geometry in the returned
   :class:`Contacts` buffer.
-- ``"sticky"`` — match like ``"latest"``, then overwrite
+- ``"sticky"`` — match using transported body-local witnesses or a contact
+  travelling with one body's translation, then overwrite
   each matched contact's body-frame contact points (``point0``/``point1``),
   offsets (``offset0``/``offset1``), and world-frame ``normal`` with the
   saved previous-frame values when the contact is penetrating and the saved
@@ -2400,19 +2763,32 @@ match indices refer to, or ``-1`` when the previous pass wrote another buffer
 with the generation it saved, so indices into another buffer's contacts are not
 mistaken for its own.
 
-The distance metric is the world-space **contact midpoint**
+In ``"latest"`` mode, the distance metric is the world-space **contact midpoint**
 ``0.5 * (world(point0) + world(point1))`` — symmetric in shape 0 and shape 1
 — which means swapping the two shapes of a pair does not change whether a
 contact matches.  It also means pure changes in penetration depth register
 as motion on both sides of the contact, not just one.
+
+In ``"sticky"`` mode, the distance metric is instead the larger distance
+between each saved body-local witness, transformed by its current body pose,
+and its corresponding fresh contact point. This preserves matches during
+shared body motion and compression that leaves each witness on its own
+surface. A contact can also match while travelling with one body's
+translation, as with a rolling wheel: changes in that body's world-oriented
+witness offset and in the world-space separation between witnesses must
+remain within the position threshold. Both matching rules are symmetric
+in shape 0 and shape 1.
 
 **Thresholds**
 
 - ``contact_matching_pos_threshold`` — maximum world-space distance [m]
   between the previous and current contact midpoints for a match.  Contacts
   that moved more than this between frames are considered broken.  In sticky
-  mode, this also bounds each saved witness's distance from its fresh contact
-  point under the current body transforms.  Defaults to ``0.0005`` m.
+  mode, this threshold applies either to both transported witnesses or to
+  the travelling-contact offset and separation described above. A matched
+  contact retains fresh geometry when either transported witness exceeds
+  this threshold.
+  Defaults to ``0.0005`` m.
 - ``contact_matching_normal_dot_threshold`` — minimum dot product between old
   and new contact normals.  Below this the contact is reported as broken even
   if the key and position match.
@@ -2422,22 +2798,26 @@ as motion on both sides of the contact, not just one.
 Replay of the matched previous-frame geometry happens after the deterministic
 sort, so ``match_index`` already addresses the final sorted layout.  Unmatched
 rows are left untouched, so new and threshold-broken contacts keep their fresh
-narrow-phase geometry.  Matched contacts also keep fresh geometry if the
-fresh contact is separated, or if either saved witness, transformed by the
-current body pose, lies farther than ``contact_matching_pos_threshold`` from
-its corresponding fresh witness.  This prevents a rotating surface from
-replaying a stale material point even when its geometric contact midpoint
-stays put.  These contacts retain their match indices and reports, and the
-fresh geometry becomes the saved history for the next frame.  The extra
-per-contact buffers (four ``vec3`` columns for the body-frame points and
-offsets) are only allocated when the mode is ``"sticky"``; ``"latest"`` and
+narrow-phase geometry. A travelling contact can retain its match index and
+solver history even when its material witnesses move around a rolling or
+spinning body. If either transported witness lies farther than
+``contact_matching_pos_threshold`` from its fresh contact point, replay keeps
+the fresh geometry. Matched separated contacts also keep fresh geometry.
+The retained geometry becomes the saved history for the next frame.
+A contact is reported as broken when neither matching rule accepts a previous
+contact or the normal threshold fails. One-to-one matching can also reject a
+contact when another row claims the same previous contact.
+Use ``"latest"`` to retain world-space midpoint matching with fresh geometry.
+The extra per-contact buffers (seven ``vec3`` columns for the body-frame
+points and offsets, world-oriented witness offsets, and witness separation)
+are only allocated when the mode is ``"sticky"``; ``"latest"`` and
 ``"disabled"`` pay zero additional memory and launch no additional kernels.
 
 **Memory**
 
 Both enabled modes keep the previous frame's sorted keys, uniqueness claims,
 contact midpoints and normals in buffers owned by the pipeline: 40 bytes per
-``rigid_contact_max`` slot.  ``"sticky"`` adds 48 bytes per slot and
+``rigid_contact_max`` slot.  ``"sticky"`` adds 84 bytes per slot and
 ``contact_report=True`` adds 4.  ``"disabled"`` allocates no matching history.
 
 The deterministic pipeline's sorter omits the unused simple-layout scratch,
@@ -2634,7 +3014,21 @@ specializations. Rebuild the pipeline after modifying or resizing the pair array
 **Narrow phase**
 
 :class:`~geometry.NarrowPhase` accepts the candidate pairs from any broad phase and
-generates contacts:
+generates contacts. Low-level mesh-SDF collision requires packed edge indices and
+per-shape edge ranges; omitting them disables mesh edge contacts. Centers and
+half-vectors are optional acceleration arrays in unscaled mesh coordinates.
+Caller-owned arrays can use the full public :attr:`~newton.Mesh.edges` set and
+zero endpoint-ownership codes, but reproducing the pipeline's simplified edges
+and ownership requires internal data without a stable public accessor. Use
+:class:`~newton.CollisionPipeline` for model collision detection.
+
+.. deprecated:: 1.8
+
+   The ``Model.mesh_edge_indices``, ``Model.mesh_edge_centers``,
+   ``Model.mesh_edge_halves``, and ``Model.shape_edge_range`` aliases expose
+   internal collision acceleration data. They remain readable and writable with
+   :class:`~newton.NewtonDeprecationWarning` through Newton 1.8 and
+   will be removed in 1.9. Use :class:`~newton.CollisionPipeline` instead.
 
 .. code-block:: python
 
@@ -2651,7 +3045,7 @@ generates contacts:
         shape_types=...,
         shape_data=...,
         shape_transform=...,
-        # ... remaining geometry arrays from Model
+        # ... remaining geometry arrays and caller-owned mesh edge data
         contact_pair=out_pairs,
         contact_position=out_positions,
         contact_normal=out_normals,

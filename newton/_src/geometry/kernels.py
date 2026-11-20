@@ -3,7 +3,14 @@
 
 import warp as wp
 
-from ..utils.heightfield import HeightfieldData, sample_sdf_grad_heightfield
+from ..utils.heightfield import (
+    HeightfieldData,
+    get_triangle_shape_from_heightfield,
+    heightfield_cell_range,
+    heightfield_point_below,
+    sample_sdf_grad_heightfield,
+    signed_heightfield_feature_distance,
+)
 from .broad_phase_common import binary_search
 from .flags import MeshProperties, MeshSignMethod, ParticleFlags, ShapeFlags
 from .types import (
@@ -737,267 +744,6 @@ def sdf_plane_grad(point: wp.vec3, width: float, length: float):
 
 
 @wp.func
-def closest_point_plane(width: float, length: float, point: wp.vec3):
-    # projects the point onto the quad in the xy plane (if width and length > 0.0, otherwise the plane is infinite)
-    if width > 0.0:
-        x = wp.clamp(point[0], -width, width)
-    else:
-        x = point[0]
-    if length > 0.0:
-        y = wp.clamp(point[1], -length, length)
-    else:
-        y = point[1]
-    return wp.vec3(x, y, 0.0)
-
-
-@wp.func
-def closest_point_line_segment(a: wp.vec3, b: wp.vec3, point: wp.vec3):
-    ab = b - a
-    ap = point - a
-    t = wp.dot(ap, ab) / wp.dot(ab, ab)
-    t = wp.clamp(t, 0.0, 1.0)
-    return a + t * ab
-
-
-@wp.func
-def closest_point_box(upper: wp.vec3, point: wp.vec3):
-    # closest point to box surface
-    x = wp.clamp(point[0], -upper[0], upper[0])
-    y = wp.clamp(point[1], -upper[1], upper[1])
-    z = wp.clamp(point[2], -upper[2], upper[2])
-    if wp.abs(point[0]) <= upper[0] and wp.abs(point[1]) <= upper[1] and wp.abs(point[2]) <= upper[2]:
-        # the point is inside, find closest face
-        sx = wp.abs(wp.abs(point[0]) - upper[0])
-        sy = wp.abs(wp.abs(point[1]) - upper[1])
-        sz = wp.abs(wp.abs(point[2]) - upper[2])
-        # return closest point on closest side, handle corner cases
-        if (sx < sy and sx < sz) or (sy == 0.0 and sz == 0.0):
-            x = wp.sign(point[0]) * upper[0]
-        elif (sy < sx and sy < sz) or (sx == 0.0 and sz == 0.0):
-            y = wp.sign(point[1]) * upper[1]
-        else:
-            z = wp.sign(point[2]) * upper[2]
-    return wp.vec3(x, y, z)
-
-
-@wp.func
-def get_box_vertex(point_id: int, upper: wp.vec3):
-    # box vertex numbering:
-    #    6---7
-    #    |\  |\       y
-    #    | 2-+-3      |
-    #    4-+-5 |   z \|
-    #     \|  \|      o---x
-    #      0---1
-    # get the vertex of the box given its ID (0-7)
-    sign_x = float(point_id % 2) * 2.0 - 1.0
-    sign_y = float((point_id // 2) % 2) * 2.0 - 1.0
-    sign_z = float((point_id // 4) % 2) * 2.0 - 1.0
-    return wp.vec3(sign_x * upper[0], sign_y * upper[1], sign_z * upper[2])
-
-
-@wp.func
-def get_box_edge(edge_id: int, upper: wp.vec3):
-    # get the edge of the box given its ID (0-11)
-    if edge_id < 4:
-        # edges along x: 0-1, 2-3, 4-5, 6-7
-        i = edge_id * 2
-        j = i + 1
-        return wp.spatial_vector(get_box_vertex(i, upper), get_box_vertex(j, upper))
-    elif edge_id < 8:
-        # edges along y: 0-2, 1-3, 4-6, 5-7
-        edge_id -= 4
-        i = edge_id % 2 + edge_id // 2 * 4
-        j = i + 2
-        return wp.spatial_vector(get_box_vertex(i, upper), get_box_vertex(j, upper))
-    # edges along z: 0-4, 1-5, 2-6, 3-7
-    edge_id -= 8
-    i = edge_id
-    j = i + 4
-    return wp.spatial_vector(get_box_vertex(i, upper), get_box_vertex(j, upper))
-
-
-@wp.func
-def get_plane_edge(edge_id: int, plane_width: float, plane_length: float):
-    # get the edge of the plane given its ID (0-3)
-    p0x = (2.0 * float(edge_id % 2) - 1.0) * plane_width
-    p0y = (2.0 * float(edge_id // 2) - 1.0) * plane_length
-    if edge_id == 0 or edge_id == 3:
-        p1x = p0x
-        p1y = -p0y
-    else:
-        p1x = -p0x
-        p1y = p0y
-    return wp.spatial_vector(wp.vec3(p0x, p0y, 0.0), wp.vec3(p1x, p1y, 0.0))
-
-
-@wp.func
-def closest_edge_coordinate_box(upper: wp.vec3, edge_a: wp.vec3, edge_b: wp.vec3, max_iter: int):
-    # find point on edge closest to box, return its barycentric edge coordinate
-    # Golden-section search
-    a = float(0.0)
-    b = float(1.0)
-    h = b - a
-    invphi = 0.61803398875  # 1 / phi
-    invphi2 = 0.38196601125  # 1 / phi^2
-    c = a + invphi2 * h
-    d = a + invphi * h
-    query = (1.0 - c) * edge_a + c * edge_b
-    yc = sdf_box(query, upper[0], upper[1], upper[2])
-    query = (1.0 - d) * edge_a + d * edge_b
-    yd = sdf_box(query, upper[0], upper[1], upper[2])
-
-    for _k in range(max_iter):
-        if yc < yd:  # yc > yd to find the maximum
-            b = d
-            d = c
-            yd = yc
-            h = invphi * h
-            c = a + invphi2 * h
-            query = (1.0 - c) * edge_a + c * edge_b
-            yc = sdf_box(query, upper[0], upper[1], upper[2])
-        else:
-            a = c
-            c = d
-            yc = yd
-            h = invphi * h
-            d = a + invphi * h
-            query = (1.0 - d) * edge_a + d * edge_b
-            yd = sdf_box(query, upper[0], upper[1], upper[2])
-
-    if yc < yd:
-        return 0.5 * (a + d)
-    return 0.5 * (c + b)
-
-
-@wp.func
-def closest_edge_coordinate_plane(
-    plane_width: float,
-    plane_length: float,
-    edge_a: wp.vec3,
-    edge_b: wp.vec3,
-    max_iter: int,
-):
-    # find point on edge closest to plane, return its barycentric edge coordinate
-    # Golden-section search
-    a = float(0.0)
-    b = float(1.0)
-    h = b - a
-    invphi = 0.61803398875  # 1 / phi
-    invphi2 = 0.38196601125  # 1 / phi^2
-    c = a + invphi2 * h
-    d = a + invphi * h
-    query = (1.0 - c) * edge_a + c * edge_b
-    yc = sdf_plane(query, plane_width, plane_length)
-    query = (1.0 - d) * edge_a + d * edge_b
-    yd = sdf_plane(query, plane_width, plane_length)
-
-    for _k in range(max_iter):
-        if yc < yd:  # yc > yd to find the maximum
-            b = d
-            d = c
-            yd = yc
-            h = invphi * h
-            c = a + invphi2 * h
-            query = (1.0 - c) * edge_a + c * edge_b
-            yc = sdf_plane(query, plane_width, plane_length)
-        else:
-            a = c
-            c = d
-            yc = yd
-            h = invphi * h
-            d = a + invphi * h
-            query = (1.0 - d) * edge_a + d * edge_b
-            yd = sdf_plane(query, plane_width, plane_length)
-
-    if yc < yd:
-        return 0.5 * (a + d)
-    return 0.5 * (c + b)
-
-
-@wp.func
-def closest_edge_coordinate_capsule(radius: float, half_height: float, edge_a: wp.vec3, edge_b: wp.vec3, max_iter: int):
-    # find point on edge closest to capsule, return its barycentric edge coordinate
-    # Golden-section search
-    a = float(0.0)
-    b = float(1.0)
-    h = b - a
-    invphi = 0.61803398875  # 1 / phi
-    invphi2 = 0.38196601125  # 1 / phi^2
-    c = a + invphi2 * h
-    d = a + invphi * h
-    query = (1.0 - c) * edge_a + c * edge_b
-    yc = sdf_capsule(query, radius, half_height, int(Axis.Z))
-    query = (1.0 - d) * edge_a + d * edge_b
-    yd = sdf_capsule(query, radius, half_height, int(Axis.Z))
-
-    for _k in range(max_iter):
-        if yc < yd:  # yc > yd to find the maximum
-            b = d
-            d = c
-            yd = yc
-            h = invphi * h
-            c = a + invphi2 * h
-            query = (1.0 - c) * edge_a + c * edge_b
-            yc = sdf_capsule(query, radius, half_height, int(Axis.Z))
-        else:
-            a = c
-            c = d
-            yc = yd
-            h = invphi * h
-            d = a + invphi * h
-            query = (1.0 - d) * edge_a + d * edge_b
-            yd = sdf_capsule(query, radius, half_height, int(Axis.Z))
-
-    if yc < yd:
-        return 0.5 * (a + d)
-
-    return 0.5 * (c + b)
-
-
-@wp.func
-def closest_edge_coordinate_cylinder(
-    radius: float, half_height: float, edge_a: wp.vec3, edge_b: wp.vec3, max_iter: int
-):
-    # find point on edge closest to cylinder, return its barycentric edge coordinate
-    # Golden-section search
-    a = float(0.0)
-    b = float(1.0)
-    h = b - a
-    invphi = 0.61803398875  # 1 / phi
-    invphi2 = 0.38196601125  # 1 / phi^2
-    c = a + invphi2 * h
-    d = a + invphi * h
-    query = (1.0 - c) * edge_a + c * edge_b
-    yc = sdf_cylinder(query, radius, half_height, int(Axis.Z))
-    query = (1.0 - d) * edge_a + d * edge_b
-    yd = sdf_cylinder(query, radius, half_height, int(Axis.Z))
-
-    for _k in range(max_iter):
-        if yc < yd:  # yc > yd to find the maximum
-            b = d
-            d = c
-            yd = yc
-            h = invphi * h
-            c = a + invphi2 * h
-            query = (1.0 - c) * edge_a + c * edge_b
-            yc = sdf_cylinder(query, radius, half_height, int(Axis.Z))
-        else:
-            a = c
-            c = d
-            yc = yd
-            h = invphi * h
-            d = a + invphi * h
-            query = (1.0 - d) * edge_a + d * edge_b
-            yd = sdf_cylinder(query, radius, half_height, int(Axis.Z))
-
-    if yc < yd:
-        return 0.5 * (a + d)
-
-    return 0.5 * (c + b)
-
-
-@wp.func
 def mesh_query_point_sign(mesh: wp.uint64, point: wp.vec3, max_dist: float, sign_method: int):
     """Closest-point query with the inside/outside sign strategy selected by *sign_method*."""
     if sign_method == MeshSignMethod.PARITY:
@@ -1028,74 +774,6 @@ def sdf_mesh(mesh: wp.uint64, point: wp.vec3, max_dist: float):
         Signed distance [m], negative inside, zero on surface, positive outside.
     """
     return mesh_sdf(mesh, point, max_dist)
-
-
-@wp.func
-def closest_point_mesh(mesh: wp.uint64, point: wp.vec3, max_dist: float):
-    res = wp.mesh_query_point_no_sign(mesh, point, max_dist)
-
-    if res.result:
-        return wp.mesh_eval_position(mesh, res.face, res.u, res.v)
-    # return arbitrary point from mesh
-    return wp.mesh_eval_position(mesh, 0, 0.0, 0.0)
-
-
-@wp.func
-def closest_edge_coordinate_mesh(mesh: wp.uint64, edge_a: wp.vec3, edge_b: wp.vec3, max_iter: int, max_dist: float):
-    # find point on edge closest to mesh, return its barycentric edge coordinate
-    # Golden-section search
-    a = float(0.0)
-    b = float(1.0)
-    h = b - a
-    invphi = 0.61803398875  # 1 / phi
-    invphi2 = 0.38196601125  # 1 / phi^2
-    c = a + invphi2 * h
-    d = a + invphi * h
-    query = (1.0 - c) * edge_a + c * edge_b
-    yc = mesh_sdf(mesh, query, max_dist)
-    query = (1.0 - d) * edge_a + d * edge_b
-    yd = mesh_sdf(mesh, query, max_dist)
-
-    for _k in range(max_iter):
-        if yc < yd:  # yc > yd to find the maximum
-            b = d
-            d = c
-            yd = yc
-            h = invphi * h
-            c = a + invphi2 * h
-            query = (1.0 - c) * edge_a + c * edge_b
-            yc = mesh_sdf(mesh, query, max_dist)
-        else:
-            a = c
-            c = d
-            yc = yd
-            h = invphi * h
-            d = a + invphi * h
-            query = (1.0 - d) * edge_a + d * edge_b
-            yd = mesh_sdf(mesh, query, max_dist)
-
-    if yc < yd:
-        return 0.5 * (a + d)
-    return 0.5 * (c + b)
-
-
-@wp.func
-def volume_grad(volume: wp.uint64, p: wp.vec3):
-    eps = 0.05  # TODO make this a parameter
-    q = wp.volume_world_to_index(volume, p)
-
-    # compute gradient of the SDF using finite differences
-    dx = wp.volume_sample_f(volume, q + wp.vec3(eps, 0.0, 0.0), wp.Volume.LINEAR) - wp.volume_sample_f(
-        volume, q - wp.vec3(eps, 0.0, 0.0), wp.Volume.LINEAR
-    )
-    dy = wp.volume_sample_f(volume, q + wp.vec3(0.0, eps, 0.0), wp.Volume.LINEAR) - wp.volume_sample_f(
-        volume, q - wp.vec3(0.0, eps, 0.0), wp.Volume.LINEAR
-    )
-    dz = wp.volume_sample_f(volume, q + wp.vec3(0.0, 0.0, eps), wp.Volume.LINEAR) - wp.volume_sample_f(
-        volume, q - wp.vec3(0.0, 0.0, eps), wp.Volume.LINEAR
-    )
-
-    return wp.normalize(wp.vec3(dx, dy, dz))
 
 
 @wp.func
@@ -1133,6 +811,46 @@ def counter_increment_replay(
     return -1
 
 
+@wp.func
+def closest_point_heightfield(
+    hfd: HeightfieldData,
+    elevation_data: wp.array[wp.float32],
+    pos: wp.vec3,
+    threshold: float,
+) -> tuple[float, wp.vec3]:
+    """Exact signed distance and contact normal of ``pos`` against nearby heightfield triangles.
+
+    Unlike :func:`sample_sdf_grad_heightfield`, the normal follows the closest-feature delta, so a
+    point beside a step lip is pushed away from the lip rather than along the riser's face normal.
+    Only triangles within ``threshold`` of ``pos`` in XY are searched; farther points return 1e10.
+    """
+    cells = heightfield_cell_range(pos, pos, pos, hfd, threshold)
+    best_sq = float(1.0e20)
+    closest = wp.vec3(0.0)
+    closest_normal = wp.vec3(0.0, 0.0, 1.0)
+    for row in range(cells[2], cells[3] + 1):
+        for col in range(cells[0], cells[1] + 1):
+            for sub in range(2):
+                tri_index = (row * (hfd.ncol - 1) + col) * 2 + sub
+                rigid_shape, u = get_triangle_shape_from_heightfield(
+                    hfd, elevation_data, wp.transform_identity(), tri_index
+                )
+                v = u + rigid_shape.scale
+                w = u + rigid_shape.auxiliary
+                y, _bary, _feature = triangle_closest_point(u, v, w, pos)
+                distance_sq = wp.length_sq(pos - y)
+                if distance_sq < best_sq:
+                    best_sq = distance_sq
+                    closest = y
+                    closest_normal = wp.cross(v - u, w - u)
+    if best_sq >= 1.0e20:
+        return float(1.0e10), wp.vec3(0.0, 0.0, 1.0)
+    best, best_normal = signed_heightfield_feature_distance(
+        pos, closest, wp.normalize(closest_normal), heightfield_point_below(hfd, elevation_data, pos)
+    )
+    return best, best_normal
+
+
 @wp.kernel
 def create_soft_contacts(
     soft_rigid_contact_pairs: wp.array[wp.vec2i],
@@ -1148,6 +866,9 @@ def create_soft_contacts(
     shape_source_ptr: wp.array[wp.uint64],
     shape_mesh_properties: wp.array[wp.int32],
     shape_world: wp.array[int],  # World indices for shapes
+    shape_aabb_lower: wp.array[wp.vec3],
+    shape_aabb_upper: wp.array[wp.vec3],
+    shape_gap: wp.array[float],
     margin: float,
     shape_margin: wp.array[float],
     soft_contact_max: int,
@@ -1155,6 +876,7 @@ def create_soft_contacts(
     shape_heightfield_index: wp.array[wp.int32],
     heightfield_data: wp.array[HeightfieldData],
     heightfield_elevations: wp.array[wp.float32],
+    exact_heightfield: bool,
     # outputs
     soft_contact_count: wp.array[int],
     soft_contact_particle: wp.array[int],
@@ -1188,6 +910,28 @@ def create_soft_contacts(
     px = particle_q[particle_index]
     radius = particle_radius[particle_index]
 
+    geo_type = shape_type[shape_index]
+    geo_scale = shape_scale[shape_index]
+    s_margin = shape_margin[shape_index] if shape_margin.shape[0] > 0 else 0.0
+
+    # The rigid broad-phase AABB already includes its shape margin and rigid-contact gap. Expand it
+    # only by the particle radius and any additional soft-contact gap before doing shape-specific work.
+    # Plane distance is cheaper than this bound; heightfields also remain solid below their surface.
+    can_cull = shape_aabb_lower.shape[0] > 0 and geo_type != GeoType.PLANE and geo_type != GeoType.HFIELD
+    if can_cull:
+        extent = radius + wp.max(margin - shape_gap[shape_index], 0.0)
+        lower = shape_aabb_lower[shape_index] - wp.vec3(extent)
+        upper = shape_aabb_upper[shape_index] + wp.vec3(extent)
+        if (
+            px[0] < lower[0]
+            or px[0] > upper[0]
+            or px[1] < lower[1]
+            or px[1] > upper[1]
+            or px[2] < lower[2]
+            or px[2] > upper[2]
+        ):
+            return
+
     X_wb = wp.transform_identity()
     if rigid_index >= 0:
         X_wb = body_q[rigid_index]
@@ -1199,11 +943,6 @@ def create_soft_contacts(
 
     # transform particle position to shape local space
     x_local = wp.transform_point(X_sw, px)
-
-    # geo description
-    geo_type = shape_type[shape_index]
-    geo_scale = shape_scale[shape_index]
-    s_margin = shape_margin[shape_index] if shape_margin.shape[0] > 0 else 0.0
 
     # evaluate shape sdf
     d = 1.0e6
@@ -1275,7 +1014,12 @@ def create_soft_contacts(
 
     if geo_type == GeoType.HFIELD:
         hfd = heightfield_data[shape_heightfield_index[shape_index]]
-        d, n = sample_sdf_grad_heightfield(hfd, heightfield_elevations, x_local)
+        if exact_heightfield:
+            # Full-surface contacts rest cloth on step lips, so particles beside a lip need the
+            # closest-feature normal instead of the riser's nearly horizontal face normal.
+            d, n = closest_point_heightfield(hfd, heightfield_elevations, x_local, margin + s_margin + radius)
+        else:
+            d, n = sample_sdf_grad_heightfield(hfd, heightfield_elevations, x_local)
 
     if d < margin + s_margin + radius:
         index = counter_increment(soft_contact_count, 0, soft_contact_tids, tid)
@@ -1399,23 +1143,6 @@ def compute_edge_groups(
     if world_index < 0:
         world_index = world_count
     groups[e_id] = world_index
-
-
-@wp.func
-def tri_is_neighbor(a_1: wp.int32, a_2: wp.int32, a_3: wp.int32, b_1: wp.int32, b_2: wp.int32, b_3: wp.int32):
-    tri_is_neighbor = (
-        a_1 == b_1
-        or a_1 == b_2
-        or a_1 == b_3
-        or a_2 == b_1
-        or a_2 == b_2
-        or a_2 == b_3
-        or a_3 == b_1
-        or a_3 == b_2
-        or a_3 == b_3
-    )
-
-    return tri_is_neighbor
 
 
 @wp.func
@@ -1573,19 +1300,19 @@ def vertex_triangle_collision_detection_kernel(
 
                 dist = wp.length(closest_p - v)
 
-                if min_distance_filtering_ref_pos and min_query_radius > 0.0:
-                    closest_p_ref, _, __ = triangle_closest_point(
-                        min_distance_filtering_ref_pos[t1],
-                        min_distance_filtering_ref_pos[t2],
-                        min_distance_filtering_ref_pos[t3],
-                        min_distance_filtering_ref_pos[v_index],
-                    )
-                    dist_ref = wp.length(closest_p_ref - min_distance_filtering_ref_pos[v_index])
-
-                    if dist_ref < min_query_radius:
-                        continue
-
                 if dist < max_query_radius:
+                    if min_distance_filtering_ref_pos and min_query_radius > 0.0:
+                        closest_p_ref, _, __ = triangle_closest_point(
+                            min_distance_filtering_ref_pos[t1],
+                            min_distance_filtering_ref_pos[t2],
+                            min_distance_filtering_ref_pos[t3],
+                            min_distance_filtering_ref_pos[v_index],
+                        )
+                        dist_ref = wp.length(closest_p_ref - min_distance_filtering_ref_pos[v_index])
+
+                        if dist_ref < min_query_radius:
+                            continue
+
                     # record v-f collision to vertex
                     min_dis_to_tris = wp.min(min_dis_to_tris, dist)
                     if vertex_num_collisions < vertex_buffer_size:
@@ -1724,20 +1451,20 @@ def edge_colliding_edges_detection_kernel(
                 std = wp.closest_point_edge_edge(e0_v0_pos, e0_v1_pos, e1_v0_pos, e1_v1_pos, edge_edge_parallel_epsilon)
                 dist = std[2]
 
-                if min_distance_filtering_ref_pos and min_query_radius > 0.0:
-                    e0_v0_pos_ref = min_distance_filtering_ref_pos[e0_v0]
-                    e0_v1_pos_ref = min_distance_filtering_ref_pos[e0_v1]
-                    e1_v0_pos_ref = min_distance_filtering_ref_pos[e1_v0]
-                    e1_v1_pos_ref = min_distance_filtering_ref_pos[e1_v1]
-                    std_ref = wp.closest_point_edge_edge(
-                        e0_v0_pos_ref, e0_v1_pos_ref, e1_v0_pos_ref, e1_v1_pos_ref, edge_edge_parallel_epsilon
-                    )
-
-                    dist_ref = std_ref[2]
-                    if dist_ref < min_query_radius:
-                        continue
-
                 if dist < max_query_radius:
+                    if min_distance_filtering_ref_pos and min_query_radius > 0.0:
+                        e0_v0_pos_ref = min_distance_filtering_ref_pos[e0_v0]
+                        e0_v1_pos_ref = min_distance_filtering_ref_pos[e0_v1]
+                        e1_v0_pos_ref = min_distance_filtering_ref_pos[e1_v0]
+                        e1_v1_pos_ref = min_distance_filtering_ref_pos[e1_v1]
+                        std_ref = wp.closest_point_edge_edge(
+                            e0_v0_pos_ref, e0_v1_pos_ref, e1_v0_pos_ref, e1_v1_pos_ref, edge_edge_parallel_epsilon
+                        )
+
+                        dist_ref = std_ref[2]
+                        if dist_ref < min_query_radius:
+                            continue
+
                     edge_buffer_offset = edge_colliding_edges_offsets[e_index]
                     edge_buffer_size = edge_colliding_edges_offsets[e_index + 1] - edge_buffer_offset
 

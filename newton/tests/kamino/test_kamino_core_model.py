@@ -5,6 +5,7 @@
 Unit tests for the :class:`ModelKamino` class, model conversion, and related functionality.
 """
 
+import logging
 import unittest
 
 import numpy as np
@@ -25,11 +26,11 @@ from newton._src.solvers.kamino._src.core.joints import (
     JointActuationType,
 )
 from newton._src.solvers.kamino._src.core.model import ModelKamino
-from newton._src.solvers.kamino._src.utils import logger as msg
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
 from newton.tests import get_kamino_basics_asset
-from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino import setup_test_output, setup_tests, test_context
 from newton.tests.kamino.utils import print as print_utils
+from newton.tests.unittest_utils import NewtonTestCase, requires
 from newton.tests.utils.basics import (
     build_box_pendulum,
     build_boxes_fourbar,
@@ -38,29 +39,21 @@ from newton.tests.utils.basics import (
     make_basics_heterogeneous_builder,
 )
 
+logger = logging.getLogger(__name__)
+
 ###
 # Tests
 ###
 
 
-class TestModel(unittest.TestCase):
+class TestModel(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose  # Set to True for verbose output
 
-        # Set debug-level logging to print verbose test output to console
-        if self.verbose:
-            print("\n")  # Add newline before test output for better readability
-            msg.set_log_level(msg.LogLevel.DEBUG)
-        else:
-            msg.reset_log_level()
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            msg.reset_log_level()
+        setup_test_output(self, verbose=self.verbose)
 
     def test_01_single_model(self):
         # Create a model builder
@@ -68,15 +61,13 @@ class TestModel(unittest.TestCase):
 
         # Finalize the model
         model: ModelKamino = ModelKamino.from_newton(builder.finalize(device=self.default_device))
-        if self.verbose:
-            print("")  # Add a newline for better readability
-            print_utils.print_model_info(model)
+        logger.debug("")  # Add a newline for better readability
+        print_utils.debug_print_model_info(model)
 
         # Create a model state
         state = model.data()
-        if self.verbose:
-            print("")  # Add a newline for better readability
-            print_utils.print_data_info(state)
+        logger.debug("")  # Add a newline for better readability
+        print_utils.debug_print_data_info(state)
 
         # Check the model info entries
         self.assertEqual(model.size.sum_of_num_bodies, builder.body_count)
@@ -99,15 +90,13 @@ class TestModel(unittest.TestCase):
 
         # Finalize the model
         model: ModelKamino = ModelKamino.from_newton(builder1.finalize(device=self.default_device))
-        if self.verbose:
-            print("")  # Add a newline for better readability
-            print_utils.print_model_info(model)
+        logger.debug("")  # Add a newline for better readability
+        print_utils.debug_print_model_info(model)
 
         # Create a model state
         data = model.data()
-        if self.verbose:
-            print("")  # Add a newline for better readability
-            print_utils.print_data_info(data)
+        logger.debug("")  # Add a newline for better readability
+        print_utils.debug_print_data_info(data)
 
         # Check the model info entries
         self.assertEqual(model.size.sum_of_num_bodies, total_nb)
@@ -120,19 +109,17 @@ class TestModel(unittest.TestCase):
 
         # Create a model builder
         builder = ModelBuilder()
-        builder.replicate(builder=build_boxes_hinged(), world_count=num_worlds)
+        builder.replicate(builder=build_boxes_hinged(), copy_count=num_worlds)
 
         # Finalize the model
         model: ModelKamino = ModelKamino.from_newton(builder.finalize(device=self.default_device))
-        if self.verbose:
-            print("")  # Add a newline for better readability
-            print_utils.print_model_info(model)
+        logger.debug("")  # Add a newline for better readability
+        print_utils.debug_print_model_info(model)
 
         # Create a model state
         state = model.data()
-        if self.verbose:
-            print("")  # Add a newline for better readability
-            print_utils.print_data_info(state)
+        logger.debug("")  # Add a newline for better readability
+        print_utils.debug_print_data_info(state)
 
         # Check the model info entries
         self.assertEqual(model.size.sum_of_num_bodies, num_worlds * 2)
@@ -147,42 +134,30 @@ class TestModel(unittest.TestCase):
 
         # Finalize the model
         model: ModelKamino = ModelKamino.from_newton(builder.finalize(device=self.default_device))
-        if self.verbose:
-            print("")  # Add a newline for better readability
-            print_utils.print_model_info(model)
-            print("")  # Add a newline for better readability
-            print_utils.print_model_bodies(model)
-            print("")  # Add a newline for better readability
-            print_utils.print_model_joints(model)
+        logger.debug("")  # Add a newline for better readability
+        print_utils.debug_print_model_info(model)
+        logger.debug("")  # Add a newline for better readability
+        print_utils.debug_print_model_bodies(model)
+        logger.debug("")  # Add a newline for better readability
+        print_utils.debug_print_model_joints(model)
 
         # Create a model state
         state = model.data()
-        if self.verbose:
-            print("")  # Add a newline for better readability
-            print_utils.print_data_info(state)
+        logger.debug("")  # Add a newline for better readability
+        print_utils.debug_print_data_info(state)
 
         # Check the model info entries
         self.assertEqual(model.info.num_worlds, num_worlds)
 
 
-class TestModelConversions(unittest.TestCase):
+class TestModelConversions(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose  # Set to True to enable verbose output
 
-        # Set debug-level logging to print verbose test output to console
-        if self.verbose:
-            print("\n")  # Add newline before test output for better readability
-            msg.set_log_level(msg.LogLevel.INFO)  # TODO @nvtw: set this to DEBUG when investigating noted issues
-        else:
-            msg.reset_log_level()
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            msg.reset_log_level()
+        setup_test_output(self, verbose=self.verbose)
 
     def test_01_model_conversions_consistency_fourbar_from_builder(self):
         """
@@ -207,7 +182,7 @@ class TestModelConversions(unittest.TestCase):
 
         builder_newton: ModelBuilder = ModelBuilder()
         SolverKamino.register_custom_attributes(builder_newton)
-        builder_newton.replicate(builder=builder_single, world_count=2)
+        builder_newton.replicate(builder=builder_single, copy_count=2)
 
         model_newton: Model = builder_newton.finalize(skip_validation_joints=True, device=self.default_device)
         model_kamino: ModelKamino = ModelKamino.from_newton(model_newton)
@@ -252,6 +227,7 @@ class TestModelConversions(unittest.TestCase):
         test_util_checks.assert_model_conversion_consistency(self, model_newton, model_kamino)
         test_util_checks.assert_model_info_size_consistency(self, model_kamino)
 
+    @requires("pxr.Usd")
     def test_03_model_conversions_consistency_fourbar_from_usd(self):
         """
         Test that the Newton to Kamino model conversion of a fourbar model
@@ -279,6 +255,7 @@ class TestModelConversions(unittest.TestCase):
         test_util_checks.assert_model_conversion_consistency(self, model_newton, model_kamino)
         test_util_checks.assert_model_info_size_consistency(self, model_kamino)
 
+    @requires("pxr.Usd")
     def test_04_model_conversions_consistency_box_on_plane_materials_from_usd(self):
         """
         Test that the Newton to Kamino model conversion of a box-on-plane model
@@ -301,7 +278,7 @@ class TestModelConversions(unittest.TestCase):
 
         builder_newton: ModelBuilder = ModelBuilder()
         SolverKamino.register_custom_attributes(builder_newton)
-        builder_newton.replicate(builder=builder_single, world_count=2)
+        builder_newton.replicate(builder=builder_single, copy_count=2)
 
         model_newton: Model = builder_newton.finalize(skip_validation_joints=True, device=self.default_device)
         model_kamino: ModelKamino = ModelKamino.from_newton(model_newton)
@@ -1077,24 +1054,14 @@ class TestModelConversions(unittest.TestCase):
         self.assertEqual(geom_material[1], -1)
 
 
-class TestStateControlConversions(unittest.TestCase):
+class TestStateControlConversions(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose  # Set to True to enable verbose output
 
-        # Set debug-level logging to print verbose test output to console
-        if self.verbose:
-            print("\n")  # Add newline before test output for better readability
-            msg.set_log_level(msg.LogLevel.INFO)  # TODO @nvtw: set this to DEBUG when investigating noted issues
-        else:
-            msg.reset_log_level()
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            msg.reset_log_level()
+        setup_test_output(self, verbose=self.verbose)
 
     def test_01_state_conversions(self):
         """
@@ -1116,7 +1083,7 @@ class TestStateControlConversions(unittest.TestCase):
         )
         builder_newton: ModelBuilder = ModelBuilder()
         SolverKamino.register_custom_attributes(builder_newton)
-        builder_newton.replicate(builder=builder_single, world_count=2)
+        builder_newton.replicate(builder=builder_single, copy_count=2)
 
         # Create models from the builders and conversion operations, and check for consistency
         model_newton: Model = builder_newton.finalize(skip_validation_joints=True, device=self.default_device)
@@ -1191,7 +1158,7 @@ class TestStateControlConversions(unittest.TestCase):
         )
         builder_newton: ModelBuilder = ModelBuilder()
         SolverKamino.register_custom_attributes(builder_newton)
-        builder_newton.replicate(builder=builder_single, world_count=2)
+        builder_newton.replicate(builder=builder_single, copy_count=2)
 
         # Create models from the builders and conversion operations, and check for consistency
         model_newton: Model = builder_newton.finalize(skip_validation_joints=True, device=self.default_device)
@@ -1239,14 +1206,12 @@ class TestStateControlConversions(unittest.TestCase):
         )
 
 
-class TestConvertModelMaterials(unittest.TestCase):
+class TestConvertModelMaterials(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
+        setup_test_output(self)
         self.default_device = wp.get_device(test_context.device)
-
-    def tearDown(self):
-        self.default_device = None
 
     def _build_two_material_model(self) -> tuple[Model, ModelKamino]:
         """Build a model with 2 shapes sharing a material and 1 shape with a distinct one."""
@@ -1312,6 +1277,7 @@ class TestConvertModelMaterials(unittest.TestCase):
         mu_np[2] = 0.8
         restitution_np[2] = 0.9
         model.shape_material_mu.assign(mu_np)
+        model.shape_material_mu_static.assign(mu_np)
         model.shape_material_restitution.assign(restitution_np)
 
         convert_model_materials(model, model_kamino, first_shape, conflict)
@@ -1348,6 +1314,7 @@ class TestConvertModelMaterials(unittest.TestCase):
 
 if __name__ == "__main__":
     # Test setup
+    newton.utils.setup_console_logging()
     setup_tests()
 
     # Run all tests

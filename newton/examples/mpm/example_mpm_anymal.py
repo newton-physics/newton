@@ -1,14 +1,18 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example MPM ANYmal
-#
-# Shows ANYmal C with a pretrained policy coupled with implicit MPM sand.
-#
-# Example usage (via unified runner):
-#   python -m newton.examples mpm_anymal --viewer gl
-###########################################################################
+"""Example MPM ANYmal
+
+Shows ANYmal C with a pretrained policy coupled with implicit MPM sand.
+
+Success criteria:
+- An Anymal robot is walking on a ground covered by particles.
+- The particles are reacting realistically to the movement of the robot.
+
+Runs:
+- `python -m newton.examples mpm_anymal`
+- `python -m newton.examples mpm_anymal --viewer gl`
+"""
 
 import sys
 
@@ -141,6 +145,8 @@ class Example:
         mpm_options.critical_fraction = 0.0
         mpm_options.air_drag = 1.0
         mpm_options.collider_velocity_mode = "backward"
+        # Push sand that foot strikes drive into the ground back out within about one frame
+        mpm_options.collider_recovery_time = 0.02
 
         # setup solvers
         self.solver = newton.solvers.SolverMuJoCo(

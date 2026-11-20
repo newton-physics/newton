@@ -1,0 +1,1 @@
+Reject Kamino example options that the selected dynamics solver ignores, such as `--bilateral-solver-type` without SCC, `--linear-solver-type` with SCC or LOX, and the DR Legs `--unilateral-solver`, `--[no-]use-schur-complement`, and `--no-graph-conditionals` options outside their solver, instead of silently running another configuration.

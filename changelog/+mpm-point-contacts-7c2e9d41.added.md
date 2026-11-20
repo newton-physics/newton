@@ -1,0 +1,2 @@
+Add `SolverImplicitMPM.Config.collider_winding_number` to sign collider distances with generalized winding numbers, so shapes merged into one collider mesh, such as boxes resting on the ground, are signed as their union.
+Add `SolverImplicitMPM.Config.collider_contact_shielding`, on by default, to deactivate particle collider contacts that another particle shields from the collider, which removes most contacts behind the layer touching colliders; resting contacts and contacts approaching faster than their gap allows stay active.

@@ -1,6 +1,18 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+"""Twist an MPM beam and visualize its stress field.
+
+Success criteria:
+- A beam made of particles twists under the driven boundary motion.
+- Particle stress colors develop during twisting; disabling Show Stress removes the stress coloring.
+- When the drive stops twisting, the beam remains in the twisted configuration without unbounded
+  deformation.
+
+Runs:
+- `python -m newton.examples mpm_beam_twist`
+"""
+
 import warnings
 
 import numpy as np
@@ -283,6 +295,12 @@ class Example:
 
         parser.add_argument("--max-iterations", "-it", type=int, default=250)
         parser.add_argument("--tolerance", "-tol", type=float, default=1.0e-6)
+        parser.add_argument(
+            "--carry-residual-strain",
+            choices=["none", "unconverged", "sampled"],
+            default="unconverged",
+            help="Keep the strain an unconverged solve leaves; suited to compliant elastic materials.",
+        )
         parser.add_argument("--voxel-size", "-dx", type=float, default=0.25)
 
         return parser

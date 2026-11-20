@@ -3,12 +3,14 @@
 
 """Unit tests for the DelassusOperator class"""
 
+import logging
 import unittest
 from unittest.mock import Mock, patch
 
 import numpy as np
 import warp as wp
 
+import newton
 from newton import ModelBuilder
 from newton._src.solvers.kamino._src.core.data import DataKamino
 from newton._src.solvers.kamino._src.core.model import ModelKamino, ModelKaminoInfo
@@ -19,8 +21,8 @@ from newton._src.solvers.kamino._src.kinematics.constraints import get_max_const
 from newton._src.solvers.kamino._src.kinematics.jacobians import SparseSystemJacobians
 from newton._src.solvers.kamino._src.kinematics.limits import LimitsKamino
 from newton._src.solvers.kamino._src.linalg import LLTSequentialSolver
-from newton._src.solvers.kamino._src.utils import logger as msg
-from newton.tests.kamino import setup_tests, test_context
+from newton._src.solvers.kamino._src.linalg.core import dense_matrix_layout
+from newton.tests.kamino import setup_test_output, setup_tests, test_context
 from newton.tests.kamino.utils.extract import (
     extract_active_constraint_dims,
     extract_cts_jacobians,
@@ -33,9 +35,12 @@ from newton.tests.kamino.utils.make import (
     make_inverse_generalized_mass_matrices,
     update_containers,
 )
-from newton.tests.kamino.utils.print import print_error_stats
+from newton.tests.kamino.utils.print import debug_print_error_stats
 from newton.tests.kamino.utils.rand import random_rhs_for_matrix
+from newton.tests.unittest_utils import NewtonTestCase
 from newton.tests.utils.basics import build_boxes_fourbar, build_boxes_nunchaku, make_basics_heterogeneous_builder
+
+logger = logging.getLogger(__name__)
 
 ###
 # Helper functions
@@ -59,7 +64,6 @@ def check_delassus_allocations(
     )
     D_maxdims = [int(delassus_maxdim_np[i]) for i in range(num_worlds)]
     D_sizes = [D_maxdims[i] * D_maxdims[i] for i in range(num_worlds)]
-    D_sizes_sum = sum(D_sizes)
 
     for i in range(num_worlds):
         fixture.assertEqual(
@@ -74,23 +78,23 @@ def check_delassus_allocations(
     # Check Delassus operator data sizes
     fixture.assertEqual(delassus.info.maxdim.size, num_worlds)
     fixture.assertEqual(delassus.info.dim.size, num_worlds)
-    fixture.assertEqual(delassus.info.mio.size, num_worlds)
     fixture.assertEqual(delassus.info.vio.size, num_worlds)
-    fixture.assertEqual(delassus.D.size, D_sizes_sum)
+    fixture.assertEqual(delassus.D.shape, dense_matrix_layout(D_sizes))
 
     # Check if the factorizer info data to the same as the Delassus info data
     fixture.assertEqual(delassus.info.maxdim.ptr, delassus.solver.operator.info.maxdim.ptr)
     fixture.assertEqual(delassus.info.dim.ptr, delassus.solver.operator.info.dim.ptr)
-    fixture.assertEqual(delassus.info.mio.ptr, delassus.solver.operator.info.mio.ptr)
     fixture.assertEqual(delassus.info.vio.ptr, delassus.solver.operator.info.vio.ptr)
 
 
-def print_delassus_info(delassus: DelassusOperator) -> None:
-    print(f"delassus.info.maxdim: {delassus.info.maxdim}")
-    print(f"delassus.info.dim: {delassus.info.dim}")
-    print(f"delassus.info.mio: {delassus.info.mio}")
-    print(f"delassus.info.vio: {delassus.info.vio}")
-    print(f"delassus.D: {delassus.D.shape}")
+def debug_print_delassus_info(delassus: DelassusOperator) -> None:
+    """Print ``delassus.info`` and ``delassus.D`` shape in the debug log."""
+    if not logger.isEnabledFor(logging.DEBUG):
+        return
+    logger.debug("delassus.info.maxdim: %s", delassus.info.maxdim)
+    logger.debug("delassus.info.dim: %s", delassus.info.dim)
+    logger.debug("delassus.info.vio: %s", delassus.info.vio)
+    logger.debug("delassus.D: %s", delassus.D)
 
 
 ###
@@ -103,16 +107,20 @@ def _allocation_patches(error):
     return {name: Mock(side_effect=error) for name in ("zeros", "empty", "full", "array")}
 
 
-class TestDelassusSizing(unittest.TestCase):
+class TestDelassusSizing(NewtonTestCase):
+    def setUp(self):
+        setup_test_output(self)
+
     def test_accept_dense_delassus_at_int32_limit(self):
         """Allow a dense buffer at the int32 limit to reach allocation without reserving its memory."""
+        dimensions = [23170] * 4 + [296, 20, 5, 2, 1, 1]
         model = ModelKamino(
             _device="cpu",
-            size=SizeKamino(num_worlds=4),
+            size=SizeKamino(num_worlds=len(dimensions)),
             info=ModelKaminoInfo(
-                num_worlds=4,
-                num_joint_bilateral_cts=wp.array([32767, 32767, 362, 5], dtype=wp.int32, device="cpu"),
-                num_joint_bounded_cts=wp.array([0, 0, 0, 0], dtype=wp.int32, device="cpu"),
+                num_worlds=len(dimensions),
+                num_joint_bilateral_cts=wp.array(dimensions, dtype=wp.int32, device="cpu"),
+                num_joint_bounded_cts=wp.array([0] * len(dimensions), dtype=wp.int32, device="cpu"),
             ),
         )
         delassus = DelassusOperator()
@@ -135,12 +143,12 @@ class TestDelassusSizing(unittest.TestCase):
         self.assertIsInstance(counts[0], int)
         self.assertEqual(counts[0] ** 2, 237169)
 
-    def test_reject_oversized_dense_delassus_before_allocation(self):
-        """Reject both negative and positive int32 wraparound before allocating a dense buffer."""
+    def test_oversized_dense_delassus_uses_world_rows(self):
+        """Check the allocation shape without reserving a large dense buffer."""
+        self.assertEqual(dense_matrix_layout([2**28] * 8), (8, 2**28))
         cases = (
             (16384, 487, 3885776896),
             (20000, 487, 4743380000),
-            (1, 46341, 2147488281),
         )
         for num_worlds, num_constraints, expected_size in cases:
             with self.subTest(num_worlds=num_worlds, num_constraints=num_constraints):
@@ -154,30 +162,45 @@ class TestDelassusSizing(unittest.TestCase):
                     ),
                 )
                 delassus = DelassusOperator()
-                with patch.multiple(wp, **_allocation_patches(AssertionError("Dense buffer allocation attempted"))):
-                    with self.assertRaisesRegex(ValueError, "Kamino.*dense Delassus") as error:
+                allocators = _allocation_patches(MemoryError("Reached dense buffer allocation"))
+                with patch.multiple(wp, **allocators):
+                    with self.assertRaisesRegex(MemoryError, "Reached dense buffer allocation"):
                         delassus.finalize(model=model, data=DataKamino())
                 self.assertEqual(delassus.num_maxsize, expected_size)
-                for guidance in (
-                    "2147483647",
-                    "worlds",
-                    "max_contacts_per_world",
-                    "sparse_dynamics=True",
-                    "sparse_jacobian=True",
-                    "iterative",
-                ):
-                    self.assertIn(guidance, str(error.exception))
+                self.assertEqual(
+                    allocators["zeros"].call_args.kwargs["shape"],
+                    dense_matrix_layout([num_constraints**2] * num_worlds),
+                )
+
+    def test_reject_unrepresentable_world_row_stride(self):
+        for dimensions in ([32767, 32767, 362, 6], [23171] * 4, [46341]):
+            with self.subTest(dimensions=dimensions):
+                count = len(dimensions)
+                model = ModelKamino(
+                    _device="cpu",
+                    size=SizeKamino(num_worlds=count),
+                    info=ModelKaminoInfo(
+                        num_worlds=count,
+                        num_joint_bilateral_cts=wp.array(dimensions, dtype=wp.int32, device="cpu"),
+                        num_joint_bounded_cts=wp.array([0] * count, dtype=wp.int32, device="cpu"),
+                    ),
+                )
+                allocators = _allocation_patches(MemoryError("Reached dense buffer allocation"))
+                with patch.multiple(wp, **allocators):
+                    with self.assertRaisesRegex(ValueError, "row stride"):
+                        DelassusOperator().finalize(model=model, data=DataKamino())
+                for allocator in allocators.values():
+                    allocator.assert_not_called()
 
 
-class TestDelassusOperator(unittest.TestCase):
+class TestDelassusOperator(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.verbose = test_context.verbose  # Set to True for detailed output
         self.default_device = wp.get_device(test_context.device)
 
-    def tearDown(self):
-        self.default_device = None
+        setup_test_output(self, verbose=self.verbose)
 
     def test_01_allocate_single_delassus_operator(self):
         # Model constants
@@ -206,11 +229,9 @@ class TestDelassusOperator(unittest.TestCase):
 
         # Compare expected to allocated dimensions and sizes
         check_delassus_allocations(self, model, limits, detector.contacts, delassus)
-
         # Optional verbose output
-        if self.verbose:
-            print("")  # Print a newline for better readability
-            print_delassus_info(delassus)
+        logger.debug("")  # Print a newline for better readability
+        debug_print_delassus_info(delassus)
 
     def test_02_allocate_homogeneous_delassus_operator(self):
         # Model constants
@@ -219,7 +240,7 @@ class TestDelassusOperator(unittest.TestCase):
 
         # Construct a homogeneous model description using model builders
         builder = ModelBuilder()
-        builder.replicate(builder=build_boxes_nunchaku(), world_count=num_worlds)
+        builder.replicate(builder=build_boxes_nunchaku(), copy_count=num_worlds)
 
         # Create the model and containers from the builder
         model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
@@ -241,11 +262,9 @@ class TestDelassusOperator(unittest.TestCase):
 
         # Compare expected to allocated dimensions and sizes
         check_delassus_allocations(self, model, limits, detector.contacts, delassus)
-
         # Optional verbose output
-        if self.verbose:
-            print("")  # Print a newline for better readability
-            print_delassus_info(delassus)
+        logger.debug("")  # Print a newline for better readability
+        debug_print_delassus_info(delassus)
 
     def test_03_allocate_heterogeneous_delassus_operator(self):
         # Model constants
@@ -274,11 +293,9 @@ class TestDelassusOperator(unittest.TestCase):
 
         # Compare expected to allocated dimensions and sizes
         check_delassus_allocations(self, model, limits, detector.contacts, delassus)
-
         # Optional verbose output
-        if self.verbose:
-            print("")  # Print a newline for better readability
-            print_delassus_info(delassus)
+        logger.debug("")  # Print a newline for better readability
+        debug_print_delassus_info(delassus)
 
     def test_04_build_delassus_operator(self):
         # Model constants
@@ -333,7 +350,7 @@ class TestDelassusOperator(unittest.TestCase):
             for w in range(delassus.num_worlds):
                 inv_M_q_np[w][: njdcts[w]] = inv_m_j_np[jdcts_start[w] : jdcts_start[w] + njdcts[w]]
                 inv_M_q_np[w] = np.diag(inv_M_q_np[w])
-                msg.info(f"[{w}]: inv_M_q_np (shape={inv_M_q_np[w].shape}):\n{inv_M_q_np[w]}\n\n")
+                logger.debug("[%s]: inv_M_q_np (shape=%s):\n%s\n\n", w, inv_M_q_np[w].shape, inv_M_q_np[w])
 
         # For each world, compute the Delassus matrix using numpy and
         # compare it with the one from the Delassus operator class
@@ -342,12 +359,10 @@ class TestDelassusOperator(unittest.TestCase):
             D_w = (J_cts_np[w] @ invM_np[w]) @ J_cts_np[w].T + inv_M_q_np[w]
 
             # Compare the computed Delassus matrix with the one from the dual problem
-            is_D_close = np.allclose(D_np[w], D_w, rtol=1e-3, atol=1e-4)
-            if not is_D_close or self.verbose:
-                msg.warning(f"[{w}]: D_w (shape={D_w.shape}):\n{D_w}")
-                msg.warning(f"[{w}]: D_np (shape={D_np[w].shape}):\n{D_np[w]}")
-                print_error_stats(f"D[{w}]", D_np[w], D_w, active_size[w], show_errors=True)
-            self.assertTrue(is_D_close)
+            logger.debug("[%s]: D_w (shape=%s):\n%s", w, D_w.shape, D_w)
+            logger.debug("[%s]: D_np (shape=%s):\n%s", w, D_np[w].shape, D_np[w])
+            debug_print_error_stats(f"D[{w}]", D_np[w], D_w, active_size[w], show_errors=True)
+            np.testing.assert_allclose(D_np[w], D_w, rtol=1e-3, atol=1e-4, err_msg="D")
 
     def test_05_build_homogeneous_delassus_operator(self):
         # Model constants
@@ -356,7 +371,7 @@ class TestDelassusOperator(unittest.TestCase):
 
         # Construct a homogeneous model description using model builders
         builder = ModelBuilder()
-        builder.replicate(builder=build_boxes_nunchaku(), world_count=num_worlds)
+        builder.replicate(builder=build_boxes_nunchaku(), copy_count=num_worlds)
 
         # Create the model and containers from the builder
         model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
@@ -400,22 +415,22 @@ class TestDelassusOperator(unittest.TestCase):
             for w in range(delassus.num_worlds):
                 inv_M_q_np[w][: njdcts[w]] = inv_m_j_np[jdcts_start[w] : jdcts_start[w] + njdcts[w]]
                 inv_M_q_np[w] = np.diag(inv_M_q_np[w])
-                print(f"[{w}]: inv_M_q_np (shape={inv_M_q_np[w].shape}):\n{inv_M_q_np[w]}\n\n")
+                logger.debug("[%s]: inv_M_q_np (shape=%s):\n%s\n\n", w, inv_M_q_np[w].shape, inv_M_q_np[w])
 
         # Optional verbose output
-        if self.verbose:
-            print("")  # Print a newline for better readability
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("")  # Print a newline for better readability
             for i in range(len(active_dims)):
-                print(f"[{i}]: active_dims: {active_dims[i]}")
+                logger.debug("[%s]: active_dims: %s", i, active_dims[i])
             for i in range(len(J_cts_np)):
-                print(f"[{i}]: J_cts_np (shape={J_cts_np[i].shape}):\n{J_cts_np[i]}")
+                logger.debug("[%s]: J_cts_np (shape=%s):\n%s", i, J_cts_np[i].shape, J_cts_np[i])
             for i in range(len(D_np)):
-                print(f"[{i}]: D_np (shape={D_np[i].shape}):\n{D_np[i]}")
+                logger.debug("[%s]: D_np (shape=%s):\n%s", i, D_np[i].shape, D_np[i])
             for i in range(len(invM_np)):
-                print(f"[{i}]: invM_np (shape={invM_np[i].shape}):\n{invM_np[i]}")
-            print("")  # Add a newline for better readability
-            print_delassus_info(delassus)
-            print("")  # Add a newline for better readability
+                logger.debug("[%s]: invM_np (shape=%s):\n%s", i, invM_np[i].shape, invM_np[i])
+            logger.debug("")  # Add a newline for better readability
+            debug_print_delassus_info(delassus)
+            logger.debug("")  # Add a newline for better readability
 
         # For each world, compute the Delassus matrix using numpy and
         # compare it with the one from the Delassus operator class
@@ -424,12 +439,10 @@ class TestDelassusOperator(unittest.TestCase):
             D_w = (J_cts_np[w] @ invM_np[w]) @ J_cts_np[w].T + inv_M_q_np[w]
 
             # Compare the computed Delassus matrix with the one from the dual problem
-            is_D_close = np.allclose(D_np[w], D_w, atol=1e-3, rtol=1e-4)
-            if not is_D_close or self.verbose:
-                print(f"[{w}]: D_w (shape={D_w.shape}):\n{D_w}")
-                print(f"[{w}]: D_np (shape={D_np[w].shape}):\n{D_np[w]}")
-                print_error_stats(f"D[{w}]", D_np[w], D_w, active_dims[w])
-            self.assertTrue(is_D_close)
+            logger.debug("[%s]: D_w (shape=%s):\n%s", w, D_w.shape, D_w)
+            logger.debug("[%s]: D_np (shape=%s):\n%s", w, D_np[w].shape, D_np[w])
+            debug_print_error_stats(f"D[{w}]", D_np[w], D_w, active_dims[w])
+            np.testing.assert_allclose(D_np[w], D_w, atol=1e-3, rtol=1e-4, err_msg="D")
 
     def test_06_build_heterogeneous_delassus_operator(self):
         # Model constants
@@ -472,19 +485,19 @@ class TestDelassusOperator(unittest.TestCase):
         invM_np = make_inverse_generalized_mass_matrices(model, data)
 
         # Optional verbose output
-        if self.verbose:
-            print("")  # Print a newline for better readability
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("")  # Print a newline for better readability
             for i in range(len(active_dims)):
-                print(f"[{i}]: active_dims: {active_dims[i]}")
+                logger.debug("[%s]: active_dims: %s", i, active_dims[i])
             for i in range(len(J_cts_np)):
-                print(f"[{i}]: J_cts_np (shape={J_cts_np[i].shape}):\n{J_cts_np[i]}")
+                logger.debug("[%s]: J_cts_np (shape=%s):\n%s", i, J_cts_np[i].shape, J_cts_np[i])
             for i in range(len(D_np)):
-                print(f"[{i}]: D_np (shape={D_np[i].shape}):\n{D_np[i]}")
+                logger.debug("[%s]: D_np (shape=%s):\n%s", i, D_np[i].shape, D_np[i])
             for i in range(len(invM_np)):
-                print(f"[{i}]: invM_np (shape={invM_np[i].shape}):\n{invM_np[i]}")
-            print("")  # Add a newline for better readability
-            print_delassus_info(delassus)
-            print("")  # Add a newline for better readability
+                logger.debug("[%s]: invM_np (shape=%s):\n%s", i, invM_np[i].shape, invM_np[i])
+            logger.debug("")  # Add a newline for better readability
+            debug_print_delassus_info(delassus)
+            logger.debug("")  # Add a newline for better readability
 
         # For each world, compute the Delassus matrix using numpy and
         # compare it with the one from the Delassus operator class
@@ -493,12 +506,10 @@ class TestDelassusOperator(unittest.TestCase):
             D_w = (J_cts_np[w] @ invM_np[w]) @ J_cts_np[w].T
 
             # Compare the computed Delassus matrix with the one from the dual problem
-            is_D_close = np.allclose(D_np[w], D_w, atol=1e-3, rtol=1e-4)
-            if not is_D_close or self.verbose:
-                print(f"[{w}]: D_w (shape={D_w.shape}):\n{D_w}")
-                print(f"[{w}]: D_np (shape={D_np[w].shape}):\n{D_np[w]}")
-                print_error_stats(f"D[{w}]", D_np[w], D_w, active_dims[w])
-            self.assertTrue(is_D_close)
+            logger.debug("[%s]: D_w (shape=%s):\n%s", w, D_w.shape, D_w)
+            logger.debug("[%s]: D_np (shape=%s):\n%s", w, D_np[w].shape, D_np[w])
+            debug_print_error_stats(f"D[{w}]", D_np[w], D_w, active_dims[w])
+            np.testing.assert_allclose(D_np[w], D_w, atol=1e-3, rtol=1e-4, err_msg="D")
 
     def test_07_regularize_delassus_operator(self):
         # Model constants
@@ -542,15 +553,15 @@ class TestDelassusOperator(unittest.TestCase):
         D_np = extract_delassus(delassus, only_active_dims=True)
 
         # Optional verbose output
-        if self.verbose:
-            print("\n")
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("\n")
             for i in range(len(active_dims)):
-                print(f"[{i}]: active_dims: {active_dims[i]}")
+                logger.debug("[%s]: active_dims: %s", i, active_dims[i])
             for i in range(len(D_np)):
-                print(f"[{i}]: D_np (shape={D_np[i].shape}):\n{D_np[i]}")
-            print("")  # Add a newline for better readability
-            print_delassus_info(delassus)
-            print("")  # Add a newline for better readability
+                logger.debug("[%s]: D_np (shape=%s):\n%s", i, D_np[i].shape, D_np[i])
+            logger.debug("")  # Add a newline for better readability
+            debug_print_delassus_info(delassus)
+            logger.debug("")  # Add a newline for better readability
 
         # For each world, compute the Delassus matrix using numpy and
         # compare it with the one from the Delassus operator class
@@ -560,12 +571,10 @@ class TestDelassusOperator(unittest.TestCase):
             D_w = np.eye(active_dims[w], dtype=np.float32)
 
             # Compare the computed Delassus matrix with the one from the dual problem
-            is_D_close = np.allclose(D_np[w], D_w, atol=1e-3, rtol=1e-4)
-            if not is_D_close or self.verbose:
-                print(f"[{w}]: D_w (shape={D_w.shape}):\n{D_w}")
-                print(f"[{w}]: D_np (shape={D_np[w].shape}):\n{D_np[w]}")
-                print_error_stats(f"D[{w}]", D_np[w], D_w, active_dims[w])
-            self.assertTrue(is_D_close)
+            logger.debug("[%s]: D_w (shape=%s):\n%s", w, D_w.shape, D_w)
+            logger.debug("[%s]: D_np (shape=%s):\n%s", w, D_np[w].shape, D_np[w])
+            debug_print_error_stats(f"D[{w}]", D_np[w], D_w, active_dims[w])
+            np.testing.assert_allclose(D_np[w], D_w, atol=1e-3, rtol=1e-4, err_msg="D")
 
     def test_08_delassus_operator_factorize_and_solve_with_sequential_cholesky(self):
         """Factorize a Delassus matrix and solve systems with reproducible right-hand sides."""
@@ -583,15 +592,15 @@ class TestDelassusOperator(unittest.TestCase):
 
         # Update the containers
         update_containers(model=model, data=data, state=state, limits=limits, detector=detector, jacobians=jacobians)
-        if self.verbose:
-            print("")  # Print a newline for better readability
-            print(f"model.info.num_bilateral_joint_cts: {model.info.num_joint_bilateral_cts}")
-            print(f"limits.data.world_max_limits: {limits.data.world_max_limits}")
-            print(f"limits.data.world_active_limits: {limits.data.world_active_limits}")
-            print(f"contacts.data.world_max_contacts: {detector.contacts.data.world_max_contacts}")
-            print(f"contacts.data.world_active_contacts: {detector.contacts.data.world_active_contacts}")
-            print(f"data.info.num_total_cts: {data.info.num_total_cts}")
-            print("")  # Print a newline for better readability
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("")  # Print a newline for better readability
+            logger.debug("model.info.num_bilateral_joint_cts: %s", model.info.num_joint_bilateral_cts)
+            logger.debug("limits.data.world_max_limits: %s", limits.data.world_max_limits)
+            logger.debug("limits.data.world_active_limits: %s", limits.data.world_active_limits)
+            logger.debug("contacts.data.world_max_contacts: %s", detector.contacts.data.world_max_contacts)
+            logger.debug("contacts.data.world_active_contacts: %s", detector.contacts.data.world_active_contacts)
+            logger.debug("data.info.num_total_cts: %s", data.info.num_total_cts)
+            logger.debug("")  # Print a newline for better readability
 
         # Create the Delassus operator
         delassus = DelassusOperator(
@@ -646,27 +655,25 @@ class TestDelassusOperator(unittest.TestCase):
             x_np.append(np.linalg.solve(D_np[w][: active_dims[w], : active_dims[w]], v_f_np[w]))
 
         # Optional verbose output
-        if self.verbose:
+        if logger.isEnabledFor(logging.DEBUG):
             for i in range(len(active_dims)):
-                print(f"[{i}]: active_dims: {active_dims[i]}")
+                logger.debug("[%s]: active_dims: %s", i, active_dims[i])
             for i in range(len(D_np)):
-                print(f"[{i}]: D_np (shape={D_np[i].shape}):\n{D_np[i]}")
+                logger.debug("[%s]: D_np (shape=%s):\n%s", i, D_np[i].shape, D_np[i])
             for w in range(num_worlds):
-                print(f"[{w}]: v_f_np: {v_f_np[w]}")
+                logger.debug("[%s]: v_f_np: %s", w, v_f_np[w])
             for w in range(num_worlds):
-                print(f"[{w}]: x_np: {x_np[w]}")
-                print(f"[{w}]: x_wp: {x_wp_np[w]}")
-            print("")  # Add a newline for better readability
-            print_delassus_info(delassus)
-            print("")  # Add a newline for better readability
+                logger.debug("[%s]: x_np: %s", w, x_np[w])
+                logger.debug("[%s]: x_wp: %s", w, x_wp_np[w])
+            logger.debug("")  # Add a newline for better readability
+            debug_print_delassus_info(delassus)
+            logger.debug("")  # Add a newline for better readability
 
         # For each world, compare the numpy and DelassusOperator solutions
         for w in range(num_worlds):
             # Compare the reconstructed solution vector with the one computed using numpy
-            is_x_close = np.allclose(x_wp_np[w], x_np[w], atol=1e-3, rtol=1e-4)
-            if not is_x_close or self.verbose:
-                print_error_stats(f"x[{w}]", x_wp_np[w], x_np[w], active_dims[w])
-            self.assertTrue(is_x_close)
+            debug_print_error_stats(f"x[{w}]", x_wp_np[w], x_np[w], active_dims[w])
+            np.testing.assert_allclose(x_wp_np[w], x_np[w], atol=1e-3, rtol=1e-4, err_msg="x")
 
     def test_09_compare_dense_sparse_delassus_operator_assembly(self):
         # Model constants
@@ -718,12 +725,10 @@ class TestDelassusOperator(unittest.TestCase):
         # For each world, compare the Delassus matrix
         for w in range(delassus_dense.num_worlds):
             # Compare the computed Delassus matrix with the one from the dual problem
-            is_D_close = np.allclose(D_dense_np[w], D_sparse_np[w], rtol=1e-3, atol=1e-4)
-            if not is_D_close or self.verbose:
-                print(f"[{w}]: D_dense_np (shape={D_dense_np[w].shape}):\n{D_dense_np[w]}")
-                print(f"[{w}]: D_sparse_np (shape={D_sparse_np[w].shape}):\n{D_sparse_np[w]}")
-                print_error_stats(f"D[{w}]", D_dense_np[w], D_sparse_np[w], active_size[w], show_errors=True)
-            self.assertTrue(is_D_close)
+            logger.debug("[%s]: D_dense_np (shape=%s):\n%s", w, D_dense_np[w].shape, D_dense_np[w])
+            logger.debug("[%s]: D_sparse_np (shape=%s):\n%s", w, D_sparse_np[w].shape, D_sparse_np[w])
+            debug_print_error_stats(f"D[{w}]", D_dense_np[w], D_sparse_np[w], active_size[w], show_errors=True)
+            np.testing.assert_allclose(D_dense_np[w], D_sparse_np[w], rtol=1e-3, atol=1e-4, err_msg="D")
 
     def test_10_compare_dense_sparse_homogeneous_delassus_operator_assembly(self):
         # Model constants
@@ -732,7 +737,7 @@ class TestDelassusOperator(unittest.TestCase):
 
         # Construct a homogeneous model description using model builders
         builder = ModelBuilder()
-        builder.replicate(builder=build_boxes_nunchaku(), world_count=num_worlds)
+        builder.replicate(builder=build_boxes_nunchaku(), copy_count=num_worlds)
 
         # Create the model and containers from the builder
         model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
@@ -776,12 +781,10 @@ class TestDelassusOperator(unittest.TestCase):
         # For each world, compare the Delassus matrix
         for w in range(delassus_dense.num_worlds):
             # Compare the computed Delassus matrix with the one from the dual problem
-            is_D_close = np.allclose(D_dense_np[w], D_sparse_np[w], rtol=1e-3, atol=1e-4)
-            if not is_D_close or self.verbose:
-                print(f"[{w}]: D_dense_np (shape={D_dense_np[w].shape}):\n{D_dense_np[w]}")
-                print(f"[{w}]: D_sparse_np (shape={D_sparse_np[w].shape}):\n{D_sparse_np[w]}")
-                print_error_stats(f"D[{w}]", D_dense_np[w], D_sparse_np[w], active_dims[w] * active_dims[w])
-            self.assertTrue(is_D_close)
+            logger.debug("[%s]: D_dense_np (shape=%s):\n%s", w, D_dense_np[w].shape, D_dense_np[w])
+            logger.debug("[%s]: D_sparse_np (shape=%s):\n%s", w, D_sparse_np[w].shape, D_sparse_np[w])
+            debug_print_error_stats(f"D[{w}]", D_dense_np[w], D_sparse_np[w], active_dims[w] * active_dims[w])
+            np.testing.assert_allclose(D_dense_np[w], D_sparse_np[w], rtol=1e-3, atol=1e-4, err_msg="D")
 
     def test_11_compare_dense_sparse_heterogeneous_delassus_operator_assembly(self):
         # Model constants
@@ -799,6 +802,8 @@ class TestDelassusOperator(unittest.TestCase):
 
         # Update the containers once, then build both Jacobians from the same collision-detection pass.
         update_containers(model, data, state, limits, detector)
+        jacobians_dense.data.J_cts_data.fill_(7.0)
+        jacobians_dense.data.J_dofs_data.fill_(7.0)
         jacobians_dense.build(model=model, data=data, limits=limits.data, contacts=detector.contacts.data)
         jacobians_sparse.build(model=model, data=data, limits=limits.data, contacts=detector.contacts.data)
 
@@ -819,6 +824,8 @@ class TestDelassusOperator(unittest.TestCase):
         )
 
         # Build the Delassus operator from the current data
+        delassus_dense.D.fill_(7.0)
+        delassus_sparse.D.fill_(7.0)
         delassus_dense.build(model=model, data=data, jacobians=jacobians_dense, reset_to_zero=True)
         delassus_sparse.build(model=model, data=data, jacobians=jacobians_sparse, reset_to_zero=True)
 
@@ -826,21 +833,22 @@ class TestDelassusOperator(unittest.TestCase):
         active_dims = extract_active_constraint_dims(data)
 
         # Extract Delassus data as numpy arrays
+        storage_dense, storage_sparse = delassus_dense.D.numpy(), delassus_sparse.D.numpy()
         D_dense_np = extract_delassus(delassus_dense, only_active_dims=True)
         D_sparse_np = extract_delassus(delassus_sparse, only_active_dims=True)
 
         # For each world, compare the Delassus matrix
         for w in range(delassus_dense.num_worlds):
+            for storage in (storage_dense, storage_sparse):
+                np.testing.assert_array_equal(storage[w, active_dims[w] ** 2 :], 7.0)
             # Compare the computed Delassus matrix with the one from the dual problem
-            is_D_close = np.allclose(D_dense_np[w], D_sparse_np[w], rtol=1e-3, atol=1e-4)
-            if not is_D_close or self.verbose:
-                print(f"[{w}]: D_dense_np (shape={D_dense_np[w].shape}):\n{D_dense_np[w]}")
-                print(f"[{w}]: D_sparse_np (shape={D_sparse_np[w].shape}):\n{D_sparse_np[w]}")
-                print_error_stats(f"D[{w}]", D_dense_np[w], D_sparse_np[w], active_dims[w] * active_dims[w])
-            self.assertTrue(is_D_close)
+            logger.debug("[%s]: D_dense_np (shape=%s):\n%s", w, D_dense_np[w].shape, D_dense_np[w])
+            logger.debug("[%s]: D_sparse_np (shape=%s):\n%s", w, D_sparse_np[w].shape, D_sparse_np[w])
+            debug_print_error_stats(f"D[{w}]", D_dense_np[w], D_sparse_np[w], active_dims[w] * active_dims[w])
+            np.testing.assert_allclose(D_dense_np[w], D_sparse_np[w], rtol=1e-3, atol=1e-4, err_msg="D")
 
 
-class TestDelassusOperatorSparse(unittest.TestCase):
+class TestDelassusOperatorSparse(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
@@ -849,8 +857,7 @@ class TestDelassusOperatorSparse(unittest.TestCase):
         self.seed = 42
         self.dynamic_joints = True
 
-    def tearDown(self):
-        self.default_device = None
+        setup_test_output(self, verbose=self.verbose)
 
     ###
     # Helpers
@@ -951,15 +958,15 @@ class TestDelassusOperatorSparse(unittest.TestCase):
                     ]
 
             # Optional verbose output
-            if self.verbose:
-                print("")  # Print a newline for better readability
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug("")  # Print a newline for better readability
                 for i in range(len(J_cts_np)):
-                    print(f"[{i}]: J_cts_np (shape={J_cts_np[i].shape}):\n{J_cts_np[i]}")
+                    logger.debug("[%s]: J_cts_np (shape=%s):\n%s", i, J_cts_np[i].shape, J_cts_np[i])
                 for i in range(len(invM_np)):
-                    print(f"[{i}]: invM_np (shape={invM_np[i].shape}):\n{invM_np[i]}")
+                    logger.debug("[%s]: invM_np (shape=%s):\n%s", i, invM_np[i].shape, invM_np[i])
                 for i in range(len(D_np)):
-                    print(f"[{i}]: D_np (shape={D_np[i].shape}):\n{D_np[i]}")
-                print("")  # Add a newline for better readability
+                    logger.debug("[%s]: D_np (shape=%s):\n%s", i, D_np[i].shape, D_np[i])
+                logger.debug("")  # Add a newline for better readability
 
             # For each world, compute the Delassus matrix using numpy and compare it with the matrix
             # represented by the Delassus operator.
@@ -970,13 +977,10 @@ class TestDelassusOperatorSparse(unittest.TestCase):
                     D_w = np.diag(preconditioner_list[w]) @ D_w @ np.diag(preconditioner_list[w])
                 if use_regularization:
                     D_w = D_w + np.diag(regularization_list[w])
-
-                is_D_close = np.allclose(D_np[w], D_w, atol=1e-3, rtol=1e-4)
-                if not is_D_close or self.verbose:
-                    print(f"[{w}]: D_w (shape={D_w.shape}):\n{D_w}")
-                    print(f"[{w}]: D_np (shape={D_np[w].shape}):\n{D_np[w]}")
-                    print_error_stats(f"D[{w}]", D_np[w], D_w, D_w.shape[0])
-                self.assertTrue(is_D_close)
+                logger.debug("[%s]: D_w (shape=%s):\n%s", w, D_w.shape, D_w)
+                logger.debug("[%s]: D_np (shape=%s):\n%s", w, D_np[w].shape, D_np[w])
+                debug_print_error_stats(f"D[{w}]", D_np[w], D_w, D_w.shape[0])
+                np.testing.assert_allclose(D_np[w], D_w, atol=1e-3, rtol=1e-4, err_msg="D")
 
         run_check(use_regularization=False, use_preconditioner=False)
         run_check(use_regularization=True, use_preconditioner=False)
@@ -989,11 +993,14 @@ class TestDelassusOperatorSparse(unittest.TestCase):
         data: DataKamino,
         delassus: BlockSparseMatrixFreeDelassusOperator,
         jacobians: SparseSystemJacobians,
+        *,
+        capture_first_product: bool = False,
     ):
         """Checks the different matrix-vector products provided by the sparse Delassus operator."""
         rng = np.random.default_rng(seed=self.seed)
 
         def run_check(use_regularization: bool, use_preconditioner: bool, mask_worlds: bool):
+            nonlocal capture_first_product
             delassus_sizes = data.info.num_total_cts.numpy()
             jac_row_start = jacobians._J_cts.bsm.row_start.numpy()
 
@@ -1049,7 +1056,16 @@ class TestDelassusOperatorSparse(unittest.TestCase):
             world_mask = wp.from_numpy(mask_np, dtype=wp.bool, device=self.default_device)
 
             # Compute different products (simple matvec, gemv, and gemv with beta = 0.0)
-            delassus.matvec(input_vec, output_vec_matmul, world_mask)
+            if capture_first_product and self.default_device.is_cuda and wp.is_conditional_graph_supported():
+                # The first regularized application must work inside a conditional
+                # body without a warmup that could hide lazy placeholder allocations.
+                condition = wp.ones(1, dtype=wp.int32, device=self.default_device)
+                with wp.ScopedCapture(device=self.default_device) as capture:
+                    wp.capture_if(condition, lambda: delassus.matvec(input_vec, output_vec_matmul, world_mask))
+                wp.capture_launch(capture.graph)
+            else:
+                delassus.matvec(input_vec, output_vec_matmul, world_mask)
+            capture_first_product = False
             delassus.gemv(input_vec, output_vec_gemv, world_mask, alpha, beta)
             delassus.gemv(input_vec, output_vec_gemv_zero, world_mask, alpha, 0.0)
 
@@ -1099,39 +1115,37 @@ class TestDelassusOperatorSparse(unittest.TestCase):
                     vec_gemv_zero_ref = alpha * (D_w @ input_vec_list[w])
 
                     # Compare the computed Delassus matrix with the one from the dual problem
-                    is_matmul_close = np.allclose(vec_matmul_ref, vec_matmul_w, atol=1e-3, rtol=1e-4)
-                    if not is_matmul_close or self.verbose:
-                        print(f"[{w}]: vec_matmul_ref (shape={vec_matmul_ref.shape}):\n{vec_matmul_ref}")
-                        print(f"[{w}]: vec_matmul_w (shape={vec_matmul_w.shape}):\n{vec_matmul_w}")
-                        print_error_stats(
-                            f"vec_gemv_zero[{w}]",
-                            vec_matmul_ref,
-                            vec_matmul_w,
-                            vec_matmul_w.shape[0],
-                        )
-                    self.assertTrue(is_matmul_close)
-                    is_gemv_close = np.allclose(vec_gemv_ref, vec_gemv_w, atol=1e-3, rtol=1e-4)
-                    if not is_gemv_close or self.verbose:
-                        print(f"[{w}]: vec_gemv_ref (shape={vec_gemv_ref.shape}):\n{vec_gemv_ref}")
-                        print(f"[{w}]: vec_gemv_w (shape={vec_gemv_w.shape}):\n{vec_gemv_w}")
-                        print_error_stats(
-                            f"vec_gemv_zero[{w}]",
-                            vec_gemv_ref,
-                            vec_gemv_w,
-                            vec_gemv_w.shape[0],
-                        )
-                    self.assertTrue(is_gemv_close)
-                    is_gemv_zero_close = np.allclose(vec_gemv_zero_ref, vec_gemv_zero_w, atol=1e-3, rtol=1e-4)
-                    if not is_gemv_zero_close or self.verbose:
-                        print(f"[{w}]: vec_gemv_zero_ref (shape={vec_gemv_zero_ref.shape}):\n{vec_gemv_zero_ref}")
-                        print(f"[{w}]: vec_gemv_zero_w (shape={vec_gemv_zero_w.shape}):\n{vec_gemv_zero_w}")
-                        print_error_stats(
-                            f"vec_gemv_zero[{w}]",
-                            vec_gemv_zero_ref,
-                            vec_gemv_zero_w,
-                            vec_gemv_zero_w.shape[0],
-                        )
-                    self.assertTrue(is_gemv_zero_close)
+                    logger.debug("[%s]: vec_matmul_ref (shape=%s):\n%s", w, vec_matmul_ref.shape, vec_matmul_ref)
+                    logger.debug("[%s]: vec_matmul_w (shape=%s):\n%s", w, vec_matmul_w.shape, vec_matmul_w)
+                    debug_print_error_stats(
+                        f"vec_gemv_zero[{w}]",
+                        vec_matmul_ref,
+                        vec_matmul_w,
+                        vec_matmul_w.shape[0],
+                    )
+                    np.testing.assert_allclose(vec_matmul_ref, vec_matmul_w, atol=1e-3, rtol=1e-4, err_msg="matmul")
+                    logger.debug("[%s]: vec_gemv_ref (shape=%s):\n%s", w, vec_gemv_ref.shape, vec_gemv_ref)
+                    logger.debug("[%s]: vec_gemv_w (shape=%s):\n%s", w, vec_gemv_w.shape, vec_gemv_w)
+                    debug_print_error_stats(
+                        f"vec_gemv_zero[{w}]",
+                        vec_gemv_ref,
+                        vec_gemv_w,
+                        vec_gemv_w.shape[0],
+                    )
+                    np.testing.assert_allclose(vec_gemv_ref, vec_gemv_w, atol=1e-3, rtol=1e-4, err_msg="gemv")
+                    logger.debug(
+                        "[%s]: vec_gemv_zero_ref (shape=%s):\n%s", w, vec_gemv_zero_ref.shape, vec_gemv_zero_ref
+                    )
+                    logger.debug("[%s]: vec_gemv_zero_w (shape=%s):\n%s", w, vec_gemv_zero_w.shape, vec_gemv_zero_w)
+                    debug_print_error_stats(
+                        f"vec_gemv_zero[{w}]",
+                        vec_gemv_zero_ref,
+                        vec_gemv_zero_w,
+                        vec_gemv_zero_w.shape[0],
+                    )
+                    np.testing.assert_allclose(
+                        vec_gemv_zero_ref, vec_gemv_zero_w, atol=1e-3, rtol=1e-4, err_msg="gemv_zero"
+                    )
 
         run_check(use_regularization=False, use_preconditioner=False, mask_worlds=False)
         run_check(use_regularization=True, use_preconditioner=False, mask_worlds=False)
@@ -1185,15 +1199,15 @@ class TestDelassusOperatorSparse(unittest.TestCase):
                 ]
 
         # Optional verbose output
-        if self.verbose:
-            print("")  # Print a newline for better readability
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("")  # Print a newline for better readability
             for i in range(len(J_cts_np)):
-                print(f"[{i}]: J_cts_np (shape={J_cts_np[i].shape}):\n{J_cts_np[i]}")
+                logger.debug("[%s]: J_cts_np (shape=%s):\n%s", i, J_cts_np[i].shape, J_cts_np[i])
             for i in range(len(invM_np)):
-                print(f"[{i}]: invM_np (shape={invM_np[i].shape}):\n{invM_np[i]}")
+                logger.debug("[%s]: invM_np (shape=%s):\n%s", i, invM_np[i].shape, invM_np[i])
             for i in range(len(D_diag_list)):
-                print(f"[{i}]: D_diag (shape={D_diag_list[i].shape}):\n{D_diag_list[i]}")
-            print("")  # Add a newline for better readability
+                logger.debug("[%s]: D_diag (shape=%s):\n%s", i, D_diag_list[i].shape, D_diag_list[i])
+            logger.debug("")  # Add a newline for better readability
 
         # For each world, compute the Delassus matrix diagonal using numpy and compare it with the
         # one from the Delassus operator class
@@ -1203,12 +1217,10 @@ class TestDelassusOperatorSparse(unittest.TestCase):
             D_diag_ref = np.diag(D_w)
 
             # Compare the computed Delassus matrix diagonals
-            is_D_diag_close = np.allclose(D_diag_list[w], D_diag_ref, atol=1e-3, rtol=1e-4)
-            if not is_D_diag_close or self.verbose:
-                print(f"[{w}]: D_diag_ref (shape={D_diag_ref.shape}):\n{D_diag_ref}")
-                print(f"[{w}]: D_diag (shape={D_diag_list[w].shape}):\n{D_diag_list[w]}")
-                print_error_stats(f"D_diag[{w}]", D_diag_list[w], D_diag_ref, D_diag_ref.shape[0])
-            self.assertTrue(is_D_diag_close)
+            logger.debug("[%s]: D_diag_ref (shape=%s):\n%s", w, D_diag_ref.shape, D_diag_ref)
+            logger.debug("[%s]: D_diag (shape=%s):\n%s", w, D_diag_list[w].shape, D_diag_list[w])
+            debug_print_error_stats(f"D_diag[{w}]", D_diag_list[w], D_diag_ref, D_diag_ref.shape[0])
+            np.testing.assert_allclose(D_diag_list[w], D_diag_ref, atol=1e-3, rtol=1e-4, err_msg="D_diag")
 
     ###
     # Allocation
@@ -1249,7 +1261,7 @@ class TestDelassusOperatorSparse(unittest.TestCase):
 
         # Construct a homogeneous model description using model builders
         builder = ModelBuilder()
-        builder.replicate(builder=build_boxes_nunchaku(), world_count=num_worlds)
+        builder.replicate(builder=build_boxes_nunchaku(), copy_count=num_worlds)
 
         # Create the model and containers from the builder
         model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
@@ -1337,7 +1349,7 @@ class TestDelassusOperatorSparse(unittest.TestCase):
 
         # Construct a homogeneous model description using model builders
         builder = ModelBuilder()
-        builder.replicate(builder=build_boxes_nunchaku(), world_count=num_worlds)
+        builder.replicate(builder=build_boxes_nunchaku(), copy_count=num_worlds)
 
         # Create the model and containers from the builder
         model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
@@ -1425,7 +1437,7 @@ class TestDelassusOperatorSparse(unittest.TestCase):
 
         # Construct a homogeneous model description using model builders
         builder = ModelBuilder()
-        builder.replicate(builder=build_boxes_nunchaku(), world_count=num_worlds)
+        builder.replicate(builder=build_boxes_nunchaku(), copy_count=num_worlds)
 
         # Create the model and containers from the builder
         model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
@@ -1477,6 +1489,7 @@ class TestDelassusOperatorSparse(unittest.TestCase):
         self._check_delassus_diagonal(model, data, delassus, jacobians)
 
     def test_10_delassus_operator_vector_product(self):
+        """Compare sparse products to dense references, including first use in a conditional graph."""
         # Model constants
         max_world_contacts = 12
 
@@ -1504,7 +1517,7 @@ class TestDelassusOperatorSparse(unittest.TestCase):
         )
 
         # Check that the Delassus operator represents the actual Delassus matrix
-        self._check_delassus_matrix_vector_product(model, data, delassus, jacobians)
+        self._check_delassus_matrix_vector_product(model, data, delassus, jacobians, capture_first_product=True)
 
     def test_11_homogeneous_delassus_operator_vector_product(self):
         # Model constants
@@ -1513,7 +1526,7 @@ class TestDelassusOperatorSparse(unittest.TestCase):
 
         # Construct a homogeneous model description using model builders
         builder = ModelBuilder()
-        builder.replicate(builder=build_boxes_nunchaku(), world_count=num_worlds)
+        builder.replicate(builder=build_boxes_nunchaku(), copy_count=num_worlds)
 
         # Create the model and containers from the builder
         model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
@@ -1587,6 +1600,33 @@ class TestDelassusOperatorSparse(unittest.TestCase):
         delassus._set_raw_transpose_enabled(False)
         self._check_delassus_matrix_vector_product(model, data, delassus, jacobians)
 
+    def test_14_matvec_inside_conditional_graph_body(self):
+        """Apply the operator first inside a conditional graph body, where allocation is not allowed."""
+        if not self.default_device.is_cuda or not wp.is_conditional_graph_supported():
+            self.skipTest("Conditional CUDA graphs are required")
+        builder = make_basics_heterogeneous_builder(dynamic_joints=self.dynamic_joints, implicit_pd=self.dynamic_joints)
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
+        model, data, state, limits, detector, jacobians = make_containers(
+            model=model, max_world_contacts=12, sparse=True
+        )
+        update_containers(model=model, data=data, state=state, limits=limits, detector=detector, jacobians=jacobians)
+        delassus = BlockSparseMatrixFreeDelassusOperator(
+            model=model, data=data, limits=limits, contacts=detector.contacts, jacobians=jacobians
+        )
+        delassus.update()
+        size = model.size.sum_of_max_total_cts
+        x = wp.ones(size, dtype=wp.float32, device=self.default_device)
+        y = wp.zeros(size, dtype=wp.float32, device=self.default_device)
+        mask = wp.ones(model.size.num_worlds, dtype=wp.bool, device=self.default_device)
+        condition = wp.ones(1, dtype=wp.int32, device=self.default_device)
+        with wp.ScopedCapture(device=self.default_device) as capture:
+            wp.capture_if(condition, on_true=lambda: delassus.matvec(x, y, mask))
+        wp.capture_launch(capture.graph)
+        expected = wp.zeros_like(y)
+        delassus.matvec(x, expected, mask)
+        # Graph and direct launches may accumulate float32 atomics in different orders.
+        np.testing.assert_allclose(y.numpy(), expected.numpy(), rtol=1e-4, atol=1e-3)
+
 
 ###
 # Test execution
@@ -1594,6 +1634,7 @@ class TestDelassusOperatorSparse(unittest.TestCase):
 
 if __name__ == "__main__":
     # Test setup
+    newton.utils.setup_console_logging()
     setup_tests()
 
     # Run all tests

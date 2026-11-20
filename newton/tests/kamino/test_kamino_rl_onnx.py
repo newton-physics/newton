@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import contextlib
-import importlib.util
 import io
 import os
 import subprocess
@@ -13,22 +12,25 @@ import unittest
 import numpy as np
 import warp as wp
 
+import newton
 from newton._src.solvers.kamino.examples.rl.example_rl_drlegs import _build_observation_kernel
 from newton._src.solvers.kamino.examples.rl.joystick import JoystickConfig, JoystickController
 from newton._src.solvers.kamino.examples.rl.simulation import RigidBodySim
+from newton.tests.kamino import setup_test_output, setup_tests
+from newton.tests.unittest_utils import NewtonTestCase, has_module, requires
 
-_HAS_ONNX = importlib.util.find_spec("onnx") is not None
-_HAS_WARP_NN = importlib.util.find_spec("warp_nn") is not None
-
-if _HAS_ONNX and _HAS_WARP_NN:
+if has_module("onnx") and has_module("warp_nn"):
     import onnx
     from onnx import TensorProto, helper, numpy_helper
 
     from newton._src.solvers.kamino.examples.rl.onnx_policy import WarpOnnxPolicy
 
 
-class TestKaminoRlDrlegsWarp(unittest.TestCase):
+class TestKaminoRlDrlegsWarp(NewtonTestCase):
     """Test the Warp-native DR Legs policy path."""
+
+    def setUp(self):
+        setup_test_output(self)
 
     def test_module_imports_without_torch(self):
         """Import the DR Legs example when PyTorch is unavailable."""
@@ -151,9 +153,12 @@ import newton._src.solvers.kamino.examples.rl.example_rl_drlegs  # noqa: F401, E
         self.assertIs(wrapper.body_pair_contact_flag, flag)
 
 
-@unittest.skipUnless(_HAS_ONNX and _HAS_WARP_NN, "onnx or warp-nn not installed")
-class TestKaminoRlOnnx(unittest.TestCase):
+@requires("onnx", "warp_nn")
+class TestKaminoRlOnnx(NewtonTestCase):
     """Test Warp-NN policy inference used by the Kamino RL example."""
+
+    def setUp(self):
+        setup_test_output(self)
 
     def _save_policy(
         self,
@@ -269,4 +274,6 @@ class TestKaminoRlOnnx(unittest.TestCase):
 
 
 if __name__ == "__main__":
+    newton.utils.setup_console_logging()
+    setup_tests()
     unittest.main()

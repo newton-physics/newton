@@ -1,28 +1,29 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Cable Cross-Slide Table
-#
-# Demonstrates a cable-driven cross-slide table inspired by the Simscape
-# Multibody cable-driven XY table example:
-# https://www.mathworks.com/help/sm/ug/cable-driven-xy-table-with-cross-base.html
-# The mechanism is laid out on the ground plane: the blue base is fixed, the
-# green carriage moves horizontally, and the beige carriage moves vertically on
-# the green carriage. The cable is driven only by the two blue input pulleys.
-#
-# The sample combines passive revolute pulleys, a closed cable loop, and two
-# commanded input pulleys. The input rotations trace a rectangle with the
-# beige table marker while the solver resolves cable wrapping and contact
-# against the guides.
-#
-# Run interactively:
-#   uv run --extra examples python -m newton.examples.cable.example_cable_cross_slide_table
-#
-# Run as a test:
-#   uv run --extra examples python -m newton.examples.cable.example_cable_cross_slide_table --test --viewer null
-#
-###########################################################################
+"""Example Cable Cross-Slide Table
+
+Demonstrates a cable-driven cross-slide table inspired by the Simscape
+Multibody cable-driven XY table example:
+https://www.mathworks.com/help/sm/ug/cable-driven-xy-table-with-cross-base.html
+The mechanism is laid out on the ground plane: the blue base is fixed, the
+green carriage moves horizontally, and the beige carriage moves vertically on
+the green carriage. The cable is driven only by the two blue input pulleys.
+
+The sample combines passive revolute pulleys, a closed cable loop, and two
+commanded input pulleys. The input rotations trace a rectangle with the
+beige table marker while the solver resolves cable wrapping and contact
+against the guides.
+
+Success criteria:
+- Two blue input pulleys pull the green and beige carriages through a deformable cable loop.
+- The beige table moves in the XY plane, tracking the commanded path without losing the cable from
+  its guides.
+- Live plots report both blue input rotations, beige table X and Y positions, and tracking error.
+
+Runs:
+- `python -m newton.examples cable_cross_slide_table`
+"""
 
 from __future__ import annotations
 
@@ -42,8 +43,6 @@ TABLE_TRACKING_RMS_ERROR_TOLERANCE = 0.0025
 CABLE_XY_ABS_BOUND = 0.30
 JOINT_LIMIT_TOLERANCE = 0.003
 START_RAMP_DURATION = 1.2
-MOUSE_PICK_STIFFNESS = 0.01
-MOUSE_PICK_DAMPING = 0.001
 PULLEY_OPACITY = 0.55
 CONTACT_KE = 1.0e6
 
@@ -772,12 +771,6 @@ class Example:
 
         # Viewer setup.
         self.viewer.set_model(self.model)
-        picking = getattr(self.viewer, "picking", None)
-        if picking is not None:
-            pick_state = picking.pick_state.numpy()
-            pick_state[0]["pick_stiffness"] = MOUSE_PICK_STIFFNESS
-            pick_state[0]["pick_damping"] = MOUSE_PICK_DAMPING
-            picking.pick_state.assign(pick_state)
 
         self.viewer.set_camera(
             pos=wp.vec3(0.0, 0.0, 0.8),

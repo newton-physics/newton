@@ -17,6 +17,7 @@ from collections.abc import Sequence
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any
 
+import numpy as np
 import warp as wp
 
 from ...core.types import Transform, Vec3, axis_to_vec3, vec5
@@ -35,10 +36,33 @@ class MjcEqualityTargetKind(IntEnum):
     MIMIC = 2  # Target is a Newton mimic constraint, used by converted JOINT equalities.
 
 
+def equality_loop_joint_mask(target_kind: Any, target: Any, joint_count: int) -> np.ndarray:
+    """Mask of the Newton joints that equality rows target, one entry per joint.
+
+    These are the loop joints that converted CONNECT and WELD equalities created
+    (:attr:`MjcEqualityTargetKind.JOINT`); they never place a body, so
+    :class:`~newton.ModelBuilder` keeps them out of its weld groups and
+    :class:`~newton.solvers.SolverMuJoCo` out of its standalone world roots, both through
+    :func:`~newton._src.utils.topology.tree_joint_mask`.
+
+    Args:
+        target_kind: ``equality_constraint_target_kind`` of the rows to consider.
+        target: ``equality_constraint_target`` of the same rows.
+        joint_count: Number of joints the mask covers.
+    """
+    target_kind = np.asarray(target_kind, dtype=np.int64).reshape(-1)
+    target = np.asarray(target, dtype=np.int64).reshape(-1)
+    joints = target[(target_kind == int(MjcEqualityTargetKind.JOINT)) & (target >= 0) & (target < joint_count)]
+    mask = np.zeros(joint_count, dtype=bool)
+    mask[joints] = True
+    return mask
+
+
 # Object kinds an equality row references (mjtObj-aligned).
 MJC_OBJ_UNKNOWN = -1
 MJC_OBJ_BODY = 1
 MJC_OBJ_JOINT = 3
+MJC_OBJ_TENDON = 18
 
 
 def _register_equality_constraint_attributes(builder: ModelBuilder) -> None:
@@ -144,6 +168,20 @@ def _register_equality_constraint_attributes(builder: ModelBuilder) -> None:
             namespace="mujoco",
         )
     )
+    # Importers set these when an endpoint is one DoF of a Newton joint that
+    # combines several MuJoCo scalar joints; -1 means the whole joint.
+    for endpoint in (1, 2):
+        builder.add_custom_attribute(
+            ca(
+                name=f"equality_constraint_joint{endpoint}_dof",
+                frequency=eq_freq,
+                assignment=model_assignment,
+                dtype=wp.int32,
+                default=-1,
+                references="joint_dof",
+                namespace="mujoco",
+            )
+        )
     # polycoef is materialized as ``wp.array2d[wp.float32]`` with shape
     # ``[equality_constraint_count, 5]``; the value stored per entry is a
     # 5-element list of floats so the standard pipeline yields the expected 2D layout.
@@ -250,6 +288,22 @@ def _register_equality_constraint_attributes(builder: ModelBuilder) -> None:
     )
 
 
+def _register_equality_tendon_attributes(builder: ModelBuilder) -> None:
+    """Declare the tendon-equality columns, which reference the ``mujoco:tendon`` frequency."""
+    for name in ("equality_constraint_tendon1", "equality_constraint_tendon2"):
+        builder.add_custom_attribute(
+            type(builder).CustomAttribute(
+                name=name,
+                frequency="mujoco:equality_constraint",
+                assignment=Model.AttributeAssignment.MODEL,
+                dtype=wp.int32,
+                default=-1,
+                references="mujoco:tendon",
+                namespace="mujoco",
+            )
+        )
+
+
 def _add_equality_constraint(
     builder: ModelBuilder,
     constraint_type: EqType,
@@ -265,6 +319,8 @@ def _add_equality_constraint(
     enabled: bool = True,
     custom_attributes: dict[str, Any] | None = None,
     *,
+    tendon1: int = -1,
+    tendon2: int = -1,
     validate_custom_attributes: bool = False,
 ) -> int:
     """Append a row to the ``mujoco:equality_constraint`` custom-attribute frequency on ``builder``.
@@ -272,21 +328,24 @@ def _add_equality_constraint(
     Args:
         builder: Target :class:`~newton.ModelBuilder`.
         constraint_type: Equality constraint type (``EqType.CONNECT``,
-            ``EqType.WELD``, or ``EqType.JOINT``).
+            ``EqType.WELD``, ``EqType.JOINT``, or ``EqType.TENDON``).
         body1: Index of the first body (-1 for world).
         body2: Index of the second body (-1 for world).
-        anchor: Anchor point on body1. Defaults to the origin.
+        anchor: Anchor point on body1 for connect, or on body2 for weld. Defaults to the origin.
         torquescale: Angular residual scale for weld. Defaults to ``1.0`` for
             ``EqType.WELD`` and ``0.0`` otherwise.
-        relpose: Relative pose of body2 for weld. Defaults to the identity transform.
+        relpose: For weld, the position in body1's frame where the anchor is held, and body2's
+            orientation in body1's frame. Defaults to the identity transform.
         joint1: Index of the first joint for joint coupling.
         joint2: Index of the second joint for joint coupling.
-        polycoef: Five polynomial coefficients for ``EqType.JOINT`` coupling.
-            Defaults to ``[0, 0, 0, 0, 0]``.
+        polycoef: Five polynomial coefficients for ``EqType.JOINT`` and
+            ``EqType.TENDON`` coupling. Defaults to ``[0, 0, 0, 0, 0]``.
         label: Optional constraint label.
         enabled: Whether the constraint is active.
         custom_attributes: Additional ``mujoco:equality_constraint``-frequency
             custom attributes to assign at the new index.
+        tendon1: Index of the first tendon for tendon coupling.
+        tendon2: Index of the second tendon for tendon coupling (-1 for none).
         validate_custom_attributes: Reject managed-column overrides and validate extras before appending.
 
     Returns:
@@ -298,7 +357,7 @@ def _add_equality_constraint(
         torquescale_value = 1.0 if constraint_type == EqType.WELD else 0.0
     else:
         torquescale_value = float(torquescale)
-    objtype = MJC_OBJ_JOINT if constraint_type == EqType.JOINT else MJC_OBJ_BODY
+    objtype = {EqType.JOINT: MJC_OBJ_JOINT, EqType.TENDON: MJC_OBJ_TENDON}.get(constraint_type, MJC_OBJ_BODY)
 
     values = {
         "mujoco:equality_constraint_type": int(constraint_type),
@@ -315,6 +374,10 @@ def _add_equality_constraint(
         "mujoco:equality_constraint_enabled": enabled,
         "mujoco:equality_constraint_world": builder.current_world,
     }
+    if constraint_type == EqType.TENDON:
+        # Tendon columns exist only with the tendon schema and need tendons to resolve on merge.
+        values["mujoco:equality_constraint_tendon1"] = tendon1
+        values["mujoco:equality_constraint_tendon2"] = tendon2
     if validate_custom_attributes:
         # Importers may override columns when projecting constraints onto native
         # entities; public helpers accept only additional attributes.
@@ -322,6 +385,10 @@ def _add_equality_constraint(
 
         values = _prepare_custom_frequency_row(builder, "mujoco:equality_constraint", values, custom_attributes)
         custom_attributes = None
+    # Pad omitted columns with None (default) so an optional attribute authored only on
+    # earlier rows, e.g. MJCF solref, isn't left short and flagged at finalize.
+    for attribute in builder.get_custom_attributes_by_frequency(["mujoco:equality_constraint"]):
+        values.setdefault(attribute.key, None)
     indices = builder.add_custom_values(**values)
     constraint_idx = indices["mujoco:equality_constraint_type"]
 
@@ -357,6 +424,20 @@ def _validate_joint(builder: ModelBuilder, joint: int, name: str) -> None:
     if linear_dofs + angular_dofs != 1:
         raise ValueError(f"{name} index {joint} must identify a scalar joint.")
     _validate_world(builder, name, joint, int(builder.joint_world[joint]))
+
+
+def _validate_tendon(builder: ModelBuilder, tendon: int, name: str) -> None:
+    tendon_count = builder._custom_frequency_counts.get("mujoco:tendon", 0)
+    if tendon < 0 or tendon >= tendon_count:
+        raise IndexError(f"{name} index {tendon} is outside [0, {tendon_count}).")
+    _validate_world(builder, name, tendon, int(builder.custom_attributes["mujoco:tendon_world"].values[tendon]))
+
+
+def _polycoef(polycoef: Sequence[float]) -> list[float]:
+    coefficients = [float(value) for value in polycoef]
+    if len(coefficients) > 5:
+        raise ValueError(f"polycoef accepts at most 5 values, got {len(coefficients)}.")
+    return coefficients + [0.0] * (5 - len(coefficients))
 
 
 def _ensure_equality_attributes(builder: ModelBuilder) -> None:
@@ -458,8 +539,9 @@ def add_equality_weld(
         builder: Model builder receiving the constraint.
         body1: First body index, or ``-1`` for the world.
         body2: Second body index, or ``-1`` for the world.
-        relpose: Relative pose of the second body in the first body's frame.
-            If omitted, preserve the bodies' initial relative pose.
+        relpose: The position in the first body's frame where the second body's origin is held,
+            and the second body's orientation in the first body's frame. If omitted, preserve the
+            bodies' initial relative pose.
         torquescale: Angular residual length scale [m].
         label: Optional constraint label.
         enabled: Whether the constraint is active.
@@ -514,7 +596,8 @@ def add_equality_joint(
         builder: Model builder receiving the constraint.
         joint1: Dependent Newton joint index.
         joint2: Reference Newton joint index.
-        polycoef: Up to five polynomial coefficients.
+        polycoef: Up to five polynomial coefficients. Omitted higher-order terms are zero, whereas MJCF
+            ``polycoef`` fills omitted terms from MuJoCo's ``0 1 0 0 0`` default.
         label: Optional constraint label.
         enabled: Whether the constraint is active.
         solref: Optional MuJoCo constraint reference parameters.
@@ -529,16 +612,67 @@ def add_equality_joint(
     _validate_joint(builder, joint2, "joint2")
     if joint1 == joint2:
         raise ValueError("A joint equality requires two distinct joints.")
-    coefficients = [float(value) for value in polycoef]
-    if len(coefficients) > 5:
-        raise ValueError(f"polycoef accepts at most 5 values, got {len(coefficients)}.")
-    coefficients.extend([0.0] * (5 - len(coefficients)))
     return _add_equality_constraint(
         builder,
         EqType.JOINT,
         joint1=joint1,
         joint2=joint2,
-        polycoef=coefficients,
+        polycoef=_polycoef(polycoef),
+        label=label,
+        enabled=enabled,
+        custom_attributes=_equality_custom_attributes(custom_attributes, solref, solimp),
+        validate_custom_attributes=True,
+    )
+
+
+def add_equality_tendon(
+    builder: ModelBuilder,
+    tendon1: int,
+    tendon2: int = -1,
+    *,
+    polycoef: Sequence[float] = (0.0, 1.0),
+    label: str | None = None,
+    enabled: bool = True,
+    solref: Sequence[float] | None = None,
+    solimp: Sequence[float] | None = None,
+    custom_attributes: dict[str, Any] | None = None,
+) -> int:
+    """Add a MuJoCo polynomial equality between two tendon lengths.
+
+    Lengths are measured relative to their values at the reference
+    configuration. Without ``tendon2``, only ``polycoef[0]`` is used and the
+    length of ``tendon1`` is held at that offset. Both tendons must belong to
+    the current world or the global world (``-1``).
+
+    Args:
+        builder: Model builder receiving the constraint.
+        tendon1: Dependent ``mujoco:tendon`` index.
+        tendon2: Reference ``mujoco:tendon`` index, or ``-1`` for none.
+        polycoef: Up to five polynomial coefficients. Omitted higher-order terms are zero, whereas MJCF
+            ``polycoef`` fills omitted terms from MuJoCo's ``0 1 0 0 0`` default.
+        label: Optional constraint label.
+        enabled: Whether the constraint is active.
+        solref: Optional MuJoCo constraint reference parameters.
+        solimp: Optional MuJoCo constraint impedance parameters.
+        custom_attributes: Additional registered equality-frequency attributes.
+
+    Returns:
+        The ``mujoco:equality_constraint`` row index.
+    """
+    from ._authoring import _ensure_mujoco_attributes  # noqa: PLC0415
+
+    _ensure_mujoco_attributes(builder, "mujoco:equality_constraint_tendon1")
+    _validate_tendon(builder, tendon1, "tendon1")
+    if tendon2 != -1:
+        _validate_tendon(builder, tendon2, "tendon2")
+    if tendon1 == tendon2:
+        raise ValueError("A tendon equality requires two distinct tendons.")
+    return _add_equality_constraint(
+        builder,
+        EqType.TENDON,
+        tendon1=tendon1,
+        tendon2=tendon2,
+        polycoef=_polycoef(polycoef),
         label=label,
         enabled=enabled,
         custom_attributes=_equality_custom_attributes(custom_attributes, solref, solimp),
@@ -549,5 +683,6 @@ def add_equality_joint(
 __all__ = [
     "add_equality_connect",
     "add_equality_joint",
+    "add_equality_tendon",
     "add_equality_weld",
 ]

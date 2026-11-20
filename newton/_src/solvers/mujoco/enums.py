@@ -18,6 +18,18 @@ class EqType(IntEnum):
     JOINT = 2
     """Constrains one scalar joint coordinate to a quartic polynomial of another."""
 
+    TENDON = 3
+    """Constrains one tendon length to a quartic polynomial of another, or to a constant offset."""
+
+
+class _JointType(IntEnum):
+    """Mirror MuJoCo's mjtJoint without requiring MuJoCo at import time."""
+
+    FREE = 0
+    BALL = 1
+    SLIDE = 2
+    HINGE = 3
+
 
 # Mirrors of MuJoCo's mjtBias/mjtDyn/mjtGain, duplicated so MJCF and USD import do not
 # need MuJoCo. Types Newton does not support are listed too, so Newton's ordinals track

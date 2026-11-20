@@ -1,25 +1,31 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Basic Pendulum
-#
-# Shows how to set up a simulation of a simple double pendulum using the
-# newton.ModelBuilder() class.
-#
-# Command: python -m newton.examples basic_pendulum --solver xpbd
-#          python -m newton.examples basic_pendulum --solver kamino
-#
-###########################################################################
+"""Example Basic Pendulum
+
+Shows how to set up a simulation of a simple double pendulum using the
+newton.ModelBuilder() class.
+
+Success criteria:
+- The two-link pendulum swings back and forth with both joints connected.
+- Motion stays bounded and in the pendulum plane without explosive separation.
+
+Runs:
+- `python -m newton.examples basic_pendulum`
+- `python -m newton.examples basic_pendulum --solver xpbd`
+- `python -m newton.examples basic_pendulum --solver kamino`
+"""
 
 import warp as wp
 
 import newton
 import newton.examples
+from newton.examples.kamino.utils.ldl import add_ldl_arguments, configure_ldl
 
 
 class Example:
     def __init__(self, viewer, args):
+        """Build the double-pendulum simulation with the requested solver options."""
         # setup simulation parameters first
         self.fps = 100
         self.frame_dt = 1.0 / self.fps
@@ -30,6 +36,8 @@ class Example:
         self.viewer = viewer
         self.args = args
         self.solver_type = getattr(args, "solver", "xpbd") if args is not None else "xpbd"
+        if self.solver_type != "kamino":
+            configure_ldl(None, args)
         if self.solver_type == "kamino":
             self.sim_substeps = 2
             self.sim_dt = self.frame_dt / self.sim_substeps
@@ -79,13 +87,13 @@ class Example:
         if self.solver_type == "kamino":
             solver_config = newton.solvers.SolverKamino.Config.from_model(
                 self.model,
-                dynamics_solver="dvi",
+                dynamics_solver="scc",
                 sparse_dynamics=True,
                 sparse_jacobian=True,
             )
-            solver_config.dvi.bilateral_solver_type = "LLTBRCM"
-            solver_config.dvi.max_alternating_iterations = 8
-            solver_config.dvi.bilateral_solve_interval = 8
+            configure_ldl(solver_config, args)
+            solver_config.scc.max_alternating_iterations = 8
+            solver_config.scc.bilateral_solve_interval = 8
             self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
         else:
             self.solver = newton.solvers.SolverXPBD(self.model)
@@ -148,7 +156,7 @@ class Example:
 
         def check_velocities(_, qd):
             # velocity outside the plane of the pendulum should be close to zero
-            check = abs(qd[0]) < 1e-4 and abs(qd[6]) < 1e-4
+            check = abs(qd[0]) < 1e-4 and abs(qd[5]) < 1e-3
             # velocity in the plane of the pendulum should be reasonable
             check = check and abs(qd[1]) < 10.0 and abs(qd[2]) < 5.0 and abs(qd[3]) < 10.0 and abs(qd[4]) < 10.0
             return check
@@ -172,6 +180,7 @@ class Example:
 if __name__ == "__main__":
     # Parse arguments and initialize viewer
     parser = newton.examples.create_parser()
+    add_ldl_arguments(parser)
     parser.add_argument(
         "--solver",
         type=str,

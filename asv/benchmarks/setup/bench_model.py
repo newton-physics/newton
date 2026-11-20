@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import gc
+import inspect
 import os
 import sys
 import time
@@ -16,18 +17,18 @@ import warp as wp
 wp.config.enable_backward = False
 wp.config.log_level = wp.LOG_WARNING
 
-from asv_runner.benchmarks.mark import skip_benchmark_if
+from asv_runner.benchmarks.mark import SkipNotImplemented, skip_benchmark_if
 
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(parent_dir)
 sys.path.append(os.path.join(parent_dir, "simulation"))
 
-from bench_sensor_tiled_camera import SCENES as TILED_CAMERA_SCENES
+from bench_sensor_camera import SCENES
 from benchmark_metrics import collect_startup_metrics
 from benchmark_mujoco import Example, _startup_phase
 
 import newton
-from newton.sensors import SensorTiledCamera
+from newton.sensors import SensorCamera
 from newton.solvers import SolverXPBD
 from newton.viewer import ViewerGL
 
@@ -230,6 +231,8 @@ class KpiInitializeViewerGL:
 
         # finalize model
         self._model = builder.finalize()
+        # Load the viewer's kernels before timing.
+        self.time_initialize_renderer(robot, world_count)
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_initialize_renderer(self, robot, world_count):
@@ -244,8 +247,8 @@ class KpiInitializeViewerGL:
         del self._model
 
 
-class _InitializeModelTiledCamera:
-    """Build models and tiled cameras from scene presets with collision handling enabled."""
+class _InitializeModelSensorCamera:
+    """Build models and camera sensors from scene presets with collision handling enabled."""
 
     param_names = ["scene", "world_count"]
     rounds = 1
@@ -254,7 +257,7 @@ class _InitializeModelTiledCamera:
     min_run_count = 1
 
     def setup(self, scene, world_count):
-        self.world = TILED_CAMERA_SCENES[scene].build()
+        self.world = SCENES[scene].build()
         warmup = self._replicate(1)
         _model, _sensor = self._initialize_model_and_sensor(warmup)
         self.replicated_builder = self._replicate(world_count)
@@ -268,7 +271,7 @@ class _InitializeModelTiledCamera:
 
     def _initialize_model_and_sensor(self, builder):
         model = builder.finalize()
-        sensor = SensorTiledCamera(model)
+        sensor = SensorCamera(model)
         return model, sensor
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
@@ -286,7 +289,7 @@ class _InitializeModelTiledCamera:
         del self.world
 
 
-class KpiInitializeModelTiledCamera(_InitializeModelTiledCamera):
+class KpiInitializeModelSensorCamera(_InitializeModelSensorCamera):
     params = (["franka_cabinet", "quadruped"], [4096])
     timeout = 3600
 
@@ -348,6 +351,10 @@ class FastInitializeSolver:
 
         # finalize model
         self._model = builder.finalize()
+        # Load the solver's kernels before timing, and free the warm-up solver.
+        Example.create_solver(self._model, robot, use_mujoco_cpu=False)
+        gc.collect()
+        wp.synchronize_device()
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_initialize_solver(self, robot, world_count):
@@ -374,6 +381,8 @@ class FastInitializeViewerGL:
 
         # finalize model
         self._model = builder.finalize()
+        # Load the viewer's kernels before timing.
+        self.time_initialize_renderer(robot, world_count)
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_initialize_renderer(self, robot, world_count):
@@ -388,8 +397,62 @@ class FastInitializeViewerGL:
         del self._model
 
 
-class FastInitializeModelTiledCamera(_InitializeModelTiledCamera):
+class FastInitializeModelSensorCamera(_InitializeModelSensorCamera):
     params = (["franka_cabinet", "quadruped"], [256])
+
+
+class FastInitializeModelStackedBoxes:
+    """Stamp columns of stacked boxes into one shared world and finalize the model."""
+
+    params = (["add_builder", "replicate"],)
+    param_names = ["method"]
+    grid = (16, 8, 16)
+    peakmem_grid = (40, 20, 40)
+
+    rounds = 1
+    repeat = 3
+    number = 1
+    min_run_count = 1
+
+    def setup_cache(self):
+        # Compile the CPU finalize kernels once, outside the timed builds.
+        self._build("add_builder", 2, 2, 2).finalize(device="cpu")
+
+    def setup(self, method):
+        if (
+            method == "replicate"
+            and "separate_worlds" not in inspect.signature(newton.ModelBuilder.replicate).parameters
+        ):
+            # Skips commits that predate replicate(separate_worlds=...).
+            raise SkipNotImplemented
+
+    @staticmethod
+    def _build(method, nx, ny, nz):
+        column = newton.ModelBuilder()
+        for j in range(ny):
+            offset = float((j + 1) & 1)
+            body = column.add_body(xform=wp.transform((offset, offset, 1.0 + 2.0 * j), wp.quat_identity()))
+            column.add_shape_box(body, hx=1.0, hy=1.0, hz=1.0)
+
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        xforms = [wp.transform((2.2 * i, 2.2 * k, 0.0), wp.quat_identity()) for i in range(nx) for k in range(nz)]
+        if method == "replicate":
+            builder.replicate(column, len(xforms), separate_worlds=False, xforms=xforms)
+        else:
+            for xform in xforms:
+                builder.add_builder(column, xform=xform)
+        return builder
+
+    def time_initialize_model(self, method):
+        self._build(method, *self.grid).finalize(device="cpu")
+
+    def peakmem_initialize_model(self, method):
+        # Not part of the PR gate, so it uses a larger pile; at the timing grid the
+        # builder's memory would be lost in the process baseline.
+        gc.collect()
+        model = self._build(method, *self.peakmem_grid).finalize(device="cpu")
+        del model
 
 
 if __name__ == "__main__":
@@ -405,8 +468,9 @@ if __name__ == "__main__":
         "FastInitializeSolver": FastInitializeSolver,
         "KpiInitializeViewerGL": KpiInitializeViewerGL,
         "FastInitializeViewerGL": FastInitializeViewerGL,
-        "KpiInitializeModelTiledCamera": KpiInitializeModelTiledCamera,
-        "FastInitializeModelTiledCamera": FastInitializeModelTiledCamera,
+        "KpiInitializeModelSensorCamera": KpiInitializeModelSensorCamera,
+        "FastInitializeModelSensorCamera": FastInitializeModelSensorCamera,
+        "FastInitializeModelStackedBoxes": FastInitializeModelStackedBoxes,
     }
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)

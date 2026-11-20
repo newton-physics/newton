@@ -10,7 +10,7 @@ import warp as wp
 
 from newton._src.geometry.contact_data import (
     ContactData,
-    contact_sort_shape_index_bits,
+    contact_sort_key_layout,
     make_contact_sort_key,
     make_contact_sort_key_with_bits,
 )
@@ -1159,6 +1159,43 @@ def test_centered_deepest_wins_max_depth_slot(test, device):
     test.assertAlmostEqual(best_depth, deepest_depth, places=5, msg="Deepest contact should be among winners")
 
 
+def test_centered_coincident_normal_coverage(test, device):
+    """Reduce a coincident contact cloud to twelve representatives spanning the sphere."""
+    rng = np.random.default_rng(42)
+    normals_np = rng.standard_normal((256, 3)).astype(np.float32)
+    normals_np /= np.linalg.norm(normals_np, axis=1, keepdims=True)
+    normals = wp.array(normals_np, dtype=wp.vec3, device=device)
+    reducer = GlobalContactReducer(capacity=512, device=device)
+
+    @wp.kernel(module="unique")
+    def store_normal_cloud(normals: wp.array[wp.vec3], data: GlobalContactReducerData):
+        tid = wp.tid()
+        # Separated candidates exercise normal depth coverage without footprint
+        # winners. Coincident positions share one voxel, so it adds no winner.
+        export_and_reduce_contact_centered(
+            shape_a=0,
+            shape_b=1,
+            position=wp.vec3(0.0),
+            normal=normals[tid],
+            depth=0.001 + float(tid) * 0.000001,
+            fingerprint=tid,
+            centered_position=wp.vec3(0.0),
+            X_ws_voxel_shape=wp.transform_identity(),
+            aabb_lower_voxel=wp.vec3(-1.0),
+            aabb_upper_voxel=wp.vec3(1.0),
+            voxel_res=wp.vec3i(4, 4, 4),
+            reducer_data=data,
+        )
+
+    wp.launch(store_normal_cloud, dim=len(normals_np), inputs=[normals, reducer.get_data_struct()], device=device)
+    winners = get_winning_contacts(reducer)
+    test.assertEqual(len(winners), 12)
+    fingerprints = reducer.contact_fingerprints.numpy()[winners]
+    retained_normals = normals_np[fingerprints]
+    for axis in np.concatenate((np.eye(3), -np.eye(3))):
+        test.assertGreater(float(np.max(retained_normals @ axis)), 0.5)
+
+
 def test_centered_pre_pruning_reduces_buffer_usage(test, device):
     """Verify pre-pruning skips dominated contacts, reducing buffer allocations.
 
@@ -1426,11 +1463,23 @@ class TestMakeContactSortKey(unittest.TestCase):
     pass
 
 
-def test_sort_key_shape_index_bits(test, device):
-    """Use only the shape-index bits required by the model."""
+def test_sort_key_layout(test, device):
+    """Pack shape indices into the key while they fit; past that, sort by a separate pair key."""
     del device
-    for shape_count, expected in ((0, 1), (2, 1), (3, 2), (256, 8), (32768, 15), (1 << 20, 20), (1 << 21, 20)):
-        test.assertEqual(contact_sort_shape_index_bits(shape_count), expected)
+    for shape_count, sub_key_bits, expected in (
+        (0, 23, (1, False)),
+        (2, 23, (1, False)),
+        (3, 23, (2, False)),
+        (256, 23, (8, False)),
+        (32768, 23, (15, False)),
+        (1 << 20, 23, (20, False)),
+        ((1 << 20) + 1, 3, (21, False)),
+        (1 << 30, 3, (30, False)),
+        ((1 << 20) + 1, 23, (21, True)),
+        ((1 << 30) + 1, 3, (31, True)),
+        (1 << 31, 23, (31, True)),
+    ):
+        test.assertEqual(contact_sort_key_layout(shape_count, sub_key_bits), expected)
 
 
 @wp.kernel(enable_backward=False)
@@ -1640,9 +1689,6 @@ def test_deterministic_identical_across_runs(test, device):
     fingerprint) rather than buffer contact IDs, since IDs are assigned by
     atomic_add and vary between runs.
     """
-    if str(device) == "cpu":
-        return  # Deterministic mode is primarily for GPU
-
     num_runs = 5
     all_contact_sets = []
 
@@ -1777,6 +1823,12 @@ add_function_test(
 )
 add_function_test(
     TestGlobalContactReducer,
+    "test_centered_coincident_normal_coverage",
+    test_centered_coincident_normal_coverage,
+    devices=devices,
+)
+add_function_test(
+    TestGlobalContactReducer,
     "test_centered_pre_pruning_reduces_buffer_usage",
     test_centered_pre_pruning_reduces_buffer_usage,
     devices=devices,
@@ -1804,8 +1856,8 @@ add_function_test(
 # make_contact_sort_key tests
 add_function_test(
     TestMakeContactSortKey,
-    "test_sort_key_shape_index_bits",
-    test_sort_key_shape_index_bits,
+    "test_sort_key_layout",
+    test_sort_key_layout,
     devices=devices,
 )
 add_function_test(TestMakeContactSortKey, "test_sort_key_bit_layout", test_sort_key_bit_layout, devices=devices)
@@ -1844,7 +1896,7 @@ add_function_test(
     TestDeterministicEndToEnd,
     "test_deterministic_identical_across_runs",
     test_deterministic_identical_across_runs,
-    devices=devices,
+    devices=[device for device in devices if device.is_cuda],  # deterministic mode targets CUDA
 )
 
 

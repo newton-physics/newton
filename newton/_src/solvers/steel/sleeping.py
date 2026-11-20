@@ -11,6 +11,9 @@ import warp as wp
 from ...core.reset import reset_world_selected
 from ...sim import Model
 from ...sim.enums import BodyFlags, JointType, ModelFlags
+from .kernels import WARP_DETERMINISM_OFF
+
+wp.set_module_options(WARP_DETERMINISM_OFF)
 
 
 class _SleepState:
@@ -69,6 +72,9 @@ class _SleepState:
         # Joint wrenches computed every step, and the published history sleeping bodies keep.
         self.parent_wrenches = wp.zeros(model.body_count, dtype=wp.spatial_vector, device=device)
         self.last_parent_wrenches = wp.zeros(model.body_count, dtype=wp.spatial_vector, device=device)
+        # Articulations whose wrench this step computes, and those whose last published wrench was computed.
+        self.parent_wrench_history_active = wp.zeros(count, dtype=int, device=device)
+        self.last_parent_wrench_history_active = wp.zeros(count, dtype=int, device=device)
         articulation_world = model.articulation_world.numpy()
         gravity_world = articulation_world.copy()
         gravity_world[gravity_world < 0] = model.gravity.size - 1
@@ -109,6 +115,8 @@ class _SleepState:
         )
         self.changed = wp.zeros(count, dtype=int, device=device)
         self.asleep_steps = wp.zeros(count, dtype=int, device=device)
+        self.shared_boundaries = wp.zeros(model.body_count, dtype=int, device=device)
+        self.unselected_reader_scopes = wp.zeros(model.world_count + 2, dtype=int, device=device)
         self.frozen_bodies = wp.zeros(model.body_count, dtype=int, device=device)
         shape_art = np.full(model.shape_count, -1, dtype=np.int32)
         shape_body = model.shape_body.numpy()
@@ -132,33 +140,79 @@ class _SleepState:
         """Bodies whose friction-patch history can be carried; only row-free sleeping qualifies."""
         return self.frozen_bodies if self.skip_constraints and self.carry_frozen_patches else None
 
-    def wake(self, world_mask=None):
-        """Wake every component and invalidate state-change history, or wake only the masked worlds.
+    def wake(self):
+        """Wake every component and invalidate state-change history."""
+        requested = self.solver._mass_update_requested
+        wp.launch(_wake_all, self.art_awake.size, [self.art_awake, requested], device=self.model.device)
+        self.body_awake.fill_(1)
+        self.quiet_age.zero_()
+        self.valid.zero_()
+        self.asleep_steps.zero_()
 
-        ``world_mask`` has the solver's ``(world_count + 1,)`` reset layout; its final entry
-        selects global articulations.
+    def wake_worlds(self, world_mask, state):
+        """Wake the masked worlds and restart their state-change history from ``state``.
+
+        ``world_mask`` has the solver's ``(world_count + 1,)`` reset layout; its final entry selects global entities.
         """
         requested = self.solver._mass_update_requested
-        if world_mask is None:
-            wp.launch(_wake_all, self.art_awake.size, [self.art_awake, requested], device=self.model.device)
-            self.body_awake.fill_(1)
-            self.quiet_age.zero_()
-            self.valid.zero_()
-            self.asleep_steps.zero_()
-            return
         device = self.model.device
         world = self.solver._articulation_model_world
         world_count = int(self.model.world_count)
         wp.launch(
             _wake_worlds,
             self.art_awake.size,
-            [world_mask, world_count, world, self.art_awake, self.quiet_age, requested],
+            [world_mask, world_count, world, self.art_awake, self.quiet_age, self.asleep_steps, requested],
             device=device,
         )
         wp.launch(
             _wake_world_bodies,
             self.body_awake.size,
             [world_mask, world_count, world, self.body_nodes, self.body_awake],
+            device=device,
+        )
+        # The masked counterpart of valid=0, except for contact boundaries that unselected islands can also touch.
+        self.unselected_reader_scopes.zero_()
+        self.shared_boundaries.zero_()
+        shapes = [self.model.shape_body, self.model.shape_world, self.body_nodes, self.model.body_flags]
+        wp.launch(
+            _unselected_reader_scopes,
+            self.model.shape_count,
+            [world_mask, world_count, world, *shapes, self.unselected_reader_scopes],
+            device=device,
+        )
+        wp.launch(
+            _mark_shared_boundaries,
+            self.model.shape_count,
+            [world_count, *shapes, self.unselected_reader_scopes, self.shared_boundaries],
+            device=device,
+        )
+        wp.launch(
+            _restart_world_body_history,
+            self.model.body_count,
+            [
+                world_mask,
+                world_count,
+                self.model.body_world,
+                self.body_nodes,
+                self.model.body_flags,
+                self.shared_boundaries,
+                state.body_q,
+                state.body_qd,
+                self.last_body_q,
+                self.last_body_qd,
+            ],
+            device=device,
+        )
+        wp.launch(
+            _restart_world_history,
+            self.model.joint_coord_count,
+            [world_mask, world_count, world, self.coord_art, state.joint_q, self.last_q],
+            device=device,
+        )
+        wp.launch(
+            _restart_world_history,
+            self.model.joint_dof_count,
+            [world_mask, world_count, world, self.dof_art, state.joint_qd, self.last_qd],
             device=device,
         )
 
@@ -302,6 +356,7 @@ class _SleepState:
                     contacts.rigid_contact_normal,
                     contacts.rigid_contact_margin0,
                     contacts.rigid_contact_margin1,
+                    contacts.rigid_contact_surface_velocity,
                     state.body_q,
                     state.body_qd,
                     self.last_body_q,
@@ -352,6 +407,7 @@ class _SleepState:
         )
         solver = self.solver
         skip = int(self.skip_constraints and self.skip_dynamics)
+        solver._propagation_dynamics_active.zero_()
         wp.launch(
             _articulation_activity,
             self.parent.size,
@@ -364,6 +420,7 @@ class _SleepState:
                 solver._dynamics_art_active,
                 solver._dynamics_art_mask,
                 solver._constraint_art_active,
+                solver._propagation_dynamics_active,
             ],
             device=device,
         )
@@ -405,6 +462,17 @@ class _SleepState:
                     [self.dof_art, self.art_awake, self.solver._joint_limit_q_index, self.limit_q_index],
                     device=device,
                 )
+
+    def parent_wrench_history_mask(self, active, dt, requested):
+        """Mask the active articulations whose wrench this step computes: all if requested, else those near sleep."""
+        wp.launch(
+            _parent_wrench_history_active,
+            self.quiet_age.size,
+            [active, self.quiet_age, dt, self.quiet_time, int(requested)],
+            outputs=[self.parent_wrench_history_active],
+            device=self.model.device,
+        )
+        return self.parent_wrench_history_active
 
     def finish(self, state_in, state_out, state_aug, dt):
         """Freeze quiet supported islands and publish synchronized state history."""
@@ -524,7 +592,7 @@ class _SleepState:
             device=device,
         )
         if model.body_count:
-            # A frozen body keeps the joint wrench published before it fell asleep.
+            # A frozen body keeps the last computed joint wrench from before or at the step it fell asleep.
             wp.launch(
                 _freeze_parent_wrenches,
                 model.body_count,
@@ -534,12 +602,14 @@ class _SleepState:
                     self.art_awake,
                     self.step_asleep,
                     self.root_veto,
+                    self.last_parent_wrench_history_active,
                     self.last_parent_wrenches,
                     self.parent_wrenches,
                 ],
                 device=device,
             )
             wp.copy(self.last_parent_wrenches, self.parent_wrenches)
+            wp.copy(self.last_parent_wrench_history_active, self.parent_wrench_history_active)
         wp.copy(self.last_q, state_out.joint_q)
         wp.copy(self.last_qd, state_out.joint_qd)
         wp.copy(self.last_body_q, state_out.body_q)
@@ -605,6 +675,7 @@ def _wake_worlds(
     world: wp.array[int],
     awake: wp.array[int],
     age: wp.array[float],
+    asleep_steps: wp.array[int],
     requested: wp.array[int],
 ):
     i = wp.tid()
@@ -613,6 +684,90 @@ def _wake_worlds(
             requested[i] = 1
         awake[i] = 1
         age[i] = 0.0
+        asleep_steps[i] = 0
+
+
+@wp.kernel(enable_backward=False)
+def _unselected_reader_scopes(
+    mask: wp.array[wp.bool],
+    world_count: int,
+    world: wp.array[int],
+    shape_body: wp.array[int],
+    shape_world: wp.array[int],
+    nodes: wp.array[int],
+    flags: wp.array[int],
+    scopes: wp.array[int],
+):
+    """Flag the shape worlds of unselected islands; entry ``world_count`` flags a global shape, the last any shape."""
+    i = wp.tid()
+    node = _node(shape_body[i], nodes, flags)
+    if node < 0 or reset_world_selected(world[node], mask, world_count):
+        return
+    w = shape_world[i]
+    if w < 0:
+        wp.atomic_max(scopes, world_count, 1)
+    else:
+        wp.atomic_max(scopes, w, 1)
+    wp.atomic_max(scopes, world_count + 1, 1)
+
+
+@wp.kernel(enable_backward=False)
+def _mark_shared_boundaries(
+    world_count: int,
+    shape_body: wp.array[int],
+    shape_world: wp.array[int],
+    nodes: wp.array[int],
+    flags: wp.array[int],
+    scopes: wp.array[int],
+    shared: wp.array[int],
+):
+    """Mark the contact boundaries with a shape that a shape of an unselected island can collide with."""
+    i = wp.tid()
+    body = shape_body[i]
+    if body < 0 or _node(body, nodes, flags) >= 0:
+        return
+    w = shape_world[i]
+    if scopes[world_count] != 0 or (w < 0 and scopes[world_count + 1] != 0) or (w >= 0 and scopes[w] != 0):
+        wp.atomic_max(shared, body, 1)
+
+
+@wp.kernel(enable_backward=False)
+def _restart_world_body_history(
+    mask: wp.array[wp.bool],
+    world_count: int,
+    body_world: wp.array[int],
+    nodes: wp.array[int],
+    flags: wp.array[int],
+    shared: wp.array[int],
+    q: wp.array[wp.transform],
+    qd: wp.array[wp.spatial_vector],
+    last_q: wp.array[wp.transform],
+    last_qd: wp.array[wp.spatial_vector],
+):
+    i = wp.tid()
+    w = body_world[i]
+    if not reset_world_selected(w, mask, world_count):
+        return
+    # A contact boundary's history also shows its moves to the islands resting on it; keep it for unselected ones.
+    if _node(i, nodes, flags) < 0 and shared[i] != 0:
+        return
+    last_q[i] = q[i]
+    last_qd[i] = qd[i]
+
+
+@wp.kernel(enable_backward=False)
+def _restart_world_history(
+    mask: wp.array[wp.bool],
+    world_count: int,
+    world: wp.array[int],
+    nodes: wp.array[int],
+    value: wp.array[float],
+    last: wp.array[float],
+):
+    i = wp.tid()
+    node = nodes[i]
+    if node >= 0 and reset_world_selected(world[node], mask, world_count):
+        last[i] = value[i]
 
 
 @wp.kernel(enable_backward=False)
@@ -776,6 +931,7 @@ def _contact_boundaries(
     normal: wp.array[wp.vec3],
     margin0: wp.array[float],
     margin1: wp.array[float],
+    surface_velocity: wp.array[wp.vec3],
     q: wp.array[wp.transform],
     qd: wp.array[wp.spatial_vector],
     last: wp.array[wp.transform],
@@ -785,6 +941,11 @@ def _contact_boundaries(
 ):
     i = wp.tid()
     if i < count[0] and shape0[i] >= 0 and shape1[i] >= 0:
+        # A moving contact surface drives its friction rows, so neither side may sleep.
+        surface_moving = False
+        if surface_velocity:
+            sv = surface_velocity[i]
+            surface_moving = _nonzero(wp.length(sv - normal[i] * wp.dot(normal[i], sv)))
         bodies = wp.vec2i(shape_body[shape0[i]], shape_body[shape1[i]])
         pa = wp.vec3(point0[i])
         pb = wp.vec3(point1[i])
@@ -796,6 +957,8 @@ def _contact_boundaries(
         for side in range(2):
             a = _node(bodies[side], nodes, flags)
             b = _node(bodies[1 - side], nodes, flags)
+            if a >= 0 and surface_moving:
+                wp.atomic_max(veto, parent[a], 1)
             if a >= 0 and b < 0:
                 if gap <= 1.0e-5:
                     wp.atomic_max(supported, parent[a], 1)
@@ -861,6 +1024,7 @@ def _articulation_activity(
     active: wp.array[int],
     active_mask: wp.array[wp.bool],
     rows_active: wp.array[int],
+    any_sleepable_active: wp.array[int],
 ):
     i = wp.tid()
     step_asleep[i] = 1 - awake[i]
@@ -873,6 +1037,9 @@ def _articulation_activity(
         if awake[i] == 0 and skippable[i] != 0:
             active[i] = 0
             active_mask[i] = False
+    # Prescribed articulations never sleep and own no propagation rows, so they leave the flag unset.
+    if active[i] != 0 and skippable[i] != 0:
+        wp.atomic_max(any_sleepable_active, 0, 1)
 
 
 @wp.kernel(enable_backward=False)
@@ -1004,6 +1171,12 @@ def _freeze_dofs(
 
 
 @wp.kernel(enable_backward=False)
+def _publish_body_awake(body_awake: wp.array[int], out: wp.array[wp.bool]):
+    i = wp.tid()
+    out[i] = body_awake[i] != 0
+
+
+@wp.kernel(enable_backward=False)
 def _freeze_bodies(
     nodes: wp.array[int],
     parent: wp.array[int],
@@ -1027,18 +1200,36 @@ def _freeze_bodies(
 
 
 @wp.kernel(enable_backward=False)
+def _parent_wrench_history_active(
+    active: wp.array[int],
+    quiet_age: wp.array[float],
+    dt: float,
+    quiet_time: float,
+    requested: int,
+    history_active: wp.array[int],
+):
+    # Quiet articulations keep the previous step's wrench current for a freeze; one that can sleep this step computes.
+    i = wp.tid()
+    history_active[i] = 0
+    if active[i] != 0 and (requested != 0 or quiet_age[i] > 0.0 or quiet_age[i] + dt >= quiet_time):
+        history_active[i] = 1
+
+
+@wp.kernel(enable_backward=False)
 def _freeze_parent_wrenches(
     nodes: wp.array[int],
     parent: wp.array[int],
     awake: wp.array[int],
     step_asleep: wp.array[int],
     veto: wp.array[int],
+    source_current: wp.array[int],
     source: wp.array[wp.spatial_vector],
     target: wp.array[wp.spatial_vector],
 ):
+    # A body whose last wrench was skipped keeps this step's, which the history mask computed.
     i = wp.tid()
     node = nodes[i]
-    if node >= 0 and _frozen(node, parent, awake, step_asleep, veto):
+    if node >= 0 and source_current[node] != 0 and _frozen(node, parent, awake, step_asleep, veto):
         target[i] = source[i]
 
 
@@ -1122,13 +1313,13 @@ def _entity_arrays(model, frequency, size):
     """Model arrays declared at ``frequency`` with one row per entity, so coincident counts never mix owners."""
     arrays = []
     for name, spec in model.attribute_specs.items():
-        value = _model_array(model, name)
         if (
             spec.frequency != frequency
             or spec.assignment not in (None, Model.AttributeAssignment.MODEL)
             or spec.deprecated
         ):
             continue
+        value = _model_array(model, name)
         if isinstance(value, wp.array) and value.ndim >= 1 and value.shape[0] == size and size > 0:
             arrays.append((name, value))
     return arrays

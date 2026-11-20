@@ -5,6 +5,7 @@ import ast
 import copy
 import gc
 import importlib
+import logging
 import math
 import os
 import sys
@@ -12,6 +13,7 @@ import time
 import warnings
 from collections import defaultdict
 from collections.abc import Callable
+from typing import Any
 
 import numpy as np
 import warp as wp
@@ -20,6 +22,7 @@ import newton
 from newton.tests.unittest_utils import find_nan_members
 
 _DEPRECATED_WARP_CONFIG_KEYS = {"quiet", "verbose"}
+logger = logging.getLogger(__name__)
 
 
 def get_source_directory() -> str:
@@ -348,6 +351,8 @@ class _ExampleBrowser:
         self.switch_target: str | None = None
         self._reset_requested = False
         self.callback = None
+        self.load_error: str | None = None
+        self.failed_target: str | None = None
         self._tree: dict[str, list[tuple[str, str]]] = {}
         # Deep-copy so later mutations to the caller's namespace (or to
         # nested mutable fields like ``args.warp_config``) do not change
@@ -369,12 +374,15 @@ class _ExampleBrowser:
             )
             if hasattr(viewer, "set_reset_callback"):
                 viewer.set_reset_callback(lambda: setattr(self, "_reset_requested", True))
+            if hasattr(viewer, "register_ui_callback"):
+                viewer.register_ui_callback(self._error_ui, position="panel")
             return
 
         if not hasattr(viewer, "register_ui_callback"):
             return
 
         def _browser_ui(imgui):
+            self._error_ui(imgui)
             imgui.set_next_item_open(False, imgui.Cond_.appearing)
             if imgui.collapsing_header("Examples"):
                 for category in sorted(self._tree.keys()):
@@ -389,6 +397,19 @@ class _ExampleBrowser:
         viewer.register_ui_callback(_browser_ui, position="panel")
         if hasattr(viewer, "set_reset_callback"):
             viewer.set_reset_callback(lambda: setattr(self, "_reset_requested", True))
+
+    def _error_ui(self, ui: Any) -> None:
+        """Show failures and retry through ImGui or the native Viser UI adapter."""
+        if self.load_error is None:
+            return
+        text = getattr(ui, "text_wrapped", ui.text)
+        text(self.load_error)
+        if ui.button("Retry##example_load"):
+            if self.failed_target is not None:
+                self.switch_target = self.failed_target
+            else:
+                self._reset_requested = True
+        ui.separator()
 
     def _register_ui(self, example):
         """Re-register the example's GUI callback (panel callbacks survive clear_model)."""
@@ -417,28 +438,50 @@ class _ExampleBrowser:
             self.viewer.clear_model()
         # Each example starts with picking enabled and may opt out in its constructor.
         self.viewer.picking_enabled = True
+        # Clear callback references before collecting cycles, so old resources
+        # cannot be destroyed during the next constructor's CUDA graph capture.
+        gc.collect()
+
+    def report_error(self, error: BaseException, module_path: str, *, phase: str, retry_switch: bool = False) -> None:
+        """Report the original failure and discard the partial scene, keeping the browser."""
+        # runpy launches CLI examples as __main__, but retains their module spec.
+        module = sys.modules.get(module_path)
+        module_path = getattr(getattr(module, "__spec__", None), "name", None) or module_path
+        logger.error("Failed to %s example %s", phase, module_path, exc_info=(type(error), error, error.__traceback__))
+        self.load_error = f"Failed to {phase} {module_path}:\n{type(error).__name__}: {error}"
+        self.failed_target = module_path if retry_switch else None
+        try:
+            self._clear_viewer_scene()
+        finally:
+            self._hide_splash()
 
     def switch(self, example_class):
-        """Switch to the selected example. Returns (new_example, new_class) or (None, example_class)."""
+        """Return (new_example, new_class), or (None, example_class) on failure.
+
+        The caller must drop its reference to the old example before switching.
+        """
         module_path, self.switch_target = self.switch_target, None
-        self._show_splash(f"Loading {module_path.rsplit('.', 1)[-1]}...")
-        self._clear_viewer_scene()
+        self._reset_requested = False
+        self.load_error = self.failed_target = None
         try:
-            mod = importlib.import_module(module_path)
-            parser = getattr(mod.Example, "create_parser", create_parser)()
-            new_args = default_args(parser)
-            example = mod.Example(self.viewer, new_args)
-        except Exception as e:
-            warnings.warn(f"Failed to load example {module_path}: {e}", stacklevel=2)
+            self._show_splash(f"Loading {module_path.rsplit('.', 1)[-1]}...")
+            with self.viewer._preserve_display_options(switching=True):
+                self._clear_viewer_scene()
+                try:
+                    mod = importlib.import_module(module_path)
+                    parser = getattr(mod.Example, "create_parser", create_parser)()
+                    new_args = default_args(parser)
+                    # Snapshot before the constructor can mutate the namespace.
+                    initial_args = copy.deepcopy(new_args)
+                    example = mod.Example(self.viewer, new_args)
+                    self._register_ui(example)
+                except (Exception, SystemExit) as error:
+                    self.report_error(error, module_path, phase="load", retry_switch=True)
+                    return None, example_class
+            self._initial_args = initial_args
+            return example, type(example)
+        finally:
             self._hide_splash()
-            return None, example_class
-        # Track the args used to launch the current example so a subsequent
-        # Reset reuses the new example's args, not the originally launched
-        # example's args (different parsers expose different fields).
-        self._initial_args = copy.deepcopy(new_args)
-        self._register_ui(example)
-        self._hide_splash()
-        return example, type(example)
 
     def reset(self, example_class):
         """Reset the current example by re-creating it. Returns the new example or None.
@@ -447,25 +490,26 @@ class _ExampleBrowser:
         this method.
         """
         self._reset_requested = False
-        self._show_splash("Resetting...")
-        self._clear_viewer_scene()
+        self.load_error = self.failed_target = None
         try:
-            if self._initial_args is not None:
-                # Re-create the example with the user's original CLI args so
-                # options like --world-count survive a reset; deep-copy so
-                # the new instance cannot mutate the snapshot.
-                args = copy.deepcopy(self._initial_args)
-            else:
-                parser = getattr(example_class, "create_parser", create_parser)()
-                args = default_args(parser)
-            new_example = example_class(self.viewer, args)
-        except Exception as e:
-            warnings.warn(f"Failed to reset example: {e}", stacklevel=2)
+            self._show_splash("Resetting...")
+            with self.viewer._preserve_display_options():
+                self._clear_viewer_scene()
+                try:
+                    if self._initial_args is not None:
+                        # Keep the user's CLI args, including nested mutable fields.
+                        args = copy.deepcopy(self._initial_args)
+                    else:
+                        parser = getattr(example_class, "create_parser", create_parser)()
+                        args = default_args(parser)
+                    new_example = example_class(self.viewer, args)
+                    self._register_ui(new_example)
+                except (Exception, SystemExit) as error:
+                    self.report_error(error, example_class.__module__, phase="reset")
+                    return None
+            return new_example
+        finally:
             self._hide_splash()
-            return None
-        self._register_ui(new_example)
-        self._hide_splash()
-        return new_example
 
 
 def _format_fps(fps: float) -> str:
@@ -530,6 +574,16 @@ def _throttle_render_fps(
 
 
 def run(example, args):
+    """Run an example, enabling browser recovery in interactive viewers.
+
+    Interactive load, step, render, and GUI failures are logged with their
+    tracebacks and leave the browser available for retry or another example.
+    This also applies to scripts calling ``run()`` directly. Debuggers should
+    break on raised exceptions to stop at the original failure.
+
+    Test, headless, benchmark, and noninteractive runs propagate failures to
+    the caller so automated jobs retain their normal failure exit status.
+    """
     viewer = example.viewer
     example_class = type(example)
     render_fps = getattr(args, "render_fps", None)
@@ -544,7 +598,15 @@ def run(example, args):
     if perform_test and not test_final:
         raise NotImplementedError("Examples must implement test_final() to run in test mode")
 
-    browser = _ExampleBrowser(viewer, args) if not perform_test else None
+    interactive = (
+        not perform_test
+        and not getattr(args, "headless", False)
+        and not getattr(viewer, "_headless", False)
+        and getattr(args, "benchmark", False) is False
+        and not getattr(viewer, "benchmark", False)
+        and (hasattr(viewer, "register_ui_callback") or hasattr(viewer, "_configure_example_browser"))
+    )
+    browser = _ExampleBrowser(viewer, args) if interactive else None
 
     if hasattr(example, "gui") and hasattr(viewer, "register_ui_callback"):
         viewer.register_ui_callback(lambda ui, ex=example: ex.gui(ui), position="side")
@@ -553,16 +615,13 @@ def run(example, args):
         frame_start_time = time.perf_counter()
 
         if browser is not None and browser.switch_target is not None:
+            example = None
             example, example_class = browser.switch(example_class)
             continue
 
         if browser is not None and browser._reset_requested:
-            # Drop our reference and force cycle collection so the old
-            # example's destructors finish before reset() enters the new
-            # CUDA graph capture; otherwise late texture/array __del__
-            # calls could fire mid-capture and CUDA rejects them.
+            # Scene cleanup drops callbacks and collects cycles before construction.
             example = None
-            gc.collect()
             example = browser.reset(example_class)
             continue
 
@@ -572,14 +631,21 @@ def run(example, args):
             _throttle_render_fps(frame_start_time, render_fps)
             continue
 
-        if viewer.should_step():
-            with wp.ScopedTimer("step", active=False):
-                example.step()
-        if test_post_step:
-            example.test_post_step()
+        try:
+            if viewer.should_step():
+                with wp.ScopedTimer("step", active=False):
+                    example.step()
+            if test_post_step:
+                example.test_post_step()
 
-        with wp.ScopedTimer("render", active=False):
-            example.render()
+            with wp.ScopedTimer("render", active=False):
+                example.render()
+        except (Exception, SystemExit) as error:
+            if browser is None:
+                raise
+            example = None
+            with viewer._preserve_display_options():
+                browser.report_error(error, example_class.__module__, phase="run")
 
         _throttle_render_fps(frame_start_time, render_fps)
 
@@ -638,6 +704,25 @@ def _print_examples(examples: dict[str, str]) -> None:
     print("Available examples:")
     for name in examples:
         print(f"  {name}")
+
+
+def _describe_example(examples: dict[str, str], argv: list[str]) -> None:
+    """Print an example's module docstring without importing or executing it."""
+    import argparse  # noqa: PLC0415
+
+    parser = argparse.ArgumentParser(prog="python -m newton.examples --describe")
+    parser.add_argument("example_name", choices=examples)
+    args = parser.parse_args(argv)
+
+    module_path = examples[args.example_name]
+    relative_module = module_path.removeprefix("newton.examples.")
+    source_path = os.path.join(get_source_directory(), *relative_module.split(".")) + ".py"
+    with open(source_path, encoding="utf-8") as source:
+        description = ast.get_docstring(ast.parse(source.read(), filename=source_path))
+    if not description:
+        parser.error(f"example '{args.example_name}' does not have a module docstring")
+
+    print(description)
 
 
 def create_parser():
@@ -987,6 +1072,7 @@ def main():
         print("Usage: python -m newton.examples <example_name> [options]")
         print("       python -m newton.examples          # run default basic_pendulum")
         print("       python -m newton.examples --list   # print available examples")
+        print("       python -m newton.examples --describe <example_name> # print description and QA criteria")
         print()
         print("Run 'python -m newton.examples <example_name> --help' to see the")
         print("options supported by a given example.")
@@ -994,6 +1080,10 @@ def main():
 
     if len(sys.argv) >= 2 and sys.argv[1] == "--list":
         _print_examples(examples)
+        sys.exit(0)
+
+    if len(sys.argv) >= 2 and sys.argv[1] == "--describe":
+        _describe_example(examples, sys.argv[2:])
         sys.exit(0)
 
     if len(sys.argv) < 2:

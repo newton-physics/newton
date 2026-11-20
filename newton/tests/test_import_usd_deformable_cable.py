@@ -25,13 +25,24 @@ from newton.tests._usd_deformable_test_utils import (
     group_labels,
     group_range,
 )
-from newton.tests.unittest_utils import USD_AVAILABLE, get_test_devices
+from newton.tests.unittest_utils import get_test_devices, requires
 from newton.usd import SchemaResolverPhysx
 
 
-@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+@requires("pxr.Usd")
 class TestUSDDeformableCable(unittest.TestCase):
     """Curve-deformable (cable) parsing into capsule bodies joined by rod joints."""
+
+    @staticmethod
+    def _assert_matches_native_rod(native, native_bodies, builder, bodies):
+        """Compare imported cable segment mass, inertia and inverse inertia with a native rod."""
+        for attribute in ("body_mass", "body_inertia", "body_inv_inertia"):
+            np.testing.assert_allclose(
+                np.asarray(getattr(native, attribute))[native_bodies],
+                np.asarray(getattr(builder, attribute))[bodies],
+                rtol=1e-6,
+                atol=1e-9,
+            )
 
     @staticmethod
     def _author_attached_cable_pair(*, gap, stiffness=None, damping=None):
@@ -152,6 +163,94 @@ class TestUSDDeformableCable(unittest.TestCase):
         self.assertEqual(builder.shape_count, 6)
         for value in builder.shape_material_mu_rolling:
             self.assertAlmostEqual(value, 0.15)
+
+    @staticmethod
+    def _filtered(builder, body_a, body_b):
+        s1, s2 = builder.body_shapes[body_a][0], builder.body_shapes[body_b][0]
+        return (min(s1, s2), max(s1, s2)) in set(builder.shape_collision_filter_pairs)
+
+    def test_cable_self_collision_flag(self):
+        """Verify that an authored newton:selfCollisionEnabled overrides enable_self_collisions per curve."""
+        from pxr import Sdf
+
+        points = [(0.1 * i, y, 1.0) for y in (0.0, 1.0) for i in range(4)]
+        for authored, default, expect_filtered in (
+            (None, True, False),
+            (None, False, True),
+            (False, True, True),
+            (True, False, False),
+        ):
+            with self.subTest(authored=authored, default=default):
+                stage = _deformable_stage()
+                curves = _add_cable_curve(stage, "/World/Cable", points)
+                curves.CreateCurveVertexCountsAttr([4, 4])
+                if authored is not None:
+                    curves.GetPrim().CreateAttribute("newton:selfCollisionEnabled", Sdf.ValueTypeNames.Bool).Set(
+                        authored
+                    )
+                builder = newton.ModelBuilder()
+                result = builder.add_usd(stage, enable_self_collisions=default, return_deformable_results=True)
+                bodies = result["path_cable_map"]["/World/Cable"][0]
+                self.assertEqual(len(bodies), 6)
+                self.assertEqual(self._filtered(builder, bodies[0], bodies[2]), expect_filtered)
+                # Sibling curves are separate articulations, so they are never filtered.
+                self.assertFalse(self._filtered(builder, bodies[0], bodies[3]))
+
+    def test_welded_cable_self_collision_flag(self):
+        """Verify that any welded member authoring self-collision off disables it for the whole graph."""
+        from pxr import Sdf
+
+        for author_a, author_b, default, expect_filtered in (
+            (False, None, True, True),
+            (False, True, True, True),
+            (True, None, False, False),
+        ):
+            with self.subTest(author_a=author_a, author_b=author_b, default=default):
+                stage = self._author_attached_cable_pair(gap=0.0)
+                for path, authored in (("/World/CableA", author_a), ("/World/CableB", author_b)):
+                    if authored is not None:
+                        stage.GetPrimAtPath(path).CreateAttribute(
+                            "newton:selfCollisionEnabled", Sdf.ValueTypeNames.Bool
+                        ).Set(authored)
+                builder = newton.ModelBuilder()
+                if author_b is None:
+                    with self.assertNoLogs("newton", level="WARNING"):
+                        result = builder.add_usd(stage, enable_self_collisions=default, return_deformable_results=True)
+                else:
+                    with self.assertLogs("newton", level="WARNING") as logs:
+                        result = builder.add_usd(stage, enable_self_collisions=default, return_deformable_results=True)
+                    self.assertIn("differing self-collision settings", "\n".join(logs.output))
+                self.assertEqual(builder.articulation_count, 1)
+                bodies_a = result["path_cable_map"]["/World/CableA"][0]
+                bodies_b = result["path_cable_map"]["/World/CableB"][0]
+                self.assertEqual(self._filtered(builder, bodies_a[2], bodies_b[2]), expect_filtered)
+
+    def test_rooted_cable_self_collision_flag(self):
+        """Verify that a world-rooted cable honors its authored flag and a rigid-rooted one does not."""
+        from pxr import Sdf, UsdGeom, UsdPhysics
+
+        for target, expect_filtered in (("", True), ("/World/Plug", False)):
+            with self.subTest(target=target):
+                stage = _deformable_stage()
+                plug = UsdGeom.Cube.Define(stage, "/World/Plug")
+                UsdPhysics.RigidBodyAPI.Apply(plug.GetPrim())
+                UsdPhysics.CollisionAPI.Apply(plug.GetPrim())
+                points = [(0.1 * i, 0.0, 1.0) for i in range(4)]
+                curves = _add_cable_curve(stage, "/World/Cable", points)
+                curves.GetPrim().CreateAttribute("newton:selfCollisionEnabled", Sdf.ValueTypeNames.Bool).Set(False)
+                _add_physics_attachment(
+                    stage,
+                    "/World/Pin",
+                    src0="/World/Cable",
+                    src1=target,
+                    type0="point",
+                    indices0=[0],
+                    coords1=[points[0]],
+                )
+                builder = newton.ModelBuilder()
+                result = builder.add_usd(stage, enable_self_collisions=True, return_deformable_results=True)
+                bodies = result["path_cable_map"]["/World/Cable"][0]
+                self.assertEqual(self._filtered(builder, bodies[0], bodies[2]), expect_filtered)
 
     def test_attachment_weld_policy_rejects_compliant_or_apart(self):
         """A curve-to-curve attachment welds only when hard AND coincident: a compliant
@@ -313,7 +412,11 @@ class TestUSDDeformableCable(unittest.TestCase):
             stage = self._author_attached_cable_pair(gap=0.0)
 
             builder = newton.ModelBuilder()
+            # Welded cables import solid and massive even under an inherited hollow, zero-thickness default.
+            builder.default_shape_cfg.is_solid = False
             result = builder.add_usd(stage, return_deformable_results=True)
+            self.assertTrue(all(builder.shape_is_solid))
+            self.assertTrue(all(mass > 0.0 for mass in builder.body_mass))
             self.assertEqual(len(builder.articulation_label), 1)
             self.assertEqual(
                 result["path_cable_attrs"]["/World/CableA"]["graph_component"],
@@ -723,13 +826,11 @@ class TestUSDDeformableCable(unittest.TestCase):
                 np.testing.assert_allclose(np.asarray(builder.body_q)[bodies], np.asarray(native.body_q), atol=1e-6)
                 q = builder.joint_q_start[joints[0]]
                 nq = native.joint_q_start[native_joints[0]]
-                np.testing.assert_allclose(
-                    builder.joint_target_q[q : q + 7], native.joint_target_q[nq : nq + 7], atol=1e-6
-                )
+                np.testing.assert_allclose(builder.joint_rest_q[q : q + 7], native.joint_rest_q[nq : nq + 7], atol=1e-6)
                 imported_model = builder.finalize(device="cpu")
                 native_model = native.finalize(device="cpu")
                 np.testing.assert_allclose(
-                    imported_model.joint_target_q.numpy(), native_model.joint_target_q.numpy(), atol=1e-6
+                    imported_model.joint_rest_q.numpy(), native_model.joint_rest_q.numpy(), atol=1e-6
                 )
 
     def test_welded_cables_keep_rest_vectors_and_frames(self):
@@ -771,7 +872,7 @@ class TestUSDDeformableCable(unittest.TestCase):
             )
         )
         np.testing.assert_allclose(builder.body_q, native.body_q, atol=1e-6)
-        np.testing.assert_allclose(builder.joint_target_q, native.joint_target_q, atol=1e-6)
+        np.testing.assert_allclose(builder.joint_rest_q, native.joint_rest_q, atol=1e-6)
 
     def test_welded_cable_normals_follow_merged_tangents(self):
         """Keep authored normals when an accepted weld moves one endpoint slightly."""
@@ -869,7 +970,7 @@ class TestUSDDeformableCable(unittest.TestCase):
                     joint = next(j for j, child in enumerate(builder.joint_child) if child == bodies[1])
                     q = builder.joint_q_start[joint]
                     np.testing.assert_allclose(
-                        builder.joint_target_q[q : q + 7], [0, 0, 0, 0, 0, math.sqrt(0.5), math.sqrt(0.5)], atol=1e-6
+                        builder.joint_rest_q[q : q + 7], [0, 0, 0, 0, 0, math.sqrt(0.5), math.sqrt(0.5)], atol=1e-6
                     )
 
     def test_cable_rest_volume_mass_precedence(self):
@@ -926,7 +1027,7 @@ class TestUSDDeformableCable(unittest.TestCase):
         self.assertEqual(builder.joint_articulation[joints[-1]], -1)
         np.testing.assert_allclose(builder.body_q, native.body_q, atol=1e-6)
         np.testing.assert_allclose(builder.shape_scale, native.shape_scale, atol=1e-6)
-        np.testing.assert_allclose(builder.joint_target_q, native.joint_target_q, atol=1e-6)
+        np.testing.assert_allclose(builder.joint_rest_q, native.joint_rest_q, atol=1e-6)
         np.testing.assert_allclose(builder.joint_X_p[joints[-1]], native.joint_X_p[native_joints[-1]], atol=1e-6)
 
     def test_cable_rest_arrays_keep_multi_curve_offsets(self):
@@ -950,7 +1051,7 @@ class TestUSDDeformableCable(unittest.TestCase):
         np.testing.assert_allclose(np.asarray(builder.shape_scale)[shapes, 1], [0.05, 0.1], atol=1e-6)
         q = builder.joint_q_start[joints[0]]
         np.testing.assert_allclose(
-            builder.joint_target_q[q : q + 7], [0, 0, 0, 0, 0, -math.sqrt(0.5), math.sqrt(0.5)], atol=1e-6
+            builder.joint_rest_q[q : q + 7], [0, 0, 0, 0, 0, -math.sqrt(0.5), math.sqrt(0.5)], atol=1e-6
         )
 
     def test_cable_bad_rest_normals_preserve_rest_points(self):
@@ -975,7 +1076,7 @@ class TestUSDDeformableCable(unittest.TestCase):
                 shapes = [builder.body_shapes[body][0] for body in bodies]
                 np.testing.assert_allclose(np.asarray(builder.shape_scale)[shapes, 1], [0.05, 0.1], atol=1e-6)
                 q = builder.joint_q_start[joints[0]]
-                np.testing.assert_allclose(builder.joint_target_q[q : q + 7], [0, 0, 0, 0, 0, 0, 1], atol=1e-6)
+                np.testing.assert_allclose(builder.joint_rest_q[q : q + 7], [0, 0, 0, 0, 0, 0, 1], atol=1e-6)
 
     def test_cable_rest_shape_uses_full_affine_transform(self):
         """Match baked rest geometry under scale, shear, reflection, and an import transform."""
@@ -1030,9 +1131,9 @@ class TestUSDDeformableCable(unittest.TestCase):
                     )
                     joint = result["path_cable_map"]["/World/Cable"][1][0]
                     q = builder.joint_q_start[joint]
-                    rotation = wp.quat_to_matrix(wp.quat(*builder.joint_target_q[q + 3 : q + 7]))
+                    rotation = wp.quat_to_matrix(wp.quat(*builder.joint_rest_q[q + 3 : q + 7]))
                     np.testing.assert_allclose(np.asarray(rotation).reshape(3, 3), expected_rotation, atol=2e-5)
-                for attribute in ("body_q", "shape_scale", "body_mass", "joint_target_q", "joint_X_p", "joint_X_c"):
+                for attribute in ("body_q", "shape_scale", "body_mass", "joint_rest_q", "joint_X_p", "joint_X_c"):
                     np.testing.assert_allclose(
                         getattr(builders[0], attribute), getattr(builders[1], attribute), atol=2e-5, err_msg=attribute
                     )
@@ -1106,7 +1207,7 @@ class TestUSDDeformableCable(unittest.TestCase):
                     model = builder.finalize(device=device)
                     state, next_state = model.state(), model.state()
                     control = model.control()
-                    solver = newton.solvers.SolverVBD(model, iterations=5, rigid_compliant_alm=True)
+                    solver = newton.solvers.SolverVBD(model, iterations=5)
                     initial_body_q = state.body_q.numpy().copy()
                     for _ in range(1 if relaxed else 120):
                         state.clear_forces()
@@ -1411,16 +1512,30 @@ class TestUSDDeformableCable(unittest.TestCase):
         np.testing.assert_allclose([builder.body_mass[body] for body in range(b0, b1)], [2.0, 2.5, 5.5])
 
     def test_cable_body_mass_rescales_total(self):
-        """PhysicsDeformableBodyAPI.mass rescales the rigid cable's segment masses."""
+        """Match a native solid rod for USD body mass, whatever the default shape solidity."""
         stage = _deformable_stage(up_axis="y")
         pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
         curves = _add_cable_curve(stage, "/World/Cable", pts)
         _apply_deformable_body_api(curves.GetPrim(), mass=2.5)
+        native = newton.ModelBuilder()
+        bodies, _ = native.add_rod(rod=newton.Rod(pts, radius=0.01), total_mass=2.5)
 
-        builder = newton.ModelBuilder()
-        builder.add_usd(stage)
-        b0, b1 = group_range(builder, "cable", "/World/Cable", "body")
-        self.assertAlmostEqual(sum(builder.body_mass[b] for b in range(b0, b1)), 2.5, places=4)
+        for is_solid, margin in ((True, 0.0), (False, 0.002), (False, 0.0)):
+            with self.subTest(is_solid=is_solid, margin=margin):
+                builder = newton.ModelBuilder()
+                builder.default_shape_cfg.is_solid = is_solid
+                builder.default_shape_cfg.margin = margin
+                builder.add_usd(stage)
+                b0, b1 = group_range(builder, "cable", "/World/Cable", "body")
+                self.assertAlmostEqual(sum(builder.body_mass[b] for b in range(b0, b1)), 2.5, places=4)
+                # Cables import solid, keep the requested contact margin, and leave the defaults alone.
+                shapes = [builder.body_shapes[b][0] for b in range(b0, b1)]
+                self.assertTrue(all(builder.shape_is_solid[shape] for shape in shapes))
+                self.assertEqual([builder.shape_margin[shape] for shape in shapes], [margin] * len(shapes))
+                self.assertEqual(
+                    (builder.default_shape_cfg.is_solid, builder.default_shape_cfg.margin), (is_solid, margin)
+                )
+                self._assert_matches_native_rod(native, bodies, builder, list(range(b0, b1)))
 
     def test_per_point_masses_override_proposal_density_with_finite_inertia(self):
         """Apply per-point masses ahead of the proposal density and keep inertia finite."""
@@ -1512,9 +1627,7 @@ class TestUSDDeformableCable(unittest.TestCase):
         self.assertTrue(all(math.isfinite(value) and value > 0.0 for value in cable_stiffness))
 
     def test_cable_density_segment_mass_is_cylinder_not_capsule(self):
-        """A density-derived cable segment gets the cylinder mass m = rho*pi*r^2*L per segment
-        (so mass scales with density and segment length), not add_rod's capsule mass whose
-        constant hemispherical caps overestimate short / thick segments."""
+        """Match native cylinder-volume mass without counting overlapping capsule caps."""
         r = 0.05
         for rho in (1000.0, 2000.0):
             with self.subTest(density=rho):
@@ -1535,6 +1648,9 @@ class TestUSDDeformableCable(unittest.TestCase):
                     self.assertNotAlmostEqual(builder.body_mass[b], capsule, delta=cylinder * 1e-2)
                 # A 2x-longer segment has exactly 2x the mass (no constant-cap bias in the ratio).
                 self.assertAlmostEqual(builder.body_mass[b0 + 1] / builder.body_mass[b0], 2.0, places=3)
+                native = newton.ModelBuilder()
+                bodies, _ = native.add_rod(rod=newton.Rod(pts, radius=r), cfg=native.ShapeConfig(density=rho))
+                self._assert_matches_native_rod(native, bodies, builder, list(range(b0, b1)))
 
     def test_cable_constant_geometry_thickness_controls_physics(self):
         """Apply constant simulation thickness to cable radius, mass, and derived stiffness."""

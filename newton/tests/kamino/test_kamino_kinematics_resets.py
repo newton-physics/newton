@@ -5,27 +5,31 @@
 
 from __future__ import annotations
 
+import logging
 import unittest
 
 import numpy as np
 import warp as wp
 
+import newton
 from newton import ModelBuilder
 from newton._src.solvers.kamino._src.core.model import DataKamino, ModelKamino
 from newton._src.solvers.kamino._src.kinematics.joints import JointCorrectionMode, compute_joints_data
 from newton._src.solvers.kamino._src.kinematics.resets import reset_joints_state_from_bodies_state, set_floating_base
 from newton._src.solvers.kamino._src.solvers import ForwardKinematicsSolver
-from newton._src.solvers.kamino._src.utils import logger as msg
 from newton.solvers import SolverKamino
-from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino import setup_test_output, setup_tests, test_context
 from newton.tests.kamino.utils.sampling import (
     sample_actuator_coords,
     sample_actuator_velocities,
     sample_base_state,
     sample_world_mask,
 )
+from newton.tests.unittest_utils import NewtonTestCase
 from newton.tests.utils.basics import build_boxes_fourbar
 from newton.tests.utils.testing import build_all_joints_test, build_unary_revolute_joint_test
+
+logger = logging.getLogger(__name__)
 
 ###
 # Utils
@@ -288,7 +292,7 @@ def setup_test_fourbar_model(
         builder=build_boxes_fourbar(
             limits=False, actuator_ids=[1], floatingbase=base_joint, fixedbase=False, ground=False
         ),
-        world_count=num_worlds,
+        copy_count=num_worlds,
     )
     if base_joint:
         # Set non-trivial r_B, X_B, r_F, X_F into base joint for testing (while preserving initial pose)
@@ -378,26 +382,17 @@ def set_model_to_random_pose(
 ###
 
 
-class TestSetFloatingBase(unittest.TestCase):
+class TestSetFloatingBase(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose  # Set to True to enable verbose output
+
+        setup_test_output(self, verbose=self.verbose)
+
         self.progress = test_context.verbose  # Set to True to show progress bars during long tests
         self.seed = 42
-
-        # Set debug-level logging to print verbose test output to console
-        if self.verbose:
-            print("\n")  # Add newline before test output for better readability
-            msg.set_log_level(msg.LogLevel.INFO)
-        else:
-            msg.reset_log_level()
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            msg.reset_log_level()
 
     def test_01_set_floating_base_with_base_joint(self):
         """
@@ -571,7 +566,7 @@ class TestSetFloatingBase(unittest.TestCase):
             builder=build_boxes_fourbar(
                 limits=False, actuator_ids=[1], floatingbase=False, fixedbase=True, ground=False
             ),
-            world_count=num_worlds,
+            copy_count=num_worlds,
         )
         model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
 
@@ -630,26 +625,17 @@ class TestSetFloatingBase(unittest.TestCase):
         self.assertTrue(any("no free-floating base body" in message for message in logs.output))
 
 
-class TestJointBodyStateConversions(unittest.TestCase):
+class TestJointBodyStateConversions(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose  # Set to True to enable verbose output
+
+        setup_test_output(self, verbose=self.verbose)
+
         self.progress = test_context.verbose  # Set to True to show progress bars during long tests
         self.seed = 42
-
-        # Set debug-level logging to print verbose test output to console
-        if self.verbose:
-            print("\n")  # Add newline before test output for better readability
-            msg.set_log_level(msg.LogLevel.INFO)
-        else:
-            msg.reset_log_level()
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            msg.reset_log_level()
 
     def test_01_reset_joint_states_from_body_state(self):
         """
@@ -689,6 +675,7 @@ class TestJointBodyStateConversions(unittest.TestCase):
 
 if __name__ == "__main__":
     # Test setup
+    newton.utils.setup_console_logging()
     setup_tests()
 
     # Run all tests

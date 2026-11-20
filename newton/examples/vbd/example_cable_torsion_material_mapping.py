@@ -1,41 +1,43 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Cable Torsion Material Mapping Validation
-#
-# The test starts from material properties -- E or explicit G, nu, radius, and
-# segment length -- and converts them into Newton's per-joint twist stiffness.
-# The rod centerline endpoints are fixed while one end is rotated about the rod
-# tangent. In Newton VBD cable terms this is a fixed body position with a driven
-# endpoint quaternion. This is an isolated circular-shaft material-mapping
-# validation, not an asymmetry or routed twist-transfer reproduction.
-#
-# The scene renders:
-#   1. cyan analytic ticks on the straight reference centerline
-#   2. orange simulated material-frame ticks overlaid on the same line
-#
-# The generated web video adds two live error traces:
-#   - twist profile error: deviation from the analytical target profile in degrees
-#   - bend leakage: transverse centerline motion as percent of cable length
-#
-# Rod stores the material inputs, while each assembled rod joint stores the
-# discretized twist stiffness. ModelBuilder derives that joint gain from the
-# mechanical torsion law and the joint's local dual rest length:
-#
-#   G = E / (2 * (1 + nu))
-#   J = pi * r^4 / 2
-#   twist_stiffness = GJ / h
-#
-# and verifies that pure endpoint quaternion twist does not bend the cable.
-#
-# Run interactively:
-#   uv run --extra examples python -m newton.examples.vbd.example_cable_torsion_material_mapping
-#
-# Run as a test:
-#   uv run --extra examples python -m newton.examples.vbd.example_cable_torsion_material_mapping --test --viewer null
-#
-###########################################################################
+"""Cable Torsion Material Mapping Validation
+
+The test starts from material properties -- E or explicit G, nu, radius, and
+segment length -- and converts them into Newton's per-joint twist stiffness.
+The rod centerline endpoints are fixed while one end is rotated about the rod
+tangent. In Newton VBD cable terms this is a fixed body position with a driven
+endpoint quaternion. This is an isolated circular-shaft material-mapping
+validation, not an asymmetry or routed twist-transfer reproduction.
+
+The scene renders:
+  1. cyan analytic ticks on the straight reference centerline
+  2. orange simulated material-frame ticks overlaid on the same line
+
+The generated web video adds two live error traces:
+  - twist profile error: deviation from the analytical target profile in degrees
+  - bend leakage: transverse centerline motion as percent of cable length
+
+Rod stores the material inputs, while each assembled rod joint stores the
+discretized twist stiffness. ModelBuilder derives that joint gain from the
+mechanical torsion law and the joint's local dual rest length:
+
+  G = E / (2 * (1 + nu))
+  J = pi * r^4 / 2
+  twist_stiffness = GJ / h
+
+and verifies that pure endpoint quaternion twist does not bend the cable.
+
+Success criteria:
+- The root remains untwisted while the tip rotates to its prescribed angle.
+- After the ramp and hold, orange simulated material-frame ticks align with the cyan analytic ticks
+  along the rod.
+- The twist profile is nearly linear and the centerline remains straight without visible bending
+  leakage.
+
+Runs:
+- `python -m newton.examples cable_torsion_material_mapping`
+"""
 
 import math
 

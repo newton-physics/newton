@@ -8,6 +8,7 @@ simulating constrained multi-body systems for arbitrary mechanical assemblies.
 
 from __future__ import annotations
 
+import logging
 import warnings
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
@@ -16,12 +17,13 @@ from typing import TYPE_CHECKING, Any, Literal
 import numpy as np
 import warp as wp
 
-from ...core.types import override
+from ...core.types import MAXVAL, override
 from ...exceptions import NewtonDeprecationWarning
 from ...geometry.types import GeoType
 from ...sim import (
     Contacts,
     Control,
+    JointTargetMode,
     JointType,
     Model,
     ModelBuilder,
@@ -36,6 +38,7 @@ from ...sim.collide import (
     _RIGID_CONTACTS_PER_PRIMITIVE_PAIR,
     _estimate_rigid_contact_max,
 )
+from ...utils.deprecation import warn_deprecation
 from ..coupled.interface import CouplingInterface
 from ..solver import SolverBase
 
@@ -45,11 +48,14 @@ if TYPE_CHECKING:
         ConfigBase,
         ConstrainedDynamicsConfig,
         ConstraintStabilizationConfig,
-        DVISolverConfig,
         ForwardKinematicsSolverConfig,
+        LOXSolverConfig,
         MaterialManagerConfig,
         PADMMSolverConfig,
+        SCCSolverConfig,
     )
+
+logger = logging.getLogger(__name__)
 
 ###
 # Module interface
@@ -58,8 +64,8 @@ if TYPE_CHECKING:
 __all__ = ["SolverKamino"]
 
 
-def _estimate_dvi_contacts_per_world(model, newton_model: Model) -> int:
-    """Estimate DVI contact capacity using the collision pipeline's weights."""
+def _estimate_scc_contacts_per_world(model, newton_model: Model) -> int:
+    """Estimate SCC contact capacity using the collision pipeline's weights."""
     theoretical = max(model.geoms.world_minimum_contacts, default=0)
     if model.size.num_worlds == 1:
         heuristic = _estimate_rigid_contact_max(newton_model)
@@ -117,7 +123,7 @@ class SolverKamino(SolverBase, CouplingInterface):
     Forward dynamics are formulated as a Nonlinear Complementarity Problem (NCP)
     over bilateral kinematic joint constraints, bounded-multiplier constraints, and unilateral joint-limit
     and contact constraints. The default PADMM backend solves this problem with
-    Proximal ADMM. An opt-in DVI backend uses projected iterations with a direct
+    Proximal ADMM. An opt-in Split Constraint Coupling (SCC) backend uses projected iterations with a direct
     bilateral block solve.
 
     When requested, the solver populates :attr:`~newton.solvers.SolverBase.Observables.body_qdd` with the
@@ -155,17 +161,29 @@ class SolverKamino(SolverBase, CouplingInterface):
     ----------
     Kamino treats a rigid body as *immovable* when either its Newton inertia is
     zero (``body_inv_mass == 0`` and ``body_inv_inertia == 0``) or its
-    ``body_flags`` include :attr:`~newton.BodyFlags.KINEMATIC` or
-    :attr:`~newton.BodyFlags.PROXY`. This decision is baked once at construction,
-    and flipping a body's immovability at runtime (whether by toggling its
-    KINEMATIC/PROXY flag, by making a massive body massless, or by giving a
-    massless body finite inertia) will raise a :class:`RuntimeError` from
-    :meth:`notify_model_changed`.
+    ``body_flags`` include :attr:`~newton.BodyFlags.KINEMATIC`. This decision is
+    baked once at construction, and flipping a body's immovability at runtime
+    (whether by toggling its KINEMATIC flag, by making a massive body massless, or
+    by giving a massless body finite inertia) will raise a :class:`RuntimeError`
+    from :meth:`notify_model_changed`.
 
-    Kamino's integrator does not advance a kinematic/proxy body's pose from its
-    velocity. To animate such a body along a trajectory, write the target
-    pose into ``state_in.body_q`` (and optionally ``state_in.body_qd``)
-    externally between steps.
+    Bodies flagged :attr:`~newton.BodyFlags.PROXY` are simulated like any other
+    body by every backend, with their mass and inertia, and their flag may change
+    at runtime.
+
+    The LOX backend treats only KINEMATIC bodies as immovable. It also simulates
+    massless bodies, and raises a :class:`RuntimeError` from
+    :meth:`notify_model_changed` when a body becomes massless or a massless body
+    gains mass.
+
+    With the PADMM and SCC backends, Kamino's integrator does not advance an
+    immovable body's pose from its velocity. To animate such a body along a
+    trajectory, write the target pose into ``state_in.body_q`` (and optionally
+    ``state_in.body_qd``) externally between steps. The LOX backend advances
+    kinematic bodies, and massless bodies whose only joints are free joints to the
+    world, with their velocity in ``state_in.body_qd``: write the velocity that
+    reaches the target pose within the step. Bodies welded to a kinematic body move
+    rigidly with it.
 
     Example
     -------
@@ -181,7 +199,13 @@ class SolverKamino(SolverBase, CouplingInterface):
                 state_in, state_out = state_out, state_in
     """
 
-    SUPPORTED_OBSERVABLES = frozenset({SolverBase.ObservableKind.BODY_QDD, SolverBase.ObservableKind.CONTACT_F})
+    SUPPORTED_OBSERVABLES = frozenset(
+        {
+            SolverBase.ObservableKind.BODY_QDD,
+            SolverBase.ObservableKind.CONTACT_F,
+            SolverBase.ObservableKind.SOLVER_RESIDUAL,
+        }
+    )
 
     @dataclass
     class Config:
@@ -191,8 +215,9 @@ class SolverKamino(SolverBase, CouplingInterface):
 
         sparse_jacobian: bool | None = None
         """
-        Whether to use a sparse Jacobian representation. When unspecified, defaults to `True` for DVI and `False`
-        for PADMM.
+        Whether the solver should use a sparse Jacobian. ``None`` selects the
+        backend default: sparse for SCC and LOX, and dense for PADMM. LOX
+        requires sparse Jacobians.
         """
 
         sparse_dynamics: bool = False
@@ -246,11 +271,38 @@ class SolverKamino(SolverBase, CouplingInterface):
         If `None`, default values will be used.
         """
 
-        dvi: DVISolverConfig | None = None
+        scc: SCCSolverConfig | None = None
         """
-        Configurations for the DVI dynamics solver.\n
-        See :class:`DVISolverConfig` for more details.\n
+        Configurations for the SCC dynamics solver.\n
+        See :class:`SCCSolverConfig` for more details.\n
         If `None`, default values will be used.
+        """
+
+        @property
+        def dvi(self) -> SCCSolverConfig:
+            """Deprecated alias for :attr:`scc`.
+
+            .. deprecated:: 1.9
+                Use ``config.scc`` instead. Removal is eligible in Newton 1.10.
+            """
+            warn_deprecation("config.dvi is deprecated in Newton 1.9; use config.scc instead.")
+            return self.scc
+
+        @dvi.setter
+        def dvi(self, value: SCCSolverConfig) -> None:
+            warn_deprecation("config.dvi is deprecated in Newton 1.9; use config.scc instead.")
+            self.scc = value
+
+        lox: LOXSolverConfig | None = None
+        """
+        Configurations for the LOX dynamics solver.\n
+        See :class:`LOXSolverConfig` for more details.\n
+        If `None`, default values will be used.
+
+        .. experimental::
+
+            The LOX backend, including all of its options, may change without
+            following the normal deprecation policy.
         """
 
         fk: ForwardKinematicsSolverConfig | None = None
@@ -283,11 +335,19 @@ class SolverKamino(SolverBase, CouplingInterface):
         Defaults to `"euler"`.
         """
 
-        dynamics_solver: Literal["padmm", "dvi"] = "padmm"
+        dynamics_solver: Literal["padmm", "scc", "lox", "dvi"] = "padmm"
         """
         The forward dynamics solver to use. Construct the config with this value
         so solver-dependent defaults are initialized consistently. Defaults to
         `"padmm"`.
+
+        .. deprecated:: 1.9
+            The ``"dvi"`` spelling is an alias for ``"scc"``. Use ``"scc"`` instead.
+            Removal is eligible in Newton 1.10.
+
+        .. experimental::
+
+            The ``"lox"`` backend may change without following the normal deprecation policy.
         """
 
         angular_velocity_damping: float = 0.0
@@ -335,7 +395,8 @@ class SolverKamino(SolverBase, CouplingInterface):
             config.ConstrainedDynamicsConfig.register_custom_attributes(builder)
             config.CollisionDetectorConfig.register_custom_attributes(builder)
             config.PADMMSolverConfig.register_custom_attributes(builder)
-            config.DVISolverConfig.register_custom_attributes(builder)
+            config.SCCSolverConfig.register_custom_attributes(builder)
+            config.LOXSolverConfig.register_custom_attributes(builder)
             config.MaterialManagerConfig.register_custom_attributes(builder)
 
             # Register KaminoSceneAPI custom attributes for each individual solver-level configurations
@@ -389,7 +450,8 @@ class SolverKamino(SolverBase, CouplingInterface):
                 "constraints": config.ConstraintStabilizationConfig,
                 "dynamics": config.ConstrainedDynamicsConfig,
                 "padmm": config.PADMMSolverConfig,
-                "dvi": config.DVISolverConfig,
+                "scc": config.SCCSolverConfig,
+                "lox": config.LOXSolverConfig,
                 "fk": config.ForwardKinematicsSolverConfig,
                 "materials": config.MaterialManagerConfig,
             }
@@ -397,13 +459,13 @@ class SolverKamino(SolverBase, CouplingInterface):
                 nested_config = kwargs.get(attr_name, None)
                 if nested_config is not None:
                     nested_kwargs = nested_config.__dict__
-                elif cfg.dynamics_solver == "dvi" and attr_name in {"dynamics", "dvi"}:
+                elif cfg.dynamics_solver == "scc" and attr_name in {"dynamics", "scc"}:
                     nested_kwargs = getattr(cfg, attr_name).__dict__
                 else:
                     nested_kwargs = {}
                 setattr(cfg, attr_name, config_cls.from_model(model, **nested_kwargs))
 
-            if cfg.dynamics_solver == "dvi" and "dynamics" not in kwargs:
+            if cfg.dynamics_solver == "scc" and "dynamics" not in kwargs:
                 cfg.dynamics.preconditioning = False
 
             cfg.validate()
@@ -422,6 +484,12 @@ class SolverKamino(SolverBase, CouplingInterface):
             from ._src.core.joints import JointCorrectionMode  # noqa: PLC0415
 
             # Ensure that the sparsity settings are compatible with each other
+            if self.dynamics_solver == "lox":
+                if self.sparse_jacobian is None:
+                    self.sparse_jacobian = True
+                elif not self.sparse_jacobian:
+                    raise ValueError("The LOX solver requires `sparse_jacobian=True`.")
+
             if self.sparse_dynamics and not self.sparse_jacobian:
                 raise ValueError(
                     "Sparsity setting mismatch: `sparse_dynamics` solver "
@@ -435,8 +503,10 @@ class SolverKamino(SolverBase, CouplingInterface):
                 raise ValueError("Constrained dynamics config cannot be None.")
             elif self.padmm is None:
                 raise ValueError("PADMM solver config cannot be None.")
-            elif self.dvi is None:
-                raise ValueError("DVI solver config cannot be None.")
+            elif self.scc is None:
+                raise ValueError("SCC solver config cannot be None.")
+            elif self.lox is None:
+                raise ValueError("LOX solver config cannot be None.")
 
             # Validate specialized sub-configurations
             # using their own built-in validations
@@ -445,21 +515,35 @@ class SolverKamino(SolverBase, CouplingInterface):
             if self.fk is not None:
                 self.fk.validate()
             self.constraints.validate()
+            if self.dynamics_solver == "lox" and self.constraints._has_recovery_settings():
+                raise ValueError(
+                    "Shared constraint recovery/compliance settings require PADMM or SCC. "
+                    "LOX retains its existing constraint and contact_compliance settings."
+                )
             self.dynamics.validate()
             self.padmm.validate()
-            self.dvi.validate()
+            self.scc.validate()
+            self.lox.validate()
+            if self.dynamics_solver in {"padmm", "scc"} and self.lox.contact_compliance:
+                raise ValueError(
+                    "lox.contact_compliance requires the LOX backend. "
+                    "Use constraints.contact_compliance for PADMM or SCC; "
+                    "that option also falls back to shape material stiffness and damping."
+                )
             self.materials.validate()
 
-            supported_dynamics_solvers = {"padmm", "dvi"}
+            supported_dynamics_solvers = {"padmm", "scc", "lox"}
             if self.dynamics_solver not in supported_dynamics_solvers:
                 raise ValueError(
                     f"Invalid dynamics solver: {self.dynamics_solver}. Must be one of {supported_dynamics_solvers}."
                 )
-            if self.dynamics_solver == "dvi" and self.dynamics.preconditioning:
+            if self.dynamics_solver == "scc" and self.dynamics.preconditioning:
                 raise ValueError(
-                    "The DVI solver currently requires `dynamics.preconditioning=False` so convergence checks and "
+                    "The SCC solver currently requires `dynamics.preconditioning=False` so convergence checks and "
                     "contact cone updates stay in physical constraint units."
                 )
+            if self.dynamics_solver == "padmm" and self.sparse_dynamics and self.dynamics.linear_solver_type == "LDL":
+                raise ValueError("Sparse PADMM does not support LDL; use dense PADMM or an iterative linear solver.")
             if (
                 self.dynamics_solver == "padmm"
                 and not self.sparse_dynamics
@@ -490,8 +574,14 @@ class SolverKamino(SolverBase, CouplingInterface):
             # Import here to avoid module-level imports and circular dependencies
             from . import config  # noqa: PLC0415
 
+            if self.dynamics_solver == "dvi":
+                warn_deprecation(
+                    'dynamics_solver="dvi" is deprecated in Newton 1.9; use dynamics_solver="scc" instead.'
+                )
+                self.dynamics_solver = "scc"
+
             if self.sparse_jacobian is None:
-                self.sparse_jacobian = self.dynamics_solver == "dvi"
+                self.sparse_jacobian = self.dynamics_solver in {"scc", "lox"}
 
             # Default-initialize any sub-configurations that were not explicitly provided by the user
             if self.collision_detector is None and self.use_collision_detector:
@@ -501,13 +591,13 @@ class SolverKamino(SolverBase, CouplingInterface):
             if self.constraints is None:
                 self.constraints = config.ConstraintStabilizationConfig()
             if self.dynamics is None:
-                if self.dynamics_solver == "dvi" and self.sparse_dynamics:
+                if self.dynamics_solver == "scc" and self.sparse_dynamics:
                     self.dynamics = config.ConstrainedDynamicsConfig(
                         preconditioning=False,
                         linear_solver_type="CR",
                         linear_solver_kwargs={"maxiter": 9},
                     )
-                elif self.dynamics_solver == "dvi":
+                elif self.dynamics_solver == "scc":
                     self.dynamics = config.ConstrainedDynamicsConfig(
                         preconditioning=False,
                         linear_solver_type="LLTBRCM",
@@ -516,10 +606,12 @@ class SolverKamino(SolverBase, CouplingInterface):
                     self.dynamics = config.ConstrainedDynamicsConfig()
             if self.padmm is None:
                 self.padmm = config.PADMMSolverConfig()
-            if self.dvi is None:
+            if self.scc is None:
                 # Storage backends share one convergence schedule; sparse
-                # optimizations must not silently weaken DVI semantics.
-                self.dvi = config.DVISolverConfig()
+                # optimizations must not silently weaken SCC semantics.
+                self.scc = config.SCCSolverConfig()
+            if self.lox is None:
+                self.lox = config.LOXSolverConfig()
             if self.materials is None:
                 self.materials = config.MaterialManagerConfig()
 
@@ -758,9 +850,6 @@ class SolverKamino(SolverBase, CouplingInterface):
         # as class variables if not already done
         self._import_kamino()
 
-        # Validate that the model does not contain unsupported components
-        self._validate_model_compatibility(model)
-
         # Cache configurations; either from the user-provided config or from the model's custom attributes
         # NOTE: `Config.from_model` will default-initialize if no relevant custom attributes were
         # found on the model, so `self._config` will always be fully initialized after this step.
@@ -770,6 +859,16 @@ class SolverKamino(SolverBase, CouplingInterface):
             # Validate the user-provided config. Protects against modifying the config after initialization.
             config.validate()
         self._config = config
+        if config.use_collision_detector and model._has_body_variants:
+            raise NotImplementedError(
+                "SolverKamino supports body variants only with Newton contacts; set use_collision_detector=False."
+            )
+
+        # Validate solver-specific model compatibility after resolving the selected backend.
+        self._validate_model_compatibility(model, self._config)
+        self._rod_joints = (
+            np.flatnonzero(model.joint_type.numpy() == JointType.ROD) if model.joint_count > 0 else np.empty(0, int)
+        )
 
         # Create a Kamino model from the Newton model
         collision_config = config.collision_detector
@@ -778,8 +877,11 @@ class SolverKamino(SolverBase, CouplingInterface):
             or collision_config.pipeline == "primitive"
             or collision_config.broadphase == "explicit"
         )
+        # LOX simulates massless bodies, so only kinematic bodies are immovable for it
         self._model_kamino = self._kamino.ModelKamino.from_newton(
-            model, include_shape_contact_pairs=include_shape_contact_pairs
+            model,
+            include_shape_contact_pairs=include_shape_contact_pairs,
+            kinematic_only_immovable=config.dynamics_solver == "lox",
         )
 
         # Store for which joints the limits are finite. This is used to validate that finiteness of limits is not changed at runtime.
@@ -806,16 +908,19 @@ class SolverKamino(SolverBase, CouplingInterface):
         )
         # Scratch scalar for material update validation
         self._material_update_conflict = wp.empty(1, dtype=wp.int32, device=model.device)
-
         # Create a collision detector if enabled in the config, otherwise
         # set to `None` to disable internal collision detection in Kamino
         self._collision_detector_kamino = None
         if self._config.use_collision_detector:
             collision_config = self._config.collision_detector
-            if self._config.dynamics_solver == "dvi" and collision_config.max_contacts_per_world is None:
+            if (
+                self._config.dynamics_solver in ("scc", "lox")
+                and collision_config is not None
+                and collision_config.max_contacts_per_world is None
+            ):
                 collision_config = replace(
                     collision_config,
-                    max_contacts_per_world=_estimate_dvi_contacts_per_world(self._model_kamino, self.model),
+                    max_contacts_per_world=_estimate_scc_contacts_per_world(self._model_kamino, self.model),
                 )
             self._collision_detector_kamino = self._kamino.CollisionDetector(
                 model=self._model_kamino,
@@ -871,11 +976,23 @@ class SolverKamino(SolverBase, CouplingInterface):
         self._control_kamino = self._kamino.ControlKamino()
 
     @property
+    def supported_observables(self) -> frozenset[str]:
+        """Return the observables available for this configuration.
+
+        ``SOLVER_RESIDUAL`` requires adaptive iterations; LOX with
+        ``fixed_iterations=True`` skips its convergence check and does not support it.
+        """
+        kinds = super().supported_observables
+        if self._config.dynamics_solver == "lox" and self._config.lox.fixed_iterations:
+            return kinds - {SolverBase.ObservableKind.SOLVER_RESIDUAL}
+        return kinds
+
+    @property
     def status(self) -> wp.array[Any]:
         """Per-world terminal solver status on the simulation device.
 
-        The active backend defines the array's Warp struct type. Both PADMM and
-        DVI provide ``converged``, ``iterations``, ``r_p``, ``r_d``, and ``r_c``
+        The active backend defines the array's Warp struct type. PADMM, SCC, and
+        LOX provide ``converged``, ``iterations``, ``r_p``, ``r_d``, and ``r_c``
         fields. Backend-specific fields may also be present.
 
         Residuals are absolute maxima, not relative or dimensionless values.
@@ -889,7 +1006,7 @@ class SolverKamino(SolverBase, CouplingInterface):
         product ``r_c`` [J]. The ``P`` factors convert the first two residuals
         back from solver scaling to physical constraint units.
 
-        DVI uses physical impulse ``lambda`` and augmented constraint velocity
+        SCC uses physical impulse ``lambda`` and augmented constraint velocity
         ``v`` without normalization. Its ``r_p`` [N·s or N·m·s] is the maximum
         infinity-norm distance of unilateral impulses from their limit or
         Coulomb cone; ``r_d`` [m/s or rad/s] is the maximum of the analogous
@@ -897,16 +1014,32 @@ class SolverKamino(SolverBase, CouplingInterface):
         violation; and ``r_c = max |lambda_k dot v_k|`` [J] is the maximum
         inequality complementarity violation.
 
-        For DVI APGD, ``iterations`` counts accepted inner steps;
+        For SCC APGD, ``iterations`` counts accepted inner steps;
         ``apgd_corrections`` counts completed nonlinear corrections, and
         ``apgd_backtracks`` counts rejected trials across unilateral phases.
         ``apgd_residual`` is the last phase's fresh nonlinear natural-map
-        residual. Check it against ``config.dvi.apgd.tolerance`` when that
+        residual. Check it against ``config.scc.apgd.tolerance`` when that
         threshold is required: ``converged`` uses the independent full-system
-        checks with ``config.dvi.tolerance``. Budget exhaustion alone does not
+        checks with ``config.scc.tolerance``. Budget exhaustion alone does not
         determine ``converged``. An exhausted or non-finite line search sets
         ``apgd_line_search_failed``, sets ``apgd_residual`` to ``3e38``, and
         prevents convergence. APGD-specific fields are zero for PGS.
+
+        LOX reports its native convergence flag and splitting iteration count.
+        With body twists ``v`` of the smooth solve and ``p`` of the unilateral
+        projection, and the splitting body weight ``W``, LOX reports
+        ``r_p = ||W (v - p)||_inf`` [N·s or N·m·s] and the last change
+        ``r_d = ||v - v_prev||_inf`` [m/s or rad/s] of the smooth solution.
+        Its ``r_c`` [J] is the squared maximum Delassus-scaled natural-map
+        residual of the joint-friction, limit, and contact rows under their
+        contact law, which measures feasibility and complementarity together.
+        These residuals do not require solution metrics; they are NaN before
+        solving and for failed worlds. LOX also provides a ``failed`` field; a
+        world that is neither converged nor failed reached the iteration limit
+        and uses its last projected iterate. A failed LOX world stays failed until
+        :meth:`reset` resets it, for example with a ``world_mask``. Until then, LOX
+        skips its solve, and its bodies keep their input velocity, without gravity,
+        joint or contact forces.
 
         The returned array aliases the solver's device-resident storage; reading
         it does not synchronize or copy data to the host. Terminal status is
@@ -1118,6 +1251,7 @@ class SolverKamino(SolverBase, CouplingInterface):
                 retain these input poses.
         """
         self.validate_observables(observables, contacts)
+        self._require_unreduced_contacts(contacts)
         if observables is not None and observables.is_requested(SolverBase.ObservableKind.CONTACT_F):
             wp.copy(self._contact_observable_state.body_q, state_in.body_q)
         # Interface the input state containers to Kamino's equivalents
@@ -1137,8 +1271,7 @@ class SolverKamino(SolverBase, CouplingInterface):
             self._detector = self._collision_detector_kamino
         elif contacts is not None:
             self._detector = None
-            # The contacts container is `None` when the model admits no possible contacts.
-            if self._contacts_kamino is not None:
+            if self.model.body_count > 0 and self._contacts_kamino is not None:
                 self._kamino.convert_contacts_newton_to_kamino(
                     model=self.model,
                     state=state_in,
@@ -1147,12 +1280,15 @@ class SolverKamino(SolverBase, CouplingInterface):
                     convert_forces=False,
                     friction_mix_mode=self._config.materials.friction_mix_mode,
                     restitution_mix_mode=self._config.materials.restitution_mix_mode,
-                    cull_speculative_contacts=self._config.dynamics.cull_speculative_contacts,
+                    cull_speculative_contacts=self._solver_kamino.cull_speculative_contacts,
+                    kinematic_only_immovable=self._config.dynamics_solver == "lox",
+                    contact_dead_zone=self._config.constraints.delta,
                 )
         else:
             self._detector = None
             # Clear the internal contacts container to avoid using stale contacts from previous steps.
-            self._contacts_kamino.clear()
+            if self._contacts_kamino is not None:
+                self._contacts_kamino.clear()
 
         # Convert Newton body-frame poses to Kamino CoM-frame poses
         self._kamino.convert_body_origin_to_com(
@@ -1182,6 +1318,9 @@ class SolverKamino(SolverBase, CouplingInterface):
             detector=self._detector,
             dt=dt,
         )
+
+        if observables is not None and observables.is_requested(SolverBase.ObservableKind.SOLVER_RESIDUAL):
+            self._solver_kamino.solver_fd.write_world_residual(observables.solver_residual)
 
         if body_qdd is not None:
             self._kamino.compute_body_acceleration(
@@ -1223,6 +1362,7 @@ class SolverKamino(SolverBase, CouplingInterface):
         Args:
             flags: Bitmask of :class:`~newton.ModelFlags` or custom ``int`` bits indicating which properties changed.
         """
+        self._validate_rod_joint_properties(flags)
         self._validate_structural_invariants(flags)
         self._solver_kamino.validate_model_changed(flags)
 
@@ -1240,7 +1380,7 @@ class SolverKamino(SolverBase, CouplingInterface):
             self._update_body_initial_pose()
             # Kamino-owned masked inv-mass/inertia must track Newton's values.
             # BODY_PROPERTIES is included because Newton's body_flags aren't
-            # allowed to flip KINEMATIC/PROXY (rejected in the structural check
+            # allowed to flip KINEMATIC (rejected in the structural check
             # above), but other body properties may change alongside inertia
             # and callers commonly bundle these flags together.
             self._refresh_masked_inertia()
@@ -1281,10 +1421,13 @@ class SolverKamino(SolverBase, CouplingInterface):
             | ModelFlags.ACTUATOR_PROPERTIES
             | ModelFlags.CONSTRAINT_PROPERTIES
             | ModelFlags.TENDON_PROPERTIES
+            # Newton contacts read shape geometry directly, and the Kamino detector rejects models
+            # with body variants at construction, so nothing caches what this flag changes.
+            | ModelFlags.SHAPE_TYPE_AND_SOURCE
         )
         unsupported = int(flags) & ~int(handled)
         if unsupported:
-            self._kamino.msg.warning(
+            logger.warning(
                 "SolverKamino.notify_model_changed: flags 0x%x not yet supported",
                 unsupported,
             )
@@ -1403,7 +1546,6 @@ class SolverKamino(SolverBase, CouplingInterface):
                 default=0.0,
             )
         )
-
         # Register FK custom actuation types
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
@@ -1441,15 +1583,16 @@ class SolverKamino(SolverBase, CouplingInterface):
                 raise ImportError("Kamino backend not found.") from e
 
     @staticmethod
-    def _validate_model_compatibility(model: Model):
+    def _validate_model_compatibility(model: Model, config: SolverKamino.Config):
         """
         Validates that the model does not contain components unsupported by SolverKamino:
         - particles
         - springs
         - triangles, edges, tetrahedra
         - muscles
-        - distance or rod joints
-        - bodies with singular inertial properties that are attached to movable bodies
+        - distance joints, and rod joints with the FK solver, or with
+          armature, joint damping, joint friction, finite limits, or target modes
+        - bodies with singular inertial properties that are attached to movable bodies for non-LOX backends
 
         Args:
             model: The Newton model to validate.
@@ -1459,6 +1602,7 @@ class SolverKamino(SolverBase, CouplingInterface):
         """
 
         unsupported_features = []
+        use_lox = config.dynamics_solver == "lox"
         if model.particle_count > 0:
             unsupported_features.append(f"particles (found {model.particle_count})")
         if model.spring_count > 0:
@@ -1475,29 +1619,31 @@ class SolverKamino(SolverBase, CouplingInterface):
         # Check for unsupported joint types
         if model.joint_count > 0:
             joint_type_np = model.joint_type.numpy()
-
-            unsupported_joint_types = {}
-
-            for j in range(model.joint_count):
-                joint_type = int(joint_type_np[j])
-
-                # Check for explicitly unsupported joint types
-                if joint_type == JointType.DISTANCE:
-                    unsupported_joint_types["DISTANCE"] = unsupported_joint_types.get("DISTANCE", 0) + 1
-                elif joint_type == JointType.ROD:
-                    unsupported_joint_types["ROD"] = unsupported_joint_types.get("ROD", 0) + 1
+            rod_joints = np.flatnonzero(joint_type_np == JointType.ROD)
+            supports_rods = not config.use_fk_solver
+            unsupported_joint_types = {
+                name: count
+                for name, count in (
+                    ("DISTANCE", int(np.count_nonzero(joint_type_np == JointType.DISTANCE))),
+                    ("ROD", 0 if supports_rods else rod_joints.size),
+                )
+                if count > 0
+            }
+            if supports_rods and rod_joints.size > 0:
+                unsupported_features.extend(SolverKamino._find_unsupported_rod_joint_properties(model, rod_joints))
             if len(unsupported_joint_types) > 0:
                 joint_desc = [f"{name} ({count} instances)" for name, count in unsupported_joint_types.items()]
                 unsupported_features.append("joint types: " + ", ".join(joint_desc))
 
-        singular_bodies = SolverKamino._find_unsupported_singular_inertia_bodies(model)
-        if len(singular_bodies) > 0:
-            unsupported_features.append(
-                "bodies with singular inertial properties that are attached to movable bodies:\n"
-                + "\n".join(f"      - {desc}" for desc in singular_bodies)
-                + "\n    Import with `collapse_fixed_joints=True` to merge these bodies into their neighbors,"
-                "\n    or give them a non-zero mass and inertia."
-            )
+        if not use_lox:
+            singular_bodies = SolverKamino._find_unsupported_singular_inertia_bodies(model)
+            if len(singular_bodies) > 0:
+                unsupported_features.append(
+                    "bodies with singular inertial properties that are attached to movable bodies:\n"
+                    + "\n".join(f"      - {desc}" for desc in singular_bodies)
+                    + "\n    Import with `collapse_fixed_joints=True` to merge these bodies into their neighbors,"
+                    "\n    or give them a non-zero mass and inertia."
+                )
 
         # If any unsupported features were found, raise an error
         if len(unsupported_features) > 0:
@@ -1505,6 +1651,45 @@ class SolverKamino(SolverBase, CouplingInterface):
             for feature in unsupported_features:
                 error_msg += "\n  - " + feature
             raise ValueError(error_msg)
+
+    def _validate_rod_joint_properties(self, flags: ModelFlags | int) -> None:
+        """Raise if a runtime edit gives a rod joint DoF properties that Kamino does not model.
+
+        Raises:
+            ValueError: If a rod joint DoF has an unsupported property after the edit.
+        """
+        dof_flags = (
+            ModelFlags.JOINT_DOF_PROPERTIES
+            | ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+            | ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES
+        )
+        if self._rod_joints.size == 0 or not flags & dof_flags:
+            return
+        unsupported = SolverKamino._find_unsupported_rod_joint_properties(self.model, self._rod_joints)
+        if len(unsupported) > 0:
+            raise ValueError("SolverKamino does not support " + ", ".join(unsupported) + ".")
+
+    @staticmethod
+    def _find_unsupported_rod_joint_properties(model: Model, rod_joints: np.ndarray) -> list[str]:
+        """Finds the joint DoF properties that Kamino does not model on rod joints.
+
+        Rod DoFs carry only the stiffness and damping of the rod strains, so they require zero
+        armature, joint damping, and joint friction, unbounded limits, and no target mode.
+        """
+        qd_start = model.joint_qd_start.numpy()
+        rod_dofs = np.concatenate([np.arange(qd_start[joint], qd_start[joint + 1]) for joint in rod_joints])
+        unsupported = [
+            f"rod joints with nonzero {name}"
+            for name in ("joint_armature", "joint_damping", "joint_friction")
+            if np.any(getattr(model, name).numpy()[rod_dofs] != 0.0)
+        ]
+        lower = model.joint_limit_lower.numpy()[rod_dofs]
+        upper = model.joint_limit_upper.numpy()[rod_dofs]
+        if np.any(lower > -MAXVAL) or np.any(upper < MAXVAL):
+            unsupported.append("rod joints with finite joint limits")
+        if np.any(model.joint_target_mode.numpy()[rod_dofs] != int(JointTargetMode.NONE)):
+            unsupported.append("rod joints with a target mode other than JointTargetMode.NONE")
+        return unsupported
 
     @staticmethod
     def _find_unsupported_singular_inertia_bodies(model: Model) -> list[str]:
@@ -1531,7 +1716,9 @@ class SolverKamino(SolverBase, CouplingInterface):
 
         inv_mass = model.body_inv_mass.numpy()
         inv_inertia = model.body_inv_inertia.numpy()
-        singular_inertia = np.linalg.matrix_rank(inv_inertia) < 3
+        # Inverse inertia tensors are symmetric, so the Hermitian rank path can use
+        # eigenvalues instead of a general singular-value decomposition.
+        singular_inertia = np.linalg.matrix_rank(inv_inertia, hermitian=True) < 3
         singular = [b for b in range(model.body_count) if inv_mass[b] == 0.0 or singular_inertia[b]]
         if not singular:
             return []
@@ -1615,6 +1802,7 @@ class SolverKamino(SolverBase, CouplingInterface):
             check_actuation=check_actuation,
             check_axes=check_axes,
             check_body_immovability=check_body_immovability,
+            kinematic_only_immovable=self._config.dynamics_solver == "lox",
         )
         violations = self._notify_violations.numpy()
         dynamic_joint = violations[self._kamino.StructuralUpdateViolation.DYNAMIC_CTS]
@@ -1623,6 +1811,7 @@ class SolverKamino(SolverBase, CouplingInterface):
         invalid_joint = violations[self._kamino.StructuralUpdateViolation.INVALID_TARGET_MODE]
         axis_joint = violations[self._kamino.StructuralUpdateViolation.NONORTHONORMAL_AXES]
         gimbal_handedness_joint = violations[self._kamino.StructuralUpdateViolation.GIMBAL_HANDEDNESS]
+        cartesian_handedness_joint = violations[self._kamino.StructuralUpdateViolation.CARTESIAN_HANDEDNESS]
         immovability_flip_body = violations[self._kamino.StructuralUpdateViolation.IMMOVABILITY_FLIP]
         friction_joint = violations[self._kamino.StructuralUpdateViolation.FRICTION_CTS]
         effort_joint = violations[self._kamino.StructuralUpdateViolation.EFFORT_CTS]
@@ -1674,7 +1863,7 @@ class SolverKamino(SolverBase, CouplingInterface):
             raise ValueError(
                 f"Invalid joint configuration for SolverKamino:\n"
                 f"  - joint {joint} ({self.model.joint_label[joint]!r}): "
-                "universal and gimbal axes must be unit length and orthogonal"
+                "universal, Cartesian, and gimbal axes must be unit length and orthogonal"
             )
 
         if gimbal_handedness_joint != sentinel:
@@ -1685,13 +1874,22 @@ class SolverKamino(SolverBase, CouplingInterface):
                 "gimbal axes must preserve the solver's original handedness"
             )
 
+        if cartesian_handedness_joint != sentinel:
+            joint = int(cartesian_handedness_joint)
+            raise ValueError(
+                f"Invalid joint configuration for SolverKamino:\n"
+                f"  - joint {joint} ({self.model.joint_label[joint]!r}): "
+                "three translational axes must form a right-handed set, unlike those of a USD D6 joint "
+                "whose physics:body1 is the world"
+            )
+
         if immovability_flip_body != sentinel:
             body = int(immovability_flip_body)
             label = self.model.body_label[body] if self.model.body_label else f"body {body}"
             raise RuntimeError(
                 f"Changing the immovability status of body {body} ({label!r}) is not supported; "
                 "recreate SolverKamino to apply the change. More specifically, toggling the "
-                "KINEMATIC/PROXY flag of a body, making a massive body massless or giving a "
+                "KINEMATIC flag of a body, making a massive body massless or giving a "
                 "massless body finite inertia are not supported."
             )
 
