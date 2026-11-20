@@ -787,6 +787,8 @@ class TestDeformableVisualViewer(unittest.TestCase):
         viewer.show_particles = viewer.show_ground = viewer.show_triangles = False
         viewer.renderer.draw_shadows = False
         controls = ViewportControls(SimpleNamespace(viewer=viewer))
+        # Pick X-ray as the user would, so the first sync keeps it.
+        controls._mode_chosen = True
         controls.set_mode("xray")
         controls.deformable_edges = False
         state = model.state()
