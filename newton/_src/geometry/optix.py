@@ -71,7 +71,9 @@ class OptixShapes:
     has_global_instances: bool
     """Whether the global world's cell holds any instances."""
     out_of_cell: wp.array[wp.int32]
-    """Set to 1 on the device when a refit hides a shape that left its cell; cleared by a rebuild, shape ``[1]``."""
+    """Set to 1 on the device when a refit hides a shape that left its cell, or when a camera's particle or
+    deformable point leaves its cell (those stay visible and may show in a neighboring world); cleared by a
+    rebuild, shape ``[1]``."""
     pipelines: dict = field(default_factory=dict)
     """Camera and raycast pipelines compiled for these shapes."""
 

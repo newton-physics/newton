@@ -2222,7 +2222,7 @@ class Model:
         :meth:`ModelBuilder.finalize`. Each world's shapes must stay within the cube of half-width
         ``optix_extent`` about the origin, measured by the bounding sphere of each shape's
         build-time bounds; a refit hides shapes that leave it and sets ``optix_shapes.out_of_cell``
-        on the device. Changing shape scales requires a rebuild. Building is several times slower than the
+        on the device, as cameras do when their particles or deformable surfaces leave it. Changing shape scales requires a rebuild. Building is several times slower than the
         Warp BVH build and refitting is somewhat slower, so build once and refit each frame.
 
         Args:
