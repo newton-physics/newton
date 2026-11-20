@@ -177,7 +177,12 @@ def write_scene_instance(
     records: wp.array[wo.Instance],
 ):
     records[index] = wo.make_instance(
-        wp.transform_identity(), traversable, instance_id, sbt_offset, mask, wp.static(int(wo.InstanceFlags.DISABLE_ANYHIT))
+        wp.transform_identity(),
+        traversable,
+        instance_id,
+        sbt_offset,
+        mask,
+        wp.static(int(wo.InstanceFlags.DISABLE_ANYHIT)),
     )
 
 
@@ -229,7 +234,6 @@ class OptixScene:
         children = list(shapes.geometry)
         extra = []
         if self.has_triangles:
-            point_worlds = items.triangle_point_worlds.numpy()
             triangle_worlds = items.triangle_worlds.numpy()
             self.has_global_items |= bool(np.any(triangle_worlds < 0))
             if self.clustered:

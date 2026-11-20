@@ -163,10 +163,12 @@ class SensorCamera:
             backend: ``"warp"`` traverses :attr:`~newton.Model.bvh_shapes`; ``"optix"``
                 traverses :attr:`~newton.Model.optix_shapes` (experimental). OptiX requires the
                 ``newton[optix]`` extra (Python 3.12 on x86-64 Linux or Windows) and a CUDA device,
-                cannot be recorded in CUDA graphs, and does not support particles, deformable
-                surfaces, Gaussians or shape variants; unsupported models raise
-                :class:`RuntimeError`. OptiX does not render shapes that have left the region
-                set when the OptiX shapes were built (see :meth:`~newton.Model.bvh_build_shapes`).
+                cannot be recorded in CUDA graphs, and does not support Gaussians or shape variants;
+                unsupported models raise :class:`RuntimeError`. OptiX does not render shapes that
+                have left the region set when the OptiX shapes were built (see
+                :meth:`~newton.Model.bvh_build_shapes`); particles and deformable surfaces must stay
+                in it too. With ``warp-optix`` cluster support, deformable surfaces are rebuilt as
+                triangle clusters each frame, and refit otherwise.
             deformable_surface_mode: Which deformable surfaces the sensor uploads
                 and renders: :attr:`DeformableSurfaceMode.BOTH` renders the
                 simulation triangles and the visual meshes, as the viewers do;
@@ -951,13 +953,15 @@ class SensorCamera:
         )
 
     def sync_deformable_meshes(self, state: State, *, deformable_visuals: DeformableVisuals | None = None) -> None:
-        """Synchronize render-only deformable triangle-mesh points from *state*.
+        """Synchronize deformable triangle-mesh points from *state* and refit the camera's scene.
 
-        :meth:`update` calls this by default (pass ``sync_deformables=False`` to
-        skip it when you already synced). Call it explicitly only when you opt
-        out of the automatic sync. Scenes without simulation triangles or visual
-        meshes are a no-op. Shape and particle BVHs are refit separately via
-        :meth:`~newton.Model.bvh_refit_shapes` and :meth:`~newton.Model.bvh_refit_particles`.
+        Each camera traces its shapes, standalone particles and deformable surfaces in one
+        acceleration structure. This refits it to the particles and deformable points of
+        *state* and to the model's shapes as of their last :meth:`~newton.Model.bvh_refit_shapes`,
+        so refit the shapes first. :meth:`update` calls this by default (pass
+        ``sync_deformables=False`` to skip it when you already synced). Call it explicitly only
+        when you opt out of the automatic sync. Scenes with only shapes are a no-op with the
+        Warp backend. The camera does not read :attr:`~newton.Model.bvh_particles`.
         Deformable visual meshes are skinned from *state* in at most four launches,
         however many worlds were replicated. Supplied visual buffers are consumed as-is;
         update or replay them before this call. Their source state and freshness
@@ -1024,14 +1028,13 @@ class SensorCamera:
         non-``None`` output arrays must have shape ``(view_count, height, width)``
         matching the ``camera_rays`` image dimensions.
 
-        On any frame whose geometry moved, refit the model's shape and particle
-        BVHs with :meth:`~newton.Model.bvh_refit_shapes` and
-        :meth:`~newton.Model.bvh_refit_particles` (both are built initially by
+        On any frame whose shapes moved, refit the model's shape BVH with
+        :meth:`~newton.Model.bvh_refit_shapes` (built initially by
         :meth:`~newton.ModelBuilder.finalize`) before calling this; otherwise the
         render reads stale bounds. With the OptiX backend, build
         :attr:`~newton.Model.optix_shapes` once with ``bvh_build_shapes(state, backend="optix")``
-        and refit them with ``bvh_refit_shapes(state, backend="optix")`` instead. Deformable triangle-mesh points are synced from
-        *state* automatically (see ``sync_deformables``).
+        and refit them with ``bvh_refit_shapes(state, backend="optix")`` instead. Particles and
+        deformable triangle-mesh points are synced from *state* automatically (see ``sync_deformables``).
 
         The camera looks along its local ``-Z`` axis with ``+Y`` up and ``+X``
         right (the USD/OpenGL convention); ``camera_transforms`` place that frame
