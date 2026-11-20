@@ -247,7 +247,7 @@ class TestUsdMeshHelpers(unittest.TestCase):
                 model = builder.finalize(device="cpu")
                 sensor = SensorCamera(model)
                 transforms = wp.array([wp.transform(wp.vec3(0.25, 0.25, 2.0), wp.quat_identity())], dtype=wp.transformf)
-                rays = SensorCamera.compute_camera_rays_pinhole(1, 1, camera_fov=0.5)
+                rays = SensorCamera.compute_camera_rays_pinhole(1, 1, fov=0.5)
                 image = sensor.allocate_image_normal(1, 1, 1)
                 sensor.update(model.state(), transforms, rays, normal_image=image)
                 normal = image.numpy()[0, 0, 0]
