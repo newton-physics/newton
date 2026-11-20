@@ -33,7 +33,6 @@ from ..geometry.contact_reduction_body_pairs import (
 )
 from ..geometry.contact_reduction_global import CONTACT_ID_BITS, MAX_GROUP_ID
 from ..geometry.contact_sort import ContactSorter
-from ..geometry.differentiable_contacts import launch_differentiable_contact_augment
 from ..geometry.flags import MeshProperties, ShapeFlags
 from ..geometry.kernels import create_soft_contacts
 from ..geometry.narrow_phase import NarrowPhase
@@ -1863,11 +1862,9 @@ class CollisionPipeline:
                 collision/solver time. Set ``soft_contact_max`` to size storage explicitly;
                 this does not reduce the number of feature pairs queried.
                 See :ref:`full-surface-mesh-contact-costs`.
-            requires_grad: Whether pipeline-generated soft contacts and the
-                deprecated automatic rigid-contact outputs require gradients.
-                If None, uses ``model.requires_grad``. Explicit calls to
-                :func:`newton.eval_rigid_contact_kinematics` do not
-                depend on this flag.
+            requires_grad: Whether pipeline-generated soft contacts require gradients.
+                If None, uses ``model.requires_grad``. Rigid-contact gradients come from
+                :func:`newton.eval_rigid_contact_kinematics` and do not depend on this flag.
             broad_phase:
                 Either a broad phase mode string ("explicit", "nxn", "sap") or
                 a prebuilt broad phase instance for expert usage.
@@ -2748,13 +2745,6 @@ class CollisionPipeline:
 
         Returns:
             A newly allocated contacts buffer sized for this pipeline.
-
-        .. experimental::
-
-            If ``requires_grad`` is true, deprecated rigid-contact distance and
-            point compatibility arrays are allocated. New code should allocate
-            only the outputs it needs and pass them to
-            :func:`newton.eval_rigid_contact_kinematics`.
         """
         detector = self._soft_self_contact_detector
         soft_self_contact = detector is not None
@@ -3025,16 +3015,11 @@ class CollisionPipeline:
 
         Safe to call inside a :class:`wp.Tape` context.  The non-differentiable
         broad-phase and narrow-phase kernels are launched with tape recording
-        hardcoded ``record_tape=False`` internally.  The differentiable kernels
-        (soft-contact generation and rigid-contact augmentation) are recorded on
-        the tape so that gradients flow through ``state.body_q`` and
-        ``state.particle_q``.
-
-        For backward compatibility, when ``requires_grad=True`` the deprecated
-        ``contacts.rigid_contact_diff_*`` arrays are populated by a lightweight
-        augmentation kernel. New code should call
-        :func:`newton.eval_rigid_contact_kinematics` explicitly
-        after collision detection to reconstruct only the quantities it needs.
+        hardcoded ``record_tape=False`` internally.  The differentiable
+        soft-contact generation kernels are recorded on the tape so that
+        gradients flow through ``state.body_q`` and ``state.particle_q``.
+        Call :func:`newton.eval_rigid_contact_kinematics` after collision
+        detection for differentiable rigid-contact quantities.
 
         .. experimental::
 
@@ -3111,8 +3096,7 @@ class CollisionPipeline:
         # Rigid contact detection -- broad phase + narrow phase.
         # These kernels hardcode record_tape=False internally so they are
         # never captured on an active wp.Tape.  The differentiable
-        # augmentation and soft-contact kernels that follow are tape-safe
-        # and recorded normally.
+        # soft-contact kernels that follow are tape-safe and recorded normally.
 
         # Eager calls copy the sticky rescale flag to the host and raise on a copy from an earlier call; never syncs.
         check_unit_scale_sdf = self._shape_unit_scale_sdf.shape[0] > 0 and not wp.get_device(self.device).is_capturing
@@ -3487,16 +3471,6 @@ class CollisionPipeline:
                 contact_generation=contacts.contact_generation,
                 device=self.device,
                 **sticky_offsets,
-            )
-
-        # Differentiable contact augmentation: reconstruct world-space contact
-        # quantities through body_q so that gradients flow via wp.Tape.
-        if self.requires_grad and contacts._rigid_contact_diff_distance is not None:
-            launch_differentiable_contact_augment(
-                contacts=contacts,
-                body_q=state.body_q,
-                shape_body=model.shape_body,
-                device=self.device,
             )
 
         # Generate soft contacts for particles and shapes
