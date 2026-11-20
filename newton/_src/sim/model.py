@@ -2467,7 +2467,9 @@ class Model:
             ],
             device=device,
         )
-        enabled = enabled[: int(num_enabled.numpy()[0])]
+        enabled_count = int(num_enabled.numpy()[0])
+        # Warp cannot slice an array to zero length.
+        enabled = enabled[:enabled_count] if enabled_count else wp.empty(0, dtype=wp.uint32, device=device)
         transforms = wp.empty(shape_count, dtype=wp.transformf, device=device)
         if shape_count:
             wp.launch(
