@@ -557,8 +557,9 @@ def compute_inertia_mesh(
     if num_tris > 0:
         referenced = np.zeros(len(vertices), dtype=bool)
         referenced[indices[: num_tris * 3]] = True
-        used = vertices[referenced]
-        reference = 0.5 * (used.min(axis=0) + used.max(axis=0))
+        used = vertices if referenced.all() else vertices[referenced]
+        columns = np.ascontiguousarray(used.T)  # axis-0 reductions over (N, 3) are slow
+        reference = 0.5 * (columns.min(axis=1) + columns.max(axis=1))
 
     # Allocating for mass and inertia
     com_warp = wp.zeros(1, dtype=wp.vec3)
