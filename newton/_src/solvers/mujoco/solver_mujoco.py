@@ -9870,12 +9870,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 pair_world = getattr(mujoco_attrs, "pair_world", None) if mujoco_attrs is not None else None
                 if pair_world is not None:
                     pair_world_np = pair_world.numpy()
+                    # Rows of each world in authored order, shape [nworld, rows per world].
+                    world_rows = np.flatnonzero(pair_world_np >= 0)
+                    world_rows = world_rows[np.argsort(pair_world_np[world_rows], kind="stable")]
+                    world_rows = world_rows.reshape(nworld, len(world_rows) // nworld)
                     pair_row_rank = np.full(len(pair_world_np), -1, dtype=np.int32)
-                    per_world_rows = []
-                    for w in range(nworld):
-                        rows = np.flatnonzero(pair_world_np == w).astype(np.int32)
-                        pair_row_rank[rows] = np.arange(len(rows), dtype=np.int32)
-                        per_world_rows.append(rows)
+                    pair_row_rank[world_rows] = np.arange(world_rows.shape[1], dtype=np.int32)
                     for mjc_pair, newton_pair in mjc_pair_entries:
                         # Read the compiled ID after MuJoCo sorts/reassigns pair IDs.
                         mjc_pair_index = mjc_pair.id
@@ -9885,9 +9885,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                             # reads them at the absolute index they were authored at.
                             mjc_pair_to_newton_pair_np[:, mjc_pair_index] = newton_pair
                         else:
-                            rank = int(pair_row_rank[newton_pair])
-                            for w in range(nworld):
-                                mjc_pair_to_newton_pair_np[w, mjc_pair_index] = per_world_rows[w][rank]
+                            mjc_pair_to_newton_pair_np[:, mjc_pair_index] = world_rows[:, pair_row_rank[newton_pair]]
                 self.mjc_pair_to_newton_pair = wp.array(mjc_pair_to_newton_pair_np, dtype=wp.int32)
 
             if separate_worlds:
