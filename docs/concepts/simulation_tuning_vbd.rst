@@ -202,10 +202,8 @@ can inherit ``model.vbd`` settings.
        solver after changes.
 
 Deprecated aliases remain for one release cycle: ``particle_self_contact_radius``
-(legacy radius and margin pair), ``particle_collision_detection_interval``
-(now the self-contact slot of the collision schedule) and
-``particle_conservative_bound_relaxation`` (now
-``dat_conservative_bound_relaxation``). New code should not use them. Passing a
+(legacy radius and margin pair) and ``particle_collision_detection_interval``
+(now the self-contact slot of the collision schedule). New code should not use them. Passing a
 margin without a gap also triggers the legacy meaning of the margin and a
 deprecation warning, so always pass both.
 
