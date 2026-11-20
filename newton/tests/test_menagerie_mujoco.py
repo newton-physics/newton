@@ -1643,11 +1643,6 @@ class TestMenagerieBase(unittest.TestCase):
         mj_data = _mujoco.MjData(mj_model)
         _mujoco.mj_forward(mj_model, mj_data)
 
-        # Zero geom margins for NATIVECCD compatibility — mujoco_warp rejects
-        # non-zero margins at put_model() time for BOX/MESH pairs (#2106).
-        # This mirrors the Newton solver's approach in SolverMuJoCo.
-        mj_model.geom_margin[:] = 0.0
-
         # Mirror SolverMuJoCo's enable_multiccd=False default. MuJoCo 3.8 turns
         # multi-CCD on by default; Newton disables it via mjDSBL_MULTICCD.
         mj_model.opt.disableflags |= int(_mujoco.mjtDisableBit.mjDSBL_MULTICCD)
@@ -1691,12 +1686,7 @@ class TestMenagerieBase(unittest.TestCase):
         if self.solver_integrator is not None:
             solver_kwargs["integrator"] = self.solver_integrator
 
-        # Some real MJCFs (e.g. Apollo, Go2) author geom or contact-pair
-        # margins that the native-CCD path zeroes (#2106); the field comparison
-        # below already mirrors that zeroing, so tolerate the advisory rather
-        # than failing under strict warnings. Other warnings still surface.
         with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", message=r"(Geom|Pair).* zeroed for NATIVECCD")
             if self.allow_standalone_world_roots:
                 warnings.filterwarnings(
                     "ignore",

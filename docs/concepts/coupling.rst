@@ -298,9 +298,6 @@ other arrangements raise an error. Rows authored under the legacy ``coupling:bod
 custom frequency are also consumed by ADMM, so importers that write those
 attributes keep working; these legacy rows remain invisible to
 :class:`~newton.solvers.SolverVBD`.
-``SolverCoupledADMM.add_body_particle_attachment()`` is deprecated in favor of
-:meth:`newton.ModelBuilder.add_attachment_particle_body`, but keeps writing the
-legacy custom-row layout until it is removed.
 
 Contact coupling is enabled by adding one or more ``ContactPair`` values to
 ``SolverCoupledADMM.Config.contact_pairs``. A contact pair names two entries.
