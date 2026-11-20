@@ -696,6 +696,15 @@ class TestViewerGLGetFrame(unittest.TestCase):
                 for module, before in zip(modules, executables, strict=True):
                     self.assertEqual(module.execs, before, f"{module.name} reloaded on first interaction")
 
+        # Closing releases every preloaded inspection program, including the X-ray passes.
+        renderer = viewer.renderer
+        xray = [renderer._physics_collision_shader, renderer._physics_shell_shader]
+        viewer.close()
+        for name in RendererGL._INSPECTION_SHADERS:
+            self.assertIsNone(getattr(renderer, name), f"{name} was not released")
+        for shader in xray:
+            self.assertIsNone(shader.shader_program)
+
     def test_gui_mode_and_legacy_callbacks(self) -> None:
         """Render the default workspace and opt-in legacy panels with real ImGui callbacks."""
         try:

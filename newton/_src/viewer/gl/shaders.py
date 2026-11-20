@@ -681,6 +681,12 @@ class ShaderGL:
         """Context manager exit."""
         pass  # OpenGL doesn't need explicit unbinding
 
+    def destroy(self) -> None:
+        """Release the shader program while its GL context is current."""
+        if self.shader_program is not None:
+            self.shader_program.delete()
+            self.shader_program = None
+
 
 class ShaderShape(ShaderGL):
     """Shader for rendering 3D shapes with lighting and shadows."""

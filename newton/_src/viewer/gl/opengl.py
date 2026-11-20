@@ -1177,6 +1177,18 @@ class RendererGL:
     # The shaders target GLSL 330 core.
     MIN_GL_VERSION = (3, 3)
 
+    # Lazily created inspection shaders; close() releases each one that exists.
+    _INSPECTION_SHADERS = (
+        "_selection_outline",
+        "_selection_surface_shader",
+        "_joint_shader",
+        "_contact_label_shader",
+        "_physics_contact_shader",
+        "_surface_grid_shader",
+        "_physics_collision_shader",
+        "_physics_shell_shader",
+    )
+
     @staticmethod
     def _check_gl_version(context):
         import pyglet
@@ -1213,6 +1225,9 @@ class RendererGL:
         return cls._fallback_texture
 
     def __init__(self, title="Newton", screen_width=1920, screen_height=1080, vsync=True, headless=None, device=None):
+        # Declared first so close() can release them after a partial initialization.
+        for name in self._INSPECTION_SHADERS:
+            setattr(self, name, None)
         self.draw_sky = True
         self.draw_fps = True
         self.draw_shadows = True
@@ -1375,8 +1390,6 @@ class RendererGL:
         self._frame_depth_texture = None
         self._frame_fbo = None
         self._frame_pbo = None
-        self._selection_outline = None
-        self._selection_surface_shader = None
         self._selection_instances = ()
         self._oit_fbo = None
         self._oit_accum_texture = None
@@ -1438,7 +1451,7 @@ class RendererGL:
         from .surface_grid import SurfaceGridShader  # noqa: PLC0415
 
         self._make_current()
-        for name, factory in (
+        factories = (
             ("_selection_outline", SelectionOutline),
             ("_selection_surface_shader", SelectionSurfaceShader),
             ("_joint_shader", JointGlyphShader),
@@ -1447,10 +1460,12 @@ class RendererGL:
             ("_surface_grid_shader", SurfaceGridShader),
             ("_physics_collision_shader", PhysicsSurfaceShader),
             ("_physics_shell_shader", PhysicsShellShader),
-            ("_oit_resolve_shader", OITResolveShader),
-        ):
-            if getattr(self, name, None) is None:
+        )
+        for name, factory in factories:
+            if getattr(self, name) is None:
                 setattr(self, name, factory(self.gl))
+        if self._oit_resolve_shader is None:
+            self._oit_resolve_shader = OITResolveShader(self.gl)
         if self._shape_transparent_shader is None:
             self._shape_transparent_shader = ShaderShape(self.gl, enable_transparency=True)
 
@@ -1748,25 +1763,11 @@ class RendererGL:
 
     def close(self):
         self._make_current()
-        if getattr(self, "_selection_outline", None) is not None:
-            self._selection_outline.destroy()
-            self._selection_outline = None
-        if getattr(self, "_selection_surface_shader", None) is not None:
-            self._selection_surface_shader.destroy()
-            self._selection_surface_shader = None
-        if getattr(self, "_joint_shader", None) is not None:
-            self._joint_shader.destroy()
-            self._joint_shader = None
-
-        if getattr(self, "_contact_label_shader", None) is not None:
-            self._contact_label_shader.destroy()
-            self._contact_label_shader = None
-        if getattr(self, "_surface_grid_shader", None) is not None:
-            self._surface_grid_shader.destroy()
-            self._surface_grid_shader = None
-        if getattr(self, "_physics_contact_shader", None) is not None:
-            self._physics_contact_shader.destroy()
-            self._physics_contact_shader = None
+        for name in self._INSPECTION_SHADERS:
+            shader = getattr(self, name)
+            if shader is not None:
+                shader.destroy()
+                setattr(self, name, None)
 
         if not self.headless:
             self.app.event_loop.dispatch_event("on_exit")
