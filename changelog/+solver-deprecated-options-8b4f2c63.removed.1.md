@@ -1,0 +1,1 @@
+Remove `SolverCoupledADMM.add_body_particle_attachment()`, deprecated in Newton 1.7; use `ModelBuilder.add_attachment_particle_body()` instead. Rows authored directly under the `coupling:body_particle_attachment` custom frequency are still consumed.

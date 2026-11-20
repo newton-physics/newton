@@ -349,6 +349,46 @@ class TestKaminoFailedPivotRetry(NewtonTestCase):
                         expected = np.linalg.cholesky(A.astype(np.float64) + shift * np.eye(n))
                         np.testing.assert_allclose(np.tril(L), expected, rtol=0.0, atol=2.0e-3)
 
+    def test_refactorize_retries_failed_blocks(self):
+        """Refactor a selected block made indefinite by a diagonal change with a shift, and keep the others."""
+        shift = 1.0e-5
+        rng = np.random.default_rng(97)
+        n = 40
+        basis = rng.normal(size=(n, n))
+        healthy = basis @ basis.T / n + np.eye(n)
+        # Lower the diagonal to one slightly negative eigenvalue, which mimics round-off on a singular block
+        failing = healthy - (np.linalg.eigvalsh(healthy)[0] + 0.2 * shift) * np.eye(n)
+        healthy, failing = healthy.astype(np.float32), failing.astype(np.float32)
+        device = wp.get_device()
+        solvers = [LLTBlockedSolver]
+        if device.is_cuda:
+            solvers.append(LLTBlockedRCMSolver)
+        for solver_type in solvers:
+            with self.subTest(solver=solver_type.__name__):
+                info = DenseSquareMultiLinearInfo()
+                info.finalize(dimensions=[n, n], dtype=wp.float32, device=device)
+                matrix = wp.array(make_dense_matrix_storage(info, [healthy, healthy]), device=device)
+                solver = solver_type(
+                    operator=DenseLinearOperatorData(info=info, mat=matrix),
+                    failed_pivot_shift=shift,
+                    device=device,
+                )
+                solver.compute(matrix)
+                L_healthy = get_matrix_block(0, solver.L.numpy(), [n, n])
+
+                # Refactorize the second block only, after lowering its diagonal
+                source = make_dense_matrix_storage(info, [healthy, failing])
+                matrix.assign(source)
+                solver.refactorize(matrix, wp.array([0, n], dtype=wp.int32, device=device))
+
+                # Check that the shift is only kept in the factor of the refactorized block
+                factors = solver.L.numpy()
+                np.testing.assert_array_equal(get_matrix_block(0, factors, [n, n]), L_healthy)
+                order = solver.P.numpy().reshape(2, n)[1] if solver_type is LLTBlockedRCMSolver else np.arange(n)
+                expected = np.linalg.cholesky(failing[np.ix_(order, order)].astype(np.float64) + shift * np.eye(n))
+                np.testing.assert_allclose(np.tril(get_matrix_block(1, factors, [n, n])), expected, atol=2.0e-3)
+                np.testing.assert_allclose(matrix.numpy(), source, rtol=0.0, atol=1.0e-6)
+
 
 @wp.kernel
 def _compute_pointer_offsets(

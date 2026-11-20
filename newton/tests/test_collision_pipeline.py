@@ -479,36 +479,6 @@ class TestCollisionPipeline(unittest.TestCase):
 
         self.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
 
-    def test_model_collision_helpers_deprecated(self):
-        builder = newton.ModelBuilder()
-        builder.add_ground_plane()
-        model = builder.finalize(device="cpu")
-        state = model.state()
-        pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
-
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            contacts = model.contacts(collision_pipeline=pipeline)
-            returned_contacts = model.collide(state, contacts, collision_pipeline=pipeline)
-
-        self.assertIs(returned_contacts, contacts)
-        self.assertIs(model._collision_pipeline, pipeline)
-        self.assertEqual(len(caught), 2)
-        self.assertTrue(all(item.category is newton.NewtonDeprecationWarning for item in caught))
-        self.assertTrue(all(item.filename == __file__ for item in caught))
-        self.assertIn("pipeline.contacts()", str(caught[0].message))
-        self.assertIn("pipeline.collide(state, contacts)", str(caught[1].message))
-
-    def test_deprecated_model_collide_allocates_contacts(self):
-        builder = newton.ModelBuilder()
-        builder.add_ground_plane()
-        model = builder.finalize(device="cpu")
-
-        with self.assertWarnsRegex(DeprecationWarning, r"pipeline\.collide"):
-            contacts = model.collide(model.state())
-
-        self.assertIsInstance(contacts, newton.Contacts)
-
     def test_soft_contact_max_zero_disables_soft_contact_generation(self):
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         builder.add_ground_plane()
@@ -2468,9 +2438,6 @@ class TestParticleShapeContacts(unittest.TestCase):
 
         # Two worlds, each one active particle x one particle-colliding shape; no cross-world pairs.
         self.assertEqual(pipeline.soft_contact_pair_count, 2)
-        # The pre-rename property name survives as a deprecated alias.
-        with self.assertWarns(DeprecationWarning):
-            self.assertEqual(pipeline.soft_rigid_contact_pair_count, 2)
         self._assert_pairs_valid(model, pipeline)
 
     def test_soft_contacts_respect_active_and_collide_flags(self):
