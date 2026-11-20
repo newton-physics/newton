@@ -1157,7 +1157,11 @@ class ModelBuilder:
         ke: float = 2.5e3
         """The normal contact stiffness [N/m]."""
         kd: float = 100.0
-        """The normal contact damping coefficient [N·s/m]."""
+        """The normal contact damping coefficient [N·s/m].
+
+        Hydroelastic contacts use ``kd / ke`` as a shape relaxation time;
+        see :ref:`hydroelastic damping <hydroelastic-contact-damping>`.
+        """
         kf: float = 1000.0
         """The contact friction gain [N·s/m].
 
@@ -1259,8 +1263,9 @@ class ModelBuilder:
 
             For :class:`~newton.solvers.SolverMuJoCo`, stiffness values are
             internally scaled by masses when Newton-generated contacts are
-            passed through the MuJoCo contact path. Tune ``kh`` with that
-            scaling in mind.
+            passed through the MuJoCo contact path. For hydroelastic contacts,
+            see :ref:`mujoco-hydroelastic-response` for how ``mujoco.solref_mode``
+            affects this mapping before tuning ``kh``.
         """
         sdf_padding: float | None = None
         """SDF AABB padding [m] for primitive texture SDFs. Falls back to

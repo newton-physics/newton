@@ -291,6 +291,8 @@ class Contacts:
                 """Per-contact damping [N·s/m], shape (rigid_contact_max,), dtype float."""
                 self.rigid_contact_friction = wp.zeros(rigid_contact_max, dtype=wp.float32)
                 """Per-contact friction coefficient [dimensionless], shape (rigid_contact_max,), dtype float."""
+                self._hydroelastic_pressure_contact = wp.zeros(rigid_contact_max, dtype=bool)
+                self._hydroelastic_pressure_generation = wp.full(rigid_contact_max, GENERATION_SENTINEL, dtype=wp.int32)
             else:
                 self.rigid_contact_stiffness = None
                 """Per-contact stiffness [N/m], shape (rigid_contact_max,), dtype float."""
@@ -298,6 +300,8 @@ class Contacts:
                 """Per-contact damping [N·s/m], shape (rigid_contact_max,), dtype float."""
                 self.rigid_contact_friction = None
                 """Per-contact friction coefficient [dimensionless], shape (rigid_contact_max,), dtype float."""
+                self._hydroelastic_pressure_contact = None
+                self._hydroelastic_pressure_generation = None
 
             # Contact matching index — filled by the collision pipeline when
             # contact_matching is enabled.

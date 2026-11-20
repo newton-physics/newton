@@ -29,6 +29,7 @@ from newton._src.geometry.sdf_hydroelastic import (
 )
 from newton._src.geometry.sdf_mc import _get_marching_cubes_class, get_triangle_fraction
 from newton._src.geometry.utils import _scan_scratch_size, scan_with_total
+from newton._src.solvers.mujoco.constants import SOLREF_MODE_FORCE_SPACE, SOLREF_MODE_MJCF_DEFAULT, SOLREF_MODE_RAW
 from newton.geometry import HydroelasticSDF
 from newton.tests.unittest_utils import (
     MUJOCO_MODULES,
@@ -1264,6 +1265,8 @@ def test_deterministic_hydroelastic_speculative_contacts(test, device):
 def test_hydroelastic_margin_gap_bands(test, device, reduce_contacts):
     """Generate penetrating, speculative, and absent hydroelastic contacts."""
     model, state, body_b = _build_margin_gap_boxes(device)
+    model.shape_material_ke.assign([1000.0, 2000.0])
+    model.shape_material_kd.assign([3.0, 14.0])
     config = HydroelasticSDF.Config(
         reduce_contacts=reduce_contacts,
         pre_prune_contacts=reduce_contacts,
@@ -1316,6 +1319,10 @@ def test_hydroelastic_margin_gap_bands(test, device, reduce_contacts):
         test.assertTrue(np.all(distances <= gap_sum + tolerance))
         stiffness = contacts.rigid_contact_stiffness.numpy()[: len(distances)]
         test.assertTrue(np.all(stiffness > 0.0))
+        damping = contacts.rigid_contact_damping.numpy()[: len(distances)]
+        # Reconstructed distances can round across zero at the boundary.
+        np.testing.assert_allclose(damping[distances < -1.0e-6], 0.01 * stiffness[distances < -1.0e-6], rtol=2.0e-6)
+        np.testing.assert_array_equal(damping[distances > 1.0e-6], 0.0)
         if expected_distance >= 0.0:
             test.assertTrue(np.all(distances >= -tolerance))
             if expected_distance > tolerance:
@@ -1335,6 +1342,7 @@ def test_hydroelastic_margin_gap_bands(test, device, reduce_contacts):
 def test_hydroelastic_zero_gap_omits_speculative_contacts(test, device, reduce_contacts):
     """Omit positive-separation hydroelastic contacts when both gaps are zero."""
     model, state, body_b = _build_margin_gap_boxes(device, gaps=(0.0, 0.0))
+    model.shape_material_kd.zero_()
     pipeline = newton.CollisionPipeline(
         model,
         broad_phase="explicit",
@@ -1369,6 +1377,7 @@ def test_hydroelastic_zero_gap_omits_speculative_contacts(test, device, reduce_c
     distances = _get_contact_distances(contacts, model, state)
     test.assertGreater(len(distances), 0)
     test.assertTrue(np.all(distances < 0.0))
+    np.testing.assert_array_equal(contacts.rigid_contact_damping.numpy()[: len(distances)], 0.0)
 
 
 def test_hydroelastic_margin_contact_area_is_deprecated(test, device, reduce_contacts):
@@ -2320,6 +2329,7 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
             sdf_narrow_band_range=(-0.1, 0.1),
             gap=0.01,
             kh=kh_val,
+            kd=0.0,  # Keep the original undamped setup for the stiffness check.
             density=0.0,
         )
 
@@ -2640,6 +2650,357 @@ def test_fixed_point_extreme_exponents(test, device):
     expected_shifts = np.zeros(len(values_np), dtype=np.float64)
     expected_shifts[1:] = np.ldexp(1.0, mantissa_bits - exponents_np[1:])
     np.testing.assert_array_equal(shifts.numpy(), expected_shifts)
+
+
+def _mujoco_contacts(count=1, stiffness=1.0e4, damping=0.0, *, swapped=False):
+    """Split a 5 mm penetrating patch into unequal pressure weights."""
+    contacts = newton.Contacts(rigid_contact_max=count, soft_contact_max=0, per_contact_shape_properties=True)
+    contacts.rigid_contact_count.fill_(count)
+    contacts.rigid_contact_shape0.fill_(1 if swapped else 0)
+    contacts.rigid_contact_shape1.fill_(0 if swapped else 1)
+    # Place the midpoint at the body's center to isolate translation.
+    z0, z1 = (-0.0025, 0.0975) if swapped else (0.0975, -0.0025)
+    contacts.rigid_contact_point0.fill_(wp.vec3(0.0, 0.0, z0))
+    contacts.rigid_contact_point1.fill_(wp.vec3(0.0, 0.0, z1))
+    contacts.rigid_contact_normal.fill_(wp.vec3(0.0, 0.0, -1.0 if swapped else 1.0))
+    weights = np.arange(1, count + 1, dtype=np.float32)
+    weights /= weights.sum()
+    contacts.rigid_contact_stiffness.assign(stiffness * weights)
+    contacts.rigid_contact_damping.assign(damping * weights)
+    contacts.contact_generation.fill_(1)
+    return contacts
+
+
+def _mujoco_model(
+    *,
+    mass=1.0,
+    condim=3,
+    positions=(0.0,),
+    solref_modes=(SOLREF_MODE_FORCE_SPACE, SOLREF_MODE_FORCE_SPACE),
+    ordinary_shapes=(),
+):
+    """Build boxes above a shared fixed hydroelastic surface."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    if solref_modes is not None:
+        newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
+    cfg = newton.ModelBuilder.ShapeConfig(mu=0.4, margin=0.0, gap=0.0, sdf_max_resolution=8, density=mass / 0.008)
+    bodies = [-1] + [builder.add_body(xform=wp.transform((x, 0.0, 0.095), wp.quat_identity())) for x in positions]
+    for shape, body in enumerate(bodies):
+        cfg.is_hydroelastic = shape not in ordinary_shapes
+        builder.add_shape_box(
+            body,
+            hx=1.0 if body < 0 else 0.1,
+            hy=0.2 if body < 0 else 0.1,
+            hz=0.1,
+            cfg=cfg,
+            custom_attributes={"mujoco:solref_mode": solref_modes[shape]} if solref_modes is not None else None,
+        )
+    model = builder.finalize()
+    if solref_modes is not None:
+        model.mujoco.condim.fill_(condim)
+    return model
+
+
+def _mujoco_solver(model, **options):
+    """Use consistent contact capacity and convergence settings."""
+    options.setdefault("cone", "elliptic")
+    options.setdefault("nconmax", 16)
+    return newton.solvers.SolverMuJoCo(
+        model, use_mujoco_contacts=False, njmax=128, iterations=50, tolerance=1.0e-10, **options
+    )
+
+
+def _mujoco_states(model, *, velocity=-0.1):
+    """Initialize each box at its fixture pose with the same vertical velocity."""
+    state_in, state_out = model.state(), model.state()
+    state_in.joint_qd.assign(np.tile([0.0, 0.0, velocity, 0.0, 0.0, 0.0], model.body_count))
+    newton.eval_fk(model, model.joint_q, state_in.joint_qd, state_in)
+    return state_in, state_out
+
+
+@requires(*MUJOCO_MODULES)
+@unittest.skipUnless(cuda_devices, "Requires a CUDA device")
+class TestMuJoCoHydroelastic(unittest.TestCase):
+    """Check normal compliance, friction, and cached contact conversion."""
+
+    def setUp(self):
+        """Select the CUDA device for all test buffers."""
+        self.enterContext(wp.ScopedDevice(cuda_devices[0]))
+
+    def test_preserves_legacy_response(self):
+        """Preserve legacy response for unselected pairs and pyramidal contacts."""
+        modes = (SOLREF_MODE_MJCF_DEFAULT, SOLREF_MODE_RAW, SOLREF_MODE_FORCE_SPACE)
+        force_space = (SOLREF_MODE_FORCE_SPACE, SOLREF_MODE_FORCE_SPACE)
+        cases = [((), None)] + [((), (a, b)) for a in modes for b in modes if (a, b) != force_space]
+        cases += [(shapes, force_space) for shapes in ((0,), (1,), (0, 1))]
+        for cone in ("elliptic", "pyramidal"):
+            if cone == "pyramidal":
+                cases.append(((), force_space))
+            velocities = []
+            for ordinary_shapes, solref_modes in cases:
+                with self.subTest(cone=cone, ordinary_shapes=ordinary_shapes, solref_modes=solref_modes):
+                    model = _mujoco_model(solref_modes=solref_modes, ordinary_shapes=ordinary_shapes)
+                    solver = _mujoco_solver(model, cone=cone)
+                    state_in, state_out = _mujoco_states(model)
+                    solver.step(state_in, state_out, None, _mujoco_contacts(4), 0.002)
+                    velocities.append(state_out.body_qd.numpy())
+                    np.testing.assert_allclose(velocities[-1], velocities[0], atol=1.0e-6, rtol=1.0e-5)
+
+    def test_normal_response(self):
+        """Match the implicit spring solution."""
+        for mass, damping, integrator in ((0.2, 0.0, "euler"), (2.0, 20.0, "implicit"), (1.0, 0.0, "implicitfast")):
+            model = _mujoco_model(mass=mass)
+            solver = _mujoco_solver(model, integrator=integrator)
+            state_in, state_out = _mujoco_states(model)
+            for count in (1, 16):
+                contacts = _mujoco_contacts(count, damping=damping, swapped=count == 16)
+                # The shorter step puts small weights below MuJoCo's impedance floor.
+                for dt in (0.006, 0.0002):
+                    with self.subTest(mass=mass, count=count, dt=dt):
+                        solver.step(state_in, state_out, None, contacts, dt)
+                        expected = (-0.1 * mass + dt * 50.0) / (mass + dt * damping + dt * dt * 1.0e4)
+                        self.assertAlmostEqual(float(state_out.body_qd.numpy()[0, 2]), expected, delta=2.0e-5)
+                        force = float(solver.mjw_data.qfrc_constraint.numpy()[0, 2])
+                        self.assertAlmostEqual(force, mass * (expected + 0.1) / dt, delta=0.02)
+
+    def test_friction_metric(self):
+        """Preserve friction limits for small pressure weights."""
+        model = _mujoco_model(condim=6)
+        solver = _mujoco_solver(model)
+        state_in, state_out = _mujoco_states(model, velocity=0.0)
+        contacts, dt = _mujoco_contacts(4, stiffness=1.0), 1.0 / 7680.0
+        solver.step(state_in, state_out, None, contacts, dt)
+        data = solver.mjw_data
+        cids = solver._contact_tid_to_cid.numpy()[:4]
+        scale = np.linalg.norm(data.contact.frame.numpy()[cids, 1], axis=1)
+        friction = data.contact.friction.numpy()[cids]
+        sliding, torsional, rolling = solver.mjw_model.geom_friction.numpy()[0, 0]
+        np.testing.assert_allclose(
+            friction * np.column_stack((scale, scale, np.ones(4), scale, scale)),
+            np.tile([sliding, sliding, torsional, rolling, rolling], (4, 1)),
+            rtol=1.0e-5,
+        )
+        rows = data.contact.efc_address.numpy()[cids, :6]
+        self.assertTrue(np.all(rows >= 0))
+        expected = np.repeat((dt * dt * contacts.rigid_contact_stiffness.numpy())[:, None], 6, axis=1)
+        ir = float(solver.mjw_model.opt.impratio_invsqrt.numpy()[0])
+        # The cone projection requires the same metric across all six rows.
+        expected[:, 1:] *= (friction / (ir * friction[:, :1])) ** 2
+        np.testing.assert_allclose(data.efc.D.numpy()[0, rows], expected, rtol=2.0e-6, atol=0.0)
+
+    def test_captured_timestep_changes(self):
+        """Refresh captured hydroelastic contacts after timestep changes."""
+        model = _mujoco_model()
+        solver = _mujoco_solver(model)
+        state_in, state_out = _mujoco_states(model)
+        state_in.joint_qd.assign(np.array([0.001, 0.0, -0.1, 0.0, 0.0, 0.0]))
+        newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
+        contacts = _mujoco_contacts()
+        timesteps = (0.002, 0.006)
+        graphs = []
+        for dt in timesteps:
+            with wp.ScopedCapture() as capture:
+                solver.step(state_in, state_out, None, contacts, dt)
+            graphs.append(capture.graph)
+        expected = []
+        for dt in timesteps:
+            solver.step(state_in, state_out, None, contacts, dt)
+            expected.append(state_out.body_qd.numpy().copy())
+            velocity = (-0.1 + dt * 50.0) / (1.0 + dt * dt * 1.0e4)
+            self.assertAlmostEqual(float(expected[-1][0, 2]), velocity, delta=2.0e-5)
+        for index in (0, 1, 0):
+            wp.capture_launch(graphs[index])
+            np.testing.assert_allclose(state_out.body_qd.numpy(), expected[index], atol=1.0e-7, rtol=1.0e-5)
+
+    def test_soft_slab_friction(self):
+        """Check sticking, sliding, and world-space contact forces."""
+        mass, mu, load, dt = 0.02, 0.4, 1.0, 1.0 / 1920.0
+        builder = newton.ModelBuilder()
+        newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
+        common = {
+            "mu": mu,
+            "kd": 0.0,  # This sliding-speed check uses the undamped contact law.
+            "gap": 0.0,
+            "margin": 0.0,
+            "is_hydroelastic": True,
+            "sdf_narrow_band_range": (-0.001, 0.001),
+            "sdf_padding": 0.001,
+        }
+        builder.add_shape_box(
+            -1,
+            xform=wp.transform((0.0, 0.0, -0.0005), wp.quat_identity()),
+            hx=0.0155,
+            hy=0.008,
+            hz=0.0005,
+            cfg=newton.ModelBuilder.ShapeConfig(kh=1.5e9, sdf_target_voxel_size=0.0002, **common),
+            custom_attributes={"mujoco:solref_mode": SOLREF_MODE_FORCE_SPACE},
+        )
+        body = builder.add_body(xform=wp.transform((0.0, 0.0, 0.002), wp.quat_identity()))
+        builder.add_shape_box(
+            body,
+            hx=0.002,
+            hy=0.002,
+            hz=0.002,
+            cfg=newton.ModelBuilder.ShapeConfig(
+                density=mass / 0.004**3,
+                kh=1.0e12,
+                sdf_target_voxel_size=0.00025,
+                sdf_texture_format="float32",
+                **common,
+            ),
+            custom_attributes={"mujoco:solref_mode": SOLREF_MODE_FORCE_SPACE},
+        )
+        model = builder.finalize()
+        pipeline = newton.CollisionPipeline(
+            model,
+            rigid_contact_max=8192,
+            sdf_hydroelastic_config=HydroelasticSDF.Config(reduce_contacts=False, buffer_fraction=1.0),
+        )
+        contacts = pipeline.contacts()
+        solver = newton.solvers.SolverMuJoCo(
+            model, use_mujoco_contacts=False, cone="elliptic", nconmax=2048, njmax=8192
+        )
+        observables = solver.observables(contacts=contacts, kinds={solver.ObservableKind.CONTACT_F})
+        state_in, state_out = model.state(), model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
+        wrench = np.zeros((model.body_count, 6), dtype=np.float32)
+        wrench[body, 2] = -(load + mass * model.gravity.numpy()[0, 2])
+
+        def push(force, steps):
+            nonlocal state_in, state_out
+            wrench[body, 0] = force
+            state_in.body_f.assign(wrench)
+            for _ in range(steps):
+                pipeline.collide(state_in, contacts)
+                solver.step(state_in, state_out, None, contacts, dt, observables=observables)
+                state_in, state_out = state_out, state_in
+                wp.copy(state_in.body_f, state_out.body_f)
+
+        push(0.0, 200)
+        self.assertLess(float(np.abs(state_in.body_qd.numpy()[body, 3:]).max()), 0.02)
+        start = float(state_in.body_q.numpy()[body, 0])
+        for step in range(100):
+            push(0.5 * mu * load * (step + 1) / 100, 1)
+        push(0.5 * mu * load, 100)
+        self.assertLess(abs(float(state_in.body_q.numpy()[body, 0]) - start), 6.0e-5)
+        self.assertLess(abs(float(state_in.body_qd.numpy()[body, 0])), 1.0e-3)
+        # Force readout must undo the backend's tangent scaling.
+        count = int(contacts.rigid_contact_count.numpy()[0])
+        np.testing.assert_allclose(
+            observables.contact_f.numpy()[:count, :3].sum(axis=0), [0.5 * mu * load, 0.0, -load], atol=0.02
+        )
+        speed = float(state_in.body_qd.numpy()[body, 0])
+        push(1.5 * mu * load, 20)
+        gained = float(state_in.body_qd.numpy()[body, 0]) - speed
+        expected = 20 * dt * 0.5 * mu * load / mass
+        self.assertAlmostEqual(gained, expected, delta=0.2 * expected)
+
+
+@requires(*MUJOCO_MODULES)
+@unittest.skipUnless(cuda_devices, "Requires a CUDA device")
+class TestMuJoCoHydroelasticMixing(unittest.TestCase):
+    """Check mixed-mode contacts on a shared floor."""
+
+    @classmethod
+    def setUpClass(cls):
+        """Build matching scenes with different authored shape choices."""
+        cls.device = cuda_devices[0]
+        cls.models = {}
+        with wp.ScopedDevice(cls.device):
+            for modes in ((False, False, False), (True, True, False), (True, False, True)):
+                cls.models[modes] = _mujoco_model(
+                    mass=0.2,
+                    positions=(-0.4, 0.4),
+                    solref_modes=tuple(
+                        SOLREF_MODE_FORCE_SPACE if enabled else SOLREF_MODE_MJCF_DEFAULT for enabled in modes
+                    ),
+                )
+        cls.model = cls.models[False, False, False]
+
+    def setUp(self):
+        """Use the scene's CUDA device for every contact and solver allocation."""
+        self.enterContext(wp.ScopedDevice(self.device))
+
+    def make_contacts(self, count=4, *, stiffness=1.0e4):
+        """Allocate a contact buffer containing two independent pressure patches."""
+        contacts = _mujoco_contacts(2 * count)
+        contacts.rigid_contact_shape1.assign(np.repeat([1, 2], count).astype(np.int32))
+        contacts.rigid_contact_point0.assign(
+            np.repeat([[-0.4, 0.0, 0.0975], [0.4, 0.0, 0.0975]], count, axis=0).astype(np.float32)
+        )
+        weights = np.arange(1, count + 1, dtype=np.float32)
+        contacts.rigid_contact_stiffness.assign(np.tile(stiffness * weights / weights.sum(), 2))
+        return contacts
+
+    def test_buffer_reuse_with_mixed_modes(self):
+        """Preserve activation response on reuse and refresh it after collision."""
+        dt = 1.0 / 600.0
+        model = self.models[True, True, False]
+        solver = _mujoco_solver(model)
+        legacy = _mujoco_solver(self.model)
+        state_in, state_out = _mujoco_states(self.model, velocity=0.0)
+        reference_out = self.model.state()
+        a, b = self.make_contacts(1, stiffness=5.0e8), self.make_contacts(2)
+        q = state_in.joint_q.numpy().reshape(-1, 7)
+        q[:, 2] = 0.105
+        state_in.joint_q.assign(q.ravel())
+        newton.eval_fk(self.model, state_in.joint_q, state_in.joint_qd, state_in)
+        with wp.ScopedCapture():
+            solver.step(state_in, state_out, None, a, dt)
+        with wp.ScopedCapture() as capture_a:
+            solver.step(state_in, state_out, None, a, dt)
+        wp.capture_launch(capture_a.graph)
+        q[:, 2] = 0.0999
+        state_in.joint_q.assign(q.ravel())
+        newton.eval_fk(self.model, state_in.joint_q, state_in.joint_qd, state_in)
+        legacy.step(state_in, reference_out, None, a, dt)
+        expected_activation = reference_out.body_qd.numpy().copy()
+        for captured in (False, True):
+            if captured:
+                with wp.ScopedCapture() as capture_b:
+                    solver.step(state_in, state_out, None, b, dt)
+                wp.capture_launch(capture_b.graph)
+                wp.capture_launch(capture_a.graph)
+            else:
+                solver.step(state_in, state_out, None, b, dt)
+                solver.step(state_in, state_out, None, a, dt)
+            np.testing.assert_allclose(state_out.body_qd.numpy(), expected_activation, atol=1.0e-6, rtol=1.0e-5)
+        a.contact_generation.fill_(2)
+        a.rigid_contact_stiffness.fill_(1.0e4)
+        wp.capture_launch(capture_a.graph)
+        legacy.step(state_in, reference_out, None, a, dt)
+        expected = reference_out.body_qd.numpy()[:, 2].copy()
+        expected[0] = dt * 1.0e4 * 0.0001 / (0.2 + dt * dt * 1.0e4)
+        np.testing.assert_allclose(state_out.body_qd.numpy()[:, 2], expected, atol=2.0e-5, rtol=0.0)
+
+    def test_shared_buffer_keeps_solver_choices_separate(self):
+        """Keep each solver's force-space selection independent."""
+        dt = 0.002
+        state_in, state_out = _mujoco_states(self.model)
+        contacts = self.make_contacts(4)
+        legacy = _mujoco_solver(self.model)
+        legacy.step(state_in, state_out, None, self.make_contacts(4), dt)
+        expected_legacy = state_out.body_qd.numpy()[:, 2].copy()
+        # Classify only the first patch, using legacy response.
+        small = _mujoco_solver(self.models[True, False, True], nconmax=4)
+        small.step(state_in, state_out, None, contacts, dt)
+        np.testing.assert_allclose(
+            state_out.body_qd.numpy()[:, 2], [expected_legacy[0], -0.1], atol=1.0e-6, rtol=1.0e-5
+        )
+        solvers = [_mujoco_solver(self.models[modes]) for modes in ((True, True, False), (True, False, True))]
+        expected = ([1.0 / 3.0, expected_legacy[1]], [expected_legacy[0], 1.0 / 3.0])
+        graphs = []
+        for solver in solvers:
+            with wp.ScopedCapture() as capture:
+                solver.step(state_in, state_out, None, contacts, dt)
+            graphs.append(capture.graph)
+        for captured in (False, True):
+            for index in (0, 1, 0):
+                if captured:
+                    wp.capture_launch(graphs[index])
+                else:
+                    solvers[index].step(state_in, state_out, None, contacts, dt)
+                np.testing.assert_allclose(state_out.body_qd.numpy()[:, 2], expected[index], atol=2.0e-5, rtol=0.0)
 
 
 # --- Test class ---
