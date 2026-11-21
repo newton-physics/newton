@@ -16,12 +16,13 @@ _WORLD_COUNT = 2
 _DT = 0.005
 
 
-def _build_model(*, ground: bool = True, hinge_q: float = 0.29) -> newton.Model:
+def _build_model(*, ground: bool = True, hinge_q: float = 0.29, loop: bool = False) -> newton.Model:
     """Build worlds with a limited hinge, a ball joint, and a free box with an offset center of mass.
 
     By default the hinge starts next to its upper limit and moves toward it,
     and the box rests on the ground, so contacts and the joint limit are active
-    from the first step.
+    from the first step. With ``loop``, a revolute loop joint connects the
+    ball joint's child to the world.
     """
     world = newton.ModelBuilder()
     link0 = world.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, -0.2), inertia=wp.diag(wp.vec3(0.01, 0.02, 0.01)))
@@ -43,6 +44,9 @@ def _build_model(*, ground: bool = True, hinge_q: float = 0.29) -> newton.Model:
         child_xform=wp.transform((0.0, 0.0, 0.2), wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.3)),
     )
     world.add_articulation([hinge, ball])
+    if loop:
+        # Close the chain to the world near the ball body's initial position.
+        world.add_joint_revolute(-1, link1, parent_xform=wp.transform((0.0, 0.0, 0.9), wp.quat_identity()))
     box = world.add_body(xform=wp.transform((0.6, 0.0, 0.1), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.3)))
     world.add_shape_box(box, hx=0.1, hy=0.15, hz=0.1)
     world.body_com[box] = wp.vec3(0.03, -0.02, 0.01)
@@ -113,6 +117,25 @@ class TestMuJoCoQaccSmooth(unittest.TestCase):
         self.assertGreater(
             np.abs(qacc_smooth[np.concatenate(_dof_ranges(free_model, newton.JointType.BALL))]).max(), 1.0
         )
+
+        # In-place stepping reads the same input frames, and loop-joint DOFs report zero.
+        loop_model = _build_model(loop=True)
+        results = []
+        for in_place in (False, True):
+            solver = SolverMuJoCo(loop_model, integrator="euler")
+            observables = solver.observables({SolverMuJoCo.ObservableKind.QACC_SMOOTH})
+            observables.qacc_smooth.fill_(float("nan"))
+            state_in = loop_model.state()
+            state_out = state_in if in_place else loop_model.state()
+            solver.step(state_in, state_out, loop_model.control(), None, _DT, observables=observables)
+            results.append(observables.qacc_smooth.numpy())
+        np.testing.assert_array_equal(results[1], results[0])
+        articulation = loop_model.joint_articulation.numpy()
+        start = loop_model.joint_qd_start.numpy()
+        loop_dofs = [d for j in np.flatnonzero(articulation < 0) for d in range(start[j], start[j + 1])]
+        self.assertEqual(len(loop_dofs), _WORLD_COUNT)
+        np.testing.assert_array_equal(results[0][loop_dofs], 0.0)
+        self.assertTrue(np.isfinite(results[0]).all())
 
     def test_override_reproduces_native_step(self):
         """Reproduce the native step when fed native qacc_smooth, with an empty mask, and after clearing."""
@@ -228,7 +251,7 @@ class TestMuJoCoQaccSmooth(unittest.TestCase):
         self.assertEqual(float(graphed.mjw_data.qacc_smooth.numpy()[0, 0]), 2.0)
 
     def test_rejects_unsupported_configurations(self):
-        """Reject unsupported backends, integrators, sleeping, and invalid arrays."""
+        """Reject unsupported backends, integrators, sleeping, data intervals, and invalid arrays."""
         builder = newton.ModelBuilder()
         body = builder.add_body()
         builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
@@ -246,8 +269,13 @@ class TestMuJoCoQaccSmooth(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, message):
                     solver.set_qacc_smooth_override(values)
                 solver.set_qacc_smooth_override(None)
-                if kwargs.get("use_mujoco_cpu"):
+                if kwargs.get("use_mujoco_cpu") or kwargs.get("integrator") == "rk4":
                     self.assertNotIn(SolverMuJoCo.ObservableKind.QACC_SMOOTH, solver.supported_observables)
+        with self.assertWarns(newton.NewtonDeprecationWarning):
+            solver = SolverMuJoCo(model, update_data_interval=2)
+        observables = solver.observables({SolverMuJoCo.ObservableKind.QACC_SMOOTH})
+        with self.assertRaisesRegex(ValueError, "update_data_interval"):
+            solver.step(model.state(), model.state(), model.control(), None, _DT, observables=observables)
 
         solver = SolverMuJoCo(model)
         with self.assertRaises(AttributeError):

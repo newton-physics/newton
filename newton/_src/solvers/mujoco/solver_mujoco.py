@@ -583,7 +583,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         """DOF friction-loss constraint forces in Newton generalized-coordinate order."""
 
         QACC_SMOOTH = "qacc_smooth"
-        """Pre-constraint joint accelerations in Newton generalized-coordinate order (MuJoCo Warp only)."""
+        """Pre-constraint joint accelerations in Newton generalized-coordinate order (MuJoCo Warp, not RK4)."""
 
         OVERFLOW = "overflow"
         """Per-world capacity-overflow bitmask for the most recent step; see :ref:`mujoco_overflow_observable`."""
@@ -646,8 +646,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         MuJoCo's ``qacc_smooth``: the acceleration from all forces except
         constraints, expressed as the time derivative of
-        :attr:`State.joint_qd <newton.State.joint_qd>`. From the same force
-        evaluation as :attr:`qfrc_bias`, at the input state of the step. With
+        :attr:`State.joint_qd <newton.State.joint_qd>`. Evaluated at the input
+        state of the step, so it is unavailable with RK4 and requires data
+        synchronization on every step. DOFs without a MuJoCo DOF, such as those
+        of loop joints, report zero. With
         :meth:`SolverMuJoCo.set_qacc_smooth_override`, masked DOFs report the
         override that the constraint solve used.
         """
@@ -728,6 +730,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         See :ref:`solver_observables` for backend limitations.
         """
         kinds = super().supported_observables
+        if not self.use_mujoco_cpu and self.mjw_model.opt.integrator == self._mujoco.mjtIntegrator.mjINT_RK4:
+            # RK4 evaluates qacc_smooth at an intermediate stage whose state is not retained.
+            kinds = kinds.difference({self.ObservableKind.QACC_SMOOTH})
         if self.use_mujoco_cpu:
             kinds = kinds.difference({self.ObservableKind.OVERFLOW, self.ObservableKind.QACC_SMOOTH})
             if self.mj_model.opt.integrator not in (
@@ -5476,6 +5481,15 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         """
         self.validate_observables(observables, contacts)
         self._require_unreduced_contacts(contacts)
+        if (
+            self._update_data_interval != 1
+            and isinstance(observables, self.Observables)
+            and observables.is_requested(self.ObservableKind.QACC_SMOOTH)
+        ):
+            raise ValueError(
+                "ObservableKind.QACC_SMOOTH requires synchronizing MuJoCo data from the input state on every step; "
+                "do not pass the deprecated update_data_interval."
+            )
         if self._use_speculative_contacts and (not math.isfinite(dt) or dt <= 0.0):
             raise ValueError("use_speculative_contacts=True requires a finite positive timestep.")
         if self.use_mujoco_cpu:
@@ -6886,6 +6900,34 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         joints_per_world = (
             model.joint_count // model.world_count if single_world_template else model.joint_count // nworld
         )
+        if (
+            is_mjwarp
+            and isinstance(observables, self.Observables)
+            and observables.is_requested(self.ObservableKind.QACC_SMOOTH)
+        ):
+            # Convert with the input state before the readback below, which may overwrite it in place.
+            wp.launch(
+                convert_qacc_from_mj_kernel,
+                dim=(nworld, joints_per_world),
+                inputs=[
+                    mj_data.qacc_smooth,
+                    joints_per_world,
+                    model.joint_type,
+                    model.joint_q_start,
+                    model.joint_qd_start,
+                    model.joint_dof_dim,
+                    model.joint_child,
+                    model.joint_X_p,
+                    model.joint_X_c,
+                    model.body_com,
+                    state_prev.joint_q,
+                    state_prev.joint_qd,
+                    self.mj_q_start,
+                    self.mj_qd_start,
+                ],
+                outputs=[observables.qacc_smooth],
+                device=model.device,
+            )
         mujoco_attrs = getattr(model, "mujoco", None)
         dof_ref = getattr(mujoco_attrs, "dof_ref", None) if mujoco_attrs is not None else None
         wp.launch(
@@ -6951,29 +6993,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         if not isinstance(observables, self.Observables):
             return
-        if is_mjwarp and observables.is_requested(self.ObservableKind.QACC_SMOOTH):
-            wp.launch(
-                convert_qacc_from_mj_kernel,
-                dim=(nworld, joints_per_world),
-                inputs=[
-                    mj_data.qacc_smooth,
-                    joints_per_world,
-                    model.joint_type,
-                    model.joint_q_start,
-                    model.joint_qd_start,
-                    model.joint_dof_dim,
-                    model.joint_child,
-                    model.joint_X_p,
-                    model.joint_X_c,
-                    model.body_com,
-                    state_prev.joint_q,
-                    state_prev.joint_qd,
-                    self.mj_q_start,
-                    self.mj_qd_start,
-                ],
-                outputs=[observables.qacc_smooth],
-                device=model.device,
-            )
         for kind, qfrc in (
             (self.ObservableKind.QFRC_BIAS, observables.qfrc_bias),
             (self.ObservableKind.QFRC_CONSTRAINT, observables.qfrc_constraint),

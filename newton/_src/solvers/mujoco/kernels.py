@@ -3580,18 +3580,20 @@ def convert_qacc_from_mj_kernel(
 
     FREE and BALL frames come from the Newton state ``joint_q``/``joint_qd`` at
     which MuJoCo evaluated the acceleration, since MuJoCo's ``qpos``/``qvel``
-    have advanced by the time the step returns. Other joints are copied directly.
+    have advanced by the time the step returns. Other joints are copied
+    directly, and loop joints, which have no MuJoCo DOFs, report zero.
     """
     worldid, jntid = wp.tid()
     joint_id = joints_per_world * worldid + jntid
+    wq_i = joint_q_start[joint_id]
+    wqd_i = joint_qd_start[joint_id]
 
-    # Skip loop joints — they have no MuJoCo DOF entries
     if mj_q_start[jntid] < 0:
+        for i in range(wqd_i, joint_qd_start[joint_id + 1]):
+            qacc[i] = 0.0
         return
 
     qd_i = mj_qd_start[jntid]
-    wq_i = joint_q_start[joint_id]
-    wqd_i = joint_qd_start[joint_id]
     jtype = joint_type[joint_id]
 
     if jtype == JointType.FREE:
