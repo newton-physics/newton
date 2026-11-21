@@ -12,10 +12,10 @@ a modified ANYmal-D quadruped robot dog. Trajectory optimization split into
 2. Jump (1500 steps): per-joint-group servo amplitudes produce the launch
    and the flip; the loss prices the flip error and attitude at touchdown,
    an apex height band and knee clearance.
-3. Landing (first 300 steps alone, then 1600): per-joint target splines
-   absorb the touchdown impact; the loss combines knee ordering,
-   anti-bounce, paw-glue (every paw pinned to the ground) and an end-state
-   stance term.
+3. Landing (first a short window alone, then the full 1600; window lengths
+   in ``LAND_SHORT_WINDOWS``): per-joint target splines absorb the
+   touchdown impact; the loss combines knee ordering, anti-bounce,
+   paw-glue (every paw pinned to the ground) and an end-state stance term.
 
 How the optimization runs:
 - every phase shares one optimizer (``_descent``: steepest descent with a
@@ -1011,7 +1011,8 @@ class Example:
     def _state_metrics(self, body_q0, body_qd0):
         """Root-body gate metrics: height, tilt, vertical and angular speed, as a dict."""
         # body_qd0 is newton's spatial velocity: rows [0:3] linear, [3:6] angular -
-        # vz reads the linear row's z, w the angular row's norm
+        # vz reads the linear row's z, w the angular row's norm (opposite of
+        # Warp's generic spatial-vector docs, which call spatial_top angular)
         return {
             "z": float(body_q0[2]),
             "tilt": _tilt_of(body_q0),
