@@ -22,7 +22,9 @@ from ..geometry.rest_shape import _tet_rest_geometry
 from ..sim.model import Model
 from .import_usd_deformable_utils import (
     _AOUSD_DEFAULT_POISSONS_RATIO,
+    _AOUSD_DEFAULT_THICKNESS,
     _AOUSD_DEFAULT_YOUNGS_MODULUS,
+    _BUILDER_STOCK_PARTICLE_RADIUS,
     _apply_particle_masses,
     _bake_world_points,
     _deformable_body_skip_reason,
@@ -314,6 +316,11 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
                 read_base_material=volume_material is None and tetmesh_for_builder.density is None,
             )
             add_soft_mesh_kwargs["density"] = resolved_density
+            # The volume proposal has no radius field. Use Newton's 0.5 mm fallback only
+            # for the stock builder value; preserve deliberate pre-import overrides.
+            # Bare TetMeshes must not evaluate this simulation-only unit conversion.
+            if builder.default_particle_radius == _BUILDER_STOCK_PARTICLE_RADIUS:
+                add_soft_mesh_kwargs["particle_radius"] = 0.5 * _AOUSD_DEFAULT_THICKNESS / ctx.linear_unit
 
         soft_p0, soft_t0 = builder.particle_count, builder.tet_count
         builder.add_soft_mesh(**add_soft_mesh_kwargs)
