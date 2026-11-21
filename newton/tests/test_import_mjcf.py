@@ -13478,7 +13478,10 @@ class TestImportMjcfKeyframes(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "identical keyframes"):
             SolverMuJoCo(mismatch_builder.finalize(device="cpu"), separate_worlds=True, disable_contacts=True)
 
-        # Malformed overlong <key qpos="..."> length raises ValueError, while valid prefixes fill from qpos0/zero.
+    @requires(*MUJOCO_MODULES)
+    def test_mjcf_keyframe_malformed_and_short_prefixes(self):
+        import mujoco
+
         bad_mjcf = """<mujoco>
           <worldbody><body><joint name="h" type="hinge"/><geom size="0.1"/></body></worldbody>
           <keyframe><key name="bad" qpos="0.1 0.2"/></keyframe>
@@ -13486,7 +13489,7 @@ class TestImportMjcfKeyframes(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "qpos has 2 values, expected at most 1"):
             newton.ModelBuilder().add_mjcf(bad_mjcf)
 
-        prefix_and_filter_mjcf = """<mujoco>
+        prefix_mjcf = """<mujoco>
           <worldbody>
             <body name="b1"><joint name="h1" type="hinge" ref="0.1"/><geom size="0.1"/></body>
             <body name="b2"><joint name="h2" type="hinge" ref="0.3"/><geom size="0.1"/></body>
@@ -13498,13 +13501,14 @@ class TestImportMjcfKeyframes(unittest.TestCase):
             <key name="short" qpos="0.5" act="0.3"/>
           </keyframe>
         </mujoco>"""
-        pf_native = mujoco.MjModel.from_xml_string(prefix_and_filter_mjcf)
+        pf_native = mujoco.MjModel.from_xml_string(prefix_mjcf)
         pf_builder = newton.ModelBuilder()
-        pf_builder.add_mjcf(prefix_and_filter_mjcf)
+        pf_builder.add_mjcf(prefix_mjcf)
         pf_solver = SolverMuJoCo(pf_builder.finalize(device="cpu"), use_mujoco_cpu=True, disable_contacts=True)
         np.testing.assert_allclose(pf_solver.mj_model.key_qpos[0], pf_native.key_qpos[0], atol=1e-6)
 
-        # Filtered ignore_classes body reserves its authored keyframe coordinate, and colliding sanitized joint names stay distinct.
+    @requires(*MUJOCO_MODULES)
+    def test_mjcf_keyframe_filtering_framed_joints_and_multi_slot_ctrl(self):
         ignored_and_collide_mjcf = """<mujoco>
           <default><default class="skip_me"/></default>
           <worldbody>
@@ -13519,8 +13523,50 @@ class TestImportMjcfKeyframes(unittest.TestCase):
         ic_solver = SolverMuJoCo(ic_builder.finalize(device="cpu"), use_mujoco_cpu=True, disable_contacts=True)
         np.testing.assert_allclose(ic_solver.mj_model.key_qpos[0], [0.4, 0.7], atol=1e-6)
 
-        # Composing two keyed mechanisms in one world preserves each mechanism's joint and actuator targets,
-        # and differing target offsets across separate worlds fail homogeneity validation.
+        # Framed joints inside a body consume their authored XML slots without shifting direct joints.
+        framed_mjcf = """<mujoco>
+          <worldbody>
+            <body name="b">
+              <geom size="0.1"/>
+              <frame pos="0 0 0.1"><joint name="s_before" type="slide"/></frame>
+              <joint name="h_direct" type="hinge"/>
+              <frame pos="0 0 0.2"><joint name="s_after" type="slide"/></frame>
+            </body>
+          </worldbody>
+          <keyframe><key name="kf" qpos="0.1 0.55 0.3" qvel="1.0 2.5 3.0"/></keyframe>
+        </mujoco>"""
+        framed_builder = newton.ModelBuilder()
+        # Pre-populate a collapsible fixed joint to verify joint_remap index shifting during collapse.
+        fixed_link = framed_builder.add_link(mass=0.1)
+        framed_builder.add_shape_sphere(fixed_link, radius=0.05)
+        fx = framed_builder.add_joint_fixed(parent=-1, child=fixed_link)
+        framed_builder.add_articulation([fx])
+        framed_builder.add_mjcf(framed_mjcf, collapse_fixed_joints=True)
+        framed_solver = SolverMuJoCo(framed_builder.finalize(device="cpu"), use_mujoco_cpu=True, disable_contacts=True)
+        np.testing.assert_allclose(framed_solver.mj_model.key_qpos[0], [0.55], atol=1e-6)
+        np.testing.assert_allclose(framed_solver.mj_model.key_qvel[0], [2.5], atol=1e-6)
+
+        # Default <pid> owns two control slots in MuJoCo 4.0.1; skipping it advances past both slots.
+        pid_mjcf = """<mujoco>
+          <worldbody>
+            <body><joint name="h1" axis="1 0 0"/><joint name="h2" axis="0 1 0"/><geom size="0.1"/></body>
+          </worldbody>
+          <actuator>
+            <pid name="p" joint="h1" kp="10"/>
+            <motor name="m" joint="h2"/>
+          </actuator>
+          <keyframe>
+            <key name="short_pid" ctrl="0.1 0.2"/>
+            <key name="full_pid" ctrl="0.1 0.2 0.75"/>
+          </keyframe>
+        </mujoco>"""
+        pid_builder = newton.ModelBuilder()
+        pid_builder.add_mjcf(pid_mjcf, ctrl_direct=True)
+        pid_solver = SolverMuJoCo(pid_builder.finalize(device="cpu"), use_mujoco_cpu=True, disable_contacts=True)
+        np.testing.assert_allclose(pid_solver.mj_model.key_ctrl, [[0.0], [0.75]], atol=1e-6)
+
+    @requires(*MUJOCO_MODULES)
+    def test_mjcf_keyframe_composition_and_world_homogeneity(self):
         one_mech_mjcf = """<mujoco>
           <worldbody><body><joint name="h" type="hinge"/><geom size="0.1"/></body></worldbody>
           <actuator><motor name="m" joint="h"/></actuator>
@@ -13555,7 +13601,24 @@ class TestImportMjcfKeyframes(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "identical keyframes"):
             SolverMuJoCo(offset_mismatch.finalize(device="cpu"), separate_worlds=True, disable_contacts=True)
 
-        # Placed free-root copy via add_builder(xform=...) and override_root_xform=True transform exported keyframes.
+        # Worlds with equal joint_q (0.5) but different dof_ref (0.25 vs 0.5 -> qpos 0.75 vs 1.0) must be rejected.
+        ref_mjcf = """<mujoco>
+          <compiler angle="radian"/>
+          <worldbody><body><joint name="h" type="hinge" ref="{rf}"/><geom size="0.1"/></body></worldbody>
+          <keyframe><key name="k" qpos="{qp}"/></keyframe>
+        </mujoco>"""
+        ref_mismatch = newton.ModelBuilder()
+        ref_mismatch.begin_world()
+        ref_mismatch.add_mjcf(ref_mjcf.format(rf=0.25, qp=0.75))
+        ref_mismatch.end_world()
+        ref_mismatch.begin_world()
+        ref_mismatch.add_mjcf(ref_mjcf.format(rf=0.5, qp=1.0))
+        ref_mismatch.end_world()
+        with self.assertRaisesRegex(ValueError, "identical keyframes"):
+            SolverMuJoCo(ref_mismatch.finalize(device="cpu"), separate_worlds=True, disable_contacts=True)
+
+    @requires(*MUJOCO_MODULES)
+    def test_mjcf_keyframe_placement_and_separate_worlds_consistency(self):
         free_mjcf = """<mujoco>
           <worldbody>
             <body name="box" pos="2 0 0.5">
@@ -13570,19 +13633,46 @@ class TestImportMjcfKeyframes(unittest.TestCase):
         </mujoco>"""
         free_bp = newton.ModelBuilder()
         free_bp.add_mjcf(free_mjcf)
-        placed = newton.ModelBuilder()
         rot_z90 = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), float(np.pi / 2.0))
-        placed.add_builder(free_bp, xform=wp.transform(wp.vec3(10.0, 3.0, 0.0), rot_z90))
+        place_tf = wp.transform(wp.vec3(10.0, 3.0, 0.0), rot_z90)
+
+        placed = newton.ModelBuilder()
+        placed.add_builder(free_bp, xform=place_tf)
         placed_solver = SolverMuJoCo(
             placed.finalize(device="cpu"),
             use_mujoco_cpu=True,
             disable_contacts=True,
             kinematic_switchable_roots=False,
         )
-        # Rotating (2, 0, 0.5) by +90 deg about Z gives (0, 2, 0.5), plus (10, 3, 0) = (10, 5, 0.5); vx=1 rotates to vy=1.
         np.testing.assert_allclose(placed_solver.mj_model.key_qpos[0, :3], [10.0, 5.0, 0.5], atol=1e-5)
         np.testing.assert_allclose(placed_solver.mj_model.key_qpos[1, :3], [10.0, 5.0, 0.5], atol=1e-5)
         np.testing.assert_allclose(placed_solver.mj_model.key_qvel[0, :3], [0.0, 1.0, 0.0], atol=1e-5)
+
+        # Equivalent placements via add_mjcf(xform=...) and add_world(xform=...) agree under separate_worlds=True,
+        # while differing add_world(xform=...) placements raise ValueError.
+        equiv = newton.ModelBuilder()
+        equiv.begin_world()
+        equiv.add_mjcf(free_mjcf, xform=place_tf)
+        equiv.end_world()
+        equiv.add_world(free_bp, xform=place_tf)
+        equiv_solver = SolverMuJoCo(
+            equiv.finalize(device="cpu"),
+            separate_worlds=True,
+            disable_contacts=True,
+            kinematic_switchable_roots=False,
+        )
+        np.testing.assert_allclose(equiv_solver.mj_model.key_qpos[0, :3], [10.0, 5.0, 0.5], atol=1e-5)
+
+        diff_worlds = newton.ModelBuilder()
+        diff_worlds.add_world(free_bp, xform=wp.transform_identity())
+        diff_worlds.add_world(free_bp, xform=place_tf)
+        with self.assertRaisesRegex(ValueError, "identical keyframes"):
+            SolverMuJoCo(
+                diff_worlds.finalize(device="cpu"),
+                separate_worlds=True,
+                disable_contacts=True,
+                kinematic_switchable_roots=False,
+            )
 
         ovr_builder = newton.ModelBuilder()
         ovr_builder.add_mjcf(
@@ -13599,7 +13689,7 @@ class TestImportMjcfKeyframes(unittest.TestCase):
         np.testing.assert_allclose(ovr_solver.mj_model.key_qpos[0, :3], [10.0, 0.0, 0.5], atol=1e-5)
         np.testing.assert_allclose(ovr_solver.mj_model.key_qpos[1, :3], [10.0, 0.0, 0.5], atol=1e-5)
 
-        # Hinge-before-slide on one body reorders to linear-before-angular in Newton keyframe_value.
+    def test_mjcf_keyframe_combined_joint_dof_ordering(self):
         reorder_mjcf = """<mujoco>
           <worldbody><body>
             <joint name="h" type="hinge" axis="0 1 0"/>
@@ -13612,8 +13702,12 @@ class TestImportMjcfKeyframes(unittest.TestCase):
         reorder_builder.add_mjcf(reorder_mjcf)
         reorder_model = reorder_builder.finalize(device="cpu")
         rv = reorder_model.mujoco.keyframe_value.numpy()
-        np.testing.assert_allclose(rv[2:4], [-0.25, 0.9], atol=1e-6)
-        np.testing.assert_allclose(rv[4:6], [-0.4, 1.5], atol=1e-6)
+        q_adr = int(reorder_model.mujoco.keyframe_q_adr.numpy()[0])
+        q_num = int(reorder_model.mujoco.keyframe_q_num.numpy()[0])
+        qd_adr = int(reorder_model.mujoco.keyframe_qd_adr.numpy()[0])
+        qd_num = int(reorder_model.mujoco.keyframe_qd_num.numpy()[0])
+        np.testing.assert_allclose(rv[q_adr : q_adr + q_num], [-0.25, 0.9], atol=1e-6)
+        np.testing.assert_allclose(rv[qd_adr : qd_adr + qd_num], [-0.4, 1.5], atol=1e-6)
 
 
 if __name__ == "__main__":

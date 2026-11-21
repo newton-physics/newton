@@ -986,8 +986,10 @@ MJCF ``<keyframe><key .../></keyframe>`` entries are imported into the
   coordinate, DOF, and ``mujoco:actuator`` spans and are automatically rebased
   during :meth:`~newton.ModelBuilder.add_builder` and
   :meth:`~newton.ModelBuilder.replicate`. ``keyframe_q_init_adr`` records the
-  import-time initial ``joint_q`` slice so placed free-root copies transform
-  exported keyframe poses and twists consistently.
+  import-time initial ``joint_q`` slice so placed free-root copies (such as
+  :meth:`~newton.ModelBuilder.add_builder` or
+  :meth:`~newton.ModelBuilder.add_world` with ``xform=...``) transform
+  keyframe poses and twists at solver export time.
 * Joint positions and velocities are stored in Newton's ``joint_q`` and
   ``joint_qd`` conventions (including ``xyzw`` quaternions, parent-frame COM
   twists on free joints, linear-before-angular combined joints, ``dof_ref``
@@ -999,8 +1001,10 @@ MJCF ``<keyframe><key .../></keyframe>`` entries are imported into the
   so ``mujoco:keyframe`` has no USD schema or importer mapping.
 * :class:`~newton.solvers.SolverMuJoCo` exports the template world's keyframes
   back onto ``mj_model`` (``nkey``, ``key_time``, ``key_qpos``, ``key_qvel``,
-  ``key_act``, ``key_ctrl``), and requires identical keyframes across worlds
-  when ``separate_worlds=True``.
+  ``key_act``, ``key_ctrl``). When ``separate_worlds=True``, each world's
+  effective exported keyframe values (after applying world placement and
+  ``dof_ref``) must match across worlds so the shared MuJoCo keyframe table
+  applies uniformly.
 
 
 .. _mujoco-collision-pipeline:

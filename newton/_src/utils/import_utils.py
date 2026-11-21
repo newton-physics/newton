@@ -226,7 +226,7 @@ def collapse_massless_fixed_root_joints(
     builder: ModelBuilder,
     joint_indices: Sequence[int],
     root_joint_indices: Sequence[int] | None = None,
-) -> None:
+) -> dict[int, int] | None:
     """Collapse massless fixed-root chains below imported free root joints.
 
     Args:
@@ -275,14 +275,14 @@ def collapse_massless_fixed_root_joints(
                 break
 
     if not fixed_joint_indices_to_collapse:
-        return
+        return None
 
     fixed_joint_indices_to_keep = {
         joint_idx
         for joint_idx in range(builder.joint_count)
         if builder.joint_type[joint_idx] == JointType.FIXED and joint_idx not in fixed_joint_indices_to_collapse
     }
-    builder.collapse_fixed_joints(joints_to_keep=fixed_joint_indices_to_keep)
+    return builder.collapse_fixed_joints(joints_to_keep=fixed_joint_indices_to_keep)["joint_remap"]
 
 
 def is_xml_content(source: str) -> bool:
