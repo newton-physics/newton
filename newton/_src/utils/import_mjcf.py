@@ -2625,8 +2625,10 @@ def parse_mjcf(
         freejoint_tags = body.findall("freejoint")
         if len(freejoint_tags) > 0:
             joint_type = JointType.FREE
-            raw_freejoint_name = freejoint_tags[0].attrib.get("name", f"{body_name}_freejoint")
-            raw_joint_names.append(raw_freejoint_name)
+            authored_freejoint_name = freejoint_tags[0].attrib.get("name")
+            raw_freejoint_name = authored_freejoint_name or f"{body_name}_freejoint"
+            if authored_freejoint_name:
+                raw_joint_names.append(authored_freejoint_name)
             freejoint_name = sanitize_name(raw_freejoint_name)
             joint_name.append(freejoint_name)
             joint_armature.append(0.0)
@@ -2654,8 +2656,10 @@ def parse_mjcf(
                 # default to hinge if not specified
                 joint_type_str = joint_attrib.get("type", "hinge")
 
-                raw_joint_name = joint_attrib.get("name") or f"{body_name}_joint_{i}"
-                raw_joint_names.append(raw_joint_name)
+                authored_joint_name = joint_attrib.get("name")
+                raw_joint_name = authored_joint_name or f"{body_name}_joint_{i}"
+                if authored_joint_name:
+                    raw_joint_names.append(authored_joint_name)
                 joint_name.append(sanitize_name(raw_joint_name))
                 joint_pos.append(parse_vec(joint_attrib, "pos", (0.0, 0.0, 0.0)) * scale)
                 joint_range = parse_vec(joint_attrib, "range", (default_joint_limit_lower, default_joint_limit_upper))
@@ -3798,15 +3802,10 @@ def parse_mjcf(
                         logger.warning("<joint> in tendon '%s' missing joint attribute, skipping", tendon_name)
                     continue
 
-                # Prefer exact authored MJCF joint names so 'a-b' and 'a_b' do not collide;
-                # fall back to sanitized lookup when needed.
+                # Match only exact authored MJCF joint names so 'a-b' and 'a_b' never collide,
+                # including when a root override (floating=True/False) removes the target joint.
                 joint_idx = raw_joint_name_to_idx.get(joint_name)
-                if joint_idx is not None:
-                    dof_idx = raw_mjcf_joint_name_to_dof.get(joint_name, -1)
-                else:
-                    joint_key = sanitize_name(joint_name)
-                    joint_idx = joint_name_to_idx.get(joint_key)
-                    dof_idx = mjcf_joint_name_to_dof.get(joint_key, -1)
+                dof_idx = raw_mjcf_joint_name_to_dof.get(joint_name, -1) if joint_idx is not None else -1
                 if joint_idx is None:
                     if verbose:
                         logger.warning(

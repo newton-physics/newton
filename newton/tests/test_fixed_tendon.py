@@ -398,8 +398,10 @@ class TestMujocoFixedTendon(unittest.TestCase):
         mixed_builder.add_articulation([rev])
         mjc_author.add_tendon_fixed(mixed_builder, [(rev, 1.5)], label="t")
         mixed_builder.end_world()
+        mixed_model = mixed_builder.finalize(device="cpu")
+        np.testing.assert_array_equal(mixed_model.mujoco.tendon_world.numpy(), [0, 1])
         mixed_solver = SolverMuJoCo(
-            mixed_builder.finalize(device="cpu"),
+            mixed_model,
             use_mujoco_cpu=False,
             separate_worlds=True,
             disable_contacts=True,
@@ -483,6 +485,72 @@ class TestMujocoFixedTendon(unittest.TestCase):
         ball_model = ball_builder.finalize(device="cpu")
         with self.assertRaisesRegex(ValueError, "convert_3d_hinge_to_ball_joints"):
             SolverMuJoCo(ball_model, use_mujoco_cpu=True, kinematic_switchable_roots=False)
+
+    def test_root_override_does_not_redirect_tendon_to_sanitized_child(self):
+        mjcf = """<mujoco>
+          <worldbody>
+            <body name="root">
+              <joint name="finger-hinge" type="hinge" axis="0 1 0"/>
+              <geom type="sphere" size="0.1"/>
+              <body name="child" pos="0 0 0.2">
+                <joint name="finger_hinge" type="hinge" axis="0 1 0"/>
+                <geom type="sphere" size="0.05"/>
+              </body>
+            </body>
+          </worldbody>
+          <tendon>
+            <fixed name="t">
+              <joint joint="finger-hinge" coef="1.0"/>
+            </fixed>
+          </tendon>
+        </mujoco>"""
+        default_builder = newton.ModelBuilder()
+        default_builder.add_mjcf(mjcf)
+        default_model = default_builder.finalize(device="cpu")
+        self.assertEqual(default_model.custom_frequency_counts.get("mujoco:tendon", 0), 1)
+        self.assertEqual(int(default_model.mujoco.tendon_joint.numpy()[0]), 0)
+
+        for floating_override in (True, False):
+            with self.subTest(floating=floating_override):
+                override_builder = newton.ModelBuilder()
+                override_builder.add_mjcf(mjcf, floating=floating_override, collapse_fixed_joints=False)
+                override_model = override_builder.finalize(device="cpu")
+                self.assertEqual(override_model.custom_frequency_counts.get("mujoco:tendon", 0), 0)
+
+    def test_mixed_fixed_spatial_tendon_slot_order_mismatch_raises(self):
+        def add_world_body(b: newton.ModelBuilder, fixed_first: bool) -> None:
+            b.begin_world()
+            link = b.add_link(mass=1.0)
+            b.add_shape_sphere(link, radius=0.1)
+            s0 = b.add_site(link, xform=wp.transform((0.0, 0.0, 0.0), wp.quat_identity()), label="s0")
+            s1 = b.add_site(link, xform=wp.transform((0.0, 0.0, 0.5), wp.quat_identity()), label="s1")
+            rev = b.add_joint_revolute(parent=-1, child=link, axis=wp.vec3(0.0, 1.0, 0.0))
+            b.add_articulation([rev])
+            if fixed_first:
+                mjc_author.add_tendon_fixed(b, [(rev, 0.5)], label="tf")
+                mjc_author.add_tendon_spatial(
+                    b, [mjc_author.TendonWrapSite(s0), mjc_author.TendonWrapSite(s1)], label="ts"
+                )
+            else:
+                mjc_author.add_tendon_spatial(
+                    b, [mjc_author.TendonWrapSite(s0), mjc_author.TendonWrapSite(s1)], label="ts"
+                )
+                mjc_author.add_tendon_fixed(b, [(rev, 0.5)], label="tf")
+            b.end_world()
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        add_world_body(builder, fixed_first=True)
+        add_world_body(builder, fixed_first=False)
+        model = builder.finalize(device="cpu")
+        with self.assertRaisesRegex(ValueError, "homogeneous worlds"):
+            SolverMuJoCo(
+                model,
+                use_mujoco_cpu=False,
+                separate_worlds=True,
+                disable_contacts=True,
+                kinematic_switchable_roots=False,
+            )
 
 
 if __name__ == "__main__":

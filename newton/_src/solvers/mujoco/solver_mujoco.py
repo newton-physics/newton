@@ -12265,46 +12265,58 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             )
             qd_start_np = model.joint_qd_start.numpy()
             dofs_per_world = model.joint_dof_count // world_count
-            per_world_tendons: list[list[tuple[tuple[int, int, float], ...]]] = [[] for _ in range(world_count)]
+            per_world_tendon_slot = [0] * world_count
+            per_world_tendons: list[list[tuple[int, tuple[tuple[int, int, float], ...]]]] = [
+                [] for _ in range(world_count)
+            ]
             for t_idx in range(len(tw_np)):
                 tw = int(tw_np[t_idx])
-                if tw < 0 or int(ttype_np[t_idx]) != 0:
+                if tw < 0:
+                    continue
+                slot = -1
+                if 0 <= tw < world_count:
+                    slot = per_world_tendon_slot[tw]
+                    per_world_tendon_slot[tw] += 1
+                if int(ttype_np[t_idx]) != 0:
                     continue
                 start = int(t_adr_np[t_idx])
                 count = int(t_num_np[t_idx])
-                if start < 0 or count <= 0 or start + count > len(t_jnt_np):
-                    continue
                 tendon_wraps: list[tuple[int, int, float]] = []
-                for j_idx in range(start, start + count):
-                    nj = int(t_jnt_np[j_idx])
-                    dof = int(t_dof_np[j_idx])
-                    if nj >= 0 and joints_per_world > 0 and nj // joints_per_world != tw:
-                        raise ValueError(
-                            f"Fixed tendon {t_idx} joint entry {j_idx} of world {tw} references joint {nj} "
-                            "of another world."
-                        )
-                    if dof >= 0 and dofs_per_world > 0 and dof // dofs_per_world != tw:
-                        raise ValueError(
-                            f"Fixed tendon {t_idx} joint entry {j_idx} of world {tw} references DoF {dof} "
-                            "of another world."
-                        )
-                    if 0 <= tw < world_count:
-                        resolved_dof = dof
-                        if (
-                            resolved_dof < 0
-                            and 0 <= nj < len(qd_start_np) - 1
-                            and int(qd_start_np[nj + 1]) - int(qd_start_np[nj]) == 1
-                        ):
-                            resolved_dof = int(qd_start_np[nj])
-                        local_j = nj % joints_per_world if (nj >= 0 and joints_per_world > 0) else nj
-                        local_d = resolved_dof % dofs_per_world if (resolved_dof >= 0 and dofs_per_world > 0) else -1
-                        tendon_wraps.append((local_j, local_d, float(t_coef_np[j_idx])))
+                if start >= 0 and count > 0 and start + count <= len(t_jnt_np):
+                    for j_idx in range(start, start + count):
+                        nj = int(t_jnt_np[j_idx])
+                        dof = int(t_dof_np[j_idx])
+                        if nj >= 0 and joints_per_world > 0 and nj // joints_per_world != tw:
+                            raise ValueError(
+                                f"Fixed tendon {t_idx} joint entry {j_idx} of world {tw} references joint {nj} "
+                                "of another world."
+                            )
+                        if dof >= 0 and dofs_per_world > 0 and dof // dofs_per_world != tw:
+                            raise ValueError(
+                                f"Fixed tendon {t_idx} joint entry {j_idx} of world {tw} references DoF {dof} "
+                                "of another world."
+                            )
+                        if 0 <= tw < world_count:
+                            resolved_dof = dof
+                            if (
+                                resolved_dof < 0
+                                and 0 <= nj < len(qd_start_np) - 1
+                                and int(qd_start_np[nj + 1]) - int(qd_start_np[nj]) == 1
+                            ):
+                                resolved_dof = int(qd_start_np[nj])
+                            local_j = nj % joints_per_world if (nj >= 0 and joints_per_world > 0) else nj
+                            local_d = (
+                                resolved_dof % dofs_per_world if (resolved_dof >= 0 and dofs_per_world > 0) else -1
+                            )
+                            tendon_wraps.append((local_j, local_d, float(t_coef_np[j_idx])))
                 if 0 <= tw < world_count:
-                    per_world_tendons[tw].append(tuple(tendon_wraps))
+                    per_world_tendons[tw].append((slot, tuple(tendon_wraps)))
             if any(per_world_tendons):
                 for w in range(1, world_count):
-                    if per_world_tendons[w] != per_world_tendons[0]:
+                    if per_world_tendons[w] != per_world_tendons[0] or (
+                        per_world_tendon_slot[w] != per_world_tendon_slot[0]
+                    ):
                         raise ValueError(
                             "SolverMuJoCo requires homogeneous worlds. "
-                            f"Fixed tendon joint/DoF targets or coefficients in world {w} differ from world 0."
+                            f"Fixed tendon layout, joint/DoF targets, or coefficients in world {w} differ from world 0."
                         )
