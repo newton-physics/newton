@@ -6,8 +6,10 @@
 The shape instances are those of :attr:`Model.optix_shapes`. Every world's particles share one
 built-in sphere structure and every world's deformable triangles share one triangle structure,
 with their points moved into their world's cell, so each adds a single instance and the camera
-traces everything in one traversal. Triangles are rebuilt as clusters each frame when the installed
-``warp-optix`` supports them, and refit otherwise.
+traces everything in one traversal for the nearest surface. Triangles are rebuilt as clusters each
+frame on devices that support them, and refit otherwise. Gaussian splats, behind their own
+visibility bit, are gathered by further traversals up to that surface and blended as the Warp
+backend blends them.
 """
 
 from __future__ import annotations
@@ -68,9 +70,7 @@ SPLAT_TRACE_WORDS = wp.types.type_size_in_bytes(SplatTrace) // 4
 
 
 def clusters_supported(device: wp.Device) -> bool:
-    """Whether the installed ``warp-optix`` and the device support triangle clusters."""
-    if not hasattr(wo, "TriangleClusterAccel"):
-        return False
+    """Whether the device supports triangle clusters."""
     try:
         return bool(wo.cluster_capabilities(device)["flags"])
     except Exception:

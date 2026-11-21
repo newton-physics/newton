@@ -168,8 +168,8 @@ class SensorCamera:
                 splats, such as :meth:`~newton.Gaussian.bvh_refit`. OptiX does not render shapes that
                 have left the region set when the OptiX shapes were built (see
                 :meth:`~newton.Model.bvh_build_shapes`); particles and deformable surfaces must stay
-                in it too. With ``warp-optix`` cluster support, deformable surfaces are rebuilt as
-                triangle clusters each frame, and refit otherwise.
+                in it too. On devices with cluster support, deformable surfaces are rebuilt as triangle
+                clusters each frame, and refit otherwise.
             deformable_surface_mode: Which deformable surfaces the sensor uploads
                 and renders: :attr:`DeformableSurfaceMode.BOTH` renders the
                 simulation triangles and the visual meshes, as the viewers do;

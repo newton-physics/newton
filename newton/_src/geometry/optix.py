@@ -208,6 +208,8 @@ def check_supported(model: Model) -> None:
     """Raise :class:`UnsupportedError` if OptiX cannot trace the model's shapes on its device."""
     if not model.device.is_cuda:
         raise UnsupportedError("The OptiX backend requires a CUDA device")
+    if not hasattr(wo, "spheres"):
+        raise UnsupportedError("The OptiX backend requires warp-optix 0.3.1 or newer")
     try:
         wo.get_context(model.device)
     except Exception as exc:
