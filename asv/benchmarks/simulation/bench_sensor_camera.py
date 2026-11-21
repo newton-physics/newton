@@ -13,6 +13,7 @@ renderer performance:
 - ``shapes_256``: a grid of 256 primitive shapes.
 - ``cloth``: a 32x32-vertex cloth (1,922 triangles) draped over a sphere.
 - ``particles``: a cloud of 1,000 particles in an open box.
+- ``gaussians``: two overlapping Gaussian splat assets (20,000 splats each) beside a box.
 
 The deformable scenes also time ``update_render``: each iteration moves every particle, refits the
 shapes and the camera's scene, and renders, since deformables pay for an update every frame.
@@ -264,6 +265,44 @@ def _build_particles() -> newton.ModelBuilder:
     return builder
 
 
+_GAUSSIAN_SPLATS = 20000
+
+
+def _splat_shell(seed: int, radii: tuple[float, float, float], color: tuple[float, float, float]) -> newton.Gaussian:
+    """Splats scattered over an ellipsoid shell, like a scanned object's surface."""
+    rng = np.random.default_rng(seed)
+    directions = rng.normal(size=(_GAUSSIAN_SPLATS, 3))
+    directions /= np.linalg.norm(directions, axis=1, keepdims=True)
+    positions = directions * np.asarray(radii) * rng.uniform(0.97, 1.03, (_GAUSSIAN_SPLATS, 1))
+    rotations = rng.normal(size=(_GAUSSIAN_SPLATS, 4))
+    rotations /= np.linalg.norm(rotations, axis=1, keepdims=True)
+    # Degree-0 coefficients giving ``color`` with some variation.
+    dc = (np.asarray(color) + rng.uniform(-0.1, 0.1, (_GAUSSIAN_SPLATS, 3)) - 0.5) / 0.28209479177387814
+    return newton.Gaussian(
+        positions=positions.astype(np.float32),
+        rotations=rotations.astype(np.float32),
+        scales=rng.uniform(0.008, 0.025, (_GAUSSIAN_SPLATS, 3)).astype(np.float32),
+        opacities=rng.uniform(0.3, 0.9, _GAUSSIAN_SPLATS).astype(np.float32),
+        sh_coeffs=dc.astype(np.float32),
+    )
+
+
+def _build_gaussians() -> newton.ModelBuilder:
+    """Two overlapping Gaussian splat objects beside a box."""
+    builder = newton.ModelBuilder()
+    for seed, position, radii, color in (
+        (1, (0.0, 0.0, 0.4), (0.35, 0.35, 0.35), (0.85, 0.55, 0.3)),
+        (2, (0.25, -0.35, 0.3), (0.3, 0.2, 0.25), (0.3, 0.6, 0.85)),
+    ):
+        builder.add_shape_gaussian(
+            body=-1,
+            xform=wp.transform(wp.vec3(*position), wp.quat_identity()),
+            gaussian=_splat_shell(seed, radii, color),
+        )
+    builder.add_shape_box(-1, xform=wp.transform(wp.vec3(-0.6, 0.5, 0.25), wp.quat_identity()), hx=0.2, hy=0.2, hz=0.25)
+    return builder
+
+
 @wp.kernel(enable_backward=False)
 def _move_particles(rest: wp.array[wp.vec3f], frame: wp.int32, amplitude: wp.float32, q: wp.array[wp.vec3f]):
     """Procedural motion standing in for a solver: a traveling wave over every particle."""
@@ -310,6 +349,7 @@ SCENES: dict[str, ScenePreset] = {
     "particles": ScenePreset(
         _build_particles, camera_eye=(1.8, 1.4, 1.3), camera_target=(0.0, 0.0, 0.4), motion_amplitude=0.03
     ),
+    "gaussians": ScenePreset(_build_gaussians, camera_eye=(2.0, 1.6, 1.2), camera_target=(0.0, 0.0, 0.35)),
 }
 
 
@@ -500,6 +540,11 @@ class FastSensorCameraPixel(_SceneBenchmark):
 class SensorCameraShapes256(_SceneBenchmark):
     scene = "shapes_256"
     params = ([64], [4096], [50])
+
+
+class SensorCameraGaussians(_SceneBenchmark):
+    scene = "gaussians"
+    params = ([64], [1024], [50])
 
 
 class _DeformableSceneBenchmark(_SceneBenchmark):
