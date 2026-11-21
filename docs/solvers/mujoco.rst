@@ -954,32 +954,6 @@ integrators. Newton's
 triangle damping, drag, and lift, tetrahedron damping, and dihedral bending
 edges are not converted.
 
-Keyframes
----------
-
-MJCF ``<keyframe><key .../></keyframe>`` entries are imported into the
-``mujoco:keyframe`` and ``mujoco:keyframe_value`` custom frequencies on
-``model.mujoco``:
-
-* ``keyframe_label`` (``list[str]``), ``keyframe_world`` (``int32``), and
-  ``keyframe_time`` (``float32``) store each keyframe's name, owning world, and
-  simulation time.
-* ``keyframe_q_adr`` / ``keyframe_q_num``, ``keyframe_qd_adr`` / ``keyframe_qd_num``,
-  ``keyframe_act_adr`` / ``keyframe_act_num``, and ``keyframe_ctrl_adr`` /
-  ``keyframe_ctrl_num`` index contiguous slices of ``keyframe_value``
-  (``float32``). ``keyframe_q_offset`` and ``keyframe_qd_offset`` record the
-  within-world coordinate and DOF start offsets of the imported mechanism.
-* Joint positions and velocities are stored in Newton's ``joint_q`` and
-  ``joint_qd`` conventions (including ``xyzw`` quaternions, parent-frame COM
-  twists on free joints, linear-before-angular combined joints, ``dof_ref``
-  subtraction, and ``scale``). ``act`` and ``ctrl`` slices follow the imported
-  ``mujoco:actuator`` ordering. USD time-sampled animations are not imported
-  into ``mujoco:keyframe``.
-* :class:`~newton.solvers.SolverMuJoCo` exports the template world's keyframes
-  back onto ``mj_model`` (``nkey``, ``key_time``, ``key_qpos``, ``key_qvel``,
-  ``key_act``, ``key_ctrl``), and requires identical keyframes across worlds
-  when ``separate_worlds=True``.
-
 Each flex particle adds three DOFs, and MuJoCo's default ``"newton"`` solver
 factorizes a dense matrix over all DOFs of a world, so its cost grows quickly
 with the particle count. Pass ``solver="cg"`` for flexes with more than a few
@@ -993,6 +967,40 @@ dozen particles, as in the ``mujoco_flex`` example
    which brings flex performance improvements and fixes flexes resting about
    ``gap`` below planes. Until then, set the ``gap`` of planes that support
    flexes to zero.
+
+Keyframes
+---------
+
+MJCF ``<keyframe><key .../></keyframe>`` entries are imported into the
+``mujoco:keyframe`` and ``mujoco:keyframe_value`` custom frequencies on
+``model.mujoco``:
+
+* ``keyframe_label`` (``list[str]``), ``keyframe_world`` (``int32``), and
+  ``keyframe_time`` (``float32``) store each keyframe's name, owning world, and
+  simulation time.
+* ``keyframe_q_adr`` / ``keyframe_q_num``, ``keyframe_qd_adr`` / ``keyframe_qd_num``,
+  ``keyframe_act_adr`` / ``keyframe_act_num``, and ``keyframe_ctrl_adr`` /
+  ``keyframe_ctrl_num`` index contiguous slices of ``keyframe_value``
+  (``float32``). ``keyframe_q_start``, ``keyframe_qd_start``, and
+  ``keyframe_actuator_start`` / ``keyframe_actuator_num`` record the owning
+  coordinate, DOF, and ``mujoco:actuator`` spans and are automatically rebased
+  during :meth:`~newton.ModelBuilder.add_builder` and
+  :meth:`~newton.ModelBuilder.replicate`. ``keyframe_q_init_adr`` records the
+  import-time initial ``joint_q`` slice so placed free-root copies transform
+  exported keyframe poses and twists consistently.
+* Joint positions and velocities are stored in Newton's ``joint_q`` and
+  ``joint_qd`` conventions (including ``xyzw`` quaternions, parent-frame COM
+  twists on free joints, linear-before-angular combined joints, ``dof_ref``
+  subtraction, and ``scale``). Short MJCF ``qpos``, ``qvel``, ``act``, and
+  ``ctrl`` prefixes fill omitted trailing entries from ``qpos0`` or zeros,
+  matching MuJoCo.
+* **USD disposition (not applicable):** USD scenes represent saved trajectories
+  with native time-sampled attributes rather than MuJoCo ``<keyframe>`` tables,
+  so ``mujoco:keyframe`` has no USD schema or importer mapping.
+* :class:`~newton.solvers.SolverMuJoCo` exports the template world's keyframes
+  back onto ``mj_model`` (``nkey``, ``key_time``, ``key_qpos``, ``key_qvel``,
+  ``key_act``, ``key_ctrl``), and requires identical keyframes across worlds
+  when ``separate_worlds=True``.
 
 
 .. _mujoco-collision-pipeline:
@@ -1483,8 +1491,10 @@ imported when loading an MJCF or USD asset into Newton, and that
 - **Cameras and lights** declared in MJCF/USD. Newton uses its own viewer
   and lighting pipeline; camera/light primitives in the source asset are
   ignored.
-- **Keyframes** (``<keyframe>``) — MuJoCo's saved-state / reset mechanism
-  is not imported.
+- **Keyframes** (``<keyframe>``) — MJCF ``time``, ``qpos``, ``qvel``, ``act``,
+  and ``ctrl`` keyframe attributes are imported into ``mujoco:keyframe`` and
+  exported onto ``mj_model`` (see `Keyframes`_ above); mocap body keyframe poses
+  (``mpos``, ``mquat``) and USD time-sampled animations are not imported.
 - **Composite and flex** (``<composite>``, ``<flex>``) — MuJoCo's built-in
   deformables are not imported. Newton particles, springs, triangles, and
   tetrahedra can be converted to flexes instead (see `Particles and flexes`_).

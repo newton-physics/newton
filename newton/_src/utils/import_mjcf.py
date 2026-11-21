@@ -2572,6 +2572,7 @@ def parse_mjcf(
             defaults = incoming_defaults
         else:
             if is_ignored_class(body_class):
+                _record_ignored_subtree_keyframe_dims(body, incoming_defaults, body_class)
                 return
             defaults = resolve_class_defaults(body_class, incoming_defaults)
         body_attrib = body.attrib
@@ -3015,20 +3016,32 @@ def parse_mjcf(
         authored_overridden = (
             is_mjcf_root and (has_override_params or has_hierarchical_composition)
         ) or is_free_joint_with_override
-        created_jnt = joint_indices[-1]
-        created_jnt_label = builder.joint_label[created_jnt]
+        created_jnt: int | None = joint_indices[-1]
+        authored_world_xform = parent_xform * local_xform
         if joint_type == JointType.FREE:
             authored_kind = "free"
             nq_body, nv_body = 7, 6
             scalar_specs = []
+            mjcf_wb_tf = wp.transform_inverse(xform) * authored_world_xform
+            inv_sc = (1.0 / scale) if scale != 0.0 else 1.0
+            body_qpos0 = [
+                float(mjcf_wb_tf.p[0] * inv_sc),
+                float(mjcf_wb_tf.p[1] * inv_sc),
+                float(mjcf_wb_tf.p[2] * inv_sc),
+                float(mjcf_wb_tf.q[3]),
+                float(mjcf_wb_tf.q[0]),
+                float(mjcf_wb_tf.q[1]),
+                float(mjcf_wb_tf.q[2]),
+            ]
             if authored_overridden and builder.joint_type[created_jnt] != JointType.FREE:
-                created_jnt_label = None
+                created_jnt = None
         elif joint_type == JointType.BALL and not angular_axes:
             authored_kind = "ball"
             nq_body, nv_body = 4, 3
             scalar_specs = []
+            body_qpos0 = [1.0, 0.0, 0.0, 0.0]
             if authored_overridden:
-                created_jnt_label = None
+                created_jnt = None
         elif mjcf_scalar_key_raw:
             authored_kind = "scalar"
             nq_body = len(mjcf_scalar_key_raw)
@@ -3043,21 +3056,27 @@ def parse_mjcf(
                 )
                 for is_lin, slot, ax_vec, d_attr in mjcf_scalar_key_raw
             ]
+            body_qpos0 = [
+                (ref_v / scale if (is_lin and scale != 0.0) else ref_v) for is_lin, _slot, _ax, ref_v in scalar_specs
+            ]
             if authored_overridden:
-                created_jnt_label = None
+                created_jnt = None
         else:
             authored_kind = "fixed"
             nq_body, nv_body = 0, 0
             scalar_specs = []
-            created_jnt_label = None
-        if created_jnt_label is not None:
-            imported_nonfixed_joint_labels.append(created_jnt_label)
+            body_qpos0 = []
+            created_jnt = None
         mjcf_body_keyframe_info[id(body)] = {
             "kind": authored_kind,
             "nq": nq_body,
             "nv": nv_body,
-            "joint_label": created_jnt_label,
+            "pre_joint_idx": created_jnt,
             "scalar_specs": scalar_specs,
+            "qpos0": body_qpos0,
+            "parent_xform": parent_xform,
+            "authored_world_xform": authored_world_xform,
+            "world_xform": world_xform,
         }
 
         # -----------------
@@ -3577,10 +3596,45 @@ def parse_mjcf(
     raw_site_name_to_idx: dict[str, int] = {}
     raw_geom_name_to_idx: dict[str, int] = {}
     joint_name_to_idx: dict[str, int] = {}
+    start_joint_count = len(builder.joint_type)
     mjcf_body_keyframe_info: dict[int, dict[str, Any]] = {}
-    imported_nonfixed_joint_labels: list[str] = []
     mjcf_actuator_key_specs: list[list[Any]] = []
     imported_actuator_counter = [0]
+
+    def _record_ignored_subtree_keyframe_dims(elem: Any, incoming_defs: dict[str, Any], cur_cclass: str | None) -> None:
+        elem_class = elem.get("childclass") or cur_cclass
+        elem_defs = resolve_class_defaults(elem_class, incoming_defs) if elem_class else incoming_defs
+        if elem.tag == "body":
+            if elem.findall("freejoint"):
+                nq_b, nv_b = 7, 6
+            else:
+                nq_b, nv_b = 0, 0
+                for j_el in elem.findall("joint"):
+                    j_at = resolve_element_attrib(j_el, "joint", elem_defs)
+                    jt_s = j_at.get("type", "hinge")
+                    if jt_s == "free":
+                        nq_b, nv_b = 7, 6
+                        break
+                    if jt_s == "fixed":
+                        nq_b, nv_b = 0, 0
+                        break
+                    if jt_s == "ball":
+                        nq_b, nv_b = 4, 3
+                        break
+                    if jt_s in ("hinge", "slide"):
+                        nq_b += 1
+                        nv_b += 1
+            mjcf_body_keyframe_info[id(elem)] = {
+                "kind": "ignored",
+                "nq": nq_b,
+                "nv": nv_b,
+                "pre_joint_idx": None,
+                "scalar_specs": [],
+                "qpos0": [0.0] * nq_b,
+            }
+        for child_el in elem:
+            if child_el.tag in ("body", "frame"):
+                _record_ignored_subtree_keyframe_dims(child_el, elem_defs, elem_class)
 
     # Extract articulation label early for hierarchical label construction
     articulation_label = root.attrib.get("model")
@@ -4043,20 +4097,22 @@ def parse_mjcf(
             merged_attrib = resolve_element_attrib(actuator_elem, actuator_type)
             if actuator_type == "dcmotor":
                 merged_attrib.update(dcmotor_parameters[actuator_elem])
-            skip_actdim = int(merged_attrib.get("actdim", -1))
-            if skip_actdim < 0:
+            src_actdim = int(merged_attrib.get("actdim", -1))
+            if src_actdim < 0:
                 dyntype_raw = merged_attrib.get("dyntype", "none").lower()
                 shortcut_dyn = int(_ACTUATOR_SHORTCUT_DEFAULTS.get(actuator_type, {}).get("mujoco:actuator_dyntype", 0))
-                skip_actdim = (
+                pos_filter = actuator_type == "position" and parse_float(merged_attrib, "timeconst", 0.0) > 0.0
+                src_actdim = (
                     1
                     if (
                         shortcut_dyn != 0
+                        or pos_filter
                         or actuator_type in ("pid", "cylinder")
                         or dyntype_raw not in ("", "none", "0")
                     )
                     else 0
                 )
-            mjcf_actuator_key_specs.append([None, 1.0, skip_actdim, 1.0])
+            mjcf_actuator_key_specs.append([None, 1.0, src_actdim, 0, 1.0])
 
             joint_name = merged_attrib.get("joint")
             joint_in_parent_name = merged_attrib.get("jointinparent")
@@ -4409,6 +4465,7 @@ def parse_mjcf(
             mjcf_actuator_key_specs[-1] = [
                 imported_actuator_counter[0],
                 float(c_scale),
+                int(mjcf_actuator_key_specs[-1][2]),
                 act_dim_val,
                 float(a_scale),
             ]
@@ -4587,10 +4644,17 @@ def parse_mjcf(
                 articulation_label=label,
             )
 
+    pre_collapse_nonfixed = [
+        j for j in range(start_joint_count, len(builder.joint_type)) if builder.joint_type[j] != JointType.FIXED
+    ]
     if collapse_fixed_joints:
         builder.collapse_fixed_joints()
     elif collapse_massless_fixed_root:
         collapse_massless_fixed_root_joints(builder, joint_indices)
+    post_collapse_nonfixed = [
+        j for j in range(start_joint_count, len(builder.joint_type)) if builder.joint_type[j] != JointType.FIXED
+    ]
+    pre_to_post_joint = dict(zip(pre_collapse_nonfixed, post_collapse_nonfixed, strict=True))
 
     key_elems = [elem for sec in root.findall("keyframe") for elem in sec.findall("key")]
     if key_elems and "mujoco:keyframe_world" in builder.custom_attributes:
@@ -4609,12 +4673,13 @@ def parse_mjcf(
         for wb in root.findall("worldbody"):
             _collect_xml_bodies(wb)
 
+        mjcf_qpos0: list[float] = []
+        for info in ordered_body_infos:
+            mjcf_qpos0.extend(info["qpos0"])
         mjcf_nq = sum(info["nq"] for info in ordered_body_infos)
         mjcf_nv = sum(info["nv"] for info in ordered_body_infos)
         mjcf_nu = len(mjcf_actuator_key_specs)
         mjcf_na = sum(int(spec[2]) for spec in mjcf_actuator_key_specs)
-
-        label_to_joint_idx = {builder.joint_label[j]: j for j in range(len(builder.joint_type))}
 
         def _joint_q_dim(j_idx: int) -> int:
             jt = builder.joint_type[j_idx]
@@ -4630,9 +4695,10 @@ def parse_mjcf(
             return int(builder.joint_dof_dim[j_idx][0] + builder.joint_dof_dim[j_idx][1])
 
         surviving_imported_joints = sorted(
-            label_to_joint_idx[lbl] for lbl in imported_nonfixed_joint_labels if lbl in label_to_joint_idx
+            pre_to_post_joint[info["pre_joint_idx"]]
+            for info in ordered_body_infos
+            if info["pre_joint_idx"] is not None and info["pre_joint_idx"] in pre_to_post_joint
         )
-        cur_world = builder.current_world
         if surviving_imported_joints:
             first_imp_j = surviving_imported_joints[0]
             last_imp_j = surviving_imported_joints[-1]
@@ -4640,16 +4706,19 @@ def parse_mjcf(
             import_abs_q_end = int(builder.joint_q_start[last_imp_j]) + _joint_q_dim(last_imp_j)
             import_abs_qd_start = int(builder.joint_qd_start[first_imp_j])
             import_abs_qd_end = int(builder.joint_qd_start[last_imp_j]) + _joint_qd_dim(last_imp_j)
-            world_q_offset = sum(_joint_q_dim(j) for j in range(first_imp_j) if builder.joint_world[j] == cur_world)
-            world_qd_offset = sum(_joint_qd_dim(j) for j in range(first_imp_j) if builder.joint_world[j] == cur_world)
+            kf_q_start_val = import_abs_q_start
+            kf_qd_start_val = import_abs_qd_start
         else:
             import_abs_q_start = import_abs_q_end = 0
             import_abs_qd_start = import_abs_qd_end = 0
-            world_q_offset = world_qd_offset = 0
+            kf_q_start_val = -1
+            kf_qd_start_val = -1
 
         import_qd_len = import_abs_qd_end - import_abs_qd_start
         imported_act_total = imported_actuator_counter[0]
-        imported_na_total = sum(int(spec[2]) for spec in mjcf_actuator_key_specs if spec[0] is not None)
+        total_act_after = builder._custom_frequency_counts.get("mujoco:actuator", 0)
+        kf_act_start_val = (total_act_after - imported_act_total) if imported_act_total > 0 else -1
+        imported_na_total = sum(int(spec[3]) for spec in mjcf_actuator_key_specs if spec[0] is not None)
         val_attr_list = builder.custom_attributes["mujoco:keyframe_value"].values
 
         def _append_value_slice(arr: list[float]) -> tuple[int, int]:
@@ -4660,10 +4729,13 @@ def parse_mjcf(
                 builder.add_custom_values(**{"mujoco:keyframe_value": float(v)})
             return adr, len(arr)
 
+        q_init_snapshot = [float(v) for v in builder.joint_q[import_abs_q_start:import_abs_q_end]]
+        q_init_slice_adr, _ = _append_value_slice(q_init_snapshot)
+
         for key_elem in key_elems:
             key_name = key_elem.attrib.get("name", "")
             key_time = parse_float(key_elem.attrib, "time", 0.0)
-            key_q = [float(v) for v in builder.joint_q[import_abs_q_start:import_abs_q_end]]
+            key_q = list(q_init_snapshot)
             key_qd = [0.0] * import_qd_len
 
             has_qpos = "qpos" in key_elem.attrib
@@ -4672,12 +4744,20 @@ def parse_mjcf(
             raw_qvel: list[float] | None = None
             if has_qpos:
                 raw_qpos = [float(x) for x in key_elem.attrib["qpos"].split()]
-                if len(raw_qpos) != mjcf_nq:
-                    raise ValueError(f"MJCF keyframe '{key_name}' qpos has {len(raw_qpos)} values, expected {mjcf_nq}.")
+                if len(raw_qpos) > mjcf_nq:
+                    raise ValueError(
+                        f"MJCF keyframe '{key_name}' qpos has {len(raw_qpos)} values, expected at most {mjcf_nq}."
+                    )
+                if len(raw_qpos) < mjcf_nq:
+                    raw_qpos.extend(mjcf_qpos0[len(raw_qpos) :])
             if has_qvel:
                 raw_qvel = [float(x) for x in key_elem.attrib["qvel"].split()]
-                if len(raw_qvel) != mjcf_nv:
-                    raise ValueError(f"MJCF keyframe '{key_name}' qvel has {len(raw_qvel)} values, expected {mjcf_nv}.")
+                if len(raw_qvel) > mjcf_nv:
+                    raise ValueError(
+                        f"MJCF keyframe '{key_name}' qvel has {len(raw_qvel)} values, expected at most {mjcf_nv}."
+                    )
+                if len(raw_qvel) < mjcf_nv:
+                    raw_qvel.extend([0.0] * (mjcf_nv - len(raw_qvel)))
 
             if has_qpos or has_qvel:
                 qp_cur = 0
@@ -4685,13 +4765,14 @@ def parse_mjcf(
                 for b_info in ordered_body_infos:
                     b_nq = b_info["nq"]
                     b_nv = b_info["nv"]
-                    j_lbl = b_info["joint_label"]
-                    if j_lbl is None or j_lbl not in label_to_joint_idx:
+                    pre_j = b_info["pre_joint_idx"]
+                    if pre_j is None or pre_j not in pre_to_post_joint:
                         qp_cur += b_nq
                         qv_cur += b_nv
                         continue
-                    j_idx = label_to_joint_idx[j_lbl]
-                    wq = int(builder.joint_q_start[j_idx]) - import_abs_q_start
+                    j_idx = pre_to_post_joint[pre_j]
+                    abs_jq = int(builder.joint_q_start[j_idx])
+                    wq = abs_jq - import_abs_q_start
                     wqd = int(builder.joint_qd_start[j_idx]) - import_abs_qd_start
                     b_kind = b_info["kind"]
 
@@ -4702,6 +4783,7 @@ def parse_mjcf(
                         q_c = X_c.q
                         child_link = builder.joint_child[j_idx]
                         com = builder.body_com[child_link]
+                        ovr_delta = b_info["world_xform"] * wp.transform_inverse(b_info["authored_world_xform"])
                         if raw_qpos is not None:
                             px, py, pz, qw, qx, qy, qz = raw_qpos[qp_cur : qp_cur + 7]
                             q_norm = float(np.linalg.norm([qx, qy, qz, qw]))
@@ -4710,7 +4792,8 @@ def parse_mjcf(
                                 if q_norm > 0.0
                                 else wp.quat_identity()
                             )
-                            wf = xform * wp.transform(wp.vec3(px * scale, py * scale, pz * scale), mj_rot)
+                            wf_authored = xform * wp.transform(wp.vec3(px * scale, py * scale, pz * scale), mj_rot)
+                            wf = ovr_delta * wf_authored
                             world_pos = wf.p
                             world_rot = wf.q
                             j_rot = wp.quat_inverse(q_p) * world_rot * q_c
@@ -4730,7 +4813,9 @@ def parse_mjcf(
                             world_rot = q_p * j_rot * wp.quat_inverse(q_c)
                         if raw_qvel is not None:
                             vx, vy, vz, wx, wy, wz = raw_qvel[qv_cur : qv_cur + 6]
-                            v_orig_world = wp.quat_rotate(xform.q, wp.vec3(vx * scale, vy * scale, vz * scale))
+                            v_orig_world = wp.quat_rotate(
+                                ovr_delta.q * xform.q, wp.vec3(vx * scale, vy * scale, vz * scale)
+                            )
                             w_world = wp.quat_rotate(world_rot, wp.vec3(wx, wy, wz))
                             com_world = wp.quat_rotate(world_rot, com)
                             v_com_world = v_orig_world + wp.cross(w_world, com_world)
@@ -4754,15 +4839,15 @@ def parse_mjcf(
                                 if q_norm > 0.0
                                 else wp.quat_identity()
                             )
-                            mj_to_anc = wp.quat_inverse(q_cj) * q_mj
-                            r_q = mj_to_anc * q_cj
+                            mj_to_anchor = wp.quat_inverse(q_cj) * q_mj
+                            r_q = mj_to_anchor * q_cj
                             key_q[wq : wq + 4] = [float(r_q[0]), float(r_q[1]), float(r_q[2]), float(r_q[3])]
                         else:
                             r_q = wp.quat(key_q[wq], key_q[wq + 1], key_q[wq + 2], key_q[wq + 3])
-                            mj_to_anc = r_q * wp.quat_inverse(q_cj)
+                            mj_to_anchor = r_q * wp.quat_inverse(q_cj)
                         if raw_qvel is not None:
                             wx, wy, wz = raw_qvel[qv_cur : qv_cur + 3]
-                            w_n = wp.quat_rotate(mj_to_anc, wp.vec3(wx, wy, wz))
+                            w_n = wp.quat_rotate(mj_to_anchor, wp.vec3(wx, wy, wz))
                             key_qd[wqd : wqd + 3] = [float(w_n[0]), float(w_n[1]), float(w_n[2])]
                     elif b_kind == "scalar":
                         if builder.joint_type[j_idx] == JointType.BALL:
@@ -4798,25 +4883,33 @@ def parse_mjcf(
             key_ctrl = [0.0] * imported_act_total
             if "ctrl" in key_elem.attrib:
                 raw_ctrl = [float(x) for x in key_elem.attrib["ctrl"].split()]
-                if len(raw_ctrl) != mjcf_nu:
-                    raise ValueError(f"MJCF keyframe '{key_name}' ctrl has {len(raw_ctrl)} values, expected {mjcf_nu}.")
-                for m_idx, (imp_ord, c_sc, _a_dim, _a_sc) in enumerate(mjcf_actuator_key_specs):
+                if len(raw_ctrl) > mjcf_nu:
+                    raise ValueError(
+                        f"MJCF keyframe '{key_name}' ctrl has {len(raw_ctrl)} values, expected at most {mjcf_nu}."
+                    )
+                if len(raw_ctrl) < mjcf_nu:
+                    raw_ctrl.extend([0.0] * (mjcf_nu - len(raw_ctrl)))
+                for m_idx, (imp_ord, c_sc, _src_adim, _imp_adim, _a_sc) in enumerate(mjcf_actuator_key_specs):
                     if imp_ord is not None:
                         key_ctrl[int(imp_ord)] = float(raw_ctrl[m_idx] * c_sc)
 
             key_act = [0.0] * imported_na_total
             if "act" in key_elem.attrib:
                 raw_act = [float(x) for x in key_elem.attrib["act"].split()]
-                if len(raw_act) != mjcf_na:
-                    raise ValueError(f"MJCF keyframe '{key_name}' act has {len(raw_act)} values, expected {mjcf_na}.")
+                if len(raw_act) > mjcf_na:
+                    raise ValueError(
+                        f"MJCF keyframe '{key_name}' act has {len(raw_act)} values, expected at most {mjcf_na}."
+                    )
+                if len(raw_act) < mjcf_na:
+                    raw_act.extend([0.0] * (mjcf_na - len(raw_act)))
                 raw_a_cur = 0
                 imp_a_cur = 0
-                for _imp_ord, _c_sc, a_dim, a_sc in mjcf_actuator_key_specs:
-                    if _imp_ord is not None:
-                        for d in range(a_dim):
+                for imp_ord, _c_sc, src_adim, imp_adim, a_sc in mjcf_actuator_key_specs:
+                    if imp_ord is not None and imp_adim > 0:
+                        for d in range(min(src_adim, imp_adim)):
                             key_act[imp_a_cur + d] = float(raw_act[raw_a_cur + d] * a_sc)
-                        imp_a_cur += a_dim
-                    raw_a_cur += a_dim
+                        imp_a_cur += imp_adim
+                    raw_a_cur += src_adim
 
             q_slice_adr, q_slice_num = _append_value_slice(key_q)
             qd_slice_adr, qd_slice_num = _append_value_slice(key_qd)
@@ -4836,7 +4929,10 @@ def parse_mjcf(
                     "mujoco:keyframe_act_num": act_slice_num,
                     "mujoco:keyframe_ctrl_adr": ctrl_slice_adr,
                     "mujoco:keyframe_ctrl_num": ctrl_slice_num,
-                    "mujoco:keyframe_q_offset": world_q_offset,
-                    "mujoco:keyframe_qd_offset": world_qd_offset,
+                    "mujoco:keyframe_q_init_adr": q_init_slice_adr,
+                    "mujoco:keyframe_q_start": kf_q_start_val,
+                    "mujoco:keyframe_qd_start": kf_qd_start_val,
+                    "mujoco:keyframe_actuator_start": kf_act_start_val,
+                    "mujoco:keyframe_actuator_num": imported_act_total,
                 }
             )
