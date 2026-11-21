@@ -15357,25 +15357,39 @@ def _get_pgs_solve_mf_gs_kernel(
         "                if ({d} < " + str(D) + ") { pre_dJ_{k} = J_world.data[next_jy_base + {d}]; "
         "pre_dY_{k} = Y_world.data[next_jy_base + {d}]; }"
     )
-    dense_dot = lanes("            if ({d} < " + str(D) + ") my_sum += cur_dJ_{k} * s_v[{d}];")
-    # A friction pair's sibling J v and cross term J_i Y_sib, with row i's J from the prefetch registers.
+    dense_velocity = "s_v[{d}]"
+    dense_v_flush = ""
+    if friction_mode not in ("bisection", "bisection_desaxce"):
+        dense_velocity = "dense_v_{k}"
+        dense_pipe_decl += "\n" + lanes("        float dense_v_{k} = 0.0f;")
+        dense_prefetch_init += "\n" + lanes("            if ({d} < " + str(D) + ") dense_v_{k} = s_v[{d}];")
+        dense_v_flush = (
+            "        if (dense_main_end >= 1) {\n"
+            + lanes("            if ({d} < " + str(D) + ") s_v[{d}] = dense_v_{k};")
+            + "\n            __syncwarp();\n        }\n"
+        )
+    dense_dot = lanes("            if ({d} < " + str(D) + ") my_sum += cur_dJ_{k} * " + dense_velocity + ";")
     dense_sib_dot = lanes(
-        "                        if ({d} < "
-        + str(D)
-        + ") sibling_residual += J_world.data[sib_row_base + {d}] * s_v[{d}];"
+        "                        if ({d} < " + str(D) + ") sibling_residual += pre_dJ_{k} * " + dense_velocity + ";"
     )
     prologue_cross = lanes(
-        "            if ({d} < "
+        "                if ({d} < "
         + str(D)
         + ") cross += J_world.data[row_base + {d}] * Y_world.data[sib_row_base + {d}];"
     )
     dense_pair_dot = lanes(
         "                    if ({d} < "
         + str(D)
-        + ") { sibling_residual += J_world.data[sib_row_base + {d}] * s_v[{d}]; "
-        "cross += cur_dJ_{k} * Y_world.data[sib_row_base + {d}]; }"
+        + ") { sibling_residual += pre_dJ_{k} * "
+        + dense_velocity
+        + "; cross += cur_dJ_{k} * pre_dY_{k}; }"
     )
-    dense_v_update = lanes("                if ({d} < " + str(D) + ") s_v[{d}] += cur_dY_{k} * delta_impulse;")
+    dense_sib_update = lanes(
+        "                        if ({d} < " + str(D) + ") " + dense_velocity + " += pre_dY_{k} * sib_delta;"
+    )
+    dense_v_update = lanes(
+        "                if ({d} < " + str(D) + ") " + dense_velocity + " += cur_dY_{k} * delta_impulse;"
+    )
 
     dense_velocity_limit_pass = (
         f"""
@@ -15513,29 +15527,42 @@ def _get_pgs_solve_mf_gs_kernel(
     __shared__ float s_pair_op[5][{pair_cache_capacity}];
     if (contact_rows) {{
         int pairs = 0;
-        for (int i = 0; i < dense_main_end; i++) {{
-            if ((s_meta_dense[i] & {type_mask}) != {int(PGS_CONSTRAINT_TYPE_FRICTION)}) continue;
-            if (i != ((s_meta_dense[i] >> {type_bits}) - 1) + 1) continue;
-            if (pairs >= {pair_cache_capacity}) {{
-                if (lane == 0) s_pair_slot[i] = -1;
-                continue;
-            }}
-            int row_base = jy_world_base + i * {D};
-            int sib_row_base = jy_world_base + (i + 1) * {D};
-            float cross = 0.0f;
+        for (int tile_base = 0; tile_base < dense_main_end; tile_base += 32) {{
+            const int i = tile_base + lane;
+            bool first_tangent = i < dense_main_end
+                && (s_meta_dense[i] & {type_mask}) == {int(PGS_CONSTRAINT_TYPE_FRICTION)}
+                && i == ((s_meta_dense[i] >> {type_bits}) - 1) + 1;
+            unsigned pending = __ballot_sync(MASK, first_tangent);
+            int lane_slot = -1;
+            float lane_cross = 0.0f;
+            while (pending != 0u) {{
+                const int pair_row = tile_base + (__ffs(pending) - 1);
+                pending &= pending - 1u;
+                if (pairs >= {pair_cache_capacity}) {{
+                    if (lane == 0) s_pair_slot[pair_row] = -1;
+                    continue;
+                }}
+                int row_base = jy_world_base + pair_row * {D};
+                int sib_row_base = row_base + {D};
+                float cross = 0.0f;
 {prologue_cross}
-            cross = warp_sum(cross);
-            float scale, largest, smallest, vx, vy;
-            friction_pair_setup(s_diag_dense[i], cross, s_diag_dense[i + 1], scale, largest, smallest, vx, vy);
-            if (lane == 0) {{
-                s_pair_slot[i] = pairs;
-                s_pair_op[0][pairs] = scale;
-                s_pair_op[1][pairs] = largest;
-                s_pair_op[2][pairs] = smallest;
-                s_pair_op[3][pairs] = vx;
-                s_pair_op[4][pairs] = vy;
+                cross = warp_sum(cross);
+                if (i == pair_row) {{
+                    lane_slot = pairs;
+                    lane_cross = cross;
+                }}
+                ++pairs;
             }}
-            ++pairs;
+            if (lane_slot >= 0) {{
+                float scale, largest, smallest, vx, vy;
+                friction_pair_setup(s_diag_dense[i], lane_cross, s_diag_dense[i + 1], scale, largest, smallest, vx, vy);
+                s_pair_slot[i] = lane_slot;
+                s_pair_op[0][lane_slot] = scale;
+                s_pair_op[1][lane_slot] = largest;
+                s_pair_op[2][lane_slot] = smallest;
+                s_pair_op[3][lane_slot] = vx;
+                s_pair_op[4][lane_slot] = vy;
+            }}
         }}
         __syncwarp();
     }}
@@ -15543,6 +15570,35 @@ def _get_pgs_solve_mf_gs_kernel(
         if pair_cache
         else ""
     )
+    if friction_mode == "fixed_normal" and pair_cache and 0 < D <= 64:
+        first = pair_cache_build.index("            int lane_slot = -1;")
+        last = pair_cache_build.index("            if (lane_slot >= 0)", first)
+        reduce_lanes = min(32, 1 << (D - 1).bit_length())
+        reduce_cross = f"""            int lane_slot = first_tangent ? pairs + __popc(pending & ((1u << lane) - 1u)) : -1;
+            pairs += __popc(pending);
+            if (lane_slot >= {pair_cache_capacity}) {{ s_pair_slot[i] = -1; lane_slot = -1; }}
+            float lane_cross = 0.0f;
+            if (lane_slot >= 0) {{
+                int row_base = jy_world_base + i * {D};
+                float dot_columns[{reduce_lanes}];
+                #pragma unroll
+                for (int column = 0; column < {reduce_lanes}; ++column) {{
+                    float accum = 0.0f;
+                    #pragma unroll
+                    for (int offset = column; offset < {D}; offset += 32)
+                        accum += J_world.data[row_base + offset] * Y_world.data[row_base + {D} + offset];
+                    dot_columns[column] = accum;
+                }}
+                #pragma unroll
+                for (int width = {reduce_lanes // 2}; width; width >>= 1) {{
+                    #pragma unroll
+                    for (int column = 0; column < width; ++column)
+                        dot_columns[column] += dot_columns[column + width];
+                }}
+                lane_cross = dot_columns[0];
+            }}
+"""
+        pair_cache_build = pair_cache_build[:first] + reduce_cross + pair_cache_build[last:]
     joint_friction_projection = (
         f""" else if (row_type == {int(PGS_CONSTRAINT_TYPE_JOINT_FRICTION)}) {{
                 // Joint friction box [-f dt, f dt]; mu holds the bound.
@@ -15613,6 +15669,12 @@ def _get_pgs_solve_mf_gs_kernel(
             + """                    }
 """
         )
+    if friction_mode == "fixed_normal":
+        dense_pair_solve = dense_pair_solve.replace("float2 pair", "float3 pair")
+        dense_pair_scale = "float scale = pair.z;"
+    else:
+        dense_pair_scale = """float mag = sqrtf(pair.x * pair.x + pair.y * pair.y);
+                    float scale = mag > radius ? radius / mag : 1.0f;"""
     dense_friction_update = f"""                // The first tangent row solves both tangents of its contact; the second
                 // row's impulse was written by the first.
                 int parent_idx = (s_meta_dense[i] >> {type_bits}) - 1;
@@ -15620,7 +15682,6 @@ def _get_pgs_solve_mf_gs_kernel(
                     new_impulse = old_impulse;
                 }} else {{
                     int sib = parent_idx + 2;
-                    int sib_row_base = jy_world_base + sib * {D};
                     // A patch's normal rows form a cycle through their parent links; its
                     // anchors share the pooled normal load (a point contact links to -1).
                     float lambda_n = s_lam_dense[parent_idx];
@@ -15629,52 +15690,69 @@ def _get_pgs_solve_mf_gs_kernel(
                          patch_row = ((s_meta_dense[patch_row] >> {type_bits}) - 1))
                         lambda_n += s_lam_dense[patch_row];
                     float radius = fmaxf(s_mu_dense[i] * lambda_n, 0.0f);
-{dense_pair_solve}                    float mag = sqrtf(pair.x * pair.x + pair.y * pair.y);
-                    float scale = mag > radius ? radius / mag : 1.0f;
+{dense_pair_solve}                    {dense_pair_scale}
                     new_impulse = pair.x * scale;
                     float sib_delta = pair.y * scale - s_lam_dense[sib];
                     __syncwarp();
                     s_lam_dense[sib] = pair.y * scale;
                     if (sib_delta != 0.0f) {{
                         iteration_changed = 1;
-                        for (int d = lane; d < {D}; d += 32) s_v[d] += Y_world.data[sib_row_base + d] * sib_delta;
+{dense_sib_update}
                     }}
                 }}"""
+    dense_radius_setup = ""
     if friction_mode == "fixed_normal":
-        mf_friction_update = """                int sib = mf_par + 2;
-                int sib_mf6 = mf6_base + sib * 6;
-                float2 pair = make_float2(0.0f, 0.0f);
-                // Zero load gives a zero disk; avoid the unused tangent reductions.
-                if (radius > 0.0f) {
-                    float sibling_residual = 0.0f;
+        radius_lo = dense_friction_update.index("                    float lambda_n")
+        radius_hi = dense_friction_update.index("\n", dense_friction_update.index("float radius =", radius_lo))
+        radius_calc = dense_friction_update[radius_lo:radius_hi].replace("float radius =", "radius =")
+        dense_friction_update = dense_friction_update[:radius_lo] + dense_friction_update[radius_hi:]
+        dense_radius_setup = f"""            float radius = 0.0f;
+            if (row_type == {friction_type}) {{
+                int parent_idx = (s_meta_dense[i] >> {type_bits}) - 1;
+{radius_calc}
+                if (radius == 0.0f && __float_as_uint(s_lam_dense[i]) == 0u &&
+                    __float_as_uint(s_lam_dense[i + 1]) == 0u) continue;
+            }}"""
+        mf_pair_candidate = """                    float sibling_residual = 0.0f;
                     float cross = 0.0f;
                     if (lane < 6 && dof_a >= 0) {
-                        sibling_residual = mf_J_a.data[sib_mf6 + lane] * s_v[dof_a + lane];
-                        cross = cur_Ja * mf_MiJt_a.data[sib_mf6 + lane];
+                        sibling_residual = sib_operand * s_v[dof_a + lane];
+                        cross = cur_operand * sib_response;
                     }
                     if (lane >= 6 && lane < 12 && dof_b >= 0) {
-                        sibling_residual = mf_J_b.data[sib_mf6 + lane - 6] * s_v[dof_b + lane - 6];
-                        cross = cur_Jb * mf_MiJt_b.data[sib_mf6 + lane - 6];
+                        sibling_residual = sib_operand * s_v[dof_b + lane - 6];
+                        cross = cur_operand * sib_response;
                     }
                     sibling_residual = warp_sum(sibling_residual) + __int_as_float(mf_meta.data[off_meta + sib * 4 + 2]);
                     cross = warp_sum(cross);
                     float inv_sib = __int_as_float(mf_meta.data[off_meta + sib * 4 + 1]);
                     pair = friction_pair_candidate(mf_diag > 0.0f ? 1.0f / mf_diag : 0.0f, cross,
                         inv_sib > 0.0f ? 1.0f / inv_sib : 0.0f, residual, sibling_residual, old_impulse,
-                        s_lam_mf[sib], radius, omega);
+                        s_lam_mf[sib], radius, omega);"""
+        mf_friction_update = (
+            """                int sib = mf_par + 2;
+                bool has_side = mf_part < 6 ? dof_a >= 0 : mf_part < 12 && dof_b >= 0;
+                float sib_operand = has_side && (lane >= 16 || radius > 0.0f) ? mf_lane_values[sib * 6] : 0.0f;
+                float sib_response = __shfl_xor_sync(MASK, sib_operand, 16);
+                float3 pair = make_float3(0.0f, 0.0f, 1.0f);
+                // Zero load gives a zero disk; avoid the unused tangent reductions.
+                if (radius > 0.0f) {
+"""
+            + mf_pair_candidate
+            + """
                 }
-                float mag = sqrtf(pair.x * pair.x + pair.y * pair.y);
-                float scale = mag > radius ? radius / mag : 1.0f;
+                float scale = pair.z;
                 new_impulse = pair.x * scale;
                 float sib_delta = pair.y * scale - s_lam_mf[sib];
                 __syncwarp();
                 s_lam_mf[sib] = pair.y * scale;
                 if (sib_delta != 0.0f) {
                     iteration_changed = 1;
-                    if (lane < 6 && dof_a >= 0) s_v[dof_a + lane] += mf_MiJt_a.data[sib_mf6 + lane] * sib_delta;
+                    if (lane < 6 && dof_a >= 0) s_v[dof_a + lane] += sib_response * sib_delta;
                     if (lane >= 6 && lane < 12 && dof_b >= 0)
-                        s_v[dof_b + lane - 6] += mf_MiJt_b.data[sib_mf6 + lane - 6] * sib_delta;
+                        s_v[dof_b + lane - 6] += sib_response * sib_delta;
                 }"""
+        )
         mf_friction_radius = f"""            float radius = 0.0f;
             if (mf_rt == {int(PGS_CONSTRAINT_TYPE_FRICTION)}) {{
                 float lambda_n = s_lam_mf[mf_par];
@@ -15684,7 +15762,7 @@ def _get_pgs_solve_mf_gs_kernel(
                     lambda_n += s_lam_mf[patch_row];
                 radius = fmaxf(mf_row_mu.data[off_mf + i] * lambda_n, 0.0f);
                 // A zero disk with no carried impulse cannot change the velocity.
-                if (radius == 0.0f && s_lam_mf[i] == 0.0f && s_lam_mf[i + 1] == 0.0f) continue;
+                if (radius == 0.0f && __float_as_uint(s_lam_mf[i]) == 0u && __float_as_uint(s_lam_mf[i + 1]) == 0u) continue;
             }}"""
         dense_friction_denominator_guard = f" && row_type != {friction_type}"
         mf_friction_denominator_guard = f" && mf_rt != {friction_type}"
@@ -15878,7 +15956,7 @@ def _get_pgs_solve_mf_gs_kernel(
 {dense_second_friction_skip}
             float denom = s_diag_dense[i];
             if (denom <= 0.0f{dense_friction_denominator_guard}) continue;
-
+{dense_radius_setup}
             float my_sum = 0.0f;
 {dense_dot}
             float jv = warp_sum(my_sum);
@@ -15908,42 +15986,31 @@ def _get_pgs_solve_mf_gs_kernel(
             }}
             __syncwarp();
         }}
-
+{dense_v_flush}
         // Free-body contact and friction rows, prefetching the next row.
         int4 pre_meta;
-        float pre_Ja = 0.0f, pre_Jb = 0.0f;
-        float pre_MiJta = 0.0f, pre_MiJtb = 0.0f;
+        const int mf_part = lane & 15;
+        const float* mf_lane_values = nullptr;
+        float pre_operand = 0.0f;
         if (mf_main_end > 0) {{
             pre_meta = *reinterpret_cast<const int4*>(&mf_meta.data[off_meta]);
-            if (lane < 6) {{
-                pre_Ja = mf_J_a.data[mf6_base + lane];
-                pre_MiJta = mf_MiJt_a.data[mf6_base + lane];
-            }}
-            if (lane >= 6 && lane < 12) {{
-                pre_Jb = mf_J_b.data[mf6_base + lane - 6];
-                pre_MiJtb = mf_MiJt_b.data[mf6_base + lane - 6];
+            if (mf_part < 12) {{
+                int slot = mf6_base + (mf_part < 6 ? mf_part : mf_part - 6);
+                mf_lane_values = lane < 16
+                    ? (mf_part < 6 ? &mf_J_a.data[slot] : &mf_J_b.data[slot])
+                    : (mf_part < 6 ? &mf_MiJt_a.data[slot] : &mf_MiJt_b.data[slot]);
+                pre_operand = mf_lane_values[0];
             }}
         }}
         for (int i = 0, next_i = 0; i < mf_main_end; i = next_i) {{
             int4 meta = pre_meta;
-            float cur_Ja = pre_Ja;
-            float cur_Jb = pre_Jb;
-            float cur_MiJta = pre_MiJta;
-            float cur_MiJtb = pre_MiJtb;
+            float cur_operand = pre_operand;
             // The first row of a friction pair also solves the second, so the sweep steps over it.
             next_i = i + 1;
             if ((meta.w & 0xFFFF) == {int(PGS_CONSTRAINT_TYPE_FRICTION)} && i == (meta.w >> 16) + 1) next_i = i + 2;
             if (next_i < mf_main_end) {{
-                int next_mf6 = mf6_base + next_i * 6;
                 pre_meta = *reinterpret_cast<const int4*>(&mf_meta.data[off_meta + next_i * 4]);
-                if (lane < 6) {{
-                    pre_Ja = mf_J_a.data[next_mf6 + lane];
-                    pre_MiJta = mf_MiJt_a.data[next_mf6 + lane];
-                }}
-                if (lane >= 6 && lane < 12) {{
-                    pre_Jb = mf_J_b.data[next_mf6 + lane - 6];
-                    pre_MiJtb = mf_MiJt_b.data[next_mf6 + lane - 6];
-                }}
+                if (mf_part < 12) pre_operand = mf_lane_values[next_i * 6];
             }}
 
             int dof_a = meta.x >> 16;
@@ -15963,8 +16030,9 @@ def _get_pgs_solve_mf_gs_kernel(
 {mf_friction_radius}
 
             float my_sum = 0.0f;
-            if (lane < 6 && dof_a >= 0) my_sum = cur_Ja * s_v[dof_a + lane];
-            if (lane >= 6 && lane < 12 && dof_b >= 0) my_sum = cur_Jb * s_v[dof_b + lane - 6];
+            if (lane < 6 && dof_a >= 0) my_sum = cur_operand * s_v[dof_a + lane];
+            if (lane >= 6 && lane < 12 && dof_b >= 0) my_sum = cur_operand * s_v[dof_b + lane - 6];
+            float cur_response = __shfl_xor_sync(MASK, cur_operand, 16);
             float jv = warp_sum(my_sum);
 
             float residual = jv + __int_as_float(meta.z);
@@ -15985,8 +16053,8 @@ def _get_pgs_solve_mf_gs_kernel(
             s_lam_mf[i] = new_impulse;
             if (delta_impulse != 0.0f) {{
                 iteration_changed = 1;
-                if (lane < 6 && dof_a >= 0) s_v[dof_a + lane] += cur_MiJta * delta_impulse;
-                if (lane >= 6 && lane < 12 && dof_b >= 0) s_v[dof_b + lane - 6] += cur_MiJtb * delta_impulse;
+                if (lane < 6 && dof_a >= 0) s_v[dof_a + lane] += cur_response * delta_impulse;
+                if (lane >= 6 && lane < 12 && dof_b >= 0) s_v[dof_b + lane - 6] += cur_response * delta_impulse;
             }}
             __syncwarp();
         }}
@@ -16052,6 +16120,68 @@ def _get_pgs_solve_mf_gs_kernel(
             "                : __int_as_float(meta.z));",
         )
 
+    patch_storage = 0
+    if (
+        friction_mode == "fixed_normal"
+        and not nesterov_momentum
+        and not contact_torsion
+        and (32 + 24 * has_drive_rows) * M_D + M_MF * 16 + 4 * D <= 32 * 1024
+    ):
+        for category, capacity, parent, fetch_parent in (
+            ("dense", M_D, "parent_idx", "world_row_parent.data[off_dense + row]"),
+            ("mf", M_MF, "mf_par", "(mf_meta.data[off_meta + row * 4 + 3] >> 16)"),
+        ):
+            if not 0 < capacity <= 1023:
+                continue
+            patch_storage += (capacity * 4 + 15) & ~15
+            sums = "s_lam_" + category
+            relatives = f"""
+    __shared__ unsigned patch_{category}[{capacity}];
+    auto next_{category} = [&](int row) {{ return {fetch_parent}; }};
+    for (int start = lane; contact_rows && iterations > 0 && start < m_{category}; start += 32) {{
+        unsigned links = 0;
+        int index = next_{category}(start);
+        #pragma unroll
+        for (int level = 0; level != 3; ++level) {{
+            if (index < 0 || index == start || index >= m_{category}) break;
+            links |= (unsigned)(index + 1) << (10 * level);
+            index = next_{category}(index);
+        }}
+        patch_{category}[start] = index < 0 || index == start ? links : ~0u;
+    }}
+    __syncwarp();
+    auto sum_{category}_patch = [&](int start) {{
+        unsigned links = patch_{category}[start];
+        float load = {sums}[start];
+        if (links == ~0u) {{
+            for (int row = next_{category}(start); row >= 0 && row != start; row = next_{category}(row))
+                load += {sums}[row];
+        }} else if (links != 0u) {{
+            int second = (links >> 10) & 1023, third = links >> 20;
+            float first_value = {sums}[(links & 1023) - 1];
+            float second_value = {sums}[second > 0 ? second - 1 : start];
+            float third_value = {sums}[third > 0 ? third - 1 : start];
+            load += first_value;
+            if (second != 0) load += second_value;
+            if (third != 0) load += third_value;
+        }}
+        return load;
+    }};
+"""
+            header = "    for (int iter = 0; iter < iterations; iter++) {"
+            snippet = _replace_once(snippet, header, relatives + header)
+            match = re.search(
+                rf"float lambda_n = {sums}\[{parent}\];\s*for \(int patch_row.*?lambda_n \+= {sums}\[patch_row\];",
+                snippet,
+                re.S,
+            )
+            if match:
+                snippet = (
+                    snippet[: match.start()]
+                    + f"float lambda_n = sum_{category}_patch({parent});"
+                    + snippet[match.end() :]
+                )
+
     if not shared_metadata:
         # Larger shapes stream the read-only row metadata from global memory instead of
         # holding it in shared memory, which would otherwise limit occupancy. Values are
@@ -16101,8 +16231,246 @@ def _get_pgs_solve_mf_gs_kernel(
         snippet = re.sub(r"world_row_type\.data\[off_dense \+ ([^\]]+)\]", r"s_row_type[\1]", snippet)
         snippet = re.sub(r"world_row_parent\.data\[off_dense \+ ([^\]]+)\]", r"s_row_parent[\1]", snippet)
 
+    def mf_pair_cache_fits(slots: int) -> bool:
+        """Budget known static arrays plus 40 KiB of staging. Two adjacent rows need at most one slot:
+        both the build and the sweep skip the sibling after a first tangent.
+        """
+        cache_bytes = (5 * 4 * slots + 15) & ~15
+        if slots <= 0 or cache_bytes > 4 * 1024:
+            return False
+        total = 40 * 1024 + cache_bytes - patch_storage
+        widths = {"unsigned char": 1, "unsigned": 4, "short": 2, "int": 4, "float": 4}
+        for line in snippet.splitlines():
+            if "__shared__" not in line:
+                continue
+            decl = re.fullmatch(
+                r"\s*__shared__\s+(unsigned char|unsigned|short|int|float)\s+\w+((?:\[\d+\])+);\s*", line
+            )
+            if decl is None:
+                return False
+            size = widths[decl[1]]
+            for extent in re.findall(r"\d+", decl[2]):
+                size *= int(extent)
+            total += (size + 15) & ~15
+        return total <= 48 * 1024
+
+    mf_pair_slots = M_MF // 2
+    if pair_cache and friction_mode == "fixed_normal" and mf_pair_cache_fits(mf_pair_slots):
+        sweep_start = "    for (int iter = 0; iter < iterations; iter++) {"
+        mf_pair_build = f"""    __shared__ float s_mf_pair_op[{mf_pair_slots}][5];
+    const bool cache_mf_pairs = iterations > 1 && (long long)iteration_offset + iterations - 2 >= friction_start_iteration;
+    if (cache_mf_pairs && mf_main_end > 1) {{
+        bool skip_first = false;
+        for (int tile = 0; tile + 1 < mf_main_end; tile += 32) {{
+            int row = tile + lane, sibling = row + 1;
+            int4 first = make_int4(0, 0, 0, 0);
+            if (sibling < mf_main_end) first = *reinterpret_cast<const int4*>(&mf_meta.data[off_meta + row * 4]);
+            bool eligible = sibling < mf_main_end && (first.w & 0xFFFF) == {friction_type}
+                && row == (first.w >> 16) + 1 && (lane != 0 || !skip_first);
+            unsigned starts = __ballot_sync(MASK, eligible);
+            if (starts & (starts << 1)) {{
+                unsigned remaining = starts;
+                while (remaining) {{
+                    unsigned current = remaining & -remaining;
+                    starts &= ~(current << 1);
+                    remaining &= ~(current | (current << 1));
+                }}
+            }}
+            skip_first = (starts >> 31) != 0;
+            if (!(starts & (1u << lane))) continue;
+            int first_base = mf6_base + row * 6;
+            int sibling_base = first_base + 6;
+            float parts[16];
+            #pragma unroll
+            for (int col = 0; col < 16; ++col) {{
+                float term = 0.0f;
+                if (col < 6 && (first.x >> 16) >= 0)
+                    term = __fmul_rn(mf_J_a.data[first_base + col], mf_MiJt_a.data[sibling_base + col]);
+                if (col >= 6 && col < 12 && (first.x & 0x8000) == 0)
+                    term = __fmul_rn(mf_J_b.data[first_base + col - 6], mf_MiJt_b.data[sibling_base + col - 6]);
+                parts[col] = __fadd_rn(term, 0.0f);
+            }}
+            #pragma unroll
+            for (int stride = 8; stride > 0; stride >>= 1) {{
+                #pragma unroll
+                for (int col = 0; col < stride; ++col) parts[col] += parts[col + stride];
+            }}
+            float cross = parts[0];
+            {{
+                float inv_first = __int_as_float(first.y);
+                float inv_sib = __int_as_float(mf_meta.data[off_meta + sibling * 4 + 1]);
+                float scale, largest, smallest, vx, vy;
+                friction_pair_setup(inv_first > 0.0f ? 1.0f / inv_first : 0.0f, cross,
+                    inv_sib > 0.0f ? 1.0f / inv_sib : 0.0f, scale, largest, smallest, vx, vy);
+                float* op = s_mf_pair_op[row >> 1];
+                op[0] = scale; op[1] = largest; op[2] = smallest; op[3] = vx; op[4] = vy;
+            }}
+        }}
+        __syncwarp();
+    }}
+"""
+        snippet = _replace_once(snippet, sweep_start, mf_pair_build + sweep_start)
+        cached_pair = (
+            """                    if (cache_mf_pairs && sib < mf_main_end) {
+                        float sibling_residual = 0.0f;
+                        if (lane < 6 && dof_a >= 0)
+                            sibling_residual = sib_operand * s_v[dof_a + lane];
+                        if (lane >= 6 && lane < 12 && dof_b >= 0)
+                            sibling_residual = sib_operand * s_v[dof_b + lane - 6];
+                        sibling_residual = warp_sum(sibling_residual) + __int_as_float(mf_meta.data[off_meta + sib * 4 + 2]);
+                        const float* op = s_mf_pair_op[i >> 1];
+                        pair = friction_pair_solve(op[0], op[1], op[2], op[3], op[4],
+                            residual, sibling_residual, old_impulse, s_lam_mf[sib], radius, omega);
+                    } else {
+"""
+            + "\n".join("    " + line for line in mf_pair_candidate.splitlines())
+            + "\n                    }"
+        )
+        snippet = _replace_once(snippet, mf_pair_candidate, cached_pair)
+
+    def pair_search(width):
+        pair_helpers = FRICTION_PAIR_CUDA.replace(
+            "return make_float2(0.0f, 0.0f);", "return make_float3(0.0f, 0.0f, 1.0f);"
+        )
+        pair_helpers = _replace_once(
+            pair_helpers, "return make_float2(old0, old1);", "return make_float3(old0, old1, 1.0f);"
+        )
+        relaxed = "make_float2(old0 + omega*(result0-old0), old1 + omega*(result1-old1))"
+        pair_helpers = _replace_once(
+            pair_helpers,
+            f"return {relaxed};",
+            f"""float2 pair = {relaxed};
+        if (sticking && __float_as_uint(pair.x) == __float_as_uint(result0)
+                     && __float_as_uint(pair.y) == __float_as_uint(result1))
+            return make_float3(pair.x, pair.y, 1.0f);
+        float mag = sqrtf(pair.x * pair.x + pair.y * pair.y);
+        return make_float3(pair.x, pair.y, mag > radius ? radius / mag : 1.0f);""",
+        )
+        choose = "                    if (candidate > lo && candidate < hi) alpha = candidate;"
+        old_alpha = "                    alpha = 0.5f * (lo+hi);"
+        pair_helpers = _replace_once(
+            pair_helpers, old_alpha, "                    float previous_alpha = alpha;\n" + old_alpha
+        )
+        pair_helpers = _replace_once(
+            pair_helpers,
+            choose,
+            choose + "\n                    if (__float_as_uint(alpha) == __float_as_uint(previous_alpha)) break;",
+        )
+        bisect_start = pair_helpers.index("                    for (int iteration = 0; iteration < 24;")
+        bisect_end = pair_helpers.index("                    x = b0 /", bisect_start)
+        stages = (5, 5, 5, 5, 4) if width == 32 else (2,) * 12
+        mask = "0xffffffffu" if width == 32 else "(15u << (threadIdx.x & ~3))"
+        precise_sqrt = "#if defined(__CUDA_PREC_SQRT) && __CUDA_PREC_SQRT && defined(__CUDA_FTZ) && !__CUDA_FTZ"
+        pair_body = "        float r0_rotated = "
+        pair_helpers = _replace_once(
+            pair_helpers,
+            pair_body,
+            f"""{precise_sqrt}
+        float square_floor = __fmul_rd(radius, radius);
+        unsigned successor = min(__float_as_uint(radius) + 1u, 0x7f800000u);
+        float square_ceiling = __fmul_ru(__uint_as_float(successor), __uint_as_float(successor));
+#endif
+"""
+            + pair_body,
+        )
+        test = "            sticking = sqrtf(result0*result0 + result1*result1) <= radius;"
+        pair_helpers = _replace_once(
+            pair_helpers,
+            test,
+            f"""{precise_sqrt}
+            float square = result0*result0 + result1*result1;
+            sticking = square <= square_floor || (square < square_ceiling && sqrtf(square) <= radius);
+#else
+{test}
+#endif""",
+        )
+        magnitude = "        float mag = sqrtf(pair.x * pair.x + pair.y * pair.y);"
+        pair_helpers = _replace_once(
+            pair_helpers,
+            magnitude,
+            f"""{precise_sqrt}
+        float square = pair.x * pair.x + pair.y * pair.y;
+        if (square <= square_floor) return make_float3(pair.x, pair.y, 1.0f);
+        float mag = sqrtf(square);
+#else
+{magnitude}
+#endif""",
+        )
+        bisect_start = pair_helpers.index("                    for (int iteration = 0; iteration < 24;")
+        bisect_end = pair_helpers.index("                    x = b0 /", bisect_start)
+        code = f"""                    {{
+{precise_sqrt}
+                    const unsigned radius_bits = __float_as_uint(radius);
+                    float cutoff = radius;
+                    if (radius_bits < 0x7f7fffffu) {{
+                        double adjacent = (double)__uint_as_float(radius_bits + 1u);
+                        double midpoint = 0.5 * ((double)radius + adjacent);
+                        double boundary = midpoint * midpoint;
+                        cutoff = __double2float_rd(boundary);
+                        if ((radius_bits & 1u) && (double)cutoff == boundary)
+                            cutoff = __uint_as_float(__float_as_uint(cutoff) - 1u);
+                    }}
+#endif
+"""
+        for depth in dict.fromkeys(stages):
+            cells = 1 << depth
+            code += f"""                    for (int batch = 0; batch < {stages.count(depth)} && (lo != hi || hi > 0x1.fffffep126f); ++batch) {{
+                        int path = threadIdx.x & {cells - 1};
+                        float left = lo, right = hi;
+                        #pragma unroll
+                        for (int bit = {cells // 2}; bit; bit >>= 1) {{
+                            float mid = 0.5f * (left + right);
+                            if (path & bit) left = mid; else right = mid;
+                        }}
+                        float tx = b0 / (largest + right);
+                        float ty = b1 / (smallest + right);
+{precise_sqrt}
+                        bool outside = tx*tx + ty*ty > cutoff;
+#else
+                        bool outside = sqrtf(tx*tx + ty*ty) > radius;
+#endif
+                        unsigned tests = (__ballot_sync({mask}, outside)
+                                         >> (threadIdx.x & ~{width - 1})) & {((1 << (cells - 1)) - 1)}u;
+                        int cell = __popc(tests);
+                        if ((tests & (tests + 1u)) != 0u) {{
+                            cell = 0;
+                            #pragma unroll
+                            for (int bit = {cells // 2}; bit; bit >>= 1)
+                                cell += ((tests >> (cell + bit - 1)) & 1u) * bit;
+                        }}
+                        lo = __shfl_sync({mask}, left, cell, {width});
+                        hi = __shfl_sync({mask}, right, cell, {width});
+                    }}
+"""
+        code = code.replace(
+            "int path = threadIdx.x",
+            """if (hi <= 0x1.fffffep126f && lo <= hi && lo >= 0.0f &&
+                            largest+lo == largest+hi && smallest+lo == smallest+hi) {
+                            lo = hi; break;
+                        }
+                        int path = threadIdx.x""",
+        )
+        pair_helpers = pair_helpers[:bisect_start] + code + "                    }\n" + pair_helpers[bisect_end:]
+        hi_decl = "float hi = sqrtf(b0*b0 + b1*b1) / radius;"
+        pair_helpers = _replace_once(
+            pair_helpers,
+            hi_decl,
+            """
+#if defined(__CUDA_PREC_DIV) && __CUDA_PREC_DIV && defined(__CUDA_FTZ) && !__CUDA_FTZ
+            double inv_radius = __drcp_rn((double)radius);
+            auto over_radius = [&](float amount) { return __double2float_rn(__dmul_rn((double)amount, inv_radius)); };
+#else
+            auto over_radius = [&](float amount) { return amount / radius; };
+#endif
+            float hi = over_radius(sqrtf(b0*b0 + b1*b1));""",
+        )
+        pair_helpers = pair_helpers.replace("fabsf(b1)/radius-smallest", "over_radius(fabsf(b1))-smallest")
+        pair_helpers = pair_helpers.replace("norm/radius-1.0f", "over_radius(norm)-1.0f")
+        return pair_helpers
+
+    pair_helpers = pair_search(32) if friction_mode == "fixed_normal" else FRICTION_PAIR_CUDA
     helpers = (
-        FRICTION_PAIR_CUDA
+        pair_helpers
         + """
     // Each butterfly level adds the same pair as lane 0's down sweep, in either order, so every
     // lane ends with that sum and no broadcast is needed.
@@ -16113,6 +16481,873 @@ def _get_pgs_solve_mf_gs_kernel(
 """
     )
     snippet = snippet.replace("#if defined(__CUDA_ARCH__)", "#if defined(__CUDA_ARCH__)\n" + helpers, 1)
+
+    if friction_mode == "fixed_normal" and 0 < M_D <= 32 * 32 and D > 0:
+
+        def ordered_dense_descriptors(source: str) -> str:
+            """Keep one tile's masks per lane and visit set bits in original row order.
+
+            Before friction starts only, the nonfriction updates read only their own impulses,
+            so tangent clears can be coalesced within the tile. The active pair still reads its
+            physical sibling, independently of where the next executable bit falls.
+            """
+            contact = int(PGS_CONSTRAINT_TYPE_CONTACT)
+            limit = int(PGS_CONSTRAINT_TYPE_JOINT_LIMIT)
+            drive = int(PGS_CONSTRAINT_TYPE_JOINT_TARGET)
+            if shared_metadata:
+                kind_expr = f"(s_meta_dense[desc_row] & {type_mask})"
+                parent_expr = f"((s_meta_dense[desc_row] >> {type_bits}) - 1)"
+                diag_expr = "s_diag_dense[desc_row]"
+            else:
+                kind_expr = "s_row_type[desc_row]" if row_cache else "world_row_type.data[off_dense + desc_row]"
+                parent_expr = "s_row_parent[desc_row]" if row_cache else "world_row_parent.data[off_dense + desc_row]"
+                diag_expr = "world_diag.data[off_dense + desc_row]"
+            torsion_gate = f" && kind != {int(PGS_CONSTRAINT_TYPE_TORSION)}" if contact_torsion else ""
+            flags = {
+                "ready": "ready",
+                "tangent": "eligible && tangent",
+                "unilateral": f"kind == {contact} || kind == {limit}",
+            }
+            if has_drive_rows:
+                flags["drive"] = f"kind == {drive}"
+            if joint_friction:
+                flags["joint"] = f"kind == {int(PGS_CONSTRAINT_TYPE_JOINT_FRICTION)}"
+            if contact_compliance:
+                flags["contact"] = f"kind == {contact}"
+            owner_words = "\n".join(f"    unsigned owner_{key} = 0u;" for key in flags)
+            pack_words = "\n".join(
+                f"        unsigned packed_{key} = __ballot_sync(MASK, {value});" for key, value in flags.items()
+            )
+            save_words = "\n".join(f"            owner_{key} = packed_{key};" for key in flags)
+            fetch_words = "\n".join(
+                f"            unsigned tile_{key} = __shfl_sync(MASK, owner_{key}, desc_base >> 5);" for key in flags
+            )
+            plan = f"""{owner_words}
+    for (int desc_base = 0; iterations > 0 && desc_base < dense_main_end; desc_base += 32) {{
+        int desc_row = desc_base + lane;
+        int kind = desc_row < dense_main_end ? {kind_expr} : -1;
+        bool tangent = kind == {friction_type};
+        bool eligible = desc_row < dense_main_end && kind != {int(PGS_CONSTRAINT_TYPE_JOINT_VELOCITY_LIMIT)}{torsion_gate}
+            && !(freeze_drive_rows && kind == {drive}) && ((kind == {contact} || tangent) ? contact_rows : internal_rows);
+        bool ready = eligible && (tangent ? desc_row == {parent_expr} + 1 : !({diag_expr} <= 0.0f));
+{pack_words}
+        if (lane == (desc_base >> 5)) {{
+{save_words}
+        }}
+    }}
+"""
+            iter_header = "    for (int iter = 0; iter < iterations; iter++) {"
+            source = _replace_once(source, iter_header, plan + iter_header)
+            begin = source.index("        // Dense rows, prefetching the response of the next row.")
+            end = source.index(dense_v_flush, begin)
+            main = source[begin:end]
+            payload = main[main.index("            float denom =") :].removesuffix("        }\n")
+            payload = _replace_once(
+                payload, f"            if (denom <= 0.0f{dense_friction_denominator_guard}) continue;\n", ""
+            )
+            payload = re.sub(r"int parent_idx = [^;\n]+;", "int parent_idx = i - 1;", payload)
+            payload = re.sub(
+                rf"row_type == {contact} \|\|\s*row_type == {limit}", "tile_unilateral & desc_bit", payload
+            )
+            payload = _replace_once(
+                payload,
+                "            // Regularized rows",
+                """            if ((tile_unilateral & desc_bit) && __float_as_uint(old_impulse) == 0u && residual >= 0.0f && isfinite(residual)
+                && denom > 0.0f && regularize == 0 && omega > 0.0f && isfinite(omega)) continue;
+            // Regularized rows""",
+            )
+            for kind_id, key in (
+                (friction_type, "tangent"),
+                (drive, "drive"),
+                (int(PGS_CONSTRAINT_TYPE_JOINT_FRICTION), "joint"),
+                (contact, "contact"),
+            ):
+                payload = payload.replace(f"row_type == {kind_id}", f"(tile_{key} & desc_bit)")
+            payload = payload.replace("pre_dJ_", "sibling_dJ_").replace("pre_dY_", "sibling_dY_")
+            sibling_decl = lanes("                    float sibling_dJ_{k} = cur_dJ_{k}, sibling_dY_{k} = cur_dY_{k};")
+            sibling_load = dense_prefetch_next.replace("pre_dJ_", "sibling_dJ_").replace("pre_dY_", "sibling_dY_")
+            sibling_key = "                    int sib = parent_idx + 2;"
+            payload = _replace_once(
+                payload,
+                sibling_key,
+                sibling_key
+                + f"""
+{sibling_decl}
+                    if (sib < dense_main_end) {{
+                        int next_jy_base = jy_world_base + sib * {D};
+{sibling_load}
+                    }}""",
+            )
+            tile_meta = row_meta = ""
+            if "float lambda_n = sum_dense_patch(parent_idx);" in payload:
+                tile_meta = """            __syncwarp();
+            int snapshot_row = desc_base + lane;
+            float tile_impulse = snapshot_row < m_dense ? s_lam_dense[snapshot_row] : 0.0f;
+            float tile_sibling = snapshot_row + 1 < m_dense ? s_lam_dense[snapshot_row + 1] : 0.0f;
+            __syncwarp();"""
+                row_meta = """            float input_impulse = __shfl_sync(MASK, tile_impulse, desc_lane);
+            float input_sibling = __shfl_sync(MASK, tile_sibling, desc_lane);"""
+                payload = payload.replace(
+                    "float lambda_n = sum_dense_patch(parent_idx);",
+                    "float lambda_n = __shfl_sync(MASK, lane == 0 ? sum_dense_patch(parent_idx) : 0.0f, 0);",
+                )
+                payload = re.sub(r"s_lam_dense\[i\](?! = )", "input_impulse", payload)
+                payload = re.sub(r"s_lam_dense\[sib\](?! = )", "input_sibling", payload)
+                payload = payload.replace("s_lam_dense[i + 1]", "input_sibling")
+                payload = payload.replace("s_lam_dense[sib] =", "if (lane == 0) s_lam_dense[sib] =")
+                payload = payload.replace("s_lam_dense[i] =", "if (lane == 0) s_lam_dense[i] =")
+                payload = payload.replace("__syncwarp();", "")
+            if not shared_metadata:
+                tile_meta += f"""\n            int desc_row = desc_base + lane;
+            bool selected = (pending & (1u << lane)) != 0u;
+            float lane_diag = selected ? {diag_expr} : 0.0f;
+            float lane_rhs = selected ? rhs_bias.data[off_dense + desc_row] : 0.0f;
+            float lane_weight = selected && regularize != 0 ? world_row_w.data[off_dense + desc_row] : 1.0f;"""
+                row_meta += """\n            float cur_diag = __shfl_sync(MASK, lane_diag, desc_lane);
+            float cur_rhs = __shfl_sync(MASK, lane_rhs, desc_lane);
+            float cur_row_w = regularize != 0 ? __shfl_sync(MASK, lane_weight, desc_lane) : 1.0f;"""
+            if pair_cache:
+                mu_src = "s_mu_dense[packet_row]" if shared_metadata else "world_row_mu.data[off_dense + packet_row]"
+                rhs_src = "s_rhs_dense[packet_row+1]" if shared_metadata else "rhs_bias.data[off_dense + packet_row+1]"
+                tile_meta += f"""
+            int packet_row = desc_base + lane;
+            bool packet_pair = (pending & tile_tangent & (1u << lane)) != 0u;
+            int packet_slot = packet_pair ? s_pair_slot[packet_row] : -1;
+            float packet_mu = packet_pair ? {mu_src} : 0.0f;
+            float packet_rhs = packet_pair && packet_row + 1 < m_dense ? {rhs_src} : 0.0f;
+"""
+                old_mu = "s_mu_dense[i]" if shared_metadata else "world_row_mu.data[off_dense + (i)]"
+                old_rhs = "s_rhs_dense[sib]" if shared_metadata else "rhs_bias.data[off_dense + (sib)]"
+                row_meta += "\n            int packet_lane = desc_lane;"
+
+                def shuffle(expr):
+                    return f"__shfl_sync(MASK, {expr}, packet_lane)"
+
+                payload = payload.replace(old_mu, shuffle("packet_mu")).replace(old_rhs, shuffle("packet_rhs"))
+                payload = payload.replace(
+                    "const int pair_slot = s_pair_slot[i]", "const int pair_slot = " + shuffle("packet_slot")
+                )
+                for component in range(5):
+                    tile_meta += f"            float packet_op{component} = packet_slot >= 0 ? s_pair_op[{component}][packet_slot] : 0.0f;\n"
+                    payload = payload.replace(f"s_pair_op[{component}][pair_slot]", shuffle(f"packet_op{component}"))
+                slow_load = "__shfl_sync(MASK, lane == 0 ? sum_dense_patch(parent_idx) : 0.0f, 0)"
+                if slow_load in payload:
+                    tile_meta += """
+            unsigned member_bits = packet_pair ? patch_dense[packet_row - 1] : ~0u;
+            int member0 = packet_pair ? packet_row - 1 : -1;
+"""
+                    for member in range(1, 4):
+                        tile_meta += f"            int member{member} = member_bits != ~0u ? (int)((member_bits >> {(member - 1) * 10}) & 1023u) - 1 : -1;\n"
+                    for member in range(4):
+                        tile_meta += f"            float member_lam{member} = member{member} >= 0 ? s_lam_dense[member{member}] : 0.0f;\n"
+                    tile_meta += "            __syncwarp();"
+                    load = "float packet_sum = member_lam0;\n"
+                    for member in range(1, 4):
+                        load += f"                    if (member{member} >= 0) packet_sum += member_lam{member};\n"
+                    load += "                    float lambda_n = " + shuffle("packet_sum") + ";\n"
+                    load += (
+                        "                    if (" + shuffle("member_bits") + " == ~0u) lambda_n = " + slow_load + ";"
+                    )
+                    payload = _replace_once(payload, "float lambda_n = " + slow_load + ";", load)
+                    for index, value in [("i", "new_impulse"), ("sib", "pair.y * scale")]:
+                        key = f"if (lane == 0) s_lam_dense[{index}] = {value};"
+                        updates = "\n".join(
+                            f"                    if ({index} == member{member}) member_lam{member} = {value};"
+                            for member in range(4)
+                        )
+                        payload = _replace_once(payload, key, key + "\n" + updates)
+            init_velocity = lanes("            if ({d} < " + str(D) + ") dense_v_{k} = s_v[{d}];")
+            traversal = f"""        if (dense_main_end > 0) {{
+{init_velocity}
+        }}
+        for (int desc_base = 0; desc_base < dense_main_end; desc_base += 32) {{
+{fetch_words}
+            unsigned pending = tile_ready;
+            if (global_iter < friction_start_iteration) {{
+                if (tile_tangent & (1u << lane)) s_lam_dense[desc_base + lane] = 0.0f;
+                __syncwarp();
+                pending &= ~tile_tangent;
+            }}
+            if (!pending) continue;
+{tile_meta}
+            int desc_lane = __ffs(pending) - 1;
+            {{
+                int next_jy_base = jy_world_base + (desc_base + desc_lane) * {D};
+{dense_prefetch_next}
+            }}
+            while (pending) {{
+            int i = desc_base + desc_lane;
+            unsigned desc_bit = pending & -pending;
+{row_meta}
+{dense_consume}
+            pending &= pending - 1u;
+            desc_lane = __ffs(pending) - 1;
+            if (pending) {{
+                int next_jy_base = jy_world_base + (desc_base + desc_lane) * {D};
+{dense_prefetch_next}
+            }}
+{payload}            }}
+        }}
+"""
+            if 0 < D <= 16 and pair_cache:
+
+                def half_prefetch(text):
+                    load = f"""                int column = lane & 15;
+                int pair_offset = lane >= 16 && (tile_tangent & (1u << desc_lane)) && desc_base + desc_lane + 1 < dense_main_end ? {D} : 0;
+                if (column < {D}) {{ pre_dJ_0 = J_world.data[next_jy_base + pair_offset + column];
+                    pre_dY_0 = Y_world.data[next_jy_base + pair_offset + column]; }}"""
+                    return text.replace(dense_prefetch_next, load)
+
+                traversal = half_prefetch(traversal)
+                traversal = traversal.replace(init_velocity, init_velocity.replace("lane", "(lane & 15)"))
+                traversal = traversal.replace(dense_dot, dense_dot.replace("lane", "(lane & 15)"))
+                traversal = traversal.replace(
+                    "float jv = warp_sum(my_sum);",
+                    """float partial = __fadd_rn(my_sum, 0.0f);
+            #pragma unroll
+            for (int ofs=8; ofs>0; ofs>>=1) partial += __shfl_xor_sync(MASK, partial, ofs, 16);
+            float jv = __shfl_sync(MASK, partial, 0);""",
+                )
+                sibling_begin = traversal.index(sibling_decl)
+                sibling_end = traversal.index("                    // A patch's normal rows", sibling_begin)
+                traversal = (
+                    traversal[:sibling_begin]
+                    + """                    float sibling_dY_0 = __shfl_sync(MASK, cur_dY_0, lane | 16);
+                    cur_dY_0 = __shfl_sync(MASK, cur_dY_0, lane & 15);
+"""
+                    + traversal[sibling_end:]
+                )
+                traversal = traversal.replace(dense_sib_dot.replace("pre_dJ_", "sibling_dJ_"), "")
+                traversal = traversal.replace(
+                    dense_pair_dot.replace("pre_dJ_", "sibling_dJ_").replace("pre_dY_", "sibling_dY_"),
+                    f"                    if (lane < {D}) cross += cur_dJ_0 * sibling_dY_0;",
+                )
+                traversal = traversal.replace("warp_sum(sibling_residual)", "__shfl_sync(MASK, partial, 16)")
+                for update in (dense_v_update, dense_sib_update.replace("pre_dY_", "sibling_dY_")):
+                    traversal = traversal.replace(update, update.replace("lane", "(lane & 15)"))
+            return source[:begin] + traversal + source[end:]
+
+        snippet = ordered_dense_descriptors(snippet)
+
+    def island_sweep(source: str, staged: bool) -> str:
+        """Connect rows via touched velocity DOFs and impulse parents, then build ascending row lists.
+
+        Roots are minimum row indices. After path compression they can be relabeled in ascending order.
+        The DOF-owner table is dead before the same storage is reused for component heads.
+        Four lanes own each list. Rank r owns packed components r, r+4 and r+8 for both reads and updates.
+        The first three butterfly levels are local; the two remaining levels use a four-lane mask.
+        A list link is zero at its tail (successor indices are strictly positive). Its low seven bits
+        hold the successor and its high bit means the lane-to-DOF mapping is unchanged. Such rows
+        can share a register velocity without communicating through shared memory.
+        """
+        contact = int(PGS_CONSTRAINT_TYPE_CONTACT)
+        friction = int(PGS_CONSTRAINT_TYPE_FRICTION)
+        meta_view = "stage_meta" if staged else "reinterpret_cast<const int4*>(mf_meta.data + off_meta)"
+        vectors = "\n".join(
+            f"    const float* island_{field} = " + (f"stage_mf_{field};" if staged else f"mf_{field}.data + mf6_base;")
+            for field in ("J_a", "J_b", "MiJt_a", "MiJt_b")
+        )
+        classify = f"""    const int4* island_meta = {meta_view};
+{vectors}
+    constexpr int island_nil = 255;
+    __shared__ unsigned char island_root[{M_MF}];
+    __shared__ unsigned char island_next[{M_MF}];
+    __shared__ unsigned char island_head[{max(D, M_MF)}];
+    int island_count = 0;
+    if (iterations > 0 && mf_main_end >= 2) {{
+        bool valid = true;
+        bool block_graph = true;
+        unsigned bridge_tiles = 0;
+        int first_map = island_meta[0].x;
+        int residue = max(first_map >> 16, (int)(short)first_map) % 6;
+        for (int row = lane; row < mf_main_end; row += 32) {{
+            island_root[row] = row;
+            int4 own = island_meta[row];
+            int kind = own.w & 0xffff, parent = own.w >> 16;
+            int body_a = own.x >> 16, body_b = (short)own.x;
+            if (max(body_a, body_b) < 0 || (body_a >= 0 && body_a % 6 != residue) ||
+                (body_b >= 0 && body_b % 6 != residue) ||
+                (parent >= 0 && (parent >= mf_main_end || island_meta[parent].x != own.x))) block_graph = false;
+            if (body_a >= 0 && body_b >= 0 && (!row || island_meta[row - 1].x != own.x))
+                bridge_tiles |= 1u << (row >> 5);
+            if (kind != {friction} || row != parent + 2) {{
+                if ((body_a >= 0 && body_a + 6 > {D}) || (body_b >= 0 && body_b + 6 > {D}) ||
+                    (body_a >= 0 && body_b >= 0 && body_a < body_b + 6 && body_b < body_a + 6)) valid = false;
+            }}
+            if (kind == {contact}) {{
+                int link = parent, hops = 0;
+                while (link >= 0 && link != row) {{
+                    if (link >= mf_main_end || ++hops >= mf_main_end) {{ valid = false; break; }}
+                    int4 next = island_meta[link];
+                    if ((next.w & 0xffff) != {contact}) {{ valid = false; break; }}
+                    link = next.w >> 16;
+                }}
+            }} else if (kind == {friction} && parent >= 0 && parent + 2 < mf_main_end &&
+                       (row == parent + 1 || row == parent + 2)) {{
+                valid = valid && (island_meta[parent].w & 0xffff) == {contact}
+                    && island_meta[parent + 1].w == own.w && island_meta[parent + 2].w == own.w;
+            }} else valid = false;
+        }}
+        for (int dof = lane; dof < {D}; dof += 32) island_head[dof] = island_nil;
+        __syncwarp();
+        bool valid_graph = __all_sync(MASK, valid);
+        if (valid_graph && __all_sync(MASK, block_graph)) {{
+            int component = lane;
+            for (int tile = 0; __any_sync(MASK, bridge_tiles != 0); tile += 32, bridge_tiles >>= 1) {{
+                unsigned joins = __ballot_sync(MASK, bridge_tiles & 1u);
+                while (joins) {{
+                    int bodies = island_meta[tile + __ffs(joins) - 1].x;
+                    int left = __shfl_sync(MASK, component, (bodies >> 16) / 6);
+                    int right = __shfl_sync(MASK, component, ((int)(short)bodies) / 6);
+                    if (component == right) component = left;
+                    joins &= joins - 1;
+                }}
+            }}
+            unsigned self = 1u << lane, lower = self - 1u;
+            for (int tile = 0; tile < mf_main_end; tile += 32) {{
+                int row = tile + lane;
+                int4 own = row < mf_main_end ? island_meta[row] : make_int4(0, 0, 0, 0);
+                bool emit = row < mf_main_end && !((own.w & 0xffff) == {friction} && row == (own.w >> 16) + 2);
+                int key = __shfl_sync(MASK, component, max(own.x >> 16, (int)(short)own.x) / 6);
+                unsigned peers = __ballot_sync(MASK, emit);
+                #pragma unroll
+                for (int bit = 1; bit < {D // 6}; bit *= 2) {{
+                    unsigned ones = __ballot_sync(MASK, (key & bit) != 0);
+                    peers &= (key & bit) ? ones : ~ones;
+                }}
+                unsigned higher = peers & ~(lower | self);
+                bool first = emit && !(peers & lower);
+                int tail = first ? island_head[key] : island_nil;
+                unsigned new_heads = __ballot_sync(MASK, first && tail == island_nil);
+                if (emit) {{
+                    int successor = tile + __ffs(higher) - 1;
+                    island_next[row] = higher ? successor | (own.x == island_meta[successor].x ? 128 : 0) : 0;
+                    if (first) {{
+                        if (tail != island_nil) island_next[tail] = row | (own.x == island_meta[tail].x ? 128 : 0);
+                        else island_root[island_count + __popc(new_heads & lower)] = row;
+                        island_head[key] = tile + 31 - __clz(peers);
+                    }}
+                }}
+                island_count += __popc(new_heads);
+                __syncwarp();
+            }}
+            for (int slot = lane; slot < island_count; slot += 32) island_head[slot] = island_root[slot];
+        }} else if (valid_graph && lane == 0) {{
+            auto find_root = [&](int row) {{
+                while (island_root[row] != row) {{
+                    island_root[row] = island_root[island_root[row]];
+                    row = island_root[row];
+                }}
+                return row;
+            }};
+            auto unite = [&](int left, int right) {{
+                left = find_root(left); right = find_root(right);
+                if (left < right) island_root[right] = left;
+                if (right < left) island_root[left] = right;
+            }};
+            for (int row = 0; row < mf_main_end; ++row) {{
+                int4 own = island_meta[row];
+                int parent = own.w >> 16;
+                if (parent >= 0) unite(row, parent);
+                if ((own.w & 0xffff) == {friction} &&
+                    (row == parent + 2 || own.x == island_meta[parent].x)) continue;
+                for (int side = 0; side < 2; ++side) {{
+                    int base = side == 0 ? own.x >> 16 : (short)own.x;
+                    if (base < 0) continue;
+                    int previous = island_nil;
+                    for (int dof = base; dof < base + 6; ++dof) {{
+                        int prior = island_head[dof];
+                        if (prior == island_nil) island_head[dof] = row;
+                        else if (prior != previous) unite(row, prior);
+                        previous = prior;
+                    }}
+                }}
+            }}
+            for (int row = 0; row < mf_main_end; ++row) island_root[row] = find_root(row);
+            for (int row = 0; row < mf_main_end; ++row) {{
+                int root = island_root[row];
+                if (root == row) {{ island_head[island_count] = island_nil; island_root[row] = island_count++; }}
+                else island_root[row] = island_root[root];
+            }}
+            if (island_count >= 2) {{
+                for (int row = mf_main_end - 1; row >= 0; --row) {{
+                    int4 own = island_meta[row];
+                    int tag = own.w;
+                    if ((tag & 0xffff) == {friction} && row == (tag >> 16) + 2) continue;
+                    int slot = island_root[row];
+                    int successor = island_head[slot];
+                    island_next[row] = successor == island_nil ? 0 :
+                        (successor | (own.x == island_meta[successor].x ? 128 : 0));
+                    island_head[slot] = row;
+                }}
+            }}
+        }}
+        __syncwarp();
+        island_count = __shfl_sync(MASK, island_count, 0);
+    }}
+"""
+        scalar_pair = """float cross = island_dot(jacobian, sibling_response);
+                        float inv_sib = __int_as_float(island_meta[sibling].y);
+                        pair = friction_pair_candidate(diag > 0.0f ? 1.0f / diag : 0.0f, cross,
+                            inv_sib > 0.0f ? 1.0f / inv_sib : 0.0f, residual, residual_sib, old, old_sib, radius, omega);"""
+        if "__shared__ float s_mf_pair_op[" in source:
+            scalar_pair = (
+                """if (cache_mf_pairs) {
+                        const float* op = s_mf_pair_op[row >> 1];
+                        pair = friction_pair_solve(op[0], op[1], op[2], op[3], op[4],
+                            residual, residual_sib, old, old_sib, radius, omega);
+                    } else {
+                        """
+                + scalar_pair
+                + "\n                    }"
+            )
+        normal_rhs = "(rhs + compliance_mf_gamma.data[off_mf + row] * old)" if contact_compliance else "rhs"
+        parallel = f"""        if (island_count >= 2) {{
+{FRICTION_PAIR_CUDA}
+            const int group = lane >> 2, rank = lane & 3;
+            const unsigned group_mask = 0xFu << (group * 4);
+            auto island_dot = [&](float3 jacobian, float3 vector) {{
+                float low = __fmul_rn(jacobian.x, vector.x);
+                float mid = __fmul_rn(jacobian.y, vector.y);
+                float high = __fmul_rn(jacobian.z, vector.z);
+                low = __fadd_rn(low, 0.0f); mid = __fadd_rn(mid, 0.0f); high = __fadd_rn(high, 0.0f);
+                float partial = __fadd_rn(__fadd_rn(low, high), __fadd_rn(mid, 0.0f));
+                float peer = __shfl_xor_sync(group_mask, partial, 2, 4);
+                partial = (rank & 2) ? __fadd_rn(peer, partial) : __fadd_rn(partial, peer);
+                peer = __shfl_xor_sync(group_mask, partial, 1, 4);
+                return (rank & 1) ? __fadd_rn(peer, partial) : __fadd_rn(partial, peer);
+            }};
+            const int middle_offset = rank < 2 ? rank + 4 : rank - 2;
+            for (int slot = group; slot < island_count; slot += 8) {{
+                int link = island_head[slot];
+                if (link == island_nil) continue;
+                for (;;) {{
+                    int bodies = island_meta[link].x;
+                    int body_a = bodies >> 16, body_b = (short)bodies;
+                    bool has_a = body_a >= 0, has_b = body_b >= 0;
+                    bool has_middle = rank < 2 ? has_a : has_b;
+                    int middle_dof = (rank < 2 ? body_a : body_b) + middle_offset;
+                    float3 velocity = make_float3(has_a ? s_v[body_a + rank] : 0.0f,
+                        has_middle ? s_v[middle_dof] : 0.0f, has_b ? s_v[body_b + rank + 2] : 0.0f);
+                    auto island_load = [&](int row, const float* values_a, const float* values_b) {{
+                        int base = row * 6;
+                        const float* middle = rank < 2 ? values_a : values_b;
+                        return make_float3(has_a ? values_a[base + rank] : 0.0f,
+                            has_middle ? middle[base + middle_offset] : 0.0f,
+                            has_b ? values_b[base + rank + 2] : 0.0f);
+                    }};
+                    bool dirty = false;
+                    auto island_apply = [&](float3 response, float delta) {{
+                        if (has_a) velocity.x += response.x * delta;
+                        if (has_middle) velocity.y += response.y * delta;
+                        if (has_b) velocity.z += response.z * delta;
+                        dirty = true;
+                        iteration_changed = 1;
+                    }};
+                    do {{
+                        int row = link & 127;
+                        link = island_next[row];
+                        int4 meta = island_meta[row];
+                        float diag = __int_as_float(meta.y), rhs = __int_as_float(meta.z);
+                        float old = __shfl_sync(group_mask, rank == 0 ? s_lam_mf[row] : 0.0f, 0, 4), next_impulse;
+                        if ((meta.w & 0xffff) == {contact}) {{
+                            if (diag <= 0.0f) continue;
+                            float residual = island_dot(island_load(row, island_J_a, island_J_b), velocity) + {normal_rhs};
+                            float weight = regularize != 0 ? mf_row_w.data[off_mf + row] : 1.0f;
+                            float delta = -residual * diag * weight - (1.0f - weight) * old;
+                            next_impulse = old + omega * delta;
+                            if (next_impulse < 0.0f) next_impulse = 0.0f;
+                        }} else {{
+                            int parent = meta.w >> 16, sibling = row + 1;
+                            if (global_iter < friction_start_iteration) {{
+                                if (rank == 0) {{ s_lam_mf[row] = 0.0f; s_lam_mf[sibling] = 0.0f; }}
+                                continue;
+                            }}
+                            float radius = 0.0f;
+                            if (rank == 0) {{
+                                float load = s_lam_mf[parent];
+                                for (int link = island_meta[parent].w >> 16; link >= 0 && link != parent; link = island_meta[link].w >> 16)
+                                    load += s_lam_mf[link];
+                                radius = fmaxf(mf_row_mu.data[off_mf + row] * load, 0.0f);
+                            }}
+                            radius = __shfl_sync(group_mask, radius, 0, 4);
+                            float old_sib = __shfl_sync(group_mask, rank == 0 ? s_lam_mf[sibling] : 0.0f, 0, 4);
+                            if (radius == 0.0f && __float_as_uint(old) == 0u && __float_as_uint(old_sib) == 0u) continue;
+                            float3 sibling_response = island_load(sibling, island_MiJt_a, island_MiJt_b);
+                            float3 pair = make_float3(0.0f, 0.0f, 1.0f);
+                            if (radius > 0.0f) {{
+                                float3 jacobian = island_load(row, island_J_a, island_J_b);
+                                float residual = island_dot(jacobian, velocity) + rhs;
+                                float residual_sib = island_dot(island_load(sibling, island_J_a, island_J_b), velocity)
+                                    + __int_as_float(island_meta[sibling].z);
+                            {scalar_pair}
+                            }}
+                            float scale = pair.z;
+                            next_impulse = pair.x * scale;
+                            float sib_delta = pair.y * scale - old_sib;
+                            if (rank == 0) s_lam_mf[sibling] = pair.y * scale;
+                            if (sib_delta != 0.0f) island_apply(sibling_response, sib_delta);
+                        }}
+                        float delta = next_impulse - old;
+                        if (rank == 0) s_lam_mf[row] = next_impulse;
+                        if (delta != 0.0f) island_apply(island_load(row, island_MiJt_a, island_MiJt_b), delta);
+                    }} while (link & 128);
+                    if (dirty) {{
+                        if (has_a) s_v[body_a + rank] = velocity.x;
+                        if (has_middle) s_v[middle_dof] = velocity.y;
+                        if (has_b) s_v[body_b + rank + 2] = velocity.z;
+                    }}
+                    if (link == 0) break;
+                    __syncwarp(group_mask);
+                }}
+            }}
+            __syncwarp();
+        }} else {{
+"""
+        sweep = "    for (int iter = 0; iter < iterations; iter++) {"
+        source = _replace_once(source, sweep, classify + sweep)
+        main = "        // Free-body contact and friction rows, prefetching the next row."
+        limits = "        // Velocity limits last:"
+        if "auto sum_mf_patch =" in source:
+            parallel = re.sub(
+                r"float load = s_lam_mf\[parent\];\s*for \(int link = island_meta.*?load \+= s_lam_mf\[link\];",
+                "float load = sum_mf_patch(parent);",
+                parallel,
+                flags=re.S,
+            )
+        source = _replace_once(source, main, parallel.replace(FRICTION_PAIR_CUDA, pair_search(4)) + main)
+        return _replace_once(source, limits, "        }\n" + limits)
+
+    if friction_mode == "fixed_normal" and not nesterov_momentum and not contact_torsion:
+        live_bytes = 4 * (D + M_D + M_MF)
+        if shared_metadata:
+            live_bytes += 4 * M_D * (4 + 4 * has_drive_rows + fuse_vel_limits)
+        if pair_cache:
+            live_bytes += 2 * M_D + 20 * pair_cache_capacity + 3 * M_D * row_cache
+        room = 40 * 1024 - live_bytes - patch_storage
+        island_bytes = 2 * ((M_MF + 15) & ~15) + ((max(D, M_MF) + 15) & ~15)
+        enable_islands = 12 <= D <= 128 and 2 <= M_MF <= 128 and island_bytes <= room
+        if enable_islands:
+            room -= island_bytes
+        staging = ""
+        first_use = "    __shared__ float s_v["
+        prefix, body = snippet.split(first_use, 1)
+        mf_staged = 0 < M_MF and M_MF * 112 <= room // 2
+        if mf_staged:
+            staging += f"""
+    __shared__ int4 stage_meta[{M_MF}];
+    for (int row = lane; row < m_mf; row += 32)
+        stage_meta[row] = reinterpret_cast<const int4*>(mf_meta.data + off_meta)[row];
+"""
+            body = body.replace("*reinterpret_cast<const int4*>(&mf_meta.data[off_meta])", "stage_meta[0]")
+            body = re.sub(
+                r"\*reinterpret_cast<const int4\*>\(&mf_meta\.data\[off_meta \+ (\w+) \* 4\]\)", r"stage_meta[\1]", body
+            )
+            for component, field in enumerate("xyzw"):
+                body = re.sub(
+                    rf"mf_meta\.data\[off_meta \+ (\w+) \* 4 \+ {component}\]", rf"stage_meta[\1].{field}", body
+                )
+            for src in ("mf_J_a", "mf_J_b", "mf_MiJt_a", "mf_MiJt_b"):
+                staging += f"    __shared__ float stage_{src}[{M_MF * 6}];\n"
+            staging += "    for (int elem = lane; elem < m_mf * 6; elem += 32) {\n"
+            for src in ("mf_J_a", "mf_J_b", "mf_MiJt_a", "mf_MiJt_b"):
+                staging += f"        stage_{src}[elem] = {src}.data[mf6_base + elem];\n"
+                body = body.replace(src + ".data[", "stage_" + src + "[")
+            staging += "    }\n    mf6_base = 0;\n"
+            room -= 112 * M_MF
+        if mf_staged and "const bool cache_mf_pairs" in body:
+            contact_kind = int(PGS_CONSTRAINT_TYPE_CONTACT)
+            phase_prologue = f"""
+    bool short_pass = cache_mf_pairs && mf_main_end > 0 && mf_main_end <= 32;
+    int short_dof = -1;
+    const int short_part = lane & 15;
+    unsigned short_rows = 0u, short_pairs = 0u, short_links = 0u;
+    int4 short_meta = make_int4(0,0,0,0);
+    float short_mu = 0.0f, short_weight = 1.0f;
+    float short_scale = 0.f, short_major = 0.f, short_minor = 0.f, short_vx = 0.f, short_vy = 0.f;
+    if (short_pass) {{
+        int map = stage_meta[0].x;
+        int base_a = map >> 16, base_b = (short)map;
+        bool disjoint = base_a < 0 || base_b < 0 || base_a+6 <= base_b || base_b+6 <= base_a;
+        short_dof = short_part < 6 && base_a >= 0 ? base_a + short_part :
+                    short_part >= 6 && short_part < 12 && base_b >= 0 ? base_b + short_part-6 : -1;
+        if (lane < mf_main_end) short_meta = stage_meta[lane];
+        int kind = short_meta.w & 65535, parent = short_meta.w >> 16;
+        bool tangent = lane < mf_main_end && kind == {friction_type};
+        bool first = tangent && lane == parent+1;
+        bool valid = lane >= mf_main_end || (map == short_meta.x && (kind == {contact_kind} || tangent));
+        if (tangent) {{
+            valid = valid && parent >= 0 && parent+2 < mf_main_end && (first || lane == parent+2)
+                     && stage_meta[parent+1].w == short_meta.w && stage_meta[parent+2].w == short_meta.w
+                     && (stage_meta[parent].w & 65535) == {contact_kind};
+            if (first && valid) {{
+                int relative = stage_meta[parent].w >> 16;
+                #pragma unroll
+                for (int level=0; level<5; ++level) {{
+                    if (relative < 0 || relative == parent || relative >= mf_main_end) break;
+                    short_links |= (unsigned)(relative+1) << (level*6);
+                    relative = stage_meta[relative].w >> 16;
+                }}
+                valid = relative < 0 || relative == parent;
+            }}
+        }}
+        short_pass = __all_sync(MASK, valid && disjoint && base_a+6 <= {D} && base_b+6 <= {D});
+        if (short_pass) {{
+            short_rows = __ballot_sync(MASK, lane < mf_main_end &&
+                (first || (kind == {contact_kind} && !(__int_as_float(short_meta.y) <= 0.0f))));
+            short_pairs = __ballot_sync(MASK, first);
+            if (first) {{
+                short_mu = mf_row_mu.data[off_mf+lane];
+                const float* op = s_mf_pair_op[lane >> 1];
+                short_scale = op[0]; short_major = op[1]; short_minor = op[2]; short_vx = op[3]; short_vy = op[4];
+            }}
+            if (regularize != 0 && lane < mf_main_end && kind == {contact_kind}) short_weight = mf_row_w.data[off_mf+lane];
+        }}
+    }}
+"""
+            residual_bias = "(bias + compliance_mf_gamma.data[off_mf + row] * old)" if contact_compliance else "bias"
+            step = f"""        if (short_pass) {{
+            float carried = lane < mf_main_end ? s_lam_mf[lane] : 0.0f;
+            float velocity = short_dof >= 0 ? s_v[short_dof] : 0.0f;
+            unsigned visit = short_rows;
+            if (global_iter < friction_start_iteration) {{
+                if ((short_meta.w & 65535) == {friction_type}) carried = 0.0f;
+                visit &= ~short_pairs;
+            }}
+            const float* jac = short_part < 6 ? stage_mf_J_a : stage_mf_J_b;
+            const float* response = short_part < 6 ? stage_mf_MiJt_a : stage_mf_MiJt_b;
+            int column = short_part < 6 ? short_part : short_part - 6;
+            bool dirty = false;
+            while (visit) {{
+                int row = __ffs(visit) - 1;
+                bool paired = ((visit & -visit) & short_pairs) != 0;
+                visit &= visit - 1;
+                float old = __shfl_sync(MASK, carried, row);
+                float old_sibling = __shfl_sync(MASK, carried, row+1);
+                float radius = 0.0f;
+                if (paired) {{
+                    unsigned links = __shfl_sync(MASK, short_links, row);
+                    float load = __shfl_sync(MASK, carried, row-1);
+                    while (links) {{ load += __shfl_sync(MASK, carried, (links & 63u)-1); links >>= 6; }}
+                    radius = fmaxf(__shfl_sync(MASK, short_mu, row) * load, 0.f);
+                    if (radius == 0.f && __float_as_uint(old) == 0u && __float_as_uint(old_sibling) == 0u) continue;
+                }}
+                int coeff = (row + (paired && lane >= 16)) * 6 + column;
+                float direction = short_dof >= 0 ? response[coeff] : 0.f;
+                float item = short_dof >= 0 ? __fmul_rn(jac[coeff], velocity) : 0.f;
+                float partial = __fadd_rn(item, 0.f);
+                #pragma unroll
+                for (int offset=8; offset; offset >>= 1) partial += __shfl_xor_sync(MASK, partial, offset, 16);
+                float dot = __shfl_sync(MASK, partial, 0);
+                float bias = __shfl_sync(MASK, __int_as_float(short_meta.z), row);
+                float next_value;
+                if (paired) {{
+                    float second = __shfl_sync(MASK, partial, 16) + __shfl_sync(MASK, __int_as_float(short_meta.z), row+1);
+                    float3 result = friction_pair_solve(__shfl_sync(MASK, short_scale,row), __shfl_sync(MASK,short_major,row),
+                        __shfl_sync(MASK,short_minor,row), __shfl_sync(MASK,short_vx,row), __shfl_sync(MASK,short_vy,row),
+                        dot+bias, second, old, old_sibling, radius, omega);
+                    next_value = result.x * result.z;
+                    float next_sibling = result.y * result.z;
+                    float change = next_sibling - old_sibling;
+                    float second_direction = __shfl_sync(MASK, direction, lane|16);
+                    direction = __shfl_sync(MASK, direction, lane&15);
+                    if (lane == row+1) carried = next_sibling;
+                    if (change != 0.0f) {{ dirty = true; velocity += second_direction * change; }}
+                }} else {{
+                    float weight = __shfl_sync(MASK, short_weight,row);
+                    float diag = __shfl_sync(MASK, __int_as_float(short_meta.y),row);
+                    float residual = dot + {residual_bias};
+                    float delta = -residual * diag * weight - (1.0f-weight) * old;
+                    next_value = old + omega * delta;
+                    if (next_value < 0.f) next_value = 0.f;
+                }}
+                if (lane == row) carried = next_value;
+                float change = next_value - old;
+                if (change != 0.f) {{ dirty = true; velocity += direction * change; }}
+            }}
+            if (dirty) {{
+                iteration_changed = 1;
+                if (lane < 16 && short_dof >= 0) s_v[short_dof] = velocity;
+            }}
+            if (lane < mf_main_end) s_lam_mf[lane] = carried;
+            __syncwarp();
+        }} else {{
+"""
+            sweep = "    for (int iter = 0; iter < iterations; iter++) {"
+            main = "        // Free-body contact and friction rows, prefetching the next row."
+            limit = "        // Velocity limits last:"
+            body = _replace_once(body, sweep, phase_prologue + sweep)
+            body = _replace_once(body, main, main + "\n" + step)
+            body = _replace_once(body, limit, "        }\n" + limit)
+        if enable_islands:
+            body = island_sweep(body, mf_staged)
+        row_cap = min(M_D, room // max(8 * D, 1))
+        if row_cap > 0 and D > 0:
+            staging += f"""
+    __shared__ float stage_J[{row_cap * D}], stage_Y[{row_cap * D}];
+    const float* active_J = J_world.data + jy_world_base;
+    const float* active_Y = Y_world.data + jy_world_base;
+    if (m_dense <= {row_cap}) {{
+        for (int elem = lane; elem < m_dense * {D}; elem += 32) {{
+            stage_J[elem] = active_J[elem];
+            stage_Y[elem] = active_Y[elem];
+        }}
+        active_J = stage_J;
+        active_Y = stage_Y;
+    }}
+    jy_world_base = 0;
+"""
+            body = body.replace("J_world.data[", "active_J[").replace("Y_world.data[", "active_Y[")
+        snippet = prefix + staging + first_use + body
+
+    if not shared_metadata and friction_mode == "fixed_normal" and 8 <= M_D <= 32 * 32 and 0 < D <= 128:
+        joint_limit = int(PGS_CONSTRAINT_TYPE_JOINT_LIMIT)
+        iter_header = "    for (int iter = 0; iter < iterations; iter++) {"
+        limit_setup = f"""
+    int limit_start = -1;
+    int limit_dof = 0;
+    float limit_coeff = 0.0f, limit_rhs = 0.0f, limit_margin = 0.0f;
+    bool limit_sparse = false;
+    if (iterations > 1 && internal_rows && regularize == 0 && omega >= 0x1p-63f && isfinite(omega)) {{
+        for (int base = 0; base + 7 < dense_main_end; base += 32) {{
+            int row = base + lane;
+            unsigned starts = __ballot_sync(MASK, row < dense_main_end && world_row_type.data[off_dense + row] == {joint_limit});
+            starts &= starts >> 1;
+            starts &= starts >> 2;
+            starts &= starts >> 4;
+            if (starts) {{ limit_start = base + __ffs(starts) - 1; break; }}
+        }}
+        if (limit_start >= 0) {{
+            int row = limit_start + lane;
+            if (row < dense_main_end && world_row_type.data[off_dense + row] == {joint_limit}) {{
+                float diag = world_diag.data[off_dense + row];
+                limit_rhs = rhs_bias.data[off_dense + row];
+                limit_margin = 0x1p-63f * fmaxf(1.0f, diag);
+                limit_sparse = diag > 0.0f && isfinite(diag) && isfinite(limit_rhs);
+                for (int column = 0; column < {D}; ++column) {{
+                    float entry = J_world.data[(off_dense + row) * {D} + column];
+                    if (entry != 0.0f) {{
+                        if (limit_coeff != 0.0f || !isfinite(entry)) {{ limit_sparse = false; break; }}
+                        limit_coeff = entry;
+                        limit_dof = column;
+                    }}
+                }}
+            }}
+        }}
+    }}
+"""
+        snippet = _replace_once(
+            snippet,
+            iter_header,
+            limit_setup + iter_header + "\n        int limit_probe = limit_start, skip_before = -1;",
+        )
+        pending_start = "            unsigned pending = tile_ready;"
+        snippet = _replace_once(
+            snippet,
+            pending_start,
+            pending_start
+            + """
+            if (skip_before > desc_base) pending &= skip_before >= desc_base + 32 ? 0u : ~0u << (skip_before - desc_base);""",
+        )
+        dense_header = "            int i = desc_base + desc_lane;"
+        reload_current = snippet.split("            int desc_lane = __ffs(pending) - 1;\n", 1)[1].split(
+            "            while (pending)", 1
+        )[0]
+        finite_v = " && ".join(f"isfinite(dense_v_{chunk})" for chunk in range(ELEMS_PER_LANE))
+        gather = "\n".join(
+            f"                float chunk_v_{chunk} = __shfl_sync(MASK, dense_v_{chunk}, limit_dof & 31);\n"
+            f"                if ((limit_dof >> 5) == {chunk}) limit_v = chunk_v_{chunk};"
+            for chunk in range(ELEMS_PER_LANE)
+        )
+        limit_skip = f"""
+            if (i == limit_probe && __all_sync(MASK, {finite_v})) {{
+                float limit_v = 0.0f;
+{gather}
+                float gap = __fadd_rn(__fmul_rn(limit_coeff, limit_v), limit_rhs);
+                bool idle = limit_sparse && gap >= limit_margin && isfinite(gap)
+                    && __float_as_uint(s_lam_dense[limit_start + lane]) == 0u;
+                unsigned unresolved = __ballot_sync(MASK, !idle) & (~0u << (i - limit_start));
+                int stop_lane = unresolved ? __ffs(unresolved) - 1 : 32;
+                int next_row = limit_start + stop_lane;
+                if (next_row > i) {{
+                    if (next_row - i >= 4 && stop_lane + 8 < 32) limit_probe = next_row + 1;
+                    skip_before = next_row;
+                    pending &= next_row >= desc_base + 32 ? 0u : ~0u << (next_row - desc_base);
+                    if (!pending) break;
+                    desc_lane = __ffs(pending) - 1;
+                    i = desc_base + desc_lane;
+{reload_current}
+                }}
+            }}"""
+        snippet = _replace_once(snippet, dense_header, dense_header + limit_skip)
+
+    if pair_cache and friction_mode == "fixed_normal":
+        matrix_free_cache = "__shared__ float s_mf_pair_op[" in snippet
+        bytes_used = 0
+        shared_types = {"unsigned char": 1, "short": 2, "int": 4, "int4": 16, "float": 4, "unsigned": 4}
+        for declaration in re.findall(r"__shared__\s+([^;]+);", snippet):
+            match = re.fullmatch(r"(unsigned char|short|int4|int|float|unsigned)\s+(.+)", declaration)
+            if not match:
+                bytes_used = 48 * 1024
+                break
+            for array in match[2].split(","):
+                count = shared_types[match[1]]
+                for extent in re.findall(r"\[(\d+)\]", array):
+                    count *= int(extent)
+                bytes_used += (count + 15) & ~15
+        recip_bytes = 24 * (pair_cache_capacity + (mf_pair_slots if matrix_free_cache else 0))
+        if bytes_used + recip_bytes + 32 <= 48 * 1024:
+            solve_proto = (
+                "float r0, float r1, float old0, float old1, float radius, float omega) {\n        if (radius <= 0.0f)"
+            )
+            cached_proto = """float r0, float r1, float old0, float old1, float radius, float omega,
+        const double3* reciprocals = nullptr) {
+        const auto quotient = [&](float value, float divisor, int axis) {
+#if defined(__CUDA_PREC_DIV) && __CUDA_PREC_DIV && defined(__CUDA_FTZ) && !__CUDA_FTZ
+            if (reciprocals) {
+                double inverse = axis == 0 ? reciprocals->x : (axis == 1 ? reciprocals->y : reciprocals->z);
+                return __double2float_rn(__dmul_rn((double)value, inverse));
+            }
+#endif
+            return value / divisor;
+        };
+        if (radius <= 0.0f)"""
+            snippet = snippet.replace(solve_proto, cached_proto)
+            snippet = snippet.replace("(vx*r0 + vy*r1) / scale", "quotient(vx*r0 + vy*r1, scale, 0)")
+            snippet = snippet.replace("(-vy*r0 + vx*r1) / scale", "quotient(-vy*r0 + vx*r1, scale, 0)")
+            snippet = snippet.replace("r0_rotated / largest", "quotient(r0_rotated, largest, 1)")
+            snippet = snippet.replace("r1_rotated / smallest", "quotient(r1_rotated, smallest, 2)")
+            build = "make_double3(__drcp_rn((double)scale), __drcp_rn((double)largest), __drcp_rn((double)smallest))"
+            snippet = snippet.replace(
+                "__shared__ short s_pair_slot[",
+                f"__shared__ double3 dense_reciprocal[{pair_cache_capacity}];\n    __shared__ short s_pair_slot[",
+            )
+            snippet = snippet.replace(
+                "s_pair_slot[i] = lane_slot;",
+                f"dense_reciprocal[lane_slot] = {build};\n                s_pair_slot[i] = lane_slot;",
+            )
+            if matrix_free_cache:
+                snippet = snippet.replace(
+                    "__shared__ float s_mf_pair_op[",
+                    f"__shared__ double3 mf_reciprocal[{mf_pair_slots}];\n    __shared__ float s_mf_pair_op[",
+                )
+                snippet = snippet.replace(
+                    "op[0] = scale;", f"mf_reciprocal[row >> 1] = {build};\n                op[0] = scale;"
+                )
+
+            def reciprocal_arguments(match):
+                call = match[0]
+                if "packet_op" in call or "s_pair_op" in call:
+                    address = "dense_reciprocal + pair_slot"
+                elif "op[0]" in call and matrix_free_cache:
+                    address = "mf_reciprocal + (" + ("row" if "old_sib, radius" in call else "i") + " >> 1)"
+                elif "short_scale" in call and matrix_free_cache:
+                    address = "mf_reciprocal + (row >> 1)"
+                else:
+                    return call
+                return call[:-2] + ", " + address + ");"
+
+            snippet = re.sub(r"friction_pair_solve\([^;{}]+?\);", reciprocal_arguments, snippet)
 
     if skip_local_internal_worlds:
         return _mf_gs_skip_local_kernel(
