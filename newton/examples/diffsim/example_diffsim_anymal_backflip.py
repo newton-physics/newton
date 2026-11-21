@@ -981,7 +981,8 @@ class Example:
         return st
 
     def _settle_segment(self, st0, st1, n, mode, amp=0.0):
-        """Run n solver steps under the hold servo with the given mode and amplitude."""
+        """Run n solver steps under the hold servo with the given mode and amplitude
+        (mode 0 = hold stand, mode 1 = push to stand * (1 + amp))."""
         params = wp.array([amp], dtype=wp.float32)
         for _ in range(n):
             self.pipe.collide(st0, self.cts)
@@ -993,6 +994,7 @@ class Example:
             st0.clear_forces()
             self.solver.step(st0, st1, self.ctrl, self.cts, SIM_DT)
             st0, st1 = st1, st0
+        # ping-pong buffers: after each swap st0 is again the newest state
         return st0
 
     def _foot_row_count(self, contacts):
@@ -1006,6 +1008,8 @@ class Example:
 
     def _state_metrics(self, body_q0, body_qd0):
         """Root-body gate metrics: height, tilt, vertical and angular speed, as a dict."""
+        # body_qd0 is newton's spatial velocity: rows [0:3] linear, [3:6] angular -
+        # vz reads the linear row's z, w the angular row's norm
         return {
             "z": float(body_q0[2]),
             "tilt": _tilt_of(body_q0),
@@ -1096,6 +1100,7 @@ class Example:
         the replays all run these exact kernels on the same buffers, so the
         loss the optimizer differentiates is the loss it accepts steps on."""
         n = ro.n
+        # fresh accumulation per evaluation: the line search calls this many times
         ro.loss_arr.zero_()
         contacts = None
         for t in range(n):
