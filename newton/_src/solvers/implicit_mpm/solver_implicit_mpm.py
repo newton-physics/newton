@@ -2623,7 +2623,8 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         After :meth:`coupling_notify_proxy_feedback` enabled body feedback, the impulses are
         accumulated over every step since the previous harvest, so a sub-stepped entry feeds
         back the average force over the whole coupled step ``dt``. Otherwise only the impulses
-        of the most recent step are converted.
+        of the most recent step are converted. Each harvest consumes the rows it maps, so
+        several proxy mappings of one destination each receive their own feedback.
         """
         del body_qd_before, state_out, contacts
         if dt <= 0.0:
@@ -2634,7 +2635,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
         if not self._coupling_body_feedback:
             self._require_coupling_body_impulse()
-            self._clear_coupling_impulses()
+            self._coupling_body_impulse.zero_()
             impulses, positions, collider_ids = self.collect_collider_impulses(state)
             if collider_ids.shape[0] > 0:
                 self._accumulate_collider_body_impulses(impulses, positions, collider_ids, state, None, 0.0, None)
@@ -2654,7 +2655,6 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             ],
             device=self.model.device,
         )
-        self._coupling_body_impulse.zero_()
 
     def coupling_rewind_proxy_particle(
         self,
@@ -2709,7 +2709,9 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         After :meth:`coupling_notify_proxy_feedback` enabled particle feedback, the deformable
         collider impulses are accumulated over every step since the previous harvest, so a
         sub-stepped entry feeds back the average force over the whole coupled step ``dt``.
-        Otherwise only the impulses of the most recent step are converted.
+        Otherwise only the impulses of the most recent step are converted. Each harvest
+        consumes the rows it maps, so several proxy mappings of one destination each receive
+        their own feedback.
         """
         if dt <= 0.0:
             raise ValueError("MPM proxy particle-force harvesting requires a positive dt")
@@ -2731,7 +2733,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
         if not self._coupling_particle_feedback:
             self._require_coupling_particle_impulse(force=True)
-            self._clear_coupling_impulses()
+            self._coupling_particle_impulse.zero_()
             impulses, positions, collider_ids = self.collect_collider_impulses(state)
             if collider_ids.shape[0] > 0:
                 self._accumulate_collider_particle_impulses(impulses, positions, collider_ids)
@@ -2764,7 +2766,6 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             ],
             device=self.model.device,
         )
-        self._coupling_particle_impulse.zero_()
 
     def _require_coupling_body_impulse(self) -> None:
         """Allocate the per-body impulse accumulators used by the proxy wrench harvest."""
@@ -5678,6 +5679,7 @@ def _harvest_mpm_proxy_wrenches_kernel(
         return
 
     wp.atomic_add(out_body_f, proxy_global, body_impulse[local_body] / dt)
+    body_impulse[local_body] = wp.spatial_vector()
 
 
 @wp.kernel(enable_backward=False)
@@ -5745,3 +5747,4 @@ def _harvest_mpm_proxy_particle_forces_kernel(
         return
 
     wp.atomic_add(out_particle_f, proxy_global, particle_impulse[local_particle] / dt)
+    particle_impulse[local_particle] = wp.vec3(0.0)

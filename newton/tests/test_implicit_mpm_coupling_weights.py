@@ -50,11 +50,11 @@ def _mock_single_contact_impulse(solver, contact_impulse, device):
     solver.collect_collider_impulses = lambda state: (impulses, contact_point, collider_ids)
 
 
-def _harvest_proxy_particle_forces(solver, state, dt, device):
-    """Harvest the proxy particle forces of the three collider vertices over a coupled step ``dt``."""
+def _harvest_proxy_particle_forces(solver, state, dt, device, mapping=(0, 1, 2, -1)):
+    """Harvest the proxy particle forces of the collider vertices in ``mapping`` over a coupled step ``dt``."""
     feedback = wp.zeros(3, dtype=wp.vec3, device=device)
     solver.coupling_harvest_proxy_particle_forces(
-        wp.array([0, 1, 2, -1], dtype=int, device=device),
+        wp.array(mapping, dtype=int, device=device),
         feedback,
         particle_qd_before=state.particle_qd,
         state=state,
@@ -150,6 +150,23 @@ def test_proxy_feedback_without_notification_uses_last_step(test, device):
     _assert_feedback_matches_contact(forces, contact_impulse / dt)
 
 
+def test_proxy_feedback_keeps_rows_of_other_mappings(test, device):
+    """Consume only the harvested rows so later proxy mappings of the same destination keep their feedback."""
+    solver, _mesh = _make_deformable_collider(device)
+    contact_impulse = np.array([0.0, 0.0, 2.0], dtype=np.float32)
+    _mock_single_contact_impulse(solver, contact_impulse, device)
+
+    state = solver.model.state()
+    dt = 2.0
+    solver.coupling_notify_proxy_feedback(CouplingInterface.EndpointKind.PARTICLE, True)
+    solver.step(state, state, None, None, dt)
+    first = _harvest_proxy_particle_forces(solver, state, dt, device, mapping=(0, -1, -1, -1))
+    second = _harvest_proxy_particle_forces(solver, state, dt, device, mapping=(-1, 1, 2, -1))
+
+    test.assertGreater(np.abs(second).sum(), 0.0)
+    _assert_feedback_matches_contact(first + second, contact_impulse / dt)
+
+
 def test_proxy_feedback_storage_follows_notification(test, device):
     """Allocate the feedback accumulators only for the endpoint kinds the coupler declared."""
     solver, _mesh = _make_deformable_collider(device)
@@ -222,6 +239,12 @@ add_function_test(
     TestImplicitMPMCouplingWeights,
     "test_proxy_feedback_without_notification_uses_last_step",
     test_proxy_feedback_without_notification_uses_last_step,
+    devices=devices,
+)
+add_function_test(
+    TestImplicitMPMCouplingWeights,
+    "test_proxy_feedback_keeps_rows_of_other_mappings",
+    test_proxy_feedback_keeps_rows_of_other_mappings,
     devices=devices,
 )
 add_function_test(
