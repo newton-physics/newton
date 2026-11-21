@@ -41,6 +41,7 @@ _COLLISION_EDGE_DEPRECATION_MSG = (
 if TYPE_CHECKING:
     from ..actuators.actuator import Actuator
     from ..actuators.batteries import BatteryBase
+    from ..geometry import Gaussian
     from ..geometry.optix import OptixShapes
     from ..utils.heightfield import HeightfieldData
 
@@ -1184,6 +1185,8 @@ class Model:
 
         self._mesh_keep_alive: list[wp.Mesh] = []
         """wp.Mesh objects referenced by :attr:`shape_source_ptr`, kept alive for the model's lifetime."""
+        self._gaussian_keep_alive: list[tuple[Gaussian.Data, wp.Bvh]] = []
+        """Finalized data and BVH of each Gaussian asset in :attr:`gaussians_data`, kept alive for the model's lifetime."""
 
         # Internal collision edges; public names remain as deprecated property aliases.
         self._mesh_edge_indices: wp.array[wp.vec2i] | None = None

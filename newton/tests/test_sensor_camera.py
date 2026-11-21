@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import gc
 import inspect
 import math
 import unittest
@@ -2074,6 +2075,43 @@ class TestSensorCamera(unittest.TestCase):
         np.testing.assert_allclose(hdr.numpy().reshape(3), [0.8] * 3, atol=1e-4)
         self.assertAlmostEqual(float(depth.numpy().reshape(-1)[0]), 3.0, delta=1e-3)
         self.assertEqual(int(shape_index.numpy().reshape(-1)[0]), shapes[1])
+
+    @unittest.skipUnless(wp.is_cuda_available(), "requires CUDA")
+    def test_gaussian_asset_shared_by_two_models_stays_valid(self):
+        """Finalizing a second model with a model's Gaussian asset leaves the first model's splats intact."""
+        rng = np.random.default_rng(0)
+        gaussian = newton.Gaussian(
+            positions=rng.uniform(-0.3, 0.3, (200, 3)).astype(np.float32),
+            scales=np.full((200, 3), 0.05, dtype=np.float32),
+            opacities=np.full(200, 0.9, dtype=np.float32),
+            sh_coeffs=rng.normal(size=(200, 3)).astype(np.float32),
+        )
+
+        def finalize():
+            builder = newton.ModelBuilder()
+            builder.add_shape_gaussian(
+                -1, xform=wp.transform(wp.vec3(0.0, 0.0, -2.0), wp.quat_identity()), gaussian=gaussian
+            )
+            return builder.finalize(device="cuda:0")
+
+        model = finalize()
+        camera = SensorCamera(model)
+        depth = camera.allocate_image_depth(1, 16, 16)
+
+        def render():
+            camera.update(
+                model.state(),
+                self._identity_transforms(1, "cuda:0"),
+                self._rays(16, 16, device="cuda:0"),
+                depth_image=depth,
+            )
+            return depth.numpy()
+
+        before = render()
+        del_model = finalize()
+        del del_model
+        gc.collect()
+        np.testing.assert_array_equal(render(), before)
 
 
 def _optix_variant(test):
