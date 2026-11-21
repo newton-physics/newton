@@ -39,9 +39,9 @@ def _knee_order_loss(device, dz):
     wp.launch(bf.knee_mingz_kernel, dim=1, inputs=[body_q, pts_body, pts_local, argmin, mink, 0], device=device)
     wp.launch(bf.pawraw_state_kernel, dim=1, inputs=[body_q, paw_body, paw_center, paw_r, minp, 0], device=device)
     wp.launch(
-        bf.order_state_g_kernel,
+        bf.order_state_ground_kernel,
         dim=1,
-        inputs=[mink, minp, 0, bf.W_ORDER_A, bf.KNEE_MARGIN_G, bf.PAW_MASK_H, loss],
+        inputs=[mink, minp, 0, bf.WEIGHT_ORDER_CROUCH, bf.KNEE_MARGIN_GROUND, bf.PAW_MASK_HEIGHT, loss],
         device=device,
     )
     return body_q, loss
@@ -71,7 +71,7 @@ def _band_loss(device, z_np, requires_grad):
     for t in range(n):
         wp.launch(bf.cum_max_kernel, dim=1, inputs=[z, cum_z, t], device=device)
     wp.launch(
-        bf.loss_jump_band_kernel, dim=1, inputs=[cum_z, n - 1, loss, bf.C_BAND, bf.Z_GOOD, bf.Z_LOW], device=device
+        bf.loss_jump_band_kernel, dim=1, inputs=[cum_z, n - 1, loss, bf.WEIGHT_BAND, bf.Z_GOOD, bf.Z_LOW], device=device
     )
     return z, loss
 
