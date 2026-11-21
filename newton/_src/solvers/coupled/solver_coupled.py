@@ -3554,6 +3554,9 @@ class SolverCoupled(SolverBase, CouplingInterface):
         if entry.state_tmp is None:
             raise RuntimeError(f"SolverCoupled.Entry {entry.name!r} is missing a substep scratch state")
         _copy_same_view_state(entry.state_0, entry.state_1)
+        # Solvers only write the rows they own, so the scratch state must also
+        # start from this coupled step's input (proxy bodies, coupled particles).
+        _copy_same_view_state(entry.state_0, entry.state_tmp)
         state_in = entry.state_1
         state_out = entry.state_tmp
         for substep in range(entry.substeps):

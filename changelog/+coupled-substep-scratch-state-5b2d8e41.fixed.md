@@ -1,0 +1,1 @@
+Fix `SolverCoupled` entries with `substeps > 1` and `in_place=False` so every sub-step sees the proxy body and coupled particle state synchronized for the current coupled step; previously the scratch state used by odd sub-steps kept the initial model state, so a `SolverImplicitMPM` destination rasterized moving proxy bodies at their initial pose on every other sub-step.

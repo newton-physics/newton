@@ -1296,6 +1296,81 @@ add_function_test(
 )
 
 
+class _RisingBodySolver(SolverBase, CouplingInterface):
+    """Source solver that lifts its bodies by 0.1 m per step."""
+
+    def step(self, state_in, state_out, control, contacts, dt):
+        del control, contacts, dt
+        body_q = state_in.body_q.numpy()
+        body_q[:, 2] += 0.1
+        state_out.body_q.assign(wp.array(body_q, dtype=wp.transform, device=state_out.body_q.device))
+        wp.copy(state_out.body_qd, state_in.body_qd)
+
+
+class _ProxyPoseRecordingSolver(SolverBase, CouplingInterface):
+    """Destination solver that records the proxy body height seen by every sub-step.
+
+    Like :class:`SolverImplicitMPM`, it only reads proxy bodies and never writes
+    their state to ``state_out``.
+    """
+
+    instances: ClassVar[list] = []
+
+    def __init__(self, model):
+        super().__init__(model)
+        self.proxy_heights = []
+        self.instances.append(self)
+
+    def step(self, state_in, state_out, control, contacts, dt):
+        del state_out, control, contacts, dt
+        self.proxy_heights.append(float(state_in.body_q.numpy()[:, 2].max()))
+
+
+def _coupled_substeps_see_current_proxy_pose(test, device):
+    """Give every sub-step of a non-in-place destination the proxy pose synced for this coupled step."""
+    _ProxyPoseRecordingSolver.instances.clear()
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    for _ in range(3):
+        builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+    model = builder.finalize(device=device)
+
+    coupled = SolverCoupledProxy(
+        model=model,
+        entries=[
+            SolverCoupled.Entry(name="src", solver=_RisingBodySolver, bodies=[0]),
+            SolverCoupled.Entry(name="dst", solver=_ProxyPoseRecordingSolver, bodies=[1], substeps=2, in_place=False),
+        ],
+        coupling=SolverCoupledProxy.Config(
+            proxies=[
+                SolverCoupledProxy.Proxy(
+                    source="src",
+                    destination="dst",
+                    bodies=[0],
+                    proxy_bodies=[2],
+                    mode="staggered",
+                ),
+            ],
+        ),
+    )
+
+    state = model.state()
+    step_count = 3
+    for _ in range(step_count):
+        coupled.step(state, state, control=None, contacts=None, dt=0.5)
+
+    heights = _ProxyPoseRecordingSolver.instances[-1].proxy_heights
+    expected = [0.1 * step for step in range(1, step_count + 1) for _substep in range(2)]
+    np.testing.assert_allclose(heights, expected, rtol=0.0, atol=1.0e-6)
+
+
+add_function_test(
+    TestSolverCoupledContactsAndMPM,
+    "test_substeps_see_current_proxy_pose",
+    _coupled_substeps_see_current_proxy_pose,
+    devices=get_test_devices("basic"),
+)
+
+
 class TestSolverCoupledBasic(unittest.TestCase):
     """Test SolverCoupled with two SemiImplicit solvers (simplest case)."""
 
