@@ -5090,8 +5090,9 @@ class TestSCCSparseDecoupledJointRows(NewtonTestCase):
             setup_tests(clear_cache=False)
         setup_test_output(self)
 
-    def test_sparse_matches_dense_on_armature_dominant_chain(self):
-        """Match dense SCC with friction and effort-limited PD on every joint of an armature-dominant chain."""
+    @staticmethod
+    def _build_armature_dominant_chain():
+        """Build a 6-joint chain with friction and effort-limited PD on every joint, armature 100x body inertia."""
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
         SolverKamino.register_custom_attributes(builder)
         parent, joints = -1, []
@@ -5116,7 +5117,11 @@ class TestSCCSparseDecoupledJointRows(NewtonTestCase):
             )
             parent = body
         builder.add_articulation(joints)
-        model = builder.finalize(device=test_context.device)
+        return builder.finalize(device=test_context.device)
+
+    def test_sparse_matches_dense_on_armature_dominant_chain(self):
+        """Match dense SCC with friction and effort-limited PD on every joint of an armature-dominant chain."""
+        model = self._build_armature_dominant_chain()
         rng = np.random.default_rng(0)
         targets = rng.uniform(-0.3, 0.3, model.joint_coord_count)
         initial_velocities = rng.uniform(-0.5, 0.5, model.joint_dof_count)
@@ -5146,6 +5151,32 @@ class TestSCCSparseDecoupledJointRows(NewtonTestCase):
             with self.subTest(use_schur_complement=use_schur_complement, unilateral_solver=unilateral_solver):
                 dense, sparse = rollout(configs[0]), rollout(configs[1])
                 np.testing.assert_allclose(sparse, dense, rtol=0.0, atol=1.0e-4 * np.max(np.abs(dense)))
+
+    def test_raw_jacobian_transpose_matches_column_major_with_decoupled_rows(self):
+        """Apply the body Jacobian of decoupled joint rows in the raw transpose product used by large batches."""
+        model = self._build_armature_dominant_chain()
+        config = make_scc_sparse_config()
+        config.scc.use_schur_complement = True
+        solver = SolverKamino(model, config)
+        state_in, state_out = model.state(), model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
+        solver.step(state_in, state_out, control=model.control(), contacts=None, dt=0.005)
+
+        problem = solver._solver_kamino._problem_fd
+        self.assertIsNotNone(problem.joint_decoupling)
+        delassus = problem.delassus
+        rng = np.random.default_rng(1)
+        impulses = wp.array(rng.uniform(-1.0, 1.0, problem.data.P.shape[0]).astype(np.float32), device=delassus.device)
+        mask = wp.ones(delassus.constraint_jacobian.num_matrices, dtype=wp.bool, device=delassus.device)
+        products = []
+        for raw in (False, True):
+            delassus._set_raw_transpose_enabled(raw)
+            delassus.update()
+            product = wp.zeros_like(delassus._vec_temp_body_space)
+            delassus.apply_jacobian_transpose(impulses, product, mask)
+            products.append(product.numpy())
+        column_major, raw = products
+        np.testing.assert_allclose(raw, column_major, rtol=0.0, atol=1.0e-6 * np.max(np.abs(column_major)))
 
 
 if __name__ == "__main__":

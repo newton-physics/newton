@@ -227,10 +227,9 @@ class SparseSCCPath:
             jacobian_values=delassus.constraint_jacobian.nzb_values,
         )
         # General PGS and fused inverse solves read transpose values directly. The raw transpose
-        # holds the unscaled Jacobian, not the body Jacobian of decoupled joint rows.
+        # product applies the row scale, which includes the body share of decoupled joint rows.
         delassus._set_raw_transpose_enabled(
-            not self.decoupled_rows.enabled
-            and self.device.is_cuda
+            self.device.is_cuda
             and self.size.num_worlds >= 2048
             and self.has_unilateral_constraints
             and self.max_alternating_iterations >= 4
