@@ -42,6 +42,7 @@ with open(project_root / "pyproject.toml", "rb") as f:
     project_version = tomllib.load(f)["project"]["version"]
 
 release = project_version
+version = project_version
 
 # -- Nitpicky mode -----------------------------------------------------------
 # Set nitpicky = True to warn about all broken cross-references (e.g. missing
@@ -80,7 +81,12 @@ extensions = [
     "autodoc_filter",
     "autodoc_wpfunc",
     "experimental",
+    "markdown_docs",
 ]
+
+markdown_anchor_sections = True
+markdown_anchor_signatures = True
+markdown_docinfo = True
 
 # -- nbsphinx configuration ---------------------------------------------------
 
@@ -465,8 +471,9 @@ def _copy_viser_client_into_output_static(*, outdir: Path) -> None:
 
 
 def _on_builder_inited(_app: Any) -> None:
-    outdir = Path(_app.builder.outdir)
-    _copy_viser_client_into_output_static(outdir=outdir)
+    if _app.builder.format == "html":
+        outdir = Path(_app.builder.outdir)
+        _copy_viser_client_into_output_static(outdir=outdir)
 
 
 _RE_REPR_ADDRESS = re.compile(r"<([\w.]+) object at 0x[0-9a-f]+>")

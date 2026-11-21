@@ -80,5 +80,9 @@ jobs:
             echo "::error::API docs are stale. Run 'python docs/generate_api.py' and commit the changes."
             exit 1
           }
+      - name: Verify Markdown documentation
+        run: |
+          uv run --extra docs --extra sim -m unittest newton.tests.test_documentation
+          uv run --extra docs --extra sim docs/build_markdown.py docs/_build/markdown
       - name: Run Sphinx doctests
         run: uv run --extra docs --extra sim sphinx-build -j auto -W -b doctest docs docs/_build/doctest
