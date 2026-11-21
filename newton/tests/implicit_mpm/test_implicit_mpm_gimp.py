@@ -434,69 +434,108 @@ def test_colored_contact_dynamic_collider(test, device, capture=False, determini
             wp.copy(self.feedback_velocity, scratch.collider_velocity)
             return result
 
+    if deterministic:
+        # Spread many unequal impacts across the same body so the wrench
+        # reduction can distinguish different orders of floating-point sums.
+        positions = tuple((x, y, 0.4) for x, y in product(np.linspace(-2.4, 2.4, 20), np.linspace(-1.4, 1.4, 12)))
+        impact_speeds = np.random.default_rng(5044).uniform(0.5, 2.0, len(positions))
+        collider_mass = 64.0
+    else:
+        positions = ((-0.8, 0.2, 0.4), (1.6, 0.2, 0.4))
+        impact_speeds = np.ones(len(positions))
+        collider_mass = 2.0
+
+    def rollout(mode, velocity):
+        solver, state = _make_solver(
+            device,
+            positions=positions,
+            contact=True,
+            collider_basis="pic27",
+            collider_mass=collider_mass,
+            gs_colored_contacts=None,
+            rheology_solver=mode,
+            velocity_basis=velocity,
+            solver_class=FeedbackMPM,
+            max_iterations=50,
+            young_modulus=12000.0,
+            air_drag=1.0e-4,
+            deterministic=wp.DeterministicMode.RUN_TO_RUN if deterministic else None,
+        )
+        solver.feedback_velocity = wp.empty(len(positions), dtype=wp.vec3)
+        initial_velocity = np.zeros((len(positions), 3), dtype=np.float32)
+        initial_velocity[:, 2] = -impact_speeds
+        state.particle_qd.assign(initial_velocity)
+        dt = 0.001
+        for step in range(2):
+            initial_momentum = state.particle_qd.numpy().sum(axis=0, dtype=np.float64)
+            if capture and step > 0:
+                with wp.ScopedCapture(device=device) as graph:
+                    solver.step(state, state, None, None, dt)
+                wp.capture_launch(graph.graph)
+            else:
+                solver.step(state, state, None, None, dt)
+            impulses, contact_positions, collider_ids = solver.collect_collider_impulses(state)
+            impulse = impulses.numpy()
+            position = contact_positions.numpy()
+            total_impulse = impulse.sum(axis=0, dtype=np.float64)
+            linear = total_impulse / collider_mass
+            angular = np.cross(position, impulse).sum(axis=0, dtype=np.float64)
+            test.assertLess(linear[2], -0.1)
+            test.assertGreater(np.linalg.norm(angular), 0.01)
+            # The larger fixture accumulates hundreds of contact contributions.
+            np.testing.assert_allclose(
+                solver.feedback_velocity.numpy(),
+                linear + np.cross(angular, position),
+                atol=1.0e-5 if deterministic else 2.0e-6,
+            )
+            np.testing.assert_allclose(
+                state.particle_qd.numpy().sum(axis=0, dtype=np.float64) + total_impulse,
+                initial_momentum,
+                rtol=1.0e-5 if deterministic else 1.0e-7,
+                atol=1.0e-4,
+            )
+
+        if deterministic:
+            ids = collider_ids.numpy()
+            contributions = impulse[(ids >= 0) & (impulse[:, 2] != 0.0), 2] / dt
+            test.assertGreaterEqual(np.unique(contributions).size, 3)
+            # Check that the fixture's actual force sum is sensitive to the
+            # order of sequential float32 additions.
+            ordered = np.sort(contributions)
+            sums = {np.cumsum(order, dtype=np.float32)[-1] for order in (contributions, ordered, ordered[::-1])}
+            test.assertGreater(len(sums), 1)
+
+            solver.model.body_flags.fill_(int(newton.BodyFlags.DYNAMIC | newton.BodyFlags.PROXY))
+            wrench = wp.empty(1, dtype=wp.spatial_vector)
+            solver.coupling_harvest_proxy_wrenches(
+                wp.array([0], dtype=int),
+                wrench,
+                body_qd_before=state.body_qd,
+                state=state,
+                state_out=state,
+                contacts=None,
+                dt=dt,
+            )
+            values = wrench.numpy()[0]
+            forces = impulse.astype(np.float64) / dt
+            wrench_terms = np.column_stack((forces, np.cross(position, forces)))
+            expected = wrench_terms.sum(axis=0)
+            # Opposing torques can nearly cancel. Scale roundoff by the
+            # magnitude of the inputs to the sum, not by the net torque.
+            scale = np.maximum(np.abs(wrench_terms).sum(axis=0), 1.0)
+            np.testing.assert_allclose((values - expected) / scale, 0.0, atol=2.0e-6)
+            return impulse, position, ids, values
+        return ()
+
     cases = (("gs-soa", "B2"),) if deterministic else product(("gs", "gs-soa"), ("Q1", "B2"))
     for mode, velocity in cases:
         with test.subTest(solver=mode, velocity_basis=velocity), wp.ScopedDevice(device):
-            solver, state = _make_solver(
-                device,
-                positions=((-0.8, 0.2, 0.4), (1.6, 0.2, 0.4)),
-                contact=True,
-                collider_basis="pic27",
-                collider_mass=2.0,
-                gs_colored_contacts=None,
-                rheology_solver=mode,
-                velocity_basis=velocity,
-                solver_class=FeedbackMPM,
-                max_iterations=50,
-                young_modulus=12000.0,
-                air_drag=1.0e-4,
-                deterministic=wp.DeterministicMode.RUN_TO_RUN if deterministic else None,
-            )
-            solver.feedback_velocity = wp.empty(2, dtype=wp.vec3)
-            state.particle_qd.fill_(wp.vec3(0.0, 0.0, -1.0))
-            for step in range(2):
-                initial_momentum = state.particle_qd.numpy().sum(axis=0)
-                if capture and step > 0:
-                    with wp.ScopedCapture(device=device) as graph:
-                        solver.step(state, state, None, None, 0.001)
-                    wp.capture_launch(graph.graph)
-                else:
-                    solver.step(state, state, None, None, 0.001)
-                impulses, positions, _ = solver.collect_collider_impulses(state)
-                impulse, position = impulses.numpy(), positions.numpy()
-                linear = impulse.sum(axis=0) / 2.0
-                angular = np.cross(position, impulse).sum(axis=0)
-                test.assertLess(linear[2], -0.1)
-                test.assertGreater(np.linalg.norm(angular), 0.01)
-                np.testing.assert_allclose(
-                    solver.feedback_velocity.numpy(), linear + np.cross(angular, position), atol=2.0e-6
-                )
-                np.testing.assert_allclose(
-                    state.particle_qd.numpy().sum(axis=0) + impulse.sum(axis=0), initial_momentum, atol=1.0e-4
-                )
+            reference = rollout(mode, velocity)
             if deterministic:
-                solver.model.body_flags.fill_(int(newton.BodyFlags.DYNAMIC | newton.BodyFlags.PROXY))
-                mapping = wp.array([0], dtype=int, device=device)
-                wrench = wp.empty(1, dtype=wp.spatial_vector, device=device)
-                reference = None
-                for _ in range(2):
-                    solver.coupling_harvest_proxy_wrenches(
-                        mapping,
-                        wrench,
-                        body_qd_before=state.body_qd,
-                        state=state,
-                        state_out=state,
-                        contacts=None,
-                        dt=0.001,
-                    )
-                    values = wrench.numpy()[0]
-                    if reference is None:
-                        np.testing.assert_allclose(
-                            values, np.concatenate((impulse.sum(axis=0), angular)) / 0.001, atol=1.0e-4
-                        )
-                        reference = values
-                    else:
-                        np.testing.assert_array_equal(values.view(np.uint32), reference.view(np.uint32))
+                actual = rollout(mode, velocity)
+                arrays = ("contact impulses", "contact positions", "collider IDs", "proxy wrench")
+                for name, a, b in zip(arrays, actual, reference, strict=True):
+                    np.testing.assert_array_equal(a.view(np.uint32), b.view(np.uint32), err_msg=name)
 
 
 class TestImplicitMPMGimp(unittest.TestCase):
@@ -532,9 +571,29 @@ def test_particle_updates_are_bitwise_repeatable(
         air_drag=0.0,
     )
 
+    class CheckColoringMPM(SolverImplicitMPM):
+        def _solve_rheology(self, scratch, rigidity_operator):
+            # Inspect live scratch arrays before the step returns them to the temporary store.
+            color_offsets = scratch.color_offsets.numpy()
+            color_blocks = scratch.color_indices.numpy()
+            row_offsets = scratch.strain_matrix.offsets.numpy()
+            columns = scratch.strain_matrix.columns.numpy()
+            test.assertGreater(color_offsets[-1], 0)
+            test.assertGreater(row_offsets[-1], 0)
+            for color in range(len(color_offsets) - 1):
+                begin, end = color_offsets[color : color + 2]
+                written = set()
+                for block in range(begin, end):
+                    row_begin, row_end = color_blocks[:, block]
+                    targets = set(columns[row_offsets[row_begin] : row_offsets[row_end]])
+                    test.assertFalse(written & targets, f"Color {color} has overlapping velocity write targets")
+                    written.update(targets)
+            return super()._solve_rheology(scratch, rigidity_operator)
+
     reference = None
-    for _ in range(3):
-        solver = SolverImplicitMPM(model, config, deterministic=wp.DeterministicMode.RUN_TO_RUN)
+    for rollout in range(3):
+        solver_type = CheckColoringMPM if rollout == 0 and strain_basis == "Q1" else SolverImplicitMPM
+        solver = solver_type(model, config, deterministic=wp.DeterministicMode.RUN_TO_RUN)
         state_in, state_out = model.state(), model.state()
         for _ in range(4):
             solver.step(state_in, state_out, None, None, 0.01)
