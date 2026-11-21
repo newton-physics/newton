@@ -197,8 +197,11 @@ MuJoCo's ``ref`` is the coordinate assigned to the authored pose;
 Newton stores the relative coordinate ``rest_q = springref - ref``,
 after conversion to meters or radians. If ``springref`` is omitted,
 MuJoCo defaults it to zero, giving ``rest_q = -ref``.
+A FREE joint's spring rests at the body's initial pose. As in MuJoCo, an MJCF
+``<joint type="free">`` takes joint attributes and default classes, while the
+``<freejoint/>`` shortcut ignores them.
 
-For hinge, slide, and BALL joints with MuJoCo DOFs, constructing
+For hinge, slide, BALL, and FREE joints with MuJoCo DOFs, constructing
 :class:`~newton.solvers.SolverMuJoCo` resolves positive MJCF ``springdamper``
 or USD ``mjc:springdamper`` pairs once into core ``joint_stiffness`` and
 ``joint_damping``.
@@ -206,7 +209,7 @@ The attribute ``model.mujoco.dof_springdamper`` is a construction-time input:
 consumed positive pairs are reset to zero. ``notify_model_changed`` does not
 read it. Change the core gains for runtime edits; assign new pairs before
 constructing another solver to resolve them again.
-Positive pairs must be identical across a BALL joint's DOFs. Inconsistent
+Positive pairs must be identical across a BALL or FREE joint's DOFs. Inconsistent
 per-DOF values or positive pairs on joints without MuJoCo DOFs, such as loop
 joints mapped to CONNECT constraints, raise ``ValueError``.
 Resolution uses each world's initial physical inertia and authored armature,
