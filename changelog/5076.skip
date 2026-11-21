@@ -1,0 +1,1 @@
+Add regression coverage for zero box-ray normals, already fixed by #5334.
