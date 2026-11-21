@@ -113,6 +113,36 @@ class TestSensorCameraRays(unittest.TestCase):
             got_q = -got_q
         np.testing.assert_allclose(got_q, expected_q, atol=1e-6)
 
+    @requires("pxr.Usd")
+    def test_usd_camera_transform_keeps_view_and_up_under_mirrored_parent(self):
+        sensor = _make_sensor(up_axis=newton.Axis.Z)
+        for parent_scale in ((-1.0, 1.0, 1.0), (-1.0, -1.0, -1.0), (1.0, 1.0, -1.0)):
+            with self.subTest(parent_scale=parent_scale):
+                stage = Usd.Stage.CreateInMemory()
+                UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+                parent = UsdGeom.Xform.Define(stage, "/World/Parent")
+                parent.AddTranslateOp().Set(Gf.Vec3d(0.5, -1.0, 2.0))
+                parent.AddScaleOp().Set(Gf.Vec3d(*parent_scale))
+                camera = UsdGeom.Camera.Define(stage, "/World/Parent/Camera")
+                camera.AddTranslateOp().Set(Gf.Vec3d(1.0, 2.0, 3.0))
+                camera.AddRotateXYZOp().Set(Gf.Vec3f(20.0, 30.0, 40.0))
+
+                world = camera.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+                # USD transforms row vectors, so the authored directions are M applied to -Z and +Y.
+                expected_view = np.array(world.TransformDir(Gf.Vec3d(0.0, 0.0, -1.0)))
+                expected_up = np.array(world.TransformDir(Gf.Vec3d(0.0, 1.0, 0.0)))
+                expected_view /= np.linalg.norm(expected_view)
+                expected_up /= np.linalg.norm(expected_up)
+                expected_pos = np.array(world.ExtractTranslation())
+
+                got = sensor.compute_camera_transforms_usd(camera).numpy()[0]
+                q = wp.quat(*got[3:].tolist())
+                view = np.array(wp.quat_rotate(q, wp.vec3(0.0, 0.0, -1.0)))
+                up = np.array(wp.quat_rotate(q, wp.vec3(0.0, 1.0, 0.0)))
+                np.testing.assert_allclose(got[:3], expected_pos, atol=1e-5)
+                np.testing.assert_allclose(view, expected_view, atol=1e-5)
+                np.testing.assert_allclose(up, expected_up, atol=1e-5)
+
     def test_opencv_fisheye_zero_distortion(self):
         got = SensorCamera.compute_camera_rays_fisheye_opencv(
             3, 3, fx=1.0, fy=1.0, cx=1.5, cy=1.5, device="cpu"
