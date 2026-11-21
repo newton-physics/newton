@@ -1309,6 +1309,7 @@ class Example:
             yield
             _, g = ro.loss_and_grad(amps, snap)
             ng = float(np.linalg.norm(g))
+            # nothing to descend along: the gradient vanished (or diverged) - stop
             if not np.isfinite(ng) or ng < 1e-14:
                 print(f"  {tag} it{it}: |g|={ng:.3g} - stop", flush=True)
                 break
@@ -1318,6 +1319,8 @@ class Example:
                 yield
                 trial = np.clip(amps + r * d, low, high)
                 L_trial = ro.loss(trial, snap)
+                # sufficient decrease: the trial loss must be finite and improve L
+                # by a relative margin (1e-4) - noise-level improvements don't count
                 if np.isfinite(L_trial) and L_trial < L - 1e-4 * abs(L):
                     amps, L = trial, L_trial
                     accepts += 1
