@@ -160,7 +160,7 @@ def create_closest_hit_function(
     if optix is not None:
         return optix.create_closest_hit(config, state, with_normal)
 
-    shade_gaussians = gaussians.create_shade_function(config, state)
+    shade_gaussians = gaussians.create_shade_function(config)
     has_particles = config.enable_particles and state.has_particles
 
     @wp.func
@@ -186,7 +186,7 @@ def create_closest_hit_function(
 
         if scene.id:
             # Gaussian shapes crossed in the world and the global world, blended together afterwards.
-            gaussians_hit = wp.vector(length=wp.static(max(state.gaussian_shapes_per_ray, 1)), dtype=wp.int32)
+            gaussians_hit = wp.zeros(shape=(wp.static(max(state.gaussian_shapes_per_ray, 1)),), dtype=wp.int32)
             num_gaussians_hit = wp.int32(0)
             # int() makes the bound dynamic in Warp, preventing loop unrolling
             # that duplicates BVH traversal state and increases register pressure.
