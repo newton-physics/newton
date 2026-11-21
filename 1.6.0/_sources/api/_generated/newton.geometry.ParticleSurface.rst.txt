@@ -1,0 +1,8 @@
+﻿newton.geometry.ParticleSurface
+===============================
+
+.. autoclass:: newton.geometry.ParticleSurface
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :member-order: groupwise

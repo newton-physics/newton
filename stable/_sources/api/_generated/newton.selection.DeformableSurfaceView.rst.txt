@@ -1,0 +1,48 @@
+﻿newton.selection.DeformableSurfaceView
+======================================
+
+.. currentmodule:: newton.selection
+
+.. autoclass:: DeformableSurfaceView
+   :members:
+   :inherited-members:
+   :member-order: groupwise
+   
+   
+
+   
+   .. rubric:: Methods
+
+   .. autosummary::
+   
+      ~DeformableSurfaceView.__init__
+      ~DeformableSurfaceView.deformable_object_ranges
+      ~DeformableSurfaceView.element_count
+      ~DeformableSurfaceView.get_particle_flags
+      ~DeformableSurfaceView.get_particle_inv_masses
+      ~DeformableSurfaceView.get_particle_positions
+      ~DeformableSurfaceView.get_particle_velocities
+      ~DeformableSurfaceView.ranges
+      ~DeformableSurfaceView.set_mask_from_indices
+      ~DeformableSurfaceView.set_particle_positions
+      ~DeformableSurfaceView.set_particle_velocities
+      ~DeformableSurfaceView.starts
+   
+   
+
+   
+   
+   .. rubric:: Attributes
+
+   .. autosummary::
+   
+      ~DeformableSurfaceView.particle_count
+      ~DeformableSurfaceView.count
+      ~DeformableSurfaceView.count_per_world
+      ~DeformableSurfaceView.family
+      ~DeformableSurfaceView.labels
+      ~DeformableSurfaceView.worlds
+      ~DeformableSurfaceView.deformable_object_boundaries
+      ~DeformableSurfaceView.worlds_device
+   
+   

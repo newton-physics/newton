@@ -1,0 +1,6 @@
+﻿newton.usd.find\_deformable\_visual\_prims
+==========================================
+
+.. currentmodule:: newton.usd
+
+.. autofunction:: find_deformable_visual_prims

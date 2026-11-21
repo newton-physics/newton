@@ -1,0 +1,8 @@
+﻿newton.viewer.Picking
+=====================
+
+.. autoclass:: newton.viewer.Picking
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :member-order: groupwise

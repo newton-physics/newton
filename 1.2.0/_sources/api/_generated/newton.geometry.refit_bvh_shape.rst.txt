@@ -1,0 +1,6 @@
+﻿newton.geometry.refit\_bvh\_shape
+=================================
+
+.. currentmodule:: newton.geometry
+
+.. autofunction:: refit_bvh_shape

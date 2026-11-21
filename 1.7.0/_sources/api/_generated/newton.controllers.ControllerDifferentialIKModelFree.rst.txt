@@ -1,0 +1,8 @@
+﻿newton.controllers.ControllerDifferentialIKModelFree
+====================================================
+
+.. autoclass:: newton.controllers.ControllerDifferentialIKModelFree
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :member-order: groupwise

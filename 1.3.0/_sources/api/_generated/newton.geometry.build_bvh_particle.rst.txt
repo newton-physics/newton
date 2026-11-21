@@ -1,0 +1,6 @@
+﻿newton.geometry.build\_bvh\_particle
+====================================
+
+.. currentmodule:: newton.geometry
+
+.. autofunction:: build_bvh_particle

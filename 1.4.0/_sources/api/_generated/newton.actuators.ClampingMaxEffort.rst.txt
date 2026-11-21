@@ -1,0 +1,8 @@
+﻿newton.actuators.ClampingMaxEffort
+==================================
+
+.. autoclass:: newton.actuators.ClampingMaxEffort
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :member-order: groupwise

@@ -1,0 +1,8 @@
+﻿newton.Gaussian
+===============
+
+.. autoclass:: newton.Gaussian
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :member-order: groupwise

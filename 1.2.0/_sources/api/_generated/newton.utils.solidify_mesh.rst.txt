@@ -1,0 +1,6 @@
+﻿newton.utils.solidify\_mesh
+===========================
+
+.. currentmodule:: newton.utils
+
+.. autofunction:: solidify_mesh

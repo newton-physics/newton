@@ -1,0 +1,6 @@
+﻿newton.eval\_mimic
+==================
+
+.. currentmodule:: newton
+
+.. autofunction:: eval_mimic

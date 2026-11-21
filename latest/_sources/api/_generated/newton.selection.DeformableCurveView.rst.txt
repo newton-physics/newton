@@ -1,0 +1,46 @@
+﻿newton.selection.DeformableCurveView
+====================================
+
+.. currentmodule:: newton.selection
+
+.. autoclass:: DeformableCurveView
+   :members:
+   :inherited-members:
+   :member-order: groupwise
+   
+   
+
+   
+   .. rubric:: Methods
+
+   .. autosummary::
+   
+      ~DeformableCurveView.__init__
+      ~DeformableCurveView.deformable_object_ranges
+      ~DeformableCurveView.element_count
+      ~DeformableCurveView.get_body_transforms
+      ~DeformableCurveView.get_body_velocities
+      ~DeformableCurveView.ranges
+      ~DeformableCurveView.set_body_transforms
+      ~DeformableCurveView.set_body_velocities
+      ~DeformableCurveView.set_mask_from_indices
+      ~DeformableCurveView.starts
+   
+   
+
+   
+   
+   .. rubric:: Attributes
+
+   .. autosummary::
+   
+      ~DeformableCurveView.body_count
+      ~DeformableCurveView.count
+      ~DeformableCurveView.count_per_world
+      ~DeformableCurveView.family
+      ~DeformableCurveView.labels
+      ~DeformableCurveView.worlds
+      ~DeformableCurveView.deformable_object_boundaries
+      ~DeformableCurveView.worlds_device
+   
+   

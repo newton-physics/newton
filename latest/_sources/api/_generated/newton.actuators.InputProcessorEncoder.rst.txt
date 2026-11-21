@@ -1,0 +1,8 @@
+﻿newton.actuators.InputProcessorEncoder
+======================================
+
+.. autoclass:: newton.actuators.InputProcessorEncoder
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :member-order: groupwise

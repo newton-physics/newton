@@ -1,0 +1,6 @@
+﻿newton.utils.setup\_console\_logging
+====================================
+
+.. currentmodule:: newton.utils
+
+.. autofunction:: setup_console_logging

@@ -1,0 +1,8 @@
+﻿newton.actuators.BatteryParsed
+==============================
+
+.. autoclass:: newton.actuators.BatteryParsed
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :member-order: groupwise
