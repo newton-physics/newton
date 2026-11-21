@@ -23,6 +23,7 @@ import warp as wp
 import newton
 import newton.utils
 from newton import ModelBuilder, NewtonDeprecationWarning
+from newton._src.geometry.sdf_contact import compute_mesh_boundary_flags
 from newton._src.geometry.utils import transform_points
 from newton._src.solvers.coupled.model_view import ModelView
 from newton._src.solvers.mujoco.equality import _add_equality_constraint
@@ -457,6 +458,100 @@ class TestModelMesh(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "exceeds vertex count 3"):
             mesh.finalize(device="cpu")
+
+    def test_repeated_finalization_reuses_open_mesh_topology(self):
+        """Cook shared collision topology once, and refresh it after geometry changes."""
+        mesh = newton.Mesh(
+            [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 0, 0), (1, 1, 0), (0, 1, 0)],
+            [0, 1, 2, 3, 4, 5],
+            compute_inertia=False,
+        )
+        source = ModelBuilder()
+        source.add_shape_mesh(body=-1, mesh=mesh)
+        edge_batches = []
+        norm = np.linalg.norm
+
+        def edge_norm(values, *args, **kwargs):
+            if kwargs.get("axis") == 1 and kwargs.get("keepdims") and values.shape[1:] == (3,):
+                edge_batches.append(values.copy())
+            return norm(values, *args, **kwargs)
+
+        with (
+            mock.patch(
+                "newton._src.geometry.sdf_contact.compute_mesh_boundary_flags", wraps=compute_mesh_boundary_flags
+            ) as cook,
+            mock.patch("numpy.linalg.norm", side_effect=edge_norm),
+        ):
+            first = source.finalize(device="cpu")
+            combined = ModelBuilder()
+            combined.add_builder(source)
+            combined.add_shape_sphere(body=-1, radius=0.2)
+            second = combined.finalize(device="cpu")
+            self.assertEqual(cook.call_count, 1)
+            self.assertEqual(len(edge_batches), 1)
+            for name in (
+                "_mesh_edge_indices",
+                "_mesh_edge_centers",
+                "_mesh_edge_halves",
+                "shape_collision_aabb_lower",
+                "shape_collision_aabb_upper",
+            ):
+                np.testing.assert_array_equal(
+                    getattr(first, name).numpy(),
+                    getattr(second, name).numpy()[:1] if name.startswith("shape_") else getattr(second, name).numpy(),
+                )
+            np.testing.assert_array_equal(first._mesh_edge_halves.numpy()[:, 3], [7, 6, 4, 6, 4])
+            np.testing.assert_array_equal(first._mesh_boundary_flags.numpy(), [61, 59])
+            np.testing.assert_array_equal(second._mesh_boundary_flags.numpy(), [61, 59])
+            np.testing.assert_array_equal(second._shape_mesh_boundary_start.numpy(), [0, -1])
+            points = mesh.mesh.points.numpy().copy()
+            points[3:, 0] += 10
+            mesh.mesh.points.assign(points)
+            mesh.mesh.refit()
+            moved = source.finalize(device="cpu")
+            np.testing.assert_array_equal(moved._mesh_boundary_flags.numpy(), [63, 63])
+            self.assertEqual(cook.call_count, 2)
+            np.testing.assert_array_equal(first._mesh_boundary_flags.numpy(), [61, 59])
+            mesh.indices = [0, 1, 2]
+            changed = source.finalize(device="cpu")
+            self.assertEqual(cook.call_count, 3)
+            np.testing.assert_array_equal(changed._mesh_boundary_flags.numpy(), [63])
+            np.testing.assert_array_equal(first._mesh_boundary_flags.numpy(), [61, 59])
+            self.assertEqual(len(edge_batches), 2)
+            old_centers = changed._mesh_edge_centers.numpy().copy()
+            old_halves = changed._mesh_edge_halves.numpy().copy()
+            translation = np.array((2, -1, 3), dtype=np.float32)
+            mesh.vertices = mesh.vertices + translation
+            shifted = source.finalize(device="cpu")
+            self.assertEqual(len(edge_batches), 3)
+            np.testing.assert_array_equal(shifted._mesh_edge_centers.numpy()[:, :3], old_centers[:, :3] + translation)
+            np.testing.assert_array_equal(shifted._mesh_edge_halves.numpy(), old_halves)
+            for name in ("shape_collision_aabb_lower", "shape_collision_aabb_upper"):
+                np.testing.assert_array_equal(
+                    getattr(shifted, name).numpy(), getattr(changed, name).numpy() + translation
+                )
+            mesh.vertices[:, 0] *= 2
+            mesh.invalidate_cache()
+            stretched = source.finalize(device="cpu")
+            self.assertEqual(len(edge_batches), 4)
+            expected = shifted._mesh_edge_centers.numpy().copy()
+            expected[:, 0] *= 2
+            np.testing.assert_array_equal(stretched._mesh_edge_centers.numpy()[:, :3], expected[:, :3])
+            np.testing.assert_allclose(stretched._mesh_edge_centers.numpy()[:, 3], [1, 0.5, math.sqrt(1.25)])
+            full_edges = mesh.edges
+            mesh._collision_edges = full_edges[1:2].copy()
+            subset = source.finalize(device="cpu")
+            self.assertEqual(len(edge_batches), 5)
+            np.testing.assert_array_equal(subset._mesh_edge_indices.numpy(), full_edges[1:2])
+            np.testing.assert_array_equal(subset._mesh_edge_halves.numpy()[:, 3], [7])
+            mesh._collision_edges = full_edges
+            restored = source.finalize(device="cpu")
+            self.assertEqual(len(edge_batches), 6)
+            np.testing.assert_array_equal(restored._mesh_edge_centers.numpy(), stretched._mesh_edge_centers.numpy())
+            np.testing.assert_array_equal(restored._mesh_edge_halves.numpy(), stretched._mesh_edge_halves.numpy())
+            mesh._collision_edges = np.empty((0, 2), dtype=np.int32)
+            empty = source.finalize(device="cpu")
+            self.assertEqual(int(empty._shape_edge_range.numpy()[0, 1]), 0)
 
     def test_compute_convex_hull_replaces_geometry_atomically(self):
         """Replace hull vertices and indices as one validated geometry update."""

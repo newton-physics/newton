@@ -2,9 +2,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import ctypes
+import logging
 import sys
+import tempfile
 import unittest
-from types import SimpleNamespace
+from importlib import import_module
+from pathlib import Path
+from types import ModuleType, SimpleNamespace
 from unittest import mock
 
 import numpy as np
@@ -15,7 +19,12 @@ import newton.viewer
 from newton._src.viewer import viewer_gl
 from newton._src.viewer.gl import opengl
 from newton._src.viewer.gl.opengl import RendererGL
+from newton._src.viewer.gui.viewport import ViewportControls
+from newton._src.viewer.gui.workspace import ViewerWorkspace
+from newton._src.viewer.kernels import compact
 from newton._src.viewer.viewer_gl import ViewerGL
+from newton._src.viewer.viewer_joint_selection import _JointDrawList
+from newton._src.viewer.viewer_navigation import SelectionNavigation
 from newton.tests.unittest_utils import import_pyglet_window, requires
 
 
@@ -103,7 +112,7 @@ class TestRenderingPauseGL(unittest.TestCase):
         reference = viewer.get_frame().numpy().copy()
         np.testing.assert_array_equal(reference, before)
 
-        gui = mock.Mock()
+        gui = mock.Mock(workspace_enabled=False, workspace=None, _frame_camera_pending=False)
         gui.prepare_frame.side_effect = lambda: viewer.set_rendering_paused(True)
         viewer.gui = gui
         viewer.begin_frame(2.0)
@@ -181,7 +190,1001 @@ class _FakeGL:
         self.readback_count += 1
 
 
+def _gl_gen_texture(gl: ModuleType) -> int:
+    """Create a texture name with pyglet's GL bindings."""
+    texture = gl.GLuint()
+    gl.glGenTextures(1, ctypes.byref(texture))
+    return texture.value
+
+
+def _gl_get_integer(gl: ModuleType, name: int) -> int:
+    """Read one integer of GL state with pyglet's GL bindings."""
+    value = gl.GLint()
+    gl.glGetIntegerv(name, ctypes.byref(value))
+    return value.value
+
+
+def _gl_read_rgba(gl: ModuleType, width: int, height: int) -> np.ndarray:
+    """Read the bound framebuffer as bottom-up RGBA rows."""
+    pixels = np.empty((height, width, 4), dtype=np.uint8)
+    gl.glReadPixels(0, 0, width, height, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, pixels.ctypes.data_as(ctypes.c_void_p))
+    return pixels
+
+
 class TestViewerGLGetFrame(unittest.TestCase):
+    def test_model_replacement_retains_only_unchanged_geometry(self) -> None:
+        """Reuse immutable prototypes while replacing instances and release stale GL resources."""
+        try:
+            from PIL import Image
+        except ImportError as error:
+            self.skipTest(f"Texture dependency not available: {error}")
+        with wp.ScopedDevice("cpu"), tempfile.TemporaryDirectory() as directory:
+            viewer = _make_headless_viewer_gl_or_skip(self)
+            try:
+                gl = viewer.renderer.gl
+                path = Path(directory) / "color.png"
+                Image.new("RGBA", (4, 4), "red").save(path)
+                source = newton.Mesh.create_box(0.25, 0.25, 0.25, compute_inertia=False)
+                source.texture = str(path)
+
+                def model(*, sphere=False):
+                    builder = newton.ModelBuilder()
+                    builder.add_shape_mesh(-1, mesh=source)
+                    if sphere:
+                        builder.add_shape_sphere(-1, radius=0.2)
+                    return builder.finalize(device="cpu")
+
+                def prototypes():
+                    return [viewer.objects[name] for name in viewer._geometry_cache.values()]
+
+                def replace_and_release(resource):
+                    destroy = resource.destroy
+                    deleted = []
+
+                    def check_destroy():
+                        destroy()
+                        deleted.append(
+                            (
+                                bool(gl.glIsBuffer(resource.vbo)),
+                                bool(gl.glIsTexture(resource.texture_id)) if resource.texture_id is not None else False,
+                            )
+                        )
+
+                    with mock.patch.object(resource, "destroy", side_effect=check_destroy):
+                        viewer.set_model(model())
+                    self.assertEqual(deleted, [(False, False)])
+
+                viewer.set_model(model(sphere=True))
+                textured = next(mesh for mesh in prototypes() if mesh.texture_id is not None)
+                sphere = next(mesh for mesh in prototypes() if mesh.texture_id is None)
+                old_instances = tuple(viewer._shape_instances.values())
+                viewer.set_model(model(sphere=True))
+                self.assertIn(textured, prototypes())
+                self.assertIn(sphere, prototypes())
+                self.assertFalse(any(batch in old_instances for batch in viewer._shape_instances.values()))
+                self.assertTrue(gl.glIsBuffer(textured.vbo))
+                self.assertTrue(gl.glIsTexture(textured.texture_id))
+
+                replace_and_release(sphere)
+                self.assertIn(textured, prototypes())
+                # The native texture hash uses its path; changing bytes at that path must still upload.
+                Image.new("RGBA", (8, 4), "blue").save(path)
+                replace_and_release(textured)
+                replacement = prototypes()[0]
+                self.assertIsNot(replacement, textured)
+                self.assertTrue(gl.glIsTexture(replacement.texture_id))
+
+                # A new source and mutable image arrays are outside immutable-identity reuse.
+                source = source.copy()
+                replace_and_release(replacement)
+                self.assertIsNot(prototypes()[0], replacement)
+                source.texture = np.full((4, 4, 4), 255, dtype=np.uint8)
+                viewer.set_model(model())
+                mutable = prototypes()[0]
+                replace_and_release(mutable)
+                self.assertIsNot(prototypes()[0], mutable)
+                resource = prototypes()[0]
+                viewer.clear_model()
+                self.assertFalse(gl.glIsBuffer(resource.vbo))
+                self.assertFalse(gl.glIsTexture(resource.texture_id))
+                viewer.set_model(model())
+                resource = prototypes()[0]
+                close_renderer = viewer.renderer.close
+
+                def close_after_resources():
+                    self.assertFalse(gl.glIsBuffer(resource.vbo))
+                    self.assertFalse(gl.glIsTexture(resource.texture_id))
+                    close_renderer()
+
+                with mock.patch.object(viewer.renderer, "close", side_effect=close_after_resources):
+                    viewer.close()
+                viewer = None
+            finally:
+                if viewer is not None:
+                    viewer.close()
+
+    def test_contact_label_leaders_ignore_pixel_rounding(self) -> None:
+        """Only displaced labels add leader geometry at integer or fractional DPI."""
+        with wp.ScopedDevice("cpu"):
+            viewer = _make_headless_viewer_gl_or_skip(self, width=400, height=300)
+        self.addCleanup(viewer.close)
+        viewer.set_camera(pos=(1.0, 1.0, 1.0), pitch=0.0, yaw=0.0)
+        viewer.camera.look_at((0.0, 0.0, 0.0))
+        point = ((0.013, 0.017, 0.0),)
+        for scale in (1.0, 1.5, 2.0):
+            viewer.renderer._contact_label_scale = scale
+            for labels in ([(point, "1", False)], [(point, "1", False), (point, "2", True)]):
+                viewer.renderer._contact_labels = labels
+                viewer.begin_frame(0.0)
+                viewer.end_frame()
+                shader = viewer.renderer._contact_label_shader
+                self.assertEqual(len(shader.layout), len(labels))
+                if len(labels) == 1:
+                    self.assertEqual(shader.count, 6)
+                else:
+                    self.assertGreater(shader.count, 12)
+
+    def test_shape_graph_capture_requires_buffer_reuse(self) -> None:
+        """One-shot States avoid capture; recurring buffers replay with current transforms."""
+        if not wp.is_cuda_available():
+            self.skipTest("CUDA graph capture requires CUDA")
+        with wp.ScopedDevice("cuda:0"):
+            viewer = _make_headless_viewer_gl_or_skip(self)
+        self.addCleanup(viewer.close)
+        model = _make_box_model("cuda:0")
+        viewer.set_model(model)
+        states = [model.state() for _ in range(8)]
+        with mock.patch.object(wp, "ScopedCapture", wraps=wp.ScopedCapture) as capture:
+            for index, state in enumerate(states):
+                state.body_q.assign([[index, 0, 0, 0, 0, 0, 1]])
+                viewer.log_state(state)
+                np.testing.assert_allclose(viewer._packed_world_xforms.numpy()[0, :3], [index, 0, 0])
+            self.assertEqual(capture.call_count, 0)
+            for index in range(6):
+                state = states[-1 - index % 2]
+                state.body_q.assign([[10 + index, 0, 0, 0, 0, 0, 1]])
+                viewer.log_state(state)
+                np.testing.assert_allclose(viewer._packed_world_xforms.numpy()[0, :3], [10 + index, 0, 0])
+            self.assertEqual(capture.call_count, 2)
+            self.assertLessEqual(len(viewer._shape_prepare_graphs), 4)
+
+    def test_variant_batches_resize_and_clear(self) -> None:
+        """Keep GL batches valid when variant switches grow or empty their instance lists."""
+        variants = []
+        for capsules in (False, True):
+            variant = newton.ModelBuilder()
+            visual = newton.ModelBuilder.ShapeConfig(has_shape_collision=False, has_particle_collision=False)
+            body = variant.add_body()
+            if capsules:
+                for x in (-0.3, 0.3):
+                    variant.add_shape_capsule(
+                        body, xform=wp.transform((x, 0, 0), wp.quat_identity()), radius=0.1, half_height=0.6, cfg=visual
+                    )
+            else:
+                variant.add_shape_box(body, hx=0.5, hy=0.5, hz=0.5, cfg=visual)
+            variants.append(variant)
+        world = newton.ModelBuilder()
+        world.add_body_variants(world.add_body(), variants)
+        builder = newton.ModelBuilder()
+        builder.replicate(world, 3)
+        viewer = _make_headless_viewer_gl_or_skip(self)
+        self.addCleanup(viewer.close)
+        controls = ViewportControls(SimpleNamespace(viewer=viewer))
+        for device in [wp.get_device("cpu"), *wp.get_cuda_devices()[:1]]:
+            with self.subTest(device=device):
+                model = builder.finalize(device=device)
+                viewer.set_model(model)
+                for choice, expected in (([0, 0, 0], 3), ([1, 0, 0], 4), ([1, 1, 1], 6), ([0, 0, 0], 3)):
+                    flags = model.select_body_variants(wp.array(choice, dtype=int, device=device))
+                    viewer.notify_model_changed(flags)
+                    viewer.begin_frame(0.0)
+                    viewer.log_state(model.state())
+                    # Run the workspace's actual batch classification even in
+                    # this hidden context, including empty and multi-shape batches.
+                    controls.sync()
+                    viewer.end_frame()
+                    actual = 0
+                    for batch in viewer._shape_instances.values():
+                        count = len(batch.model_shapes)
+                        instancer = viewer.objects.get(batch.name)
+                        if count:
+                            self.assertFalse(instancer.hidden)
+                            self.assertEqual(instancer._physics_role, "visual")
+                            self.assertGreaterEqual(instancer.num_instances, count)
+                            actual += count
+                            if batch.geo_type == newton.GeoType.CAPSULE:
+                                np.testing.assert_allclose(
+                                    batch.scales.numpy(), np.tile((0.1, 0.1, 0.6), (count, 1)), atol=1e-6
+                                )
+                        elif instancer is not None:
+                            self.assertTrue(instancer.hidden)
+                    self.assertEqual(actual, expected)
+
+    def test_workspace_picking_and_selection_batches(self) -> None:
+        """Pick and outline current plain, variant, and SDF instances through the workspace."""
+        variant = newton.ModelBuilder()
+        body = variant.add_body()
+        variant.add_shape_sphere(body, radius=0.4)
+        expanded = newton.ModelBuilder()
+        body = expanded.add_body()
+        for x in (0.0, 2.0):
+            expanded.add_shape_sphere(body, xform=wp.transform((x, 0, 0), wp.quat_identity()), radius=0.4)
+        builder = newton.ModelBuilder()
+        builder.add_body_variants(builder.add_body(), [variant, expanded])
+        viewer = _make_headless_viewer_gl_or_skip(self)
+        self.addCleanup(viewer.close)
+        workspace = ViewerWorkspace(
+            SimpleNamespace(
+                _viewer=viewer,
+                ui=SimpleNamespace(dpi_scale=1.0),
+                console_capture=None,
+                stop_following_selection=lambda: None,
+            )
+        )
+        for device in [wp.get_device("cpu"), *wp.get_cuda_devices()[:1]]:
+            for variants in (False, True):
+                with self.subTest(device=device, variants=variants):
+                    model = (builder if variants else variant).finalize(device=device)
+                    viewer.set_model(model)
+                    workspace.bind()
+                    for choice in (1, 0, 1) if variants else (0,):
+                        if variants:
+                            changed = model.select_body_variants(wp.array([choice], dtype=int, device=device))
+                            viewer.notify_model_changed(changed)
+                        viewer.begin_frame(0.0)
+                        viewer.log_state(model.state())
+                        viewer.end_frame()
+                        for x in (0.0, 2.0):
+                            viewer.set_camera((x, -3, 0), 0, 0)
+                            viewer.camera.look_at((x, 0, 0))
+                            workspace.select_from_screen(32, 24, lambda x, y: (x, y))
+                            expected = ("body", 0) if x == 0 or (variants and choice == 1) else None
+                            self.assertEqual(workspace.selected, expected)
+                            workspace._sync_selection_outline()
+                            self.assertEqual(bool(viewer.renderer._selection_instances), expected is not None)
+
+        if wp.is_cuda_available():
+            with wp.ScopedDevice("cuda:0"):
+                mesh = newton.Mesh.create_box(0.3, 0.3, 0.3)
+                mesh.build_sdf(max_resolution=8)
+                builder = newton.ModelBuilder()
+                # A non-SDF shape in the selection must be skipped by the SDF lookup.
+                plain = builder.add_shape_sphere(-1, radius=0.2)
+                shapes = [
+                    builder.add_shape_mesh(-1, mesh=mesh, xform=wp.transform((x, 0, 0), wp.quat_identity()))
+                    for x in (1.0, 2.0)
+                ]
+                model = builder.finalize()
+            viewer.set_model(model)
+            workspace.bind()
+            viewer.show_collision = True
+            viewer.show_visual = False
+            viewer.begin_frame(0.0)
+            viewer.log_state(model.state())
+            viewer.end_frame()
+            workspace.select(("shape", plain))
+            workspace.select(("shape", shapes[1]), toggle=True)
+            workspace._sync_selection_outline()
+            batch = next(iter(viewer._sdf_isomesh_instances.values()))
+            self.assertIn((viewer.objects[batch.name], 1), viewer.renderer._selection_instances)
+
+    def test_workspace_contact_selection_filter(self) -> None:
+        """Filter every contact glyph by either selected witness without changing contact slots."""
+        builder = newton.ModelBuilder()
+        builder.begin_world()
+        body = builder.add_body()
+        builder.add_shape_sphere(body, radius=0.2)
+        builder.add_shape_sphere(body, radius=0.3)
+        builder.add_shape_sphere(builder.add_body(), radius=0.4)
+        builder.add_shape_sphere(-1, radius=0.5)
+        builder.add_body()  # Selecting a body with no shapes must show no contacts.
+        builder.end_world()
+        viewer = _make_headless_viewer_gl_or_skip(self)
+        self.addCleanup(viewer.close)
+        gui = SimpleNamespace(
+            _viewer=viewer,
+            ui=SimpleNamespace(dpi_scale=1.0),
+            console_capture=None,
+            stop_following_selection=lambda: None,
+            workspace_enabled=True,
+        )
+        workspace = ViewerWorkspace(gui)
+        gui.workspace = workspace
+        for device in [wp.get_device("cpu"), *wp.get_cuda_devices()[:1]]:
+            with self.subTest(device=device):
+                model = builder.finalize(device=device)
+                viewer.set_model(model)
+                workspace.bind()
+                state = model.state()
+                contacts = newton.Contacts(4, 0, device=device)
+                contacts.rigid_contact_count.assign([3])
+                contacts.rigid_contact_shape0.assign([0, 1, 2, 0])
+                contacts.rigid_contact_shape1.assign([2, 3, 3, 0])
+                contacts.rigid_contact_normal.fill_(wp.vec3(0, 0, 1))
+                contacts.force = wp.array(
+                    [wp.spatial_vector(0, 0, 1, 0, 0, 0)] * 4, dtype=wp.spatial_vector, device=device
+                )
+                viewer.show_contacts = viewer.show_contact_forces = True
+
+                def check(
+                    expected: tuple[int, ...], *, contacts: newton.Contacts = contacts, state: newton.State = state
+                ) -> None:
+                    """Check the actual kernel outputs, including capacity beyond the live count."""
+                    with mock.patch.object(viewer, "gui", gui):
+                        viewer.log_contacts(contacts, state)
+                    visible = np.zeros(4, dtype=bool)
+                    visible[list(expected)] = True
+                    for points in (
+                        viewer._contact_points0,
+                        viewer._contact_points1,
+                        viewer._contact_opposing_points,
+                        viewer._contact_force_starts,
+                        viewer._contact_force_ends,
+                    ):
+                        np.testing.assert_array_equal(np.isfinite(points.numpy()).all(axis=1), visible)
+                    scales = viewer._contact_disk_scales.numpy().reshape(4, 2, 3)
+                    np.testing.assert_array_equal(np.any(scales != 0, axis=2), np.repeat(visible[:, None], 2, axis=1))
+
+                check((0, 1, 2))
+                workspace.select(("shape", 2))  # First or second witness must match.
+                check((0, 2))
+                self.assertTrue(viewer.contact_selection_only)
+                with mock.patch.object(viewer, "gui", gui):
+                    mask = viewer._get_contact_shape_mask()
+                    self.assertIs(viewer._get_contact_shape_mask(), mask)
+                workspace.select(("body", 0))
+                check((0, 1))
+                with viewer._track_display_options():
+                    viewer.contact_selection_only = False
+                with viewer._preserve_display_options(switching=True):
+                    viewer.contact_selection_only = True
+                self.assertFalse(viewer.contact_selection_only)
+                check((0, 1, 2))
+                viewer.contact_selection_only = True
+                check((0, 1))
+                workspace.select(("shape", 3), toggle=True)
+                check((0, 1, 2))
+                workspace.select(("body", 2))
+                check(())
+                workspace.select(("shape", 0))
+                viewer._visible_worlds_mask = wp.array([0], dtype=int, device=device)
+                check(())
+                viewer._visible_worlds_mask = None
+                check((0,))
+                # Reordered live contact buffers must be filtered afresh on device.
+                contacts.rigid_contact_shape0.assign([2, 1, 0, 0])
+                contacts.rigid_contact_shape1.assign([3, 3, 2, 0])
+                check((2,))
+                workspace.select(("root", 0))
+                check((0, 1, 2))
+                workspace.select(None)
+                check((0, 1, 2))
+                workspace.select(("body", 0))
+                gui.workspace_enabled = False
+                check((0, 1, 2))
+                gui.workspace_enabled = True
+
+    def test_workspace_variant_resource_notification(self) -> None:
+        """Keep resource selection and metadata current through the public viewer notification."""
+        mesh = newton.Mesh.create_box(0.3)
+        mesh.texture = np.full((2, 2, 3), 255, dtype=np.uint8)
+        textured = newton.ModelBuilder()
+        textured.add_shape_mesh(textured.add_body(), mesh=mesh)
+        plain = newton.ModelBuilder()
+        plain.add_shape_sphere(plain.add_body(), radius=0.3)
+        builder = newton.ModelBuilder()
+        builder.add_body_variants(builder.add_body(), [textured, plain])
+        builder.add_shape_sphere(builder.add_body(), radius=0.2)
+        viewer = _make_headless_viewer_gl_or_skip(self)
+        self.addCleanup(viewer.close)
+        gui = SimpleNamespace(
+            _viewer=viewer,
+            ui=SimpleNamespace(dpi_scale=1.0),
+            console_capture=None,
+            stop_following_selection=mock.Mock(),
+        )
+        workspace = ViewerWorkspace(gui)
+        gui.workspace = workspace
+        for device in [wp.get_device("cpu"), *wp.get_cuda_devices()[:1]]:
+            with self.subTest(device=device):
+                model = builder.finalize(device=device)
+                viewer.set_model(model)
+                workspace.bind()
+                workspace.select(("body", 1))
+                workspace.select(("shape_texture", 0), toggle=True)
+                tree = workspace.tree
+                tree.expanded.add(("shape", 0))
+                flags = model.select_body_variants(wp.array([1, 0], dtype=int, device=device))
+                # The hidden GL context uses the same notification dispatch as
+                # the interactive viewer, without drawing a synthetic GUI.
+                with mock.patch.object(viewer, "gui", gui):
+                    viewer.notify_model_changed(flags)
+                self.assertIs(workspace.tree, tree)
+                self.assertEqual(workspace.selected, ("shape", 0))
+                self.assertEqual(workspace.selection, {("shape", 0), ("body", 1)})
+                self.assertNotIn(("shape_texture", 0), tree.labels)
+                self.assertEqual(tree.meta[("shape", 0)]["type"], int(newton.GeoType.SPHERE))
+                gui.stop_following_selection.reset_mock()
+                flags = model.select_body_variants(wp.array([0, 0], dtype=int, device=device))
+                with mock.patch.object(viewer, "gui", gui):
+                    viewer.notify_model_changed(flags)
+                self.assertEqual(workspace.selected, ("shape", 0))
+                self.assertEqual(workspace.selection, {("shape", 0), ("body", 1)})
+                self.assertIn(("shape", 0), tree.expanded)
+                self.assertIn(("shape_texture", 0), tree.labels)
+                self.assertIs(tree.resources.source(0), mesh)
+                gui.stop_following_selection.assert_not_called()
+
+    def test_point_prototypes_follow_model_device(self) -> None:
+        """Reuse device-local point/splat meshes across CPU/CUDA model changes."""
+        if not wp.is_cuda_available():
+            self.skipTest("Device switching requires CUDA")
+        with wp.ScopedDevice("cpu"):
+            viewer = _make_headless_viewer_gl_or_skip(self)
+        gaussian = newton.Gaussian(positions=np.array([[0.5, 0.0, 0.0]], dtype=np.float32))
+        prototypes = {}
+        try:
+            for device in (wp.get_device("cpu"), wp.get_device("cuda:0"), wp.get_device("cpu")):
+                viewer.set_model(_make_box_model(device))
+                viewer.begin_frame(0.0)
+                viewer.log_state(viewer.model.state())
+                viewer.log_gaussian("splats", gaussian)
+                viewer.end_frame()
+                point = viewer.objects["/model/com"]
+                splat = viewer.objects["splats"]
+                self.assertEqual(point.device, device)
+                self.assertEqual(splat.device, device)
+                np.testing.assert_allclose(point.world_xforms.numpy()[0, 3], [0.0, 0.0, 0.0, 1.0], atol=1e-6)
+                key = str(device)
+                if key in prototypes:
+                    self.assertIs(point.mesh, prototypes[key][0])
+                    self.assertIs(splat.mesh, prototypes[key][1])
+                prototypes[key] = (point.mesh, splat.mesh)
+        finally:
+            viewer.close()
+        self.assertFalse(viewer._point_meshes)
+        self.assertFalse(viewer._gaussian_meshes)
+
+    def test_nonworkspace_viewers_leave_optional_kernels_lazy(self) -> None:
+        """Headless and legacy viewers compile only the features their scenes use."""
+        _viewer_gl_unavailable_error_types(self)
+        modules = [
+            wp.get_module(import_module(name).__name__)
+            for name in (
+                "newton._src.geometry.sdf_texture",
+                "newton._src.geometry.raycast",
+                "newton._src.sim.articulation",
+                "newton._src.viewer.wind",
+                "newton._src.viewer.viewer_navigation",
+                "newton._src.viewer.viewer_history",
+            )
+        ]
+        initialize_renderer = RendererGL.__init__
+
+        def initialize_offscreen(renderer: RendererGL, **kwargs: object) -> None:
+            kwargs["headless"] = True
+            initialize_renderer(renderer, **kwargs)
+
+        for headless in (True, False):
+            with self.subTest(headless=headless):
+                for module in modules:
+                    module.unload()
+                try:
+                    with wp.ScopedDevice("cpu"), mock.patch.object(RendererGL, "__init__", initialize_offscreen):
+                        viewer = ViewerGL(width=64, height=48, headless=headless, legacy_gui=True)
+                except Exception as exc:
+                    if _is_viewer_gl_unavailable_error(self, exc):
+                        self.skipTest(f"ViewerGL display/backend not available: {exc}")
+                    raise
+                try:
+                    if viewer.gui is not None and viewer.gui.is_available:
+                        viewer.gui.ui.io.set_ini_filename("")
+                    self.assertIsNone(viewer.renderer._selection_outline)
+                    devices = [wp.get_device("cpu"), *wp.get_cuda_devices()[:1]]
+                    for device in devices:
+                        with self.subTest(device=device):
+                            for module in modules:
+                                self.assertFalse(module.execs, f"Eagerly loaded {module.name}")
+                            viewer.set_model(_make_box_model(device))
+                            for module in modules:
+                                self.assertFalse(module.execs, f"Model binding loaded unused {module.name}")
+                            # Lazy compilation must still support rendering and graph reuse.
+                            state = viewer.model.state()
+                            for frame in range(2):
+                                viewer.begin_frame(float(frame))
+                                viewer.log_state(state)
+                                viewer.end_frame()
+                            self.assertEqual(viewer.get_frame().shape[-1], 3)
+                finally:
+                    viewer.close()
+
+    def test_gui_preloads_interaction_kernels(self) -> None:
+        """First selection and particle filtering reuse startup-compiled CPU/CUDA modules."""
+        try:
+            __import__("imgui_bundle")
+        except ImportError as exc:
+            self.skipTest(f"Viewer UI dependencies not available: {exc}")
+        _viewer_gl_unavailable_error_types(self)
+        modules = [
+            wp.get_module(import_module(f"newton._src.viewer.{name}").__name__)
+            for name in (
+                "viewer_navigation",
+                "viewer_joint_selection",
+                "viewer_deformables",
+                "viewer_bvh",
+                "viewer_history",
+                "gui.collision",
+                "gui.workspace",
+                "kernels",
+            )
+        ]
+        # Earlier tests may have launched these kernels. Discard only their
+        # in-process executables so this test cannot pass because of test order.
+        for module in modules:
+            module.unload()
+        initialize_renderer = RendererGL.__init__
+
+        def initialize_offscreen(renderer: RendererGL, **kwargs: object) -> None:
+            kwargs["headless"] = True
+            initialize_renderer(renderer, **kwargs)
+
+        try:
+            with wp.ScopedDevice("cpu"), mock.patch.object(RendererGL, "__init__", initialize_offscreen):
+                viewer = ViewerGL(width=800, height=600)
+        except Exception as exc:
+            if _is_viewer_gl_unavailable_error(self, exc):
+                self.skipTest(f"ViewerGL display/backend not available: {exc}")
+            raise
+        self.addCleanup(viewer.close)
+        self.assertTrue(viewer.gui.is_available)
+        viewer.gui.ui.io.set_ini_filename("")
+        self.assertIsNone(viewer.gui.workspace)
+        for name in (
+            "_selection_outline",
+            "_selection_surface_shader",
+            "_joint_shader",
+            "_contact_label_shader",
+            "_physics_contact_shader",
+            "_surface_grid_shader",
+            "_physics_collision_shader",
+            "_physics_shell_shader",
+            "_oit_resolve_shader",
+            "_shape_transparent_shader",
+        ):
+            self.assertIsNotNone(getattr(viewer.renderer, name, None), f"{name} was not preloaded")
+        self.assertIsNone(viewer.renderer._selection_outline.size)
+        self.assertIsNone(viewer.renderer._oit_fbo)
+
+        devices = [wp.get_device("cpu"), *wp.get_cuda_devices()[:1]]
+        for device in devices:
+            with self.subTest(device=device):
+                # CPU compilation must finish in the constructor, before a
+                # model or the first GUI frame. A model switch warms its device.
+                if device.is_cuda:
+                    viewer.set_model(_make_box_model(device))
+                for module in modules:
+                    self.assertTrue(
+                        any(executable.device == device for executable in module.execs.values()),
+                        f"{module.name} was not preloaded on {device}",
+                    )
+                executables = [dict(module.execs) for module in modules]
+                if device.is_cpu:
+                    viewer.set_model(_make_box_model(device))
+                # Exercise navigation independently of draw-buffer creation.
+                viewer._last_state = viewer.model.state()
+                navigation = SelectionNavigation(
+                    SimpleNamespace(viewer=viewer, model=viewer.model, _selection_shapes=(0,))
+                )
+                self.assertAlmostEqual(navigation(wp.vec3(0.5, 0, 0), wp.vec3(0.4, 0, 0), reference=1.0), 0.0625)
+
+                mask = wp.array([1, 0, 1], dtype=int, device=device)
+                offsets = wp.array([0, 1, 1], dtype=int, device=device)
+                for dtype in (float, wp.vec3):
+                    values = [1.0, 2.0, 3.0] if dtype is float else [(1.0, 2.0, 3.0)] * 3
+                    source = wp.array(values, dtype=dtype, device=device)
+                    output = wp.empty(2, dtype=dtype, device=device)
+                    wp.launch(compact, dim=3, inputs=[source, mask, offsets, output], device=device)
+                    np.testing.assert_array_equal(output.numpy(), source.numpy()[[0, 2]])
+                # Adding a generic overload on first use invalidates the whole
+                # module, even if load_module had already been called at startup.
+                for module, before in zip(modules, executables, strict=True):
+                    self.assertEqual(module.execs, before, f"{module.name} reloaded on first interaction")
+
+        # Closing releases every preloaded inspection program, including the X-ray passes.
+        renderer = viewer.renderer
+        xray = [renderer._physics_collision_shader, renderer._physics_shell_shader]
+        viewer.close()
+        for name in RendererGL._INSPECTION_SHADERS:
+            self.assertIsNone(getattr(renderer, name), f"{name} was not released")
+        for shader in xray:
+            self.assertIsNone(shader.shader_program)
+
+    def test_gui_history_records_public_logging_calls(self) -> None:
+        """Record logged frames through ViewerGL and replay them without the application's objects."""
+        try:
+            import imgui_bundle  # noqa: F401
+        except ImportError as exc:
+            self.skipTest(f"Viewer UI dependencies not available: {exc}")
+        _viewer_gl_unavailable_error_types(self)
+        initialize_renderer = RendererGL.__init__
+
+        def initialize_offscreen(renderer: RendererGL, **kwargs: object) -> None:
+            kwargs["headless"] = True
+            initialize_renderer(renderer, **kwargs)
+
+        try:
+            with wp.ScopedDevice("cpu"), mock.patch.object(RendererGL, "__init__", initialize_offscreen):
+                viewer = ViewerGL(width=800, height=600)
+        except Exception as exc:
+            if _is_viewer_gl_unavailable_error(self, exc):
+                self.skipTest(f"ViewerGL display/backend not available: {exc}")
+            raise
+        self.addCleanup(viewer.close)
+        viewer.gui.ui.io.set_ini_filename("")
+        model = _make_box_model("cpu")
+        viewer.set_model(model)
+        state = model.state()
+        contacts = newton.Contacts(4, 0, device="cpu")
+        lines = wp.array([(0.0, 0.0, 0.0)], dtype=wp.vec3, device="cpu")
+
+        def frame(time: float) -> None:
+            viewer.begin_frame(time)
+            viewer.log_state(state)
+            viewer.log_contacts(contacts, state)
+            viewer.log_lines("trail", lines, lines, (1.0, 0.0, 0.0))
+            viewer.end_frame()
+
+        frame(0.0)
+        history = viewer.gui.workspace.history
+        self.assertIs(viewer._history, history)
+        # Recording is opt-in, so the default live path takes no snapshots.
+        self.assertFalse(history.recording)
+        self.assertFalse(history.frames)
+        history.set_recording(True)
+        for step in range(3):
+            state.body_q.fill_(wp.transform(wp.vec3(float(step), 0.0, 0.0), wp.quat_identity()))
+            frame(step / 60)
+        self.assertEqual(len(history.frames), 3)
+        recorded = history.frames[0]
+        layer = viewer._active_layer_id
+        # Only the application's own calls are recorded, not lines drawn by log_contacts().
+        self.assertEqual(set(recorded.arrays), {("lines", layer, "trail")})
+        self.assertEqual(len(recorded.states), 1)
+        self.assertEqual(len(recorded.contact_records), 1)
+
+        # Replay displays the recorded frame for the same calls; stepping
+        # advances playback and resumes only at the newest frame.
+        history.select(0)
+        viewer._paused = False
+        frame(2 / 60)
+        self.assertIsNot(viewer._last_state, state)
+        np.testing.assert_allclose(viewer._last_state.body_q.numpy()[0, :3], [0, 0, 0])
+        np.testing.assert_allclose(state.body_q.numpy()[0, :3], [2, 0, 0])
+        self.assertEqual(len(history.frames), 3)
+        self.assertFalse(viewer.should_step())
+        self.assertEqual(history.index, 1)
+        self.assertFalse(viewer.should_step())
+        self.assertEqual(history.index, 2)
+        self.assertTrue(viewer.should_step())
+        frame(3 / 60)
+        self.assertIs(viewer._last_state, state)
+        self.assertEqual(len(history.frames), 4)
+
+    def test_gui_mode_and_legacy_callbacks(self) -> None:
+        """Render the default workspace and opt-in legacy panels with real ImGui callbacks."""
+        try:
+            from imgui_bundle import imgui
+        except ImportError as exc:
+            self.skipTest(f"Viewer UI dependencies not available: {exc}")
+        _viewer_gl_unavailable_error_types(self)
+        initialize_renderer = RendererGL.__init__
+
+        def initialize_offscreen(renderer: RendererGL, **kwargs: object) -> None:
+            # Exercise ViewerGL's windowed GUI selection using a real hidden GL
+            # context, so the test works on CI without opening desktop windows.
+            kwargs["headless"] = True
+            initialize_renderer(renderer, **kwargs)
+
+        model = _make_box_model("cpu")
+        state = model.state()
+        for legacy in (True, False):
+            with self.subTest(legacy=legacy):
+                options = {"legacy_gui": True} if legacy else {}
+                try:
+                    with wp.ScopedDevice("cpu"), mock.patch.object(RendererGL, "__init__", initialize_offscreen):
+                        viewer = ViewerGL(width=800, height=600, **options)
+                except Exception as exc:
+                    if _is_viewer_gl_unavailable_error(self, exc):
+                        self.skipTest(f"ViewerGL display/backend not available: {exc}")
+                    raise
+                image_texture = None
+                try:
+                    viewer.set_model(model)
+                    gui = viewer.gui
+                    self.assertTrue(gui.is_available)
+                    # Native GUI tests must neither load nor overwrite a user's
+                    # persisted window sizes in the working directory.
+                    gui.ui.io.set_ini_filename("")
+                    # Use pyglet's GL bindings, like the viewer; PyOpenGL is not a dependency.
+                    from pyglet import gl
+
+                    image_texture = _gl_gen_texture(gl)
+                    gl.glBindTexture(gl.GL_TEXTURE_2D, image_texture)
+                    gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_NEAREST)
+                    gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_NEAREST)
+                    pixels = np.array(
+                        [[[255, 0, 0, 255], [0, 255, 0, 255]], [[0, 0, 255, 255], [255, 255, 255, 255]]], dtype=np.uint8
+                    )
+                    gl.glTexImage2D(
+                        gl.GL_TEXTURE_2D,
+                        0,
+                        gl.GL_RGBA8,
+                        2,
+                        2,
+                        0,
+                        gl.GL_RGBA,
+                        gl.GL_UNSIGNED_BYTE,
+                        pixels.ctypes.data_as(ctypes.c_void_p),
+                    )
+                    calls = []
+                    for position in ("panel", "side", "stats", "free"):
+
+                        def callback(
+                            ui: ModuleType,
+                            position: str = position,
+                            calls: list[str] = calls,
+                            texture: int = image_texture,
+                        ) -> None:
+                            ui.text(f"Custom {position} callback")
+                            calls.append(position)
+                            if position == "free":
+                                # Exercise switches between font and user-image textures.
+                                ui.get_foreground_draw_list().add_image(
+                                    ui.ImTextureRef(texture), ui.ImVec2(16, 400), ui.ImVec2(80, 464)
+                                )
+
+                        viewer.register_ui_callback(callback, position=position)
+
+                    def timeline_gui(ui: ModuleType, calls: list[str] = calls) -> None:
+                        # User callbacks must not be filtered by their Python name.
+                        ui.get_foreground_draw_list().add_text((16, 480), 0xFFFFFFFF, "Custom timeline")
+                        calls.append("timeline_gui")
+
+                    viewer.register_ui_callback(timeline_gui, position="free")
+                    if not legacy:
+                        # Keep the inspector docked in this 800 px window on HiDPI desktops too.
+                        gui.ui.refresh_dpi(1.0)
+                    for frame in range(2):
+                        viewer.begin_frame(frame / 60)
+                        viewer.log_state(state)
+                        viewer.end_frame()
+                    self.assertFalse(gui.ui.section_errors)
+                    self.assertGreater(gui.ui.imgui.get_draw_data().total_vtx_count, 0)
+                    if legacy:
+                        self.assertIsNone(gui.ui.io.font_default)
+                        self.assertIsNone(gui.ui.number_font)
+                        self.assertIsNone(gui.workspace)
+                        self.assertIsNone(gui.console_capture)
+                        self.assertIsNone(viewer.renderer._workspace_rect)
+                        self.assertEqual(calls, ["panel", "side", "stats", "free", "timeline_gui"] * 2)
+                        sidebar = gui.ui.imgui.internal.find_window_by_name(f"Newton Viewer v{newton.__version__}")
+                        self.assertIsNotNone(sidebar)
+                        self.assertEqual(sidebar.size.x, 300 * gui.ui.dpi_scale)
+                    else:
+                        self.assertIsNotNone(gui.workspace)
+                        self.assertIsNotNone(viewer.renderer._workspace_rect)
+                        # Only the application may opt into mirroring Newton logs.
+                        self.assertFalse(gui.console_capture.attached)
+                        self.assertNotIn(gui.console_capture.buffer, logging.getLogger("newton").handlers)
+                        # Custom loops without newton.examples.run() still draw
+                        # every registered position, including the default "side".
+                        self.assertEqual(calls[-5:], ["panel", "side", "stats", "free", "timeline_gui"])
+                        self.assertFalse(gui.workspace.timeline_options["recording"])
+
+                    # Render clipped text, widgets, and user images into an isolated target.
+                    previous_fbo = _gl_get_integer(gl, gl.GL_FRAMEBUFFER_BINDING)
+                    texture = _gl_gen_texture(gl)
+                    framebuffer = gl.GLuint()
+                    gl.glGenFramebuffers(1, ctypes.byref(framebuffer))
+                    try:
+                        gl.glBindTexture(gl.GL_TEXTURE_2D, texture)
+                        gl.glTexImage2D(
+                            gl.GL_TEXTURE_2D, 0, gl.GL_RGBA8, 800, 600, 0, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, None
+                        )
+                        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, framebuffer)
+                        gl.glFramebufferTexture2D(
+                            gl.GL_FRAMEBUFFER, gl.GL_COLOR_ATTACHMENT0, gl.GL_TEXTURE_2D, texture, 0
+                        )
+                        self.assertEqual(gl.glCheckFramebufferStatus(gl.GL_FRAMEBUFFER), gl.GL_FRAMEBUFFER_COMPLETE)
+                        gl.glDisable(gl.GL_SCISSOR_TEST)
+                        gl.glClearColor(0.1, 0.2, 0.3, 1.0)
+                        gl.glClear(gl.GL_COLOR_BUFFER_BIT)
+                        gui.ui.render()
+                        image = _gl_read_rgba(gl, 800, 600)
+                        # The native renderer may filter user images linearly; allow
+                        # half-pixel blending with the neighboring texel.
+                        np.testing.assert_allclose(image[600 - 416, 32], [255, 0, 0, 255], atol=8)
+
+                        # Rendering the UI must preserve independent alpha blend
+                        # factors used by scene transparency passes.
+                        gl.glBlendFuncSeparate(gl.GL_ONE, gl.GL_ZERO, gl.GL_ZERO, gl.GL_ONE)
+                        gui.ui.render()
+                        for name, value in (
+                            (gl.GL_BLEND_SRC_RGB, gl.GL_ONE),
+                            (gl.GL_BLEND_DST_RGB, gl.GL_ZERO),
+                            (gl.GL_BLEND_SRC_ALPHA, gl.GL_ZERO),
+                            (gl.GL_BLEND_DST_ALPHA, gl.GL_ONE),
+                        ):
+                            self.assertEqual(_gl_get_integer(gl, name), value)
+
+                        if not legacy:
+                            # Reuse this context to check actual cached-icon
+                            # pixels, including mid-frame font texture growth and DPI
+                            # changes. Merely comparing two renderers could miss
+                            # blank or incorrectly mapped icon textures.
+                            atlas = gui.ui.icon_atlas
+                            fonts = imgui.get_io().fonts
+                            for scale in (1.0, 2.0, 1.5):
+                                size = int(16 * scale)
+                                gui.ui.begin_frame()
+                                draw = imgui.get_foreground_draw_list()
+                                vertices = draw.vtx_buffer.size()
+                                for copy in range(3):
+                                    if scale == 1.0 and copy == 1:
+                                        previous_size = fonts.tex_data.width, fonts.tex_data.height
+                                        rect = imgui.ImFontAtlasRect()
+                                        fonts.add_custom_rect(*previous_size, rect)
+                                        self.assertNotEqual(
+                                            (fonts.tex_data.width, fonts.tex_data.height), previous_size
+                                        )
+                                    self.assertTrue(
+                                        atlas.draw(
+                                            draw,
+                                            "body",
+                                            (100 + 40 * copy, 100),
+                                            size,
+                                            scale=scale,
+                                            color=imgui.get_color_u32((1.0, 0.5, 0.25, 1.0)),
+                                            solid=True,
+                                        )
+                                    )
+                                self.assertEqual(draw.vtx_buffer.size() - vertices, 12)
+                                self.assertFalse(
+                                    atlas.draw(draw, "unknown", (0, 0), size, scale=scale, color=0xFFFFFFFF)
+                                )
+                                gui.ui.end_frame()
+                                gl.glDisable(gl.GL_SCISSOR_TEST)
+                                gl.glClearColor(0, 0, 0, 1)
+                                gl.glClear(gl.GL_COLOR_BUFFER_BIT)
+                                gui.ui.render()
+                                pixels = _gl_read_rgba(gl, 800, 600)[::-1]
+                                first = pixels[100 : 100 + size, 100 : 100 + size, :3]
+                                self.assertGreater(np.count_nonzero(first[..., 0] > 128), size * size // 4)
+                                self.assertGreater(first[..., 0].sum(), first[..., 1].sum())
+                                self.assertGreater(first[..., 1].sum(), first[..., 2].sum())
+                                # Drivers may round edge coverage differently at
+                                # another screen offset, so allow a few levels.
+                                for copy in (1, 2):
+                                    np.testing.assert_allclose(
+                                        pixels[100 : 100 + size, 100 + 40 * copy : 100 + 40 * copy + size, :3].astype(
+                                            np.int16
+                                        ),
+                                        first.astype(np.int16),
+                                        atol=2,
+                                        rtol=0,
+                                    )
+                            # Clipped property labels should still batch as text,
+                            # without a separate GPU scissor command per field.
+                            # Check actual pixels as well as command count so a
+                            # faster path cannot silently remove label clipping.
+                            for label_width in (70, 150):
+                                gui.ui.begin_frame()
+                                imgui.set_next_window_pos((40, 40))
+                                imgui.set_next_window_size((300, 350))
+                                imgui.push_style_var(imgui.StyleVar_.window_padding, (0, 0))
+                                imgui.push_style_var(imgui.StyleVar_.window_border_size, 0)
+                                imgui.begin(
+                                    "##label_batch",
+                                    flags=imgui.WindowFlags_.no_decoration | imgui.WindowFlags_.no_background,
+                                )
+                                origin = imgui.get_cursor_screen_pos()
+                                for _ in range(6):
+                                    gui.workspace.widgets._fixed_label(
+                                        "A very long property name for clipping", label_width
+                                    )
+                                draw = imgui.get_window_draw_list()
+                                command_count = sum(command.elem_count > 0 for command in draw.cmd_buffer)
+                                imgui.end()
+                                imgui.pop_style_var(2)
+                                gui.ui.end_frame()
+                                gl.glDisable(gl.GL_SCISSOR_TEST)
+                                gl.glClearColor(0, 0, 0, 1)
+                                gl.glClear(gl.GL_COLOR_BUFFER_BIT)
+                                gui.ui.render()
+                                pixels = _gl_read_rgba(gl, 800, 600)[::-1, :, :3]
+                                x, y = int(origin.x), int(origin.y)
+                                self.assertGreater(np.count_nonzero(pixels[y : y + 200, x : x + label_width]), 0)
+                                self.assertEqual(np.count_nonzero(pixels[y : y + 200, x + label_width : x + 280]), 0)
+                                self.assertEqual(command_count, 1)
+                    finally:
+                        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, previous_fbo)
+                        gl.glDeleteFramebuffers(1, ctypes.byref(framebuffer))
+                        gl.glDeleteTextures(1, ctypes.byref(gl.GLuint(texture)))
+
+                    # Model switches clear old images but must keep the image
+                    # presentation alive for the next example in both GUIs.
+                    for reset in (False, True):
+                        if reset:
+                            viewer.clear_model()
+                        for frame in range(3):
+                            viewer.begin_frame(frame / 60)
+                            viewer.log_image("sensor", np.full((16, 16, 3), 150, dtype=np.uint8))
+                            viewer.end_frame()
+                        texture_id, _, _ = viewer._image_logger.get_texture("sensor")
+                        commands = (
+                            command for draw_list in imgui.get_draw_data().cmd_lists for command in draw_list.cmd_buffer
+                        )
+                        self.assertTrue(any(command.get_tex_id() == texture_id for command in commands))
+                finally:
+                    if image_texture is not None:
+                        gl.glDeleteTextures(1, ctypes.byref(gl.GLuint(image_texture)))
+                    icon_texture = viewer.gui.ui.icon_atlas._texture
+                    icon_texture_id = icon_texture.id if icon_texture is not None else None
+                    viewer.gui.ui.shutdown()
+                    if icon_texture_id is not None:
+                        self.assertFalse(gl.glIsTexture(icon_texture_id))
+                    # Shutdown also destroys the viewer's ImGui context, so GUI
+                    # fonts, style and time do not leak into other ImGui tests.
+                    viewer.close()
+
+    def test_joint_stroke_outline_preserves_arc_color_and_occlusion(self) -> None:
+        """Keep tilted angle arcs clear at different zooms without drawing through geometry."""
+        with wp.ScopedDevice("cpu"):
+            viewer = _make_headless_viewer_gl_or_skip(self, width=400, height=300)
+        self.addCleanup(viewer.close)
+        renderer = viewer.renderer
+        renderer.draw_sky = renderer.draw_shadows = renderer.draw_grid = False
+        renderer.sky_upper = (0.13, 0.13, 0.13)
+        # Supply viewport metrics without starting an ImGui event loop. Both
+        # triangulation and opaque/transparent rasterization use the real GL path.
+        workspace = SimpleNamespace(viewer=viewer, widgets=SimpleNamespace(scale=1.0), rect=(0, 0, 400, 300))
+        angles = np.linspace(0, np.pi * 1.6, 65)
+        circle = np.column_stack((np.cos(angles), np.sin(angles), np.zeros_like(angles)))
+        for distance in (3.0, 30.0, 300.0):
+            viewer.set_camera(wp.vec3(distance, -distance, distance), pitch=0.0, yaw=0.0)
+            viewer.camera.look_at((0.0, 0.0, 0.0))
+            for radius_pixels, thickness, alpha in ((42, 3.0, 1.0), (12, 1.5, 0.45)):
+                with self.subTest(distance=distance, radius=radius_pixels, alpha=alpha):
+                    frames = []
+                    for halo in (False, True):
+                        draw = _JointDrawList(workspace)
+                        radius = np.linalg.norm(np.asarray(viewer.camera.pos)) * draw.radius_per_depth * radius_pixels
+                        draw.lines(
+                            (circle * radius)[None, ...], np.array([[1.0, 0.6, 0.2, alpha]]), thickness, halo=halo
+                        )
+                        draw.flush()
+                        renderer.render(viewer.camera, {})
+                        frames.append(viewer.get_frame().numpy().copy())
+                    core = frames[0][..., 0] >= int(frames[0][..., 0].max()) - 2
+                    self.assertGreater(np.count_nonzero(core), 10)
+                    error = np.abs(frames[1][core].astype(int) - frames[0][core].astype(int))
+                    self.assertLessEqual(int(error.max()), 2, "the outline painted over the arc")
+
+        # Move a real box in front of the diagnostic. Its depth must still hide
+        # the arc and its border; fixing self-overlap must not make an overlay.
+        builder = newton.ModelBuilder()
+        builder.add_shape_box(-1, xform=wp.transform((150.0, -150.0, 150.0), wp.quat_identity()), hx=70, hy=70, hz=70)
+        model = builder.finalize(device="cpu")
+        viewer.set_model(model)
+        viewer.log_state(model.state())
+        triangles = renderer._joint_triangles
+        renderer._joint_triangles = None
+        renderer.render(viewer.camera, viewer.objects)
+        scene = viewer.get_frame().numpy().copy()
+        renderer._joint_triangles = triangles
+        renderer.render(viewer.camera, viewer.objects)
+        np.testing.assert_array_equal(viewer.get_frame().numpy(), scene)
+
     @requires("pyglet")
     def test_backend_error_types_do_not_force_window_import(self):
         """Verify backend error discovery does not import pyglet.window."""
@@ -238,6 +1241,60 @@ class TestViewerGLGetFrame(unittest.TestCase):
                 self.assertEqual(cuda_frame.dtype, wp.uint8)
                 self.assertEqual(cuda_frame.device, cuda_device)
                 self.assertGreater(np.ptp(cuda_frame.numpy()), 0)
+
+            # Wide contact connectors must retain their visible portion when
+            # either witness crosses behind the eye. Compare against an
+            # explicitly clipped segment using the same native framebuffer.
+            viewer.clear_all_layers()
+            viewer.set_model(newton.ModelBuilder().finalize(device="cpu"))
+            viewer.show_ground_plane = False
+            viewer.renderer.draw_sky = False
+            viewer.camera.near = 0.1
+            viewer.set_camera(pos=wp.vec3(0, -2, 1), pitch=0.0, yaw=0.0)
+            viewer.camera.look_at((0, 0, 1))
+            eye = np.asarray(viewer.camera.pos)
+            forward, right = np.asarray(viewer.camera.get_front()), np.asarray(viewer.camera.get_right())
+            start = eye + 2 * forward - 0.3 * right
+            end = eye - 0.5 * forward + 0.2 * right
+            clipped = start + (end - start) * ((2 - 0.100001) / 2.5)
+
+            def draw_segment(
+                a: tuple[float, float, float], b: tuple[float, float, float], *, arrows: bool = False
+            ) -> np.ndarray:
+                begins = wp.array([a], dtype=wp.vec3, device="cpu")
+                ends = wp.array([b], dtype=wp.vec3, device="cpu")
+                viewer.begin_frame(1.0)
+                if arrows:
+                    viewer.log_lines("/contacts/witnesses", None, None, None)
+                    viewer.log_arrows("/contacts/normals", begins, ends, (0, 1, 0))
+                else:
+                    viewer.log_lines("/contacts/witnesses", begins, ends, (1, 1, 0))
+                viewer.end_frame()
+                return viewer.get_frame().numpy().copy()
+
+            for xray in (False, True):
+                viewer.renderer._physics_xray = xray
+                viewer.renderer._xray_inspection_radius = 1.0
+                viewer.renderer._xray_proximity_range = 3.0
+                reference = draw_segment(start, clipped)
+                yellow = (reference[:, :, 0] > 100) & (reference[:, :, 1] > 100) & (reference[:, :, 2] < 80)
+                self.assertGreater(np.count_nonzero(yellow), 10)
+                for a, b in ((start, end), (end, start)):
+                    actual = draw_segment(a, b)
+                    np.testing.assert_allclose(actual, reference, atol=2)
+
+            for a, b in ((start, end), (end, start)):
+                actual = draw_segment(a, b, arrows=True)
+                green = (actual[:, :, 1] > 150) & (actual[:, :, 0] < 80) & (actual[:, :, 2] < 80)
+                self.assertGreater(np.count_nonzero(green), 5)
+            actual = draw_segment(eye - forward, end, arrows=True)
+            green = (actual[:, :, 1] > 150) & (actual[:, :, 0] < 80) & (actual[:, :, 2] < 80)
+            self.assertEqual(np.count_nonzero(green), 0)
+            # Zero force (or a disabled length scale) must not produce the
+            # camera-facing arrowhead used for nonzero view-aligned vectors.
+            actual = draw_segment(start, start, arrows=True)
+            green = (actual[:, :, 1] > 150) & (actual[:, :, 0] < 80) & (actual[:, :, 2] < 80)
+            self.assertEqual(np.count_nonzero(green), 0)
         finally:
             viewer.close()
 

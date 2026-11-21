@@ -1,0 +1,1 @@
+Reduce ViewerGL GUI overhead by caching property metadata and orientation geometry, limiting property discovery to selected frequencies, skipping offscreen property decoration, and batching clipped text, while preserving live values and scene OpenGL state.

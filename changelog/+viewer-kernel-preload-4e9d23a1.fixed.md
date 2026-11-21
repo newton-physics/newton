@@ -1,0 +1,1 @@
+Precompile built-in ViewerGL workspace kernels and inspection shaders during initialization, and kernels on model device changes, to avoid compilation stalls on first selection or display-mode changes; retain on-demand compilation for headless rendering and legacy GUIs.

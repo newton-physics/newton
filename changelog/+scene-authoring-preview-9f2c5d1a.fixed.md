@@ -1,0 +1,1 @@
+Enable dragging the selected SimReady asset's large inspector preview into the viewport using the same placement path as asset cards. Place interactive additions and duplicates above nearby collision geometry to prevent initial intersections from launching existing objects.

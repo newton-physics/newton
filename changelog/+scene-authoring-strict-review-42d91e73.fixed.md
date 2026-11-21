@@ -1,0 +1,1 @@
+Reject invalid native-range edits before publication, protect imported USD dependencies from save replacement, refresh referenced assets on reimport and document reopening, retain new defaults for changed joint layouts, defer downloaded placements across active interactions, and distinguish authored assembly poses in MCP observations.

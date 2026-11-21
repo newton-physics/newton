@@ -119,6 +119,21 @@ class TestExampleBrowserReset(unittest.TestCase):
             builder.add_body(mass=mass, inertia=wp.mat33(mass, 0.0, 0.0, 0.0, mass, 0.0, 0.0, 0.0, mass))
             models.append(builder.finalize(device="cpu"))
 
+        contact_render_options = {
+            "contact_arrow_scale": 0.7,
+            "contact_normal_max_pixels": 40.0,
+            "contact_force_max_pixels": 50.0,
+            "contact_disk_scale": 0.6,
+        }
+
+        def contact_defaults(viewer: ViewerNull) -> None:
+            viewer.show_contact_pairs = False
+            viewer.show_contact_lines = True
+            viewer.show_contact_labels = True
+            viewer.camera_slowdown = 2.0
+            for name in contact_render_options:
+                setattr(viewer.renderer, name, 1.0)
+
         class Scene(_StubExample):
             def __init__(self, viewer: ViewerNull, args: argparse.Namespace) -> None:
                 super().__init__(viewer, args)
@@ -134,6 +149,7 @@ class TestExampleBrowserReset(unittest.TestCase):
                 viewer.vsync = False
                 viewer._paused = False
                 viewer.show_ui = False
+                contact_defaults(viewer)
 
         class OtherScene(_StubExample):
             def __init__(self, viewer: ViewerNull, args: argparse.Namespace) -> None:
@@ -149,6 +165,7 @@ class TestExampleBrowserReset(unittest.TestCase):
                 viewer.vsync = True
                 viewer._paused = True
                 viewer.show_ui = True
+                contact_defaults(viewer)
 
         with wp.ScopedDevice("cpu"):
             viewer = ViewerNull(num_frames=1)
@@ -176,6 +193,17 @@ class TestExampleBrowserReset(unittest.TestCase):
                 joint_scale=3.0,
                 wireframe_line_width=3.0,
             )
+            # Exercise the same preference recording boundary as the workspace,
+            # without constructing an OpenGL renderer or duplicating its UI.
+            with viewer._track_display_options():
+                viewer.contact_normal_scale = 0.6
+                viewer.show_contact_pairs = True
+                viewer.show_contact_lines = False
+                viewer.show_contact_labels = False
+                viewer.camera_slowdown = 3.0
+                viewer.camera.near, viewer.camera.far = 0.002, 1500.0
+                for name, value in contact_render_options.items():
+                    setattr(viewer.renderer, name, value)
             original_force_scale = viewer.contact_force_scale
             viewer.layer.visible = False
             browser = _ExampleBrowser(viewer)
@@ -216,6 +244,14 @@ class TestExampleBrowserReset(unittest.TestCase):
             self.assertTrue(viewer.vsync)
             self.assertTrue(viewer._paused)
             self.assertTrue(viewer.show_ui)
+            self.assertEqual(viewer.contact_normal_scale, 0.6)
+            self.assertTrue(viewer.show_contact_pairs)
+            self.assertFalse(viewer.show_contact_lines)
+            self.assertFalse(viewer.show_contact_labels)
+            self.assertEqual(viewer.camera_slowdown, 3.0)
+            self.assertEqual((viewer.camera.near, viewer.camera.far), (0.002, 1500.0))
+            for name, value in contact_render_options.items():
+                self.assertEqual(getattr(viewer.renderer, name), value)
             # A previous scene's default must not hide loose particles.
             self.assertTrue(viewer.show_particles)
             viewer.show_particles = False
@@ -228,6 +264,9 @@ class TestExampleBrowserReset(unittest.TestCase):
             viewer._display_options_user.update(show_joints=False, _paused=False, show_ui=False)
             viewer.activate("unused")
             viewer.show_joints = True
+            with viewer._track_display_options():
+                viewer.camera.fov = 46.0
+                viewer.camera_speed = 1.5
             browser.switch_target = "test.other"
             with patch(
                 "newton.examples.importlib.import_module", return_value=types.SimpleNamespace(Example=OtherScene)
@@ -237,6 +276,9 @@ class TestExampleBrowserReset(unittest.TestCase):
             self.assertFalse(viewer.show_joints)
             self.assertFalse(viewer._paused)
             self.assertFalse(viewer.show_ui)
+
+            self.assertEqual(viewer.camera.fov, 46.0)
+            self.assertEqual(viewer.camera_speed, 1.5)
 
     def test_load_failures_clear_partial_scenes_and_allow_retry(self) -> None:
         """Recover from parser exits and partial constructors on switch and reset."""
@@ -352,6 +394,58 @@ class TestExampleBrowserReset(unittest.TestCase):
                 self.assertIsNone(viewer.old_refs[0]())
                 self.assertTrue(viewer.old_refs[1]().previous_released)
 
+    def test_new_scene_replaces_owned_editor_with_empty_paused_scene(self) -> None:
+        """Close the previous editor and create an empty scene on the same viewer."""
+        from newton.examples.basic.example_scene_editor import Example  # noqa: PLC0415 - Load the editor only here.
+
+        with wp.ScopedDevice("cpu"):
+            viewer = _BrowserViewer()
+            viewer._paused = False
+            viewer._step_requested = True
+            viewer._display_options_user["_paused"] = False
+            previous = Example(viewer, Example.create_parser().parse_args(["--empty"]))
+            previous.add_primitive("box", position=(0, 0, 2))
+            previous.commit()
+            model = previous.model
+            switched = []
+
+            def make_browser(viewer, args):
+                browser = _ExampleBrowser(viewer, args)
+                switch = browser.switch
+
+                def create_scene():
+                    browser.new_scene(solver="xpbd", device="cpu")
+                    self.assertIs(viewer.model, model)
+                    self.assertFalse(previous._closed)
+                    viewer.on_frame = lambda: None
+
+                def observe_switch(example_class):
+                    result = switch(example_class)
+                    switched.append((browser, result[0]))
+                    return result
+
+                viewer.on_frame = create_scene
+                browser.switch = observe_switch
+                return browser
+
+            with patch("newton.examples._ExampleBrowser", side_effect=make_browser):
+                newton.examples.run(previous, newton.examples.default_args())
+            self.assertEqual(len(switched), 1)
+            browser, current = switched[0]
+            self.assertIsInstance(current, Example)
+            self.assertIs(current.viewer, viewer)
+            self.assertIsNot(current.model, model)
+            self.assertEqual(current.objects, ())
+            self.assertEqual(current.model.body_count, 0)
+            self.assertEqual(current.model.shape_count, 1)
+            self.assertTrue(current.model.device.is_cpu)
+            self.assertEqual(current.solver_type.value, "xpbd")
+            self.assertTrue(previous._closed)
+            self.assertTrue(current._closed)
+            self.assertTrue(browser._initial_args.empty)
+            self.assertTrue(viewer._paused)
+            self.assertFalse(viewer._step_requested)
+
     def test_runtime_failure_recovers_but_automated_runs_raise(self) -> None:
         """Keep browsing after step/render errors and propagate automated failures."""
 
@@ -448,6 +542,21 @@ class TestExampleBrowserReset(unittest.TestCase):
         self.assertEqual(viewer.cleared_all_layers, 1)
         self.assertEqual(viewer.cleared, 0)
 
+    def test_reset_preserves_user_provided_args(self):
+        # Simulate the user invoking the example with `--world-count 2`.
+        args = _StubExample.create_parser().parse_args(["--world-count", "2"])
+        self.assertEqual(args.world_count, 2)
+
+        viewer = _StubViewer()
+        browser = _ExampleBrowser(viewer, args)
+
+        new_example = browser.reset(_StubExample)
+
+        self.assertIsNotNone(new_example)
+        self.assertEqual(new_example.args.world_count, 2)
+        self.assertEqual(viewer.cleared_all_layers, 1)
+        self.assertEqual(viewer.cleared, 0)
+
     def test_reset_after_switch_uses_new_example_args(self):
         # Original launch: _StubExample with --world-count 2.
         args = _StubExample.create_parser().parse_args(["--world-count", "2"])
@@ -461,6 +570,7 @@ class TestExampleBrowserReset(unittest.TestCase):
             new_example, new_class = browser.switch(_StubExample)
 
         self.assertIs(new_class, _OtherStubExample)
+        self.assertEqual(browser.current_module, "fake.module.path")
         self.assertEqual(new_example.args.world_count, 7)
         self.assertEqual(viewer.cleared_all_layers, 1)
         self.assertEqual(viewer.cleared, 0)
@@ -471,6 +581,7 @@ class TestExampleBrowserReset(unittest.TestCase):
         self.assertIsNotNone(reset_example)
         self.assertIsInstance(reset_example, _OtherStubExample)
         self.assertEqual(reset_example.args.world_count, 7)
+        self.assertEqual(browser.current_module, "fake.module.path")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,1 @@
+Isolate asynchronous USD preparation in a reusable CPU process to prevent native crashes when viewport GPU readbacks change Warp's process-wide default device during mesh inertia computation; retain the live scene after a preparation-worker failure.

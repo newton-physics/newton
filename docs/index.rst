@@ -39,6 +39,7 @@ Newton Physics
    Sensors <concepts/sensors>
    Conventions <concepts/conventions>
    USD Parsing <concepts/usd_parsing>
+   Scene Authoring <concepts/scene_authoring>
    Custom Attributes <concepts/custom_attributes>
    Solver Observables <concepts/solver_observables>
    Collisions and Contacts <concepts/collisions>

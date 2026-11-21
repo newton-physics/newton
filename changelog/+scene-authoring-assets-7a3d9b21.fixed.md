@@ -1,0 +1,1 @@
+Keep asset cards stable during thumbnail loading and allow a quick select-then-drag without triggering double-click placement. Import jointed USD props without explicit articulation roots through session-layer articulation metadata, preserving their bodies and joints.

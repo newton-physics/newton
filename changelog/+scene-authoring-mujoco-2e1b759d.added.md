@@ -1,0 +1,1 @@
+Add MuJoCo Warp simulation to the experimental scene editor, with native live-edit notifications, solver reset and overflow handling, Newton mesh contacts, and an explicit XPBD option for CPU or CUDA.

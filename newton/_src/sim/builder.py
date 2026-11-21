@@ -16174,8 +16174,6 @@ class ModelBuilder:
 
             # Open-boundary bits for collision meshes queried with pseudo-normal
             # signs, packed once per unique finalized mesh.
-            from ..geometry.sdf_contact import compute_mesh_boundary_flags  # noqa: PLC0415
-
             finalized_meshes = {mesh.id: mesh for mesh in mesh_keep_alive}
             boundary_chunks = []
             boundary_offset = 0
@@ -16192,7 +16190,8 @@ class ModelBuilder:
                     if source in finalized_meshes:
                         start = boundary_starts.get(source)
                         if start is None:
-                            flags = compute_mesh_boundary_flags(finalized_meshes[source])
+                            geo = generated_shape_sources[shape_idx]
+                            flags = geo._get_boundary_flags(finalized_meshes[source])
                             start = boundary_starts[source] = boundary_offset
                             boundary_chunks.append(flags)
                             boundary_offset += len(flags)
@@ -16420,14 +16419,15 @@ class ModelBuilder:
                         interior_pt = np.zeros(3, dtype=np.float32)
                         sc_np = np.array(sc_tuple)
                         if st == GeoType.MESH:
-                            vertices = shape_src.vertices
-                            lo64 = vertices.min(axis=0) * sc_np
-                            hi64 = vertices.max(axis=0) * sc_np
+                            lower, upper = shape_src._get_local_bounds()
+                            lo64 = lower * sc_np
+                            hi64 = upper * sc_np
                             aabb_lo = np.minimum(lo64, hi64)
                             aabb_hi = np.maximum(lo64, hi64)
                         elif st == GeoType.CONVEX_MESH:
-                            lo64 = shape_src.vertices.min(axis=0) * sc_np
-                            hi64 = shape_src.vertices.max(axis=0) * sc_np
+                            lower, upper = shape_src._get_local_bounds()
+                            lo64 = lower * sc_np
+                            hi64 = upper * sc_np
                             centroid = _convex_hull_interior_point(shape_src.vertices, shape_src.indices)
                             interior_pt = (centroid * sc_np).astype(np.float32)
                             aabb_lo = np.minimum(lo64, hi64)
@@ -16889,29 +16889,9 @@ class ModelBuilder:
                         edge_chunks.append(edges)
                         if count > 0:
                             # Unscaled: kernels apply the live shape_scale when reading these edges.
-                            vertices = np.asarray(mesh.vertices, dtype=np.float32)
-                            edge_v0 = vertices[edges[:, 0]]
-                            edge_v1 = vertices[edges[:, 1]]
-                            edge_halves = np.ascontiguousarray((edge_v1 - edge_v0) * 0.5, dtype=np.float32)
-                            edge_centers = np.ascontiguousarray((edge_v0 + edge_v1) * 0.5, dtype=np.float32)
-                            edge_radii = np.linalg.norm(edge_halves, axis=1, keepdims=True)
-                            canonical_edges = mesh._canonical_vertex_ids()[edges].reshape(-1)
-                            endpoint_indices = np.arange(2 * count, dtype=np.int64)
-                            first_endpoint = np.full(int(canonical_edges.max()) + 1, 2 * count, dtype=np.int64)
-                            np.minimum.at(first_endpoint, canonical_edges, endpoint_indices)
-                            owns_endpoint = (first_endpoint[canonical_edges] == endpoint_indices).reshape(-1, 2)
-                            # Zero remains the legacy "both endpoints owned" encoding.
-                            corner_ownership = (
-                                4.0 + owns_endpoint[:, 0].astype(np.float32) + 2.0 * owns_endpoint[:, 1]
-                            ).reshape(-1, 1)
-                            edge_center_chunks.append(
-                                np.ascontiguousarray(
-                                    np.concatenate((edge_centers, edge_radii), axis=1), dtype=np.float32
-                                )
-                            )
-                            edge_half_chunks.append(
-                                np.ascontiguousarray(np.concatenate((edge_halves, corner_ownership), axis=1))
-                            )
+                            centers, halves = mesh._get_collision_edge_geometry(edges)
+                            edge_center_chunks.append(centers)
+                            edge_half_chunks.append(halves)
                         edge_offset += count
                         entry = (start, count)
                         edge_cache[mesh_key] = entry

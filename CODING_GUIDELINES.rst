@@ -340,7 +340,9 @@ When writing a message:
 - log one record per event, joining multi-line summaries into one message; and
 - do not add handlers, change levels, or call :func:`logging.basicConfig`;
   the application owns logging configuration, and the default output above
-  is set up once in ``newton/_src/diagnostics.py``.
+  is set up once in ``newton/_src/diagnostics.py``. The one exception is an
+  explicit application opt-in, such as ``ViewerGL(capture_logs=True)``,
+  whose handler only mirrors records and leaves the default output in place.
 
 Test log output with :meth:`~unittest.TestCase.assertLogs` on the ``newton``
 logger rather than by capturing stdout, which depends on how the test process

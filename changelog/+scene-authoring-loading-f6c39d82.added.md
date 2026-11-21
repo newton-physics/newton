@@ -1,0 +1,1 @@
+Show native loading feedback before scene-editor model rebuilds and first physics initialization, including structural deletions. Add a nonblocking animated SimReady activity card that identifies the asset and tracks download, USD preparation and scene publication without interrupting dragging.

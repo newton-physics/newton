@@ -1,0 +1,1 @@
+Preserve terminal diagnostics and application-configured logging while the ViewerGL console is open, including Newton warnings and exception tracebacks. The console captures logs only when the application passes `ViewerGL(capture_logs=True)`, as the example runner does.
