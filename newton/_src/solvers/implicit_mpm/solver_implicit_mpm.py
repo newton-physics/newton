@@ -1882,9 +1882,8 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         # Materialize graph-persistent topology and buffers before callers can capture step().
         self._last_step_data = LastStepData()
         # Collider impulses accumulated over every step since the last coupling input-state
-        # notification, so proxy harvesting spans all sub-steps of one coupled step. The
-        # accumulation only starts once a coupled solver sends that notification, so
-        # standalone stepping does not pay for it.
+        # notification, so proxy harvesting spans all sub-steps of one coupled step. Only a
+        # proxy destination (see coupling_notify_proxy_feedback) pays for the accumulation.
         self._coupling_impulse_tracking = False
         self._coupling_body_impulse = wp.zeros(model.body_count, dtype=wp.spatial_vector, device=model.device)
         self._coupling_particle_impulse = None
@@ -2454,6 +2453,12 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             self._mpm_model.notify_particle_material_changed()
 
     @override
+    def coupling_notify_proxy_feedback(self, enabled: bool) -> None:
+        """Start or stop accumulating collider impulses for the proxy harvest hooks."""
+        self._coupling_impulse_tracking = bool(enabled)
+        self._clear_coupling_impulses()
+
+    @override
     def coupling_eval_gravity_acceleration(
         self,
         out_body_acceleration: wp.array[wp.vec3] | None,
@@ -2479,8 +2484,8 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         so the next harvest spans every step taken after this notification.
         """
         del dt
-        self._coupling_impulse_tracking = True
-        self._clear_coupling_impulses()
+        if self._coupling_impulse_tracking:
+            self._clear_coupling_impulses()
         flags = int(flags)
         update_points = bool(flags & StateFlags.PARTICLE_Q)
         update_velocities = bool(flags & StateFlags.PARTICLE_QD)

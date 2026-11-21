@@ -79,6 +79,7 @@ def test_proxy_feedback_preserves_contact_force_and_moment(test, device):
 
     state = solver.model.state()
     dt = 2.0
+    solver.coupling_notify_proxy_feedback(True)
     solver.coupling_notify_input_state_update(state, newton.StateFlags.NONE)
     solver.step(state, state, None, None, dt)
     forces = _harvest_proxy_particle_forces(solver, state, dt, device)
@@ -94,6 +95,7 @@ def test_proxy_feedback_sums_substep_impulses(test, device):
 
     state = solver.model.state()
     dt = 2.0
+    solver.coupling_notify_proxy_feedback(True)
     solver.coupling_notify_input_state_update(state, newton.StateFlags.NONE)
     solver.step(state, state, None, None, dt / 2.0)
     solver.step(state, state, None, None, dt / 2.0)
@@ -109,17 +111,30 @@ def test_proxy_feedback_sums_substep_impulses(test, device):
     _assert_feedback_matches_contact(forces, contact_impulse / dt)
 
 
-def test_proxy_feedback_requires_coupling_notification(test, device):
-    """Skip impulse accumulation until a coupled solver announces an input-state update."""
+def test_proxy_feedback_requires_proxy_feedback_notification(test, device):
+    """Accumulate collider impulses only while the coupler has declared proxy feedback."""
     solver, _mesh = _make_deformable_collider(device)
     contact_impulse = np.array([0.0, 0.0, 2.0], dtype=np.float32)
     _mock_single_contact_impulse(solver, contact_impulse, device)
 
     state = solver.model.state()
     dt = 2.0
+    # Input-state notifications alone (as sent by every coupler) must not start the accumulation.
+    solver.coupling_notify_input_state_update(state, newton.StateFlags.NONE)
     solver.step(state, state, None, None, dt)
     forces = _harvest_proxy_particle_forces(solver, state, dt, device)
+    np.testing.assert_allclose(forces, 0.0, rtol=0.0, atol=0.0)
 
+    solver.coupling_notify_proxy_feedback(True)
+    solver.coupling_notify_input_state_update(state, newton.StateFlags.NONE)
+    solver.step(state, state, None, None, dt)
+    forces = _harvest_proxy_particle_forces(solver, state, dt, device)
+    _assert_feedback_matches_contact(forces, contact_impulse / dt)
+
+    solver.coupling_notify_proxy_feedback(False)
+    solver.coupling_notify_input_state_update(state, newton.StateFlags.NONE)
+    solver.step(state, state, None, None, dt)
+    forces = _harvest_proxy_particle_forces(solver, state, dt, device)
     np.testing.assert_allclose(forces, 0.0, rtol=0.0, atol=0.0)
 
 
@@ -177,8 +192,8 @@ add_function_test(
 )
 add_function_test(
     TestImplicitMPMCouplingWeights,
-    "test_proxy_feedback_requires_coupling_notification",
-    test_proxy_feedback_requires_coupling_notification,
+    "test_proxy_feedback_requires_proxy_feedback_notification",
+    test_proxy_feedback_requires_proxy_feedback_notification,
     devices=devices,
 )
 add_function_test(

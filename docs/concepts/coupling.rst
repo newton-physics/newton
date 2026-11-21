@@ -133,6 +133,11 @@ The protocol currently covers these concepts:
 - ``coupling_notify_iteration_restarts()`` tells a solver once after
   construction whether the coupler may restart a step's solve, so a solver that
   saves state for a restart can skip the save when none can follow.
+- ``coupling_notify_proxy_feedback()`` tells a solver once after construction
+  whether it is the destination of a proxy, so a solver that records data
+  during its steps for the harvest hooks can skip that work otherwise. MPM uses
+  it to accumulate collider impulses across sub-steps only when coupled through
+  a proxy.
 - ``coupling_eval_gravity_acceleration()`` lets a solver report the body and
   particle acceleration that it applies internally for gravity-like forces.
   Proxy and ADMM couplers pass these acceleration arrays explicitly to rewind

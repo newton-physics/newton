@@ -45,6 +45,9 @@ Supported hook signatures are:
     def coupling_notify_iteration_restarts(enabled) -> None: ...
 
 
+    def coupling_notify_proxy_feedback(enabled) -> None: ...
+
+
     def coupling_effective_mass_refresh_flags() -> int: ...
 
 
@@ -262,6 +265,19 @@ class CouplingInterface:
         Args:
             enabled: Whether ``coupling_notify_input_state_update`` may receive ``iteration_restart=True``
                 between steps.
+        """
+        del enabled
+
+    def coupling_notify_proxy_feedback(self, enabled: bool) -> None:
+        """Declare whether the coupler harvests proxy feedback from this solver.
+
+        Called once after the entry solvers are constructed. With ``enabled`` true, the coupler calls
+        :meth:`coupling_harvest_proxy_wrenches` or :meth:`coupling_harvest_proxy_particle_forces` after
+        stepping this solver, so a solver that must record data during its steps for those hooks can
+        start doing so; with ``enabled`` false it can skip that work.
+
+        Args:
+            enabled: Whether this solver is the destination of at least one proxy.
         """
         del enabled
 
