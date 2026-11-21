@@ -24,7 +24,7 @@ How the optimization runs:
 - each phase window is a ``Rollout``: buffers allocated once, forward and
   forward+backward passes captured into CUDA graphs;
 - a missed gate retries the chain from a different crouch warm start
-  (``CR_WARM_SCALES``);
+  (``CROUCH_WARM_SCALES``);
 - a full run takes a few minutes on a single GPU, advancing a little every
   frame so an interactive viewer stays live.
 
@@ -91,86 +91,100 @@ from newton import GeoType, ShapeFlags
 #    demonstrated behavior was achieved with)
 # ------------------------------------------------------------------------------
 
-SIM_DT = 1.0e-3
-STAND_LEG = (0.0, 0.2, -0.4)
+# 2.1 Simulation + model indices
+SIM_DT = 1.0e-3  # simulation timestep (s)
+STAND_LEG = (0.0, 0.2, -0.4)  # stance pose per leg (HAA, HFE, KFE) in rad
 STAND = np.tile(np.array(STAND_LEG, dtype=np.float32), 4)
-HINGE_DOFS = np.arange(6, 18, dtype=np.int32)
-FOOT_BODIES = (3, 6, 9, 12)
+HINGE_DOFS = np.arange(6, 18, dtype=np.int32)  # the 12 hinge DOFs, after the root's 6
+FOOT_BODIES = (3, 6, 9, 12)  # body indices of the four paws
 PAWS = len(FOOT_BODIES)  # fixed paw count: paw minima may unroll statically
 KE_SCALE = 50.0  # contact stiffness realism multiplier
 KD_SCALE = 4.0  # contact damping multiplier (ke * sqrt(KE_SCALE) * KD_SCALE)
 
-# objective weights (the configuration the demonstrated behavior was
-# achieved with; a search over these weights is possible but out of scope)
+# 2.2 Objective weights (found by trial and error and bilevel optimization)
 Z_GOOD = 1.7463734824840804  # apex ceiling of the height band (m)
-C_FLIP = 0.956137871751204  # flip-error weight at touchdown attention
-KNEE_MARGIN_G = 0.0217610642328222  # ground-based knee clearance bar (m)
+WEIGHT_FLIP = 0.956137871751204  # flip-error weight at touchdown attention
+KNEE_MARGIN_GROUND = 0.0217610642328222  # ground-based knee clearance bar (m)
 Z_TARGET = 0.32296679716115667  # crouch depth target (m)
-C_ARR = 0.4918151418204104  # arrival quality weight
+WEIGHT_ARRIVAL = 0.4918151418204104  # arrival quality weight
 Z_LOW = Z_GOOD - 0.35  # apex floor of the height band (m)
-C_BAND = 30.0
-Z_TD = 0.68  # touchdown attention: root height the replay calls touchdown (m)
-TD_SIG = 0.015  # touchdown attention sharpness (m)
-TD_LEN = 10.0  # touchdown attention spans ~this many steps after first touchdown
-LIFT_H = 0.15  # airborne gate: prefix-max paw height for "has flown" (m)
+WEIGHT_BAND = 30.0  # apex height-band penalty weight
+Z_TOUCHDOWN = 0.68  # touchdown attention: root height the replay calls touchdown (m)
+TOUCHDOWN_SIG = 0.015  # touchdown attention sharpness (m)
+TOUCHDOWN_LEN = 10.0  # touchdown attention spans ~this many steps after first touchdown
+LIFT_HEIGHT = 0.15  # airborne gate: prefix-max paw height for "has flown" (m)
 FLIP_SIGN = -1.0  # backflip sign about world +y
-W_ORDER_A = 10.0  # crouch per-state knee-ordering weight
-W_ORDER_B = 40.0  # jump per-state knee-ordering weight
-W_ORDER_C = 20.0  # land per-state knee-ordering weight
-W_PAWS = 40.0  # paw-glue weight (the yielding-knee mechanism)
-W_UP = 1.0  # mid-window upright weight
-A1, B1, C1 = 30.0, 2.0, 6.0  # crouch end terms
-A2, B2, C2, D2, D3 = 100.0, 0.1, 6.0, 0.5, 15.0  # land end + anti-bounce
+WEIGHT_ORDER_CROUCH = 10.0  # crouch per-state knee-ordering weight
+WEIGHT_ORDER_JUMP = 40.0  # jump per-state knee-ordering weight
+WEIGHT_ORDER_LAND = 20.0  # land per-state knee-ordering weight
+WEIGHT_PAWS = 40.0  # paw-glue weight (the yielding-knee mechanism)
+WEIGHT_UP = 1.0  # mid-window upright weight
+# crouch end terms
+WEIGHT_CROUCH_DEPTH, WEIGHT_CROUCH_STILL, WEIGHT_CROUCH_UP = 30.0, 2.0, 6.0
+# land end terms (scaled by WEIGHT_ARRIVAL) + per-state anti-bounce
+WEIGHT_LAND_DEPTH, WEIGHT_LAND_SPIN = 100.0, 0.1
+WEIGHT_LAND_UP, WEIGHT_LAND_VZ = 6.0, 0.5
+WEIGHT_BOUNCE = 15.0
 TWO_PI = 2.0 * np.pi
 
-# phase A: crouch
-CR_N = 300
-CR_PREVIEW = 100
-CR_N_EXT = CR_N + CR_PREVIEW
-CR_ITERS = 64
-STEP_BUDGET_S = 0.05  # optimization time per viewer frame (keeps the window responsive)
-REPLAY_YIELD_EVERY = 100  # replays hand control back to the viewer every this many steps
+# 2.3 Crouch phase
+CROUCH_STEPS = 300  # crouch steps (learned part)
+CROUCH_PREVIEW = 100  # zero-amp push preview steps
+CROUCH_ROLLOUT_STEPS = CROUCH_STEPS + CROUCH_PREVIEW  # full crouch rollout
+CROUCH_ITERS = 64  # optimizer iterations
 # crouch warm-start scale per chain attempt, alternating around the default;
 # the next one is tried when the crouch, the flip or the landing misses its gate
-CR_WARM_SCALES = (1.0, 0.98, 1.02, 0.96, 1.04, 0.94)
-CR_RADII = (0.2, 0.1, 0.05, 0.02, 0.01, 0.005, 0.002, 0.001)
-CR_NP = 8  # cosine amps (4 channels) + ramp times (4 channels)
-CR_T_REF = 249.0
-CR_WARM = np.array([5.2, 3.8, 4.5, 4.5, 1.0, 1.0, 1.0, 1.0])  # hip-dominant
-CR_AMP_LO = np.array([-1.0, -1.0, -1.0, -1.0, 0.1, 0.1, 0.1, 0.1])
-CR_AMP_HI = np.array([5.5, 5.5, 5.5, 5.5, 1.2, 1.2, 1.2, 1.2])
+CROUCH_WARM_SCALES = (1.0, 0.98, 1.02, 0.96, 1.04, 0.94)
+# _descent step lengths to try, largest first
+CROUCH_RADII = (0.2, 0.1, 0.05, 0.02, 0.01, 0.005, 0.002, 0.001)
+CROUCH_N_PARAMS = 8  # cosine amps (4 channels) + ramp times (4 channels)
+# cosine ramp duration (steps) at multiplier 1; the learned ramp times scale it
+CROUCH_RAMP_REF = 249.0
+# warm-start params, hip-dominant
+CROUCH_WARM = np.array([5.2, 3.8, 4.5, 4.5, 1.0, 1.0, 1.0, 1.0])
+# per-channel bounds: amps, then ramp times
+CROUCH_AMP_LOW = np.array([-1.0, -1.0, -1.0, -1.0, 0.1, 0.1, 0.1, 0.1])
+CROUCH_AMP_HIGH = np.array([5.5, 5.5, 5.5, 5.5, 1.2, 1.2, 1.2, 1.2])
+VZ_LAG_STEPS = 5  # vz metric: finite-difference window (steps) at the crouch end
+INV_VZ_LAG_DT = 1.0 / (VZ_LAG_STEPS * SIM_DT)
 
-# phase B: jump
-N_B, NSEG_B = 1500, 15
-B_SPS = N_B // NSEG_B
-JB_ITERS = 16
-JB_RADII = (0.3, 0.15, 0.08, 0.04, 0.02, 0.01, 0.005)
-B_AMP_LO, B_AMP_HI = -0.9, 3.0
-TAUF, TAUH = 450.0, 300.0  # jump torque caps (front/hind)
+# 2.4 Jump phase
+JUMP_STEPS = 1500  # jump rollout steps
+JUMP_SEGMENTS = 15  # trajectory segments
+JUMP_SEG_STEPS = JUMP_STEPS // JUMP_SEGMENTS  # steps per segment
+JUMP_ITERS = 16  # optimizer iterations
+JUMP_RADII = (0.3, 0.15, 0.08, 0.04, 0.02, 0.01, 0.005)
+# per-segment servo amplitude bounds
+JUMP_AMP_LOW, JUMP_AMP_HIGH = -0.9, 3.0
+TAU_FRONT, TAU_HIND = 450.0, 300.0  # jump torque caps
 TAU_MAX = 300.0  # land servo torque clamp
 GROUP_OF_JOINT = np.array([0, 0, 0, 1, 1, 1, 0, 0, 0, 1, 1, 1], dtype=np.int32)  # LF,RF front; LH,RH hind
-CHAN_OF_JOINT = np.array([GROUP_OF_JOINT[j] * 2 + (1 if j % 3 == 2 else 0) for j in range(12)], dtype=np.int32)
+# amp channel per joint: 0/1 front hip pair/knee, 2/3 hind hip pair/knee
+CHANNEL_OF_JOINT = np.array([GROUP_OF_JOINT[j] * 2 + (1 if j % 3 == 2 else 0) for j in range(12)], dtype=np.int32)
 
-# phase C: landing (per-joint direct-target splines, C1 smoothstep, dense
+# 2.5 Landing phase (per-joint direct-target splines, C1 smoothstep, dense
 # around touchdown; past the last knot the final values are held)
-N_C, NSEG_C = 1600, 8
+LAND_STEPS = 1600  # landing rollout steps
 LAND_SHORT_WINDOWS = (300, 0, 600)  # first-stage window per landing attempt (steps; 0 = none)
-C_SPS = N_C // NSEG_C
-LC_ITERS = 10
-LC_RADII = (0.6, 0.4, 0.25, 0.15, 0.08, 0.04, 0.02, 0.01)
-PROF_KNOTS_MS = [0, 20, 40, 60, 90, 120, 160, 200, 260, 320, 400, 500, 650, 850, 1150, 1600]
-PROF_N_KNOTS = len(PROF_KNOTS_MS)
-LAND_NPAR = 12 * (PROF_N_KNOTS - 1)
-_JOINT_LO = (-0.7, -1.2, -2.4)  # HAA, HFE, KFE
-_JOINT_HI = (0.7, 0.9, -0.05)  # knee kept from locking straight
-LAND_LO = np.tile(np.repeat(_JOINT_LO, PROF_N_KNOTS - 1).astype(np.float64), 4)
-LAND_HI = np.tile(np.repeat(_JOINT_HI, PROF_N_KNOTS - 1).astype(np.float64), 4)
-LAND_INIT = np.tile(np.repeat((0.0, 0.2, -0.4), PROF_N_KNOTS - 1).astype(np.float64), 4)
+LAND_ITERS = 10  # optimizer iterations
+LAND_RADII = (0.6, 0.4, 0.25, 0.15, 0.08, 0.04, 0.02, 0.01)
+# knot times of the target splines
+LAND_KNOTS_MS = [0, 20, 40, 60, 90, 120, 160, 200, 260, 320, 400, 500, 650, 850, 1150, 1600]
+LAND_N_KNOTS = len(LAND_KNOTS_MS)
+LAND_N_PARAMS = 12 * (LAND_N_KNOTS - 1)
+LAND_JOINT_LOW = (-0.7, -1.2, -2.4)  # spline target bounds per joint type (HAA, HFE, KFE)
+LAND_JOINT_HIGH = (0.7, 0.9, -0.05)  # knee high bound kept from locking straight
+# per-joint knot bounds, tiled over the four legs
+LAND_LOW = np.tile(np.repeat(LAND_JOINT_LOW, LAND_N_KNOTS - 1).astype(np.float64), 4)
+LAND_HIGH = np.tile(np.repeat(LAND_JOINT_HIGH, LAND_N_KNOTS - 1).astype(np.float64), 4)
+# initial profile: hold the stance pose
+LAND_INIT = np.tile(np.repeat(STAND_LEG, LAND_N_KNOTS - 1).astype(np.float64), 4)
 
+# 2.6 Shared rollout + replay constants
+STEP_BUDGET_S = 0.05  # optimization time per viewer frame (keeps the window responsive)
+REPLAY_YIELD_EVERY = 100  # replays hand control back to the viewer every this many steps
 COLLIDE_EVERY = 2  # contact-truthful tapes; replays use the SAME schedule
-PAW_MASK_H = 0.02  # "grounded" mask: lowest paw within 2 cm of ground
-VZ_LAG_M = 5
-INV_MDT = 1.0 / (VZ_LAG_M * SIM_DT)
+PAW_MASK_HEIGHT = 0.02  # "grounded" mask: lowest paw within 2 cm of ground
 FRAME_EVERY = 8  # one playback frame per this many simulated steps
 
 
@@ -184,8 +198,8 @@ def _bracket(t_ms):
     """Landing-spline segment index: LAST knot with knots_ms[kk] <= t_ms,
     clamped to [0, n_knots-2]. Computed on the HOST per launch - see the
     module docstring for why this must not live inside the kernel."""
-    k = int(np.searchsorted(np.asarray(PROF_KNOTS_MS, dtype=np.float64), float(t_ms), side="right")) - 1
-    return max(0, min(k, PROF_N_KNOTS - 2))
+    k = int(np.searchsorted(np.asarray(LAND_KNOTS_MS, dtype=np.float64), float(t_ms), side="right")) - 1
+    return max(0, min(k, LAND_N_KNOTS - 2))
 
 
 # ------------------------------------------------------------------------------
@@ -224,7 +238,7 @@ def servo_crouch_cos_kernel(
     joint_f: wp.array[float],
     stand: wp.array[float],
     hinge_dofs: wp.array[int],
-    chan_of_joint: wp.array[int],
+    channel_of_joint: wp.array[int],
     t: int,
     ramp_ref: float,
     tau_cap: float,
@@ -233,7 +247,7 @@ def servo_crouch_cos_kernel(
     dof = hinge_dofs[j]
     q = joint_q[7 + j]
     qd = joint_qd[dof]
-    ch = chan_of_joint[j]
+    ch = channel_of_joint[j]
     amp_a = params[ch]
     tau_p = params[4 + ch]
     ramp_t = ramp_ref * wp.max(tau_p, 0.05)
@@ -244,7 +258,7 @@ def servo_crouch_cos_kernel(
 
 
 @wp.kernel
-def servo_traj_group_caps_kernel(
+def servo_jump_trajectory_caps_kernel(
     seg_amp: wp.array[float],
     joint_q: wp.array[float],
     joint_qd: wp.array[float],
@@ -267,7 +281,7 @@ def servo_traj_group_caps_kernel(
 
 
 @wp.kernel
-def servo_profile_kernel(
+def servo_land_spline_kernel(
     seg_amp: wp.array[float],
     joint_q: wp.array[float],
     joint_qd: wp.array[float],
@@ -407,18 +421,18 @@ def touchdown_att_kernel(
     z_arr: wp.array[float],
     cum_paw_arr: wp.array[float],
     idx: int,
-    z_td: float,
-    td_sig: float,
-    lift_h: float,
+    z_touchdown: float,
+    touchdown_sig: float,
+    lift_height: float,
     att_arr: wp.array[float],
 ):
     """Touchdown attention at one state (``att_arr[idx]``): ~1 once the dog
-    has flown (prefix-max paw height above lift_h) and its root has come
-    back down to the touchdown height z_td, ~0 otherwise. The airborne gate
-    keeps the push-off out: there the root rises through z_td while the
+    has flown (prefix-max paw height above lift_height) and its root has come
+    back down to the touchdown height z_touchdown, ~0 otherwise. The airborne gate
+    keeps the push-off out: there the root rises through z_touchdown while the
     paws are still on the ground and the flip error is still a full turn."""
-    a = wp.clamp((z_td - z_arr[idx]) / td_sig, -30.0, 30.0)
-    ag = wp.clamp((cum_paw_arr[idx] - lift_h) / 0.01, -30.0, 30.0)
+    a = wp.clamp((z_touchdown - z_arr[idx]) / touchdown_sig, -30.0, 30.0)
+    ag = wp.clamp((cum_paw_arr[idx] - lift_height) / 0.01, -30.0, 30.0)
     att_arr[idx] = 1.0 / ((1.0 + wp.exp(-a)) * (1.0 + wp.exp(-ag)))
 
 
@@ -433,18 +447,18 @@ def order_state_g_kernel(
     mink_arr: wp.array[float],
     minp_arr: wp.array[float],
     idx: int,
-    w_order: float,
-    margin_g: float,
-    mask_h: float,
+    weight_order: float,
+    margin_ground: float,
+    mask_height: float,
     loss: wp.array[float],
 ):
     """Ground-based knee ordering: while paws are grounded, the lowest knee
     point must stay above the GROUND margin. The minima arrive precomputed
     per state (knee_mingz_kernel / pawraw_state_kernel); the kernel itself is
     loop-free."""
-    mask = wp.max(1.0 - minp_arr[idx] / mask_h, 0.0)
-    viol = wp.max(margin_g - mink_arr[idx], 0.0)
-    loss[0] = loss[0] + w_order * mask * viol * viol
+    mask = wp.max(1.0 - minp_arr[idx] / mask_height, 0.0)
+    viol = wp.max(margin_ground - mink_arr[idx], 0.0)
+    loss[0] = loss[0] + weight_order * mask * viol * viol
 
 
 @wp.kernel
@@ -453,17 +467,19 @@ def loss_crouch_end_kernel(
     body_q_m: wp.array[wp.transform],
     loss: wp.array[float],
     z_target: float,
-    a1: float,
-    b1: float,
-    c1: float,
-    inv_mdt: float,
+    weight_depth: float,
+    weight_still: float,
+    weight_up: float,
+    inv_vz_lag_dt: float,
 ):
     zn = wp.transform_get_translation(body_q_n[0])
     zm = wp.transform_get_translation(body_q_m[0])
-    vz = (zn[2] - zm[2]) * inv_mdt
+    vz = (zn[2] - zm[2]) * inv_vz_lag_dt
     q = wp.transform_get_rotation(body_q_n[0])
     up = wp.quat_rotate(q, wp.vec3(0.0, 0.0, 1.0))
-    loss[0] = loss[0] + a1 * wp.pow(zn[2] - z_target, 2.0) + b1 * vz * vz + c1 * (1.0 - up[2])
+    loss[0] = (
+        loss[0] + weight_depth * wp.pow(zn[2] - z_target, 2.0) + weight_still * vz * vz + weight_up * (1.0 - up[2])
+    )
 
 
 @wp.kernel
@@ -476,14 +492,14 @@ def loss_jump_state_kernel(
     cum_att_arr: wp.array[float],
     idx: int,
     loss: wp.array[float],
-    c_flip: float,
-    c_att: float,
-    w_order: float,
-    margin_g: float,
-    mask_h: float,
+    weight_flip: float,
+    weight_att: float,
+    weight_order: float,
+    margin_ground: float,
+    mask_height: float,
     flip_sign: float,
     two_pi: float,
-    td_len: float,
+    touchdown_len: float,
 ):
     """Per-state jump terms: flip error and attitude at touchdown, knee
     clearance while grounded. pitch (the accumulated roll through this
@@ -491,8 +507,8 @@ def loss_jump_state_kernel(
     per-element launches, the knee/paw minima by the gather kernels - the
     kernel itself is loop-free (module docstring).
 
-    Every term is weighted by first = exp(-attention so far / td_len), so
-    only the first ~td_len steps after touchdown are priced: past that the
+    Every term is weighted by first = exp(-attention so far / touchdown_len), so
+    only the first ~touchdown_len steps after touchdown are priced: past that the
     landing is phase C's job, and the stiff post-touchdown contacts would
     only add chaotic gradient noise."""
     pitch = cum_wy_arr[idx]
@@ -503,16 +519,16 @@ def loss_jump_state_kernel(
     prev = float(0.0)
     if idx > 0:
         prev = cum_att_arr[idx - 1]
-    first = wp.exp(-prev / td_len)
+    first = wp.exp(-prev / touchdown_len)
     w = att_arr[idx] * first
     flip_err = pitch - flip_sign * two_pi
-    mask_g = wp.max(1.0 - min_p / mask_h, 0.0)
-    viol_g = wp.max(margin_g - min_k, 0.0)
+    mask_g = wp.max(1.0 - min_p / mask_height, 0.0)
+    viol_g = wp.max(margin_ground - min_k, 0.0)
     loss[0] = (
         loss[0]
-        + c_flip * w * flip_err * flip_err
-        + c_att * w * (1.0 - up[2])
-        + w_order * first * mask_g * viol_g * viol_g
+        + weight_flip * w * flip_err * flip_err
+        + weight_att * w * (1.0 - up[2])
+        + weight_order * first * mask_g * viol_g * viol_g
     )
 
 
@@ -521,17 +537,17 @@ def loss_jump_band_kernel(
     cum_z_arr: wp.array[float],
     n: int,
     loss: wp.array[float],
-    c_band: float,
+    weight_band: float,
     z_good: float,
     z_low: float,
 ):
     """Apex band on the window's highest root height. The maximum arrives
     precomputed (a cum_max_kernel chain over the z state samples): a
     runtime-bound running max here measured as a wrong
-    ``-2*c_band*(z_low + 1e9)``-scale adjoint deposited on the last element
+    ``-2*weight_band*(z_low + 1e9)``-scale adjoint deposited on the last element
     (module docstring)."""
     zmax = cum_z_arr[n]
-    loss[0] = loss[0] + c_band * (wp.pow(wp.max(zmax - z_good, 0.0), 2.0) + wp.pow(wp.max(z_low - zmax, 0.0), 2.0))
+    loss[0] = loss[0] + weight_band * (wp.pow(wp.max(zmax - z_good, 0.0), 2.0) + wp.pow(wp.max(z_low - zmax, 0.0), 2.0))
 
 
 @wp.kernel
@@ -544,10 +560,10 @@ def loss_land_state_kernel(
     paw_r: wp.array[float],
     idx: int,
     loss: wp.array[float],
-    w_order: float,
-    margin_g: float,
-    mask_h: float,
-    d3: float,
+    weight_order: float,
+    margin_ground: float,
+    mask_height: float,
+    weight_bounce: float,
     w_paws: float,
     w_up: float,
 ):
@@ -572,15 +588,15 @@ def loss_land_state_kernel(
         min_p = wp.min(min_p, h)
         hu = wp.max(h, 0.0)
         pp = pp + hu * hu
-    mask_g = wp.max(1.0 - min_p / mask_h, 0.0)
-    viol_g = wp.max(margin_g - min_k, 0.0)
+    mask_g = wp.max(1.0 - min_p / mask_height, 0.0)
+    viol_g = wp.max(margin_ground - min_k, 0.0)
     vz = wp.spatial_top(body_qd[0])[2]
     q = wp.transform_get_rotation(body_q[0])
     up = wp.quat_rotate(q, wp.vec3(0.0, 0.0, 1.0))
     loss[0] = (
         loss[0]
-        + w_order * mask_g * viol_g * viol_g
-        + d3 * wp.pow(wp.max(vz, 0.0), 2.0)
+        + weight_order * mask_g * viol_g * viol_g
+        + weight_bounce * wp.pow(wp.max(vz, 0.0), 2.0)
         + w_paws * pp
         + w_up * (1.0 - up[2])
     )
@@ -592,19 +608,22 @@ def loss_land_end_kernel(
     body_qd_n: wp.array[wp.spatial_vector],
     loss: wp.array[float],
     z_target: float,
-    c_arr: float,
-    a2: float,
-    b2: float,
-    c2: float,
-    d2: float,
+    weight_arrival: float,
+    weight_depth: float,
+    weight_spin: float,
+    weight_up: float,
+    weight_vz: float,
 ):
     zn = wp.transform_get_translation(body_q_n[0])
     q = wp.transform_get_rotation(body_q_n[0])
     up = wp.quat_rotate(q, wp.vec3(0.0, 0.0, 1.0))
     v = wp.spatial_top(body_qd_n[0])
     w = wp.spatial_bottom(body_qd_n[0])
-    loss[0] = loss[0] + c_arr * (
-        a2 * wp.pow(zn[2] - z_target, 2.0) + b2 * wp.dot(w, w) + c2 * (1.0 - up[2]) + d2 * v[2] * v[2]
+    loss[0] = loss[0] + weight_arrival * (
+        weight_depth * wp.pow(zn[2] - z_target, 2.0)
+        + weight_spin * wp.dot(w, w)
+        + weight_up * (1.0 - up[2])
+        + weight_vz * v[2] * v[2]
     )
 
 
@@ -861,10 +880,10 @@ class Example:
         self.stand_arr = wp.array(STAND, dtype=wp.float32)
         self.dofs_arr = wp.array(HINGE_DOFS, dtype=wp.int32)
         self.group_arr = wp.array(GROUP_OF_JOINT, dtype=wp.int32)
-        self.chan_arr = wp.array(CHAN_OF_JOINT, dtype=wp.int32)
-        self.zero_amp_arr = wp.zeros(NSEG_B * 2, dtype=wp.float32)
-        self.caps_j_arr = wp.array([TAUF, TAUH], dtype=wp.float32)
-        self.prof_knots_arr = wp.array(np.array(PROF_KNOTS_MS, dtype=np.float32), dtype=wp.float32)
+        self.channel_arr = wp.array(CHANNEL_OF_JOINT, dtype=wp.int32)
+        self.zero_amp_arr = wp.zeros(JUMP_SEGMENTS * 2, dtype=wp.float32)
+        self.tau_caps_arr = wp.array([TAU_FRONT, TAU_HIND], dtype=wp.float32)
+        self.prof_knots_arr = wp.array(np.array(LAND_KNOTS_MS, dtype=np.float32), dtype=wp.float32)
         self.ctrl = self.model.control()
 
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.model)
@@ -942,7 +961,7 @@ class Example:
     def _launch_servo(self, ro, t):
         """Write the phase's servo torques for step t into the rollout's control buffer."""
         st, ctrl = ro.states[t], ro.ctrls[t]
-        if ro.mode == "crouch" and t < CR_N:
+        if ro.mode == "crouch" and t < CROUCH_STEPS:
             wp.launch(
                 servo_crouch_cos_kernel,
                 dim=12,
@@ -953,19 +972,19 @@ class Example:
                     ctrl.joint_f,
                     self.stand_arr,
                     self.dofs_arr,
-                    self.chan_arr,
+                    self.channel_arr,
                     t,
-                    CR_T_REF,
+                    CROUCH_RAMP_REF,
                     TAU_MAX,
                 ],
             )
         elif ro.mode in ("crouch", "jump"):
             # jump: per-segment trajectory amplitudes; crouch preview
-            # (t >= CR_N): zero-amp rebound with jump torque caps - the order
+            # (t >= CROUCH_STEPS): zero-amp rebound with jump torque caps - the order
             # term prices the rebound over these states too
             jump = ro.mode == "jump"
             wp.launch(
-                servo_traj_group_caps_kernel,
+                servo_jump_trajectory_caps_kernel,
                 dim=12,
                 inputs=[
                     ro.params if jump else self.zero_amp_arr,
@@ -975,13 +994,13 @@ class Example:
                     self.stand_arr,
                     self.dofs_arr,
                     self.group_arr,
-                    min(t // B_SPS, NSEG_B - 1) if jump else 0,
-                    self.caps_j_arr,
+                    min(t // JUMP_SEG_STEPS, JUMP_SEGMENTS - 1) if jump else 0,
+                    self.tau_caps_arr,
                 ],
             )
         else:
             wp.launch(
-                servo_profile_kernel,
+                servo_land_spline_kernel,
                 dim=12,
                 inputs=[
                     ro.params,
@@ -991,7 +1010,7 @@ class Example:
                     self.stand_arr,
                     self.dofs_arr,
                     self.prof_knots_arr,
-                    PROF_N_KNOTS,
+                    LAND_N_KNOTS,
                     SIM_DT * 1000.0,
                     t,
                     TAU_MAX,
@@ -1044,20 +1063,28 @@ class Example:
                 wp.launch(
                     order_state_g_kernel,
                     dim=1,
-                    inputs=[ro.mink_arr, ro.minp_arr, t, W_ORDER_A, KNEE_MARGIN_G, PAW_MASK_H, ro.loss_arr],
+                    inputs=[
+                        ro.mink_arr,
+                        ro.minp_arr,
+                        t,
+                        WEIGHT_ORDER_CROUCH,
+                        KNEE_MARGIN_GROUND,
+                        PAW_MASK_HEIGHT,
+                        ro.loss_arr,
+                    ],
                 )
             wp.launch(
                 loss_crouch_end_kernel,
                 dim=1,
                 inputs=[
-                    states[CR_N].body_q,
-                    states[CR_N - VZ_LAG_M].body_q,
+                    states[CROUCH_STEPS].body_q,
+                    states[CROUCH_STEPS - VZ_LAG_STEPS].body_q,
                     ro.loss_arr,
                     Z_TARGET,
-                    A1,
-                    B1,
-                    C1,
-                    INV_MDT,
+                    WEIGHT_CROUCH_DEPTH,
+                    WEIGHT_CROUCH_STILL,
+                    WEIGHT_CROUCH_UP,
+                    INV_VZ_LAG_DT,
                 ],
             )
         elif ro.mode == "jump":
@@ -1078,7 +1105,7 @@ class Example:
                 wp.launch(
                     touchdown_att_kernel,
                     dim=1,
-                    inputs=[ro.z_arr, ro.cum_paw_arr, t, Z_TD, TD_SIG, LIFT_H, ro.att_arr],
+                    inputs=[ro.z_arr, ro.cum_paw_arr, t, Z_TOUCHDOWN, TOUCHDOWN_SIG, LIFT_HEIGHT, ro.att_arr],
                 )
                 wp.launch(cum_sum_kernel, dim=1, inputs=[ro.att_arr, ro.cum_att_arr, t])
                 self._launch_knee_min(states[t], ro, t)
@@ -1096,17 +1123,17 @@ class Example:
                         ro.cum_att_arr,
                         t,
                         ro.loss_arr,
-                        C_FLIP,
-                        3.0 * C_ARR,
-                        W_ORDER_B,
-                        KNEE_MARGIN_G,
-                        PAW_MASK_H,
+                        WEIGHT_FLIP,
+                        3.0 * WEIGHT_ARRIVAL,
+                        WEIGHT_ORDER_JUMP,
+                        KNEE_MARGIN_GROUND,
+                        PAW_MASK_HEIGHT,
                         FLIP_SIGN,
                         TWO_PI,
-                        TD_LEN,
+                        TOUCHDOWN_LEN,
                     ],
                 )
-            wp.launch(loss_jump_band_kernel, dim=1, inputs=[ro.cum_z_arr, n, ro.loss_arr, C_BAND, Z_GOOD, Z_LOW])
+            wp.launch(loss_jump_band_kernel, dim=1, inputs=[ro.cum_z_arr, n, ro.loss_arr, WEIGHT_BAND, Z_GOOD, Z_LOW])
         else:
             for t in range(n + 1):
                 self._launch_knee_min(states[t], ro, t)
@@ -1128,18 +1155,28 @@ class Example:
                         self.paw_r_arr,
                         t,
                         ro.loss_arr,
-                        W_ORDER_C,
-                        KNEE_MARGIN_G,
-                        PAW_MASK_H,
-                        D3,
-                        W_PAWS,
-                        W_UP,
+                        WEIGHT_ORDER_LAND,
+                        KNEE_MARGIN_GROUND,
+                        PAW_MASK_HEIGHT,
+                        WEIGHT_BOUNCE,
+                        WEIGHT_PAWS,
+                        WEIGHT_UP,
                     ],
                 )
             wp.launch(
                 loss_land_end_kernel,
                 dim=1,
-                inputs=[states[n].body_q, states[n].body_qd, ro.loss_arr, self.z_stand, C_ARR, A2, B2, C2, D2],
+                inputs=[
+                    states[n].body_q,
+                    states[n].body_qd,
+                    ro.loss_arr,
+                    self.z_stand,
+                    WEIGHT_ARRIVAL,
+                    WEIGHT_LAND_DEPTH,
+                    WEIGHT_LAND_SPIN,
+                    WEIGHT_LAND_UP,
+                    WEIGHT_LAND_VZ,
+                ],
             )
 
     # ---------------- optimizer ----------------
@@ -1147,11 +1184,11 @@ class Example:
     # --------------------------------------------------------------------------
     # 11. Optimizer - _descent: shared steepest descent + backtracking line search
     # --------------------------------------------------------------------------
-    def _descent(self, tag, ro, snap, amps_init, lo, hi, iters, radii):
+    def _descent(self, tag, ro, snap, amps_init, low, high, iters, radii):
         """Steepest descent with a backtracking line search, shared by all
         three phases: each iteration takes a fresh tape gradient and tries
         the step lengths in ``radii`` (largest first) along the normalized
-        descent direction, projected onto the [lo, hi] box, and accepts the
+        descent direction, projected onto the [low, high] box, and accepts the
         first one that lowers the loss. It stops once no step length helps.
         Trying the large steps first every iteration (instead of shrinking a
         trust radius on each rejection) keeps the search from stalling on
@@ -1159,7 +1196,7 @@ class Example:
 
         A generator: it yields after every rollout so ``step()`` can hand
         control back to the viewer, and returns the optimized amplitudes."""
-        amps = np.clip(np.asarray(amps_init, dtype=np.float64), lo, hi)
+        amps = np.clip(np.asarray(amps_init, dtype=np.float64), low, high)
         L_init = ro.loss(amps, snap)
         L = L_init
         accepts = 0
@@ -1174,7 +1211,7 @@ class Example:
             moved = False
             for r in radii:
                 yield
-                trial = np.clip(amps + r * d, lo, hi)
+                trial = np.clip(amps + r * d, low, high)
                 L_trial = ro.loss(trial, snap)
                 if np.isfinite(L_trial) and L_trial < L - 1e-4 * abs(L):
                     amps, L = trial, L_trial
@@ -1205,19 +1242,19 @@ class Example:
         # knee and paw minima over the full replay window (crouch + preview),
         # as the loss computed them on the device
         mink, minp = ro.mink_arr.numpy()[1:], ro.minp_arr.numpy()[1:]
-        grounded = minp < PAW_MASK_H
+        grounded = minp < PAW_MASK_HEIGHT
         rep = {
             "min_foot_rows": 10**9,
             "knee_min": float(mink.min()),
             "push_margin": float(mink[grounded].min()) if grounded.any() else 1e9,
         }
         snap_end = None
-        for t in range(CR_N_EXT):
+        for t in range(CROUCH_ROLLOUT_STEPS):
             if t % REPLAY_YIELD_EVERY == 0:
                 yield
             rows = self._foot_row_count(ro.contacts[t // COLLIDE_EVERY])
             rep["min_foot_rows"] = min(rep["min_foot_rows"], rows)
-            if t == CR_N - 1:
+            if t == CROUCH_STEPS - 1:
                 st = ro.states[t + 1]
                 m = self._state_metrics(st.body_q.numpy()[0], st.body_qd.numpy()[0])
                 snap_end = self._snapshot(st)
@@ -1242,7 +1279,7 @@ class Example:
         td_t = None
         rep = {"apex": -1e9, "paw_min": 1e9, "blew_up": False, "knee_margin_min": 1e9, "min_foot_rows": 10**9}
         airborne = False
-        for t in range(N_B):
+        for t in range(JUMP_STEPS):
             if t % REPLAY_YIELD_EVERY == 0:
                 yield
             rows = self._foot_row_count(ro.contacts[t // COLLIDE_EVERY])
@@ -1258,7 +1295,7 @@ class Example:
             rep["apex"] = max(rep["apex"], m["z"])
             rep["paw_min"] = min(rep["paw_min"], mp)
             rep["min_foot_rows"] = min(rep["min_foot_rows"], rows)
-            if mp < PAW_MASK_H:
+            if mp < PAW_MASK_HEIGHT:
                 rep["knee_margin_min"] = min(rep["knee_margin_min"], min_k)
             if not np.isfinite(m["z"]) or m["z"] > 3.5:
                 rep["blew_up"] = True
@@ -1271,7 +1308,7 @@ class Example:
                 foot_steps = 0
             elif airborne_steps >= 5:
                 airborne = True
-                if m["vz"] < 3.0 and m["z"] < Z_TD:
+                if m["vz"] < 3.0 and m["z"] < Z_TOUCHDOWN:
                     foot_steps += 1
                     if foot_steps >= 2:
                         td_snap = self._snapshot(st)
@@ -1315,7 +1352,7 @@ class Example:
         rep = {"knee_margin_min": 1e9, "bounce": 0.0, "blew_up": False, "min_foot_rows": 10**9, "paw_lift_max": 0.0}
         m = None
         bqd = None
-        for t in range(N_C):
+        for t in range(LAND_STEPS):
             if t % REPLAY_YIELD_EVERY == 0:
                 yield
             rows = self._foot_row_count(ro.contacts[t // COLLIDE_EVERY])
@@ -1324,7 +1361,7 @@ class Example:
             m = self._state_metrics(bqd[0], st.body_qd.numpy()[0])
             min_k, min_p = float(mink[t + 1]), float(minp[t + 1])
             rep["min_foot_rows"] = min(rep["min_foot_rows"], rows)
-            if min_p < PAW_MASK_H:
+            if min_p < PAW_MASK_HEIGHT:
                 rep["knee_margin_min"] = min(rep["knee_margin_min"], min_k)
             rep["paw_lift_max"] = max(rep["paw_lift_max"], self._paw_max_z(bqd))
             rep["bounce"] += max(m["vz"], 0.0) ** 2 * SIM_DT
@@ -1362,13 +1399,13 @@ class Example:
         spins (the push is torque-saturated, so the jump amplitudes cannot
         undo that), and some touchdowns are much harder to catch than
         others. When an attempt misses a gate, the chain is retried from
-        the next crouch warm start in ``CR_WARM_SCALES``, and the best
+        the next crouch warm start in ``CROUCH_WARM_SCALES``, and the best
         attempt is kept."""
         best = None
-        for attempt, scale in enumerate(CR_WARM_SCALES):
+        for attempt, scale in enumerate(CROUCH_WARM_SCALES):
             if attempt:
                 print(f"== retrying the chain, crouch warm start x{scale:g} (attempt {attempt + 1}) ==", flush=True)
-            res = yield from self._attempt(CR_WARM * scale)
+            res = yield from self._attempt(CROUCH_WARM * scale)
             if best is None or res["score"] > best["score"]:
                 best = res
             if res["crouch_ok"] and res["flip_ok"] and res["land_ok"]:
@@ -1423,15 +1460,17 @@ class Example:
         """Phase A: optimize the crouch from the settled stance, starting at
         the ``warm`` amplitudes; returns (gates passed, crouch-end snapshot)."""
         print("== crouch phase ==", flush=True)
-        ro = Rollout(self, "crouch", CR_N_EXT, CR_NP)
-        amps = yield from self._descent("crouch", ro, self.snap, warm, CR_AMP_LO, CR_AMP_HI, CR_ITERS, CR_RADII)
+        ro = Rollout(self, "crouch", CROUCH_ROLLOUT_STEPS, CROUCH_N_PARAMS)
+        amps = yield from self._descent(
+            "crouch", ro, self.snap, warm, CROUCH_AMP_LOW, CROUCH_AMP_HIGH, CROUCH_ITERS, CROUCH_RADII
+        )
         end_snap, rep = yield from self._crouch_replay(ro, amps)
         ok = (
             rep["z_end"] <= 0.375
             and rep["tilt_end_deg"] < 20.0
             and rep["min_foot_rows"] > 0
             and rep["foot_rows_end"] > 0
-            and rep["knee_min"] >= KNEE_MARGIN_G - 0.005
+            and rep["knee_min"] >= KNEE_MARGIN_GROUND - 0.005
             and rep["push_margin"] >= -0.002
         )
         print(
@@ -1445,10 +1484,12 @@ class Example:
         """Phase B: optimize the jump from the crouch end; records the flight
         playback and returns (touchdown snapshot or None, replay report)."""
         print("== jump phase ==", flush=True)
-        ro = Rollout(self, "jump", N_B, NSEG_B * 2)
-        lo = np.full(NSEG_B * 2, B_AMP_LO)
-        hi = np.full(NSEG_B * 2, B_AMP_HI)
-        amps = yield from self._descent("jump", ro, crouch_snap, np.zeros(NSEG_B * 2), lo, hi, JB_ITERS, JB_RADII)
+        ro = Rollout(self, "jump", JUMP_STEPS, JUMP_SEGMENTS * 2)
+        low = np.full(JUMP_SEGMENTS * 2, JUMP_AMP_LOW)
+        high = np.full(JUMP_SEGMENTS * 2, JUMP_AMP_HIGH)
+        amps = yield from self._descent(
+            "jump", ro, crouch_snap, np.zeros(JUMP_SEGMENTS * 2), low, high, JUMP_ITERS, JUMP_RADII
+        )
         self.playback = []  # the flight frames; phase C appends the landing
         td_snap, rep = yield from self._jump_replay(ro, amps, crouch_snap, record=True)
         print(
@@ -1472,24 +1513,24 @@ class Example:
         touchdown, so the attempts in ``LAND_SHORT_WINDOWS`` (0 = no short
         stage) are tried in order until one settles; the best one is kept."""
         print("== landing phase ==", flush=True)
-        ro = Rollout(self, "land", N_C, LAND_NPAR)
+        ro = Rollout(self, "land", LAND_STEPS, LAND_N_PARAMS)
         best = None
         for n_short in LAND_SHORT_WINDOWS:
             amps = LAND_INIT
             if n_short:
-                ro_short = Rollout(self, "land", n_short, LAND_NPAR)
+                ro_short = Rollout(self, "land", n_short, LAND_N_PARAMS)
                 amps = yield from self._descent(
-                    f"land-{n_short}", ro_short, td_snap, amps, LAND_LO, LAND_HI, LC_ITERS, LC_RADII
+                    f"land-{n_short}", ro_short, td_snap, amps, LAND_LOW, LAND_HIGH, LAND_ITERS, LAND_RADII
                 )
                 del ro_short
                 # hold the pose of the last knot inside the short window for
                 # the rest of the landing, instead of springing back to the
                 # untouched stand targets the later knots still hold
-                last = int(np.searchsorted(PROF_KNOTS_MS, n_short * SIM_DT * 1000.0)) - 1
-                amps = amps.reshape(12, PROF_N_KNOTS - 1)
+                last = int(np.searchsorted(LAND_KNOTS_MS, n_short * SIM_DT * 1000.0)) - 1
+                amps = amps.reshape(12, LAND_N_KNOTS - 1)
                 amps[:, last + 1 :] = amps[:, last : last + 1]
                 amps = amps.reshape(-1)
-            amps = yield from self._descent("land", ro, td_snap, amps, LAND_LO, LAND_HI, LC_ITERS, LC_RADII)
+            amps = yield from self._descent("land", ro, td_snap, amps, LAND_LOW, LAND_HIGH, LAND_ITERS, LAND_RADII)
             rep = yield from self._land_replay(ro, amps, td_snap)
             score = (rep["settled"], -rep["bounce"])
             if best is None or score > best[0]:
@@ -1599,7 +1640,7 @@ class Example:
 
         def rollout(kick_arr, kick_idx, kick):
             """Two-step landing-servo rollout from the settled stance, with an optional kick."""
-            amps = np.full(LAND_NPAR, amp, dtype=np.float32)
+            amps = np.full(LAND_N_PARAMS, amp, dtype=np.float32)
             amps_arr = wp.array(amps, dtype=wp.float32)
             st0 = self._fresh(snap)
             st1 = model.state()
@@ -1616,7 +1657,7 @@ class Example:
                 if t % COLLIDE_EVERY == 0:
                     self.pipe.collide(st0, cts)
                 wp.launch(
-                    servo_profile_kernel,
+                    servo_land_spline_kernel,
                     dim=12,
                     inputs=[
                         amps_arr,
@@ -1626,7 +1667,7 @@ class Example:
                         self.stand_arr,
                         self.dofs_arr,
                         self.prof_knots_arr,
-                        PROF_N_KNOTS,
+                        LAND_N_KNOTS,
                         SIM_DT * 1000.0,
                         t,
                         TAU_MAX,
@@ -1640,7 +1681,7 @@ class Example:
             return float(1.0 * jq[9] + 0.75 * jq[13] - 0.5 * jq[7] + 0.25 * jq[16])
 
         # analytic: 2-step tape from the same state
-        amps = np.full(LAND_NPAR, amp, dtype=np.float32)
+        amps = np.full(LAND_N_PARAMS, amp, dtype=np.float32)
         params = wp.array(amps, dtype=wp.float32, requires_grad=True)
         states = [model.state(requires_grad=True) for _ in range(3)]
         states[0].joint_q.assign(snap[0])
@@ -1658,7 +1699,7 @@ class Example:
                 if t % COLLIDE_EVERY == 0:
                     self.pipe.collide(states[t], cts_tape)
                 wp.launch(
-                    servo_profile_kernel,
+                    servo_land_spline_kernel,
                     dim=12,
                     inputs=[
                         params,
@@ -1668,7 +1709,7 @@ class Example:
                         self.stand_arr,
                         self.dofs_arr,
                         self.prof_knots_arr,
-                        PROF_N_KNOTS,
+                        LAND_N_KNOTS,
                         SIM_DT * 1000.0,
                         t,
                         TAU_MAX,
