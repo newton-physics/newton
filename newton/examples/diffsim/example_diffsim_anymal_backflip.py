@@ -193,10 +193,10 @@ SERVO_KP = 2000.0  # position gain (Nm/rad)
 SERVO_KD = 15.0  # velocity damping gain (Nm s/rad)
 
 
-# -----------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 # 3. Host-side spline-segment lookup - _bracket: the adjoint-safe spline
 #    segment index
-# -----------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 
 
 def _bracket(t_ms):
@@ -472,10 +472,10 @@ def touchdown_att_kernel(
     att_arr[idx] = 1.0 / ((1.0 + wp.exp(-a)) * (1.0 + wp.exp(-ag)))
 
 
-# -----------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 # 6. Loss kernels - the three phases' loss terms, assembled read-only from
 #    the samples
-# -----------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 
 
 @wp.kernel
@@ -737,6 +737,7 @@ class Rollout:
         self.argmin_arr = wp.zeros(n + 1, dtype=wp.int32)
         self.min_knee_arr = wp.zeros(n + 1, dtype=wp.float32, requires_grad=True)
         self.min_paw_arr = wp.zeros(n + 1, dtype=wp.float32, requires_grad=True)
+
         if mode == "jump":
             # per-state samples the jump loss reads; the prefix sum / maxima
             # are chained per-element launches into the cum_* arrays
@@ -748,6 +749,7 @@ class Rollout:
             # touchdown attention per state and its prefix sum
             self.att_arr = wp.zeros(n + 1, dtype=wp.float32, requires_grad=True)
             self.cum_att_arr = wp.zeros(n + 1, dtype=wp.float32, requires_grad=True)
+
         self.tape = wp.Tape()
         self.fwd_graph = None
         self.grad_graph = None
@@ -797,10 +799,10 @@ class Rollout:
         return float(self.loss_arr.numpy()[0]), self.params.grad.numpy().astype(np.float64)
 
 
-# -----------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 # 9. Example class - setup: build ANYmal-D, classify paw/knee contact shapes,
 #    settle the stance
-# -----------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 
 
 class Example:
@@ -1427,6 +1429,7 @@ class Example:
                         break
             else:
                 airborne_steps = 0
+
         rep["pitch_end_deg"] = float(np.degrees(pitch_cum))
         if td_snap is not None:
             bqd0 = td_snap[2][0]
@@ -1485,6 +1488,7 @@ class Example:
             if not np.isfinite(m["z"]):
                 rep["blew_up"] = True
                 break
+
         rep["final_z"] = m["z"]
         rep["final_tilt_deg"] = float(np.degrees(m["tilt"]))
         rep["final_vz"] = m["vz"]
@@ -1715,25 +1719,25 @@ class Example:
         self.recorder.close()
         self.rec_done = True
 
+    def _draw_frame(self, t, st):
+        """One viewer frame: begin/log/end around the given state."""
+        self.viewer.begin_frame(t)
+        self.viewer.log_state(st)
+        self.viewer.end_frame()
+
     def render(self):
         """Framework hook: draw the settled stance or the optimized playback, looping it."""
         t = self.frame * SIM_DT * FRAME_EVERY
         if not self.playback:
             # nothing optimized yet (or --test): render the settled stance
-            st = self._fresh(self.snap)
-            self.viewer.begin_frame(t)
-            self.viewer.log_state(st)
-            self.viewer.end_frame()
+            self._draw_frame(t, self._fresh(self.snap))
             self.frame += 1
             return
 
         # clamp: the chain appends playback frames as it goes, so the frame
         # counter can be ahead of what exists yet
         _ph, snap = self.playback[min(self.frame, len(self.playback) - 1)]
-        st = self._fresh(snap)
-        self.viewer.begin_frame(t)
-        self.viewer.log_state(st)
-        self.viewer.end_frame()
+        self._draw_frame(t, self._fresh(snap))
         self.frame += 1
         if self.frame >= len(self.playback):
             self.frame = 0  # loop the achieved behavior
@@ -1861,10 +1865,10 @@ def _probe_loss_kernel(joint_q: wp.array[float], loss: wp.array[float]):
     loss[0] = 1.0 * joint_q[9] + 0.75 * joint_q[13] - 0.5 * joint_q[7] + 0.25 * joint_q[16]
 
 
-# -----------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 # 16. CLI entry point - __main__: --rec validation, construction, guaranteed
 #     recording close
-# -----------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 
 if __name__ == "__main__":
     parser = Example.create_parser()
