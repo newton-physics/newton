@@ -163,8 +163,9 @@ class SensorCamera:
             backend: ``"warp"`` traverses :attr:`~newton.Model.bvh_shapes`; ``"optix"``
                 traverses :attr:`~newton.Model.optix_shapes` (experimental). OptiX requires the
                 ``newton[optix]`` extra (Python 3.12 on x86-64 Linux or Windows) and a CUDA device,
-                cannot be recorded in CUDA graphs, and does not support Gaussians or shape variants;
-                unsupported models raise :class:`RuntimeError`. OptiX does not render shapes that
+                and cannot be recorded in CUDA graphs; unsupported models raise :class:`RuntimeError`.
+                It builds each Gaussian asset's splat structure once, so it ignores later edits of the
+                splats, such as :meth:`~newton.Gaussian.bvh_refit`. OptiX does not render shapes that
                 have left the region set when the OptiX shapes were built (see
                 :meth:`~newton.Model.bvh_build_shapes`); particles and deformable surfaces must stay
                 in it too. With ``warp-optix`` cluster support, deformable surfaces are rebuilt as

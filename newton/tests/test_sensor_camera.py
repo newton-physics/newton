@@ -2113,6 +2113,47 @@ class TestSensorCamera(unittest.TestCase):
         gc.collect()
         np.testing.assert_array_equal(render(), before)
 
+    @requires("warp_optix")
+    @unittest.skipUnless(wp.is_cuda_available(), "requires CUDA")
+    def test_body_variants_render_alike_on_both_backends(self):
+        """OptiX follows per-world body variants selected after its shapes were built, as Warp does."""
+        variants = []
+        for kind in ("box", "mesh", "spheres"):
+            variant = newton.ModelBuilder()
+            body = variant.add_body()
+            if kind == "box":
+                variant.add_shape_box(body, hx=0.25, hy=0.25, hz=0.25)
+            elif kind == "mesh":
+                variant.add_shape_mesh(body, mesh=newton.Mesh.create_box(0.2))
+            else:
+                for x in (-0.15, 0.15):
+                    variant.add_shape_sphere(body, xform=wp.transform((x, 0.0, 0.0), wp.quat_identity()), radius=0.12)
+            variants.append(variant)
+        env = newton.ModelBuilder()
+        env.add_body_variants(env.add_body(xform=wp.transform((0.0, 0.0, -2.0), wp.quat_identity())), variants)
+        scene = newton.ModelBuilder()
+        scene.replicate(env, 3)
+        model = scene.finalize(device="cuda:0")
+        state = model.state()
+        model.bvh_build_shapes(state, backend="optix")
+        cameras = [SensorCamera(model, backend=backend) for backend in ("warp", "optix")]
+        model.select_body_variants(wp.array([2, 0, 1], dtype=wp.int32, device="cuda:0"))
+        model.bvh_refit_shapes(state)
+        model.bvh_refit_shapes(state, backend="optix")
+        images = []
+        for camera in cameras:
+            shape_index = camera.allocate_image_shape_index(3, 16, 16)
+            camera.update(
+                state,
+                self._identity_transforms(3, "cuda:0"),
+                self._rays(16, 16, device="cuda:0"),
+                shape_index_image=shape_index,
+            )
+            images.append(shape_index.numpy())
+        np.testing.assert_array_equal(images[1], images[0])
+        # World 0 holds both spheres, world 1 the box and world 2 the mesh.
+        self.assertEqual([len(np.unique(image)) - 1 for image in images[0]], [2, 1, 1])
+
 
 def _optix_variant(test):
     @requires("warp_optix")
