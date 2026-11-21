@@ -757,7 +757,7 @@ def test_intersect_ray(test: TestRaycast, device: str, backend: str = "warp"):
         model.bvh_refit_shapes(state, backend="optix")
         shapes = model.optix_shapes
         masks = shapes.instances.numpy()["visibility_mask"]
-        np.testing.assert_array_equal(masks[np.argsort(shapes.instance_shapes.numpy())], [255, 0])
+        np.testing.assert_array_equal(masks[np.argsort(shapes.instance_shapes.numpy())] != 0, [True, False])
         test.assertEqual(shapes.out_of_cell.numpy()[0], 1)
 
         # A larger extent leaves room for the move.

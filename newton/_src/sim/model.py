@@ -2545,6 +2545,7 @@ class Model:
         while grid**3 < self.world_count + 1:
             grid += 1
         geometry, traversables = optix.build_shape_geometry(self, enabled, types)
+        instance_ids, slot_gaussians = optix.gaussian_slots(self, instance_shapes, types)
         shapes = optix.OptixShapes(
             id=0,
             accel=None,
@@ -2552,6 +2553,8 @@ class Model:
             shape_types=wp.array(types, dtype=wp.int32, device=device),
             shape_world_transforms=transforms,
             shape_traversables=traversables,
+            shape_instance_ids=wp.array(instance_ids, dtype=wp.uint32, device=device),
+            slot_gaussians=wp.array(slot_gaussians, dtype=wp.int32, device=device),
             instance_shapes=wp.array(instance_shapes, dtype=wp.int32, device=device),
             instances=wp.empty(len(instance_shapes), dtype=optix.wo.Instance, device=device),
             shape_radii=wp.array(radii, dtype=wp.float32, device=device),

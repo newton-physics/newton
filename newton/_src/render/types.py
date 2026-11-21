@@ -270,6 +270,8 @@ class SceneData:
     """OptiX clusters: first entry of each cluster in :attr:`cluster_triangles`; empty without clusters."""
     cluster_triangles: wp.array[wp.int32]
     """OptiX clusters: face of each clustered triangle, in cluster order."""
+    slot_gaussians: wp.array2d[wp.int32]
+    """OptiX: Gaussian shape in each slot of each world's rays, shape ``[world_count, slots]``."""
 
 
 @wp.struct

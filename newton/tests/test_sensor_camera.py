@@ -2093,6 +2093,7 @@ for _name in (
     "test_volume_deformable_renders_surface_not_particles",
     "test_scene_matches_across_backends",
     "test_particles_follow_state_without_particle_bvh_refit",
+    "test_gaussian_shapes_sharing_an_asset_blend_together",
 ):
     setattr(TestSensorCamera, f"{_name}_optix", _optix_variant(getattr(TestSensorCamera, _name)))
 

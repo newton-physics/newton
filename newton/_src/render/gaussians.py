@@ -43,6 +43,20 @@ def compute_gaussian_bvh_bounds(
     uppers[tid] = upper
 
 
+@wp.kernel(enable_backward=False)
+def compute_asset_splat_bounds(
+    gaussians_data: wp.array[Gaussian.Data],
+    asset: wp.int32,
+    lowers: wp.array[wp.vec3f],
+    uppers: wp.array[wp.vec3f],
+):
+    """Bounds of each splat of a finalized asset, like :func:`compute_gaussian_bvh_bounds`."""
+    tid = wp.tid()
+    lower, upper = compute_gaussian_bounds(gaussians_data[asset], tid)
+    lowers[tid] = lower
+    uppers[tid] = upper
+
+
 @wp.func
 def sorting_mode_ray_hit_distance(ray_origin: wp.vec3f, ray_direction: wp.vec3f) -> wp.float32:
     numerator = -wp.dot(ray_origin, ray_direction)
@@ -121,61 +135,63 @@ def ray_gsplat_hit_response(
     return 0.0, -1.0
 
 
-@wp.func
-def hit_before(t0: wp.float32, shape0: wp.int32, splat0: wp.int32, t1: wp.float32, shape1: wp.int32, splat1: wp.int32):
-    """Whether splat hit ``(t0, shape0, splat0)`` sorts before ``(t1, shape1, splat1)``.
+SPLAT_BITS = 24
+"""Bits of a splat hit's id that hold the splat; the bits above hold the slot of its Gaussian shape."""
+MAX_SPLATS = 1 << SPLAT_BITS
+"""Splats a Gaussian asset may hold."""
+MAX_SLOTS = 1 << (32 - SPLAT_BITS)
+"""Gaussian shapes one ray may cross."""
 
-    The shape and splat break distance ties, so hits have one order however they are gathered.
-    """
+
+@wp.func
+def splat_hit_id(slot: wp.int32, splat: wp.int32) -> wp.uint32:
+    """Id of a hit on ``splat`` of the Gaussian shape in ``slot``."""
+    return (wp.uint32(slot) << wp.uint32(SPLAT_BITS)) | wp.uint32(splat)
+
+
+@wp.func
+def hit_before(t0: wp.float32, id0: wp.uint32, t1: wp.float32, id1: wp.uint32) -> wp.bool:
+    """Whether splat hit ``(t0, id0)`` sorts before ``(t1, id1)``; ids break distance ties, so hits
+    have one order however they are gathered."""
     if t0 != t1:
         return t0 < t1
-    if shape0 != shape1:
-        return shape0 < shape1
-    return splat0 < splat1
+    return id0 < id1
 
 
 @functools.cache
 def create_hit_buffer(capacity: int) -> tuple[type, wp.Function, wp.Function]:
-    """Sorted buffer of the nearest ``capacity`` splat hits along a ray.
+    """Sorted buffer of the nearest ``capacity`` splat hits along a ray, by distance, then id.
 
     Returns the buffer struct, a function returning an empty buffer, and a function inserting a hit.
     Inserting a hit already in the buffer leaves it unchanged, as OptiX may report a primitive twice.
     """
-
     distances = wp.types.vector(capacity, wp.float32)
-    indices = wp.types.vector(capacity, wp.int32)
+    ids = wp.types.vector(capacity, wp.uint32)
     # Built from annotation objects: postponed annotations cannot name the capacity.
-    SplatHits = wp.struct(
-        type("SplatHits", (), {"__annotations__": {"t": distances, "shape": indices, "splat": indices}})
-    )
+    SplatHits = wp.struct(type("SplatHits", (), {"__annotations__": {"t": distances, "id": ids}}))
 
     @wp.func
     def empty_hits():
         hits = SplatHits()
         hits.t = distances(MAXVAL)
-        hits.shape = indices(-1)
-        hits.splat = indices(-1)
+        hits.id = ids(wp.uint32(0xFFFFFFFF))
         return hits
 
     @wp.func
-    def insert_hit(hits: Any, t: wp.float32, shape: wp.int32, splat: wp.int32):
+    def insert_hit(hits: Any, t: wp.float32, id: wp.uint32):
         carry_t = t
-        carry_shape = shape
-        carry_splat = splat
+        carry_id = id
         for i in range(wp.static(capacity)):
-            if carry_t == hits.t[i] and carry_shape == hits.shape[i] and carry_splat == hits.splat[i]:
+            if carry_t == hits.t[i] and carry_id == hits.id[i]:
                 return hits
-            if hit_before(carry_t, carry_shape, carry_splat, hits.t[i], hits.shape[i], hits.splat[i]):
+            if hit_before(carry_t, carry_id, hits.t[i], hits.id[i]):
                 # Bubble the new hit into place, carrying the displaced one onward.
                 t_i = hits.t[i]
-                shape_i = hits.shape[i]
-                splat_i = hits.splat[i]
+                id_i = hits.id[i]
                 hits.t[i] = carry_t
-                hits.shape[i] = carry_shape
-                hits.splat[i] = carry_splat
+                hits.id[i] = carry_id
                 carry_t = t_i
-                carry_shape = shape_i
-                carry_splat = splat_i
+                carry_id = id_i
         return hits
 
     return SplatHits, empty_hits, insert_hit
@@ -272,7 +288,8 @@ def create_shade_function(config: RenderConfig, state: RenderState) -> wp.Functi
     """Blend the splats of the Gaussian shapes a ray crosses, nearest first, in front of ``max_distance``.
 
     Each round gathers the nearest :attr:`RenderConfig.gaussians_max_num_hits` splat hits after those
-    already blended, across all shapes, and blends them; ``FAST`` renders stop after one round.
+    already blended, across all shapes, and blends them; ``FAST`` renders stop after one round. A hit's
+    slot is its shape's position in ``shapes_hit``.
     """
     capacity = config.gaussians_max_num_hits
     _SplatHits, empty_hits, insert_hit = create_hit_buffer(capacity)
@@ -292,14 +309,13 @@ def create_shade_function(config: RenderConfig, state: RenderState) -> wp.Functi
         max_distance: wp.float32,
     ) -> tuple[wp.float32, wp.vec3f, wp.int32]:
         blend = start_blend()
-        # Hits after (last_t, last_shape, last_splat) are left for the next round.
+        # Hits up to (last_t, last_id) are blended.
         last_t = wp.float32(-MAXVAL)
-        last_shape = wp.int32(-1)
-        last_splat = wp.int32(-1)
+        last_id = wp.uint32(0)
         while blend.transmittance > 0.003:
             hits = empty_hits()
-            for g in range(shape_count):
-                si = shapes_hit[g]
+            for slot in range(shape_count):
+                si = shapes_hit[slot]
                 data = gaussians_data[int(shape_source_ptr[si])]
                 origin, direction = map_ray_to_local(shape_transforms[si], ray_origin, ray_direction, shape_sizes[si])
                 query = wp.bvh_query_ray(data.bvh_id, origin, direction)
@@ -316,16 +332,18 @@ def create_shade_function(config: RenderConfig, state: RenderState) -> wp.Functi
                         camera_forward,
                         wp.min(hits.t[-1], max_distance),
                     )
-                    if alpha > 0.0 and hit_before(last_t, last_shape, last_splat, t, si, splat):
-                        hits = insert_hit(hits, t, si, splat)
+                    id = splat_hit_id(slot, splat)
+                    if alpha > 0.0 and hit_before(last_t, last_id, t, id):
+                        hits = insert_hit(hits, t, id)
             count = int(0)
             for i in range(wp.static(capacity)):
                 if hits.t[i] < MAXVAL:
+                    id = hits.id[i]
                     blend = blend_splat(
                         blend,
                         hits.t[i],
-                        hits.shape[i],
-                        hits.splat[i],
+                        shapes_hit[int(id >> wp.uint32(SPLAT_BITS))],
+                        int(id & wp.uint32(MAX_SPLATS - 1)),
                         shape_transforms,
                         shape_sizes,
                         shape_source_ptr,
@@ -336,8 +354,7 @@ def create_shade_function(config: RenderConfig, state: RenderState) -> wp.Functi
                     )
                     count += 1
                     last_t = hits.t[i]
-                    last_shape = hits.shape[i]
-                    last_splat = hits.splat[i]
+                    last_id = id
             if count == 0 or wp.static(config.gaussians_mode == GaussianRenderMode.FAST):
                 break
         return finish_blend(blend)
