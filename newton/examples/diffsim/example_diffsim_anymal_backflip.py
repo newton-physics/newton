@@ -3,80 +3,75 @@
 
 """Example Diffsim Anymal Backflip
 
-An example of how differentiable physics can be used in Newton to achieve
-things: an ANYmal-D quadruped robot dog learns a complete standing backflip
-- crouch, 360 degree flip in the air, and a controlled landing - through
-gradient-based optimization, with every gradient computed by backpropagating
-through the raw physics simulation via ``wp.Tape()``.
+An example of how differentiable physics can be used to perform a backflip on
+a modified ANYmal-D quadruped robot dog. Trajectory optimization split into
+3 phases:
 
-Three skills are optimized in sequence over single rollout windows
-("one window, one skill" - no rolling windows):
+1. Crouch (300 steps + a 100-step zero-amp push preview): learned cosine
+   servo ramps; the loss shapes crouch depth, stillness and knee clearance.
+2. Jump (1500 steps): per-joint-group servo amplitudes produce the launch
+   and the flip; the loss prices the flip error and attitude at touchdown,
+   an apex height band and knee clearance.
+3. Landing (first 300 steps alone, then 1600): per-joint target splines
+   absorb the touchdown impact; the loss combines knee ordering,
+   anti-bounce, paw-glue (every paw pinned to the ground) and an end-state
+   stance term.
 
-1. Crouch (300 steps + a 100-step zero-amp push preview): PD-servo targets
-   follow learned cosine ramps; the loss shapes crouch depth, stillness and
-   a ground-based knee-clearance margin so the dog squats cleanly without
-   scraping its knees.
-2. Jump (1500 steps): per-joint-group servo trajectory amplitudes produce
-   the launch and the full -360 degree pitch rotation. The loss prices the
-   flip error and attitude AT TOUCHDOWN (the first ~10 steps after the root
-   comes back down, once the paws have flown), an apex height band and knee
-   clearance. Pricing only the touchdown keeps the loss aligned with the
-   outcome: the liftoff, where the flip error is still a full turn, and the
-   stiff post-touchdown contacts, whose gradients are chaotic, stay out.
-3. Landing (300 steps, then 1600 steps): per-joint target SPLINES
-   (non-uniform knots, dense around touchdown) absorb the touchdown impact.
-   The splines are first optimized over the first 300 ms alone, where the
-   dog either catches the flip's leftover rotation or tumbles, and then over
-   the full window (other first-stage windows are retried if it does not
-   settle). The loss combines ground-based knee ordering, anti-bounce, a
-   paw-glue term (every paw pinned to the ground - holding it at zero
-   REQUIRES flexed knees, so the yielding-squat posture emerges instead of
-   being prescribed) and an end-state stance term.
-
-Gradients flow through SolverFeatherstone AND the differentiable contact
-pipeline (soft_contact_gap margin). Every phase uses the same optimizer:
-steepest descent on the tape gradient with a backtracking line search over
-a fixed list of step lengths (``_descent``). Takeoff and touchdown over
-contact are chaotic, so when the crouch, the flip or the landing misses its
-gate, the chain is retried from a slightly shallower or deeper crouch warm
-start (``CR_WARM_SCALES``).
-
-Each phase window is a ``Rollout``: its states, controls and contact buffers
-are allocated once, and on CUDA the forward pass and the forward + backward
-pass are each captured into a CUDA graph. The optimizer's gradients, its
-line-search loss evaluations and the replays all run the same kernels on the
-same buffers, so the loss being differentiated is exactly the loss being
-accepted. Together with the solver's tile-based mass-matrix assembly
-(``use_tile_gemm=True``) a full run of all three skills takes a few minutes
-on a single GPU. ``--test`` skips the optimization entirely and runs only the
-gradient check (seconds); ``--rec`` saves the optimized playback to a
-ViewerFile recording. The optimization advances a little every frame, so
-an interactive viewer stays live (and can pause it) while it runs.
+How the optimization runs:
+- every phase shares one optimizer (``_descent``: steepest descent with a
+  backtracking line search) and one rollout path (``_simulate``) - the loss
+  the optimizer differentiates is exactly the loss it accepts steps on;
+- each phase window is a ``Rollout``: buffers allocated once, forward and
+  forward+backward passes captured into CUDA graphs;
+- a missed gate retries the chain from a different crouch warm start
+  (``CR_WARM_SCALES``);
+- a full run takes a few minutes on a single GPU, advancing a little every
+  frame so an interactive viewer stays live.
 
 Writing differentiable loss kernels: Warp does not replay dynamic
 (runtime-bound) loops in the backward pass (see "Dynamic Loops" in Warp's
-differentiability guide), so loop-carried values such as a running min/max,
-a prefix sum or a scanned spline-segment index get wrong adjoints. The loss
-kernels here avoid them: spline segments are bracketed on the host
-(``_bracket``), fixed paw sets are statically unrolled, prefix values are
-built by chained per-element launches (``cum_sum_kernel`` /
-``cum_max_kernel``), and the knee minimum is an integer argmin pre-pass
-followed by a differentiable gather. ``newton/tests/test_diffsim_anymal_backflip_losses.py``
-finite-difference-checks these patterns.
+differentiability guide), so loop-carried values - a running min/max, a
+prefix sum, a scanned segment index - get wrong adjoints. The loss kernels
+avoid them with four patterns (the loop-sensitive ones FD-checked in
+``newton/tests/test_diffsim_anymal_backflip_losses.py``):
+- spline segments are bracketed on the host (``_bracket``);
+- fixed paw sets are statically unrolled;
+- prefix sums/maxima are chained per-element launches
+  (``cum_sum_kernel`` / ``cum_max_kernel``);
+- the knee minimum is an integer argmin pre-pass + a differentiable gather.
 
 Success criteria:
-- Phase A: a clean crouch (depth ~0.32 m, upright, knees clear of the ground).
-- Phase B: the dog leaves the ground, completes a full backflip and touches
+- Crouch phase: a clean crouch (depth ~0.32 m, upright, knees clear of the ground).
+- Jump phase: the dog leaves the ground, completes a full backflip and touches
   down on its paws: touchdown pitch within 10 degrees of -360 and tilt
   below 10 degrees.
-- Phase C: the dog settles standing after the impact (settled gate: tilt
+- Landing phase: the dog settles standing after the impact (settled gate: tilt
   <= 15 deg, |vz| <= 0.15 m/s, |z - stand| <= 0.10 m, |w| <= 0.6 rad/s).
 - When ``--test`` runs, numeric and analytic gradients agree within the
   check tolerance.
 
 Runs:
 - `python -m newton.examples diffsim_anymal_backflip`
+- `python -m newton.examples diffsim_anymal_backflip --test` (gradient check only)
 - `python -m newton.examples diffsim_anymal_backflip --rec backflip.bin`
+
+Table of Contents
+1.  Header docstring
+2.  Imports + constants
+3.  Host-side spline-segment lookup
+4.  Servo kernels
+5.  Sample kernels
+6.  Loss kernels
+7.  Replay helpers
+8.  Rollout
+9.  Example class
+10. Execution helpers
+11. Optimizer
+12. Replays
+13. The chain
+14. Runner interface
+15. Gradient check
+16. CLI entry point
 """
 
 import os
@@ -91,8 +86,9 @@ import newton.utils
 from newton import GeoType, ShapeFlags
 
 # ------------------------------------------------------------------------------
-# simulation parameters and objective weights (single-source constants - the
-# configuration the demonstrated behavior was achieved with)
+# 2. Imports + constants - every tunable in one place: the simulation
+#    parameters and objective weights (single-source: the configuration the
+#    demonstrated behavior was achieved with)
 # ------------------------------------------------------------------------------
 
 SIM_DT = 1.0e-3
@@ -178,6 +174,12 @@ INV_MDT = 1.0 / (VZ_LAG_M * SIM_DT)
 FRAME_EVERY = 8  # one playback frame per this many simulated steps
 
 
+# -----------------------------------------------------------------------------
+# 3. Host-side spline-segment lookup - _bracket: the adjoint-safe spline
+#    segment index
+# -----------------------------------------------------------------------------
+
+
 def _bracket(t_ms):
     """Landing-spline segment index: LAST knot with knots_ms[kk] <= t_ms,
     clamped to [0, n_knots-2]. Computed on the HOST per launch - see the
@@ -187,7 +189,8 @@ def _bracket(t_ms):
 
 
 # ------------------------------------------------------------------------------
-# Warp kernels: servo laws
+# 4. Servo kernels - the four control laws writing joint torques: settle hold,
+#    crouch cosine ramp, jump per-group trajectory, landing spline
 # ------------------------------------------------------------------------------
 
 
@@ -300,8 +303,8 @@ def servo_profile_kernel(
 
 
 # ------------------------------------------------------------------------------
-# Warp kernels: per-state sample passes + losses (each sample index written
-# exactly once; loss kernels read read-only with internal prefix sums)
+# 5. Sample kernels - per-state captures + chained prefix launches (each
+#    sample index written exactly once)
 # ------------------------------------------------------------------------------
 
 
@@ -400,6 +403,32 @@ def cum_max_kernel(x_arr: wp.array[float], cum_arr: wp.array[float], idx: int):
 
 
 @wp.kernel
+def touchdown_att_kernel(
+    z_arr: wp.array[float],
+    cum_paw_arr: wp.array[float],
+    idx: int,
+    z_td: float,
+    td_sig: float,
+    lift_h: float,
+    att_arr: wp.array[float],
+):
+    """Touchdown attention at one state (``att_arr[idx]``): ~1 once the dog
+    has flown (prefix-max paw height above lift_h) and its root has come
+    back down to the touchdown height z_td, ~0 otherwise. The airborne gate
+    keeps the push-off out: there the root rises through z_td while the
+    paws are still on the ground and the flip error is still a full turn."""
+    a = wp.clamp((z_td - z_arr[idx]) / td_sig, -30.0, 30.0)
+    ag = wp.clamp((cum_paw_arr[idx] - lift_h) / 0.01, -30.0, 30.0)
+    att_arr[idx] = 1.0 / ((1.0 + wp.exp(-a)) * (1.0 + wp.exp(-ag)))
+
+
+# -----------------------------------------------------------------------------
+# 6. Loss kernels - the three phases' loss terms, assembled read-only from
+#    the samples
+# -----------------------------------------------------------------------------
+
+
+@wp.kernel
 def order_state_g_kernel(
     mink_arr: wp.array[float],
     minp_arr: wp.array[float],
@@ -435,26 +464,6 @@ def loss_crouch_end_kernel(
     q = wp.transform_get_rotation(body_q_n[0])
     up = wp.quat_rotate(q, wp.vec3(0.0, 0.0, 1.0))
     loss[0] = loss[0] + a1 * wp.pow(zn[2] - z_target, 2.0) + b1 * vz * vz + c1 * (1.0 - up[2])
-
-
-@wp.kernel
-def touchdown_att_kernel(
-    z_arr: wp.array[float],
-    cum_paw_arr: wp.array[float],
-    idx: int,
-    z_td: float,
-    td_sig: float,
-    lift_h: float,
-    att_arr: wp.array[float],
-):
-    """Touchdown attention at one state (``att_arr[idx]``): ~1 once the dog
-    has flown (prefix-max paw height above lift_h) and its root has come
-    back down to the touchdown height z_td, ~0 otherwise. The airborne gate
-    keeps the push-off out: there the root rises through z_td while the
-    paws are still on the ground and the flip error is still a full turn."""
-    a = wp.clamp((z_td - z_arr[idx]) / td_sig, -30.0, 30.0)
-    ag = wp.clamp((cum_paw_arr[idx] - lift_h) / 0.01, -30.0, 30.0)
-    att_arr[idx] = 1.0 / ((1.0 + wp.exp(-a)) * (1.0 + wp.exp(-ag)))
 
 
 @wp.kernel
@@ -600,7 +609,7 @@ def loss_land_end_kernel(
 
 
 # ------------------------------------------------------------------------------
-# numpy helpers (replay metrics)
+# 7. Replay helpers - host-side metrics (tilt, up-z) + snapshot loading
 # ------------------------------------------------------------------------------
 
 
@@ -623,7 +632,7 @@ def _load_snapshot(st, snap):
 
 
 # ------------------------------------------------------------------------------
-# Rollout: preallocated, CUDA-graph-captured optimization window
+# 8. Rollout - one phase window's preallocated buffers + its two CUDA graphs
 # ------------------------------------------------------------------------------
 
 
@@ -717,7 +726,10 @@ class Rollout:
 
 
 # ------------------------------------------------------------------------------
-# Example
+# -----------------------------------------------------------------------------
+# 9. Example class - setup: build ANYmal-D, classify paw/knee contact shapes,
+#    settle the stance
+# -----------------------------------------------------------------------------
 # ------------------------------------------------------------------------------
 
 
@@ -880,6 +892,10 @@ class Example:
 
     # ---------------- execution helpers ----------------
 
+    # --------------------------------------------------------------------------
+    # 10. Execution helpers - snapshots, settling, contact counting, gate
+    #     metrics, _simulate (the one rollout+loss path all consumers share)
+    # --------------------------------------------------------------------------
     def _snapshot(self, st):
         """Copy a state's joint/body arrays to a host-side numpy snapshot tuple."""
         return tuple(arr.numpy().copy() for arr in (st.joint_q, st.joint_qd, st.body_q, st.body_qd))
@@ -1128,6 +1144,9 @@ class Example:
 
     # ---------------- optimizer ----------------
 
+    # --------------------------------------------------------------------------
+    # 11. Optimizer - _descent: shared steepest descent + backtracking line search
+    # --------------------------------------------------------------------------
     def _descent(self, tag, ro, snap, amps_init, lo, hi, iters, radii):
         """Steepest descent with a backtracking line search, shared by all
         three phases: each iteration takes a fresh tape gradient and tries
@@ -1177,6 +1196,9 @@ class Example:
     # Replays are generators like ``_descent`` (they yield every
     # REPLAY_YIELD_EVERY steps) and return their results.
 
+    # --------------------------------------------------------------------------
+    # 12. Replays - re-run a window, read back gate metrics + snapshots
+    # --------------------------------------------------------------------------
     def _crouch_replay(self, ro, amps):
         """Replay the crouch phase for the given amplitudes; returns the end snapshot and metrics."""
         ro.loss(amps, self.snap)
@@ -1326,6 +1348,10 @@ class Example:
 
     # ---------------- the chain ----------------
 
+    # --------------------------------------------------------------------------
+    # 13. The chain - run_chain retries over crouch warm starts; the three
+    #     phases and their gates
+    # --------------------------------------------------------------------------
     def run_chain(self):
         """Phase A -> B -> C. Prints progress; stores the final result.
 
@@ -1363,14 +1389,14 @@ class Example:
         missed gate costs little before the next attempt. The score ranks
         attempts by the number of gates passed, then by the flip error."""
         res = {"crouch_ok": False, "flip_ok": False, "land_ok": False, "playback": [], "score": (0, -np.inf)}
-        res["crouch_ok"], crouch_snap = yield from self._phase_a(crouch_warm)
+        res["crouch_ok"], crouch_snap = yield from self._crouch_phase(crouch_warm)
         res["result"] = {"crouch_ok": res["crouch_ok"], "jump_ok": False}
         if not res["crouch_ok"]:
             return res
-        td_snap, rep_b = yield from self._phase_b(crouch_snap)
+        td_snap, rep_b = yield from self._jump_phase(crouch_snap)
         res["playback"] = self.playback
         if td_snap is None:
-            print("  phase B never achieved a clean touchdown - skipping phase C", flush=True)
+            print("  jump phase never achieved a clean touchdown - skipping the landing phase", flush=True)
             res["score"] = (1, -np.inf)
             return res
         flip_err = abs(rep_b["td_pitch_deg"] - FLIP_SIGN * 360.0)
@@ -1379,7 +1405,7 @@ class Example:
         res["score"] = (1 + int(res["flip_ok"]), -flip_err)
         if not res["flip_ok"]:
             return res
-        rep_c = yield from self._phase_c(td_snap, rep_b["td_step"])
+        rep_c = yield from self._landing_phase(td_snap, rep_b["td_step"])
         res["land_ok"] = rep_c["settled"]
         res["result"] = {
             "crouch_ok": True,
@@ -1393,10 +1419,10 @@ class Example:
         res["score"] = (2 + int(res["land_ok"]), -flip_err)
         return res
 
-    def _phase_a(self, warm):
+    def _crouch_phase(self, warm):
         """Phase A: optimize the crouch from the settled stance, starting at
         the ``warm`` amplitudes; returns (gates passed, crouch-end snapshot)."""
-        print("== phase A: crouch ==", flush=True)
+        print("== crouch phase ==", flush=True)
         ro = Rollout(self, "crouch", CR_N_EXT, CR_NP)
         amps = yield from self._descent("crouch", ro, self.snap, warm, CR_AMP_LO, CR_AMP_HI, CR_ITERS, CR_RADII)
         end_snap, rep = yield from self._crouch_replay(ro, amps)
@@ -1415,10 +1441,10 @@ class Example:
         )
         return ok, end_snap
 
-    def _phase_b(self, crouch_snap):
+    def _jump_phase(self, crouch_snap):
         """Phase B: optimize the jump from the crouch end; records the flight
         playback and returns (touchdown snapshot or None, replay report)."""
-        print("== phase B: jump ==", flush=True)
+        print("== jump phase ==", flush=True)
         ro = Rollout(self, "jump", N_B, NSEG_B * 2)
         lo = np.full(NSEG_B * 2, B_AMP_LO)
         hi = np.full(NSEG_B * 2, B_AMP_HI)
@@ -1433,7 +1459,7 @@ class Example:
         )
         return td_snap, rep
 
-    def _phase_c(self, td_snap, td_step):
+    def _landing_phase(self, td_snap, td_step):
         """Phase C: optimize the landing from the touchdown state; records the
         landing playback and returns the replay report.
 
@@ -1445,7 +1471,7 @@ class Example:
         over the full window. Which window length works best depends on the
         touchdown, so the attempts in ``LAND_SHORT_WINDOWS`` (0 = no short
         stage) are tried in order until one settles; the best one is kept."""
-        print("== phase C: landing ==", flush=True)
+        print("== landing phase ==", flush=True)
         ro = Rollout(self, "land", N_C, LAND_NPAR)
         best = None
         for n_short in LAND_SHORT_WINDOWS:
@@ -1482,6 +1508,10 @@ class Example:
 
     # ---------------- runner interface ----------------
 
+    # --------------------------------------------------------------------------
+    # 14. Runner interface - step (frame budget), render, --rec close, CLI
+    #     arguments
+    # --------------------------------------------------------------------------
     def step(self):
         """Framework hook: advance the optimization (skipped when done or in --test mode).
 
@@ -1552,6 +1582,10 @@ class Example:
         )
         return parser
 
+    # --------------------------------------------------------------------------
+    # 15. Gradient check - test_final: the proof the differentiability claims
+    #     hold (FD vs tape probe, _probe_loss_kernel)
+    # --------------------------------------------------------------------------
     def test_final(self):
         """Gradient check: a 2-step landing-servo rollout from the settled
         stance, linear probe loss; tape gradient vs central finite differences
@@ -1679,6 +1713,11 @@ class Example:
 def _probe_loss_kernel(joint_q: wp.array[float], loss: wp.array[float]):
     loss[0] = 1.0 * joint_q[9] + 0.75 * joint_q[13] - 0.5 * joint_q[7] + 0.25 * joint_q[16]
 
+
+# -----------------------------------------------------------------------------
+# 16. CLI entry point - __main__: --rec validation, construction, guaranteed
+#     recording close
+# -----------------------------------------------------------------------------
 
 if __name__ == "__main__":
     parser = Example.create_parser()
