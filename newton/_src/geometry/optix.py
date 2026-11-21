@@ -243,12 +243,13 @@ def create_pipeline(
     kernel: wp.Kernel,
     *,
     enable_backface_culling: bool = False,
-    particle_intersection: wp.Kernel | None = None,
+    particle_build_flags: int | None = None,
     clustered_geometry: bool = False,
 ) -> wo.Pipeline:
     """Compile ``kernel`` as the ray generation program of a pipeline over ``shapes``.
 
-    ``particle_intersection`` adds a third hit group, at SBT offset 2, for a camera's particles.
+    ``particle_build_flags`` adds a third hit group, at SBT offset 2, for a camera's particles: built-in
+    spheres built with those flags.
     ``clustered_geometry`` allows tracing cluster geometry.
     """
 
@@ -274,8 +275,8 @@ def create_pipeline(
             wp.optix_report_intersection(distance, wp.uint32(0), wp.uint32(0), wp.uint32(0))
 
     hit_groups = {"triangles": wo.HitGroup(), "primitives": wo.HitGroup(intersection=intersect)}
-    if particle_intersection is not None:
-        hit_groups["particles"] = wo.HitGroup(intersection=particle_intersection)
+    if particle_build_flags is not None:
+        hit_groups["particles"] = wo.HitGroup(builtin=wo.PrimitiveType.SPHERE, build_flags=particle_build_flags)
     options = {"clustered_geometry": True} if clustered_geometry else {}
     return wo.Pipeline(
         kernel,
