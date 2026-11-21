@@ -187,6 +187,10 @@ COLLIDE_EVERY = 2  # contact-truthful tapes; replays use the SAME schedule
 PAW_MASK_HEIGHT = 0.02  # "grounded" mask: lowest paw within 2 cm of ground
 FRAME_EVERY = 8  # one playback frame per this many simulated steps
 
+# 2.7 Servo PD gains (shared by the four servo kernels)
+SERVO_KP = 2000.0  # position gain (Nm/rad)
+SERVO_KD = 15.0  # velocity damping gain (Nm s/rad)
+
 
 # -----------------------------------------------------------------------------
 # 3. Host-side spline-segment lookup - _bracket: the adjoint-safe spline
@@ -211,15 +215,15 @@ def _bracket(t_ms):
 
 @wp.kernel
 def servo_hold_kernel(
-    params: wp.array[float],
-    joint_q: wp.array[float],
-    joint_qd: wp.array[float],
-    joint_f: wp.array[float],
-    stand: wp.array[float],
-    hinge_dofs: wp.array[int],
-    mode: int,
+    params: wp.array[float],  # one element: the mode-1 pulse amplitude (ignored in mode 0)
+    joint_q: wp.array[float],  # State's joint positions: root's 7 pose entries (pos + quat) first, hinges after
+    joint_qd: wp.array[float],  # State's joint velocities: root's 6 DOFs first, hinges after
+    joint_f: wp.array[float],  # Control's joint-force buffer, written per DOF
+    stand: wp.array[float],  # stance angle per hinge joint (rad)
+    hinge_dofs: wp.array[int],  # velocity/force buffer index of each hinge joint
+    mode: int,  # 0 = hold stand, 1 = stand scaled by (1 + params[0])
 ):
-    """Settle servo: mode 0 = hold stand, mode 1 = stand + params[0] pulse."""
+    """Settle servo: grounds the robot before the rollouts (hold, then one pulse)."""
     j = wp.tid()
     dof = hinge_dofs[j]
     q = joint_q[7 + j]
@@ -228,22 +232,24 @@ def servo_hold_kernel(
         target = stand[j]
     else:
         target = stand[j] * (1.0 + params[0])
-    joint_f[dof] = 2000.0 * (target - q) - 15.0 * qd
+    joint_f[dof] = SERVO_KP * (target - q) - SERVO_KD * qd
 
 
 @wp.kernel
 def servo_crouch_cos_kernel(
-    params: wp.array[float],
-    joint_q: wp.array[float],
-    joint_qd: wp.array[float],
-    joint_f: wp.array[float],
-    stand: wp.array[float],
-    hinge_dofs: wp.array[int],
-    channel_of_joint: wp.array[int],
-    t: int,
-    ramp_ref: float,
-    tau_cap: float,
+    params: wp.array[float],  # 8 learned values: 4 amplitudes, then 4 ramp-time multipliers
+    joint_q: wp.array[float],  # State's joint positions: root's 7 pose entries (pos + quat) first, hinges after
+    joint_qd: wp.array[float],  # State's joint velocities: root's 6 DOFs first, hinges after
+    joint_f: wp.array[float],  # Control's joint-force buffer, written per DOF
+    stand: wp.array[float],  # stance angle per hinge joint (rad)
+    hinge_dofs: wp.array[int],  # velocity/force buffer index of each hinge joint
+    channel_of_joint: wp.array[int],  # learned channel per joint (0/1 = front hips/knees, 2/3 = hind)
+    t: int,  # step within the crouch rollout
+    ramp_ref: float,  # ramp duration in steps at multiplier 1 (CROUCH_RAMP_REF)
+    tau_cap: float,  # torque clamp (Nm; TAU_MAX)
 ):
+    """Crouch ramp: the target glides from stand to stand * (1 + amp) along a
+    half-cosine with zero target velocity at both ends."""
     j = wp.tid()
     dof = hinge_dofs[j]
     q = joint_q[7 + j]
@@ -254,47 +260,49 @@ def servo_crouch_cos_kernel(
     ramp_t = ramp_ref * wp.max(tau_p, 0.05)
     u = wp.min(float(t) / ramp_t, 1.0)
     target = stand[j] * (1.0 + amp_a * 0.5 * (1.0 - wp.cos(3.14159265 * u)))
-    tau = 2000.0 * (target - q) - 15.0 * qd
+    tau = SERVO_KP * (target - q) - SERVO_KD * qd
     joint_f[dof] = wp.clamp(tau, -tau_cap, tau_cap)
 
 
 @wp.kernel
 def servo_jump_trajectory_caps_kernel(
-    seg_amp: wp.array[float],
-    joint_q: wp.array[float],
-    joint_qd: wp.array[float],
-    joint_f: wp.array[float],
-    stand: wp.array[float],
-    hinge_dofs: wp.array[int],
-    group_of_joint: wp.array[int],
-    seg: int,
-    tau_caps: wp.array[float],
+    seg_amp: wp.array[float],  # learned amplitude per segment and group (15 x 2, index seg * 2 + g)
+    joint_q: wp.array[float],  # State's joint positions: root's 7 pose entries (pos + quat) first, hinges after
+    joint_qd: wp.array[float],  # State's joint velocities: root's 6 DOFs first, hinges after
+    joint_f: wp.array[float],  # Control's joint-force buffer, written per DOF
+    stand: wp.array[float],  # stance angle per hinge joint (rad)
+    hinge_dofs: wp.array[int],  # velocity/force buffer index of each hinge joint
+    group_of_joint: wp.array[int],  # front/hind group per joint (0 = LF + RF, 1 = LH + RH)
+    seg: int,  # current segment index (0-14)
+    tau_caps: wp.array[float],  # torque cap per group (Nm): [front, hind]
 ):
+    """Jump trajectory: the target pose is piecewise-constant, one learned
+    amplitude per (segment, group)."""
     j = wp.tid()
     dof = hinge_dofs[j]
     q = joint_q[7 + j]
     qd = joint_qd[dof]
     g = group_of_joint[j]
     target = stand[j] * (1.0 + seg_amp[seg * 2 + g])
-    tau = 2000.0 * (target - q) - 15.0 * qd
+    tau = SERVO_KP * (target - q) - SERVO_KD * qd
     cap = tau_caps[g]
     joint_f[dof] = wp.clamp(tau, -cap, cap)
 
 
 @wp.kernel
 def servo_land_spline_kernel(
-    seg_amp: wp.array[float],
-    joint_q: wp.array[float],
-    joint_qd: wp.array[float],
-    joint_f: wp.array[float],
-    stand: wp.array[float],
-    hinge_dofs: wp.array[int],
-    knots_ms: wp.array[float],
-    n_knots: int,
-    dt_ms: float,
-    t: int,
-    tau_max: float,
-    k: int,
+    seg_amp: wp.array[float],  # learned target per joint and knot 1..n_knots - 1 (knot 0 pinned to stand)
+    joint_q: wp.array[float],  # State's joint positions: root's 7 pose entries (pos + quat) first, hinges after
+    joint_qd: wp.array[float],  # State's joint velocities: root's 6 DOFs first, hinges after
+    joint_f: wp.array[float],  # Control's joint-force buffer, written per DOF
+    stand: wp.array[float],  # stance angle per hinge joint (rad)
+    hinge_dofs: wp.array[int],  # velocity/force buffer index of each hinge joint
+    knots_ms: wp.array[float],  # the knot times (ms), device copy of LAND_KNOTS_MS
+    n_knots: int,  # knot count (len(LAND_KNOTS_MS))
+    dt_ms: float,  # milliseconds per simulation step (SIM_DT * 1000)
+    t: int,  # step within the landing rollout
+    tau_max: float,  # torque clamp (Nm; TAU_MAX)
+    k: int,  # spline segment index, precomputed on the host by _bracket
 ):
     """Per-joint target spline through the landing window. The segment index
     k arrives precomputed from the host: a loop-carried index variable inside
@@ -313,7 +321,7 @@ def servo_land_spline_kernel(
     a1 = seg_amp[j * stride + k]
     s = wp.clamp((t_ms - t0) / wp.max(t1 - t0, 1.0e-6), 0.0, 1.0)
     target = a0 + (a1 - a0) * s * s * (3.0 - 2.0 * s)
-    tau = 2000.0 * (target - q) - 15.0 * qd
+    tau = SERVO_KP * (target - q) - SERVO_KD * qd
     joint_f[dof] = wp.clamp(tau, -tau_max, tau_max)
 
 
