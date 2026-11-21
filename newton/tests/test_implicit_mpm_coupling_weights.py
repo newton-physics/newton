@@ -12,6 +12,7 @@ import warp.sparse as wps
 import newton
 from newton._src.solvers.implicit_mpm.rasterized_collisions import build_rigidity_operator
 from newton.solvers import SolverImplicitMPM
+from newton.solvers.experimental.coupled import CouplingInterface
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 _VERTICES = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32)
@@ -79,7 +80,7 @@ def test_proxy_feedback_preserves_contact_force_and_moment(test, device):
 
     state = solver.model.state()
     dt = 2.0
-    solver.coupling_notify_proxy_feedback(True)
+    solver.coupling_notify_proxy_feedback(CouplingInterface.EndpointKind.PARTICLE, True)
     solver.coupling_notify_input_state_update(state, newton.StateFlags.NONE)
     solver.step(state, state, None, None, dt)
     forces = _harvest_proxy_particle_forces(solver, state, dt, device)
@@ -95,47 +96,74 @@ def test_proxy_feedback_sums_substep_impulses(test, device):
 
     state = solver.model.state()
     dt = 2.0
-    solver.coupling_notify_proxy_feedback(True)
-    solver.coupling_notify_input_state_update(state, newton.StateFlags.NONE)
+    solver.coupling_notify_proxy_feedback(CouplingInterface.EndpointKind.PARTICLE, True)
+    solver.coupling_notify_input_state_update(state, newton.StateFlags.PARTICLE_Q | newton.StateFlags.PARTICLE_QD)
     solver.step(state, state, None, None, dt / 2.0)
+    # Couplers may update input forces between sub-steps; that must not drop earlier impulses.
+    solver.coupling_notify_input_state_update(state, newton.StateFlags.PARTICLE_F)
     solver.step(state, state, None, None, dt / 2.0)
     forces = _harvest_proxy_particle_forces(solver, state, dt, device)
 
     _assert_feedback_matches_contact(forces, 2.0 * contact_impulse / dt)
 
-    # A new notification restarts the accumulation.
-    solver.coupling_notify_input_state_update(state, newton.StateFlags.NONE)
+    # Each harvest consumes the accumulated impulses.
+    solver.step(state, state, None, None, dt)
+    forces = _harvest_proxy_particle_forces(solver, state, dt, device)
+
+    _assert_feedback_matches_contact(forces, contact_impulse / dt)
+
+    # An iteration restart discards the impulses of the abandoned solve.
+    solver.step(state, state, None, None, dt)
+    solver.coupling_notify_input_state_update(state, newton.StateFlags.PARTICLE_Q, iteration_restart=True)
     solver.step(state, state, None, None, dt)
     forces = _harvest_proxy_particle_forces(solver, state, dt, device)
 
     _assert_feedback_matches_contact(forces, contact_impulse / dt)
 
 
-def test_proxy_feedback_requires_proxy_feedback_notification(test, device):
-    """Accumulate collider impulses only while the coupler has declared proxy feedback."""
+def test_proxy_feedback_without_notification_uses_last_step(test, device):
+    """Convert only the most recent step's impulses until the coupler declares particle proxy feedback."""
     solver, _mesh = _make_deformable_collider(device)
     contact_impulse = np.array([0.0, 0.0, 2.0], dtype=np.float32)
     _mock_single_contact_impulse(solver, contact_impulse, device)
+    kind = CouplingInterface.EndpointKind.PARTICLE
 
     state = solver.model.state()
     dt = 2.0
     # Input-state notifications alone (as sent by every coupler) must not start the accumulation.
-    solver.coupling_notify_input_state_update(state, newton.StateFlags.NONE)
-    solver.step(state, state, None, None, dt)
-    forces = _harvest_proxy_particle_forces(solver, state, dt, device)
-    np.testing.assert_allclose(forces, 0.0, rtol=0.0, atol=0.0)
-
-    solver.coupling_notify_proxy_feedback(True)
-    solver.coupling_notify_input_state_update(state, newton.StateFlags.NONE)
-    solver.step(state, state, None, None, dt)
+    solver.coupling_notify_input_state_update(state, newton.StateFlags.PARTICLE_Q)
+    solver.step(state, state, None, None, dt / 2.0)
+    solver.step(state, state, None, None, dt / 2.0)
     forces = _harvest_proxy_particle_forces(solver, state, dt, device)
     _assert_feedback_matches_contact(forces, contact_impulse / dt)
 
-    solver.coupling_notify_proxy_feedback(False)
-    solver.coupling_notify_input_state_update(state, newton.StateFlags.NONE)
-    solver.step(state, state, None, None, dt)
+    solver.coupling_notify_proxy_feedback(kind, True)
+    solver.step(state, state, None, None, dt / 2.0)
+    solver.step(state, state, None, None, dt / 2.0)
     forces = _harvest_proxy_particle_forces(solver, state, dt, device)
-    np.testing.assert_allclose(forces, 0.0, rtol=0.0, atol=0.0)
+    _assert_feedback_matches_contact(forces, 2.0 * contact_impulse / dt)
+
+    solver.coupling_notify_proxy_feedback(kind, False)
+    solver.step(state, state, None, None, dt / 2.0)
+    solver.step(state, state, None, None, dt / 2.0)
+    forces = _harvest_proxy_particle_forces(solver, state, dt, device)
+    _assert_feedback_matches_contact(forces, contact_impulse / dt)
+
+
+def test_proxy_feedback_storage_follows_notification(test, device):
+    """Allocate the feedback accumulators only for the endpoint kinds the coupler declared."""
+    solver, _mesh = _make_deformable_collider(device)
+    test.assertIsNone(solver._coupling_particle_impulse)
+    test.assertIsNone(solver._coupling_body_impulse)
+
+    solver.coupling_notify_proxy_feedback(CouplingInterface.EndpointKind.PARTICLE, True)
+    test.assertIsNotNone(solver._coupling_particle_impulse)
+    test.assertEqual(solver._coupling_particle_impulse.shape[0], solver.model.particle_count)
+    test.assertIsNone(solver._coupling_body_impulse)
+
+    solver.coupling_notify_proxy_feedback(CouplingInterface.EndpointKind.BODY, True)
+    test.assertIsNotNone(solver._coupling_body_impulse)
+    test.assertEqual(solver._coupling_body_impulse.shape[0], solver.model.body_count)
 
 
 def test_collider_contact_motion_and_moment(test, device):
@@ -192,8 +220,14 @@ add_function_test(
 )
 add_function_test(
     TestImplicitMPMCouplingWeights,
-    "test_proxy_feedback_requires_proxy_feedback_notification",
-    test_proxy_feedback_requires_proxy_feedback_notification,
+    "test_proxy_feedback_without_notification_uses_last_step",
+    test_proxy_feedback_without_notification_uses_last_step,
+    devices=devices,
+)
+add_function_test(
+    TestImplicitMPMCouplingWeights,
+    "test_proxy_feedback_storage_follows_notification",
+    test_proxy_feedback_storage_follows_notification,
     devices=devices,
 )
 add_function_test(

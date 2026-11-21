@@ -133,11 +133,13 @@ The protocol currently covers these concepts:
 - ``coupling_notify_iteration_restarts()`` tells a solver once after
   construction whether the coupler may restart a step's solve, so a solver that
   saves state for a restart can skip the save when none can follow.
-- ``coupling_notify_proxy_feedback()`` tells a solver once after construction
-  whether it is the destination of a proxy, so a solver that records data
-  during its steps for the harvest hooks can skip that work otherwise. MPM uses
-  it to accumulate collider impulses across sub-steps only when coupled through
-  a proxy.
+- ``coupling_notify_proxy_feedback()`` tells a solver once after construction,
+  per endpoint kind, whether it is the destination of a body or particle proxy,
+  so a solver that records data during its steps for the matching harvest hook
+  can skip that work otherwise. MPM uses it to integrate proxy bodies through
+  its sub-steps and to accumulate collider impulses across them only when
+  coupled through a proxy; without it the MPM harvest hooks convert the
+  impulses of the most recent step only.
 - ``coupling_eval_gravity_acceleration()`` lets a solver report the body and
   particle acceleration that it applies internally for gravity-like forces.
   Proxy and ADMM couplers pass these acceleration arrays explicitly to rewind
@@ -443,7 +445,10 @@ The coupled-solver framework is useful today, but it is still experimental:
 
 - Proxy stability is tuning-sensitive. Virtual inertia scale, contact
   stiffness, solver iterations, and lagged versus staggered scheduling strongly
-  affect damping and convergence.
+  affect damping and convergence. A sub-stepped destination with stiff contact,
+  such as MPM sand under a rigid proxy body, feeds back a force that a single
+  lagged pass per step applies one full step late; use ``iterations=2`` or more
+  so the pass converges instead of oscillating.
 - Generic momentum harvesting is only a fallback. Solver-private contact modes
   should expose custom harvest hooks where possible.
 - ADMM contact detection is internal and does not consume arbitrary caller

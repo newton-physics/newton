@@ -1209,7 +1209,9 @@ def _harvest_mpm_proxy_wrench_on_fixed_plate(device, substeps, mode, in_place, s
     voxel_size = 0.05
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0))
     SolverImplicitMPM.register_custom_attributes(builder)
-    plate = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, -0.1), wp.quat_identity()), mass=1.0)
+    # A static plate: the source holds it still, so it must not respond to the sand.
+    builder.default_shape_cfg.density = 0.0
+    plate = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, -0.1), wp.quat_identity()), mass=0.0)
     builder.add_shape_box(plate, hx=0.5, hy=0.5, hz=0.1)
     builder.add_particle_grid(
         pos=wp.vec3(-0.1, -0.1, 0.0),
@@ -1297,6 +1299,171 @@ add_function_test(
     "test_mpm_proxy_wrench_harvest_independent_of_substeps",
     _coupled_mpm_proxy_wrench_harvest_independent_of_substeps,
     devices=get_test_devices(),
+)
+
+
+@wp.kernel
+def _integrate_falling_bodies_kernel(
+    dt: float,
+    gravity: wp.array[wp.vec3],
+    body_world: wp.array[int],
+    body_inv_mass: wp.array[float],
+    body_f: wp.array[wp.spatial_vector],
+    body_q_in: wp.array[wp.transform],
+    body_qd_in: wp.array[wp.spatial_vector],
+    body_q_out: wp.array[wp.transform],
+    body_qd_out: wp.array[wp.spatial_vector],
+):
+    i = wp.tid()
+    v = wp.spatial_top(body_qd_in[i])
+    if body_inv_mass[i] > 0.0:
+        v = v + dt * (gravity[wp.max(body_world[i], 0)] + body_inv_mass[i] * wp.spatial_top(body_f[i]))
+    p = wp.transform_get_translation(body_q_in[i]) + dt * v
+    body_q_out[i] = wp.transform(p, wp.transform_get_rotation(body_q_in[i]))
+    body_qd_out[i] = wp.spatial_vector(v, wp.vec3(0.0))
+
+
+class _FallingBodySolver(SolverBase, CouplingInterface):
+    """Source solver that translates its bodies under gravity and the input forces with symplectic Euler."""
+
+    def step(self, state_in, state_out, control, contacts, dt):
+        del control, contacts
+        wp.launch(
+            _integrate_falling_bodies_kernel,
+            dim=self.model.body_count,
+            inputs=[
+                float(dt),
+                self.model.gravity,
+                self.model.body_world,
+                self.model.body_inv_mass,
+                state_in.body_f,
+                state_in.body_q,
+                state_in.body_qd,
+                state_out.body_q,
+                state_out.body_qd,
+            ],
+            device=self.model.device,
+        )
+
+
+def _drop_box_on_mpm_sand(device, substeps, step_count=150, dt=0.01):
+    """Drop a box on an MPM sand bed and return (height series, support force series, box weight, box half-height).
+
+    The box is a proxy of a source body that responds to the harvested wrench, so the run
+    exercises the feedback loop rather than the impulse accounting alone. Two proxy
+    iterations per step keep the lagged scheme stable for a stiff, sub-stepped destination.
+    """
+    voxel_size = 0.05
+    box_half = 0.075
+    bed_half, bed_depth = 0.3, 0.2
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0))
+    SolverImplicitMPM.register_custom_attributes(builder)
+    box = builder.add_body(
+        xform=wp.transform(wp.vec3(0.0, 0.0, bed_depth + box_half + 0.02), wp.quat_identity()), mass=10.0
+    )
+    builder.add_shape_box(box, hx=box_half, hy=box_half, hz=box_half)
+    builder.add_ground_plane()
+    lo = np.array([-bed_half, -bed_half, 0.0])
+    hi = np.array([bed_half, bed_half, bed_depth])
+    res = np.array(np.ceil(2.0 * (hi - lo) / voxel_size), dtype=int)
+    cell = (hi - lo) / res
+    builder.add_particle_grid(
+        pos=wp.vec3(lo),
+        rot=wp.quat_identity(),
+        vel=wp.vec3(0.0),
+        dim_x=res[0] + 1,
+        dim_y=res[1] + 1,
+        dim_z=res[2] + 1,
+        cell_x=cell[0],
+        cell_y=cell[1],
+        cell_z=cell[2],
+        mass=float(np.prod(cell) * 2500.0),
+        jitter=0.0,
+        radius_mean=float(np.max(cell) * 0.5),
+        custom_attributes={"mpm:friction": 0.75},
+    )
+    model = builder.finalize(device=device)
+
+    config = SolverImplicitMPM.Config()
+    config.voxel_size = voxel_size
+    config.grid_type = "fixed"
+    config.grid_padding = 8
+    config.max_active_cell_count = 1 << 14
+    config.strain_basis = "P0"
+    config.max_iterations = 30
+    config.critical_fraction = 0.0
+
+    coupled = SolverCoupledProxy(
+        model=model,
+        entries=[
+            SolverCoupledProxy.Entry(name="rigid", solver=_FallingBodySolver, bodies=[box]),
+            SolverCoupledProxy.Entry(
+                name="mpm",
+                solver=lambda view: SolverImplicitMPM(view, config=config, enable_timers=False),
+                particles=range(model.particle_count),
+                substeps=substeps,
+                in_place=True,
+            ),
+        ],
+        coupling=SolverCoupledProxy.Config(
+            proxies=[
+                SolverCoupledProxy.Proxy(
+                    source="rigid",
+                    destination="mpm",
+                    bodies=[box],
+                    mode="lagged",
+                    collision_pipeline=lambda _view: None,
+                )
+            ],
+            iterations=2,
+        ),
+    )
+    state = model.state()
+    control = model.control()
+    heights, forces = [], []
+    for _ in range(step_count):
+        state.clear_forces()
+        coupled.step(state, state, control, None, dt)
+        heights.append(float(state.body_q.numpy()[box][2]))
+        forces.append(float(coupled._proxy_mappings[0].coupling_forces.numpy()[box][2]))
+    weight = float(model.body_mass.numpy()[box]) * 10.0
+    return np.array(heights), np.array(forces), weight, box_half
+
+
+def _coupled_mpm_proxy_body_settles_with_substeps(test, device):
+    """Settle a box on MPM sand with the same depth, support force, and rest at one and four MPM substeps."""
+    bottoms = {}
+    for substeps in (1, 4):
+        with test.subTest(substeps=substeps):
+            heights, forces, weight, box_half = _drop_box_on_mpm_sand(device, substeps)
+            bottoms[substeps] = heights[-1] - box_half
+            tail_heights, tail_forces = heights[-25:], forces[-25:]
+            travel_mm = (tail_heights.max() - tail_heights.min()) * 1e3
+            test.assertLess(travel_mm, 4.0, msg=f"substeps={substeps}: {travel_mm:.2f} mm of vertical travel at rest")
+            test.assertAlmostEqual(
+                tail_forces.mean(),
+                weight,
+                delta=0.1 * weight,
+                msg=f"substeps={substeps}: mean support {tail_forces.mean():.1f} N vs weight {weight:.1f} N",
+            )
+            test.assertLess(
+                tail_forces.max() / tail_forces.mean(),
+                1.3,
+                msg=f"substeps={substeps}: support force peaks at {tail_forces.max() / weight:.2f}x weight",
+            )
+    test.assertAlmostEqual(
+        bottoms[4],
+        bottoms[1],
+        delta=0.01,
+        msg=f"box bottom {bottoms[4]:.3f} m with 4 substeps vs {bottoms[1]:.3f} m with 1 substep",
+    )
+
+
+add_function_test(
+    TestSolverCoupledContactsAndMPM,
+    "test_mpm_proxy_body_settles_with_substeps",
+    _coupled_mpm_proxy_body_settles_with_substeps,
+    devices=get_cuda_test_devices(),
 )
 
 

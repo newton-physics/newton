@@ -45,7 +45,7 @@ Supported hook signatures are:
     def coupling_notify_iteration_restarts(enabled) -> None: ...
 
 
-    def coupling_notify_proxy_feedback(enabled) -> None: ...
+    def coupling_notify_proxy_feedback(endpoint_kind, enabled) -> None: ...
 
 
     def coupling_effective_mass_refresh_flags() -> int: ...
@@ -268,18 +268,23 @@ class CouplingInterface:
         """
         del enabled
 
-    def coupling_notify_proxy_feedback(self, enabled: bool) -> None:
-        """Declare whether the coupler harvests proxy feedback from this solver.
+    def coupling_notify_proxy_feedback(
+        self, endpoint_kind: CouplingInterface.EndpointKind | int, enabled: bool
+    ) -> None:
+        """Declare whether the coupler harvests proxy feedback of one endpoint kind from this solver.
 
-        Called once after the entry solvers are constructed. With ``enabled`` true, the coupler calls
-        :meth:`coupling_harvest_proxy_wrenches` or :meth:`coupling_harvest_proxy_particle_forces` after
-        stepping this solver, so a solver that must record data during its steps for those hooks can
-        start doing so; with ``enabled`` false it can skip that work.
+        Called once per endpoint kind after the entry solvers are constructed. With ``enabled`` true, the
+        coupler calls :meth:`coupling_harvest_proxy_wrenches` (bodies) or
+        :meth:`coupling_harvest_proxy_particle_forces` (particles) after stepping this solver, so a solver
+        that must record data during its steps for that hook can start doing so; with ``enabled`` false it
+        can skip that work. A solver that never receives this notification keeps its previous harvest
+        behavior.
 
         Args:
-            enabled: Whether this solver is the destination of at least one proxy.
+            endpoint_kind: :attr:`EndpointKind.BODY` or :attr:`EndpointKind.PARTICLE`.
+            enabled: Whether this solver is the destination of at least one proxy of that kind.
         """
-        del enabled
+        del endpoint_kind, enabled
 
     def coupling_effective_mass_refresh_flags(self) -> int:
         """Return the :class:`~newton.ModelFlags` after which this solver's effective masses need refreshing.

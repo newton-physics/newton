@@ -1881,13 +1881,15 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
         # Materialize graph-persistent topology and buffers before callers can capture step().
         self._last_step_data = LastStepData()
-        # Collider impulses accumulated over every step since the last coupling input-state
-        # notification, so proxy harvesting spans all sub-steps of one coupled step. Only a
-        # proxy destination (see coupling_notify_proxy_feedback) pays for the accumulation.
-        self._coupling_impulse_tracking = False
-        self._coupling_body_impulse = wp.zeros(model.body_count, dtype=wp.spatial_vector, device=model.device)
+        # Collider impulses accumulated since the last proxy harvest, so the harvest spans all
+        # sub-steps of one coupled step. Allocated by coupling_notify_proxy_feedback, so only a
+        # proxy destination pays for the accumulation.
+        self._coupling_body_feedback = False
+        self._coupling_particle_feedback = False
+        self._coupling_body_impulse = None
+        self._coupling_body_impulse_step = None
+        self._coupling_body_qd = None
         self._coupling_particle_impulse = None
-        self._require_coupling_particle_impulse()
         with wp.ScopedDevice(model.device):
             self._scratchpad = ImplicitMPMScratchpad()
             pic = self._particles_to_cells(model.particle_q)
@@ -2416,6 +2418,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             ):
                 last_step_data.gimp_stress[1].zero_()
             pic = self._particles_to_cells(state_in.particle_q)
+            collider_body_qd = self._coupling_proxy_body_velocities(state_in, dt)
             if self.collider_basis[:3] == "pic" and self.collider_basis[3:].isdigit():
                 contact_pic = self._scratchpad.contact_pic if self.gimp else pic
                 if contact_pic is not None:
@@ -2435,14 +2438,14 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                         motion,
                         self._mpm_model.collider,
                         state_in.body_q,
-                        state_in.body_qd,
+                        collider_body_qd,
                         dt,
                         self._mpm_model.voxel_size,
                         self.temporary_store,
                     )
             scratch = self._rebuild_scratchpad(pic)
-            self._step_impl(state_in, state_out, dt, pic, scratch)
-            self._accumulate_coupling_impulses(state_in, state_out)
+            self._step_impl(state_in, state_out, dt, pic, scratch, body_qd=collider_body_qd)
+            self._accumulate_coupling_impulses(state_in, state_out, dt, collider_body_qd)
             scratch.release_temporaries()
             if last_step_data.gimp_stress is not None:
                 last_step_data.gimp_warmstart_state = state_out
@@ -2453,9 +2456,29 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             self._mpm_model.notify_particle_material_changed()
 
     @override
-    def coupling_notify_proxy_feedback(self, enabled: bool) -> None:
-        """Start or stop accumulating collider impulses for the proxy harvest hooks."""
-        self._coupling_impulse_tracking = bool(enabled)
+    def coupling_notify_proxy_feedback(
+        self, endpoint_kind: CouplingInterface.EndpointKind | int, enabled: bool
+    ) -> None:
+        """Enable per-step collider impulse accumulation for the matching proxy harvest hook.
+
+        While enabled, the harvest hook sums the collider impulses of every step since its
+        previous call, so a sub-stepped entry feeds back the average force over the whole
+        coupled step. For bodies, the velocity response of the collider bodies to each step's
+        impulses is also written to ``state_out.body_qd``, so later sub-steps see the already
+        decelerated body instead of resolving the same impact again. Without this notification
+        the harvest hooks convert the impulses of the most recent step only.
+        """
+        kind = int(endpoint_kind)
+        if kind == int(CouplingInterface.EndpointKind.BODY):
+            self._coupling_body_feedback = bool(enabled)
+            if enabled:
+                self._require_coupling_body_impulse()
+        elif kind == int(CouplingInterface.EndpointKind.PARTICLE):
+            self._coupling_particle_feedback = bool(enabled)
+            if enabled:
+                self._require_coupling_particle_impulse()
+        else:
+            raise ValueError(f"Unknown coupling endpoint kind: {endpoint_kind!r}")
         self._clear_coupling_impulses()
 
     @override
@@ -2464,9 +2487,17 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         out_body_acceleration: wp.array[wp.vec3] | None,
         out_particle_acceleration: wp.array[wp.vec3] | None,
     ) -> None:
-        """Evaluate gravity acceleration applied internally by the MPM solver."""
+        """Evaluate gravity acceleration applied internally by the MPM solver.
+
+        Bodies only receive gravity from this solver while body proxy feedback is enabled
+        (see :meth:`coupling_notify_proxy_feedback`), when the solver integrates the
+        proxy bodies through its sub-steps.
+        """
         if out_body_acceleration is not None:
-            out_body_acceleration.zero_()
+            if self._coupling_body_feedback:
+                super().coupling_eval_gravity_acceleration(out_body_acceleration, None)
+            else:
+                out_body_acceleration.zero_()
         if out_particle_acceleration is not None:
             super().coupling_eval_gravity_acceleration(None, out_particle_acceleration)
 
@@ -2480,11 +2511,12 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
     ) -> None:
         """Synchronize deformable collider meshes after particle input-state updates.
 
-        Also restarts the collider impulse accumulation used by the proxy harvest hooks,
-        so the next harvest spans every step taken after this notification.
+        On an iteration restart the coupler re-solves the step from its input state, so the
+        collider impulses accumulated for the proxy harvest hooks by the discarded solve are
+        dropped as well.
         """
         del dt
-        if self._coupling_impulse_tracking:
+        if iteration_restart:
             self._clear_coupling_impulses()
         flags = int(flags)
         update_points = bool(flags & StateFlags.PARTICLE_Q)
@@ -2543,8 +2575,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         body_gravity_acceleration: wp.array[wp.vec3],
         dt: float,
     ) -> None:
-        """Remove lagged velocity-level proxy wrenches from collider velocities."""
-        del body_gravity_acceleration
+        """Remove lagged velocity-level proxy wrenches, and the gravity this solver re-applies, from collider velocities."""
         if state.body_q is None or state.body_qd is None or body_local_to_proxy_global.shape[0] == 0:
             return
 
@@ -2562,6 +2593,19 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             ],
             device=self.model.device,
         )
+        if self._coupling_body_feedback and body_gravity_acceleration is not None:
+            wp.launch(
+                _rewind_mpm_proxy_body_gravity_kernel,
+                dim=body_local_to_proxy_global.shape[0],
+                inputs=[
+                    float(dt),
+                    body_local_to_proxy_global,
+                    body_gravity_acceleration,
+                    self.model.body_inv_mass,
+                    state.body_qd,
+                ],
+                device=self.model.device,
+            )
 
     def coupling_harvest_proxy_wrenches(
         self,
@@ -2576,15 +2620,25 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
     ) -> None:
         """Convert MPM collider grid impulses to proxy-body wrenches.
 
-        The impulses are accumulated over every step since the last
-        :meth:`coupling_notify_input_state_update`, so a sub-stepped entry
-        feeds back the average force over the whole coupled step ``dt``.
+        After :meth:`coupling_notify_proxy_feedback` enabled body feedback, the impulses are
+        accumulated over every step since the previous harvest, so a sub-stepped entry feeds
+        back the average force over the whole coupled step ``dt``. Otherwise only the impulses
+        of the most recent step are converted.
         """
-        del body_qd_before, state, state_out, contacts
+        del body_qd_before, state_out, contacts
         if dt <= 0.0:
             raise ValueError("MPM proxy wrench harvesting requires a positive dt")
         out_body_f.zero_()
         if body_local_to_proxy_global.shape[0] == 0:
+            return
+
+        if not self._coupling_body_feedback:
+            self._require_coupling_body_impulse()
+            self._clear_coupling_impulses()
+            impulses, positions, collider_ids = self.collect_collider_impulses(state)
+            if collider_ids.shape[0] > 0:
+                self._accumulate_collider_body_impulses(impulses, positions, collider_ids, state, None, 0.0, None)
+        if self._coupling_body_impulse is None:
             return
 
         wp.launch(
@@ -2600,6 +2654,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             ],
             device=self.model.device,
         )
+        self._coupling_body_impulse.zero_()
 
     def coupling_rewind_proxy_particle(
         self,
@@ -2651,9 +2706,10 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
     ) -> None:
         """Convert MPM proxy momentum changes and collider impulses to forces.
 
-        The deformable collider impulses are accumulated over every step since the
-        last :meth:`coupling_notify_input_state_update`, so a sub-stepped entry
-        feeds back the average force over the whole coupled step ``dt``.
+        After :meth:`coupling_notify_proxy_feedback` enabled particle feedback, the deformable
+        collider impulses are accumulated over every step since the previous harvest, so a
+        sub-stepped entry feeds back the average force over the whole coupled step ``dt``.
+        Otherwise only the impulses of the most recent step are converted.
         """
         if dt <= 0.0:
             raise ValueError("MPM proxy particle-force harvesting requires a positive dt")
@@ -2672,7 +2728,15 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
         if not self._mpm_model.deformable_collider_vertex_ranges:
             return
-        self._require_coupling_particle_impulse()
+
+        if not self._coupling_particle_feedback:
+            self._require_coupling_particle_impulse(force=True)
+            self._clear_coupling_impulses()
+            impulses, positions, collider_ids = self.collect_collider_impulses(state)
+            if collider_ids.shape[0] > 0:
+                self._accumulate_collider_particle_impulses(impulses, positions, collider_ids)
+        if self._coupling_particle_impulse is None:
+            return
 
         wp.launch(
             _clear_inactive_mpm_proxy_particle_forces_kernel,
@@ -2700,27 +2764,100 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             ],
             device=self.model.device,
         )
+        self._coupling_particle_impulse.zero_()
 
-    def _require_coupling_particle_impulse(self) -> None:
-        """Allocate the per-particle impulse accumulator once deformable colliders exist."""
+    def _require_coupling_body_impulse(self) -> None:
+        """Allocate the per-body impulse accumulators used by the proxy wrench harvest."""
+        if self._coupling_body_impulse is not None:
+            return
+        body_count = self.model.body_count
+        self._coupling_body_impulse = wp.zeros(body_count, dtype=wp.spatial_vector, device=self.model.device)
+        self._coupling_body_impulse_step = wp.zeros(body_count, dtype=wp.spatial_vector, device=self.model.device)
+        self._coupling_body_qd = wp.zeros(body_count, dtype=wp.spatial_vector, device=self.model.device)
+
+    def _coupling_proxy_body_velocities(self, state_in: newton.State, dt: float) -> wp.array[wp.spatial_vector] | None:
+        """Return the collider body velocities for this step.
+
+        With body proxy feedback enabled the solver integrates the proxy bodies itself, so
+        the finite-mass bodies first receive this step's gravity.
+        """
+        if state_in.body_qd is None:
+            return None
+        if not self._coupling_body_feedback or self._coupling_body_qd is None or self._coupling_body_qd.shape[0] == 0:
+            return state_in.body_qd
+        wp.launch(
+            _apply_mpm_proxy_body_gravity_kernel,
+            dim=self._coupling_body_qd.shape[0],
+            inputs=[
+                float(dt),
+                self.model.gravity,
+                self.model.body_world,
+                self.model.body_inv_mass,
+                state_in.body_qd,
+                self._coupling_body_qd,
+            ],
+            device=self.model.device,
+        )
+        return self._coupling_body_qd
+
+    def _require_coupling_particle_impulse(self, *, force: bool = False) -> None:
+        """Allocate the per-particle impulse accumulator once particle feedback and deformable colliders exist."""
         if self._coupling_particle_impulse is not None or not self._mpm_model.deformable_collider_vertex_ranges:
+            return
+        if not (force or self._coupling_particle_feedback):
             return
         self._coupling_particle_impulse = wp.zeros(self.model.particle_count, dtype=wp.vec3, device=self.model.device)
 
     def _clear_coupling_impulses(self) -> None:
-        self._coupling_body_impulse.zero_()
+        if self._coupling_body_impulse is not None:
+            self._coupling_body_impulse.zero_()
         if self._coupling_particle_impulse is not None:
             self._coupling_particle_impulse.zero_()
 
-    def _accumulate_coupling_impulses(self, state_in: newton.State, state_out: newton.State) -> None:
-        """Add this step's collider impulses to the per-body and per-particle coupling accumulators."""
-        if not self._coupling_impulse_tracking:
+    def _accumulate_coupling_impulses(
+        self,
+        state_in: newton.State,
+        state_out: newton.State,
+        dt: float,
+        body_qd: wp.array[wp.spatial_vector] | None,
+    ) -> None:
+        """Add this step's collider impulses to the accumulators of the enabled proxy harvest hooks."""
+        accumulate_bodies = (
+            self._coupling_body_feedback
+            and self._coupling_body_impulse is not None
+            and self._coupling_body_impulse.shape[0] > 0
+        )
+        accumulate_particles = self._coupling_particle_feedback and self._coupling_particle_impulse is not None
+        if not (accumulate_bodies or accumulate_particles):
             return
         impulses, positions, collider_ids = self.collect_collider_impulses(state_out)
         if collider_ids.shape[0] == 0:
             return
-        body_q = state_in.body_q if state_in.body_q is not None else self.model.body_q
+        if accumulate_bodies:
+            self._accumulate_collider_body_impulses(impulses, positions, collider_ids, state_in, state_out, dt, body_qd)
+        if accumulate_particles:
+            self._accumulate_collider_particle_impulses(impulses, positions, collider_ids)
 
+    def _accumulate_collider_body_impulses(
+        self,
+        impulses: wp.array[wp.vec3],
+        positions: wp.array[wp.vec3],
+        collider_ids: wp.array[int],
+        state_in: newton.State,
+        state_out: newton.State | None,
+        dt: float,
+        body_qd: wp.array[wp.spatial_vector] | None,
+    ) -> None:
+        """Sum the collider impulses per body and, given ``state_out``, advance the bodies by their response.
+
+        The collider compliance model of the solve lets each finite-mass body respond to the
+        impulses applied to it. Writing that response, and the motion it causes over ``dt``, to
+        ``state_out`` lets the next sub-step of a coupled step see the body where this sub-step
+        left it instead of resolving the same impact against the same penetration again.
+        """
+        body_q = state_in.body_q if state_in.body_q is not None else self.model.body_q
+        step_impulse = self._coupling_body_impulse_step
+        step_impulse.zero_()
         wp.launch(
             _accumulate_mpm_collider_body_impulses_kernel,
             dim=collider_ids.shape[0],
@@ -2732,22 +2869,48 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 self.model.body_com,
                 body_q,
                 self._coupling_body_impulse,
+                step_impulse,
             ],
             device=self.model.device,
         )
-        if self._coupling_particle_impulse is not None:
-            wp.launch(
-                _accumulate_mpm_collider_particle_impulses_kernel,
-                dim=collider_ids.shape[0],
-                inputs=[
-                    collider_ids,
-                    impulses,
-                    positions,
-                    self._mpm_model.collider,
-                    self._coupling_particle_impulse,
-                ],
-                device=self.model.device,
-            )
+        if state_out is None or body_qd is None or state_in.body_q is None or state_out.body_q is None:
+            return
+        wp.launch(
+            _apply_mpm_collider_body_impulses_kernel,
+            dim=step_impulse.shape[0],
+            inputs=[
+                float(dt),
+                step_impulse,
+                self.model.body_com,
+                self.model.body_inv_inertia,
+                self.model.body_inv_mass,
+                state_in.body_q,
+                body_qd,
+                state_out.body_q,
+                state_out.body_qd,
+            ],
+            device=self.model.device,
+        )
+
+    def _accumulate_collider_particle_impulses(
+        self,
+        impulses: wp.array[wp.vec3],
+        positions: wp.array[wp.vec3],
+        collider_ids: wp.array[int],
+    ) -> None:
+        """Scatter the collider impulses to the deformable collider vertices."""
+        wp.launch(
+            _accumulate_mpm_collider_particle_impulses_kernel,
+            dim=collider_ids.shape[0],
+            inputs=[
+                collider_ids,
+                impulses,
+                positions,
+                self._mpm_model.collider,
+                self._coupling_particle_impulse,
+            ],
+            device=self.model.device,
+        )
 
     def collect_collider_impulses(self, state: newton.State | None) -> tuple[wp.array, wp.array, wp.array]:
         """Collect current collider impulses and their application positions.
@@ -3604,6 +3767,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         dt: float,
         pic: fem.PicQuadrature,
         scratch: ImplicitMPMScratchpad,
+        body_qd: wp.array[wp.spatial_vector] | None = None,
     ):
         """Single implicit MPM step: bin, rasterize, assemble, solve, advect.
 
@@ -3619,6 +3783,8 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             pic: Particle-in-cell quadrature data.
             scratch: Scratchpad for temporary storage.
         """
+        if body_qd is None:
+            body_qd = state_in.body_qd
 
         cell_volume = self._mpm_model.voxel_size**3
         inv_cell_volume = 1.0 / cell_volume
@@ -3630,7 +3796,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         self._require_velocity_space_fields(scratch, mpm_model.has_compliant_particles)
 
         # Rasterize colliders to discrete space
-        self._rasterize_colliders(state_in, dt, last_step_data, scratch, pic, inv_cell_volume)
+        self._rasterize_colliders(state_in, dt, last_step_data, scratch, pic, inv_cell_volume, body_qd)
 
         # Velocity right-hand side and inverse mass matrix
         self._compute_unconstrained_velocity(state_in, dt, pic, scratch, inv_cell_volume)
@@ -3747,6 +3913,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         scratch: ImplicitMPMScratchpad,
         pic: fem.PicQuadrature,
         inv_cell_volume: float,
+        body_qd: wp.array[wp.spatial_vector] | None,
     ):
         # Rasterize collider to grid
         collider_node_count = scratch.collider_node_count
@@ -3787,7 +3954,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             rasterize_collider(
                 self._mpm_model.collider,
                 state_in.body_q,
-                state_in.body_qd if self.collider_velocity_mode == "forward" else None,
+                body_qd if self.collider_velocity_mode == "forward" else None,
                 last_step_data.body_q_prev if self.collider_velocity_mode == "backward" else None,
                 self._mpm_model.voxel_size,
                 dt,
@@ -5398,6 +5565,41 @@ def _rewind_mpm_proxy_bodies_kernel(
 
 
 @wp.kernel(enable_backward=False)
+def _rewind_mpm_proxy_body_gravity_kernel(
+    dt: float,
+    body_local_to_proxy_global: wp.array[int],
+    body_gravity_acceleration: wp.array[wp.vec3],
+    body_inv_mass: wp.array[float],
+    body_qd: wp.array[wp.spatial_vector],
+):
+    local_body = wp.tid()
+    if body_local_to_proxy_global[local_body] < 0 or body_inv_mass[local_body] == 0.0:
+        return
+    qd = body_qd[local_body]
+    body_qd[local_body] = wp.spatial_vector(
+        wp.spatial_top(qd) - dt * body_gravity_acceleration[local_body], wp.spatial_bottom(qd)
+    )
+
+
+@wp.kernel(enable_backward=False)
+def _apply_mpm_proxy_body_gravity_kernel(
+    dt: float,
+    gravity: wp.array[wp.vec3],
+    body_world: wp.array[int],
+    body_inv_mass: wp.array[float],
+    body_qd_in: wp.array[wp.spatial_vector],
+    body_qd_out: wp.array[wp.spatial_vector],
+):
+    local_body = wp.tid()
+    qd = body_qd_in[local_body]
+    if body_inv_mass[local_body] > 0.0:
+        qd = wp.spatial_vector(
+            wp.spatial_top(qd) + dt * gravity[wp.max(body_world[local_body], 0)], wp.spatial_bottom(qd)
+        )
+    body_qd_out[local_body] = qd
+
+
+@wp.kernel(enable_backward=False)
 def _accumulate_mpm_collider_body_impulses_kernel(
     collider_ids: wp.array[int],
     collider_impulses: wp.array[wp.vec3],
@@ -5406,6 +5608,7 @@ def _accumulate_mpm_collider_body_impulses_kernel(
     body_com: wp.array[wp.vec3],
     body_q: wp.array[wp.transform],
     body_impulse: wp.array[wp.spatial_vector],
+    body_impulse_step: wp.array[wp.spatial_vector],
 ):
     i = wp.tid()
     cid = collider_ids[i]
@@ -5420,7 +5623,44 @@ def _accumulate_mpm_collider_body_impulses_kernel(
     impulse = collider_impulses[i]
     center = wp.transform_point(body_q[local_body], body_com[local_body])
     r = collider_impulse_pos[i] - center
-    wp.atomic_add(body_impulse, local_body, wp.spatial_vector(impulse, wp.cross(r, impulse)))
+    wrench = wp.spatial_vector(impulse, wp.cross(r, impulse))
+    wp.atomic_add(body_impulse, local_body, wrench)
+    wp.atomic_add(body_impulse_step, local_body, wrench)
+
+
+@wp.kernel(enable_backward=False)
+def _apply_mpm_collider_body_impulses_kernel(
+    dt: float,
+    body_impulse: wp.array[wp.spatial_vector],
+    body_com: wp.array[wp.vec3],
+    body_inv_inertia: wp.array[wp.mat33],
+    body_inv_mass: wp.array[float],
+    body_q_in: wp.array[wp.transform],
+    body_qd_in: wp.array[wp.spatial_vector],
+    body_q_out: wp.array[wp.transform],
+    body_qd_out: wp.array[wp.spatial_vector],
+):
+    local_body = wp.tid()
+    q = body_q_in[local_body]
+    qd = body_qd_in[local_body]
+    if body_inv_mass[local_body] == 0.0:
+        body_q_out[local_body] = q
+        body_qd_out[local_body] = qd
+        return
+
+    impulse = body_impulse[local_body]
+    rot = wp.transform_get_rotation(q)
+    com = body_com[local_body]
+    v = wp.spatial_top(qd) + body_inv_mass[local_body] * wp.spatial_top(impulse)
+    w = wp.spatial_bottom(qd) + wp.quat_rotate(
+        rot,
+        body_inv_inertia[local_body] * wp.quat_rotate_inv(rot, wp.spatial_bottom(impulse)),
+    )
+    # Same convention as integrate_rigid_body: the linear velocity moves the center of mass.
+    x_com = wp.transform_get_translation(q) + wp.quat_rotate(rot, com) + dt * v
+    rot_new = wp.normalize(rot + wp.quat(w, 0.0) * rot * 0.5 * dt)
+    body_q_out[local_body] = wp.transform(x_com - wp.quat_rotate(rot_new, com), rot_new)
+    body_qd_out[local_body] = wp.spatial_vector(v, w)
 
 
 @wp.kernel(enable_backward=False)
