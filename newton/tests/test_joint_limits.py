@@ -101,10 +101,35 @@ class TestJointLimits(unittest.TestCase):
                     <inertia ixx="0.05" iyy="0.05" izz="0.05" ixy="0.0" ixz="0.0" iyz="0.0"/>
                 </inertial>
             </link>
+            <link name="wheel_link">
+                <inertial>
+                    <mass value="0.5"/>
+                    <inertia ixx="0.05" iyy="0.05" izz="0.05" ixy="0.0" ixz="0.0" iyz="0.0"/>
+                </inertial>
+            </link>
+            <link name="turntable_link">
+                <inertial>
+                    <mass value="0.5"/>
+                    <inertia ixx="0.05" iyy="0.05" izz="0.05" ixy="0.0" ixz="0.0" iyz="0.0"/>
+                </inertial>
+            </link>
             <joint name="continuous_joint" type="continuous">
                 <parent link="base_link"/>
                 <child link="rotating_link"/>
                 <axis xyz="0 0 1"/>
+            </joint>
+            <!-- Position bounds in <limit> do not apply to continuous joints. -->
+            <joint name="wheel_joint" type="continuous">
+                <parent link="base_link"/>
+                <child link="wheel_link"/>
+                <axis xyz="1 0 0"/>
+                <limit effort="3.25" lower="0" upper="0" velocity="6.28319"/>
+            </joint>
+            <joint name="turntable_joint" type="continuous">
+                <parent link="base_link"/>
+                <child link="turntable_link"/>
+                <axis xyz="0 0 1"/>
+                <limit effort="40" lower="-6.28318530718" upper="6.28318530718" velocity="0.628"/>
             </joint>
         </robot>
         """
@@ -114,11 +139,15 @@ class TestJointLimits(unittest.TestCase):
         parse_urdf(builder, urdf_content)
         model = builder.finalize()
 
-        # Find the continuous joint (should be the first joint)
+        # The fixed base joint has no DOFs, so DOFs 0-2 are the three continuous joints.
         lower_limits = model.joint_limit_lower.numpy()
         upper_limits = model.joint_limit_upper.numpy()
-        self.assertEqual(lower_limits[0], -MAXVAL)
-        self.assertEqual(upper_limits[0], MAXVAL)
+        np.testing.assert_array_equal(lower_limits, [-MAXVAL] * 3)
+        np.testing.assert_array_equal(upper_limits, [MAXVAL] * 3)
+
+        # Effort and velocity limits still apply to continuous joints.
+        np.testing.assert_allclose(model.joint_effort_limit.numpy()[1:], [3.25, 40.0], rtol=1e-6)
+        np.testing.assert_allclose(model.joint_velocity_limit.numpy()[1:], [6.28319, 0.628], rtol=1e-6)
 
     def test_joint_d6_with_mixed_limits(self):
         """Test D6 joint with mixed limited and unlimited axes."""

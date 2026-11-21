@@ -1,0 +1,1 @@
+Fix URDF `continuous` joints importing the `lower` and `upper` attributes of their `<limit>` element as position limits. A continuous joint now stays unlimited, as the URDF format specifies, while its `effort` and `velocity` limits are still imported; previously a `<limit lower="0" upper="0" .../>` locked the joint and made `SolverMuJoCo` fail to compile the model.
