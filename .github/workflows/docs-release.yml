@@ -78,9 +78,25 @@ jobs:
         # `-d docs/_build/doctrees` keeps Sphinx's pickled doctree cache out of
         # the published html/ tree (GH-2726): it is build-only state, ~25 MB of
         # non-deterministic bytes that no browser loads.
-        run: uv run --extra docs --extra sim sphinx-build -j auto -d docs/_build/doctrees -b html docs docs/_build/html
+        run: |
+          uv run --extra docs --extra sim python - <<'PY'
+          import os
+          import tomllib
+          from pathlib import Path
+          actual = tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"]
+          if actual != os.environ["DOCS_VERSION"]:
+              raise SystemExit(f"Checked-out version {actual} does not match requested docs {os.environ['DOCS_VERSION']}; select the matching release ref.")
+          PY
+          uv run --extra docs --extra sim sphinx-build -j auto -d docs/_build/doctrees -b html docs docs/_build/html
         env:
           NEWTON_REQUIRE_PANDOC: "1"
+          DOCS_VERSION: ${{ steps.version.outputs.VERSION }}
+
+      - name: Build agent documentation
+        if: steps.version.outputs.SHOULD_DEPLOY == 'true'
+        run: |
+          uv run --extra docs docs/build_markdown.py docs/_build/markdown
+          cp -a docs/_build/markdown/. docs/_build/html/
 
       - name: Deploy to gh-pages
         if: steps.version.outputs.SHOULD_DEPLOY == 'true'
@@ -88,6 +104,7 @@ jobs:
           VERSION: ${{ steps.version.outputs.VERSION }}
         run: |
           set -e  # Exit on any error
+          cp scripts/ci/update_docs_llms.py /tmp/update_docs_llms.py
 
           git config user.email "actions@github.com"
           git config user.name "GitHub Actions"
@@ -128,6 +145,7 @@ jobs:
           git fetch --depth=1 origin main
           git show origin/main:scripts/ci/update_docs_switcher.py > /tmp/update_docs_switcher.py
           uv run --no-project /tmp/update_docs_switcher.py "$VERSION"
+          uv run --no-project /tmp/update_docs_llms.py
           rm -f switcher.json.bak
 
           # Ensure root index.html redirect exists
@@ -163,7 +181,7 @@ jobs:
           # Stage new/modified files. git checkout --orphan below preserves the
           # full index from gh-pages, so all previously tracked files (e.g.
           # other versioned docs, latest/) are also included in the deploy commit.
-          git add "$VERSION" stable switcher.json index.html 404.html .nojekyll
+          git add "$VERSION" stable switcher.json index.html 404.html .nojekyll llms.txt
 
           # Reset to an orphan commit to prevent unbounded history growth.
           # gh-pages is a deployment target, not a historical record.
