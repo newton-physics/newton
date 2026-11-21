@@ -64,7 +64,15 @@ def Xform "Robot" (
     }
 
     def PhysicsJoint "D6" (
-        prepend apiSchemas = ["PhysicsDriveAPI:rotX", "PhysicsLimitAPI:rotX"]
+        prepend apiSchemas = [
+            "PhysicsDriveAPI:rotX",
+            "PhysicsLimitAPI:transX",
+            "PhysicsLimitAPI:transY",
+            "PhysicsLimitAPI:transZ",
+            "PhysicsLimitAPI:rotX",
+            "PhysicsLimitAPI:rotY",
+            "PhysicsLimitAPI:rotZ"
+        ]
     )
     {
         float drive:rotX:physics:damping = 0.002

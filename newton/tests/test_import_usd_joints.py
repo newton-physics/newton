@@ -778,13 +778,64 @@ def Xform "World" (
         )
 
     @requires("pxr.Usd")
+    def test_d6_unauthored_axes_are_free(self):
+        """Preserve free D6 axes, drives, and state when limits are absent or sparse."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        for name, locks in (("Free", {}), ("Closure", {"transY": (0.0, 0.0), "transZ": (1.0, -1.0)})):
+            body = UsdGeom.Xform.Define(stage, f"/{name}/Body")
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            joint = UsdPhysics.Joint.Define(stage, f"/{name}/Joint")
+            joint.CreateBody1Rel().SetTargets([body.GetPath()])
+            for axis, (low, high) in locks.items():
+                limit = UsdPhysics.LimitAPI.Apply(joint.GetPrim(), axis)
+                limit.CreateLowAttr(low)
+                limit.CreateHighAttr(high)
+            drive = UsdPhysics.DriveAPI.Apply(joint.GetPrim(), "rotX")
+            drive.CreateTargetPositionAttr(90.0)
+            drive.CreateTargetVelocityAttr(30.0)
+            drive.CreateStiffnessAttr(2.0)
+            drive.CreateDampingAttr(0.5)
+            for quantity, value in (("position", 45.0), ("velocity", 60.0)):
+                joint.GetPrim().CreateAttribute(f"state:rotX:physics:{quantity}", Sdf.ValueTypeNames.Float).Set(value)
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage, load_visual_shapes=False, schema_resolvers=[SchemaResolverPhysx()])
+        for name, linear_dofs in (("Free", 3), ("Closure", 1)):
+            with self.subTest(joint=name):
+                joint = result["path_joint_map"][f"/{name}/Joint"]
+                self.assertEqual(builder.joint_dof_dim[joint], (linear_dofs, 3))
+                dof = builder.joint_qd_start[joint]
+                count = linear_dofs + 3
+                np.testing.assert_array_equal(
+                    builder.joint_axis[dof : dof + count], [*np.eye(3)[:linear_dofs], *np.eye(3)]
+                )
+                for bound in ("lower", "upper"):
+                    default = getattr(builder.default_joint_cfg, f"limit_{bound}")
+                    np.testing.assert_allclose(
+                        getattr(builder, f"joint_limit_{bound}")[dof : dof + count],
+                        [default] * linear_dofs + [math.radians(default)] * 3,
+                    )
+                angular_dof = dof + linear_dofs
+                angular_q = builder.joint_q_start[joint] + linear_dofs
+                self.assertAlmostEqual(builder.joint_target_q[angular_q], math.pi / 2)
+                self.assertAlmostEqual(builder.joint_target_qd[angular_dof], math.pi / 6)
+                self.assertAlmostEqual(builder.joint_target_ke[angular_dof], 2.0 / math.radians(1.0))
+                self.assertAlmostEqual(builder.joint_target_kd[angular_dof], 0.5 / math.radians(1.0))
+                self.assertAlmostEqual(builder.joint_q[angular_q], math.pi / 4)
+                self.assertAlmostEqual(builder.joint_qd[angular_dof], math.pi / 3)
+
+    @requires("pxr.Usd")
     def test_newton_joint_api_d6(self):
         """Broadcast joint properties, including registered MuJoCo stiffness, across D6 DOFs."""
         from pxr import Usd
 
         deg2rad = math.pi / 180.0
 
-        # PhysicsJoint with one free translation DOF (transX) and one free rotation DOF (rotX).
+        # Limit transX and rotX; the other four axes remain free.
         usd_content = """#usda 1.0
 (
     upAxis = "Z"
@@ -859,10 +910,20 @@ def Xform "Articulation" (
         joint_idx = model.joint_label.index("/Articulation/Joint1")
         dof_start = int(model.joint_qd_start.numpy()[joint_idx])
 
-        # The linear transX DOF is created before the angular rotX DOF.
+        self.assertEqual(builder.joint_dof_dim[joint_idx], (3, 3))
+        self.assertEqual(
+            model.mujoco.joint_dof_label[dof_start : dof_start + 6],
+            [f"/Articulation/Joint1:{axis}" for axis in ("transX", "transY", "transZ", "rotX", "rotY", "rotZ")],
+        )
+        # The three linear DOFs precede the three angular DOFs.
         d_lin = dof_start
-        d_ang = dof_start + 1
-        np.testing.assert_array_equal(model.joint_stiffness.numpy()[d_lin : d_ang + 1], [3.0, 3.0])
+        d_ang = dof_start + 3
+        np.testing.assert_array_equal(model.joint_stiffness.numpy()[dof_start : dof_start + 6], [3.0] * 6)
+
+        lower = model.joint_limit_lower.numpy()[dof_start : dof_start + 6]
+        upper = model.joint_limit_upper.numpy()[dof_start : dof_start + 6]
+        np.testing.assert_allclose(lower[[0, 3]], [-1.0, -math.pi / 4])
+        np.testing.assert_allclose(upper[[0, 3]], [1.0, math.pi / 4])
 
         limit_ke = model.joint_limit_ke.numpy()
         limit_kd = model.joint_limit_kd.numpy()
@@ -883,8 +944,8 @@ def Xform "Articulation" (
         self.assertAlmostEqual(float(damping[d_ang]), 2.0 / deg2rad, places=3)
         self.assertAlmostEqual(float(velocity_limit[d_ang]), 100.0 * deg2rad, places=5)
 
-        # Armature and friction broadcast uniformly to both DOFs.
-        for d in (d_lin, d_ang):
+        # Armature and friction broadcast uniformly to all DOFs.
+        for d in range(dof_start, dof_start + 6):
             self.assertAlmostEqual(float(armature[d]), 0.5, places=5)
             self.assertAlmostEqual(float(friction[d]), 0.1, places=5)
 
@@ -1439,10 +1500,10 @@ def Xform "Articulation" (
                     joints.append(joint)
             else:
                 joint = UsdPhysics.Joint.Define(stage, "/World/D6")
-                for axis in axes:
+                for axis in ("transX", "transY", "transZ", "rotX", "rotY", "rotZ"):
                     limit = UsdPhysics.LimitAPI.Apply(joint.GetPrim(), axis)
-                    limit.CreateLowAttr().Set(limits[0])
-                    limit.CreateHighAttr().Set(limits[1])
+                    limit.CreateLowAttr().Set(limits[0] if axis in axes else 0.0)
+                    limit.CreateHighAttr().Set(limits[1] if axis in axes else 0.0)
                 joints = [joint]
             for joint in joints:
                 joint.CreateBody0Rel().SetTargets([body.GetPath()])

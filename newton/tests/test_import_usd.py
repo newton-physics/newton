@@ -243,7 +243,11 @@ class TestImportUsdPhysics(unittest.TestCase):
         set_state(connect(prismatic, "Slider"), "linear", 0.25, 0.5)
 
         d6 = connect(UsdPhysics.Joint.Define(stage, "/World/D6"), "Gimbal")
-        # Newton creates D6 DOFs only for axes with a limit; rotX is the rotational DOF.
+        # Keep rotX as the only DOF by explicitly locking the other five axes.
+        for axis in ("transX", "transY", "transZ", "rotY", "rotZ"):
+            locked = UsdPhysics.LimitAPI.Apply(d6, axis)
+            locked.CreateLowAttr(0.0)
+            locked.CreateHighAttr(0.0)
         limit = UsdPhysics.LimitAPI.Apply(d6, "rotX")
         limit.CreateLowAttr().Set(-180.0)
         limit.CreateHighAttr().Set(180.0)
@@ -4792,10 +4796,11 @@ def Xform "Articulation" (
         joint = UsdPhysics.Joint.Define(stage, "/World/Articulation/Joint")
         joint.CreateBody0Rel().SetTargets([parent.GetPath()])
         joint.CreateBody1Rel().SetTargets([child.GetPath()])
-        for axis in ("transX", "rotZ"):
+        for axis in ("transX", "transY", "transZ", "rotX", "rotY", "rotZ"):
             limit = UsdPhysics.LimitAPI.Apply(joint.GetPrim(), axis)
-            limit.CreateLowAttr().Set(-1.0)
-            limit.CreateHighAttr().Set(1.0)
+            free = axis in ("transX", "rotZ")
+            limit.CreateLowAttr().Set(-1.0 if free else 0.0)
+            limit.CreateHighAttr().Set(1.0 if free else 0.0)
         joint.GetPrim().CreateAttribute("mjc:damping", Sdf.ValueTypeNames.Float, custom=True).Set(0.75)
 
         builder = newton.ModelBuilder()
@@ -8783,10 +8788,11 @@ def Xform "Articulation" (
             j.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
             j.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
             j.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
-            for axis in ("transX", "rotZ"):
+            for axis in ("transX", "transY", "transZ", "rotX", "rotY", "rotZ"):
                 limit = UsdPhysics.LimitAPI.Apply(j.GetPrim(), axis)
-                limit.CreateLowAttr().Set(-1.0)
-                limit.CreateHighAttr().Set(1.0)
+                free = axis in ("transX", "rotZ")
+                limit.CreateLowAttr().Set(-1.0 if free else 0.0)
+                limit.CreateHighAttr().Set(1.0 if free else 0.0)
             return j
 
         leader = joint("/World/Root/Leader", root, links[0])
