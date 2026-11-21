@@ -231,7 +231,7 @@ def create_kernel(
 
         closest_hit = trace.closest_hit
         is_gaussian = wp.bool(False)
-        if wp.static(state.num_gaussians > 0):
+        if wp.static(state.gaussian_shapes_per_ray > 0):
             if closest_hit.shape_index < raytrace.MAX_SHAPE_ID:
                 if shape_types[closest_hit.shape_index] == GeoType.GAUSSIAN:
                     is_gaussian = wp.bool(True)
@@ -523,7 +523,7 @@ def create_kernel(
 
         camera_transform = camera_transforms[view_index]
         camera_forward = wp.vec3f(0.0)
-        if wp.static(state.num_gaussians > 0):
+        if wp.static(state.gaussian_shapes_per_ray > 0):
             camera_forward = wp.transform_vector(camera_transform, wp.vec3f(0.0, 0.0, -1.0))
 
         forward_axis = wp.vec3f(0.0)

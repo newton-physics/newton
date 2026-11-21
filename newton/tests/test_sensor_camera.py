@@ -2038,6 +2038,43 @@ class TestSensorCamera(unittest.TestCase):
         self.assertGreater(abs(expected - per_splat_decode), 0.05)
         np.testing.assert_allclose(color, [expected] * 3, atol=1e-4)
 
+    def test_gaussian_shapes_sharing_an_asset_blend_together(self, device: str = "cpu", backend: str = "warp"):
+        """Splats of two shapes instancing one asset on one ray blend into a single result."""
+        # One linear-color splat with alpha 0.5: alone it stays below the opacity threshold, so a
+        # ray hits only when the splats of both shapes blend, and the far shape crosses the threshold.
+        gaussian = newton.Gaussian(
+            positions=np.zeros((1, 3), dtype=np.float32),
+            scales=np.full((1, 3), 0.5, dtype=np.float32),
+            opacities=np.full(1, 0.5, dtype=np.float32),
+            sh_coeffs=np.full((1, 3), (0.8 - 0.5) / SH_C0, dtype=np.float32),
+            sh_color_space=newton.utils.ColorSpace.LINEAR,
+        )
+        builder = newton.ModelBuilder()
+        shapes = [
+            builder.add_shape_gaussian(
+                body=-1, xform=wp.transform(wp.vec3(0.0, 0.0, z), wp.quat_identity()), gaussian=gaussian
+            )
+            for z in (-2.0, -3.0)
+        ]
+        model = builder.finalize(device=device)
+        if backend == "optix":
+            model.bvh_build_shapes(model.state(), backend="optix")
+        camera = SensorCamera(model, backend=backend)
+        hdr = camera.allocate_image_color_hdr(1, 1, 1)
+        depth = camera.allocate_image_depth(1, 1, 1)
+        shape_index = camera.allocate_image_shape_index(1, 1, 1)
+        camera.update(
+            model.state(),
+            self._identity_transforms(1, device),
+            self._rays(1, 1, device=device),
+            hdr_color_image=hdr,
+            depth_image=depth,
+            shape_index_image=shape_index,
+        )
+        np.testing.assert_allclose(hdr.numpy().reshape(3), [0.8] * 3, atol=1e-4)
+        self.assertAlmostEqual(float(depth.numpy().reshape(-1)[0]), 3.0, delta=1e-3)
+        self.assertEqual(int(shape_index.numpy().reshape(-1)[0]), shapes[1])
+
 
 def _optix_variant(test):
     @requires("warp_optix")

@@ -201,7 +201,8 @@ class RenderConfig:
 class RenderState:
     """Mutable flags tracking which render outputs are active."""
 
-    num_gaussians: int = 0
+    gaussian_shapes_per_ray: int = 0
+    """Most Gaussian shapes one ray can cross: those of the world with the most, plus the global ones."""
     has_particles: bool = False
     """Whether the scene has standalone particle items."""
     has_triangle_mesh: bool = False

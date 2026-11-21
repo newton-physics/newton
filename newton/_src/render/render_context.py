@@ -180,8 +180,10 @@ class RenderContext:
                 mask_topology_particles(model.tri_indices)
                 mask_topology_particles(model.tet_indices)
 
-        if model.gaussians_data is not None:
-            self._render_state.num_gaussians = model.gaussians_data.shape[0]
+        if model.shape_count:
+            gaussian_worlds = model.shape_world.numpy()[model.shape_type.numpy() == GeoType.GAUSSIAN]
+            local = np.bincount(gaussian_worlds[gaussian_worlds >= 0], minlength=1).max()
+            self._render_state.gaussian_shapes_per_ray = int(local + np.count_nonzero(gaussian_worlds < 0))
 
         skin_texture_ids = self._load_texture_and_mesh_data(model, load_textures, deformable_visual_meshes)
         if has_simulation_triangles or deformable_visual_meshes:
