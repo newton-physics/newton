@@ -11946,6 +11946,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         4. Global world (-1) only contains static shapes (no bodies, joints, or constraints)
         5. Actuator layouts, template-only properties, and high-level DC-motor parameters match across worlds
         6. Flex particle properties, elements, materials, and authored flexes match across worlds
+        7. Corresponding world-root joints match in articulation membership
 
         Args:
             model: The Newton model to validate.
@@ -12144,8 +12145,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 )
 
             bodies_per_world = model.body_count // world_count
-            for name in ("joint_parent", "joint_child"):
-                bodies = getattr(model, name).numpy().reshape(world_count, joints_per_world)
+            joint_parents = model.joint_parent.numpy().reshape(world_count, joints_per_world)
+            for name, bodies in (
+                ("joint_parent", joint_parents),
+                ("joint_child", model.joint_child.numpy().reshape(world_count, joints_per_world)),
+            ):
                 local_bodies = np.where(bodies >= 0, bodies % bodies_per_world, -1)
                 mismatch = local_bodies != local_bodies[0]
                 if np.any(mismatch):
@@ -12154,6 +12158,16 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         f"SolverMuJoCo requires matching {name}: world {world}, joint {joint} "
                         f"references body {local_bodies[world, joint]}, expected {local_bodies[0, joint]}."
                     )
+
+            # The template determines which world roots need FK outside an articulation.
+            articulated = model.joint_articulation.numpy().reshape(world_count, joints_per_world) >= 0
+            mismatch = (joint_parents[0] == -1) & (articulated != articulated[0])
+            if np.any(mismatch):
+                world, joint = np.argwhere(mismatch)[0]
+                raise ValueError(
+                    "SolverMuJoCo requires matching articulation membership for world roots: "
+                    f"world {world}, joint {joint} differs from world 0."
+                )
 
             joint_mimic_joint = model.joint_mimic_joint.numpy().reshape(world_count, joints_per_world)
             world_joint_offsets = np.arange(world_count, dtype=np.int32)[:, None] * joints_per_world

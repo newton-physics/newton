@@ -6709,6 +6709,23 @@ class TestMuJoCoValidation(unittest.TestCase):
         self.assertIn("joint types mismatch at position", str(ctx.exception).lower())
 
     @requires(*MUJOCO_MODULES)
+    def test_mismatched_world_root_membership_fails(self):
+        """Reject a standalone root when its template joint belongs to an articulation."""
+        builder = newton.ModelBuilder()
+        for world in range(2):
+            builder.begin_world()
+            body = builder.add_link()
+            builder.add_shape_sphere(body, radius=0.1)
+            joint = builder.add_joint_free(body)
+            if world == 0:
+                builder.add_articulation([joint])
+            builder.end_world()
+
+        model = builder.finalize()
+        with self.assertRaisesRegex(ValueError, "matching articulation membership.*world 1, joint 0"):
+            SolverMuJoCo(model, separate_worlds=True)
+
+    @requires(*MUJOCO_MODULES)
     def test_mismatched_joint_dof_counts_fails(self):
         """Test that D6 joints with differing DOF layouts across worlds raises ValueError."""
 
