@@ -332,25 +332,39 @@ def servo_land_spline_kernel(
 
 
 @wp.kernel
-def wy_state_kernel(body_qd: wp.array[wp.spatial_vector], wy_arr: wp.array[float], idx: int, dt: float):
+def wy_state_kernel(
+    body_qd: wp.array[wp.spatial_vector],  # State's body velocities (world frame); body 0 is the root
+    wy_arr: wp.array[float],  # flip-progress increment per state (rad): y angular rate x dt
+    idx: int,  # sample index this launch writes (one slot per rollout state)
+    dt: float,  # integration window for the velocity sample (SIM_DT)
+):
+    """Flip-progress increment at one state (``wy_arr[idx]``): the root's
+    world-frame y angular velocity integrated over dt. A cum_sum chain over
+    these samples is the flip angle the jump loss reads."""
     w = wp.spatial_bottom(body_qd[0])
     wy_arr[idx] = w[1] * dt
 
 
 @wp.kernel
-def zraw_state_kernel(body_q: wp.array[wp.transform], z_arr: wp.array[float], idx: int):
+def zraw_state_kernel(
+    body_q: wp.array[wp.transform],  # State's body transforms (world frame); body 0 is the root
+    z_arr: wp.array[float],  # root height per state (m)
+    idx: int,  # sample index this launch writes (one slot per rollout state)
+):
+    """Root height at one state (``z_arr[idx]``): read by the touchdown
+    attention and by the apex prefix-max the jump height band uses."""
     z = wp.transform_get_translation(body_q[0])[2]
     z_arr[idx] = z
 
 
 @wp.kernel
 def pawraw_state_kernel(
-    body_q: wp.array[wp.transform],
-    paw_body: wp.array[int],
-    paw_center: wp.array[wp.vec3],
-    paw_r: wp.array[float],
-    paw_arr: wp.array[float],
-    idx: int,
+    body_q: wp.array[wp.transform],  # State's body transforms (world frame); body 0 is the root
+    paw_body: wp.array[int],  # body index of each paw
+    paw_center: wp.array[wp.vec3],  # paw sphere center (body frame)
+    paw_r: wp.array[float],  # paw sphere radius (m)
+    paw_arr: wp.array[float],  # lowest paw bottom per state (m)
+    idx: int,  # sample index this launch writes (one slot per rollout state)
 ):
     """Lowest paw bottom at one state (``paw_arr[idx]``). The paw count is the
     fixed constant ``PAWS``, so the minimum is a static straight-line unroll
@@ -365,12 +379,12 @@ def pawraw_state_kernel(
 
 @wp.kernel
 def knee_argmin_kernel(
-    body_q: wp.array[wp.transform],
-    pts_body: wp.array[int],
-    pts_local: wp.array[wp.vec3],
-    n_pts: int,
-    argmin_arr: wp.array[int],
-    idx: int,
+    body_q: wp.array[wp.transform],  # State's body transforms (world frame); body 0 is the root
+    pts_body: wp.array[int],  # body index per knee point
+    pts_local: wp.array[wp.vec3],  # knee point position (body frame)
+    n_pts: int,  # knee point count
+    argmin_arr: wp.array[int],  # lowest knee point index per state (no adjoint)
+    idx: int,  # sample index this launch writes (one slot per rollout state)
 ):
     """Index of the lowest knee point at one state. NON-differentiated pre-pass
     (int output, no adjoint): a runtime-bound loop is fine here precisely
@@ -388,24 +402,28 @@ def knee_argmin_kernel(
 
 @wp.kernel
 def knee_mingz_kernel(
-    body_q: wp.array[wp.transform],
-    pts_body: wp.array[int],
-    pts_local: wp.array[wp.vec3],
-    argmin_arr: wp.array[int],
-    mink_arr: wp.array[float],
-    idx: int,
+    body_q: wp.array[wp.transform],  # State's body transforms (world frame); body 0 is the root
+    pts_body: wp.array[int],  # body index per knee point
+    pts_local: wp.array[wp.vec3],  # knee point position (body frame)
+    argmin_arr: wp.array[int],  # lowest knee point index per state (no adjoint)
+    min_knee_arr: wp.array[float],  # lowest knee point world z per state (m)
+    idx: int,  # sample index this launch writes (one slot per rollout state)
 ):
-    """World z of the lowest knee point at one state (``mink_arr[idx]``):
+    """World z of the lowest knee point at one state (``min_knee_arr[idx]``):
     a loop-free gather of the argmin pre-pass, so the adjoint flows exactly
     to the winning point's body transform (same pattern as the host-side
     ``_bracket`` spline segment, moved onto the device)."""
     k = argmin_arr[idx]
     p = wp.transform_point(body_q[pts_body[k]], pts_local[k])
-    mink_arr[idx] = p[2]
+    min_knee_arr[idx] = p[2]
 
 
 @wp.kernel
-def cum_sum_kernel(x_arr: wp.array[float], cum_arr: wp.array[float], idx: int):
+def cum_sum_kernel(
+    x_arr: wp.array[float],  # per-state samples to accumulate (already filled)
+    cum_arr: wp.array[float],  # running sum written per link
+    idx: int,  # this link's index (launch in order 0..n)
+):
     """One link of a chained per-element prefix sum: launch for idx = 0..n in
     order and ``cum_arr`` holds x's running sum. Loop-free, so the adjoint is
     exact - the runtime-bound prefix loops this replaces measured with zero
@@ -417,8 +435,14 @@ def cum_sum_kernel(x_arr: wp.array[float], cum_arr: wp.array[float], idx: int):
 
 
 @wp.kernel
-def cum_max_kernel(x_arr: wp.array[float], cum_arr: wp.array[float], idx: int):
-    """One link of a chained per-element running maximum (see cum_sum_kernel)."""
+def cum_max_kernel(
+    x_arr: wp.array[float],  # per-state samples to accumulate (already filled)
+    cum_arr: wp.array[float],  # running max written per link
+    idx: int,  # this link's index (launch in order 0..n)
+):
+    """One link of a chained per-element running maximum: launch for
+    idx = 0..n in order and ``cum_arr`` holds x's running max (same adjoint
+    rationale as cum_sum_kernel)."""
     prev = float(-1.0e9)
     if idx > 0:
         prev = cum_arr[idx - 1]
@@ -427,20 +451,22 @@ def cum_max_kernel(x_arr: wp.array[float], cum_arr: wp.array[float], idx: int):
 
 @wp.kernel
 def touchdown_att_kernel(
-    z_arr: wp.array[float],
-    cum_paw_arr: wp.array[float],
-    idx: int,
-    z_touchdown: float,
-    touchdown_sig: float,
-    lift_height: float,
-    att_arr: wp.array[float],
+    z_arr: wp.array[float],  # root height per state (m; from zraw_state_kernel)
+    cum_paw_arr: wp.array[float],  # running max of paw-bottom samples (chained cum_max_kernel)
+    idx: int,  # sample index this launch writes (one slot per rollout state)
+    z_touchdown: float,  # touchdown attention root height (m)
+    touchdown_sig: float,  # attention sharpness (m)
+    lift_height: float,  # airborne gate: prefix paw height to call it flown (m)
+    att_arr: wp.array[float],  # touchdown attention per state (0..1)
 ):
     """Touchdown attention at one state (``att_arr[idx]``): ~1 once the dog
     has flown (prefix-max paw height above lift_height) and its root has come
     back down to the touchdown height z_touchdown, ~0 otherwise. The airborne gate
     keeps the push-off out: there the root rises through z_touchdown while the
     paws are still on the ground and the flip error is still a full turn."""
+    # sigmoid arguments clamped to +/-30: wp.exp overflows f32 above ~88
     a = wp.clamp((z_touchdown - z_arr[idx]) / touchdown_sig, -30.0, 30.0)
+    # airborne-gate sharpness (m): full attention weight 1 cm past lift_height
     ag = wp.clamp((cum_paw_arr[idx] - lift_height) / 0.01, -30.0, 30.0)
     att_arr[idx] = 1.0 / ((1.0 + wp.exp(-a)) * (1.0 + wp.exp(-ag)))
 
@@ -453,8 +479,8 @@ def touchdown_att_kernel(
 
 @wp.kernel
 def order_state_g_kernel(
-    mink_arr: wp.array[float],
-    minp_arr: wp.array[float],
+    min_knee_arr: wp.array[float],
+    min_paw_arr: wp.array[float],
     idx: int,
     weight_order: float,
     margin_ground: float,
@@ -465,8 +491,8 @@ def order_state_g_kernel(
     point must stay above the GROUND margin. The minima arrive precomputed
     per state (knee_mingz_kernel / pawraw_state_kernel); the kernel itself is
     loop-free."""
-    mask = wp.max(1.0 - minp_arr[idx] / mask_height, 0.0)
-    viol = wp.max(margin_ground - mink_arr[idx], 0.0)
+    mask = wp.max(1.0 - min_paw_arr[idx] / mask_height, 0.0)
+    viol = wp.max(margin_ground - min_knee_arr[idx], 0.0)
     loss[0] = loss[0] + weight_order * mask * viol * viol
 
 
@@ -495,8 +521,8 @@ def loss_crouch_end_kernel(
 def loss_jump_state_kernel(
     body_q: wp.array[wp.transform],
     cum_wy_arr: wp.array[float],
-    mink_arr: wp.array[float],
-    minp_arr: wp.array[float],
+    min_knee_arr: wp.array[float],
+    min_paw_arr: wp.array[float],
     att_arr: wp.array[float],
     cum_att_arr: wp.array[float],
     idx: int,
@@ -521,8 +547,8 @@ def loss_jump_state_kernel(
     landing is phase C's job, and the stiff post-touchdown contacts would
     only add chaotic gradient noise."""
     pitch = cum_wy_arr[idx]
-    min_k = mink_arr[idx]
-    min_p = minp_arr[idx]
+    min_k = min_knee_arr[idx]
+    min_p = min_paw_arr[idx]
     q = wp.transform_get_rotation(body_q[0])
     up = wp.quat_rotate(q, wp.vec3(0.0, 0.0, 1.0))
     prev = float(0.0)
@@ -563,7 +589,7 @@ def loss_jump_band_kernel(
 def loss_land_state_kernel(
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
-    mink_arr: wp.array[float],
+    min_knee_arr: wp.array[float],
     paw_body: wp.array[int],
     paw_center: wp.array[wp.vec3],
     paw_r: wp.array[float],
@@ -588,7 +614,7 @@ def loss_land_state_kernel(
     starts the window before touchdown would need to gate them on
     t >= first-contact so airborne states contribute no loss; this example
     starts the window at touchdown, so every state is post-contact.)"""
-    min_k = mink_arr[idx]
+    min_k = min_knee_arr[idx]
     min_p = float(1.0e9)
     pp = float(0.0)
     for k in range(PAWS):
@@ -695,8 +721,8 @@ class Rollout:
         # gathers (module docstring - why these are not in-kernel
         # runtime-bound loops)
         self.argmin_arr = wp.zeros(n + 1, dtype=wp.int32)
-        self.mink_arr = wp.zeros(n + 1, dtype=wp.float32, requires_grad=True)
-        self.minp_arr = wp.zeros(n + 1, dtype=wp.float32, requires_grad=True)
+        self.min_knee_arr = wp.zeros(n + 1, dtype=wp.float32, requires_grad=True)
+        self.min_paw_arr = wp.zeros(n + 1, dtype=wp.float32, requires_grad=True)
         if mode == "jump":
             # per-state samples the jump loss reads; the prefix sum / maxima
             # are chained per-element launches into the cum_* arrays
@@ -1028,7 +1054,7 @@ class Example:
             )
 
     def _launch_knee_min(self, st, ro, t):
-        """Record the state's lowest knee-point world z into ``ro.mink_arr[t]``:
+        """Record the state's lowest knee-point world z into ``ro.min_knee_arr[t]``:
         a non-differentiated argmin pre-pass followed by a differentiable
         gather of the winning point (see knee_argmin_kernel)."""
         wp.launch(
@@ -1039,7 +1065,7 @@ class Example:
         wp.launch(
             knee_mingz_kernel,
             dim=1,
-            inputs=[st.body_q, self.knee_pts_body_arr, self.knee_pts_local_arr, ro.argmin_arr, ro.mink_arr, t],
+            inputs=[st.body_q, self.knee_pts_body_arr, self.knee_pts_local_arr, ro.argmin_arr, ro.min_knee_arr, t],
         )
 
     def _simulate(self, ro):
@@ -1067,14 +1093,21 @@ class Example:
                 wp.launch(
                     pawraw_state_kernel,
                     dim=1,
-                    inputs=[states[t].body_q, self.paw_body_arr, self.paw_center_arr, self.paw_r_arr, ro.minp_arr, t],
+                    inputs=[
+                        states[t].body_q,
+                        self.paw_body_arr,
+                        self.paw_center_arr,
+                        self.paw_r_arr,
+                        ro.min_paw_arr,
+                        t,
+                    ],
                 )
                 wp.launch(
                     order_state_g_kernel,
                     dim=1,
                     inputs=[
-                        ro.mink_arr,
-                        ro.minp_arr,
+                        ro.min_knee_arr,
+                        ro.min_paw_arr,
                         t,
                         WEIGHT_ORDER_CROUCH,
                         KNEE_MARGIN_GROUND,
@@ -1103,14 +1136,21 @@ class Example:
                 wp.launch(
                     pawraw_state_kernel,
                     dim=1,
-                    inputs=[states[t].body_q, self.paw_body_arr, self.paw_center_arr, self.paw_r_arr, ro.minp_arr, t],
+                    inputs=[
+                        states[t].body_q,
+                        self.paw_body_arr,
+                        self.paw_center_arr,
+                        self.paw_r_arr,
+                        ro.min_paw_arr,
+                        t,
+                    ],
                 )
                 # prefix values as chained per-element launches (adjoint-exact;
                 # the in-kernel runtime-bound loops they replace measured with
                 # zero or garbage gradients - see the module docstring)
                 wp.launch(cum_sum_kernel, dim=1, inputs=[ro.wy_arr, ro.cum_wy_arr, t])
                 wp.launch(cum_max_kernel, dim=1, inputs=[ro.z_arr, ro.cum_z_arr, t])
-                wp.launch(cum_max_kernel, dim=1, inputs=[ro.minp_arr, ro.cum_paw_arr, t])
+                wp.launch(cum_max_kernel, dim=1, inputs=[ro.min_paw_arr, ro.cum_paw_arr, t])
                 wp.launch(
                     touchdown_att_kernel,
                     dim=1,
@@ -1124,10 +1164,10 @@ class Example:
                     inputs=[
                         states[t].body_q,
                         ro.cum_wy_arr,
-                        ro.mink_arr,
+                        ro.min_knee_arr,
                         # the state sample IS the state's lowest paw bottom:
                         # the kernel reads its min_p from it
-                        ro.minp_arr,
+                        ro.min_paw_arr,
                         ro.att_arr,
                         ro.cum_att_arr,
                         t,
@@ -1150,7 +1190,14 @@ class Example:
                 wp.launch(
                     pawraw_state_kernel,
                     dim=1,
-                    inputs=[states[t].body_q, self.paw_body_arr, self.paw_center_arr, self.paw_r_arr, ro.minp_arr, t],
+                    inputs=[
+                        states[t].body_q,
+                        self.paw_body_arr,
+                        self.paw_center_arr,
+                        self.paw_r_arr,
+                        ro.min_paw_arr,
+                        t,
+                    ],
                 )
                 wp.launch(
                     loss_land_state_kernel,
@@ -1158,7 +1205,7 @@ class Example:
                     inputs=[
                         states[t].body_q,
                         states[t].body_qd,
-                        ro.mink_arr,
+                        ro.min_knee_arr,
                         self.paw_body_arr,
                         self.paw_center_arr,
                         self.paw_r_arr,
@@ -1250,7 +1297,7 @@ class Example:
         ro.loss(amps, self.snap)
         # knee and paw minima over the full replay window (crouch + preview),
         # as the loss computed them on the device
-        mink, minp = ro.mink_arr.numpy()[1:], ro.minp_arr.numpy()[1:]
+        mink, minp = ro.min_knee_arr.numpy()[1:], ro.min_paw_arr.numpy()[1:]
         grounded = minp < PAW_MASK_HEIGHT
         rep = {
             "min_foot_rows": 10**9,
@@ -1279,7 +1326,7 @@ class Example:
         2 grounded steps AND descending near ground). Returns (td_snap or
         None, report)."""
         ro.loss(amps, snap)
-        mink, minp = ro.mink_arr.numpy(), ro.minp_arr.numpy()
+        mink, minp = ro.min_knee_arr.numpy(), ro.min_paw_arr.numpy()
         q_prev = wp.quat(snap[2][0][3:])
         pitch_cum = 0.0
         airborne_steps = 0
@@ -1357,7 +1404,7 @@ class Example:
         ``rep["td_step"]``) so the frames stay evenly spaced across the
         touchdown boundary."""
         ro.loss(amps, snap)
-        mink, minp = ro.mink_arr.numpy(), ro.minp_arr.numpy()
+        mink, minp = ro.min_knee_arr.numpy(), ro.min_paw_arr.numpy()
         rep = {"knee_margin_min": 1e9, "bounce": 0.0, "blew_up": False, "min_foot_rows": 10**9, "paw_lift_max": 0.0}
         m = None
         bqd = None
