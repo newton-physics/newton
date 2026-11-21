@@ -680,16 +680,17 @@ def loss_land_end_kernel(
 
 def _up_z(body_q):
     """Up-axis z component of a body transform row (1 upright, -1 inverted)."""
+    # a transform row is (pos, quat): [3:7] is the quaternion
     return float(wp.quat_rotate(wp.quat(body_q[3:7]), wp.vec3(0.0, 0.0, 1.0))[2])
 
 
 def _tilt_of(body_q):
     """Tilt angle (radians) of a body transform row away from upright."""
-    return float(np.arccos(np.clip(_up_z(body_q), -1.0, 1.0)))
+    return float(np.arccos(np.clip(_up_z(body_q), -1.0, 1.0)))  # clip: arccos NaNs on |up_z| > 1 (fp drift)
 
 
 def _load_snapshot(st, snap):
-    """Copy a host-side (joint_q, joint_qd, body_q, body_qd) snapshot into a state."""
+    """Copy a host-side snapshot tuple (from _snapshot) back into a state's device arrays."""
     st.joint_q.assign(snap[0])
     st.joint_qd.assign(snap[1])
     st.body_q.assign(snap[2])
