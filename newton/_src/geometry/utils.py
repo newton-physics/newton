@@ -318,6 +318,59 @@ def compute_inertia_obb(
     return wp.transform(*best_transform), wp.vec3(*best_extents)
 
 
+def _read_meshio(filename: str):
+    """Read a mesh file with meshio, which exits the process when no reader accepts the file."""
+    import meshio
+
+    try:
+        return meshio.read(filename)
+    except (Exception, SystemExit) as e:
+        raise ValueError(f"meshio could not read mesh file '{filename}'.") from e
+
+
+def _read_meshio_surface(filename: str) -> tuple[np.ndarray, np.ndarray]:
+    """Read the triangles of a mesh file with meshio, and only the vertices they use."""
+    mesh = _read_meshio(filename)
+    triangles = mesh.get_cells_type("triangle")
+    if len(triangles) == 0:
+        raise ValueError(f"Mesh file '{filename}' contains no triangles.")
+    if triangles.min() < 0 or triangles.max() >= len(mesh.points):
+        raise ValueError(f"Mesh file '{filename}' has triangles that reference missing vertices.")
+    used, triangles = np.unique(triangles, return_inverse=True)
+    return mesh.points[used], triangles.reshape(-1, 3)
+
+
+# trimesh reads these meshio formats itself, and keeps their materials and UVs.
+_TRIMESH_FORMATS = frozenset({".obj", ".off", ".ply", ".stl"})
+
+
+def _reads_with_meshio(filename: str) -> bool:
+    """Whether meshio, not trimesh, reads this format; trimesh 5 deprecates forwarding files to meshio."""
+    extension = os.path.splitext(filename)[1].lower()
+    if extension in _TRIMESH_FORMATS:
+        return False
+    try:
+        import meshio
+    except ImportError:
+        return False
+    return extension in meshio.extension_to_filetypes
+
+
+def _load_trimesh(filename: str, **kwargs):
+    """Call ``trimesh.load`` with the behavior trimesh 5 deprecated or turned off by default."""
+    import trimesh
+
+    if _reads_with_meshio(filename):
+        vertices, triangles = _read_meshio_surface(filename)
+        return trimesh.Trimesh(vertices=vertices, faces=triangles)
+    try:
+        # Let materials and textures sit outside the mesh directory.
+        resolver = trimesh.resolvers.FilePathResolver(filename, allow_anywhere=True)
+    except TypeError:  # trimesh 4 has no such restriction
+        resolver = None
+    return trimesh.load(filename, resolver=resolver, **kwargs)
+
+
 def load_mesh(filename: str, method: str | None = None):
     """
     Loads a 3D triangular surface mesh from a file.
@@ -335,11 +388,8 @@ def load_mesh(filename: str, method: str | None = None):
 
     def load_mesh_with_method(method):
         if method == "meshio":
-            import meshio
-
-            m = meshio.read(filename)
-            mesh_points = np.array(m.points)
-            mesh_indices = np.array(m.cells[0].data, dtype=np.int32)
+            mesh_points, mesh_indices = _read_meshio_surface(filename)
+            mesh_indices = mesh_indices.astype(np.int32)
         elif method == "openmesh":
             import openmesh
 
@@ -352,9 +402,7 @@ def load_mesh(filename: str, method: str | None = None):
             mesh_points, mesh_indices = pcu.load_mesh_vf(filename)
             mesh_indices = mesh_indices.flatten()
         else:
-            import trimesh
-
-            m = trimesh.load(filename)
+            m = _load_trimesh(filename)
             if hasattr(m, "geometry"):
                 # Combine scene parts with their node transforms applied;
                 # raw vertices are in node-local space.
