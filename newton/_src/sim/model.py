@@ -41,6 +41,7 @@ _COLLISION_EDGE_DEPRECATION_MSG = (
 if TYPE_CHECKING:
     from ..actuators.actuator import Actuator
     from ..actuators.batteries import BatteryBase
+    from ..geometry import Gaussian
     from ..geometry.optix import OptixShapes
     from ..utils.heightfield import HeightfieldData
 
@@ -1184,6 +1185,8 @@ class Model:
 
         self._mesh_keep_alive: list[wp.Mesh] = []
         """wp.Mesh objects referenced by :attr:`shape_source_ptr`, kept alive for the model's lifetime."""
+        self._gaussian_keep_alive: list[tuple[Gaussian.Data, wp.Bvh]] = []
+        """Finalized data and BVH of each Gaussian asset in :attr:`gaussians_data`, kept alive for the model's lifetime."""
 
         # Internal collision edges; public names remain as deprecated property aliases.
         self._mesh_edge_indices: wp.array[wp.vec2i] | None = None
@@ -2222,7 +2225,7 @@ class Model:
         :meth:`ModelBuilder.finalize`. Each world's shapes must stay within the cube of half-width
         ``optix_extent`` about the origin, measured by the bounding sphere of each shape's
         build-time bounds; a refit hides shapes that leave it and sets ``optix_shapes.out_of_cell``
-        on the device. Changing shape scales requires a rebuild. Building is several times slower than the
+        on the device, as cameras do when their particles or deformable surfaces leave it. Changing shape scales requires a rebuild. Building is several times slower than the
         Warp BVH build and refitting is somewhat slower, so build once and refit each frame.
 
         Args:
@@ -2235,8 +2238,8 @@ class Model:
             backend: ``"warp"`` builds :attr:`bvh_shapes`; ``"optix"`` builds
                 :attr:`optix_shapes` (experimental).
             optix_extent: Half-width [m] of the region each world's shapes may occupy with
-                ``backend="optix"``. Defaults to twice the farthest reach of any non-plane shape
-                from the origin at build time, and at least 1 m. Larger values leave room for
+                ``backend="optix"``. Defaults to twice the farthest reach of any non-plane shape or
+                particle from the origin at build time, and at least 1 m. Larger values leave room for
                 motion but lower precision, since worlds are packed further apart in float32.
 
         Raises:
@@ -2289,16 +2292,7 @@ class Model:
             device=device,
         )
 
-        # Variant rows get a leaf if any variant shape they can hold would, whatever the opacity of the
-        # one they hold now; ray queries skip rows that are empty or transparent at the last refit.
-        enabled_flags = self.shape_flags
-        enabled_opacity = self.shape_opacity
-        if self._has_variant_rows:
-            enabled_flags = wp.array(self._shape_option_flags(), dtype=wp.int32, device=device)
-            if enabled_opacity is not None:
-                opacity = enabled_opacity.numpy().copy()
-                opacity[self._variant_row_shapes.numpy()] = 1.0
-                enabled_opacity = wp.array(opacity, dtype=wp.float32, device=device)
+        enabled_flags, enabled_opacity = self._shape_enabled_flags_and_opacity()
         self._bvh_shape_flags_mask = int(shape_flags)
         self.bvh_shape_enabled = wp.empty(shape_count, dtype=wp.uint32, device=device)
         num_enabled = wp.zeros(1, dtype=wp.int32, device=device)
@@ -2432,6 +2426,21 @@ class Model:
             device=self.device,
         )
 
+    def _shape_enabled_flags_and_opacity(self) -> tuple[wp.array[wp.int32], wp.array[wp.float32] | None]:
+        """Shape flags and opacity that decide which shapes the shape BVHs hold.
+
+        Variant rows get a leaf if any variant shape they can hold would, whatever the opacity of the
+        one they hold now; ray queries skip rows that are empty or transparent at the last refit.
+        """
+        flags, opacity = self.shape_flags, self.shape_opacity
+        if self._has_variant_rows:
+            flags = wp.array(self._shape_option_flags(), dtype=wp.int32, device=self.device)
+            if opacity is not None:
+                opacity = opacity.numpy().copy()
+                opacity[self._variant_row_shapes.numpy()] = 1.0
+                opacity = wp.array(opacity, dtype=wp.float32, device=self.device)
+        return flags, opacity
+
     def _optix_build_shapes(self, state: State, shape_flags: ShapeFlags, extent: float | None) -> None:
         """Build :attr:`optix_shapes`; see :meth:`bvh_build_shapes`."""
         try:
@@ -2454,20 +2463,23 @@ class Model:
 
         enabled = wp.empty(shape_count, dtype=wp.uint32, device=device)
         num_enabled = wp.zeros(1, dtype=wp.int32, device=device)
+        enabled_flags, enabled_opacity = self._shape_enabled_flags_and_opacity()
         wp.launch(
             kernel=compute_enabled_shapes,
             dim=shape_count,
             inputs=[
                 self.shape_type,
-                self.shape_flags,
+                enabled_flags,
                 int(shape_flags),
-                self.shape_opacity if self.shape_opacity is not None else wp.empty(0, dtype=wp.float32, device=device),
+                enabled_opacity if enabled_opacity is not None else wp.empty(0, dtype=wp.float32, device=device),
                 enabled,
                 num_enabled,
             ],
             device=device,
         )
-        enabled = enabled[: int(num_enabled.numpy()[0])]
+        enabled_count = int(num_enabled.numpy()[0])
+        # Warp cannot slice an array to zero length.
+        enabled = enabled[:enabled_count] if enabled_count else wp.empty(0, dtype=wp.uint32, device=device)
         transforms = wp.empty(shape_count, dtype=wp.transformf, device=device)
         if shape_count:
             wp.launch(
@@ -2518,9 +2530,58 @@ class Model:
         radii[enabled] = np.linalg.norm(
             np.maximum(np.abs(lowers.numpy() - origins), np.abs(uppers.numpy() - origins)), axis=1
         )
+        row_reach = np.zeros(shape_count, dtype=np.float32)
+        if self._has_variant_rows:
+            # A variant row covers every variant shape it can hold, which may sit elsewhere on its body.
+            geometry = self._variant_shape_geometry
+            count = self._variant_shape_count
+            variant_bounds = wp.empty((count, 2), dtype=wp.vec3f, device=device)
+            wp.launch_tiled(
+                kernel=compute_shape_local_bounds,
+                dim=count,
+                block_dim=SHAPE_BOUNDS_BLOCK_DIM,
+                inputs=[geometry["shape_type"], geometry["shape_source_ptr"], self.gaussians_data, variant_bounds],
+                device=device,
+            )
+            variant_lowers = wp.empty(count, dtype=wp.vec3f, device=device)
+            variant_uppers = wp.empty(count, dtype=wp.vec3f, device=device)
+            wp.launch(
+                kernel=compute_shape_bvh_bounds,
+                dim=count,
+                inputs=[
+                    count,
+                    1,
+                    wp.zeros(count, dtype=wp.int32, device=device),
+                    wp.array(np.arange(count, dtype=np.uint32), device=device),
+                    geometry["shape_type"],
+                    geometry["shape_scale"],
+                    wp.full(count, wp.transform_identity(), dtype=wp.transformf, device=device),
+                    variant_bounds,
+                    variant_lowers,
+                    variant_uppers,
+                    wp.empty(count, dtype=wp.int32, device=device),
+                ],
+                device=device,
+            )
+            variant_radii = np.linalg.norm(
+                np.maximum(np.abs(variant_lowers.numpy()), np.abs(variant_uppers.numpy())), axis=1
+            )
+            rows, options = self._variant_row_options()
+            shift = np.linalg.norm(
+                geometry["shape_transform"].numpy()[options, :3] - self.shape_transform.numpy()[rows, :3], axis=1
+            )
+            np.maximum.at(radii, rows, variant_radii[options])
+            np.maximum.at(row_reach, rows, shift + variant_radii[options])
         # Planes are intersected analytically, outside the cells.
         bounded = types[enabled] != GeoType.PLANE
-        reach = np.abs(origins).max(axis=1, initial=0.0) + radii[enabled]
+        reach = np.abs(origins).max(axis=1, initial=0.0) + np.maximum(radii[enabled], row_reach[enabled])
+        reach = reach[bounded]
+        if state.particle_q is not None and state.particle_count:
+            # Cameras trace particles and deformable surfaces in the same cells.
+            particle_reach = np.abs(state.particle_q.numpy()).max(axis=1)
+            if self.particle_radius is not None:
+                particle_reach = particle_reach + self.particle_radius.numpy()
+            reach = np.concatenate([reach, particle_reach])
         enabled = np.sort(enabled)
         shape_world = self.shape_world.numpy() if shape_count else np.empty(0, dtype=np.int32)
         plane = types[enabled] == GeoType.PLANE
@@ -2535,7 +2596,8 @@ class Model:
         grid = int(np.ceil((self.world_count + 1) ** (1.0 / 3.0)))
         while grid**3 < self.world_count + 1:
             grid += 1
-        geometry, traversables = optix.build_shape_geometry(self, enabled, types)
+        geometry, traversables, variant_traversables = optix.build_shape_geometry(self, enabled, types)
+        instance_ids, slot_gaussians = optix.gaussian_slots(self, instance_shapes, types)
         shapes = optix.OptixShapes(
             id=0,
             accel=None,
@@ -2543,13 +2605,17 @@ class Model:
             shape_types=wp.array(types, dtype=wp.int32, device=device),
             shape_world_transforms=transforms,
             shape_traversables=traversables,
+            shape_instance_ids=wp.array(instance_ids, dtype=wp.uint32, device=device),
+            slot_gaussians=wp.array(slot_gaussians, dtype=wp.int32, device=device),
+            variant_traversables=variant_traversables,
+            flags_mask=int(shape_flags),
             instance_shapes=wp.array(instance_shapes, dtype=wp.int32, device=device),
             instances=wp.empty(len(instance_shapes), dtype=optix.wo.Instance, device=device),
             shape_radii=wp.array(radii, dtype=wp.float32, device=device),
             planes=tuple(int(si) for si in enabled[plane & (shape_world[enabled] < 0)]),
             world_planes=wp.array(world_planes, dtype=wp.int32, device=device),
             # Room for shapes to move.
-            extent=extent or max(2.0 * float(reach[bounded].max(initial=0.0)), 1.0),
+            extent=extent or max(2.0 * float(reach.max(initial=0.0)), 1.0),
             out_of_cell=wp.zeros(1, dtype=wp.int32, device=device),
             grid=grid,
             world_count=self.world_count,
@@ -2586,7 +2652,11 @@ class Model:
             )
         compute_optix_shape_instances_launch(self, shapes)
         if shapes.accel is not None:
-            shapes.accel.refit()
+            if shapes.has_variant_rows:
+                # Selecting a variant changes the structure its rows instance, which a refit cannot follow.
+                shapes.accel.rebuild()
+            else:
+                shapes.accel.refit()
 
     def _variant_row_options(self) -> tuple[np.ndarray, np.ndarray]:
         """Each variant row with each variant shape it can hold, on the host."""
