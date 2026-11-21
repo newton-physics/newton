@@ -720,6 +720,8 @@ class Rollout:
     same code runs uncaptured."""
 
     def __init__(self, example, mode, n, n_params):
+        """Buffers for an n-step window (n + 1 states: every step produces
+        one) and n_params learned parameters (mode-specific)."""
         model = example.model
         self.example = example
         self.mode = mode
@@ -750,6 +752,7 @@ class Rollout:
         self.fwd_graph = None
         self.grad_graph = None
         device = model.device
+        # capture needs the device memory pool: raw cudaMalloc is not capture-safe
         if device.is_cuda and device.is_mempool_enabled:
             # warm-up pass outside the capture: the solver allocates its
             # per-state scratch on the first step into each state, and those
@@ -765,6 +768,8 @@ class Rollout:
             self.grad_graph = cap.graph
 
     def _load(self, amps, snap):
+        """Load the learned parameters and the window's start state (settle
+        snapshot for crouch, crouch end for jump, touchdown for land)."""
         self.params.assign(np.asarray(amps, dtype=np.float32))
         _load_snapshot(self.states[0], snap)
 
@@ -788,6 +793,7 @@ class Rollout:
             with self.tape:
                 self.example._simulate(self)
             self.tape.backward(self.loss_arr)
+        # the gradient is promoted to float64: _descent's step arithmetic is f64
         return float(self.loss_arr.numpy()[0]), self.params.grad.numpy().astype(np.float64)
 
 
