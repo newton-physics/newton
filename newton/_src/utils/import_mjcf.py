@@ -2623,6 +2623,7 @@ def parse_mjcf(
 
         joint_armature = []
         joint_name = []
+        raw_joint_names = []
         joint_pos = []
         joint_custom_attributes: dict[str, Any] = {}
         dof_custom_attributes: dict[str, dict[int, Any]] = {}
@@ -2634,7 +2635,11 @@ def parse_mjcf(
         freejoint_tags = body.findall("freejoint")
         if len(freejoint_tags) > 0:
             joint_type = JointType.FREE
-            freejoint_name = sanitize_name(freejoint_tags[0].attrib.get("name", f"{body_name}_freejoint"))
+            authored_freejoint_name = freejoint_tags[0].attrib.get("name")
+            raw_freejoint_name = authored_freejoint_name or f"{body_name}_freejoint"
+            if authored_freejoint_name:
+                raw_joint_names.append(authored_freejoint_name)
+            freejoint_name = sanitize_name(raw_freejoint_name)
             joint_name.append(freejoint_name)
             joint_armature.append(0.0)
             joint_custom_attributes = parse_custom_attributes(
@@ -2647,8 +2652,8 @@ def parse_mjcf(
             # linear_axes/angular_axes) and only assigned DOF indices after the loop.
             linear_dof_attrs: list[dict[str, Any]] = []
             angular_dof_attrs: list[dict[str, Any]] = []
-            # (MJCF joint name, is_linear, index into linear/angular_dof_attrs, inert range)
-            mjcf_joint_dof_slots: list[tuple[str, bool, int, tuple[float, float] | None]] = []
+            # (sanitized MJCF joint name, raw MJCF joint name, is_linear, index into linear/angular_dof_attrs, inert range)
+            mjcf_joint_dof_slots: list[tuple[str, str, bool, int, tuple[float, float] | None]] = []
             # frictionloss for a native <joint type="ball"/>; captured in the ball branch
             # and read by the add_joint_ball call. Default 0.0 matches MJCF.
             ball_friction = 0.0
@@ -2661,7 +2666,11 @@ def parse_mjcf(
                 # default to hinge if not specified
                 joint_type_str = joint_attrib.get("type", "hinge")
 
-                joint_name.append(sanitize_name(joint_attrib.get("name") or f"{body_name}_joint_{i}"))
+                authored_joint_name = joint_attrib.get("name")
+                raw_joint_name = authored_joint_name or f"{body_name}_joint_{i}"
+                if authored_joint_name:
+                    raw_joint_names.append(authored_joint_name)
+                joint_name.append(sanitize_name(raw_joint_name))
                 joint_pos.append(parse_vec(joint_attrib, "pos", (0.0, 0.0, 0.0)) * scale)
                 joint_range = parse_vec(joint_attrib, "range", (default_joint_limit_lower, default_joint_limit_upper))
                 joint_armature.append(parse_float(joint_attrib, "armature", default_joint_armature) * armature_scale)
@@ -2694,7 +2703,7 @@ def parse_mjcf(
                             default_joint_limit_ke, default_joint_limit_kd
                         )
                     # ball joint has 3 angular DOFs; replicate attribute values across all of them
-                    mjcf_joint_dof_slots.append((joint_name[-1], False, len(angular_dof_attrs), None))
+                    mjcf_joint_dof_slots.append((joint_name[-1], raw_joint_name, False, len(angular_dof_attrs), None))
                     angular_dof_attrs.extend(dof_attr for _ in range(3))
                     # Lift frictionloss and damping into the builder's per-DOF arrays
                     # so they reach the MuJoCo spec on export.
@@ -2822,11 +2831,15 @@ def parse_mjcf(
 
                 # Keep each DOF's attributes next to its axis so both share Newton's DOF order.
                 if is_angular:
-                    mjcf_joint_dof_slots.append((joint_name[-1], False, len(angular_dof_attrs), inert_range))
+                    mjcf_joint_dof_slots.append(
+                        (joint_name[-1], raw_joint_name, False, len(angular_dof_attrs), inert_range)
+                    )
                     angular_axes.append(ax)
                     angular_dof_attrs.append(dof_attr)
                 else:
-                    mjcf_joint_dof_slots.append((joint_name[-1], True, len(linear_dof_attrs), inert_range))
+                    mjcf_joint_dof_slots.append(
+                        (joint_name[-1], raw_joint_name, True, len(linear_dof_attrs), inert_range)
+                    )
                     linear_axes.append(ax)
                     linear_dof_attrs.append(dof_attr)
 
@@ -2836,8 +2849,8 @@ def parse_mjcf(
                     dof_custom_attributes.setdefault(key, {})[dof_index] = value
             num_linear_dofs = len(linear_dof_attrs)
             mjcf_joint_dof_offsets = [
-                (name, slot if is_linear_slot else num_linear_dofs + slot, inert_range)
-                for name, is_linear_slot, slot, inert_range in mjcf_joint_dof_slots
+                (name, raw_name, slot if is_linear_slot else num_linear_dofs + slot, inert_range)
+                for name, raw_name, is_linear_slot, slot, inert_range in mjcf_joint_dof_slots
             ]
 
         body_custom_attributes = parse_custom_attributes(body_attrib, builder_custom_attr_body, parsing_mode="mjcf")
@@ -2952,6 +2965,8 @@ def parse_mjcf(
                 # Map free joint names so actuators can target them
                 for jn in joint_name:
                     joint_name_to_idx[jn] = joint_idx
+                for raw_jn in raw_joint_names:
+                    raw_joint_name_to_idx[raw_jn] = joint_idx
             elif joint_type == JointType.BALL and not angular_axes:
                 # MJCF <joint type="ball"/>: native ball joint with a single DOF entry.
                 # (The 3-hinge->ball conversion fills angular_axes and uses the generic path below.)
@@ -2976,6 +2991,8 @@ def parse_mjcf(
                 joint_indices.append(joint_idx)
                 for jn in joint_name:
                     joint_name_to_idx[jn] = joint_idx
+                for raw_jn in raw_joint_names:
+                    raw_joint_name_to_idx[raw_jn] = joint_idx
             else:
                 # When parent is world (-1), use world_xform to respect the xform argument
                 if parent == -1:
@@ -3003,14 +3020,17 @@ def parse_mjcf(
                 # This allows actuators to target specific DOFs when multiple MJCF joints are combined
                 if mjcf_joint_dof_offsets:
                     qd_start = builder.joint_qd_start[joint_idx]
-                    for mjcf_name, dof_offset, inert_range in mjcf_joint_dof_offsets:
+                    for mjcf_name, raw_mjcf_name, dof_offset, inert_range in mjcf_joint_dof_offsets:
                         mjcf_joint_name_to_dof[mjcf_name] = qd_start + dof_offset
+                        raw_mjcf_joint_name_to_dof[raw_mjcf_name] = qd_start + dof_offset
                         if inert_range is not None:
                             disabled_joint_ranges[qd_start + dof_offset] = inert_range
 
                 # Map raw MJCF joint names to Newton joint index for tendon/actuator resolution
                 for jn in joint_name:
                     joint_name_to_idx[jn] = joint_idx
+                for raw_jn in raw_joint_names:
+                    raw_joint_name_to_idx[raw_jn] = joint_idx
 
         # -----------------
         # add shapes (using shared helper for visual/collider partitioning)
@@ -3515,6 +3535,7 @@ def parse_mjcf(
     # Maps individual MJCF joint names to their specific DOF index.
     # Used to resolve actuators targeting specific joints within combined Newton joints.
     mjcf_joint_name_to_dof: dict[str, int] = {}
+    raw_mjcf_joint_name_to_dof: dict[str, int] = {}
     # Keyed by DOF so inheritrange reads the same joint that actuator DOF resolution picked.
     disabled_joint_ranges: dict[int, tuple[float, float]] = {}
     mjcf_slide_joint_names: set[str] = set()
@@ -3529,6 +3550,7 @@ def parse_mjcf(
     raw_site_name_to_idx: dict[str, int] = {}
     raw_geom_name_to_idx: dict[str, int] = {}
     joint_name_to_idx: dict[str, int] = {}
+    raw_joint_name_to_idx: dict[str, int] = {}
 
     # Extract articulation label early for hierarchical label construction
     articulation_label = root.attrib.get("model")
@@ -3749,6 +3771,7 @@ def parse_mjcf(
         "tendon_joint_adr",
         "tendon_joint_num",
         "tendon_joint",
+        "tendon_joint_dof",
         "tendon_coef",
         "tendon_wrap_adr",
         "tendon_wrap_num",
@@ -3789,8 +3812,10 @@ def parse_mjcf(
                         logger.warning("<joint> in tendon '%s' missing joint attribute, skipping", tendon_name)
                     continue
 
-                # Look up joint index by name
-                joint_idx = joint_name_to_idx.get(joint_name)
+                # Match only exact authored MJCF joint names so 'a-b' and 'a_b' never collide,
+                # including when a root override (floating=True/False) removes the target joint.
+                joint_idx = raw_joint_name_to_idx.get(joint_name)
+                dof_idx = raw_mjcf_joint_name_to_dof.get(joint_name, -1) if joint_idx is not None else -1
                 if joint_idx is None:
                     if verbose:
                         logger.warning(
@@ -3799,7 +3824,7 @@ def parse_mjcf(
                     continue
 
                 coef = float(coef_str)
-                joint_entries.append((joint_idx, coef))
+                joint_entries.append((joint_idx, dof_idx, coef))
 
             if not joint_entries:
                 if verbose:
@@ -3814,13 +3839,14 @@ def parse_mjcf(
             joint_start = len(tendon_joint_attr.values) if tendon_joint_attr and tendon_joint_attr.values else 0
 
             # Add joints to the joint arrays
-            for joint_idx, coef in joint_entries:
-                builder.add_custom_values(
-                    **{
-                        "mujoco:tendon_joint": joint_idx,
-                        "mujoco:tendon_coef": coef,
-                    }
-                )
+            for joint_idx, dof_idx, coef in joint_entries:
+                joint_row: dict[str, Any] = {
+                    "mujoco:tendon_joint": joint_idx,
+                    "mujoco:tendon_coef": coef,
+                }
+                if "mujoco:tendon_joint_dof" in builder.custom_attributes:
+                    joint_row["mujoco:tendon_joint_dof"] = dof_idx
+                builder.add_custom_values(**joint_row)
 
             # Build values dict for tendon-level attributes
             tendon_values: dict[str, Any] = {
@@ -3843,7 +3869,7 @@ def parse_mjcf(
                 tendon_name_to_idx[sanitize_name(tendon_name)] = tendon_idx
 
             if verbose:
-                joint_names_str = ", ".join(f"{builder.joint_label[j]}*{c}" for j, c in joint_entries)
+                joint_names_str = ", ".join(f"{builder.joint_label[j]}*{c}" for j, _dof, c in joint_entries)
                 logger.info("Parsed fixed tendon: %s (%s)", tendon_name, joint_names_str)
 
         def find_shape_by_name(name: str, want_site: bool) -> int:
