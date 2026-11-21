@@ -1754,62 +1754,66 @@ class Example:
     # 15. Gradient check - test_final: the proof the differentiability claims
     #     hold (FD vs tape probe, _probe_loss_kernel)
     # --------------------------------------------------------------------------
+    def _servo_two_steps(self, params, states, ctrls, contacts):
+        """The gradient check's rollout body, shared by the tape pass and the FD
+        rollouts: collide, land-spline servo, solver step - twice, states[0] ->
+        states[1] -> states[2]. Both sides run this exact sequence, so the
+        finite differences are taken of the same computation the tape
+        differentiates."""
+        for t in range(2):
+            if t % COLLIDE_EVERY == 0:
+                self.pipe.collide(states[t], contacts)
+            wp.launch(
+                servo_land_spline_kernel,
+                dim=12,
+                inputs=[
+                    params,
+                    states[t].joint_q,
+                    states[t].joint_qd,
+                    ctrls[t].joint_f,
+                    self.stand_arr,
+                    self.dofs_arr,
+                    self.land_knots_arr,
+                    LAND_N_KNOTS,
+                    SIM_DT * 1000.0,
+                    t,
+                    TAU_MAX,
+                    _bracket(t * SIM_DT * 1000.0),
+                ],
+            )
+            states[t].clear_forces()
+            self.solver.step(states[t], states[t + 1], ctrls[t], contacts, SIM_DT)
+
     def test_final(self):
         """Gradient check: a 2-step landing-servo rollout from the settled
         stance, linear probe loss; tape gradient vs central finite differences
         on a spread of joint channels (skips the optimization)."""
         model = self.model
-        solver = self.solver
         cts = self.cts
         snap = self.snap
         channels = [(0, 5), (0, 9), (0, 16), (1, 3), (1, 4), (1, 16)]
         amp = 0.07  # off zero so the spline path is exercised
+        loss_fd = wp.zeros(1, dtype=wp.float32)  # the FD rollouts' probe-loss target (overwritten per call)
 
         def rollout(kick_arr, kick_idx, kick):
             """Two-step landing-servo rollout from the settled stance, with an optional kick."""
-            amps = np.full(LAND_N_PARAMS, amp, dtype=np.float32)
-            amps_arr = wp.array(amps, dtype=wp.float32)
-            st0 = self._fresh(snap)
-            st1 = model.state()
+            amps_arr = wp.array(np.full(LAND_N_PARAMS, amp, dtype=np.float32), dtype=wp.float32)
+            states = [self._fresh(snap)] + [model.state() for _ in range(2)]
             if kick_arr == 0:
                 q = snap[0].copy()
                 q[kick_idx] += kick
-                st0.joint_q.assign(q)
+                states[0].joint_q.assign(q)
             else:
                 qd = snap[1].copy()
                 qd[kick_idx] += kick
-                st0.joint_qd.assign(qd)
-            ctrl = model.control()
-            for t in range(2):
-                if t % COLLIDE_EVERY == 0:
-                    self.pipe.collide(st0, cts)
-                wp.launch(
-                    servo_land_spline_kernel,
-                    dim=12,
-                    inputs=[
-                        amps_arr,
-                        st0.joint_q,
-                        st0.joint_qd,
-                        ctrl.joint_f,
-                        self.stand_arr,
-                        self.dofs_arr,
-                        self.land_knots_arr,
-                        LAND_N_KNOTS,
-                        SIM_DT * 1000.0,
-                        t,
-                        TAU_MAX,
-                        _bracket(t * SIM_DT * 1000.0),
-                    ],
-                )
-                st0.clear_forces()
-                solver.step(st0, st1, ctrl, cts, SIM_DT)
-                st0, st1 = st1, st0
-            jq = st0.joint_q.numpy().astype(np.float64)
-            return float(1.0 * jq[9] + 0.75 * jq[13] - 0.5 * jq[7] + 0.25 * jq[16])
+                states[0].joint_qd.assign(qd)
+            ctrls = [model.control() for _ in range(2)]
+            self._servo_two_steps(amps_arr, states, ctrls, cts)
+            wp.launch(_probe_loss_kernel, dim=1, inputs=[states[2].joint_q, loss_fd])
+            return float(loss_fd.numpy()[0])
 
         # analytic: 2-step tape from the same state
-        amps = np.full(LAND_N_PARAMS, amp, dtype=np.float32)
-        params = wp.array(amps, dtype=wp.float32, requires_grad=True)
+        params = wp.array(np.full(LAND_N_PARAMS, amp, dtype=np.float32), dtype=wp.float32, requires_grad=True)
         states = [model.state(requires_grad=True) for _ in range(3)]
         states[0].joint_q.assign(snap[0])
         states[0].joint_qd.assign(snap[1])
@@ -1822,40 +1826,15 @@ class Example:
         loss = wp.zeros(1, dtype=wp.float32, requires_grad=True)
         tape = wp.Tape()
         with tape:
-            for t in range(2):
-                if t % COLLIDE_EVERY == 0:
-                    self.pipe.collide(states[t], cts_tape)
-                wp.launch(
-                    servo_land_spline_kernel,
-                    dim=12,
-                    inputs=[
-                        params,
-                        states[t].joint_q,
-                        states[t].joint_qd,
-                        ctrls[t].joint_f,
-                        self.stand_arr,
-                        self.dofs_arr,
-                        self.land_knots_arr,
-                        LAND_N_KNOTS,
-                        SIM_DT * 1000.0,
-                        t,
-                        TAU_MAX,
-                        _bracket(t * SIM_DT * 1000.0),
-                    ],
-                )
-                states[t].clear_forces()
-                solver.step(states[t], states[t + 1], ctrls[t], cts_tape, SIM_DT)
-            jq = states[2].joint_q
-            wp.launch(
-                _probe_loss_kernel,
-                dim=1,
-                inputs=[jq, loss],
-            )
+            self._servo_two_steps(params, states, ctrls, cts_tape)
+            wp.launch(_probe_loss_kernel, dim=1, inputs=[states[2].joint_q, loss])
         tape.backward(loss)
         g_q = states[0].joint_q.grad.numpy().astype(np.float64)
         g_qd = states[0].joint_qd.grad.numpy().astype(np.float64)
         tape.zero()
 
+        # FD step: small enough that second-order error stays negligible, large
+        # enough that the loss difference clears the f32 noise floor
         eps = 3e-4
         for arr_idx, c in channels:
             fd = (rollout(arr_idx, c, +eps) - rollout(arr_idx, c, -eps)) / (2 * eps)
@@ -1864,12 +1843,9 @@ class Example:
             # float32 noise floor of a 2-step rollout
             err = abs(gv - fd)
             rel = err / max(abs(fd), 1e-12)
-            assert rel <= 0.15 or err <= 5e-5, (
-                f"grad check {'q' if arr_idx == 0 else 'qd'}[{c}]: tape={gv:.5e} fd={fd:.5e} rel={rel:.2e} abs={err:.2e}"
-            )
-            print(
-                f"grad check {'q' if arr_idx == 0 else 'qd'}[{c}]: tape={gv:.5e} fd={fd:.5e} rel={rel:.2e}", flush=True
-            )
+            msg = f"grad check {'q' if arr_idx == 0 else 'qd'}[{c}]: tape={gv:.5e} fd={fd:.5e} rel={rel:.2e}"
+            assert rel <= 0.15 or err <= 5e-5, msg + f" abs={err:.2e}"
+            print(msg, flush=True)
 
         print("gradient check passed", flush=True)
 
@@ -1879,6 +1855,9 @@ class Example:
 
 @wp.kernel
 def _probe_loss_kernel(joint_q: wp.array[float], loss: wp.array[float]):
+    """The probe loss: a fixed linear combination of four joint channels.
+    Both sides of the gradient check launch this same kernel - the tape
+    for the analytic gradient, the FD rollouts for the numeric one."""
     loss[0] = 1.0 * joint_q[9] + 0.75 * joint_q[13] - 0.5 * joint_q[7] + 0.25 * joint_q[16]
 
 
