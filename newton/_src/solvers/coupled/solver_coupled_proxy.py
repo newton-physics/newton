@@ -777,6 +777,9 @@ class SolverCoupledProxy(SolverCoupled):
         return int(self._coupling.iterations) > 1
 
     def _after_entries_constructed(self) -> None:
+        destinations = {mapping.dst_name for mapping in (*self._proxy_mappings, *self._proxy_particle_mappings)}
+        for name, entry in self._entries.items():
+            entry.solver.coupling_notify_proxy_feedback(name in destinations)
         self._refresh_proxy_view_maps()
         self._validate_in_place_proxy_entries()
         self._apply_proxy_effective_masses()

@@ -1,0 +1,1 @@
+Fix `SolverImplicitMPM` proxy feedback for sub-stepped coupled entries: `coupling_harvest_proxy_wrenches` and `coupling_harvest_proxy_particle_forces` now accumulate the collider impulses of every MPM substep instead of dividing only the last substep's impulse by the full coupled `dt`, which scaled the force fed back to `SolverCoupledProxy` source bodies by `1 / substeps`.

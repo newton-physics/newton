@@ -1190,6 +1190,191 @@ def test_coupled_model_omits_rod_with_replaced_joint(test, device):
     test.assertEqual(model.curve_label, ["complete", "cut"])
 
 
+class _FixedBodyCopySolver(SolverBase, CouplingInterface):
+    """Source solver that holds its bodies still by copying the input state through."""
+
+    def step(self, state_in, state_out, control, contacts, dt):
+        del control, contacts, dt
+        if state_in is not state_out:
+            wp.copy(state_out.body_q, state_in.body_q)
+            wp.copy(state_out.body_qd, state_in.body_qd)
+
+
+def _harvest_mpm_proxy_wrench_on_fixed_plate(device, substeps, mode, in_place, step_count=12, dt=0.01):
+    """Rest a sand column on a fixed proxy plate and return the harvested vertical force and sand weight.
+
+    The plate never moves, so after the sand settles the MPM collider impulses summed over one coupled
+    step must equal the sand weight times ``dt`` regardless of how many MPM substeps run inside it.
+    """
+    voxel_size = 0.05
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0))
+    SolverImplicitMPM.register_custom_attributes(builder)
+    plate = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, -0.1), wp.quat_identity()), mass=1.0)
+    builder.add_shape_box(plate, hx=0.5, hy=0.5, hz=0.1)
+    builder.add_particle_grid(
+        pos=wp.vec3(-0.1, -0.1, 0.0),
+        rot=wp.quat_identity(),
+        vel=wp.vec3(0.0),
+        dim_x=9,
+        dim_y=9,
+        dim_z=5,
+        cell_x=voxel_size / 2.0,
+        cell_y=voxel_size / 2.0,
+        cell_z=voxel_size / 2.0,
+        mass=0.1,
+        jitter=0.0,
+        radius_mean=voxel_size / 4.0,
+    )
+    model = builder.finalize(device=device)
+
+    config = SolverImplicitMPM.Config()
+    config.voxel_size = voxel_size
+    config.grid_type = "fixed"
+    config.grid_padding = 6
+    config.max_active_cell_count = 1 << 12
+    config.strain_basis = "P0"
+    config.max_iterations = 30
+    config.critical_fraction = 0.0
+
+    coupled = SolverCoupledProxy(
+        model=model,
+        entries=[
+            SolverCoupledProxy.Entry(name="rigid", solver=_FixedBodyCopySolver, bodies=[plate]),
+            SolverCoupledProxy.Entry(
+                name="mpm",
+                solver=lambda view: SolverImplicitMPM(view, config=config, enable_timers=False),
+                particles=range(model.particle_count),
+                substeps=substeps,
+                in_place=in_place,
+            ),
+        ],
+        coupling=SolverCoupledProxy.Config(
+            proxies=[
+                SolverCoupledProxy.Proxy(
+                    source="rigid",
+                    destination="mpm",
+                    bodies=[plate],
+                    mode=mode,
+                    collision_pipeline=lambda _view: None,
+                )
+            ],
+        ),
+    )
+    state = model.state()
+    control = model.control()
+    for _ in range(step_count):
+        state.clear_forces()
+        coupled.step(state, state, control, None, dt)
+
+    harvested = coupled._proxy_mappings[0].coupling_forces.numpy()[plate]
+    weight = float(model.particle_mass.numpy().sum()) * 10.0
+    return float(harvested[2]), weight
+
+
+def _coupled_mpm_proxy_wrench_harvest_independent_of_substeps(test, device):
+    """Verify the MPM proxy wrench spans the whole coupled step when the MPM entry is sub-stepped.
+
+    The plate never moves, so lagged and staggered proxies synchronize the same inputs; the two
+    configurations cover the in-place and non-in-place sub-stepping paths of the destination entry.
+    """
+    for mode, in_place in (("lagged", True), ("staggered", False)):
+        with test.subTest(mode=mode, in_place=in_place):
+            reference, weight = _harvest_mpm_proxy_wrench_on_fixed_plate(device, 1, mode, in_place)
+            test.assertLess(reference, 0.0)
+            test.assertAlmostEqual(reference, -weight, delta=0.25 * weight)
+            substeps = 4
+            harvested, _weight = _harvest_mpm_proxy_wrench_on_fixed_plate(device, substeps, mode, in_place)
+            test.assertAlmostEqual(
+                harvested,
+                reference,
+                delta=0.1 * abs(reference),
+                msg=f"substeps={substeps}: harvested {harvested:.3f} N vs {reference:.3f} N with substeps=1",
+            )
+
+
+add_function_test(
+    TestSolverCoupledContactsAndMPM,
+    "test_mpm_proxy_wrench_harvest_independent_of_substeps",
+    _coupled_mpm_proxy_wrench_harvest_independent_of_substeps,
+    devices=get_test_devices(),
+)
+
+
+class _RisingBodySolver(SolverBase, CouplingInterface):
+    """Source solver that lifts its bodies by 0.1 m per step."""
+
+    def step(self, state_in, state_out, control, contacts, dt):
+        del control, contacts, dt
+        body_q = state_in.body_q.numpy()
+        body_q[:, 2] += 0.1
+        state_out.body_q.assign(wp.array(body_q, dtype=wp.transform, device=state_out.body_q.device))
+        wp.copy(state_out.body_qd, state_in.body_qd)
+
+
+class _ProxyPoseRecordingSolver(SolverBase, CouplingInterface):
+    """Destination solver that records the proxy body height seen by every sub-step.
+
+    Like :class:`SolverImplicitMPM`, it only reads proxy bodies and never writes
+    their state to ``state_out``.
+    """
+
+    instances: ClassVar[list] = []
+
+    def __init__(self, model):
+        super().__init__(model)
+        self.proxy_heights = []
+        self.instances.append(self)
+
+    def step(self, state_in, state_out, control, contacts, dt):
+        del state_out, control, contacts, dt
+        self.proxy_heights.append(float(state_in.body_q.numpy()[:, 2].max()))
+
+
+def _coupled_substeps_see_current_proxy_pose(test, device):
+    """Give every sub-step of a non-in-place destination the proxy pose synced for this coupled step."""
+    _ProxyPoseRecordingSolver.instances.clear()
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    for _ in range(3):
+        builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+    model = builder.finalize(device=device)
+
+    coupled = SolverCoupledProxy(
+        model=model,
+        entries=[
+            SolverCoupled.Entry(name="src", solver=_RisingBodySolver, bodies=[0]),
+            SolverCoupled.Entry(name="dst", solver=_ProxyPoseRecordingSolver, bodies=[1], substeps=2, in_place=False),
+        ],
+        coupling=SolverCoupledProxy.Config(
+            proxies=[
+                SolverCoupledProxy.Proxy(
+                    source="src",
+                    destination="dst",
+                    bodies=[0],
+                    proxy_bodies=[2],
+                    mode="staggered",
+                ),
+            ],
+        ),
+    )
+
+    state = model.state()
+    step_count = 3
+    for _ in range(step_count):
+        coupled.step(state, state, control=None, contacts=None, dt=0.5)
+
+    heights = _ProxyPoseRecordingSolver.instances[-1].proxy_heights
+    expected = [0.1 * step for step in range(1, step_count + 1) for _substep in range(2)]
+    np.testing.assert_allclose(heights, expected, rtol=0.0, atol=1.0e-6)
+
+
+add_function_test(
+    TestSolverCoupledContactsAndMPM,
+    "test_substeps_see_current_proxy_pose",
+    _coupled_substeps_see_current_proxy_pose,
+    devices=get_test_devices("basic"),
+)
+
+
 class TestSolverCoupledBasic(unittest.TestCase):
     """Test SolverCoupled with two SemiImplicit solvers (simplest case)."""
 
