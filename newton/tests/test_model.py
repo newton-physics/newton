@@ -1213,13 +1213,18 @@ class TestModelMesh(unittest.TestCase):
         with patch_sys_module("coacd", fake_coacd):
             builder.approximate_meshes(method="coacd", shape_indices=[shape])
         self.assertEqual(captured["threshold"], 0.5)
+        self.assertEqual(
+            {key: captured[key] for key in ("mcts_nodes", "mcts_iterations", "mcts_max_depth", "merge")},
+            {"mcts_nodes": 20, "mcts_iterations": 20, "mcts_max_depth": 2, "merge": False},
+        )
 
-        # an explicit argument overrides the builder default
+        # explicit arguments override the builder and search defaults
         captured.clear()
         shape = builder.add_shape_mesh(body=-1, mesh=box)
         with patch_sys_module("coacd", fake_coacd):
-            builder.approximate_meshes(method="coacd", shape_indices=[shape], threshold=0.2)
+            builder.approximate_meshes(method="coacd", shape_indices=[shape], threshold=0.2, mcts_max_depth=1)
         self.assertEqual(captured["threshold"], 0.2)
+        self.assertEqual(captured["mcts_max_depth"], 1)
 
     @requires("scipy")
     def test_mesh_approximation_coacd_limits_hull_vertices(self):

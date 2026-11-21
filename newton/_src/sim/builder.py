@@ -10754,6 +10754,8 @@ class ModelBuilder:
             is decomposed separately and may produce one or more convex shapes,
             each limited to the source mesh's ``maxhullvert`` vertices.
             CoACD decompositions repeat across runs; pass CoACD's ``seed`` through ``remeshing_kwargs`` to change it.
+            CoACD searches cuts with ``mcts_nodes=20``, ``mcts_iterations=20``, ``mcts_max_depth=2``, and
+            ``merge=False`` unless overridden through ``remeshing_kwargs``.
 
         The ``raise_on_failure`` parameter controls the behavior when the remeshing fails:
             - If `True`, an exception is raised when the remeshing fails.
@@ -10930,9 +10932,11 @@ class ModelBuilder:
                         settings = (
                             {
                                 "threshold": self.default_mesh_approximation_cfg.coacd_threshold,
+                                # A two-level cut search finds cuts that need about a third as many
+                                # parts as a greedy one-level search at similar accuracy.
                                 "mcts_nodes": 20,
-                                "mcts_iterations": 5,
-                                "mcts_max_depth": 1,
+                                "mcts_iterations": 20,
+                                "mcts_max_depth": 2,
                                 "merge": False,
                             }
                             if method == "coacd"
