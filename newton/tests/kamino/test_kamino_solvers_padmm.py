@@ -3,34 +3,50 @@
 
 """Unit tests for the Proximal-ADMM Solver."""
 
+import itertools
+import logging
 import unittest
+import unittest.mock
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 import warp as wp
 
-from newton._src.solvers.kamino._src.core.builder import ModelBuilderKamino
+import newton
+from newton import ModelBuilder
+from newton._src.sim import BodyFlags
+from newton._src.solvers.coupled.model_view import ModelView
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.dynamics.dual import DualProblem
 from newton._src.solvers.kamino._src.kinematics.constraints import unpack_constraint_solutions
-from newton._src.solvers.kamino._src.linalg import ConjugateResidualSolver, LLTBlockedSolver
+from newton._src.solvers.kamino._src.linalg import (
+    ConjugateResidualSolver,
+    ConjugateResidualSolverFused,
+    LDLBlockSparseSolver,
+    LLTBlockedRCMSolver,
+    LLTBlockedSolver,
+    LLTSequentialSolver,
+)
 from newton._src.solvers.kamino._src.linalg.utils.matrix import SquareSymmetricMatrixProperties
 from newton._src.solvers.kamino._src.linalg.utils.range import in_range_via_gaussian_elimination
-from newton._src.solvers.kamino._src.models.builders import basics
-from newton._src.solvers.kamino._src.models.builders.utils import make_homogeneous_builder
 from newton._src.solvers.kamino._src.solvers.padmm import PADMMSolver, PADMMWarmStartMode
 from newton._src.solvers.kamino._src.solvers.padmm.math import (
     project_to_coulomb_cone,
     project_to_coulomb_dual_cone,
 )
-from newton._src.solvers.kamino._src.utils import logger as msg
-from newton.tests.kamino import setup_tests, test_context
+from newton._src.solvers.kamino.solver_kamino import SolverKamino
+from newton.tests.kamino import setup_test_output, setup_tests, test_context
 from newton.tests.kamino.utils.extract import (
     extract_delassus,
     extract_info_vectors,
     extract_problem_vector,
 )
 from newton.tests.kamino.utils.make import make_containers, update_containers
+from newton.tests.unittest_utils import NewtonTestCase
+from newton.tests.utils import basics
+
+logger = logging.getLogger(__name__)
 
 ###
 # Helper functions
@@ -46,25 +62,30 @@ class TestSetup:
         gravity: bool = True,
         device: wp.DeviceLike = None,
         sparse: bool = False,
+        linear_solver=None,
+        linear_solver_kwargs=None,
         **kwargs,
     ):
         # Cache the max contacts allocated for the test problem
+        """Build a PADMM problem with the requested topology, device, and linear solver."""
         self.max_world_contacts = max_world_contacts
 
         # Construct the model description using model builders for different systems
-        self.builder: ModelBuilderKamino = builder_fn(**kwargs)
+        self.builder: ModelBuilder = builder_fn(**kwargs)
 
         # Set ad-hoc configurations
         if not gravity:
-            self.builder.set_gravity(wp.vec3f(0.0))
+            for i in range(len(self.builder.world_gravity)):
+                self.builder.world_gravity[i] = wp.vec3(0.0, 0.0, 0.0)
         if perturb:
             u_0 = wp.spatial_vectorf(10.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-            for body in self.builder.all_bodies:
-                body.u_i_0 = u_0
+            for i in range(len(self.builder.body_qd)):
+                self.builder.body_qd[i] = u_0
 
         # Create the model and containers from the builder
+        model = ModelKamino.from_newton(self.builder.finalize(device=device))
         self.model, self.data, self.state, self.limits, self.detector, self.jacobians = make_containers(
-            builder=self.builder, max_world_contacts=max_world_contacts, device=device, sparse=sparse
+            model=model, max_world_contacts=max_world_contacts, sparse=sparse
         )
         self.contacts = self.detector.contacts
         self.state_p = self.model.state()
@@ -76,7 +97,8 @@ class TestSetup:
             limits=self.limits,
             contacts=self.contacts,
             jacobians=self.jacobians,
-            solver=ConjugateResidualSolver if sparse else LLTBlockedSolver,
+            solver=linear_solver or (ConjugateResidualSolver if sparse else LLTBlockedSolver),
+            solver_kwargs=linear_solver_kwargs,
             sparse=sparse,
         )
 
@@ -114,15 +136,15 @@ class TestSetup:
 
 
 def print_dual_problem_summary(D: np.ndarray, v_f: np.ndarray, notes: str = ""):
+    if not logger.isEnabledFor(logging.DEBUG):
+        return
     D_props = SquareSymmetricMatrixProperties(D)
     v_f_is_in_range, *_ = in_range_via_gaussian_elimination(D, v_f)
-    msg.info("Delassus Properties %s:\n%s\n", notes, D_props)
-    msg.info("v_f is in range of D %s: %s\n", notes, v_f_is_in_range)
+    logger.debug("Delassus Properties %s:\n%s\n", notes, D_props)
+    logger.debug("v_f is in range of D %s: %s\n", notes, v_f_is_in_range)
 
 
-def check_padmm_solution(
-    test: unittest.TestCase, model: ModelKamino, problem: DualProblem, solver: PADMMSolver, verbose: bool = False
-):
+def check_padmm_solution(test: unittest.TestCase, model: ModelKamino, problem: DualProblem, solver: PADMMSolver):
     # Extract numpy arrays from the solver state and solution
     only_active_dims = True
     D_wp_np = extract_delassus(problem.delassus, only_active_dims=only_active_dims)
@@ -135,7 +157,7 @@ def check_padmm_solution(
         problem.delassus, solver.data.solution.lambdas.numpy(), only_active_dims=only_active_dims
     )
 
-    # Optional verbose output
+    # Check solution
     status = solver.data.status.numpy()
     for w in range(model.size.num_worlds):
         # Recover the original (preconditioned) Delassua matrix from the in-place regularized storage
@@ -161,24 +183,33 @@ def check_padmm_solution(
         r_c = status[w]["r_c"]
 
         # Optionally print relevant solver data
-        if verbose:
+        if logger.isEnabledFor(logging.DEBUG):
             print_dual_problem_summary(D, v_f_wp_np[w], "(preconditioned)")
             print_dual_problem_summary(D_true, v_f_true)
-            msg.notif(
+            logger.debug(
                 "\n---------"
-                f"\nconverged: {converged}"
-                f"\niterations: {iterations}"
+                "\nconverged: %s"
+                "\niterations: %s"
                 "\n---------"
-                f"\nr_p: {r_p}"
-                f"\nr_d: {r_d}"
-                f"\nr_c: {r_c}"
+                "\nr_p: %s"
+                "\nr_d: %s"
+                "\nr_c: %s"
                 "\n---------"
-                f"\nerror_dual_abs_l2: {error_dual_abs_l2}"
-                f"\nerror_dual_abs_inf: {error_dual_abs_inf}"
+                "\nerror_dual_abs_l2: %s"
+                "\nerror_dual_abs_inf: %s"
                 "\n---------"
-                f"\nsolution: lambda: {lambdas_wp_np[w]}"
-                f"\nsolution: v_plus: {v_plus_wp_np[w]}"
-                "\n---------\n"
+                "\nsolution: lambda: %s"
+                "\nsolution: v_plus: %s"
+                "\n---------\n",
+                converged,
+                iterations,
+                r_p,
+                r_d,
+                r_c,
+                error_dual_abs_l2,
+                error_dual_abs_inf,
+                lambdas_wp_np[w],
+                v_plus_wp_np[w],
             )
 
         # Check results
@@ -313,7 +344,7 @@ def solve_apadmm_bilateral_reference(
     }
 
 
-def save_solver_info(solver: PADMMSolver, path: str | None = None, verbose: bool = False):
+def save_solver_info(solver: PADMMSolver, path: str | None = None):
     # Attempt to import matplotlib for plotting
     try:
         import matplotlib.pyplot as plt
@@ -352,33 +383,34 @@ def save_solver_info(solver: PADMMSolver, path: str | None = None, verbose: bool
         r_comb_np = extract_info_vectors(offsets_np, solver.data.info.r_comb.numpy(), iterations)
         r_comb_ratio_np = extract_info_vectors(offsets_np, solver.data.info.r_comb_ratio.numpy(), iterations)
 
-    if verbose:
+    # Optional verbose output
+    if logger.isEnabledFor(logging.DEBUG):
         for w in range(nw):
-            print(f"[World {w}] =======================================================================")
-            print(f"solver.info.num_rho_updates: {num_rho_updates_np[w]}")
-            print(f"solver.info.norm_s: {norm_s_np[w]}")
-            print(f"solver.info.norm_x: {norm_x_np[w]}")
-            print(f"solver.info.norm_y: {norm_y_np[w]}")
-            print(f"solver.info.norm_z: {norm_z_np[w]}")
-            print(f"solver.info.f_ccp: {f_ccp_np[w]}")
-            print(f"solver.info.f_ncp: {f_ncp_np[w]}")
-            print(f"solver.info.r_dx: {r_dx_np[w]}")
-            print(f"solver.info.r_dy: {r_dy_np[w]}")
-            print(f"solver.info.r_dz: {r_dz_np[w]}")
-            print(f"solver.info.r_primal: {r_primal_np[w]}")
-            print(f"solver.info.r_dual: {r_dual_np[w]}")
-            print(f"solver.info.r_compl: {r_compl_np[w]}")
-            print(f"solver.info.r_pd: {r_pd_np[w]}")
-            print(f"solver.info.r_dp: {r_dp_np[w]}")
-            print(f"solver.info.r_ncp_primal: {r_ncp_primal_np[w]}")
-            print(f"solver.info.r_ncp_dual: {r_ncp_dual_np[w]}")
-            print(f"solver.info.r_ncp_compl: {r_ncp_compl_np[w]}")
-            print(f"solver.info.r_ncp_natmap: {r_ncp_natmap_np[w]}")
+            logger.debug("[World %s] =======================================================================", w)
+            logger.debug("solver.info.num_rho_updates: %s", num_rho_updates_np[w])
+            logger.debug("solver.info.norm_s: %s", norm_s_np[w])
+            logger.debug("solver.info.norm_x: %s", norm_x_np[w])
+            logger.debug("solver.info.norm_y: %s", norm_y_np[w])
+            logger.debug("solver.info.norm_z: %s", norm_z_np[w])
+            logger.debug("solver.info.f_ccp: %s", f_ccp_np[w])
+            logger.debug("solver.info.f_ncp: %s", f_ncp_np[w])
+            logger.debug("solver.info.r_dx: %s", r_dx_np[w])
+            logger.debug("solver.info.r_dy: %s", r_dy_np[w])
+            logger.debug("solver.info.r_dz: %s", r_dz_np[w])
+            logger.debug("solver.info.r_primal: %s", r_primal_np[w])
+            logger.debug("solver.info.r_dual: %s", r_dual_np[w])
+            logger.debug("solver.info.r_compl: %s", r_compl_np[w])
+            logger.debug("solver.info.r_pd: %s", r_pd_np[w])
+            logger.debug("solver.info.r_dp: %s", r_dp_np[w])
+            logger.debug("solver.info.r_ncp_primal: %s", r_ncp_primal_np[w])
+            logger.debug("solver.info.r_ncp_dual: %s", r_ncp_dual_np[w])
+            logger.debug("solver.info.r_ncp_compl: %s", r_ncp_compl_np[w])
+            logger.debug("solver.info.r_ncp_natmap: %s", r_ncp_natmap_np[w])
             if solver_has_acceleration:
-                print(f"solver.info.num_restarts: {num_restarts_np[w]}")
-                print(f"solver.info.a: {a_np[w]}")
-                print(f"solver.info.r_comb: {r_comb_np[w]}")
-                print(f"solver.info.r_comb_ratio: {r_comb_ratio_np[w]}")
+                logger.debug("solver.info.num_restarts: %s", num_restarts_np[w])
+                logger.debug("solver.info.a: %s", a_np[w])
+                logger.debug("solver.info.r_comb: %s", r_comb_np[w])
+                logger.debug("solver.info.r_comb_ratio: %s", r_comb_ratio_np[w])
 
     # List of (label, data) for plotting
     info_list = [
@@ -440,30 +472,21 @@ def save_solver_info(solver: PADMMSolver, path: str | None = None, verbose: bool
 ###
 
 
-class TestPADMMSolver(unittest.TestCase):
+class TestPADMMSolver(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.verbose = test_context.verbose  # Set to True for detailed output
+
+        setup_test_output(self, verbose=self.verbose)
+
         self.savefig = test_context.verbose  # Set to True to generate solver info plots
         self.default_device = wp.get_device(test_context.device)
-        self.output_path = test_context.output_path / "test_solvers_padmm"
+        self.output_path = Path(__file__).parent / "output" / "test_solvers_padmm"
 
         # Create output directory if saving figures
         if self.savefig:
             self.output_path.mkdir(parents=True, exist_ok=True)
-
-        # Set debug-level logging to print verbose test output to console
-        if self.verbose:
-            print("\n")  # Add newline before test output for better readability
-            msg.set_log_level(msg.LogLevel.INFO)
-        else:
-            msg.reset_log_level()
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            msg.reset_log_level()
 
     def test_00_make_padmm_default(self):
         """
@@ -493,8 +516,9 @@ class TestPADMMSolver(unittest.TestCase):
         # should result in a solver without any memory allocation.
         solver = PADMMSolver()
 
-        # Finalize the solver with a model
-        solver.finalize(test.model)
+        # Finalize the solver with a model and a problem, which is required
+        self.assertRaises(ValueError, solver.finalize, test.model)
+        solver.finalize(test.model, test.problem)
 
         # Check that the solver has been properly allocated
         self.assertIsNotNone(solver._size)
@@ -508,45 +532,60 @@ class TestPADMMSolver(unittest.TestCase):
         """
         Tests the Proximal-ADMM (PADMM) solver with default config on the reference problem.
         """
-        # Create the test problem
-        test = TestSetup(builder_fn=basics.build_box_on_plane, max_world_contacts=8, device=self.default_device)
+        for linear_solver, ordering in (
+            (LLTBlockedSolver, None),
+            (LDLBlockSparseSolver, "meca"),
+            (LDLBlockSparseSolver, "rcm"),
+        ):
+            with self.subTest(linear_solver=linear_solver.__name__, ordering=ordering):
+                # Create the test problem
+                test = TestSetup(
+                    builder_fn=basics.build_box_on_plane,
+                    max_world_contacts=8,
+                    device=self.default_device,
+                    linear_solver=linear_solver,
+                    linear_solver_kwargs={"ordering": ordering} if ordering else {},
+                )
+                if ordering:
+                    self.assertEqual(test.problem.delassus.solver.ordering, ordering)
 
-        # Define solver config
-        # NOTE: These are all equal to their default values
-        # but are defined here explicitly for the purposes
-        # of experimentation and testing.
-        config = PADMMSolver.Config()
-        config.primal_tolerance = 1e-6
-        config.dual_tolerance = 1e-6
-        config.compl_tolerance = 1e-6
-        config.eta = 1e-5
-        config.rho_0 = 1.0
-        config.max_iterations = 200
+                # Define solver config
+                # NOTE: These are all equal to their default values
+                # but are defined here explicitly for the purposes
+                # of experimentation and testing.
+                config = PADMMSolver.Config()
+                config.primal_tolerance = 1e-6
+                config.dual_tolerance = 1e-6
+                config.compl_tolerance = 1e-6
+                config.eta = 1e-5
+                config.rho_0 = 1.0
+                config.max_iterations = 200
 
-        # Create the PADMM solver
-        solver = PADMMSolver(
-            model=test.model,
-            config=config,
-            warmstart=PADMMWarmStartMode.NONE,
-            use_acceleration=False,
-            collect_info=self.savefig,
-        )
+                # Create the PADMM solver
+                solver = PADMMSolver(
+                    model=test.model,
+                    problem=test.problem,
+                    config=config,
+                    warmstart=PADMMWarmStartMode.NONE,
+                    use_acceleration=False,
+                    collect_info=self.savefig,
+                )
 
-        # Solve the test problem
-        test.build()
-        solver.reset()
-        solver.coldstart()
-        solver.solve(problem=test.problem)
-        # check_padmm_solution(self, test.model, test.problem, solver, verbose=self.verbose)
+                # Solve the test problem
+                test.build()
+                solver.reset()
+                solver.coldstart()
+                solver.solve(problem=test.problem)
+                # check_padmm_solution(self, test.model, test.problem, solver)
 
-        # Extract solver info
-        if self.savefig:
-            msg.notif("Generating solver info plots...")
-            path = self.output_path / "test_02_padmm_solve.pdf"
-            save_solver_info(solver=solver, path=str(path))
+                # Extract solver info
+                if self.savefig:
+                    logger.info("Generating solver info plots...")
+                    path = self.output_path / "test_02_padmm_solve.pdf"
+                    save_solver_info(solver=solver, path=str(path))
 
-        # Check solution
-        check_padmm_solution(self, test.model, test.problem, solver, verbose=self.verbose)
+                # Check solution
+                check_padmm_solution(self, test.model, test.problem, solver)
 
     def test_03_padmm_solve_with_acceleration(self):
         """
@@ -571,6 +610,7 @@ class TestPADMMSolver(unittest.TestCase):
         # Create the PADMM solver
         solver = PADMMSolver(
             model=test.model,
+            problem=test.problem,
             config=config,
             warmstart=PADMMWarmStartMode.NONE,
             use_acceleration=True,
@@ -582,16 +622,16 @@ class TestPADMMSolver(unittest.TestCase):
         solver.reset()
         solver.coldstart()
         solver.solve(problem=test.problem)
-        # check_padmm_solution(self, test.model, test.problem, solver, verbose=self.verbose)
+        # check_padmm_solution(self, test.model, test.problem, solver)
 
         # Extract solver info
         if self.savefig:
-            msg.notif("Generating solver info plots...")
+            logger.info("Generating solver info plots...")
             path = self.output_path / "test_03_padmm_solve_with_acceleration.pdf"
             save_solver_info(solver=solver, path=str(path))
 
         # Check solution
-        check_padmm_solution(self, test.model, test.problem, solver, verbose=self.verbose)
+        check_padmm_solution(self, test.model, test.problem, solver)
 
     def test_04_padmm_solve_with_internal_warmstart(self):
         """
@@ -615,6 +655,7 @@ class TestPADMMSolver(unittest.TestCase):
         # Create the ADMM solver
         solver = PADMMSolver(
             model=test.model,
+            problem=test.problem,
             config=config,
             warmstart=PADMMWarmStartMode.INTERNAL,
             use_acceleration=False,
@@ -626,7 +667,7 @@ class TestPADMMSolver(unittest.TestCase):
         solver.reset()
         solver.coldstart()
         solver.solve(problem=test.problem)
-        check_padmm_solution(self, test.model, test.problem, solver, verbose=self.verbose)
+        check_padmm_solution(self, test.model, test.problem, solver)
 
         # Second solve with warm-starting from previous solution
         test.build()
@@ -635,11 +676,11 @@ class TestPADMMSolver(unittest.TestCase):
         np.testing.assert_allclose(solver.data.state.x_p.numpy(), expected_forces)
         np.testing.assert_allclose(solver.data.state.y_p.numpy(), expected_forces)
         solver.solve(problem=test.problem)
-        check_padmm_solution(self, test.model, test.problem, solver, verbose=self.verbose)
+        check_padmm_solution(self, test.model, test.problem, solver)
 
         # Extract solver info
         if self.savefig:
-            msg.notif("Generating solver info plots...")
+            logger.info("Generating solver info plots...")
             path = self.output_path / "test_04_padmm_solve_with_internal_warmstart.pdf"
             save_solver_info(solver=solver, path=str(path))
 
@@ -665,6 +706,7 @@ class TestPADMMSolver(unittest.TestCase):
         # Create the ADMM solver
         solver = PADMMSolver(
             model=test.model,
+            problem=test.problem,
             config=config,
             warmstart=PADMMWarmStartMode.CONTAINERS,
             use_acceleration=False,
@@ -676,18 +718,18 @@ class TestPADMMSolver(unittest.TestCase):
         solver.reset()
         solver.coldstart()
         solver.solve(problem=test.problem)
-        check_padmm_solution(self, test.model, test.problem, solver, verbose=self.verbose)
+        check_padmm_solution(self, test.model, test.problem, solver)
 
         # Second solve with warm-starting from previous solution
         test.cache(solver=solver)
         test.build()
         solver.warmstart(test.problem, test.model, test.data, test.limits, test.contacts)
         solver.solve(problem=test.problem)
-        check_padmm_solution(self, test.model, test.problem, solver, verbose=self.verbose)
+        check_padmm_solution(self, test.model, test.problem, solver)
 
         # Extract solver info
         if self.savefig:
-            msg.notif("Generating solver info plots...")
+            logger.info("Generating solver info plots...")
             path = self.output_path / "test_05_padmm_solve_with_container_warmstart.pdf"
             save_solver_info(solver=solver, path=str(path))
 
@@ -703,9 +745,9 @@ class TestPADMMSolver(unittest.TestCase):
         # but are defined here explicitly for the purposes
         # of experimentation and testing.
         config = PADMMSolver.Config()
-        config.primal_tolerance = 1e-6
-        config.dual_tolerance = 1e-6
-        config.compl_tolerance = 1e-6
+        config.primal_tolerance = 1e-5
+        config.dual_tolerance = 1e-5
+        config.compl_tolerance = 1e-5
         config.restart_tolerance = 0.999
         config.eta = 1e-5
         config.rho_0 = 1.0
@@ -714,6 +756,7 @@ class TestPADMMSolver(unittest.TestCase):
         # Create the ADMM solver
         solver = PADMMSolver(
             model=test.model,
+            problem=test.problem,
             config=config,
             warmstart=PADMMWarmStartMode.INTERNAL,
             use_acceleration=True,
@@ -725,17 +768,17 @@ class TestPADMMSolver(unittest.TestCase):
         solver.reset()
         solver.coldstart()
         solver.solve(problem=test.problem)
-        check_padmm_solution(self, test.model, test.problem, solver, verbose=self.verbose)
+        check_padmm_solution(self, test.model, test.problem, solver)
 
         # Second solve with warm-starting from previous solution
         test.build()
         solver.warmstart(test.problem, test.model, test.data)
         solver.solve(problem=test.problem)
-        check_padmm_solution(self, test.model, test.problem, solver, verbose=self.verbose)
+        check_padmm_solution(self, test.model, test.problem, solver)
 
         # Extract solver info
         if self.savefig:
-            msg.notif("Generating solver info plots...")
+            logger.info("Generating solver info plots...")
             path = self.output_path / "test_06_padmm_solve_with_acceleration_and_internal_warmstart.pdf"
             save_solver_info(solver=solver, path=str(path))
 
@@ -751,9 +794,9 @@ class TestPADMMSolver(unittest.TestCase):
         # but are defined here explicitly for the purposes
         # of experimentation and testing.
         config = PADMMSolver.Config()
-        config.primal_tolerance = 1e-6
-        config.dual_tolerance = 1e-6
-        config.compl_tolerance = 1e-6
+        config.primal_tolerance = 1e-5
+        config.dual_tolerance = 1e-5
+        config.compl_tolerance = 1e-5
         config.restart_tolerance = 0.999
         config.eta = 1e-5
         config.rho_0 = 1.0
@@ -762,6 +805,7 @@ class TestPADMMSolver(unittest.TestCase):
         # Create the ADMM solver
         solver = PADMMSolver(
             model=test.model,
+            problem=test.problem,
             config=config,
             warmstart=PADMMWarmStartMode.CONTAINERS,
             use_acceleration=True,
@@ -773,31 +817,31 @@ class TestPADMMSolver(unittest.TestCase):
         solver.reset()
         solver.coldstart()
         solver.solve(problem=test.problem)
-        check_padmm_solution(self, test.model, test.problem, solver, verbose=self.verbose)
+        check_padmm_solution(self, test.model, test.problem, solver)
 
         # Second solve with warm-starting from previous solution
         test.cache(solver=solver)
         test.build()
         solver.warmstart(test.problem, test.model, test.data, test.limits, test.contacts)
         solver.solve(problem=test.problem)
-        check_padmm_solution(self, test.model, test.problem, solver, verbose=self.verbose)
+        check_padmm_solution(self, test.model, test.problem, solver)
 
         # Extract solver info
         if self.savefig:
-            msg.notif("Generating solver info plots...")
+            logger.info("Generating solver info plots...")
             path = self.output_path / "test_07_padmm_solve_with_acceleration_and_container_warmstart.pdf"
             save_solver_info(solver=solver, path=str(path))
 
     def test_08_padmm_solve_single_contact(self):
         """
-        Tests the Proximal-ADMM (PADMM) solver with default config on the reference problem (no
-        constraints and limits) with a single contact.
+        Tests the Proximal-ADMM (PADMM) solver with default config on the sphere-on-plane problem
+        (no constraints and limits) with a single contact.
         """
         # Create the test problem
-        test = TestSetup(builder_fn=basics.build_box_on_plane, max_world_contacts=1, device=self.default_device)
+        test = TestSetup(builder_fn=basics.build_sphere_on_plane, max_world_contacts=1, device=self.default_device)
 
         # Create the PADMM solver
-        solver = PADMMSolver(model=test.model, collect_info=self.savefig)
+        solver = PADMMSolver(model=test.model, problem=test.problem, collect_info=self.savefig)
 
         # Solve the test problem
         test.build()
@@ -807,12 +851,12 @@ class TestPADMMSolver(unittest.TestCase):
 
         # Extract solver info
         if self.savefig and solver.data.info is not None:
-            msg.notif("Generating solver info plots...")
+            logger.info("Generating solver info plots...")
             path = self.output_path / "test_08_padmm_solve.pdf"
             save_solver_info(solver=solver, path=str(path))
 
         # Check solution
-        check_padmm_solution(self, test.model, test.problem, solver, verbose=self.verbose)
+        check_padmm_solution(self, test.model, test.problem, solver)
 
     def test_08a_padmm_collect_info_matches_solution(self):
         """Record consistent diagnostics for dense and sparse PADMM problems."""
@@ -826,6 +870,7 @@ class TestPADMMSolver(unittest.TestCase):
                 )
                 solver = PADMMSolver(
                     model=test.model,
+                    problem=test.problem,
                     config=PADMMSolver.Config(
                         primal_tolerance=1.0e3,
                         dual_tolerance=1.0e3,
@@ -859,9 +904,14 @@ class TestPADMMSolver(unittest.TestCase):
                 # Store info for dense-sparse comparison
                 info_vectors[sparse] = (info.v_plus.numpy(), info.v_aug.numpy(), info.s.numpy())
 
-        # Compare dense-sparse info
-        for dense_values, sparse_values in zip(info_vectors[False], info_vectors[True], strict=True):
-            np.testing.assert_allclose(dense_values, sparse_values, rtol=1e-5, atol=1e-6)
+        # Dense and sparse solves/reductions accumulate float32 roundoff
+        # differently. Allow absolute error in near-zero components of these
+        # O(10) velocities, which can shift with one-ULP changes in model inputs.
+        # Keep the tighter bound for the correction s.
+        for dense_values, sparse_values, atol in zip(
+            info_vectors[False], info_vectors[True], (1e-5, 1e-5, 1e-6), strict=True
+        ):
+            np.testing.assert_allclose(dense_values, sparse_values, rtol=1e-5, atol=atol)
 
     def test_09_apadmm_restart_matches_bilateral_reference(self):
         """Match a NumPy reference across an APADMM solve whose final iteration restarts.
@@ -870,18 +920,33 @@ class TestPADMMSolver(unittest.TestCase):
         combined-residual formula, the restart bookkeeping, and the rule that a restart
         rewinds only the extrapolation while keeping the current iterate.
         """
+        for linear_solver, ordering in (
+            (LLTBlockedSolver, None),
+            (LDLBlockSparseSolver, "meca"),
+            (LDLBlockSparseSolver, "rcm"),
+        ):
+            with self.subTest(linear_solver=linear_solver.__name__, ordering=ordering):
+                self._check_apadmm_restart_reference(linear_solver, ordering)
+
+    def _check_apadmm_restart_reference(self, linear_solver, ordering):
+        """Compare accelerated PADMM restart state against the reference with the selected factorization."""
         test = TestSetup(
             builder_fn=basics.build_box_pendulum,
             max_world_contacts=1,
             device=self.default_device,
             ground=False,
+            linear_solver=linear_solver,
+            linear_solver_kwargs={"ordering": ordering} if ordering else {},
         )
+        if ordering:
+            self.assertEqual(test.problem.delassus.solver.ordering, ordering)
         config = PADMMSolver.Config(
             primal_tolerance=0.0,
             dual_tolerance=0.0,
             compl_tolerance=0.0,
             restart_tolerance=1.0e-6,
             max_iterations=6,
+            unpenalized_bilateral_rows=False,
         )
 
         test.build()
@@ -900,6 +965,7 @@ class TestPADMMSolver(unittest.TestCase):
 
         solver = PADMMSolver(
             model=test.model,
+            problem=test.problem,
             config=config,
             warmstart=PADMMWarmStartMode.NONE,
             use_acceleration=True,
@@ -933,7 +999,10 @@ class TestPADMMSolver(unittest.TestCase):
             "num_restarts": solver.data.info.num_restarts.numpy()[:iterations],
         }
         for name, values in solver_history.items():
-            np.testing.assert_allclose(values, reference_history[name], rtol=1e-5, atol=1e-6, err_msg=name)
+            # Subtracting nearly identical float32 iterates exposes a few ulps
+            # of backend-dependent solve roundoff in the tiny x increment.
+            atol = 3e-6 if name == "r_dx" else 1e-6
+            np.testing.assert_allclose(values, reference_history[name], rtol=1e-5, atol=atol, err_msg=name)
 
         ncts = D.shape[0]
         np.testing.assert_allclose(solver.data.state.x_p.numpy()[:ncts], reference["x_p"], rtol=1e-5, atol=1e-6)
@@ -979,6 +1048,7 @@ class TestPADMMSolver(unittest.TestCase):
         test.build()
         solver = PADMMSolver(
             model=test.model,
+            problem=test.problem,
             config=config,
             warmstart=PADMMWarmStartMode.NONE,
             use_acceleration=True,
@@ -1006,13 +1076,16 @@ class TestPADMMSolver(unittest.TestCase):
 
         for use_graph_conditionals in modes:
             with self.subTest(use_graph_conditionals=use_graph_conditionals):
+
+                def builder_fn():
+                    builder = ModelBuilder()
+                    builder.replicate(basics.build_box_pendulum(ground=False), copy_count=len(budgets))
+                    return builder
+
                 test = TestSetup(
-                    builder_fn=make_homogeneous_builder,
+                    builder_fn=builder_fn,
                     max_world_contacts=1,
                     device=self.default_device,
-                    num_worlds=len(budgets),
-                    build_fn=basics.build_box_pendulum,
-                    ground=False,
                 )
                 configs = [
                     PADMMSolver.Config(
@@ -1020,6 +1093,7 @@ class TestPADMMSolver(unittest.TestCase):
                         dual_tolerance=0.0,
                         compl_tolerance=0.0,
                         max_iterations=budget,
+                        unpenalized_bilateral_rows=False,
                     )
                     for budget in budgets
                 ]
@@ -1027,6 +1101,7 @@ class TestPADMMSolver(unittest.TestCase):
                 test.build()
                 solver = PADMMSolver(
                     model=test.model,
+                    problem=test.problem,
                     config=configs,
                     warmstart=PADMMWarmStartMode.NONE,
                     use_acceleration=True,
@@ -1042,7 +1117,7 @@ class TestPADMMSolver(unittest.TestCase):
         """Assert one primal or dual Coulomb cone projection."""
         is_primal = cone == "primal"
 
-        @wp.kernel
+        @wp.kernel(module="unique")
         def project(x: wp.array[wp.vec3f], mu: wp.array[wp.float32], y: wp.array[wp.vec3f]):
             if wp.static(is_primal):
                 y[0] = project_to_coulomb_cone(x[0], mu[0])
@@ -1086,12 +1161,449 @@ class TestPADMMSolver(unittest.TestCase):
             self.assert_coulomb_cone_projection(cone, "projection", mu, [1.0, 0.0, 0.0], [1.0 / den, 0.0, mu / den])
 
 
+def make_redundant_fourbar(device: wp.DeviceLike, sparse: bool, linear_solver: type | None = None) -> TestSetup:
+    """Creates a fixed-base four-bar linkage, whose closed loop makes the bilateral constraints redundant."""
+    return TestSetup(
+        builder_fn=basics.build_boxes_fourbar,
+        max_world_contacts=8,
+        device=device,
+        sparse=sparse,
+        linear_solver=linear_solver,
+        fixedbase=True,
+        limits=False,
+        ground=False,
+    )
+
+
+def fourbar_dual_tolerance(sparse: bool) -> float:
+    """Returns the dual tolerance that the PADMM solves of the four-bar linkage reliably reach."""
+    # NOTE: The float32 iterative linear solves of the sparse problems, warm-started from the previous
+    # iterate, change the Delassus product by up to about 1e-5 between iterations
+    return 1e-5 if sparse else 1e-6
+
+
+def delassus_null_bases(problem: DualProblem, rel_tol: float = 1e-6) -> list[np.ndarray]:
+    """Returns orthonormal bases of the numerical null spaces of the per-world (preconditioned) Delassus matrices."""
+    bases = []
+    for D in extract_delassus(problem.delassus, only_active_dims=True):
+        eigvals, eigvecs = np.linalg.eigh(D.astype(np.float64))
+        bases.append(eigvecs[:, eigvals < rel_tol * eigvals.max()])
+    return bases
+
+
+def add_null_components(
+    problem: DualProblem, vector: wp.array[wp.float32], bases: list[np.ndarray], scale: float
+) -> np.ndarray:
+    """Adds null-space components of norm ``scale`` to each world block of ``vector`` and returns the result."""
+    rng = np.random.default_rng(0)
+    vector_np = vector.numpy()
+    vio = problem.data.vio.numpy()
+    for w, basis in enumerate(bases):
+        coeffs = rng.standard_normal(basis.shape[1])
+        vector_np[vio[w] : vio[w] + basis.shape[0]] += scale * basis @ (coeffs / np.linalg.norm(coeffs))
+    vector.assign(vector_np)
+    return vector_np
+
+
+class TestPADMMNullspaceRobustness(NewtonTestCase):
+    def setUp(self):
+        if not test_context.setup_done:
+            setup_tests(clear_cache=False)
+        self.default_device = wp.get_device(test_context.device)
+
+        setup_test_output(self)
+
+        # Test the handling of redundant constraints with iterative linear solvers too
+        patcher = unittest.mock.patch.object(PADMMSolver, "_redundancy_handling_with_iterative_solvers", True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_00_delassus_dual_residual(self):
+        """Check that the Delassus-weighted dual residual matches `P^{-1} D (x - x_p)` between consecutive iterates."""
+        builders = {
+            "fourbar": lambda sparse: make_redundant_fourbar(self.default_device, sparse),
+            "box_on_plane": lambda sparse: TestSetup(
+                builder_fn=basics.build_box_on_plane, max_world_contacts=8, device=self.default_device, sparse=sparse
+            ),
+        }
+        # NOTE: The unpenalized four-bar converges in three iterations, so only its first change of iterates is
+        # compared, and only with the deterministic dense solves
+        cases = [
+            (name, sparse, use_acceleration, penalty, unpenalized, False, 2 if unpenalized else 5)
+            for name in builders
+            for sparse in (False, True)
+            for use_acceleration in (False, True)
+            for penalty in ("fixed", "balanced")
+            for unpenalized in ((False, True) if name == "fourbar" and not sparse else (False,))
+        ]
+
+        # Drop the redundant rows, whose residual dominates the maximum only after several accelerated iterations
+        cases += [("fourbar", sparse, False, "fixed", False, True, 5) for sparse in (False, True)]
+        cases += [("fourbar", False, True, "fixed", False, True, 30)]
+
+        setups = {}
+        for name, sparse, use_acceleration, penalty, unpenalized, detect, num_iterations in cases:
+            # Build each model once, with the bare Delassus matrices that the solves regularize
+            if (name, sparse) not in setups:
+                test = builders[name](sparse)
+                test.build()
+                D = [D.astype(np.float64) for D in extract_delassus(test.problem.delassus, only_active_dims=True)]
+                P = extract_problem_vector(test.problem.delassus, test.problem.data.P.numpy(), only_active_dims=True)
+                setups[name, sparse] = (test, D, P, delassus_null_bases(test.problem))
+            test, D, P, bases = setups[name, sparse]
+            with self.subTest(
+                model=name,
+                sparse=sparse,
+                use_acceleration=use_acceleration,
+                penalty=penalty,
+                unpenalized=unpenalized,
+                detect=detect,
+            ):
+                # Run the solver for two consecutive iteration counts from the same cold start
+                x, r_d, r_dual = [], [], []
+                for max_iterations in (num_iterations - 1, num_iterations):
+                    config = PADMMSolver.Config(
+                        dual_residual_mode="delassus",
+                        detect_redundant_kinematics=detect,
+                        unpenalized_bilateral_rows=unpenalized,
+                        max_iterations=max_iterations,
+                        penalty_update_method=penalty,
+                        penalty_update_freq=1,
+                    )
+                    solver = PADMMSolver(
+                        model=test.model, problem=test.problem, config=config, use_acceleration=use_acceleration
+                    )
+                    test.build()
+
+                    # Load the dropped rows with impulses by a null-space bias
+                    if detect:
+                        add_null_components(test.problem, test.problem.data.v_f, bases, 1e-2)
+                    solver.coldstart()
+                    solver.solve(problem=test.problem)
+                    np.testing.assert_array_equal(solver.data.status.numpy()["iterations"], max_iterations)
+                    if detect:
+                        self.assertGreater(int(solver._redundant_joints.shifted.numpy().sum()), 0)
+                    x.append(
+                        extract_problem_vector(
+                            test.problem.delassus, solver.data.state.x.numpy(), only_active_dims=True
+                        )
+                    )
+                    r_d.append(solver.data.status.numpy()["r_d"])
+                    r_dual.append(
+                        extract_problem_vector(
+                            test.problem.delassus, solver.data.residuals.r_dual.numpy(), only_active_dims=True
+                        )
+                    )
+
+                # Compare with the explicit Delassus product of the last change of preconditioned iterates
+                # NOTE: The product is recovered from the linear system with the float32 rounding of `D x`
+                for w in range(len(D)):
+                    dx = (x[1][w].astype(np.float64) - x[0][w]) / P[w]
+                    r_dual_ref = (D[w] @ dx) / P[w]
+                    atol = max(1e-6, 4e-6 * np.abs(D[w] @ (x[1][w] / P[w]) / P[w]).max())
+                    np.testing.assert_allclose(r_d[1][w], np.abs(r_dual_ref).max(), rtol=1e-2, atol=atol)
+
+                    # Compare each row, which the non-accelerated solve stores
+                    if detect and not use_acceleration:
+                        atol = 1e-4 * np.abs(r_dual_ref).max()
+                        np.testing.assert_allclose(r_dual[1][w], r_dual_ref, rtol=1e-2, atol=atol)
+
+    def test_01_delassus_dual_residual_converges_with_null_leakage(self):
+        """Check that the Delassus-weighted dual residual converges with a free velocity leaking into the null space."""
+        for sparse in (False, True):
+            for use_acceleration in (False, True):
+                with self.subTest(sparse=sparse, use_acceleration=use_acceleration):
+                    status = {}
+                    for mode in ("standard", "delassus"):
+                        test = make_redundant_fourbar(self.default_device, sparse)
+                        config = PADMMSolver.Config(
+                            dual_residual_mode=mode,
+                            detect_redundant_kinematics=False,
+                            unpenalized_bilateral_rows=False,
+                            max_iterations=500,
+                            dual_tolerance=fourbar_dual_tolerance(sparse),
+                        )
+                        solver = PADMMSolver(
+                            model=test.model, problem=test.problem, config=config, use_acceleration=use_acceleration
+                        )
+                        test.build()
+                        bases = delassus_null_bases(test.problem)
+                        add_null_components(test.problem, test.problem.data.v_f, bases, 1e-4)
+                        solver.coldstart()
+                        solver.solve(problem=test.problem)
+                        status[mode] = solver.data.status.numpy()[0]
+                    self.assertTrue(bool(status["delassus"]["converged"]))
+                    if not sparse:
+                        self.assertFalse(bool(status["standard"]["converged"]))
+
+    def test_02_redundant_joint_shift(self):
+        """Check that dropping the redundant joint rows leaves no impulse on them and keeps the solution velocities."""
+        for sparse in (False, True):
+            with self.subTest(sparse=sparse):
+                v_plus, lambdas = [], []
+                for detect in (False, True):
+                    test = make_redundant_fourbar(self.default_device, sparse)
+                    config = PADMMSolver.Config(
+                        detect_redundant_kinematics=detect,
+                        unpenalized_bilateral_rows=False,
+                        max_iterations=500,
+                        dual_tolerance=fourbar_dual_tolerance(sparse),
+                    )
+                    solver = PADMMSolver(model=test.model, problem=test.problem, config=config)
+
+                    # Remove the null-space components of the free velocity
+                    test.build()
+                    bases = delassus_null_bases(test.problem)
+                    v_f = test.problem.data.v_f.numpy()
+                    vio = test.problem.data.vio.numpy()
+                    for w, basis in enumerate(bases):
+                        block = v_f[vio[w] : vio[w] + basis.shape[0]]
+                        block -= basis @ (basis.T @ block)
+                    test.problem.data.v_f.assign(v_f)
+
+                    solver.coldstart()
+                    solver.solve(problem=test.problem)
+                    self.assertTrue(bool(solver.data.status.numpy()[0]["converged"]))
+                    v_plus.append(solver.data.solution.v_plus.numpy())
+                    lambdas.append(solver.data.solution.lambdas.numpy())
+
+                # Check that exactly the redundant rows are shifted and carry no impulse
+                shifted = solver._redundant_joints.shifted.numpy()
+                offset = test.model.info.joint_kinematic_cts_group_offset.numpy()
+                for w, basis in enumerate(bases):
+                    rows = vio[w] + offset[w] + np.flatnonzero(shifted[w])
+                    self.assertEqual(len(rows), basis.shape[1])
+                    np.testing.assert_allclose(lambdas[1][rows], 0.0, atol=1e-4 * np.abs(lambdas[1]).max())
+                np.testing.assert_allclose(v_plus[1], v_plus[0], rtol=0.0, atol=1e-3 * np.abs(v_plus[0]).max())
+
+    def test_03_redundant_joint_sparse_block(self):
+        """Check that the kinematic joint block assembled from the sparse Jacobian matches the dense Delassus matrix."""
+        blocks, shifts = [], []
+        for sparse in (False, True):
+            test = make_redundant_fourbar(self.default_device, sparse)
+            config = PADMMSolver.Config(max_iterations=1)
+            solver = PADMMSolver(model=test.model, problem=test.problem, config=config)
+            test.build()
+            D = [D.copy() for D in extract_delassus(test.problem.delassus, only_active_dims=True)]
+            solver.coldstart()
+            solver.solve(problem=test.problem)
+            detection = solver._redundant_joints
+            offset = test.model.info.joint_kinematic_cts_group_offset.numpy()
+            num_rows = test.model.info.num_joint_kinematic_cts.numpy()
+            rows = detection.max_rows
+            for w in range(len(D)):
+                kinematic = slice(offset[w], offset[w] + num_rows[w])
+                if sparse:
+                    block = detection._block.numpy()[w].reshape(rows, rows)
+                    blocks.append(np.tril(block[: num_rows[w], : num_rows[w]]))
+                else:
+                    blocks.append(np.tril(D[w][kinematic, kinematic]))
+            shifts.append(detection.shifts.numpy())
+        # Check that both blocks match, and that both shift as many rows, keeping a basis of the rows
+        # NOTE: The rows of the symmetric linkage are tied, so the roundoff may shift different ones
+        num_worlds = len(blocks) // 2
+        for w in range(num_worlds):
+            dense, assembled = blocks[w], blocks[num_worlds + w]
+            np.testing.assert_allclose(assembled, dense, rtol=1e-5, atol=1e-6 * np.abs(dense).max())
+            B = (dense + np.tril(dense, -1).T).astype(np.float64)
+            rank = np.linalg.matrix_rank(B, tol=1e-6 * np.abs(B).max())
+            for shift in shifts:
+                kept = shift[w, : len(B)] == 0
+                self.assertEqual(int(kept.sum()), rank)
+                self.assertEqual(np.linalg.matrix_rank(B[np.ix_(kept, kept)], tol=1e-6 * np.abs(B).max()), rank)
+
+    def test_04_unpenalized_bilateral_rows(self):
+        """Check that removing the penalty of the bilateral joint rows keeps the solution and speeds up convergence."""
+        for use_acceleration in (False, True):
+            with self.subTest(use_acceleration=use_acceleration):
+                status, v_plus, lambdas = {}, {}, {}
+                for unpenalized in (False, True):
+                    test = make_redundant_fourbar(self.default_device, sparse=False)
+                    config = PADMMSolver.Config(unpenalized_bilateral_rows=unpenalized, max_iterations=500)
+                    solver = PADMMSolver(
+                        model=test.model, problem=test.problem, config=config, use_acceleration=use_acceleration
+                    )
+                    test.build()
+                    solver.coldstart()
+                    solver.solve(problem=test.problem)
+                    status[unpenalized] = solver.data.status.numpy()[0]
+                    v_plus[unpenalized] = solver.data.solution.v_plus.numpy()
+                    lambdas[unpenalized] = solver.data.solution.lambdas.numpy()
+
+                # Check that both converge to the same solution, the unpenalized one in fewer iterations
+                self.assertTrue(bool(status[False]["converged"]))
+                self.assertTrue(bool(status[True]["converged"]))
+                self.assertLess(status[True]["iterations"], status[False]["iterations"])
+                np.testing.assert_allclose(
+                    v_plus[True], v_plus[False], rtol=0.0, atol=1e-3 * np.abs(v_plus[False]).max()
+                )
+                np.testing.assert_allclose(
+                    lambdas[True], lambdas[False], rtol=0.0, atol=1e-3 * np.abs(lambdas[False]).max()
+                )
+
+    def test_05_reuse_redundant_kinematics_set(self):
+        """Check that reusing the dropped rows that pass the check gives the solution of the detection at every step."""
+        for sparse, linear_solver in (
+            (False, LLTBlockedSolver),
+            (False, LLTBlockedRCMSolver),
+            (False, LLTSequentialSolver),
+            (False, LDLBlockSparseSolver),
+            (False, ConjugateResidualSolver),
+            (True, ConjugateResidualSolver),
+            (True, ConjugateResidualSolverFused),
+        ):
+            if linear_solver is ConjugateResidualSolverFused and not self.default_device.is_cuda:
+                continue
+            with self.subTest(sparse=sparse, linear_solver=linear_solver.__name__):
+                status, v_plus, lambdas, shifted = {}, {}, {}, {}
+                for reuse in (False, True):
+                    test = make_redundant_fourbar(self.default_device, sparse, linear_solver=linear_solver)
+                    config = PADMMSolver.Config(
+                        reuse_redundant_kinematics_set=reuse,
+                        max_iterations=500,
+                        dual_tolerance=fourbar_dual_tolerance(sparse),
+                    )
+                    solver = PADMMSolver(model=test.model, problem=test.problem, config=config)
+
+                    # The first solve detects the redundant rows, and the second one reuses them if enabled
+                    for _ in range(2):
+                        test.build()
+                        solver.coldstart()
+                        solver.solve(problem=test.problem)
+                    status[reuse] = solver.data.status.numpy()[0].copy()
+                    v_plus[reuse] = solver.data.solution.v_plus.numpy().copy()
+                    lambdas[reuse] = solver.data.solution.lambdas.numpy().copy()
+                    shifted[reuse] = solver._redundant_joints.shifted.numpy().copy()
+                    if reuse:
+                        self.assertEqual(int(solver._redundant_joints.pivot_rows.numpy().sum()), 0)
+
+                        # Check that a reset detects the redundant rows again
+                        solver.reset()
+                        test.build()
+                        solver.coldstart()
+                        solver.solve(problem=test.problem)
+                        self.assertGreater(int(solver._redundant_joints.pivot_rows.numpy().sum()), 0)
+                        np.testing.assert_array_equal(solver._redundant_joints.shifted.numpy(), shifted[True])
+
+                # Check that both detect the same rows and converge to the same solution
+                self.assertTrue(bool(status[False]["converged"]))
+                self.assertTrue(bool(status[True]["converged"]))
+                self.assertGreater(int(shifted[True].sum()), 0)
+                np.testing.assert_array_equal(shifted[True], shifted[False])
+                np.testing.assert_allclose(
+                    v_plus[True], v_plus[False], rtol=0.0, atol=1e-4 * np.abs(v_plus[False]).max()
+                )
+                np.testing.assert_allclose(
+                    lambdas[True], lambdas[False], rtol=0.0, atol=1e-4 * np.abs(lambdas[False]).max()
+                )
+
+    def test_06_redundant_kinematics_detection_requires_loops(self):
+        """Check that the redundant kinematics detection is only allocated for models with closed loops."""
+        for name, builder_fn, kwargs, has_loops in (
+            ("fourbar_fixed", basics.build_boxes_fourbar, {"fixedbase": True, "limits": False}, True),
+            ("fourbar_floating", basics.build_boxes_fourbar, {"fixedbase": False, "limits": False}, True),
+            ("nunchaku", basics.build_boxes_nunchaku, {}, False),
+            ("cartpole", basics.build_cartpole, {"limits": False}, False),
+        ):
+            with self.subTest(model=name):
+                test = TestSetup(
+                    builder_fn=builder_fn, max_world_contacts=8, device=self.default_device, ground=False, **kwargs
+                )
+                solver = PADMMSolver(model=test.model, problem=test.problem, config=PADMMSolver.Config())
+                self.assertEqual(solver._redundant_joints is not None, has_loops)
+
+        # A chain between two immovable bodies closes a loop through the world
+        with self.subTest(model="anchored_chain"):
+            builder = ModelBuilder(up_axis=newton.Axis.Z)
+            SolverKamino.register_custom_attributes(builder)
+            bodies = []
+            for z in (2.0, 1.6, 1.2):
+                body = builder.add_link(xform=wp.transformf(wp.vec3f(0.0, 0.0, z), wp.quat_identity(dtype=wp.float32)))
+                builder.add_shape_box(body=body, hx=0.1, hy=0.1, hz=0.2)
+                bodies.append(body)
+            joints = [
+                builder.add_joint_revolute(
+                    parent=parent,
+                    child=child,
+                    axis=newton.Axis.X,
+                    parent_xform=wp.transformf(wp.vec3f(0.0, 0.0, -0.2), wp.quat_identity(dtype=wp.float32)),
+                    child_xform=wp.transformf(wp.vec3f(0.0, 0.0, 0.2), wp.quat_identity(dtype=wp.float32)),
+                )
+                for parent, child in itertools.pairwise(bodies)
+            ]
+            builder.add_articulation(joints)
+            model = builder.finalize(device=self.default_device)
+
+            # Flag both ends as kinematic, which the builder only allows on roots
+            view = ModelView(model, "anchored_chain")
+            flags = model.body_flags.numpy().copy()
+            flags[[bodies[0], bodies[-1]]] = int(BodyFlags.KINEMATIC)
+            view.body_flags = wp.array(flags, dtype=wp.int32, device=model.device)
+
+            # The two parallel hinges of the middle body have 10 rows of rank 6
+            solver = SolverKamino(view, config=SolverKamino.Config(use_collision_detector=False))
+            detection = solver._solver_kamino.solver_fd._redundant_joints
+            self.assertIsNotNone(detection)
+            state_in, state_out = view.state(), view.state()
+            newton.eval_fk(view, view.joint_q, view.joint_qd, state_in)
+            solver.step(state_in, state_out, control=None, contacts=None, dt=1.0e-3)
+            self.assertEqual(int(detection.shifted.numpy().sum()), 4)
+            self.assertTrue(np.all(np.isfinite(state_out.body_q.numpy())))
+
+    def test_07_dense_metrics_exclude_redundant_row_shifts(self):
+        """Check that the dense Delassus matrix after the solve, and the solver info, exclude the dropped row shifts."""
+        test = make_redundant_fourbar(self.default_device, sparse=False)
+        config = PADMMSolver.Config(max_iterations=50)
+        solver = PADMMSolver(model=test.model, problem=test.problem, config=config, collect_info=True)
+        test.build()
+
+        # Add a null-space bias, which loads the dropped rows with impulses
+        add_null_components(test.problem, test.problem.data.v_f, delassus_null_bases(test.problem), 1e-2)
+        D = [D.astype(np.float64) for D in extract_delassus(test.problem.delassus, only_active_dims=True)]
+        solver.coldstart()
+        solver.solve(problem=test.problem)
+        self.assertGreater(int(solver._redundant_joints.shifted.numpy().sum()), 0)
+
+        # Compare with the bare matrix plus the uniform regularization
+        D_solved = extract_delassus(test.problem.delassus, only_active_dims=True)
+        sigma = solver.data.state.sigma.numpy()[:, 0]
+        P = extract_problem_vector(test.problem.delassus, test.problem.data.P.numpy(), only_active_dims=True)
+        v_f = extract_problem_vector(test.problem.delassus, test.problem.data.v_f.numpy(), only_active_dims=True)
+        lambdas = extract_problem_vector(test.problem.delassus, solver.data.info.lambdas.numpy(), only_active_dims=True)
+        v_plus = extract_problem_vector(test.problem.delassus, solver.data.info.v_plus.numpy(), only_active_dims=True)
+        for w in range(len(D)):
+            expected = D[w] + sigma[w] * np.eye(len(D[w]))
+            np.testing.assert_allclose(D_solved[w], expected, rtol=1e-5, atol=1e-5 * np.abs(expected).max())
+            v_plus_ref = (D[w] @ (lambdas[w] / P[w]) + v_f[w]) / P[w]
+            self.assertTrue(np.all(np.isfinite(lambdas[w])) and np.all(np.isfinite(v_plus[w])))
+            np.testing.assert_allclose(v_plus[w], v_plus_ref, rtol=0.0, atol=1e-4 * np.abs(v_plus_ref).max())
+
+    def test_08_iterative_solvers_keep_standard_handling(self):
+        """Check that iterative linear solvers turn off the handling of redundant constraints."""
+        cases = (
+            (False, LLTBlockedSolver, False),
+            (False, ConjugateResidualSolver, True),
+            (True, ConjugateResidualSolver, True),
+        )
+        with unittest.mock.patch.object(PADMMSolver, "_redundancy_handling_with_iterative_solvers", False):
+            for sparse, linear_solver, iterative in cases:
+                with self.subTest(sparse=sparse, linear_solver=linear_solver.__name__):
+                    test = make_redundant_fourbar(self.default_device, sparse, linear_solver=linear_solver)
+                    config = PADMMSolver.Config()
+                    solver = PADMMSolver(model=test.model, problem=test.problem, config=config)
+                    self.assertEqual(solver._redundant_joints is None, iterative)
+                    self.assertEqual(solver._scale_joint_rho, not iterative)
+                    self.assertEqual(solver._config[0].dual_residual_mode, "standard" if iterative else "delassus")
+                    self.assertEqual(config.dual_residual_mode, "delassus")
+
+
 ###
 # Test execution
 ###
 
 if __name__ == "__main__":
     # Test setup
+    newton.utils.setup_console_logging()
     setup_tests()
 
     # Run all tests

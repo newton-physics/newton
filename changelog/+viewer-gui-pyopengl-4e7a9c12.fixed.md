@@ -1,0 +1,1 @@
+Fix the viewer GUI being unavailable, with an `imgui_bundle not found` warning, when PyOpenGL is not installed, as on Windows ARM64 where the `examples` extra does not install MuJoCo. The GUI now renders with Dear ImGui's native OpenGL backend and no longer needs PyOpenGL, and the warning names the import that failed.

@@ -68,6 +68,8 @@ EPS_LARGE = 1e-8
 EPS_SMALL = 1e-20
 MIN_FRICTION_SCALE = 1e-2
 SPECULATIVE_BIN_OFFSET = 128
+SPECULATIVE_CONTACT_AREA = 1.0e-2
+"""Area [m^2] that turns the pair's material stiffness into the activation stiffness of a speculative contact."""
 _NUM_VOXEL_GROUPS = (NUM_VOXEL_DEPTH_SLOTS + NUM_SPATIAL_DIRECTIONS) // (NUM_SPATIAL_DIRECTIONS + 1)
 assert NUM_NORMAL_BINS + _NUM_VOXEL_GROUPS <= SPECULATIVE_BIN_OFFSET
 assert SPECULATIVE_BIN_OFFSET + _NUM_VOXEL_GROUPS <= 256
@@ -157,21 +159,18 @@ def _max_abs_component(v: wp.vec3) -> float:
     return wp.max(wp.max(wp.abs(v[0]), wp.abs(v[1])), wp.abs(v[2]))
 
 
-@wp.func
+@wp.func_native(f"""
+if (exp_ref == {int(FIXED_EXP_NONE)}) return 0.0;
+return ::ldexp(1.0, mantissa_bits - exp_ref);
+""")
 def _fixed_shift(exp_ref: int, mantissa_bits: int) -> wp.float64:
     """Power-of-two factor mapping an entry's grid onto the fixed-point range.
 
     Returns zero for the sentinel exponent so that quantization collapses to
-    zero without a branch at every call site.  This is a double-precision
-    ``pow``, so callers hoist it out of per-component loops: computing it once
-    per entry instead of once per scalar is ~10x cheaper on consumer GPUs.
+    zero without a branch at every call site. Native ``ldexp`` constructs the
+    exact binary scale; CUDA's general double-precision ``pow`` can round an
+    integer power of two down by one ULP. Warp does not expose ``ldexp`` yet.
     """
-    if exp_ref == FIXED_EXP_NONE:
-        return wp.float64(0.0)
-    # Every non-sentinel exponent comes from a finite float32 contribution, so
-    # forming the exact shift in float64 covers its full exponent range while
-    # preserving the int64 overflow proof in ``_fixed_mantissa_bits``.
-    return wp.pow(wp.float64(2.0), wp.float64(mantissa_bits - exp_ref))
 
 
 @wp.func
@@ -416,7 +415,7 @@ def _create_unreduced_aggregate_kernel(mantissa_bits: int):
         mantissa_bits: Fixed-point mantissa width from :func:`_fixed_mantissa_bits`.
     """
 
-    @wp.kernel(enable_backward=False)
+    @wp.kernel(enable_backward=False, module="unique")
     def accumulate_unreduced_aggregates_kernel(
         reducer_data: GlobalContactReducerData,
         fixed_accum: wp.array[wp.int64],
@@ -478,7 +477,7 @@ def _create_unreduced_moment_kernel(mantissa_bits: int):
     ``weight_sum`` and ``weighted_pos_sum`` have been finalized.
     """
 
-    @wp.kernel(enable_backward=False)
+    @wp.kernel(enable_backward=False, module="unique")
     def accumulate_unreduced_moment_kernel(
         reducer_data: GlobalContactReducerData,
         fixed_accum: wp.array[wp.int64],
@@ -530,7 +529,7 @@ def _create_finalize_fixed_kernel(mantissa_bits: int):
     the moment accumulator needs them, and the moments last.
     """
 
-    @wp.kernel(enable_backward=False)
+    @wp.kernel(enable_backward=False, module="unique")
     def finalize_fixed_aggregates_kernel(
         reducer_data: GlobalContactReducerData,
         fixed_accum: wp.array[wp.int64],
@@ -604,7 +603,7 @@ def get_reduce_hydroelastic_contacts_kernel(deterministic: bool = False):
         A Warp kernel that registers buffered contacts in the hashtable.
     """
 
-    @wp.kernel(enable_backward=False)
+    @wp.kernel(enable_backward=False, module="unique")
     def reduce_hydroelastic_contacts_kernel(
         reducer_data: GlobalContactReducerData,
         shape_transform: wp.array[wp.transform],
@@ -767,7 +766,7 @@ def _create_accumulate_reduced_depth_kernel(deterministic: bool = False, mantiss
     """
     exported_ids_vec = wp.types.vector(length=VALUES_PER_KEY, dtype=wp.int32)
 
-    @wp.kernel(enable_backward=False)
+    @wp.kernel(enable_backward=False, module="unique")
     def accumulate_reduced_depth_kernel(
         ht_keys: wp.array[wp.uint64],
         ht_values: wp.array[wp.uint64],
@@ -867,7 +866,7 @@ def _create_accumulate_moments_kernel(
     """
     exported_ids_vec = wp.types.vector(length=VALUES_PER_KEY, dtype=wp.int32)
 
-    @wp.kernel(enable_backward=False)
+    @wp.kernel(enable_backward=False, module="unique")
     def accumulate_moments_kernel(
         ht_keys: wp.array[wp.uint64],
         ht_values: wp.array[wp.uint64],
@@ -982,7 +981,6 @@ def _create_accumulate_moments_kernel(
 
 def create_export_hydroelastic_reduced_contacts_kernel(
     writer_func: Any,
-    margin_contact_area: float,
     normal_matching: bool = True,
     anchor_contact: bool = False,
     moment_matching: bool = False,
@@ -1000,8 +998,8 @@ def create_export_hydroelastic_reduced_contacts_kernel(
 
     This ensures the total contact force from the K reduced contacts equals the
     aggregate force from all original contacts under any user-supplied
-    ``pressure_func``. Speculative contact activation stiffness uses the
-    configured compatibility area and the pair's series-combined material slope.
+    ``pressure_func``. Speculative contact activation stiffness uses
+    ``SPECULATIVE_CONTACT_AREA`` and the pair's series-combined material slope.
 
     .. important::
 
@@ -1011,8 +1009,6 @@ def create_export_hydroelastic_reduced_contacts_kernel(
 
     Args:
         writer_func: A warp function with signature (ContactData, writer_data, int) -> None
-        margin_contact_area: Deprecated compatibility area [m^2] for
-            speculative contact activation stiffness.
         normal_matching: If True, rotate contact normals so their weighted sum aligns with aggregate force
         anchor_contact: If True, add an anchor contact at the center of pressure for each entry
         moment_matching: If True, adjust per-contact friction scales so that
@@ -1033,7 +1029,7 @@ def create_export_hydroelastic_reduced_contacts_kernel(
     exported_ny_vec = wp.types.vector(length=VALUES_PER_KEY, dtype=wp.float32)
     exported_nz_vec = wp.types.vector(length=VALUES_PER_KEY, dtype=wp.float32)
 
-    @wp.kernel(enable_backward=False)
+    @wp.kernel(enable_backward=False, module="unique")
     def export_hydroelastic_reduced_contacts_kernel(
         # Hashtable arrays
         ht_keys: wp.array[wp.uint64],
@@ -1289,7 +1285,7 @@ def create_export_hydroelastic_reduced_contacts_kernel(
                         if depth < 0.0:
                             c_stiffness = area_i * pressure_i / wp.max(-depth, wp.static(EPS_SMALL))
                         else:
-                            c_stiffness = wp.static(margin_contact_area) * k_eff_first
+                            c_stiffness = SPECULATIVE_CONTACT_AREA * k_eff_first
 
                     # Moment matching friction adjustment
                     if wp.static(moment_matching) and depth < 0.0:
@@ -1388,12 +1384,12 @@ def create_export_hydroelastic_reduced_contacts_kernel(
                     elif depth < 0.0:
                         c_stiffness = area_i * pressure_i / wp.max(-depth, wp.static(EPS_SMALL))
                     else:
-                        c_stiffness = wp.static(margin_contact_area) * k_eff_first
+                        c_stiffness = SPECULATIVE_CONTACT_AREA * k_eff_first
 
                 if depth >= 0.0:
                     # Speculative contacts never inherit penetrating
                     # force/wrench-matching stiffness from a mixed bin.
-                    c_stiffness = wp.static(margin_contact_area) * k_eff_first
+                    c_stiffness = SPECULATIVE_CONTACT_AREA * k_eff_first
                     c_friction_scale = 1.0
 
                 # Transform contact to world space
@@ -1473,8 +1469,6 @@ class HydroelasticReductionConfig:
         moment_matching: If True, adjust per-contact friction scales so that the
             maximum friction moment per normal bin is preserved between reduced
             and unreduced contacts. Automatically enables ``anchor_contact``.
-        margin_contact_area: Deprecated compatibility area [m^2] for
-            speculative contact activation stiffness.
         hashtable_size_factor: Multiplier applied to the contact buffer capacity
             when allocating the reduction hashtable. Must be positive.
     """
@@ -1482,7 +1476,6 @@ class HydroelasticReductionConfig:
     normal_matching: bool = True
     anchor_contact: bool = False
     moment_matching: bool = False
-    margin_contact_area: float = 1e-2
     hashtable_size_factor: float = 0.25
 
 
@@ -1630,7 +1623,6 @@ class HydroelasticContactReduction:
         # Create the export kernel with the configured options
         self._export_kernel = create_export_hydroelastic_reduced_contacts_kernel(
             writer_func=writer_func,
-            margin_contact_area=config.margin_contact_area,
             normal_matching=config.normal_matching,
             anchor_contact=config.anchor_contact,
             moment_matching=config.moment_matching,
@@ -1685,6 +1677,7 @@ class HydroelasticContactReduction:
         else:
             self.reducer.contact_count.zero_()
             self.reducer.ht_insert_failures.zero_()
+            self.reducer.buffer_overflows.zero_()
         if self.deterministic:
             self._fixed_accum.zero_()
             self._fixed_scale.fill_(FIXED_EXP_NONE)

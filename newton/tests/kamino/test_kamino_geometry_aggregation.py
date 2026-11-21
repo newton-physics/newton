@@ -3,44 +3,40 @@
 
 """Unit tests for `geometry/aggregation.py`"""
 
+import logging
 import unittest
 
 import numpy as np
 import warp as wp
 
+import newton
+from newton import ModelBuilder
+from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.geometry import CollisionDetector, ContactAggregation, ContactMode
-from newton._src.solvers.kamino._src.models.builders import basics
-from newton._src.solvers.kamino._src.models.builders.utils import make_homogeneous_builder
-from newton._src.solvers.kamino._src.utils import logger as msg
-from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino import setup_test_output, setup_tests, test_context
+from newton.tests.unittest_utils import NewtonTestCase
+from newton.tests.utils import basics
+
+logger = logging.getLogger(__name__)
 
 ###
 # Tests
 ###
 
 
-class TestContactAggregation(unittest.TestCase):
+class TestContactAggregation(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose  # Set to True for detailed output
 
-        # Set debug-level logging to print verbose test output to console
-        if self.verbose:
-            msg.set_log_level(msg.LogLevel.INFO)
-        else:
-            msg.reset_log_level()
+        setup_test_output(self, verbose=self.verbose)
 
         self.build_func = basics.build_boxes_nunchaku
         self.expected_contacts = 9  # NOTE: specialized to build_boxes_nunchaku
-        msg.debug(f"build_func: {self.build_func.__name__}")
-        msg.debug(f"expected_contacts: {self.expected_contacts}")
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            msg.reset_log_level()
+        logger.debug("build_func: %s", self.build_func.__name__)
+        logger.debug("expected_contacts: %s", self.expected_contacts)
 
     def test_contact_aggregation(self):
         """
@@ -48,8 +44,9 @@ class TestContactAggregation(unittest.TestCase):
         on multiple worlds containing boxes_nunchaku model.
         """
         # Create and set up a model builder
-        builder = make_homogeneous_builder(num_worlds=3, build_fn=self.build_func)
-        model = builder.finalize(self.default_device)
+        builder = ModelBuilder()
+        builder.replicate(builder=self.build_func(), copy_count=3)
+        model = ModelKamino.from_newton(builder.finalize(self.default_device))
         data = model.data()
 
         # Create a collision detector with primitive pipeline
@@ -77,7 +74,7 @@ class TestContactAggregation(unittest.TestCase):
             cwid = int(wid_np[c])
             bid_A = max(-1, int(bid_AB_np[c, 0]) - world_body_start[cwid])
             bid_B = max(-1, int(bid_AB_np[c, 1]) - world_body_start[cwid])
-            msg.info(f"Contact {c}: wid={cwid}, bid_A={bid_A}, bid_B={bid_B}")
+            logger.debug("Contact %s: wid=%s, bid_A=%s, bid_B=%s", c, cwid, bid_A, bid_B)
             # First nunchaku box body
             if bid_B == 0 and bid_A == -1:
                 contact_reaction_np[c, :] = np.array([1.0, 0.0, 0.0])  # Force in +x direction
@@ -88,7 +85,7 @@ class TestContactAggregation(unittest.TestCase):
             elif bid_B == 2 and bid_A == -1:
                 contact_reaction_np[c, :] = np.array([0.0, 0.0, 1.0])  # Force in +z direction
         detector.contacts.reaction.assign(contact_reaction_np)
-        msg.info("contacts.reaction:\n%s", detector.contacts.reaction.numpy())
+        logger.debug("contacts.reaction:\n%s", detector.contacts.reaction.numpy())
 
         # Enable the mode of active contacts to ensure all contacts are processed by the aggregator
         contact_mode_np = detector.contacts.mode.numpy().copy()
@@ -99,11 +96,11 @@ class TestContactAggregation(unittest.TestCase):
         aggregator.compute()
 
         # Optional debug output
-        msg.info("aggregator.body_net_force:\n%s", aggregator.body_net_force)
-        msg.info("aggregator.body_contact_flag:\n%s", aggregator.body_contact_flag)
-        msg.info("aggregator.body_static_contact_flag:\n%s", aggregator.body_static_contact_flag)
-        msg.info("aggregator.geom_net_force:\n%s", aggregator.geom_net_force)
-        msg.info("aggregator.geom_contact_flag:\n%s", aggregator.geom_contact_flag)
+        logger.debug("aggregator.body_net_force:\n%s", aggregator.body_net_force)
+        logger.debug("aggregator.body_contact_flag:\n%s", aggregator.body_contact_flag)
+        logger.debug("aggregator.body_static_contact_flag:\n%s", aggregator.body_static_contact_flag)
+        logger.debug("aggregator.geom_net_force:\n%s", aggregator.geom_net_force)
+        logger.debug("aggregator.geom_contact_flag:\n%s", aggregator.geom_contact_flag)
 
         # Test results: check that the aggregated net forces on bodies and
         # geoms match expected values based on the contact reactions we set
@@ -159,6 +156,7 @@ class TestContactAggregation(unittest.TestCase):
 
 if __name__ == "__main__":
     # Test setup
+    newton.utils.setup_console_logging()
     setup_tests()
 
     # Run all tests

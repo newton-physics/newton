@@ -1,24 +1,32 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Rigid-VBD Coupled Solver
-#
-# Rigid boxes and an articulated pendulum chain (driven by MuJoCo or Kamino)
-# interact with a cloth sheet and several soft bodies (simulated by
-# VBD).  Contact forces from the deformables are fed back to the
-# rigid bodies, causing them to bounce and settle realistically.
-#
-# This example builds rigid/VBD proxy coupling directly through
-# ``SolverCoupledProxy`` so the generic proxy path exercises the default API.
-#
-# Pass ``--solver vbd`` to run the same scene with a single VBD solver
-# (no coupling) as a reference baseline.
-#
-# Command: python -m newton.examples mujoco_vbd_coupled_solver
-#          python -m newton.examples mujoco_vbd_coupled_solver --solver vbd
-#
-###########################################################################
+"""Example Rigid-VBD Coupled Solver
+
+Rigid boxes and an articulated pendulum chain (driven by MuJoCo or Kamino)
+interact with a cloth sheet and several soft bodies (simulated by
+VBD).  Contact forces from the deformables are fed back to the
+rigid bodies, causing them to bounce and settle realistically.
+
+This example builds rigid/VBD proxy coupling directly through
+``SolverCoupledProxy`` so the generic proxy path exercises the default API.
+
+Pass ``--solver vbd`` to run the same scene with a single VBD solver
+(no coupling) as a reference baseline.
+
+Success criteria:
+- Rigid boxes and an articulated chain appear above a cloth sheet and several soft bodies.
+- The rigid bodies interact with the deformables, bouncing on contact without flying apart or
+  excessively penetrating the ground.
+- The deformables remain bounded without stretching explosively or sinking through the ground.
+- The rigid bodies settle above the ground; inspect the late motion for persistent jitter.
+
+Runs:
+- `python -m newton.examples mujoco_vbd_coupled_solver`
+  - Deformable contact reactions affect the rigid bodies through proxy coupling.
+- `python -m newton.examples mujoco_vbd_coupled_solver --solver vbd`
+  - The same scene runs as a single-solver VBD reference.
+"""
 
 from __future__ import annotations
 
@@ -99,7 +107,6 @@ def _launch_frame_graph(model: newton.Model, graph) -> bool:
 
 class Example:
     def __init__(self, viewer, args):
-        newton.use_coord_layout_targets = True
         self.args = args
         self.viewer = viewer
         self.sim_time = 0.0
@@ -140,11 +147,10 @@ class Example:
 
         vbd_kwargs = {
             "iterations": 10,
-            "rigid_compliant_alm": True,
             "friction_epsilon": 0.01,
             "particle_enable_self_contact": True,
-            "particle_self_contact_radius": 0.01,
             "particle_self_contact_margin": 0.01,
+            "particle_self_contact_gap": 0.0,
         }
 
         if self.use_coupled:

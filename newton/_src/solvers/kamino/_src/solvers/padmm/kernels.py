@@ -14,6 +14,7 @@ from ...core.math import FLOAT32_EPS, FLOAT32_MAX
 from ..common import (
     apply_dual_preconditioner_to_solution as _apply_dual_preconditioner_to_solution,
 )
+from ..common import tolerance_scaled_residual
 from ..common import (
     warmstart_contact_constraints as _warmstart_contact_constraints,
 )
@@ -67,6 +68,7 @@ __all__ = [
     "_warmstart_desaxce_correction",
     "_warmstart_joint_constraints",
     "_warmstart_limit_constraints",
+    "_write_padmm_world_residual",
     "make_collect_solver_info_kernel",
     "make_collect_solver_info_kernel_sparse",
     "make_desaxce_correction_and_velocity_bias_kernel",
@@ -130,6 +132,41 @@ def _reset_solver_data(
     # Reset the solver state variables to zero
     lambdas[thread_offset] = 0.0
     v_plus[thread_offset] = 0.0
+
+
+@wp.kernel
+def _fill_rho_scale(
+    # Inputs:
+    problem_dim: wp.array[wp.int32],
+    problem_nbc: wp.array[wp.int32],
+    problem_nl: wp.array[wp.int32],
+    problem_nc: wp.array[wp.int32],
+    problem_bcgo: wp.array[wp.int32],
+    problem_lcgo: wp.array[wp.int32],
+    problem_ccgo: wp.array[wp.int32],
+    problem_vio: wp.array[wp.int32],
+    solver_config: wp.array[PADMMConfigStruct],
+    # Outputs:
+    rho_scale: wp.array[wp.float32],
+):
+    # Retrieve the world and constraint indices from the 2D thread grid
+    wid, tid = wp.tid()
+
+    # Skip if row index exceed the problem size
+    if tid >= problem_dim[wid]:
+        return
+
+    # Scale the penalty of the bilateral joint rows only
+    bcgo = problem_bcgo[wid]
+    lcgo = problem_lcgo[wid]
+    ccgo = problem_ccgo[wid]
+    bounded = tid >= bcgo and tid < bcgo + problem_nbc[wid]
+    limit = tid >= lcgo and tid < lcgo + problem_nl[wid]
+    contact = tid >= ccgo and tid < ccgo + 3 * problem_nc[wid]
+    scale = wp.float32(1.0)
+    if not (bounded or limit or contact):
+        scale = solver_config[wid].joint_rho_scale
+    rho_scale[problem_vio[wid] + tid] = scale
 
 
 @wp.kernel
@@ -213,7 +250,7 @@ def make_initialize_solver_kernel(use_acceleration: bool = False):
         The kernel function to initialize the PADMM solver.
     """
 
-    @wp.kernel
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def _initialize_solver(
         # Inputs:
         solver_config: wp.array[PADMMConfigStruct],
@@ -282,7 +319,7 @@ def make_initialize_solver_kernel(use_acceleration: bool = False):
 
 
 def make_update_proximal_regularization_kernel(method: PADMMPenaltyUpdate):
-    @wp.kernel
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def _update_proximal_regularization(
         # Inputs:
         solver_config: wp.array[PADMMConfigStruct],
@@ -326,14 +363,17 @@ def make_update_proximal_regularization_kernel(method: PADMMPenaltyUpdate):
 def _update_delassus_proximal_regularization(
     # Inputs:
     problem_dim: wp.array[wp.int32],
-    problem_mio: wp.array[wp.int32],
+    problem_vio: wp.array[wp.int32],
+    solver_penalty: wp.array[PADMMPenalty],
     solver_status: wp.array[PADMMStatus],
     solver_state_sigma: wp.array[wp.vec2f],
+    solver_state_rho_scale: wp.array[wp.float32],
     # Outputs:
-    D: wp.array[wp.float32],
+    D_storage: wp.array2d[wp.float32],
 ):
     # Retrieve the thread index
     wid, tid = wp.tid()
+    D = D_storage[wid]
 
     # Retrieve the number of active constraints in the world
     ncts = problem_dim[wid]
@@ -345,14 +385,59 @@ def _update_delassus_proximal_regularization(
     if tid >= ncts or status.converged > 0:
         return
 
-    # Retrieve the matrix index offset of the world
-    mio = problem_mio[wid]
-
-    # Retrieve the (current, previous) proximal regularization pair
+    # Retrieve the (current, previous) proximal regularization pair, without the unscaled share of the penalty
     sigma = solver_state_sigma[wid]
+    penalty = solver_penalty[wid]
+    unscaled = 1.0 - solver_state_rho_scale[problem_vio[wid] + tid]
 
     # Add the proximal regularization to the diagonal of the Delassus matrix
-    D[mio + ncts * tid + tid] += sigma[0] - sigma[1]
+    D[ncts * tid + tid] += sigma[0] - sigma[1] - unscaled * (penalty.rho - penalty.rho_p)
+
+
+@wp.func
+def _get_row_shift(
+    shift_row_offset: wp.array[wp.int32],
+    shift_num_rows: wp.array[wp.int32],
+    shifts: wp.array2d[wp.float32],
+    wid: wp.int32,
+    tid: wp.int32,
+) -> wp.float32:
+    """Returns the diagonal shift of a row dropped as redundant, or zero."""
+    if shifts:
+        row = tid - shift_row_offset[wid]
+        if row >= 0 and row < shift_num_rows[wid]:
+            return shifts[wid, row]
+    return wp.float32(0.0)
+
+
+@wp.kernel
+def _restore_uniform_regularization(
+    # Inputs:
+    problem_dim: wp.array[wp.int32],
+    problem_vio: wp.array[wp.int32],
+    solver_config: wp.array[PADMMConfigStruct],
+    solver_state_sigma: wp.array[wp.vec2f],
+    solver_state_rho_scale: wp.array[wp.float32],
+    shift_row_offset: wp.array[wp.int32],
+    shift_num_rows: wp.array[wp.int32],
+    shifts: wp.array2d[wp.float32],
+    # Outputs:
+    D_storage: wp.array2d[wp.float32],
+):
+    # Retrieve the thread index
+    wid, tid = wp.tid()
+    D = D_storage[wid]
+
+    # Skip if row index exceed the problem size
+    ncts = problem_dim[wid]
+    if tid >= ncts:
+        return
+
+    # Complete the regularization of the scaled rows to the uniform `sigma`, and remove the shifts of the dropped rows
+    sigma = solver_state_sigma[wid][0]
+    unscaled = 1.0 - solver_state_rho_scale[problem_vio[wid] + tid]
+    shift = _get_row_shift(shift_row_offset, shift_num_rows, shifts, wid, tid)
+    D[ncts * tid + tid] += unscaled * (sigma - solver_config[wid].eta) - shift
 
 
 @wp.kernel
@@ -363,6 +448,10 @@ def _update_delassus_proximal_regularization_sparse(
     solver_config: wp.array[PADMMConfigStruct],
     solver_penalty: wp.array[PADMMPenalty],
     solver_status: wp.array[PADMMStatus],
+    solver_state_rho_scale: wp.array[wp.float32],
+    shift_row_offset: wp.array[wp.int32],
+    shift_num_rows: wp.array[wp.int32],
+    shifts: wp.array2d[wp.float32],
     # Outputs:
     delassus_eta: wp.array[wp.float32],
 ):
@@ -388,7 +477,11 @@ def _update_delassus_proximal_regularization_sparse(
         return
 
     # Set the proximal regularization term: eta + rho
-    delassus_eta[mio + tid] = solver_config[wid].eta + solver_penalty[wid].rho
+    eta = solver_config[wid].eta + solver_penalty[wid].rho * solver_state_rho_scale[mio + tid]
+
+    # Add the shifts of the redundant rows, if any
+    eta += _get_row_shift(shift_row_offset, shift_num_rows, shifts, wid, tid)
+    delassus_eta[mio + tid] = eta
 
 
 @wp.kernel
@@ -452,6 +545,7 @@ def _compute_velocity_bias(
     solver_config: wp.array[PADMMConfigStruct],
     solver_penalty: wp.array[PADMMPenalty],
     solver_status: wp.array[PADMMStatus],
+    solver_rho_scale: wp.array[wp.float32],
     solver_s: wp.array[wp.float32],
     solver_x_p: wp.array[wp.float32],
     solver_y_p: wp.array[wp.float32],
@@ -475,12 +569,12 @@ def _compute_velocity_bias(
     # Retrieve the index offset of the vector block of the world
     vio = problem_vio[wid]
 
-    # Retrieve solver parameters
-    eta = solver_config[wid].eta
-    rho = solver_penalty[wid].rho
-
     # Compute the index offset of the vector block of the world
     thread_offset = vio + tid
+
+    # Retrieve solver parameters
+    eta = solver_config[wid].eta
+    rho = solver_penalty[wid].rho * solver_rho_scale[thread_offset]
 
     # Retrieve the solver state
     v_f = problem_v_f[thread_offset]
@@ -520,6 +614,7 @@ def make_desaxce_correction_and_velocity_bias_kernel(has_contacts: bool, collect
         solver_config: wp.array[PADMMConfigStruct],
         solver_penalty: wp.array[PADMMPenalty],
         solver_status: wp.array[PADMMStatus],
+        solver_rho_scale: wp.array[wp.float32],
         solver_x_p: wp.array[wp.float32],
         solver_y_p: wp.array[wp.float32],
         solver_z_p: wp.array[wp.float32],
@@ -539,7 +634,7 @@ def make_desaxce_correction_and_velocity_bias_kernel(has_contacts: bool, collect
         thread_offset = vio + tid
 
         eta = solver_config[wid].eta
-        rho = solver_penalty[wid].rho
+        rho = solver_penalty[wid].rho * solver_rho_scale[thread_offset]
 
         v_f = problem_v_f[thread_offset]
         x_p = solver_x_p[thread_offset]
@@ -571,6 +666,30 @@ def make_desaxce_correction_and_velocity_bias_kernel(has_contacts: bool, collect
     return _compute_desaxce_correction_and_velocity_bias
 
 
+@wp.func
+def _compute_projection_argument_row(x: wp.float32, z_hat: wp.float32, rho: wp.float32) -> wp.float32:
+    """
+    Returns the argument `x - z_hat / rho` of the projection onto the feasible set of a row.
+
+    A zero penalty only occurs on bilateral rows, whose projection is the identity, and thus returns `x`.
+    """
+    if rho > 0.0:
+        return x - (1.0 / rho) * z_hat
+    return x
+
+
+@wp.func
+def _compute_dual_variable_row(x: wp.float32, y: wp.float32, z_p: wp.float32, rho: wp.float32) -> wp.float32:
+    """
+    Returns the dual variable update `z_p + rho * (y - x)` of a row.
+
+    A zero penalty only occurs on bilateral rows, whose dual variable vanishes.
+    """
+    if rho > 0.0:
+        return z_p + rho * (y - x)
+    return wp.float32(0.0)
+
+
 @wp.kernel
 def _compute_projection_argument(
     # Inputs
@@ -578,6 +697,7 @@ def _compute_projection_argument(
     problem_vio: wp.array[wp.int32],
     solver_penalty: wp.array[PADMMPenalty],
     solver_status: wp.array[PADMMStatus],
+    solver_rho_scale: wp.array[wp.float32],
     solver_z_hat: wp.array[wp.float32],
     solver_x: wp.array[wp.float32],
     # Outputs
@@ -599,18 +719,18 @@ def _compute_projection_argument(
     # Retrieve the index offset of the vector block of the world
     vio = problem_vio[wid]
 
-    # Capture the ALM penalty
-    rho = solver_penalty[wid].rho
-
     # Compute the index offset of the vector block of the world
     thread_offset = vio + tid
+
+    # Capture the ALM penalty
+    rho = solver_penalty[wid].rho * solver_rho_scale[thread_offset]
 
     # Retrieve the solver state variables
     z_hat = solver_z_hat[thread_offset]
     x = solver_x[thread_offset]
 
     # Compute and store the updated values back to the solver state
-    solver_y[thread_offset] = x - (1.0 / rho) * z_hat
+    solver_y[thread_offset] = _compute_projection_argument_row(x, z_hat, rho)
 
 
 @wp.kernel
@@ -695,7 +815,52 @@ def _project_to_feasible_cone(
         solver_y[ccio_j + 2] = y_proj[2]
 
 
-def make_update_dual_variables_and_compute_primal_dual_residuals(use_acceleration: bool = False):
+@wp.func
+def _get_delassus_regularization(
+    sparse: wp.bool, sigma: wp.vec2f, eta: wp.float32, rho: wp.float32, rho_scale: wp.float32, shift: wp.float32
+) -> wp.float32:
+    """
+    Returns the proximal regularization held by the Delassus operator on a row in the current iteration.
+
+    The dense matrix holds the regularization `sigma` set before the iterations, with the penalty `sigma - eta`
+    scaled by `rho_scale`, while the sparse operator is updated with the current scaled ALM penalty. Both
+    also hold the `shift` of the row if it is dropped as redundant.
+    """
+    if sparse:
+        return eta + rho * rho_scale + shift
+    return sigma[0] - (1.0 - rho_scale) * (sigma[0] - eta) + shift
+
+
+@wp.func
+def _compute_delassus_dual_residual(
+    iterations: wp.int32,
+    P_i: wp.float32,
+    sigma: wp.float32,
+    v_i: wp.float32,
+    x_i: wp.float32,
+    Dx_p: wp.array[wp.float32],
+    index: wp.int32,
+    r_d_standard: wp.float32,
+) -> wp.float32:
+    """
+    Computes the Delassus-weighted dual residual `P^{-1} D (x - x_p)` of a constraint row,
+    and stores the product `D x` for the next iteration.
+
+    The product is recovered from the regularized linear system `(D + sigma I) x = v` as
+    `D x = v - sigma x`. The first iteration has no previous product and falls back to
+    the standard residual.
+    """
+    Dx_i = v_i - sigma * x_i
+    r_d = r_d_standard
+    if iterations > 0:
+        r_d = (1.0 / P_i) * (Dx_i - Dx_p[index])
+    Dx_p[index] = Dx_i
+    return r_d
+
+
+def make_update_dual_variables_and_compute_primal_dual_residuals(
+    use_acceleration: bool = False, delassus_dual_residual: bool = False
+):
     """
     Creates a kernel to update the dual variables and compute the primal and dual residuals.
 
@@ -703,12 +868,14 @@ def make_update_dual_variables_and_compute_primal_dual_residuals(use_acceleratio
 
     Args:
         use_acceleration: Flag indicating whether acceleration is enabled. Defaults to False.
+        delassus_dual_residual: Flag indicating whether the dual residual is weighted by
+            the Delassus matrix instead of the proximal parameters. Defaults to False.
 
     Returns:
         The kernel function to update dual variables and compute residuals.
     """
 
-    @wp.kernel
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def _update_dual_variables_and_compute_primal_dual_residuals(
         # Inputs:
         problem_dim: wp.array[wp.int32],
@@ -717,6 +884,13 @@ def make_update_dual_variables_and_compute_primal_dual_residuals(use_acceleratio
         solver_config: wp.array[PADMMConfigStruct],
         solver_penalty: wp.array[PADMMPenalty],
         solver_status: wp.array[PADMMStatus],
+        problem_sparse: wp.bool,
+        solver_sigma: wp.array[wp.vec2f],
+        solver_rho_scale: wp.array[wp.float32],
+        shift_row_offset: wp.array[wp.int32],
+        shift_num_rows: wp.array[wp.int32],
+        shifts: wp.array2d[wp.float32],
+        solver_v: wp.array[wp.float32],
         solver_x: wp.array[wp.float32],
         solver_y: wp.array[wp.float32],
         solver_x_p: wp.array[wp.float32],
@@ -724,6 +898,7 @@ def make_update_dual_variables_and_compute_primal_dual_residuals(use_acceleratio
         solver_z_p: wp.array[wp.float32],
         # Outputs:
         solver_z: wp.array[wp.float32],
+        solver_Dx_p: wp.array[wp.float32],
         solver_r_prim: wp.array[wp.float32],
         solver_r_dual: wp.array[wp.float32],
         solver_r_dx: wp.array[wp.float32],
@@ -746,12 +921,13 @@ def make_update_dual_variables_and_compute_primal_dual_residuals(use_acceleratio
         # Retrieve the index offset of the vector block of the world
         vio = problem_vio[wid]
 
-        # Capture proximal parameter and the ALM penalty
-        eta = solver_config[wid].eta
-        rho = solver_penalty[wid].rho
-
         # Compute the index offset of the vector block of the world
         thread_offset = vio + tid
+
+        # Capture proximal parameter and the ALM penalty of the row
+        eta = solver_config[wid].eta
+        rho_w = solver_penalty[wid].rho
+        rho = rho_w * solver_rho_scale[thread_offset]
 
         # Retrieve
         P_i = problem_P[thread_offset]
@@ -764,14 +940,27 @@ def make_update_dual_variables_and_compute_primal_dual_residuals(use_acceleratio
         z_p = solver_z_p[thread_offset]
 
         # Compute and store the dual variable update
-        z = z_p + rho * (y - x)
+        z = _compute_dual_variable_row(x, y, z_p, rho)
         solver_z[thread_offset] = z
 
         # Compute the primal residual as the consensus of the primal and slack variable
         solver_r_prim[thread_offset] = P_i * (x - y)
 
         # Compute the dual residual using the ADMM-specific shortcut
-        solver_r_dual[thread_offset] = (1.0 / P_i) * (eta * (x - x_p) + rho * (y - y_p))
+        r_d = (1.0 / P_i) * (eta * (x - x_p) + rho * (y - y_p))
+        if wp.static(delassus_dual_residual):
+            sigma = _get_delassus_regularization(
+                problem_sparse,
+                solver_sigma[wid],
+                eta,
+                rho_w,
+                solver_rho_scale[thread_offset],
+                _get_row_shift(shift_row_offset, shift_num_rows, shifts, wid, tid),
+            )
+            r_d = _compute_delassus_dual_residual(
+                status.iterations, P_i, sigma, solver_v[thread_offset], x, solver_Dx_p, thread_offset, r_d
+            )
+        solver_r_dual[thread_offset] = r_d
 
         # Compute the individual iterate residuals only if acceleration is enabled
         # NOTE: These are used to compute the combined residual
@@ -786,12 +975,14 @@ def make_update_dual_variables_and_compute_primal_dual_residuals(use_acceleratio
 
 
 @functools.cache
-def _make_project_dual_convergence_accel_kernel(reduction_size: int):
+def _make_project_dual_convergence_accel_kernel(reduction_size: int, delassus_dual_residual: bool = False):
     """Create one accelerated PADMM projection/update kernel per world.
 
     Each block owns one world. Threads sweep the world's constraints, write the
     slack and dual variables, reduce residual metrics, update convergence and
     acceleration state, then cache the current iterates for the next iteration.
+    If ``delassus_dual_residual`` is set, the dual residual is weighted by the
+    Delassus matrix instead of the proximal parameters.
     """
 
     @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
@@ -814,6 +1005,13 @@ def _make_project_dual_convergence_accel_kernel(reduction_size: int):
         solver_config: wp.array[PADMMConfigStruct],
         solver_penalty: wp.array[PADMMPenalty],
         solver_state_a_p: wp.array[wp.float32],
+        problem_sparse: wp.bool,
+        solver_state_sigma: wp.array[wp.vec2f],
+        solver_state_rho_scale: wp.array[wp.float32],
+        shift_row_offset: wp.array[wp.int32],
+        shift_num_rows: wp.array[wp.int32],
+        shifts: wp.array2d[wp.float32],
+        solver_state_v: wp.array[wp.float32],
         solver_state_x: wp.array[wp.float32],
         solver_state_x_p: wp.array[wp.float32],
         solver_state_y_hat_in: wp.array[wp.float32],
@@ -823,6 +1021,7 @@ def _make_project_dual_convergence_accel_kernel(reduction_size: int):
         # Outputs:
         solver_state_y: wp.array[wp.float32],
         solver_state_z: wp.array[wp.float32],
+        solver_state_Dx_p: wp.array[wp.float32],
         solver_state_done: wp.array[wp.int32],
         solver_state_a: wp.array[wp.float32],
         solver_state_a_factor: wp.array[wp.float32],
@@ -872,6 +1071,7 @@ def _make_project_dual_convergence_accel_kernel(reduction_size: int):
         rho = pen.rho
         inv_rho = 1.0 / rho
         eta = config.eta
+        sigma = _get_delassus_regularization(problem_sparse, solver_state_sigma[wid], eta, rho, 1.0, 0.0)
 
         r_p_local = wp.float32(0.0)
         r_d_local = wp.float32(0.0)
@@ -921,6 +1121,10 @@ def _make_project_dual_convergence_accel_kernel(reduction_size: int):
 
                             r_p = p_i * (x - y)
                             r_d = (1.0 / p_i) * (eta * (x - x_p) + rho * (y - y_p))
+                            if wp.static(delassus_dual_residual):
+                                r_d = _compute_delassus_dual_residual(
+                                    status.iterations, p_i, sigma, solver_state_v[idx], x, solver_state_Dx_p, idx, r_d
+                                )
                             r_dx = p_i * (x - x_p)
                             r_dy = p_i * (y - y_p)
                             r_dz = (1.0 / p_i) * (z - z_p)
@@ -933,9 +1137,10 @@ def _make_project_dual_convergence_accel_kernel(reduction_size: int):
 
                         r_c_local = wp.max(r_c_local, wp.abs(wp.dot(x_c, z_c)))
                 else:
+                    rho_i = rho * solver_state_rho_scale[thread_offset]
                     x = solver_state_x[thread_offset]
                     z_p = solver_state_z_hat_in[thread_offset]
-                    y = x - inv_rho * z_p
+                    y = _compute_projection_argument_row(x, z_p, rho_i)
                     is_bounded = nbc > 0 and local_id >= bcgo and local_id < bcgo + nbc
                     bio = problem_bcio[wid] + local_id - bcgo
                     if is_bounded:
@@ -951,13 +1156,31 @@ def _make_project_dual_convergence_accel_kernel(reduction_size: int):
                     y_p = solver_state_y_hat_in[thread_offset]
                     z_prev = solver_state_z_hat_in[thread_offset]
                     p_i = problem_P[thread_offset]
-                    z = z_prev + rho * (y - x)
+                    z = _compute_dual_variable_row(x, y, z_prev, rho_i)
 
                     solver_state_y[thread_offset] = y
                     solver_state_z[thread_offset] = z
 
                     r_p = p_i * (x - y)
-                    r_d = (1.0 / p_i) * (eta * (x - x_p) + rho * (y - y_p))
+                    r_d = (1.0 / p_i) * (eta * (x - x_p) + rho_i * (y - y_p))
+                    if wp.static(delassus_dual_residual):
+                        r_d = _compute_delassus_dual_residual(
+                            status.iterations,
+                            p_i,
+                            _get_delassus_regularization(
+                                problem_sparse,
+                                solver_state_sigma[wid],
+                                eta,
+                                rho,
+                                solver_state_rho_scale[thread_offset],
+                                _get_row_shift(shift_row_offset, shift_num_rows, shifts, wid, local_id),
+                            ),
+                            solver_state_v[thread_offset],
+                            x,
+                            solver_state_Dx_p,
+                            thread_offset,
+                            r_d,
+                        )
                     r_dx = p_i * (x - x_p)
                     r_dy = p_i * (y - y_p)
                     r_dz = (1.0 / p_i) * (z - z_prev)
@@ -1028,7 +1251,7 @@ def _make_project_dual_convergence_accel_kernel(reduction_size: int):
                 status.converged = 1
 
             if status.converged or status.iterations >= config.max_iterations:
-                solver_state_done[0] -= 1
+                wp.atomic_sub(solver_state_done, 0, 1)
 
             if status.converged:
                 status.restart = 0
@@ -1359,7 +1582,7 @@ def _make_compute_infnorm_residuals_kernel(tile_size: int, n_cts_max: int, n_com
 
             # If converged or reached max iterations, decrement the number of active worlds
             if status.converged or status.iterations >= maxiters:
-                solver_state_done[0] -= 1
+                wp.atomic_sub(solver_state_done, 0, 1)
 
             # Store the updated status
             solver_status[wid] = status
@@ -1383,7 +1606,7 @@ def make_collect_solver_info_kernel(use_acceleration: bool):
         The kernel function to collect solver convergence information.
     """
 
-    @wp.kernel
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def _collect_solver_convergence_info(
         # Inputs:
         problem_nbc: wp.array[wp.int32],
@@ -1396,14 +1619,18 @@ def make_collect_solver_info_kernel(use_acceleration: bool):
         problem_ccgo: wp.array[wp.int32],
         problem_dim: wp.array[wp.int32],
         problem_vio: wp.array[wp.int32],
-        problem_mio: wp.array[wp.int32],
         problem_mu: wp.array[wp.float32],
         problem_v_f: wp.array[wp.float32],
-        problem_D: wp.array[wp.float32],
+        problem_D_storage: wp.array2d[wp.float32],
         problem_P: wp.array[wp.float32],
         problem_bound_lower: wp.array[wp.float32],
         problem_bound_upper: wp.array[wp.float32],
+        solver_config: wp.array[PADMMConfigStruct],
         solver_state_sigma: wp.array[wp.vec2f],
+        solver_state_rho_scale: wp.array[wp.float32],
+        shift_row_offset: wp.array[wp.int32],
+        shift_num_rows: wp.array[wp.int32],
+        shifts: wp.array2d[wp.float32],
         solver_state_s: wp.array[wp.float32],
         solver_state_x: wp.array[wp.float32],
         solver_state_x_p: wp.array[wp.float32],
@@ -1446,6 +1673,7 @@ def make_collect_solver_info_kernel(use_acceleration: bool):
     ):
         # Retrieve the thread index as the world index
         wid = wp.tid()
+        problem_D = problem_D_storage[wid]
 
         # Retrieve the world-specific data
         nbc = problem_nbc[wid]
@@ -1458,7 +1686,6 @@ def make_collect_solver_info_kernel(use_acceleration: bool):
         lcgo = problem_lcgo[wid]
         ccgo = problem_ccgo[wid]
         vio = problem_vio[wid]
-        mio = problem_mio[wid]
         rio = solver_info_offset[wid]
         penalty = solver_penalty[wid]
         status = solver_status[wid]
@@ -1484,7 +1711,15 @@ def make_collect_solver_info_kernel(use_acceleration: bool):
         compute_cwise_vec_mul(ncts, vio, problem_P, solver_state_y, solver_info_lambdas)
 
         # Compute the post-event constraint-space velocity from the current solution: v_plus = v_f + D @ lambda
-        compute_gemv(ncts, vio, mio, sigma[0], problem_P, problem_D, solver_state_y, problem_v_f, solver_info_v_plus)
+        # NOTE: The diagonal of `D` lacks the unscaled share of the penalty, see `_update_delassus_proximal_regularization`,
+        # and holds the shifts of the dropped redundant rows
+        compute_gemv(ncts, vio, sigma[0], problem_P, problem_D, solver_state_y, problem_v_f, solver_info_v_plus)
+        rho = sigma[0] - solver_config[wid].eta
+        for i in range(ncts):
+            v_i = vio + i
+            unscaled = 1.0 - solver_state_rho_scale[v_i]
+            shift = _get_row_shift(shift_row_offset, shift_num_rows, shifts, wid, i)
+            solver_info_v_plus[v_i] += (unscaled * rho - shift) * solver_state_y[v_i] / problem_P[v_i]
 
         # Compute the De Saxce correction for each contact as: s = G(v_plus)
         compute_desaxce_corrections(nc, cio, vio, ccgo, problem_mu, solver_info_v_plus, solver_info_s)
@@ -1619,7 +1854,7 @@ def make_collect_solver_info_kernel_sparse(use_acceleration: bool):
         The kernel function to collect solver convergence information.
     """
 
-    @wp.kernel
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def _collect_solver_convergence_info_sparse(
         # Inputs:
         problem_nbc: wp.array[wp.int32],
@@ -1960,3 +2195,24 @@ def _compute_solution_vectors(
 
     # Update constraint reactions: lambda = y
     solver_lambdas[thread_offset] = y
+
+
+@wp.kernel
+def _write_padmm_world_residual(
+    # Inputs:
+    solver_config: wp.array[PADMMConfigStruct],
+    solver_status: wp.array[PADMMStatus],
+    # Outputs:
+    world_residual: wp.array[wp.float32],
+):
+    """Write the largest terminal residual of each world relative to its stopping tolerance."""
+    wid = wp.tid()
+    config = solver_config[wid]
+    status = solver_status[wid]
+    world_residual[wid] = wp.max(
+        wp.max(
+            tolerance_scaled_residual(status.r_p, config.primal_tolerance),
+            tolerance_scaled_residual(status.r_d, config.dual_tolerance),
+        ),
+        tolerance_scaled_residual(status.r_c, config.compl_tolerance),
+    )

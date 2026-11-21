@@ -226,6 +226,19 @@ def blend_proxy_forces_kernel(
     )
 
 
+# Overloads instantiated lazily on launch change the module hash, making the
+# compiled module depend on launch order; declare body and particle forces up front.
+for _dtype in (wp.vec3, wp.spatial_vector):
+    wp.overload(
+        stash_proxy_forces_kernel,
+        {"coupling_forces": wp.array[_dtype], "out_previous_coupling_forces": wp.array[_dtype]},
+    )
+    wp.overload(
+        blend_proxy_forces_kernel,
+        {"previous_coupling_forces": wp.array[_dtype], "coupling_forces": wp.array[_dtype]},
+    )
+
+
 @wp.kernel(enable_backward=False)
 def filter_proxy_rigid_contacts_kernel(
     rigid_contact_count: wp.array[int],

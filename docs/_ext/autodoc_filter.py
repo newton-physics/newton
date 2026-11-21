@@ -6,6 +6,8 @@ from __future__ import annotations
 import sys
 from typing import Any
 
+from sphinx.ext.autodoc import ClassDocumenter
+
 # NOTE: This file is *imported by Sphinx* when building the docs.
 # It must therefore avoid heavy third-party imports that might not be
 # available in the documentation environment.
@@ -15,8 +17,19 @@ from typing import Any
 # Skip handler implementation
 
 
+class _ClassDocumenter(ClassDocumenter):
+    """Keep None-valued members only when their declarations are documented."""
+
+    def filter_members(self, members, want_all):
+        return [
+            (name, member, isattr)
+            for name, member, isattr in super().filter_members(members, want_all)
+            if member is not None or isattr
+        ]
+
+
 def _should_skip_member(
-    app: Any,  # Sphinx application (unused)
+    app: Any,  # Sphinx application
     what: str,
     name: str,
     obj: Any,
@@ -56,6 +69,10 @@ def _should_skip_member(
     doc = getattr(obj, "__doc__", None)
 
     if not doc:
+        # ClassDocumenter checks source documentation for None-valued fields.
+        if obj is None and what == "class":
+            return None
+
         # Keep an undocumented callable **only** if it overrides a documented
         # attribute from a base-class.  This covers cases like ``step`` in
         # solver subclasses while still hiding brand-new helpers that have no
@@ -89,6 +106,7 @@ def _should_skip_member(
 def setup(app):  # type: ignore[override]
     """Hook into the Sphinx build."""
 
+    app.add_autodocumenter(_ClassDocumenter, override=True)
     app.connect("autodoc-skip-member", _should_skip_member)
     # Tell Sphinx our extension is parallel-safe.
     return {

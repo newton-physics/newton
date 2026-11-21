@@ -2,28 +2,66 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from .actuator import Actuator
-from .clamping import Clamping, ClampingDCMotor, ClampingMaxEffort, ClampingPositionBased
-from .controllers import Controller, ControllerNeuralLSTM, ControllerNeuralMLP, ControllerPD, ControllerPID
-from .delay import Delay
-from .response_oracle import ResponseOracle
-from .usd_parser import ActuatorParsed, ComponentKind, SchemaNames, parse_actuator_prim, register_actuator_component
+from .batteries import BatteryBase, BatteryConstantResistance
+from .clamping import (
+    ClampingBase,
+    ClampingCurrentDuty,
+    ClampingDCMotor,
+    ClampingMaxEffort,
+    ClampingPositionBased,
+)
+from .drives import (
+    DriveBase,
+    DriveNeuralGRU,
+    DriveNeuralLSTM,
+    DriveNeuralMLP,
+    DrivePD,
+    DrivePID,
+)
+from .input_processors import (
+    InputProcessorBase,
+    InputProcessorDelay,
+    InputProcessorEncoder,
+)
+from .joint_space_response import JointSpaceResponse
+from .motor_dc import MotorDC
+from .space import DriveOutputSpace
+from .usd_parser import (
+    ActuatorParsed,
+    BatteryParsed,
+    ComponentKind,
+    SchemaNames,
+    parse_actuator_prim,
+    parse_battery_prim,
+    register_actuator_component,
+)
 
 __all__ = [
     "Actuator",
     "ActuatorParsed",
-    "Clamping",
+    "BatteryBase",
+    "BatteryConstantResistance",
+    "BatteryParsed",
+    "ClampingBase",
+    "ClampingCurrentDuty",
     "ClampingDCMotor",
     "ClampingMaxEffort",
     "ClampingPositionBased",
     "ComponentKind",
-    "Controller",
-    "ControllerNeuralLSTM",
-    "ControllerNeuralMLP",
-    "ControllerPD",
-    "ControllerPID",
-    "Delay",
-    "ResponseOracle",
+    "DriveBase",
+    "DriveNeuralGRU",
+    "DriveNeuralLSTM",
+    "DriveNeuralMLP",
+    "DriveOutputSpace",
+    "DrivePD",
+    "DrivePID",
+    "InputProcessorBase",
+    "InputProcessorDelay",
+    "InputProcessorEncoder",
+    "JointSpaceResponse",
+    "MotorDC",
     "SchemaNames",
     "parse_actuator_prim",
+    "parse_battery_prim",
     "register_actuator_component",
 ]

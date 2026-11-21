@@ -8,7 +8,8 @@ from typing import TYPE_CHECKING
 import warp as wp
 
 from ..core.types import Devicelike
-from .articulation import eval_jacobian, eval_mass_matrix
+from .articulation import eval_articulation_subtree_sum, eval_jacobian, eval_mass_matrix
+from .enums import JointType
 
 if TYPE_CHECKING:
     from .model import Model
@@ -26,6 +27,39 @@ def _compute_body_q_com_kernel(
     body-CoM-anchored transform consumed by :func:`eval_rigid_id`."""
     i = wp.tid()
     body_q_com[i] = body_q[i] * wp.transform(body_com[i], wp.quat_identity())
+
+
+@wp.kernel
+def _free_joint_qdd_internal_at_rest_kernel(
+    joint_type: wp.array[int],
+    joint_qd_start: wp.array[int],
+    joint_qd_public: wp.array[float],
+    # output
+    joint_qdd_internal: wp.array[float],
+):
+    """Internal joint accelerations that correspond to public ``joint_qdd = 0``.
+
+    For free and distance joints the public linear acceleration is that of the
+    child CoM, while RNEA's internal one is spatial. Holding the CoM
+    unaccelerated takes the internal linear acceleration ``-omega x v_com``
+    (parent frame); the angular part stays zero. Every other joint keeps zero.
+    """
+    joint_id = wp.tid()
+    qd_start = joint_qd_start[joint_id]
+    qd_end = joint_qd_start[joint_id + 1]
+    for i in range(qd_start, qd_end):
+        joint_qdd_internal[i] = 0.0
+
+    jtype = joint_type[joint_id]
+    if jtype != JointType.FREE and jtype != JointType.DISTANCE:
+        return
+
+    v_com = wp.vec3(joint_qd_public[qd_start + 0], joint_qd_public[qd_start + 1], joint_qd_public[qd_start + 2])
+    omega = wp.vec3(joint_qd_public[qd_start + 3], joint_qd_public[qd_start + 4], joint_qd_public[qd_start + 5])
+    a_internal = -wp.cross(omega, v_com)
+    joint_qdd_internal[qd_start + 0] = a_internal[0]
+    joint_qdd_internal[qd_start + 1] = a_internal[1]
+    joint_qdd_internal[qd_start + 2] = a_internal[2]
 
 
 class _InverseDynamicsScratchBuffer:
@@ -63,8 +97,7 @@ class _InverseDynamicsScratchBuffer:
             joint_dof_count: Total number of joint DOFs across all
                 articulations (matches :attr:`Model.joint_dof_count`).
             joint_target_q_count: Length of :attr:`Model.joint_target_q`
-                (coord- or DOF-shaped depending on
-                :data:`newton.use_coord_layout_targets`), used to size the
+                (matches :attr:`Model.joint_coord_count`), used to size the
                 constant-zero position-target input.
             max_dofs_per_articulation: Per-articulation DOF count (inclusive
                 of floating-base root DOFs, if any). Matches
@@ -87,6 +120,7 @@ class _InverseDynamicsScratchBuffer:
         self.body_I_m = wp.empty(bc, dtype=wp.spatial_matrix, device=device)
         self.body_q_com = wp.empty(bc, dtype=wp.transform, device=device)
         self.joint_qd_internal = wp.empty(jdc, dtype=wp.float32, device=device)
+        self.joint_qdd_internal = wp.empty(jdc, dtype=wp.float32, device=device)
         self.body_qd_fk = wp.empty(bc, dtype=wp.spatial_vector, device=device)
         self.body_solve_origin = wp.zeros(bc, dtype=wp.vec3, device=device)
         self.joint_S_s = wp.empty(jdc, dtype=wp.spatial_vector, device=device)
@@ -101,9 +135,8 @@ class _InverseDynamicsScratchBuffer:
 
         # Constant-zero inputs (allocated once, never written). The position
         # target buffer is sized separately: it is indexed via
-        # joint_target_q_start, which is coord-shaped under
-        # newton.use_coord_layout_targets, so a DOF-sized buffer would read
-        # out of bounds.
+        # joint_target_q_start in coordinate space, so a DOF-sized buffer
+        # would read out of bounds for free, ball, distance, or rod joints.
         self.zeros_dof = wp.zeros(jdc, dtype=wp.float32, device=device)
         self.zeros_target_q = wp.zeros(joint_target_q_count, dtype=wp.float32, device=device)
         self.zeros_body = wp.zeros(bc, dtype=wp.spatial_vector, device=device)
@@ -127,8 +160,8 @@ def _rnea_compensation_pass(
     callers must invoke :func:`~newton.eval_fk` (or otherwise update
     ``state.body_q``) before calling this.
 
-    With ``qdd = 0`` implicit in :func:`eval_rigid_id` and the result
-    sign-flipped to match the standard convention, the output is
+    With public ``qdd = 0`` and the result sign-flipped to match the
+    standard convention, the output is
     ``g(q) = ∂U/∂q`` when ``joint_qd`` is zero (gravity only),
     ``C(q, q_dot)*q_dot`` when ``gravity`` is zero (Coriolis only), or
     their sum when both are non-zero.
@@ -203,6 +236,13 @@ def _rnea_compensation_pass(
         outputs=[scratch.joint_qd_internal],
         device=device,
     )
+    wp.launch(
+        _free_joint_qdd_internal_at_rest_kernel,
+        dim=model.joint_count,
+        inputs=[model.joint_type, model.joint_qd_start, joint_qd],
+        outputs=[scratch.joint_qdd_internal],
+        device=device,
+    )
 
     # RNEA forward pass: body bias wrenches in the spatial frame.
     wp.launch(
@@ -219,6 +259,7 @@ def _rnea_compensation_pass(
             model.joint_qd_start,
             state.joint_q,
             scratch.joint_qd_internal,
+            scratch.joint_qdd_internal,
             model.joint_axis,
             model.joint_dof_dim,
             scratch.body_I_m,
@@ -269,6 +310,8 @@ def _rnea_compensation_pass(
             scratch.zeros_dof,  # joint_limit_ke
             scratch.zeros_dof,  # joint_limit_kd
             scratch.zeros_dof,  # joint_damping
+            scratch.zeros_dof,  # joint_stiffness
+            model.joint_rest_q,  # unused with zero stiffness
             scratch.joint_S_s,
             scratch.body_q_com,
             scratch.body_solve_origin,
@@ -279,14 +322,11 @@ def _rnea_compensation_pass(
         device=device,
     )
 
-    # Convert output tau_out from RNEA's internal body-origin convention to
-    # Newton's documented free-joint joint_f convention (wrench at body CoM)
-    # and flip the RNEA sign so tau_out stores the standard ``+g(q)`` /
-    # ``+C(q, q_dot)*q_dot`` directly. Subtracts the spatial-vs-classical
-    # acceleration bias, shifts the wrench from body origin to body CoM,
-    # then negates every per-DOF entry. Non-free / non-distance joints
-    # skip the corrections (their joint_f is reference-point-invariant)
-    # but still get the sign flip.
+    # Convert output tau_out from RNEA's internal parent-frame-origin convention to
+    # Newton's documented free-joint joint_f convention (world-frame wrench
+    # at body CoM) and flip the RNEA sign so tau_out stores the standard
+    # ``+g(q)`` / ``+C(q, q_dot)*q_dot`` directly. Non-free / non-distance
+    # joints only get the sign flip (their joint_f is reference-point-invariant).
     wp.launch(
         convert_free_distance_joint_f_internal_to_public,
         dim=model.joint_count,
@@ -300,8 +340,6 @@ def _rnea_compensation_pass(
             model.joint_X_p,
             state.body_q,
             scratch.body_q_com,
-            model.body_mass,
-            joint_qd,
         ],
         outputs=[tau_out],
         device=device,
@@ -361,6 +399,156 @@ def _compute_coriolis_force(
     )
 
 
+def _compute_bias_forces_per_joint(
+    model: Model,
+    state: State,
+    gravity_force: wp.array[wp.float32] | None,
+    coriolis_force: wp.array[wp.float32] | None,
+    mask: wp.array[bool] | None = None,
+) -> None:
+    """Compute the requested gravity and Coriolis forces in one RNEA pass with one thread per joint.
+
+    Requires the model's FK level schedule. Matches :func:`_compute_gravity_force`
+    and :func:`_compute_coriolis_force`.
+    """
+    # Lazy import, see _rnea_compensation_pass.
+    from ..solvers.featherstone.kernels import (  # noqa: PLC0415
+        convert_free_distance_joint_f_internal_to_public,
+        convert_free_distance_joint_qd_public_to_internal,
+        eval_rigid_id_bias_tau,
+        eval_rigid_id_body_force,
+        eval_rigid_id_joint_motion,
+    )
+
+    device = model.device
+    bc = model.body_count
+    body_q_com = wp.empty(bc, dtype=wp.transform, device=device)
+    body_solve_origin = wp.empty(bc, dtype=wp.vec3, device=device)
+    body_f_s = wp.empty((bc, 2), dtype=wp.spatial_vector, device=device)
+    joint_qd = wp.empty(model.joint_dof_count, dtype=wp.float32, device=device)
+    joint_qdd = wp.empty(model.joint_dof_count, dtype=wp.float32, device=device)
+    joint_S_s = wp.empty(model.joint_dof_count, dtype=wp.spatial_vector, device=device)
+    joint_v_s = wp.empty(model.joint_count, dtype=wp.spatial_vector, device=device)
+    joint_a_s = wp.empty(model.joint_count, dtype=wp.spatial_vector, device=device)
+    outputs = [tau for tau in (gravity_force, coriolis_force) if tau is not None]
+    for tau in outputs:
+        tau.zero_()
+
+    wp.launch(
+        _compute_body_q_com_kernel,
+        dim=bc,
+        inputs=[state.body_q, model.body_com],
+        outputs=[body_q_com],
+        device=device,
+    )
+    wp.launch(
+        convert_free_distance_joint_qd_public_to_internal,
+        dim=model.joint_count,
+        inputs=[
+            model.joint_type,
+            model.joint_parent,
+            model.joint_child,
+            model.joint_qd_start,
+            model.joint_X_p,
+            state.body_q,
+            model.body_com,
+            state.joint_qd,
+        ],
+        outputs=[joint_qd],
+        device=device,
+    )
+    wp.launch(
+        _free_joint_qdd_internal_at_rest_kernel,
+        dim=model.joint_count,
+        inputs=[model.joint_type, model.joint_qd_start, state.joint_qd],
+        outputs=[joint_qdd],
+        device=device,
+    )
+    wp.launch(
+        eval_rigid_id_joint_motion,
+        dim=model.joint_count,
+        inputs=[
+            mask,
+            model.joint_articulation,
+            model.articulation_start,
+            model.joint_type,
+            model.joint_parent,
+            model.joint_child,
+            model.joint_q_start,
+            model.joint_qd_start,
+            state.joint_q,
+            joint_qd,
+            joint_qdd,
+            model.joint_axis,
+            model.joint_dof_dim,
+            state.body_q,
+            body_q_com,
+            model.joint_X_p,
+        ],
+        outputs=[joint_S_s, joint_v_s, joint_a_s, body_solve_origin],
+        device=device,
+    )
+    wp.launch(
+        eval_rigid_id_body_force,
+        dim=model.joint_count,
+        inputs=[
+            mask,
+            model.joint_articulation,
+            model.joint_ancestor,
+            model.joint_child,
+            joint_v_s,
+            joint_a_s,
+            model.body_mass,
+            model.body_inertia,
+            body_q_com,
+            body_solve_origin,
+            model.body_world,
+            model.gravity,
+        ],
+        outputs=[body_f_s],
+        device=device,
+    )
+    wp.launch(
+        eval_articulation_subtree_sum,
+        dim=(model.articulation_count, 12),
+        inputs=[
+            model._fk_articulation_level_start,  # pyright: ignore[reportPrivateUsage]
+            model._fk_level_joint_start,  # pyright: ignore[reportPrivateUsage]
+            model._fk_level_joints,  # pyright: ignore[reportPrivateUsage]
+            mask,
+            model.joint_parent,
+            model.joint_child,
+        ],
+        outputs=[body_f_s.view(wp.float32).reshape((bc, 12))],
+        device=device,
+    )
+    wp.launch(
+        eval_rigid_id_bias_tau,
+        dim=model.joint_count,
+        inputs=[mask, model.joint_articulation, model.joint_child, model.joint_qd_start, joint_S_s, body_f_s],
+        outputs=[coriolis_force, gravity_force],
+        device=device,
+    )
+    for tau in outputs:
+        wp.launch(
+            convert_free_distance_joint_f_internal_to_public,
+            dim=model.joint_count,
+            inputs=[
+                model.joint_type,
+                model.joint_parent,
+                model.joint_child,
+                model.joint_qd_start,
+                model.joint_articulation,
+                mask,
+                model.joint_X_p,
+                state.body_q,
+                body_q_com,
+            ],
+            outputs=[tau],
+            device=device,
+        )
+
+
 def eval_inverse_dynamics_passive(
     model: Model,
     state: State,
@@ -372,11 +560,13 @@ def eval_inverse_dynamics_passive(
 ) -> None:
     """Compute passive inverse-dynamics quantities for articulated systems.
 
-    Each non-``None`` output is computed independently. Omitted outputs are
-    not computed. Callers allocate the requested output arrays:
+    Only the non-``None`` outputs are written; omitted outputs are not
+    computed, although on CUDA ``gravity_force`` and ``coriolis_force`` share
+    one pass. Callers allocate the requested output arrays:
 
     * ``mass_matrix`` ← the joint-space mass matrix ``M(q)`` [kg, kg·m, or
-      kg·m^2, depending on the joint types of the row/column DOFs];
+      kg·m^2, depending on the joint types of the row/column DOFs], with
+      :attr:`~newton.Model.joint_armature` added to the diagonal;
     * ``gravity_force`` ← the gravity force ``g(q) = ∂U/∂q`` [N or N·m,
       depending on joint type], where ``U(q)`` is the system's
       gravitational potential energy ``sum_i -m_i * g . x_com_i``. This is
@@ -397,9 +587,8 @@ def eval_inverse_dynamics_passive(
         loop-closure joints (``EqType.CONNECT``, ``EqType.WELD``, ``EqType.JOINT``)
         play no role in the inverse dynamics evaluation.
 
-        :attr:`~newton.JointType.ROD` joints are not supported because they
-        do not define generalized coordinates or a motion subspace for this
-        inverse-dynamics formulation.
+        :attr:`~newton.JointType.ROD` joints are not supported by the
+        inverse-dynamics pipeline.
 
     .. experimental::
 
@@ -426,8 +615,9 @@ def eval_inverse_dynamics_passive(
 
     Raises:
         ValueError: If the model contains a :attr:`~newton.JointType.ROD`
-            joint, no outputs are requested, or an output or mask has an
-            unexpected shape.
+            joint, no outputs are requested, an output or mask has an
+            unexpected shape, or ``gravity_force`` and ``coriolis_force``
+            are the same array.
     """
     if model._has_rod_joints:  # pyright: ignore[reportPrivateUsage]
         raise ValueError("eval_inverse_dynamics_passive() does not support JointType.ROD joints.")
@@ -444,21 +634,30 @@ def eval_inverse_dynamics_passive(
     for name, array in (("gravity_force", gravity_force), ("coriolis_force", coriolis_force)):
         if array is not None and array.shape != expected_dof_shape:
             raise ValueError(f"{name} has shape {array.shape}, expected {expected_dof_shape}.")
+    if (
+        gravity_force is not None
+        and coriolis_force is not None
+        and gravity_force.size
+        and gravity_force.ptr == coriolis_force.ptr
+    ):
+        raise ValueError("gravity_force and coriolis_force must be different arrays.")
 
     expected_mask_shape = (model.articulation_count,)
     if mask is not None and mask.shape != expected_mask_shape:
         raise ValueError(f"mask has shape {mask.shape}, expected {expected_mask_shape}.")
 
-    scratch = _InverseDynamicsScratchBuffer(
-        body_count=model.body_count,
-        articulation_count=model.articulation_count,
-        joint_dof_count=model.joint_dof_count,
-        joint_target_q_count=model.joint_target_q.shape[0],
-        max_dofs_per_articulation=model.max_dofs_per_articulation,
-        max_joints_per_articulation=model.max_joints_per_articulation,
-        world_count=model.world_count,
-        device=model.device,
-    )
+    per_joint = model.device.is_cuda and model._fk_articulation_level_start is not None  # pyright: ignore[reportPrivateUsage]
+    if mass_matrix is not None or not per_joint:
+        scratch = _InverseDynamicsScratchBuffer(
+            body_count=model.body_count,
+            articulation_count=model.articulation_count,
+            joint_dof_count=model.joint_dof_count,
+            joint_target_q_count=model.joint_target_q.shape[0],
+            max_dofs_per_articulation=model.max_dofs_per_articulation,
+            max_joints_per_articulation=model.max_joints_per_articulation,
+            world_count=model.world_count,
+            device=model.device,
+        )
 
     if mass_matrix is not None:
         # eval_jacobian zeros scratch.J internally; jcalc_motion_subspace
@@ -476,6 +675,11 @@ def eval_inverse_dynamics_passive(
             joint_S_s=scratch.joint_S_s,
             mask=mask,
         )
+
+    if per_joint:
+        if gravity_force is not None or coriolis_force is not None:
+            _compute_bias_forces_per_joint(model, state, gravity_force, coriolis_force, mask=mask)
+        return
 
     if gravity_force is not None:
         _compute_gravity_force(model, state, gravity_force, scratch, mask=mask)

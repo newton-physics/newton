@@ -5,29 +5,31 @@
 
 from __future__ import annotations
 
-import functools
+import logging
 import unittest
 
 import numpy as np
 import warp as wp
 
+import newton
+from newton import ModelBuilder
 from newton._src.solvers.kamino._src.core.model import DataKamino, ModelKamino
 from newton._src.solvers.kamino._src.kinematics.joints import JointCorrectionMode, compute_joints_data
 from newton._src.solvers.kamino._src.kinematics.resets import reset_joints_state_from_bodies_state, set_floating_base
-from newton._src.solvers.kamino._src.models.builders.basics import build_boxes_fourbar
-from newton._src.solvers.kamino._src.models.builders.testing import build_all_joints_test_model
-from newton._src.solvers.kamino._src.models.builders.utils import make_homogeneous_builder
 from newton._src.solvers.kamino._src.solvers import ForwardKinematicsSolver
-from newton._src.solvers.kamino._src.utils import logger as msg
 from newton.solvers import SolverKamino
-from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino import setup_test_output, setup_tests, test_context
 from newton.tests.kamino.utils.sampling import (
     sample_actuator_coords,
     sample_actuator_velocities,
     sample_base_state,
     sample_world_mask,
 )
-from newton.tests.utils.testing import build_unary_revolute_joint_test
+from newton.tests.unittest_utils import NewtonTestCase
+from newton.tests.utils.basics import build_boxes_fourbar
+from newton.tests.utils.testing import build_all_joints_test, build_unary_revolute_joint_test
+
+logger = logging.getLogger(__name__)
 
 ###
 # Utils
@@ -285,25 +287,44 @@ def setup_test_fourbar_model(
     base_joint: bool, num_worlds: int, rng: np.random.Generator, device: wp.DeviceLike
 ) -> ModelKamino:
     """Helper setting up a floating-base actuated four-bar model, with a base joint or a base body."""
-    build_fn = functools.partial(
-        build_boxes_fourbar, actuator_ids=[1], floatingbase=base_joint, fixedbase=False, ground=False
+    builder = ModelBuilder()
+    builder.replicate(
+        builder=build_boxes_fourbar(
+            limits=False, actuator_ids=[1], floatingbase=base_joint, fixedbase=False, ground=False
+        ),
+        copy_count=num_worlds,
     )
-    builder = make_homogeneous_builder(num_worlds=num_worlds, build_fn=build_fn, limits=False)
     if base_joint:
         # Set non-trivial r_B, X_B, r_F, X_F into base joint for testing (while preserving initial pose)
         random_frames = np.resize(rng.uniform(-1.0, 1.0, 7 * num_worlds), (num_worlds, 7))
         random_frames[:, 3:] /= np.linalg.norm(random_frames[:, 3:], axis=1)[:, None]  # Normalize quaternions
         for wid in range(num_worlds):
-            joint = builder.joints[wid][0]
-            assert joint.bid_B == -1
-            body_F = builder.bodies[wid][joint.bid_F]
-            c_F = wp.transform_get_translation(body_F.q_i_0)
-            R_F = wp.quat_to_matrix(wp.transform_get_rotation(body_F.q_i_0))
-            joint.F_r_Fj = wp.vec3f(random_frames[wid, :3])
-            joint.X_Fj = wp.quat_to_matrix(wp.quatf(random_frames[wid, 3:]))
-            joint.B_r_Bj = c_F + R_F * joint.F_r_Fj  # Compute r_B, X_B given r_F, X_F to preserve a valid pose
-            joint.X_Bj = R_F * joint.X_Fj
-    model = builder.finalize(device=device)
+            # Find the joint attaching the floating base to the world (parent == -1) in this world.
+            candidate_joints = [
+                jid
+                for jid in range(builder.joint_count)
+                if builder.joint_world[jid] == wid and builder.joint_parent[jid] == -1
+            ]
+            assert len(candidate_joints) == 1
+            joint_idx = candidate_joints[0]
+            body_F_idx = builder.joint_child[joint_idx]
+
+            q_i_0_F = wp.transform(*builder.body_q[body_F_idx])
+            c_F = wp.transform_get_translation(q_i_0_F)
+            R_F = wp.quat_to_matrix(wp.transform_get_rotation(q_i_0_F))
+            F_r_Fj = wp.vec3f(random_frames[wid, :3])
+            X_Fj = wp.quat_to_matrix(wp.quatf(random_frames[wid, 3:]))
+            B_r_Bj = c_F + R_F * F_r_Fj  # Compute r_B, X_B given r_F, X_F to preserve a valid pose
+            X_Bj = R_F * X_Fj
+            builder.joint_X_p[joint_idx] = wp.transform(B_r_Bj, wp.quat_from_matrix(X_Bj))
+            builder.joint_X_c[joint_idx] = wp.transform(F_r_Fj, wp.quat_from_matrix(X_Fj))
+
+            # Recompute `joint_q` for base joint
+            q_start = builder.joint_q_start[joint_idx]
+            parent_anchor_world = builder.joint_X_p[joint_idx]
+            joint_q = wp.transform_inverse(parent_anchor_world) * q_i_0_F * builder.joint_X_c[joint_idx]
+            builder.joint_q[q_start : q_start + 7] = list(joint_q)
+    model = ModelKamino.from_newton(builder.finalize(device=device))
     return model
 
 
@@ -339,14 +360,14 @@ def set_model_to_random_pose(
     fk_solver = ForwardKinematicsSolver(model=model)
     data = model.data(device=model.device)
     fk_solver.run_fk_solve(
-        actuators_q=actuator_q,
-        actuators_u=actuator_u,
+        actuator_q=actuator_q,
+        actuator_u=actuator_u,
         base_q=base_q,
         base_u=base_u,
-        bodies_q=data.bodies.q_i,
-        bodies_u=data.bodies.u_i,
+        body_q=data.bodies.q_i,
+        body_u=data.bodies.u_i,
     )
-    test_case.assertTrue(fk_solver.newton_success.numpy().sum() == model.size.num_worlds)
+    test_case.assertTrue(fk_solver.data.gauss_newton.success.numpy().sum() == model.size.num_worlds)
 
     # Evaluate joint state and check constraint residuals
     compute_joints_data(model=model, data=data, q_j_p=model.joints.q_j_0, correction=JointCorrectionMode.CONTINUOUS)
@@ -361,26 +382,17 @@ def set_model_to_random_pose(
 ###
 
 
-class TestSetFloatingBase(unittest.TestCase):
+class TestSetFloatingBase(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose  # Set to True to enable verbose output
+
+        setup_test_output(self, verbose=self.verbose)
+
         self.progress = test_context.verbose  # Set to True to show progress bars during long tests
         self.seed = 42
-
-        # Set debug-level logging to print verbose test output to console
-        if self.verbose:
-            print("\n")  # Add newline before test output for better readability
-            msg.set_log_level(msg.LogLevel.INFO)
-        else:
-            msg.reset_log_level()
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            msg.reset_log_level()
 
     def test_01_set_floating_base_with_base_joint(self):
         """
@@ -549,11 +561,14 @@ class TestSetFloatingBase(unittest.TestCase):
 
         # Set up an actuated four-bar model with a fixed base
         num_worlds = 3
-        build_fn = functools.partial(
-            build_boxes_fourbar, actuator_ids=[1], floatingbase=False, fixedbase=True, ground=False
+        builder = ModelBuilder()
+        builder.replicate(
+            builder=build_boxes_fourbar(
+                limits=False, actuator_ids=[1], floatingbase=False, fixedbase=True, ground=False
+            ),
+            copy_count=num_worlds,
         )
-        builder = make_homogeneous_builder(num_worlds=num_worlds, build_fn=build_fn, limits=False)
-        model = builder.finalize(device=self.default_device)
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
 
         # Double-check that no floating base is set for this model
         np.testing.assert_equal(model.info.base_joint_index.numpy(), -1)
@@ -610,26 +625,17 @@ class TestSetFloatingBase(unittest.TestCase):
         self.assertTrue(any("no free-floating base body" in message for message in logs.output))
 
 
-class TestJointBodyStateConversions(unittest.TestCase):
+class TestJointBodyStateConversions(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose  # Set to True to enable verbose output
+
+        setup_test_output(self, verbose=self.verbose)
+
         self.progress = test_context.verbose  # Set to True to show progress bars during long tests
         self.seed = 42
-
-        # Set debug-level logging to print verbose test output to console
-        if self.verbose:
-            print("\n")  # Add newline before test output for better readability
-            msg.set_log_level(msg.LogLevel.INFO)
-        else:
-            msg.reset_log_level()
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            msg.reset_log_level()
 
     def test_01_reset_joint_states_from_body_state(self):
         """
@@ -640,8 +646,8 @@ class TestJointBodyStateConversions(unittest.TestCase):
         rng = np.random.default_rng(self.seed)
 
         # Setup a model with all joint types
-        builder = build_all_joints_test_model(binary_joints=True, unary_joints=False, actuated=True, floating_base=True)
-        model = builder.finalize(device=self.default_device)
+        builder = build_all_joints_test(binary_joints=True, unary_joints=False, actuated=True, floating_base=True)
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
 
         # Set the model into a non-trivial pose
         data = set_model_to_random_pose(self, model, rng)
@@ -669,6 +675,7 @@ class TestJointBodyStateConversions(unittest.TestCase):
 
 if __name__ == "__main__":
     # Test setup
+    newton.utils.setup_console_logging()
     setup_tests()
 
     # Run all tests

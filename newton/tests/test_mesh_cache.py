@@ -42,6 +42,38 @@ class TestMeshCache(unittest.TestCase):
         mesh.invalidate_cache()
         self.assertNotEqual(hash(mesh), old_hash)
 
+    def test_texture_transform_is_copied_without_changing_physics_hash(self):
+        """Copy a texture transform without changing physical mesh identity."""
+        mesh = _make_tet_mesh()
+        physics_hash = hash(mesh)
+        mesh.texture_transform = ((0.5, 0.25, 0.25), (-1.0, 2.0, -0.75))
+        self.assertEqual(hash(mesh), physics_hash)
+
+        copied = mesh.copy()
+        self.assertEqual(copied.texture_transform, mesh.texture_transform)
+        self.assertEqual(hash(copied), hash(mesh))
+
+        copied.texture_transform = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0))
+        self.assertEqual(hash(copied), hash(mesh))
+
+    def test_render_hash_tracks_vertex_attributes(self):
+        """Refresh visual identity after normal or UV edits without changing physics."""
+        mesh = Mesh(
+            [[0, 0, 0], [1, 0, 0], [0, 1, 0]],
+            [0, 1, 2],
+            normals=[[0, 0, 1]] * 3,
+            uvs=[[0, 0], [1, 0], [0, 1]],
+            compute_inertia=False,
+        )
+        physics_hash = hash(mesh)
+        self.assertEqual(mesh._get_render_hash(), mesh.copy()._get_render_hash())
+        for attribute in (mesh.normals, mesh.uvs):
+            render_hash = mesh._get_render_hash()
+            attribute[0, 0] += 0.5
+            mesh.invalidate_cache()
+            self.assertNotEqual(mesh._get_render_hash(), render_hash)
+            self.assertEqual(hash(mesh), physics_hash)
+
 
 def test_finalize_reuses_cached_mesh(test: TestMeshCache, device):
     """Verify finalize() reuses the cached Warp mesh only for identical arguments.
@@ -108,6 +140,16 @@ def test_copy_does_not_share_finalized_meshes(test: TestMeshCache, device):
 
     # the original's cache entry is untouched by finalizing the copy
     test.assertEqual(mesh.finalize(device=device), mesh_id)
+
+    # in-place edits to the copy's properties leave the original untouched
+    mesh.color = [0.2, 0.4, 0.6]
+    copied = mesh.copy()
+    copied.inertia[0, 0] = 2.0
+    copied.com[0] = 1.0
+    copied.color[0] = 1.0
+    test.assertEqual(mesh.inertia[0, 0], 1.0)
+    test.assertEqual(mesh.com[0], 0.0)
+    test.assertAlmostEqual(mesh.color[0], 0.2)
 
 
 def test_in_place_edit_requires_invalidate_cache(test: TestMeshCache, device):

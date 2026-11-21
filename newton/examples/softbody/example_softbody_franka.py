@@ -1,18 +1,25 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Soft Body Franka
-#
-# Demonstrates a Franka Panda robot grasping a deformable rubber duck
-# on a table. The robot is positioned via Newton's GPU IK solver;
-# Featherstone is used as a kinematic integrator to produce proper
-# body velocities for VBD friction. The duck is a tetrahedral mesh
-# simulated with VBD.
-#
-# The simulation runs in meter scale.
-#
-###########################################################################
+"""Example Soft Body Franka
+
+Demonstrates a Franka Panda robot grasping a deformable rubber duck
+on a table. The robot is positioned via Newton's GPU IK solver;
+Featherstone is used as a kinematic integrator to produce proper
+body velocities for VBD friction. The duck is a tetrahedral mesh
+simulated with VBD.
+
+The simulation runs in meter scale.
+
+Success criteria:
+- A setup appears with a Franka robotic arm and a table with a rubber duck on it.
+- The Franka arm starts to move and catch the rubber duck, raise it, and then drop it nicely on the
+  table.
+- The rubber duck is behaving as a softbody.
+
+Runs:
+- `python -m newton.examples softbody_franka`
+"""
 
 from __future__ import annotations
 
@@ -26,6 +33,8 @@ import newton.ik as ik
 import newton.utils
 from newton import ModelBuilder, eval_fk
 from newton.solvers import SolverFeatherstone, SolverVBD
+
+DUCK_OPACITY = 0.55
 
 
 @wp.kernel
@@ -58,8 +67,8 @@ class Example:
         # contact (meter scale)
         self.particle_radius = 0.005
         self.soft_body_contact_margin = 0.01
-        self.particle_self_contact_radius = 0.003
-        self.particle_self_contact_margin = 0.005
+        self.particle_self_contact_margin = 0.003
+        self.particle_self_contact_gap = 0.002
 
         self.soft_contact_ke = 2e6
         self.soft_contact_kd = 2e-1
@@ -108,6 +117,7 @@ class Example:
             k_lambda=1.0e6,
             k_damp=1e0,
             particle_radius=self.particle_radius,
+            opacity=DUCK_OPACITY,
         )
 
         self.scene.color()
@@ -133,7 +143,7 @@ class Example:
         # collision pipeline for soft body - robot contacts
         self.collision_pipeline = newton.CollisionPipeline(
             self.model,
-            soft_contact_margin=self.soft_body_contact_margin,
+            soft_contact_gap=self.soft_body_contact_margin,
         )
         self.contacts = self.collision_pipeline.contacts()
 
@@ -150,12 +160,14 @@ class Example:
             self.model,
             iterations=self.iterations,
             integrate_with_external_rigid_solver=True,
-            particle_self_contact_radius=self.particle_self_contact_radius,
             particle_self_contact_margin=self.particle_self_contact_margin,
+            particle_self_contact_gap=self.particle_self_contact_gap,
             particle_enable_self_contact=False,
             particle_vertex_contact_buffer_size=32,
             particle_edge_contact_buffer_size=64,
-            particle_collision_detection_interval=-1,
+            collision_frequency_type={
+                newton.solvers.SolverBase.CollisionSlot.SOFT_SELF_CONTACT: newton.solvers.SolverBase.CollisionFrequencyType.PRE_INIT,
+            },
         )
 
         self.viewer.set_model(self.model)
@@ -245,6 +257,7 @@ class Example:
             enable_self_collisions=False,
             collapse_fixed_joints=True,
             force_show_colliders=False,
+            joint_damping_mode="passive",
         )
         builder.joint_q[:6] = [0.0, 0.0, 0.0, -1.59695, 0.0, 2.5307]
 
@@ -346,7 +359,6 @@ class Example:
             particle_count = self.model.particle_count
             self.model.particle_count = 0
             self.model.gravity.assign(self.gravity_zero)
-            self.model.shape_contact_pair_count = 0
 
             self.state_0.joint_qd.assign(self.target_joint_qd)
             self.robot_solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)

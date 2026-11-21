@@ -1,0 +1,1 @@
+Deprecate Kamino's `dynamics_solver="dvi"` and `config.dvi` aliases in Newton 1.9 in favor of `dynamics_solver="scc"` and `config.scc`. Keep both aliases functional with `NewtonDeprecationWarning` for at least one full minor release cycle; removal is eligible in Newton 1.10.

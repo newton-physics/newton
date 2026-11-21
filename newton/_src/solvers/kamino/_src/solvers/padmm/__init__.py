@@ -33,7 +33,7 @@ Usage
 A typical example for using this module is:
 
     # Import all relevant types from Kamino
-    from newton._src.solvers.kamino.core import ModelBuilderKamino
+    import newton
     from newton._src.solvers.kamino._src.geometry import ContactsKamino
     from newton._src.solvers.kamino._src.kinematics import LimitsKamino
     from newton._src.solvers.kamino._src.kinematics import DenseSystemJacobians
@@ -41,15 +41,15 @@ A typical example for using this module is:
     from newton._src.solvers.kamino.solvers import PADMMSolver
 
     # Create a model builder and add bodies, joints, geoms, etc.
-    builder = ModelBuilderKamino()
+    builder = newton.ModelBuilder()
     ...
 
     # Create a model from the builder and construct additional
     # containers to hold joint-limits, contacts, Jacobians
-    model = builder.finalize()
+    model = ModelKamino.from_newton(builder.finalize())
     data = model.data()
     limits = LimitsKamino(model)
-    contacts = ContactsKamino(builder)
+    contacts = ContactsKamino(model)
     jacobians = DenseSystemJacobians(model, limits, contacts)
 
     # Build the Jacobians for the model and active limits and contacts
@@ -61,7 +61,7 @@ A typical example for using this module is:
     dual.build(model, data, limits, contacts, jacobians)
 
     # Create a forward-dynamics PADMM solver
-    solver = PADMMSolver(model, limits, contacts)
+    solver = PADMMSolver(model, dual)
 
     # Solve the dual forward dynamics problem
     solver.coldstart()

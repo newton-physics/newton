@@ -337,7 +337,7 @@ class DRLegsBenchmarkWorkload:
         self.solver = DRLegsBenchmarkWorkload.create_solver(self.model, self.sim_dt)
         self.solver.reset(state=self.state_0)
 
-        self._world_reset_mask = wp.zeros(world_count, dtype=wp.bool, device=self.model.device)
+        self._world_reset_mask = wp.zeros(world_count + 1, dtype=wp.bool, device=self.model.device)
         self._reset_config = newton.solvers.SolverKamino.ResetConfig.to_default()
 
         if self.viewer is not None:
