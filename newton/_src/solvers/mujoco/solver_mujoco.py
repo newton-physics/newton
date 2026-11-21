@@ -6749,6 +6749,30 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         eval_fk(model, state.joint_q, state.joint_qd, state)
 
+        # Generic FK excludes joints outside articulations, including the standalone roots.
+        if self._standalone_root_joints.size:
+            wp.launch(
+                kernels.eval_standalone_root_fk_kernel,
+                dim=(nworld, self._standalone_root_joints.size),
+                inputs=[
+                    self._standalone_root_joints,
+                    joints_per_world,
+                    state.joint_q,
+                    state.joint_qd,
+                    model.joint_q_start,
+                    model.joint_qd_start,
+                    model.joint_type,
+                    model.joint_child,
+                    model.joint_X_p,
+                    model.joint_X_c,
+                    model.joint_axis,
+                    model.joint_dof_dim,
+                    model.body_com,
+                ],
+                outputs=[state.body_q, state.body_qd],
+                device=model.device,
+            )
+
         if is_mjwarp:
             self._update_body_observables(model, state, mj_data, observables)
 
@@ -9492,6 +9516,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 )
         self.mj_q_start = wp.array(mj_q_start_np, dtype=wp.int32, device=model.device)
         self.mj_qd_start = wp.array(mj_qd_start_np, dtype=wp.int32, device=model.device)
+        self._standalone_root_joints = wp.array(
+            np.searchsorted(selected_joints, joints_dynamic_roots).astype(np.int32),
+            dtype=wp.int32,
+            device=model.device,
+        )
         # Slide-joint coordinates of each particle body, or -1 for pinned particles and
         # particles without a body, whose state the solver leaves untouched.
         particle_body = np.array([-1 if body is None else body.id for body in particle_bodies], dtype=np.int32)
@@ -11917,6 +11946,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         4. Global world (-1) only contains static shapes (no bodies, joints, or constraints)
         5. Actuator layouts, template-only properties, and high-level DC-motor parameters match across worlds
         6. Flex particle properties, elements, materials, and authored flexes match across worlds
+        7. Corresponding world-root joints match in articulation membership
 
         Args:
             model: The Newton model to validate.
@@ -12115,8 +12145,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 )
 
             bodies_per_world = model.body_count // world_count
-            for name in ("joint_parent", "joint_child"):
-                bodies = getattr(model, name).numpy().reshape(world_count, joints_per_world)
+            joint_parents = model.joint_parent.numpy().reshape(world_count, joints_per_world)
+            for name, bodies in (
+                ("joint_parent", joint_parents),
+                ("joint_child", model.joint_child.numpy().reshape(world_count, joints_per_world)),
+            ):
                 local_bodies = np.where(bodies >= 0, bodies % bodies_per_world, -1)
                 mismatch = local_bodies != local_bodies[0]
                 if np.any(mismatch):
@@ -12125,6 +12158,16 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         f"SolverMuJoCo requires matching {name}: world {world}, joint {joint} "
                         f"references body {local_bodies[world, joint]}, expected {local_bodies[0, joint]}."
                     )
+
+            # The template determines which world roots need FK outside an articulation.
+            articulated = model.joint_articulation.numpy().reshape(world_count, joints_per_world) >= 0
+            mismatch = (joint_parents[0] == -1) & (articulated != articulated[0])
+            if np.any(mismatch):
+                world, joint = np.argwhere(mismatch)[0]
+                raise ValueError(
+                    "SolverMuJoCo requires matching articulation membership for world roots: "
+                    f"world {world}, joint {joint} differs from world 0."
+                )
 
             joint_mimic_joint = model.joint_mimic_joint.numpy().reshape(world_count, joints_per_world)
             world_joint_offsets = np.arange(world_count, dtype=np.int32)[:, None] * joints_per_world
