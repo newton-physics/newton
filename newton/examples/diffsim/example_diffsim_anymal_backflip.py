@@ -107,6 +107,7 @@ WEIGHT_FLIP = 0.956137871751204  # flip-error weight at touchdown attention
 KNEE_MARGIN_GROUND = 0.0217610642328222  # ground-based knee clearance bar (m)
 Z_TARGET = 0.32296679716115667  # crouch depth target (m)
 WEIGHT_ARRIVAL = 0.4918151418204104  # arrival quality weight
+WEIGHT_ATT_JUMP = 3.0 * WEIGHT_ARRIVAL  # jump attitude weight: 3 x the arrival weight
 Z_LOW = Z_GOOD - 0.35  # apex floor of the height band (m)
 WEIGHT_BAND = 30.0  # apex height-band penalty weight
 Z_TOUCHDOWN = 0.68  # touchdown attention: root height the replay calls touchdown (m)
@@ -478,14 +479,14 @@ def touchdown_att_kernel(
 
 
 @wp.kernel
-def order_state_g_kernel(
-    min_knee_arr: wp.array[float],
-    min_paw_arr: wp.array[float],
-    idx: int,
-    weight_order: float,
-    margin_ground: float,
-    mask_height: float,
-    loss: wp.array[float],
+def order_state_ground_kernel(
+    min_knee_arr: wp.array[float],  # lowest knee point z per state (m; from knee_mingz_kernel)
+    min_paw_arr: wp.array[float],  # lowest paw bottom per state (m; from pawraw_state_kernel)
+    idx: int,  # sample index this launch prices (one slot per rollout state)
+    weight_order: float,  # crouch knee-ordering weight (WEIGHT_ORDER_CROUCH)
+    margin_ground: float,  # knee clearance bar above ground (m; KNEE_MARGIN_GROUND)
+    mask_height: float,  # grounded-mask scale (m; PAW_MASK_HEIGHT)
+    loss: wp.array[float],  # shared window accumulator (read-modify-write)
 ):
     """Ground-based knee ordering: while paws are grounded, the lowest knee
     point must stay above the GROUND margin. The minima arrive precomputed
@@ -498,15 +499,20 @@ def order_state_g_kernel(
 
 @wp.kernel
 def loss_crouch_end_kernel(
-    body_q_n: wp.array[wp.transform],
-    body_q_m: wp.array[wp.transform],
-    loss: wp.array[float],
-    z_target: float,
-    weight_depth: float,
-    weight_still: float,
-    weight_up: float,
-    inv_vz_lag_dt: float,
+    body_q_n: wp.array[wp.transform],  # root transform at the window's last state (states[CROUCH_STEPS])
+    body_q_m: wp.array[wp.transform],  # root transform VZ_LAG_STEPS states earlier (the vz finite-difference base)
+    loss: wp.array[float],  # shared window accumulator (read-modify-write)
+    z_target: float,  # crouch depth target (m; Z_TARGET)
+    weight_depth: float,  # depth weight (WEIGHT_CROUCH_DEPTH)
+    weight_still: float,  # stillness weight (WEIGHT_CROUCH_STILL)
+    weight_up: float,  # upright weight (WEIGHT_CROUCH_UP)
+    inv_vz_lag_dt: float,  # 1 / (VZ_LAG_STEPS * SIM_DT): scales the height delta into m/s
 ):
+    """Crouch-end terms at the window's last state: depth (root z vs
+    z_target), stillness (root vz over the last VZ_LAG_STEPS steps, a finite
+    difference against body_q_m) and upright (the root up-vector's z). Reads
+    the root body transforms directly - crouch builds no z sample chain - and
+    adds into ``loss[0]``, the shared accumulator zeroed before the window."""
     zn = wp.transform_get_translation(body_q_n[0])
     zm = wp.transform_get_translation(body_q_m[0])
     vz = (zn[2] - zm[2]) * inv_vz_lag_dt
@@ -519,22 +525,22 @@ def loss_crouch_end_kernel(
 
 @wp.kernel
 def loss_jump_state_kernel(
-    body_q: wp.array[wp.transform],
-    cum_wy_arr: wp.array[float],
-    min_knee_arr: wp.array[float],
-    min_paw_arr: wp.array[float],
-    att_arr: wp.array[float],
-    cum_att_arr: wp.array[float],
-    idx: int,
-    loss: wp.array[float],
-    weight_flip: float,
-    weight_att: float,
-    weight_order: float,
-    margin_ground: float,
-    mask_height: float,
-    flip_sign: float,
-    two_pi: float,
-    touchdown_len: float,
+    body_q: wp.array[wp.transform],  # State's body transforms (world frame); body 0 is the root
+    cum_wy_arr: wp.array[float],  # accumulated flip angle per state (chained cum_sum_kernel over wy_arr)
+    min_knee_arr: wp.array[float],  # lowest knee point z per state (m; from knee_mingz_kernel)
+    min_paw_arr: wp.array[float],  # lowest paw bottom per state (m; the jump window passes the raw paw sample)
+    att_arr: wp.array[float],  # touchdown attention per state (from touchdown_att_kernel)
+    cum_att_arr: wp.array[float],  # attention prefix sum (chained cum_sum_kernel); read at idx - 1
+    idx: int,  # sample index this launch prices (one slot per rollout state)
+    loss: wp.array[float],  # shared window accumulator (read-modify-write)
+    weight_flip: float,  # flip-error weight at full attention (WEIGHT_FLIP)
+    weight_att: float,  # attitude weight (3 x WEIGHT_ARRIVAL at the launch site)
+    weight_order: float,  # per-state knee-ordering weight (WEIGHT_ORDER_JUMP)
+    margin_ground: float,  # knee clearance bar above ground (m; KNEE_MARGIN_GROUND)
+    mask_height: float,  # grounded-mask scale (m; PAW_MASK_HEIGHT)
+    flip_sign: float,  # backflip direction about world +y (FLIP_SIGN)
+    two_pi: float,  # the wanted flip angle is flip_sign * two_pi (TWO_PI)
+    touchdown_len: float,  # attention decay scale in steps (TOUCHDOWN_LEN)
 ):
     """Per-state jump terms: flip error and attitude at touchdown, knee
     clearance while grounded. pitch (the accumulated roll through this
@@ -569,12 +575,12 @@ def loss_jump_state_kernel(
 
 @wp.kernel
 def loss_jump_band_kernel(
-    cum_z_arr: wp.array[float],
-    n: int,
-    loss: wp.array[float],
-    weight_band: float,
-    z_good: float,
-    z_low: float,
+    cum_z_arr: wp.array[float],  # running max of root heights (chained cum_max_kernel over z_arr)
+    n: int,  # last state index: cum_z_arr[n] is the window's apex height
+    loss: wp.array[float],  # shared window accumulator (read-modify-write)
+    weight_band: float,  # apex band penalty weight (WEIGHT_BAND)
+    z_good: float,  # apex ceiling of the band (m; Z_GOOD)
+    z_low: float,  # apex floor of the band (m; Z_LOW)
 ):
     """Apex band on the window's highest root height. The maximum arrives
     precomputed (a cum_max_kernel chain over the z state samples): a
@@ -587,20 +593,20 @@ def loss_jump_band_kernel(
 
 @wp.kernel
 def loss_land_state_kernel(
-    body_q: wp.array[wp.transform],
-    body_qd: wp.array[wp.spatial_vector],
-    min_knee_arr: wp.array[float],
-    paw_body: wp.array[int],
-    paw_center: wp.array[wp.vec3],
-    paw_r: wp.array[float],
-    idx: int,
-    loss: wp.array[float],
-    weight_order: float,
-    margin_ground: float,
-    mask_height: float,
-    weight_bounce: float,
-    w_paws: float,
-    w_up: float,
+    body_q: wp.array[wp.transform],  # State's body transforms (world frame); body 0 is the root
+    body_qd: wp.array[wp.spatial_vector],  # State's body velocities (top 3 = linear, bottom 3 = angular)
+    min_knee_arr: wp.array[float],  # lowest knee point z per state (m; from knee_mingz_kernel)
+    paw_body: wp.array[int],  # body index of each paw
+    paw_center: wp.array[wp.vec3],  # paw sphere center (body frame)
+    paw_r: wp.array[float],  # paw sphere radius (m)
+    idx: int,  # sample index this launch prices (one slot per rollout state)
+    loss: wp.array[float],  # shared window accumulator (read-modify-write)
+    weight_order: float,  # per-state knee-ordering weight (WEIGHT_ORDER_LAND)
+    margin_ground: float,  # knee clearance bar above ground (m; KNEE_MARGIN_GROUND)
+    mask_height: float,  # grounded-mask scale (m; PAW_MASK_HEIGHT)
+    weight_bounce: float,  # anti-bounce weight on upward root velocity (WEIGHT_BOUNCE)
+    weight_paws: float,  # paw-glue weight (WEIGHT_PAWS): pulls paws to the ground
+    weight_up: float,  # upright weight (WEIGHT_UP)
 ):
     """Per-state land terms: ground-based knee ordering + anti-bounce +
     paw-glue + upright. Holding the paw-glue at zero REQUIRES flexed knees -
@@ -632,28 +638,33 @@ def loss_land_state_kernel(
         loss[0]
         + weight_order * mask_g * viol_g * viol_g
         + weight_bounce * wp.pow(wp.max(vz, 0.0), 2.0)
-        + w_paws * pp
-        + w_up * (1.0 - up[2])
+        + weight_paws * pp
+        + weight_up * (1.0 - up[2])
     )
 
 
 @wp.kernel
 def loss_land_end_kernel(
-    body_q_n: wp.array[wp.transform],
-    body_qd_n: wp.array[wp.spatial_vector],
-    loss: wp.array[float],
-    z_target: float,
-    weight_arrival: float,
-    weight_depth: float,
-    weight_spin: float,
-    weight_up: float,
-    weight_vz: float,
+    body_q_n: wp.array[wp.transform],  # root transform at the window's last state (states[n])
+    body_qd_n: wp.array[wp.spatial_vector],  # root velocity there (top 3 = linear, bottom 3 = angular)
+    loss: wp.array[float],  # shared window accumulator (read-modify-write)
+    z_target: float,  # final depth target (m; the settled height self.z_stand at the launch site)
+    weight_arrival: float,  # outer scale for the whole arrival sum (WEIGHT_ARRIVAL)
+    weight_depth: float,  # depth weight inside the arrival sum (WEIGHT_LAND_DEPTH)
+    weight_spin: float,  # angular-velocity (spin) weight (WEIGHT_LAND_SPIN)
+    weight_up: float,  # upright weight (WEIGHT_LAND_UP)
+    weight_vz: float,  # vertical-velocity weight (WEIGHT_LAND_VZ)
 ):
+    """Land-end terms at the window's last state: arrival quality - depth
+    (root z vs z_target), spin, upright and vz, summed and scaled by
+    weight_arrival. Reads the root transform and velocity directly (no
+    sample chain) and adds into ``loss[0]``, the shared accumulator zeroed
+    before the window."""
     zn = wp.transform_get_translation(body_q_n[0])
     q = wp.transform_get_rotation(body_q_n[0])
     up = wp.quat_rotate(q, wp.vec3(0.0, 0.0, 1.0))
-    v = wp.spatial_top(body_qd_n[0])
-    w = wp.spatial_bottom(body_qd_n[0])
+    v = wp.spatial_top(body_qd_n[0])  # linear velocity part
+    w = wp.spatial_bottom(body_qd_n[0])  # angular velocity part
     loss[0] = loss[0] + weight_arrival * (
         weight_depth * wp.pow(zn[2] - z_target, 2.0)
         + weight_spin * wp.dot(w, w)
@@ -1103,7 +1114,7 @@ class Example:
                     ],
                 )
                 wp.launch(
-                    order_state_g_kernel,
+                    order_state_ground_kernel,
                     dim=1,
                     inputs=[
                         ro.min_knee_arr,
@@ -1173,7 +1184,7 @@ class Example:
                         t,
                         ro.loss_arr,
                         WEIGHT_FLIP,
-                        3.0 * WEIGHT_ARRIVAL,
+                        WEIGHT_ATT_JUMP,
                         WEIGHT_ORDER_JUMP,
                         KNEE_MARGIN_GROUND,
                         PAW_MASK_HEIGHT,
