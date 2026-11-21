@@ -9981,13 +9981,14 @@ class ModelBuilder:
         length: float = 10.0,
         body: int = -1,
         cfg: ShapeConfig | None = None,
+        as_site: bool = False,
         color: Vec3 | None = None,
         opacity: float | None = None,
         label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
         """
-        Adds a plane collision shape to the model.
+        Adds a plane collision shape or site to the model.
 
         If `xform` is provided, it directly defines the plane's position and orientation. The plane's collision normal
         is assumed to be along the local Z-axis of this `xform`.
@@ -10003,14 +10004,15 @@ class ModelBuilder:
             width: The visual/collision extent of the plane along its local X-axis. If `0.0`, considered infinite for collision. Defaults to `10.0`.
             length: The visual/collision extent of the plane along its local Y-axis. If `0.0`, considered infinite for collision. Defaults to `10.0`.
             body: The index of the parent body this shape belongs to. Use -1 for world-static planes. Defaults to `-1`.
-            cfg: The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
+            cfg: The configuration for the shape's physical and collision properties. If `None`, uses :attr:`default_shape_cfg` (or :attr:`default_site_cfg` when `as_site=True`). If `as_site=True` and `cfg` is provided, a copy is made and site invariants are enforced via `mark_as_site()`. Defaults to `None`.
+            as_site: If `True`, creates a site (non-colliding reference point) instead of a collision shape. Defaults to `False`.
             color: Optional display RGB color with values in [0, 1]. If `None`, uses the per-shape palette color.
             opacity: Optional display opacity with value in [0, 1]. If `None`, uses full opacity.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute values for SHAPE frequency attributes.
 
         Returns:
-            The index of the newly added shape.
+            The index of the newly added shape or site.
         """
         if xform is None:
             assert plane is not None, "Either xform or plane must be provided"
@@ -10026,7 +10028,10 @@ class ModelBuilder:
             rot = wp.quat_between_vectors(wp.vec3(0.0, 0.0, 1.0), wp.vec3(*normal))
             xform = wp.transform(pos, rot)
         if cfg is None:
-            cfg = self.default_shape_cfg
+            cfg = self.default_site_cfg if as_site else self.default_shape_cfg
+        elif as_site:
+            cfg = cfg.copy()
+            cfg.mark_as_site()
         scale = wp.vec3(width, length, 0.0)
         return self.add_shape(
             body=body,
@@ -10436,30 +10441,35 @@ class ModelBuilder:
         mesh: Mesh | None = None,
         scale: Vec3 | None = None,
         cfg: ShapeConfig | None = None,
+        as_site: bool = False,
         color: Vec3 | None = None,
         opacity: float | None = None,
         label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
-        """Adds a triangle mesh collision shape to a body.
+        """Adds a triangle mesh collision shape or site to a body.
 
         Args:
             body: The index of the parent body this shape belongs to. Use -1 for shapes not attached to any specific body.
             xform: The transform of the mesh in the parent body's local frame. If `None`, the identity transform `wp.transform()` is used. Defaults to `None`.
             mesh: The :class:`Mesh` object containing the vertex and triangle data. Defaults to `None`.
             scale: The scale of the mesh. Defaults to `None`, in which case the scale is `(1.0, 1.0, 1.0)`.
-            cfg: The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
+            cfg: The configuration for the shape's physical and collision properties. If `None`, uses :attr:`default_shape_cfg` (or :attr:`default_site_cfg` when `as_site=True`). If `as_site=True` and `cfg` is provided, a copy is made and site invariants are enforced via `mark_as_site()`. Defaults to `None`.
+            as_site: If `True`, creates a site (non-colliding reference point) instead of a collision shape. Defaults to `False`.
             color: Optional display RGB color with values in [0, 1]. If `None`, falls back to :attr:`~newton.Mesh.color` when available.
             opacity: Optional display opacity with value in [0, 1]. If `None`, falls back to :attr:`~newton.Mesh.opacity` when available.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute values for SHAPE frequency attributes.
 
         Returns:
-            The index of the newly added shape.
+            The index of the newly added shape or site.
         """
 
         if cfg is None:
-            cfg = self.default_shape_cfg
+            cfg = self.default_site_cfg if as_site else self.default_shape_cfg
+        elif as_site:
+            cfg = cfg.copy()
+            cfg.mark_as_site()
         return self.add_shape(
             body=body,
             type=GeoType.MESH,
@@ -10576,13 +10586,14 @@ class ModelBuilder:
         gaussian: Gaussian | None = None,
         scale: Vec3 | None = None,
         cfg: ShapeConfig | None = None,
+        as_site: bool = False,
         collision_proxy: str | Mesh | None = None,
         color: Vec3 | None = None,
         opacity: float | None = None,
         label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
-        """Adds a Gaussian splat shape to a body.
+        """Adds a Gaussian splat shape or site to a body.
 
         The Gaussian is attached as a ``GeoType.GAUSSIAN`` shape for rendering.
         Collision is handled separately via *collision_proxy*.
@@ -10594,8 +10605,12 @@ class ModelBuilder:
             gaussian: The :class:`Gaussian` splat asset.
             scale: 3D scale applied to Gaussian positions. Defaults to ``(1, 1, 1)``.
             cfg: Shape configuration. If ``None``, uses :attr:`default_shape_cfg`
-                with ``has_shape_collision=False`` (Gaussians are render-only by
-                default).
+                (or :attr:`default_site_cfg` when ``as_site=True``) with
+                ``has_shape_collision=False`` (Gaussians are render-only by
+                default). If ``as_site=True`` and ``cfg`` is provided, a copy is
+                made and site invariants are enforced via ``mark_as_site()``.
+            as_site: If ``True``, creates a site (non-colliding reference point)
+                instead of a regular Gaussian shape. Defaults to ``False``.
             collision_proxy: Collision strategy. Options:
 
                 - ``None``: no collision (render-only).
@@ -10608,15 +10623,19 @@ class ModelBuilder:
                 frequency attributes.
 
         Returns:
-            The index of the Gaussian shape.
+            The index of the Gaussian shape or site.
         """
         if gaussian is None:
             raise TypeError("'gaussian' is required when adding a Gaussian shape.")
+        if as_site and collision_proxy is not None:
+            raise ValueError("Gaussian sites cannot have a collision_proxy.")
 
         if cfg is None:
-            cfg = self.default_shape_cfg.copy()
+            cfg = (self.default_site_cfg if as_site else self.default_shape_cfg).copy()
         else:
             cfg = cfg.copy()
+            if as_site:
+                cfg.mark_as_site()
 
         # Gaussian shape is render-only; collisions are represented by optional proxy geometry.
         proxy_cfg_base = cfg.copy()
