@@ -49,7 +49,9 @@ def _build_model(device, requires_grad=True, kinematic_pendulum=False):
         builder.body_inertia[body] = wp.mat33(inertia_np)
     builder.joint_q[-12:] = STAND
     if kinematic_pendulum:
-        link = builder.add_link(mass=1.0, is_kinematic=True, label="kinematic_pendulum")
+        link = builder.add_link(
+            mass=1.0, inertia=wp.mat33(np.eye(3) * 0.01), is_kinematic=True, label="kinematic_pendulum"
+        )
         joint = builder.add_joint_revolute(parent=-1, child=link, axis=newton.Axis.Y)
         builder.add_articulation([joint])
     return builder.finalize(device=device, requires_grad=requires_grad)
