@@ -1333,20 +1333,24 @@ class Example:
         print(f"  {tag}: L {L_init:.4g} -> {L:.4g} ({accepts} steps accepted)", flush=True)
         return amps
 
+    # --------------------------------------------------------------------------
+    # 12. Replays - re-run a window, read back gate metrics + snapshots
+    # --------------------------------------------------------------------------
     # A replay re-runs the window's forward pass and reads the resulting
     # trajectory back from the rollout buffers. Contacts at step t are the
     # ones collided at the start of that step: ro.contacts[t // COLLIDE_EVERY].
     # Replays are generators like ``_descent`` (they yield every
     # REPLAY_YIELD_EVERY steps) and return their results.
 
-    # --------------------------------------------------------------------------
-    # 12. Replays - re-run a window, read back gate metrics + snapshots
-    # --------------------------------------------------------------------------
     def _crouch_replay(self, ro, amps):
-        """Replay the crouch phase for the given amplitudes; returns the end snapshot and metrics."""
+        """Replay the crouch phase for the given amplitudes and collect its gate
+        metrics (knee clearance, push margin, foot rows); returns the crouch-end
+        snapshot (the jump phase's start anchor) and the report."""
         ro.loss(amps, self.snap)
         # knee and paw minima over the full replay window (crouch + preview),
-        # as the loss computed them on the device
+        # as the loss computed them on the device. The arrays carry per-state
+        # samples for states 0..n; the replay judges states 1..n (index t + 1
+        # is the state after step t), so the aggregates run over [1:]
         mink, minp = ro.min_knee_arr.numpy()[1:], ro.min_paw_arr.numpy()[1:]
         grounded = minp < PAW_MASK_HEIGHT
         rep = {
@@ -1414,6 +1418,7 @@ class Example:
                 foot_steps = 0
             elif airborne_steps >= 5:
                 airborne = True
+                # descending-ish: anything not rising faster than 3 m/s counts
                 if m["vz"] < 3.0 and m["z"] < Z_TOUCHDOWN:
                     foot_steps += 1
                     if foot_steps >= 2:
@@ -1438,7 +1443,9 @@ class Example:
         return td_snap, rep
 
     def _paw_max_z(self, body_q_np):
-        """HIGHEST paw bottom - the numeric proxy for the paw rebound."""
+        """Highest paw bottom in one state's body transforms (host-side,
+        replay only): the numeric proxy for the paw rebound, read per step
+        by _land_replay into rep["paw_lift_max"]."""
         max_p = float("-inf")
         for b, c, r in self.paw_pts_py:
             xf = body_q_np[b]
@@ -1470,6 +1477,8 @@ class Example:
             if min_p < PAW_MASK_HEIGHT:
                 rep["knee_margin_min"] = min(rep["knee_margin_min"], min_k)
             rep["paw_lift_max"] = max(rep["paw_lift_max"], self._paw_max_z(bqd))
+            # bounce proxy: the time-integral of the loss's per-state
+            # bounce term (max(vz, 0)^2), as a gate metric
             rep["bounce"] += max(m["vz"], 0.0) ** 2 * SIM_DT
             if record and (t + frame_offset) % FRAME_EVERY == 0:
                 self.playback.append(("land", self._snapshot(st)))
