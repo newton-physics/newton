@@ -13441,5 +13441,97 @@ class TestImportMjcfHeightfieldOrientation(unittest.TestCase):
             np.testing.assert_allclose(imported_grid(png, {"terrain.png": png_payload}), flipped)
 
 
+class TestImportMjcfMocapBodies(unittest.TestCase):
+    @requires(*MUJOCO_MODULES)
+    def test_mocap_body_flags_and_collapse_preservation(self):
+        mjcf = """<mujoco>
+          <worldbody>
+            <body name="target" mocap="true" pos="0.1 0.2 0.3">
+              <geom type="sphere" size="0.02" contype="0" conaffinity="0"/>
+            </body>
+            <body name="static_wall" pos="1 0 0">
+              <geom type="box" size="0.1 0.1 0.1"/>
+            </body>
+            <body name="arm" pos="0 0 0.5">
+              <joint name="j0" type="hinge" axis="0 1 0"/>
+              <geom type="capsule" size="0.02 0.1"/>
+            </body>
+          </worldbody>
+        </mujoco>"""
+        for collapse in (False, True):
+            with self.subTest(collapse_fixed_joints=collapse):
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(mjcf, collapse_fixed_joints=collapse)
+                model = builder.finalize(device="cpu")
+                target_idx = model.body_label.index("worldbody/target")
+                arm_idx = model.body_label.index("worldbody/arm")
+                self.assertEqual(int(model.body_flags.numpy()[target_idx]), int(newton.BodyFlags.KINEMATIC))
+                self.assertEqual(int(model.body_flags.numpy()[arm_idx]), int(newton.BodyFlags.DYNAMIC))
+                if collapse:
+                    self.assertNotIn("worldbody/static_wall", model.body_label)
+                    solver = SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
+                    self.assertEqual(solver.mj_model.nmocap, 1)
+                    self.assertEqual(solver.mj_model.nq, 1)
+                    np.testing.assert_allclose(solver.mj_data.mocap_pos[0], [0.1, 0.2, 0.3], atol=1e-6)
+
+        # floating=True floats non-mocap roots (static_wall + arm -> 2 free joints = 14 coords)
+        # while keeping mocap="true" world-fixed (0 coords, nmocap=1).
+        float_builder = newton.ModelBuilder()
+        float_builder.add_mjcf(mjcf, floating=True, collapse_fixed_joints=True)
+        float_model = float_builder.finalize(device="cpu")
+        self.assertEqual(float_model.joint_coord_count, 14)
+        float_solver = SolverMuJoCo(
+            float_model, use_mujoco_cpu=True, disable_contacts=True, kinematic_switchable_roots=False
+        )
+        self.assertEqual(float_solver.mj_model.nmocap, 1)
+        self.assertEqual(float_solver.mj_model.nq, 14)
+
+    @requires(*MUJOCO_MODULES)
+    def test_mocap_body_with_weld_and_collapse_fixed_joints(self):
+        weld_template = """<mujoco>
+          <worldbody>
+            <body name="target" mocap="true" pos="0.1 0.2 0.3">
+              <geom type="sphere" size="0.02" contype="0" conaffinity="0"/>
+            </body>
+            <body name="arm" pos="0 0 0.5">
+              <joint name="j0" type="hinge" axis="0 1 0"/>
+              <geom type="capsule" size="0.02 0.1"/>
+            </body>
+          </worldbody>
+          <equality>
+            <weld body1="{b1}" body2="{b2}"/>
+          </equality>
+        </mujoco>"""
+        for b1, b2 in (("target", "arm"), ("arm", "target")):
+            with self.subTest(body1=b1, body2=b2):
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(weld_template.format(b1=b1, b2=b2), collapse_fixed_joints=True)
+                model = builder.finalize(device="cpu")
+                self.assertEqual(model.body_label, ["worldbody/target", "worldbody/arm"])
+                solver = SolverMuJoCo(
+                    model, use_mujoco_cpu=True, disable_contacts=True, kinematic_switchable_roots=False
+                )
+                self.assertEqual(solver.mj_model.nmocap, 1)
+                self.assertEqual(solver.mj_model.njnt, 1)
+                self.assertEqual(solver.mj_model.neq, 1)
+
+    def test_mocap_body_validation_rejects_nested_or_jointed_bodies(self):
+        nested_mjcf = """<mujoco>
+          <worldbody>
+            <body name="parent"><geom size="0.1"/><body name="bad" mocap="true"><geom size="0.05"/></body></body>
+          </worldbody>
+        </mujoco>"""
+        with self.assertRaisesRegex(ValueError, "child of <worldbody>"):
+            newton.ModelBuilder().add_mjcf(nested_mjcf)
+
+        jointed_mjcf = """<mujoco>
+          <worldbody>
+            <body name="bad" mocap="true"><joint name="h" type="hinge"/><geom size="0.05"/></body>
+          </worldbody>
+        </mujoco>"""
+        with self.assertRaisesRegex(ValueError, "cannot declare joints"):
+            newton.ModelBuilder().add_mjcf(jointed_mjcf)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

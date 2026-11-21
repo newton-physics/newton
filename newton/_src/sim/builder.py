@@ -8758,6 +8758,13 @@ class ModelBuilder:
             joint_lbl = self.joint_label[i]
             parent = self.joint_parent[i]
             child = self.joint_child[i]
+            if (
+                i in equality_joints
+                and self.joint_type[i] == JointType.FIXED
+                and self.joint_articulation[i] < 0
+                and any(k != i and self.joint_articulation[k] >= 0 for k in incoming[child])
+            ):
+                continue
             body_children[parent].append(child)
 
             q_start = self.joint_q_start[i]
@@ -8839,6 +8846,12 @@ class ModelBuilder:
         for body in self.attachment_particle_body_body:
             if body >= 0:
                 bodies_requiring_body_frame.add(body)
+
+        # Kinematic root bodies (such as MuJoCo mocap bodies) can be posed at runtime and
+        # must not be merged into the static world frame.
+        for body_idx, flags in enumerate(self.body_flags):
+            if int(flags) & int(BodyFlags.KINEMATIC):
+                bodies_requiring_body_frame.add(body_idx)
 
         retained_joints = []
         retained_bodies = []
