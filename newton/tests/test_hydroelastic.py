@@ -1525,6 +1525,13 @@ def test_reduced_vs_unreduced_contact_forces(test, device, anchor_contact=False,
         pipe_red.collide(state, contacts_red)
         pipe_unr.collide(state, contacts_unr)
 
+        # Exclude ground shape 0: hydroelastic rim rows must have positive stiffness.
+        count = int(contacts_unr.rigid_contact_count.numpy()[0])
+        shape0 = contacts_unr.rigid_contact_shape0.numpy()[:count]
+        shape1 = contacts_unr.rigid_contact_shape1.numpy()[:count]
+        stiffness = contacts_unr.rigid_contact_stiffness.numpy()[:count]
+        test.assertTrue(np.all(stiffness[(shape0 > 0) & (shape1 > 0)] > 0.0))
+
         f_red = _compute_net_force(contacts_red, model, state)
         f_unr = _compute_net_force(contacts_unr, model, state)
 

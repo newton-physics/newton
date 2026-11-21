@@ -2120,6 +2120,9 @@ def get_generate_contacts_kernel(
                         wp.static(pressure_func)(adjusted_sdf_shape_b, shape_b, pressure_data),
                         0.0,
                     )
+                    # Zero-force faces must not become ordinary solver contacts.
+                    if force_area <= 0.0 or face_pressure <= 0.0:
+                        continue
                 # Accumulate stats per normal bin
                 if pair_separation < 0.0 and wp.static(reduce_contacts and not deterministic_reduction):
                     bin_id = get_slot(normal)
