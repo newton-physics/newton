@@ -13,11 +13,12 @@ Success criteria:
 - Boxes respond through contact without explosive motion.
 
 Runs:
+- `python -m newton.examples pyramid`
 - `python -m newton.examples pyramid --broad-phase nxn`
 - `python -m newton.examples pyramid --broad-phase sap --num-pyramids 5 --pyramid-size 40`
 - `python -m newton.examples pyramid --broad-phase explicit --num-pyramids 40 --pyramid-size 5`
-- `python -m newton.examples pyramid`
 - `python -m newton.examples pyramid --solver kamino`
+- `python -m newton.examples pyramid --solver style3d`
 """
 
 import numpy as np
@@ -42,6 +43,12 @@ RAMP_THICKNESS = 0.5
 XPBD_ITERATIONS = 2
 XPBD_CONTACT_RELAXATION = 0.8
 
+SUBSTEPS = {
+    "xpbd": 10,
+    "kamino": 40,
+    "style3d": 2,
+}
+
 
 class Example:
     def __init__(self, viewer, args):
@@ -54,7 +61,7 @@ class Example:
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
         # Resolve the heavy-ball impact before deep ground penetration develops.
-        self.sim_substeps = 40 if self.solver_type == "kamino" else 10
+        self.sim_substeps = SUBSTEPS[self.solver_type]
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         num_pyramids = args.num_pyramids
@@ -66,6 +73,8 @@ class Example:
         self.pyramid_size = pyramid_size
 
         builder = newton.ModelBuilder()
+        if self.solver_type == "style3d":
+            builder.default_shape_cfg.ke = 2.0e8
         if self.solver_type == "kamino":
             newton.solvers.SolverKamino.register_custom_attributes(builder)
         builder.add_shape_plane(xform=wp.transform_identity(), width=0.0, length=0.0)
@@ -108,6 +117,8 @@ class Example:
             )
             ball_cfg = newton.ModelBuilder.ShapeConfig()
             ball_cfg.density = builder.default_shape_cfg.density * WRECKING_BALL_DENSITY_MULT
+            if self.solver_type == "style3d":
+                ball_cfg.ke = 1e10
             builder.add_shape_sphere(body_ball, radius=WRECKING_BALL_RADIUS, cfg=ball_cfg)
 
             # Ramp (static)
@@ -156,11 +167,16 @@ class Example:
                 self.model,
                 broad_phase=args.broad_phase,
             )
-            self.solver = newton.solvers.SolverXPBD(
-                self.model,
-                iterations=XPBD_ITERATIONS,
-                rigid_contact_relaxation=XPBD_CONTACT_RELAXATION,
-            )
+            if self.solver_type == "xpbd":
+                self.solver = newton.solvers.SolverXPBD(
+                    self.model,
+                    iterations=XPBD_ITERATIONS,
+                    rigid_contact_relaxation=XPBD_CONTACT_RELAXATION,
+                )
+            elif self.solver_type == "style3d":
+                self.solver = newton.solvers.SolverStyle3D(
+                    self.model, dynamics=newton.solvers.SolverStyle3D.Dynamics.AFFINE_BODY
+                )
             self.contacts = self.collision_pipeline.contacts()
 
         self.state_0 = self.model.state()
@@ -254,7 +270,7 @@ class Example:
         parser.set_defaults(broad_phase="sap")
         parser.add_argument(
             "--solver",
-            choices=["xpbd", "kamino"],
+            choices=["xpbd", "kamino", "style3d"],
             default="xpbd",
             help="Solver backend to use.",
         )

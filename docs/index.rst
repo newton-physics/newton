@@ -54,6 +54,7 @@ Newton Physics
    Overview <solvers/index>
    MuJoCo <solvers/mujoco>
    Kamino <solvers/kamino>
+   Style3D <solvers/style3d>
    VBD <solvers/vbd>
 
 .. toctree::

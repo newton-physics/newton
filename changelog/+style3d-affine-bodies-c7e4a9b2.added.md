@@ -1,0 +1,1 @@
+Add affine body dynamics and two-way cloth-rigid contact coupling to `SolverStyle3D`. Select `Dynamics.AFFINE_BODY` for free rigid bodies or `Dynamics.ALL` for a shared cloth-rigid solve; the default remains `Dynamics.DEFORMABLE`. Configure the SO(3) rigidity penalty with the dimensionless `Config.affine_rigidity_ratio`, scaled by the mean directional inertia.

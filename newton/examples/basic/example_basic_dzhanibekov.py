@@ -18,6 +18,7 @@ Runs:
 - `python -m newton.examples basic_dzhanibekov --solver xpbd`
 - `python -m newton.examples basic_dzhanibekov --solver mujoco`
 - `python -m newton.examples basic_dzhanibekov --solver kamino`
+- `python -m newton.examples basic_dzhanibekov --solver style3d`
 """
 
 import numpy as np
@@ -128,9 +129,15 @@ class Example:
             self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
             self.collision_pipeline = None
             self.contacts = None
+        elif self.solver_type == "style3d":
+            self.solver = newton.solvers.SolverStyle3D(
+                self.model, dynamics=newton.solvers.SolverStyle3D.Dynamics.AFFINE_BODY
+            )
+            self.collision_pipeline = None
+            self.contacts = None
         else:
             raise ValueError(
-                f"Unknown solver type: {self.solver_type}. Choose from 'vbd', 'xpbd', 'mujoco', or 'kamino'."
+                f"Unknown solver type: {self.solver_type}. Choose from 'vbd', 'xpbd', 'mujoco', 'kamino', or 'style3d'."
             )
 
         self.state_0 = self.model.state()
@@ -218,8 +225,8 @@ if __name__ == "__main__":
         "--solver",
         type=str,
         default="vbd",
-        choices=["vbd", "xpbd", "mujoco", "kamino"],
-        help="Solver type: vbd (default), xpbd, mujoco, or kamino.",
+        choices=["vbd", "xpbd", "mujoco", "kamino", "style3d"],
+        help="Solver type: vbd (default), xpbd, mujoco, kamino, or style3d.",
     )
     viewer, args = newton.examples.init(parser)
     newton.examples.run(Example(viewer, args), args)
