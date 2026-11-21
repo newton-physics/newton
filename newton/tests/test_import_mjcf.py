@@ -13441,5 +13441,87 @@ class TestImportMjcfHeightfieldOrientation(unittest.TestCase):
             np.testing.assert_allclose(imported_grid(png, {"terrain.png": png_payload}), flipped)
 
 
+class TestImportMjcfBodyShapeLabels(unittest.TestCase):
+    def test_mjcf_raw_body_and_shape_labels_distinguish_authored_from_synthesized(self):
+        mjcf = """<mujoco>
+          <worldbody>
+            <geom type="plane" size="1 1 0.1"/>
+            <site name="world/origin-site" pos="0 0 0"/>
+            <body name="upper-arm/link">
+              <joint name="h0" type="hinge"/>
+              <geom name="lower_geom_0" type="sphere" size="0.1"/>
+              <site name="hand/tip-1" pos="0 0 0.2"/>
+              <body name="lower">
+                <joint name="h1" type="hinge"/>
+                <geom type="sphere" size="0.05"/>
+                <site pos="0 0 0.1"/>
+              </body>
+              <body>
+                <joint name="h2" type="hinge"/>
+                <geom name="leaf-geom" type="sphere" size="0.04"/>
+              </body>
+            </body>
+          </worldbody>
+        </mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize(device="cpu")
+
+        self.assertEqual(model.mujoco.body_label, ["upper-arm/link", "lower", ""])
+        self.assertEqual(
+            model.mujoco.shape_label,
+            ["lower_geom_0", "hand/tip-1", "", "", "leaf-geom", "", "world/origin-site"],
+        )
+
+    def test_mjcf_body_and_shape_labels_survive_collapse_and_world_replication(self):
+        mjcf = """<mujoco>
+          <worldbody>
+            <body name="base-link">
+              <joint name="h0" type="hinge"/>
+              <geom name="base-geom" type="sphere" size="0.1"/>
+              <body name="welded-tip" pos="0 0 0.2">
+                <geom name="tip-geom" type="sphere" size="0.05"/>
+                <site name="tip-site" pos="0 0 0.1"/>
+              </body>
+            </body>
+          </worldbody>
+        </mujoco>"""
+        blueprint = newton.ModelBuilder()
+        blueprint.add_mjcf(mjcf, collapse_fixed_joints=True)
+        builder = newton.ModelBuilder()
+        builder.add_world(blueprint, label_prefix="env_0")
+        builder.add_world(blueprint, label_prefix="env_1")
+        model = builder.finalize(device="cpu")
+
+        self.assertEqual(model.mujoco.body_label, ["base-link", "base-link"])
+        self.assertEqual(
+            model.mujoco.shape_label,
+            ["base-geom", "tip-geom", "tip-site", "base-geom", "tip-geom", "tip-site"],
+        )
+
+    @requires("pxr", "newton_usd_schemas")
+    def test_usd_import_populates_mujoco_body_and_shape_prim_labels(self):
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        root_xform = UsdGeom.Xform.Define(stage, "/World/robot")
+        UsdPhysics.ArticulationRootAPI.Apply(root_xform.GetPrim())
+        link = UsdGeom.Xform.Define(stage, "/World/robot/link_a")
+        UsdPhysics.RigidBodyAPI.Apply(link.GetPrim())
+        UsdPhysics.MassAPI.Apply(link.GetPrim()).CreateMassAttr(1.0)
+        sph = UsdGeom.Sphere.Define(stage, "/World/robot/link_a/col_sphere")
+        sph.CreateRadiusAttr(0.1)
+        UsdPhysics.CollisionAPI.Apply(sph.GetPrim())
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(stage)
+        model = builder.finalize(device="cpu")
+
+        self.assertEqual(model.mujoco.body_label, ["/World/robot/link_a"])
+        self.assertIn("/World/robot/link_a/col_sphere", model.mujoco.shape_label)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -1414,7 +1414,10 @@ is the body of
 :meth:`~newton.solvers.SolverMuJoCo.register_custom_attributes`
 itself.
 See :doc:`/concepts/custom_attributes` for how Newton's
-custom-attribute system works in general.
+custom-attribute system works in general. Source body and shape provenance
+is also recorded in ``model.mujoco.body_label`` and ``model.mujoco.shape_label``
+(unsanitized MJCF ``name`` attributes for bodies, geoms, and sites, or ``""``
+when unnamed; USD prim paths for USD imports).
 
 **Direct mapping to Newton built-ins.** Some MuJoCo-specific
 attributes are mapped onto Newton's built-in properties during import

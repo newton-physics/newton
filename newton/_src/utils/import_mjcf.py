@@ -776,6 +776,10 @@ def parse_mjcf(
     has_solreflimit_gain_baseline = solreflimit_gain_baseline_key in builder.custom_attributes
     solref_mode_key = "mujoco:solref_mode"
     has_solref_mode = solref_mode_key in builder.custom_attributes
+    body_label_key = "mujoco:body_label"
+    has_body_label = body_label_key in builder.custom_attributes
+    shape_label_key = "mujoco:shape_label"
+    has_shape_label = shape_label_key in builder.custom_attributes
     builder_custom_attr_eq: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
         ["mujoco:equality_constraint"]
     )
@@ -1760,6 +1764,8 @@ def parse_mjcf(
                 if "mujoco:conaffinity" in builder.custom_attributes:
                     custom_attributes["mujoco:conaffinity"] = conaffinity & 0xFFFFFFFF
                 custom_attributes[collision_mask_domain_key] = collision_mask_domain
+                if has_shape_label and raw_geom_name is not None:
+                    custom_attributes[shape_label_key] = raw_geom_name
             if has_solref_mode and shape_builder is builder:
                 # Authored solref → RAW (forwarded verbatim); unauthored →
                 # MJCF_DEFAULT (force-space scaling is strictly opt-in for
@@ -2290,6 +2296,9 @@ def parse_mjcf(
 
             # Add site using builder.add_site()
             site_label = f"{label_prefix}/{site_name}" if label_prefix else site_name
+            site_custom_attributes = (
+                {shape_label_key: raw_site_name} if (has_shape_label and raw_site_name is not None) else None
+            )
             s = builder.add_site(
                 body=link,
                 xform=site_xform,
@@ -2297,6 +2306,7 @@ def parse_mjcf(
                 scale=site_size,
                 label=site_label,
                 visible=visible,
+                custom_attributes=site_custom_attributes,
             )
             site_shapes.append(s)
             site_name_to_idx[sanitize_name(site_name)] = s
@@ -2841,6 +2851,8 @@ def parse_mjcf(
             ]
 
         body_custom_attributes = parse_custom_attributes(body_attrib, builder_custom_attr_body, parsing_mode="mjcf")
+        if has_body_label and "name" in body_attrib:
+            body_custom_attributes[body_label_key] = body_attrib["name"]
         link = builder.add_link(
             xform=world_xform,  # Use the composed world transform
             label=body_label_path,

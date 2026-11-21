@@ -2604,6 +2604,31 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             warnings.warn(f"Unsupported joint type for DOF name resolution: {prim_type}", NewtonWarning, stacklevel=2)
             return []
 
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="body_label",
+                frequency=AttributeFrequency.BODY,
+                assignment=AttributeAssignment.MODEL,
+                dtype=str,
+                default="",
+                namespace="mujoco",
+                usd_attribute_name="*",
+                usd_value_transformer=resolve_prim_name,
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="shape_label",
+                frequency=AttributeFrequency.SHAPE,
+                assignment=AttributeAssignment.MODEL,
+                dtype=str,
+                default="",
+                namespace="mujoco",
+                usd_attribute_name="*",
+                usd_value_transformer=resolve_prim_name,
+            )
+        )
+
         # First we get a list of all joint DOF names from USD
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
