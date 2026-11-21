@@ -15,6 +15,7 @@ from ..geometry import GeoType, Mesh
 from ..geometry.deformable_visual import DeformableVisualMesh, DeformableVisuals, _DeformableVisualSkinBatches
 from ..sim import Model, State
 from ..utils import load_texture, normalize_texture
+from . import gaussians
 from .render import create_kernel
 from .scene import SceneItems, WarpScene, model_shape_scene_data, standalone_particles
 from .types import (
@@ -181,9 +182,17 @@ class RenderContext:
                 mask_topology_particles(model.tet_indices)
 
         if model.shape_count:
-            gaussian_worlds = model.shape_world.numpy()[model.shape_type.numpy() == GeoType.GAUSSIAN]
+            gaussian_shapes = np.flatnonzero(model.shape_type.numpy() == GeoType.GAUSSIAN)
+            gaussian_worlds = model.shape_world.numpy()[gaussian_shapes]
             local = np.bincount(gaussian_worlds[gaussian_worlds >= 0], minlength=1).max()
-            self._render_state.gaussian_shapes_per_ray = int(local + np.count_nonzero(gaussian_worlds < 0))
+            per_ray = int(local + np.count_nonzero(gaussian_worlds < 0))
+            if per_ray > gaussians.MAX_SLOTS:
+                raise ValueError(
+                    f"Cameras support at most {gaussians.MAX_SLOTS} Gaussian shapes per world, including global ones"
+                )
+            if any(model.shape_source[si].count > gaussians.MAX_SPLATS for si in gaussian_shapes):
+                raise ValueError(f"Cameras support Gaussian assets of at most {gaussians.MAX_SPLATS} splats")
+            self._render_state.gaussian_shapes_per_ray = per_ray
 
         skin_texture_ids = self._load_texture_and_mesh_data(model, load_textures, deformable_visual_meshes)
         if has_simulation_triangles or deformable_visual_meshes:

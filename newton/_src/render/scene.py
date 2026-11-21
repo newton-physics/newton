@@ -62,6 +62,7 @@ def empty_scene_data(device: wp.Device) -> SceneData:
     scene.triangle_indices = empty_int
     scene.cluster_triangle_start = empty_int
     scene.cluster_triangles = empty_int
+    scene.slot_gaussians = wp.empty((0, 0), dtype=wp.int32, device=device)
     return scene
 
 

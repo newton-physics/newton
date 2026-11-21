@@ -17,11 +17,20 @@ from typing import TYPE_CHECKING
 import numpy as np
 import warp as wp
 
+from ..core import MAXVAL
 from ..geometry import Gaussian, GeoType, raycast
-from ..geometry.optix import create_pipeline, ray_interval, wo, world_offset
-from . import raytrace
+from ..geometry.optix import (
+    GAUSSIAN_ASSET_BITS,
+    GAUSSIAN_MASK,
+    OPAQUE_RAY_MASK,
+    create_pipeline,
+    ray_interval,
+    wo,
+    world_offset,
+)
+from . import gaussians, raytrace
 from .scene import SceneItems, empty_scene_data, fill_item_data
-from .types import MeshData, RenderConfig, RenderState, SceneData
+from .types import GaussianRenderMode, MeshData, RenderConfig, RenderState, SceneData
 
 if TYPE_CHECKING:
     from ..geometry.optix import OptixShapes
@@ -33,13 +42,31 @@ PARTICLE_INSTANCE_ID = 0xFFFFFE
 """Instance ID of the standalone particles."""
 PARTICLE_MASK = 2
 """Visibility mask bit of the particle instance, so renders without particles skip it."""
+PARTICLE_SBT_OFFSET = 3
+"""Hit group of the particle instance, after the shapes' groups."""
 PARTICLE_BUILD_FLAGS = wo.BuildFlags.ALLOW_UPDATE | wo.BuildFlags.PREFER_FAST_BUILD
 """Build flags of the particle spheres, which their built-in intersection is compiled for."""
 CLUSTER_TRIANGLES = 128
 """Triangles per cluster; at most 3 * 128 vertices, which never exceeds the 256-vertex limit after a split."""
 
-_RAY_MASK_ALL = 0xFF
-_RAY_MASK_NO_PARTICLES = 0xFF & ~PARTICLE_MASK
+_RAY_MASK_NO_PARTICLES = OPAQUE_RAY_MASK & ~PARTICLE_MASK
+
+SPLAT_HITS_PER_TRACE = 13
+"""Splat hits one Gaussian traversal gathers in its payload, at 2 words each, beside 5 more words."""
+SplatHits, empty_splat_hits, insert_splat_hit = gaussians.create_hit_buffer(SPLAT_HITS_PER_TRACE)
+
+
+@wp.struct
+class SplatTrace:
+    """Payload of a Gaussian traversal: the nearest splat hits after the last one blended."""
+
+    hits: SplatHits
+    last_t: wp.float32
+    last_id: wp.uint32
+    camera_forward: wp.vec3f
+
+
+SPLAT_TRACE_WORDS = 2 * SPLAT_HITS_PER_TRACE + 5
 
 
 def clusters_supported(device: wp.Device) -> bool:
@@ -177,6 +204,38 @@ def write_scene_instance(
     )
 
 
+@wp.kernel(module="unique", enable_backward=False)
+def intersect_splat(gaussians_data: wp.array[Gaussian.Data]):
+    """Gather a splat hit into the payload; only a full payload reports a hit, to shorten the ray."""
+    # Gaussian instances report their slot and asset as instance ID.
+    instance = wp.optix_get_instance_id()
+    splat = int(wp.optix_get_primitive_index())
+    trace = SplatTrace()
+    wp.optix_load_payload(trace)
+    data = gaussians_data[int(instance & wp.uint32(wp.static((1 << GAUSSIAN_ASSET_BITS) - 1)))]
+    # The instance maps object space to the shape's space before its scale, like map_ray_to_local().
+    alpha, t = gaussians.ray_gsplat_hit_response(
+        data.transforms[splat],
+        data.scales[splat],
+        data.opacities[splat],
+        data.min_response,
+        data.sorting_mode,
+        wp.optix_get_object_ray_origin(),
+        wp.optix_get_object_ray_direction(),
+        trace.camera_forward,
+        wp.min(trace.hits.t[wp.static(SPLAT_HITS_PER_TRACE - 1)], wp.optix_get_ray_tmax()),
+    )
+    id = gaussians.splat_hit_id(int(instance >> wp.uint32(GAUSSIAN_ASSET_BITS)), splat)
+    if alpha > 0.0 and gaussians.hit_before(trace.last_t, trace.last_id, t, id):
+        trace.hits = insert_splat_hit(trace.hits, t, id)
+        wp.optix_store_payload(trace)
+        # With the payload full, reporting its farthest hit shortens the ray, so the traversal skips
+        # splats that start behind it, as Warp's query does.
+        farthest = trace.hits.t[wp.static(SPLAT_HITS_PER_TRACE - 1)]
+        if farthest < wp.optix_get_ray_tmax() and farthest > wp.optix_get_ray_tmin():
+            wp.optix_report_intersection(farthest, wp.uint32(0))
+
+
 class OptixScene:
     """A camera's OptiX instance structure over :attr:`Model.optix_shapes`, particles and deformable triangles.
 
@@ -198,6 +257,7 @@ class OptixScene:
         if use_clusters is None:
             use_clusters = self.has_triangles and clusters_supported(device)
         self.clustered = bool(use_clusters and self.has_triangles)
+        self.has_gaussians = shapes.slot_gaussians.shape[1] > 0
         self.has_global_items = shapes.has_global_instances
         self.accel: wo.Accel | None = None
         self.triangle_accel = None
@@ -246,7 +306,7 @@ class OptixScene:
                 [wo.spheres(self._particle_centers, self._particle_radii)], flags=PARTICLE_BUILD_FLAGS
             )
             children.append(self.particle_accel)
-            extra.append((PARTICLE_INSTANCE_ID, self.particle_accel.id, 2, PARTICLE_MASK))
+            extra.append((PARTICLE_INSTANCE_ID, self.particle_accel.id, PARTICLE_SBT_OFFSET, PARTICLE_MASK))
 
         shape_instances = shapes.instance_shapes.shape[0]
         self.records = wp.empty(shape_instances + len(extra), dtype=wo.Instance, device=device)
@@ -335,6 +395,8 @@ class OptixScene:
         if self.clustered:
             scene.cluster_triangle_start = self.cluster_triangle_start
             scene.cluster_triangles = self.cluster_triangles
+        if self.has_gaussians:
+            scene.slot_gaussians = self.shapes.slot_gaussians
         return scene
 
     def create_pipeline(self, kernel: wp.Kernel, config: RenderConfig) -> wo.Pipeline:
@@ -342,6 +404,8 @@ class OptixScene:
             self.shapes,
             kernel,
             enable_backface_culling=config.enable_backface_culling,
+            splat_intersection=intersect_splat if self.has_gaussians else None,
+            payload_words=SPLAT_TRACE_WORDS if self.has_gaussians else 0,
             particle_build_flags=PARTICLE_BUILD_FLAGS if self.has_particles else None,
             clustered_geometry=self.clustered,
         )
@@ -356,9 +420,91 @@ class OptixScene:
         has_particles = self.has_particles
         has_triangles = self.has_triangles
         clustered = self.clustered
-        ray_mask = _RAY_MASK_ALL if config.enable_particles else _RAY_MASK_NO_PARTICLES
+        ray_mask = OPAQUE_RAY_MASK if config.enable_particles else _RAY_MASK_NO_PARTICLES
         traversals = self._traversal_count(config)
         has_instances = self.has_instances
+        has_gaussians = self.has_gaussians
+        blend_splat = gaussians.create_blend_function(config)
+        # Splats blend in rounds of this many, as Warp gathers them, so both blend the same splats.
+        round_hits = config.gaussians_max_num_hits
+        fast = config.gaussians_mode == GaussianRenderMode.FAST
+
+        @wp.func
+        def blend_splats(
+            hit: raytrace.ClosestHit,
+            scene: SceneData,
+            world_index: wp.int32,
+            shape_transforms: wp.array[wp.transformf],
+            shape_sizes: wp.array[wp.vec3f],
+            shape_source_ptr: wp.array[wp.uint64],
+            gaussians_data: wp.array[Gaussian.Data],
+            origin: wp.vec3f,
+            direction: wp.vec3f,
+            camera_forward: wp.vec3f,
+        ) -> raytrace.ClosestHit:
+            """Blend the splats in front of ``hit``, gathering a payload of hits per traversal."""
+            blend = gaussians.start_blend()
+            trace = SplatTrace()
+            trace.last_t = -MAXVAL
+            trace.last_id = wp.uint32(0)
+            trace.camera_forward = camera_forward
+            round_left = int(round_hits)
+            while True:
+                trace.hits = empty_splat_hits()
+                for i in range(wp.static(traversals)):
+                    world = wp.where(i == 1, wp.static(world_count), world_index)
+                    interval = ray_interval(origin, direction, wp.static(extent), hit.distance)
+                    if interval[1] >= interval[0]:
+                        wp.optix_trace(
+                            scene.id,
+                            origin + world_offset(world, wp.static(grid), wp.static(extent)),
+                            direction,
+                            interval[1],
+                            trace,
+                            interval[0],
+                            0.0,
+                            wp.static(GAUSSIAN_MASK),
+                            wp.static(int(wo.RayFlags.DISABLE_ANYHIT | wo.RayFlags.DISABLE_CLOSESTHIT)),
+                        )
+                gathered = int(0)
+                for k in range(wp.static(SPLAT_HITS_PER_TRACE)):
+                    if trace.hits.t[k] < MAXVAL and gathered < round_left:
+                        id = trace.hits.id[k]
+                        blend = blend_splat(
+                            blend,
+                            trace.hits.t[k],
+                            scene.slot_gaussians[world_index, int(id >> wp.uint32(gaussians.SPLAT_BITS))],
+                            int(id & wp.uint32(gaussians.MAX_SPLATS - 1)),
+                            shape_transforms,
+                            shape_sizes,
+                            shape_source_ptr,
+                            gaussians_data,
+                            origin,
+                            direction,
+                            camera_forward,
+                        )
+                        trace.last_t = trace.hits.t[k]
+                        trace.last_id = id
+                        gathered += 1
+                round_left -= gathered
+                # A payload with room to spare held every remaining hit.
+                exhausted = trace.hits.t[wp.static(SPLAT_HITS_PER_TRACE - 1)] == MAXVAL and round_left > 0
+                if gathered == 0 or exhausted:
+                    break
+                if round_left == 0:
+                    if wp.static(fast) or blend.transmittance <= 0.003:
+                        break
+                    round_left = int(round_hits)
+            distance, color, si = gaussians.finish_blend(blend)
+            if distance >= 0.0 and distance < hit.distance:
+                hit.distance = distance
+                hit.shape_index = wp.uint32(si)
+                hit.normal = wp.vec3f(0.0)
+                hit.color = color
+                hit.bary_u = 0.0
+                hit.bary_v = 0.0
+                hit.face_idx = -1
+            return hit
 
         @wp.func
         def plane_hit(
@@ -497,6 +643,19 @@ class OptixScene:
                                         wp.static(config.enable_backface_culling),
                                     )
                                     hit.normal = normal
+            if wp.static(has_gaussians):
+                hit = blend_splats(
+                    hit,
+                    scene,
+                    world_index,
+                    shape_transforms,
+                    shape_sizes,
+                    shape_source_ptr,
+                    gaussians_data,
+                    origin,
+                    direction,
+                    camera_forward,
+                )
             return hit
 
         return closest_hit
@@ -505,7 +664,7 @@ class OptixScene:
         shapes = self.shapes
         grid, extent, world_count = shapes.grid, shapes.extent, shapes.world_count
         planes_per_world = shapes.world_planes.shape[1]
-        ray_mask = _RAY_MASK_ALL if config.enable_particles else _RAY_MASK_NO_PARTICLES
+        ray_mask = OPAQUE_RAY_MASK if config.enable_particles else _RAY_MASK_NO_PARTICLES
         traversals = self._traversal_count(config)
         has_instances = self.has_instances
 

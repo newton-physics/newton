@@ -185,15 +185,15 @@ def create_closest_hit_function(
         closest_hit.color = wp.vec3f(0.0)
 
         if scene.id:
+            # Gaussian shapes crossed in the world and the global world, blended together afterwards.
+            gaussians_hit = wp.vector(length=wp.static(max(state.gaussian_shapes_per_ray, 1)), dtype=wp.int32)
+            num_gaussians_hit = wp.int32(0)
             # int() makes the bound dynamic in Warp, preventing loop unrolling
             # that duplicates BVH traversal state and increases register pressure.
             for i in range(int(wp.static(2 if config.enable_global_world else 1))):
                 group_root = get_group_roots(scene.world_roots, world_index, i)
                 if group_root < 0:
                     continue
-
-                gaussians_hit = wp.vector(length=wp.static(max(state.gaussian_shapes_per_ray, 1)), dtype=wp.int32)
-                num_gaussians_hit = wp.int32(0)
 
                 query = wp.bvh_query_ray(scene.id, ray_origin_world, ray_dir_world, group_root)
                 item = wp.int32(0)
@@ -238,7 +238,7 @@ def create_closest_hit_function(
                                         wp.static(config.enable_backface_culling),
                                         closest_hit.distance,
                                     )
-                            elif shape_type == GeoType.GAUSSIAN:
+                            elif wp.static(state.gaussian_shapes_per_ray > 0) and shape_type == GeoType.GAUSSIAN:
                                 if num_gaussians_hit < wp.static(state.gaussian_shapes_per_ray):
                                     gaussians_hit[num_gaussians_hit] = wp.int32(si)
                                     num_gaussians_hit += 1
@@ -295,27 +295,27 @@ def create_closest_hit_function(
                             closest_hit.bary_v = hit_v
                             closest_hit.color = wp.vec3f(0.0)
 
-                # Splats are blended after the traversal: nested Warp BVH queries share
-                # stack data, and this also skips splats hidden behind other items.
-                if num_gaussians_hit > 0:
-                    hit_distance, hit_color, gaussian_shape = shade_gaussians(
-                        gaussians_hit,
-                        num_gaussians_hit,
-                        shape_transforms,
-                        shape_sizes,
-                        shape_source_ptr,
-                        gaussians_data,
-                        ray_origin_world,
-                        ray_dir_world,
-                        camera_forward,
-                        closest_hit.distance,
-                    )
-                    if hit_distance >= 0.0 and hit_distance < closest_hit.distance:
-                        closest_hit.distance = hit_distance
-                        closest_hit.shape_index = wp.uint32(gaussian_shape)
-                        if wp.static(with_normal):
-                            closest_hit.normal = wp.vec3f(0.0)
-                            closest_hit.color = hit_color
+            # Splats are blended after the traversals: nested Warp BVH queries share
+            # stack data, and this also skips splats hidden behind other items.
+            if wp.static(state.gaussian_shapes_per_ray > 0) and num_gaussians_hit > 0:
+                hit_distance, hit_color, gaussian_shape = shade_gaussians(
+                    gaussians_hit,
+                    num_gaussians_hit,
+                    shape_transforms,
+                    shape_sizes,
+                    shape_source_ptr,
+                    gaussians_data,
+                    ray_origin_world,
+                    ray_dir_world,
+                    camera_forward,
+                    closest_hit.distance,
+                )
+                if hit_distance >= 0.0 and hit_distance < closest_hit.distance:
+                    closest_hit.distance = hit_distance
+                    closest_hit.shape_index = wp.uint32(gaussian_shape)
+                    if wp.static(with_normal):
+                        closest_hit.normal = wp.vec3f(0.0)
+                        closest_hit.color = hit_color
 
         return closest_hit
 
