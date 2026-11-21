@@ -5,7 +5,7 @@
 
 A network is not an in-kernel force law, so each step it is linearized about the
 current state and enters the implicit solve as ``tau0 + a (q - q0) + b (qd - qd0)``.
-Both :class:`DriveNeuralMLP` and :class:`DriveNeuralLSTM` use this;
+:class:`DriveNeuralMLP`, :class:`DriveNeuralLSTM` and :class:`DriveNeuralGRU` use this;
 only the forward and gradient evaluation differs between them.
 """
 
