@@ -1103,6 +1103,8 @@ class Example:
         # fresh accumulation per evaluation: the line search calls this many times
         ro.loss_arr.zero_()
         contacts = None
+        # the forward pass is the same mechanics for every mode: the phases
+        # differ only in what their losses price
         for t in range(n):
             if t % COLLIDE_EVERY == 0:
                 contacts = ro.contacts[t // COLLIDE_EVERY]
@@ -1111,154 +1113,178 @@ class Example:
             ro.states[t].clear_forces()
             self.solver.step(ro.states[t], ro.states[t + 1], ro.ctrls[t], contacts, SIM_DT)
 
-        states = ro.states
         if ro.mode == "crouch":
-            for t in range(n + 1):
-                self._launch_knee_min(states[t], ro, t)
-                wp.launch(
-                    pawraw_state_kernel,
-                    dim=1,
-                    inputs=[
-                        states[t].body_q,
-                        self.paw_body_arr,
-                        self.paw_center_arr,
-                        self.paw_r_arr,
-                        ro.min_paw_arr,
-                        t,
-                    ],
-                )
-                wp.launch(
-                    order_state_ground_kernel,
-                    dim=1,
-                    inputs=[
-                        ro.min_knee_arr,
-                        ro.min_paw_arr,
-                        t,
-                        WEIGHT_ORDER_CROUCH,
-                        KNEE_MARGIN_GROUND,
-                        PAW_MASK_HEIGHT,
-                        ro.loss_arr,
-                    ],
-                )
-            wp.launch(
-                loss_crouch_end_kernel,
-                dim=1,
-                inputs=[
-                    states[CROUCH_STEPS].body_q,
-                    states[CROUCH_STEPS - VZ_LAG_STEPS].body_q,
-                    ro.loss_arr,
-                    Z_TARGET,
-                    WEIGHT_CROUCH_DEPTH,
-                    WEIGHT_CROUCH_STILL,
-                    WEIGHT_CROUCH_UP,
-                    INV_VZ_LAG_DT,
-                ],
-            )
+            self._loss_crouch(ro)
         elif ro.mode == "jump":
-            for t in range(n + 1):
-                wp.launch(wy_state_kernel, dim=1, inputs=[states[t].body_qd, ro.wy_arr, t, SIM_DT])
-                wp.launch(zraw_state_kernel, dim=1, inputs=[states[t].body_q, ro.z_arr, t])
-                wp.launch(
-                    pawraw_state_kernel,
-                    dim=1,
-                    inputs=[
-                        states[t].body_q,
-                        self.paw_body_arr,
-                        self.paw_center_arr,
-                        self.paw_r_arr,
-                        ro.min_paw_arr,
-                        t,
-                    ],
-                )
-                # prefix values as chained per-element launches (adjoint-exact;
-                # the in-kernel runtime-bound loops they replace measured with
-                # zero or garbage gradients - see the module docstring)
-                wp.launch(cum_sum_kernel, dim=1, inputs=[ro.wy_arr, ro.cum_wy_arr, t])
-                wp.launch(cum_max_kernel, dim=1, inputs=[ro.z_arr, ro.cum_z_arr, t])
-                wp.launch(cum_max_kernel, dim=1, inputs=[ro.min_paw_arr, ro.cum_paw_arr, t])
-                wp.launch(
-                    touchdown_att_kernel,
-                    dim=1,
-                    inputs=[ro.z_arr, ro.cum_paw_arr, t, Z_TOUCHDOWN, TOUCHDOWN_SIG, LIFT_HEIGHT, ro.att_arr],
-                )
-                wp.launch(cum_sum_kernel, dim=1, inputs=[ro.att_arr, ro.cum_att_arr, t])
-                self._launch_knee_min(states[t], ro, t)
-                wp.launch(
-                    loss_jump_state_kernel,
-                    dim=1,
-                    inputs=[
-                        states[t].body_q,
-                        ro.cum_wy_arr,
-                        ro.min_knee_arr,
-                        # the state sample IS the state's lowest paw bottom:
-                        # the kernel reads its min_p from it
-                        ro.min_paw_arr,
-                        ro.att_arr,
-                        ro.cum_att_arr,
-                        t,
-                        ro.loss_arr,
-                        WEIGHT_FLIP,
-                        WEIGHT_ATT_JUMP,
-                        WEIGHT_ORDER_JUMP,
-                        KNEE_MARGIN_GROUND,
-                        PAW_MASK_HEIGHT,
-                        FLIP_SIGN,
-                        TWO_PI,
-                        TOUCHDOWN_LEN,
-                    ],
-                )
-            wp.launch(loss_jump_band_kernel, dim=1, inputs=[ro.cum_z_arr, n, ro.loss_arr, WEIGHT_BAND, Z_GOOD, Z_LOW])
+            self._loss_jump(ro)
         else:
-            for t in range(n + 1):
-                self._launch_knee_min(states[t], ro, t)
-                # read by the replay only (the landing loss takes its paw minimum in-kernel)
-                wp.launch(
-                    pawraw_state_kernel,
-                    dim=1,
-                    inputs=[
-                        states[t].body_q,
-                        self.paw_body_arr,
-                        self.paw_center_arr,
-                        self.paw_r_arr,
-                        ro.min_paw_arr,
-                        t,
-                    ],
-                )
-                wp.launch(
-                    loss_land_state_kernel,
-                    dim=1,
-                    inputs=[
-                        states[t].body_q,
-                        states[t].body_qd,
-                        ro.min_knee_arr,
-                        self.paw_body_arr,
-                        self.paw_center_arr,
-                        self.paw_r_arr,
-                        t,
-                        ro.loss_arr,
-                        WEIGHT_ORDER_LAND,
-                        KNEE_MARGIN_GROUND,
-                        PAW_MASK_HEIGHT,
-                        WEIGHT_BOUNCE,
-                        WEIGHT_PAWS,
-                        WEIGHT_UP,
-                    ],
-                )
+            self._loss_land(ro)
+
+    def _loss_crouch(self, ro):
+        """Crouch loss launches: per-state knee-ordering and grounded-paw
+        terms over the whole window, then the end-state terms (depth,
+        stillness, upright) at the window's last state."""
+        states = ro.states
+        n = ro.n
+        for t in range(n + 1):
+            self._launch_knee_min(states[t], ro, t)
             wp.launch(
-                loss_land_end_kernel,
+                pawraw_state_kernel,
                 dim=1,
                 inputs=[
-                    states[n].body_q,
-                    states[n].body_qd,
-                    ro.loss_arr,
-                    self.z_stand,
-                    WEIGHT_ARRIVAL,
-                    WEIGHT_LAND_DEPTH,
-                    WEIGHT_LAND_SPIN,
-                    WEIGHT_LAND_UP,
-                    WEIGHT_LAND_VZ,
+                    states[t].body_q,
+                    self.paw_body_arr,
+                    self.paw_center_arr,
+                    self.paw_r_arr,
+                    ro.min_paw_arr,
+                    t,
                 ],
             )
+            wp.launch(
+                order_state_ground_kernel,
+                dim=1,
+                inputs=[
+                    ro.min_knee_arr,
+                    ro.min_paw_arr,
+                    t,
+                    WEIGHT_ORDER_CROUCH,
+                    KNEE_MARGIN_GROUND,
+                    PAW_MASK_HEIGHT,
+                    ro.loss_arr,
+                ],
+            )
+        wp.launch(
+            loss_crouch_end_kernel,
+            dim=1,
+            inputs=[
+                states[CROUCH_STEPS].body_q,
+                states[CROUCH_STEPS - VZ_LAG_STEPS].body_q,
+                ro.loss_arr,
+                Z_TARGET,
+                WEIGHT_CROUCH_DEPTH,
+                WEIGHT_CROUCH_STILL,
+                WEIGHT_CROUCH_UP,
+                INV_VZ_LAG_DT,
+            ],
+        )
+
+    def _loss_jump(self, ro):
+        """Jump loss launches: per-state captures (flip rate, height and
+        paw-bottom samples) chained into prefix sums / maxima and touchdown
+        attention, then per-state pricing and one apex-band kernel."""
+        states = ro.states
+        n = ro.n
+        for t in range(n + 1):
+            wp.launch(wy_state_kernel, dim=1, inputs=[states[t].body_qd, ro.wy_arr, t, SIM_DT])
+            wp.launch(zraw_state_kernel, dim=1, inputs=[states[t].body_q, ro.z_arr, t])
+            wp.launch(
+                pawraw_state_kernel,
+                dim=1,
+                inputs=[
+                    states[t].body_q,
+                    self.paw_body_arr,
+                    self.paw_center_arr,
+                    self.paw_r_arr,
+                    ro.min_paw_arr,
+                    t,
+                ],
+            )
+            # prefix values as chained per-element launches (adjoint-exact;
+            # the in-kernel runtime-bound loops they replace measured with
+            # zero or garbage gradients - see the module docstring)
+            wp.launch(cum_sum_kernel, dim=1, inputs=[ro.wy_arr, ro.cum_wy_arr, t])
+            wp.launch(cum_max_kernel, dim=1, inputs=[ro.z_arr, ro.cum_z_arr, t])
+            wp.launch(cum_max_kernel, dim=1, inputs=[ro.min_paw_arr, ro.cum_paw_arr, t])
+            wp.launch(
+                touchdown_att_kernel,
+                dim=1,
+                inputs=[ro.z_arr, ro.cum_paw_arr, t, Z_TOUCHDOWN, TOUCHDOWN_SIG, LIFT_HEIGHT, ro.att_arr],
+            )
+            wp.launch(cum_sum_kernel, dim=1, inputs=[ro.att_arr, ro.cum_att_arr, t])
+            self._launch_knee_min(states[t], ro, t)
+            wp.launch(
+                loss_jump_state_kernel,
+                dim=1,
+                inputs=[
+                    states[t].body_q,
+                    ro.cum_wy_arr,
+                    ro.min_knee_arr,
+                    # the state sample IS the state's lowest paw bottom:
+                    # the kernel reads its min_p from it
+                    ro.min_paw_arr,
+                    ro.att_arr,
+                    ro.cum_att_arr,
+                    t,
+                    ro.loss_arr,
+                    WEIGHT_FLIP,
+                    WEIGHT_ATT_JUMP,
+                    WEIGHT_ORDER_JUMP,
+                    KNEE_MARGIN_GROUND,
+                    PAW_MASK_HEIGHT,
+                    FLIP_SIGN,
+                    TWO_PI,
+                    TOUCHDOWN_LEN,
+                ],
+            )
+        wp.launch(loss_jump_band_kernel, dim=1, inputs=[ro.cum_z_arr, n, ro.loss_arr, WEIGHT_BAND, Z_GOOD, Z_LOW])
+
+    def _loss_land(self, ro):
+        """Landing loss launches: per-state knee-ordering, bounce and
+        paw-glue terms (the state kernel takes the paw arrays in-kernel),
+        then the end-state terms (arrival, depth, spin, upright, vz) at
+        the window's last state."""
+        states = ro.states
+        n = ro.n
+        for t in range(n + 1):
+            self._launch_knee_min(states[t], ro, t)
+            # read by the replay only (the landing loss takes its paw minimum in-kernel)
+            wp.launch(
+                pawraw_state_kernel,
+                dim=1,
+                inputs=[
+                    states[t].body_q,
+                    self.paw_body_arr,
+                    self.paw_center_arr,
+                    self.paw_r_arr,
+                    ro.min_paw_arr,
+                    t,
+                ],
+            )
+            wp.launch(
+                loss_land_state_kernel,
+                dim=1,
+                inputs=[
+                    states[t].body_q,
+                    states[t].body_qd,
+                    ro.min_knee_arr,
+                    self.paw_body_arr,
+                    self.paw_center_arr,
+                    self.paw_r_arr,
+                    t,
+                    ro.loss_arr,
+                    WEIGHT_ORDER_LAND,
+                    KNEE_MARGIN_GROUND,
+                    PAW_MASK_HEIGHT,
+                    WEIGHT_BOUNCE,
+                    WEIGHT_PAWS,
+                    WEIGHT_UP,
+                ],
+            )
+        wp.launch(
+            loss_land_end_kernel,
+            dim=1,
+            inputs=[
+                states[n].body_q,
+                states[n].body_qd,
+                ro.loss_arr,
+                self.z_stand,
+                WEIGHT_ARRIVAL,
+                WEIGHT_LAND_DEPTH,
+                WEIGHT_LAND_SPIN,
+                WEIGHT_LAND_UP,
+                WEIGHT_LAND_VZ,
+            ],
+        )
 
     # --------------------------------------------------------------------------
     # 11. Optimizer - _descent: shared steepest descent + backtracking line search
