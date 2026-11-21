@@ -1873,6 +1873,7 @@ if __name__ == "__main__":
         # nothing is optimized in test mode, so the recording could only ever
         # hold the settled stance - reject the combination before any work
         parser.error("--rec is not supported together with --test")
+
     if args.rec:
         # mirror ViewerFile's save-time validation (_get_serialization_format
         # in newton/_src/viewer/viewer_file.py) here, so an unusable path is
@@ -1881,11 +1882,14 @@ if __name__ == "__main__":
         ext = os.path.splitext(args.rec)[1].lower()
         if ext not in (".bin", ".json"):
             parser.error(f"--rec {args.rec}: unsupported extension '{ext}' (ViewerFile supports .bin and .json)")
+        # .json recordings serialize with the stdlib json module - only .bin
+        # needs the extra dependency
         if ext == ".bin":
             try:
                 import cbor2  # noqa: F401
             except ImportError:
                 parser.error("--rec: .bin recordings require the cbor2 package (pip install 'cbor2>=5.7.0')")
+
     ex = Example(viewer, args)
     try:
         newton.examples.run(ex, args)
