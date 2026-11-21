@@ -1,0 +1,1 @@
+Expose `SolverMuJoCo.mjc_actuator_to_newton_actuator` (`[nworld, nu]`) mapping compiled MuJoCo actuators to per-world `mujoco:actuator` rows, and use it in control and actuator-property synchronization across worlds.

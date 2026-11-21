@@ -4892,6 +4892,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         """Mapping from MuJoCo [world, tendon] to Newton tendon index.
 
         Shape [nworld, ntendon], dtype int32."""
+        self.mjc_actuator_to_newton_actuator: wp.array2d[wp.int32] | None = None
+        """Mapping from MuJoCo ``[world, actuator]`` to Newton ``mujoco:actuator`` row index.
+
+        Entries are ``-1`` for synthesized ``JOINT_TARGET`` drives that were created from joint
+        target modes without an authored ``mujoco:actuator`` row.
+
+        Shape ``[nworld, nu]``, dtype ``int32``."""
         self.body_free_qd_start: wp.array[wp.int32] | None = None
         """Per-body mapping to the free-joint qd_start index (or -1 if not free)."""
 
@@ -6325,7 +6332,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         )
         if control is not None:
             # Use instance arrays (built during MuJoCo model construction)
-            if self.mjc_actuator_ctrl_source is not None and self.mjc_actuator_to_newton_idx is not None:
+            if (
+                self.mjc_actuator_ctrl_source is not None
+                and self.mjc_actuator_to_newton_idx is not None
+                and self.mjc_actuator_to_newton_actuator is not None
+            ):
                 nu = self.mjc_actuator_ctrl_source.shape[0]
                 dofs_per_world = model.joint_dof_count // nworld if nworld > 0 else model.joint_dof_count
                 target_q_total = control.joint_target_q.shape[0] if control.joint_target_q is not None else 0
@@ -6335,7 +6346,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 # Get mujoco.ctrl (None if not available - won't be accessed if no CTRL_DIRECT actuators)
                 mujoco_ctrl_ns = getattr(control, "mujoco", None)
                 mujoco_ctrl = getattr(mujoco_ctrl_ns, "ctrl", None) if mujoco_ctrl_ns is not None else None
-                ctrls_per_world = mujoco_ctrl.shape[0] // nworld if mujoco_ctrl is not None and nworld > 0 else 0
 
                 mujoco_attrs = getattr(model, "mujoco", None)
                 dof_ref = getattr(mujoco_attrs, "dof_ref", None) if mujoco_attrs is not None else None
@@ -6346,6 +6356,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     inputs=[
                         self.mjc_actuator_ctrl_source,
                         self.mjc_actuator_to_newton_idx,
+                        self.mjc_actuator_to_newton_actuator,
                         self.mjc_actuator_to_newton_target_q_idx,
                         self.mjc_actuator_to_target_q_axis_idx,
                         self.mjc_actuator_to_newton_ball_jnt,
@@ -6358,7 +6369,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         target_q_per_world,
                         coords_per_world,
                         dofs_per_world,
-                        ctrls_per_world,
                         joints_per_world,
                     ],
                     outputs=[
@@ -9834,6 +9844,58 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     mjc_tendon_to_newton_tendon_np[:, mjc_tendon] = world_offsets * tendons_per_world + template_tendon
                 self.mjc_tendon_to_newton_tendon = wp.array(mjc_tendon_to_newton_tendon_np, dtype=wp.int32)
 
+            # Create mjc_actuator_to_newton_actuator: MuJoCo[world, actuator] -> Newton mujoco:actuator row
+            nu = self.mj_model.nu
+            mjc_actuator_to_newton_actuator_np = np.full((nworld, nu), -1, dtype=np.int32)
+            if nu > 0:
+                if nworld <= 1:
+                    mjc_actuator_to_newton_actuator_np[0, :] = actuator_custom_attr_idx
+                else:
+                    actuator_world_arr = get_custom_attribute("actuator_world")
+                    if actuator_world_arr is None:
+                        total_actuators = model.custom_frequency_counts.get("mujoco:actuator", 0)
+                        actuators_per_world = total_actuators // nworld if nworld > 0 else total_actuators
+                        for mjc_act, template_act in enumerate(actuator_custom_attr_idx):
+                            if template_act >= 0:
+                                local_act = (
+                                    template_act % actuators_per_world if actuators_per_world > 0 else template_act
+                                )
+                                mjc_actuator_to_newton_actuator_np[:, mjc_act] = (
+                                    world_offsets * actuators_per_world + local_act
+                                )
+                    else:
+                        valid_rows = np.flatnonzero((actuator_world_arr >= 0) & (actuator_world_arr < nworld))
+                        sorted_rows = valid_rows[np.argsort(actuator_world_arr[valid_rows], kind="stable")]
+                        counts = np.bincount(actuator_world_arr[valid_rows], minlength=nworld)
+                        world_starts = np.zeros(nworld + 1, dtype=np.intp)
+                        np.cumsum(counts, out=world_starts[1:])
+                        template_world_rows = (
+                            sorted_rows[world_starts[first_world] : world_starts[first_world + 1]]
+                            if 0 <= first_world < nworld
+                            else np.flatnonzero(actuator_world_arr == first_world)
+                        )
+                        template_row_to_ordinal = {int(row): idx for idx, row in enumerate(template_world_rows)}
+                        uniform_counts = bool(len(counts) > 0 and np.all(counts == counts[0]))
+                        for mjc_act, template_act in enumerate(actuator_custom_attr_idx):
+                            template_act_int = int(template_act)
+                            if template_act_int < 0:
+                                continue
+                            if int(actuator_world_arr[template_act_int]) < 0:
+                                mjc_actuator_to_newton_actuator_np[:, mjc_act] = template_act_int
+                            else:
+                                ordinal = template_row_to_ordinal.get(template_act_int)
+                                if ordinal is not None:
+                                    if uniform_counts and ordinal < counts[0]:
+                                        mjc_actuator_to_newton_actuator_np[:, mjc_act] = sorted_rows[
+                                            world_starts[:-1] + ordinal
+                                        ]
+                                    else:
+                                        target_worlds = np.flatnonzero(ordinal < counts)
+                                        mjc_actuator_to_newton_actuator_np[target_worlds, mjc_act] = sorted_rows[
+                                            world_starts[target_worlds] + ordinal
+                                        ]
+            self.mjc_actuator_to_newton_actuator = wp.array(mjc_actuator_to_newton_actuator_np, dtype=wp.int32)
+
             if separate_worlds:
                 nworld = model.world_count
             else:
@@ -11811,7 +11873,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         JOINT_TARGET gains come from joint arrays; control and authored force ranges come from actuator attributes.
         """
-        if self.mjc_actuator_ctrl_source is None or self.mjc_actuator_to_newton_actuator_idx is None:
+        if self.mjc_actuator_ctrl_source is None or self.mjc_actuator_to_newton_actuator is None:
             return
 
         nu = self.mjc_actuator_ctrl_source.shape[0]
@@ -11845,14 +11907,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             return
 
         nworld = self.mjw_model.actuator_biasprm.shape[0]
-        actuators_per_world = actuator_gainprm.shape[0] // nworld if nworld > 0 else actuator_gainprm.shape[0]
 
         wp.launch(
             update_actuator_properties_kernel,
             dim=(nworld, nu),
             inputs=[
                 self.mjc_actuator_ctrl_source,
-                self.mjc_actuator_to_newton_actuator_idx,
+                self.mjc_actuator_to_newton_actuator,
                 actuator_ctrl_type,
                 actuator_gainprm,
                 actuator_biasprm,
@@ -11863,7 +11924,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 actuator_actrange,
                 actuator_gear,
                 actuator_cranklength,
-                actuators_per_world,
             ],
             outputs=[
                 self.mjw_model.actuator_gainprm,

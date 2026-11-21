@@ -2296,6 +2296,116 @@ class TestMuJoCoSiteActuators(unittest.TestCase):
             atol=1e-5,
         )
 
+    @requires(*MUJOCO_MODULES)
+    def test_mjc_actuator_to_newton_actuator_empty(self):
+        """Expose an empty (nworld, 0) actuator mapping on unactuated multi-world models."""
+        passive_bp = ModelBuilder()
+        passive_link = passive_bp.add_link(mass=1.0)
+        passive_bp.add_shape_sphere(passive_link, radius=0.1)
+        passive_j = passive_bp.add_joint_revolute(parent=-1, child=passive_link, axis=wp.vec3(0.0, 1.0, 0.0))
+        passive_bp.add_articulation([passive_j])
+        passive_builder = ModelBuilder()
+        passive_builder.replicate(passive_bp, 2)
+        passive_solver = SolverMuJoCo(
+            passive_builder.finalize(device="cpu"), separate_worlds=True, disable_contacts=True
+        )
+        self.assertEqual(passive_solver.mjc_actuator_to_newton_actuator.shape, (2, 0))
+
+    @requires(*MUJOCO_MODULES)
+    def test_mjc_actuator_to_newton_actuator_mixed_sources(self):
+        """Map authored JOINT_TARGET, synthesized JOINT_TARGET (-1), and CTRL_DIRECT rows across worlds."""
+        mixed_mjcf = """<mujoco>
+          <worldbody>
+            <body name="b1">
+              <joint name="j_pos" type="hinge" axis="0 1 0"/>
+              <geom type="sphere" size="0.1" mass="1"/>
+              <body name="b2" pos="0 0 -0.2">
+                <joint name="j_mot" type="hinge" axis="0 1 0"/>
+                <geom type="sphere" size="0.1" mass="1"/>
+              </body>
+            </body>
+          </worldbody>
+          <actuator>
+            <position name="pos_act" joint="j_pos" kp="25" ctrlrange="-1 1"/>
+            <motor name="mot_act" joint="j_mot" gear="2.0" ctrlrange="-2 2"/>
+          </actuator>
+        </mujoco>"""
+        bp = ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(bp)
+        bp.add_mjcf(mixed_mjcf, ctrl_direct=False)
+        extra_link = bp.add_link(mass=1.0)
+        bp.add_shape_sphere(extra_link, radius=0.05)
+        extra_j = bp.add_joint_revolute(
+            parent=-1,
+            child=extra_link,
+            axis=wp.vec3(1.0, 0.0, 0.0),
+            target_ke=10.0,
+            target_kd=1.0,
+            actuator_mode=JointTargetMode.POSITION,
+        )
+        bp.add_articulation([extra_j])
+
+        rep_builder = ModelBuilder()
+        rep_builder.replicate(bp, 3)
+        rep_solver = SolverMuJoCo(rep_builder.finalize(device="cpu"), separate_worlds=True, disable_contacts=True)
+        act_map = rep_solver.mjc_actuator_to_newton_actuator.numpy()
+        np.testing.assert_array_equal(act_map, [[0, -1, 1], [2, -1, 3], [4, -1, 5]])
+
+        single_solver = SolverMuJoCo(bp.finalize(device="cpu"), separate_worlds=False, disable_contacts=True)
+        np.testing.assert_array_equal(single_solver.mjc_actuator_to_newton_actuator.numpy(), [[0, -1, 1]])
+
+    @requires(*MUJOCO_MODULES)
+    def test_mjc_actuator_to_newton_actuator_interleaved_worlds(self):
+        """Route direct controls and actuator-property updates through interleaved per-world actuator rows."""
+        interleaved = ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        SolverMuJoCo.register_custom_attributes(interleaved)
+        for w in range(2):
+            interleaved.begin_world()
+            l1 = interleaved.add_link(mass=1.0)
+            interleaved.add_shape_sphere(l1, radius=0.1)
+            j1 = interleaved.add_joint_revolute(parent=-1, child=l1, axis=wp.vec3(0.0, 1.0, 0.0))
+            l2 = interleaved.add_link(mass=1.0)
+            interleaved.add_shape_sphere(l2, radius=0.1)
+            j2 = interleaved.add_joint_revolute(parent=l1, child=l2, axis=wp.vec3(1.0, 0.0, 0.0))
+            interleaved.add_articulation([j1, j2])
+            mujoco_helpers.add_actuator_motor(
+                interleaved,
+                mujoco_helpers.ActuatorTarget.joint(j1),
+                gear=(1.0,),
+                custom_attributes={"mujoco:actuator_label": f"m1_w{w}"},
+            )
+            mujoco_helpers.add_actuator_motor(
+                interleaved,
+                mujoco_helpers.ActuatorTarget.joint(j2),
+                gear=(2.0,),
+                custom_attributes={"mujoco:actuator_label": f"m2_w{w}"},
+            )
+            interleaved.end_world()
+
+        for attr in interleaved.custom_attributes.values():
+            if attr.frequency == "mujoco:actuator" and isinstance(attr.values, list) and len(attr.values) == 4:
+                attr.values[1], attr.values[2] = attr.values[2], attr.values[1]
+
+        il_model = interleaved.finalize()
+        il_solver = SolverMuJoCo(il_model, separate_worlds=True, disable_contacts=True)
+        np.testing.assert_array_equal(il_solver.mjc_actuator_to_newton_actuator.numpy(), [[0, 2], [1, 3]])
+
+        state_in = il_model.state()
+        state_out = il_model.state()
+        ctrl = il_model.control()
+        ctrl.mujoco.ctrl.assign([0.1, -0.3, 0.5, -0.7])
+        il_solver.step(state_in, state_out, ctrl, None, dt=0.002)
+        np.testing.assert_allclose(il_solver.mjw_data.ctrl.numpy(), [[0.1, 0.5], [-0.3, -0.7]], atol=1e-6)
+
+        gear_np = il_model.mujoco.actuator_gear.numpy().copy()
+        gear_np[0, 0] = 3.0
+        gear_np[1, 0] = 4.0
+        gear_np[2, 0] = 5.0
+        gear_np[3, 0] = 6.0
+        il_model.mujoco.actuator_gear.assign(gear_np)
+        il_solver.notify_model_changed(ModelFlags.ACTUATOR_PROPERTIES)
+        np.testing.assert_allclose(il_solver.mjw_model.actuator_gear.numpy()[:, :, 0], [[3.0, 5.0], [4.0, 6.0]])
+
 
 if __name__ == "__main__":
     unittest.main()
