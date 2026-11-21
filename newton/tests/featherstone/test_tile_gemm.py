@@ -43,8 +43,11 @@ def _joint_qd_loss(joint_qd: wp.array[float], loss: wp.array[float]):
 
 
 def _simulate(model, **solver_kwargs):
-    """Return the final joint velocities and the loss gradient with respect to the initial ones."""
+    """Return the final joint velocities and the loss gradients with respect to the initial
+    joint velocities and the joint armature."""
     solver = newton.solvers.SolverFeatherstone(model, **solver_kwargs)
+    # the armature array is shared with the model, so clear what an earlier run deposited
+    solver.joint_armature_effective.grad.zero_()
     states = [model.state() for _ in range(3)]
     control = model.control()
     loss = wp.zeros(1, dtype=float, device=model.device, requires_grad=True)
@@ -56,17 +59,28 @@ def _simulate(model, **solver_kwargs):
             _joint_qd_loss, model.joint_dof_count, inputs=[states[-1].joint_qd], outputs=[loss], device=model.device
         )
     tape.backward(loss)
-    return states[-1].joint_qd.numpy(), states[0].joint_qd.grad.numpy()
+    return (
+        states[-1].joint_qd.numpy(),
+        states[0].joint_qd.grad.numpy(),
+        solver.joint_armature_effective.grad.numpy().copy(),
+    )
 
 
 def test_tile_gemm_mixed_articulation_sizes(test, device):
-    """Match the non-tile path in forward and backward when articulations differ in size."""
+    """Match the non-tile path in forward and backward when articulations differ in size.
+
+    The armature gradient is compared too: the fused tile kernel factors
+    H + diag(armature) without an adj_dense_cholesky behind it, so its only
+    armature route is the solve adjoint's direct deposit (previously the
+    tile path's armature gradient was exactly zero)."""
     model = _build_model(device)
-    expected_qd, expected_grad = _simulate(model)
+    expected_qd, expected_grad, expected_arm_grad = _simulate(model)
     test.assertGreater(np.abs(expected_grad).max(), 0.0)
-    qd, grad = _simulate(model, use_tile_gemm=True)
+    test.assertGreater(np.abs(expected_arm_grad).max(), 0.0)
+    qd, grad, arm_grad = _simulate(model, use_tile_gemm=True)
     np.testing.assert_allclose(qd, expected_qd, rtol=1e-4, atol=1e-5)
     np.testing.assert_allclose(grad, expected_grad, rtol=1e-3, atol=1e-4)
+    np.testing.assert_allclose(arm_grad, expected_arm_grad, rtol=1e-3, atol=1e-4)
 
 
 class TestFeatherstoneTileGemm(unittest.TestCase):
