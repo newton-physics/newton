@@ -1145,7 +1145,7 @@ def stabilize_collider_velocity(
         return
     gap = collider_sdf[i]
     if gap < 0.0:
-        collider_velocity[i] -= (fraction * gap / dt) * normal
+        collider_velocity[i] = collider_velocity[i] - (fraction * gap / dt) * normal
 
 
 @wp.kernel
@@ -1189,7 +1189,7 @@ def recover_node_penetration(
     volume = node_volume[i]
     if wp.length_sq(normal) == 0.0 or volume <= 0.0:
         return
-    collider_velocity[i] += (fraction * node_penetration[i] / (volume * dt)) * normal
+    collider_velocity[i] = collider_velocity[i] + (fraction * node_penetration[i] / (volume * dt)) * normal
 
 
 @wp.kernel
@@ -1339,9 +1339,10 @@ def normalize_gradient(
         if values[i] < _INFINITY:
             sdf_new = wp.min(values[i] - radius, sdf_old)
     if dt > 0.0:
-        velocity[i] += (wp.max(sdf_old - stop, 0.0) / dt) * previous_normal - (
+        delta_velocity = (wp.max(sdf_old - stop, 0.0) / dt) * previous_normal - (
             wp.max(sdf_new - stop, 0.0) / dt
         ) * corrected_normal
+        velocity[i] = velocity[i] + delta_velocity
     sdf[i] = sdf_new
     normal[i] = corrected_normal
 

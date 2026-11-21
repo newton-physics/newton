@@ -134,9 +134,10 @@ GPU models); Newton only tests ``RUN_TO_RUN``.
      - No
      - Accumulates cloth and contact forces with floating-point atomics.
    * - :class:`~solvers.SolverImplicitMPM`
-     - No
-     - Has no ``deterministic`` option. In our measurements the default PIC
-       transfer was repeatable; the GIMP transfer is not.
+     - Yes
+     - Warp deterministic mode covers the MPM kernels, including GIMP
+       integration and MPM collider force accumulation. Enable it with
+       ``deterministic=wp.DeterministicMode.RUN_TO_RUN``.
    * - Coupled solvers (:mod:`newton.solvers.experimental.coupled`)
      - No
      - The couplers route contacts and sum coupling forces with atomics, so
