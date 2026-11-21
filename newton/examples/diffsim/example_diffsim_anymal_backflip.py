@@ -797,12 +797,10 @@ class Rollout:
         return float(self.loss_arr.numpy()[0]), self.params.grad.numpy().astype(np.float64)
 
 
-# ------------------------------------------------------------------------------
 # -----------------------------------------------------------------------------
 # 9. Example class - setup: build ANYmal-D, classify paw/knee contact shapes,
 #    settle the stance
 # -----------------------------------------------------------------------------
-# ------------------------------------------------------------------------------
 
 
 class Example:
@@ -840,12 +838,13 @@ class Example:
             inertia_np = np.asarray(robot.body_inertia[body], dtype=np.float32).reshape(3, 3)
             inertia_np += np.eye(3, dtype=np.float32) * 0.01
             robot.body_inertia[body] = wp.mat33(inertia_np)
-        robot.joint_q[0:3] = (0.0, 0.0, 0.66)
+        robot.joint_q[0:3] = (0.0, 0.0, 0.66)  # root at 0.66 m
         robot.joint_q[6] = 1.0  # identity quaternion (w)
-        robot.joint_q[7:19] = STAND.tolist()
+        robot.joint_q[7:19] = STAND.tolist()  # hinge targets = stance pose
         scene = newton.ModelBuilder(up_axis=newton.Axis.Z)
         scene.replicate(robot, 1)
         scene.add_ground_plane(cfg=robot.default_shape_cfg)
+        # requires_grad=True: the whole model's downstream quantities carry adjoints
         self.model = scene.finalize(requires_grad=True)
 
         # contact realism: stiffen/damp every shape material
@@ -860,7 +859,8 @@ class Example:
         # single-threaded dense GEMM - for one 18-DOF robot this is ~30x less
         # GPU time per differentiable step
         self.solver = newton.solvers.SolverFeatherstone(self.model, use_tile_gemm=True)
-        self.pipe = newton.CollisionPipeline(self.model, soft_contact_gap=10.0, requires_grad=True)
+        # differentiable contacts: contact-force adjoints flow through the pipeline into the loss
+        self.pipe = newton.CollisionPipeline(self.model, requires_grad=True)
         self.cts = self.pipe.contacts()
         # ---- classify collision shapes: paw spheres vs true knee shapes ----
         shape_body = np.array(self.model.shape_body.numpy(), dtype=np.int32)
@@ -882,7 +882,7 @@ class Example:
         knee_shapes = sorted(
             int(i)
             for i in range(n_shapes)
-            if 1 <= shape_body[i] <= 12
+            if 1 <= shape_body[i] <= 12  # bodies 1-12 are the 12 leg links (0 is the root)
             and shape_body[i] not in FOOT_BODIES
             and (shape_flags[i] & int(ShapeFlags.COLLIDE_SHAPES))
         )
@@ -936,9 +936,11 @@ class Example:
         self.channel_arr = wp.array(CHANNEL_OF_JOINT, dtype=wp.int32)
         self.zero_amp_arr = wp.zeros(JUMP_SEGMENTS * 2, dtype=wp.float32)
         self.tau_caps_arr = wp.array([TAU_FRONT, TAU_HIND], dtype=wp.float32)
-        self.prof_knots_arr = wp.array(np.array(LAND_KNOTS_MS, dtype=np.float32), dtype=wp.float32)
+        self.land_knots_arr = wp.array(np.array(LAND_KNOTS_MS, dtype=np.float32), dtype=wp.float32)
         self.ctrl = self.model.control()
 
+        # forward kinematics: derive the body transforms from the posed joint_q,
+        # so the viewer and the settle start from the standing pose
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.model)
         self.viewer.set_model(self.model)
 
@@ -954,6 +956,8 @@ class Example:
             self.recorder.set_model(self.model)
 
         # ---- settle to a grounded stance (hold stand, then one pulse) ----
+        # hold for 1200 steps (contact transients die), then a 100-step pulse
+        # at -12% stand compresses the suspension once and seats the contacts
         s0 = self.model.state()
         s1 = self.model.state()
         s0 = self._settle_segment(s0, s1, 1200, mode=0)
@@ -961,8 +965,6 @@ class Example:
         self.snap = self._snapshot(s0)
         self.z_stand = float(self.snap[2][0][2])
         print(f"settle done: z_stand={self.z_stand:.4f}", flush=True)
-
-    # ---------------- execution helpers ----------------
 
     # --------------------------------------------------------------------------
     # 10. Execution helpers - snapshots, settling, contact counting, gate
@@ -1062,7 +1064,7 @@ class Example:
                     ctrl.joint_f,
                     self.stand_arr,
                     self.dofs_arr,
-                    self.prof_knots_arr,
+                    self.land_knots_arr,
                     LAND_N_KNOTS,
                     SIM_DT * 1000.0,
                     t,
@@ -1253,8 +1255,6 @@ class Example:
                 ],
             )
 
-    # ---------------- optimizer ----------------
-
     # --------------------------------------------------------------------------
     # 11. Optimizer - _descent: shared steepest descent + backtracking line search
     # --------------------------------------------------------------------------
@@ -1299,8 +1299,6 @@ class Example:
         print(f"  {tag}: L {L_init:.4g} -> {L:.4g} ({accepts} steps accepted)", flush=True)
         return amps
 
-    # ---------------- replays + metrics ----------------
-    #
     # A replay re-runs the window's forward pass and reads the resulting
     # trajectory back from the rollout buffers. Contacts at step t are the
     # ones collided at the start of that step: ro.contacts[t // COLLIDE_EVERY].
@@ -1456,8 +1454,6 @@ class Example:
             and rep["final_w"] <= 0.6
         )
         return rep
-
-    # ---------------- the chain ----------------
 
     # --------------------------------------------------------------------------
     # 13. The chain - run_chain retries over crouch warm starts; the three
@@ -1621,8 +1617,6 @@ class Example:
         )
         return rep
 
-    # ---------------- runner interface ----------------
-
     # --------------------------------------------------------------------------
     # 14. Runner interface - step (frame budget), render, --rec close, CLI
     #     arguments
@@ -1740,7 +1734,7 @@ class Example:
                         ctrl.joint_f,
                         self.stand_arr,
                         self.dofs_arr,
-                        self.prof_knots_arr,
+                        self.land_knots_arr,
                         LAND_N_KNOTS,
                         SIM_DT * 1000.0,
                         t,
@@ -1782,7 +1776,7 @@ class Example:
                         ctrls[t].joint_f,
                         self.stand_arr,
                         self.dofs_arr,
-                        self.prof_knots_arr,
+                        self.land_knots_arr,
                         LAND_N_KNOTS,
                         SIM_DT * 1000.0,
                         t,
