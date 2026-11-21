@@ -74,6 +74,12 @@ Table of Contents
 16. CLI entry point
 """
 
+# ------------------------------------------------------------------------------
+# 2. Imports + constants - every tunable in one place: the simulation
+#    parameters and objective weights (single-source: the configuration the
+#    demonstrated behavior was achieved with)
+# ------------------------------------------------------------------------------
+
 import os
 import time
 
@@ -84,12 +90,6 @@ import newton
 import newton.examples
 import newton.utils
 from newton import GeoType, ShapeFlags
-
-# ------------------------------------------------------------------------------
-# 2. Imports + constants - every tunable in one place: the simulation
-#    parameters and objective weights (single-source: the configuration the
-#    demonstrated behavior was achieved with)
-# ------------------------------------------------------------------------------
 
 # 2.1 Simulation + model indices
 SIM_DT = 1.0e-3  # simulation timestep (s)
