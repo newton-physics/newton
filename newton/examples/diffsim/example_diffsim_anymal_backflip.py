@@ -195,9 +195,10 @@ FRAME_EVERY = 8  # one playback frame per this many simulated steps
 
 
 def _bracket(t_ms):
-    """Landing-spline segment index: LAST knot with knots_ms[kk] <= t_ms,
-    clamped to [0, n_knots-2]. Computed on the HOST per launch - see the
-    module docstring for why this must not live inside the kernel."""
+    """Landing-spline segment index: the last knot with LAND_KNOTS_MS[k] <= t_ms,
+    clamped to [0, LAND_N_KNOTS - 2] so k + 1 is always a valid knot. Computed on
+    the HOST per launch - Warp does not replay dynamic loops in the backward pass,
+    so a scanned segment index would get a wrong adjoint (see module docstring)."""
     k = int(np.searchsorted(np.asarray(LAND_KNOTS_MS, dtype=np.float64), float(t_ms), side="right")) - 1
     return max(0, min(k, LAND_N_KNOTS - 2))
 
