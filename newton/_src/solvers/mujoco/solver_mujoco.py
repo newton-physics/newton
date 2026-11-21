@@ -9864,13 +9864,18 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                                     world_offsets * actuators_per_world + local_act
                                 )
                     else:
-                        world_act_rows = [np.flatnonzero(actuator_world_arr == w) for w in range(nworld)]
+                        valid_rows = np.flatnonzero((actuator_world_arr >= 0) & (actuator_world_arr < nworld))
+                        sorted_rows = valid_rows[np.argsort(actuator_world_arr[valid_rows], kind="stable")]
+                        counts = np.bincount(actuator_world_arr[valid_rows], minlength=nworld)
+                        world_starts = np.zeros(nworld + 1, dtype=np.intp)
+                        np.cumsum(counts, out=world_starts[1:])
                         template_world_rows = (
-                            world_act_rows[first_world]
+                            sorted_rows[world_starts[first_world] : world_starts[first_world + 1]]
                             if 0 <= first_world < nworld
                             else np.flatnonzero(actuator_world_arr == first_world)
                         )
                         template_row_to_ordinal = {int(row): idx for idx, row in enumerate(template_world_rows)}
+                        uniform_counts = bool(len(counts) > 0 and np.all(counts == counts[0]))
                         for mjc_act, template_act in enumerate(actuator_custom_attr_idx):
                             template_act_int = int(template_act)
                             if template_act_int < 0:
@@ -9880,11 +9885,15 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                             else:
                                 ordinal = template_row_to_ordinal.get(template_act_int)
                                 if ordinal is not None:
-                                    for w in range(nworld):
-                                        if ordinal < len(world_act_rows[w]):
-                                            mjc_actuator_to_newton_actuator_np[w, mjc_act] = int(
-                                                world_act_rows[w][ordinal]
-                                            )
+                                    if uniform_counts and ordinal < counts[0]:
+                                        mjc_actuator_to_newton_actuator_np[:, mjc_act] = sorted_rows[
+                                            world_starts[:-1] + ordinal
+                                        ]
+                                    else:
+                                        target_worlds = np.flatnonzero(ordinal < counts)
+                                        mjc_actuator_to_newton_actuator_np[target_worlds, mjc_act] = sorted_rows[
+                                            world_starts[target_worlds] + ordinal
+                                        ]
             self.mjc_actuator_to_newton_actuator = wp.array(mjc_actuator_to_newton_actuator_np, dtype=wp.int32)
 
             if separate_worlds:

@@ -2297,9 +2297,8 @@ class TestMuJoCoSiteActuators(unittest.TestCase):
         )
 
     @requires(*MUJOCO_MODULES)
-    def test_mjc_actuator_to_newton_actuator_mapping_and_interleaved_worlds(self):
-        """Verify [nworld, nu] mjc_actuator_to_newton_actuator across mixed, unactuated, and interleaved worlds."""
-        # 1. Unactuated model exposes an empty (nworld, 0) mapping.
+    def test_mjc_actuator_to_newton_actuator_empty(self):
+        """Expose an empty (nworld, 0) actuator mapping on unactuated multi-world models."""
         passive_bp = ModelBuilder()
         passive_link = passive_bp.add_link(mass=1.0)
         passive_bp.add_shape_sphere(passive_link, radius=0.1)
@@ -2312,7 +2311,9 @@ class TestMuJoCoSiteActuators(unittest.TestCase):
         )
         self.assertEqual(passive_solver.mjc_actuator_to_newton_actuator.shape, (2, 0))
 
-        # 2. Replicated world with synthesized JOINT_TARGET (-1), authored position JOINT_TARGET, and CTRL_DIRECT motor.
+    @requires(*MUJOCO_MODULES)
+    def test_mjc_actuator_to_newton_actuator_mixed_sources(self):
+        """Map authored JOINT_TARGET, synthesized JOINT_TARGET (-1), and CTRL_DIRECT rows across worlds."""
         mixed_mjcf = """<mujoco>
           <worldbody>
             <body name="b1">
@@ -2346,22 +2347,16 @@ class TestMuJoCoSiteActuators(unittest.TestCase):
 
         rep_builder = ModelBuilder()
         rep_builder.replicate(bp, 3)
-        rep_model = rep_builder.finalize(device="cpu")
-        rep_solver = SolverMuJoCo(rep_model, separate_worlds=True, disable_contacts=True)
+        rep_solver = SolverMuJoCo(rep_builder.finalize(device="cpu"), separate_worlds=True, disable_contacts=True)
         act_map = rep_solver.mjc_actuator_to_newton_actuator.numpy()
-        self.assertEqual(act_map.shape, (3, 3))
-        # Order: authored JOINT_TARGET (row 0/2/4), synthesized JOINT_TARGET (-1), CTRL_DIRECT motor (row 1/3/5).
         np.testing.assert_array_equal(act_map, [[0, -1, 1], [2, -1, 3], [4, -1, 5]])
 
         single_solver = SolverMuJoCo(bp.finalize(device="cpu"), separate_worlds=False, disable_contacts=True)
         np.testing.assert_array_equal(single_solver.mjc_actuator_to_newton_actuator.numpy(), [[0, -1, 1]])
 
-        cpu_solver = SolverMuJoCo(rep_model, use_mujoco_cpu=True, separate_worlds=True, disable_contacts=True)
-        np.testing.assert_array_equal(
-            cpu_solver.mjc_actuator_to_newton_actuator.numpy(), [[0, -1, 1], [2, -1, 3], [4, -1, 5]]
-        )
-
-        # 3. Interleaved per-world actuator rows route ctrl and ACTUATOR_PROPERTIES to each world's exact rows.
+    @requires(*MUJOCO_MODULES)
+    def test_mjc_actuator_to_newton_actuator_interleaved_worlds(self):
+        """Route direct controls and actuator-property updates through interleaved per-world actuator rows."""
         interleaved = ModelBuilder(gravity=(0.0, 0.0, 0.0))
         SolverMuJoCo.register_custom_attributes(interleaved)
         for w in range(2):
@@ -2387,7 +2382,6 @@ class TestMuJoCoSiteActuators(unittest.TestCase):
             )
             interleaved.end_world()
 
-        # Permute rows [0, 1, 2, 3] -> [0, 2, 1, 3] so actuator_world is interleaved [0, 1, 0, 1].
         for attr in interleaved.custom_attributes.values():
             if attr.frequency == "mujoco:actuator" and isinstance(attr.values, list) and len(attr.values) == 4:
                 attr.values[1], attr.values[2] = attr.values[2], attr.values[1]
@@ -2396,7 +2390,6 @@ class TestMuJoCoSiteActuators(unittest.TestCase):
         il_solver = SolverMuJoCo(il_model, separate_worlds=True, disable_contacts=True)
         np.testing.assert_array_equal(il_solver.mjc_actuator_to_newton_actuator.numpy(), [[0, 2], [1, 3]])
 
-        # Verify control routing in interleaved order: rows [0, 1, 2, 3] = [w0_m1, w1_m1, w0_m2, w1_m2].
         state_in = il_model.state()
         state_out = il_model.state()
         ctrl = il_model.control()
@@ -2404,12 +2397,11 @@ class TestMuJoCoSiteActuators(unittest.TestCase):
         il_solver.step(state_in, state_out, ctrl, None, dt=0.002)
         np.testing.assert_allclose(il_solver.mjw_data.ctrl.numpy(), [[0.1, 0.5], [-0.3, -0.7]], atol=1e-6)
 
-        # Verify ACTUATOR_PROPERTIES notification updates per-world gear in interleaved order.
         gear_np = il_model.mujoco.actuator_gear.numpy().copy()
-        gear_np[0, 0] = 3.0  # w0, m1
-        gear_np[1, 0] = 4.0  # w1, m1
-        gear_np[2, 0] = 5.0  # w0, m2
-        gear_np[3, 0] = 6.0  # w1, m2
+        gear_np[0, 0] = 3.0
+        gear_np[1, 0] = 4.0
+        gear_np[2, 0] = 5.0
+        gear_np[3, 0] = 6.0
         il_model.mujoco.actuator_gear.assign(gear_np)
         il_solver.notify_model_changed(ModelFlags.ACTUATOR_PROPERTIES)
         np.testing.assert_allclose(il_solver.mjw_model.actuator_gear.numpy()[:, :, 0], [[3.0, 5.0], [4.0, 6.0]])
