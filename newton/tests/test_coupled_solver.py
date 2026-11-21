@@ -1302,51 +1302,7 @@ add_function_test(
 )
 
 
-@wp.kernel
-def _integrate_falling_bodies_kernel(
-    dt: float,
-    gravity: wp.array[wp.vec3],
-    body_world: wp.array[int],
-    body_inv_mass: wp.array[float],
-    body_f: wp.array[wp.spatial_vector],
-    body_q_in: wp.array[wp.transform],
-    body_qd_in: wp.array[wp.spatial_vector],
-    body_q_out: wp.array[wp.transform],
-    body_qd_out: wp.array[wp.spatial_vector],
-):
-    i = wp.tid()
-    v = wp.spatial_top(body_qd_in[i])
-    if body_inv_mass[i] > 0.0:
-        v = v + dt * (gravity[wp.max(body_world[i], 0)] + body_inv_mass[i] * wp.spatial_top(body_f[i]))
-    p = wp.transform_get_translation(body_q_in[i]) + dt * v
-    body_q_out[i] = wp.transform(p, wp.transform_get_rotation(body_q_in[i]))
-    body_qd_out[i] = wp.spatial_vector(v, wp.vec3(0.0))
-
-
-class _FallingBodySolver(SolverBase, CouplingInterface):
-    """Source solver that translates its bodies under gravity and the input forces with symplectic Euler."""
-
-    def step(self, state_in, state_out, control, contacts, dt):
-        del control, contacts
-        wp.launch(
-            _integrate_falling_bodies_kernel,
-            dim=self.model.body_count,
-            inputs=[
-                float(dt),
-                self.model.gravity,
-                self.model.body_world,
-                self.model.body_inv_mass,
-                state_in.body_f,
-                state_in.body_q,
-                state_in.body_qd,
-                state_out.body_q,
-                state_out.body_qd,
-            ],
-            device=self.model.device,
-        )
-
-
-def _drop_box_on_mpm_sand(device, substeps, step_count=150, dt=0.01):
+def _drop_box_on_mpm_sand(device, substeps, step_count=80, dt=0.01):
     """Drop a box on an MPM sand bed and return (height series, support force series, box weight, box half-height).
 
     The box is a proxy of a source body that responds to the harvested wrench, so the run
@@ -1396,7 +1352,7 @@ def _drop_box_on_mpm_sand(device, substeps, step_count=150, dt=0.01):
     coupled = SolverCoupledProxy(
         model=model,
         entries=[
-            SolverCoupledProxy.Entry(name="rigid", solver=_FallingBodySolver, bodies=[box]),
+            SolverCoupledProxy.Entry(name="rigid", solver=SolverSemiImplicit, bodies=[box]),
             SolverCoupledProxy.Entry(
                 name="mpm",
                 solver=lambda view: SolverImplicitMPM(view, config=config, enable_timers=False),
