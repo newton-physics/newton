@@ -16121,6 +16121,7 @@ class ModelBuilder:
             finalized_geos = {}  # content hash -> finalized geometry
             finalized_geos_by_identity = {}  # object id -> finalized geometry
             gaussians = []
+            gaussian_keep_alive = []
             heightfield_meshes = []
             mesh_keep_alive = []
             for shape_idx, geo in enumerate(generated_shape_sources):
@@ -16181,6 +16182,9 @@ class ModelBuilder:
                         gaussians.append(
                             geo.finalize(device=device, bvh_constructor=self.default_bvh_cfg.gaussian_constructor)
                         )
+                        # Like meshes, keep the splat arrays and BVH alive: finalizing the asset
+                        # again for another model replaces them on the asset.
+                        gaussian_keep_alive.append((gaussians[-1], geo.bvh))
                     else:
                         finalized_geos[geo_cache_key] = geo.finalize()
 
@@ -16213,6 +16217,7 @@ class ModelBuilder:
             m.shape_source_ptr = wp.array(geo_sources, dtype=wp.uint64)
             m.heightfield_meshes = heightfield_meshes
             m._mesh_keep_alive = mesh_keep_alive
+            m._gaussian_keep_alive = gaussian_keep_alive
 
             # Open-boundary bits for collision meshes queried with pseudo-normal
             # signs, packed once per unique finalized mesh.
