@@ -550,7 +550,7 @@ def loss_jump_state_kernel(
 
     Every term is weighted by first = exp(-attention so far / touchdown_len), so
     only the first ~touchdown_len steps after touchdown are priced: past that the
-    landing is phase C's job, and the stiff post-touchdown contacts would
+    landing phase takes over, and the stiff post-touchdown contacts would
     only add chaotic gradient noise."""
     pitch = cum_wy_arr[idx]
     min_k = min_knee_arr[idx]
@@ -1503,7 +1503,7 @@ class Example:
     #     phases and their gates
     # --------------------------------------------------------------------------
     def run_chain(self):
-        """Phase A -> B -> C. Prints progress; stores the final result.
+        """Crouch -> jump -> landing, in order. Prints progress; stores the final result.
 
         A generator that yields after every rollout (see ``step()``).
 
@@ -1523,6 +1523,7 @@ class Example:
                 best = res
             if res["crouch_ok"] and res["flip_ok"] and res["land_ok"]:
                 break
+
         self.playback = best["playback"]
         self.result = best["result"]
         self.chain_done = True
@@ -1533,7 +1534,7 @@ class Example:
         )
 
     def _attempt(self, crouch_warm):
-        """One A -> B -> C attempt; returns its gates, score, result and playback.
+        """One crouch -> jump -> landing attempt; returns its gates, score, result and playback.
 
         Each phase runs only when the previous one passed its gate, so a
         missed gate costs little before the next attempt. The score ranks
@@ -1543,6 +1544,7 @@ class Example:
         res["result"] = {"crouch_ok": res["crouch_ok"], "jump_ok": False}
         if not res["crouch_ok"]:
             return res
+
         td_snap, rep_b = yield from self._jump_phase(crouch_snap)
         res["playback"] = self.playback
         if td_snap is None:
@@ -1555,6 +1557,7 @@ class Example:
         res["score"] = (1 + int(res["flip_ok"]), -flip_err)
         if not res["flip_ok"]:
             return res
+
         rep_c = yield from self._landing_phase(td_snap, rep_b["td_step"])
         res["land_ok"] = rep_c["settled"]
         res["result"] = {
@@ -1570,14 +1573,17 @@ class Example:
         return res
 
     def _crouch_phase(self, warm):
-        """Phase A: optimize the crouch from the settled stance, starting at
+        """Optimize the crouch from the settled stance, starting at
         the ``warm`` amplitudes; returns (gates passed, crouch-end snapshot)."""
         print("== crouch phase ==", flush=True)
         ro = Rollout(self, "crouch", CROUCH_ROLLOUT_STEPS, CROUCH_N_PARAMS)
         amps = yield from self._descent(
             "crouch", ro, self.snap, warm, CROUCH_AMP_LOW, CROUCH_AMP_HIGH, CROUCH_ITERS, CROUCH_RADII
         )
+
         end_snap, rep = yield from self._crouch_replay(ro, amps)
+        # gates: crouch depth, upright, paws planted through the window, knees clear
+        # (small numeric tolerances)
         ok = (
             rep["z_end"] <= 0.375
             and rep["tilt_end_deg"] < 20.0
@@ -1594,7 +1600,7 @@ class Example:
         return ok, end_snap
 
     def _jump_phase(self, crouch_snap):
-        """Phase B: optimize the jump from the crouch end; records the flight
+        """Optimize the jump from the crouch end; records the flight
         playback and returns (touchdown snapshot or None, replay report)."""
         print("== jump phase ==", flush=True)
         ro = Rollout(self, "jump", JUMP_STEPS, JUMP_SEGMENTS * 2)
@@ -1603,7 +1609,8 @@ class Example:
         amps = yield from self._descent(
             "jump", ro, crouch_snap, np.zeros(JUMP_SEGMENTS * 2), low, high, JUMP_ITERS, JUMP_RADII
         )
-        self.playback = []  # the flight frames; phase C appends the landing
+
+        self.playback = []  # the flight frames; the landing phase appends its landing frames
         td_snap, rep = yield from self._jump_replay(ro, amps, crouch_snap, record=True)
         print(
             f"  => jump: apex={rep['apex']:.3f}  pitch_end={rep['pitch_end_deg']:.1f}deg  "
@@ -1614,7 +1621,7 @@ class Example:
         return td_snap, rep
 
     def _landing_phase(self, td_snap, td_step):
-        """Phase C: optimize the landing from the touchdown state; records the
+        """Optimize the landing from the touchdown state; records the
         landing playback and returns the replay report.
 
         Curriculum: the dog still carries the flip's pitch rate at touchdown,
@@ -1635,6 +1642,7 @@ class Example:
                 amps = yield from self._descent(
                     f"land-{n_short}", ro_short, td_snap, amps, LAND_LOW, LAND_HIGH, LAND_ITERS, LAND_RADII
                 )
+                # the short window's buffers are no longer needed once its descent is done
                 del ro_short
                 # hold the pose of the last knot inside the short window for
                 # the rest of the landing, instead of springing back to the
@@ -1643,6 +1651,7 @@ class Example:
                 amps = amps.reshape(12, LAND_N_KNOTS - 1)
                 amps[:, last + 1 :] = amps[:, last : last + 1]
                 amps = amps.reshape(-1)
+
             amps = yield from self._descent("land", ro, td_snap, amps, LAND_LOW, LAND_HIGH, LAND_ITERS, LAND_RADII)
             rep = yield from self._land_replay(ro, amps, td_snap)
             score = (rep["settled"], -rep["bounce"])
@@ -1651,6 +1660,7 @@ class Example:
             if rep["settled"]:
                 break
             print("  landing did not settle - retrying with the next curriculum window", flush=True)
+
         rep = yield from self._land_replay(ro, best[1], td_snap, record=True, frame_offset=td_step)
         print(
             f"  => landing: z={rep['final_z']:.3f} tilt={rep['final_tilt_deg']:.1f}deg "
