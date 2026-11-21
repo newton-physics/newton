@@ -192,7 +192,7 @@ def create_closest_hit_function(
                 if group_root < 0:
                     continue
 
-                gaussians_hit = wp.vector(length=wp.static(state.num_gaussians), dtype=wp.uint32)
+                gaussians_hit = wp.vector(length=wp.static(max(state.gaussian_shapes_per_ray, 1)), dtype=wp.int32)
                 num_gaussians_hit = wp.int32(0)
 
                 query = wp.bvh_query_ray(scene.id, ray_origin_world, ray_dir_world, group_root)
@@ -239,8 +239,8 @@ def create_closest_hit_function(
                                         closest_hit.distance,
                                     )
                             elif shape_type == GeoType.GAUSSIAN:
-                                if num_gaussians_hit < wp.static(state.num_gaussians):
-                                    gaussians_hit[num_gaussians_hit] = si
+                                if num_gaussians_hit < wp.static(state.gaussian_shapes_per_ray):
+                                    gaussians_hit[num_gaussians_hit] = wp.int32(si)
                                     num_gaussians_hit += 1
                             elif wp.static(with_normal):
                                 hit_distance, hit_normal = raycast.ray_intersect_shape(
@@ -295,29 +295,27 @@ def create_closest_hit_function(
                             closest_hit.bary_v = hit_v
                             closest_hit.color = wp.vec3f(0.0)
 
-                # Gaussians are shaded after the traversal: nested Warp BVH queries share
-                # stack data, and this also skips Gaussians hidden behind other items.
+                # Splats are blended after the traversal: nested Warp BVH queries share
+                # stack data, and this also skips splats hidden behind other items.
                 if num_gaussians_hit > 0:
-                    for gi in range(num_gaussians_hit):
-                        si = gaussians_hit[gi]
-
-                        gaussian_id = shape_source_ptr[si]
-                        hit_distance, hit_normal, hit_color = shade_gaussians(
-                            shape_transforms[si],
-                            shape_sizes[si],
-                            ray_origin_world,
-                            ray_dir_world,
-                            camera_forward,
-                            gaussians_data[gaussian_id],
-                            closest_hit.distance,
-                        )
-
-                        if hit_distance >= 0.0 and hit_distance < closest_hit.distance:
-                            closest_hit.distance = hit_distance
-                            closest_hit.shape_index = si
-                            if wp.static(with_normal):
-                                closest_hit.normal = hit_normal
-                                closest_hit.color = hit_color
+                    hit_distance, hit_color, gaussian_shape = shade_gaussians(
+                        gaussians_hit,
+                        num_gaussians_hit,
+                        shape_transforms,
+                        shape_sizes,
+                        shape_source_ptr,
+                        gaussians_data,
+                        ray_origin_world,
+                        ray_dir_world,
+                        camera_forward,
+                        closest_hit.distance,
+                    )
+                    if hit_distance >= 0.0 and hit_distance < closest_hit.distance:
+                        closest_hit.distance = hit_distance
+                        closest_hit.shape_index = wp.uint32(gaussian_shape)
+                        if wp.static(with_normal):
+                            closest_hit.normal = wp.vec3f(0.0)
+                            closest_hit.color = hit_color
 
         return closest_hit
 

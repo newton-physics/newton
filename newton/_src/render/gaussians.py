@@ -3,8 +3,12 @@
 
 from __future__ import annotations
 
+import functools
+from typing import Any
+
 import warp as wp
 
+from ..core import MAXVAL
 from ..geometry import Gaussian
 from ..geometry.bvh import compute_ellipsoid_bounds
 from ..geometry.raycast import map_ray_to_local
@@ -117,102 +121,225 @@ def ray_gsplat_hit_response(
     return 0.0, -1.0
 
 
-def create_shade_function(config: RenderConfig, state: RenderState) -> wp.Function:
+@wp.func
+def hit_before(t0: wp.float32, shape0: wp.int32, splat0: wp.int32, t1: wp.float32, shape1: wp.int32, splat1: wp.int32):
+    """Whether splat hit ``(t0, shape0, splat0)`` sorts before ``(t1, shape1, splat1)``.
+
+    The shape and splat break distance ties, so hits have one order however they are gathered.
+    """
+    if t0 != t1:
+        return t0 < t1
+    if shape0 != shape1:
+        return shape0 < shape1
+    return splat0 < splat1
+
+
+@functools.cache
+def create_hit_buffer(capacity: int) -> tuple[type, wp.Function, wp.Function]:
+    """Sorted buffer of the nearest ``capacity`` splat hits along a ray.
+
+    Returns the buffer struct, a function returning an empty buffer, and a function inserting a hit.
+    Inserting a hit already in the buffer leaves it unchanged, as OptiX may report a primitive twice.
+    """
+
+    distances = wp.types.vector(capacity, wp.float32)
+    indices = wp.types.vector(capacity, wp.int32)
+    # Built from annotation objects: postponed annotations cannot name the capacity.
+    SplatHits = wp.struct(
+        type("SplatHits", (), {"__annotations__": {"t": distances, "shape": indices, "splat": indices}})
+    )
+
     @wp.func
-    def shade(
-        transform: wp.transformf,
-        scale: wp.vec3f,
+    def empty_hits():
+        hits = SplatHits()
+        hits.t = distances(MAXVAL)
+        hits.shape = indices(-1)
+        hits.splat = indices(-1)
+        return hits
+
+    @wp.func
+    def insert_hit(hits: Any, t: wp.float32, shape: wp.int32, splat: wp.int32):
+        carry_t = t
+        carry_shape = shape
+        carry_splat = splat
+        for i in range(wp.static(capacity)):
+            if carry_t == hits.t[i] and carry_shape == hits.shape[i] and carry_splat == hits.splat[i]:
+                return hits
+            if hit_before(carry_t, carry_shape, carry_splat, hits.t[i], hits.shape[i], hits.splat[i]):
+                # Bubble the new hit into place, carrying the displaced one onward.
+                t_i = hits.t[i]
+                shape_i = hits.shape[i]
+                splat_i = hits.splat[i]
+                hits.t[i] = carry_t
+                hits.shape[i] = carry_shape
+                hits.splat[i] = carry_splat
+                carry_t = t_i
+                carry_shape = shape_i
+                carry_splat = splat_i
+        return hits
+
+    return SplatHits, empty_hits, insert_hit
+
+
+@wp.struct
+class SplatBlend:
+    """Front-to-back blend of the splats along a ray."""
+
+    transmittance: wp.float32
+    srgb_color: wp.vec3f
+    """Weighted colors of splats authored in sRGB, blended in sRGB as 3DGS is trained."""
+    srgb_weight: wp.float32
+    linear_color: wp.vec3f
+    """Weighted colors of splats authored in linear color."""
+    distance: wp.float32
+    """Distance at which the transmittance first fell below the opacity threshold, or ``MAXVAL``."""
+    shape: wp.int32
+    """Gaussian shape of the splat at :attr:`distance`."""
+
+
+@wp.func
+def start_blend() -> SplatBlend:
+    blend = SplatBlend()
+    blend.transmittance = 1.0
+    blend.distance = MAXVAL
+    blend.shape = -1
+    return blend
+
+
+def create_blend_function(config: RenderConfig) -> wp.Function:
+    @wp.func
+    def blend_splat(
+        blend: SplatBlend,
+        t: wp.float32,
+        si: wp.int32,
+        splat: wp.int32,
+        shape_transforms: wp.array[wp.transformf],
+        shape_sizes: wp.array[wp.vec3f],
+        shape_source_ptr: wp.array[wp.uint64],
+        gaussians_data: wp.array[Gaussian.Data],
         ray_origin: wp.vec3f,
         ray_direction: wp.vec3f,
         camera_forward: wp.vec3f,
-        gaussian_data: Gaussian.Data,
+    ) -> SplatBlend:
+        """Blend one splat hit behind the splats already blended."""
+        data = gaussians_data[int(shape_source_ptr[si])]
+        origin, direction = map_ray_to_local(shape_transforms[si], ray_origin, ray_direction, shape_sizes[si])
+        alpha, _t = ray_gsplat_hit_response(
+            data.transforms[splat],
+            data.scales[splat],
+            data.opacities[splat],
+            data.min_response,
+            data.sorting_mode,
+            origin,
+            direction,
+            camera_forward,
+            MAXVAL,
+        )
+        color = wp.max(
+            SH_C0 * wp.vec3f(data.sh_coeffs[splat][0], data.sh_coeffs[splat][1], data.sh_coeffs[splat][2])
+            + wp.vec3f(0.5),
+            wp.vec3f(0.0),
+        )
+        weight = alpha * blend.transmittance
+        if data.sh_color_space == ColorSpace.SRGB:
+            blend.srgb_color += color * weight
+            blend.srgb_weight += weight
+        else:
+            blend.linear_color += color * weight
+        blend.transmittance *= 1.0 - alpha
+        if blend.transmittance < wp.static(config.gaussians_min_transmittance) and blend.distance == MAXVAL:
+            blend.distance = t
+            blend.shape = si
+        return blend
+
+    return blend_splat
+
+
+@wp.func
+def finish_blend(blend: SplatBlend) -> tuple[wp.float32, wp.vec3f, wp.int32]:
+    """Distance, linear color and shape of the blended splats; distance is -1 unless they are opaque enough."""
+    if blend.distance == MAXVAL:
+        return -1.0, wp.vec3f(0.0), -1
+    opacity = 1.0 - blend.transmittance
+    color = blend.linear_color / opacity
+    if blend.srgb_weight > 0.0:
+        # sRGB is decoded once per ray, after blending.
+        color += srgb_to_linear_wp(blend.srgb_color / blend.srgb_weight) * (blend.srgb_weight / opacity)
+    return blend.distance, color, blend.shape
+
+
+def create_shade_function(config: RenderConfig, state: RenderState) -> wp.Function:
+    """Blend the splats of the Gaussian shapes a ray crosses, nearest first, in front of ``max_distance``.
+
+    Each round gathers the nearest :attr:`RenderConfig.gaussians_max_num_hits` splat hits after those
+    already blended, across all shapes, and blends them; ``FAST`` renders stop after one round.
+    """
+    capacity = config.gaussians_max_num_hits
+    _SplatHits, empty_hits, insert_hit = create_hit_buffer(capacity)
+    blend_splat = create_blend_function(config)
+
+    @wp.func
+    def shade(
+        shapes_hit: Any,
+        shape_count: wp.int32,
+        shape_transforms: wp.array[wp.transformf],
+        shape_sizes: wp.array[wp.vec3f],
+        shape_source_ptr: wp.array[wp.uint64],
+        gaussians_data: wp.array[Gaussian.Data],
+        ray_origin: wp.vec3f,
+        ray_direction: wp.vec3f,
+        camera_forward: wp.vec3f,
         max_distance: wp.float32,
-    ) -> tuple[wp.float32, wp.vec3f, wp.vec3f]:
-        tracked_distance = max_distance
-        result_normal = wp.vec3f(0.0)
-        result_color = wp.vec3f(0.0)
-
-        ray_origin_local, ray_direction_local = map_ray_to_local(transform, ray_origin, ray_direction, scale)
-
-        hit_index = wp.int32(0)
-        min_distance = wp.float32(0.0)
-        ray_transmittance = wp.float32(1.0)
-
-        hit_distances = wp.vector(max_distance, length=wp.static(config.gaussians_max_num_hits), dtype=wp.float32)
-        hit_indices = wp.vector(-1, length=wp.static(config.gaussians_max_num_hits), dtype=wp.int32)
-        hit_alphas = wp.vector(0.0, length=wp.static(config.gaussians_max_num_hits), dtype=wp.float32)
-
-        while ray_transmittance > 0.003:
-            num_hits = wp.int32(0)
-
-            for i in range(wp.static(config.gaussians_max_num_hits)):
-                hit_distances[i] = max_distance - min_distance
-
-            query = wp.bvh_query_ray(
-                gaussian_data.bvh_id, ray_origin_local + ray_direction_local * min_distance, ray_direction_local
-            )
-
-            while wp.bvh_query_next(query, hit_index, hit_distances[-1]):
-                hit_alpha, hit_distance = ray_gsplat_hit_response(
-                    gaussian_data.transforms[hit_index],
-                    gaussian_data.scales[hit_index],
-                    gaussian_data.opacities[hit_index],
-                    gaussian_data.min_response,
-                    gaussian_data.sorting_mode,
-                    ray_origin_local,
-                    ray_direction_local,
-                    camera_forward,
-                    hit_distances[-1],
-                )
-
-                if hit_distance > -1:
-                    if num_hits < wp.static(config.gaussians_max_num_hits):
-                        num_hits += 1
-
-                    for h in range(num_hits):
-                        if hit_distance < hit_distances[h]:
-                            for hh in range(num_hits - 1, h, -1):
-                                hit_distances[hh] = hit_distances[hh - 1]
-                                hit_indices[hh] = hit_indices[hh - 1]
-                                hit_alphas[hh] = hit_alphas[hh - 1]
-                            hit_distances[h] = hit_distance
-                            hit_indices[h] = hit_index
-                            hit_alphas[h] = hit_alpha
-                            break
-
-            if num_hits == 0:
+    ) -> tuple[wp.float32, wp.vec3f, wp.int32]:
+        blend = start_blend()
+        # Hits after (last_t, last_shape, last_splat) are left for the next round.
+        last_t = wp.float32(-MAXVAL)
+        last_shape = wp.int32(-1)
+        last_splat = wp.int32(-1)
+        while blend.transmittance > 0.003:
+            hits = empty_hits()
+            for g in range(shape_count):
+                si = shapes_hit[g]
+                data = gaussians_data[int(shape_source_ptr[si])]
+                origin, direction = map_ray_to_local(shape_transforms[si], ray_origin, ray_direction, shape_sizes[si])
+                query = wp.bvh_query_ray(data.bvh_id, origin, direction)
+                splat = wp.int32(0)
+                while wp.bvh_query_next(query, splat, wp.min(hits.t[-1], max_distance)):
+                    alpha, t = ray_gsplat_hit_response(
+                        data.transforms[splat],
+                        data.scales[splat],
+                        data.opacities[splat],
+                        data.min_response,
+                        data.sorting_mode,
+                        origin,
+                        direction,
+                        camera_forward,
+                        wp.min(hits.t[-1], max_distance),
+                    )
+                    if alpha > 0.0 and hit_before(last_t, last_shape, last_splat, t, si, splat):
+                        hits = insert_hit(hits, t, si, splat)
+            count = int(0)
+            for i in range(wp.static(capacity)):
+                if hits.t[i] < MAXVAL:
+                    blend = blend_splat(
+                        blend,
+                        hits.t[i],
+                        hits.shape[i],
+                        hits.splat[i],
+                        shape_transforms,
+                        shape_sizes,
+                        shape_source_ptr,
+                        gaussians_data,
+                        ray_origin,
+                        ray_direction,
+                        camera_forward,
+                    )
+                    count += 1
+                    last_t = hits.t[i]
+                    last_shape = hits.shape[i]
+                    last_splat = hits.splat[i]
+            if count == 0 or wp.static(config.gaussians_mode == GaussianRenderMode.FAST):
                 break
-
-            for hit in range(num_hits):
-                hit_index = hit_indices[hit]
-
-                color = SH_C0 * wp.vec3f(
-                    gaussian_data.sh_coeffs[hit_index][0],
-                    gaussian_data.sh_coeffs[hit_index][1],
-                    gaussian_data.sh_coeffs[hit_index][2],
-                ) + wp.vec3f(0.5)
-                # Blend in the asset's authored color space (as 3DGS is trained); sRGB is decoded once per ray below.
-                color = wp.max(color, wp.vec3f(0.0))
-
-                opacity = hit_alphas[hit]
-                result_color += color * opacity * ray_transmittance
-                ray_transmittance *= 1.0 - opacity
-
-                if ray_transmittance < wp.static(config.gaussians_min_transmittance):
-                    tracked_distance = wp.min(hit_distances[hit], tracked_distance)
-
-            min_distance = hit_distances[-1] + wp.float32(1e-06)
-
-            if wp.static(config.gaussians_mode) == GaussianRenderMode.FAST:
-                break
-
-        result_distance = wp.float32(-1.0)
-        if ray_transmittance < wp.static(config.gaussians_min_transmittance):
-            result_distance = tracked_distance
-            result_color /= 1.0 - ray_transmittance
-            if gaussian_data.sh_color_space == ColorSpace.SRGB:
-                result_color = srgb_to_linear_wp(result_color)
-
-        return result_distance, result_normal, result_color
+        return finish_blend(blend)
 
     return shade
