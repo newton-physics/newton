@@ -1272,8 +1272,12 @@ def _harvest_mpm_proxy_wrench_on_fixed_plate(device, substeps, mode, in_place, s
 
 
 def _coupled_mpm_proxy_wrench_harvest_independent_of_substeps(test, device):
-    """Verify the MPM proxy wrench spans the whole coupled step when the MPM entry is sub-stepped."""
-    for mode, in_place in (("lagged", True), ("staggered", True), ("lagged", False)):
+    """Verify the MPM proxy wrench spans the whole coupled step when the MPM entry is sub-stepped.
+
+    The plate never moves, so lagged and staggered proxies synchronize the same inputs; the two
+    configurations cover the in-place and non-in-place sub-stepping paths of the destination entry.
+    """
+    for mode, in_place in (("lagged", True), ("staggered", False)):
         with test.subTest(mode=mode, in_place=in_place):
             reference, weight = _harvest_mpm_proxy_wrench_on_fixed_plate(device, 1, mode, in_place)
             test.assertLess(reference, 0.0)
