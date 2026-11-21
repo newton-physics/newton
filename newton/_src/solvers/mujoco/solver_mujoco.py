@@ -4264,8 +4264,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         ctrl_type_arr = mujoco_attrs.ctrl_type.numpy() if hasattr(mujoco_attrs, "ctrl_type") else None
         actuator_world_arr = mujoco_attrs.actuator_world.numpy() if hasattr(mujoco_attrs, "actuator_world") else None
         actuator_target_label_arr = getattr(mujoco_attrs, "actuator_target_label", None)
+        actuator_label_arr = getattr(mujoco_attrs, "actuator_label", None)
         joint_dof_label_arr = getattr(mujoco_attrs, "joint_dof_label", None)
         tendon_label_arr = getattr(mujoco_attrs, "tendon_label", None)
+        used_actuator_names: set[str] = {a.name for a in spec.actuators if a.name}
 
         # Build reverse lookup from shape label (prim path) to site name
         # so we can resolve actuator target labels that reference sites.
@@ -4542,7 +4544,18 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             if refsite_name is not None:
                 general_args["refsite"] = refsite_name
             # The MuJoCo compiler resolves a positive biasprm[2] as dampratio on position-like general actuators.
-            spec.add_actuator(target=target_name, **general_args)
+            act = spec.add_actuator(target=target_name, **general_args)
+            actuator_label = ""
+            if isinstance(actuator_label_arr, list) and mujoco_act_idx < len(actuator_label_arr):
+                actuator_label = str(actuator_label_arr[mujoco_act_idx]).strip()
+            if actuator_label:
+                actuator_name = actuator_label
+                suffix = 1
+                while actuator_name in used_actuator_names:
+                    actuator_name = f"{actuator_label}_{suffix}"
+                    suffix += 1
+                used_actuator_names.add(actuator_name)
+                act.name = actuator_name
             # CTRL_DIRECT actuators - store MJCF-order index into control.mujoco.ctrl
             # mujoco_act_idx is the index in Newton's mujoco:actuator frequency (MJCF order)
             mjc_actuator_ctrl_source_list.append(1)  # CTRL_DIRECT
@@ -4797,6 +4810,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         """Mapping from MuJoCo [world, body] to Newton body index. Shape [nworld, nbody], dtype int32."""
         self.mjc_geom_to_newton_shape: wp.array2d[wp.int32] | None = None
         """Mapping from MuJoCo [world, geom] to Newton shape index. Shape [nworld, ngeom], dtype int32."""
+        self.mjc_site_to_newton_shape: wp.array2d[wp.int32] | None = None
+        """Mapping from MuJoCo [world, site] to Newton shape index. Shape [nworld, nsite], dtype int32."""
         self._mjc_site_to_newton_shape: wp.array2d[wp.int32] | None = None
         self.mjc_jnt_to_newton_jnt: wp.array2d[wp.int32] | None = None
         """Mapping from MuJoCo [world, joint] to Newton joint index. Shape [nworld, njnt], dtype int32."""
@@ -8420,6 +8435,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             jt_damping = get_custom_attribute("actuator_damping")
             jt_dampingpoly = get_custom_attribute("actuator_dampingpoly")
             jt_armature = get_custom_attribute("actuator_armature")
+            jt_label = getattr(mujoco_attrs, "actuator_label", None)
 
             # Which sub-actuator a row feeds (as is_position): position->position only,
             # velocity->velocity only, unknown->both.
@@ -8452,8 +8468,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     w = int(jt_world[row])
                     if w != first_world and w != -1:
                         continue
+                raw_label = jt_label[row] if isinstance(jt_label, list) and row < len(jt_label) else ""
                 info = {
                     "actuator_idx": row,
+                    "label": str(raw_label).strip() if raw_label is not None else "",
                     "has_ctrlrange": bool(jt_has_ctrlrange[row]) if jt_has_ctrlrange is not None else False,
                     "ctrlrange": tuple(jt_ctrlrange[row]) if jt_ctrlrange is not None else None,
                     "ctrllimited": int(jt_ctrllimited[row]) if jt_ctrllimited is not None else None,
@@ -8469,12 +8487,22 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 for is_position in kinds:
                     joint_target_ranges[(dof, is_position)] = info
 
+        used_jt_actuator_names: set[str] = {a.name for a in spec.actuators if a.name}
+
         def joint_target_actuator_kwargs(base: dict[str, Any], dof: int, is_position: bool) -> dict[str, Any]:
-            """Merge the matching row's authored ranges and passive properties onto a sub-actuator."""
+            """Merge the matching row's authored ranges, passive properties, and label onto a sub-actuator."""
             kwargs = dict(base)
             info = joint_target_ranges.get((dof, is_position))
             if info is None:
                 return kwargs
+            if info["label"]:
+                act_name = info["label"]
+                suffix = 1
+                while act_name in used_jt_actuator_names:
+                    act_name = f"{info['label']}_{suffix}"
+                    suffix += 1
+                used_jt_actuator_names.add(act_name)
+                kwargs["name"] = act_name
             kwargs["damping"] = info["damping"]
             kwargs["armature"] = info["armature"]
             if info["ctrllimited"] is not None:
@@ -9083,6 +9111,26 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 return spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_BODY)
             return spec.add_equality()
 
+        eq_constraint_label = getattr(mujoco_attrs, "equality_constraint_label", None) if mujoco_attrs else None
+        used_equality_names: set[str] = {e.name for e in spec.equalities if e.name}
+
+        def assign_equality_name(eq: Any, constraint_idx: int) -> None:
+            if not isinstance(eq_constraint_label, list) or constraint_idx >= len(eq_constraint_label):
+                return
+            raw_label = eq_constraint_label[constraint_idx]
+            if raw_label is None:
+                return
+            eq_label = str(raw_label).strip()
+            if not eq_label:
+                return
+            eq_name = eq_label
+            suffix = 1
+            while eq_name in used_equality_names:
+                eq_name = f"{eq_label}_{suffix}"
+                suffix += 1
+            used_equality_names.add(eq_name)
+            eq.name = eq_name
+
         mjc_eq_to_newton_eq_dict = {}
         converted_loop_joint_targets = set()
         converted_mimic_targets = set()
@@ -9143,6 +9191,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             else:
                 continue
 
+            assign_equality_name(eq, i)
             mjc_eq_to_newton_eq_dict[eq.id] = i
 
         # add equality constraints for joints that are excluded from the articulation
@@ -9368,6 +9417,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 eq.solref = eq_constraint_solref[i]
             if eq_constraint_solimp is not None:
                 eq.solimp = eq_constraint_solimp[i]
+            assign_equality_name(eq, i)
             mjc_eq_to_newton_eq_dict[eq.id] = i
 
         # Process MuJoCo general actuators (motor, general, etc.) from custom attributes
@@ -9592,9 +9642,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
             geom_shape_mapping = entity_shape_mapping(geom_to_shape_idx, self.mj_model.ngeom)
             self.mjc_geom_to_newton_shape = wp.array(geom_shape_mapping, dtype=wp.int32)
-            self._mjc_site_to_newton_shape = wp.array(
+            self.mjc_site_to_newton_shape = wp.array(
                 entity_shape_mapping(site_to_shape_idx, self.mj_model.nsite), dtype=wp.int32
             )
+            self._mjc_site_to_newton_shape = self.mjc_site_to_newton_shape
             if heterogeneous_geoms:
                 self._initialize_geom_assets(
                     spec, mesh_assets, shape_mesh_names, hfield_assets, shape_hfield_names, geom_shape_mapping

@@ -81,6 +81,7 @@ def add_actuator_dcmotor(
     ctrlrange: Sequence[float] | None = None,
     ctrllimited: bool | int | str = "auto",
     cranklength: float | None = None,
+    label: str | None = None,
     ctrl: float = 0.0,
     custom_attributes: dict[str, Any] | None = None,
 ) -> int:
@@ -129,6 +130,7 @@ def add_actuator_dcmotor(
             [m or rad], or velocity [m/s or rad/s], in actuator coordinates.
         ctrllimited: Control-limit tri-state (false, true, or auto).
         cranklength: Slider-crank length [m]. Required for slider-crank targets.
+        label: Optional actuator label.
         ctrl: Initial control value, with the same units as ``ctrlrange``.
         custom_attributes: Additional registered ``mujoco:actuator`` attributes.
 
@@ -180,6 +182,7 @@ def add_actuator_dcmotor(
         ctrlrange=ctrlrange,
         ctrllimited=ctrllimited,
         cranklength=cranklength,
+        label=label,
         ctrl=ctrl,
         custom_attributes=custom_attributes,
     )
