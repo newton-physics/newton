@@ -1685,6 +1685,7 @@ class Example:
             # --test runs ONLY the gradient check (test_final); the full
             # optimization is the interactive run's purpose
             return
+
         if self._chain is None:
             self._chain = self.run_chain()
         start = time.perf_counter()
@@ -1704,11 +1705,13 @@ class Example:
             return
         if not self.playback:
             print("recording: no optimized playback was produced; nothing saved", flush=True)
+
         for k, (_phase, snap) in enumerate(self.playback):
             st = self._fresh(snap)
             self.recorder.begin_frame(k * SIM_DT * FRAME_EVERY)
             self.recorder.log_state(st)
             self.recorder.end_frame()
+
         self.recorder.close()
         self.rec_done = True
 
@@ -1723,6 +1726,9 @@ class Example:
             self.viewer.end_frame()
             self.frame += 1
             return
+
+        # clamp: the chain appends playback frames as it goes, so the frame
+        # counter can be ahead of what exists yet
         _ph, snap = self.playback[min(self.frame, len(self.playback) - 1)]
         st = self._fresh(snap)
         self.viewer.begin_frame(t)
