@@ -58,7 +58,6 @@ def empty_scene_data(device: wp.Device) -> SceneData:
     scene.item_particles = empty_int
     scene.particle_positions = wp.empty(0, dtype=wp.vec3f, device=device)
     scene.particle_radii = wp.empty(0, dtype=wp.float32, device=device)
-    scene.particle_item_offsets = wp.empty(0, dtype=wp.vec3f, device=device)
     scene.triangle_points = wp.empty(0, dtype=wp.vec3f, device=device)
     scene.triangle_indices = empty_int
     scene.cluster_triangle_start = empty_int

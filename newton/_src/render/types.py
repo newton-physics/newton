@@ -261,8 +261,6 @@ class SceneData:
     """Particle positions [m]."""
     particle_radii: wp.array[wp.float32]
     """Particle radii [m]."""
-    particle_item_offsets: wp.array[wp.vec3f]
-    """OptiX: offset of each particle item into its world's cell [m]."""
     triangle_points: wp.array[wp.vec3f]
     """Points of the deformable triangles [m]; the remaining items are their faces, in order."""
     triangle_indices: wp.array[wp.int32]

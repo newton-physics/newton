@@ -4,7 +4,7 @@
 """A camera's OptiX scene: one instance structure over shapes, standalone particles and deformable triangles.
 
 The shape instances are those of :attr:`Model.optix_shapes`. Every world's particles share one
-custom-primitive structure and every world's deformable triangles share one triangle structure,
+built-in sphere structure and every world's deformable triangles share one triangle structure,
 with their points moved into their world's cell, so each adds a single instance and the camera
 traces everything in one traversal. Triangles are rebuilt as clusters each frame when the installed
 ``warp-optix`` supports them, and refit otherwise.
@@ -33,6 +33,8 @@ PARTICLE_INSTANCE_ID = 0xFFFFFE
 """Instance ID of the standalone particles."""
 PARTICLE_MASK = 2
 """Visibility mask bit of the particle instance, so renders without particles skip it."""
+PARTICLE_BUILD_FLAGS = wo.BuildFlags.ALLOW_UPDATE | wo.BuildFlags.PREFER_FAST_BUILD
+"""Build flags of the particle spheres, which their built-in intersection is compiled for."""
 CLUSTER_TRIANGLES = 128
 """Triangles per cluster; at most 3 * 128 vertices, which never exceeds the 256-vertex limit after a split."""
 
@@ -132,39 +134,28 @@ def pack_triangle_points(
 
 
 @wp.kernel(enable_backward=False)
-def compute_particle_bounds(
+def pack_particles(
+    grid: wp.int32,
     extent: wp.float32,
+    world_count: wp.int32,
     item_particles: wp.array[wp.int32],
-    item_offsets: wp.array[wp.vec3f],
+    particle_worlds: wp.array[wp.int32],
     particle_positions: wp.array[wp.vec3f],
     particle_radii: wp.array[wp.float32],
-    out_bounds: wp.array2d[wp.float32],
+    out_centers: wp.array[wp.vec3f],
+    out_radii: wp.array[wp.float32],
     out_of_cell: wp.array[wp.int32],
 ):
+    """Move each particle sphere into its world's cell."""
     i = wp.tid()
     particle = item_particles[i]
     p = particle_positions[particle]
     radius = particle_radii[particle]
     if wp.max(wp.abs(p)) + radius > extent:
         out_of_cell[0] = 1
-    center = p + item_offsets[i]
-    for axis in range(3):
-        out_bounds[i, axis] = center[axis] - radius
-        out_bounds[i, axis + 3] = center[axis] + radius
-
-
-@wp.kernel(enable_backward=False)
-def compute_particle_item_offsets(
-    grid: wp.int32,
-    extent: wp.float32,
-    world_count: wp.int32,
-    item_particles: wp.array[wp.int32],
-    particle_worlds: wp.array[wp.int32],
-    out_offsets: wp.array[wp.vec3f],
-):
-    i = wp.tid()
-    world = particle_worlds[item_particles[i]]
-    out_offsets[i] = world_offset(wp.where(world < 0, world_count, world), grid, extent)
+    world = particle_worlds[particle]
+    out_centers[i] = p + world_offset(wp.where(world < 0, world_count, world), grid, extent)
+    out_radii[i] = radius
 
 
 @wp.kernel(enable_backward=False)
@@ -184,21 +175,6 @@ def write_scene_instance(
         mask,
         wp.static(int(wo.InstanceFlags.DISABLE_ANYHIT)),
     )
-
-
-@wp.kernel(module="unique", enable_backward=False)
-def intersect_particle(scene: SceneData):
-    item = int(wp.optix_get_primitive_index())
-    particle = scene.item_particles[item]
-    # The particle instance has an identity transform: object space is the packed world space.
-    distance, _normal = raycast.ray_intersect_particle_sphere(
-        wp.optix_get_object_ray_origin(),
-        wp.optix_get_object_ray_direction(),
-        scene.particle_positions[particle] + scene.particle_item_offsets[item],
-        scene.particle_radii[particle],
-    )
-    if distance >= wp.optix_get_ray_tmin():
-        wp.optix_report_intersection(distance, wp.uint32(0), wp.uint32(0), wp.uint32(0))
 
 
 class OptixScene:
@@ -230,7 +206,6 @@ class OptixScene:
         if not (self.has_particles or self.has_triangles):
             return
 
-        grid, extent, world_count = shapes.grid, shapes.extent, shapes.world_count
         children = list(shapes.geometry)
         extra = []
         if self.has_triangles:
@@ -264,19 +239,11 @@ class OptixScene:
         if self.has_particles:
             particle_worlds = model.particle_world
             self.has_global_items |= bool(np.any(particle_worlds.numpy()[items.item_particles.numpy()] < 0))
-            self.particle_item_offsets = wp.empty(items.particle_count, dtype=wp.vec3f, device=device)
-            wp.launch(
-                compute_particle_item_offsets,
-                dim=items.particle_count,
-                inputs=[grid, extent, world_count, items.item_particles, particle_worlds],
-                outputs=[self.particle_item_offsets],
-                device=device,
-            )
-            self._particle_bounds = wp.empty((items.particle_count, 6), dtype=wp.float32, device=device)
-            self._compute_particle_bounds(state.particle_q)
+            self._particle_centers = wp.empty(items.particle_count, dtype=wp.vec3f, device=device)
+            self._particle_radii = wp.empty(items.particle_count, dtype=wp.float32, device=device)
+            self._pack_particles(state.particle_q)
             self.particle_accel = wo.Accel(
-                [wo.aabbs(bounds=self._particle_bounds)],
-                flags=wo.BuildFlags.ALLOW_UPDATE | wo.BuildFlags.PREFER_FAST_TRACE,
+                [wo.spheres(self._particle_centers, self._particle_radii)], flags=PARTICLE_BUILD_FLAGS
             )
             children.append(self.particle_accel)
             extra.append((PARTICLE_INSTANCE_ID, self.particle_accel.id, 2, PARTICLE_MASK))
@@ -324,19 +291,21 @@ class OptixScene:
             device=self.model.device,
         )
 
-    def _compute_particle_bounds(self, particle_q: wp.array[wp.vec3f]) -> None:
-        items = self.items
+    def _pack_particles(self, particle_q: wp.array[wp.vec3f]) -> None:
+        shapes = self.shapes
         wp.launch(
-            compute_particle_bounds,
-            dim=items.particle_count,
+            pack_particles,
+            dim=self.items.particle_count,
             inputs=[
-                self.shapes.extent,
-                items.item_particles,
-                self.particle_item_offsets,
+                shapes.grid,
+                shapes.extent,
+                shapes.world_count,
+                self.items.item_particles,
+                self.model.particle_world,
                 particle_q,
                 self.model.particle_radius,
             ],
-            outputs=[self._particle_bounds, self.shapes.out_of_cell],
+            outputs=[self._particle_centers, self._particle_radii, shapes.out_of_cell],
             device=self.model.device,
         )
 
@@ -354,7 +323,7 @@ class OptixScene:
             else:
                 self.triangle_accel.refit()
         if self.has_particles:
-            self._compute_particle_bounds(state.particle_q)
+            self._pack_particles(state.particle_q)
             self.particle_accel.refit()
         self.accel.refit()
 
@@ -363,8 +332,6 @@ class OptixScene:
         scene.id = wp.uint64(self.id if self.has_instances else 0)
         scene.world_roots = self.shapes.world_planes.flatten()
         fill_item_data(scene, self.model, self.items, state)
-        if self.has_particles:
-            scene.particle_item_offsets = self.particle_item_offsets
         if self.clustered:
             scene.cluster_triangle_start = self.cluster_triangle_start
             scene.cluster_triangles = self.cluster_triangles
@@ -375,7 +342,7 @@ class OptixScene:
             self.shapes,
             kernel,
             enable_backface_culling=config.enable_backface_culling,
-            particle_intersection=intersect_particle if self.has_particles else None,
+            particle_build_flags=PARTICLE_BUILD_FLAGS if self.has_particles else None,
             clustered_geometry=self.clustered,
         )
 
