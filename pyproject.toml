@@ -45,6 +45,12 @@ sim = [
     "mujoco-core~=4.0.1; (sys_platform != 'win32' or platform_machine != 'ARM64')",  # MuJoCo physics engine
 ]
 
+# Optional cuNLS backend for inverse kinematics (IKOptimizer.CUNLS): closed loops, mimic joints and
+# hard joint limits. Its Python package is built with CUDA 13 (R580 or newer driver).
+cunls = [
+    "pycunls-cu13>=0.4.3; sys_platform == 'linux' and (platform_machine == 'x86_64' or platform_machine == 'aarch64')",
+]
+
 # Optional ONNX policy inference for neural actuators and RL policy examples.
 onnx = [
     "warp-nn[onnx]~=0.4.0",

@@ -4,6 +4,7 @@
 """Inverse-kinematics submodule."""
 
 from .ik_common import IKJacobianType
+from .ik_cunls_optimizer import IKOptimizerCuNLS
 from .ik_lbfgs_optimizer import IKOptimizerLBFGS
 from .ik_lm_optimizer import IKOptimizerLM
 from .ik_objectives import IKObjective, IKObjectiveJointLimit, IKObjectivePosition, IKObjectiveRotation
@@ -16,6 +17,7 @@ __all__ = [
     "IKObjectivePosition",
     "IKObjectiveRotation",
     "IKOptimizer",
+    "IKOptimizerCuNLS",
     "IKOptimizerLBFGS",
     "IKOptimizerLM",
     "IKSampler",

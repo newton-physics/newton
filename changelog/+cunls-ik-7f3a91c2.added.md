@@ -1,0 +1,1 @@
+Add `IKOptimizer.CUNLS`, an inverse-kinematics backend built on the optional cuNLS package (`newton[cunls]`, CUDA 13) that keeps loop-closing and mimic joints satisfied as equality constraints and treats `IKObjectiveJointLimit` limits as hard bounds, and the `ik_stewart_platform` example showing it on a field of closed-loop Stewart platforms.
