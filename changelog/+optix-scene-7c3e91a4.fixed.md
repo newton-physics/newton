@@ -1,0 +1,1 @@
+Fix `SensorCamera` dropping Gaussian shapes when a ray crossed more Gaussian shapes than the model has Gaussian assets, and fix a model's Gaussian splats being freed when another model was finalized with the same `Gaussian` asset.

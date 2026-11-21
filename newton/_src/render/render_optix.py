@@ -388,7 +388,11 @@ class OptixScene:
         if self.has_particles:
             self._pack_particles(state.particle_q)
             self.particle_accel.refit()
-        self.accel.refit()
+        if self.shapes.has_variant_rows:
+            # Variant rows change the structures they instance, which a refit cannot follow.
+            self.accel.rebuild()
+        else:
+            self.accel.refit()
 
     def scene_data(self, state: State) -> SceneData:
         scene = empty_scene_data(self.model.device)

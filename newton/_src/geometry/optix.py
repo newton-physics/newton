@@ -17,6 +17,7 @@ import warp as wp
 import warp_optix as wo
 
 from . import raycast
+from .flags import ShapeFlags
 from .types import GeoType
 
 if TYPE_CHECKING:
@@ -68,6 +69,11 @@ class OptixShapes:
     (see :func:`gaussian_slots`), shape ``[shape_count]``."""
     slot_gaussians: wp.array2d[wp.int32]
     """Gaussian shape in each slot of each world's rays, padded with -1, shape ``[world_count, slots]``."""
+    variant_traversables: wp.array[wp.uint64] | None
+    """Acceleration structure of each variant shape, or ``None`` without variant rows; see
+    :meth:`Model.select_body_variants`."""
+    flags_mask: int
+    """Shape flags the shapes were built for; variant rows without them are hidden."""
     instance_shapes: wp.array[wp.int32]
     """Shape index of each instance."""
     instances: wp.array[wo.Instance]
@@ -94,6 +100,12 @@ class OptixShapes:
     @property
     def has_instances(self) -> bool:
         return self.instance_shapes.shape[0] > 0
+
+    @property
+    def has_variant_rows(self) -> bool:
+        """Whether instances change acceleration structures as body variants change, so instance
+        structures over them are rebuilt rather than refit."""
+        return self.variant_traversables is not None
 
 
 @wp.func
@@ -155,19 +167,23 @@ def compute_optix_shape_instances(
     kind = shape_types[si]
     size = shape_sizes[si]
     world = wp.where(shape_world[si] < 0, world_count, shape_world[si])
+    traversable = shape_traversables[si]
     transform = shape_transforms[si]
     rotation = wp.quat_to_matrix(wp.transform_get_rotation(transform))
     center = wp.transform_get_translation(transform)
     half = primitive_half_extents(kind, size)
     mask = wp.where(kind == GeoType.GAUSSIAN, wp.static(GAUSSIAN_MASK), wp.static(OPAQUE_RAY_MASK))
-    if wp.max(wp.abs(center)) + shape_radii[si] > extent:
+    if traversable == wp.uint64(0):
+        # An empty or hidden variant row.
+        mask = 0
+    elif wp.max(wp.abs(center)) + shape_radii[si] > extent:
         # Hide shapes that left their cell rather than let them reach another world's.
         mask = 0
         out_of_cell[0] = 1
     out_instances[i] = wo.make_instance(
         rotation @ wp.diag(half),
         center + world_offset(world, grid, extent),
-        shape_traversables[si],
+        traversable,
         shape_instance_ids[si],
         wp.uint32(
             wp.where(
@@ -199,16 +215,25 @@ def check_supported(model: Model) -> None:
     # The two highest instance IDs mark a camera's particles and deformable triangles.
     if model.shape_count >= (1 << 24) - 2:
         raise UnsupportedError("OptiX shape instance IDs must fit in 24 bits")
-    if model._variant_shape_source:
-        raise UnsupportedError("The OptiX backend does not support shape variants")
 
 
 def build_shape_geometry(
     model: Model, shapes: np.ndarray, shape_types: np.ndarray
-) -> tuple[list[wo.Accel], wp.array[wp.uint64]]:
-    """Build the triangle structures of the meshes used by ``shapes``, a triangle cube for boxes, the
-    other primitives' unit cube, and a structure over the splats of each Gaussian asset."""
+) -> tuple[list[wo.Accel], wp.array[wp.uint64], wp.array[wp.uint64] | None]:
+    """Build the triangle structures of the meshes used by ``shapes`` and by variant shapes, a triangle
+    cube for boxes, the other primitives' unit cube, and a structure over the splats of each Gaussian
+    asset.
+
+    Returns:
+        ``(geometry, traversables, variant_traversables)``: the structures, the one each shape
+        instances, and the one each variant shape instances, or ``None`` without variant rows.
+    """
     sources = model.shape_source_ptr.numpy()
+    variant_types = variant_sources = None
+    if model._has_variant_rows:
+        variant_types = model._variant_shape_geometry["shape_type"].numpy()
+        variant_types = np.where(variant_types == GeoType.CONVEX_MESH, GeoType.MESH, variant_types)
+        variant_sources = model._variant_shape_geometry["shape_source_ptr"].numpy()
     geometry = []
     mesh_ids = {}
     splat_ids = {}
@@ -231,6 +256,8 @@ def build_shape_geometry(
             geometry.append(wo.Accel([wo.aabbs(lowers, uppers)], compact=True))
             splat_ids[asset] = geometry[-1].id
     used_meshes = set(sources[shapes[shape_types[shapes] == GeoType.MESH]].tolist())
+    if variant_types is not None:
+        used_meshes |= set(variant_sources[variant_types == GeoType.MESH].tolist())
     for mesh in [*model._mesh_keep_alive, *model.heightfield_meshes]:
         if mesh.id in used_meshes and mesh.id not in mesh_ids:
             geometry.append(wo.Accel([wo.triangles(mesh.points, mesh.indices)], compact=True))
@@ -244,16 +271,25 @@ def build_shape_geometry(
     bounds = wp.array([[-1.001] * 3 + [1.001] * 3], dtype=float, device=model.device)
     primitive = wo.Accel([wo.aabbs(bounds=bounds)], compact=True)
     geometry += [box, primitive]
+
+    def traversable(kind: int, source: int) -> int:
+        if kind == GeoType.MESH:
+            return mesh_ids[source]
+        if kind == GeoType.GAUSSIAN:
+            return splat_ids[source]
+        return box.id if kind == GeoType.BOX else primitive.id
+
     traversables = np.zeros(model.shape_count, dtype=np.uint64)
     for si in shapes:
-        kind = shape_types[si]
-        if kind == GeoType.MESH:
-            traversables[si] = mesh_ids[int(sources[si])]
-        elif kind == GeoType.GAUSSIAN:
-            traversables[si] = splat_ids[int(sources[si])]
-        else:
-            traversables[si] = box.id if kind == GeoType.BOX else primitive.id
-    return geometry, wp.array(traversables, dtype=wp.uint64, device=model.device)
+        traversables[si] = traversable(shape_types[si], int(sources[si]))
+    variant_traversables = None
+    if variant_types is not None:
+        variant_traversables = wp.array(
+            [traversable(kind, int(source)) for kind, source in zip(variant_types, variant_sources, strict=True)],
+            dtype=wp.uint64,
+            device=model.device,
+        )
+    return geometry, wp.array(traversables, dtype=wp.uint64, device=model.device), variant_traversables
 
 
 def gaussian_slots(model: Model, instance_shapes: np.ndarray, shape_types: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -290,8 +326,53 @@ def gaussian_slots(model: Model, instance_shapes: np.ndarray, shape_types: np.nd
     return instance_ids, slot_gaussians
 
 
+@wp.kernel(enable_backward=False)
+def update_variant_rows(
+    rows: wp.array[wp.int32],
+    shape_variant_shape: wp.array[wp.int32],
+    shape_type: wp.array[wp.int32],
+    shape_flags: wp.array[wp.int32],
+    shape_opacity: wp.array[wp.float32],
+    flags_mask: wp.int32,
+    variant_traversables: wp.array[wp.uint64],
+    out_shape_types: wp.array[wp.int32],
+    out_shape_traversables: wp.array[wp.uint64],
+):
+    """Point each variant row at the structure of the variant shape it holds; empty and hidden rows,
+    like :func:`~newton._src.geometry.bvh.mark_inactive_bvh_shapes` skips, get none."""
+    row = rows[wp.tid()]
+    held = shape_variant_shape[row]
+    flags = shape_flags[row]
+    if shape_opacity.shape[0] > 0 and shape_opacity[row] <= 0.0:
+        flags = flags & ~wp.static(int(ShapeFlags.VISIBLE))
+    kind = shape_type[row]
+    out_shape_types[row] = wp.where(kind == GeoType.CONVEX_MESH, GeoType.MESH, kind)
+    out_shape_traversables[row] = wp.uint64(0)
+    if held >= 0 and (flags & flags_mask) != 0:
+        out_shape_traversables[row] = variant_traversables[held]
+
+
 def compute_optix_shape_instances_launch(model: Model, shapes: OptixShapes) -> None:
-    """Write the instance of each shape in ``shapes`` from its current world transform."""
+    """Write the instance of each shape in ``shapes`` from its current world transform and, for variant
+    rows, the variant shape it holds."""
+    if shapes.has_variant_rows:
+        wp.launch(
+            update_variant_rows,
+            dim=model._variant_row_shapes.shape[0],
+            inputs=[
+                model._variant_row_shapes,
+                model._shape_variant_shape,
+                model.shape_type,
+                model.shape_flags,
+                model.shape_opacity
+                if model.shape_opacity is not None
+                else wp.empty(0, dtype=wp.float32, device=model.device),
+                shapes.flags_mask,
+                shapes.variant_traversables,
+            ],
+            outputs=[shapes.shape_types, shapes.shape_traversables],
+            device=model.device,
+        )
     wp.launch(
         kernel=compute_optix_shape_instances,
         dim=shapes.instance_shapes.shape[0],
