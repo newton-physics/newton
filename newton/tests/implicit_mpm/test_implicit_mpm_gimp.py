@@ -39,6 +39,7 @@ def _make_solver(
     air_drag=0.0,
     rheology_solver="gs",
     collider_mass=None,
+    deterministic=None,
 ):
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     SolverImplicitMPM.register_custom_attributes(builder)
@@ -71,6 +72,7 @@ def _make_solver(
             gs_colored_contacts=gs_colored_contacts,
             air_drag=air_drag,
         ),
+        deterministic=deterministic,
     )
     return solver, model.state()
 
@@ -421,8 +423,10 @@ def test_grid_contact_full_condition(test, device):
     test.assertGreater(state.particle_qd.numpy()[0, 2], -0.01)
 
 
-def test_colored_contact_dynamic_collider(test, device, capture=False):
+def test_colored_contact_dynamic_collider(test, device, capture=False, deterministic=False):
     """Share impact momentum with a finite-mass collider across separated contact cells."""
+    if deterministic and not hasattr(wp, "DeterministicMode"):
+        test.skipTest("Warp does not support deterministic execution")
 
     class FeedbackMPM(SolverImplicitMPM):
         def _solve_rheology(self, scratch, rigidity_operator):
@@ -430,7 +434,8 @@ def test_colored_contact_dynamic_collider(test, device, capture=False):
             wp.copy(self.feedback_velocity, scratch.collider_velocity)
             return result
 
-    for mode, velocity in product(("gs", "gs-soa"), ("Q1", "B2")):
+    cases = (("gs-soa", "B2"),) if deterministic else product(("gs", "gs-soa"), ("Q1", "B2"))
+    for mode, velocity in cases:
         with test.subTest(solver=mode, velocity_basis=velocity), wp.ScopedDevice(device):
             solver, state = _make_solver(
                 device,
@@ -445,6 +450,7 @@ def test_colored_contact_dynamic_collider(test, device, capture=False):
                 max_iterations=50,
                 young_modulus=12000.0,
                 air_drag=1.0e-4,
+                deterministic=wp.DeterministicMode.RUN_TO_RUN if deterministic else None,
             )
             solver.feedback_velocity = wp.empty(2, dtype=wp.vec3)
             state.particle_qd.fill_(wp.vec3(0.0, 0.0, -1.0))
@@ -468,10 +474,101 @@ def test_colored_contact_dynamic_collider(test, device, capture=False):
                 np.testing.assert_allclose(
                     state.particle_qd.numpy().sum(axis=0) + impulse.sum(axis=0), initial_momentum, atol=1.0e-4
                 )
+            if deterministic:
+                solver.model.body_flags.fill_(int(newton.BodyFlags.DYNAMIC | newton.BodyFlags.PROXY))
+                mapping = wp.array([0], dtype=int, device=device)
+                wrench = wp.empty(1, dtype=wp.spatial_vector, device=device)
+                reference = None
+                for _ in range(2):
+                    solver.coupling_harvest_proxy_wrenches(
+                        mapping,
+                        wrench,
+                        body_qd_before=state.body_qd,
+                        state=state,
+                        state_out=state,
+                        contacts=None,
+                        dt=0.001,
+                    )
+                    values = wrench.numpy()[0]
+                    if reference is None:
+                        np.testing.assert_allclose(
+                            values, np.concatenate((impulse.sum(axis=0), angular)) / 0.001, atol=1.0e-4
+                        )
+                        reference = values
+                    else:
+                        np.testing.assert_array_equal(values.view(np.uint32), reference.view(np.uint32))
 
 
 class TestImplicitMPMGimp(unittest.TestCase):
     pass
+
+
+def test_particle_updates_are_bitwise_repeatable(
+    test, device, integration_scheme, velocity_basis="Q1", strain_basis="P0", volume_recovery_time=None
+):
+    """Compare independent rollouts with particles spanning multiple grid cells."""
+    if not hasattr(wp, "DeterministicMode"):
+        test.skipTest("Warp does not support deterministic execution")
+    rng = np.random.default_rng(5044)
+    positions = rng.uniform(0.15, 3.85, (512, 3))
+    velocities = rng.uniform(-0.3, 0.3, (512, 3))
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    SolverImplicitMPM.register_custom_attributes(builder)
+    for position, velocity in zip(positions.tolist(), velocities.tolist(), strict=True):
+        builder.add_particle(pos=position, vel=velocity, mass=1.0, radius=0.2)
+    model = builder.finalize(device=device)
+    config = SolverImplicitMPM.Config(
+        voxel_size=1.0,
+        grid_type="fixed",
+        grid_padding=1,
+        max_active_cell_count=512,
+        integration_scheme=integration_scheme,
+        velocity_basis=velocity_basis,
+        strain_basis=strain_basis,
+        volume_recovery_time=volume_recovery_time,
+        warmstart_mode="particles",
+        max_iterations=5,
+        tolerance=0.0,
+        air_drag=0.0,
+    )
+
+    reference = None
+    for _ in range(3):
+        solver = SolverImplicitMPM(model, config, deterministic=wp.DeterministicMode.RUN_TO_RUN)
+        state_in, state_out = model.state(), model.state()
+        for _ in range(4):
+            solver.step(state_in, state_out, None, None, 0.01)
+            state_in, state_out = state_out, state_in
+        arrays = (state_in.particle_q, state_in.particle_qd, state_in.mpm.particle_stress)
+        values = tuple(array.numpy() for array in arrays)
+        for value in values:
+            test.assertTrue(np.isfinite(value).all())
+        if reference is None:
+            reference = values
+        else:
+            for name, actual, expected in zip(("position", "velocity", "stress"), values, reference, strict=True):
+                np.testing.assert_array_equal(actual.view(np.uint32), expected.view(np.uint32), err_msg=name)
+
+
+for scheme in ("pic", "gimp"):
+    add_function_test(
+        TestImplicitMPMGimp,
+        f"test_{scheme}_particle_updates_are_bitwise_repeatable",
+        test_particle_updates_are_bitwise_repeatable,
+        devices=get_cuda_test_devices(mode="basic"),
+        integration_scheme=scheme,
+    )
+
+add_function_test(
+    TestImplicitMPMGimp,
+    "test_gimp_b3_grid_recovery_is_bitwise_repeatable",
+    test_particle_updates_are_bitwise_repeatable,
+    devices=get_cuda_test_devices(mode="basic"),
+    integration_scheme="gimp",
+    velocity_basis="B3",
+    strain_basis="Q1",
+    volume_recovery_time=0.1,
+)
 
 
 for name, func in (
@@ -500,6 +597,15 @@ add_function_test(
     test_colored_contact_dynamic_collider,
     devices=get_cuda_test_devices(mode="basic"),
     capture=True,
+)
+
+add_function_test(
+    TestImplicitMPMGimp,
+    "test_deterministic_colored_contact_dynamic_collider_capture",
+    test_colored_contact_dynamic_collider,
+    devices=get_cuda_test_devices(mode="basic"),
+    capture=True,
+    deterministic=True,
 )
 
 add_function_test(

@@ -161,7 +161,7 @@ def compute_vel_node_multiplicity(
         tau_i = transposed_strain_mat_columns[b]
         bi = strain_batch[tau_i]
         if bi >= 0 and bi < n_batches:
-            multiplicity[bi, u_i] += 1.0
+            multiplicity[bi, u_i] = multiplicity[bi, u_i] + 1.0
 
 
 @wp.kernel
@@ -740,13 +740,13 @@ def make_apply_stress_delta(strain_velocity_node_count: int = -1):
                 b = block_beg + bk
                 u_i = strain_mat_columns[b]
                 delta_u = inv_mass_matrix[u_i] * _symmetric_part_transposed_op(strain_mat_values[b], delta_stress)
-                velocities[u_i] += delta_u
+                velocities[u_i] = velocities[u_i] + delta_u
         else:
             block_end = strain_mat_offsets[tau_i + 1]
             for b in range(block_beg, block_end):
                 u_i = strain_mat_columns[b]
                 delta_u = inv_mass_matrix[u_i] * _symmetric_part_transposed_op(strain_mat_values[b], delta_stress)
-                velocities[u_i] += delta_u
+                velocities[u_i] = velocities[u_i] + delta_u
 
     return apply_stress_delta_impl
 
@@ -775,7 +775,7 @@ def apply_stress_delta_jacobi(
         delta_stress = stress[tau_i]
         delta_u += _symmetric_part_transposed_op(transposed_strain_mat_values[b], delta_stress)
 
-    velocities[u_i] += inv_mass * delta_u
+    velocities[u_i] = velocities[u_i] + inv_mass * delta_u
 
 
 @wp.kernel
@@ -1149,7 +1149,7 @@ def make_solve_strain_rows(
             )
             # Batched compliant solves read frozen stresses and commit them in a separate kernel.
             if wp.static(not (batched and has_compliance_mat)):
-                stress[tau_i] += ds
+                stress[tau_i] = stress[tau_i] + ds
             delta[tau_i] = ds
             if wp.static(not batched):
                 scatter_entries = n
@@ -1163,7 +1163,7 @@ def make_solve_strain_rows(
                         cache.vy[k] += cache.inverse_mass[k] * dv[1]
                         cache.vz[k] += cache.inverse_mass[k] * dv[2]
                     else:
-                        velocity[node] += inv_mass[node] * dv
+                        velocity[node] = velocity[node] + inv_mass[node] * dv
 
         if wp.static(cache_cell_velocity):
             for k in range(8):
@@ -1426,7 +1426,7 @@ def build_batch_transpose_offsets(
         tau_i = transposed_strain_mat_columns[b]
         bi = strain_batch[tau_i]
         if bi >= 0 and bi < n_batches:
-            batch_transpose_offsets[bi, u_i] += 1
+            batch_transpose_offsets[bi, u_i] = batch_transpose_offsets[bi, u_i] + 1
 
 
 @wp.kernel
@@ -1522,7 +1522,7 @@ def commit_batched_stress(
     batch_end = flat_color_offsets[wp.min((batch_index + 1) * colors_per_batch, flat_color_offsets.shape[0] - 1)]
     for fi in range(batch_beg + wp.tid(), batch_end, launch_dim):
         tau_i = flat_constraint_ids[fi]
-        stress[tau_i] += delta_stress[tau_i]
+        stress[tau_i] = stress[tau_i] + delta_stress[tau_i]
 
 
 @wp.kernel
@@ -1551,7 +1551,7 @@ def batched_scatter(
         tau_i = batch_columns[b]
         delta_u += _symmetric_part_transposed_op(batch_values[b], delta_stress[tau_i])
 
-    velocities[u_i] += inv_mass * delta_u
+    velocities[u_i] = velocities[u_i] + inv_mass * delta_u
 
 
 @wp.kernel

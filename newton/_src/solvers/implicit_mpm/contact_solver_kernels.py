@@ -153,7 +153,7 @@ def apply_nodal_impulse_warmstart(
 
     collider_impulse[i] = impulse
     delta_impulse[i] = impulse
-    velocities[i] += inv_mass[i] * impulse
+    velocities[i] = velocities[i] + inv_mass[i] * impulse
 
 
 @wp.kernel
@@ -204,8 +204,8 @@ def solve_nodal_friction(
     delta_lambda = delta_u / w
 
     delta_impulse[i] = delta_lambda
-    impulse[i] += delta_lambda
-    velocities[i] += inv_mass[i] * delta_lambda
+    impulse[i] = impulse[i] + delta_lambda
+    velocities[i] = velocities[i] + inv_mass[i] * delta_lambda
 
 
 @wp.kernel
@@ -231,7 +231,7 @@ def apply_subgrid_impulse(
     for b in range(block_beg, block_end):
         delta_f += tr_collider_mat_values[b] * impulses[tr_collider_mat_columns[b]]
 
-    velocities[u_i] += inv_mass[u_i] * delta_f
+    velocities[u_i] = velocities[u_i] + inv_mass[u_i] * delta_f
 
 
 @wp.kernel
@@ -322,7 +322,7 @@ def solve_subgrid_friction(
     delta_u = u - u0
     delta_lambda = delta_u / w
 
-    impulse[i] += delta_lambda
+    impulse[i] = impulse[i] + delta_lambda
     delta_impulse[i] = delta_lambda
 
 
@@ -372,11 +372,11 @@ def _solve_cell_contacts_gs_generic(
             n = normal[i]
             u = solve_coulomb_isotropic(friction[i], n, u0 - (impulse[i] + adhesion[i] * n) * w)
             delta = (u - u0) / w
-            impulse[i] += delta
+            impulse[i] = impulse[i] + delta
             delta_impulse[i] = delta
             for b in range(offsets[i], offsets[i + 1]):
                 node = columns[b]
-                velocity[node] += inv_volume[node] * values[b] * delta
+                velocity[node] = velocity[node] + inv_volume[node] * values[b] * delta
 
 
 _ContactScalar8 = wp.types.vector(length=8, dtype=float)
@@ -459,7 +459,7 @@ def solve_cell_contacts_gs(
             n = normal[i]
             u = solve_coulomb_isotropic(friction[i], n, u0 - (impulse[i] + adhesion[i] * n) * w)
             delta = (u - u0) / w
-            impulse[i] += delta
+            impulse[i] = impulse[i] + delta
             delta_impulse[i] = delta
             mw = wp.cw_mul(mass, weights)
             vx += mw * delta[0]

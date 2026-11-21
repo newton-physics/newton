@@ -25,6 +25,12 @@ from ...geometry.particle_surface import ParticleSurface
 from ...sim import ModelFlags, StateFlags
 from ..coupled.interface import CouplingInterface
 from ..solver import SolverBase
+from . import (
+    contact_solver_kernels,
+    implicit_mpm_solver_kernels,
+    rasterized_collisions,
+    rheology_solver_kernels,
+)
 from .density_measurement import (
     critical_offset_values,
     deformed_particle_volumes,
@@ -1737,14 +1743,42 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         model: newton.Model,
         config: Config,
         *,
+        deterministic: wp.DeterministicMode | None = None,
         temporary_store: fem.TemporaryStore | None = None,
         verbose: bool | None = None,
         enable_timers: bool = False,
     ):
+        """Initialize the implicit MPM solver.
+
+        Args:
+            model: Model containing the particles and optional colliders.
+            config: Solver configuration.
+            deterministic: Warp determinism mode for the MPM kernels. Use
+                :attr:`warp.DeterministicMode.RUN_TO_RUN` for repeated runs on
+                the same GPU architecture, or ``None`` to inherit Warp's mode.
+            temporary_store: Optional storage for temporary FEM arrays.
+            verbose: Whether to report rheology solver progress.
+            enable_timers: Whether to record simulation timings.
+        """
         super().__init__(model)
         if model._has_body_variants:
             # The collider merges every particle-colliding shape of a body at setup.
             raise NotImplementedError("SolverImplicitMPM does not support body variants.")
+
+        self._deterministic = deterministic
+        if hasattr(wp, "DeterministicMode"):
+            if self._deterministic is None:
+                self._deterministic = wp.config.deterministic
+            module_options = {"deterministic": self._deterministic, "deterministic_max_records": 0}
+            for module in (
+                wp.get_module(__name__),
+                implicit_mpm_solver_kernels,
+                contact_solver_kernels,
+                rasterized_collisions,
+                rheology_solver_kernels,
+                wp.get_module(solve_rheology.__module__),
+            ):
+                self._set_module_options(module_options, module=module)
 
         self._initial_particle_count = int(model.particle_count)
         self._initial_world_count = int(model.world_count)
@@ -2395,6 +2429,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         """
         self.validate_observables(observables, contacts)
         self._require_unreduced_contacts(contacts)
+        self._apply_module_options()
         model = self.model
 
         with wp.ScopedDevice(model.device):
@@ -2557,6 +2592,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         del body_qd_before, state_out, contacts
         if dt <= 0.0:
             raise ValueError("MPM proxy wrench harvesting requires a positive dt")
+        self._apply_module_options()
         out_body_f.zero_()
 
         impulses, positions, collider_ids = self.collect_collider_impulses(state)
@@ -2637,6 +2673,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         if particle_local_to_proxy_global.shape[0] == 0:
             return
 
+        self._apply_module_options()
         super().coupling_harvest_proxy_particle_forces(
             particle_local_to_proxy_global,
             out_particle_f,
@@ -3503,7 +3540,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
             for k in range(8):
                 if cell_index[p, k] != fem.NULL_ELEMENT_INDEX:
-                    cell_fractions[p, k] /= tot_weight
+                    cell_fractions[p, k] = cell_fractions[p, k] / tot_weight
 
         device = positions.device
 
@@ -4243,7 +4280,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     )
                     cell_values.zero_()
                     wp.launch(
-                        make_grid_volume_kernel(grid),
+                        make_grid_volume_kernel(grid, self._deterministic),
                         dim=particle_count,
                         inputs=[
                             grid.cell_arg_value(device),
@@ -5068,10 +5105,15 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     dest=last_step_data.ws_stress_field,
                 )
 
+    def _color_stencil_size(self) -> int:
+        velocity_nodes_per_axis = round(self._scratchpad.velocity_nodes_per_element ** (1.0 / 3.0))
+        # A continuous Q1 strain node spans two adjacent cells along each axis.
+        return velocity_nodes_per_axis + int(self.strain_basis == "Q1")
+
     def _max_colors(self):
         if not self.coloring:
             return 0
-        return 27 if self.strain_basis == "Q1" else self._scratchpad.velocity_nodes_per_element
+        return self._color_stencil_size() ** 3
 
     def _compute_coloring(
         self,
@@ -5085,6 +5127,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
         space_partition = scratch._strain_space_restriction.space_partition
         grid = space_partition.geo_partition.geometry
+        stencil_size = self._color_stencil_size()
 
         is_pic = self.strain_basis[:3] == "pic"
 
@@ -5098,7 +5141,6 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             # cell-based coloring
 
             # nodes in each element solved sequentially
-            stencil_size = int(np.round(np.cbrt(scratch.velocity_nodes_per_element)))
             if isinstance(grid, fem.Nanogrid):
                 voxels = grid._cell_ijk
                 voxel_envs = grid.cell_env
@@ -5132,7 +5174,6 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
         elif self.strain_basis == "Q1":
             nodes_per_color_element = 1
-            stencil_size = 3
             node_env_offsets = None
             env_offsets = None
             if isinstance(grid, fem.Nanogrid):

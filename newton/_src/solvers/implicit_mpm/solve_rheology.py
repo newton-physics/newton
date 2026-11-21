@@ -365,7 +365,7 @@ def _nesterov_check_restart(residual: wp.array2d[float], interval: int, state: w
     if total > state[1, environment]:
         state[0, environment] = 0.0
     else:
-        state[0, environment] += float(interval)
+        state[0, environment] = state[0, environment] + float(interval)
     state[1, environment] = total
 
 
@@ -1619,7 +1619,10 @@ def _resolve_batched_gs_batching(color_count: int, n_batches: int | None) -> tup
         raise ValueError("Batched Gauss-Seidel requires at least one color.")
 
     if n_batches is None:
-        n_batches = 9 if color_count == 27 else 16
+        # Preserve the existing choices for 27 and 64 colors, and use a
+        # divisor for other stencils (e.g. five batches for 125 colors).
+        target_batches = 9 if color_count == 27 else 16
+        n_batches = next(n for n in range(target_batches, 0, -1) if color_count % n == 0)
 
     if n_batches <= 0:
         raise ValueError(f"Batched Gauss-Seidel requires a positive batch count, got {n_batches}.")
