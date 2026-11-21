@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import unittest
+import warnings
 from unittest.mock import patch
 
 import numpy as np
@@ -782,35 +783,19 @@ def test_vbd_pipeline_parity_and_deprecations(test, device):
             particle_self_contact_margin=0.04,
         )
     test.assertEqual(caught.filename, __file__)
-    # Margin-only calls retain their old query-radius meaning during deprecation.
-    with test.assertWarns(DeprecationWarning) as caught:
-        legacy_margin = SolverVBD(
+    # Margin-only calls set the interaction distance, with no gap and no warning.
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        margin_only = SolverVBD(
             _build_cloth_model(device),
             iterations=1,
             particle_enable_self_contact=True,
-            particle_self_contact_margin=0.4,
-        )
-    test.assertEqual(caught.filename, __file__)
-    test.assertEqual(legacy_margin.particle_self_contact_margin, 0.2)
-    test.assertEqual(legacy_margin.particle_self_contact_gap, 0.2)
-    # Invalid ignored legacy geometry still warns but is not rejected.
-    with test.assertWarns(DeprecationWarning):
-        SolverVBD(_build_model(device), iterations=1, particle_self_contact_margin=0.1)
-    with test.assertWarns(DeprecationWarning):
-        SolverVBD(
-            _build_cloth_model(device),
-            iterations=1,
-            particle_enable_self_contact=False,
             particle_self_contact_margin=0.1,
         )
-    # The same geometry remains invalid when self-contact is active.
+    test.assertEqual(margin_only.particle_self_contact_margin, 0.1)
+    test.assertEqual(margin_only.particle_self_contact_gap, 0.0)
     with test.assertRaises(ValueError):
-        SolverVBD(
-            _build_cloth_model(device),
-            iterations=1,
-            particle_enable_self_contact=True,
-            particle_self_contact_margin=0.1,
-        )
+        SolverVBD(_build_cloth_model(device), iterations=1, particle_self_contact_margin=-0.1)
     # Deprecated interval warns; combining it with an explicit slot raises.
     with test.assertWarns(DeprecationWarning) as caught:
         SolverVBD(_build_cloth_model(device), iterations=1, particle_collision_detection_interval=2)
