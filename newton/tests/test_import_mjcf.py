@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import itertools
 import os
 import struct
 import tempfile
@@ -58,6 +59,13 @@ MASSLESS_FIXED_ROOT_WITH_INTERNAL_FIXED_MJCF = """
     </worldbody>
 </mujoco>
 """
+
+
+def _option_disableflags(mj_model):
+    """MuJoCo disable flags without the parent-filter bit, which SolverMuJoCo always sets because
+    Newton's collision filter pairs decide parent-child contacts."""
+    mujoco, _ = SolverMuJoCo.import_mujoco()
+    return int(mj_model.opt.disableflags) & ~int(mujoco.mjtDisableBit.mjDSBL_FILTERPARENT)
 
 
 class TestImportMjcfBasic(unittest.TestCase):
@@ -201,7 +209,7 @@ class TestImportMjcfBasic(unittest.TestCase):
         builder.add_mjcf(mjcf)
         model = builder.finalize()
         solver = SolverMuJoCo(model)
-        self.assertEqual(solver.mj_model.opt.disableflags, native.opt.disableflags)
+        self.assertEqual(_option_disableflags(solver.mj_model), native.opt.disableflags)
         self.assertEqual(solver.mj_model.opt.enableflags, native.opt.enableflags)
         # World 0 and global world -1 keep separate gravity entries.
         np.testing.assert_allclose(model.gravity.numpy(), [[0, 0, -9.81], [0, 0, -9.81]])
@@ -256,15 +264,15 @@ class TestImportMjcfBasic(unittest.TestCase):
                 builder = newton.ModelBuilder()
                 builder.add_mjcf(mjcf)
                 solver = SolverMuJoCo(builder.finalize(device="cpu"), use_mujoco_cpu=True)
-                self.assertEqual(solver.mj_model.opt.disableflags, native.opt.disableflags)
+                self.assertEqual(_option_disableflags(solver.mj_model), native.opt.disableflags)
                 self.assertEqual(solver.mj_model.opt.enableflags, native.opt.enableflags)
 
     @requires(*MUJOCO_MODULES)
     def test_unknown_option_flag_warns(self):
         """Warn and ignore unsupported flags without breaking Warp model construction."""
-        for name in ("mysteryflag", "filterparent", "override", "fwdinv", "diagexact", "midphase", "autoreset"):
+        for name in ("mysteryflag", "override", "fwdinv", "diagexact", "midphase", "autoreset"):
             with self.subTest(flag=name):
-                value = "disable" if name in ("filterparent", "midphase", "autoreset") else "enable"
+                value = "disable" if name in ("midphase", "autoreset") else "enable"
                 mjcf = f"""
 <mujoco>
     <option><flag {name}="{value}"/></option>
@@ -276,6 +284,72 @@ class TestImportMjcfBasic(unittest.TestCase):
                     builder.add_mjcf(mjcf)
                 solver = SolverMuJoCo(builder.finalize())
                 self.assertEqual(solver.mj_model.opt.enableflags, 0)
+
+    @requires(*MUJOCO_MODULES)
+    def test_filterparent_flag_controls_parent_child_contacts(self):
+        """Honor <flag filterparent="disable"/>: parent and child bodies collide as in native MuJoCo (#4693)."""
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        for value in ("disable", "enable", None):
+            with self.subTest(filterparent=value):
+                flag = f'<option><flag filterparent="{value}"/></option>' if value else ""
+                mjcf = f"""
+<mujoco>
+  {flag}
+  <worldbody>
+    <body pos="0 0 1"><freejoint/><geom type="sphere" size="0.2"/>
+      <body pos="0 0 0.1"><joint type="hinge"/><geom type="sphere" size="0.2"/></body>
+    </body>
+  </worldbody>
+</mujoco>
+"""
+                native_model = mujoco.MjModel.from_xml_string(mjcf)
+                native_data = mujoco.MjData(native_model)
+                mujoco.mj_forward(native_model, native_data)
+                builder = newton.ModelBuilder()
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    builder.add_mjcf(mjcf)
+                self.assertFalse([w for w in caught if "filterparent" in str(w.message)])
+                model = builder.finalize(device="cpu")
+                expected_filters = 0 if value == "disable" else 1
+                self.assertEqual(len(model.shape_collision_filter_pairs), expected_filters)
+                solver = SolverMuJoCo(model, use_mujoco_cpu=True)
+                self.assertEqual(solver.mj_model.nexclude, expected_filters)
+                mujoco.mj_forward(solver.mj_model, solver.mj_data)
+                self.assertEqual(native_data.ncon, 1 if value == "disable" else 0)
+                self.assertEqual(solver.mj_data.ncon, native_data.ncon)
+
+    def test_equality_welds_do_not_join_weld_groups(self):
+        """MJCF equality welds become loop joints: they keep their direct pair but do not weld groups (#4693)."""
+        mjcf = """
+<mujoco>
+  <worldbody>
+    <body name="a" pos="0 0 1"><freejoint/><geom name="a" type="sphere" size="0.1"/>
+      <body name="a_palm" pos="0 0 0.15">
+        <body name="a_tip" pos="0 0 0.15"><joint type="hinge"/><geom name="a_tip" type="sphere" size="0.1"/></body>
+      </body>
+    </body>
+    <body name="b" pos="1 0 1"><freejoint/><geom name="b" type="sphere" size="0.1"/>
+      <body name="b_palm" pos="0 0 0.15">
+        <body name="b_tip" pos="0 0 0.15"><joint type="hinge"/><geom name="b_tip" type="sphere" size="0.1"/></body>
+      </body>
+    </body>
+  </worldbody>
+  <equality>
+    <weld body1="a_tip" body2="b_tip"/>
+    <weld body1="a"/>
+  </equality>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            builder.add_mjcf(mjcf, enable_self_collisions=True, convert_mjc_equality_constraints=True)
+        shape = {label.rsplit("/", 1)[-1]: i for i, label in enumerate(builder.shape_label)}
+        pair = lambda x, y: (min(shape[x], shape[y]), max(shape[x], shape[y]))  # noqa: E731
+        pairs = set(builder.finalize(device="cpu").shape_collision_filter_pairs)
+        # each tip is filtered against its hand through the shapeless palm; the welded tips are a direct pair
+        self.assertEqual(pairs, {pair("a", "a_tip"), pair("b", "b_tip"), pair("a_tip", "b_tip")})
 
     def test_geom_friction_replaces_the_friction_pair(self):
         """An MJCF geom friction is one coefficient: it sets mu and mu_static together, and the builder's
@@ -330,14 +404,14 @@ class TestImportMjcfBasic(unittest.TestCase):
                 self.assertFalse(imported.mj_model.opt.disableflags & mujoco.mjtDisableBit.mjDSBL_MULTICCD)
                 overridden = SolverMuJoCo(model, disable_contacts=False, disable_sensors=True, enable_multiccd=False)
                 self.assertEqual(
-                    overridden.mj_model.opt.disableflags,
+                    _option_disableflags(overridden.mj_model),
                     mujoco.mjtDisableBit.mjDSBL_SENSOR | mujoco.mjtDisableBit.mjDSBL_MULTICCD,
                 )
                 self.assertEqual(overridden.mj_model.opt.enableflags, 0)
         default_builder = newton.ModelBuilder()
         default_builder.add_mjcf(mjcf, parse_mujoco_options=False)
         default_solver = SolverMuJoCo(default_builder.finalize())
-        self.assertEqual(default_solver.mj_model.opt.disableflags, mujoco.mjtDisableBit.mjDSBL_MULTICCD)
+        self.assertEqual(_option_disableflags(default_solver.mj_model), mujoco.mjtDisableBit.mjDSBL_MULTICCD)
 
     def test_geom_rgba_preserves_opacity(self):
         """Preserve authored MJCF geometry opacity."""
@@ -7181,6 +7255,128 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
         self.assertAlmostEqual(geom_xform[1], 5.0, places=5)
         self.assertAlmostEqual(geom_xform[2], 0.0, places=5)
 
+    @requires(*MUJOCO_MODULES)
+    def test_geom_fromto_box_ellipsoid_matches_native_mujoco(self):
+        """Verify box and ellipsoid geoms with fromto span the segment like native MuJoCo."""
+        import mujoco
+
+        # The second segment points within 0.08 degrees of -Z, where the axis must keep its tilt.
+        for geom_type, fromto in itertools.product(
+            ("box", "ellipsoid"), ("0.1 0.2 0.3  0.4 0.6 0.8", "0.0006 0.0008 -1  0 0 0")
+        ):
+            for size in ("0.05", "0.05 0.07"):
+                with self.subTest(geom_type=geom_type, fromto=fromto, size=size):
+                    mjcf = f"""<mujoco model="fromto_shape">
+    <worldbody>
+        <geom name="g" type="{geom_type}" fromto="{fromto}" size="{size}"/>
+    </worldbody>
+</mujoco>"""
+                    mj_model = mujoco.MjModel.from_xml_string(mjcf)
+
+                    builder = newton.ModelBuilder()
+                    builder.add_mjcf(mjcf)
+                    idx = builder.shape_label.index("fromto_shape/worldbody/g")
+
+                    xform = builder.shape_transform[idx]
+                    quat = wp.quat(*xform[3:7])
+                    mj_quat = wp.quat(*mj_model.geom_quat[0][[1, 2, 3, 0]])
+                    np.testing.assert_allclose(xform[:3], mj_model.geom_pos[0], atol=1e-6)
+                    np.testing.assert_allclose(
+                        np.array(wp.quat_to_matrix(quat)), np.array(wp.quat_to_matrix(mj_quat)), atol=1e-5
+                    )
+                    np.testing.assert_allclose(builder.shape_scale[idx], mj_model.geom_size[0], atol=1e-6)
+
+        # A slanted segment inside a frame with both a position and a rotation checks the composition order.
+        for geom_type in ("box", "ellipsoid"):
+            with self.subTest(geom_type=geom_type, frame=True):
+                mjcf = f"""<mujoco model="fromto_slanted">
+    <worldbody>
+        <frame pos="0.1 0.2 0" euler="20 0 45">
+            <geom name="g" type="{geom_type}" fromto="0.1 0.2 0.3  0.4 0.6 0.8" size="0.05 0.07"/>
+        </frame>
+    </worldbody>
+</mujoco>"""
+                mj_model = mujoco.MjModel.from_xml_string(mjcf)
+                mj_data = mujoco.MjData(mj_model)
+                mujoco.mj_forward(mj_model, mj_data)
+
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(mjcf)
+                xform = builder.shape_transform[builder.shape_label.index("fromto_slanted/worldbody/g")]
+                np.testing.assert_allclose(xform[:3], mj_data.geom_xpos[0], atol=1e-6)
+                np.testing.assert_allclose(
+                    np.array(wp.quat_to_matrix(wp.quat(*xform[3:7]))).reshape(3, 3),
+                    mj_data.geom_xmat[0].reshape(3, 3),
+                    atol=1e-5,
+                )
+
+    @requires(*MUJOCO_MODULES)
+    def test_geom_fromto_box_keeps_frame_rotation_like_native_mujoco(self):
+        """Verify a box with fromto inside a rotated frame keeps the frame's roll about the segment."""
+        import mujoco
+
+        mjcf = """<mujoco model="fromto_frame">
+    <worldbody>
+        <frame euler="0 0 45">
+            <geom name="g" type="box" fromto="0 0 0.5  0 0 -0.5" size="0.05 0.05"/>
+        </frame>
+    </worldbody>
+</mujoco>"""
+        mj_model = mujoco.MjModel.from_xml_string(mjcf)
+        mj_data = mujoco.MjData(mj_model)
+        mujoco.mj_forward(mj_model, mj_data)
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        idx = builder.shape_label.index("fromto_frame/worldbody/g")
+        xform = builder.shape_transform[idx]
+        np.testing.assert_allclose(xform[:3], mj_data.geom_xpos[0], atol=1e-6)
+        np.testing.assert_allclose(
+            np.array(wp.quat_to_matrix(wp.quat(*xform[3:7]))).reshape(3, 3),
+            mj_data.geom_xmat[0].reshape(3, 3),
+            atol=1e-5,
+        )
+
+    @requires(*MUJOCO_MODULES)
+    def test_geom_fromto_box_keeps_import_xform_rotation(self):
+        """Verify a rotated import xform rotates a box with fromto about the segment axis."""
+        import mujoco
+
+        framed = """<mujoco model="m"><worldbody><frame euler="0 0 45">
+            <geom name="g" type="box" fromto="0 0 0.5  0 0 -0.5" size="0.05 0.05"/>
+        </frame></worldbody></mujoco>"""
+        plain = framed.replace('<frame euler="0 0 45">', "<frame>")
+        mj_model = mujoco.MjModel.from_xml_string(framed)
+        mj_data = mujoco.MjData(mj_model)
+        mujoco.mj_forward(mj_model, mj_data)
+
+        rot = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), wp.pi / 4.0)
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(plain, xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), rot))
+        idx = builder.shape_label.index("m/worldbody/g")
+        xform = builder.shape_transform[idx]
+        np.testing.assert_allclose(
+            np.array(wp.quat_to_matrix(wp.quat(*xform[3:7]))).reshape(3, 3),
+            mj_data.geom_xmat[0].reshape(3, 3),
+            atol=1e-5,
+        )
+
+    @requires(*MUJOCO_MODULES)
+    def test_geom_fromto_short_segment_keeps_length(self):
+        """Verify a short but nonzero fromto segment keeps its half-length."""
+        mjcf = """<mujoco model="fromto_short">
+    <worldbody>
+        <geom name="g" type="box" fromto="0 0 2.5e-7  0 0 -2.5e-7" size="0.05"/>
+    </worldbody>
+</mujoco>"""
+        for scale in (1.0, 0.1):
+            with self.subTest(scale=scale):
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(mjcf, scale=scale)
+                idx = builder.shape_label.index("fromto_short/worldbody/g")
+                # The 1e-7 cutoff applies to the authored segment, before the import scale.
+                self.assertAlmostEqual(float(builder.shape_scale[idx][2]), 2.5e-7 * scale, delta=1e-10 * scale)
+
     def test_actuator_mode_inference_from_actuator_type(self):
         """Test that JointTargetMode is correctly inferred from MJCF actuator types."""
         from newton._src.sim.enums import JointTargetMode  # noqa: PLC0415
@@ -8533,6 +8729,9 @@ class TestImportMjcfComposition(unittest.TestCase):
                     pair_filtered,
                     f"Shape pair ({shape1}, {shape2}) should be filtered due to <exclude body1='body1' body2='body2'/>",
                 )
+
+        # Sites on the excluded bodies add no filter pairs.
+        self.assertEqual(len(filter_pairs), 4)
 
         # The test above verifies that body1-body2 pairs are correctly filtered.
         # We don't need to verify body3 interactions as that would require running
@@ -11338,6 +11537,36 @@ class TestContypeConaffinityZero(unittest.TestCase):
                 [0.7, 0.8, 0.01, 0.4, 1.5],
             ],
         )
+
+    @requires(*MUJOCO_MODULES)
+    def test_explicit_pair_solreffriction_default_matches_mujoco(self):
+        """Compile omitted pair solreffriction like native MuJoCo."""
+        import mujoco
+
+        mjcf = """
+<mujoco>
+    <worldbody>
+        <geom name="a" type="sphere" size="0.1"/>
+        <body pos="0 0 1">
+            <freejoint/>
+            <geom name="b" type="sphere" size="0.1"/>
+            <geom name="c" type="sphere" size="0.1" pos="0 0 1"/>
+        </body>
+    </worldbody>
+    <contact>
+        <pair geom1="a" geom2="b"/>
+        <pair geom1="a" geom2="c" solreffriction="0.05 1.2"/>
+    </contact>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+        native = mujoco.MjModel.from_xml_string(mjcf)
+
+        np.testing.assert_allclose(model.mujoco.pair_solreffriction.numpy(), [[0.0, 0.0], [0.05, 1.2]])
+        np.testing.assert_allclose(solver.mj_model.pair_solreffriction, native.pair_solreffriction)
 
     def test_explicit_pair_scales_inherited_distances(self):
         """Scale contact pair distances inherited from a named default."""

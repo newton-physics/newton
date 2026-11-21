@@ -781,40 +781,6 @@ def test_particle_shape_restitution_does_not_launch_resting_particle(test, devic
     test.assertAlmostEqual(vy, 0.0, delta=1.0e-6)
 
 
-def test_compute_body_velocity_from_position_delta_legacy_path(test, device):
-    """Retain the deprecated full-step angular-velocity reconstruction."""
-    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-    body = builder.add_body()
-    builder.add_shape_sphere(body, radius=0.1)
-    model = builder.finalize(device=device)
-
-    solver_incremental = newton.solvers.SolverXPBD(model)
-    solver_legacy = newton.solvers.SolverXPBD(model)
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DeprecationWarning)
-        solver_legacy.compute_body_velocity_from_position_delta = True
-
-    state_incremental_in = model.state()
-    state_incremental_out = model.state()
-    state_legacy_in = model.state()
-    state_legacy_out = model.state()
-    qd = np.zeros((model.body_count, 6), dtype=np.float32)
-    qd[body, 5] = 10.0
-    state_incremental_in.body_qd.assign(qd)
-    state_legacy_in.body_qd.assign(qd)
-
-    dt = 0.1
-    state_incremental_in.clear_forces()
-    state_legacy_in.clear_forces()
-    solver_incremental.step(state_incremental_in, state_incremental_out, None, None, dt)
-    solver_legacy.step(state_legacy_in, state_legacy_out, None, None, dt)
-
-    wz_incremental = float(state_incremental_out.body_qd.numpy()[body, 5])
-    wz_legacy = float(state_legacy_out.body_qd.numpy()[body, 5])
-    test.assertAlmostEqual(wz_incremental, 10.0, delta=1.0e-4)
-    test.assertAlmostEqual(wz_legacy, 8.944272, delta=1.0e-4)
-
-
 def test_restitution_flag_does_not_change_body_integration(test, device):
     """Keep rigid-body integration independent of the restitution flag."""
     builder = newton.ModelBuilder(gravity=(0.0, -10.0, 0.0), up_axis=newton.Axis.Y)
@@ -2661,6 +2627,52 @@ def test_xpbd_mimic_warns_for_unsupported_joint_types(test, device):
 devices = get_test_devices()
 
 
+def test_xpbd_body_pair_reduction_on_curved_support(test, device):
+    """Settle a compound sole on curved support without losing post-prediction contact coverage."""
+    builder = newton.ModelBuilder()
+    cfg = builder.ShapeConfig(density=0.0, mu=0.6, gap=0.02)
+    body = builder.add_body(
+        xform=wp.transform((0.0, 0.0, 0.014), wp.quat_identity()),
+        mass=1.0,
+        inertia=wp.mat33(np.eye(3) * 0.001),
+    )
+    for i in range(9):
+        for j in range(9):
+            builder.add_shape_sphere(
+                body,
+                xform=wp.transform(((i - 4) * 0.012, (j - 4) * 0.012, 0.0), wp.quat_identity()),
+                radius=0.01,
+                cfg=cfg,
+            )
+    ground = builder.add_shape_sphere(-1, xform=wp.transform((0.0, 0.0, -0.3), wp.quat_identity()), radius=0.3, cfg=cfg)
+    model = builder.finalize(device=device)
+    pairs = wp.array([(ground, i) for i in range(ground)], dtype=wp.vec2i, device=device)
+    outcomes = []
+    for reduced in (False, True):
+        pipeline = newton.CollisionPipeline(
+            model,
+            broad_phase="explicit",
+            shape_pairs_filtered=pairs,
+            body_pair_reduction=newton.CollisionPipeline.BodyPairReductionConfig() if reduced else None,
+        )
+        contacts = pipeline.contacts()
+        state, out = model.state(), model.state()
+        control = model.control()
+        solver = newton.solvers.SolverXPBD(model, iterations=8)
+        angular_tail = wp.empty(60, dtype=wp.spatial_vector, device=device)
+        for step in range(240):
+            state.clear_forces()
+            pipeline.collide(state, contacts)
+            solver.step(state, out, control, contacts, 1.0 / 240)
+            state, out = out, state
+            if step >= 180:
+                wp.copy(angular_tail, state.body_qd, dest_offset=step - 180, src_offset=body, count=1)
+        angular_speeds = np.linalg.norm(angular_tail.numpy()[:, 3:], axis=1)
+        outcomes.append((float(state.body_q.numpy()[body, 2]), float(np.mean(angular_speeds, dtype=np.float64))))
+    test.assertLess(abs(outcomes[1][0] - outcomes[0][0]), 1e-5)
+    test.assertLess(outcomes[1][1], max(2 * outcomes[0][1], 0.01))
+
+
 class TestSolverXPBD(unittest.TestCase):
     def test_restitution_is_disabled_by_default(self):
         """Keep restitution disabled by default without a deprecation warning."""
@@ -2675,24 +2687,9 @@ class TestSolverXPBD(unittest.TestCase):
     def test_rejects_rod_joints(self):
         """Raise at construction instead of silently skipping Rod joints in the constraint kernels."""
         builder = newton.ModelBuilder()
-        builder.add_rod(
-            rod=newton.Rod([(0.0, 0.0, 0.0), (0.0, 0.0, 1.0), (0.0, 0.0, 2.0)], radius=0.1), body_frame_origin="com"
-        )
+        builder.add_rod(rod=newton.Rod([(0.0, 0.0, 0.0), (0.0, 0.0, 1.0), (0.0, 0.0, 2.0)], radius=0.1))
         with self.assertRaisesRegex(ValueError, "JointType.ROD"):
             newton.solvers.SolverXPBD(builder.finalize(device="cpu"))
-
-    def test_compute_body_velocity_from_position_delta_is_deprecated(self):
-        model = newton.ModelBuilder().finalize()
-        solver = newton.solvers.SolverXPBD(model)
-
-        with self.assertWarnsRegex(DeprecationWarning, "deprecated in Newton 1.6"):
-            self.assertFalse(solver.compute_body_velocity_from_position_delta)
-
-        with self.assertWarnsRegex(DeprecationWarning, "deprecated in Newton 1.6"):
-            solver.compute_body_velocity_from_position_delta = True
-
-        with self.assertWarnsRegex(DeprecationWarning, "deprecated in Newton 1.6"):
-            self.assertTrue(solver.compute_body_velocity_from_position_delta)
 
 
 add_function_test(
@@ -2804,14 +2801,6 @@ add_function_test(
     TestSolverXPBD,
     "test_particle_shape_restitution_accounts_for_body_velocity",
     test_particle_shape_restitution_accounts_for_body_velocity,
-    devices=devices,
-    check_output=False,
-)
-
-add_function_test(
-    TestSolverXPBD,
-    "test_compute_body_velocity_from_position_delta_legacy_path",
-    test_compute_body_velocity_from_position_delta_legacy_path,
     devices=devices,
     check_output=False,
 )
@@ -3039,6 +3028,15 @@ add_function_test(
     TestSolverXPBD,
     "test_xpbd_mimic_warns_for_unsupported_joint_types",
     test_xpbd_mimic_warns_for_unsupported_joint_types,
+    devices=devices,
+    check_output=False,
+)
+
+
+add_function_test(
+    TestSolverXPBD,
+    "test_xpbd_body_pair_reduction_on_curved_support",
+    test_xpbd_body_pair_reduction_on_curved_support,
     devices=devices,
     check_output=False,
 )

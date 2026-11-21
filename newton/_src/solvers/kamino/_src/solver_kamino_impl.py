@@ -276,6 +276,7 @@ class SolverKaminoImpl(SolverBase):
             )
 
         # Allocate the dual problem data on the device
+        uses_dense_scc = self._config.dynamics_solver == "scc" and not self._config.sparse_dynamics
         self._problem_fd: DualProblem | None = None
         if not uses_lox or (self._config.compute_solution_metrics and self._model.size.sum_of_max_total_cts > 0):
             self._problem_fd = DualProblem(
@@ -285,8 +286,8 @@ class SolverKaminoImpl(SolverBase):
                 contacts=contacts,
                 jacobians=self._jacobians,
                 config=problem_fd_config,
-                solver=None if uses_lox else linear_solver_type,
-                solver_kwargs=None if uses_lox else linear_solver_kwargs,
+                solver=None if uses_lox or uses_dense_scc else linear_solver_type,
+                solver_kwargs=None if uses_lox or uses_dense_scc else linear_solver_kwargs,
                 sparse=self._config.sparse_dynamics,
                 decouple_joint_dynamics=self._config.dynamics_solver == "padmm",
             )
@@ -316,6 +317,7 @@ class SolverKaminoImpl(SolverBase):
         elif self._config.dynamics_solver == "padmm":
             self._solver_fd = PADMMSolver(
                 model=self._model,
+                problem=self._problem_fd,
                 config=self._config.padmm,
                 warmstart=self._warmstart_mode,
                 use_acceleration=self._config.padmm.use_acceleration,
@@ -946,7 +948,7 @@ class SolverKaminoImpl(SolverBase):
         wp.copy(state_out.q_i, self._data.bodies.q_i)
         wp.copy(state_out.u_i, self._data.bodies.u_i)
         wp.copy(state_out.w_i, self._data.bodies.w_i)
-        wp.copy(state_out.w_i_e, self._data.bodies.w_e_i)
+        # External wrenches (w_i_e) are a step input and are never written to the output state.
         wp.copy(state_out.q_j, self._data.joints.q_j)
         wp.copy(state_out.q_j_p, self._data.joints.q_j_p)
         wp.copy(state_out.dq_j, self._data.joints.dq_j)

@@ -9,6 +9,7 @@ import unittest
 import numpy as np
 import warp as wp
 
+import newton
 from newton import ModelBuilder
 from newton._src.solvers.kamino._src.core.data import DataKamino
 from newton._src.solvers.kamino._src.core.model import ModelKamino
@@ -33,9 +34,8 @@ from newton._src.solvers.kamino._src.geometry.primitive.narrowphase import (
     PRIMITIVE_NARROWPHASE_SUPPORTED_SHAPE_PAIRS,
     primitive_narrowphase,
 )
-from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
-from newton.tests.kamino import allow_verbose_output, expect_contact_capacity_warning, setup_tests, test_context
-from newton.tests.unittest_utils import MODULE_LOAD_OUTPUT_RE, NewtonTestCase
+from newton.tests.kamino import expect_contact_capacity_warning, setup_test_output, setup_tests, test_context
+from newton.tests.unittest_utils import NewtonTestCase
 from newton.tests.utils import basics, testing
 
 logger = logging.getLogger(__name__)
@@ -483,18 +483,14 @@ def test_narrowphase_on_shape_pair(
 ###
 
 
-class TestPrimitiveBroadPhase(unittest.TestCase):
+class TestPrimitiveBroadPhase(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose  # Set to True for detailed output
 
-        # Set debug-level logging to print verbose test output to console
-        if self.verbose:
-            set_log_level(logging.DEBUG)
-        else:
-            reset_log_level()
+        setup_test_output(self, verbose=self.verbose)
 
         # Construct a list of all supported primitive shape pairs
         self.supported_shape_pairs: list[tuple[str, str]] = []
@@ -504,11 +500,6 @@ class TestPrimitiveBroadPhase(unittest.TestCase):
                 shape_B_name = shape_B.name.lower()
                 self.supported_shape_pairs.append((shape_A_name, shape_B_name))
         logger.debug("supported_shape_pairs:\n%s\n", self.supported_shape_pairs)
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
 
     def test_01_bspheres_on_each_primitive_shape_pair_exact(self):
         # Each shape pair in its own world with
@@ -710,18 +701,14 @@ class TestPrimitiveBroadPhase(unittest.TestCase):
         )
 
 
-class TestPrimitiveNarrowPhase(unittest.TestCase):
+class TestPrimitiveNarrowPhase(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose  # Set to True for detailed output
 
-        # Set debug-level logging to print verbose test output to console
-        if self.verbose:
-            set_log_level(logging.DEBUG)
-        else:
-            reset_log_level()
+        setup_test_output(self, verbose=self.verbose)
 
         # Construct a list of all supported primitive shape pairs
         self.supported_shape_pairs: list[tuple[str, str]] = []
@@ -732,11 +719,6 @@ class TestPrimitiveNarrowPhase(unittest.TestCase):
                 if (shape_A, shape_B) in PRIMITIVE_NARROWPHASE_SUPPORTED_SHAPE_PAIRS:
                     self.supported_shape_pairs.append((shape_A_name, shape_B_name))
         logger.debug("supported_shape_pairs:\n%s\n", self.supported_shape_pairs)
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
 
     def test_01_on_each_primitive_shape_pair_exact(self):
         """
@@ -1029,20 +1011,9 @@ class TestPipelinePrimitive(NewtonTestCase):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
-        self.allowOutputRegex(MODULE_LOAD_OUTPUT_RE, stream="stdout")
         self.verbose = test_context.verbose  # Set to True for detailed output
 
-        # Set debug-level logging to print verbose test output to console
-        if self.verbose:
-            allow_verbose_output(self)
-            set_log_level(logging.DEBUG)
-        else:
-            reset_log_level()
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
+        setup_test_output(self, verbose=self.verbose)
 
     def test_00_make_default(self):
         """Tests the default constructor of CollisionPipelinePrimitive."""
@@ -1138,6 +1109,7 @@ class TestPipelinePrimitive(NewtonTestCase):
 
 if __name__ == "__main__":
     # Test setup
+    newton.utils.setup_console_logging()
     setup_tests()
 
     # Run all tests

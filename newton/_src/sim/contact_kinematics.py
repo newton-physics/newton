@@ -94,7 +94,6 @@ def eval_rigid_contact_kinematics(
         state.body_q,
         model.shape_body,
         out_distance=out_distance,
-        out_normal=None,
         out_point0_world=out_point0_world,
         out_point1_world=out_point1_world,
         device=model.device,

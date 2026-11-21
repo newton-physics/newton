@@ -113,9 +113,9 @@ Supported Features
      - Explicit, Semi-implicit, Implicit-in-velocity
      - ✅ :sup:`1`
      - ✅ generalized coordinates
-     - ❌
-     - ❌
-     - ❌
+     - 🟨 element vertices only :sup:`4`
+     - ✅ :sup:`4`
+     - ✅ :sup:`4`
      - ❌
      - 🟨 CPU only
    * - :class:`~newton.solvers.SolverSemiImplicit`
@@ -171,6 +171,8 @@ Supported Features
 | :sup:`3` Run-to-run determinism with ``deterministic=wp.DeterministicMode.RUN_TO_RUN``
   (MuJoCo's CPU backend is deterministic regardless of that argument);
   see :doc:`/concepts/determinism` for limitations and performance trade-offs.
+| :sup:`4` Simulated as MuJoCo flexes; particles that belong to no spring,
+  triangle, or tetrahedron are not simulated. See :ref:`mujoco-flexes`.
 
 .. experimental::
     :class:`~newton.solvers.SolverSteel`'s public API and behavior may change without prior notice.
@@ -215,6 +217,8 @@ formulation.
   :class:`~newton.solvers.SolverKamino`.
 - ``mu_torsional`` / ``mu_rolling``: :class:`~newton.solvers.SolverXPBD` and
   :class:`~newton.solvers.SolverMuJoCo`.
+  :class:`~newton.solvers.SolverVBD` also supports these properties for
+  compliant-ALM rigid-rigid contacts.
 - ``mu_static``: stored as :attr:`~newton.Model.shape_material_mu_static` and
   carried into :class:`~newton.solvers.SolverKamino`'s material tables, but no
   built-in solver distinguishes static from dynamic friction in its contact
@@ -239,7 +243,7 @@ The maximal-coordinate solvers (:class:`~newton.solvers.SolverSemiImplicit`,
 :class:`~newton.solvers.SolverXPBD`, and :class:`~newton.solvers.SolverKamino`)
 enforce joints as pairwise body constraints but do not use the articulation kinematic-tree structure.
 :class:`~newton.solvers.SolverVBD` supports a subset of joint types through maximal-coordinate
-constraints, with unified compliant ALM by default and a deprecated legacy AVBD path.
+constraints, using a compliant augmented-Lagrangian (ALM) formulation.
 :class:`~newton.solvers.SolverStyle3D` and :class:`~newton.solvers.SolverImplicitMPM` do not support joints.
 
 **Joint types**
@@ -320,9 +324,10 @@ constraints, with unified compliant ALM by default and a deprecated legacy AVBD 
      - |no|
      - |no|
      - |yes|
-     - |no|
+     - |yes| :sup:`2`
 
 | :sup:`1` DISTANCE joints are treated as FREE (no distance constraint enforcement).
+| :sup:`2` See :ref:`kamino-rod-joints` for the supported rod joint properties.
 
 **Joint properties**
 
@@ -546,6 +551,34 @@ row whose body or particle is owned by no solver applies no force at all. The
 coupler also warns when both endpoints belong to one entry whose solver does not
 support attachments. Hard attachments require both endpoints in one VBD entry;
 the coupler raises an error for other ownership arrangements.
+
+.. _External forces:
+
+External Forces
+---------------
+
+:attr:`State.body_f <newton.State.body_f>` and
+:attr:`State.particle_f <newton.State.particle_f>` hold external forces that the
+caller applies. Every solver reads them from ``state_in`` and never writes them
+in ``state_in`` or ``state_out``; contact, joint, and elastic forces are
+accumulated in solver-owned buffers. Forces therefore persist until the caller
+clears them, so a force written once can act on every substep of a frame, and
+double-buffered states may share their force arrays:
+
+.. code-block:: python
+
+    state_1.body_f = state_0.body_f
+    state_1.particle_f = state_0.particle_f
+
+    state_0.clear_forces()
+    apply_external_forces(state_0)  # written once per frame
+    for _ in range(sim_substeps):
+        solver.step(state_0, state_1, control, contacts, sim_dt)
+        state_0, state_1 = state_1, state_0
+
+Forces that are recomputed every substep, such as viewer picking forces, still
+call :meth:`State.clear_forces() <newton.State.clear_forces>` before they are
+reapplied on each substep.
 
 .. _Differentiability:
 

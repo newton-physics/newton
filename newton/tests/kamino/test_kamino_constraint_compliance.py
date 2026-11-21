@@ -12,10 +12,15 @@ import warp as wp
 import newton
 from newton._src.solvers.kamino.config import ConstrainedDynamicsConfig, ConstraintStabilizationConfig
 from newton.solvers import SolverKamino
+from newton.tests.kamino import setup_test_output, setup_tests
+from newton.tests.unittest_utils import NewtonTestCase
 
 
-class TestKaminoConstraintCompliance(unittest.TestCase):
+class TestKaminoConstraintCompliance(NewtonTestCase):
     """Compare small physical systems with analytical implicit updates."""
+
+    def setUp(self):
+        setup_test_output(self)
 
     @classmethod
     def setUpClass(cls):
@@ -115,7 +120,7 @@ class TestKaminoConstraintCompliance(unittest.TestCase):
         dt, stiffness, damping, gap, velocity, gravity = 0.01, 5000.0, 20.0, -0.02, -0.3, -10.0
         model = self._sphere(stiffness=stiffness, damping=damping, gap=gap, velocity=velocity, gravity=gravity)
         for backend, (integrator, internal) in product(
-            ("scc", "padmm"), (("euler", False), ("moreau", True), ("moreau", False))
+            ("scc", "padmm"), (("euler", False), ("euler", True), ("moreau", True))
         ):
             for sparse in (False, True):
                 for preconditioning in (False, True) if backend == "padmm" else (False,):
@@ -582,4 +587,6 @@ class TestKaminoConstraintCompliance(unittest.TestCase):
 
 
 if __name__ == "__main__":
+    newton.utils.setup_console_logging()
+    setup_tests()
     unittest.main()

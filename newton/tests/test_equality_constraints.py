@@ -85,8 +85,9 @@ class TestEqualityConstraints(unittest.TestCase):
 
         builder = newton.ModelBuilder()
 
+        asset_path = os.path.join(os.path.dirname(__file__), "assets", "constraints.xml")
         builder.add_mjcf(
-            os.path.join(os.path.dirname(__file__), "assets", "constraints.xml"),
+            asset_path,
             ignore_names=["floor", "ground"],
             up_axis="Z",
             skip_equality_constraints=False,
@@ -138,18 +139,25 @@ class TestEqualityConstraints(unittest.TestCase):
 
         self.assertEqual(self.solver.mj_model.eq_type.shape[0], 5)
 
-        # Check constraint violations
-        nefc = self.solver.mj_data.nefc  # number of active constraints
-        if nefc > 0:
-            efc_pos = self.solver.mj_data.efc_pos[:nefc]  # constraint violations
-            max_violation = np.max(np.abs(efc_pos))
-            self.assertLess(max_violation, 0.01, f"Maximum constraint violation {max_violation} exceeds threshold")
+        # Compare against native MuJoCo on the same MJCF. The asset is intentionally soft
+        # (joint5 uses solreflimit="-100 -1" and the weld a small torquescale), so large
+        # violations and forces are expected; they must match MuJoCo's.
+        mujoco, _ = newton.solvers.SolverMuJoCo.import_mujoco()
+        native_model = mujoco.MjModel.from_xml_path(asset_path)
+        native_model.opt.timestep = self.sim_dt
+        native_model.opt.integrator = mujoco.mjtIntegrator.mjINT_EULER
+        native_model.opt.iterations = 100
+        native_model.opt.ls_iterations = 50
+        native_data = mujoco.MjData(native_model)
+        mujoco.mj_step(native_model, native_data, nstep=200 * 10)
 
-        # Check constraint forces
-        if nefc > 0:
-            efc_force = self.solver.mj_data.efc_force[:nefc]
-            max_force = np.max(np.abs(efc_force))
-            self.assertLess(max_force, 1000.0, f"Maximum constraint force {max_force} seems unreasonably large")
+        nefc = self.solver.mj_data.nefc  # number of active constraints
+        self.assertGreater(nefc, 0)
+        self.assertEqual(nefc, native_data.nefc)
+        for field in ("efc_pos", "efc_force"):
+            values = np.abs(getattr(self.solver.mj_data, field)[:nefc])
+            native_values = np.abs(getattr(native_data, field)[:nefc])
+            np.testing.assert_allclose(values.max(), native_values.max(), rtol=1e-3, err_msg=field)
 
     def test_target_and_objtype_defaults(self):
         # Pure equality rows default to MjcEqualityTargetKind.NONE / target -1 and carry the

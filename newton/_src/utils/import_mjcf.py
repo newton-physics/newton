@@ -542,7 +542,7 @@ def parse_mjcf(
     """
     Parses MuJoCo XML (MJCF) file and adds the bodies and joints to the given ModelBuilder.
     MuJoCo-specific custom attributes are registered on the builder automatically.
-    Importing ``<dcmotor>`` actuators requires the optional ``mujoco`` package
+    Importing ``<dcmotor>`` actuators requires the optional ``mujoco-core`` package
     (included in ``newton[sim]``) to resolve native defaults, and raises
     :class:`ImportError` if it is unavailable. Other MJCF import remains independent of MuJoCo.
 
@@ -639,7 +639,7 @@ def parse_mjcf(
         parse_meshes: Whether geometries of type `"mesh"` should be parsed. If False, geometries of type `"mesh"` are ignored.
         parse_sites: Whether sites (non-colliding reference points) should be parsed. If False, sites are ignored.
         parse_visuals: Whether visual geometries (non-collision shapes) should be loaded. If False, visual shapes are not loaded (different from `hide_visuals` which loads but hides them). Default is True.
-        parse_mujoco_options: Whether solver options from the MJCF `<option>` tag should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
+        parse_mujoco_options: Whether solver options from the MJCF `<option>` tag should be parsed. If False, solver options are not loaded and custom attributes retain their default values; the ``gravity`` and ``filterparent`` flags, which change the Newton model rather than a solver option, are then ignored as well. Default is True.
         up_axis: The up axis of the MuJoCo scene. The default is Z up.
         ignore_names: A list of regular expressions. Bodies and joints with a name matching one of the regular expressions will be ignored.
         ignore_classes: A list of regular expressions. Bodies and joints with a class matching one of the regular expressions will be ignored.
@@ -648,7 +648,10 @@ def parse_mjcf(
         no_class_as_colliders: If True, geometries without a class are parsed as collision geometries. If False, geometries without a class are parsed as visual geometries.
         force_show_colliders: If True, the collision shapes are always shown, even if there are visual shapes.
             Collider planes in MJCF groups 0-2 remain visible even when this is False.
-        enable_self_collisions: If True, self-collisions are enabled.
+        enable_self_collisions: If True, self-collisions are enabled. ``<option><flag filterparent="disable"/>``
+            additionally lets parent and child bodies collide by importing their joints with
+            ``collision_filter_parent=False``; ``enable_self_collisions=False`` still disables every collision
+            between the imported shapes.
         ignore_inertial_definitions: If True, the inertial parameters defined in the MJCF are ignored and the inertia is calculated from the shape geometry.
         collapse_fixed_joints: If True, fixed joints are removed and the respective bodies are merged.
         collapse_massless_fixed_root: If True, collapse only the massless fixed-joint chain below an imported free root body. Ignored when ``collapse_fixed_joints`` is True.
@@ -815,6 +818,11 @@ def parse_mjcf(
         raise ValueError(f"MJCF compiler balanceinertia must be 'false' or 'true'; got {balance_inertia_value!r}.")
     balance_inertia = balance_inertia_value == "true"
 
+    # Like gravity, filterparent changes the Newton model rather than a solver option: it decides
+    # whether the imported joints filter parent-child collisions (collision_filter_parent). FIXED
+    # joints keep the filter because MuJoCo welds those bodies together.
+    filter_parent = True
+
     # Parse MJCF compiler and option tags for ONCE and WORLD frequency custom attributes
     # WORLD frequency attributes use the current world, -1 outside a world context;
     # add_world() remaps them to the destination world.
@@ -839,7 +847,7 @@ def parse_mjcf(
             for attr in builder_custom_attr_option
             if attr.namespace == "mujoco" and (attr.name.startswith("flag_") or attr.name == "enable_sleeping")
         ]
-        flag_names = {attr.mjcf_attribute_name for attr in flag_attrs} | {"gravity"}
+        flag_names = {attr.mjcf_attribute_name for attr in flag_attrs} | {"gravity", "filterparent"}
         gravity_enabled = True
         for option_elem in root.findall("option"):
             for flag_elem in option_elem.findall("flag"):
@@ -855,11 +863,15 @@ def parse_mjcf(
                     attribute.values[builder._model_value_key(attribute)] = value
                 if "gravity" in flag_elem.attrib:
                     gravity_enabled = SolverMuJoCo._parse_enable_disable(flag_elem.attrib["gravity"])
+                if "filterparent" in flag_elem.attrib:
+                    filter_parent = SolverMuJoCo._parse_enable_disable(flag_elem.attrib["filterparent"])
         if not gravity_enabled:
             if builder.current_world >= 0:
                 builder.world_gravity[builder.current_world] = wp.vec3()
             else:
                 builder.gravity = wp.vec3()
+
+    joint_filter_parent = None if filter_parent else False
 
     class_parent = {}
     class_children = {}
@@ -1554,46 +1566,51 @@ def parse_mjcf(
         if "zaxis" in attrib:
             zaxis = np.array(attrib["zaxis"].split(), dtype=float)
             zaxis /= np.linalg.norm(zaxis)
-            axis = np.array([-zaxis[1], zaxis[0], 0.0])
-            axis_norm_sq = np.dot(axis, axis)
-            # Match MuJoCo's mjuu_z2quat, including mjuu_normvec's mjEPS cutoff.
-            if axis_norm_sq < 1e-14:
-                axis = np.array([1.0, 0.0, 0.0])
-                axis_norm = 0.0
-            else:
-                axis_norm = np.sqrt(axis_norm_sq)
-                axis /= axis_norm
-            half_angle = 0.5 * np.arctan2(axis_norm, zaxis[2])
-            return wp.quat(*(axis * np.sin(half_angle)), np.cos(half_angle))
+            return quat_from_zaxis(zaxis)
         return wp.quat_identity()
+
+    def quat_from_zaxis(zaxis: np.ndarray) -> wp.quat:
+        """Rotate local +Z onto the unit vector ``zaxis`` like MuJoCo's ``mjuu_z2quat``."""
+        axis = np.array([-zaxis[1], zaxis[0], 0.0])
+        axis_norm_sq = np.dot(axis, axis)
+        # Match MuJoCo's mjuu_z2quat, including mjuu_normvec's mjEPS cutoff.
+        if axis_norm_sq < 1e-14:
+            axis = np.array([1.0, 0.0, 0.0])
+            axis_norm = 0.0
+        else:
+            axis_norm = np.sqrt(axis_norm_sq)
+            axis /= axis_norm
+        half_angle = 0.5 * np.arctan2(axis_norm, zaxis[2])
+        return wp.quat(*(axis * np.sin(half_angle)), np.cos(half_angle))
 
     def parse_fromto_transform(
         attrib, incoming_xform: wp.transform | None = None, zero_length_error: str | None = None
     ) -> tuple[wp.transform, float]:
         """Parse a MuJoCo fromto segment into its transform and half-length."""
-        values = parse_vec(attrib, "fromto", (0.0, 0.0, 0.0, 1.0, 0.0, 0.0))
-        start = wp.vec3(values[0:3]) * scale
-        end = wp.vec3(values[3:6]) * scale
+        values = np.array(parse_vec(attrib, "fromto", (0.0, 0.0, 0.0, 1.0, 0.0, 0.0)), dtype=np.float64)
+        start = values[0:3]
+        end = values[3:6]
 
-        if incoming_xform is not None:
-            start = wp.transform_point(incoming_xform, start)
-            end = wp.transform_point(incoming_xform, end)
-
-        position = (start + end) * 0.5
+        position = wp.vec3(*((start + end) * 0.5 * scale))
         # Match MuJoCo's compiler, which points local +Z from the second endpoint to the first.
         direction = start - end
-        length = wp.length(direction)
-        if length < 1.0e-6:
+        length = float(np.linalg.norm(direction))
+        # MuJoCo rejects authored fromto segments shorter than 1e-7, so test the length before
+        # applying the import scale; longer short segments keep their length.
+        if length < 1.0e-7:
             if zero_length_error is not None:
                 raise ValueError(zero_length_error)
-            return wp.transform(position, wp.quat_identity()), 0.0
-
-        direction /= length
-        if float(direction[2]) < -0.999999:
-            rotation = wp.quat(1.0, 0.0, 0.0, 0.0)
+            local_xform = wp.transform(position, wp.quat_identity())
+            half_length = 0.0
         else:
-            rotation = wp.quat_between_vectors(wp.vec3(0.0, 0.0, 1.0), direction)
-        return wp.transform(position, rotation), float(length) * 0.5
+            local_xform = wp.transform(position, quat_from_zaxis(direction / length))
+            half_length = length * 0.5 * scale
+
+        # Build the segment frame locally, then compose it with the parent frame so the parent's
+        # rotation about the segment axis is kept (MuJoCo composes the frame after the segment).
+        if incoming_xform is not None:
+            local_xform = incoming_xform * local_xform
+        return local_xform, half_length
 
     def parse_shapes(
         defaults,
@@ -1643,6 +1660,11 @@ def parse_mjcf(
             tf = wp.transform(geom_pos, geom_rot)
             if incoming_xform is not None:
                 tf = incoming_xform * tf
+
+            if "fromto" in geom_attrib and geom_type in {"box", "ellipsoid"}:
+                # MuJoCo spans the segment along local Z and uses size[0] for both cross-section axes.
+                tf, geom_half_length = parse_fromto_transform(geom_attrib, incoming_xform)
+                geom_size = np.array([geom_size[0], geom_size[0], geom_half_length], dtype=np.float32)
 
             geom_density = parse_float(geom_attrib, "density", density)
             geom_mass_explicit = None
@@ -2947,6 +2969,7 @@ def parse_mjcf(
                     friction=ball_friction,
                     damping=ball_damping,
                     stiffness=ball_stiffness,
+                    collision_filter_parent=joint_filter_parent,
                     label=joint_label,
                     custom_attributes=joint_custom_attributes | dof_custom_attributes,
                 )
@@ -2968,6 +2991,7 @@ def parse_mjcf(
                     child=link,
                     linear_axes=linear_axes,
                     angular_axes=angular_axes,
+                    collision_filter_parent=None if joint_type == JointType.FIXED else joint_filter_parent,
                     label=joint_label,
                     parent_xform=parent_xform_for_joint,
                     child_xform=wp.transform(joint_pos, wp.quat_identity()),
@@ -3693,9 +3717,11 @@ def parse_mjcf(
                     logger.warning("<exclude> references unknown body '%s', skipping", body2_name)
                 continue
 
-            # Find all shapes belonging to body1 and body2
-            body1_shapes = [i for i, body in enumerate(builder.shape_body) if body == body1_idx]
-            body2_shapes = [i for i, body in enumerate(builder.shape_body) if body == body2_idx]
+            # The broad phase only ever tests colliding shapes, so sites and visual-only shapes need no filter pairs.
+            body1_shapes, body2_shapes = (
+                [shape for shape in builder.body_shapes[body] if builder.shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES]
+                for body in (body1_idx, body2_idx)
+            )
 
             # Add all shape pairs from these bodies to collision filter
             for shape1_idx in body1_shapes:

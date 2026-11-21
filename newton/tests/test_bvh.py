@@ -29,6 +29,47 @@ class TestShapeBvhBounds(unittest.TestCase):
     pass
 
 
+class TestModelBvh(unittest.TestCase):
+    @staticmethod
+    def _build_single_sphere_scene() -> newton.Model:
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        body = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 0.0, -2.0), q=wp.quat_identity()))
+        builder.add_shape_sphere(body, radius=0.75)
+        return builder.finalize(device="cpu")
+
+    @staticmethod
+    def _build_single_particle_scene() -> newton.Model:
+        builder = newton.ModelBuilder()
+        builder.add_particle(pos=wp.vec3(0.0), vel=wp.vec3(0.0), mass=1.0, radius=0.1)
+        return builder.finalize(device="cpu")
+
+    def test_model_bvh_build_accepts_constructor(self) -> None:
+        model = self._build_single_sphere_scene()
+        state = model.state()
+
+        model.bvh_build_shapes(state, bvh_constructor="median")
+        self.assertIsNotNone(model.bvh_shapes)
+
+        particle_model = self._build_single_particle_scene()
+        particle_state = particle_model.state()
+
+        particle_model.bvh_build_particles(particle_state, bvh_constructor="median")
+        self.assertIsNotNone(particle_model.bvh_particles)
+
+    def test_model_bvhs_are_built_by_finalize_and_refit(self) -> None:
+        model = self._build_single_sphere_scene()
+        state = model.state()
+
+        self.assertIsNotNone(model.bvh_shapes)
+        model.bvh_refit_shapes(state)
+
+        particle_model = self._build_single_particle_scene()
+        particle_state = particle_model.state()
+
+        self.assertIsNotNone(particle_model.bvh_particles)
+        particle_model.bvh_refit_particles(particle_state)
+
+
 def _make_points(rng: np.random.Generator, num_points: int, extent: float) -> np.ndarray:
     """Sample points in a cube, planting the extremes at the strided-tail and midpoint indices."""
     points = rng.uniform(-extent, extent, size=(num_points, 3)).astype(np.float32)
