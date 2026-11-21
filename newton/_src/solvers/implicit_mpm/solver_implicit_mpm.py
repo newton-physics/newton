@@ -1881,6 +1881,14 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
         # Materialize graph-persistent topology and buffers before callers can capture step().
         self._last_step_data = LastStepData()
+        # Collider impulses accumulated over every step since the last coupling input-state
+        # notification, so proxy harvesting spans all sub-steps of one coupled step. The
+        # accumulation only starts once a coupled solver sends that notification, so
+        # standalone stepping does not pay for it.
+        self._coupling_impulse_tracking = False
+        self._coupling_body_impulse = wp.zeros(model.body_count, dtype=wp.spatial_vector, device=model.device)
+        self._coupling_particle_impulse = None
+        self._require_coupling_particle_impulse()
         with wp.ScopedDevice(model.device):
             self._scratchpad = ImplicitMPMScratchpad()
             pic = self._particles_to_cells(model.particle_q)
@@ -1973,6 +1981,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         )
 
         self._last_step_data.save_collider_current_position(self._mpm_model.collider_body_q)
+        self._require_coupling_particle_impulse()
 
     def collider_face_materials(self, collider_id: int) -> wp.array[int]:
         """Return a writable view of the per-face material ids of a collider.
@@ -2434,6 +2443,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     )
             scratch = self._rebuild_scratchpad(pic)
             self._step_impl(state_in, state_out, dt, pic, scratch)
+            self._accumulate_coupling_impulses(state_in, state_out)
             scratch.release_temporaries()
             if last_step_data.gimp_stress is not None:
                 last_step_data.gimp_warmstart_state = state_out
@@ -2463,8 +2473,14 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         iteration_restart: bool = False,
         dt: float = 0.0,
     ) -> None:
-        """Synchronize deformable collider meshes after particle input-state updates."""
+        """Synchronize deformable collider meshes after particle input-state updates.
+
+        Also restarts the collider impulse accumulation used by the proxy harvest hooks,
+        so the next harvest spans every step taken after this notification.
+        """
         del dt
+        self._coupling_impulse_tracking = True
+        self._clear_coupling_impulses()
         flags = int(flags)
         update_points = bool(flags & StateFlags.PARTICLE_Q)
         update_velocities = bool(flags & StateFlags.PARTICLE_QD)
@@ -2553,31 +2569,28 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         contacts: newton.Contacts | None,
         dt: float,
     ) -> None:
-        """Convert MPM collider grid impulses to proxy-body wrenches."""
-        del body_qd_before, state_out, contacts
+        """Convert MPM collider grid impulses to proxy-body wrenches.
+
+        The impulses are accumulated over every step since the last
+        :meth:`coupling_notify_input_state_update`, so a sub-stepped entry
+        feeds back the average force over the whole coupled step ``dt``.
+        """
+        del body_qd_before, state, state_out, contacts
         if dt <= 0.0:
             raise ValueError("MPM proxy wrench harvesting requires a positive dt")
         out_body_f.zero_()
-
-        impulses, positions, collider_ids = self.collect_collider_impulses(state)
-        if collider_ids.shape[0] == 0:
+        if body_local_to_proxy_global.shape[0] == 0:
             return
-        body_q = state.body_q if state.body_q is not None else self.model.body_q
 
         wp.launch(
             _harvest_mpm_proxy_wrenches_kernel,
-            dim=collider_ids.shape[0],
+            dim=body_local_to_proxy_global.shape[0],
             inputs=[
                 float(dt),
-                collider_ids,
-                impulses,
-                positions,
-                self.collider_body_index,
+                self._coupling_body_impulse,
                 body_local_to_proxy_global,
                 int(newton.BodyFlags.PROXY),
                 self.model.body_flags,
-                self.model.body_com,
-                body_q,
                 out_body_f,
             ],
             device=self.model.device,
@@ -2631,7 +2644,12 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         contacts: newton.Contacts | None,
         dt: float,
     ) -> None:
-        """Convert MPM proxy momentum changes and collider impulses to forces."""
+        """Convert MPM proxy momentum changes and collider impulses to forces.
+
+        The deformable collider impulses are accumulated over every step since the
+        last :meth:`coupling_notify_input_state_update`, so a sub-stepped entry
+        feeds back the average force over the whole coupled step ``dt``.
+        """
         if dt <= 0.0:
             raise ValueError("MPM proxy particle-force harvesting requires a positive dt")
         if particle_local_to_proxy_global.shape[0] == 0:
@@ -2649,6 +2667,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
         if not self._mpm_model.deformable_collider_vertex_ranges:
             return
+        self._require_coupling_particle_impulse()
 
         wp.launch(
             _clear_inactive_mpm_proxy_particle_forces_kernel,
@@ -2663,19 +2682,12 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             device=self.model.device,
         )
 
-        impulses, positions, collider_ids = self.collect_collider_impulses(state)
-        if collider_ids.shape[0] == 0:
-            return
-
         wp.launch(
             _harvest_mpm_proxy_particle_forces_kernel,
-            dim=collider_ids.shape[0],
+            dim=particle_local_to_proxy_global.shape[0],
             inputs=[
                 float(dt),
-                collider_ids,
-                impulses,
-                positions,
-                self._mpm_model.collider,
+                self._coupling_particle_impulse,
                 particle_local_to_proxy_global,
                 int(newton.ParticleFlags.PROXY),
                 self._mpm_model.particle_flags,
@@ -2683,6 +2695,54 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             ],
             device=self.model.device,
         )
+
+    def _require_coupling_particle_impulse(self) -> None:
+        """Allocate the per-particle impulse accumulator once deformable colliders exist."""
+        if self._coupling_particle_impulse is not None or not self._mpm_model.deformable_collider_vertex_ranges:
+            return
+        self._coupling_particle_impulse = wp.zeros(self.model.particle_count, dtype=wp.vec3, device=self.model.device)
+
+    def _clear_coupling_impulses(self) -> None:
+        self._coupling_body_impulse.zero_()
+        if self._coupling_particle_impulse is not None:
+            self._coupling_particle_impulse.zero_()
+
+    def _accumulate_coupling_impulses(self, state_in: newton.State, state_out: newton.State) -> None:
+        """Add this step's collider impulses to the per-body and per-particle coupling accumulators."""
+        if not self._coupling_impulse_tracking:
+            return
+        impulses, positions, collider_ids = self.collect_collider_impulses(state_out)
+        if collider_ids.shape[0] == 0:
+            return
+        body_q = state_in.body_q if state_in.body_q is not None else self.model.body_q
+
+        wp.launch(
+            _accumulate_mpm_collider_body_impulses_kernel,
+            dim=collider_ids.shape[0],
+            inputs=[
+                collider_ids,
+                impulses,
+                positions,
+                self.collider_body_index,
+                self.model.body_com,
+                body_q,
+                self._coupling_body_impulse,
+            ],
+            device=self.model.device,
+        )
+        if self._coupling_particle_impulse is not None:
+            wp.launch(
+                _accumulate_mpm_collider_particle_impulses_kernel,
+                dim=collider_ids.shape[0],
+                inputs=[
+                    collider_ids,
+                    impulses,
+                    positions,
+                    self._mpm_model.collider,
+                    self._coupling_particle_impulse,
+                ],
+                device=self.model.device,
+            )
 
     def collect_collider_impulses(self, state: newton.State | None) -> tuple[wp.array, wp.array, wp.array]:
         """Collect current collider impulses and their application positions.
@@ -5290,64 +5350,6 @@ def _rewind_mpm_proxy_particles_kernel(
 
 
 @wp.kernel(enable_backward=False)
-def _harvest_mpm_proxy_particle_forces_kernel(
-    dt: float,
-    collider_ids: wp.array[int],
-    collider_impulses: wp.array[wp.vec3],
-    collider_impulse_pos: wp.array[wp.vec3],
-    collider: Collider,
-    particle_local_to_proxy_global: wp.array[int],
-    proxy_flag: int,
-    particle_flags: wp.array[wp.int32],
-    out_particle_f: wp.array[wp.vec3],
-):
-    i = wp.tid()
-    cid = collider_ids[i]
-
-    if cid < 0 or cid + 1 >= collider.collider_particle_offsets.shape[0]:
-        return
-
-    vertex_offset = collider.collider_particle_offsets[cid]
-    vertex_end = collider.collider_particle_offsets[cid + 1]
-    if vertex_end <= vertex_offset:
-        return
-
-    mesh = collider.collider_mesh[cid]
-    max_dist = collider.query_max_dist + collider.collider_max_thickness[cid]
-    query = wp.mesh_query_point_no_sign(mesh, collider_impulse_pos[i], max_dist)
-    if not query.result:
-        return
-
-    indices = wp.mesh_get(mesh).indices
-    tri = query.face
-    local_i = indices[3 * tri + 0]
-    local_j = indices[3 * tri + 1]
-    local_k = indices[3 * tri + 2]
-
-    dst_i = collider.collider_particle_ids[vertex_offset + local_i]
-    dst_j = collider.collider_particle_ids[vertex_offset + local_j]
-    dst_k = collider.collider_particle_ids[vertex_offset + local_k]
-
-    f = collider_impulses[i] / dt
-    w_i = query.u
-    w_j = query.v
-    w_k = 1.0 - w_i - w_j
-
-    if dst_i >= 0 and dst_i < particle_local_to_proxy_global.shape[0]:
-        proxy_global_i = particle_local_to_proxy_global[dst_i]
-        if proxy_global_i >= 0 and (particle_flags[dst_i] & proxy_flag) != 0 and w_i > 0.0:
-            wp.atomic_add(out_particle_f, proxy_global_i, w_i * f)
-    if dst_j >= 0 and dst_j < particle_local_to_proxy_global.shape[0]:
-        proxy_global_j = particle_local_to_proxy_global[dst_j]
-        if proxy_global_j >= 0 and (particle_flags[dst_j] & proxy_flag) != 0 and w_j > 0.0:
-            wp.atomic_add(out_particle_f, proxy_global_j, w_j * f)
-    if dst_k >= 0 and dst_k < particle_local_to_proxy_global.shape[0]:
-        proxy_global_k = particle_local_to_proxy_global[dst_k]
-        if proxy_global_k >= 0 and (particle_flags[dst_k] & proxy_flag) != 0 and w_k > 0.0:
-            wp.atomic_add(out_particle_f, proxy_global_k, w_k * f)
-
-
-@wp.kernel(enable_backward=False)
 def _clear_inactive_mpm_proxy_particle_forces_kernel(
     particle_local_to_proxy_global: wp.array[int],
     particle_flags: wp.array[wp.int32],
@@ -5391,18 +5393,14 @@ def _rewind_mpm_proxy_bodies_kernel(
 
 
 @wp.kernel(enable_backward=False)
-def _harvest_mpm_proxy_wrenches_kernel(
-    dt: float,
+def _accumulate_mpm_collider_body_impulses_kernel(
     collider_ids: wp.array[int],
     collider_impulses: wp.array[wp.vec3],
     collider_impulse_pos: wp.array[wp.vec3],
     collider_body_ids: wp.array[int],
-    body_local_to_proxy_global: wp.array[int],
-    proxy_flag: int,
-    body_flags: wp.array[wp.int32],
     body_com: wp.array[wp.vec3],
     body_q: wp.array[wp.transform],
-    out_body_f: wp.array[wp.spatial_vector],
+    body_impulse: wp.array[wp.spatial_vector],
 ):
     i = wp.tid()
     cid = collider_ids[i]
@@ -5411,14 +5409,94 @@ def _harvest_mpm_proxy_wrenches_kernel(
         return
 
     local_body = collider_body_ids[cid]
-    if local_body < 0 or local_body >= body_local_to_proxy_global.shape[0]:
+    if local_body < 0 or local_body >= body_impulse.shape[0]:
         return
 
+    impulse = collider_impulses[i]
+    center = wp.transform_point(body_q[local_body], body_com[local_body])
+    r = collider_impulse_pos[i] - center
+    wp.atomic_add(body_impulse, local_body, wp.spatial_vector(impulse, wp.cross(r, impulse)))
+
+
+@wp.kernel(enable_backward=False)
+def _harvest_mpm_proxy_wrenches_kernel(
+    dt: float,
+    body_impulse: wp.array[wp.spatial_vector],
+    body_local_to_proxy_global: wp.array[int],
+    proxy_flag: int,
+    body_flags: wp.array[wp.int32],
+    out_body_f: wp.array[wp.spatial_vector],
+):
+    local_body = wp.tid()
     proxy_global = body_local_to_proxy_global[local_body]
     if proxy_global < 0 or proxy_global >= out_body_f.shape[0] or (body_flags[local_body] & proxy_flag) == 0:
         return
 
-    f_world = collider_impulses[i] / dt
-    center = wp.transform_point(body_q[local_body], body_com[local_body])
-    r = collider_impulse_pos[i] - center
-    wp.atomic_add(out_body_f, proxy_global, wp.spatial_vector(f_world, wp.cross(r, f_world)))
+    wp.atomic_add(out_body_f, proxy_global, body_impulse[local_body] / dt)
+
+
+@wp.kernel(enable_backward=False)
+def _accumulate_mpm_collider_particle_impulses_kernel(
+    collider_ids: wp.array[int],
+    collider_impulses: wp.array[wp.vec3],
+    collider_impulse_pos: wp.array[wp.vec3],
+    collider: Collider,
+    particle_impulse: wp.array[wp.vec3],
+):
+    i = wp.tid()
+    cid = collider_ids[i]
+
+    if cid < 0 or cid + 1 >= collider.collider_particle_offsets.shape[0]:
+        return
+
+    vertex_offset = collider.collider_particle_offsets[cid]
+    vertex_end = collider.collider_particle_offsets[cid + 1]
+    if vertex_end <= vertex_offset:
+        return
+
+    mesh = collider.collider_mesh[cid]
+    max_dist = collider.query_max_dist + collider.collider_max_thickness[cid]
+    query = wp.mesh_query_point_no_sign(mesh, collider_impulse_pos[i], max_dist)
+    if not query.result:
+        return
+
+    indices = wp.mesh_get(mesh).indices
+    tri = query.face
+    local_i = indices[3 * tri + 0]
+    local_j = indices[3 * tri + 1]
+    local_k = indices[3 * tri + 2]
+
+    dst_i = collider.collider_particle_ids[vertex_offset + local_i]
+    dst_j = collider.collider_particle_ids[vertex_offset + local_j]
+    dst_k = collider.collider_particle_ids[vertex_offset + local_k]
+
+    impulse = collider_impulses[i]
+    w_i = query.u
+    w_j = query.v
+    w_k = 1.0 - w_i - w_j
+
+    if dst_i >= 0 and dst_i < particle_impulse.shape[0] and w_i > 0.0:
+        wp.atomic_add(particle_impulse, dst_i, w_i * impulse)
+    if dst_j >= 0 and dst_j < particle_impulse.shape[0] and w_j > 0.0:
+        wp.atomic_add(particle_impulse, dst_j, w_j * impulse)
+    if dst_k >= 0 and dst_k < particle_impulse.shape[0] and w_k > 0.0:
+        wp.atomic_add(particle_impulse, dst_k, w_k * impulse)
+
+
+@wp.kernel(enable_backward=False)
+def _harvest_mpm_proxy_particle_forces_kernel(
+    dt: float,
+    particle_impulse: wp.array[wp.vec3],
+    particle_local_to_proxy_global: wp.array[int],
+    proxy_flag: int,
+    particle_flags: wp.array[wp.int32],
+    out_particle_f: wp.array[wp.vec3],
+):
+    local_particle = wp.tid()
+    proxy_global = particle_local_to_proxy_global[local_particle]
+    if proxy_global < 0 or proxy_global >= out_particle_f.shape[0]:
+        return
+    if (particle_flags[local_particle] & proxy_flag) == 0:
+        return
+
+    wp.atomic_add(out_particle_f, proxy_global, particle_impulse[local_particle] / dt)
