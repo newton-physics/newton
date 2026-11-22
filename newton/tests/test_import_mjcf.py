@@ -13565,6 +13565,27 @@ class TestImportMjcfKeyframes(unittest.TestCase):
         pid_solver = SolverMuJoCo(pid_builder.finalize(device="cpu"), use_mujoco_cpu=True, disable_contacts=True)
         np.testing.assert_allclose(pid_solver.mj_model.key_ctrl, [[0.0], [0.75]], atol=1e-6)
 
+        # General SO(3) actuators occupy 3 (expmap) or 4 (quat) control slots in MuJoCo 4.0.1.
+        so3_mjcf = """<mujoco>
+          <worldbody>
+            <body name="b"><joint name="j" type="ball"/><geom size="0.1"/></body>
+            <body name="b2"><joint name="h" type="hinge"/><geom size="0.1"/></body>
+          </worldbody>
+          <actuator>
+            <general name="g_exp" site="missing_site" gaintype="so3" biastype="so3"/>
+            <general name="g_quat" site="missing_site" gaintype="so3" biastype="so3" input="quat"/>
+            <motor name="m" joint="h"/>
+          </actuator>
+          <keyframe>
+            <key name="short_so3" ctrl="0.1 0.2 0.3 1.0 0.25 0.0 0.0"/>
+            <key name="full_so3" ctrl="0.1 0.2 0.3 1.0 0.25 0.0 0.0 0.77"/>
+          </keyframe>
+        </mujoco>"""
+        so3_builder = newton.ModelBuilder()
+        so3_builder.add_mjcf(so3_mjcf, ctrl_direct=True)
+        so3_solver = SolverMuJoCo(so3_builder.finalize(device="cpu"), use_mujoco_cpu=True, disable_contacts=True)
+        np.testing.assert_allclose(so3_solver.mj_model.key_ctrl, [[0.0], [0.77]], atol=1e-6)
+
     @requires(*MUJOCO_MODULES)
     def test_mjcf_keyframe_composition_and_world_homogeneity(self):
         one_mech_mjcf = """<mujoco>
@@ -13616,6 +13637,20 @@ class TestImportMjcfKeyframes(unittest.TestCase):
         ref_mismatch.end_world()
         with self.assertRaisesRegex(ValueError, "identical keyframes"):
             SolverMuJoCo(ref_mismatch.finalize(device="cpu"), separate_worlds=True, disable_contacts=True)
+
+        # Unkeyed joints added outside the stored keyframe slice with differing dof_ref must also be rejected.
+        unkeyed_mjcf = """<mujoco>
+          <compiler angle="radian"/>
+          <worldbody><body><joint name="h_extra" type="hinge" ref="{rf}"/><geom size="0.1"/></body></worldbody>
+        </mujoco>"""
+        unkeyed_ref_mismatch = newton.ModelBuilder()
+        for rf_val in (0.25, 0.5):
+            unkeyed_ref_mismatch.begin_world()
+            unkeyed_ref_mismatch.add_mjcf(one_mech_mjcf.format(qp=0.7, ct=1.0), ctrl_direct=True)
+            unkeyed_ref_mismatch.add_mjcf(unkeyed_mjcf.format(rf=rf_val))
+            unkeyed_ref_mismatch.end_world()
+        with self.assertRaisesRegex(ValueError, "identical keyframes"):
+            SolverMuJoCo(unkeyed_ref_mismatch.finalize(device="cpu"), separate_worlds=True, disable_contacts=True)
 
     @requires(*MUJOCO_MODULES)
     def test_mjcf_keyframe_placement_and_separate_worlds_consistency(self):
@@ -13688,6 +13723,75 @@ class TestImportMjcfKeyframes(unittest.TestCase):
         )
         np.testing.assert_allclose(ovr_solver.mj_model.key_qpos[0, :3], [10.0, 0.0, 0.5], atol=1e-5)
         np.testing.assert_allclose(ovr_solver.mj_model.key_qpos[1, :3], [10.0, 0.0, 0.5], atol=1e-5)
+
+        # Opposite quaternion signs (including scalar w == 0 half-turns) represent the same rotation
+        # on both free roots and ball joints.
+        quat_sign_mjcf = """<mujoco>
+          <worldbody>
+            <body name="root" pos="0 0 1">
+              <freejoint/>
+              <geom size="0.1"/>
+              <body name="child" pos="0 0 0.2">
+                <joint name="ball_j" type="ball"/>
+                <geom size="0.05"/>
+              </body>
+            </body>
+          </worldbody>
+          <keyframe>
+            <key name="half_turn" qpos="0 0 1 0 {s} 0 0 0 0 {s} 0"/>
+          </keyframe>
+        </mujoco>"""
+        quat_sign_builder = newton.ModelBuilder()
+        for s_val in (1, -1):
+            quat_sign_builder.begin_world()
+            quat_sign_builder.add_mjcf(quat_sign_mjcf.format(s=s_val))
+            quat_sign_builder.end_world()
+        quat_sign_solver = SolverMuJoCo(
+            quat_sign_builder.finalize(device="cpu"),
+            separate_worlds=True,
+            disable_contacts=True,
+            kinematic_switchable_roots=False,
+        )
+        self.assertEqual(quat_sign_solver.mj_model.nkey, 1)
+
+        # Free-root keyframe velocities are compared in MuJoCo coordinates (after CoM offset removal).
+        com_qvel_mjcf = """<mujoco>
+          <worldbody>
+            <body name="root" pos="0 0 1">
+              <freejoint/>
+              <inertial pos="{cx} 0 0" mass="1.0" diaginertia="0.01 0.01 0.01"/>
+              <geom size="0.1"/>
+            </body>
+          </worldbody>
+          <keyframe>
+            <key name="spin" qpos="0 0 1 1 0 0 0" qvel="0 {vy} 0 0 0 1"/>
+          </keyframe>
+        </mujoco>"""
+        same_mjc_vel = newton.ModelBuilder()
+        for cx_val in (0.0, 1.0):
+            same_mjc_vel.begin_world()
+            same_mjc_vel.add_mjcf(com_qvel_mjcf.format(cx=cx_val, vy=0.0))
+            same_mjc_vel.end_world()
+        same_mjc_solver = SolverMuJoCo(
+            same_mjc_vel.finalize(device="cpu"),
+            separate_worlds=True,
+            disable_contacts=True,
+            kinematic_switchable_roots=False,
+        )
+        np.testing.assert_allclose(same_mjc_solver.mj_model.key_qvel[0], [0.0, 0.0, 0.0, 0.0, 0.0, 1.0], atol=1e-5)
+
+        diff_mjc_vel = newton.ModelBuilder()
+        for cx_val, vy_val in ((0.0, 0.0), (1.0, -1.0)):
+            diff_mjc_vel.begin_world()
+            diff_mjc_vel.add_mjcf(com_qvel_mjcf.format(cx=cx_val, vy=vy_val))
+            diff_mjc_vel.end_world()
+        with self.assertRaisesRegex(ValueError, "identical keyframes"):
+            SolverMuJoCo(
+                diff_mjc_vel.finalize(device="cpu"),
+                separate_worlds=True,
+                disable_contacts=True,
+                kinematic_switchable_roots=False,
+            )
 
     def test_mjcf_keyframe_combined_joint_dof_ordering(self):
         reorder_mjcf = """<mujoco>

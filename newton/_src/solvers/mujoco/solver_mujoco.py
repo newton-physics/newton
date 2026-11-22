@@ -12422,14 +12422,16 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 j_qd_start_np = model.joint_qd_start.numpy() if model.joint_count > 0 else np.empty(0, dtype=np.int32)
                 j_type_np = model.joint_type.numpy() if model.joint_count > 0 else np.empty(0, dtype=np.int32)
                 j_parent_np = model.joint_parent.numpy() if model.joint_count > 0 else np.empty(0, dtype=np.int32)
+                j_child_np = model.joint_child.numpy() if model.joint_count > 0 else np.empty(0, dtype=np.int32)
                 j_dof_dim_np = (
                     model.joint_dof_dim.numpy() if model.joint_count > 0 else np.empty((0, 2), dtype=np.int32)
                 )
+                j_X_p_np = model.joint_X_p.numpy() if model.joint_count > 0 else np.empty((0, 7), dtype=np.float32)
+                j_X_c_np = model.joint_X_c.numpy() if model.joint_count > 0 else np.empty((0, 7), dtype=np.float32)
+                body_com_np = model.body_com.numpy() if model.body_count > 0 else np.empty((0, 3), dtype=np.float32)
                 base_jq_np = model.joint_q.numpy() if model.joint_q is not None else np.empty(0, dtype=np.float32)
                 dof_ref_attr = getattr(model.mujoco, "dof_ref", None)
                 dof_ref_np = dof_ref_attr.numpy() if dof_ref_attr is not None else None
-                world_q_base = np.zeros(world_count, dtype=np.int32)
-                world_qd_base = np.zeros(world_count, dtype=np.int32)
                 joints_by_world: list[np.ndarray] = [np.empty(0, dtype=np.int32) for _ in range(world_count)]
                 if len(joint_world) > 0:
                     valid_j = np.flatnonzero((joint_world >= 0) & (joint_world < world_count))
@@ -12441,14 +12443,25 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                             cnt = int(j_counts[w_idx])
                             if cnt > 0:
                                 joints_by_world[w_idx] = j_order[j_pos : j_pos + cnt]
-                                first_j = int(j_order[j_pos])
-                                world_q_base[w_idx] = int(j_q_start_np[first_j])
-                                world_qd_base[w_idx] = int(j_qd_start_np[first_j])
                                 j_pos += cnt
 
-                world_act_base = np.zeros(world_count, dtype=np.int32)
+                total_act_rows = model.custom_frequency_counts.get("mujoco:actuator", 0)
+                actdim_attr = getattr(model.mujoco, "actuator_actdim", None)
+                dyntype_attr = getattr(model.mujoco, "actuator_dyntype", None)
+                actdim_np = actdim_attr.numpy() if actdim_attr is not None else None
+                dyntype_np = dyntype_attr.numpy() if dyntype_attr is not None else None
+                row_act_dim = np.zeros(total_act_rows, dtype=np.int32)
+                row_act_prefix = np.zeros(total_act_rows + 1, dtype=np.int32)
+                for r_a in range(total_act_rows):
+                    dim_a = -1 if actdim_np is None else int(actdim_np[r_a])
+                    if dim_a < 0:
+                        dim_a = 1 if (dyntype_np is not None and int(dyntype_np[r_a]) != 0) else 0
+                    row_act_dim[r_a] = dim_a
+                    row_act_prefix[r_a + 1] = row_act_prefix[r_a] + dim_a
+
+                acts_by_world: list[np.ndarray] = [np.empty(0, dtype=np.int32) for _ in range(world_count)]
                 act_world_attr = getattr(model.mujoco, "actuator_world", None)
-                if act_world_attr is not None and model.custom_frequency_counts.get("mujoco:actuator", 0) > 0:
+                if act_world_attr is not None and total_act_rows > 0:
                     act_w_np = act_world_attr.numpy()
                     valid_a = np.flatnonzero((act_w_np >= 0) & (act_w_np < world_count))
                     if len(valid_a) > 0:
@@ -12456,20 +12469,18 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         a_counts = np.bincount(act_w_np[valid_a], minlength=world_count)
                         a_pos = 0
                         for w_idx in range(world_count):
-                            if a_counts[w_idx] > 0:
-                                world_act_base[w_idx] = int(a_order[a_pos])
-                                a_pos += int(a_counts[w_idx])
-
-                scalar_types = {int(JointType.REVOLUTE), int(JointType.PRISMATIC), int(JointType.D6)}
+                            cnt_a = int(a_counts[w_idx])
+                            if cnt_a > 0:
+                                acts_by_world[w_idx] = a_order[a_pos : a_pos + cnt_a]
+                                a_pos += cnt_a
 
                 def _world_keyframes_signature(
                     w_idx: int, w_rows: np.ndarray
                 ) -> list[tuple[tuple[Any, ...], np.ndarray]]:
                     sig: list[tuple[tuple[Any, ...], np.ndarray]] = []
-                    wq_base = int(world_q_base[w_idx])
-                    wqd_base = int(world_qd_base[w_idx])
-                    wact_base = int(world_act_base[w_idx])
                     w_joints = joints_by_world[w_idx]
+                    w_acts = acts_by_world[w_idx]
+                    w_na = int(np.sum(row_act_dim[w_acts])) if len(w_acts) > 0 else 0
                     for r in w_rows:
                         r_int = int(r)
                         lbl = kf_labels[r_int] if isinstance(kf_labels, list) and r_int < len(kf_labels) else ""
@@ -12487,110 +12498,211 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         kq_init = int(kf_q_init[r_int])
                         q_arr = arrs["q"]
                         qd_arr = arrs["qd"]
-                        if len(q_arr) > 0 and kq_off >= 0:
-                            q_init_slice = (
-                                kf_vals[kq_init : kq_init + len(q_arr)]
-                                if kq_init >= 0 and kq_init + len(q_arr) <= len(kf_vals)
-                                else None
-                            )
-                            for j in w_joints:
-                                ji = int(j)
-                                jt = int(j_type_np[ji])
-                                jq_s = int(j_q_start_np[ji])
-                                jqd_s = int(j_qd_start_np[ji])
+                        q_init_slice = (
+                            kf_vals[kq_init : kq_init + len(q_arr)]
+                            if len(q_arr) > 0 and kq_init >= 0 and kq_init + len(q_arr) <= len(kf_vals)
+                            else None
+                        )
+
+                        q_list: list[float] = []
+                        qd_list: list[float] = []
+                        quat_starts: list[int] = []
+                        for j in w_joints:
+                            ji = int(j)
+                            jt = int(j_type_np[ji])
+                            jq_s = int(j_q_start_np[ji])
+                            jqd_s = int(j_qd_start_np[ji])
+                            if jt in (int(JointType.FREE), int(JointType.DISTANCE)):
+                                jq_dim, jqd_dim = 7, 6
+                            elif jt == int(JointType.BALL):
+                                jq_dim, jqd_dim = 4, 3
+                            else:
+                                jq_dim = jqd_dim = int(j_dof_dim_np[ji, 0] + j_dof_dim_np[ji, 1])
+
+                            x_loc = None
+                            if (
+                                len(q_arr) > 0
+                                and kq_off >= 0
+                                and kq_off <= jq_s
+                                and jq_s + jq_dim <= kq_off + len(q_arr)
+                            ):
+                                rq = jq_s - kq_off
+                                jq_joint = q_arr[rq : rq + jq_dim].copy()
                                 if (
                                     jt == int(JointType.FREE)
                                     and int(j_parent_np[ji]) == -1
                                     and q_init_slice is not None
-                                    and kq_off <= jq_s
-                                    and jq_s + 7 <= kq_off + len(q_arr)
                                     and jq_s + 7 <= len(base_jq_np)
                                 ):
-                                    rq = jq_s - kq_off
                                     x_cur = wp.transform(
-                                        wp.vec3(*base_jq_np[jq_s : jq_s + 3]),
-                                        wp.quat(*base_jq_np[jq_s + 3 : jq_s + 7]),
+                                        wp.vec3(*(float(v) for v in base_jq_np[jq_s : jq_s + 3])),
+                                        wp.quat(*(float(v) for v in base_jq_np[jq_s + 3 : jq_s + 7])),
                                     )
                                     x_saved = wp.transform(
-                                        wp.vec3(*q_init_slice[rq : rq + 3]),
-                                        wp.quat(*q_init_slice[rq + 3 : rq + 7]),
+                                        wp.vec3(*(float(v) for v in q_init_slice[rq : rq + 3])),
+                                        wp.quat(*(float(v) for v in q_init_slice[rq + 3 : rq + 7])),
                                     )
                                     x_loc = x_cur * wp.transform_inverse(x_saved)
                                     x_key = wp.transform(
-                                        wp.vec3(*(float(v) for v in q_arr[rq : rq + 3])),
-                                        wp.quat(*(float(v) for v in q_arr[rq + 3 : rq + 7])),
+                                        wp.vec3(*(float(v) for v in jq_joint[:3])),
+                                        wp.quat(*(float(v) for v in jq_joint[3:7])),
                                     )
                                     x_out = x_loc * x_key
-                                    q_sign = -1.0 if float(x_out.q[3]) < -1e-7 else 1.0
-                                    q_arr[rq : rq + 7] = [
+                                    jq_joint[:] = [
                                         float(x_out.p[0]),
                                         float(x_out.p[1]),
                                         float(x_out.p[2]),
-                                        float(x_out.q[0]) * q_sign,
-                                        float(x_out.q[1]) * q_sign,
-                                        float(x_out.q[2]) * q_sign,
-                                        float(x_out.q[3]) * q_sign,
+                                        float(x_out.q[0]),
+                                        float(x_out.q[1]),
+                                        float(x_out.q[2]),
+                                        float(x_out.q[3]),
                                     ]
-                                    if (
-                                        len(qd_arr) > 0
-                                        and kqd_off >= 0
-                                        and kqd_off <= jqd_s
-                                        and jqd_s + 6 <= kqd_off + len(qd_arr)
-                                    ):
-                                        rqd = jqd_s - kqd_off
-                                        v_out = wp.quat_rotate(
-                                            x_loc.q, wp.vec3(*(float(v) for v in qd_arr[rqd : rqd + 3]))
-                                        )
-                                        w_out = wp.quat_rotate(
-                                            x_loc.q, wp.vec3(*(float(v) for v in qd_arr[rqd + 3 : rqd + 6]))
-                                        )
-                                        qd_arr[rqd : rqd + 6] = [
-                                            float(v_out[0]),
-                                            float(v_out[1]),
-                                            float(v_out[2]),
-                                            float(w_out[0]),
-                                            float(w_out[1]),
-                                            float(w_out[2]),
-                                        ]
-                                elif jt in scalar_types and dof_ref_np is not None:
-                                    n_d = int(j_dof_dim_np[ji, 0] + j_dof_dim_np[ji, 1])
-                                    if n_d > 0 and kq_off <= jq_s and jq_s + n_d <= kq_off + len(q_arr):
-                                        rq = jq_s - kq_off
-                                        q_arr[rq : rq + n_d] += dof_ref_np[jqd_s : jqd_s + n_d]
-                        q_rel = (kq_off - wq_base) if len(q_arr) > 0 and kq_off >= 0 else -1
-                        qd_rel = (kqd_off - wqd_base) if len(qd_arr) > 0 and kqd_off >= 0 else -1
-                        act_rel = (
-                            (int(kf_act_start[r_int]) - wact_base, int(kf_act_cnt[r_int]))
-                            if (len(arrs["act"]) > 0 or len(arrs["ctrl"]) > 0) and kf_act_start[r_int] >= 0
-                            else (-1, 0)
-                        )
+                            else:
+                                jq_joint = base_jq_np[jq_s : jq_s + jq_dim].astype(np.float64).copy()
+
+                            if (
+                                len(qd_arr) > 0
+                                and kqd_off >= 0
+                                and kqd_off <= jqd_s
+                                and jqd_s + jqd_dim <= kqd_off + len(qd_arr)
+                            ):
+                                rqd = jqd_s - kqd_off
+                                qd_joint = qd_arr[rqd : rqd + jqd_dim].copy()
+                                if x_loc is not None and jqd_dim >= 6:
+                                    v_out = wp.quat_rotate(x_loc.q, wp.vec3(*(float(v) for v in qd_joint[:3])))
+                                    w_out = wp.quat_rotate(x_loc.q, wp.vec3(*(float(v) for v in qd_joint[3:6])))
+                                    qd_joint[:6] = [
+                                        float(v_out[0]),
+                                        float(v_out[1]),
+                                        float(v_out[2]),
+                                        float(w_out[0]),
+                                        float(w_out[1]),
+                                        float(w_out[2]),
+                                    ]
+                            else:
+                                qd_joint = np.zeros(jqd_dim, dtype=np.float64)
+
+                            if jt == int(JointType.FREE):
+                                joint_pos = wp.vec3(*(float(v) for v in jq_joint[:3]))
+                                joint_rot = wp.quat(*(float(v) for v in jq_joint[3:7]))
+                                X_p = j_X_p_np[ji]
+                                X_c = j_X_c_np[ji]
+                                p_p = wp.vec3(*(float(v) for v in X_p[:3]))
+                                q_p = wp.normalize(wp.quat(*(float(v) for v in X_p[3:7])))
+                                p_c = wp.vec3(*(float(v) for v in X_c[:3]))
+                                q_c = wp.normalize(wp.quat(*(float(v) for v in X_c[3:7])))
+                                world_rot = wp.normalize(q_p * joint_rot * wp.quat_inverse(q_c))
+                                anchor_offset_world = wp.quat_rotate(world_rot, p_c)
+                                world_pos = p_p + wp.quat_rotate(q_p, joint_pos) - anchor_offset_world
+                                q_list.extend([float(world_pos[0]), float(world_pos[1]), float(world_pos[2])])
+                                quat_starts.append(len(q_list))
+                                q_list.extend(
+                                    [float(world_rot[3]), float(world_rot[0]), float(world_rot[1]), float(world_rot[2])]
+                                )
+
+                                v_com_parent = wp.vec3(*(float(v) for v in qd_joint[:3]))
+                                w_parent = wp.vec3(*(float(v) for v in qd_joint[3:6]))
+                                v_com_world = wp.quat_rotate(q_p, v_com_parent)
+                                w_world = wp.quat_rotate(q_p, w_parent)
+                                child = int(j_child_np[ji])
+                                com_c = (
+                                    wp.vec3(*(float(v) for v in body_com_np[child]))
+                                    if 0 <= child < len(body_com_np)
+                                    else wp.vec3(0.0, 0.0, 0.0)
+                                )
+                                com_world = wp.quat_rotate(world_rot, com_c)
+                                v_origin_world = v_com_world - wp.cross(w_world, com_world)
+                                w_body = wp.quat_rotate_inv(world_rot, w_world)
+                                qd_list.extend(
+                                    [
+                                        float(v_origin_world[0]),
+                                        float(v_origin_world[1]),
+                                        float(v_origin_world[2]),
+                                        float(w_body[0]),
+                                        float(w_body[1]),
+                                        float(w_body[2]),
+                                    ]
+                                )
+                            elif jt == int(JointType.BALL):
+                                X_c = j_X_c_np[ji]
+                                q_cj = wp.normalize(wp.quat(*(float(v) for v in X_c[3:7])))
+                                r_q = wp.normalize(wp.quat(*(float(v) for v in jq_joint[:4])))
+                                q_mj = wp.normalize(q_cj * r_q * wp.quat_inverse(q_cj))
+                                quat_starts.append(len(q_list))
+                                q_list.extend([float(q_mj[3]), float(q_mj[0]), float(q_mj[1]), float(q_mj[2])])
+
+                                w_newton = wp.vec3(*(float(v) for v in qd_joint[:3]))
+                                w_mj = wp.quat_rotate(wp.normalize(q_cj * wp.quat_inverse(r_q)), w_newton)
+                                qd_list.extend([float(w_mj[0]), float(w_mj[1]), float(w_mj[2])])
+                            else:
+                                for d_i in range(jq_dim):
+                                    ref = float(dof_ref_np[jqd_s + d_i]) if dof_ref_np is not None else 0.0
+                                    q_list.append(float(jq_joint[d_i]) + ref)
+                                    qd_list.append(float(qd_joint[d_i]))
+
+                        ka_start = int(kf_act_start[r_int])
+                        ka_cnt = int(kf_act_cnt[r_int])
+                        ctrl_arr = arrs["ctrl"]
+                        ctrl_full = np.zeros(len(w_acts), dtype=np.float64)
+                        if len(ctrl_arr) > 0 and ka_start >= 0 and ka_cnt > 0:
+                            for loc_a, src_row in enumerate(w_acts):
+                                s_row = int(src_row)
+                                if ka_start <= s_row < ka_start + ka_cnt:
+                                    loc_ord = s_row - ka_start
+                                    if loc_ord < len(ctrl_arr):
+                                        ctrl_full[loc_a] = ctrl_arr[loc_ord]
+
+                        act_arr = arrs["act"]
+                        act_full = np.zeros(w_na, dtype=np.float64)
+                        if len(act_arr) > 0 and ka_start >= 0 and ka_cnt > 0:
+                            base_act_p = int(row_act_prefix[ka_start])
+                            dst_a = 0
+                            for src_row in w_acts:
+                                s_row = int(src_row)
+                                a_dim = int(row_act_dim[s_row])
+                                if a_dim > 0 and ka_start <= s_row < ka_start + ka_cnt:
+                                    loc_adr = int(row_act_prefix[s_row]) - base_act_p
+                                    if 0 <= loc_adr and loc_adr + a_dim <= len(act_arr):
+                                        act_full[dst_a : dst_a + a_dim] = act_arr[loc_adr : loc_adr + a_dim]
+                                dst_a += a_dim
+
                         meta = (
                             lbl,
-                            q_rel,
-                            qd_rel,
-                            act_rel,
-                            len(q_arr),
-                            len(qd_arr),
-                            len(arrs["act"]),
-                            len(arrs["ctrl"]),
+                            len(q_list),
+                            len(qd_list),
+                            len(act_full),
+                            len(ctrl_full),
+                            tuple(quat_starts),
                         )
                         vec = np.concatenate(
                             (
                                 np.asarray([float(kf_time[r_int])], dtype=np.float64),
-                                q_arr,
-                                qd_arr,
-                                arrs["act"],
-                                arrs["ctrl"],
+                                np.asarray(q_list, dtype=np.float64),
+                                np.asarray(qd_list, dtype=np.float64),
+                                act_full,
+                                ctrl_full,
                             )
                         )
                         sig.append((meta, vec))
                     return sig
 
+                def _keyframe_rows_match(
+                    m_w: tuple[Any, ...], v_w: np.ndarray, m_0: tuple[Any, ...], v_0: np.ndarray
+                ) -> bool:
+                    if m_w != m_0:
+                        return False
+                    v_cmp = v_w.copy()
+                    for qs in m_0[5]:
+                        q_slice = slice(1 + qs, 5 + qs)
+                        if float(np.dot(v_cmp[q_slice], v_0[q_slice])) < 0.0:
+                            v_cmp[q_slice] *= -1.0
+                    return bool(np.allclose(v_cmp, v_0, rtol=1e-5, atol=1e-5))
+
                 ref_sig = _world_keyframes_signature(0, kf_rows_by_world[0])
                 for w in range(1, world_count):
                     w_sig = _world_keyframes_signature(w, kf_rows_by_world[w])
                     if len(w_sig) != len(ref_sig) or any(
-                        m_w != m_0 or not np.allclose(v_w, v_0, rtol=1e-5, atol=1e-5)
+                        not _keyframe_rows_match(m_w, v_w, m_0, v_0)
                         for (m_w, v_w), (m_0, v_0) in zip(w_sig, ref_sig, strict=True)
                     ):
                         raise ValueError(

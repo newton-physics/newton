@@ -4137,10 +4137,15 @@ def parse_mjcf(
             merged_attrib = resolve_element_attrib(actuator_elem, actuator_type)
             if actuator_type == "dcmotor":
                 merged_attrib.update(dcmotor_parameters[actuator_elem])
-            if actuator_type == "pid":
+            gaintype_raw = merged_attrib.get("gaintype", "").strip().lower()
+            biastype_raw = merged_attrib.get("biastype", "").strip().lower()
+            input_raw = merged_attrib.get("input", "").strip().lower()
+            if actuator_type == "pid" or (actuator_type == "general" and gaintype_raw == "pid"):
                 src_ctrldim = max(1, len(merged_attrib["input"].split())) if "input" in merged_attrib else 2
-            elif actuator_type == "orientation":
-                src_ctrldim = 4 if merged_attrib.get("input", "").strip() == "quat" else 3
+            elif actuator_type == "orientation" or (
+                actuator_type == "general" and "so3" in (gaintype_raw, biastype_raw)
+            ):
+                src_ctrldim = 4 if input_raw in {"quat", "vel"} else 3
             elif actuator_type == "dcmotor" and "input" in merged_attrib:
                 src_ctrldim = max(1, len(merged_attrib["input"].split()))
             else:
