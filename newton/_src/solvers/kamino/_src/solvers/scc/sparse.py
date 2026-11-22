@@ -220,12 +220,16 @@ class SparseSCCPath:
     def prepare(self, problem: DualProblem) -> None:
         """Precompute host-derived sparse topology before the first solve."""
         delassus = _get_sparse_delassus(problem)
-        self.decoupled_rows = SparseDecoupledRows(
-            problem.joint_decoupling,
-            self.size.sum_of_max_total_cts,
-            self.device,
-            jacobian_values=delassus.constraint_jacobian.nzb_values,
-        )
+        # Without bilateral rows, `prepare` runs on every solve. Decoupled DoFs always have a
+        # bilateral dynamics row, so keep the placeholder from `__init__` instead of reallocating it.
+        decoupling = problem.joint_decoupling
+        if decoupling is not None and decoupling.num_dofs > 0:
+            self.decoupled_rows = SparseDecoupledRows(
+                decoupling,
+                self.size.sum_of_max_total_cts,
+                self.device,
+                jacobian_values=delassus.constraint_jacobian.nzb_values,
+            )
         # General PGS and fused inverse solves read transpose values directly. The raw transpose
         # product applies the row scale, which includes the body share of decoupled joint rows.
         delassus._set_raw_transpose_enabled(
