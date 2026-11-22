@@ -1815,7 +1815,10 @@ def contact_rp_fill_from_soft_contacts_kernel(
 
     lambda0 = wp.vec3(0.0, 0.0, 0.0)
     for j in range(capacity):
-        if prev_active[j] != 0 and prev_particle_id[j] == p and prev_shape_id[j] == s:
+        # The fill kernel writes active contacts as a dense prefix.
+        if prev_active[j] == 0:
+            break
+        if prev_particle_id[j] == p and prev_shape_id[j] == s:
             lambda0 = _rescale_lambda(prev_lambda[j], prev_W[j], weight)
             break
 
@@ -2072,7 +2075,10 @@ def contact_pp_fill_from_particle_contacts_kernel(
 
     lambda0 = wp.vec3(0.0, 0.0, 0.0)
     for j in range(capacity):
-        if prev_active[j] != 0 and prev_particle_a[j] == pa and prev_particle_b[j] == pb:
+        # The fill kernel writes active contacts as a dense prefix.
+        if prev_active[j] == 0:
+            break
+        if prev_particle_a[j] == pa and prev_particle_b[j] == pb:
             lambda0 = _rescale_lambda(prev_lambda[j], prev_W[j], weight)
             break
 
