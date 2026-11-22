@@ -185,6 +185,16 @@ def _copy_variant_shape_kernel(
 
 
 @wp.kernel(enable_backward=False)
+def _refresh_variant_shape_colors_kernel(
+    selected: wp.array[wp.int32], sources: wp.array[wp.vec3], colors: wp.array[wp.vec3]
+):
+    shape = wp.tid()
+    source = selected[shape]
+    if source >= 0:
+        colors[shape] = sources[source]
+
+
+@wp.kernel(enable_backward=False)
 def _copy_variant_shape_bounds_kernel(
     variants: wp.array[wp.int32],
     bodies: wp.array[wp.int32],
@@ -1466,9 +1476,9 @@ class Model:
         """Number of variant shapes over all variant sets."""
         self._variant_shape_geometry: dict[str, wp.array] = {}
         """Arrays of :data:`_SHAPE_VARIANT_ATTRIBUTES` of every variant shape, by attribute name."""
-        self._variant_shape_custom: dict[str, tuple[wp.array, wp.array]] = {}
+        self._variant_shape_custom: dict[str, tuple[wp.array | list, wp.array | list]] = {}
         """Model-assigned shape custom attributes by full key: the value of each variant shape and the
-        per-shape array variant rows copy them into."""
+        per-shape storage. String metadata stays on the host; only device arrays follow selection."""
         self._variant_shape_source: list[Any] = []
         """Geometry source of each variant shape."""
         self._variant_mass: wp.array[wp.float32] | None = None
@@ -2958,7 +2968,8 @@ class Model:
         sensors and ray casts skip them after the next :meth:`bvh_refit_shapes`. The body's mass,
         center of mass, and inertia, including their inverses, become those of the body as built
         plus the variant. Edits to the copied arrays, such as :attr:`shape_scale` or materials,
-        last until the next selection, so apply randomization after selecting.
+        last until the next selection, so apply randomization after selecting. Use
+        :meth:`set_body_variant_shape_colors` for source colors that persist across selections.
 
         Each body may appear at most once per call. Entries whose variant is out of range, such as
         ``-1``, leave their body unchanged. The selection runs without host synchronization, so it
@@ -3041,6 +3052,60 @@ class Model:
             )
         return flags
 
+    def get_body_variant_shape_attribute(self, name: str) -> wp.array | list | None:
+        """Return a source attribute in finalized variant-shape order, or ``None`` if absent.
+
+        All returned attributes share the same row ordering, including model-assigned custom
+        attributes addressed by their full key, such as ``"render:material_path"``. String
+        attributes are host lists; numeric attributes are device arrays. Cloned bodies share
+        their variant sources. Host metadata is not copied during device-side selection.
+
+        Use :meth:`set_body_variant_shape_colors` to update source colors and active shapes
+        together. Direct edits to other source arrays take effect on the next selection.
+
+        .. experimental::
+
+            Body variants may change without a deprecation period.
+
+        Args:
+            name: Core shape attribute name or full custom-attribute key.
+        """
+        if name in self._variant_shape_geometry:
+            return self._variant_shape_geometry[name]
+        custom = self._variant_shape_custom.get(name)
+        return None if custom is None else custom[0]
+
+    def set_body_variant_shape_colors(self, colors: wp.array[wp.vec3]) -> None:
+        """Update variant source colors and every currently selected shape on device.
+
+        Colors use the same convention as :attr:`shape_color` and the source ordering exposed
+        by :meth:`get_body_variant_shape_attribute`. Nonvariant and empty shape rows retain
+        their colors. The update performs no host synchronization and supports CUDA graphs.
+        Bodies sharing a source variant also share its new colors.
+
+        .. experimental::
+
+            Body variants may change without a deprecation period.
+
+        Args:
+            colors: Source colors, shape [variant_shape_count], vec3, on the model's device.
+                The existing source array may be passed after editing it in place.
+        """
+        if colors.dtype != wp.vec3 or colors.shape != (self._variant_shape_count,) or colors.device != self.device:
+            raise ValueError("colors must be a vec3 array with one entry per variant shape on the model device.")
+        if self._variant_shape_count == 0:
+            return
+        sources = self._variant_shape_geometry["shape_color"]
+        if colors is not sources:
+            wp.copy(sources, colors)
+        wp.launch(
+            _refresh_variant_shape_colors_kernel,
+            dim=self.shape_count,
+            inputs=[self._shape_variant_shape, sources],
+            outputs=[self.shape_color],
+            device=self.device,
+        )
+
     @property
     def _has_body_variants(self) -> bool:
         """Whether any body has variants, including variants without shapes."""
@@ -3055,7 +3120,7 @@ class Model:
         """Recorded copies of every variant shape attribute into the variant rows, rebuilt when an
         array is replaced; :meth:`select_body_variants` sets the selection and dimension."""
         copies = [(self._variant_shape_geometry[name], getattr(self, name)) for name in _SHAPE_VARIANT_ATTRIBUTES]
-        copies.extend(self._variant_shape_custom.values())
+        copies.extend(pair for pair in self._variant_shape_custom.values() if isinstance(pair[0], wp.array))
         key = tuple(id(array) for pair in copies for array in pair)
         if self._variant_copy_cache is not None and self._variant_copy_cache[0] == key:
             return self._variant_copy_cache[1]

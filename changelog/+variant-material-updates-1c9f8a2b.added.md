@@ -1,0 +1,1 @@
+Expose finalized body-variant shape attributes, including string metadata, and add `Model.set_body_variant_shape_colors()` to preserve runtime colors across selections while updating active shapes on device.
