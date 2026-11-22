@@ -2590,11 +2590,20 @@ def parse_mjcf(
         if is_mocap_body:
             if not is_mjcf_root:
                 raise ValueError(f"MJCF body '{body_name}' with mocap=\"true\" must be a child of <worldbody>.")
+
+            def _iter_body_owned_frame_elements(frame_el: ET.Element):
+                stack = list(frame_el)
+                while stack:
+                    el = stack.pop()
+                    if el.tag == "body":
+                        continue
+                    yield el
+                    stack.extend(el)
+
             has_framed_joint = any(
                 el.tag in ("joint", "freejoint")
                 for fr in body.findall("frame")
-                for el in fr.iter()
-                if el.tag in ("joint", "freejoint")
+                for el in _iter_body_owned_frame_elements(fr)
             )
             if has_joint_definition or has_framed_joint:
                 raise ValueError(f"MJCF body '{body_name}' with mocap=\"true\" cannot declare joints.")
@@ -2859,7 +2868,7 @@ def parse_mjcf(
         link = builder.add_link(
             xform=world_xform,  # Use the composed world transform
             label=body_label_path,
-            is_kinematic=is_mocap_body and parent == -1,
+            is_kinematic=is_mocap_body,
             custom_attributes=body_custom_attributes,
         )
         body_name_to_idx[body_name] = link

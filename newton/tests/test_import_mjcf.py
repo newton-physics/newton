@@ -13515,6 +13515,16 @@ class TestImportMjcfMocapBodies(unittest.TestCase):
                 self.assertEqual(solver.mj_model.njnt, 1)
                 self.assertEqual(solver.mj_model.neq, 1)
 
+        # Explicitly keeping a converted loop-closing equality FIXED joint preserves it in joint_remap.
+        keep_builder = newton.ModelBuilder()
+        keep_builder.add_mjcf(weld_template.format(b1="target", b2="arm"), collapse_fixed_joints=False)
+        eq_jnt_idx = int(keep_builder._eq_attr("equality_constraint_target").values[0])
+        collapse_res = keep_builder.collapse_fixed_joints(joints_to_keep=[eq_jnt_idx])
+        self.assertIn(eq_jnt_idx, collapse_res["joint_remap"])
+        remapped_eq_jnt = collapse_res["joint_remap"][eq_jnt_idx]
+        self.assertEqual(int(keep_builder._eq_attr("equality_constraint_target").values[0]), remapped_eq_jnt)
+        self.assertEqual(int(keep_builder._eq_attr("equality_constraint_target_kind").values[0]), 1)
+
     def test_mocap_body_validation_rejects_nested_or_jointed_bodies(self):
         nested_mjcf = """<mujoco>
           <worldbody>
@@ -13524,6 +13534,15 @@ class TestImportMjcfMocapBodies(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "child of <worldbody>"):
             newton.ModelBuilder().add_mjcf(nested_mjcf)
 
+        # Hierarchical composition attaching a mocap root under an existing parent body must also raise.
+        comp_builder = newton.ModelBuilder()
+        parent_body = comp_builder.add_body(mass=1.0, label="parent")
+        mocap_root_mjcf = """<mujoco>
+          <worldbody><body name="target" mocap="true"><geom size="0.05"/></body></worldbody>
+        </mujoco>"""
+        with self.assertRaisesRegex(ValueError, "Only root bodies"):
+            comp_builder.add_mjcf(mocap_root_mjcf, parent_body=parent_body)
+
         jointed_mjcf = """<mujoco>
           <worldbody>
             <body name="bad" mocap="true"><joint name="h" type="hinge"/><geom size="0.05"/></body>
@@ -13531,6 +13550,33 @@ class TestImportMjcfMocapBodies(unittest.TestCase):
         </mujoco>"""
         with self.assertRaisesRegex(ValueError, "cannot declare joints"):
             newton.ModelBuilder().add_mjcf(jointed_mjcf)
+
+        framed_joint_mjcf = """<mujoco>
+          <worldbody>
+            <body name="bad" mocap="true"><frame pos="0 0 0.1"><joint name="h" type="hinge"/></frame><geom size="0.05"/></body>
+          </worldbody>
+        </mujoco>"""
+        with self.assertRaisesRegex(ValueError, "cannot declare joints"):
+            newton.ModelBuilder().add_mjcf(framed_joint_mjcf)
+
+        # A joint belonging to an articulated child body wrapped in a <frame> under a mocap root is valid.
+        framed_child_mjcf = """<mujoco>
+          <worldbody>
+            <body name="target" mocap="true">
+              <geom type="sphere" size="0.02"/>
+              <frame pos="0 0 0.1">
+                <body name="arm">
+                  <joint name="h" type="hinge" axis="0 1 0"/>
+                  <geom type="sphere" size="0.05"/>
+                </body>
+              </frame>
+            </body>
+          </worldbody>
+        </mujoco>"""
+        valid_builder = newton.ModelBuilder()
+        valid_builder.add_mjcf(framed_child_mjcf)
+        valid_model = valid_builder.finalize(device="cpu")
+        self.assertEqual(valid_model.joint_dof_count, 1)
 
 
 if __name__ == "__main__":

@@ -5655,13 +5655,18 @@ class ModelBuilder:
                   ``parent_body == -1`` since FREE joints must connect to world frame.
                 - ``False``: Creates a FIXED joint (0 DOF).
 
-                Cannot be specified together with ``base_joint``.
+                Cannot be specified together with ``base_joint``. World-root MJCF bodies authored with
+                ``mocap="true"`` always import as world-fixed ``BodyFlags.KINEMATIC`` bodies (0 DOF) and
+                ignore ``floating``.
             base_joint: Custom joint specification for connecting the root body to the world
                 (or to ``parent_body`` if specified). This parameter enables hierarchical composition with
                 custom mobility. Dictionary with joint parameters as accepted by
                 :meth:`ModelBuilder.add_joint` (e.g., joint type, axes, limits, stiffness).
 
-                Cannot be specified together with ``floating``.
+                Cannot be specified together with ``floating``. World-root MJCF bodies authored with
+                ``mocap="true"`` remain world-fixed ``BodyFlags.KINEMATIC`` bodies when ``parent_body == -1``
+                and ignore ``base_joint``; attaching a ``mocap="true"`` root to ``parent_body != -1`` raises
+                a ``ValueError`` (kinematic bodies must be articulation roots).
             parent_body: Parent body index for hierarchical composition. If specified, attaches the
                 imported root body to this existing body, making them part of the same kinematic articulation.
                 The connection type is determined by ``floating`` or ``base_joint``. If ``-1`` (default),
@@ -8754,18 +8759,19 @@ class ModelBuilder:
             body_children[i] = []
 
         joint_data = {}
+        kept_equality_fixed_joints = []
         for i in range(self.joint_count):
             joint_lbl = self.joint_label[i]
             parent = self.joint_parent[i]
             child = self.joint_child[i]
-            if (
+            is_loop_equality_fixed = (
                 i in equality_joints
                 and self.joint_type[i] == JointType.FIXED
                 and self.joint_articulation[i] < 0
                 and any(k != i and self.joint_articulation[k] >= 0 for k in incoming[child])
-            ):
+            )
+            if is_loop_equality_fixed and joint_lbl not in joints_to_keep and i not in joints_to_keep:
                 continue
-            body_children[parent].append(child)
 
             q_start = self.joint_q_start[i]
             qd_start = self.joint_qd_start[i]
@@ -8823,7 +8829,11 @@ class ModelBuilder:
                     }
                 )
 
-            joint_data.setdefault((parent, child), []).append(data)
+            if is_loop_equality_fixed:
+                kept_equality_fixed_joints.append(data)
+            else:
+                body_children[parent].append(child)
+                joint_data.setdefault((parent, child), []).append(data)
 
         # sort body children so we traverse the tree in the same order as the bodies are listed
         for children in body_children.values():
@@ -9062,6 +9072,17 @@ class ModelBuilder:
                     # The child was reached earlier through a loop-closing path (e.g. an
                     # attachment anchor); this root's joint to it must not be dropped.
                     retain_loop_joints(joint_data[(body_id, child)], child, wp.transform(), body_id)
+
+        for eq_joint in kept_equality_fixed_joints:
+            eq_parent = eq_joint["parent"]
+            if eq_parent in body_merged_parent:
+                eq_joint["parent_xform"] = body_merged_transform[eq_parent] * eq_joint["parent_xform"]
+                eq_joint["parent"] = body_merged_parent[eq_parent]
+            eq_child = eq_joint["child"]
+            if eq_child in body_merged_parent:
+                eq_joint["child_xform"] = body_merged_transform[eq_child] * eq_joint["child_xform"]
+                eq_joint["child"] = body_merged_parent[eq_child]
+            retained_joints.append(eq_joint)
 
         # Reindex retained bodies in their original relative order: DFS discovery order
         # would reorder bodies whenever a loop-closing joint (e.g. an attachment anchor)
