@@ -9848,6 +9848,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     1,
                     int(np.max(self.mj_model.geom_condim, initial=1)),
                     int(np.max(self.mj_model.pair_dim, initial=1)),
+                    int(np.max(self.mj_model.flex_condim, initial=1)),
                 )
                 if self.mj_model.opt.cone == mujoco.mjtCone.mjCONE_ELLIPTIC:
                     return max_contact_dim
