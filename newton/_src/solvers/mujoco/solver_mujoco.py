@@ -1514,6 +1514,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 articulation_owner_resolver=cls._resolve_mujoco_tendon_wrap_owners,
             )
         )
+        builder.add_custom_frequency(ModelBuilder.CustomFrequency(name="keyframe", namespace="mujoco"))
+        builder.add_custom_frequency(ModelBuilder.CustomFrequency(name="keyframe_value", namespace="mujoco"))
         # endregion custom frequencies
 
         # region geom attributes
@@ -3487,6 +3489,100 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             )
         )
 
+        # region keyframe attributes
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="keyframe_label",
+                frequency="mujoco:keyframe",
+                dtype=str,
+                default="",
+                namespace="mujoco",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="keyframe_world",
+                frequency="mujoco:keyframe",
+                dtype=wp.int32,
+                default=-1,
+                namespace="mujoco",
+                references="world",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="keyframe_time",
+                frequency="mujoco:keyframe",
+                dtype=wp.float32,
+                default=0.0,
+                namespace="mujoco",
+            )
+        )
+        for slice_prefix in ("q", "qd", "act", "ctrl"):
+            builder.add_custom_attribute(
+                ModelBuilder.CustomAttribute(
+                    name=f"keyframe_{slice_prefix}_adr",
+                    frequency="mujoco:keyframe",
+                    dtype=wp.int32,
+                    default=-1,
+                    namespace="mujoco",
+                    references="mujoco:keyframe_value",
+                )
+            )
+            builder.add_custom_attribute(
+                ModelBuilder.CustomAttribute(
+                    name=f"keyframe_{slice_prefix}_num",
+                    frequency="mujoco:keyframe",
+                    dtype=wp.int32,
+                    default=0,
+                    namespace="mujoco",
+                )
+            )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="keyframe_q_init_adr",
+                frequency="mujoco:keyframe",
+                dtype=wp.int32,
+                default=-1,
+                namespace="mujoco",
+                references="mujoco:keyframe_value",
+            )
+        )
+        for start_name, ref_freq in (
+            ("keyframe_q_start", AttributeFrequency.JOINT_COORD),
+            ("keyframe_qd_start", AttributeFrequency.JOINT_DOF),
+            ("keyframe_actuator_start", "mujoco:actuator"),
+        ):
+            builder.add_custom_attribute(
+                ModelBuilder.CustomAttribute(
+                    name=start_name,
+                    frequency="mujoco:keyframe",
+                    dtype=wp.int32,
+                    default=-1,
+                    namespace="mujoco",
+                    references=ref_freq,
+                )
+            )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="keyframe_actuator_num",
+                frequency="mujoco:keyframe",
+                dtype=wp.int32,
+                default=0,
+                namespace="mujoco",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="keyframe_value",
+                frequency="mujoco:keyframe_value",
+                dtype=wp.float32,
+                default=0.0,
+                namespace="mujoco",
+            )
+        )
+        # endregion keyframe attributes
+
     def _init_flexes(self, model: Model, spec: Any, shape_mapping: dict[int, str], particles: np.ndarray) -> list[Any]:
         """
         Initialize MuJoCo flexes from Newton particles and their tetrahedra, triangles, and springs.
@@ -4553,6 +4649,259 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             actuator_count += 1
 
         return actuator_count
+
+    def _export_keyframes_to_spec(
+        self,
+        model: Model,
+        spec: Any,
+        template_world: int,
+        separate_worlds: bool,
+        actuator_custom_attr_idx: np.ndarray,
+    ) -> bool:
+        """Export template-world ``mujoco:keyframe`` entries onto ``spec``."""
+        keyframe_count = model.custom_frequency_counts.get("mujoco:keyframe", 0)
+        mujoco_attrs = getattr(model, "mujoco", None)
+        if keyframe_count == 0 or mujoco_attrs is None or not hasattr(mujoco_attrs, "keyframe_time"):
+            return False
+
+        keyframe_world_attr = getattr(mujoco_attrs, "keyframe_world", None)
+        keyframe_world = (
+            keyframe_world_attr.numpy()
+            if keyframe_world_attr is not None
+            else np.full(keyframe_count, -1, dtype=np.int32)
+        )
+        if separate_worlds:
+            selected_keys = [
+                k
+                for k in range(keyframe_count)
+                if int(keyframe_world[k]) == template_world or int(keyframe_world[k]) < 0
+            ]
+        else:
+            selected_keys = list(range(keyframe_count))
+        if not selected_keys:
+            return False
+
+        keyframe_labels = getattr(mujoco_attrs, "keyframe_label", None)
+        keyframe_time = mujoco_attrs.keyframe_time.numpy()
+        q_adr = mujoco_attrs.keyframe_q_adr.numpy()
+        q_num = mujoco_attrs.keyframe_q_num.numpy()
+        qd_adr = mujoco_attrs.keyframe_qd_adr.numpy()
+        qd_num = mujoco_attrs.keyframe_qd_num.numpy()
+        act_adr = mujoco_attrs.keyframe_act_adr.numpy()
+        act_num = mujoco_attrs.keyframe_act_num.numpy()
+        ctrl_adr = mujoco_attrs.keyframe_ctrl_adr.numpy()
+        ctrl_num = mujoco_attrs.keyframe_ctrl_num.numpy()
+        q_init_adr_attr = getattr(mujoco_attrs, "keyframe_q_init_adr", None)
+        q_init_adr = (
+            q_init_adr_attr.numpy() if q_init_adr_attr is not None else np.full(keyframe_count, -1, dtype=np.int32)
+        )
+        q_start_attr = getattr(mujoco_attrs, "keyframe_q_start", None)
+        qd_start_attr = getattr(mujoco_attrs, "keyframe_qd_start", None)
+        act_start_attr = getattr(mujoco_attrs, "keyframe_actuator_start", None)
+        act_cnt_attr = getattr(mujoco_attrs, "keyframe_actuator_num", None)
+        q_start = q_start_attr.numpy() if q_start_attr is not None else np.full(keyframe_count, -1, dtype=np.int32)
+        qd_start = qd_start_attr.numpy() if qd_start_attr is not None else np.full(keyframe_count, -1, dtype=np.int32)
+        kf_act_start = (
+            act_start_attr.numpy() if act_start_attr is not None else np.full(keyframe_count, -1, dtype=np.int32)
+        )
+        kf_act_cnt = act_cnt_attr.numpy() if act_cnt_attr is not None else np.zeros(keyframe_count, dtype=np.int32)
+        val_attr = getattr(mujoco_attrs, "keyframe_value", None)
+        values = val_attr.numpy() if val_attr is not None else np.empty(0, dtype=np.float32)
+
+        nq = self.mj_model.nq
+        nv = self.mj_model.nv
+        na = self.mj_model.na
+        nu = self.mj_model.nu
+        n_template_joints = self.mj_q_start.shape[0]
+        dof_ref = getattr(mujoco_attrs, "dof_ref", None)
+
+        total_act_rows = model.custom_frequency_counts.get("mujoco:actuator", 0)
+        actdim_attr = getattr(mujoco_attrs, "actuator_actdim", None)
+        dyntype_attr = getattr(mujoco_attrs, "actuator_dyntype", None)
+        actdim_np = actdim_attr.numpy() if actdim_attr is not None else None
+        dyntype_np = dyntype_attr.numpy() if dyntype_attr is not None else None
+        row_act_prefix = np.zeros(total_act_rows + 1, dtype=np.int32)
+        for r_int in range(total_act_rows):
+            dim = -1 if actdim_np is None else int(actdim_np[r_int])
+            if dim < 0:
+                dim = 1 if (dyntype_np is not None and int(dyntype_np[r_int]) != 0) else 0
+            row_act_prefix[r_int + 1] = row_act_prefix[r_int] + dim
+
+        base_joint_q = model.joint_q.numpy().copy() if model.joint_q is not None else np.empty(0, dtype=np.float32)
+        base_joint_qd = model.joint_qd.numpy().copy() if model.joint_qd is not None else np.empty(0, dtype=np.float32)
+        joint_type_np = model.joint_type.numpy() if model.joint_count > 0 else np.empty(0, dtype=np.int32)
+        joint_parent_np = model.joint_parent.numpy() if model.joint_count > 0 else np.empty(0, dtype=np.int32)
+        joint_q_start_np = model.joint_q_start.numpy() if model.joint_count > 0 else np.empty(0, dtype=np.int32)
+        joint_qd_start_np = model.joint_qd_start.numpy() if model.joint_count > 0 else np.empty(0, dtype=np.int32)
+        if separate_worlds and model.joint_count > 0:
+            joint_world_np = model.joint_world.numpy()
+            tpl_joints = np.flatnonzero((joint_world_np == template_world) | (joint_world_np < 0))
+            tpl_j_start = int(tpl_joints[0]) if len(tpl_joints) > 0 else 0
+        else:
+            tpl_j_start = 0
+
+        free_root_joints = [
+            j
+            for j in range(tpl_j_start, tpl_j_start + n_template_joints)
+            if int(joint_type_np[j]) == int(JointType.FREE) and int(joint_parent_np[j]) == -1
+        ]
+        used_key_names: set[str] = set()
+
+        qpos_wp = wp.empty((1, nq), dtype=wp.float32, device=model.device)
+        qvel_wp = wp.empty((1, nv), dtype=wp.float32, device=model.device)
+
+        j_slice = slice(tpl_j_start, tpl_j_start + n_template_joints)
+        tpl_joint_type = model.joint_type[j_slice] if tpl_j_start > 0 else model.joint_type
+        tpl_joint_q_start = model.joint_q_start[j_slice] if tpl_j_start > 0 else model.joint_q_start
+        tpl_joint_qd_start = model.joint_qd_start[j_slice] if tpl_j_start > 0 else model.joint_qd_start
+        tpl_joint_dof_dim = model.joint_dof_dim[j_slice] if tpl_j_start > 0 else model.joint_dof_dim
+        tpl_joint_child = model.joint_child[j_slice] if tpl_j_start > 0 else model.joint_child
+        tpl_joint_X_p = model.joint_X_p[j_slice] if tpl_j_start > 0 else model.joint_X_p
+        tpl_joint_X_c = model.joint_X_c[j_slice] if tpl_j_start > 0 else model.joint_X_c
+
+        for k in selected_keys:
+            raw_name = keyframe_labels[k] if isinstance(keyframe_labels, list) and k < len(keyframe_labels) else ""
+            key_name = str(raw_name).strip() if raw_name is not None else ""
+            if key_name:
+                unique_name = key_name
+                suffix = 1
+                while unique_name in used_key_names:
+                    unique_name = f"{key_name}_{suffix}"
+                    suffix += 1
+                used_key_names.add(unique_name)
+                key_name = unique_name
+
+            kq_adr, kq_num, kq_off = int(q_adr[k]), int(q_num[k]), int(q_start[k])
+            kq_init_adr = int(q_init_adr[k])
+            kqd_adr, kqd_num, kqd_off = int(qd_adr[k]), int(qd_num[k]), int(qd_start[k])
+            if nq > 0 or nv > 0:
+                jq_np = base_joint_q.copy()
+                jqd_np = np.zeros_like(base_joint_qd)
+                free_xform_local: dict[int, Any] = {}
+                if kq_init_adr >= 0 and kq_num > 0 and kq_off >= 0 and kq_off + kq_num <= len(base_joint_q):
+                    q_init_saved = values[kq_init_adr : kq_init_adr + kq_num]
+                    for fj in free_root_joints:
+                        jq_s = int(joint_q_start_np[fj])
+                        if kq_off <= jq_s and jq_s + 7 <= kq_off + kq_num:
+                            rel_s = jq_s - kq_off
+                            x_cur = wp.transform(
+                                wp.vec3(*base_joint_q[jq_s : jq_s + 3]),
+                                wp.quat(*base_joint_q[jq_s + 3 : jq_s + 7]),
+                            )
+                            x_saved = wp.transform(
+                                wp.vec3(*q_init_saved[rel_s : rel_s + 3]),
+                                wp.quat(*q_init_saved[rel_s + 3 : rel_s + 7]),
+                            )
+                            free_xform_local[fj] = x_cur * wp.transform_inverse(x_saved)
+                if kq_adr >= 0 and kq_num > 0 and kq_off >= 0 and kq_off + kq_num <= len(jq_np):
+                    jq_np[kq_off : kq_off + kq_num] = values[kq_adr : kq_adr + kq_num]
+                    for fj, x_loc in free_xform_local.items():
+                        jq_s = int(joint_q_start_np[fj])
+                        x_key = wp.transform(
+                            wp.vec3(*jq_np[jq_s : jq_s + 3]),
+                            wp.quat(*jq_np[jq_s + 3 : jq_s + 7]),
+                        )
+                        x_out = x_loc * x_key
+                        jq_np[jq_s : jq_s + 7] = [
+                            float(x_out.p[0]),
+                            float(x_out.p[1]),
+                            float(x_out.p[2]),
+                            float(x_out.q[0]),
+                            float(x_out.q[1]),
+                            float(x_out.q[2]),
+                            float(x_out.q[3]),
+                        ]
+                if kqd_adr >= 0 and kqd_num > 0 and kqd_off >= 0 and kqd_off + kqd_num <= len(jqd_np):
+                    jqd_np[kqd_off : kqd_off + kqd_num] = values[kqd_adr : kqd_adr + kqd_num]
+                    for fj, x_loc in free_xform_local.items():
+                        jqd_s = int(joint_qd_start_np[fj])
+                        if kqd_off <= jqd_s and jqd_s + 6 <= kqd_off + kqd_num:
+                            v_out = wp.quat_rotate(x_loc.q, wp.vec3(*jqd_np[jqd_s : jqd_s + 3]))
+                            w_out = wp.quat_rotate(x_loc.q, wp.vec3(*jqd_np[jqd_s + 3 : jqd_s + 6]))
+                            jqd_np[jqd_s : jqd_s + 6] = [
+                                float(v_out[0]),
+                                float(v_out[1]),
+                                float(v_out[2]),
+                                float(w_out[0]),
+                                float(w_out[1]),
+                                float(w_out[2]),
+                            ]
+                qpos_wp.assign(self.mj_model.qpos0[None, :].astype(np.float32))
+                qvel_wp.zero_()
+                if n_template_joints > 0:
+                    wp.launch(
+                        convert_warp_coords_to_mj_kernel,
+                        dim=(1, n_template_joints),
+                        inputs=[
+                            wp.array(jq_np, dtype=wp.float32, device=model.device),
+                            wp.array(jqd_np, dtype=wp.float32, device=model.device),
+                            None,
+                            n_template_joints,
+                            tpl_joint_type,
+                            tpl_joint_q_start,
+                            tpl_joint_qd_start,
+                            tpl_joint_dof_dim,
+                            tpl_joint_child,
+                            tpl_joint_X_p,
+                            tpl_joint_X_c,
+                            model.joint_axis,
+                            model.body_com,
+                            dof_ref,
+                            self.mj_q_start,
+                            self.mj_qd_start,
+                            None,
+                            True,
+                        ],
+                        outputs=[qpos_wp, qvel_wp, None, None, None],
+                        device=model.device,
+                    )
+                mjc_qpos = qpos_wp.numpy()[0].tolist()
+                mjc_qvel = qvel_wp.numpy()[0].tolist()
+            else:
+                mjc_qpos = []
+                mjc_qvel = []
+
+            ka_start, ka_cnt = int(kf_act_start[k]), int(kf_act_cnt[k])
+            mjc_ctrl = [0.0] * nu
+            kctrl_adr, kctrl_num = int(ctrl_adr[k]), int(ctrl_num[k])
+            if nu > 0 and kctrl_adr >= 0 and kctrl_num > 0 and ka_start >= 0 and ka_cnt > 0:
+                ctrl_slice = values[kctrl_adr : kctrl_adr + kctrl_num]
+                for a in range(nu):
+                    src_row = int(actuator_custom_attr_idx[a])
+                    if ka_start <= src_row < ka_start + ka_cnt:
+                        local_ord = src_row - ka_start
+                        if local_ord < len(ctrl_slice):
+                            mjc_ctrl[a] = float(ctrl_slice[local_ord])
+
+            mjc_act = [0.0] * na
+            kact_adr, kact_num = int(act_adr[k]), int(act_num[k])
+            if na > 0 and kact_adr >= 0 and kact_num > 0 and ka_start >= 0 and ka_cnt > 0:
+                act_slice = values[kact_adr : kact_adr + kact_num]
+                base_act_prefix = int(row_act_prefix[ka_start])
+                for a in range(nu):
+                    a_dim = int(self.mj_model.actuator_actnum[a])
+                    if a_dim <= 0:
+                        continue
+                    a_adr = int(self.mj_model.actuator_actadr[a])
+                    src_row = int(actuator_custom_attr_idx[a])
+                    if ka_start <= src_row < ka_start + ka_cnt:
+                        local_act_adr = int(row_act_prefix[src_row]) - base_act_prefix
+                        if 0 <= local_act_adr and local_act_adr + a_dim <= len(act_slice):
+                            for d in range(a_dim):
+                                mjc_act[a_adr + d] = float(act_slice[local_act_adr + d])
+
+            key_kwargs: dict[str, Any] = {
+                "time": float(keyframe_time[k]),
+                "qpos": mjc_qpos,
+                "qvel": mjc_qvel,
+                "act": mjc_act,
+                "ctrl": mjc_ctrl,
+            }
+            if key_name:
+                key_kwargs["name"] = key_name
+            spec.add_key(**key_kwargs)
+
+        return True
 
     def __init__(
         self,
@@ -9492,6 +9841,16 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 )
         self.mj_q_start = wp.array(mj_q_start_np, dtype=wp.int32, device=model.device)
         self.mj_qd_start = wp.array(mj_qd_start_np, dtype=wp.int32, device=model.device)
+        if self._export_keyframes_to_spec(model, spec, first_world, separate_worlds, actuator_custom_attr_idx):
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore", message=r".*is not rigid and has no equality constraints or passive forces"
+                )
+                self.mj_model = spec.compile()
+            self._canonical_bvh_aabb = self.mj_model.bvh_aabb.copy()
+            self._canonical_body_ipos = self.mj_model.body_ipos.copy()
+            self._canonical_body_iquat = self.mj_model.body_iquat.copy()
+            self.mj_data = mujoco.MjData(self.mj_model)
         # Slide-joint coordinates of each particle body, or -1 for pinned particles and
         # particles without a body, whose state the solver leaves untouched.
         particle_body = np.array([-1 if body is None else body.id for body in particle_bodies], dtype=np.int32)
@@ -12002,6 +12361,353 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                             f"identical actuator template parameters (mujoco:{name}) across worlds."
                         )
             dcmotor.validate_worlds(model, rows, dcmotor_type=SolverMuJoCo.CtrlType.DCMOTOR)
+
+        keyframe_world_attribute = getattr(model.mujoco, "keyframe_world", None)
+        if keyframe_world_attribute is not None and model.custom_frequency_counts.get("mujoco:keyframe", 0) > 0:
+            keyframe_world = keyframe_world_attribute.numpy()
+            kf_rows = np.flatnonzero((keyframe_world >= 0) & (keyframe_world < world_count))
+            if len(kf_rows) > 0:
+                kf_counts = np.bincount(keyframe_world[kf_rows], minlength=world_count)
+                if np.any(kf_counts != kf_counts[0]):
+                    raise ValueError(
+                        "SolverMuJoCo with separate_worlds=True requires identical keyframes across worlds."
+                    )
+                kf_rows_by_world = kf_rows[np.argsort(keyframe_world[kf_rows], kind="stable")].reshape(
+                    world_count, kf_counts[0]
+                )
+                kf_labels = getattr(model.mujoco, "keyframe_label", None)
+                kf_time = model.mujoco.keyframe_time.numpy()
+                kf_vals_attr = getattr(model.mujoco, "keyframe_value", None)
+                kf_vals = kf_vals_attr.numpy() if kf_vals_attr is not None else np.empty(0, dtype=np.float32)
+                kf_slice_adrs = {
+                    prefix: getattr(model.mujoco, f"keyframe_{prefix}_adr").numpy()
+                    for prefix in ("q", "qd", "act", "ctrl")
+                }
+                kf_slice_nums = {
+                    prefix: getattr(model.mujoco, f"keyframe_{prefix}_num").numpy()
+                    for prefix in ("q", "qd", "act", "ctrl")
+                }
+                kf_q_start_attr = getattr(model.mujoco, "keyframe_q_start", None)
+                kf_qd_start_attr = getattr(model.mujoco, "keyframe_qd_start", None)
+                kf_act_start_attr = getattr(model.mujoco, "keyframe_actuator_start", None)
+                kf_act_num_attr = getattr(model.mujoco, "keyframe_actuator_num", None)
+                kf_q_start = (
+                    kf_q_start_attr.numpy()
+                    if kf_q_start_attr is not None
+                    else np.full(len(keyframe_world), -1, dtype=np.int32)
+                )
+                kf_qd_start = (
+                    kf_qd_start_attr.numpy()
+                    if kf_qd_start_attr is not None
+                    else np.full(len(keyframe_world), -1, dtype=np.int32)
+                )
+                kf_act_start = (
+                    kf_act_start_attr.numpy()
+                    if kf_act_start_attr is not None
+                    else np.full(len(keyframe_world), -1, dtype=np.int32)
+                )
+                kf_act_cnt = (
+                    kf_act_num_attr.numpy()
+                    if kf_act_num_attr is not None
+                    else np.zeros(len(keyframe_world), dtype=np.int32)
+                )
+
+                kf_q_init_attr = getattr(model.mujoco, "keyframe_q_init_adr", None)
+                kf_q_init = (
+                    kf_q_init_attr.numpy()
+                    if kf_q_init_attr is not None
+                    else np.full(len(keyframe_world), -1, dtype=np.int32)
+                )
+                j_q_start_np = model.joint_q_start.numpy() if model.joint_count > 0 else np.empty(0, dtype=np.int32)
+                j_qd_start_np = model.joint_qd_start.numpy() if model.joint_count > 0 else np.empty(0, dtype=np.int32)
+                j_type_np = model.joint_type.numpy() if model.joint_count > 0 else np.empty(0, dtype=np.int32)
+                j_parent_np = model.joint_parent.numpy() if model.joint_count > 0 else np.empty(0, dtype=np.int32)
+                j_child_np = model.joint_child.numpy() if model.joint_count > 0 else np.empty(0, dtype=np.int32)
+                j_dof_dim_np = (
+                    model.joint_dof_dim.numpy() if model.joint_count > 0 else np.empty((0, 2), dtype=np.int32)
+                )
+                j_X_p_np = model.joint_X_p.numpy() if model.joint_count > 0 else np.empty((0, 7), dtype=np.float32)
+                j_X_c_np = model.joint_X_c.numpy() if model.joint_count > 0 else np.empty((0, 7), dtype=np.float32)
+                body_com_np = model.body_com.numpy() if model.body_count > 0 else np.empty((0, 3), dtype=np.float32)
+                base_jq_np = model.joint_q.numpy() if model.joint_q is not None else np.empty(0, dtype=np.float32)
+                dof_ref_attr = getattr(model.mujoco, "dof_ref", None)
+                dof_ref_np = dof_ref_attr.numpy() if dof_ref_attr is not None else None
+                joints_by_world: list[np.ndarray] = [np.empty(0, dtype=np.int32) for _ in range(world_count)]
+                if len(joint_world) > 0:
+                    valid_j = np.flatnonzero((joint_world >= 0) & (joint_world < world_count))
+                    if len(valid_j) > 0:
+                        j_order = valid_j[np.argsort(joint_world[valid_j], kind="stable")]
+                        j_counts = np.bincount(joint_world[valid_j], minlength=world_count)
+                        j_pos = 0
+                        for w_idx in range(world_count):
+                            cnt = int(j_counts[w_idx])
+                            if cnt > 0:
+                                joints_by_world[w_idx] = j_order[j_pos : j_pos + cnt]
+                                j_pos += cnt
+
+                total_act_rows = model.custom_frequency_counts.get("mujoco:actuator", 0)
+                actdim_attr = getattr(model.mujoco, "actuator_actdim", None)
+                dyntype_attr = getattr(model.mujoco, "actuator_dyntype", None)
+                actdim_np = actdim_attr.numpy() if actdim_attr is not None else None
+                dyntype_np = dyntype_attr.numpy() if dyntype_attr is not None else None
+                row_act_dim = np.zeros(total_act_rows, dtype=np.int32)
+                row_act_prefix = np.zeros(total_act_rows + 1, dtype=np.int32)
+                for r_a in range(total_act_rows):
+                    dim_a = -1 if actdim_np is None else int(actdim_np[r_a])
+                    if dim_a < 0:
+                        dim_a = 1 if (dyntype_np is not None and int(dyntype_np[r_a]) != 0) else 0
+                    row_act_dim[r_a] = dim_a
+                    row_act_prefix[r_a + 1] = row_act_prefix[r_a] + dim_a
+
+                acts_by_world: list[np.ndarray] = [np.empty(0, dtype=np.int32) for _ in range(world_count)]
+                act_world_attr = getattr(model.mujoco, "actuator_world", None)
+                if act_world_attr is not None and total_act_rows > 0:
+                    act_w_np = act_world_attr.numpy()
+                    valid_a = np.flatnonzero((act_w_np >= 0) & (act_w_np < world_count))
+                    if len(valid_a) > 0:
+                        a_order = valid_a[np.argsort(act_w_np[valid_a], kind="stable")]
+                        a_counts = np.bincount(act_w_np[valid_a], minlength=world_count)
+                        a_pos = 0
+                        for w_idx in range(world_count):
+                            cnt_a = int(a_counts[w_idx])
+                            if cnt_a > 0:
+                                acts_by_world[w_idx] = a_order[a_pos : a_pos + cnt_a]
+                                a_pos += cnt_a
+
+                def _world_keyframes_signature(
+                    w_idx: int, w_rows: np.ndarray
+                ) -> list[tuple[tuple[Any, ...], np.ndarray]]:
+                    sig: list[tuple[tuple[Any, ...], np.ndarray]] = []
+                    w_joints = joints_by_world[w_idx]
+                    w_acts = acts_by_world[w_idx]
+                    w_na = int(np.sum(row_act_dim[w_acts])) if len(w_acts) > 0 else 0
+                    for r in w_rows:
+                        r_int = int(r)
+                        lbl = kf_labels[r_int] if isinstance(kf_labels, list) and r_int < len(kf_labels) else ""
+                        arrs: dict[str, np.ndarray] = {}
+                        for prefix in ("q", "qd", "act", "ctrl"):
+                            adr = int(kf_slice_adrs[prefix][r_int])
+                            num = int(kf_slice_nums[prefix][r_int])
+                            arrs[prefix] = (
+                                kf_vals[adr : adr + num].astype(np.float64).copy()
+                                if adr >= 0 and num > 0
+                                else np.empty(0, dtype=np.float64)
+                            )
+                        kq_off = int(kf_q_start[r_int])
+                        kqd_off = int(kf_qd_start[r_int])
+                        kq_init = int(kf_q_init[r_int])
+                        q_arr = arrs["q"]
+                        qd_arr = arrs["qd"]
+                        q_init_slice = (
+                            kf_vals[kq_init : kq_init + len(q_arr)]
+                            if len(q_arr) > 0 and kq_init >= 0 and kq_init + len(q_arr) <= len(kf_vals)
+                            else None
+                        )
+
+                        q_list: list[float] = []
+                        qd_list: list[float] = []
+                        quat_starts: list[int] = []
+                        for j in w_joints:
+                            ji = int(j)
+                            jt = int(j_type_np[ji])
+                            jq_s = int(j_q_start_np[ji])
+                            jqd_s = int(j_qd_start_np[ji])
+                            if jt in (int(JointType.FREE), int(JointType.DISTANCE)):
+                                jq_dim, jqd_dim = 7, 6
+                            elif jt == int(JointType.BALL):
+                                jq_dim, jqd_dim = 4, 3
+                            else:
+                                jq_dim = jqd_dim = int(j_dof_dim_np[ji, 0] + j_dof_dim_np[ji, 1])
+
+                            x_loc = None
+                            if (
+                                len(q_arr) > 0
+                                and kq_off >= 0
+                                and kq_off <= jq_s
+                                and jq_s + jq_dim <= kq_off + len(q_arr)
+                            ):
+                                rq = jq_s - kq_off
+                                jq_joint = q_arr[rq : rq + jq_dim].copy()
+                                if (
+                                    jt == int(JointType.FREE)
+                                    and int(j_parent_np[ji]) == -1
+                                    and q_init_slice is not None
+                                    and jq_s + 7 <= len(base_jq_np)
+                                ):
+                                    x_cur = wp.transform(
+                                        wp.vec3(*(float(v) for v in base_jq_np[jq_s : jq_s + 3])),
+                                        wp.quat(*(float(v) for v in base_jq_np[jq_s + 3 : jq_s + 7])),
+                                    )
+                                    x_saved = wp.transform(
+                                        wp.vec3(*(float(v) for v in q_init_slice[rq : rq + 3])),
+                                        wp.quat(*(float(v) for v in q_init_slice[rq + 3 : rq + 7])),
+                                    )
+                                    x_loc = x_cur * wp.transform_inverse(x_saved)
+                                    x_key = wp.transform(
+                                        wp.vec3(*(float(v) for v in jq_joint[:3])),
+                                        wp.quat(*(float(v) for v in jq_joint[3:7])),
+                                    )
+                                    x_out = x_loc * x_key
+                                    jq_joint[:] = [
+                                        float(x_out.p[0]),
+                                        float(x_out.p[1]),
+                                        float(x_out.p[2]),
+                                        float(x_out.q[0]),
+                                        float(x_out.q[1]),
+                                        float(x_out.q[2]),
+                                        float(x_out.q[3]),
+                                    ]
+                            else:
+                                jq_joint = base_jq_np[jq_s : jq_s + jq_dim].astype(np.float64).copy()
+
+                            if (
+                                len(qd_arr) > 0
+                                and kqd_off >= 0
+                                and kqd_off <= jqd_s
+                                and jqd_s + jqd_dim <= kqd_off + len(qd_arr)
+                            ):
+                                rqd = jqd_s - kqd_off
+                                qd_joint = qd_arr[rqd : rqd + jqd_dim].copy()
+                                if x_loc is not None and jqd_dim >= 6:
+                                    v_out = wp.quat_rotate(x_loc.q, wp.vec3(*(float(v) for v in qd_joint[:3])))
+                                    w_out = wp.quat_rotate(x_loc.q, wp.vec3(*(float(v) for v in qd_joint[3:6])))
+                                    qd_joint[:6] = [
+                                        float(v_out[0]),
+                                        float(v_out[1]),
+                                        float(v_out[2]),
+                                        float(w_out[0]),
+                                        float(w_out[1]),
+                                        float(w_out[2]),
+                                    ]
+                            else:
+                                qd_joint = np.zeros(jqd_dim, dtype=np.float64)
+
+                            if jt == int(JointType.FREE):
+                                joint_pos = wp.vec3(*(float(v) for v in jq_joint[:3]))
+                                joint_rot = wp.quat(*(float(v) for v in jq_joint[3:7]))
+                                X_p = j_X_p_np[ji]
+                                X_c = j_X_c_np[ji]
+                                p_p = wp.vec3(*(float(v) for v in X_p[:3]))
+                                q_p = wp.normalize(wp.quat(*(float(v) for v in X_p[3:7])))
+                                p_c = wp.vec3(*(float(v) for v in X_c[:3]))
+                                q_c = wp.normalize(wp.quat(*(float(v) for v in X_c[3:7])))
+                                world_rot = wp.normalize(q_p * joint_rot * wp.quat_inverse(q_c))
+                                anchor_offset_world = wp.quat_rotate(world_rot, p_c)
+                                world_pos = p_p + wp.quat_rotate(q_p, joint_pos) - anchor_offset_world
+                                q_list.extend([float(world_pos[0]), float(world_pos[1]), float(world_pos[2])])
+                                quat_starts.append(len(q_list))
+                                q_list.extend(
+                                    [float(world_rot[3]), float(world_rot[0]), float(world_rot[1]), float(world_rot[2])]
+                                )
+
+                                v_com_parent = wp.vec3(*(float(v) for v in qd_joint[:3]))
+                                w_parent = wp.vec3(*(float(v) for v in qd_joint[3:6]))
+                                v_com_world = wp.quat_rotate(q_p, v_com_parent)
+                                w_world = wp.quat_rotate(q_p, w_parent)
+                                child = int(j_child_np[ji])
+                                com_c = (
+                                    wp.vec3(*(float(v) for v in body_com_np[child]))
+                                    if 0 <= child < len(body_com_np)
+                                    else wp.vec3(0.0, 0.0, 0.0)
+                                )
+                                com_world = wp.quat_rotate(world_rot, com_c)
+                                v_origin_world = v_com_world - wp.cross(w_world, com_world)
+                                w_body = wp.quat_rotate_inv(world_rot, w_world)
+                                qd_list.extend(
+                                    [
+                                        float(v_origin_world[0]),
+                                        float(v_origin_world[1]),
+                                        float(v_origin_world[2]),
+                                        float(w_body[0]),
+                                        float(w_body[1]),
+                                        float(w_body[2]),
+                                    ]
+                                )
+                            elif jt == int(JointType.BALL):
+                                X_c = j_X_c_np[ji]
+                                q_cj = wp.normalize(wp.quat(*(float(v) for v in X_c[3:7])))
+                                r_q = wp.normalize(wp.quat(*(float(v) for v in jq_joint[:4])))
+                                q_mj = wp.normalize(q_cj * r_q * wp.quat_inverse(q_cj))
+                                quat_starts.append(len(q_list))
+                                q_list.extend([float(q_mj[3]), float(q_mj[0]), float(q_mj[1]), float(q_mj[2])])
+
+                                w_newton = wp.vec3(*(float(v) for v in qd_joint[:3]))
+                                w_mj = wp.quat_rotate(wp.normalize(q_cj * wp.quat_inverse(r_q)), w_newton)
+                                qd_list.extend([float(w_mj[0]), float(w_mj[1]), float(w_mj[2])])
+                            else:
+                                for d_i in range(jq_dim):
+                                    ref = float(dof_ref_np[jqd_s + d_i]) if dof_ref_np is not None else 0.0
+                                    q_list.append(float(jq_joint[d_i]) + ref)
+                                    qd_list.append(float(qd_joint[d_i]))
+
+                        ka_start = int(kf_act_start[r_int])
+                        ka_cnt = int(kf_act_cnt[r_int])
+                        ctrl_arr = arrs["ctrl"]
+                        ctrl_full = np.zeros(len(w_acts), dtype=np.float64)
+                        if len(ctrl_arr) > 0 and ka_start >= 0 and ka_cnt > 0:
+                            for loc_a, src_row in enumerate(w_acts):
+                                s_row = int(src_row)
+                                if ka_start <= s_row < ka_start + ka_cnt:
+                                    loc_ord = s_row - ka_start
+                                    if loc_ord < len(ctrl_arr):
+                                        ctrl_full[loc_a] = ctrl_arr[loc_ord]
+
+                        act_arr = arrs["act"]
+                        act_full = np.zeros(w_na, dtype=np.float64)
+                        if len(act_arr) > 0 and ka_start >= 0 and ka_cnt > 0:
+                            base_act_p = int(row_act_prefix[ka_start])
+                            dst_a = 0
+                            for src_row in w_acts:
+                                s_row = int(src_row)
+                                a_dim = int(row_act_dim[s_row])
+                                if a_dim > 0 and ka_start <= s_row < ka_start + ka_cnt:
+                                    loc_adr = int(row_act_prefix[s_row]) - base_act_p
+                                    if 0 <= loc_adr and loc_adr + a_dim <= len(act_arr):
+                                        act_full[dst_a : dst_a + a_dim] = act_arr[loc_adr : loc_adr + a_dim]
+                                dst_a += a_dim
+
+                        meta = (
+                            lbl,
+                            len(q_list),
+                            len(qd_list),
+                            len(act_full),
+                            len(ctrl_full),
+                            tuple(quat_starts),
+                        )
+                        vec = np.concatenate(
+                            (
+                                np.asarray([float(kf_time[r_int])], dtype=np.float64),
+                                np.asarray(q_list, dtype=np.float64),
+                                np.asarray(qd_list, dtype=np.float64),
+                                act_full,
+                                ctrl_full,
+                            )
+                        )
+                        sig.append((meta, vec))
+                    return sig
+
+                def _keyframe_rows_match(
+                    m_w: tuple[Any, ...], v_w: np.ndarray, m_0: tuple[Any, ...], v_0: np.ndarray
+                ) -> bool:
+                    if m_w != m_0:
+                        return False
+                    v_cmp = v_w.copy()
+                    for qs in m_0[5]:
+                        q_slice = slice(1 + qs, 5 + qs)
+                        if float(np.dot(v_cmp[q_slice], v_0[q_slice])) < 0.0:
+                            v_cmp[q_slice] *= -1.0
+                    return bool(np.allclose(v_cmp, v_0, rtol=1e-5, atol=1e-5))
+
+                ref_sig = _world_keyframes_signature(0, kf_rows_by_world[0])
+                for w in range(1, world_count):
+                    w_sig = _world_keyframes_signature(w, kf_rows_by_world[w])
+                    if len(w_sig) != len(ref_sig) or any(
+                        not _keyframe_rows_match(m_w, v_w, m_0, v_0)
+                        for (m_w, v_w), (m_0, v_0) in zip(w_sig, ref_sig, strict=True)
+                    ):
+                        raise ValueError(
+                            "SolverMuJoCo with separate_worlds=True requires identical keyframes across worlds."
+                        )
 
         # --- Check entity count homogeneity ---
         # Count entities per world (excluding global shapes)

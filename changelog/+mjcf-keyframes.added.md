@@ -1,0 +1,1 @@
+Import MJCF `<keyframe>` entries into `mujoco:keyframe` / `mujoco:keyframe_value` custom attributes (remapped to Newton `joint_q` and `joint_qd` conventions) and export `<key>` rows onto `SolverMuJoCo.mj_model` (USD disposition: not applicable, as USD uses native time-sampled attributes rather than static MuJoCo keyframe tables).
