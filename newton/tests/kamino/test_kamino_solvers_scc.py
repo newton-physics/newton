@@ -3483,8 +3483,8 @@ class TestSCCSolver(NewtonTestCase):
             self.assertGreater(int(solver._contacts_kamino.world_active_contacts.numpy()[0]), 0)
             return state_out.joint_qd.numpy()
 
-        reference = step(use_schur_complement=False, max_alternating_iterations=3000)
-        schur = step(use_schur_complement=True, max_alternating_iterations=400)
+        reference = step(use_schur_complement=False, max_alternating_iterations=1000)
+        schur = step(use_schur_complement=True, max_alternating_iterations=30)
         scale = np.max(np.abs(reference))
         np.testing.assert_allclose(schur / scale, reference / scale, rtol=0.0, atol=1.0e-3)
 
@@ -3573,8 +3573,8 @@ class TestSCCSolver(NewtonTestCase):
         them against stale velocities. Coloring each articulation as one node
         keeps them apart, while the free sphere may still share a color.
         """
-        reference, body_nodes, _ = self._step_articulated_bar_on_ground(False, 3000)
-        schur, schur_nodes, contact_colors = self._step_articulated_bar_on_ground(True, 100)
+        reference, body_nodes, _ = self._step_articulated_bar_on_ground(False, 300)
+        schur, schur_nodes, contact_colors = self._step_articulated_bar_on_ground(True, 30)
         np.testing.assert_allclose(schur, reference, rtol=0.0, atol=1.0e-4)
         np.testing.assert_array_equal(body_nodes, np.arange(5))
         np.testing.assert_array_equal(schur_nodes, [0, 0, 0, 0, 4])
@@ -3588,8 +3588,8 @@ class TestSCCSolver(NewtonTestCase):
         Sparse PGS updates the contact groups of one color in parallel, so its
         coloring must also treat each articulation as one node.
         """
-        reference, _, _ = self._step_articulated_bar_on_ground(False, 3000)
-        schur, _, _ = self._step_articulated_bar_on_ground(True, 100, sparse=True)
+        reference, _, _ = self._step_articulated_bar_on_ground(False, 300)
+        schur, _, _ = self._step_articulated_bar_on_ground(True, 30, sparse=True)
         np.testing.assert_allclose(schur, reference, rtol=0.0, atol=1.0e-4)
 
     def test_08d4_scc_incline_friction_threshold(self):

@@ -25,6 +25,7 @@ from ...linalg import (
     LLTBlockedSolver,
 )
 from ...linalg.core import validate_dense_matrix_shape
+from ...utils.graph import connected_component_labels
 from ..common import (
     WarmStartMode,
     apply_dual_preconditioner_to_solution,
@@ -305,28 +306,15 @@ class SCCSolver:
         of bodies joined through eliminated joint rows, so the Schur path maps
         each such component to one node, its lowest body index.
         """
-        num_bodies = self._size.sum_of_num_bodies
-        nodes = np.arange(max(1, num_bodies), dtype=np.int32)
+        num_bodies = max(1, self._size.sum_of_num_bodies)
         if self._use_schur_complement and self._num_joints > 0:
             bilateral_cts = model.joints.num_kinematic_cts.numpy() + model.joints.num_dynamic_cts.numpy()
             bid_B = model.joints.bid_B.numpy()
             bid_F = model.joints.bid_F.numpy()
             joined = (bilateral_cts > 0) & (bid_B >= 0) & (bid_F >= 0)
-            bid_B = bid_B[joined]
-            bid_F = bid_F[joined]
-            # Min-label propagation with pointer jumping, vectorized over all
-            # joints: labels only decrease and stay inside their component, so
-            # the fixed point is the component's lowest body index. Converges
-            # in a few passes for replicated worlds, unlike a per-joint loop.
-            while bid_B.size > 0:
-                joint_labels = np.minimum(nodes[bid_B], nodes[bid_F])
-                labels = nodes.copy()
-                np.minimum.at(labels, bid_B, joint_labels)
-                np.minimum.at(labels, bid_F, joint_labels)
-                labels = labels[labels]
-                if np.array_equal(labels, nodes):
-                    break
-                nodes = labels
+            nodes = connected_component_labels(num_bodies, bid_B[joined], bid_F[joined])
+        else:
+            nodes = np.arange(num_bodies, dtype=np.int32)
         return wp.array(nodes, dtype=wp.int32, device=self._device)
 
     def _make_bilateral_solve_schedule(self, configs: list[SCCSolver.Config]) -> tuple[bool, ...]:
