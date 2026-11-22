@@ -554,6 +554,14 @@ def parse_mjcf(
     mesh-file appearance and primitive palette colors are retained for compatibility.
     Other PBR texture layers are not imported.
 
+    Per-DOF MJCF joint provenance is recorded in ``model.mujoco.joint_dof_label`` in Newton's
+    linear-first DOF order as ``"{body_label}/{raw_joint_name}"`` (preserving unsanitized MJCF
+    joint names, or ``"{body_name}_joint_{idx}"`` / ``"{body_name}_freejoint"`` when unnamed). Native
+    ``ball`` and ``free`` joints append ``:rotX``..``:rotZ`` and ``:transX``..``:rotZ`` axis
+    suffixes, whereas converted three-hinge ball joints retain the individual hinge names.
+    Synthetic base joints added by ``floating`` or ``base_joint`` overrides leave DOF labels
+    empty unless an authored free joint remains free under ``floating=True``.
+
     Args:
         builder: The :class:`ModelBuilder` to add the bodies and joints to.
         source: The filename of the MuJoCo file to parse, or the MJCF XML string content.
@@ -776,6 +784,8 @@ def parse_mjcf(
     has_solreflimit_gain_baseline = solreflimit_gain_baseline_key in builder.custom_attributes
     solref_mode_key = "mujoco:solref_mode"
     has_solref_mode = solref_mode_key in builder.custom_attributes
+    joint_dof_label_key = "mujoco:joint_dof_label"
+    has_joint_dof_label = joint_dof_label_key in builder.custom_attributes
     builder_custom_attr_eq: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
         ["mujoco:equality_constraint"]
     )
@@ -2634,12 +2644,18 @@ def parse_mjcf(
         freejoint_tags = body.findall("freejoint")
         if len(freejoint_tags) > 0:
             joint_type = JointType.FREE
-            freejoint_name = sanitize_name(freejoint_tags[0].attrib.get("name", f"{body_name}_freejoint"))
+            raw_freejoint_name = freejoint_tags[0].attrib.get("name", f"{body_name}_freejoint")
+            freejoint_name = sanitize_name(raw_freejoint_name)
             joint_name.append(freejoint_name)
             joint_armature.append(0.0)
             joint_custom_attributes = parse_custom_attributes(
                 freejoint_tags[0].attrib, builder_custom_attr_joint, parsing_mode="mjcf"
             )
+            if has_joint_dof_label:
+                dof_label_prefix = f"{body_label_path}/{raw_freejoint_name}" if body_label_path else raw_freejoint_name
+                dof_custom_attributes[joint_dof_label_key] = [
+                    f"{dof_label_prefix}:{axis}" for axis in ("transX", "transY", "transZ", "rotX", "rotY", "rotZ")
+                ]
         else:
             # Multiple MJCF joints in a body are combined into one Newton joint whose DOFs
             # are ordered linear-first, independent of MJCF declaration order. Per-DOF
@@ -2661,13 +2677,20 @@ def parse_mjcf(
                 # default to hinge if not specified
                 joint_type_str = joint_attrib.get("type", "hinge")
 
-                joint_name.append(sanitize_name(joint_attrib.get("name") or f"{body_name}_joint_{i}"))
+                raw_joint_name = joint_attrib.get("name") or f"{body_name}_joint_{i}"
+                joint_name.append(sanitize_name(raw_joint_name))
                 joint_pos.append(parse_vec(joint_attrib, "pos", (0.0, 0.0, 0.0)) * scale)
                 joint_range = parse_vec(joint_attrib, "range", (default_joint_limit_lower, default_joint_limit_upper))
                 joint_armature.append(parse_float(joint_attrib, "armature", default_joint_armature) * armature_scale)
 
                 if joint_type_str == "free":
                     joint_type = JointType.FREE
+                    if has_joint_dof_label:
+                        dof_label_prefix = f"{body_label_path}/{raw_joint_name}" if body_label_path else raw_joint_name
+                        dof_custom_attributes[joint_dof_label_key] = [
+                            f"{dof_label_prefix}:{axis}"
+                            for axis in ("transX", "transY", "transZ", "rotX", "rotY", "rotZ")
+                        ]
                     break
                 if joint_type_str == "fixed":
                     joint_type = JointType.FIXED
@@ -2695,7 +2718,14 @@ def parse_mjcf(
                         )
                     # ball joint has 3 angular DOFs; replicate attribute values across all of them
                     mjcf_joint_dof_slots.append((joint_name[-1], False, len(angular_dof_attrs), None))
-                    angular_dof_attrs.extend(dof_attr for _ in range(3))
+                    if has_joint_dof_label:
+                        dof_label_prefix = f"{body_label_path}/{raw_joint_name}" if body_label_path else raw_joint_name
+                        angular_dof_attrs.extend(
+                            {**dof_attr, joint_dof_label_key: f"{dof_label_prefix}:{axis}"}
+                            for axis in ("rotX", "rotY", "rotZ")
+                        )
+                    else:
+                        angular_dof_attrs.extend(dof_attr for _ in range(3))
                     # Lift frictionloss and damping into the builder's per-DOF arrays
                     # so they reach the MuJoCo spec on export.
                     ball_friction = parse_float(joint_attrib, "frictionloss", 0.0)
@@ -2819,6 +2849,10 @@ def parse_mjcf(
                     dof_attr[solreflimit_mode_key] = imported_joint_solreflimit_mode(joint_attrib)
                 if has_solreflimit_gain_baseline:
                     dof_attr[solreflimit_gain_baseline_key] = wp.vec2(limit_ke, limit_kd)
+                if has_joint_dof_label:
+                    dof_attr[joint_dof_label_key] = (
+                        f"{body_label_path}/{raw_joint_name}" if body_label_path else raw_joint_name
+                    )
 
                 # Keep each DOF's attributes next to its axis so both share Newton's DOF order.
                 if is_angular:
@@ -2912,11 +2946,19 @@ def parse_mjcf(
                 )
             elif floating is not None and floating and parent == -1:
                 # floating=True only makes sense when connecting to world
-                joint_indices.append(
-                    builder._add_base_joint(
+                if joint_type == JointType.FREE:
+                    joint_idx = builder.add_joint_free(
+                        link,
+                        label=f"{body_label_path}/floating_base",
+                        custom_attributes=joint_custom_attributes | dof_custom_attributes,
+                    )
+                    for jn in joint_name:
+                        joint_name_to_idx[jn] = joint_idx
+                else:
+                    joint_idx = builder._add_base_joint(
                         child=link, floating=True, label=f"{body_label_path}/floating_base", parent=parent
                     )
-                )
+                joint_indices.append(joint_idx)
             else:
                 # Fixed joint to world or to parent_body
                 # When parent_body is set, _xform is already relative to parent body (computed via effective_xform)
@@ -2946,7 +2988,7 @@ def parse_mjcf(
                 joint_idx = builder.add_joint_free(
                     link,
                     label=joint_label,
-                    custom_attributes=joint_custom_attributes,
+                    custom_attributes=joint_custom_attributes | dof_custom_attributes,
                 )
                 joint_indices.append(joint_idx)
                 # Map free joint names so actuators can target them

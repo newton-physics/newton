@@ -5636,6 +5636,14 @@ class ModelBuilder:
         mesh-file appearance and primitive palette colors are retained for compatibility.
         Other PBR texture layers are not imported.
 
+        Per-DOF MJCF joint provenance is recorded in ``model.mujoco.joint_dof_label`` in Newton's
+        linear-first DOF order as ``"{body_label}/{raw_joint_name}"`` (preserving unsanitized MJCF
+        joint names, or ``"{body_name}_joint_{idx}"`` / ``"{body_name}_freejoint"`` when unnamed). Native
+        ``ball`` and ``free`` joints append ``:rotX``..``:rotZ`` and ``:transX``..``:rotZ`` axis
+        suffixes, whereas converted three-hinge ball joints retain the individual hinge names.
+        Synthetic base joints added by ``floating`` or ``base_joint`` overrides leave DOF labels
+        empty unless an authored free joint remains free under ``floating=True``.
+
         Args:
             source: The filename of the MuJoCo file to parse, or the MJCF XML string content.
             xform: The transform to apply to the imported mechanism.
