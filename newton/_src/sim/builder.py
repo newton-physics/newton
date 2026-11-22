@@ -2858,8 +2858,16 @@ class ModelBuilder:
 
     def _set_array_backed_attribute(self, name: str, value: np.ndarray, descriptor: _ArrayBackedListDescriptor) -> None:
         """Store an attribute as an array that materializes as a list on ordinary access."""
-        self._array_backed_attributes[name] = (value, descriptor)
+        self._array_backed_attributes[name] = _ArrayBackedAttribute(value, descriptor)
         self.__dict__.pop(name, None)
+
+    def _append_value(self, name: str, value: Any) -> None:
+        """Append to a per-entity attribute, keeping an array-backed one as an array."""
+        entry = self._array_backed_attributes.get(name)
+        if entry is None:
+            getattr(self, name).append(value)
+        else:
+            entry.appended.append(value)
 
     @contextmanager
     def _raw_array_access(self):
@@ -4108,7 +4116,12 @@ class ModelBuilder:
         """
         The number of rigid bodies in the model.
         """
-        return len(self.body_q)
+        # Read the instance dictionary directly: this is on the adders' hot path, and an array-backed
+        # attribute must not turn back into a list.
+        try:
+            return len(self.__dict__["body_q"])
+        except KeyError:
+            return len(self._array_backed_attributes["body_q"])
 
     @property
     def joint_count(self):
@@ -4122,7 +4135,12 @@ class ModelBuilder:
         """
         The number of particles in the model.
         """
-        return len(self.particle_q)
+        # Read the instance dictionary directly: this is on the adders' hot path, and an array-backed
+        # attribute must not turn back into a list.
+        try:
+            return len(self.__dict__["particle_q"])
+        except KeyError:
+            return len(self._array_backed_attributes["particle_q"])
 
     @property
     def tri_count(self):
@@ -4430,7 +4448,7 @@ class ModelBuilder:
                 if len(source_values) > 0:
                     descriptor = _describe_array_backed_list(source_values[0])
                 elif existing is not None:
-                    descriptor = existing[1]
+                    descriptor = existing.descriptor
                 else:
                     descriptor = _describe_array_backed_list(prefix_values[0])
 
@@ -10018,11 +10036,11 @@ class ModelBuilder:
         if not is_static and cfg.density > 0.0 and body >= 0 and not self.body_lock_inertia[body]:
             shape_mass_props = compute_inertia_shape(type, scale, src, cfg.density, cfg.is_solid, cfg.margin)
 
-        self.shape_body.append(body)
+        self._append_value("shape_body", body)
         shape = self.shape_count
         self.body_shapes[body].append(shape)
         self.shape_label.append(label or f"shape_{shape}")
-        self.shape_transform.append(xform)
+        self._append_value("shape_transform", xform)
         # Get flags and clear HYDROELASTIC for unsupported shape types (PLANE, HFIELD)
         shape_flags = cfg.flags
         if (shape_flags & ShapeFlags.HYDROELASTIC) and (type == GeoType.PLANE or type == GeoType.HFIELD):
@@ -10038,27 +10056,27 @@ class ModelBuilder:
 
         self.shape_flags.append(shape_flags)
         self.shape_type.append(type)
-        self.shape_scale.append((float(scale[0]), float(scale[1]), float(scale[2])))
+        self._append_value("shape_scale", (float(scale[0]), float(scale[1]), float(scale[2])))
         self.shape_source.append(src)
-        self.shape_color.append(resolved_color)
-        self.shape_opacity.append(resolved_opacity)
-        self.shape_margin.append(cfg.margin)
-        self.shape_is_solid.append(cfg.is_solid)
-        self.shape_material_ke.append(cfg.ke)
-        self.shape_material_kd.append(cfg.kd)
-        self.shape_material_kf.append(cfg.kf)
-        self.shape_material_ka.append(cfg.ka)
-        self.shape_material_mu.append(cfg.mu)
-        self.shape_material_mu_static.append(cfg.mu_static)
-        self.shape_material_restitution.append(cfg.restitution)
-        self.shape_material_mu_torsional.append(cfg.mu_torsional)
-        self.shape_material_mu_rolling.append(cfg.mu_rolling)
-        self.shape_material_friction_mode.append(int(cfg.friction_mode))
-        self.shape_material_kh.append(cfg.kh)
-        self.shape_gap.append(cfg.gap if cfg.gap is not None else self.rigid_gap)
-        self.shape_collision_group.append(cfg.collision_group)
-        self.shape_collision_radius.append(compute_shape_radius(type, scale, src))
-        self.shape_world.append(self.current_world)
+        self._append_value("shape_color", resolved_color)
+        self._append_value("shape_opacity", resolved_opacity)
+        self._append_value("shape_margin", cfg.margin)
+        self._append_value("shape_is_solid", cfg.is_solid)
+        self._append_value("shape_material_ke", cfg.ke)
+        self._append_value("shape_material_kd", cfg.kd)
+        self._append_value("shape_material_kf", cfg.kf)
+        self._append_value("shape_material_ka", cfg.ka)
+        self._append_value("shape_material_mu", cfg.mu)
+        self._append_value("shape_material_mu_static", cfg.mu_static)
+        self._append_value("shape_material_restitution", cfg.restitution)
+        self._append_value("shape_material_mu_torsional", cfg.mu_torsional)
+        self._append_value("shape_material_mu_rolling", cfg.mu_rolling)
+        self._append_value("shape_material_friction_mode", int(cfg.friction_mode))
+        self._append_value("shape_material_kh", cfg.kh)
+        self._append_value("shape_gap", cfg.gap if cfg.gap is not None else self.rigid_gap)
+        self._append_value("shape_collision_group", cfg.collision_group)
+        self._append_value("shape_collision_radius", compute_shape_radius(type, scale, src))
+        self._append_value("shape_world", self.current_world)
         self.shape_sdf_narrow_band_range.append(cfg.sdf_narrow_band_range)
         self.shape_sdf_target_voxel_size.append(cfg.sdf_target_voxel_size)
         self.shape_sdf_max_resolution.append(cfg.sdf_max_resolution)
@@ -12336,7 +12354,7 @@ class ModelBuilder:
         self.particle_flags.append(flags)
         self.particle_world.append(self.current_world)
 
-        particle_id = self.particle_count - 1
+        particle_id = len(self.particle_q) - 1
 
         # Process custom attributes
         if custom_attributes:
@@ -14393,8 +14411,8 @@ class ModelBuilder:
                 )
             else:
                 # No edges to color - assign all particles to single color group
-                if len(self.particle_q) > 0:
-                    self.particle_color_groups = [np.arange(len(self.particle_q), dtype=int)]
+                if self.particle_count > 0:
+                    self.particle_color_groups = [np.arange(self.particle_count, dtype=int)]
                 else:
                     self.particle_color_groups = []
 
@@ -14413,10 +14431,13 @@ class ModelBuilder:
                     tendon_edges.append((self.tendon_guide_body[guide_idx - 1], self.tendon_guide_body[guide_idx + 1]))
 
         # Also color rigid bodies based on joint and tendon connectivity.
+        with self._raw_array_access():
+            joint_parent = _list_for_iteration(self.joint_parent)
+            joint_child = _list_for_iteration(self.joint_child)
         self.body_color_groups = color_rigid_bodies(
             self.body_count,
-            self.joint_parent,
-            self.joint_child,
+            joint_parent,
+            joint_child,
             additional_edges=tendon_edges,
             algorithm=coloring_algorithm,
             balance_colors=balance_colors,
@@ -17945,7 +17966,34 @@ class ModelBuilder:
 
 
 _ArrayBackedListDescriptor = tuple[Literal["ctypes", "tuple", "list", "ndarray", "scalar"], Any]
-_ArrayBackedAttribute = tuple[np.ndarray, _ArrayBackedListDescriptor]
+
+
+class _ArrayBackedAttribute:
+    """A builder attribute held as an array, followed by the values appended to it since."""
+
+    __slots__ = ("appended", "descriptor", "values")
+
+    def __init__(self, values: np.ndarray, descriptor: _ArrayBackedListDescriptor):
+        self.values = values
+        self.descriptor = descriptor
+        self.appended: list[Any] = []
+
+    def __len__(self) -> int:
+        return len(self.values) + len(self.appended)
+
+    def merge(self) -> np.ndarray:
+        """Return the values as one array, merging the appended values into it.
+
+        The merged array's dtype promotes as :meth:`ModelBuilder.replicate` does, so an appended ``None``
+        makes an object array.
+        """
+        if self.appended:
+            appended = np.asarray(self.appended)
+            dtype = np.result_type(self.values.dtype, appended.dtype)
+            appended = np.asarray(appended, dtype=dtype).reshape((-1, *self.values.shape[1:]))
+            self.values = np.concatenate((np.asarray(self.values, dtype=dtype), appended))
+            self.appended = []
+        return self.values
 
 
 _ARRAY_BACKED_ATTRIBUTE_DTYPES: dict[str, Any] = {
@@ -18112,11 +18160,12 @@ class _ArrayBackedAttributeAccess:
                 f"{type(instance).__name__!r} has neither list nor array storage for attribute {self.name!r}"
             ) from None
 
-        value, descriptor = attributes[self.name]
+        entry = attributes[self.name]
         if instance_dict.get("_raw_array_access_active", False):
-            return value
+            return entry.merge()
 
-        materialized = _materialize_array_backed_list(value, descriptor)
+        materialized = _materialize_array_backed_list(entry.values, entry.descriptor)
+        materialized.extend(entry.appended)
         setattr(instance, self.name, materialized)
         return materialized
 
