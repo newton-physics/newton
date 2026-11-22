@@ -21,8 +21,9 @@ How the optimization runs:
 - every phase shares one optimizer (``_descent``: steepest descent with a
   backtracking line search) and one rollout path (``_simulate``) - the loss
   the optimizer differentiates is exactly the loss it accepts steps on;
-- each phase window is a ``Rollout``: buffers allocated once, forward and
-  forward+backward passes captured into CUDA graphs;
+- each phase window is a ``Rollout``: buffers allocated once, with forward
+  and forward+backward passes captured into CUDA graphs on CUDA devices with
+  memory pools enabled (otherwise the passes run uncaptured);
 - a missed gate retries the chain from a different crouch warm start
   (``CROUCH_WARM_SCALES``);
 - a full run takes a few minutes on a single GPU, advancing a little every
@@ -467,7 +468,7 @@ def touchdown_att_kernel(
     paws are still on the ground and the flip error is still a full turn."""
     # sigmoid arguments clamped to +/-30: wp.exp overflows f32 above ~88
     a = wp.clamp((z_touchdown - z_arr[idx]) / touchdown_sig, -30.0, 30.0)
-    # airborne-gate sharpness (m): full attention weight 1 cm past lift_height
+    # airborne-gate sharpness (m): sigmoid scale - ~73% gate activation 1 cm past lift_height
     ag = wp.clamp((cum_paw_arr[idx] - lift_height) / 0.01, -30.0, 30.0)
     att_arr[idx] = 1.0 / ((1.0 + wp.exp(-a)) * (1.0 + wp.exp(-ag)))
 
@@ -499,7 +500,7 @@ def order_state_ground_kernel(
 
 @wp.kernel
 def loss_crouch_end_kernel(
-    body_q_n: wp.array[wp.transform],  # root transform at the window's last state (states[CROUCH_STEPS])
+    body_q_n: wp.array[wp.transform],  # root transform at the end of the learned window (states[CROUCH_STEPS])
     body_q_m: wp.array[wp.transform],  # root transform VZ_LAG_STEPS states earlier (the vz finite-difference base)
     loss: wp.array[float],  # shared window accumulator (read-modify-write)
     z_target: float,  # crouch depth target (m; Z_TARGET)
@@ -508,7 +509,8 @@ def loss_crouch_end_kernel(
     weight_up: float,  # upright weight (WEIGHT_CROUCH_UP)
     inv_vz_lag_dt: float,  # 1 / (VZ_LAG_STEPS * SIM_DT): scales the height delta into m/s
 ):
-    """Crouch-end terms at the window's last state: depth (root z vs
+    """Crouch-end terms at the end of the learned window (state
+    CROUCH_STEPS, before the push preview): depth (root z vs
     z_target), stillness (root vz over the last VZ_LAG_STEPS steps, a finite
     difference against body_q_m) and upright (the root up-vector's z). Reads
     the root body transforms directly - crouch builds no z sample chain - and
@@ -1125,8 +1127,9 @@ class Example:
 
     def _loss_crouch(self, ro):
         """Crouch loss launches: per-state knee-ordering and grounded-paw
-        terms over the whole window, then the end-state terms (depth,
-        stillness, upright) at the window's last state."""
+        terms over the whole window (the push preview included), then the
+        end-state terms (depth, stillness, upright) at the end of the
+        learned window - state CROUCH_STEPS, before the preview runs."""
         states = ro.states
         n = ro.n
         for t in range(n + 1):
