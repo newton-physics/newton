@@ -859,6 +859,55 @@ class TestUnifiedPipelineNxnBroadphase(NewtonTestCase):
                 active = self._run_two_sphere_pipeline(builder)
                 self.assertEqual(active, 0, "Non-collidable shapes must not collide via NXN broadphase")
 
+    def test_05_nxn_negative_group_keeps_own_material(self):
+        """A shape in a negative collision group must keep its own contact material.
+
+        Negative groups collide with every other group, so their shapes must not
+        be treated as non-collidable when materials are assigned; otherwise the
+        contact looks up material index -1, which wraps to the last registered
+        material.
+        """
+        for group_a in (1, -1):
+            with self.subTest(group_a=group_a):
+                builder = ModelBuilder()
+                builder.begin_world()
+                bid_a = builder.add_body(
+                    mass=1.0,
+                    inertia=wp.mat33(np.eye(3, dtype=np.float32)),
+                    xform=wp.transformf(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0),
+                )
+                bid_b = builder.add_body(
+                    mass=1.0,
+                    inertia=wp.mat33(np.eye(3, dtype=np.float32)),
+                    xform=wp.transformf(0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
+                )
+                builder.add_shape_sphere(
+                    body=bid_a, radius=0.5, cfg=ModelBuilder.ShapeConfig(collision_group=group_a, mu=0.2)
+                )
+                builder.add_shape_sphere(
+                    body=bid_b, radius=0.5, cfg=ModelBuilder.ShapeConfig(collision_group=1, mu=0.2)
+                )
+                # A far-away shape with a different friction registered last.
+                bid_c = builder.add_body(
+                    mass=1.0,
+                    inertia=wp.mat33(np.eye(3, dtype=np.float32)),
+                    xform=wp.transformf(10.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0),
+                )
+                builder.add_shape_sphere(
+                    body=bid_c, radius=0.5, cfg=ModelBuilder.ShapeConfig(collision_group=1, mu=1.0)
+                )
+                builder.end_world()
+
+                model = ModelKamino.from_newton(builder.finalize(self.default_device))
+                data = model.data()
+                pipeline = CollisionPipelineUnifiedKamino(model=model, broadphase="nxn", default_gap=1.0)
+                contacts = ContactsKamino(capacity=36, device=self.default_device)
+                contacts.clear()
+                pipeline.collide(data, contacts)
+
+                self.assertEqual(int(contacts.model_active_contacts.numpy()[0]), 1)
+                self.assertAlmostEqual(float(contacts.material.numpy()[0][0]), 0.2, places=6)
+
 
 ###
 # Test execution
