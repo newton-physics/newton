@@ -1209,9 +1209,11 @@ def _harvest_mpm_proxy_wrench_on_fixed_plate(device, substeps, mode, in_place, s
     voxel_size = 0.05
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0))
     SolverImplicitMPM.register_custom_attributes(builder)
-    # A static plate: the source holds it still, so it must not respond to the sand.
+    # A kinematic plate with mass: the source prescribes its motion, so it must not respond to the sand.
     builder.default_shape_cfg.density = 0.0
-    plate = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, -0.1), wp.quat_identity()), mass=0.0)
+    plate = builder.add_body(
+        xform=wp.transform(wp.vec3(0.0, 0.0, -0.1), wp.quat_identity()), mass=1.0, is_kinematic=True
+    )
     builder.add_shape_box(plate, hx=0.5, hy=0.5, hz=0.1)
     builder.add_particle_grid(
         pos=wp.vec3(-0.1, -0.1, 0.0),

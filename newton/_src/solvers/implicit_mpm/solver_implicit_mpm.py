@@ -2576,7 +2576,10 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         body_gravity_acceleration: wp.array[wp.vec3],
         dt: float,
     ) -> None:
-        """Remove lagged velocity-level proxy wrenches, and the gravity this solver re-applies, from collider velocities."""
+        """Remove lagged velocity-level proxy wrenches, and the gravity this solver re-applies, from collider velocities.
+
+        Kinematic proxies are prescribed by their source and never responded to the wrench, so they are left alone.
+        """
         if state.body_q is None or state.body_qd is None or body_local_to_proxy_global.shape[0] == 0:
             return
 
@@ -2590,6 +2593,8 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 state.body_q,
                 self.model.body_inv_inertia,
                 self.model.body_inv_mass,
+                int(newton.BodyFlags.KINEMATIC),
+                self.model.body_flags,
                 state.body_qd,
             ],
             device=self.model.device,
@@ -2603,6 +2608,8 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     body_local_to_proxy_global,
                     body_gravity_acceleration,
                     self.model.body_inv_mass,
+                    int(newton.BodyFlags.KINEMATIC),
+                    self.model.body_flags,
                     state.body_qd,
                 ],
                 device=self.model.device,
@@ -2796,6 +2803,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 self.model.body_world,
                 self.model.body_inv_mass,
                 int(newton.BodyFlags.PROXY),
+                int(newton.BodyFlags.KINEMATIC),
                 self.model.body_flags,
                 state_in.body_qd,
                 self._coupling_body_qd,
@@ -2891,6 +2899,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 self.model.body_inv_inertia,
                 self.model.body_inv_mass,
                 int(newton.BodyFlags.PROXY),
+                int(newton.BodyFlags.KINEMATIC),
                 self.model.body_flags,
                 state_in.body_q,
                 body_qd,
@@ -5554,11 +5563,13 @@ def _rewind_mpm_proxy_bodies_kernel(
     body_q: wp.array[wp.transform],
     body_inv_inertia: wp.array[wp.mat33],
     body_inv_mass: wp.array[float],
+    kinematic_flag: int,
+    body_flags: wp.array[wp.int32],
     body_qd: wp.array[wp.spatial_vector],
 ):
     local_body = wp.tid()
     proxy_global = body_local_to_proxy_global[local_body]
-    if proxy_global < 0:
+    if proxy_global < 0 or (body_flags[local_body] & kinematic_flag) != 0:
         return
 
     f = coupling_forces[proxy_global]
@@ -5578,10 +5589,14 @@ def _rewind_mpm_proxy_body_gravity_kernel(
     body_local_to_proxy_global: wp.array[int],
     body_gravity_acceleration: wp.array[wp.vec3],
     body_inv_mass: wp.array[float],
+    kinematic_flag: int,
+    body_flags: wp.array[wp.int32],
     body_qd: wp.array[wp.spatial_vector],
 ):
     local_body = wp.tid()
     if body_local_to_proxy_global[local_body] < 0 or body_inv_mass[local_body] == 0.0:
+        return
+    if (body_flags[local_body] & kinematic_flag) != 0:
         return
     qd = body_qd[local_body]
     body_qd[local_body] = wp.spatial_vector(
@@ -5596,13 +5611,15 @@ def _apply_mpm_proxy_body_gravity_kernel(
     body_world: wp.array[int],
     body_inv_mass: wp.array[float],
     proxy_flag: int,
+    kinematic_flag: int,
     body_flags: wp.array[wp.int32],
     body_qd_in: wp.array[wp.spatial_vector],
     body_qd_out: wp.array[wp.spatial_vector],
 ):
     local_body = wp.tid()
     qd = body_qd_in[local_body]
-    if body_inv_mass[local_body] > 0.0 and (body_flags[local_body] & proxy_flag) != 0:
+    flags = body_flags[local_body]
+    if body_inv_mass[local_body] > 0.0 and (flags & proxy_flag) != 0 and (flags & kinematic_flag) == 0:
         qd = wp.spatial_vector(
             wp.spatial_top(qd) + dt * gravity[wp.max(body_world[local_body], 0)], wp.spatial_bottom(qd)
         )
@@ -5648,6 +5665,7 @@ def _apply_mpm_collider_body_impulses_kernel(
     body_inv_inertia: wp.array[wp.mat33],
     body_inv_mass: wp.array[float],
     proxy_flag: int,
+    kinematic_flag: int,
     body_flags: wp.array[wp.int32],
     body_q_in: wp.array[wp.transform],
     body_qd_in: wp.array[wp.spatial_vector],
@@ -5657,7 +5675,8 @@ def _apply_mpm_collider_body_impulses_kernel(
     local_body = wp.tid()
     q = body_q_in[local_body]
     qd = body_qd_in[local_body]
-    if body_inv_mass[local_body] == 0.0 or (body_flags[local_body] & proxy_flag) == 0:
+    flags = body_flags[local_body]
+    if body_inv_mass[local_body] == 0.0 or (flags & proxy_flag) == 0 or (flags & kinematic_flag) != 0:
         body_q_out[local_body] = q
         body_qd_out[local_body] = qd
         return
