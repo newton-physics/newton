@@ -2642,8 +2642,8 @@ def parse_mjcf(
             # linear_axes/angular_axes) and only assigned DOF indices after the loop.
             linear_dof_attrs: list[dict[str, Any]] = []
             angular_dof_attrs: list[dict[str, Any]] = []
-            # (sanitized MJCF joint name, raw MJCF joint name, is_linear, index into linear/angular_dof_attrs, inert range)
-            mjcf_joint_dof_slots: list[tuple[str, str, bool, int, tuple[float, float] | None]] = []
+            # (sanitized MJCF joint name, authored MJCF joint name, is_linear, index into linear/angular_dof_attrs, inert range)
+            mjcf_joint_dof_slots: list[tuple[str, str | None, bool, int, tuple[float, float] | None]] = []
             # frictionloss for a native <joint type="ball"/>; captured in the ball branch
             # and read by the add_joint_ball call. Default 0.0 matches MJCF.
             ball_friction = 0.0
@@ -2822,13 +2822,13 @@ def parse_mjcf(
                 # Keep each DOF's attributes next to its axis so both share Newton's DOF order.
                 if is_angular:
                     mjcf_joint_dof_slots.append(
-                        (joint_name[-1], raw_joint_name, False, len(angular_dof_attrs), inert_range)
+                        (joint_name[-1], authored_joint_name, False, len(angular_dof_attrs), inert_range)
                     )
                     angular_axes.append(ax)
                     angular_dof_attrs.append(dof_attr)
                 else:
                     mjcf_joint_dof_slots.append(
-                        (joint_name[-1], raw_joint_name, True, len(linear_dof_attrs), inert_range)
+                        (joint_name[-1], authored_joint_name, True, len(linear_dof_attrs), inert_range)
                     )
                     linear_axes.append(ax)
                     linear_dof_attrs.append(dof_attr)
@@ -3012,7 +3012,8 @@ def parse_mjcf(
                     qd_start = builder.joint_qd_start[joint_idx]
                     for mjcf_name, raw_mjcf_name, dof_offset, inert_range in mjcf_joint_dof_offsets:
                         mjcf_joint_name_to_dof[mjcf_name] = qd_start + dof_offset
-                        raw_mjcf_joint_name_to_dof[raw_mjcf_name] = qd_start + dof_offset
+                        if raw_mjcf_name is not None:
+                            raw_mjcf_joint_name_to_dof[raw_mjcf_name] = qd_start + dof_offset
                         if inert_range is not None:
                             disabled_joint_ranges[qd_start + dof_offset] = inert_range
 

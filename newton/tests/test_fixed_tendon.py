@@ -552,6 +552,34 @@ class TestMujocoFixedTendon(unittest.TestCase):
                 kinematic_switchable_roots=False,
             )
 
+    def test_unnamed_sibling_joint_does_not_shadow_authored_joint_name(self):
+        mjcf = """<mujoco>
+          <worldbody>
+            <body name="link">
+              <joint name="link_joint_1" type="hinge" axis="1 0 0"/>
+              <joint type="hinge" axis="0 1 0"/>
+              <geom type="sphere" size="0.1"/>
+            </body>
+          </worldbody>
+          <tendon>
+            <fixed name="t">
+              <joint joint="link_joint_1" coef="1.5"/>
+            </fixed>
+          </tendon>
+        </mujoco>"""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize(device="cpu")
+        self.assertEqual(int(model.mujoco.tendon_joint_dof.numpy()[0]), 0)
+        solver = SolverMuJoCo(
+            model,
+            use_mujoco_cpu=False,
+            disable_contacts=True,
+            kinematic_switchable_roots=False,
+        )
+        self.assertEqual(int(solver.mj_model.wrap_objid[0]), 0)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
