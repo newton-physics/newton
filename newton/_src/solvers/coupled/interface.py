@@ -278,7 +278,8 @@ class CouplingInterface:
         :meth:`coupling_harvest_proxy_particle_forces` (particles) after stepping this solver, so a solver
         that must record data during its steps for that hook can start doing so; with ``enabled`` false it
         can skip that work. A solver that never receives this notification keeps its previous harvest
-        behavior.
+        behavior. Couplers send it before :meth:`coupling_eval_gravity_acceleration`, since a solver
+        that integrates its proxies through its own sub-steps reports the gravity it applies to them.
 
         Args:
             endpoint_kind: :attr:`EndpointKind.BODY` or :attr:`EndpointKind.PARTICLE`.

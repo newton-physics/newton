@@ -1415,6 +1415,67 @@ def _coupled_mpm_proxy_body_settles_with_substeps(test, device):
     )
 
 
+def _coupled_mpm_leaves_owned_bodies_alone(test, device):
+    """Keep a finite-mass body owned by an MPM body-proxy destination where its owner left it."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0))
+    SolverImplicitMPM.register_custom_attributes(builder)
+    proxied = builder.add_body(xform=wp.transform(wp.vec3(5.0, 0.0, 5.0), wp.quat_identity()), mass=10.0)
+    builder.add_shape_box(proxied, hx=0.1, hy=0.1, hz=0.1)
+    owned = builder.add_body(xform=wp.transform(wp.vec3(-5.0, 0.0, 1.0), wp.quat_identity()), mass=1.0)
+    builder.add_shape_box(owned, hx=0.1, hy=0.1, hz=0.1)
+    builder.add_particle(pos=(0.0, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=0.1, radius=0.01)
+    model = builder.finalize(device=device)
+
+    config = SolverImplicitMPM.Config()
+    config.voxel_size = 0.05
+    config.grid_type = "fixed"
+    config.grid_padding = 4
+    config.max_active_cell_count = 1 << 12
+    config.max_iterations = 10
+    coupled = SolverCoupledProxy(
+        model=model,
+        entries=[
+            SolverCoupledProxy.Entry(name="rigid", solver=SolverSemiImplicit, bodies=[proxied]),
+            SolverCoupledProxy.Entry(
+                name="mpm",
+                solver=lambda view: SolverImplicitMPM(view, config=config, enable_timers=False),
+                particles=range(model.particle_count),
+                bodies=[owned],
+                in_place=True,
+            ),
+        ],
+        coupling=SolverCoupledProxy.Config(
+            proxies=[
+                SolverCoupledProxy.Proxy(
+                    source="rigid",
+                    destination="mpm",
+                    bodies=[proxied],
+                    mode="lagged",
+                    collision_pipeline=lambda _view: None,
+                )
+            ]
+        ),
+    )
+    state = model.state()
+    control = model.control()
+    initial_q = state.body_q.numpy()[owned].copy()
+    for _ in range(5):
+        state.clear_forces()
+        coupled.step(state, state, control, None, 0.01)
+
+    np.testing.assert_allclose(state.body_q.numpy()[owned], initial_q, rtol=0.0, atol=0.0)
+    np.testing.assert_allclose(state.body_qd.numpy()[owned], 0.0, rtol=0.0, atol=0.0)
+    test.assertLess(state.body_q.numpy()[proxied][2], 5.0)
+
+
+add_function_test(
+    TestSolverCoupledContactsAndMPM,
+    "test_mpm_leaves_owned_bodies_alone",
+    _coupled_mpm_leaves_owned_bodies_alone,
+    devices=get_test_devices(),
+)
+
+
 add_function_test(
     TestSolverCoupledContactsAndMPM,
     "test_mpm_proxy_body_settles_with_substeps",

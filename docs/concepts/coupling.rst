@@ -448,7 +448,10 @@ The coupled-solver framework is useful today, but it is still experimental:
   affect damping and convergence. A sub-stepped destination with stiff contact,
   such as MPM sand under a rigid proxy body, feeds back a force that a single
   lagged pass per step applies one full step late; use ``iterations=2`` or more
-  so the pass converges instead of oscillating.
+  so the pass converges instead of oscillating. Within such a step the MPM
+  destination advances finite-mass proxy bodies as free bodies under gravity and
+  its contact impulses, so a proxy that its source holds against gravity drifts
+  by at most ``dt² |g| / 2`` inside the step; the source state is unaffected.
 - Generic momentum harvesting is only a fallback. Solver-private contact modes
   should expose custom harvest hooks where possible.
 - ADMM contact detection is internal and does not consume arbitrary caller

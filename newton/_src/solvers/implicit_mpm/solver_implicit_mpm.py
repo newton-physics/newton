@@ -2491,7 +2491,8 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
         Bodies only receive gravity from this solver while body proxy feedback is enabled
         (see :meth:`coupling_notify_proxy_feedback`), when the solver integrates the
-        proxy bodies through its sub-steps.
+        proxy bodies through its sub-steps. Bodies owned by this solver are never
+        integrated, whatever this hook reports for them.
         """
         if out_body_acceleration is not None:
             if self._coupling_body_feedback:
@@ -2794,6 +2795,8 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 self.model.gravity,
                 self.model.body_world,
                 self.model.body_inv_mass,
+                int(newton.BodyFlags.PROXY),
+                self.model.body_flags,
                 state_in.body_qd,
                 self._coupling_body_qd,
             ],
@@ -2869,6 +2872,8 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 self.collider_body_index,
                 self.model.body_com,
                 body_q,
+                int(newton.BodyFlags.PROXY),
+                self.model.body_flags,
                 self._coupling_body_impulse,
                 step_impulse,
             ],
@@ -2885,6 +2890,8 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 self.model.body_com,
                 self.model.body_inv_inertia,
                 self.model.body_inv_mass,
+                int(newton.BodyFlags.PROXY),
+                self.model.body_flags,
                 state_in.body_q,
                 body_qd,
                 state_out.body_q,
@@ -5588,12 +5595,14 @@ def _apply_mpm_proxy_body_gravity_kernel(
     gravity: wp.array[wp.vec3],
     body_world: wp.array[int],
     body_inv_mass: wp.array[float],
+    proxy_flag: int,
+    body_flags: wp.array[wp.int32],
     body_qd_in: wp.array[wp.spatial_vector],
     body_qd_out: wp.array[wp.spatial_vector],
 ):
     local_body = wp.tid()
     qd = body_qd_in[local_body]
-    if body_inv_mass[local_body] > 0.0:
+    if body_inv_mass[local_body] > 0.0 and (body_flags[local_body] & proxy_flag) != 0:
         qd = wp.spatial_vector(
             wp.spatial_top(qd) + dt * gravity[wp.max(body_world[local_body], 0)], wp.spatial_bottom(qd)
         )
@@ -5608,6 +5617,8 @@ def _accumulate_mpm_collider_body_impulses_kernel(
     collider_body_ids: wp.array[int],
     body_com: wp.array[wp.vec3],
     body_q: wp.array[wp.transform],
+    proxy_flag: int,
+    body_flags: wp.array[wp.int32],
     body_impulse: wp.array[wp.spatial_vector],
     body_impulse_step: wp.array[wp.spatial_vector],
 ):
@@ -5618,7 +5629,7 @@ def _accumulate_mpm_collider_body_impulses_kernel(
         return
 
     local_body = collider_body_ids[cid]
-    if local_body < 0 or local_body >= body_impulse.shape[0]:
+    if local_body < 0 or local_body >= body_impulse.shape[0] or (body_flags[local_body] & proxy_flag) == 0:
         return
 
     impulse = collider_impulses[i]
@@ -5636,6 +5647,8 @@ def _apply_mpm_collider_body_impulses_kernel(
     body_com: wp.array[wp.vec3],
     body_inv_inertia: wp.array[wp.mat33],
     body_inv_mass: wp.array[float],
+    proxy_flag: int,
+    body_flags: wp.array[wp.int32],
     body_q_in: wp.array[wp.transform],
     body_qd_in: wp.array[wp.spatial_vector],
     body_q_out: wp.array[wp.transform],
@@ -5644,7 +5657,7 @@ def _apply_mpm_collider_body_impulses_kernel(
     local_body = wp.tid()
     q = body_q_in[local_body]
     qd = body_qd_in[local_body]
-    if body_inv_mass[local_body] == 0.0:
+    if body_inv_mass[local_body] == 0.0 or (body_flags[local_body] & proxy_flag) == 0:
         body_q_out[local_body] = q
         body_qd_out[local_body] = qd
         return
