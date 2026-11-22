@@ -19,6 +19,7 @@ import warp as wp
 
 from ...core.types import MAXVAL, override
 from ...exceptions import NewtonDeprecationWarning
+from ...geometry import ShapeFlags
 from ...geometry.types import GeoType
 from ...sim import (
     Contacts,
@@ -76,6 +77,9 @@ def _estimate_scc_contacts_per_world(model, newton_model: Model) -> int:
     geom_group = model.geoms.group.numpy()
     geom_type = model.geoms.type.numpy()
     collidable = geom_group != 0
+    if model.geoms.flags is not None:
+        # Match the conversion path: shapes without COLLIDE_SHAPES never collide.
+        collidable &= (model.geoms.flags.numpy() & int(ShapeFlags.COLLIDE_SHAPES)) != 0
     if not np.any(collidable):
         return 0
 
