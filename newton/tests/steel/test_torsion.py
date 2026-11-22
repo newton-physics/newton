@@ -3979,8 +3979,8 @@ class TestTorsionLinkSharedMemory(unittest.TestCase):
             _use_mfgs_torsion_links(8192, 512, 32, device_limit, shared_metadata=False, pair_cache=False, **options)
         )
         self.assertFalse(_use_mfgs_torsion_links(64, 16, 12, 0, shared_metadata=False, pair_cache=False, **options))
-        # 128 + 4 * (16 + 8 + rows) + 4 * rows is 48 KiB at rows = 6116.
-        for rows, limit, admitted in ((6116, device_limit, True), (6117, device_limit, False), (6116, 49151, False)):
+        # With 16-byte alignment per array, 6112 rows need 49,120 bytes and 6113 need 49,168.
+        for rows, limit, admitted in ((6112, device_limit, True), (6113, device_limit, False), (6112, 49119, False)):
             with self.subTest(rows=rows, limit=limit):
                 self.assertEqual(
                     _use_mfgs_torsion_links(rows, 8, 16, limit, shared_metadata=False, pair_cache=False, **options),
@@ -3998,8 +3998,8 @@ class TestTorsionLinkSharedMemory(unittest.TestCase):
         self.assertFalse(
             _use_mfgs_torsion_links(2500, 0, 16, device_limit, shared_metadata=False, pair_cache=True, **options)
         )
-        # The lists cut the pair cache's resident blocks per SM from 6 to 4.
-        residency = {"shared_metadata": False, "world_count": 500, "sm_count": 100, **options}
+        # For this torsion configuration the lists reduce residency from four blocks per SM to three.
+        residency = {"shared_metadata": False, "world_count": 400, "sm_count": 100, "contact_torsion": True, **options}
         self.assertTrue(_use_mfgs_pair_cache(1024, 0, 16, device_limit, **residency))
         self.assertFalse(_use_mfgs_pair_cache(1024, 0, 16, device_limit, **residency, torsion_links=True))
 
@@ -4080,7 +4080,7 @@ class TestTorsionSweepLinks(unittest.TestCase):
         device = wp.get_device("cuda:0")
         self.assertTrue(
             _use_mfgs_torsion_links(
-                6116,
+                6112,
                 8,
                 16,
                 device.max_shared_memory_per_block,
@@ -4091,7 +4091,7 @@ class TestTorsionSweepLinks(unittest.TestCase):
             )
         )
         kernel = _get_pgs_solve_mf_gs_kernel(
-            6116,
+            6112,
             8,
             16,
             device.arch,
