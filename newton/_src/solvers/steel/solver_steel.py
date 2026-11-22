@@ -1046,14 +1046,14 @@ def _use_resident_mfgs_metadata(
     Keep at most one 4-KiB metadata working set resident and stream larger sets.
     """
     metadata_bytes = _mfgs_metadata_bytes(max_constraints, has_drive_rows, fuse_vel_limits)
-    total_shared_bytes = _mfgs_block_shared_bytes(
+    total_shared_bytes = _mfgs_shared_layout(
         max_constraints,
         free_body_constraint_max,
         max_world_dofs,
         shared_metadata=True,
         has_drive_rows=has_drive_rows,
         fuse_vel_limits=fuse_vel_limits,
-    )
+    ).block_bytes
     return metadata_bytes <= _MFGS_RESIDENT_METADATA_MAX_BYTES and total_shared_bytes <= max_shared_memory
 
 
@@ -1069,13 +1069,15 @@ def _use_mfgs_pair_cache(
     world_count: int,
     sm_count: int,
     torsion_links: bool = False,
+    contact_torsion: bool = False,
+    nesterov_momentum: bool = False,
 ) -> bool:
     """Select the MF-GS friction-pair cache when a shared-memory estimate keeps every world resident.
 
     The caches shorten each world's serial chain but lower blocks per SM; once worlds queue for SMs, the extra waves
     cost more than they save. The estimate ignores register, block-count and carveout limits.
     """
-    block_bytes = _mfgs_block_shared_bytes(
+    block_bytes = _mfgs_shared_layout(
         max_constraints,
         free_body_constraint_max,
         max_world_dofs,
@@ -1084,7 +1086,9 @@ def _use_mfgs_pair_cache(
         fuse_vel_limits=fuse_vel_limits,
         pair_cache=True,
         torsion_links=torsion_links,
-    )
+        contact_torsion=contact_torsion,
+        nesterov_momentum=nesterov_momentum,
+    ).block_bytes
     resident_worlds = sm_count * (max_shared_memory // block_bytes)
     # Row parents are cached as short, and the kernel's arrays are static shared memory.
     return (
@@ -1109,7 +1113,7 @@ def _use_mfgs_torsion_links(
 
     Otherwise the sweep scans every dense row for torsion groups, with identical results.
     """
-    block_bytes = _mfgs_block_shared_bytes(
+    block_bytes = _mfgs_shared_layout(
         max_constraints,
         free_body_constraint_max,
         max_world_dofs,
@@ -1118,11 +1122,23 @@ def _use_mfgs_torsion_links(
         fuse_vel_limits=fuse_vel_limits,
         pair_cache=pair_cache,
         torsion_links=True,
-    )
+    ).block_bytes
     return block_bytes <= min(max_shared_memory, _STATIC_SHARED_MEMORY_BYTES)
 
 
-def _mfgs_block_shared_bytes(
+@dataclass(frozen=True)
+class _MfgsSharedLayout:
+    block_bytes: int
+    patch_dense: bool = False
+    patch_mf: bool = False
+    mf_pair_slots: int = 0
+    islands: bool = False
+    stage_mf: bool = False
+    staged_dense_rows: int = 0
+    reciprocals: bool = False
+
+
+def _mfgs_shared_layout(
     max_constraints: int,
     free_body_constraint_max: int,
     max_world_dofs: int,
@@ -1132,21 +1148,61 @@ def _mfgs_block_shared_bytes(
     fuse_vel_limits: bool,
     pair_cache: bool = False,
     torsion_links: bool = False,
-) -> int:
-    """Return the static shared memory [B] of one matrix-free Gauss-Seidel kernel block, up to 4-byte alignment.
+    contact_torsion: bool = False,
+    nesterov_momentum: bool = False,
+) -> _MfgsSharedLayout:
+    """Plan static allocations once for both kernel generation and world residency.
 
-    Every ``__shared__`` array of :func:`_get_pgs_solve_mf_gs_kernel` is counted here.
+    Round each array up to 16 bytes and include Warp's tile scratch. Cache-independent
+    kernels use only their base arrays, even when their row capacity is small.
     """
-    total = _MFGS_TILE_SHARED_STORAGE_BYTES + 4 * (max_world_dofs + max_constraints + free_body_constraint_max)
+    dense, free, dofs = max_constraints, free_body_constraint_max, max_world_dofs
+    align = _align_shared_memory
+    total = _MFGS_TILE_SHARED_STORAGE_BYTES + sum(align(4 * n) for n in (dense, free, dofs))
     if shared_metadata:
-        total += _mfgs_metadata_bytes(max_constraints, has_drive_rows, fuse_vel_limits)
-    if pair_cache:
-        total += 2 * max_constraints + 4 * 5 * _mfgs_pair_cache_capacity(max_constraints)
-        if not shared_metadata:
-            total += 3 * max_constraints
+        total += (4 + 4 * has_drive_rows + fuse_vel_limits) * align(4 * dense)
     if torsion_links:
-        total += torque_links_shared_bytes(max_constraints)
-    return total
+        total += 2 * align(torque_links_shared_bytes(dense) // 2)
+    if not pair_cache:
+        return _MfgsSharedLayout(total)
+
+    pairs = _mfgs_pair_cache_capacity(dense)
+    total += align(2 * dense) + align(20 * pairs)
+    if not shared_metadata:
+        total += align(dense) + align(2 * dense)
+
+    staging = not (contact_torsion or torsion_links or nesterov_momentum)
+    compact = staging and (32 + 24 * has_drive_rows) * dense + 16 * free + 4 * dofs <= 32 * 1024
+    patch_dense = compact and 0 < dense <= 1023
+    patch_mf = compact and 0 < free <= 1023
+
+    # Keep the small free-body friction operator cache only for compact base layouts.
+    mf_slots = free // 2
+    operators = align(20 * mf_slots)
+    if operators > 4096 or total + operators > _STATIC_SHARED_MEMORY_BYTES - 40 * 1024:
+        mf_slots = 0
+    total += align(20 * mf_slots) + patch_dense * align(4 * dense) + patch_mf * align(4 * free)
+
+    staging_budget = 40 * 1024
+    island_bytes = 2 * align(free) + align(max(dofs, free))
+    islands = staging and 12 <= dofs <= 128 and 2 <= free <= 128 and total + island_bytes <= staging_budget
+    if islands:
+        total += island_bytes
+    mf_bytes = align(16 * free) + 4 * align(24 * free)
+    stage_mf = staging and free > 0 and mf_bytes <= (staging_budget - total) // 2
+    if stage_mf:
+        total += mf_bytes
+    # J and its mass-weighted response are separate, equally sized arrays.
+    rows = 0
+    if staging and dofs > 0:
+        bytes_per_array = max(0, (staging_budget - total) // 2) // 16 * 16
+        rows = min(dense, bytes_per_array // (4 * dofs))
+        total += 2 * align(4 * rows * dofs)
+    reciprocal_bytes = align(24 * pairs) + align(24 * mf_slots)
+    reciprocals = total + reciprocal_bytes <= _STATIC_SHARED_MEMORY_BYTES
+    if reciprocals:
+        total += reciprocal_bytes
+    return _MfgsSharedLayout(total, patch_dense, patch_mf, mf_slots, islands, stage_mf, rows, reciprocals)
 
 
 def _mfgs_metadata_bytes(max_constraints: int, has_drive_rows: bool, fuse_vel_limits: bool) -> int:
@@ -6332,7 +6388,12 @@ class SolverSteel(SolverBase, CouplingInterface):
                 and not self._propagation_active
                 and self._row_schedule != "phased"
                 and _use_mfgs_pair_cache(
-                    *mfgs_shape, **mfgs_metadata, **mfgs_residency, torsion_links=self._mfgs_torsion_links
+                    *mfgs_shape,
+                    **mfgs_metadata,
+                    **mfgs_residency,
+                    torsion_links=self._mfgs_torsion_links,
+                    contact_torsion=self._contact_torsion_enabled,
+                    nesterov_momentum=self._nesterov_momentum,
                 )
             )
             self._pgs_solve_mf_gs_kernel_for_phase = functools.partial(
@@ -16120,20 +16181,25 @@ def _get_pgs_solve_mf_gs_kernel(
             "                : __int_as_float(meta.z));",
         )
 
-    patch_storage = 0
-    if (
-        friction_mode == "fixed_normal"
-        and not nesterov_momentum
-        and not contact_torsion
-        and (32 + 24 * has_drive_rows) * M_D + M_MF * 16 + 4 * D <= 32 * 1024
-    ):
+    layout = _mfgs_shared_layout(
+        M_D,
+        M_MF,
+        D,
+        shared_metadata=shared_metadata,
+        has_drive_rows=has_drive_rows,
+        fuse_vel_limits=fuse_vel_limits,
+        pair_cache=pair_cache,
+        torsion_links=torsion_links,
+        contact_torsion=contact_torsion,
+        nesterov_momentum=nesterov_momentum,
+    )
+    if layout.patch_dense or layout.patch_mf:
         for category, capacity, parent, fetch_parent in (
             ("dense", M_D, "parent_idx", "world_row_parent.data[off_dense + row]"),
             ("mf", M_MF, "mf_par", "(mf_meta.data[off_meta + row * 4 + 3] >> 16)"),
         ):
-            if not 0 < capacity <= 1023:
+            if not (layout.patch_dense if category == "dense" else layout.patch_mf):
                 continue
-            patch_storage += (capacity * 4 + 15) & ~15
             sums = "s_lam_" + category
             relatives = f"""
     __shared__ unsigned patch_{category}[{capacity}];
@@ -16231,31 +16297,8 @@ def _get_pgs_solve_mf_gs_kernel(
         snippet = re.sub(r"world_row_type\.data\[off_dense \+ ([^\]]+)\]", r"s_row_type[\1]", snippet)
         snippet = re.sub(r"world_row_parent\.data\[off_dense \+ ([^\]]+)\]", r"s_row_parent[\1]", snippet)
 
-    def mf_pair_cache_fits(slots: int) -> bool:
-        """Budget known static arrays plus 40 KiB of staging. Two adjacent rows need at most one slot:
-        both the build and the sweep skip the sibling after a first tangent.
-        """
-        cache_bytes = (5 * 4 * slots + 15) & ~15
-        if slots <= 0 or cache_bytes > 4 * 1024:
-            return False
-        total = 40 * 1024 + cache_bytes - patch_storage
-        widths = {"unsigned char": 1, "unsigned": 4, "short": 2, "int": 4, "float": 4}
-        for line in snippet.splitlines():
-            if "__shared__" not in line:
-                continue
-            decl = re.fullmatch(
-                r"\s*__shared__\s+(unsigned char|unsigned|short|int|float)\s+\w+((?:\[\d+\])+);\s*", line
-            )
-            if decl is None:
-                return False
-            size = widths[decl[1]]
-            for extent in re.findall(r"\d+", decl[2]):
-                size *= int(extent)
-            total += (size + 15) & ~15
-        return total <= 48 * 1024
-
-    mf_pair_slots = M_MF // 2
-    if pair_cache and friction_mode == "fixed_normal" and mf_pair_cache_fits(mf_pair_slots):
+    mf_pair_slots = layout.mf_pair_slots
+    if mf_pair_slots:
         sweep_start = "    for (int iter = 0; iter < iterations; iter++) {"
         mf_pair_build = f"""    __shared__ float s_mf_pair_op[{mf_pair_slots}][5];
     const bool cache_mf_pairs = iterations > 1 && (long long)iteration_offset + iterations - 2 >= friction_start_iteration;
@@ -16609,11 +16652,13 @@ def _get_pgs_solve_mf_gs_kernel(
             if pair_cache:
                 mu_src = "s_mu_dense[packet_row]" if shared_metadata else "world_row_mu.data[off_dense + packet_row]"
                 rhs_src = "s_rhs_dense[packet_row+1]" if shared_metadata else "rhs_bias.data[off_dense + packet_row+1]"
+                # Joint friction uses the same coefficient field as the tangent pair, as a box bound.
+                needs_mu = "(packet_pair || (tile_joint & (1u << lane)))" if joint_friction else "packet_pair"
                 tile_meta += f"""
             int packet_row = desc_base + lane;
             bool packet_pair = (pending & tile_tangent & (1u << lane)) != 0u;
             int packet_slot = packet_pair ? s_pair_slot[packet_row] : -1;
-            float packet_mu = packet_pair ? {mu_src} : 0.0f;
+            float packet_mu = {needs_mu} ? {mu_src} : 0.0f;
             float packet_rhs = packet_pair && packet_row + 1 < m_dense ? {rhs_src} : 0.0f;
 """
                 old_mu = "s_mu_dense[i]" if shared_metadata else "world_row_mu.data[off_dense + (i)]"
@@ -17018,21 +17063,11 @@ def _get_pgs_solve_mf_gs_kernel(
         source = _replace_once(source, main, parallel.replace(FRICTION_PAIR_CUDA, pair_search(4)) + main)
         return _replace_once(source, limits, "        }\n" + limits)
 
-    if friction_mode == "fixed_normal" and not nesterov_momentum and not contact_torsion:
-        live_bytes = 4 * (D + M_D + M_MF)
-        if shared_metadata:
-            live_bytes += 4 * M_D * (4 + 4 * has_drive_rows + fuse_vel_limits)
-        if pair_cache:
-            live_bytes += 2 * M_D + 20 * pair_cache_capacity + 3 * M_D * row_cache
-        room = 40 * 1024 - live_bytes - patch_storage
-        island_bytes = 2 * ((M_MF + 15) & ~15) + ((max(D, M_MF) + 15) & ~15)
-        enable_islands = 12 <= D <= 128 and 2 <= M_MF <= 128 and island_bytes <= room
-        if enable_islands:
-            room -= island_bytes
+    if layout.islands or layout.stage_mf or layout.staged_dense_rows:
         staging = ""
         first_use = "    __shared__ float s_v["
         prefix, body = snippet.split(first_use, 1)
-        mf_staged = 0 < M_MF and M_MF * 112 <= room // 2
+        mf_staged = layout.stage_mf
         if mf_staged:
             staging += f"""
     __shared__ int4 stage_meta[{M_MF}];
@@ -17054,7 +17089,6 @@ def _get_pgs_solve_mf_gs_kernel(
                 staging += f"        stage_{src}[elem] = {src}.data[mf6_base + elem];\n"
                 body = body.replace(src + ".data[", "stage_" + src + "[")
             staging += "    }\n    mf6_base = 0;\n"
-            room -= 112 * M_MF
         if mf_staged and "const bool cache_mf_pairs" in body:
             contact_kind = int(PGS_CONSTRAINT_TYPE_CONTACT)
             phase_prologue = f"""
@@ -17179,9 +17213,9 @@ def _get_pgs_solve_mf_gs_kernel(
             body = _replace_once(body, sweep, phase_prologue + sweep)
             body = _replace_once(body, main, main + "\n" + step)
             body = _replace_once(body, limit, "        }\n" + limit)
-        if enable_islands:
+        if layout.islands:
             body = island_sweep(body, mf_staged)
-        row_cap = min(M_D, room // max(8 * D, 1))
+        row_cap = layout.staged_dense_rows
         if row_cap > 0 and D > 0:
             staging += f"""
     __shared__ float stage_J[{row_cap * D}], stage_Y[{row_cap * D}];
@@ -17264,7 +17298,7 @@ def _get_pgs_solve_mf_gs_kernel(
                 float limit_v = 0.0f;
 {gather}
                 float gap = __fadd_rn(__fmul_rn(limit_coeff, limit_v), limit_rhs);
-                bool idle = limit_sparse && gap >= limit_margin && isfinite(gap)
+                bool idle = lane >= i - limit_start && limit_sparse && gap >= limit_margin && isfinite(gap)
                     && __float_as_uint(s_lam_dense[limit_start + lane]) == 0u;
                 unsigned unresolved = __ballot_sync(MASK, !idle) & (~0u << (i - limit_start));
                 int stop_lane = unresolved ? __ffs(unresolved) - 1 : 32;
@@ -17283,20 +17317,7 @@ def _get_pgs_solve_mf_gs_kernel(
 
     if pair_cache and friction_mode == "fixed_normal":
         matrix_free_cache = "__shared__ float s_mf_pair_op[" in snippet
-        bytes_used = 0
-        shared_types = {"unsigned char": 1, "short": 2, "int": 4, "int4": 16, "float": 4, "unsigned": 4}
-        for declaration in re.findall(r"__shared__\s+([^;]+);", snippet):
-            match = re.fullmatch(r"(unsigned char|short|int4|int|float|unsigned)\s+(.+)", declaration)
-            if not match:
-                bytes_used = 48 * 1024
-                break
-            for array in match[2].split(","):
-                count = shared_types[match[1]]
-                for extent in re.findall(r"\[(\d+)\]", array):
-                    count *= int(extent)
-                bytes_used += (count + 15) & ~15
-        recip_bytes = 24 * (pair_cache_capacity + (mf_pair_slots if matrix_free_cache else 0))
-        if bytes_used + recip_bytes + 32 <= 48 * 1024:
+        if layout.reciprocals:
             solve_proto = (
                 "float r0, float r1, float old0, float old1, float radius, float omega) {\n        if (radius <= 0.0f)"
             )

@@ -2162,7 +2162,9 @@ def test_pair_cache_selection(test, device):
     """Select the pair cache only for the fixed-normal pair solve outside phased and propagation, all worlds resident."""
     shape = {"shared_metadata": False, "has_drive_rows": True, "fuse_vel_limits": False}
     test.assertTrue(_use_mfgs_pair_cache(128, 64, 39, 48 * 1024, world_count=64, sm_count=100, **shape))
-    test.assertFalse(_use_mfgs_pair_cache(128, 64, 39, 48 * 1024, world_count=100_000, sm_count=100, **shape))
+    # At this scale the old base-only estimate admitted the staged cache,
+    # although three complete cached blocks cannot fit in 48 KiB.
+    test.assertFalse(_use_mfgs_pair_cache(128, 64, 39, 48 * 1024, world_count=300, sm_count=100, **shape))
     # The cached arrays fit the opt-in limit but exceed 48 KiB of static shared memory.
     test.assertTrue(_use_mfgs_pair_cache(1024, 1024, 200, 101376, world_count=64, sm_count=100, **shape))
     test.assertFalse(_use_mfgs_pair_cache(3072, 1024, 200, 101376, world_count=64, sm_count=100, **shape))
@@ -2202,13 +2204,19 @@ add_function_test(
 )
 
 
-def test_velocity_limit_pass_visits_every_active_row(test, device):
+def test_velocity_limit_pass_visits_every_active_row(
+    test,
+    device,
+    rows=40,
+    dofs=12,
+    free_rows=1,
+    cache_modes=((True, False), (False, False), (False, True)),
+):
     """Project velocity-limit rows at the first and last dense rows and between contacts, and skip inactive rows.
 
     The pass walks only the span of each world's velocity-limit rows, so this places them at the span's ends.
     """
     # More than 32 rows, so each lane's span scan takes a second stride.
-    rows, dofs = 40, 12
     contact, friction, vlim = (
         steel_kernels.PGS_CONSTRAINT_TYPE_CONTACT,
         steel_kernels.PGS_CONSTRAINT_TYPE_FRICTION,
@@ -2216,7 +2224,7 @@ def test_velocity_limit_pass_visits_every_active_row(test, device):
     )
     layouts = {
         "first": [0, 1],
-        "last": [38, 39],
+        "last": [rows - 2, rows - 1],
         "between_contacts": [3, 10, 17, 33],
         # Rows 5 and 37 share a lane, which must keep the later row as its upper bound.
         "same_lane": [5, 37],
@@ -2257,10 +2265,10 @@ def test_velocity_limit_pass_visits_every_active_row(test, device):
     initial_impulses[np.arange(rows) >= counts[:, None]] = 0.0
     mu = np.where(types == friction, 0.5, 0.0).astype(np.float32)
     v_in = rng.normal(size=worlds * dofs).astype(np.float32)
-    for shared_metadata, pair_cache in ((True, False), (False, False), (False, True)):
+    for shared_metadata, pair_cache in cache_modes:
         kernel = _get_pgs_solve_mf_gs_kernel(
             rows,
-            1,
+            free_rows,
             dofs,
             wp.get_device(device).arch,
             has_dense_velocity_limit_rows=True,
@@ -2295,16 +2303,16 @@ def test_velocity_limit_pass_visits_every_active_row(test, device):
                     *(zeros((worlds, rows)) for _ in range(5)),
                     zeros(worlds, int),
                     zeros(worlds, int),
-                    zeros((worlds, 4), int),
-                    zeros((worlds, 1)),
-                    *(zeros((worlds, 1, 6)) for _ in range(4)),
-                    zeros((worlds, 1)),
+                    zeros((worlds, 4 * free_rows), int),
+                    zeros((worlds, free_rows)),
+                    *(zeros((worlds, free_rows, 6)) for _ in range(4)),
+                    zeros((worlds, free_rows)),
                     arr(np.ones((worlds, rows), np.float32)),
-                    zeros((worlds, 1)),
+                    zeros((worlds, free_rows)),
                     arr(np.full((worlds, rows), -1, np.int32), int),
                     zeros((worlds, rows)),
                     zeros((worlds, rows)),
-                    zeros((worlds, 1)),
+                    zeros((worlds, free_rows)),
                     # Nesterov momentum history: off.
                     zeros((1, 1)),
                     1,
@@ -2337,6 +2345,20 @@ add_function_test(
     "test_velocity_limit_pass_visits_every_active_row",
     test_velocity_limit_pass_visits_every_active_row,
     devices=get_cuda_test_devices(),
+)
+
+
+# This shape put the reciprocal tables within 32 bytes of the static limit
+# before accounting for Warp's tile scratch. Compile, launch and check the solve.
+add_function_test(
+    TestSteelMatrixFreeVelocityLimitPass,
+    "test_pair_cache_shared_memory_boundary",
+    test_velocity_limit_pass_visits_every_active_row,
+    devices=get_cuda_test_devices(),
+    rows=1024,
+    free_rows=512,
+    dofs=35,
+    cache_modes=((False, True),),
 )
 
 
