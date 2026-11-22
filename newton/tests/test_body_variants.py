@@ -70,7 +70,7 @@ def _select(model, variants, bodies=None):
 
 class TestBodyVariants(unittest.TestCase):
     def test_finalize_tables_and_initial_selection(self):
-        """Preserve source metadata and runtime colors across initial and later selections."""
+        """Apply visual and physical source properties through the same variant copy path."""
         cube, spheres = _variant("cube"), _variant("spheres")
         env = newton.ModelBuilder()
         body = env.add_body(mass=2.0, com=(0.0, 0.0, 1.0), inertia=wp.diag(wp.vec3(0.1)), label="object")
@@ -106,23 +106,28 @@ class TestBodyVariants(unittest.TestCase):
         np.testing.assert_array_equal(model.get_body_variant_shape_attribute("test:tag").numpy(), [0, 0, 0])
         original = model.shape_color.numpy().copy()
         colors = wp.array([(1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)], dtype=wp.vec3, device="cpu")
-        model.set_body_variant_shape_colors(colors)
+        source_colors = model.get_body_variant_shape_attribute("shape_color")
+        wp.copy(source_colors, colors)
+        friction = model.get_body_variant_shape_attribute("shape_material_mu")
+        friction.assign([0.4, 0.7, 0.9])
+        model.apply_body_variant_shape_attributes(("shape_color", "shape_material_mu"))
+        np.testing.assert_allclose(model.shape_material_mu.numpy()[[1, 2, 4, 5]], [0.7, 0.9, 0.7, 0.9])
         expected = np.array([(0.0, 1.0, 0.0), (0.0, 0.0, 1.0)] * 2)
         np.testing.assert_array_equal(model.shape_color.numpy()[[1, 2, 4, 5]], expected)
         np.testing.assert_array_equal(model.shape_color.numpy()[[0, 3]], original[[0, 3]])
         _select(model, [0, 1])
         np.testing.assert_array_equal(model.shape_color.numpy()[[1, 4, 5]], colors.numpy()[[0, 1, 2]])
-        source_colors = model.get_body_variant_shape_attribute("shape_color")
         source_colors.fill_(wp.vec3(0.2, 0.4, 0.6))
-        model.set_body_variant_shape_colors(source_colors)
+        model.shape_material_mu.fill_(0.123)
+        model.apply_body_variant_shape_attributes(("shape_color",))
+        np.testing.assert_allclose(model.shape_material_mu.numpy(), [0.123] * model.shape_count)
         np.testing.assert_allclose(model.shape_color.numpy()[[1, 4, 5]], [[0.2, 0.4, 0.6]] * 3)
         # Empty rows keep their last color, and unrelated shapes are untouched.
         np.testing.assert_array_equal(model.shape_color.numpy()[2], [0.0, 0.0, 1.0])
         np.testing.assert_array_equal(model.shape_color.numpy()[[0, 3]], original[[0, 3]])
         _select(model, [1, 0])
         np.testing.assert_allclose(model.shape_color.numpy()[[1, 2, 4]], [[0.2, 0.4, 0.6]] * 3)
-        with self.assertRaisesRegex(ValueError, "one entry per variant shape"):
-            model.set_body_variant_shape_colors(wp.zeros(1, dtype=wp.vec3, device="cpu"))
+        np.testing.assert_allclose(model.shape_material_mu.numpy()[[1, 2, 4]], [0.7, 0.9, 0.4])
 
     def test_select_body_variants(self):
         env = newton.ModelBuilder()
@@ -488,16 +493,20 @@ def test_selection_replays_from_cuda_graph(test, device):
 
     variants = wp.zeros(2, dtype=wp.int32, device=device)
     colors = wp.full(3, wp.vec3(0.2, 0.4, 0.6), dtype=wp.vec3, device=device)
+    source_colors = model.get_body_variant_shape_attribute("shape_color")
     with wp.ScopedCapture(device=device) as capture:
         flags = model.select_body_variants(variants)
-        model.set_body_variant_shape_colors(colors)
+        wp.copy(source_colors, colors)
+        model.apply_body_variant_shape_attributes(("shape_color",))
         mujoco.notify_model_changed(flags)
         vbd.notify_model_changed(flags)
     for choice in ([1, 0], [0, 1]):
+        value = (0.2 + 0.1 * choice[0], 0.4, 0.6)
+        colors.fill_(wp.vec3(*value))
         variants.assign(choice)
         wp.capture_launch(capture.graph)
         np.testing.assert_array_equal(model.body_variant.numpy(), choice)
-        np.testing.assert_allclose(model.shape_color.numpy()[[0, 2]], [[0.2, 0.4, 0.6]] * 2)
+        np.testing.assert_allclose(model.shape_color.numpy()[[0, 2]], [value] * 2)
         expected = [newton.GeoType.SPHERE if c else newton.GeoType.BOX for c in choice]
         np.testing.assert_array_equal(model.shape_type.numpy()[[0, 2]], expected)
         np.testing.assert_allclose(mujoco.mjw_model.body_mass.numpy()[:, 1], model.body_mass.numpy(), rtol=1e-6)

@@ -1,1 +1,1 @@
-Expose finalized body-variant shape attributes, including string metadata, and add `Model.set_body_variant_shape_colors()` to preserve runtime colors across selections while updating active shapes on device.
+Expose finalized body-variant shape attributes, including string metadata, and apply edited source attributes to active shapes through the same cached copy path as variant selection.
