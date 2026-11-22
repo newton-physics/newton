@@ -201,7 +201,7 @@ def _estimate_fallback_world_max_contacts(
         group = model.geoms.group.numpy()
         for geom_id in range(len(wid)):
             world_id = int(wid[geom_id])
-            if 0 <= world_id < num_worlds and group[geom_id] > 0:
+            if 0 <= world_id < num_worlds and group[geom_id] != 0:
                 world_max_contacts[world_id] += _DYNAMIC_CONTACTS_PER_COLLIDABLE
 
     return world_max_contacts

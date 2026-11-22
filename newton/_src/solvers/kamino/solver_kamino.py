@@ -75,7 +75,7 @@ def _estimate_scc_contacts_per_world(model, newton_model: Model) -> int:
     geom_world = model.geoms.wid.numpy()
     geom_group = model.geoms.group.numpy()
     geom_type = model.geoms.type.numpy()
-    collidable = geom_group > 0
+    collidable = geom_group != 0
     if not np.any(collidable):
         return 0
 
