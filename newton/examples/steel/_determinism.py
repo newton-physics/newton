@@ -169,6 +169,8 @@ class _SimulationCopy:
             builder.shape_opacity[shape] = COPY_OPACITY
         builder.add_ground_plane()
         self.model = builder.finalize()
+        if scene.num_rigid_contacts_per_world is not None:
+            self.model.rigid_contact_max = scene.num_rigid_contacts_per_world * self.model.world_count
         self.solver = SolverSteel(
             self.model,
             deterministic=wp.DeterministicMode.RUN_TO_RUN if deterministic else wp.DeterministicMode.NOT_GUARANTEED,

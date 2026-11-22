@@ -72,6 +72,8 @@ def build_scene() -> newton.ModelBuilder:
     """Build two facing Franka arms and a 3x2 grid of boxes between them."""
     scene = newton.ModelBuilder()
     scene.rigid_gap = 0.01
+    # Leave headroom for the scripted arm/box contacts without budgeting for every mesh pair.
+    scene.num_rigid_contacts_per_world = 512
     urdf = newton.utils.download_asset("franka_emika_panda") / "urdf/fr3_franka_hand.urdf"
     for x, y, yaw in ((-0.25, -0.55, 0.5 * math.pi), (0.25, 0.55, -0.5 * math.pi)):
         scene.add_urdf(
