@@ -3501,6 +3501,36 @@ class TestMuJoCoSolverCollisionMasks(unittest.TestCase):
             solver = SolverMuJoCo(builder.finalize(device="cpu"), use_mujoco_contacts=True)
         self.assertEqual(solver.mj_model.ngeom, 66)
 
+    @requires(*MUJOCO_MODULES)
+    def test_fallback_masks_honor_collision_groups(self):
+        """Keep shapes in different positive groups apart when exact masks fall back to graph colors."""
+        builder = newton.ModelBuilder()
+        groups = np.repeat(np.arange(1, 34), 2)
+        for index, group in enumerate(groups):
+            body = builder.add_link(label=f"body_{index}")
+            joint = builder.add_joint_free(parent=-1, child=body, label=f"joint_{index}")
+            builder.add_articulation([joint])
+            cfg = newton.ModelBuilder.ShapeConfig(collision_group=int(group))
+            builder.add_shape_sphere(body, radius=0.1, cfg=cfg, label=f"shape_{index}")
+
+        model = builder.finalize(device="cpu")
+        solver = SolverMuJoCo(model, use_mujoco_contacts=True)
+        mj_model = solver.mj_model
+        geom_of_shape = {
+            int(shape): geom for geom, shape in enumerate(solver.mjc_geom_to_newton_shape.numpy()[0]) if shape >= 0
+        }
+        contype = mj_model.geom_contype.astype(np.int64) & 0xFFFFFFFF
+        conaffinity = mj_model.geom_conaffinity.astype(np.int64) & 0xFFFFFFFF
+        excluded = {int(signature) for signature in mj_model.exclude_signature}
+        for shape_a, shape_b in itertools.combinations(range(model.shape_count), 2):
+            geom_a, geom_b = geom_of_shape[shape_a], geom_of_shape[shape_b]
+            body_a, body_b = sorted((int(mj_model.geom_bodyid[geom_a]), int(mj_model.geom_bodyid[geom_b])))
+            actual = bool(
+                ((contype[geom_a] & conaffinity[geom_b]) or (contype[geom_b] & conaffinity[geom_a]))
+                and ((body_a << 16) + body_b) not in excluded
+            )
+            self.assertEqual(actual, bool(groups[shape_a] == groups[shape_b]), f"MuJoCo pair {(shape_a, shape_b)}")
+
 
 class TestMuJoCoSolverGeomProperties(unittest.TestCase):
     @requires(*MUJOCO_MODULES)
