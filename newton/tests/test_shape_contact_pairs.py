@@ -227,6 +227,28 @@ class TestShapeContactPairs(unittest.TestCase):
         expected = _reference_pairs(bodies, worlds, groups, flags, filters)
         np.testing.assert_array_equal(_sorted_pairs(data.build_pairs()), expected)
 
+    def test_mixed_groups_do_not_left_shift_negative_values(self):
+        """Pack sort keys without left-shifting negative collision groups (undefined behavior in C)."""
+
+        class _NoNegativeShift(np.ndarray):
+            def __lshift__(self, other):
+                if np.any(np.asarray(self) < 0):
+                    raise AssertionError("Left shift of a negative value")
+                return super().__lshift__(other)
+
+        # One global group (in-world pairs) and several global groups (cross-world pairs).
+        for global_groups in ([-1], [-1, 2, -2]):
+            with self.subTest(global_groups=global_groups):
+                count = len(global_groups)
+                bodies = np.append(np.full(count, -1), np.arange(5))
+                worlds = np.append(np.full(count, -1), np.zeros(5, dtype=int))
+                groups = np.array([*global_groups, -1, -2, -2, 1, 2], dtype=np.int32)
+                flags = np.full(len(bodies), newton.ShapeFlags.COLLIDE_SHAPES)
+                data = _ShapeContactPairs(bodies, worlds, groups, flags, [], 1)
+                expected = _reference_pairs(bodies, worlds, groups, flags, np.empty((0, 2), dtype=int))
+                data.shape_group = groups.view(_NoNegativeShift)
+                np.testing.assert_array_equal(_sorted_pairs(data.build_pairs()), expected)
+
     def test_many_worlds_with_compound_bodies(self):
         """Keep mixed-group counting and replay sparse across thousands of worlds."""
         world_count = 10000
