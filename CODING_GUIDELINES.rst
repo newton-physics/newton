@@ -278,15 +278,15 @@ Choose how to report a problem by who has to act on it:
   skips, and conditions the caller cannot change; see
   :ref:`logging-guidelines`.
 
-Every warning must use a :mod:`newton.exceptions` category so applications can
-filter Newton warnings without matching messages:
+Every warning must use a Newton warning category so applications can filter
+Newton warnings without matching messages:
 
-- :class:`~newton.exceptions.NewtonDeprecationWarning` for deprecations, as
+- :class:`~newton.NewtonDeprecationWarning` for deprecations, as
   required by the deprecation policy; and
-- :class:`~newton.exceptions.NewtonWarning`, or a subclass of it, for
+- :class:`~newton.NewtonWarning`, or a subclass of it, for
   everything else.
 
-Keep deprecations out of the :class:`~newton.exceptions.NewtonWarning`
+Keep deprecations out of the :class:`~newton.NewtonWarning`
 hierarchy so :class:`UserWarning` filters do not change how they are reported.
 
 Pass a ``stacklevel`` that attributes the warning to the caller's code rather

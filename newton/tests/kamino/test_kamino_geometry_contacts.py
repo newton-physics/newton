@@ -34,9 +34,8 @@ from newton._src.solvers.kamino._src.solvers.warmstart import (
     _count_current_contacts_by_cached_pair,
     warmstart_contacts_by_matched_geom_pair_key_and_position_with_net_force_backup,
 )
-from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
-from newton.tests.kamino import allow_verbose_output, expect_contact_capacity_warning, setup_tests, test_context
-from newton.tests.unittest_utils import MODULE_LOAD_OUTPUT_RE, NewtonTestCase
+from newton.tests.kamino import expect_contact_capacity_warning, setup_test_output, setup_tests, test_context
+from newton.tests.unittest_utils import NewtonTestCase
 
 logger = logging.getLogger(__name__)
 
@@ -353,24 +352,14 @@ def _make_contact_frame_znorm_np(n: np.ndarray) -> np.ndarray:
 ###
 
 
-class TestGeometryContactFrames(unittest.TestCase):
+class TestGeometryContactFrames(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose  # Set to True for detailed output
 
-        # Set debug-level logging to print verbose test output to console
-        if self.verbose:
-            set_log_level(logging.DEBUG)
-            logger.debug("\n")  # Add newline before test output for better readability
-        else:
-            reset_log_level()
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
+        setup_test_output(self, verbose=self.verbose)
 
     def test_01_make_contact_frame_znorm(self):
         # Create a normal vectors
@@ -451,24 +440,14 @@ class TestGeometryContactFrames(unittest.TestCase):
             self.assertTrue(np.isclose(det, 1.0, atol=1e-6))
 
 
-class TestGeometryContactMode(unittest.TestCase):
+class TestGeometryContactMode(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose  # Set to True for detailed output
 
-        # Set debug-level logging to print verbose test output to console
-        if self.verbose:
-            set_log_level(logging.DEBUG)
-            logger.debug("\n")  # Add newline before test output for better readability
-        else:
-            reset_log_level()
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
+        setup_test_output(self, verbose=self.verbose)
 
     def test_01_contact_mode_opening(self):
         v_input = wp.array([wp.vec3f(0.0, 0.0, 0.01)], dtype=wp.vec3f, device=self.default_device)
@@ -498,24 +477,14 @@ class TestGeometryContactMode(unittest.TestCase):
         self.assertEqual(mode, ContactMode.SLIDING)
 
 
-class TestGeometryContacts(unittest.TestCase):
+class TestGeometryContacts(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose  # Set to True for detailed output
 
-        # Set debug-level logging to print verbose test output to console
-        if self.verbose:
-            set_log_level(logging.DEBUG)
-            logger.debug("\n")  # Add newline before test output for better readability
-        else:
-            reset_log_level()
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
+        setup_test_output(self, verbose=self.verbose)
 
     def test_current_pair_counts_match_legacy_warmstart_scan(self):
         """Match legacy fallback pair counts at cached sorted range starts."""
@@ -748,19 +717,8 @@ class TestGeometryContactConversions(NewtonTestCase):
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose
-        self.allowOutputRegex(MODULE_LOAD_OUTPUT_RE, stream="stdout")
 
-        if self.verbose:
-            allow_verbose_output(self)
-            set_log_level(logging.DEBUG)
-            logger.debug("\n")
-        else:
-            reset_log_level()
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
+        setup_test_output(self, verbose=self.verbose)
 
     ###
     # Helpers
@@ -1674,7 +1632,8 @@ class TestGeometryContactConversions(NewtonTestCase):
         """Genuine box-plane contacts (gapfunc.w <= 0) survive culling.
 
         Covers the full ``(gap, margin)`` matrix with the box placed at or below
-        the rest offset so no contact is speculative.
+        the rest offset so no contact is speculative, and a box that rounding
+        could leave just above it.
         """
         half_extent = 0.25
 
@@ -1683,8 +1642,9 @@ class TestGeometryContactConversions(NewtonTestCase):
             (0.0, 0.1, half_extent - 0.01),
             (0.02, 0.0, half_extent + 0.02),
             (0.02, 0.1, half_extent + 0.02),
+            (0.0, 0.1, half_extent + 5.0e-7),
         ):
-            with self.subTest(margin=margin, gap=gap):
+            with self.subTest(margin=margin, gap=gap, box_z=box_z):
                 scene = build_box_on_plane_scene(box_z, margin=margin, gap=gap, half_extent=half_extent)
                 model = scene.finalize(self.default_device)
                 state = model.state()
@@ -1857,6 +1817,7 @@ class TestGeometryContactConversions(NewtonTestCase):
 
 if __name__ == "__main__":
     # Test setup
+    newton.utils.setup_console_logging()
     setup_tests()
 
     # Run all tests

@@ -29,7 +29,7 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton.exceptions import NewtonWarning
+from newton import NewtonWarning
 from newton.solvers import SolverSteel
 
 TOWER_HEIGHTS = (6, 7, 5, 6)
@@ -142,6 +142,8 @@ class Example:
         self.solver = SolverSteel(
             self.model,
             solve_mode="serial",
+            # With the default 12 iterations the tallest tower can keep swaying at the sleep threshold.
+            iterations=24,
             articulated_contact_response="immediate",
             enable_sleeping=True,
         )

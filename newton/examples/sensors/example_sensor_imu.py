@@ -119,15 +119,15 @@ class Example:
         # finalize model
         self.model = builder.finalize()
 
-        self.imu = newton.sensors.SensorIMU(self.model, self.imu_sites, request_state_attributes=False)
+        self.imu = newton.sensors.SensorIMU(self.model, self.imu_sites)
 
         if self.solver_type == "kamino":
             solver_config = newton.solvers.SolverKamino.Config.from_model(
-                self.model, dynamics_solver="dvi", sparse_dynamics=True, sparse_jacobian=True
+                self.model, dynamics_solver="scc", sparse_dynamics=True, sparse_jacobian=True
             )
             solver_config.use_collision_detector = True
             solver_config.integrator = "moreau"
-            solver_config.dvi.max_alternating_iterations = 8
+            solver_config.scc.max_alternating_iterations = 8
             self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
         else:
             self.solver = newton.solvers.SolverMuJoCo(self.model, njmax=100)

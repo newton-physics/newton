@@ -14,6 +14,7 @@ from newton._src.solvers.mujoco.equality import (
     MjcEqualityTargetKind,
     _add_equality_constraint,
 )
+from newton.tests.unittest_utils import MUJOCO_MODULES, requires
 
 
 def _eq_value(builder, name, idx):
@@ -76,6 +77,7 @@ class TestEqualityConstraints(unittest.TestCase):
         main_builder.add_world(namespaced_builder)
         np.testing.assert_array_equal(main_builder.finalize().test.equality_index.numpy(), [0, 1])
 
+    @requires(*MUJOCO_MODULES)
     def test_multiple_constraints(self):
         self.sim_time = 0.0
         self.frame_dt = 1 / 60
@@ -83,8 +85,9 @@ class TestEqualityConstraints(unittest.TestCase):
 
         builder = newton.ModelBuilder()
 
+        asset_path = os.path.join(os.path.dirname(__file__), "assets", "constraints.xml")
         builder.add_mjcf(
-            os.path.join(os.path.dirname(__file__), "assets", "constraints.xml"),
+            asset_path,
             ignore_names=["floor", "ground"],
             up_axis="Z",
             skip_equality_constraints=False,
@@ -136,18 +139,25 @@ class TestEqualityConstraints(unittest.TestCase):
 
         self.assertEqual(self.solver.mj_model.eq_type.shape[0], 5)
 
-        # Check constraint violations
-        nefc = self.solver.mj_data.nefc  # number of active constraints
-        if nefc > 0:
-            efc_pos = self.solver.mj_data.efc_pos[:nefc]  # constraint violations
-            max_violation = np.max(np.abs(efc_pos))
-            self.assertLess(max_violation, 0.01, f"Maximum constraint violation {max_violation} exceeds threshold")
+        # Compare against native MuJoCo on the same MJCF. The asset is intentionally soft
+        # (joint5 uses solreflimit="-100 -1" and the weld a small torquescale), so large
+        # violations and forces are expected; they must match MuJoCo's.
+        mujoco, _ = newton.solvers.SolverMuJoCo.import_mujoco()
+        native_model = mujoco.MjModel.from_xml_path(asset_path)
+        native_model.opt.timestep = self.sim_dt
+        native_model.opt.integrator = mujoco.mjtIntegrator.mjINT_EULER
+        native_model.opt.iterations = 100
+        native_model.opt.ls_iterations = 50
+        native_data = mujoco.MjData(native_model)
+        mujoco.mj_step(native_model, native_data, nstep=200 * 10)
 
-        # Check constraint forces
-        if nefc > 0:
-            efc_force = self.solver.mj_data.efc_force[:nefc]
-            max_force = np.max(np.abs(efc_force))
-            self.assertLess(max_force, 1000.0, f"Maximum constraint force {max_force} seems unreasonably large")
+        nefc = self.solver.mj_data.nefc  # number of active constraints
+        self.assertGreater(nefc, 0)
+        self.assertEqual(nefc, native_data.nefc)
+        for field in ("efc_pos", "efc_force"):
+            values = np.abs(getattr(self.solver.mj_data, field)[:nefc])
+            native_values = np.abs(getattr(native_data, field)[:nefc])
+            np.testing.assert_allclose(values.max(), native_values.max(), rtol=1e-3, err_msg=field)
 
     def test_target_and_objtype_defaults(self):
         # Pure equality rows default to MjcEqualityTargetKind.NONE / target -1 and carry the
@@ -184,6 +194,7 @@ class TestEqualityConstraints(unittest.TestCase):
         )
         np.testing.assert_array_equal(model.mujoco.equality_constraint_target.numpy(), [-1, -1, -1])
 
+    @requires(*MUJOCO_MODULES)
     def test_equality_constraints_not_duplicated_per_world(self):
         """Test that equality constraints are not duplicated for each world when using separate_worlds=True"""
         # Create a simple robot builder with equality constraints
@@ -617,6 +628,7 @@ class TestEqualityConstraints(unittest.TestCase):
         self.assertEqual(model.joint_count, 3)
         self.assertEqual(model.mujoco.equality_constraint_count, 5)
 
+    @requires(*MUJOCO_MODULES)
     def test_collapse_fixed_joints_keeps_a_satisfied_weld_satisfied(self):
         """Verify a satisfied weld stays satisfied when collapse_fixed_joints merges either of its bodies."""
 
