@@ -1,0 +1,1 @@
+Fix `ViewerViser.url` for IPv6 bind addresses: IPv6 hosts such as `::1` are now bracketed (`http://[::1]:8080`), and the IPv6 wildcard `::` is reported as `localhost` like `0.0.0.0`.

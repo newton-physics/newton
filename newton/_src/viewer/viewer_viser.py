@@ -1495,8 +1495,11 @@ class ViewerViser(ViewerBase):
         """
         # Match viser's startup URL: a wildcard bind is reachable on localhost.
         host = self._server.get_host()
-        if host == "0.0.0.0":
+        if host in ("0.0.0.0", "::"):
             host = "localhost"
+        elif ":" in host and not host.startswith("["):
+            # IPv6 literals have to be bracketed in a URL authority.
+            host = f"[{host}]"
         if self.is_jupyter_notebook:
             return self._build_browser_url(self._port, local_host=host)
         return f"http://{host}:{self._port}"
