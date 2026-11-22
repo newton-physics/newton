@@ -7340,7 +7340,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                         ],
                         device=model.device,
                     )
-                self._friction_patches.store(state_in)
+                self._friction_patches.store(state_in, contacts.rigid_contact_count)
             else:
                 self._friction_patches.previous.valid.zero_()
         if self._contact_warmstart:

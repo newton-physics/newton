@@ -1398,6 +1398,29 @@ def _ground_box(device, **solver_kwargs):
 
 @unittest.skipUnless(wp.is_cuda_available(), "SolverSteel requires CUDA")
 class TestFrictionPatchHistory(unittest.TestCase):
+    def test_store_history_with_changing_contact_count(self):
+        """Retire old lookup entries while copying contact payload only for the live prefix."""
+        points = [(0.01 * i, 0.0, 0.0) for i in range(8)]
+        model, state, contacts, patches = _patch_fixture(points)
+        for count in (8, 3, 0, 2, 8):
+            with self.subTest(count=count):
+                contacts.rigid_contact_count.fill_(count)
+                patches.build(model, state, contacts, shape_material_mu=model.shape_material_mu)
+                # Different values expose both a missed live copy and a redundant tail copy.
+                patches.current.displacement.fill_(wp.vec3(1.0, 2.0, 3.0))
+                patches.previous.displacement.zero_()
+                patches.store(state, contacts.rigid_contact_count)
+
+                np.testing.assert_array_equal(patches.previous.valid.numpy(), patches.current.valid.numpy())
+                for field in ("keys", "indices"):
+                    actual = getattr(patches.previous, field).numpy()[: patches.capacity]
+                    expected = getattr(patches.current, field).numpy()[: patches.capacity]
+                    np.testing.assert_array_equal(actual, expected)
+                stored = patches.previous.displacement.numpy()
+                np.testing.assert_array_equal(stored[:count], patches.current.displacement.numpy()[:count])
+                np.testing.assert_array_equal(stored[count:], 0.0)
+                np.testing.assert_array_equal(patches.previous_q.numpy(), state.body_q.numpy())
+
     def test_surface_motion_transports_with_relocated_anchors(self):
         """Keep zero anchor error on a co-rotating surface when the anchor points move inward."""
         theta, dt = 0.01, 1.0 / 240.0

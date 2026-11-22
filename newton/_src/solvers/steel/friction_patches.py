@@ -1086,6 +1086,7 @@ def _carry_frozen_pairs(
 
 @wp.kernel(enable_backward=False)
 def _store_history(
+    count: wp.array[int],
     q: wp.array[wp.transform],
     frame: _PatchFrame,
     prev: _PatchFrame,
@@ -1097,11 +1098,15 @@ def _store_history(
         previous_q[c] = q[c]
     if c >= frame.valid.shape[0]:
         return
+    # Sorted lookup and raw validity must retire stale history even when the count shrinks.
+    prev.keys[c] = frame.keys[c]
+    prev.indices[c] = frame.indices[c]
+    prev.valid[c] = frame.valid[c]
+    if count and c >= count[0]:
+        return
     normal = frame.normal[c]
     if frame.valid[c] != 0 and frame.body_a[c] >= 0:
         normal = wp.transform_vector(wp.transform_inverse(q[frame.body_a[c]]), normal)
-    prev.keys[c] = frame.keys[c]
-    prev.indices[c] = frame.indices[c]
     prev.normal[c] = normal
     prev.displacement[c] = frame.displacement[c]
     prev.mu[c] = frame.mu[c]
@@ -1114,7 +1119,6 @@ def _store_history(
     prev.anchor_b[c] = frame.anchor_b[c]
     prev.surface_a[c] = frame.surface_a[c]
     prev.surface_b[c] = frame.surface_b[c]
-    prev.valid[c] = frame.valid[c]
     prev.tangent_impulse[c] = frame.tangent_impulse[c]
 
 
@@ -1547,11 +1551,11 @@ class _FrictionPatchState:
             device=src_q.device,
         )
 
-    def store(self, state):
+    def store(self, state, count=None):
         wp.launch(
             _store_history,
             dim=max(self.capacity, self.previous_q.shape[0]),
-            inputs=[state.body_q, self.current, self.previous, self.previous_q],
+            inputs=[count, state.body_q, self.current, self.previous, self.previous_q],
             device=state.body_q.device,
         )
 
