@@ -13513,6 +13513,11 @@ class TestImportMjcfBodyShapeLabels(unittest.TestCase):
         sph = UsdGeom.Sphere.Define(stage, "/World/robot/link_a/col_sphere")
         sph.CreateRadiusAttr(0.1)
         UsdPhysics.CollisionAPI.Apply(sph.GetPrim())
+        vis = UsdGeom.Cube.Define(stage, "/World/robot/link_a/vis_box")
+        vis.CreateSizeAttr(0.08)
+        site = UsdGeom.Sphere.Define(stage, "/World/robot/link_a/tip_site")
+        site.CreateRadiusAttr(0.02)
+        site.GetPrim().AddAppliedSchema("MjcSiteAPI")
 
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
@@ -13521,6 +13526,8 @@ class TestImportMjcfBodyShapeLabels(unittest.TestCase):
 
         self.assertEqual(model.mujoco.body_label, ["/World/robot/link_a"])
         self.assertIn("/World/robot/link_a/col_sphere", model.mujoco.shape_label)
+        self.assertIn("/World/robot/link_a/vis_box", model.mujoco.shape_label)
+        self.assertIn("/World/robot/link_a/tip_site", model.mujoco.shape_label)
 
 
 if __name__ == "__main__":

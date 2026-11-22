@@ -944,7 +944,12 @@ def parse_usd(
         visual_shape_cfg_for_prim.is_visible = is_site or visuals.is_viewport_drawn(prim)
         material_props = visuals.get_material_props_cached(prim)
         shape_color = material_props.get("color")
-        shape_visual_kwargs = {}
+        shape_visual_kwargs: dict[str, Any] = {}
+        shape_custom_attrs = usd.get_custom_attribute_values(
+            prim, builder_custom_attr_shape, context={"builder": builder}
+        )
+        if shape_custom_attrs:
+            shape_visual_kwargs["custom_attributes"] = shape_custom_attrs
         if material_props.get("opacity") is not None:
             shape_visual_kwargs["opacity"] = material_props["opacity"]
         # A textured mesh resolves no scalar color on purpose, so the texture is not tinted;
@@ -1057,6 +1062,12 @@ def parse_usd(
                 subset_meshes = visuals.get_visual_material_subset_meshes(prim)
                 if subset_meshes:
                     for subset_path, subset_mesh in subset_meshes:
+                        subset_prim = stage.GetPrimAtPath(subset_path)
+                        subset_custom_attrs = usd.get_custom_attribute_values(
+                            subset_prim if subset_prim.IsValid() else prim,
+                            builder_custom_attr_shape,
+                            context={"builder": builder},
+                        )
                         subset_shape_id = builder.add_shape_mesh(
                             parent_body_id,
                             xform=xform,
@@ -1065,6 +1076,7 @@ def parse_usd(
                             cfg=visual_shape_cfg_for_prim,
                             color=None,
                             label=subset_path,
+                            custom_attributes=subset_custom_attrs or None,
                         )
                         path_shape_map[subset_path] = subset_shape_id
                         path_shape_scale[subset_path] = scale
