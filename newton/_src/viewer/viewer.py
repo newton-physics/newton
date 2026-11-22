@@ -2986,6 +2986,13 @@ class ViewerBase(ABC):
 
     # creates meshes and instances for each shape in the Model
     def _populate_shapes(self):
+        """Group the model's shapes into instance batches.
+
+        Shapes that agree on every input of their render geometry and batch form a group, whose geometry and
+        batch are resolved once. Groups are visited in the order of their first shape, so geometry and batches
+        are created, and named, in the order a pass over the shapes would create them. Each batch lists its
+        shapes in index order.
+        """
         # convert to NumPy
         shape_body = self.model.shape_body.numpy()
         shape_geo_src = self.model.shape_source
@@ -3006,84 +3013,150 @@ class ViewerBase(ABC):
             self.model._shape_variant_row.numpy() if self.model._has_variant_rows else np.zeros(shape_count, bool)
         )
 
-        # loop over shapes
-        for s in range(shape_count):
-            # skip shapes from non-visible worlds and variant rows
-            if not self._should_render_world(shape_world[s]) or variant_row[s]:
-                continue
+        # skip shapes from non-visible worlds and variant rows
+        keep = ~variant_row
+        if self._visible_worlds is not None:
+            keep &= (shape_world == -1) | np.isin(shape_world, list(self._visible_worlds))
 
-            geo_type = shape_geo_type[s]
-            geo_scale = [float(v) for v in shape_geo_scale[s]]
+        # Gaussians bypass the mesh instancing pipeline; render as point clouds.
+        is_gaussian = shape_geo_type == int(newton.GeoType.GAUSSIAN)
+        for s in np.flatnonzero(keep & is_gaussian).tolist():
             geo_src = shape_geo_src[s]
+            if isinstance(geo_src, newton.Gaussian):
+                parent = shape_body[s]
+                xform = transform_from_array(shape_transform[s])
+                gname = self._qualify(f"/model/gaussians/gaussian_{len(self._gaussian_instances)}")
+                self._gaussian_instances.append(
+                    (gname, geo_src, int(parent), xform, int(shape_world[s]), int(shape_flags[s]), parent == -1)
+                )
+        shapes = np.flatnonzero(keep & ~is_gaussian)
 
-            # Gaussians bypass the mesh instancing pipeline; render as point clouds.
-            if geo_type == newton.GeoType.GAUSSIAN:
-                if isinstance(geo_src, newton.Gaussian):
-                    parent = shape_body[s]
-                    xform = transform_from_array(shape_transform[s])
-                    gname = self._qualify(f"/model/gaussians/gaussian_{len(self._gaussian_instances)}")
-                    self._gaussian_instances.append(
-                        (gname, geo_src, int(parent), xform, int(shape_world[s]), int(shape_flags[s]), parent == -1)
+        if shape_display_opacity is None:
+            opacity = np.ones(len(shapes))
+        else:
+            # Clamp as max(0, min(1, x)) does, which maps NaN to 1; adding 0.0 turns -0.0 into 0.0.
+            opacity = np.fmax(0.0, np.fmin(1.0, shape_display_opacity[shapes].astype(np.float64))) + 0.0
+        transparent = opacity < OPAQUE_OPACITY_THRESHOLD
+        shape_transparent_mask[shapes] = transparent
+
+        batches = []
+        if len(shapes):
+            # One row per shape with every input of its render geometry and batch; adding 0.0 turns -0.0 into 0.0.
+            _, source_index = np.unique(
+                np.fromiter(map(id, shape_geo_src), dtype=np.uint64, count=shape_count), return_inverse=True
+            )
+            sdf = shape_sdf_index[shapes] >= 0 if shape_sdf_index is not None else np.zeros(len(shapes), bool)
+            key = (
+                np.column_stack(
+                    (
+                        source_index[shapes],
+                        shape_geo_type[shapes],
+                        shape_geo_scale[shapes],
+                        shape_geo_thickness[shapes],
+                        shape_geo_is_solid[shapes],
+                        shape_flags[shapes],
+                        sdf,
+                        shape_body[shapes] == -1,
+                        transparent,
                     )
-                continue
-
-            sdf_idx = int(shape_sdf_index[s]) if shape_sdf_index is not None else -1
-            geo_hash, mesh_name, flags, material, uses_scale = self._shape_render_geometry(
-                geo_type,
-                geo_scale,
-                float(shape_geo_thickness[s]),
-                bool(shape_geo_is_solid[s]),
-                geo_src,
-                int(shape_flags[s]),
-                sdf_idx,
+                ).astype(np.float64)
+                + 0.0
             )
+            # Group by a hash of each row, much faster to sort than the rows themselves.
+            row_hash = np.full(len(key), 0xCBF29CE484222325, dtype=np.uint64)
+            for column in key.view(np.uint64).T:
+                row_hash ^= column
+                row_hash *= np.uint64(0x100000001B3)
+                row_hash ^= row_hash >> np.uint64(29)
+            _, first, group = np.unique(row_hash, return_index=True, return_inverse=True)
+            if not np.array_equal(key[first[group]], key):
+                # Two different rows share a hash, or a row holds NaN.
+                _, first, group = np.unique(key, axis=0, return_index=True, return_inverse=True)
+            # Number the groups in the order of their first shape.
+            order = np.argsort(first, kind="stable")
+            rank = np.empty_like(order)
+            rank[order] = np.arange(len(order))
+            group = rank[group.reshape(-1)]
+            first = first[order]
 
-            # shape options
-            parent = shape_body[s]
-            static = parent == -1
-            opacity = float(shape_display_opacity[s]) if shape_display_opacity is not None else 1.0
-            opacity = max(0.0, min(1.0, opacity))
-            transparent = opacity < OPAQUE_OPACITY_THRESHOLD
-            shape_transparent_mask[s] = transparent
-            batch = self._shape_batch(geo_hash, mesh_name, geo_type, static, flags, transparent)
+            group_count = len(first)
+            group_batch = np.empty(group_count, dtype=np.intp)
+            group_material = np.empty((group_count, 4), dtype=np.float32)
+            group_uses_scale = np.empty(group_count, dtype=bool)
+            group_has_source_color = np.zeros(group_count, dtype=bool)
+            group_source_color = np.zeros((group_count, 3), dtype=np.float32)
+            batch_ordinals = {}
+            for g, i in enumerate(first.tolist()):
+                s = int(shapes[i])
+                geo_type = shape_geo_type[s]
+                geo_src = shape_geo_src[s]
+                sdf_idx = int(shape_sdf_index[s]) if shape_sdf_index is not None else -1
+                geo_hash, mesh_name, flags, material, uses_scale = self._shape_render_geometry(
+                    geo_type,
+                    [float(v) for v in shape_geo_scale[s]],
+                    float(shape_geo_thickness[s]),
+                    bool(shape_geo_is_solid[s]),
+                    geo_src,
+                    int(shape_flags[s]),
+                    sdf_idx,
+                )
+                batch = self._shape_batch(
+                    geo_hash, mesh_name, geo_type, shape_body[s] == -1, flags, bool(transparent[i])
+                )
+                ordinal = batch_ordinals.get(id(batch))
+                if ordinal is None:
+                    ordinal = batch_ordinals[id(batch)] = len(batches)
+                    batches.append(batch)
+                group_batch[g] = ordinal
+                group_material[g] = np.asarray(material, dtype=np.float32)
+                group_uses_scale[g] = uses_scale
+                if uses_scale and shape_display_color is None and geo_src.color is not None:
+                    group_has_source_color[g] = True
+                    group_source_color[g] = np.asarray(geo_src.color[0:3], dtype=np.float32)
 
-            xform = transform_from_array(shape_transform[s])
-            scale = np.asarray(geo_scale, dtype=np.float32) if uses_scale else np.array([1.0, 1.0, 1.0])
-
+            scales = np.where(group_uses_scale[group][:, None], shape_geo_scale[shapes], np.float32(1.0))
             if shape_display_color is not None:
-                color = wp.vec3(shape_display_color[s])
-            elif (shape_flags[s] & int(newton.ShapeFlags.COLLIDE_SHAPES)) == 0:
-                color = wp.vec3(0.5, 0.5, 0.5)
+                colors = shape_display_color[shapes]
             else:
-                # Use shape index for color to ensure each collision shape has a different color
-                color = wp.vec3(self._shape_color_map(s))
-            if uses_scale and shape_display_color is None and geo_src.color is not None:
-                color = wp.vec3(geo_src.color[0:3])
-            if geo_type == newton.GeoType.PLANE and shape_display_color is None:
-                color = wp.vec3(0.125, 0.125, 0.15)
+                # Use the shape index for color to ensure each collision shape has a different color
+                palette = np.array(
+                    [self._shape_color_map(i) for i in range(len(newton.ModelBuilder._SHAPE_COLOR_PALETTE))],
+                    dtype=np.float32,
+                )
+                colors = palette[shapes % len(palette)]
+                colors[(shape_flags[shapes] & int(newton.ShapeFlags.COLLIDE_SHAPES)) == 0] = 0.5
+                has_source_color = group_has_source_color[group]
+                colors[has_source_color] = group_source_color[group][has_source_color]
+                colors[shape_geo_type[shapes] == int(newton.GeoType.PLANE)] = (0.125, 0.125, 0.15)
 
-            # add render instance
-            batch.add(
-                parent=parent,
-                xform=xform,
-                scale=scale,
-                color=color,
-                material=material,
-                opacity=opacity,
-                shape_index=s,
-                world=shape_world[s],
-            )
+            # Order the instances by batch, keeping shape order within each batch.
+            instance_batch = group_batch[group]
+            by_batch = np.argsort(instance_batch, kind="stable")
+            offsets = np.concatenate(([0], np.cumsum(np.bincount(instance_batch, minlength=len(batches))))).tolist()
+            populated = {
+                "parents": shape_body[shapes].astype(np.int32),
+                "xforms": shape_transform[shapes].astype(np.float32).reshape(-1, 7),
+                "scales": scales.astype(np.float32).reshape(-1, 3),
+                "colors": colors.astype(np.float32).reshape(-1, 3),
+                "opacities": opacity.astype(np.float32),
+                "materials": group_material[group].reshape(-1, 4),
+                "worlds": shape_world[shapes].astype(np.int32),
+                "model_shapes": shapes.astype(np.int32),
+            }
+            populated = {name: values[by_batch] for name, values in populated.items()}
+            for b, batch in enumerate(batches):
+                lo, hi = offsets[b], offsets[b + 1]
+                batch._populated = {name: values[lo:hi] for name, values in populated.items()}
+                batch.model_shapes = batch._populated["model_shapes"]
 
         self._shape_transparent_mask = shape_transparent_mask
         self._shape_batches_have_transparency = bool(np.any(shape_transparent_mask))
 
         # Build shape -> batch reference mapping for change signalling
-        shape_to_batch: list[ViewerBase.ShapeInstances | None] = [None] * shape_count
-        for batch in self._shape_instances.values():
-            batch._freeze_populated()
-            for s_idx in batch.model_shapes:
-                shape_to_batch[s_idx] = batch
-        self._shape_to_batch = shape_to_batch
+        shape_to_batch = np.full(shape_count, None, dtype=object)
+        for batch in batches:
+            shape_to_batch[batch.model_shapes] = batch
+        self._shape_to_batch = shape_to_batch.tolist()
         self._variant_shape_render = None
         self._select_shape_instances()
 
