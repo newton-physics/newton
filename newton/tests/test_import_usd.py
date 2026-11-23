@@ -57,7 +57,19 @@ _PARTIAL_EQ_SOLREF_WARNING = r"Custom attribute 'mujoco:eq_solref' has \d+ value
 class TestImportUsdPhysics(unittest.TestCase):
     @requires("pxr.Usd", "newton_usd_schemas")
     def test_material_pair_friction_matches_builder(self):
-        """Import pair identity and friction from bound physics materials."""
+        """Import raw material-pair tokens from bound physics materials."""
+        self._check_material_pair_import(registered=False)
+
+    @requires("pxr.Usd", "newton_usd_schemas")
+    def test_material_pair_registered_schema_matches_builder(self):
+        """Import properties declared by the registered NewtonMaterialPairAPI schema."""
+        from pxr import Usd
+
+        if not Usd.SchemaRegistry().FindAppliedAPIPrimDefinition("NewtonMaterialPairAPI"):
+            self.skipTest("NewtonMaterialPairAPI is not registered by the installed newton-usd-schemas.")
+        self._check_material_pair_import(registered=True)
+
+    def _check_material_pair_import(self, *, registered: bool):
         from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
 
         stage = Usd.Stage.CreateInMemory()
@@ -81,22 +93,20 @@ class TestImportUsdPhysics(unittest.TestCase):
 
         pair = stage.DefinePrim("/World/Pair", "Scope")
         schema = "NewtonMaterialPairAPI"
-        if Usd.SchemaRegistry().FindAppliedAPIPrimDefinition(schema):
+        if registered:
             self.assertTrue(pair.ApplyAPI(schema))
         else:
             pair.AddAppliedSchema(schema)
         for index, path in enumerate(material_paths):
             name = f"newton:materialPair:material{index}"
-            relationship = pair.GetRelationship(name) or pair.CreateRelationship(name)
+            relationship = pair.GetRelationship(name) if registered else pair.CreateRelationship(name)
+            self.assertTrue(relationship)
             relationship.SetTargets([path])
-        mu = pair.GetAttribute("newton:materialPair:mu") or pair.CreateAttribute(
-            "newton:materialPair:mu", Sdf.ValueTypeNames.Float
-        )
-        mu.Set(0.25)
-        restitution = pair.GetAttribute("newton:materialPair:restitution") or pair.CreateAttribute(
-            "newton:materialPair:restitution", Sdf.ValueTypeNames.Float
-        )
-        restitution.Set(0.5)
+        for field, value in (("mu", 0.25), ("restitution", 0.5)):
+            name = f"newton:materialPair:{field}"
+            attr = pair.GetAttribute(name) if registered else pair.CreateAttribute(name, Sdf.ValueTypeNames.Float)
+            self.assertTrue(attr)
+            attr.Set(value)
         expected.set_material_pair(*expected_ids, mu=0.25, restitution=0.5)
 
         builder = newton.ModelBuilder()
@@ -113,6 +123,10 @@ class TestImportUsdPhysics(unittest.TestCase):
         self.assertEqual(model.get_material_pair_index(*expected_ids), 0)
         np.testing.assert_array_equal(model.material_pair_values.numpy(), expected_model.material_pair_values.numpy())
 
+        if registered:
+            return
+
+        mu = pair.GetAttribute("newton:materialPair:mu")
         mu.Set(-0.25)
         with self.assertRaisesRegex(ValueError, "Invalid contact material pair mu"):
             newton.ModelBuilder().add_usd(stage, root_path="/World", load_visual_shapes=False)

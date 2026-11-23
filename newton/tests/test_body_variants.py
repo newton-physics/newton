@@ -85,8 +85,8 @@ class TestBodyVariants(unittest.TestCase):
         self.assertEqual(model.get_material_pair_index(3, 3), 1)
         np.testing.assert_array_equal(model.material_pair_values.numpy()["mu"], [[0.25, 0.5]])
 
-        # Repeated merges keep distinct material registries but share the
-        # geometry and variant rows, including through another merge.
+        # Repeated merges share the registry, geometry, and variant rows.
+        # The shared IDs still get translated through another merge.
         repeated = newton.ModelBuilder()
         repeated.add_material("scene")
         repeated.add_world(env)
@@ -97,15 +97,15 @@ class TestBodyVariants(unittest.TestCase):
         model = nested.finalize(device=wp.get_device())
         self.assertEqual(model._variant_shape_count, 3)
         _select(model, [1, 0])
-        np.testing.assert_array_equal(model.shape_material_id.numpy()[:3], [4, 4, 6])
+        np.testing.assert_array_equal(model.shape_material_id.numpy()[:3], [4, 4, 3])
         _select(model, [0, 1])
-        np.testing.assert_array_equal(model.shape_material_id.numpy()[[0, 2, 3]], [3, 7, 7])
+        np.testing.assert_array_equal(model.shape_material_id.numpy()[[0, 2, 3]], [3, 4, 4])
         if model.device.is_cuda:
             choices = wp.array([1, 0], dtype=wp.int32, device=model.device)
             with wp.ScopedCapture(device=model.device) as capture:
                 model.select_body_variants(choices)
             wp.capture_launch(capture.graph)
-            np.testing.assert_array_equal(model.shape_material_id.numpy()[:3], [4, 4, 6])
+            np.testing.assert_array_equal(model.shape_material_id.numpy()[:3], [4, 4, 3])
 
         # A registered material does not require duplicating sets whose
         # shapes all use the default material sentinel.

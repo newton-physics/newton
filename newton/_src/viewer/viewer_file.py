@@ -722,6 +722,11 @@ def transfer_to_model(source_dict: Mapping[str, Any], target_obj, post_load_init
         _check_recorded_visual_meshes(source_dict, target_obj)
 
     for attr_name, source_value in source_dict.items():
+        if target_is_model and attr_name == "material_names":
+            # Shape material IDs and pair keys refer to this recorded registry.
+            target_obj.material_names = tuple(source_value)
+            continue
+
         if target_is_model and attr_name in {
             "_shape_collision_filter_pairs",
             "shape_collision_filter_pairs",

@@ -2491,10 +2491,13 @@ overrides, and consumes torsional and rolling friction in its spatial friction m
 
 Pairs are unordered and can refer to the same material twice. A coefficient
 of zero explicitly sets the pair coefficient. Pair coefficients take precedence
-over individual shape coefficients. Copies created by one call to
-:meth:`~ModelBuilder.replicate` share their remapped material IDs and overrides.
-To register a pair across copies of different builders, read the copied shapes'
-IDs from :attr:`~ModelBuilder.shape_material_id` on the destination builder.
+over individual shape coefficients. Repeated copies of the same unchanged
+material registry share remapped IDs and overrides across
+:meth:`~ModelBuilder.add_builder`, :meth:`~ModelBuilder.add_world`, and
+:meth:`~ModelBuilder.replicate`. Changes to the source registry or its pair
+settings give subsequent copies a new set of IDs. To register a pair across
+copies of different builders, read the copied shapes' IDs from
+:attr:`~ModelBuilder.shape_material_id` on the destination builder.
 
 All worlds share one row of pair coefficients by default. To randomize
 independently across worlds, finalize with ``material_pairs_per_world=True``.

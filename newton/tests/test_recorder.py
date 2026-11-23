@@ -400,8 +400,15 @@ def _test_model_and_state_recorder_with_format(test: TestRecorder, device, file_
         test.assertIsNotNone(new_recorder.deserialized_model)
 
         # Test that we can create a new model and restore it
-        restored_model = newton.Model(device=device)
+        destination = newton.ModelBuilder()
+        default = destination.add_material("destination")
+        body = destination.add_body()
+        destination.add_shape_capsule(body, cfg=destination.ShapeConfig(material_id=default))
+        playback_scene = newton.ModelBuilder()
+        playback_scene.replicate(destination, 2)
+        restored_model = playback_scene.finalize(device=device)
         new_recorder.playback_model(restored_model)
+        test.assertEqual(restored_model.material_names, model.material_names)
 
         # Basic model validation - check that key properties match
         test.assertEqual(restored_model.body_count, model.body_count)

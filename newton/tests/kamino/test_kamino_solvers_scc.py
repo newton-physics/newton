@@ -3357,8 +3357,12 @@ class TestSCCSolver(NewtonTestCase):
         dt = 2.0e-3
         steps = 10
         initial_speed = 3.0
+        baseline_pairs = model.material_pair_values.numpy().copy()
+        updated_pairs = baseline_pairs.copy()
+        updated_pairs["mu"][1, pair_column] = 0.125
         for pipeline in (None, "primitive", "unified"):
             with self.subTest(pipeline=pipeline):
+                model.material_pair_values.assign(baseline_pairs)
                 model.shape_material_mu.fill_(0.5)
                 model.shape_material_mu_static.fill_(0.5)
                 config = SolverKamino.Config(dynamics_solver="scc", use_collision_detector=pipeline is not None)
@@ -3367,9 +3371,7 @@ class TestSCCSolver(NewtonTestCase):
                         pipeline=pipeline, max_contacts_per_world=16, max_contacts_per_pair=8
                     )
                 solver = SolverKamino(model, config=config)
-                pair_values = model.material_pair_values.numpy()
-                pair_values["mu"][1, pair_column] = 0.125
-                model.material_pair_values.assign(pair_values)
+                model.material_pair_values.assign(updated_pairs)
                 updated = np.full(model.shape_count, 0.625, dtype=np.float32)
                 updated[model.body_shapes[3][0]] = 0.875
                 model.shape_material_mu.assign(updated)

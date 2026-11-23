@@ -247,6 +247,10 @@ not show up in builder-state comparisons or survive past either builder's lifeti
 """
 
 
+_MERGED_MATERIAL_REGISTRIES: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+"""Map destination and template to the latest merged material registry snapshot and offset."""
+
+
 def _deduplicate_convex_collision_mesh(source: Mesh) -> Mesh:
     """Build a collision-only mesh containing each exact vertex position once."""
     vertices = source.vertices
@@ -4476,7 +4480,7 @@ class ModelBuilder:
         body_starts = starts("body")
 
         attribute_specs.pop("shape_material_id")
-        material_offset = self._copy_materials(builder) if copy_count else 0
+        material_offset = self._merge_material_registry(builder) if copy_count else 0
         shape_material_ids = source_list("shape_material_id")
         if material_offset:
             shape_material_ids = [
@@ -6714,6 +6718,28 @@ class ModelBuilder:
         if not self._is_integer_scalar(material_id) or int(material_id) not in self._material_names:
             raise ValueError(f"Invalid contact material ID {material_id!r}. Use an ID returned by add_material().")
 
+    def _merge_material_registry(self, source: ModelBuilder) -> int:
+        """Reuse the destination ID range for repeated merges of an unchanged registry."""
+        material_count = len(source._material_names)
+        if not material_count:
+            return 0
+        if source is self:
+            return self._copy_materials(source)
+
+        registries = _MERGED_MATERIAL_REGISTRIES.setdefault(self, weakref.WeakKeyDictionary())
+        previous = registries.get(source)
+        if previous is not None:
+            count, pairs, offset = previous
+            if count == material_count and pairs == source._material_pairs:
+                return offset
+
+        # Names only grow by appending and pair edits replace the entire entry.
+        # Snapshot the pair mapping so later source edits don't change earlier copies.
+        pairs = source._material_pairs.copy()
+        offset = self._copy_materials(source)
+        registries[source] = (material_count, pairs, offset)
+        return offset
+
     def _copy_materials(self, source: ModelBuilder) -> int:
         """Copy a registry into a new range and return the ID offset."""
         if not source._material_names:
@@ -6807,6 +6833,10 @@ class ModelBuilder:
         To add many copies of the same builder to the current world, call
         :meth:`replicate` with ``separate_worlds=False`` instead of calling this method in
         a loop; it merges all copies in one batched pass.
+
+        Repeated copies of the same source builder reuse the translated material IDs
+        while its material registry and pair settings are unchanged. Changes in the
+        source registry apply to subsequent copies behind a new set of material IDs.
 
         The source builder acts as a template: merged entries may share objects
         with it (and across copies when replicating). Mutating such entries in

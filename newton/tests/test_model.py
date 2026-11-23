@@ -4337,6 +4337,52 @@ class TestModelJoints(unittest.TestCase):
 
 
 class TestModelWorld(unittest.TestCase):
+    def test_material_pair_registry_reused_across_builder_copies(self):
+        """Resolve same-source pairs consistently across batched, sequential, and multi-world copies."""
+        template = newton.ModelBuilder()
+        material = template.add_material("surface")
+        template.set_material_pair(material, material, mu=0.25)
+        template.add_shape_sphere(-1, radius=0.1, cfg=template.ShapeConfig(material_id=material))
+
+        for separate_worlds in (False, True):
+            with self.subTest(separate_worlds=separate_worlds):
+                sequential = newton.ModelBuilder()
+                sequential.add_material("surface")
+                for _ in range(4):
+                    if separate_worlds:
+                        sequential.add_world(template)
+                    else:
+                        sequential.add_builder(template)
+                batched = newton.ModelBuilder()
+                batched.add_material("surface")
+                batched.replicate(template, copy_count=4, separate_worlds=separate_worlds)
+                actual = sequential.finalize(device="cpu", material_pairs_per_world=True)
+                expected = batched.finalize(device="cpu", material_pairs_per_world=True)
+                self.assertEqual(actual.material_names, ("surface", "surface"))
+                np.testing.assert_array_equal(actual.shape_material_id.numpy(), [1, 1, 1, 1])
+                first, second = actual.shape_material_id.numpy()[:2]
+                self.assertEqual(actual.get_material_pair_index(first, second), 0)
+                self.assertEqual(actual.get_material_pair_index(0, first), -1)
+                self.assertEqual(actual.material_pair_values.shape, (4 if separate_worlds else 1, 1))
+                np.testing.assert_array_equal(
+                    actual.material_pair_values.numpy(), expected.material_pair_values.numpy()
+                )
+
+        scene = newton.ModelBuilder()
+        scene.add_builder(template)
+        template.set_material_pair(material, material, mu=0.75)
+        scene.add_builder(template)
+        scene.add_builder(template)
+        other = newton.ModelBuilder()
+        other_material = other.add_material("surface")
+        other.set_material_pair(other_material, other_material, mu=0.75)
+        other.add_shape_sphere(-1, radius=0.1, cfg=other.ShapeConfig(material_id=other_material))
+        scene.add_builder(other)
+        model = scene.finalize(device="cpu")
+        np.testing.assert_array_equal(model.shape_material_id.numpy(), [0, 1, 1, 2])
+        np.testing.assert_array_equal(model.material_pair_values.numpy()["mu"], [[0.25, 0.75, 0.75]])
+        self.assertEqual(model.get_material_pair_index(1, 2), -1)
+
     def test_add_world_with_open_edges(self):
         builder = ModelBuilder()
 
