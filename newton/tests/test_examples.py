@@ -42,6 +42,7 @@ from newton.tests.unittest_utils import (
     INFO_LOG_PREFIX_RE,
     MUJOCO_MODULES,
     NEWTON_ASSET_DOWNLOAD_OUTPUT_RE,
+    PXR_WORK_THREAD_LIMIT_OUTPUT_RE,
     NewtonTestCase,
     add_function_test,
     get_selected_cuda_test_devices,
@@ -53,9 +54,6 @@ from newton.tests.unittest_utils import (
 )
 from newton.viewer import ViewerNull
 
-_PXR_WORK_THREAD_LIMIT_OUTPUT_RE = (
-    r"(?s)#+\n#  PXR_WORK_THREAD_LIMIT is overridden to '1'\.  Default is '0'\.  #\n#+\n?"
-)
 _WARP_CUDA_UNAVAILABLE_OUTPUT_RE = (
     r"(?:"
     r"Warp CUDA warning: Could not find or load the NVIDIA CUDA driver\. "
@@ -116,7 +114,7 @@ _ANYMAL_MATERIAL_BINDING_WARNING_RE = (
     r"MaterialBindingAPI is not applied on the prim\n)+"
 )
 _EXAMPLE_ALLOW_OUTPUT_REGEXES = [
-    (_PXR_WORK_THREAD_LIMIT_OUTPUT_RE, "stderr"),
+    (PXR_WORK_THREAD_LIMIT_OUTPUT_RE, "stderr"),
     (NEWTON_ASSET_DOWNLOAD_OUTPUT_RE, "stdout"),
 ]
 _OutputRegexSpec = str | tuple[str, str]
@@ -1422,7 +1420,7 @@ class TestDiffSimExamples(NewtonTestCase):
 def add_diffsim_example_test(**kwargs: Any) -> None:
     extra_allow_output_regexes = kwargs.pop("allow_output_regexes", None) or ()
     allow_output_regexes = [
-        (_PXR_WORK_THREAD_LIMIT_OUTPUT_RE, "stderr"),
+        (PXR_WORK_THREAD_LIMIT_OUTPUT_RE, "stderr"),
         *extra_allow_output_regexes,
     ]
     add_example_test(TestDiffSimExamples, allow_output_regexes=allow_output_regexes, **kwargs)
@@ -1705,7 +1703,7 @@ add_function_test(
 
 
 _CONTACT_EXAMPLE_ALLOW_OUTPUT_REGEXES = [
-    (_PXR_WORK_THREAD_LIMIT_OUTPUT_RE, "stderr"),
+    (PXR_WORK_THREAD_LIMIT_OUTPUT_RE, "stderr"),
 ]
 
 
