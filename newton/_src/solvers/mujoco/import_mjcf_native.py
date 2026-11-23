@@ -150,7 +150,8 @@ def _scale_spec(spec: mujoco.MjSpec, scale: float) -> None:
             linear_tendons.add(tendon.name)
             tendon.range[:] *= scale
             tendon.margin *= scale
-            tendon.springlength[tendon.springlength >= 0] *= scale
+            if not np.all(tendon.springlength == -1):
+                tendon.springlength[:] *= scale
             tendon.width *= scale
     for actuator in spec.actuators:
         actuator.cranklength *= scale
@@ -912,7 +913,7 @@ def _equalities(builder, spec, model, bodies, joints, dofs, sites, tendons, conv
         )
 
 
-def _contacts(builder, spec, model, bodies, geoms, start_shape, self_collisions, custom_values):
+def _contacts(builder, spec, model, geoms, start_shape, self_collisions, custom_values):
     pairs = {pair.id: pair for pair in spec.pairs}
     for i in range(model.npair):
         first, second = int(model.pair_geom1[i]), int(model.pair_geom2[i])
@@ -930,13 +931,13 @@ def _contacts(builder, spec, model, bodies, geoms, start_shape, self_collisions,
             values.update(_attributes(builder, **{f"pair_{key}": getattr(model, f"pair_{name}")[i]}))
         values.update(custom_values.get(("mujoco:pair", pairs[i]), {}))
         builder.add_custom_values(**values)
+    body_geoms = {}
+    for native_geom, shape in geoms.items():
+        body_geoms.setdefault(int(model.geom_bodyid[native_geom]), []).append(shape)
     for signature in model.exclude_signature:
         first, second = int(signature) >> 16, int(signature) & 65535
-        body1, body2 = bodies[first] if first > 0 else -1, bodies[second] if second > 0 else -1
-        if body1 == -2 or body2 == -2:
-            continue
-        for a in builder.body_shapes.get(body1, []):
-            for b in builder.body_shapes.get(body2, []):
+        for a in body_geoms.get(first, ()):
+            for b in body_geoms.get(second, ()):
                 builder.add_shape_collision_filter_pair(a, b)
     selected = [
         i for i in range(start_shape, builder.shape_count) if builder.shape_flags[i] & ShapeFlags.COLLIDE_SHAPES
@@ -990,6 +991,9 @@ def _validate(spec: mujoco.MjSpec) -> None:
     for field in ("flexes", "plugins"):
         if len(getattr(spec, field)):
             reject(field)
+    for kind in ("joints", "tendons"):
+        if any(element.springyield > 0 for element in getattr(spec, kind)):
+            reject(f"spring plasticity on {kind}")
     omitted = [
         field
         for field in ("sensors", "cameras", "lights", "keys", "skins", "numerics", "texts", "tuples")
@@ -1026,7 +1030,7 @@ def _parse_spec(
 ) -> tuple[mujoco.MjSpec, set[mujoco.MjsJoint], set[mujoco.MjsGeom]]:
     import mujoco
 
-    is_xml = source.lstrip().startswith("<")
+    is_xml = source.lstrip().removeprefix("\ufeff").lstrip().startswith("<")
     root = ET.fromstring(sanitize_xml_content(source)) if is_xml else ET.parse(source).getroot()
     # Let authored flags override builder settings, including flags from earlier imports.
     options = ET.Element("option")
@@ -1210,6 +1214,8 @@ def parse_mjcf(
     articulation = builder._check_sequential_composition(parent_body)
     if parent_body != -1 and articulation is None:
         raise ValueError("parent_body must belong to an articulation")
+    if model.nbody > 1 and articulation is not None and builder.articulation_end[articulation] != builder.joint_count:
+        raise ValueError("Cannot attach imported joints after intervening joints outside the parent articulation.")
     SolverMuJoCo.register_custom_attributes(builder)
     _register_native_attributes(builder)
 
@@ -1503,7 +1509,7 @@ def parse_mjcf(
             placement=placement,
         )
     add_mjcf_body_collision_filters(builder, imported_joints, start_shape)
-    _contacts(builder, spec, model, bodies, geoms, start_shape, enable_self_collisions, custom_values)
+    _contacts(builder, spec, model, geoms, start_shape, enable_self_collisions, custom_values)
     if collapse_fixed_joints:
         builder.collapse_fixed_joints(
             joints_to_keep=[

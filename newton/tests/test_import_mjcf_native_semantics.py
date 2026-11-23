@@ -1364,16 +1364,18 @@ class TestImportMjcfNativeSemantics(unittest.TestCase):
                 <joint joint="h" coef="2"/></fixed>
             <fixed><joint joint="s" coef="1"/><joint joint="h" coef="2"/></fixed>
             <fixed range="-1 2" springlength=".5 1"><joint joint="h" coef="2"/></fixed>
+            <fixed springlength="-.4 -.2"><joint joint="s" coef="1"/></fixed>
+            <fixed springlength="-1 .5"><joint joint="s" coef="1"/></fixed>
             </tendon></mujoco>"""
         builder = newton.ModelBuilder()
         builder.add_mjcf_native(xml, scale=2)
         reference = mujoco.MjModel.from_xml_string(xml)
-        factors = np.array([2, 2, 2, 2, 1])[:, None]
+        factors = np.array([2, 2, 2, 2, 1, 2, 2])[:, None]
         expected = reference.tendon_lengthspring * factors
         model = builder.finalize()
         np.testing.assert_allclose(model.mujoco.tendon_springlength.numpy(), expected)
         np.testing.assert_allclose(model.mujoco.tendon_range.numpy(), reference.tendon_range * factors)
-        np.testing.assert_allclose(model.mujoco.tendon_coef.numpy(), [2, 1, 1, 4, 1, 4, 2])
+        np.testing.assert_allclose(model.mujoco.tendon_coef.numpy(), [2, 1, 1, 4, 1, 4, 2, 1, 1])
 
     def test_tendon_springlength_sentinels(self):
         """Recompute automatic tendon rest lengths while retaining explicit zero."""

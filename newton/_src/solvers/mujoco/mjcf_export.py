@@ -12,7 +12,7 @@ import numpy as np
 from ...core.types import MAXVAL
 from ...sim.model import Model
 from .constants import _DISABLE_FLAGS, _ENABLE_FLAGS
-from .enums import _JointType
+from .enums import TrnType, _JointType
 from .mjcf_parameters import (
     _NATIVE_ACTUATOR_FIELDS,
     _NATIVE_GEOM_FIELDS,
@@ -98,7 +98,9 @@ def _validate_native_tendon_paths(model, tendon_rows):
                 )
 
 
-def _publish_native_world_parameters(model, native, mjw_model, joint_dofs, geom_shapes, tendon_rows, actuator_rows):
+def _publish_native_world_parameters(
+    model, native, mjw_model, joint_dofs, geom_shapes, tendon_rows, actuator_rows, shape_world_mapping
+):
     import mujoco
 
     nworld = len(joint_dofs)
@@ -108,11 +110,60 @@ def _publish_native_world_parameters(model, native, mjw_model, joint_dofs, geom_
         if np.any(actuator_rows >= 0):
             count = len(model.mujoco.actuator_world) // nworld
             actuator_rows = np.where(actuator_rows >= 0, actuator_rows + np.arange(nworld)[:, None] * count, -1)
+            attrs = model.mujoco
+            valid = actuator_rows >= 0
+            rows = np.maximum(actuator_rows, 0)
+            for name in ("actuator_trntype", "ctrl_source", "ctrl_type"):
+                values = getattr(attrs, name).numpy()[rows]
+                if np.any(valid & (values != values[0])):
+                    raise ValueError("SolverMuJoCo requires matching actuator declarations across worlds.")
+            transmissions = attrs.actuator_trntype.numpy()[rows]
+            targets = attrs.actuator_trnid.numpy()[rows].copy()
+            for kinds, frequency, columns in (
+                ((TrnType.JOINT, TrnType.JOINT_IN_PARENT), "joint_dof", (0,)),
+                ((TrnType.BODY,), "body", (0,)),
+                ((TrnType.SITE, TrnType.SLIDERCRANK), "shape", (0, 1)),
+                ((TrnType.TENDON,), "tendon", (0,)),
+            ):
+                mask = valid & np.isin(transmissions, kinds)
+                if not np.any(mask):
+                    continue
+                if frequency == "shape":
+                    canonical = np.arange(model.shape_count)
+                    for shape, world_shapes in shape_world_mapping.items():
+                        canonical[world_shapes[world_shapes >= 0]] = shape
+                    for column in columns:
+                        selected = mask & (targets[..., column] >= 0)
+                        indices = np.where(selected, targets[..., column], 0)
+                        targets[..., column] = np.where(selected, canonical[indices], targets[..., column])
+                    continue
+                starts = (
+                    np.arange(nworld) * (len(attrs.tendon_world) // nworld)
+                    if frequency == "tendon"
+                    else getattr(model, f"{frequency}_world_start").numpy()[:nworld]
+                )
+                for column in columns:
+                    targets[..., column] -= np.where(mask & (targets[..., column] >= 0), starts[:, None], 0)
+            if np.any(valid[..., None] & (targets != targets[0])):
+                raise ValueError("SolverMuJoCo requires matching actuator targets and declaration order across worlds.")
         else:
             actuator_rows = None
     pair_rows = _native_pair_rows(model, native, geom_shapes)
     _validate_native_tendon_paths(model, tendon_rows)
-    if joint_dofs.size:
+    if tendon_rows is not None and np.any(tendon_rows >= 0):
+        rows = np.maximum(tendon_rows, 0)
+        flags = model.mujoco.tendon_limited.numpy()[rows]
+        ranges = model.mujoco.tendon_range.numpy()[rows]
+        limited = np.where(flags == mujoco.mjtLimited.mjLIMITED_AUTO, np.any(ranges != 0, axis=-1), flags != 0)
+        if np.any((tendon_rows >= 0) & (limited != native.tendon_limited)):
+            raise ValueError("SolverMuJoCo requires matching tendon limit flags across worlds.")
+    if np.any(joint_dofs >= 0):
+        lower = model.joint_limit_lower.numpy()[np.maximum(joint_dofs, 0)]
+        upper = model.joint_limit_upper.numpy()[np.maximum(joint_dofs, 0)]
+        limited = ~((lower <= -MAXVAL) & (upper >= MAXVAL))
+        scalars = (joint_dofs >= 0) & np.isin(native.jnt_type, (_JointType.SLIDE, _JointType.HINGE))
+        if np.any(scalars & (limited != native.jnt_limited)):
+            raise ValueError("SolverMuJoCo requires matching scalar joint limit flags across worlds.")
         source_types = model.mujoco.native_joint_type.numpy()[np.maximum(joint_dofs, 0)]
         joint_dofs = np.where(source_types == native.jnt_type, joint_dofs, -1)
         flags = model.mujoco.native_joint_limited.numpy()[np.maximum(joint_dofs, 0)]
@@ -121,12 +172,6 @@ def _publish_native_world_parameters(model, native, mjw_model, joint_dofs, geom_
         balls = (joint_dofs >= 0) & (native.jnt_type == _JointType.BALL)
         if np.any(balls & (limited != native.jnt_limited)):
             raise ValueError("SolverMuJoCo requires matching ball joint limit flags across worlds.")
-        lower = model.joint_limit_lower.numpy()[np.maximum(joint_dofs, 0)]
-        upper = model.joint_limit_upper.numpy()[np.maximum(joint_dofs, 0)]
-        limited = ~((lower <= -MAXVAL) & (upper >= MAXVAL))
-        scalars = (joint_dofs >= 0) & np.isin(native.jnt_type, (_JointType.SLIDE, _JointType.HINGE))
-        if np.any(scalars & (limited != native.jnt_limited)):
-            raise ValueError("SolverMuJoCo requires matching scalar joint limit flags across worlds.")
     mappings = {
         "joint": joint_dofs,
         "dof": joint_dofs[:, native.dof_jntid],

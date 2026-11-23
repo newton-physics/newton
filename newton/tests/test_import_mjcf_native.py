@@ -22,6 +22,7 @@ import warp as wp
 import newton
 from newton._src.utils.texture import normalize_texture
 from newton.solvers import SolverMuJoCo, SolverXPBD
+from newton.solvers import mujoco as mujoco_authoring
 from newton.tests import test_import_mjcf
 from newton.tests.test_mujoco_general_actuators import MJCF_SLIDERCRANK_ACTUATOR
 from newton.tests.unittest_utils import requires
@@ -206,7 +207,7 @@ class TestImportMjcfNative(unittest.TestCase):
                     )
                     texture = builder.shape_source[0].texture
                     if isinstance(texture, str):
-                        self.assertEqual(texture, texture_path)
+                        self.assertEqual(Path(texture), Path(texture_path))
                     else:
                         np.testing.assert_array_equal(texture, [[[255, 0, 0]]])
 
@@ -793,6 +794,7 @@ class TestImportMjcfNative(unittest.TestCase):
         self.assertTrue(solver.mjw_model.flg_adhesion)
 
         attached = newton.ModelBuilder()
+        ground = attached.add_ground_plane()
         host = attached.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
         host_shape = attached.add_shape_sphere(host, radius=0.1)
         attached.add_mjcf_native(
@@ -812,6 +814,67 @@ class TestImportMjcfNative(unittest.TestCase):
         )
         self.assertIn(tuple(sorted((floor, link))), attached._shape_collision_filter_pairs)
         self.assertNotIn(tuple(sorted((host_shape, link))), attached._shape_collision_filter_pairs)
+        self.assertNotIn(tuple(sorted((ground, link))), attached._shape_collision_filter_pairs)
+
+    def test_builder_authored_limit_flags_across_worlds(self):
+        """Include builder-authored joints when validating a shared limit topology."""
+        builder = newton.ModelBuilder()
+        builder.begin_world()
+        builder.add_mjcf_native(
+            '<mujoco><worldbody><body><joint type="slide"/><geom size=".1"/></body></worldbody></mujoco>'
+        )
+        builder.end_world()
+        builder.begin_world()
+        body = builder.add_link()
+        builder.add_articulation([builder.add_joint_prismatic(-1, body, axis=(0, 0, 1), limit_lower=0, limit_upper=1)])
+        builder.add_shape_sphere(body, radius=0.1)
+        builder.end_world()
+        with self.assertRaisesRegex(ValueError, "scalar joint limit flags"):
+            SolverMuJoCo(builder.finalize(), disable_contacts=True)
+
+    def test_tendon_limit_flags_across_worlds(self):
+        """Reject differing tendon limit flags while allowing different enabled bounds."""
+        builder = newton.ModelBuilder()
+        for limited, bounds in (("false", "0 1"), ("true", "0 2")):
+            builder.begin_world()
+            builder.add_mjcf_native(f'''<mujoco><worldbody><body><joint name="j" type="slide"/>
+                <geom size=".1"/></body></worldbody><tendon><fixed limited="{limited}" range="{bounds}">
+                <joint joint="j" coef="1"/></fixed></tendon></mujoco>''')
+            builder.end_world()
+        with self.assertRaisesRegex(ValueError, "tendon limit flags"):
+            SolverMuJoCo(builder.finalize(), disable_contacts=True)
+        builder.custom_attributes["mujoco:tendon_limited"].values[0] = 1
+        solver = SolverMuJoCo(builder.finalize(), disable_contacts=True)
+        np.testing.assert_allclose(solver.mjw_model.tendon_range.numpy()[:, 0], [[0, 1], [0, 2]])
+
+    def test_actuator_order_across_worlds(self):
+        """Reject mismatched servo rows instead of swapping their delayed commands."""
+        actuators = [
+            '<position joint="a" kp="2" delay=".003" nsample="8"/>',
+            '<position joint="b" kp="2" delay=".005" nsample="8"/>',
+        ]
+        builder = newton.ModelBuilder()
+        for declarations in (actuators, actuators[::-1]):
+            builder.begin_world()
+            builder.add_mjcf_native(f"""<mujoco><worldbody><body><joint name="a"/><geom size=".1"/></body>
+                <body pos="1 0 0"><joint name="b"/><geom size=".1"/></body></worldbody>
+                <actuator>{"".join(declarations)}</actuator></mujoco>""")
+            builder.end_world()
+        with self.assertRaisesRegex(ValueError, "actuator targets and declaration order"):
+            SolverMuJoCo(builder.finalize(), disable_contacts=True)
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf_native('<mujoco><worldbody><site name="anchor" pos="0 0 1"/></worldbody></mujoco>')
+        for _ in range(2):
+            builder.begin_world()
+            builder.add_mjcf_native("""<mujoco><worldbody><body><joint/><geom size=".1"/><site name="tip"/>
+                </body></worldbody><actuator><general site="tip"/></actuator></mujoco>""")
+            builder.end_world()
+        for target in builder.custom_attributes["mujoco:actuator_trnid"].values:
+            target[1] = 0
+        solver = SolverMuJoCo(builder.finalize(), disable_contacts=True)
+        self.assertEqual(solver.mjw_data.nworld, 2)
+        self.assertEqual(solver.mj_model.actuator_trnid[0, 1], 0)
 
     def test_equalities(self):
         """Preserve body and joint equalities with and without Newton conversion."""
@@ -1638,6 +1701,105 @@ class TestImportMjcfNative(unittest.TestCase):
         for shape in range(4):
             self.assertIn((shape, 4), builder.shape_collision_filter_pairs)
 
+    def test_attached_collision_filter_opt_outs(self):
+        """Respect host shape and fixed-joint collision opt-outs during attachment."""
+        hinge = {
+            "joint_type": newton.JointType.REVOLUTE,
+            "angular_axes": [newton.ModelBuilder.JointDofConfig(axis=(0, 0, 1))],
+        }
+        for shape_filter, joint_filter in ((False, True), (True, False), (True, True)):
+            with self.subTest(shape_filter=shape_filter, joint_filter=joint_filter):
+                builder = newton.ModelBuilder()
+                parent, child = builder.add_link(), builder.add_link()
+                builder.add_articulation(
+                    [
+                        builder.add_joint_free(parent),
+                        builder.add_joint_fixed(parent, child, collision_filter_parent=joint_filter),
+                    ]
+                )
+                builder.add_shape_sphere(
+                    parent, radius=0.1, cfg=builder.ShapeConfig(collision_filter_parent=shape_filter)
+                )
+                builder.add_shape_sphere(child, radius=0.1)
+                builder.add_mjcf_native(
+                    '<mujoco><worldbody><body><geom size=".1"/></body></worldbody></mujoco>',
+                    parent_body=child,
+                    base_joint=hinge if not shape_filter else None,
+                )
+                self.assertEqual((0, 2) in builder.shape_collision_filter_pairs, shape_filter and joint_filter)
+                self.assertIn((1, 2), builder.shape_collision_filter_pairs)
+
+        builder = newton.ModelBuilder()
+        parent = builder.add_link()
+        builder.add_articulation([builder.add_joint_fixed(-1, parent, collision_filter_parent=False)])
+        builder.add_shape_sphere(parent, radius=0.1)
+        builder.add_mjcf_native(
+            '<mujoco><worldbody><body><geom size=".1"/></body></worldbody></mujoco>',
+            parent_body=parent,
+            base_joint=hinge,
+        )
+        self.assertIn((0, 1), builder.shape_collision_filter_pairs)
+
+    def test_attachment_after_loop_joint_preserves_builder(self):
+        """Reject an unextendable articulation before adding attachment rows."""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf_native("""<mujoco><worldbody><body><joint/><geom size=".1"/>
+            <body name="b"><joint/><geom size=".1"/></body></body></worldbody>
+            <equality><weld body1="b"/></equality></mujoco>""")
+        before = builder.body_count, builder.joint_count, builder.shape_count
+        for _ in range(2):
+            with self.assertRaisesRegex(ValueError, "Cannot attach imported joints"):
+                builder.add_mjcf_native(
+                    '<mujoco><worldbody><body><geom size=".1"/></body></worldbody></mujoco>', parent_body=0
+                )
+            self.assertEqual((builder.body_count, builder.joint_count, builder.shape_count), before)
+
+        builder.add_mjcf_native('<mujoco><worldbody><geom size=".1"/></worldbody></mujoco>', parent_body=0)
+        self.assertEqual(
+            (builder.body_count, builder.joint_count, builder.shape_count), (before[0], before[1], before[2] + 1)
+        )
+
+    def test_native_static_asset_with_flex(self):
+        """Keep native geom publication when all exported joints belong to flex particles."""
+        asset = newton.ModelBuilder()
+        asset.default_shape_cfg.gap = 0.0
+        asset.add_mjcf_native(
+            '<mujoco><worldbody><geom type="plane" size="1 1 .1" adhesion=".3"/></worldbody></mujoco>'
+        )
+        asset.add_cloth_grid(
+            pos=wp.vec3(0, 0, 1),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0),
+            dim_x=1,
+            dim_y=1,
+            cell_x=0.1,
+            cell_y=0.1,
+            mass=0.1,
+        )
+        mujoco_authoring.add_flex(
+            asset, triangles=range(asset.tri_count), elastic2d="both", thickness=0.001, radius=0.01
+        )
+        builder = newton.ModelBuilder()
+        builder.replicate(asset, 2)
+        solver = SolverMuJoCo(builder.finalize())
+        self.assertGreater(solver.mj_model.njnt, 0)
+        np.testing.assert_array_equal(solver.mjc_jnt_to_newton_dof.numpy(), -1)
+        np.testing.assert_allclose(solver.mjw_model.geom_adhesion.numpy(), 0.3)
+
+    def test_native_tendon_requires_exported_axes(self):
+        """Reject a partial fixed tendon when a compound root becomes mocap."""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf_native("""<mujoco><worldbody><body><joint name="x" type="slide"/><joint name="y"/>
+            <geom size=".1"/><body><joint name="z"/><geom size=".1"/></body></body></worldbody>
+            <tendon><fixed name="t"><joint joint="x" coef="1"/><joint joint="z" coef="1"/></fixed></tendon></mujoco>""")
+        solver = SolverMuJoCo(builder.finalize(), disable_contacts=True)
+        self.assertEqual(solver.mj_model.tendon_num[0], 2)
+        builder.body_flags[0] = newton.BodyFlags.KINEMATIC
+        builder.body_mass[0] = 0
+        builder.body_inertia[0] = wp.mat33(0)
+        with self.assertRaisesRegex(ValueError, "Fixed tendon 't'.*DOF 0"):
+            SolverMuJoCo(builder.finalize(), disable_contacts=True)
+
     def test_import_after_existing_collision_filters(self):
         """Accept materialized filters and independent articulations sharing a body."""
         for materialized, shared_body in product((False, True), repeat=2):
@@ -1740,7 +1902,8 @@ class TestImportMjcfNative(unittest.TestCase):
     def test_site_equality_with_padded_meshes(self):
         xml = """<mujoco><asset><mesh name="m" vertex="0 0 0 1 0 0 0 1 0 0 0 1"/></asset>
             <worldbody><body><freejoint/><geom size=".1"/>{mesh}<site name="a"/><site name="b"/>
-            </body></worldbody><equality><connect site1="a" site2="b"/></equality></mujoco>"""
+            </body></worldbody><equality><connect site1="a" site2="b"/></equality>
+            <actuator><general site="a" refsite="b"/></actuator></mujoco>"""
         builder = newton.ModelBuilder()
         for mesh in ("", '<geom type="mesh" mesh="m" contype="0" conaffinity="0" density="0"/>'):
             builder.begin_world()
@@ -1750,6 +1913,7 @@ class TestImportMjcfNative(unittest.TestCase):
         sites = solver.mj_model.eq_objtype == solver._mujoco.mjtObj.mjOBJ_SITE
         np.testing.assert_array_equal(solver.mj_model.eq_obj1id[sites], [0])
         np.testing.assert_array_equal(solver.mj_model.eq_obj2id[sites], [1])
+        np.testing.assert_array_equal(solver.mj_model.actuator_trnid, [[0, 1]])
 
     def test_invalid_base_joint_before_mutation(self):
         builder = newton.ModelBuilder()
@@ -1882,6 +2046,25 @@ class TestImportMjcfNative(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     builder.add_mjcf_native(xml)
                 self.assertEqual((builder.body_count, builder.joint_count, builder.shape_count), (0, 0, 0))
+
+    def test_native_rejects_spring_plasticity(self):
+        """Reject plastic springs before mutation while accepting elastic springs."""
+        for kind, springyield in product(("joint", "tendon"), (0, 1)):
+            with self.subTest(kind=kind, springyield=springyield):
+                spring = f'stiffness="10" springyield="{springyield}"'
+                joint = f'<joint name="j" type="slide" {spring if kind == "joint" else ""}/>'
+                tendon = (
+                    f'<tendon><fixed {spring}><joint joint="j" coef="1"/></fixed></tendon>' if kind == "tendon" else ""
+                )
+                xml = f'<mujoco><worldbody><body>{joint}<geom size=".1"/></body></worldbody>{tendon}</mujoco>'
+                builder = newton.ModelBuilder()
+                if springyield:
+                    with self.assertRaisesRegex(NotImplementedError, "spring plasticity"):
+                        builder.add_mjcf_native(xml)
+                    self.assertEqual((builder.body_count, builder.joint_count, builder.shape_count), (0, 0, 0))
+                else:
+                    builder.add_mjcf_native(xml)
+                    self.assertEqual(builder.body_count, 1)
 
     def test_native_requires_compilable_sources(self):
         """Keep standalone mass and collision-hull requirements explicit."""
@@ -2017,6 +2200,10 @@ class TestImportMjcfNative(unittest.TestCase):
 
     def test_source_errors_preserve_context(self):
         """Report file and parse errors without suggesting an importer switch."""
+        for prefix in ("", "\ufeff", " \ufeff\n"):
+            builder = newton.ModelBuilder()
+            builder.add_mjcf_native(prefix + '<mujoco><worldbody><geom size=".1"/></worldbody></mujoco>')
+            self.assertEqual(builder.shape_count, 1)
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "parts").mkdir()

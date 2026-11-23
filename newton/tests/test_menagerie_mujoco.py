@@ -2009,7 +2009,10 @@ class TestMenagerieNativeMJCF_UR5eAllegro(TestMenagerieNativeMJCF):
     def setUpClass(cls):
         """Load independently valid arm and hand sources."""
         super().setUpClass()
-        cls.hand_path = download_menagerie_asset("wonik_allegro") / "right_hand.xml"
+        try:
+            cls.hand_path = download_menagerie_asset("wonik_allegro") / "right_hand.xml"
+        except (OSError, TimeoutError, ConnectionError) as e:
+            raise unittest.SkipTest(f"Failed to download wonik_allegro: {e}") from e
 
     def _create_newton_model(self) -> newton.Model:
         """Attach the hand through the builder's parent_body API."""

@@ -36,7 +36,10 @@ def set_mjcf_joint_collision_filter(builder, joint: int, filter_parent: bool) ->
         ancestor, parent_joint = next(
             (entry for entry in parents if builder.joint_articulation[entry[1]] >= 0), parents[0]
         )
-        if builder.joint_type[parent_joint] != JointType.FIXED:
+        if (
+            builder.joint_type[parent_joint] != JointType.FIXED
+            or not builder.joint_collision_filter_parent[parent_joint]
+        ):
             break
         parent = ancestor
     builder.joint_collision_filter_parent[joint] &= filter_parent and parent >= 0
@@ -67,7 +70,11 @@ def add_mjcf_body_collision_filters(builder, joint_indices: Sequence[int], start
     for joint in joints:
         child = builder.joint_child[joint]
         parent = builder.joint_parent[joint]
-        welded = builder.joint_type[joint] == JointType.FIXED and not builder.body_flags[child] & BodyFlags.KINEMATIC
+        welded = (
+            builder.joint_type[joint] == JointType.FIXED
+            and builder.joint_collision_filter_parent[joint]
+            and not builder.body_flags[child] & BodyFlags.KINEMATIC
+        )
         weld_roots[child] = weld_roots.get(parent, parent) if welded else child
 
     groups = {}
@@ -110,7 +117,11 @@ def add_mjcf_body_collision_filters(builder, joint_indices: Sequence[int], start
             child_shapes = groups.get((-1, child_root), []) + child_shapes
         for first in parent_shapes:
             for second in child_shapes:
-                if first >= start_shape or second >= start_shape:
+                if (
+                    (first >= start_shape or second >= start_shape)
+                    and builder._shape_filters_parent(first)
+                    and builder._shape_filters_parent(second)
+                ):
                     builder.add_shape_collision_filter_pair(first, second)
 
 

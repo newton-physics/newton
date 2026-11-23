@@ -130,9 +130,12 @@ velocity and adhesion, and actuator delay and interpolation retain per-world
 values at solver construction. Fluid coefficients, actuator groups, and
 history-buffer sample counts must match across corresponding entities;
 different values raise ``ValueError`` because their compiled layout is shared.
-Corresponding joints must agree on whether limits are enabled; enabled bounds
-may differ across worlds.
+Corresponding joints and tendons must agree on whether limits are enabled;
+enabled bounds may differ across worlds. Actuator declarations must have
+matching targets and control kinds in the same order.
 Rebuild the solver after editing these native attributes.
+
+Joint and tendon spring plasticity (positive ``springyield``) is rejected.
 
 Without a custom resolver, file-backed native imports use MuJoCo's asset-path
 rules. The legacy importer resolves ``assetdir`` and ``meshdir`` separately for

@@ -3972,8 +3972,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     coef = float(tendon_coef[j])
                     if native_tendon_dofs is not None and native_tendon_dofs[j] >= 0 and dof_names is not None:
                         joint_name = dof_names.get(int(native_tendon_dofs[j]))
-                        if joint_name is not None:
-                            fixed_wraps.append((joint_name, coef))
+                        if joint_name is None:
+                            raise ValueError(
+                                f"Fixed tendon {tendon_label!r} requires DOF {native_tendon_dofs[j]}, "
+                                "which has no exported MuJoCo joint."
+                            )
+                        fixed_wraps.append((joint_name, coef))
                         continue
                     if newton_joint < 0:
                         warnings.warn(
@@ -9904,6 +9908,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     geom_shape_mapping,
                     mjc_tendon_to_newton_tendon_np if ntendon else None,
                     actuator_custom_attr_idx if len(actuator_custom_attr_idx) else None,
+                    shape_world_mapping,
                 )
 
             if separate_worlds:
