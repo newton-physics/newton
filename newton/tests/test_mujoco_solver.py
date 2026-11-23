@@ -16617,6 +16617,34 @@ class TestMuJoCoBodyGravityScale(unittest.TestCase):
         with self.assertRaisesRegex(NotImplementedError, "unless a body has a positive one"):
             solver.notify_model_changed(ModelFlags.BODY_INERTIAL_PROPERTIES)
 
+    def _passive_flags_model(self, scale, spring, damper, use_mujoco_cpu):
+        builder = self._builder((0.0, 0.0, -10.0))
+        self._add_free_body(builder, scale, 0.0)
+        model = builder.finalize(device="cpu" if use_mujoco_cpu else None)
+        model.mujoco.flag_spring.fill_(spring)
+        model.mujoco.flag_damper.fill_(damper)
+        return model
+
+    def test_spring_and_damper_disabled(self):
+        """Raise for a scaled dynamic body when MuJoCo skips gravcomp, and apply the scale with one of them enabled."""
+        for use_mujoco_cpu in (False, True):
+            for spring, damper in ((False, False), (False, True), (True, False)):
+                with self.subTest(use_mujoco_cpu=use_mujoco_cpu, spring=spring, damper=damper):
+                    model = self._passive_flags_model(0.0, spring, damper, use_mujoco_cpu)
+                    if spring or damper:
+                        solver = SolverMuJoCo(model, use_mujoco_cpu=use_mujoco_cpu)
+                        state_0, state_1 = model.state(), model.state()
+                        solver.step(state_0, state_1, model.control(), None, self.DT)
+                        np.testing.assert_allclose(state_1.body_qd.numpy()[0], np.zeros(6), atol=1.0e-6)
+                        continue
+                    with self.assertRaisesRegex(NotImplementedError, "spring and damper disabled"):
+                        SolverMuJoCo(model, use_mujoco_cpu=use_mujoco_cpu)
+                    model = self._passive_flags_model(1.0, spring, damper, use_mujoco_cpu)
+                    solver = SolverMuJoCo(model, use_mujoco_cpu=use_mujoco_cpu)
+                    model.body_gravity_scale.fill_(0.0)
+                    with self.assertRaisesRegex(NotImplementedError, "spring and damper disabled"):
+                        solver.notify_model_changed(ModelFlags.BODY_GRAVITY_PROPERTIES)
+
     def test_clamped_actuator_gravcomp(self):
         """Count the compensation of removed weight against the actuator force limit; the coupling hook ignores it."""
         for scale, gravcomp in ((1.0, 1.0), (0.5, 0.0), (0.0, 0.0)):

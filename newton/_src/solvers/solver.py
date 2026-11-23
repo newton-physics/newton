@@ -1038,7 +1038,7 @@ class SolverBase:
         """
         return self.model.device
 
-    def _notify_body_gravity_scale(self, flags: ModelFlags | int, *, applies_scale: bool) -> None:
+    def _notify_body_gravity_scale(self, flags: ModelFlags | int, *, applies_scale: bool, reason: str = "") -> None:
         """Check :attr:`~newton.Model.body_gravity_scale` after a notification that can change it or the bodies it
         applies to; see :meth:`_validate_body_gravity_scale`."""
         if flags & ModelFlags.BODY_GRAVITY_PROPERTIES:
@@ -1051,9 +1051,9 @@ class SolverBase:
                 flags & ModelFlags.BODY_PROPERTIES and self._body_gravity_scale_kinematic_nonunit
             )
         if check:
-            self._validate_body_gravity_scale(applies_scale=applies_scale)
+            self._validate_body_gravity_scale(applies_scale=applies_scale, reason=reason)
 
-    def _validate_body_gravity_scale(self, *, applies_scale: bool) -> None:
+    def _validate_body_gravity_scale(self, *, applies_scale: bool, reason: str = "") -> None:
         """Reject non-finite :attr:`~newton.Model.body_gravity_scale` values, and values other than 1 on
         dynamic bodies unless the solver applies them.
 
@@ -1083,7 +1083,7 @@ class SolverBase:
             raise ValueError(f"Model.body_gravity_scale of body {body} must be finite, got {values[body]}")
         if dynamic_nonunit and not applies_scale:
             raise NotImplementedError(
-                f"{type(self).__name__} does not support Model.body_gravity_scale values other than 1"
+                f"{type(self).__name__} does not support Model.body_gravity_scale values other than 1{reason}"
             )
 
     def _init_kinematic_state(self):

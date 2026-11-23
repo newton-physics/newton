@@ -529,6 +529,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
           weight, and with ``actuatorgravcomp`` the compensation counts against the actuator force limits.
           ``s * (1 - gravcomp) > 1`` gives a negative gravcomp, which native MuJoCo (``use_mujoco_cpu=True``)
           applies only when some body has a positive one; otherwise :class:`NotImplementedError` is raised.
+          MuJoCo skips gravity compensation when both the ``spring`` and ``damper`` flags are disabled, so a
+          dynamic body with a scale other than ``1`` then raises :class:`NotImplementedError`.
 
     Joint support:
         - Supported joint types: PRISMATIC, REVOLUTE, BALL, FIXED, FREE, D6.
@@ -6129,7 +6131,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         if flags & ModelFlags.SHAPE_PROPERTIES:
             self._validate_compiled_mesh_scales()
 
-        self._notify_body_gravity_scale(flags, applies_scale=True)
+        # MuJoCo computes gravcomp in its passive force pass, which it skips when springs and dampers are disabled.
+        passive_disabled = int(self._mujoco.mjtDisableBit.mjDSBL_SPRING | self._mujoco.mjtDisableBit.mjDSBL_DAMPER)
+        self._notify_body_gravity_scale(
+            flags,
+            applies_scale=self.mj_model.opt.disableflags & passive_disabled != passive_disabled,
+            reason=" with both spring and damper disabled",
+        )
         if flags & ModelFlags.BODY_INERTIAL_PROPERTIES:
             self._update_model_inertial_properties()
             # set_const_fixed / set_const_0 (called below) recompute MuJoCo

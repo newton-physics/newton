@@ -1470,9 +1470,10 @@ class Model:
         :class:`~newton.solvers.SolverFeatherstone`, :class:`~newton.solvers.SolverSteel` and the inverse
         dynamics functions remove the force from the body, so joint reactions such as ``body_parent_f``
         exclude the removed weight. :class:`~newton.solvers.SolverMuJoCo` compensates it with MuJoCo's
-        gravity compensation, with the limitations listed there. The other rigid-body solvers raise
-        :class:`NotImplementedError` when a dynamic body they integrate has a scale other than ``1``. After
-        changing values in place, call ``notify_model_changed(ModelFlags.BODY_GRAVITY_PROPERTIES)``.
+        gravity compensation, with the limitations listed there, and raises :class:`NotImplementedError` for a
+        scaled dynamic body when both its ``spring`` and ``damper`` flags are disabled. The other rigid-body
+        solvers raise :class:`NotImplementedError` when a dynamic body they integrate has a scale other than
+        ``1``. After changing values in place, call ``notify_model_changed(ModelFlags.BODY_GRAVITY_PROPERTIES)``.
         """
         self.body_label: list[str] = []
         """Rigid body labels, shape [body_count], str."""
