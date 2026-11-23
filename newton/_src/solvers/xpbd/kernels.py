@@ -1095,8 +1095,8 @@ def solve_body_joints(
             q_align = wp.quat_between_vectors(twist_axis, ang_axis)
             q_p = q_p * q_align
             q_c = q_c * q_align
-            if lin_axis_count == 0:
-                # linear axes are given in the joint frame, so the linear rows turn only without them
+            # linear axes are given in the joint frame, and a hinge along a frame axis already has its own linear row
+            if lin_axis_count == 0 and (ang_axis[0] != 0.0 or ang_axis[1] * ang_axis[2] != 0.0):
                 X_wp = wp.transform(x_p, q_p)
                 X_wc = wp.transform(x_c, q_c)
 
