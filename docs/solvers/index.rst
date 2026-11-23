@@ -146,7 +146,7 @@ Supported Features
      - ❌
      - ✅
      - ✅
-     - ❌
+     - ✅ tetrahedral elasticity
      - ❌
      - ❌
    * - :class:`~newton.solvers.SolverVBD`
