@@ -44,3 +44,8 @@ uvx --with virtualenv asv run --launch-method spawn main^!
   - In test mode, `test_post_step()` runs after each simulation step and `test_final()` runs after the example completes.
 - Register the example in `README.md` with its `python -m newton.examples <name>` command and a 320x320 JPEG screenshot.
 - Include a module docstring with a general description, success criteria, and run commands, as described in `docs/guide/development.rst` (Embedded success criteria). CI checks every registered example.
+
+## Viewer Inspection Workspace
+
+- When adding or modifying `Model.AttributeFrequency` domains, `GeoType` / `JointType` / enum values, `Contacts` fields, `ViewerBase` `show_*` display options, or new top-level `Model` / `SolverBase` concepts, update the interactive workspace GUI (`newton/_src/viewer/`) so the new concepts are inspectable and controllable.
+- Run `uv run --extra dev -m newton.tests -k test_api` and `uv run --extra dev -m newton.tests -k test_viewer_controls` to verify the viewer contract and GUI coverage tests pass.

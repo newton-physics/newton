@@ -455,7 +455,11 @@ When reviewing a new or substantially changed public API, check that:
 - authorable features satisfy the schema and importer policy above;
 - optional parameters are keyword-only unless an established idiom justifies
   positional use;
-- reusable Warp-native math is placed at the appropriate ownership layer; and
+- reusable Warp-native math is placed at the appropriate ownership layer;
+- new ``Model.AttributeFrequency`` domains, ``GeoType``/``JointType`` enums,
+  ``Contacts`` fields, ``ViewerBase`` display options, and top-level
+  ``Model``/``SolverBase`` concepts are reflected in the interactive inspection
+  workspace (``newton/_src/viewer/``); and
 - compatibility changes follow the deprecation policy and update generated API
   documentation.
 
