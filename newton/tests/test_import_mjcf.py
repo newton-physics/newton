@@ -11333,6 +11333,40 @@ class TestContypeConaffinityZero(unittest.TestCase):
         )
         self.assertTrue(masks_allow_pair)
 
+    def test_merged_builders_keep_negative_collision_groups_distinct(self):
+        """Assets merged with add_builder collide like assets imported into one builder."""
+        chain = """<mujoco><worldbody><body name="base" pos="{x} 0 0.5"><freejoint/>
+            <geom type="box" size="0.05 0.05 0.05" contype="{contype}" conaffinity="{conaffinity}"/>
+            <body name="link" pos="0.2 0 0"><joint type="hinge" axis="0 0 1"/>
+            <geom type="box" size="0.05 0.05 0.05" contype="{contype}" conaffinity="{conaffinity}"/>
+            <body name="tip" pos="0.2 0 0"><joint type="hinge" axis="0 0 1"/>
+            <geom type="box" size="0.05 0.05 0.05" contype="{contype}" conaffinity="{conaffinity}"/>
+            </body></body></body></worldbody></mujoco>"""
+        assets = (
+            chain.format(x=0.0, contype=2, conaffinity=1),
+            chain.format(x=1.0, contype=1, conaffinity=2),
+        )
+
+        def cross_asset_pairs(builder):
+            model = builder.finalize(device="cpu")
+            pairs = {(int(a), int(b)) for a, b in model.shape_contact_pairs.numpy() if (a < 3) != (b < 3)}
+            return pairs, model.shape_collision_group.numpy().tolist()
+
+        imported = newton.ModelBuilder()
+        merged = newton.ModelBuilder()
+        for asset in assets:
+            imported.add_mjcf(asset)
+            part = newton.ModelBuilder()
+            part.add_mjcf(asset)
+            merged.add_builder(part)
+
+        imported_pairs, imported_groups = cross_asset_pairs(imported)
+        merged_pairs, merged_groups = cross_asset_pairs(merged)
+        self.assertEqual(imported_groups, [-1, -1, -1, -2, -2, -2])
+        self.assertEqual(merged_groups, imported_groups)
+        self.assertEqual(len(imported_pairs), 9)
+        self.assertEqual(merged_pairs, imported_pairs)
+
     def test_collision_group_zero_for_zero_contype(self):
         """Collision-class geoms with contype=conaffinity=0 get collision_group=0."""
         mjcf = """<mujoco>

@@ -599,6 +599,13 @@ Collision groups control which shapes collide within the same world:
 
     model = builder.finalize()
 
+Builders number negative groups independently. When :meth:`~newton.ModelBuilder.add_builder`,
+:meth:`~newton.ModelBuilder.add_world`, or :meth:`~newton.ModelBuilder.replicate` merges a builder,
+each negative group that :meth:`~newton.ModelBuilder.add_mjcf` compiled in the copy and that is
+already used by a shape the copy can collide with is renumbered to the smallest unused negative
+group. Negative groups assigned by hand are kept, and copies in separate worlds keep their groups
+unless global shapes use them. A group that also contains a hand-set shape is treated as hand-set.
+
 **Self-collision within articulations**
 
 Self-collisions within an articulation can be enabled or disabled with ``enable_self_collisions`` when loading models. By default, adjacent body collisions (parent-child pairs connected by joints) are disabled via ``collision_filter_parent=True``.

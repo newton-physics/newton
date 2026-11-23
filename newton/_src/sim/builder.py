@@ -4159,6 +4159,8 @@ class ModelBuilder:
         not invoked during replication. Merged entries may share objects with ``builder`` and across
         the copies; see :meth:`add_builder` for the supported life-cycle.
 
+        Negative collision groups compiled by :meth:`add_mjcf` may be renumbered; see :meth:`add_builder`.
+
         .. deprecated:: 1.8
             ``world_count`` is deprecated. Use ``copy_count`` instead.
 
@@ -4650,6 +4652,8 @@ class ModelBuilder:
                 extend_referenced(attr, destination, source, self._builder_frequency_key(spec.references))
             else:
                 destination.extend(source * copy_count)
+
+        self._renumber_merged_negative_collision_groups(builder, worlds, int(bases["shape"]))
 
         self.joint_dof_count += copy_count * counts["joint_dof"]
         self.joint_coord_count += copy_count * counts["joint_coord"]
@@ -5921,6 +5925,8 @@ class ModelBuilder:
         It's the recommended way to add homogeneous worlds (multiple instances
         of the same scene/robot).
 
+        Negative collision groups compiled by :meth:`add_mjcf` may be renumbered; see :meth:`add_builder`.
+
         Args:
             builder: The builder containing entities to add as a new world.
             xform: Optional transform to apply to all root bodies
@@ -6661,6 +6667,14 @@ class ModelBuilder:
         The gravity of ``builder`` replaces the gravity of the current world, or this
         builder's gravity outside a world context.
 
+        Builders number negative collision groups independently. A negative group that
+        :meth:`add_mjcf` compiled in ``builder`` and that is already used by a shape the copy can
+        collide with (a shape in the current world or a global shape, or any shape when merging
+        outside a world context) is renumbered to the smallest unused negative group, so merged
+        assets do not suppress each other's contacts. Negative groups assigned by hand, unused
+        negative groups, positive groups and group 0 are kept. A group that also contains a hand-set
+        shape is treated as hand-set.
+
         To add many copies of the same builder to the current world, call
         :meth:`replicate` with ``separate_worlds=False`` instead of calling this method in
         a loop; it merges all copies in one batched pass.
@@ -6695,6 +6709,75 @@ class ModelBuilder:
 
         self._merge_builder_copies(builder, [self.current_world], [xform], [label_prefix])
         self._adopt_builder_gravity(builder)
+
+    def _renumber_merged_negative_collision_groups(
+        self, builder: ModelBuilder, worlds: np.ndarray, shape_start: int
+    ) -> None:
+        """Renumber negative collision groups compiled by :meth:`add_mjcf` that are already in use.
+
+        Only groups whose shapes all have ``mujoco:collision_mask_domain`` set move; groups assigned by
+        hand are kept. Like :meth:`add_mjcf`, this scans the groups of all shapes added before the merge.
+        A copy can collide with the shapes in its own world and with global shapes, or with every shape
+        when the copy is global. Each compiled negative group of ``builder`` that such a shape already
+        uses, including earlier copies of this merge, moves to the smallest negative group unused in
+        that scope and in the copy.
+        """
+        source = np.asarray(builder.shape_collision_group, dtype=np.int64)
+        negative = source < 0
+        domain = builder.custom_attributes.get("mujoco:collision_mask_domain")
+        if not negative.any() or domain is None or not domain.values:
+            return
+        compiled = np.zeros(len(source), dtype=bool)
+        items = domain.values.items() if isinstance(domain.values, dict) else enumerate(domain.values)
+        for shape, value in items:
+            compiled[shape] = value is not None and int(value) >= 0
+        magnitudes, inverse = np.unique(-source[negative], return_inverse=True)
+        magnitude_list = magnitudes.tolist()
+        movable = set(magnitude_list) - set((-source[negative & ~compiled]).tolist())
+        if not movable:
+            return
+        groups = np.asarray(self.shape_collision_group[:shape_start], dtype=np.int64)
+        in_use = groups < 0
+        # Magnitudes used by any shape (read only by global copies) and per world (key -1 for global shapes).
+        track_all = worlds.min() < 0
+        all_used = set(np.unique(-groups[in_use]).tolist()) if track_all else set()
+        used: dict[int, set[int]] = {-1: set()}
+        if worlds.max() >= 0:
+            shape_worlds = np.asarray(self.shape_world[:shape_start], dtype=np.int64)
+            in_use &= np.isin(shape_worlds, np.append(worlds, -1))
+            for world, magnitude in np.unique(np.stack((shape_worlds[in_use], -groups[in_use])), axis=1).T.tolist():
+                used.setdefault(world, set()).add(magnitude)
+
+        claimed = np.tile(magnitudes, (len(worlds), 1))
+        # Lower bound on the smallest unused magnitude per world, valid because scopes only grow.
+        first_free: dict[int, int] = {}
+        changed = False
+        for row_index, world in enumerate(worlds.tolist()):
+            in_world = used.setdefault(world, set())
+            in_scope = all_used if world < 0 else in_world
+            clashing = {magnitude for magnitude in movable if magnitude in in_scope or magnitude in used[-1]}
+            if clashing:
+                kept = set(magnitude_list) - clashing
+                free = first_free.get(world, 1)
+                for column, magnitude in enumerate(magnitude_list):
+                    if magnitude in clashing:
+                        while free in kept or free in in_scope or free in used[-1]:
+                            free += 1
+                        claimed[row_index, column] = free
+                        free += 1
+                first_free[world] = free
+                changed = True
+            row = claimed[row_index].tolist()
+            in_world.update(row)
+            if track_all:
+                all_used.update(row)
+        if not changed:
+            return
+
+        merged = np.tile(source, (len(worlds), 1))
+        merged[:, negative] = -claimed[:, inverse]
+        # Replication may hold the groups in an array; slice assignment of a list fits either.
+        self.shape_collision_group[shape_start : shape_start + merged.size] = merged.ravel().tolist()
 
     def _adopt_builder_gravity(self, builder: ModelBuilder) -> None:
         """Take over ``builder``'s gravity for the current world context after merging it."""

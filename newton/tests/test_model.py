@@ -4204,6 +4204,104 @@ class TestModelJoints(unittest.TestCase):
 
 
 class TestModelWorld(unittest.TestCase):
+    @staticmethod
+    def _negative_group_source(groups=(-1, -2, 1, 0), compiled=(True, True, True, True)) -> ModelBuilder:
+        """Build one sphere per group, marking ``compiled`` shapes as compiled by ``add_mjcf``."""
+        source = ModelBuilder()
+        newton.solvers.SolverMuJoCo.register_custom_attributes(source)
+        for group, is_compiled in zip(groups, compiled, strict=True):
+            source.add_shape_sphere(
+                source.add_body(),
+                radius=0.1,
+                cfg=ModelBuilder.ShapeConfig(collision_group=group),
+                custom_attributes={"mujoco:collision_mask_domain": 0} if is_compiled else None,
+            )
+        return source
+
+    def test_add_builder_keeps_negative_collision_groups_distinct(self):
+        """Renumber negative groups of copies merged into one world so they stay distinct."""
+        source = self._negative_group_source()
+
+        builder = ModelBuilder()
+        builder.add_shape_sphere(builder.add_body(), radius=0.1, cfg=ModelBuilder.ShapeConfig(collision_group=-1))
+        builder.add_builder(source)
+        builder.add_builder(source)
+        self.assertEqual(builder.shape_collision_group, [-1, -3, -2, 1, 0, -4, -5, 1, 0])
+
+        # Copies in one world get the same groups as repeated add_builder calls.
+        replicated = ModelBuilder()
+        replicated.add_shape_sphere(replicated.add_body(), radius=0.1, cfg=ModelBuilder.ShapeConfig(collision_group=-1))
+        replicated.replicate(source, 2, separate_worlds=False)
+        self.assertEqual(replicated.shape_collision_group, builder.shape_collision_group)
+
+    def test_add_world_keeps_negative_collision_groups_per_world(self):
+        """Keep negative groups of copies in separate worlds unless global shapes use them."""
+        source = self._negative_group_source()
+
+        # Copies in separate worlds cannot collide, so they keep the source groups.
+        builder = ModelBuilder()
+        builder.replicate(source, 2)
+        builder.add_world(source)
+        self.assertEqual(builder.shape_collision_group, [-1, -2, 1, 0] * 3)
+
+        # Global shapes collide with every world, so world copies avoid their groups.
+        builder = ModelBuilder()
+        builder.add_shape_box(-1, hx=1.0, hy=1.0, hz=0.1, cfg=ModelBuilder.ShapeConfig(collision_group=-1))
+        builder.replicate(source, 2)
+        self.assertEqual(builder.shape_collision_group, [-1, -3, -2, 1, 0, -3, -2, 1, 0])
+
+        # A global copy avoids the groups of every world.
+        builder.add_builder(source)
+        self.assertEqual(builder.shape_collision_group[-4:], [-4, -5, 1, 0])
+
+    def test_add_builder_renumbers_only_clashing_negative_collision_groups(self):
+        """Move only clashing negative groups, to the smallest unused IDs."""
+        source = self._negative_group_source((-1, -1000), (True, True))
+
+        builder = ModelBuilder()
+        builder.add_shape_sphere(builder.add_body(), radius=0.1, cfg=ModelBuilder.ShapeConfig(collision_group=-5))
+        # Nothing in scope uses -1 or -1000 yet, so the first copy keeps them.
+        builder.add_builder(source)
+        # Clashing groups take the smallest unused IDs instead of growing with each copy.
+        builder.add_builder(source)
+        self.assertEqual(builder.shape_collision_group, [-5, -1, -1000, -2, -3])
+
+        # Shapes added between merges count as used.
+        builder.add_shape_sphere(builder.add_body(), radius=0.1, cfg=ModelBuilder.ShapeConfig(collision_group=-4))
+        builder.add_builder(source)
+        self.assertEqual(builder.shape_collision_group[-2:], [-6, -7])
+
+        # Groups written in place count as used.
+        builder.shape_collision_group[0] = -8
+        builder.add_builder(source)
+        self.assertEqual(builder.shape_collision_group[-2:], [-5, -9])
+
+    def test_merge_keeps_hand_set_negative_collision_groups(self):
+        """Keep negative groups assigned by hand and renumber only groups compiled by add_mjcf."""
+        source = self._negative_group_source((-1, -2), (False, True))
+
+        def destination():
+            builder = ModelBuilder()
+            builder.add_shape_box(-1, hx=1.0, hy=1.0, hz=0.1, cfg=ModelBuilder.ShapeConfig(collision_group=-1))
+            return builder
+
+        builder = destination()
+        builder.add_builder(source)
+        builder.add_builder(source)
+        # The hand-set -1 stays shared with the ground and between copies; the compiled -2 moves.
+        self.assertEqual(builder.shape_collision_group, [-1, -1, -2, -1, -3])
+
+        replicated = destination()
+        replicated.replicate(source, 2, separate_worlds=False)
+        self.assertEqual(replicated.shape_collision_group, builder.shape_collision_group)
+
+        # A group that also contains a hand-set shape is treated as hand-set.
+        mixed = self._negative_group_source((-1, -1, -2), (True, False, True))
+        builder = ModelBuilder()
+        builder.add_builder(mixed)
+        builder.add_builder(mixed)
+        self.assertEqual(builder.shape_collision_group, [-1, -1, -2, -1, -1, -3])
+
     def test_add_world_with_open_edges(self):
         builder = ModelBuilder()
 
