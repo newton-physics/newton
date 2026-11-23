@@ -219,6 +219,8 @@ class _SleepState:
     def notify(self, flags):
         """Wake islands whose per-entity model properties changed, or every island for other changes."""
         flags = int(flags)
+        if not flags:
+            return
         tracked = 0
         for flag in self.property_arrays:
             tracked |= int(flag)
