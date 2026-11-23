@@ -90,7 +90,9 @@ def test_thin_wall_exit(test, device):
 
 
 @wp.kernel(enable_backward=False)
-def _check_held_contact(recovery: MeshRecoveryData, result: wp.array[int]):
+def _check_held_contact(recovery_arg: MeshRecoveryData, result: wp.array[int]):
+    # NVRTC 12.9 misreads this struct argument on pre-Blackwell GPUs when it is used in place (CUDA error 700).
+    recovery = recovery_arg
     slot = hashtable_find_or_insert(_pair_key(0, 1), recovery.keys, recovery.active_slots)
     contact = MeshRecoveryContact()
     normal = wp.vec3(-1.0, 0.0, 0.0)
