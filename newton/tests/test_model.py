@@ -1247,9 +1247,9 @@ class TestModelMesh(unittest.TestCase):
             mesh = builder.shape_source[shape]
             self.assertEqual(len(mesh.vertices), mesh.maxhullvert)
 
-    @requires("coacd")
+    @requires("coacd", "scipy")
     def test_mesh_approximation_coacd_is_repeatable(self):
-        """Decompose a nonconvex mesh with CoACD repeatedly and get identical hulls."""
+        """Decompose a torus with CoACD into few accurate hulls, identically across runs."""
         # A torus is nonconvex, so CoACD's parallel tree search has several cuts to choose from.
         rings, sides = 32, 12
         u, v = np.meshgrid(
@@ -1269,14 +1269,36 @@ class TestModelMesh(unittest.TestCase):
             builder = ModelBuilder()
             builder.add_shape_mesh(body=-1, mesh=torus)
             builder.approximate_meshes(method="coacd", raise_on_failure=True)
-            return [np.concatenate((m.vertices.ravel(), m.indices.ravel())) for m in builder.shape_source]
+            return builder.shape_source
 
         first = decompose()
         for _ in range(2):
             again = decompose()
             self.assertEqual(len(again), len(first))
             for part, expected in zip(again, first, strict=True):
-                np.testing.assert_array_equal(part, expected)
+                np.testing.assert_array_equal(part.vertices, expected.vertices)
+                np.testing.assert_array_equal(part.indices, expected.indices)
+
+        # A one-level cut search needs 20 to 66 parts for this torus; a two-level search needs 10 to 12.
+        self.assertLessEqual(len(first), 16)
+
+        from scipy.spatial import ConvexHull
+
+        planes = [ConvexHull(part.vertices).equations for part in first]
+
+        def outside_distance(points):
+            """Return each point's largest plane distance to its nearest part, which is negative inside a part."""
+            return np.min([(points @ eq[:, :3].T + eq[:, 3]).max(axis=1) for eq in planes], axis=0)
+
+        rng = np.random.default_rng(0)
+        samples = rng.uniform((-0.07, -0.07, -0.02), (0.07, 0.07, 0.02), (100000, 3))
+        in_torus = (np.hypot(samples[:, 0], samples[:, 1]) - 0.05) ** 2 + samples[:, 2] ** 2 < 0.015**2
+        in_parts = outside_distance(samples) <= 0.0
+        self.assertGreater(np.sum(in_torus & in_parts) / np.sum(in_torus | in_parts), 0.9)
+        # The parts leave the hole open.
+        angles = np.linspace(0.0, 2.0 * np.pi, 64, endpoint=False)
+        hole = np.stack((0.025 * np.cos(angles), 0.025 * np.sin(angles), np.zeros_like(angles)), axis=-1)
+        self.assertTrue(np.all(outside_distance(hole) > 0.0))
 
     @requires("scipy")
     def test_mesh_approximation_coacd_unavailable_falls_back_to_convex_hull(self):
