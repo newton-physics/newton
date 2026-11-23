@@ -148,7 +148,7 @@ def refresh_masked_body_inertia(
     kamino_body_is_immovable: wp.array[wp.int32],
     kamino_body_inv_mass: wp.array[wp.float32],
     kamino_body_inv_inertia: wp.array[wp.mat33f],
-    device: wp.Device | str,
+    device: wp.DeviceLike,
 ) -> None:
     """Refresh Kamino's masked inverse mass / inertia copies from Newton's.
 
