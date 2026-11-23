@@ -7,7 +7,7 @@ Demonstrates a Franka Panda robot grasping a deformable rubber duck
 on a table. The robot is positioned via Newton's GPU IK solver;
 Featherstone is used as a kinematic integrator to produce proper
 body velocities for VBD friction. The duck is a tetrahedral mesh
-simulated with VBD.
+simulated with VBD or Style3D.
 
 The simulation runs in meter scale.
 
@@ -19,6 +19,7 @@ Success criteria:
 
 Runs:
 - `python -m newton.examples softbody_franka`
+- `python -m newton.examples softbody_franka --solver style3d`
 """
 
 from __future__ import annotations
@@ -32,7 +33,7 @@ import newton.examples
 import newton.ik as ik
 import newton.utils
 from newton import ModelBuilder, eval_fk
-from newton.solvers import SolverFeatherstone, SolverVBD
+from newton.solvers import SolverFeatherstone, SolverStyle3D, SolverVBD
 
 DUCK_OPACITY = 0.55
 
@@ -56,6 +57,8 @@ def compute_joint_qd(
 
 class Example:
     def __init__(self, viewer, args=None):
+        self.solver_type = args.solver
+
         # simulation parameters (meter scale)
         self.sim_substeps = 10
         self.iterations = 5
@@ -65,7 +68,7 @@ class Example:
         self.sim_time = 0.0
 
         # contact (meter scale)
-        self.particle_radius = 0.005
+        self.particle_radius = args.style3d_thickness if self.solver_type == "style3d" else 0.005
         self.soft_body_contact_margin = 0.01
         self.particle_self_contact_margin = 0.003
         self.particle_self_contact_gap = 0.002
@@ -75,6 +78,8 @@ class Example:
         self.self_contact_friction = 0.5
 
         self.scene = ModelBuilder(gravity=(0.0, 0.0, -9.81))
+        if self.solver_type == "style3d":
+            SolverStyle3D.register_custom_attributes(self.scene)
 
         self.viewer = viewer
 
@@ -120,7 +125,8 @@ class Example:
             opacity=DUCK_OPACITY,
         )
 
-        self.scene.color()
+        if self.solver_type == "vbd":
+            self.scene.color()
         self.scene.add_ground_plane()
 
         self.model = self.scene.finalize(requires_grad=False)
@@ -156,19 +162,30 @@ class Example:
         self.set_up_ik()
 
         # soft body solver
-        self.soft_solver = SolverVBD(
-            self.model,
-            iterations=self.iterations,
-            integrate_with_external_rigid_solver=True,
-            particle_self_contact_margin=self.particle_self_contact_margin,
-            particle_self_contact_gap=self.particle_self_contact_gap,
-            particle_enable_self_contact=False,
-            particle_vertex_contact_buffer_size=32,
-            particle_edge_contact_buffer_size=64,
-            collision_frequency_type={
-                newton.solvers.SolverBase.CollisionSlot.SOFT_SELF_CONTACT: newton.solvers.SolverBase.CollisionFrequencyType.PRE_INIT,
-            },
-        )
+        if self.solver_type == "style3d":
+            self.soft_solver = SolverStyle3D(
+                self.model,
+                config=SolverStyle3D.Config(iterations=self.iterations, linear_iterations=10),
+            )
+            # The duck uses external particle-shape contacts; its surface
+            # self-collision constraints are not needed in this example.
+            self.soft_solver.collision.stiff_vf = 0.0
+            self.soft_solver.collision.stiff_ee = 0.0
+            self.soft_solver.collision.stiff_ef = 0.0
+        else:
+            self.soft_solver = SolverVBD(
+                self.model,
+                iterations=self.iterations,
+                integrate_with_external_rigid_solver=True,
+                particle_self_contact_margin=self.particle_self_contact_margin,
+                particle_self_contact_gap=self.particle_self_contact_gap,
+                particle_enable_self_contact=False,
+                particle_vertex_contact_buffer_size=32,
+                particle_edge_contact_buffer_size=64,
+                collision_frequency_type={
+                    newton.solvers.SolverBase.CollisionSlot.SOFT_SELF_CONTACT: newton.solvers.SolverBase.CollisionFrequencyType.PRE_INIT,
+                },
+            )
 
         self.viewer.set_model(self.model)
         self.viewer.set_camera(wp.vec3(-0.6, 0.6, 1.24), -42.0, -58.0)
@@ -407,6 +424,18 @@ class Example:
 
 if __name__ == "__main__":
     parser = newton.examples.create_parser()
+    parser.add_argument(
+        "--solver",
+        help="Soft-body solver",
+        choices=["vbd", "style3d"],
+        default="vbd",
+    )
+    parser.add_argument(
+        "--style3d-thickness",
+        help="Style3D particle-shape contact thickness in meters",
+        type=float,
+        default=0.002,
+    )
     parser.set_defaults(num_frames=1000)
     viewer, args = newton.examples.init(parser)
 

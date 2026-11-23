@@ -13,6 +13,7 @@ Success criteria:
 
 Runs:
 - `python -m newton.examples softbody_dropping_to_cloth`
+- `python -m newton.examples softbody_dropping_to_cloth --solver style3d`
 """
 
 import numpy as np
@@ -21,7 +22,7 @@ from newton.solvers.experimental.coupled import ModelView, SolverCoupledProxy
 
 import newton
 import newton.examples
-from newton.solvers import SolverVBD
+from newton.solvers import SolverStyle3D, SolverVBD, style3d
 
 
 class Example:
@@ -34,31 +35,47 @@ class Example:
         self.sim_substeps = 10
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        if self.solver_type not in {"vbd", "coupled"}:
-            raise ValueError("The softbody dropping to cloth example supports the vbd and coupled solvers.")
+        if self.solver_type not in {"vbd", "coupled", "style3d"}:
+            raise ValueError("The softbody dropping to cloth example supports the vbd, coupled, and style3d solvers.")
 
         builder = newton.ModelBuilder()
+        if self.solver_type == "style3d":
+            SolverStyle3D.register_custom_attributes(builder)
         builder.add_ground_plane()
 
         cloth_particle_start = builder.particle_count
-        builder.add_cloth_grid(
-            pos=wp.vec3(-1.0, -1.0, 1.0),
-            rot=wp.quat_identity(),
-            vel=wp.vec3(0.0, 0.0, 0.0),
-            fix_left=True,
-            fix_right=True,
-            dim_x=40,
-            dim_y=40,
-            cell_x=0.05,
-            cell_y=0.05,
-            mass=0.0005,
-            tri_ke=1e5,
-            tri_ka=1e5,
-            tri_kd=1e0,
-            edge_ke=0.01,
-            edge_kd=1e-4,
-            particle_radius=0.05,
-        )
+        cloth_params = {
+            "pos": wp.vec3(-1.0, -1.0, 1.0),
+            "rot": wp.quat_identity(),
+            "vel": wp.vec3(0.0, 0.0, 0.0),
+            "fix_left": True,
+            "fix_right": True,
+            "dim_x": 40,
+            "dim_y": 40,
+            "cell_x": 0.05,
+            "cell_y": 0.05,
+            "mass": 0.0005,
+            "particle_radius": 0.05,
+        }
+        if self.solver_type == "style3d":
+            style3d.add_cloth_grid(
+                builder,
+                **cloth_params,
+                tri_aniso_ke=wp.vec3(1e5),
+                tri_ka=1e5,
+                tri_kd=1e0,
+                edge_aniso_ke=wp.vec3(0.01),
+                edge_kd=1e-4,
+            )
+        else:
+            builder.add_cloth_grid(
+                **cloth_params,
+                tri_ke=1e5,
+                tri_ka=1e5,
+                tri_kd=1e0,
+                edge_ke=0.01,
+                edge_kd=1e-4,
+            )
         self.cloth_particles = list(range(cloth_particle_start, builder.particle_count))
 
         # Add soft body (tetrahedral grid) at elevated position
@@ -98,7 +115,12 @@ class Example:
             "particle_self_contact_gap": 0.01,
             "particle_enable_tile_solve": True,
         }
-        if self.solver_type == "vbd":
+        if self.solver_type == "style3d":
+            self.solver = SolverStyle3D(
+                model=self.model,
+                config=SolverStyle3D.Config(iterations=15, linear_iterations=5),
+            )
+        elif self.solver_type == "vbd":
             self.solver = SolverVBD(model=self.model, **vbd_kwargs)
         else:
 
@@ -153,9 +175,12 @@ class Example:
         self.capture()
 
     def capture(self):
-        with wp.ScopedCapture() as capture:
-            self.simulate()
-        self.graph = capture.graph
+        if wp.get_device().is_cuda:
+            with wp.ScopedCapture() as capture:
+                self.simulate()
+            self.graph = capture.graph
+        else:
+            self.graph = None
 
     def simulate(self):
         for _ in range(self.sim_substeps):
@@ -204,7 +229,7 @@ class Example:
             "--solver",
             help="Type of solver",
             type=str,
-            choices=["vbd", "coupled"],
+            choices=["vbd", "coupled", "style3d"],
             default="vbd",
         )
         parser.add_argument(

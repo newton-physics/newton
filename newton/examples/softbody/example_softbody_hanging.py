@@ -6,14 +6,20 @@
 This simulation demonstrates volumetric soft bodies (tetrahedral grids) hanging
 from fixed particles on the left side. Four grids with different damping values
 (1e4 to 1e1) showcase the effect of damping on Neo-Hookean elastic behavior.
+With ``--solver style3d``, the grids instead compare Young's moduli of
+250000, 375000, 500000, and 1000000 Pa at Poisson ratio 0.48. Style3D uses
+co-rotational tetrahedral elasticity and volume projection; material damping
+is not supported in this mode.
 
 Success criteria:
 - 4 hanging elongated softbodies appear with different damping values.
 - The softbodies are oscillating until reaching a steady state.
-- Damping value is higher on the left so the softbodies stop oscillating earlier on the left.
+- With VBD, higher damping on the left produces earlier settling.
+- With Style3D, all four grids remain bounded while deforming under gravity.
 
 Runs:
 - `python -m newton.examples softbody_hanging`
+- `python -m newton.examples softbody_hanging --solver style3d`
 """
 
 import warp as wp
@@ -33,10 +39,9 @@ class Example:
         self.iterations = 10
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        if self.solver_type != "vbd":
-            raise ValueError("The hanging softbody example only supports the VBD solver.")
-
         builder = newton.ModelBuilder()
+        if self.solver_type == "style3d":
+            newton.solvers.SolverStyle3D.register_custom_attributes(builder)
         builder.add_ground_plane()
 
         # Grid dimensions
@@ -49,7 +54,15 @@ class Example:
         damping_values = [1e4, 1e3, 1e2, 1e1]
         spacing = 0.6  # Space between grids along Y-axis
 
-        for i, k_damp in enumerate(damping_values):
+        for i, damping in enumerate(damping_values):
+            k_damp = damping
+            mu = lam = 1.0e5
+            if self.solver_type == "style3d":
+                youngs = (2.5e5, 3.75e5, 5e5, 1e6)[i]
+                nu = 0.48
+                mu = youngs / (2.0 * (1.0 + nu))
+                lam = youngs * nu / ((1.0 + nu) * (1.0 - 2.0 * nu))
+                k_damp = 0.0
             y_offset = i * spacing
             builder.add_soft_grid(
                 pos=wp.vec3(0.0, 1.0 + y_offset, 1.0),
@@ -62,26 +75,36 @@ class Example:
                 cell_y=cell_size,
                 cell_z=cell_size,
                 density=1.0e3,
-                k_mu=1.0e5,
-                k_lambda=1.0e5,
+                k_mu=mu,
+                k_lambda=lam,
                 k_damp=k_damp,
                 fix_left=True,
             )
 
         # Color the mesh for VBD solver
-        builder.color()
+        if self.solver_type == "vbd":
+            builder.color()
 
         self.model = builder.finalize()
         self.model.soft_contact_ke = 1.0e2
         self.model.soft_contact_kd = 0
         self.model.soft_contact_mu = 1.0
 
-        self.solver = newton.solvers.SolverVBD(
-            model=self.model,
-            iterations=self.iterations,
-            particle_enable_self_contact=False,
-            particle_enable_tile_solve=False,
-        )
+        if self.solver_type == "style3d":
+            self.solver = newton.solvers.SolverStyle3D(
+                self.model,
+                config=newton.solvers.SolverStyle3D.Config(iterations=self.iterations, linear_iterations=5),
+            )
+            self.solver.collision.stiff_vf = 0.0
+            self.solver.collision.stiff_ee = 0.0
+            self.solver.collision.stiff_ef = 0.0
+        else:
+            self.solver = newton.solvers.SolverVBD(
+                model=self.model,
+                iterations=self.iterations,
+                particle_enable_self_contact=False,
+                particle_enable_tile_solve=False,
+            )
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -95,6 +118,9 @@ class Example:
         self.capture()
 
     def capture(self):
+        self.graph = None
+        if not self.model.device.is_cuda:
+            return
         with wp.ScopedCapture() as capture:
             self.simulate()
         self.graph = capture.graph
@@ -121,6 +147,7 @@ class Example:
         self.sim_time += self.frame_dt
 
     def test_final(self):
+        """Verify that the hanging grids remain within the expected volume."""
         # Test that particles are in a reasonable range (soft body may settle or deform)
         # We check that they haven't exploded or collapsed completely
         # 4 grids, each roughly 1.2 x 0.4 x 0.4 in size, positioned along Y-axis
@@ -145,9 +172,9 @@ class Example:
         parser = newton.examples.create_parser()
         parser.add_argument(
             "--solver",
-            help="Type of solver (only 'vbd' supports volumetric soft bodies)",
+            help="Solver: VBD damping comparison or Style3D elastic stiffness comparison",
             type=str,
-            choices=["vbd"],
+            choices=["vbd", "style3d"],
             default="vbd",
         )
         return parser
