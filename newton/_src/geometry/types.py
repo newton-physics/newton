@@ -181,6 +181,9 @@ class Mesh:
     MAX_HULL_VERTICES = 64
     """Default maximum vertex count for convex hull approximation."""
 
+    # Older serialized meshes have no instance attribute for this lazy cache.
+    _convex_support_data: _ConvexSupportData | None = None
+
     def __init__(
         self,
         vertices: Sequence[Vec3] | np.ndarray,
@@ -266,7 +269,6 @@ class Mesh:
         self._edges = None
         self._canonical_ids = None
         self._collision_edges: np.ndarray | None = None
-        self._convex_support_data: _ConvexSupportData | None = None
         self._is_watertight: bool | None = None
         self.sdf = sdf
 

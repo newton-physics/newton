@@ -3,6 +3,7 @@
 
 """Tests for compact convex support-map acceleration."""
 
+import pickle
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -256,6 +257,18 @@ class TestConvexSupportAcceleration(unittest.TestCase):
                 self.assertFalse(all(np.array_equal(a, b) for a, b in zip(cold, edited, strict=True)))
                 for actual, expected in zip(edited, finalize(mesh.copy()), strict=True):
                     np.testing.assert_array_equal(actual, expected)
+
+    def test_finalize_accepts_mesh_pickled_without_support_cache(self):
+        """Build support tables for a mesh whose serialized state predates the cache."""
+        mesh = newton.Mesh.create_box(1.0, 1.0, 1.0, duplicate_vertices=False, compute_inertia=False)
+        mesh.__dict__.pop("_convex_support_data", None)
+        restored = pickle.loads(pickle.dumps(mesh))
+
+        builder = newton.ModelBuilder()
+        builder.add_shape_convex_hull(body=-1, mesh=restored)
+        model = builder.finalize(device="cpu")
+        self.assertEqual(model._shape_support_data.numpy()[0, 2], 0)
+        self.assertGreater(model._convex_support_neighbors.numpy()[0], 0)
 
     def test_pipeline_specializes_support_map_for_available_acceleration(self):
         """Specialize support mapping only when acceleration data exists."""
