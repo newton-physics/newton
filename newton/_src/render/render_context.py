@@ -787,8 +787,8 @@ class RenderContext:
         """Load mesh UV/normal data and textures from *model*.
 
         Populates mesh data, texture data, and the
-        per-shape texture/mesh-data index arrays. Textures and mesh
-        data are deduplicated by hash/identity.
+        per-shape texture/mesh-data index arrays. Textures are shared
+        by content hash, and mesh data by source object.
 
         Args:
             model: Newton simulation model containing shape sources.
@@ -837,19 +837,27 @@ class RenderContext:
                 self._texture_data_source.append(data)
             return texture_hashes[texture_hash]
 
-        def ids(sources: Sequence, shape_types: Sequence) -> tuple[list[int], list[int]]:
+        def ids(sources: Sequence, shape_types: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
             """Texture and mesh-data ids of each source, loading data that is not loaded yet."""
-            texture_data_ids = []
-            mesh_data_ids = []
-            for shape, shape_type in zip(sources, shape_types, strict=True):
+            # Shapes that share a source object, such as the copies of a replicated world, share
+            # their ids, so look them up once per source. A convex hull takes no mesh data: it
+            # groups apart from the mesh shapes of its source, under the complement of the key.
+            source_keys = np.fromiter(map(id, sources), dtype=np.int64, count=len(sources))
+            is_hull = shape_types == int(GeoType.CONVEX_MESH)
+            _, first_shapes, groups = np.unique(
+                np.where(is_hull, ~source_keys, source_keys), return_index=True, return_inverse=True
+            )
+            group_texture_ids = np.full(first_shapes.shape[0], -1, dtype=np.int32)
+            group_mesh_data_ids = np.full(first_shapes.shape[0], -1, dtype=np.int32)
+            # Visit the groups in shape order: ids number the data in the order shapes first use it.
+            for group in np.argsort(first_shapes).tolist():
+                shape = sources[first_shapes[group]]
                 if not isinstance(shape, Mesh):
-                    texture_data_ids.append(-1)
-                    mesh_data_ids.append(-1)
                     continue
-                texture_data_ids.append(texture_id(shape.texture, shape.texture_hash))
+                group_texture_ids[group] = texture_id(shape.texture, shape.texture_hash)
                 # A convex hull renders its collision mesh, whose vertices may be deduplicated, so
                 # the per-vertex UVs and normals of its source mesh do not match the hit faces.
-                if shape_type != GeoType.CONVEX_MESH and (shape.uvs is not None or shape.normals is not None):
+                if not is_hull[first_shapes[group]] and (shape.uvs is not None or shape.normals is not None):
                     if shape not in mesh_hashes:
                         mesh_hashes[shape] = len(self._mesh_data_source)
 
@@ -863,12 +871,10 @@ class RenderContext:
                             data.normals = wp.array(shape.normals, dtype=wp.vec3f, device=self.device)
                         self._mesh_data_source.append(data)
 
-                    mesh_data_ids.append(mesh_hashes[shape])
-                else:
-                    mesh_data_ids.append(-1)
-            return texture_data_ids, mesh_data_ids
+                    group_mesh_data_ids[group] = mesh_hashes[shape]
+            return group_texture_ids[groups], group_mesh_data_ids[groups]
 
-        shape_types = model.shape_type.numpy() if model.shape_type is not None else ()
+        shape_types = model.shape_type.numpy() if model.shape_type is not None else np.empty(0, dtype=np.int32)
         texture_data_ids, mesh_data_ids = ids(model.shape_source, shape_types)
         if self._variant_rows is not None:
             variant_types = model._variant_shape_geometry["shape_type"].numpy()
@@ -888,9 +894,7 @@ class RenderContext:
         self._render_state.has_triangle_mesh_textures = any(i >= 0 for i in skin_texture_ids)
 
         self._texture_data = wp.array(self._texture_data_source, dtype=TextureData, device=self.device)
-        self._shape_texture_ids = wp.array(
-            np.asarray(texture_data_ids, dtype=np.int32), dtype=wp.int32, device=self.device
-        )
+        self._shape_texture_ids = wp.array(texture_data_ids, dtype=wp.int32, device=self.device)
 
         self._mesh_data = wp.array(self._mesh_data_source, dtype=MeshData, device=self.device)
         self._shape_mesh_data_ids = wp.array(mesh_data_ids, dtype=wp.int32, device=self.device)
