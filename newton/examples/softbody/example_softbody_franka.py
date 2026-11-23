@@ -57,7 +57,7 @@ def compute_joint_qd(
 
 class Example:
     def __init__(self, viewer, args=None):
-        self.solver_type = args.solver
+        self.solver_type = getattr(args, "solver", "vbd")
 
         # simulation parameters (meter scale)
         self.sim_substeps = 10
