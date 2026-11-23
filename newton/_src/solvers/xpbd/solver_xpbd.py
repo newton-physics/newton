@@ -9,6 +9,7 @@ import warp as wp
 
 from ...core.types import override
 from ...exceptions import NewtonDeprecationWarning
+from ...geometry.sdf_planar_recovery import empty_mesh_recovery
 from ...sim import Contacts, Control, JointType, Model, ModelFlags, State, StateFlags
 from ...sim.joint_mimic import has_supported_joint_mimics
 from ..coupled.interface import CouplingInterface
@@ -32,10 +33,8 @@ from .kernels import (
     solve_joint_mimics,
     solve_particle_particle_contacts,
     solve_particle_shape_contacts,
-    # solve_simple_body_joints,
     solve_springs,
     solve_tetrahedra,
-    update_body_velocities,
 )
 from .restitution_kernels import (
     RESTITUTION_MANIFOLD_MAX_CONTACTS,
@@ -46,12 +45,6 @@ from .restitution_kernels import (
     solve_manifold_restitution,
 )
 from .tendon_kernels import solve_tendon_slip, solve_tendon_stretch, update_tendon_diagnostics
-
-_COMPUTE_BODY_VELOCITY_DEPRECATION_MSG = (
-    "SolverXPBD.compute_body_velocity_from_position_delta is deprecated in Newton 1.6 and will be removed in 1.7 "
-    "or later. Leave it at False because XPBD now updates rigid-body velocities incrementally after every position "
-    "correction."
-)
 
 
 class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
@@ -181,7 +174,8 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                 active contacts. Defaults to ``True``.
             angular_damping: Rigid-body angular velocity damping coefficient [1/s]. Defaults to 0.0.
             enable_restitution: Whether to apply restitution to rigid and particle-shape contacts after the
-                positional solve. Defaults to ``False``.
+                positional solve. Deep thin-wall recovery contacts suppress restitution while they
+                guide the shapes apart. Defaults to ``False``.
             tendon_max_sweeps: Maximum capstan material-relaxation sweeps per solver iteration.
             tendon_settle_tol: Relative final capstan-force residual tolerance [dimensionless].
                 Zero disables early-out; must be finite and nonnegative.
@@ -234,7 +228,6 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
         self.enable_restitution = enable_restitution
         self._rigid_restitution_enabled = False
         self._refresh_rigid_restitution_enabled()
-        self._compute_body_velocity_from_position_delta = False
 
         self._has_joint_mimics = has_supported_joint_mimics(model, "SolverXPBD")
         if self._has_joint_mimics:
@@ -253,23 +246,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
             # reserve space for the particle hash grid
             with wp.ScopedDevice(model.device):
                 model.particle_grid.reserve(model.particle_count)
-
-    @property
-    def compute_body_velocity_from_position_delta(self) -> bool:
-        """Whether to reconstruct rigid-body velocities after position projection.
-
-        .. deprecated:: 1.6
-            Leave this setting at ``False`` because XPBD now maintains rigid-body
-            velocities incrementally. ``True`` temporarily retains the legacy
-            full-step velocity reconstruction for compatibility.
-        """
-        warnings.warn(_COMPUTE_BODY_VELOCITY_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-        return self._compute_body_velocity_from_position_delta
-
-    @compute_body_velocity_from_position_delta.setter
-    def compute_body_velocity_from_position_delta(self, value: bool) -> None:
-        warnings.warn(_COMPUTE_BODY_VELOCITY_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-        self._compute_body_velocity_from_position_delta = value
+        self._empty_mesh_recovery = empty_mesh_recovery(model.device.alias)
 
     @override
     def reset(
@@ -309,6 +286,11 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
             self._refresh_kinematic_state()
         if self.enable_restitution and flags & ModelFlags.SHAPE_PROPERTIES:
             self._refresh_rigid_restitution_enabled()
+
+    @override
+    def _non_graphable_model_flags(self) -> int:
+        # The tendon refresh validates on the host and rebuilds the tendon reset state.
+        return int(ModelFlags.TENDON_PROPERTIES) if self.model.tendon_count > 0 else 0
 
     def _refresh_rigid_restitution_enabled(self) -> None:
         restitution = self.model.shape_material_restitution
@@ -501,11 +483,13 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
 
         body_q = None
         body_qd = None
-        body_q_step_start = None
         body_q_pre_solve = None
         body_qd_pre_solve = None
         body_deltas = None
 
+        contact_recovery = self._empty_mesh_recovery
+        if contacts is not None and contacts._mesh_recovery_contacts is not None:
+            contact_recovery = contacts._mesh_recovery_contacts
         rigid_contact_inv_weight = None
         restitution_contact_active = None
         restitution_manifold_key = None
@@ -591,9 +575,6 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                 body_q = state_out.body_q
                 body_qd = state_out.body_qd
 
-                if self._compute_body_velocity_from_position_delta and not requires_grad:
-                    body_q_step_start = wp.clone(state_in.body_q)
-
                 body_deltas = wp.empty_like(state_out.body_qd)
 
                 body_f_tmp = state_in.body_f
@@ -629,13 +610,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                         device=model.device,
                     )
 
-                if body_f_tmp is state_in.body_f:
-                    self.integrate_bodies(model, state_in, state_out, dt, self.angular_damping)
-                else:
-                    body_f_prev = state_in.body_f
-                    state_in.body_f = body_f_tmp
-                    self.integrate_bodies(model, state_in, state_out, dt, self.angular_damping)
-                    state_in.body_f = body_f_prev
+                self.integrate_bodies(model, state_in, state_out, dt, self.angular_damping, body_f=body_f_tmp)
 
                 if self.enable_restitution:
                     body_q_pre_solve = wp.clone(state_out.body_q)
@@ -842,6 +817,8 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                                     contacts.rigid_contact_margin1,
                                     contacts.rigid_contact_shape0,
                                     contacts.rigid_contact_shape1,
+                                    contact_recovery,
+                                    contacts.contact_generation,
                                 ],
                                 outputs=[restitution_contact_active],
                                 device=model.device,
@@ -874,6 +851,8 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                                 model.shape_material_mu_rolling,
                                 self.rigid_contact_relaxation,
                                 dt,
+                                contact_recovery,
+                                contacts.contact_generation,
                             ],
                             outputs=[
                                 body_deltas,
@@ -1317,16 +1296,6 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                 if body_q.ptr != state_out.body_q.ptr:
                     state_out.body_q.assign(body_q)
                     state_out.body_qd.assign(body_qd)
-
-            if self._compute_body_velocity_from_position_delta and model.body_count and not requires_grad:
-                assert body_q_step_start is not None
-                wp.launch(
-                    kernel=update_body_velocities,
-                    dim=model.body_count,
-                    inputs=[state_out.body_q, body_q_step_start, model.body_com, dt],
-                    outputs=[state_out.body_qd],
-                    device=model.device,
-                )
 
             # Rigid integration and every positional correction update all
             # bodies' public COM-referenced velocities incrementally. Velocity

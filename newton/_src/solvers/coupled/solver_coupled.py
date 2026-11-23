@@ -15,7 +15,9 @@ import numpy as np
 import warp as wp
 
 from ...core.reset import reset_world_selected as _reset_world_selected
+from ...core.types import override
 from ...geometry import ParticleFlags, ShapeFlags
+from ...geometry.sdf_planar_recovery import MeshRecoveryData
 from ...sim import JointType, Model, ModelFlags, StateFlags
 from ..solver import SolverBase
 from .interface import (
@@ -3038,7 +3040,8 @@ class SolverCoupled(SolverBase, CouplingInterface):
             self._step_coupled(state_in, state_out, control, contacts, dt)
         finally:
             self._active_observables = None
-        _copy_state(state_in, state_out)
+        # External force inputs are never written to the output state.
+        _copy_state(state_in, state_out, copy_forces=False)
         self._reconcile_state(state_out)
         if observables is not None:
             self._reconcile_observables(observables)
@@ -3589,6 +3592,12 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 inputs=[
                     contacts.contact_generation,
                     filtered.contact_generation,
+                    contacts._mesh_recovery_contacts.generation
+                    if contacts._mesh_recovery_contacts is not None
+                    else None,
+                    filtered._mesh_recovery_contacts.generation
+                    if filtered._mesh_recovery_contacts is not None
+                    else None,
                     self._entry_rigid_contact_generation[entry.name],
                     self._entry_soft_contact_generation[entry.name],
                     self._entry_rigid_contact_update[entry.name],
@@ -3679,22 +3688,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
                         rigid_src_to_dst,
                         contacts.rigid_contact_match_index,
                         filtered.rigid_contact_match_index,
-                    ],
-                    device=self.model.device,
-                )
-            if contacts._rigid_contact_diff_distance is not None and filtered._rigid_contact_diff_distance is not None:
-                wp.launch(
-                    _copy_filtered_rigid_contact_diff_kernel,
-                    dim=contacts.rigid_contact_max,
-                    inputs=[
-                        self._entry_rigid_contact_update[entry.name],
-                        rigid_src_to_dst,
-                        contacts._rigid_contact_diff_distance,
-                        contacts._rigid_contact_diff_point0_world,
-                        contacts._rigid_contact_diff_point1_world,
-                        filtered._rigid_contact_diff_distance,
-                        filtered._rigid_contact_diff_point0_world,
-                        filtered._rigid_contact_diff_point1_world,
                     ],
                     device=self.model.device,
                 )
@@ -3800,6 +3793,19 @@ class SolverCoupled(SolverBase, CouplingInterface):
         filtered._contact_matching_mode = contacts.contact_matching_mode
         # Entry solvers check this stamp; the filtered rows are as reduced as their source.
         filtered._rigid_contact_body_pair_reduced = contacts.rigid_contact_body_pair_reduced
+        recovery = contacts._mesh_recovery_contacts
+        if recovery is None:
+            filtered._mesh_recovery_contacts = None
+        else:
+            if filtered._mesh_recovery_contacts is None:
+                filtered._mesh_recovery_contacts = MeshRecoveryData()
+                filtered._mesh_recovery_contacts.generation = wp.empty(1, dtype=int, device=contacts.device)
+            # Filtering preserves global shape IDs. Share immutable certificates
+            # while translating their generation to the filtered buffer's counter.
+            filtered._mesh_recovery_contacts.keys = recovery.keys
+            filtered._mesh_recovery_contacts.active_slots = recovery.active_slots
+            filtered._mesh_recovery_contacts.contacts = recovery.contacts
+            filtered._mesh_recovery_contacts.deterministic = recovery.deterministic
         filtered._enable_rigid_soft_full_surface_contact = bool(
             contacts._enable_rigid_soft_full_surface_contact and has_particles
         )
@@ -3867,48 +3873,34 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 self._filter_shape_contact_pairs(entry.view)
 
     def _attribute_matches_model_flags(self, attribute: _AttributeProjection, flags: int) -> bool:
-        """Return whether a projected model attribute is covered by change flags."""
-        frequency = attribute.frequency
-        model_frequency = self.model.AttributeFrequency
-        if flags & int(ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
-            if frequency == model_frequency.BODY:
-                return True
-        configuration_dof = attribute.name in ("joint_axis", "mujoco:dof_ref")
-        if flags & int(ModelFlags.JOINT_PROPERTIES):
-            if (
-                frequency in (model_frequency.JOINT, model_frequency.JOINT_COORD) and attribute.name != "joint_rest_q"
-            ) or attribute.name in ("joint_axis", "joint_target_q"):
-                return True
+        """Return whether a projected model attribute is covered by change flags.
+
+        An attribute matches the flags it declares (see :meth:`Model.get_attribute_update_flags`).
+        Entry views hold copies, so attributes that declare no flag, including those solvers read at
+        every step, match the flags of their entity frequency.
+        """
         if flags & int(ModelFlags.JOINT_DOF_PROPERTIES):
-            if frequency == model_frequency.JOINT_DOF or attribute.name in ("joint_target_q", "joint_rest_q"):
-                return True
-        if flags & int(ModelFlags.JOINT_DOF_FORCE_PROPERTIES):
-            if (
-                frequency == model_frequency.JOINT_DOF and attribute.name != "joint_armature" and not configuration_dof
-            ) or attribute.name == "joint_target_q":
-                return True
-        if flags & int(ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES) and attribute.name in (
-            "joint_target_q",
-            "mujoco:dof_ref",
-            "joint_rest_q",
-        ):
-            return True
-        if flags & int(ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES) and attribute.name == "joint_armature":
-            return True
-        if flags & int(ModelFlags.SHAPE_PROPERTIES):
-            if frequency == model_frequency.SHAPE or "pair_" in attribute.name:
-                return True
-        if flags & int(ModelFlags.MODEL_PROPERTIES):
-            if frequency in (model_frequency.ONCE, model_frequency.WORLD):
-                return True
-        if flags & int(ModelFlags.CONSTRAINT_PROPERTIES):
-            if frequency in (model_frequency.CONSTRAINT_MIMIC, model_frequency.ATTACHMENT_PARTICLE_BODY):
-                return True
-            if any(token in attribute.name for token in ("constraint", ":eq_", "mimic")):
-                return True
-        if flags & int(ModelFlags.TENDON_PROPERTIES) and "tendon" in attribute.name:
-            return True
-        return bool(flags & int(ModelFlags.ACTUATOR_PROPERTIES) and "actuator" in attribute.name)
+            flags |= int(
+                ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+                | ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES
+                | ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES
+            )
+        spec = self.model._attribute_spec(attribute.name)
+        if spec is not None and spec.update_flags:
+            return bool(flags & int(spec.update_flags))
+        model_frequency = self.model.AttributeFrequency
+        frequency_flags = {
+            model_frequency.BODY: ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES,
+            model_frequency.JOINT: ModelFlags.JOINT_PROPERTIES,
+            model_frequency.JOINT_COORD: ModelFlags.JOINT_PROPERTIES | ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES,
+            model_frequency.JOINT_DOF: ModelFlags.JOINT_DOF_FORCE_PROPERTIES,
+            model_frequency.SHAPE: ModelFlags.SHAPE_PROPERTIES,
+            model_frequency.ONCE: ModelFlags.MODEL_PROPERTIES,
+            model_frequency.WORLD: ModelFlags.MODEL_PROPERTIES,
+            model_frequency.CONSTRAINT_MIMIC: ModelFlags.CONSTRAINT_PROPERTIES,
+            model_frequency.ATTACHMENT_PARTICLE_BODY: ModelFlags.CONSTRAINT_PROPERTIES,
+        }
+        return bool(flags & int(frequency_flags.get(attribute.frequency, 0)))
 
     def _refresh_body_inertial_view_overrides(self, entry: SolverEntry) -> None:
         """Refresh base ownership masks derived from parent body inertia."""
@@ -3924,6 +3916,11 @@ class SolverCoupled(SolverBase, CouplingInterface):
             entry.solver.notify_model_changed(flags)
         if int(flags) & self._gravity_acceleration_refresh_flags():
             self._refresh_gravity_accelerations()
+
+    @override
+    def _non_graphable_model_flags(self) -> int:
+        # Entry model views re-project the changed attributes into newly allocated copies.
+        return ~0
 
 
 def _entry_control(view: ModelView) -> Control:
@@ -4163,14 +4160,20 @@ def _copy_state_to_entry(src: State, dst: State, entry: SolverEntry) -> int:
     return _sync_free_root_joint_state(entry, dst)
 
 
-def _copy_state(src: State, dst: State) -> None:
-    """Copy all matching state arrays from *src* to *dst*."""
+def _copy_state(src: State, dst: State, *, copy_forces: bool = True) -> None:
+    """Copy all matching state arrays from *src* to *dst*.
+
+    Args:
+        src: Source state.
+        dst: Destination state.
+        copy_forces: Whether to copy the ``body_f`` and ``particle_f`` force inputs.
+    """
     if src is dst:
         return
     if src.body_q is not None and dst.body_q is not None:
         _copy_prefix(dst.body_q, src.body_q, "body_q")
         _copy_prefix(dst.body_qd, src.body_qd, "body_qd")
-    if dst.body_f is not None:
+    if copy_forces and dst.body_f is not None:
         if src.body_f is not None:
             _copy_prefix(dst.body_f, src.body_f, "body_f")
         else:
@@ -4178,7 +4181,7 @@ def _copy_state(src: State, dst: State) -> None:
     if src.particle_q is not None and dst.particle_q is not None:
         _copy_prefix(dst.particle_q, src.particle_q, "particle_q")
         _copy_prefix(dst.particle_qd, src.particle_qd, "particle_qd")
-    if dst.particle_f is not None:
+    if copy_forces and dst.particle_f is not None:
         if src.particle_f is not None:
             _copy_prefix(dst.particle_f, src.particle_f, "particle_f")
         else:
@@ -4473,6 +4476,8 @@ def _add_mapped_particle_forces_kernel(
 def _prepare_filtered_contact_update_kernel(
     src_generation: wp.array[wp.int32],
     dst_generation: wp.array[wp.int32],
+    src_recovery_generation: wp.array[wp.int32],
+    dst_recovery_generation: wp.array[wp.int32],
     rigid_generation: wp.array[wp.int32],
     soft_generation: wp.array[wp.int32],
     rigid_update_out: wp.array[wp.int32],
@@ -4503,6 +4508,8 @@ def _prepare_filtered_contact_update_kernel(
             else:
                 generation = generation + 1
             dst_generation[0] = generation
+        if dst_recovery_generation:
+            dst_recovery_generation[0] = dst_generation[0] if src_recovery_generation[0] == src_generation[0] else -1
         if rigid_update != 0:
             rigid_generation[0] = src_generation[0]
         if soft_update != 0:
@@ -4648,30 +4655,6 @@ def _copy_filtered_rigid_contact_match_index_kernel(
         dst_match_index[dst_id] = match_id
     else:
         dst_match_index[dst_id] = -1
-
-
-@wp.kernel(enable_backward=False)
-def _copy_filtered_rigid_contact_diff_kernel(
-    update_filter: wp.array[wp.int32],
-    src_to_dst: wp.array[wp.int32],
-    src_distance: wp.array[wp.float32],
-    src_point0_world: wp.array[wp.vec3],
-    src_point1_world: wp.array[wp.vec3],
-    dst_distance: wp.array[wp.float32],
-    dst_point0_world: wp.array[wp.vec3],
-    dst_point1_world: wp.array[wp.vec3],
-):
-    if update_filter[0] == 0:
-        return
-
-    src_id = wp.tid()
-    dst_id = src_to_dst[src_id]
-    if dst_id < 0:
-        return
-
-    dst_distance[dst_id] = src_distance[src_id]
-    dst_point0_world[dst_id] = src_point0_world[src_id]
-    dst_point1_world[dst_id] = src_point1_world[src_id]
 
 
 @wp.kernel(enable_backward=False)

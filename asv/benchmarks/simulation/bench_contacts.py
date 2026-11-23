@@ -403,6 +403,10 @@ class _ExampleCollideBenchmark:
         wp.capture_launch(self.graph)
         wp.synchronize_device()
 
+    def teardown(self):
+        # ASV sets up again before every sample; release the scene first so two never coexist on the GPU.
+        self.example = self.pipeline = self.state = self.contacts = self.graph = None
+
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_collide(self):
         for _ in range(self.launch_count):

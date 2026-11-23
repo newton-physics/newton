@@ -38,7 +38,10 @@ import newton.examples
 import newton.tests.unittest_utils
 from newton.examples.robot.example_robot_cartpole import Example as RobotCartpoleExample
 from newton.tests.unittest_utils import (
+    ASSET_CACHE_REFRESH_OUTPUT_RE,
+    INFO_LOG_PREFIX_RE,
     MUJOCO_MODULES,
+    NEWTON_ASSET_DOWNLOAD_OUTPUT_RE,
     NewtonTestCase,
     add_function_test,
     get_selected_cuda_test_devices,
@@ -62,21 +65,9 @@ _WARP_CUDA_UNAVAILABLE_OUTPUT_RE = (
     r"\(in function init_cuda_driver, [^\n]*cuda_util\.cpp:\d+\)"
     r")\n?"
 )
-# Optional rich console prefix of an INFO log record
-_INFO_LOG_PREFIX_RE = r"(?:\[\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d{3}\]\[[\w.-]+\.py:\d+\]\[INFO\]: )?"
-_ASSET_CACHE_REFRESH_OUTPUT_RE = (
-    rf"(?:{_INFO_LOG_PREFIX_RE}New version of [^\n]+ found "
-    r"\(cached: [0-9a-f]{8}, latest: [0-9a-f]{8}\)\. Refreshing\.\.\.\n)?"
-)
-_NEWTON_ASSET_DOWNLOAD_OUTPUT_RE = (
-    _ASSET_CACHE_REFRESH_OUTPUT_RE
-    + _INFO_LOG_PREFIX_RE
-    + r"Cloning https://github\.com/newton-physics/newton-assets\.git "
-    r"\(ref: [0-9a-f]{40}\)\.\.\.\n" + _INFO_LOG_PREFIX_RE + r"Successfully downloaded folder to: [^\n]+\n?"
-)
 _ISAACGYM_ASSET_DOWNLOAD_OUTPUT_RE = (
-    _ASSET_CACHE_REFRESH_OUTPUT_RE + _INFO_LOG_PREFIX_RE + r"Cloning https://github\.com/isaac-sim/IsaacGymEnvs\.git "
-    r"\(ref: main\)\.\.\.\n" + _INFO_LOG_PREFIX_RE + r"Successfully downloaded folder to: [^\n]+\n?"
+    ASSET_CACHE_REFRESH_OUTPUT_RE + INFO_LOG_PREFIX_RE + r"Cloning https://github\.com/isaac-sim/IsaacGymEnvs\.git "
+    r"\(ref: main\)\.\.\.\n" + INFO_LOG_PREFIX_RE + r"Successfully downloaded folder to: [^\n]+\n?"
 )
 _NUT_BOLT_DOWNLOAD_START_OUTPUT_RE = r"Downloading nut/bolt assets\.\.\.\n?"
 _NUT_BOLT_DOWNLOAD_DONE_OUTPUT_RE = r"Assets downloaded to: [^\n]+\n?"
@@ -85,6 +76,11 @@ _MATPLOTLIB_FONT_CACHE_OUTPUT_RE = r"Matplotlib is building the font cache; this
 _DIFFSIM_BALL_GRADIENT_OUTPUT_RE = r"(?:numeric grad: \[[^\n]+\]\nanalytic grad: \[[^\n]+\]\n?){2}"
 _DIFFSIM_DRONE_LOSS_LINE_RE = r"\[\s*\d{1,3}/360\] loss=-?\d+\.\d{8}\n?"
 _DIFFSIM_DRONE_LOSS_OUTPUT_RE = rf"(?:{_DIFFSIM_DRONE_LOSS_LINE_RE}){{10}}"
+_DIFFSIM_BACKFLIP_GRADIENT_OUTPUT_RE = (
+    r"settle done: z_stand=\d\.\d{4}\n"
+    r"(?:grad check qd?\[\d+\]: tape=-?\d\.\d{5}e[+-]\d{2} fd=-?\d\.\d{5}e[+-]\d{2} rel=\d\.\d{2}e[+-]\d{2}\n?){6}"
+    r"gradient check passed"
+)
 _BASIC_PLOTTING_OUTPUT_RE = (
     r"(?:"
     r"Diagnostics plot saved to solver_convergence\.png\n?"
@@ -114,9 +110,14 @@ _ANYMAL_TEXTURE_WITHOUT_UVS_WARNING_RE = (
     r"[^\n]*[/\\]base\.dae has a texture but no UVs; texture will be ignored\.\n"
     r"  parse_shapes\(link, visuals, density=0\.0, just_visual=True, visible=not hide_visuals\)\n?"
 )
+_ANYMAL_MATERIAL_BINDING_WARNING_RE = (
+    r"(?m)(?:^.*Warning: in BindingsAtPrim at line \d+ of [^\n]*materialBindingAPI\.cpp "
+    r"-- Found material bindings on prim at path \([^\n]*\) but "
+    r"MaterialBindingAPI is not applied on the prim\n)+"
+)
 _EXAMPLE_ALLOW_OUTPUT_REGEXES = [
     (_PXR_WORK_THREAD_LIMIT_OUTPUT_RE, "stderr"),
-    (_NEWTON_ASSET_DOWNLOAD_OUTPUT_RE, "stdout"),
+    (NEWTON_ASSET_DOWNLOAD_OUTPUT_RE, "stdout"),
 ]
 _OutputRegexSpec = str | tuple[str, str]
 _registered_examples: set[str] = set()
@@ -506,11 +507,11 @@ class TestExampleOutputRegexes(unittest.TestCase):
         for prefix in ("", rich_prefix):
             with self.subTest(prefix=prefix):
                 output = "".join(prefix + line + "\n" for line in lines)
-                unmatched_output = re.sub(_NEWTON_ASSET_DOWNLOAD_OUTPUT_RE, "", output, flags=re.MULTILINE)
+                unmatched_output = re.sub(NEWTON_ASSET_DOWNLOAD_OUTPUT_RE, "", output, flags=re.MULTILINE)
                 self.assertEqual(unmatched_output, "")
 
         output = "".join("[unexpected][fields][INFO]: " + line + "\n" for line in lines)
-        unmatched_output = re.sub(_NEWTON_ASSET_DOWNLOAD_OUTPUT_RE, "", output, flags=re.MULTILINE)
+        unmatched_output = re.sub(NEWTON_ASSET_DOWNLOAD_OUTPUT_RE, "", output, flags=re.MULTILINE)
         self.assertNotEqual(unmatched_output, "")
 
 
@@ -1437,6 +1438,20 @@ add_diffsim_example_test(
 )
 
 add_diffsim_example_test(
+    name="diffsim.example_diffsim_anymal_backflip",
+    devices=test_devices,
+    # --test mode: settle + gradient check only (the full optimization is a
+    # deliberate multi-minute interactive run and is never executed by CI).
+    # Measured --test runtimes: ~12 s CUDA, ~9 s CPU - the default 600 s
+    # timeout is plenty.
+    test_options={"requires": ("pxr.Usd",), "num-frames": 2},
+    test_options_cpu={"num-frames": 1},
+    use_viewer=True,
+    expect_output_regexes=[(_DIFFSIM_BACKFLIP_GRADIENT_OUTPUT_RE, "stdout")],
+    allow_output_regexes=[(_ANYMAL_MATERIAL_BINDING_WARNING_RE, "stderr")],
+)
+
+add_diffsim_example_test(
     name="diffsim.example_diffsim_cloth",
     devices=test_devices,
     test_options={"num-frames": 4 * 120},  # train_iters * sim_steps
@@ -1780,7 +1795,7 @@ add_contact_example_test(
     devices=cuda_test_devices,
     test_options={"requires": ("git", "trimesh", "collada", *MUJOCO_MODULES), "num-frames": 1200},
     use_viewer=True,
-    allow_output_regexes=[(_NEWTON_ASSET_DOWNLOAD_OUTPUT_RE, "stdout")],
+    allow_output_regexes=[(NEWTON_ASSET_DOWNLOAD_OUTPUT_RE, "stdout")],
 )
 add_contact_example_test(
     name="contacts.example_pyramid",

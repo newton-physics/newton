@@ -8,10 +8,17 @@ import warp.fem as fem
 import warp.sparse as sp
 from warp.fem.linalg import symmetric_eigenvalues_qr
 
-from .contact_solver_kernels import ColoredContacts, make_solve_colored_cell_contacts
+from .contact_solver_kernels import (
+    ColoredContacts,
+    EnvironmentGate,
+    environment_stopped,
+    make_solve_colored_cell_contacts,
+)
 
-_DELASSUS_PROXIMAL_REG = wp.constant(1.0e-6)
-"""Cutoff for the trace of the diagonal block of the Delassus operator to disable constraints"""
+_DELASSUS_SCALED_REG = wp.constant(1.0e-2)
+"""Proximal regularization of the Delassus diagonal blocks, as a fraction of a full cell's inertial scale.
+
+Blocks far below that scale, such as those of nearly empty cells, are damped accordingly."""
 
 _SLIDING_NEWTON_TOL = wp.constant(1.0e-7)
 """Tolerance for the Newton method to solve for the sliding velocity"""
@@ -30,10 +37,6 @@ mat66 = wp.types.matrix(shape=(6, 6), dtype=wp.float32)
 mat55 = wp.types.matrix(shape=(5, 5), dtype=wp.float32)
 
 mat13 = wp.vec3
-
-_Index8 = wp.types.vector(length=8, dtype=int)
-_Scalar8 = wp.types.vector(length=8, dtype=float)
-_Vectors8 = wp.types.matrix(shape=(8, 3), dtype=float)
 
 wp.set_module_options({"enable_backward": False})
 
@@ -173,6 +176,8 @@ def compute_delassus_diagonal(
     strain_batch: wp.array[int],
     mass_multiplicity: wp.array2d[float],
     majorize: bool,
+    delassus_scale: wp.array[float],
+    environment_offsets: wp.array[int],
     delassus_rotation: wp.array[mat55],
     delassus_diagonal: wp.array[vec6],
 ):
@@ -183,6 +188,11 @@ def compute_delassus_diagonal(
 
     Empty ``mass_multiplicity`` uses unit weights (GS); otherwise use the
     supplied per-batch weights (Jacobi or batched GS).
+
+    ``delassus_scale`` holds a full cell's inertial Delassus scale dt^2 / (rho dx^2)
+    for each environment delimited by ``environment_offsets`` (a single one when empty);
+    the proximal regularization is a fixed fraction of it, which makes it independent
+    of units and time step.
     """
     tau_i = wp.tid()
     block_beg = strain_mat_offsets[tau_i]
@@ -216,7 +226,11 @@ def compute_delassus_diagonal(
         b_v2 = _symmetric_part_op(b_val, wp.vec3(0.0, 0.0, 1.0))
         diag_block += inv_frac * wp.outer(b_v2, b_v2)
 
-    diag_block += _DELASSUS_PROXIMAL_REG * wp.identity(n=6, dtype=float)
+    environment = int(0)
+    if environment_offsets.shape[0] > 0:
+        environment = wp.clamp(wp.lower_bound(environment_offsets, tau_i + 1) - 1, 0, delassus_scale.shape[0] - 1)
+    reg = _DELASSUS_SCALED_REG * delassus_scale[environment]
+    diag_block += reg * wp.identity(n=6, dtype=float)
 
     coupling = vec6(0.0)
     for k in range(1, 6):
@@ -224,7 +238,7 @@ def compute_delassus_diagonal(
         diag_block[0, k] = 0.0
         diag_block[k, 0] = 0.0
 
-    diag, ev = symmetric_eigenvalues_qr(diag_block, _DELASSUS_PROXIMAL_REG * 0.1)
+    diag, ev = symmetric_eigenvalues_qr(diag_block, reg * 0.1)
 
     if not (wp.ddot(ev, ev) < 1.0e16 and wp.length_sq(diag) < 1.0e16):
         diag = wp.get_diag(diag_block)
@@ -260,7 +274,7 @@ def preprocess_stress_and_strain(
 ):
     """Prepare stress and strain for the rheology solve.
 
-    Adds the unilateral strain offset to ``strain_rhs`` (removed in
+    Adds the signed strain offset to ``strain_rhs`` (removed in
     :func:`postprocess_stress_and_strain`), disables cohesion for nodes
     with a positive offset, and projects the initial stress guess onto
     the yield surface.
@@ -271,13 +285,13 @@ def preprocess_stress_and_strain(
     yield_params = yield_stress[tau_i]
     offset = unilateral_strain_offset[tau_i]
 
-    if offset > 0.0:
-        # add unilateral strain offset to strain rhs
-        # will be removed in postprocess_stress_and_strain
+    if offset != 0.0:
+        # Accept signed feedback; postprocessing removes the offset again.
         b = strain_rhs[tau_i]
         b += unilateral_offset_to_strain_rhs(offset)
         strain_rhs[tau_i] = b
 
+    if offset > 0.0:
         yield_params[1] = 0.0  # disable cohesion if offset > 0 (not compact)
         yield_stress[tau_i] = yield_params
 
@@ -939,6 +953,7 @@ def make_jacobi_solve_kernel(
 
     @fem.cache.dynamic_kernel(suffix=key, kernel_options={"fast_math": True})
     def jacobi_solve_kernel_impl(
+        gate: EnvironmentGate,
         yield_params: wp.array[YieldParamVec],
         strain_node_volume: wp.array[float],
         compliance_mat_offsets: wp.array[int],
@@ -956,7 +971,7 @@ def make_jacobi_solve_kernel(
     ):
         tau_i = wp.tid()
 
-        if strain_mat_offsets[tau_i] == strain_mat_offsets[tau_i + 1]:
+        if strain_mat_offsets[tau_i] == strain_mat_offsets[tau_i + 1] or environment_stopped(gate, tau_i):
             delta_correction[tau_i] = vec6(0.0)
             return
 
@@ -1002,40 +1017,6 @@ class StrainMatrixRowsSoA:
     values_y: wp.array2d[float]
     values_z: wp.array2d[float]
     block_offsets: wp.array[int]
-
-
-def make_solve_local_stress_values(has_viscosity: bool, has_dilatancy: bool, has_rotation: bool):
-    key = (has_viscosity, has_dilatancy, has_rotation)
-
-    @fem.cache.dynamic_func(suffix=key)
-    def solve_local_stress_values_impl(
-        strain_rhs: vec6,
-        current_stress: vec6,
-        diagonal: vec6,
-        rotation: mat55,
-        yield_parameters: YieldParamVec,
-        node_volume: float,
-    ):
-        if wp.static(has_rotation):
-            local_strain = _world_to_local(strain_rhs, rotation)
-            local_stress = _world_to_local(current_stress, rotation)
-        else:
-            local_strain = strain_rhs
-            local_stress = current_stress
-        tau_new = wp.static(make_solve_flow_rule(has_viscosity, has_dilatancy))(
-            diagonal,
-            local_strain - wp.cw_mul(local_stress, diagonal),
-            local_stress,
-            yield_parameters,
-            node_volume,
-        )
-        delta_stress_loc = wp.cw_div(tau_new - local_strain, diagonal)
-        if wp.static(has_rotation):
-            return _local_to_world(delta_stress_loc, rotation)
-        else:
-            return delta_stress_loc
-
-    return solve_local_stress_values_impl
 
 
 @wp.func
@@ -1092,101 +1073,44 @@ def _gather_cell_velocity(rows: Any, row: int, inv_mass: wp.array[float], veloci
     return cache
 
 
-def make_solve_short_strain_row(has_rotation: bool):
-    key = (has_rotation,)
-
-    @fem.cache.dynamic_func(suffix=key, allow_overloads=True)
-    def solve_short_strain_row_impl(
-        row: int,
-        tau_i: int,
-        rows: Any,
-        yield_params: wp.array[YieldParamVec],
-        strain_node_volume: wp.array[float],
-        diagonal: wp.array[vec6],
-        rotation: wp.array[mat55],
-        inv_mass: wp.array[float],
-        rhs: wp.array[vec6],
-        velocity: wp.array[wp.vec3],
-        stress: wp.array[vec6],
-        delta: wp.array[vec6],
-    ):
-        row_stress = stress[tau_i]
-        row_diagonal = diagonal[tau_i]
-        row_rotation = mat55()
-        if wp.static(has_rotation):
-            row_rotation = rotation[tau_i]
-        row_yield = yield_params[tau_i]
-        row_volume = strain_node_volume[tau_i]
-        tau = rhs[tau_i]
-        nodes = _Index8()
-        weights = _Vectors8()
-        inverse_masses = _Scalar8()
-        velocities = _Vectors8()
-        for k in range(8):
-            node, weight = _strain_row_entry(rows, row, k)
-            nodes[k] = node
-            weights[k] = weight
-        for k in range(8):
-            inverse_masses[k] = inv_mass[nodes[k]]
-        for k in range(8):
-            velocities[k] = velocity[nodes[k]]
-        for k in range(8):
-            tau += _symmetric_part_op(weights[k], velocities[k])
-        ds = wp.static(make_solve_local_stress_values(False, False, has_rotation))(
-            tau, row_stress, row_diagonal, row_rotation, row_yield, row_volume
-        )
-        stress[tau_i] += ds
-        delta[tau_i] = ds
-        delta_velocities = _Vectors8()
-        for k in range(8):
-            delta_velocities[k] = _symmetric_part_transposed_op(weights[k], ds)
-        for k in range(8):
-            velocity[nodes[k]] += inverse_masses[k] * delta_velocities[k]
-
-    return solve_short_strain_row_impl
+_StrainNodes8 = wp.types.vector(length=8, dtype=int)
+_StrainMasses8 = wp.types.vector(length=8, dtype=float)
+_StrainVectors8 = wp.types.matrix(shape=(8, 3), dtype=float)
 
 
-def _make_strain_block(width: int):
-    """Specialize the ordered gather and scatter loops for one fixed block width."""
-    index_type = wp.types.vector(length=width, dtype=int)
-    scalars_type = wp.types.vector(length=width, dtype=float)
-    vectors_type = wp.types.matrix(shape=(width, 3), dtype=float)
+@wp.func
+def _gather_strain_block(rows: Any, row: int, start: int, velocity: wp.array[wp.vec3], tau: vec6):
+    """Load eight independent entries together, then accumulate strain in row order."""
+    nodes = _StrainNodes8()
+    weights = _StrainVectors8()
+    velocities = _StrainVectors8()
+    for k in range(8):
+        node, weight = _strain_row_entry(rows, row, start + k)
+        nodes[k] = node
+        weights[k] = weight
+    for k in range(8):
+        velocities[k] = velocity[nodes[k]]
+    for k in range(8):
+        tau += _symmetric_part_op(weights[k], velocities[k])
+    return tau
 
-    @fem.cache.dynamic_func(suffix=(width, "gather"), allow_overloads=True)
-    def gather_strain_block(rows: Any, row: int, entry_base: int, velocity: wp.array[wp.vec3], tau: vec6):
-        nodes = index_type()
-        weights = vectors_type()
-        velocities = vectors_type()
-        for k in range(wp.static(width)):
-            node, weight = _strain_row_entry(rows, row, entry_base + k)
-            nodes[k] = node
-            weights[k] = weight
-        for k in range(wp.static(width)):
-            velocities[k] = velocity[nodes[k]]
-        for k in range(wp.static(width)):
-            tau += _symmetric_part_op(weights[k], velocities[k])
-        return tau
 
-    @fem.cache.dynamic_func(suffix=(width, "scatter"), allow_overloads=True)
-    def scatter_strain_block(
-        rows: Any, row: int, entry_base: int, ds: vec6, inv_mass: wp.array[float], velocity: wp.array[wp.vec3]
-    ):
-        nodes = index_type()
-        weights = vectors_type()
-        inverse_masses = scalars_type()
-        for k in range(wp.static(width)):
-            node, weight = _strain_row_entry(rows, row, entry_base + k)
-            nodes[k] = node
-            weights[k] = weight
-        for k in range(wp.static(width)):
-            inverse_masses[k] = inv_mass[nodes[k]]
-        dv = vectors_type()
-        for k in range(wp.static(width)):
-            dv[k] = _symmetric_part_transposed_op(weights[k], ds)
-        for k in range(wp.static(width)):
-            velocity[nodes[k]] += inverse_masses[k] * dv[k]
-
-    return gather_strain_block, scatter_strain_block
+@wp.func
+def _scatter_strain_block(
+    rows: Any, row: int, start: int, ds: vec6, inv_mass: wp.array[float], velocity: wp.array[wp.vec3]
+):
+    """Group the independent loads and apply velocity increments in row order."""
+    nodes = _StrainNodes8()
+    weights = _StrainVectors8()
+    inverse_masses = _StrainMasses8()
+    for k in range(8):
+        node, weight = _strain_row_entry(rows, row, start + k)
+        nodes[k] = node
+        weights[k] = weight
+    for k in range(8):
+        inverse_masses[k] = inv_mass[nodes[k]]
+    for k in range(8):
+        velocity[nodes[k]] += inverse_masses[k] * _symmetric_part_transposed_op(weights[k], ds)
 
 
 def make_solve_strain_rows(
@@ -1199,8 +1123,6 @@ def make_solve_strain_rows(
     max_entries: int,
 ):
     """Share the local stress solve and velocity updates across all GS layouts."""
-    gather8, scatter8 = _make_strain_block(8)
-    gather16, scatter16 = _make_strain_block(16)
     key = (
         has_viscosity,
         has_dilatancy,
@@ -1247,99 +1169,51 @@ def make_solve_strain_rows(
             if n == 0:
                 delta[tau_i] = vec6(0.0)
                 continue
-            if wp.static(
-                not has_viscosity
-                and not has_dilatancy
-                and not has_compliance_mat
-                and not cache_cell_velocity
-                and not batched
-                and max_entries <= 0
-            ):
-                if n == 8:
-                    wp.static(make_solve_short_strain_row(has_rotation))(
-                        row,
-                        tau_i,
-                        rows,
-                        yield_params,
-                        strain_node_volume,
-                        diagonal,
-                        rotation,
-                        inv_mass,
-                        rhs,
-                        velocity,
-                        stress,
-                        delta,
-                    )
-                    continue
-            row_stress = stress[tau_i]
-            row_diagonal = diagonal[tau_i]
-            row_rotation = mat55()
-            if wp.static(has_rotation):
-                row_rotation = rotation[tau_i]
-            row_yield = yield_params[tau_i]
-            row_volume = strain_node_volume[tau_i]
             tau = rhs[tau_i]
             entries = n
             if wp.static(max_entries > 0):
                 entries = wp.static(max_entries)
-            if wp.static(max_entries <= 0 and not cache_cell_velocity):
-                gather_begin = int(0)
-                if wp.static(has_viscosity):
-                    gather_begin = entries - entries % 16
-                    for entry_base in range(0, gather_begin, 16):
-                        tau = gather16(rows, row, entry_base, velocity, tau)
+            gather_end = int(0)
+            if wp.static(not cache_cell_velocity):
                 gather_end = entries - entries % 8
-                for entry_base in range(gather_begin, gather_end, 8):
-                    tau = gather8(rows, row, entry_base, velocity, tau)
-                for entry_index in range(gather_end, entries):
-                    node, weight = _strain_row_entry(rows, row, entry_index)
-                    tau += _symmetric_part_op(weight, velocity[node])
-            else:
-                for k in range(entries):
-                    node, weight = _strain_row_entry(rows, row, k)
-                    v = wp.vec3(0.0)
-                    if wp.static(cache_cell_velocity):
-                        v = wp.vec3(cache.vx[k], cache.vy[k], cache.vz[k])
-                    else:
-                        v = velocity[node]
-                    tau += _symmetric_part_op(weight, v)
+                for start in range(0, gather_end, 8):
+                    tau = _gather_strain_block(rows, row, start, velocity, tau)
+            for k in range(gather_end, entries):
+                node, weight = _strain_row_entry(rows, row, k)
+                v = wp.vec3(0.0)
+                if wp.static(cache_cell_velocity):
+                    v = wp.vec3(cache.vx[k], cache.vy[k], cache.vz[k])
+                else:
+                    v = velocity[node]
+                tau += _symmetric_part_op(weight, v)
             if wp.static(has_compliance_mat):
                 for b in range(compliance_offsets[tau_i], compliance_offsets[tau_i + 1]):
                     tau += compliance_values[b] @ stress[compliance_columns[b]]
-            ds = wp.static(make_solve_local_stress_values(has_viscosity, has_dilatancy, has_rotation))(
-                tau, row_stress, row_diagonal, row_rotation, row_yield, row_volume
+            ds = wp.static(make_solve_local_stress(has_viscosity, has_dilatancy, has_rotation))(
+                tau_i, tau, yield_params, strain_node_volume, diagonal, rotation, stress
             )
             # Batched compliant solves read frozen stresses and commit them in a separate kernel.
             if wp.static(not (batched and has_compliance_mat)):
                 stress[tau_i] += ds
             delta[tau_i] = ds
             if wp.static(not batched):
+                scatter_entries = n
+                if wp.static(cache_cell_velocity):
+                    scatter_entries = 8
+                scatter_end = int(0)
                 if wp.static(not cache_cell_velocity):
-                    scatter_begin = int(0)
-                    if wp.static(has_viscosity):
-                        scatter_begin = n - n % 16
-                        for entry_base in range(0, scatter_begin, 16):
-                            scatter16(rows, row, entry_base, ds, inv_mass, velocity)
-                    scatter_end = n - n % 8
-                    for entry_base in range(scatter_begin, scatter_end, 8):
-                        scatter8(rows, row, entry_base, ds, inv_mass, velocity)
-                    for entry_index in range(scatter_end, n):
-                        node, weight = _strain_row_entry(rows, row, entry_index)
-                        dv = _symmetric_part_transposed_op(weight, ds)
-                        velocity[node] += inv_mass[node] * dv
-                else:
-                    scatter_entries = n
+                    scatter_end = scatter_entries - scatter_entries % 8
+                    for start in range(0, scatter_end, 8):
+                        _scatter_strain_block(rows, row, start, ds, inv_mass, velocity)
+                for k in range(scatter_end, scatter_entries):
+                    node, weight = _strain_row_entry(rows, row, k)
+                    dv = _symmetric_part_transposed_op(weight, ds)
                     if wp.static(cache_cell_velocity):
-                        scatter_entries = 8
-                    for k in range(scatter_entries):
-                        node, weight = _strain_row_entry(rows, row, k)
-                        dv = _symmetric_part_transposed_op(weight, ds)
-                        if wp.static(cache_cell_velocity):
-                            cache.vx[k] += cache.inverse_mass[k] * dv[0]
-                            cache.vy[k] += cache.inverse_mass[k] * dv[1]
-                            cache.vz[k] += cache.inverse_mass[k] * dv[2]
-                        else:
-                            velocity[node] += inv_mass[node] * dv
+                        cache.vx[k] += cache.inverse_mass[k] * dv[0]
+                        cache.vy[k] += cache.inverse_mass[k] * dv[1]
+                        cache.vz[k] += cache.inverse_mass[k] * dv[2]
+                    else:
+                        velocity[node] += inv_mass[node] * dv
 
         if wp.static(cache_cell_velocity):
             for k in range(8):
@@ -1405,6 +1279,7 @@ def make_gs_solve_kernel(
         color_blocks: wp.array2d[int],
         rows: Any,
         colors_per_batch: int,
+        gate: EnvironmentGate,
         yield_params: wp.array[YieldParamVec],
         strain_node_volume: wp.array[float],
         compliance_mat_offsets: wp.array[int],
@@ -1436,6 +1311,11 @@ def make_gs_solve_kernel(
                 beg, end = int(rows.block_offsets[block]), int(rows.block_offsets[block + 1])
             else:
                 beg, end = int(color_blocks[0, block]), int(color_blocks[1, block])
+            # A block's rows and contacts belong to one environment
+            if end > beg and environment_stopped(gate, _strain_row_node(rows, beg)):
+                for row in range(beg, end):
+                    delta_correction[_strain_row_node(rows, row)] = vec6(0.0)
+                continue
             wp.static(solve_rows)(
                 beg,
                 end,

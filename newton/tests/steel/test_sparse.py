@@ -2766,7 +2766,7 @@ class TestSteelSparseSelectionGuard(unittest.TestCase):
 
 class TestSteelLocalInternalSolve(unittest.TestCase):
     @staticmethod
-    def _empty_mf_inputs(world_count: int, device: str | wp.Device) -> list:
+    def _empty_mf_inputs(world_count: int, device: wp.DeviceLike) -> list:
         return [
             wp.zeros(world_count, dtype=wp.int32, device=device),
             wp.zeros((world_count, 4), dtype=wp.int32, device=device),

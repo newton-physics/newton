@@ -13,9 +13,8 @@ import numpy as np
 import warp as wp
 
 from ..core.types import Axis, Devicelike, Vec2, Vec3, override
-from ..exceptions import NewtonDeprecationWarning, NewtonWarning
+from ..exceptions import NewtonWarning
 from ..utils.color import ColorSpace
-from ..utils.deprecation import deprecate_nonkeyword_arguments
 from ..utils.texture import compute_texture_hash
 
 if TYPE_CHECKING:
@@ -175,7 +174,6 @@ class Mesh:
     MAX_HULL_VERTICES = 64
     """Default maximum vertex count for convex hull approximation."""
 
-    @deprecate_nonkeyword_arguments
     def __init__(
         self,
         vertices: Sequence[Vec3] | np.ndarray,
@@ -1854,7 +1852,6 @@ class TetMesh:
         }
     )
 
-    @deprecate_nonkeyword_arguments
     def __init__(
         self,
         vertices: Sequence[Vec3] | np.ndarray,
@@ -2109,18 +2106,13 @@ class TetMesh:
         frequency is ambiguous or cannot be inferred emit a warning and are
         omitted without preventing the TetMesh from loading.
 
-        Material-attribute namespaces (deprecated default): with ``compat_namespaces=None``
-        (the default) the legacy vendor namespaces (``omniphysics:`` / ``physxDeformableBody:``)
-        are read off any bound material, matching the pre-canonical behavior. That default is
-        deprecated and emits a ``DeprecationWarning`` when it is load-bearing: the bound material
-        authors vendor-namespaced deformable attributes, or canonical ``physics:`` attributes
-        without ``PhysicsVolumeDeformableMaterialAPI`` (API-applied canonical or render-only
-        materials do not warn); a future
-        release will default to canonical ``physics:``-only. Pass ``compat_namespaces=()`` to adopt
-        the canonical-only behavior now -- moduli are then read only from a material that applies
-        ``PhysicsVolumeDeformableMaterialAPI`` -- or pass an explicit list (e.g.
-        ``newton.usd.DEFORMABLE_LEGACY_NAMESPACES``) to keep reading vendor namespaces without the
-        warning.
+        Material-attribute namespaces: by default, only canonical ``physics:`` attributes are
+        read, moduli from a material that applies ``PhysicsVolumeDeformableMaterialAPI`` and
+        density also from one that applies ``UsdPhysicsMaterialAPI``. Omitting
+        ``compat_namespaces`` warns when this ignores attributes authored on the bound material.
+        Pass an explicit list (e.g. ``newton.usd.DEFORMABLE_LEGACY_NAMESPACES``) to read the
+        canonical and the listed vendor namespaces off any bound material.
+        One deprecated exception to the default is described under ``compat_namespaces``.
 
         Example:
 
@@ -2140,8 +2132,13 @@ class TetMesh:
             prim: The USD prim to load the tetrahedral mesh from.
             compat_namespaces: Vendor attribute namespaces accepted as a fallback to the canonical
                 ``physics:`` material attributes, lifting the ``PhysicsVolumeDeformableMaterialAPI``
-                gate. ``None`` (the default) selects the deprecated legacy namespaces; pass ``()`` for
-                canonical-only.
+                gate. ``None`` (the default) and ``()`` are canonical-only; only ``None`` warns
+                about ignored attributes.
+
+                .. deprecated:: 1.9
+                    ``None`` still reads vendor-namespaced values without a ``physics:`` counterpart
+                    from a material that applies ``PhysicsVolumeDeformableMaterialAPI``. A future
+                    release ignores them.
 
         Returns:
             A :class:`newton.TetMesh` with vertex positions and tet connectivity.
@@ -2598,12 +2595,6 @@ class Gaussian:
         min_response: wp.float32
         sorting_mode: wp.int32
 
-    _WARP_DATA_DEPRECATION_MSG = (
-        "Gaussian.warp_data is deprecated in Newton 1.6; use the Gaussian.Data object returned by "
-        "Gaussian.finalize() instead."
-    )
-    _WARP_BVH_DEPRECATION_MSG = "Gaussian.warp_bvh is deprecated in Newton 1.6; use Gaussian.bvh instead."
-
     def __init__(
         self,
         positions: np.ndarray,
@@ -2637,9 +2628,7 @@ class Gaussian:
                 (default: :attr:`SortingMode.RAY_HIT_DISTANCE`).
             sh_color_space: Color space of evaluated SH radiance. Defaults to
                 sRGB (display-encoded); pass :attr:`~newton.utils.ColorSpace.LINEAR`
-                for scene-linear radiance. Only :class:`~newton.sensors.SensorCamera`
-                honors this; the deprecated :class:`~newton.sensors.SensorTiledCamera`
-                ignores it.
+                for scene-linear radiance.
         """
 
         self._positions = np.ascontiguousarray(np.asarray(positions, dtype=np.float32).reshape(-1, 3))
@@ -2757,36 +2746,6 @@ class Gaussian:
         """
         return self._warp_bvh
 
-    @property
-    def warp_data(self) -> "Gaussian.Data | None":
-        """Deprecated alias for the finalized Warp Gaussian data.
-
-        .. deprecated:: 1.6
-            Use the :class:`Data` object returned by :meth:`finalize` instead.
-        """
-        warnings.warn(self._WARP_DATA_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-        return self._warp_data
-
-    @warp_data.setter
-    def warp_data(self, value: "Gaussian.Data | None") -> None:
-        warnings.warn(self._WARP_DATA_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-        self._warp_data = value
-
-    @property
-    def warp_bvh(self) -> wp.Bvh | None:
-        """Deprecated alias for :attr:`bvh`.
-
-        .. deprecated:: 1.6
-            Use :attr:`bvh` instead.
-        """
-        warnings.warn(self._WARP_BVH_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-        return self._warp_bvh
-
-    @warp_bvh.setter
-    def warp_bvh(self, value: wp.Bvh | None) -> None:
-        warnings.warn(self._WARP_BVH_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-        self._warp_bvh = value
-
     def _find_sh_degree(self) -> int:
         """Spherical harmonics degree (0-3), inferred from *sh_coeffs* shape."""
         c = self._sh_coeffs.shape[1]
@@ -2851,7 +2810,7 @@ class Gaussian:
         Raises:
             RuntimeError: If :meth:`finalize` has not been called yet.
         """
-        from ..sensors.warp_raytrace.gaussians import compute_gaussian_bvh_bounds  # noqa: PLC0415
+        from ..render.gaussians import compute_gaussian_bvh_bounds  # noqa: PLC0415
 
         if self._warp_bvh is None or self._warp_data is None:
             raise RuntimeError("Gaussian.bvh_refit() requires Gaussian.finalize() to have been called first.")
