@@ -41,7 +41,7 @@ method details. For symptom-driven diagnosis and parameter tuning, start with
 Choosing a Solver
 -----------------
 
-MuJoCo, Kamino, and VBD currently have dedicated backend guides:
+MuJoCo, Kamino, VBD, and Steel currently have dedicated backend guides:
 
 - :doc:`MuJoCo <mujoco>` — generalized-coordinate rigid-body simulation and
   MuJoCo or MJCF workflows.
@@ -49,6 +49,8 @@ MuJoCo, Kamino, and VBD currently have dedicated backend guides:
   and hard frictional contacts; experimental.
 - :doc:`VBD <vbd>` — unified simulation of cloth, soft bodies, and rigid
   bodies in a single VBD-based solver; experimental.
+- :doc:`Steel <steel>`: Skild AI's generalized-coordinate rigid-body solver,
+  with links to Skild's guides, including porting from PhysX; experimental.
 
 The other solver backends are documented through their linked API references
 and the comparison tables below.
@@ -551,6 +553,78 @@ row whose body or particle is owned by no solver applies no force at all. The
 coupler also warns when both endpoints belong to one entry whose solver does not
 support attachments. Hard attachments require both endpoints in one VBD entry;
 the coupler raises an error for other ownership arrangements.
+
+.. _Runtime model updates:
+
+Runtime Model Updates
+---------------------
+
+Solvers cache data derived from the :class:`~newton.Model`, such as per-world copies of shape
+materials or factored mass matrices. After editing model attributes in place, for example for
+domain randomization, call :meth:`~newton.solvers.SolverBase.notify_model_changed` with the
+:class:`~newton.ModelFlags` that cover them.
+:meth:`Model.get_attribute_update_flags() <newton.Model.get_attribute_update_flags>` returns these
+flags for built-in model attributes and for custom model attributes such as ``"mujoco:solref"``.
+``NONE`` means that solvers read the attribute at every step, and ``None`` means that no flag
+covers the attribute, so solvers that cache it must be recreated. Some model attributes, such as
+:attr:`~newton.Model.joint_target_q`, only provide initial values for new :class:`~newton.State` or
+:class:`~newton.Control` objects, which copy them by default. Editing such a model attribute does not
+change existing objects; edit their copy directly, or create new ones.
+Coupled solvers hold copies of the model arrays in their entry views, so after editing an
+attribute whose flags are ``NONE``, notify them with the flags of the attribute's entity, such as
+:attr:`~newton.ModelFlags.BODY_PROPERTIES` for a per-body attribute.
+
+Whether a notification can be captured in a CUDA graph depends on the solver, its configuration,
+and the model. The experimental
+:meth:`~newton.solvers.SolverBase.is_notify_model_changed_graphable` answers it conservatively for
+given flags:
+
+.. code-block:: python
+
+    flags = model.get_attribute_update_flags("shape_material_mu")
+    if solver.is_notify_model_changed_graphable(flags):
+        with wp.ScopedCapture() as capture:
+            randomize_friction(model)  # writes model.shape_material_mu in place
+            solver.notify_model_changed(flags)
+        randomize_graph = capture.graph
+    else:
+        randomize_friction(model)
+        solver.notify_model_changed(flags)
+
+For example, :class:`~newton.solvers.SolverMuJoCo` can capture every notification with the MuJoCo
+Warp backend and none with the MuJoCo CPU backend (``use_mujoco_cpu=True``), while host-side
+validation or rebuilding makes some notifications of
+:class:`~newton.solvers.SolverFeatherstone`, :class:`~newton.solvers.SolverKamino`,
+:class:`~newton.solvers.SolverSteel`, :class:`~newton.solvers.SolverVBD`, and the coupled solvers
+not capturable.
+
+.. _External forces:
+
+External Forces
+---------------
+
+:attr:`State.body_f <newton.State.body_f>` and
+:attr:`State.particle_f <newton.State.particle_f>` hold external forces that the
+caller applies. Every solver reads them from ``state_in`` and never writes them
+in ``state_in`` or ``state_out``; contact, joint, and elastic forces are
+accumulated in solver-owned buffers. Forces therefore persist until the caller
+clears them, so a force written once can act on every substep of a frame, and
+double-buffered states may share their force arrays:
+
+.. code-block:: python
+
+    state_1.body_f = state_0.body_f
+    state_1.particle_f = state_0.particle_f
+
+    state_0.clear_forces()
+    apply_external_forces(state_0)  # written once per frame
+    for _ in range(sim_substeps):
+        solver.step(state_0, state_1, control, contacts, sim_dt)
+        state_0, state_1 = state_1, state_0
+
+Forces that are recomputed every substep, such as viewer picking forces, still
+call :meth:`State.clear_forces() <newton.State.clear_forces>` before they are
+reapplied on each substep.
 
 .. _Differentiability:
 

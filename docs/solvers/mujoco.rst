@@ -197,8 +197,11 @@ MuJoCo's ``ref`` is the coordinate assigned to the authored pose;
 Newton stores the relative coordinate ``rest_q = springref - ref``,
 after conversion to meters or radians. If ``springref`` is omitted,
 MuJoCo defaults it to zero, giving ``rest_q = -ref``.
+A FREE joint's spring rests at the body's initial pose. As in MuJoCo, an MJCF
+``<joint type="free">`` takes joint attributes and default classes, while the
+``<freejoint/>`` shortcut ignores them.
 
-For hinge, slide, and BALL joints with MuJoCo DOFs, constructing
+For hinge, slide, BALL, and FREE joints with MuJoCo DOFs, constructing
 :class:`~newton.solvers.SolverMuJoCo` resolves positive MJCF ``springdamper``
 or USD ``mjc:springdamper`` pairs once into core ``joint_stiffness`` and
 ``joint_damping``.
@@ -206,13 +209,12 @@ The attribute ``model.mujoco.dof_springdamper`` is a construction-time input:
 consumed positive pairs are reset to zero. ``notify_model_changed`` does not
 read it. Change the core gains for runtime edits; assign new pairs before
 constructing another solver to resolve them again.
-Positive pairs must be identical across a BALL joint's DOFs. Inconsistent
+Positive pairs must be identical across a BALL or FREE joint's DOFs. Inconsistent
 per-DOF values or positive pairs on joints without MuJoCo DOFs, such as loop
 joints mapped to CONNECT constraints, raise ``ValueError``.
 Resolution uses each world's initial physical inertia and authored armature,
 excluding kinematic-lock regularization, and leaves ``joint_rest_q`` unchanged.
-Both backends initialize these passive gains in every model world. With
-``use_mujoco_cpu=True, separate_worlds=True``, only the template world is simulated.
+Both backends initialize these passive gains in every model world.
 Positive pairs override explicit gains; nonpositive pairs retain them. After resolution,
 core edits remain authoritative through inertia updates and solver reconstruction;
 gains are not automatically retuned. Other solvers can use the resolved core
@@ -653,7 +655,7 @@ DC-motor trajectory parity with native MuJoCo is tested with ``integrator="euler
 MuJoCo-Warp's approximate implicit DC-motor derivatives can produce different
 trajectories with ``implicitfast``.
 
-When using ``separate_worlds=True``, corresponding high-level ``<dcmotor>``
+In multi-world models, corresponding high-level ``<dcmotor>``
 actuators (including those created by the helper) must have identical parameters because MuJoCo-Warp replicates one
 compiled template model across worlds.
 
@@ -989,6 +991,14 @@ accuracy as bodies move, and the solver warns at construction. Use
 ``integrator="implicitfast"`` or ``use_mujoco_contacts=True`` to avoid this
 limitation.
 
+Newton contacts also carry the surface velocity of meshes created with
+``enable_surface_velocity=True`` (see :class:`~newton.Mesh`), which the solver
+forwards to MuJoCo's per-contact ``surfacevel`` to drive the friction rows.
+They carry a linear velocity only, so torsional friction (``condim`` 4 and 6)
+treats a spinning mesh as still. MuJoCo's collision detection has no per-vertex
+surface velocity, so these meshes act as still surfaces with
+``use_mujoco_contacts=True``.
+
 Collision filtering
 ~~~~~~~~~~~~~~~~~~~
 
@@ -1006,7 +1016,7 @@ and the `geom mask attributes
 
 **Importing MJCF masks.**
 
-:func:`~newton.utils.parse_mjcf` resolves inherited ``contype`` and
+:meth:`~newton.ModelBuilder.add_mjcf` resolves inherited ``contype`` and
 ``conaffinity`` values and determines which shape pairs may collide. It stores
 the same result in Newton collision groups and explicit excluded pairs. The
 original 32-bit values are also retained as
@@ -1014,7 +1024,7 @@ original 32-bit values are also retained as
 for a lossless round trip back to MuJoCo.
 
 A *mask domain* is the set of shapes whose mask bits were authored together.
-Each :func:`~newton.utils.parse_mjcf` call creates a new domain and records it
+Each :meth:`~newton.ModelBuilder.add_mjcf` call creates a new domain and records it
 in the internal ``model.mujoco.collision_mask_domain`` attribute. The domain
 is only a source label. It is not another collision mask and does not enable
 or disable contacts. When :meth:`~newton.ModelBuilder.add_builder` combines
@@ -1107,9 +1117,9 @@ parsed into MuJoCo's geom-pair contact structures by
 Multi-world support
 -------------------
 
-Constructing :class:`~newton.solvers.SolverMuJoCo` with
-``separate_worlds=True`` (the default for GPU mode with multiple
-worlds) builds a shared MuJoCo topology across worlds via ``mujoco_warp``.
+For a model with multiple worlds, :class:`~newton.solvers.SolverMuJoCo`
+builds a shared MuJoCo topology across worlds via ``mujoco_warp``. The native
+MuJoCo CPU backend (``use_mujoco_cpu=True``) supports single-world models only.
 Bodies, joints, equality constraints, mimic relationships, primitive geoms,
 and sites must have matching layouts. With ``use_mujoco_cpu=False``, mesh,
 heightfield, and cone assets, scales, and convex-hull counts may differ across worlds. Collision
@@ -1121,10 +1131,11 @@ per-world mesh scales are compiled into the MuJoCo assets, so changing their
 recreate the solver to resize them. The solver validates
 compatibility at construction and raises ``ValueError`` on a mismatch.
 
-Bodies, joints, equality constraints, and mimic relationships cannot have
-a negative world index — assigning any of them to the global world
-raises ``ValueError``. Only shapes may live in the global world (-1);
-they are shared across all worlds without replication.
+In a multi-world model, bodies, joints, equality constraints, and mimic
+relationships cannot have a negative world index — assigning any of them to
+the global world raises ``ValueError``. Only shapes may live in the global
+world (-1); they are shared across all worlds without replication.
+Single-world models have no such restriction.
 
 
 Runtime state synchronization
@@ -1151,6 +1162,11 @@ Request ``CONTACT_F`` with ``solver.observables(..., contacts=contacts)`` and pa
 the container to ``solver.step(..., observables=observables)``. Forces are written
 to ``observables.contact_f``; with ``use_mujoco_contacts=True``, the step also
 fills the supplied ``contacts`` with contact geometry. See :ref:`solver_observables`.
+
+For Newton contacts with thin-wall recovery, adhesion, or body-transmission
+actuators, construct the collision pipeline before the solver if using a custom contact capacity.
+When switching to a larger buffer, step once with it before capturing a CUDA
+graph so the solver can grow its contact mapping.
 
 Separated speculative contacts
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

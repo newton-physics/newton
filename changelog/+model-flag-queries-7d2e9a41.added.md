@@ -1,0 +1,1 @@
+Add `Model.get_attribute_update_flags()` to look up the `ModelFlags` to pass to `notify_model_changed()` after editing a built-in or custom model attribute, the `ModelBuilder.CustomAttribute.update_flags` field and `Model.AttributeSpec.update_flags` that declare them, and `ModelFlags.NONE`.

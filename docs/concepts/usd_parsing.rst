@@ -216,10 +216,9 @@ That is the full extent of the vendor support -- the resolver does not translate
 OmniPhysics/PhysX applied schemas (such as ``PhysxDeformableSurfaceAPI``), renamed attributes,
 concrete attachment prims, pose purposes, or hierarchy conventions. A native Omni/PhysX
 deformable asset that does not apply the AOUSD simulation APIs is not recognized as a
-deformable and imports as ordinary (static) geometry. One temporary exception: a TetMesh
-material that authors its values only under the vendor namespaces is still read without a
-resolver, with a ``DeprecationWarning``, so existing assets keep their stiffness and density
-during the deprecation window.
+deformable and imports as ordinary (static) geometry. A TetMesh material that authors its
+values only under the vendor namespaces is not read without a resolver; ``add_usd()`` warns
+about it when the material does not apply ``PhysicsVolumeDeformableMaterialAPI``.
 
 Supported subset
 ~~~~~~~~~~~~~~~~
