@@ -8655,12 +8655,24 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         NewtonWarning,
                         stacklevel=2,
                     )
-                body.add_joint(
-                    name=name,
-                    type=mujoco.mjtJoint.mjJNT_FREE,
-                    damping=0.0,
-                    limited=False,
-                )
+                free_params = {
+                    "name": name,
+                    "type": mujoco.mjtJoint.mjJNT_FREE,
+                    "limited": False,
+                    "armature": joint_armature[qd_start],
+                    "frictionloss": joint_friction[qd_start],
+                }
+                if joint_stiffness is not None:
+                    free_params["stiffness"] = float(joint_stiffness[qd_start])
+                if joint_damping is not None:
+                    free_params["damping"] = float(joint_damping[qd_start])
+                if joint_actgravcomp is not None:
+                    free_params["actgravcomp"] = bool(joint_actgravcomp[qd_start])
+                if joint_dof_solref is not None:
+                    free_params["solref_friction"] = joint_dof_solref[qd_start]
+                if joint_dof_solimp is not None:
+                    free_params["solimp_friction"] = joint_dof_solimp[qd_start]
+                body.add_joint(**free_params)
                 mjc_joint_names.append(name)
                 for i in range(6):
                     dof_to_mjc_joint[qd_start + i] = num_mjc_joints
