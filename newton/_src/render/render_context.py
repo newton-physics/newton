@@ -97,10 +97,6 @@ class RenderContext:
         self._render_state = RenderState()
 
         self._kernel_cache: dict[tuple, wp.Kernel] = {}
-        # Per-view ray tables for renders whose views all share one ray bundle: every view reads
-        # bundle 0, so no view generates pinhole rays. Grown on demand to the largest view count.
-        self._shared_ray_bundle: wp.array[wp.int32] = wp.zeros(0, dtype=wp.int32, device=self.device)
-        self._no_pinhole: wp.array[wp.vec4f] = wp.zeros(1, dtype=wp.vec4f, device=self.device)
 
         self._triangle_mesh: wp.Mesh | None = None
         self._triangle_mesh_group_roots: wp.array[wp.int32] = wp.full(
@@ -617,10 +613,6 @@ class RenderContext:
                     raise ValueError(
                         f"camera_rays shape must be ({height}, {width}, sample_count, 2), got {tuple(camera_rays.shape)}"
                     )
-                if self._shared_ray_bundle.shape[0] < view_count:
-                    self._shared_ray_bundle = wp.zeros(view_count, dtype=wp.int32, device=self.device)
-                view_ray_bundle = self._shared_ray_bundle
-                view_pinhole = self._no_pinhole
             else:
                 if (
                     camera_rays.ndim != 4

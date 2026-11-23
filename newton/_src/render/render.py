@@ -116,10 +116,13 @@ def create_kernel(
         view_ray_bundle: wp.array[wp.int32],
         view_pinhole: wp.array[wp.vec4f],
     ):
-        # A view with a ray bundle (rays shared by all views, rays of a site, or a camera given rays with
-        # set_camera_rays()) reads it; the others generate pinhole rays from
+        # A view with a ray bundle (rays of a site, or a camera given rays with set_camera_rays()) reads it;
+        # the others generate pinhole rays from
         # view_pinhole = (horizontal aperture, vertical aperture, horizontal offset, vertical offset) / focal.
-        bundle = view_ray_bundle[view_index]
+        # Without a table (null array), every view reads the single bundle in camera_rays.
+        bundle = wp.int32(0)
+        if view_ray_bundle:
+            bundle = view_ray_bundle[view_index]
         if bundle >= 0:
             row = bundle * img_height + py
             return camera_rays[row, px, sample_index, 0], camera_rays[row, px, sample_index, 1]
