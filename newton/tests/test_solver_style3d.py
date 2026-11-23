@@ -408,6 +408,31 @@ class TestSolverStyle3D(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "PD matrix capacity"):
                     builder.finalize("cpu")
 
+    def test_tet_overflow_does_not_modify_existing_diagonal(self):
+        """A rejected tetrahedron leaves previously assembled matrix data intact."""
+        builder = PDMatrixBuilder(7, max_neighbor=3)
+        builder.add_tet_constraints(
+            [[0, 1, 2, 3]],
+            [[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]],
+            [[1.0, 1.0, 0.0]],
+        )
+        before_diags = builder.diags.numpy().copy()
+        before_counts = builder.counts.numpy().copy()
+        before_neighbors = builder.neighbors.numpy().copy()
+        before_values = builder.values.numpy().copy()
+
+        with self.assertRaisesRegex(ValueError, "PD matrix capacity 3 exceeded at vertex"):
+            builder.add_tet_constraints(
+                [[0, 4, 5, 6]],
+                [[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]],
+                [[2.0, 3.0, 0.0]],
+            )
+
+        np.testing.assert_array_equal(builder.diags.numpy(), before_diags)
+        np.testing.assert_array_equal(builder.counts.numpy(), before_counts)
+        np.testing.assert_array_equal(builder.neighbors.numpy(), before_neighbors)
+        np.testing.assert_array_equal(builder.values.numpy(), before_values)
+
 
 def test_invalid_topology_is_rejected_before_precompute(test, device):
     """Reject malformed cloth topology before Style3D precomputation."""

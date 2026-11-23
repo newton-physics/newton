@@ -294,7 +294,6 @@ class PDMatrixBuilder:
         volume = 1.0 / (6.0 * determinants)
         weight = 2.0 * materials[:, 0] + 3.0 * materials[:, 1]
         stiffness = (volume * weight)[:, None, None] * (gradients @ gradients.transpose(0, 2, 1))
-        np.add.at(diags, indices.ravel(), np.diagonal(stiffness, axis1=1, axis2=2).ravel())
 
         # Merge surface and tet entries together so shared edges occupy one
         # slot. Stable sorting preserves the order of tet contributions.
@@ -315,6 +314,7 @@ class PDMatrixBuilder:
         overflow = np.flatnonzero(counts > self.max_neighbors)
         if len(overflow):
             raise ValueError(f"PD matrix capacity {self.max_neighbors} exceeded at vertex {overflow[0]}.")
+        np.add.at(diags, indices.ravel(), np.diagonal(stiffness, axis1=1, axis2=2).ravel())
         row_starts = np.cumsum(counts, dtype=np.int64) - counts
         slots = np.arange(len(rows)) - row_starts[rows]
         neighbors.fill(0)
