@@ -1726,9 +1726,14 @@ def Xform "Articulation" (
         from pxr import Usd, UsdPhysics
 
         asset = os.path.join(os.path.dirname(__file__), "assets", "four_link_chain_articulation.usda")
-        joint_disabled = Usd.Stage.Open(asset)
-        joint_disabled.SetEditTarget(joint_disabled.GetSessionLayer())
-        UsdPhysics.Joint(joint_disabled.GetPrimAtPath("/Articulation/Joint2")).CreateJointEnabledAttr(False)
+
+        def disable_joint(joint_path):
+            stage = Usd.Stage.Open(asset)
+            stage.SetEditTarget(stage.GetSessionLayer())
+            UsdPhysics.Joint(stage.GetPrimAtPath(joint_path)).CreateJointEnabledAttr(False)
+            return stage
+
+        joint_disabled = disable_joint("/Articulation/Joint2")
 
         def test_filtering(
             msg,
@@ -1738,6 +1743,7 @@ def Xform "Articulation" (
             expected_joint_types,
             expected_body_keys,
             expected_joint_keys,
+            expected_articulation_keys=None,
             source=asset,
             **kwargs,
         ):
@@ -1773,6 +1779,8 @@ def Xform "Articulation" (
                 expected_joint_keys,
                 f"Expected {expected_joint_keys} joints after filtering ({msg}; {bodies_follow_joint_ordering!s}), got {builder.joint_label}",
             )
+            if expected_articulation_keys is not None:
+                self.assertEqual(builder.articulation_label, expected_articulation_keys, msg)
 
         for bodies_follow_joint_ordering in [True, False]:
             test_filtering(
@@ -1911,8 +1919,32 @@ def Xform "Articulation" (
                         "joint_3",
                         "/Articulation/Joint3",
                     ],
+                    expected_articulation_keys=["/Articulation", "/Articulation/Body2"],
                     source=source,
                 )
+
+            # USD lists no body for a link that only has a joint to the world, which stays outside the articulations
+            test_filtering(
+                "disable the joint behind the first body",
+                ignore_paths=[],
+                bodies_follow_joint_ordering=bodies_follow_joint_ordering,
+                expected_articulation_count=1,
+                expected_joint_types=[
+                    newton.JointType.FREE,
+                    newton.JointType.REVOLUTE,
+                    newton.JointType.REVOLUTE,
+                    newton.JointType.FIXED,
+                ],
+                expected_body_keys=[
+                    "/Articulation/Body1",
+                    "/Articulation/Body2",
+                    "/Articulation/Body3",
+                    "/Articulation/Body0",
+                ],
+                expected_joint_keys=["joint_1", "/Articulation/Joint2", "/Articulation/Joint3", "/Articulation/Joint0"],
+                expected_articulation_keys=["/Articulation"],
+                source=disable_joint("/Articulation/Joint1"),
+            )
 
             # a missing body in the middle of the chain leaves the body behind it floating
             for ignore_paths in ([".*Body2"], ["/Articulation/Body2"]):
@@ -1924,6 +1956,7 @@ def Xform "Articulation" (
                     expected_joint_types=[newton.JointType.FIXED, newton.JointType.REVOLUTE, newton.JointType.FREE],
                     expected_body_keys=["/Articulation/Body0", "/Articulation/Body1", "/Articulation/Body3"],
                     expected_joint_keys=["/Articulation/Joint0", "/Articulation/Joint1", "joint_3"],
+                    expected_articulation_keys=["/Articulation", "/Articulation/Body3"],
                 )
 
         # The temporary legacy flag keeps the joint to a body ignored by its path, attached to the world,

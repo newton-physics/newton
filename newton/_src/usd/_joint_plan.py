@@ -47,7 +47,7 @@ class _ArticulationJointPlan:
 
         def find(body: int) -> int:
             while root.setdefault(body, body) != body:
-                body = root[body]
+                root[body] = body = root[root[body]]
             return body
 
         for parent, child in self.joint_edges:

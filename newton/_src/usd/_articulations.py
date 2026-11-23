@@ -187,6 +187,9 @@ def _parse_articulations(
                 continue
             if str(joint_desc.body1) in ignored_body_paths:
                 continue
+            if str(joint_desc.body0) not in body_ids and str(joint_desc.body1) not in body_ids:
+                # USD lists no body for a link whose joints all lead to the world; the orphan pass imports them.
+                continue
             parent_id, child_id = resolve_joint_parent_child(joint_desc, body_ids, get_transforms=False)  # pyright: ignore[reportAssignmentType]
             joint_plan.add_joint(joint_path, parent_id, child_id, excluded=joint_desc.excludeFromArticulation)
 
@@ -197,97 +200,27 @@ def _parse_articulations(
 
         articulation_ids: set[int] = set()
 
-        if len(joint_edges) == 0:
-            # We have an articulation without joints, i.e. only free rigid bodies
-            # Use add_base_joint to honor floating, base_joint, and parent_body parameters
-            base_parent = parent_body
-            if bodies_follow_joint_ordering:
-                for i in body_ids.values():
-                    child_body_id = add_body(**body_data[i])
-                    # Compute parent_xform to preserve imported pose when attaching to parent_body
-                    parent_xform = None
-                    if base_parent != -1:
-                        # When parent_body is specified, interpret xform parameter as parent-relative offset
-                        # body_data[i]["xform"] = USD_local * incoming_world_xform
-                        # We want parent_xform to position the child at this location relative to parent
-                        # Use incoming_world_xform as the base parent-relative offset
-                        parent_xform = incoming_world_xform
-                        # If the USD body has a non-identity local transform, compose it with incoming_xform
-                        # Note: body_data[i]["xform"] already includes the child's USD transform.
-                        # So we can use body_data[i]["xform"] directly for the intended position
-                        # But we need it relative to parent. Since parent's body_q may not reflect joint offsets,
-                        # we interpret body_data[i]["xform"] as the intended parent-relative transform directly.
-                        # For articulations without joints, incoming_world_xform IS the parent-relative offset.
-                        parent_xform = incoming_world_xform
-                    joint_id = builder._add_base_joint(
-                        child_body_id,
-                        floating=floating,
-                        base_joint=base_joint,
-                        parent=base_parent,
-                        parent_xform=parent_xform,
-                    )
-                    # note the free joint's coordinates will be initialized by the body_q of the
-                    # child body
-                    builder._finalize_imported_articulation(
-                        joint_indices=[joint_id],
-                        parent_body=parent_body,
-                        articulation_label=body_data[i]["label"],
-                        custom_attributes=articulation_custom_attrs,
-                    )
-                    articulation_ids.add(builder.joint_articulation[joint_id])
-                    import_attached_cables([body_data[i]["label"]])
-            else:
-                for i, child_body_id in enumerate(art_bodies):
-                    # Compute parent_xform to preserve imported pose when attaching to parent_body
-                    parent_xform = None
-                    if base_parent != -1:
-                        # When parent_body is specified, interpret xform parameter as parent-relative offset
-                        parent_xform = incoming_world_xform
-                    joint_id = builder._add_base_joint(
-                        child_body_id,
-                        floating=floating,
-                        base_joint=base_joint,
-                        parent=base_parent,
-                        parent_xform=parent_xform,
-                    )
-                    # note the free joint's coordinates will be initialized by the body_q of the
-                    # child body
-                    builder._finalize_imported_articulation(
-                        joint_indices=[joint_id],
-                        parent_body=parent_body,
-                        articulation_label=body_labels[i],
-                        custom_attributes=articulation_custom_attrs,
-                    )
-                    articulation_ids.add(builder.joint_articulation[joint_id])
-                    import_attached_cables([body_labels[i]])
-            joint_orders = []
-        else:
-            # we have an articulation with joints, we need to sort them topologically
-            joint_orders = joint_plan.get_joint_orders(joint_ordering, verbose=verbose)
+        joint_orders = joint_plan.get_joint_orders(joint_ordering, verbose=verbose)
 
-        if joint_orders and bodies_follow_joint_ordering:
+        if joint_orders:
             # insert the bodies in the order of the joints
-            inserted_bodies = set()
-            for jid in itertools.chain.from_iterable(joint_orders):
-                parent, child = joint_edges[jid]
-                if parent >= 0 and parent not in inserted_bodies:
-                    b = add_body(**body_data[parent])
-                    inserted_bodies.add(parent)
-                    art_bodies.append(b)
-                    path_body_map[body_data[parent]["label"]] = b
-                if child >= 0 and child not in inserted_bodies:
-                    b = add_body(**body_data[child])
-                    inserted_bodies.add(child)
-                    art_bodies.append(b)
-                    path_body_map[body_data[child]["label"]] = b
-            if not legacy_ignore_paths:
-                # Bodies whose joints were all filtered get a base joint with the other free bodies.
-                for i in body_ids.values():
-                    if i not in inserted_bodies:
-                        path_body_map[body_data[i]["label"]] = add_body(**body_data[i])
+            if bodies_follow_joint_ordering:
+                inserted_bodies = set()
+                for jid in itertools.chain.from_iterable(joint_orders):
+                    parent, child = joint_edges[jid]
+                    if parent >= 0 and parent not in inserted_bodies:
+                        b = add_body(**body_data[parent])
+                        inserted_bodies.add(parent)
+                        art_bodies.append(b)
+                        path_body_map[body_data[parent]["label"]] = b
+                    if child >= 0 and child not in inserted_bodies:
+                        b = add_body(**body_data[child])
+                        inserted_bodies.add(child)
+                        art_bodies.append(b)
+                        path_body_map[body_data[child]["label"]] = b
 
         # Each connected component of the joint graph becomes its own articulation.
-        for sorted_joints in joint_orders:
+        for component, sorted_joints in enumerate(joint_orders):
             articulation_joint_indices = []
             first_joint_parent = joint_edges[sorted_joints[0]][0]
             if first_joint_parent != -1:
@@ -442,12 +375,38 @@ def _parse_articulations(
                 builder._finalize_imported_articulation(
                     joint_indices=articulation_joint_indices,
                     parent_body=parent_body,
-                    articulation_label=articulation_path,
+                    # A part split off the articulation is named after its root body.
+                    articulation_label=articulation_path if component == 0 else body_labels[first_joint_parent],
                     custom_attributes=articulation_custom_attrs,
                 )
                 articulation_ids.add(builder.joint_articulation[articulation_joint_indices[0]])
-                component_bodies = {body for i in sorted_joints for body in joint_edges[i]}
-                import_attached_cables([label for i, label in enumerate(body_labels) if i in component_bodies])
+                component_bodies = {body for i in sorted_joints for body in joint_edges[i] if body >= 0}
+                import_attached_cables([body_labels[i] for i in sorted(component_bodies)])
+
+        # Bodies without joints get a joint to the world (or to parent_body) and their own articulation,
+        # so that floating, base_joint and parent_body apply to them as well.
+        jointed_bodies = {body for edge in joint_edges for body in edge}
+        for i in body_ids.values():
+            if i in jointed_bodies or (legacy_ignore_paths and joint_edges):
+                continue
+            child_body_id = add_body(**body_data[i]) if bodies_follow_joint_ordering else art_bodies[i]
+            joint_id = builder._add_base_joint(
+                child_body_id,
+                floating=floating,
+                base_joint=base_joint,
+                parent=parent_body,
+                # With parent_body, the incoming transform is the offset relative to the parent.
+                parent_xform=incoming_world_xform if parent_body != -1 else None,
+            )
+            # The free joint's coordinates are initialized from the child's body_q.
+            builder._finalize_imported_articulation(
+                joint_indices=[joint_id],
+                parent_body=parent_body,
+                articulation_label=body_labels[i],
+                custom_attributes=articulation_custom_attrs,
+            )
+            articulation_ids.add(builder.joint_articulation[joint_id])
+            import_attached_cables([body_labels[i]])
 
         # Defer external constraints until later bodies and cables have extended their
         # articulations. Reserve these paths so the orphan-joint pass does not emit them.

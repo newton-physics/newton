@@ -585,8 +585,9 @@ def parse_usd(
     )
     ret_dict = usd.load_physics_from_range(stage, [root_path], native_exclude_paths)
     if non_regex_ignore_paths and not legacy_ignore_paths:
-        # An excluded body is missing from the results, so the joints that refer to it would attach
-        # to the world. Parse such bodies and let ignore_paths filter them like the other matches.
+        # Excluding a joint, or a body that other joints refer to, cuts an articulation before Newton
+        # sees it, and the joints of a missing body would attach to the world. Parse these prims and
+        # let ignore_paths filter them like the other matches.
         joint_bodies = {
             str(body)
             for _, descs in ret_dict.values()
@@ -594,14 +595,20 @@ def parse_usd(
             if isinstance(desc, UsdPhysics.JointDesc)
             for body in (desc.body0, desc.body1)
         }
-        referenced_paths = {
-            path
-            for path in non_regex_ignore_paths
-            if any(body == path or body.startswith(f"{path}/") for body in joint_bodies)
-        }
-        if referenced_paths:
-            native_exclude_paths = [path for path in native_exclude_paths if path not in referenced_paths]
+
+        def cuts_articulation(path: str) -> bool:
+            if any(body == path or body.startswith(f"{path}/") for body in joint_bodies):
+                return True
+            prim = stage.GetPrimAtPath(path) if Sdf.Path.IsValidPathString(path) else None
+            return bool(prim) and prim.IsA(UsdPhysics.Joint)
+
+        filtered_paths = {path for path in non_regex_ignore_paths if cuts_articulation(path)}
+        if filtered_paths:
+            # PhysicsScenes are not filtered by ignore_paths, so keep the ones found outside these paths.
+            scenes = ret_dict.get(UsdPhysics.ObjectType.Scene, ((), ()))
+            native_exclude_paths = [path for path in native_exclude_paths if path not in filtered_paths]
             ret_dict = usd.load_physics_from_range(stage, [root_path], native_exclude_paths)
+            ret_dict[UsdPhysics.ObjectType.Scene] = scenes
     physics_scenes = usd._get_physics_scenes_from_results(stage, ret_dict)
     physics_scene_prim = physics_scenes[0].GetPrim() if physics_scenes else None
 
