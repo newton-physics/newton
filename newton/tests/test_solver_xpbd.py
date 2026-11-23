@@ -365,6 +365,60 @@ def test_prismatic_joint_retains_extension_in_parent_moment_arm(test, device):
     )
 
 
+def test_revolute_joint_frame_axis_does_not_change_motion(test, device):
+    """Drive the same two-link arm through joint frames whose hinge axis is X, -X, Y, or Z."""
+    half_length = 0.1
+    axes = {"X": (1.0, 0.0, 0.0), "-X": (-1.0, 0.0, 0.0), "Y": (0.0, 1.0, 0.0), "Z": (0.0, 0.0, 1.0)}
+
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    for axis in axes.values():
+        # every arm lies along world X and hinges about world Z
+        frame = wp.quat_between_vectors(wp.vec3(*axis), wp.vec3(0.0, 0.0, 1.0))
+        parent = -1
+        parent_anchor = wp.vec3(0.0)
+        joints = []
+        for link, mass in enumerate((0.067, 1.0)):
+            inertia = mass * half_length**2 / 3.0
+            body = builder.add_link(
+                xform=wp.transform(wp.vec3((2.0 * link + 1.0) * half_length, 0.0, 0.0)),
+                mass=mass,
+                inertia=wp.mat33(np.diag((0.01 * inertia, inertia, inertia))),
+            )
+            joints.append(
+                builder.add_joint_revolute(
+                    parent,
+                    body,
+                    parent_xform=wp.transform(parent_anchor, frame),
+                    child_xform=wp.transform(wp.vec3(-half_length, 0.0, 0.0), frame),
+                    axis=axis,
+                    target_ke=20.0,
+                    target_kd=0.05,
+                )
+            )
+            parent = body
+            parent_anchor = wp.vec3(half_length, 0.0, 0.0)
+        builder.add_articulation(joints)
+
+    model = builder.finalize(device=device)
+    state0 = model.state()
+    state1 = model.state()
+    control = model.control()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state0)
+    control.joint_target_q.assign(np.tile(np.array((-0.8, 0.6), dtype=np.float32), len(axes)))
+
+    solver = newton.solvers.SolverXPBD(model)
+    for _ in range(100):
+        solver.step(state0, state1, control, None, 0.002)
+        state0, state1 = state1, state0
+
+    body_q = state0.body_q.numpy().reshape(len(axes), 2, 7)
+    for name, arm_q in zip(axes, body_q, strict=True):
+        with test.subTest(axis=name):
+            # the links start unrotated, so quaternion x and y hold the rotation out of the hinge plane
+            test.assertLess(np.abs(arm_q[:, 3:5]).max(), 1.0e-4, msg="Arm left its hinge plane")
+            np.testing.assert_allclose(arm_q, body_q[0], atol=1.0e-4, err_msg="Arm moved unlike the X-axis arm")
+
+
 def test_optional_control_and_contacts(test, device):
     """Test that XPBD accepts omitted control and contact data.
 
@@ -2728,6 +2782,14 @@ add_function_test(
     TestSolverXPBD,
     "test_prismatic_joint_retains_extension_in_parent_moment_arm",
     test_prismatic_joint_retains_extension_in_parent_moment_arm,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverXPBD,
+    "test_revolute_joint_frame_axis_does_not_change_motion",
+    test_revolute_joint_frame_axis_does_not_change_motion,
     devices=devices,
     check_output=False,
 )

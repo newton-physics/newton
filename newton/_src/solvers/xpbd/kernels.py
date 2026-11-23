@@ -1387,6 +1387,15 @@ def solve_body_joints(
         q_p = wp.transform_get_rotation(X_wp)
         q_c = wp.transform_get_rotation(X_wc)
 
+        # turn the frames so a single angular axis is the twist: the swing rows couple at large angles
+        twist_axis = wp.vec3(1.0, 0.0, 0.0)
+        if ang_axis_count == 1:
+            ang_axis = joint_axis[axis_start + lin_axis_count]
+            twist_axis = wp.vec3(wp.sign(ang_axis[0]), 0.0, 0.0)
+            q_align = wp.quat_between_vectors(twist_axis, ang_axis)
+            q_p = q_p * q_align
+            q_c = q_c * q_align
+
         # make quats lie in same hemisphere
         if wp.dot(q_p, q_c) < 0.0:
             q_c *= -1.0
@@ -1455,6 +1464,8 @@ def solve_body_joints(
             axis_idx = axis_start + lin_axis_count
             target_axis_idx = target_axis_start + lin_axis_count
             axis = joint_axis[axis_idx]
+            if ang_axis_count == 1:
+                axis = twist_axis
             lo_temp = axis * joint_limit_lower[axis_idx]
             up_temp = axis * joint_limit_upper[axis_idx]
             axis_limits = wp.spatial_vector(vec_min(lo_temp, up_temp), vec_max(lo_temp, up_temp))
