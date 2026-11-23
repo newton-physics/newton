@@ -34,6 +34,38 @@ class ViewportControls:
         ("wire", "mesh", "Wireframe"),
     )
 
+    body_guide_options = (
+        ("show_joints", "Joint frames"),
+        ("show_com", "Centers of mass"),
+        ("show_inertia_boxes", "Inertia boxes"),
+    )
+
+    scene_guide_options = (
+        ("show_particles", "Particles", None),
+        ("show_triangles", "Deformable surfaces", "tri_count"),
+        ("show_deformable_visual_meshes", "Skinned meshes", "deformable_visual_mesh_count"),
+        ("show_springs", "Springs", "spring_count"),
+        ("show_gaussians", "Gaussians", "gaussians"),
+        ("show_ground", "Ground", None),
+    )
+
+    contact_display_options = (
+        "show_contacts",
+        "show_contact_disks",
+        "show_contact_pairs",
+        "show_contact_lines",
+        "show_contact_labels",
+        "show_contact_normals",
+        "show_contact_forces",
+        "show_hydro_contact_surface",
+    )
+
+    mode_display_options = (
+        "show_visual",
+        "show_collision",
+        "show_static",
+    )
+
     def __init__(self, workspace: ViewerWorkspace) -> None:
         """Initialize view-mode preferences, orientation controls, and lazy Model appearance caches."""
         from .orientation import OrientationGizmo  # noqa: PLC0415
@@ -339,17 +371,19 @@ class ViewportControls:
     def _guides_menu(self) -> None:
         """Draw scene guides and collision-envelope controls while preserving explicit display preferences."""
         workspace = self.workspace
-        ui, viewer = workspace.gui.ui.imgui, workspace.viewer
+        ui, viewer, model = workspace.gui.ui.imgui, workspace.viewer, workspace.model
+        has_gaussians = model is not None and any(
+            type(source).__name__ == "Gaussian" for source in getattr(model, "shape_source", ())
+        )
+        scene_properties = tuple(
+            (name, label)
+            for name, label, predicate in self.scene_guide_options
+            if predicate is None
+            or (has_gaussians if predicate == "gaussians" else model is not None and getattr(model, predicate, 0))
+        )
         for title, properties in (
-            (
-                "Bodies",
-                (
-                    ("show_joints", "Joint frames"),
-                    ("show_com", "Centers of mass"),
-                    ("show_inertia_boxes", "Inertia boxes"),
-                ),
-            ),
-            ("Scene", (("show_particles", "Particles"), ("show_ground", "Ground"))),
+            ("Bodies", self.body_guide_options),
+            ("Scene", scene_properties),
         ):
             ui.separator_text(title)
             for name, label in properties:
@@ -429,6 +463,9 @@ class ViewportControls:
                 setattr(owner, name, edit.value)
 
         _, viewer.show_contacts = ui.checkbox("Show contacts", viewer.show_contacts)
+        _, viewer.show_hydro_contact_surface = ui.checkbox(
+            "Hydroelastic contact surface", viewer.show_hydro_contact_surface
+        )
         ui.begin_disabled(not viewer.show_contacts)
         _, viewer.contact_selection_only = ui.checkbox("Selected shapes and bodies only", viewer.contact_selection_only)
         if ui.is_item_hovered():

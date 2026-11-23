@@ -8,6 +8,7 @@ import gc
 import inspect
 import sys
 import unittest
+import warnings
 from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest import mock
@@ -491,6 +492,178 @@ class TestViewerUI(unittest.TestCase):
                     np.testing.assert_allclose(polygon, center + vertices @ basis.T * (19.5 * scale))
                 draw()
                 self.assertIs(gizmo._faces, faces)
+
+    def test_workspace_panels_draw_across_selection_kinds(self) -> None:
+        """Render PropertyInspector, ViewportControls, CollisionInspector, and Environment in ImGui without errors."""
+        from newton.actuators import BatteryConstantResistance, DriveOutputSpace, DrivePD, MotorDC  # noqa: PLC0415
+
+        ui = self.ui.imgui
+        builder = newton.ModelBuilder()
+        body0 = builder.add_link(xform=wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity()))
+        variant_a = newton.ModelBuilder()
+        variant_a.add_shape_sphere(variant_a.add_body(), radius=0.3)
+        variant_b = newton.ModelBuilder()
+        variant_b.add_shape_box(variant_b.add_body(), hx=0.2, hy=0.2, hz=0.2)
+        builder.add_body_variants(body0, [variant_a, variant_b], initial=0, labels=["sphere", "box"])
+        body1 = builder.add_link(xform=wp.transform(wp.vec3(0.5, 0.0, 1.0), wp.quat_identity()))
+        builder.add_shape_sphere(body1, radius=0.3)
+        j0 = builder.add_joint_revolute(-1, body0)
+        j1 = builder.add_joint_revolute(body0, body1)
+        builder.add_articulation([j0, j1])
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            builder.add_constraint_mimic(j1, j0, coef0=0.0, coef1=1.0)
+        builder.add_cloth_grid(
+            pos=wp.vec3(0.0, 1.0, 0.5),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0, 0.0, 0.0),
+            dim_x=2,
+            dim_y=2,
+            cell_x=0.2,
+            cell_y=0.2,
+            mass=0.1,
+        )
+        builder.add_soft_grid(
+            pos=wp.vec3(1.0, 1.0, 0.5),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0, 0.0, 0.0),
+            dim_x=1,
+            dim_y=1,
+            dim_z=1,
+            cell_x=0.2,
+            cell_y=0.2,
+            cell_z=0.2,
+            density=100.0,
+            k_mu=1000.0,
+            k_lambda=1000.0,
+            k_damp=1.0,
+        )
+        builder.add_rod(
+            rod=newton.Rod([(0.0, 2.0, 1.0), (0.2, 2.0, 1.0), (0.4, 2.0, 1.0)], radius=0.02),
+            label="rod_draw",
+        )
+        builder.add_deformable_visual_mesh(
+            vertices=[(0.1, 1.1, 0.5), (0.3, 1.1, 0.5), (0.1, 1.3, 0.5)],
+            indices=[0, 1, 2],
+            kind="triangle",
+            surface=0,
+            label="skin_draw",
+        )
+        builder.add_attachment_particle_body(0, body0, body_point=wp.vec3(0.0, 0.0, 0.0))
+        builder.add_tendon(
+            [
+                newton.TendonGuide(body=body0, offset=wp.vec3(0.0, 0.0, 0.1), guide_type=newton.TendonGuideType.ANCHOR),
+                newton.TendonGuide(
+                    body=body1, offset=wp.vec3(0.0, 0.0, 0.1), guide_type=newton.TendonGuideType.ANCHOR, rest_length=0.5
+                ),
+            ],
+        )
+        act_idx = builder.add_actuator(
+            DrivePD,
+            index=0,
+            kp=10.0,
+            kd=1.0,
+            output_space=DriveOutputSpace.DUTY,
+            motor=(MotorDC, {"kt": 0.5, "resistance": 2.0, "supply_from_battery": True}),
+        )
+        builder.add_battery(
+            BatteryConstantResistance,
+            actuators=[act_idx],
+            nominal_voltage=24.0,
+            resistance=0.1,
+            min_voltage=18.0,
+        )
+        model = builder.finalize(device="cpu")
+        state = model.state()
+        control = model.control()
+        pipeline = newton.CollisionPipeline(model, broad_phase="nxn", rigid_contact_max=16, soft_contact_max=8)
+        contacts = pipeline.contacts()
+
+        viewer = ViewerNull()
+        viewer.objects = {}
+        viewer.contact_selection_only = False
+        viewer.show_contact_labels = False
+        viewer.contact_normal_scale = 1.0
+        viewer.contact_force_scale = 1.0
+        viewer._contact_force_scale_default = 1.0
+        viewer.contact_viz_scale = 1.0
+        viewer.contact_mode_eps_force = 1e-3
+        viewer.contact_mode_eps_velocity = 1e-3
+        viewer.renderer = SimpleNamespace(
+            contact_disk_scale=1.0,
+            contact_arrow_scale=1.0,
+            contact_normal_max_pixels=64.0,
+            contact_force_max_pixels=64.0,
+        )
+        viewer.set_model(model)
+        viewer.set_control(control)
+        viewer._inspection_components["solver"] = SimpleNamespace(model=model, iterations=4, angular_damping=0.05)
+        viewer.set_collision_pipeline(pipeline)
+        viewer.log_state(state)
+        viewer.log_contacts(contacts, state)
+        viewer.is_paused = lambda: True
+
+        gui = SimpleNamespace(ui=self.ui, _viewer=viewer, console_capture=None)
+        ws = ViewerWorkspace(gui)
+        ws.model = model
+        ws.tree = ModelTree(model)
+        ws.collision.attach(ws.tree)
+        ws.property_inspector = PropertyInspector(ws)
+
+        surface_key = ws.tree.deformables.object_key_for_model("surface", 0, ws.tree)
+        volume_key = ws.tree.deformables.object_key_for_model("volume", 0, ws.tree)
+        curve_key = ws.tree.deformables.object_key_for_model("curve", 0, ws.tree)
+        self.assertIsNotNone(surface_key)
+        self.assertIsNotNone(volume_key)
+        self.assertIsNotNone(curve_key)
+        selections = (
+            ("scene", 0),
+            ("world", 0),
+            ("root", -1),
+            ("body", 0),
+            ("shape", 0),
+            ("joint", 0),
+            surface_key,
+            volume_key,
+            curve_key,
+            ("deformable_visual_mesh", 0),
+            ("tendon", 0),
+            ("tendon_guide", 0),
+            ("tendon_segment", 0),
+            ("attachment_particle_body", 0),
+            ("constraint_mimic", 0),
+            ("actuator_collection", 0),
+            ("actuator_group", 0),
+            ("battery", 0),
+        )
+        for key in selections:
+            with self.subTest(selection=key):
+                ws.selected = key
+                ws.selection = {key}
+                for component in (Assignment.MODEL, Assignment.STATE, Assignment.CONTROL):
+                    self.ui.begin_frame()
+                    try:
+                        ui.begin("TestProperties")
+                        try:
+                            ws.property_inspector.component = component
+                            ws.property_inspector.draw()
+                        finally:
+                            ui.end()
+                    finally:
+                        ui.end_frame()
+
+        self.ui.begin_frame()
+        try:
+            ui.begin("TestAuxiliaryPanels")
+            try:
+                ws._environment()
+                ws._solver_properties()
+                ws.collision.draw(ws.property_inspector)
+                ws.viewport_controls._contact_settings()
+            finally:
+                ui.end()
+        finally:
+            ui.end_frame()
 
     def test_example_browser_tree_view(self) -> None:
         """Render the Examples browser as a searchable folder tree reflecting directory hierarchy."""
@@ -1840,6 +2013,334 @@ class TestViewerProperties(unittest.TestCase):
         inspector._contexts()
         self.assertEqual(inspector._observables(), [])
 
+    def test_deformable_objects_and_visual_meshes(self) -> None:
+        """Expose authored surfaces, volumes, curves, edges, and skinned meshes in tree, search, and inspector."""
+        from newton._src.viewer.viewer_attributes import attribute_summary  # noqa: PLC0415
+
+        builder = newton.ModelBuilder()
+        builder.add_cloth_grid(
+            pos=wp.vec3(0.0, 0.0, 2.0),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0),
+            dim_x=1,
+            dim_y=1,
+            cell_x=1.0,
+            cell_y=1.0,
+            mass=1.0,
+            label="cloth_a",
+        )
+        builder.add_soft_grid(
+            pos=wp.vec3(3.0, 0.0, 2.0),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0),
+            dim_x=1,
+            dim_y=1,
+            dim_z=1,
+            cell_x=0.5,
+            cell_y=0.5,
+            cell_z=0.5,
+            density=100.0,
+            k_mu=1000.0,
+            k_lambda=1000.0,
+            k_damp=1.0,
+            label="soft_b",
+        )
+        rod_bodies, rod_joints = builder.add_rod(
+            rod=newton.Rod([(0.0, 2.0, 1.0), (0.2, 2.0, 1.0), (0.4, 2.0, 1.0)], radius=0.02),
+            label="rod_c",
+        )
+        builder.add_deformable_visual_mesh(
+            vertices=[(0.1, 0.1, 2.0), (0.4, 0.1, 2.0), (0.1, 0.4, 2.0)],
+            indices=[0, 1, 2],
+            kind="triangle",
+            surface=0,
+            label="skin_d",
+        )
+        model = builder.finalize(device="cpu")
+        tree = ModelTree(model)
+        ws = ViewerWorkspace.__new__(ViewerWorkspace)
+        ws.model, ws.tree = model, tree
+        ws.viewer = SimpleNamespace(_last_state=model.state(), _inspection_components={})
+        ws._bindings = ws._bindings_components = None
+        ws.history = None
+        ws._cache, ws._live_cache = {}, {}
+        inspector = PropertyInspector(ws)
+
+        surface_key = tree.deformables.object_key_for_model("surface", 0, tree)
+        volume_key = tree.deformables.object_key_for_model("volume", 0, tree)
+        self.assertIsNotNone(surface_key)
+        self.assertIsNotNone(volume_key)
+        self.assertEqual(tree.labels[surface_key], "cloth_a")
+        self.assertEqual(tree.labels[volume_key], "soft_b")
+        self.assertEqual(tree.labels[("curve", 0)], "rod_c")
+        self.assertEqual(tree.labels[("deformable_visual_mesh", 0)], "skin_d")
+        self.assertEqual(
+            tree.shape_descendants(("curve", 0)), sorted({s for b in rod_bodies for s in model.body_shapes.get(b, ())})
+        )
+        self.assertEqual(
+            tree.joint_descendants(("curve", 0)),
+            list(range(int(model.curve_joint_start.numpy()[0]), int(model.curve_joint_end.numpy()[0]))),
+        )
+        self.assertTrue(set(rod_joints) <= set(tree.joint_descendants(("curve", 0))))
+
+        # Surface selection exposes SURFACE, PARTICLE, TRIANGLE, and EDGE domains.
+        ws.selected, ws.selection = surface_key, {surface_key}
+        inspector._contexts()
+        surface_freqs = {d.frequency for d in inspector.domains}
+        self.assertTrue({Frequency.SURFACE, Frequency.PARTICLE, Frequency.TRIANGLE, Frequency.EDGE} <= surface_freqs)
+
+        # Volume selection exposes VOLUME, PARTICLE, and TETRAHEDRON domains.
+        ws.selected, ws.selection = volume_key, {volume_key}
+        inspector._contexts()
+        volume_freqs = {d.frequency for d in inspector.domains}
+        self.assertTrue({Frequency.VOLUME, Frequency.PARTICLE, Frequency.TETRAHEDRON} <= volume_freqs)
+
+        # Curve selection exposes CURVE, BODY, JOINT, JOINT_COORD, and JOINT_DOF domains.
+        ws.selected, ws.selection = ("curve", 0), {("curve", 0)}
+        inspector._contexts()
+        curve_freqs = {d.frequency for d in inspector.domains}
+        self.assertTrue(
+            {Frequency.CURVE, Frequency.BODY, Frequency.JOINT, Frequency.JOINT_COORD, Frequency.JOINT_DOF}
+            <= curve_freqs
+        )
+
+        # Reference navigation resolves authored deformables directly.
+        self.assertEqual(inspector.reference_target(model, Frequency.SURFACE, 0), surface_key)
+        self.assertEqual(inspector.reference_target(model, Frequency.VOLUME, 0), volume_key)
+        self.assertEqual(inspector.reference_target(model, Frequency.CURVE, 0), ("curve", 0))
+        self.assertEqual(inspector.reference_target(model, Frequency.EDGE, 0), ("edge", 0))
+
+        # Search finds surfaces, volumes, curves, and skinned meshes by label.
+        for query, expected_key in (
+            ("cloth_a", surface_key),
+            ("soft_b", volume_key),
+            ("rod_c", ("curve", 0)),
+            ("skin_d", ("deformable_visual_mesh", 0)),
+        ):
+            tree.query = query
+            tree.rebuild()
+            self.assertIn((expected_key, 1), tree.rows)
+
+        # Model attribute tooltips include update_flags metadata.
+        spec = model.attribute_specs["shape_material_mu"]
+        summary = attribute_summary("shape_material_mu", spec, model.shape_material_mu, Assignment.MODEL)
+        self.assertIn("Update flags:", summary)
+        self.assertIn("SHAPE_PROPERTIES", summary)
+
+    def test_tendons_attachments_mimics_and_actuators(self) -> None:
+        """Expose tendons, particle-body attachments, mimic constraints, and actuators in tree and inspector."""
+        from newton.actuators import DrivePD  # noqa: PLC0415
+
+        builder = newton.ModelBuilder()
+        b0 = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        b1 = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.add_shape_box(b0, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_shape_box(b1, hx=0.1, hy=0.1, hz=0.1)
+        j0 = builder.add_joint_revolute(-1, b0, axis=newton.Axis.Z)
+        j1 = builder.add_joint_revolute(b0, b1, axis=newton.Axis.Z)
+        builder.add_articulation([j0, j1])
+        p0 = builder.add_particle(wp.vec3(0.0, 0.0, 1.0), wp.vec3(0.0), 0.1)
+        builder.add_attachment_particle_body(p0, b0, body_point=wp.vec3(0.0, 0.0, 0.0))
+        builder.add_tendon(
+            [
+                newton.TendonGuide(body=b0, offset=wp.vec3(0.0, 0.0, 0.1), guide_type=newton.TendonGuideType.ANCHOR),
+                newton.TendonGuide(
+                    body=b1, offset=wp.vec3(0.0, 0.0, 0.1), guide_type=newton.TendonGuideType.ANCHOR, rest_length=0.5
+                ),
+            ],
+            label="cable_tendon",
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            builder.add_constraint_mimic(j1, j0, coef0=0.0, coef1=0.5, label="linked_mimic")
+        builder.add_actuator(DrivePD, index=0, kp=50.0, kd=5.0)
+        model = builder.finalize(device="cpu")
+
+        tree = ModelTree(model)
+        self.assertIn(("tendon_group", -1), tree.labels)
+        self.assertIn(("tendon", 0), tree.labels)
+        self.assertEqual(tree.labels[("tendon", 0)], "cable_tendon")
+        self.assertIn(("attachment_group", -1), tree.labels)
+        self.assertIn(("mimic_group", -1), tree.labels)
+        self.assertEqual(tree.labels[("constraint_mimic", 0)], "linked_mimic")
+        self.assertIn(("actuator_collection", 0), tree.roots)
+
+        # Guides, segments, attachments, and actuators expand lazily.
+        self.assertFalse(tree.children.get(("tendon", 0)))
+        tree.toggle(("tendon", 0))
+        self.assertIn(("tendon_guide", 0), tree.children[("tendon", 0)])
+        self.assertIn(("tendon_segment", 0), tree.children[("tendon", 0)])
+
+        self.assertFalse(tree.children.get(("attachment_group", -1)))
+        tree.toggle(("attachment_group", -1))
+        self.assertIn(("attachment_particle_body", 0), tree.children[("attachment_group", -1)])
+
+        self.assertFalse(tree.children.get(("actuator_collection", 0)))
+        tree.toggle(("actuator_collection", 0))
+        self.assertIn(("actuator_group", 0), tree.children[("actuator_collection", 0)])
+
+        ws = ViewerWorkspace.__new__(ViewerWorkspace)
+        ws.model, ws.tree = model, tree
+        ws.viewer = SimpleNamespace(_last_state=model.state(), _inspection_components={"control": model.control()})
+        ws._bindings = ws._bindings_components = None
+        ws.history = None
+        ws._cache, ws._live_cache = {}, {}
+        inspector = PropertyInspector(ws)
+
+        ws.selected, ws.selection = ("tendon", 0), {("tendon", 0)}
+        inspector._contexts()
+        self.assertEqual(
+            {d.frequency for d in inspector.domains},
+            {Frequency.TENDON, Frequency.TENDON_GUIDE, Frequency.TENDON_SEGMENT},
+        )
+        ws.selected, ws.selection = ("attachment_particle_body", 0), {("attachment_particle_body", 0)}
+        inspector._contexts()
+        self.assertEqual([d.frequency for d in inspector.domains], [Frequency.ATTACHMENT_PARTICLE_BODY])
+        ws.selected, ws.selection = ("constraint_mimic", 0), {("constraint_mimic", 0)}
+        inspector._contexts()
+        self.assertEqual([d.frequency for d in inspector.domains], [Frequency.CONSTRAINT_MIMIC])
+
+        for query, expected_key in (("cable_tendon", ("tendon", 0)), ("linked_mimic", ("constraint_mimic", 0))):
+            tree.query = query
+            tree.rebuild()
+            self.assertIn((expected_key, 1), tree.rows)
+
+    def test_global_world_slot_and_body_variants(self) -> None:
+        """Map global world -1 to the trailing WORLD slot and switch body variants with rollback."""
+        # 1) Global world -1 alongside two local worlds
+        world_template = newton.ModelBuilder()
+        body = world_template.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        variant_a = newton.ModelBuilder()
+        variant_a.add_shape_box(variant_a.add_body(), hx=0.1, hy=0.1, hz=0.1)
+        variant_b = newton.ModelBuilder()
+        variant_b.add_shape_sphere(variant_b.add_body(), radius=0.15)
+        world_template.add_body_variants(body, [variant_a, variant_b], initial=0, labels=["cube", "sphere"])
+
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        builder.replicate(world_template, world_count=2)
+        model = builder.finalize(device="cpu")
+        tree = ModelTree(model)
+
+        viewer = ViewerNull()
+        viewer.set_model(model)
+        paused = False
+        viewer.is_paused = lambda: paused
+        ws = ViewerWorkspace.__new__(ViewerWorkspace)
+        ws.model, ws.tree, ws.viewer = model, tree, viewer
+        ws._bindings = ws._bindings_components = None
+        ws.history = None
+        ws._cache, ws._live_cache = {}, {}
+        ws.message = ""
+        inspector = PropertyInspector(ws)
+
+        # Shared root maps to the trailing global-world slot (world_count), not local worlds.
+        ws.selected, ws.selection = ("root", -1), {("root", -1)}
+        inspector._contexts()
+        world_domain = next(d for d in inspector.domains if d.frequency == Frequency.WORLD)
+        self.assertEqual(list(world_domain.indices), [model.world_count])
+
+        # Scene selection spans all local worlds plus the global-world slot.
+        ws.selected, ws.selection = ("scene", 0), {("scene", 0)}
+        inspector._contexts()
+        scene_world = next(d for d in inspector.domains if d.frequency == Frequency.WORLD)
+        self.assertEqual(list(scene_world.indices), list(range(model.world_count + 1)))
+
+        # World references -1 and world_count both resolve to Shared root (-1).
+        self.assertEqual(inspector.reference_target(model, Frequency.WORLD, -1), ("root", -1))
+        self.assertEqual(inspector.reference_target(model, Frequency.WORLD, model.world_count), ("root", -1))
+        self.assertEqual(inspector.reference_label(model, Frequency.WORLD, -1, ("root", -1)), "Shared (-1)")
+
+        # 2) Interactive body variant switching requires pause and rolls back on solver rejection.
+        self.assertEqual(int(model.body_variant.numpy()[0]), 0)
+        self.assertFalse(ws.select_body_variant(0, 1))
+        self.assertEqual(int(model.body_variant.numpy()[0]), 0)
+
+        paused = True
+        notified: list[int] = []
+        ok_solver = SimpleNamespace(notify_model_changed=lambda flags: notified.append(int(flags)))
+        viewer._inspection_components["solver"] = ok_solver
+        self.assertTrue(ws.select_body_variant(0, 1))
+        self.assertEqual(int(model.body_variant.numpy()[0]), 1)
+        self.assertTrue(notified)
+
+        def reject(_flags: int) -> None:
+            raise RuntimeError("unsupported variant switch")
+
+        viewer._inspection_components["solver"] = SimpleNamespace(notify_model_changed=reject)
+        self.assertFalse(ws.select_body_variant(0, 0))
+        self.assertEqual(int(model.body_variant.numpy()[0]), 1)
+        self.assertIn("unsupported variant switch", ws.message)
+
+    def test_contacts_history_and_solver_classification(self) -> None:
+        """Preserve new contact fields in history, filter non-row fields, and classify maximal solvers."""
+        builder = newton.ModelBuilder()
+        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+        model = builder.finalize(device="cpu")
+        state = model.state()
+        contacts = newton.Contacts(
+            rigid_contact_max=2,
+            soft_contact_max=2,
+            device="cpu",
+            contact_matching=True,
+            contact_report=True,
+            rigid_contact_surface_velocity=True,
+        )
+        contacts.rigid_contact_count.assign(np.array([1], dtype=np.int32))
+        contacts.rigid_contact_shape0.assign(np.array([0, -1], dtype=np.int32))
+        contacts.rigid_contact_shape1.assign(np.array([0, -1], dtype=np.int32))
+        contacts.rigid_contact_match_index.assign(np.array([7, -1], dtype=np.int32))
+        contacts.rigid_contact_surface_velocity.assign(np.array([[1.0, 2.0, 3.0], [0.0, 0.0, 0.0]], dtype=np.float32))
+        contacts.soft_contact_count.assign(np.array([1], dtype=np.int32))
+        contacts.soft_contact_rigid_indices.assign(np.array([[1, 2, 3], [-1, -1, -1]], dtype=np.int32))
+
+        # CollisionInspector must not leak non-per-contact counters or index lists onto contact 0.
+        ws = ViewerWorkspace.__new__(ViewerWorkspace)
+        ws.model = model
+        ws.history = None
+        ws.viewer = SimpleNamespace(_last_contact_observables=None)
+        ci = CollisionInspector(ws)
+        ci.contacts = contacts
+        field_names = {field[1] for field in ci.contact_fields(("contact", 0))}
+        self.assertIn("rigid_contact_surface_velocity", field_names)
+        self.assertIn("rigid_contact_match_index", field_names)
+        for excluded in (
+            "rigid_contact_new_count",
+            "rigid_contact_broken_count",
+            "rigid_contact_new_indices",
+            "rigid_contact_broken_indices",
+            "rigid_contact_match_generation",
+        ):
+            self.assertNotIn(excluded, field_names)
+
+        # FrameHistory records and replays surface_velocity, match_index, and soft_contact_rigid_indices.
+        viewer = ViewerNull()
+        viewer.set_model(model)
+        history = FrameHistory(viewer)
+        history.begin_frame(0.0)
+        history.contacts(contacts, state, None)
+        history.end_frame()
+        contacts.rigid_contact_match_index.fill_(-1)
+        contacts.rigid_contact_surface_velocity.zero_()
+        contacts.soft_contact_rigid_indices.view(wp.int32).fill_(-1)
+        history.begin_frame(1.0)
+        history.contacts(contacts, state, None)
+        history.end_frame()
+        history.select(0)
+        history.begin_frame(1.0)
+        replayed, _, _ = history.contacts(contacts, state, None)
+        history.end_frame()
+        self.assertEqual(int(replayed.rigid_contact_match_index.numpy()[0]), 7)
+        np.testing.assert_allclose(replayed.rigid_contact_surface_velocity.numpy()[0], [1.0, 2.0, 3.0])
+        np.testing.assert_array_equal(replayed.soft_contact_rigid_indices.numpy()[0], [1, 2, 3])
+
+        # Maximal-coordinate solver detection distinguishes maximal vs reduced-coordinate solvers.
+        self.assertTrue(ViewerWorkspace._uses_maximal_coordinates(newton.solvers.SolverXPBD(model)))
+        self.assertTrue(ViewerWorkspace._uses_maximal_coordinates(newton.solvers.SolverSemiImplicit(model)))
+        self.assertFalse(ViewerWorkspace._uses_maximal_coordinates(newton.solvers.SolverFeatherstone(model)))
+        self.assertTrue(ViewerWorkspace._uses_maximal_coordinates(type("SolverKamino", (), {})()))
+
     def test_frequency_discovery_and_live_joint_edits(self) -> None:
         builder = newton.ModelBuilder()
         joints = []
@@ -2154,6 +2655,16 @@ class TestCollisionInspector(unittest.TestCase):
                 with patch.object(inspector, "read", wraps=inspector.read) as read:
                     inspector.shape_contacts(0)
                     read.assert_not_called()
+                saved_shape0 = contacts.rigid_contact_shape0.numpy().copy()
+                contacts.rigid_contact_shape0.assign(np.where(np.arange(len(saved_shape0)) == 0, -1, saved_shape0))
+                try:
+                    for k in [k for k in inspector.cache if k[0] == "label_points"]:
+                        inspector.cache.pop(k)
+                    self.assertTrue(np.isnan(inspector.label_points((("contact", 0),))[("contact", 0)]).all())
+                finally:
+                    contacts.rigid_contact_shape0.assign(saved_shape0)
+                    for k in [k for k in inspector.cache if k[0] == "label_points"]:
+                        inspector.cache.pop(k)
                 fields = {
                     name: (spec, start, count)
                     for _, name, _, spec, start, count in inspector.contact_fields(("contact", 0))

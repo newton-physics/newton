@@ -572,7 +572,9 @@ Interactive inspection in ViewerGL
 ViewerGL presents an explorer, a central viewport, State / Control / Model
 properties, and a timeline of recorded frames.
 The explorer includes worlds, articulations, joints, bodies, shapes, deformable
-objects, custom attribute frequencies, and available geometry resources.
+objects (surfaces, volumes, curves, and skinned visual meshes), tendons,
+particle-body attachments, mimic constraints, actuators and batteries, custom
+attribute frequencies, and available geometry and acceleration resources.
 Empty property categories are hidden. Custom attributes use their registered
 frequency, dtype, namespace, and reference metadata rather than solver-specific
 field-name rules.
@@ -689,9 +691,10 @@ Editing, history, and rebuilding
 * Control inputs can be changed while running or paused at the live frame.
   Edits update existing arrays so captured simulation graphs retain their
   bindings. Reset Control restores the values first seen by the inspector.
-* Joint State coordinates and velocities can be edited only while paused at
-  the latest frame. A joint mask limits forward kinematics to the edited
-  branch. Unsupported or read-only properties remain visibly locked.
+* Joint State coordinates and velocities and authored body shape variants can
+  be edited only while paused at the latest frame. A joint mask limits forward
+  kinematics to the edited branch, and rejected variant switches roll back
+  cleanly. Unsupported or read-only properties remain visibly locked.
 * Recorded historical frames are display snapshots. They are read-only;
   playback reaches the latest frame before live simulation resumes. They
   are not solver checkpoints and cannot restart simulation from an arbitrary
@@ -704,7 +707,8 @@ Editing, history, and rebuilding
   passed to ``begin_frame``, so a paused loop that renders the same time again
   records nothing new. Recording is bounded to 128 MiB and 60,000 display
   frames; a frame above 64 MiB stops recording before its arrays are
-  transferred. With recording off, no snapshots are taken.
+  transferred. With recording off, no snapshots are taken and the timeline
+  collapses to a compact transport bar with live frame and time readouts.
 * While the timeline shows a recorded frame, the same logging calls display
   that frame's data instead of their arguments, matched by call order within
   the frame and by name for points and lines; the application's arrays are not

@@ -201,8 +201,29 @@ class FrameHistory:
     and ``first_frame`` counts evicted frames.
     """
 
-    contact_fields = ("shape0", "shape1", "point0", "point1", "offset0", "offset1", "normal", "margin0", "margin1")
-    soft_contact_fields = ("indices", "particle", "barycentric", "shape", "body_pos", "body_vel", "normal")
+    contact_fields = (
+        "shape0",
+        "shape1",
+        "point0",
+        "point1",
+        "offset0",
+        "offset1",
+        "normal",
+        "margin0",
+        "margin1",
+        "surface_velocity",
+        "match_index",
+    )
+    soft_contact_fields = (
+        "indices",
+        "particle",
+        "barycentric",
+        "shape",
+        "body_pos",
+        "body_vel",
+        "normal",
+        "rigid_indices",
+    )
 
     def __init__(self, viewer: ViewerBase) -> None:
         """Initialize empty history for the viewer's current Model without recording a frame."""
@@ -391,13 +412,22 @@ class FrameHistory:
         if record is None:
             return contacts, state, observables
         display = self._display.get(key)
+        need_surface_velocity = "rigid_contact_surface_velocity" in record.arrays
+        need_match_index = "rigid_contact_match_index" in record.arrays
         if (
             display is None
             or display.rigid_contact_max < contacts.rigid_contact_max
             or display.soft_contact_max < contacts.soft_contact_max
+            or (need_surface_velocity and display.rigid_contact_surface_velocity is None)
+            or (need_match_index and display.rigid_contact_match_index is None)
         ):
             display = self._display[key] = Contacts(
-                contacts.rigid_contact_max, contacts.soft_contact_max, device=contacts.rigid_contact_count.device
+                contacts.rigid_contact_max,
+                contacts.soft_contact_max,
+                device=contacts.rigid_contact_count.device,
+                contact_matching=need_match_index or contacts.contact_matching,
+                rigid_contact_surface_velocity=need_surface_velocity
+                or contacts.rigid_contact_surface_velocity is not None,
             )
             self._loaded.pop(key, None)
             self._display.pop(("observables", *key[1:]), None)
@@ -406,7 +436,9 @@ class FrameHistory:
             display.rigid_contact_count.assign(np.array([record.rigid_count], dtype=np.int32))
             display.soft_contact_count.assign(np.array([record.soft_count], dtype=np.int32))
             for name, values in record.arrays.items():
-                getattr(display, name)[: len(values)].assign(values)
+                target = getattr(display, name, None)
+                if target is not None:
+                    target[: len(values)].assign(values)
             if display_observables is not None:
                 for name, values in record.observables.items():
                     array = getattr(display_observables, name)

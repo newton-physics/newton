@@ -40,6 +40,8 @@ class DeformableObject:
     particles: range | np.ndarray
     triangles: range | np.ndarray
     tetrahedra: range | np.ndarray
+    edges: range | np.ndarray = ()
+    model_index: int | None = None
 
 
 class ParticleSource:
@@ -249,6 +251,147 @@ class DeformableCatalog:
         self._loaded = set()
         self._materials = {}
         self._element_order = {}
+        self._surface_records: list[tuple[int, str, int, int, int, int, int, int, int]] | None = None
+        self._volume_records: list[tuple[int, str, int, int, int, int, int]] | None = None
+        self._curve_records: list[tuple[int, str, int, int, int, int, int]] | None = None
+        self._model_object_keys: dict[tuple[str, int], TreeKey] = {}
+        self._worlds_with_deformables: set[int] | None = None
+
+    def surface_records(self) -> list[tuple[int, str, int, int, int, int, int, int, int]]:
+        """Cache authored surface deformable records on the host when surfaces exist."""
+        if self._surface_records is None:
+            m = self.model
+            if m.surface_count and m.surface_world is not None:
+                worlds = m.surface_world.numpy()
+                p0s = m.surface_particle_start.numpy()
+                p1s = m.surface_particle_end.numpy()
+                t0s = m.surface_tri_start.numpy()
+                t1s = m.surface_tri_end.numpy()
+                e0s = (
+                    m.surface_edge_start.numpy()
+                    if m.surface_edge_start is not None
+                    else np.zeros(m.surface_count, dtype=int)
+                )
+                e1s = (
+                    m.surface_edge_end.numpy()
+                    if m.surface_edge_end is not None
+                    else np.zeros(m.surface_count, dtype=int)
+                )
+                labels = m.surface_label
+                self._surface_records = [
+                    (
+                        i,
+                        labels[i] if i < len(labels) and labels[i] else f"surface_{i}",
+                        int(worlds[i]),
+                        int(p0s[i]),
+                        int(p1s[i]),
+                        int(t0s[i]),
+                        int(t1s[i]),
+                        int(e0s[i]),
+                        int(e1s[i]),
+                    )
+                    for i in range(m.surface_count)
+                ]
+            else:
+                self._surface_records = []
+        return self._surface_records
+
+    def volume_records(self) -> list[tuple[int, str, int, int, int, int, int]]:
+        """Cache authored volume deformable records on the host when volumes exist."""
+        if self._volume_records is None:
+            m = self.model
+            if m.volume_count and m.volume_world is not None:
+                worlds = m.volume_world.numpy()
+                p0s = m.volume_particle_start.numpy()
+                p1s = m.volume_particle_end.numpy()
+                tet0s = m.volume_tet_start.numpy()
+                tet1s = m.volume_tet_end.numpy()
+                labels = m.volume_label
+                self._volume_records = [
+                    (
+                        i,
+                        labels[i] if i < len(labels) and labels[i] else f"volume_{i}",
+                        int(worlds[i]),
+                        int(p0s[i]),
+                        int(p1s[i]),
+                        int(tet0s[i]),
+                        int(tet1s[i]),
+                    )
+                    for i in range(m.volume_count)
+                ]
+            else:
+                self._volume_records = []
+        return self._volume_records
+
+    def curve_records(self) -> list[tuple[int, str, int, int, int, int, int]]:
+        """Cache authored curve deformable records on the host when curves exist."""
+        if self._curve_records is None:
+            m = self.model
+            if m.curve_count and m.curve_world is not None:
+                worlds = m.curve_world.numpy()
+                b0s = m.curve_body_start.numpy()
+                b1s = m.curve_body_end.numpy()
+                j0s = m.curve_joint_start.numpy()
+                j1s = m.curve_joint_end.numpy()
+                labels = m.curve_label
+                self._curve_records = [
+                    (
+                        i,
+                        labels[i] if i < len(labels) and labels[i] else f"curve_{i}",
+                        int(worlds[i]),
+                        int(b0s[i]),
+                        int(b1s[i]),
+                        int(j0s[i]),
+                        int(j1s[i]),
+                    )
+                    for i in range(m.curve_count)
+                ]
+            else:
+                self._curve_records = []
+        return self._curve_records
+
+    def has_world(self, world: int) -> bool:
+        """Report whether a world owns particles, authored deformables, curves, or visual meshes."""
+        if any(source.ranges(world) for source in self.sources):
+            return True
+        if self._worlds_with_deformables is None:
+            worlds: set[int] = set()
+            for record in self.surface_records():
+                worlds.add(record[2])
+            for record in self.volume_records():
+                worlds.add(record[2])
+            for record in self.curve_records():
+                worlds.add(record[2])
+            for mesh in self.model.deformable_visual_meshes:
+                worlds.add(mesh.world)
+            self._worlds_with_deformables = worlds
+        return world in self._worlds_with_deformables
+
+    def curve_world(self, index: int) -> int:
+        """Resolve an authored curve index to its owning world, or -1 for global curves."""
+        records = self.curve_records()
+        return records[index][2] if 0 <= index < len(records) else -1
+
+    def curve_elements(self, index: int) -> tuple[range, range]:
+        """Return body and joint ranges for an authored curve index."""
+        records = self.curve_records()
+        if 0 <= index < len(records):
+            _, _, _, b0, b1, j0, j1 = records[index]
+            return range(b0, b1), range(j0, j1)
+        return range(0), range(0)
+
+    def object_key_for_model(self, kind: str, model_index: int, tree: ModelTree) -> TreeKey | None:
+        """Resolve a Model surface/volume/curve index to its explorer object key, materializing its world if needed."""
+        if kind == "curve":
+            records = self.curve_records()
+            if 0 <= model_index < len(records):
+                tree.ensure_world(records[model_index][2])
+                return ("curve", model_index)
+            return None
+        records = self.surface_records() if kind == "surface" else self.volume_records() if kind == "volume" else ()
+        if 0 <= model_index < len(records):
+            tree.ensure_world(records[model_index][2])
+        return self._model_object_keys.get((kind, model_index))
 
     def source(self, particle: int) -> ParticleSource:
         """Find the source containing a valid catalog-wide particle index."""
@@ -260,15 +403,16 @@ class DeformableCatalog:
         return source.world_for(particle - source.offset)
 
     def topology(self, kind: str) -> np.ndarray:
-        """Cache host triangle or tetrahedron indices, preferring existing host adjacency over a device copy."""
+        """Cache host triangle, tetrahedron, or edge indices, preferring existing host adjacency over a device copy."""
         if kind not in self._topology:
             adjacency = self.model.soft_mesh_adjacency
-            name = "indices" if kind == "tri" else "tet_indices"
-            host = getattr(adjacency, name, None)
+            name = "indices" if kind == "tri" else "tet_indices" if kind == "tet" else None
+            host = getattr(adjacency, name, None) if name is not None else None
             if host is None:
                 array = getattr(self.model, kind + "_indices", None)
                 host = array.numpy() if array is not None else []
-            self._topology[kind] = np.asarray(host, dtype=np.int32).reshape(-1, 3 if kind == "tri" else 4)
+            width = 3 if kind == "tri" else 4
+            self._topology[kind] = np.asarray(host, dtype=np.int32).reshape(-1, width)
         return self._topology[kind]
 
     def elements_in_range(self, kind: str, start: int, end: int) -> np.ndarray:
@@ -292,46 +436,83 @@ class DeformableCatalog:
         if world in self._loaded:
             return
         self._loaded.add(world)
-        particle_ranges = self.sources[0].ranges(world)
-        if not any(source.ranges(world) for source in self.sources):
+        if not self.has_world(world):
             return
+        particle_ranges = self.sources[0].ranges(world)
         root = ("root", world)
         folder = ("group", world * 4 + 3)
         tree.labels[folder] = "Deformables"
         tree.parents[folder] = root
         tree.expanded.add(folder)
-        triangles = self.topology("tri")
-        tetrahedra = self.topology("tet")
         covered = []
-        records = getattr(self.model, "_deformable_objects", ())
-        for kind, label, w, p0, p1, e0, e1 in records:
+        for idx, label, w, p0, p1, t0, t1, e0, e1 in self.surface_records():
             if w != world:
                 continue
-            tri = range(e0, e1) if kind == "surface" else self.elements_in_range("tri", p0, p1)
-            tet = range(e0, e1) if kind == "volume" else range(0)
-            self._add(tree, folder, DeformableObject(kind, label, world, range(p0, p1), tri, tet))
+            self._add(
+                tree,
+                folder,
+                DeformableObject(
+                    "surface",
+                    label,
+                    world,
+                    range(p0, p1),
+                    range(t0, t1),
+                    range(0),
+                    edges=range(e0, e1),
+                    model_index=idx,
+                ),
+            )
             covered.append((p0, p1))
+        for idx, label, w, p0, p1, tet0, tet1 in self.volume_records():
+            if w != world:
+                continue
+            tri = self.elements_in_range("tri", p0, p1)
+            self._add(
+                tree,
+                folder,
+                DeformableObject("volume", label, world, range(p0, p1), tri, range(tet0, tet1), model_index=idx),
+            )
+            covered.append((p0, p1))
+        for idx, label, w, b0, b1, j0, j1 in self.curve_records():
+            if w != world:
+                continue
+            key = ("curve", idx)
+            tree.labels[key] = label
+            tree.meta[key] = {"world": world, "bodies": range(b0, b1), "joints": range(j0, j1)}
+            tree.children[folder].append(key)
+            tree.parents[key] = folder
+        for mesh in self.model.deformable_visual_meshes:
+            if mesh.world != world:
+                continue
+            key = ("deformable_visual_mesh", mesh.index)
+            tree.labels[key] = mesh.label or f"Skinned mesh {mesh.index}"
+            tree.meta[key] = {"world": world, "mesh": mesh}
+            tree.children[folder].append(key)
+            tree.parents[key] = folder
         # Low-level add_particle/add_triangle/add_tetrahedron users also get
         # inspectable objects without requiring builder-specific labels.
         loose = []
-        for a, b in particle_ranges:
-            particles = np.arange(a, b, dtype=np.int32)
-            keep = np.ones(b - a, dtype=bool)
-            for p0, p1 in covered:
-                keep[max(a, p0) - a : max(a, min(b, p1)) - a] = False
-            particles = particles[keep]
-            if not len(particles):
-                continue
-            tri = self.elements_in_range("tri", a, b)
-            tri = tri[keep[triangles[tri, 0] - a]]
-            tet = self.elements_in_range("tet", a, b)
-            tet = tet[keep[tetrahedra[tet, 0] - a]]
-            mesh_particles = np.unique(np.concatenate((triangles[tri].ravel(), tetrahedra[tet].ravel())))
-            if len(mesh_particles):
-                kind = "volume" if len(tet) else "surface"
-                label = "Tet mesh" if len(tet) else "Triangle mesh"
-                self._add(tree, folder, DeformableObject(kind, label, world, mesh_particles, tri, tet))
-            loose.append(np.setdiff1d(particles, mesh_particles, assume_unique=True))
+        if particle_ranges:
+            triangles = self.topology("tri")
+            tetrahedra = self.topology("tet")
+            for a, b in particle_ranges:
+                particles = np.arange(a, b, dtype=np.int32)
+                keep = np.ones(b - a, dtype=bool)
+                for p0, p1 in covered:
+                    keep[max(a, p0) - a : max(a, min(b, p1)) - a] = False
+                particles = particles[keep]
+                if not len(particles):
+                    continue
+                tri = self.elements_in_range("tri", a, b)
+                tri = tri[keep[triangles[tri, 0] - a]]
+                tet = self.elements_in_range("tet", a, b)
+                tet = tet[keep[tetrahedra[tet, 0] - a]]
+                mesh_particles = np.unique(np.concatenate((triangles[tri].ravel(), tetrahedra[tet].ravel())))
+                if len(mesh_particles):
+                    kind = "volume" if len(tet) else "surface"
+                    label = "Tet mesh" if len(tet) else "Triangle mesh"
+                    self._add(tree, folder, DeformableObject(kind, label, world, mesh_particles, tri, tet))
+                loose.append(np.setdiff1d(particles, mesh_particles, assume_unique=True))
         if tree.children[folder]:
             tree.children[root].append(folder)
         if loose:
@@ -340,9 +521,11 @@ class DeformableCatalog:
                 self._add(tree, root, DeformableObject("particle_set", "Particles", world, particles, (), ()))
 
     def _add(self, tree: ModelTree, folder: TreeKey, obj: DeformableObject) -> None:
-        """Register an object and lazy particle, triangle, and tetrahedron groups beneath its parent."""
+        """Register an object and lazy particle, triangle, edge, and tetrahedron groups beneath its parent."""
         key = (obj.kind, len(self.objects))
         self.objects.append(obj)
+        if obj.model_index is not None:
+            self._model_object_keys[(obj.kind, obj.model_index)] = key
         tree.labels[key] = obj.label
         tree.meta[key] = {"world": obj.world, "object": obj}
         tree.children[folder].append(key)
@@ -350,6 +533,7 @@ class DeformableCatalog:
         for kind, label, indices in (
             ("particle", "Particles", obj.particles),
             ("tri", "Triangles", obj.triangles),
+            ("edge", "Edges", obj.edges),
             ("tet", "Tetrahedra", obj.tetrahedra),
         ):
             if len(indices):
@@ -377,7 +561,7 @@ class DeformableCatalog:
         else:
             for index in indices:
                 child = (kind, int(index))
-                title = {"particle": "Particle", "tri": "Triangle", "tet": "Tetrahedron"}[kind]
+                title = {"particle": "Particle", "tri": "Triangle", "edge": "Edge", "tet": "Tetrahedron"}[kind]
                 tree.labels[child] = f"{title} {index}"
                 tree.meta[child] = {"world": self.objects[owner[1]].world, "owner": owner}
                 tree.children[key].append(child)
@@ -393,9 +577,14 @@ class DeformableCatalog:
         return None
 
     def reveal(self, tree: ModelTree, key: TreeKey) -> None:
-        """Materialize the object and element page containing a particle, triangle, or tetrahedron."""
+        """Materialize the object and element page containing a particle, triangle, edge, or tetrahedron."""
         kind, index = key
-        particle = index if kind == "particle" else int(self.topology(kind)[index, 0])
+        if kind == "particle":
+            particle = index
+        elif kind == "edge":
+            particle = int(self.topology("edge")[index, 2])
+        else:
+            particle = int(self.topology(kind)[index, 0])
         owner = self.owner(tree, particle)
         if owner is None:
             return
@@ -526,6 +715,9 @@ class DeformableCatalog:
             indices = [index]
         if kind == "particle":
             return indices, (), ()
+        if kind == "edge":
+            rows = self.topology("edge")[indices]
+            return np.unique(rows[rows >= 0]), (), ()
         if kind in ("tri", "tet"):
             return (
                 np.unique(self.topology(kind)[indices]),
@@ -533,6 +725,47 @@ class DeformableCatalog:
                 indices if kind == "tet" else (),
             )
         return (), (), ()
+
+    def element_edges(self, key: TreeKey) -> Sequence[int] | np.ndarray:
+        """Resolve a surface object, edge group, or edge key to its edge indices."""
+        kind, index = key
+        if kind in ("surface", "volume", "particle_set"):
+            return self.objects[index].edges
+        if key in self.groups and self.groups[key][0] == "edge":
+            return self.groups[key][1]
+        if kind == "edge":
+            return [index]
+        return ()
+
+    def visual_mesh_summary(self, workspace: ViewerWorkspace, index: int) -> None:
+        """Draw read-only metadata and display status for a DeformableVisualMesh."""
+        meshes = self.model.deformable_visual_meshes
+        if not (0 <= index < len(meshes)):
+            return
+        mesh = meshes[index]
+        w, ui, viewer = workspace.widgets, workspace.gui.ui.imgui, workspace.viewer
+        with w.group("Skinned mesh") as opened:
+            if opened:
+                w.text_value("Binding kind", mesh.kind.name.replace("_", " ").title())
+                w.number("Vertices", mesh.vertex_count, integer=True)
+                tri_count = int(mesh.indices.shape[0]) // 3 if mesh.indices is not None else 0
+                w.number("Triangles", tri_count, integer=True)
+                w.text_value("World", "Shared (-1)" if mesh.world < 0 else f"World {mesh.world}")
+                w.text_value("UV coordinates", "Present" if mesh.uvs is not None else "None")
+                texture = mesh.texture
+                if texture is None:
+                    texture_text = "None"
+                elif isinstance(texture, str):
+                    texture_text = texture
+                elif isinstance(texture, np.ndarray):
+                    texture_text = f"Image {texture.shape} ({texture.dtype})"
+                else:
+                    texture_text = type(texture).__name__
+                w.text_value("Texture", texture_text)
+                changed, value = ui.checkbox("Show skinned meshes", bool(viewer.show_deformable_visual_meshes))
+                if changed:
+                    viewer.show_deformable_visual_meshes = value
+                    viewer._display_options_user["show_deformable_visual_meshes"] = value
 
     def visible(self, tree: ModelTree, key: TreeKey) -> bool:
         """Resolve object visibility directly or through an element group or owning object."""
