@@ -2498,12 +2498,6 @@ derivative remains well-defined at rest without a separate smoothing
 parameter. The force is continuous at the Coulomb limit, where its derivative
 changes between the viscous and capped branches.
 
-Newton 1.9 removed the ``friction_smoothing`` constructor argument and
-attribute from :class:`~newton.solvers.SolverSemiImplicit` and
-:class:`~newton.solvers.SolverFeatherstone`. Remove the argument and any
-attribute reads or assignments. Use shape material ``kf`` for the low-speed
-friction slope and ``mu`` for the Coulomb limit.
-
 - Larger ``kf`` gives less creep but stiffens the friction force. With these
   explicit solvers, keep :math:`N k_f \, \Delta t / m_\text{eff}` well below 1,
   where :math:`m_\text{eff}` is the effective mass of the lightest contact pair,

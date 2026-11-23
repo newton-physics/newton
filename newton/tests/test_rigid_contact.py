@@ -863,10 +863,7 @@ def test_penalty_friction_solver_step(test, device):
     dt = 1.0e-4
     for solver_type in (newton.solvers.SolverSemiImplicit, newton.solvers.SolverFeatherstone):
         with test.subTest(solver=solver_type.__name__):
-            with test.assertRaisesRegex(TypeError, "friction_smoothing"):
-                solver_type(model, friction_smoothing=0.1)
             solver = solver_type(model)
-            test.assertFalse(hasattr(solver, "friction_smoothing"))
             state_in.clear_forces()
             solver.step(state_in, state_out, None, contacts, dt)
             delta_v = state_out.body_qd.numpy()[0, :3] - velocity[:3]
