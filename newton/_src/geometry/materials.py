@@ -60,6 +60,55 @@ class MaterialPairTable:
 
 
 @wp.func
+def _sample_material_pair_coefficient(
+    value: float, lower: float, upper: float, seed: int, world: int, gaussian: bool
+) -> float:
+    if lower < 0.0:
+        return value
+    if lower == upper:
+        return lower
+    state = wp.rand_init(seed, world)
+    if gaussian:
+        normal = wp.randn(state)
+        while wp.abs(normal) > 3.0:
+            normal = wp.randn(state)
+        fraction = 0.5 + normal / 6.0
+    else:
+        fraction = wp.randf(state)
+    return wp.clamp((1.0 - fraction) * lower + fraction * upper, lower, upper)
+
+
+@wp.kernel(module="unique", enable_backward=False)
+def _randomize_material_pair_values(
+    columns: wp.array[int],
+    bounds_min: wp.array[MaterialPairProperties],
+    bounds_max: wp.array[MaterialPairProperties],
+    seeds: wp.array2d[int],
+    gaussian: bool,
+    values: wp.array2d[MaterialPairProperties],
+):
+    world, pair = wp.tid()
+    column = columns[pair]
+    props = values[world, column]
+    lower = bounds_min[pair]
+    upper = bounds_max[pair]
+    props.mu = _sample_material_pair_coefficient(props.mu, lower.mu, upper.mu, seeds[pair, 0], world, gaussian)
+    props.mu_static = _sample_material_pair_coefficient(
+        props.mu_static, lower.mu_static, upper.mu_static, seeds[pair, 1], world, gaussian
+    )
+    props.mu_torsional = _sample_material_pair_coefficient(
+        props.mu_torsional, lower.mu_torsional, upper.mu_torsional, seeds[pair, 2], world, gaussian
+    )
+    props.mu_rolling = _sample_material_pair_coefficient(
+        props.mu_rolling, lower.mu_rolling, upper.mu_rolling, seeds[pair, 3], world, gaussian
+    )
+    props.restitution = _sample_material_pair_coefficient(
+        props.restitution, lower.restitution, upper.restitution, seeds[pair, 4], world, gaussian
+    )
+    values[world, column] = props
+
+
+@wp.func
 def material_pair_value(value: float, fallback: float) -> float:
     return wp.where(value >= 0.0, value, fallback)
 

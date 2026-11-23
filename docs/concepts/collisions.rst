@@ -2464,7 +2464,8 @@ Material pair friction
 
    :meth:`~ModelBuilder.add_material`, :attr:`~ModelBuilder.ShapeConfig.material_id`,
    :attr:`~Model.shape_material_id`, :attr:`~Model.material_names`, :meth:`~ModelBuilder.set_material_pair`,
-   :attr:`~Model.material_pair_values`, :meth:`~Model.get_material_pair_index`, and the corresponding
+   :attr:`~Model.material_pair_values`, :meth:`~Model.get_material_pair_index`,
+   :meth:`~Model.randomize_material_pairs`, and the corresponding
    ``NewtonMaterialPairAPI`` USD authoring schema are experimental.
 
 Assign a material ID to each participating shape and set one or more coefficients
@@ -2502,33 +2503,25 @@ copies of different builders, read the copied shapes' IDs from
 All worlds share one row of pair coefficients by default. To randomize
 independently across worlds, finalize with ``material_pairs_per_world=True``.
 This allocates five float32 coefficients for each configured pair in each
-world. Look up the pair's column once, then update the column in place with a Warp
-kernel. For example, given one friction coefficient per world:
+world. Call :meth:`~Model.randomize_material_pairs` at startup to sample the
+selected coefficients once. The same seed, material IDs, and world indices
+reproduce the samples on the same device. Change the seed for a new draw.
+Sampling is uniform by default. With ``distribution="gaussian"``, the midpoint
+is the mean, one sixth of the range is the standard deviation, and samples
+outside the bounds are rejected. Run separate calls for pairs or coefficients
+that need different distributions.
 
 .. code-block:: python
 
-    import warp as wp
-    from newton.geometry import MaterialPairProperties
-
-    @wp.kernel
-    def set_pair_friction(
-        values: wp.array2d[MaterialPairProperties],
-        column: int,
-        friction: wp.array[float],
-    ):
-        world = wp.tid()
-        props = values[world, column]
-        props.mu = friction[world]
-        values[world, column] = props
-
     model = builder.finalize(material_pairs_per_world=True)
-    column = model.get_material_pair_index(rubber, steel)
-    wp.launch(
-        set_pair_friction,
-        dim=model.world_count,
-        inputs=[model.material_pair_values, column, friction],
-        device=model.device,
+    model.randomize_material_pairs(
+        {(rubber, steel): {"mu": (0.5, 1.0), "restitution": (0.0, 0.2)}},
+        seed=123,
     )
+
+For custom sampling or manually specified values, look up the pair's column
+with :meth:`~Model.get_material_pair_index` and write the desired world rows
+in :attr:`~Model.material_pair_values`.
 
 
 .. _Contact friction gain and adhesion:

@@ -2717,13 +2717,14 @@ def test_xpbd_material_pair_friction(test, device):
 
 
 def test_xpbd_material_pairs_per_world(test, device):
-    """Apply distinct restitution across worlds with shared materials and a global floor."""
+    """Reproduce seeded restitution across worlds and apply it to a shared floor."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     floor = builder.add_material("floor")
     sphere = builder.add_material("sphere")
     with test.assertRaisesRegex(ValueError, "mu_static must be at least mu"):
         builder.set_material_pair(floor, sphere, mu=1.0, mu_static=0.0)
     builder.set_material_pair(floor, sphere, mu=0.0, restitution=0.0)
+    builder.set_material_pair(floor, floor, restitution=0.25)
     builder.add_ground_plane(cfg=builder.ShapeConfig(material_id=floor))
     radius = 0.05
     for _ in range(2):
@@ -2733,15 +2734,42 @@ def test_xpbd_material_pairs_per_world(test, device):
         builder.end_world()
 
     model = builder.finalize(device=device, material_pairs_per_world=True)
-    test.assertEqual(model.material_pair_values.shape, (2, 1))
-    test.assertEqual(model.get_material_pair_index(floor, floor), -1)
+    test.assertEqual(model.material_pair_values.shape, (2, 2))
     test.assertEqual(model.get_material_pair_index(sphere, sphere + (1 << 32)), -1)
     test.assertEqual(model.get_material_pair_index(sphere, floor + 0.25), -1)
     column = model.get_material_pair_index(sphere, floor)
+    floor_column = model.get_material_pair_index(floor, floor)
     solver = newton.solvers.SolverXPBD(model, enable_restitution=True)
-    values = model.material_pair_values.numpy()
-    values["restitution"][1, column] = 1.0
-    model.material_pair_values.assign(values)
+    ranges = {"restitution": (0.2, 0.8)}
+    model.randomize_material_pairs({(sphere, floor): ranges}, seed=123)
+    initial = model.material_pair_values.numpy().copy()
+    test.assertNotEqual(initial["restitution"][0, column], initial["restitution"][1, column])
+    np.testing.assert_array_equal(initial["restitution"][:, floor_column], 0.25)
+    np.testing.assert_array_equal(initial["mu"][:, column], 0.0)
+    test.assertTrue(np.all((initial["restitution"][:, column] >= 0.2) & (initial["restitution"][:, column] <= 0.8)))
+
+    model.randomize_material_pairs({(floor, sphere): ranges}, seed=321)
+    test.assertFalse(np.array_equal(initial, model.material_pair_values.numpy()))
+    model.randomize_material_pairs({(floor, floor): ranges, (floor, sphere): ranges}, seed=123)
+    values = model.material_pair_values.numpy().copy()
+    np.testing.assert_array_equal(values["restitution"][:, column], initial["restitution"][:, column])
+    test.assertFalse(np.array_equal(values["restitution"][:, column], values["restitution"][:, floor_column]))
+    with test.assertRaisesRegex(ValueError, "Invalid bounds"):
+        model.randomize_material_pairs({(sphere, floor): ranges, (floor, floor): {"restitution": (1.0, 0.0)}}, seed=1)
+    np.testing.assert_array_equal(model.material_pair_values.numpy(), values)
+    coefficients = {"mu": 0.5, "mu_static": 0.75, "mu_torsional": 0.125, "mu_rolling": 0.25}
+    model.randomize_material_pairs(
+        {(floor, floor): {name: (value, value) for name, value in coefficients.items()}},
+        seed=123,
+    )
+    randomized = model.material_pair_values.numpy()
+    for name, value in coefficients.items():
+        np.testing.assert_array_equal(randomized[name][:, floor_column], value)
+
+    model.randomize_material_pairs({(floor, sphere): ranges}, seed=123, distribution="gaussian")
+    sampled_restitution = model.material_pair_values.numpy()["restitution"][:, column]
+    test.assertTrue(np.all((sampled_restitution >= 0.2) & (sampled_restitution <= 0.8)))
+    test.assertNotEqual(float(sampled_restitution[0]), float(sampled_restitution[1]))
 
     state_in, state_out = model.state(), model.state()
     forces = np.zeros((2, 6), dtype=np.float32)
@@ -2753,8 +2781,7 @@ def test_xpbd_material_pairs_per_world(test, device):
     solver.step(state_in, state_out, None, contacts, 1.0 / 60.0)
 
     vz = state_out.body_qd.numpy()[:, 2]
-    test.assertAlmostEqual(float(vz[0]), 0.0, delta=1.0e-3)
-    test.assertGreater(float(vz[1]), 0.1)
+    np.testing.assert_allclose(vz, sampled_restitution / 6.0, atol=5.0e-4)
 
 
 def test_xpbd_material_pair_angular_and_static_friction(test, device):

@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 import operator
 import warnings
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field, replace
 from enum import IntEnum
@@ -22,7 +22,12 @@ from ..exceptions import NewtonDeprecationWarning, NewtonWarning
 from ..geometry.deformable_visual import DeformableVisualMesh, _DeformableVisualSkinBatches
 from ..geometry.flags import ShapeFlags
 from ..geometry.inertia import _inverse_inertia_wp
-from ..geometry.materials import MaterialPairProperties, MaterialPairTable, material_pair_key
+from ..geometry.materials import (
+    MaterialPairProperties,
+    MaterialPairTable,
+    _randomize_material_pair_values,
+    material_pair_key,
+)
 from ..utils.deprecation import warn_deprecation
 from ..utils.mesh import MeshAdjacency, MeshAdjacencyData
 from .contacts import Contacts
@@ -2051,6 +2056,90 @@ class Model:
         if not (0 <= material_a < material_count and 0 <= material_b < material_count):
             return -1
         return self._material_pair_columns.get(material_pair_key(material_a, material_b), -1)
+
+    def randomize_material_pairs(
+        self,
+        ranges: Mapping[tuple[int, int], Mapping[str, tuple[float, float]]],
+        *,
+        seed: int,
+        distribution: Literal["uniform", "gaussian"] = "uniform",
+    ) -> None:
+        """Sample selected rigid contact material pair coefficients once, in place.
+
+        This experimental method works with pairs configured before finalization.
+        In a multi-world model, finalize with ``material_pairs_per_world=True``.
+        Each draw is keyed by the seed, unordered pair, coefficient, and world
+        index. Use the same seed and IDs to repeat a sample on the same device.
+        Solvers read the resulting values until they are changed again.
+
+        Args:
+            ranges: Mapping from unordered material ID pairs to coefficient names
+                and inclusive ``(minimum, maximum)`` bounds. Supported names are
+                ``mu``, ``mu_static``, ``mu_torsional``, ``mu_rolling``, and
+                ``restitution``, with the same units as :meth:`ModelBuilder.set_material_pair`.
+                Omitted coefficients keep their current values.
+            seed: Nonnegative integer seed for all draws in this call.
+            distribution: Uniform, or a Gaussian truncated to the bounds with
+                mean at their midpoint and standard deviation one sixth of their
+                width. Equal bounds set a constant.
+
+        Raises:
+            ValueError: If the seed, distribution, pair, name, or bounds are
+                invalid, or the model lacks independent per-world storage.
+        """
+        try:
+            seed = operator.index(seed)
+        except TypeError as exc:
+            raise ValueError("Material pair randomization seed must be a nonnegative integer.") from exc
+        if seed < 0:
+            raise ValueError("Material pair randomization seed must be a nonnegative integer.")
+        if distribution not in ("uniform", "gaussian"):
+            raise ValueError(f"Invalid material pair randomization distribution {distribution!r}.")
+        if not ranges:
+            return
+        values = self.material_pair_values
+        if values is None or values.shape[0] != self.world_count:
+            raise ValueError("Configure material pairs and finalize with material_pairs_per_world=True.")
+
+        bounds_min = np.empty(len(ranges), dtype=MaterialPairProperties.numpy_dtype())
+        names = bounds_min.dtype.names
+        for name in names:
+            bounds_min[name].fill(-1.0)
+        bounds_max = bounds_min.copy()
+        seeds = np.empty((len(ranges), len(names)), dtype=np.int32)
+        columns = []
+        seen = set()
+        for row, ((material_a, material_b), coefficients) in enumerate(ranges.items()):
+            column = self.get_material_pair_index(material_a, material_b)
+            if column < 0:
+                raise ValueError(f"Material pair {(material_a, material_b)} is not configured.")
+            if column in seen:
+                raise ValueError(f"Material pair {(material_a, material_b)} was specified more than once.")
+            seen.add(column)
+            columns.append(column)
+            pair = tuple(sorted((int(material_a), int(material_b))))
+            seeds[row] = np.random.SeedSequence(seed, spawn_key=pair).generate_state(len(names)).view(np.int32)
+            for name, (lower, upper) in coefficients.items():
+                if name not in names:
+                    raise ValueError(f"Unknown material pair coefficient {name!r}.")
+                if not 0.0 <= lower <= upper <= np.finfo(np.float32).max:
+                    raise ValueError(f"Invalid bounds for material pair {name}: {(lower, upper)}.")
+                bounds_min[name][row] = lower
+                bounds_max[name][row] = upper
+
+        wp.launch(
+            _randomize_material_pair_values,
+            dim=(self.world_count, len(columns)),
+            inputs=[
+                wp.array(columns, dtype=wp.int32, device=self.device),
+                wp.array(bounds_min, dtype=MaterialPairProperties, device=self.device),
+                wp.array(bounds_max, dtype=MaterialPairProperties, device=self.device),
+                wp.array(seeds, dtype=wp.int32, device=self.device),
+                distribution == "gaussian",
+            ],
+            outputs=[values],
+            device=self.device,
+        )
 
     def _set_material_pair_table(self, keys: list[int] | np.ndarray, values: np.ndarray | None) -> None:
         table = MaterialPairTable()
