@@ -110,6 +110,8 @@ class SteelFrictionPatches:
         with wp.ScopedCapture(device=self.scene.model.device) as capture:
             self.scene.step_pair()
         self.graph = capture.graph
+        # The first replay instantiates the graph; keep it out of the samples.
+        wp.capture_launch(self.graph)
         wp.synchronize_device(self.scene.model.device)
         self._key = (tiles, friction)
 
@@ -166,6 +168,7 @@ class SteelFrictionPatchBuild:
                 build()
         self.graph = capture.graph
         self.scene = scene
+        wp.capture_launch(self.graph)
         wp.synchronize_device(scene.model.device)
         self._key = (tiles, world_count)
 
@@ -245,13 +248,19 @@ class SteelFrictionPair:
             )
         ).astype(np.float32)
         with wp.ScopedDevice("cuda:0"):
-            inputs = [wp.array(blocks, dtype=wp.vec3), wp.array(residuals, dtype=wp.vec2), wp.array(old, dtype=wp.vec2)]
+            # The graph reads these by address, so they live as long as it does.
+            self.inputs = [
+                wp.array(blocks, dtype=wp.vec3),
+                wp.array(residuals, dtype=wp.vec2),
+                wp.array(old, dtype=wp.vec2),
+            ]
             self.out = wp.empty(2 * n, dtype=float)
-            wp.launch(_friction_pair_update, dim=n, inputs=inputs, outputs=[self.out])
+            wp.launch(_friction_pair_update, dim=n, inputs=self.inputs, outputs=[self.out])
             with wp.ScopedCapture() as capture:
                 for _ in range(self.launches):
-                    wp.launch(_friction_pair_update, dim=n, inputs=inputs, outputs=[self.out])
+                    wp.launch(_friction_pair_update, dim=n, inputs=self.inputs, outputs=[self.out])
             self.graph = capture.graph
+            wp.capture_launch(self.graph)
             wp.synchronize_device()
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
@@ -274,8 +283,8 @@ class SteelContactTorsionPreparation:
     """Captured device preparation of contact torsion rows for one contact-dense world, including validation.
 
     Uses the synthetic contact tables of the Steel torsion tests; the solver's row buffers are restored
-    before every sample, outside the timed region. Without patches one thread groups each world's contacts
-    in a quadratic scan, so the contact counts stop at 1024.
+    before every sample, outside the timed region, and must match an eager preparation afterwards. Without
+    patches one thread groups each world's contacts in a quadratic scan, so the contact counts stop at 1024.
     """
 
     params = [[64, 1024], [True, False]]
@@ -285,6 +294,7 @@ class SteelContactTorsionPreparation:
     repeat = 5
     warmup_time = 0
     timeout = 600
+    _expected = None
 
     def setup(self, contacts, patches):
         _require_cuda_graphs()
@@ -292,9 +302,7 @@ class SteelContactTorsionPreparation:
             from newton._src.solvers.steel.contact_torsion_device import DeviceTorsionPreparation  # noqa: PLC0415
             from newton.tests.steel._fixtures import synthetic_fixture  # noqa: PLC0415
 
-            solver, state, augmented, contact_tables = synthetic_fixture(
-                worlds=1, witnesses=contacts, patches=patches, device="cuda:0"
-            )
+            solver, *self._inputs = synthetic_fixture(worlds=1, witnesses=contacts, patches=patches, device="cuda:0")
             names = (
                 "_constraint_count",
                 "_slot_counter",
@@ -310,11 +318,13 @@ class SteelContactTorsionPreparation:
             self._saved = [(target, wp.clone(target)) for target in targets]
             self._preparer = DeviceTorsionPreparation(solver, deferred_errors=True)
             self._restore()
-            self._preparer.prepare(state, augmented, contact_tables)
+            self._preparer.prepare(*self._inputs)
+            self._expected = [target.numpy() for target, _ in self._saved]
             self._restore()
             with wp.ScopedCapture(device="cuda:0") as capture:
-                self._preparer.prepare(state, augmented, contact_tables)
+                self._preparer.prepare(*self._inputs)
             self.graph = capture.graph
+            wp.capture_launch(self.graph)
             self._key = (contacts, patches)
         self._restore()
         wp.synchronize_device("cuda:0")
@@ -323,6 +333,13 @@ class SteelContactTorsionPreparation:
     def time_prepare(self, contacts, patches):
         wp.capture_launch(self.graph)
         self._preparer.validate()
+
+    def teardown(self, contacts, patches):
+        if self._expected is None:
+            return
+        for (target, _), expected in zip(self._saved, self._expected, strict=True):
+            if not np.array_equal(target.numpy(), expected):
+                raise RuntimeError("Captured torsion preparation diverged from the eager preparation")
 
     def _restore(self):
         for target, saved in self._saved:
