@@ -277,7 +277,13 @@ bypass the test, and every stored record is kept for truncation.
 between detections, through the planar and the radius truncation of
 :ref:`vbd-dat`. The guarantee holds for pairs that were separated at
 detection and found within the query radius; the rigid trajectory check is
-sampled unless ``rigid_soft_dat_use_interval_arithmetic`` is on.
+sampled unless ``rigid_soft_dat_use_interval_arithmetic`` is on. With
+self-contact on and ``rigid_soft_enable_dat`` off, particle motion is also
+truncated against analytic contacts with static shapes, using the
+contacts passed to :meth:`~newton.solvers.SolverVBD.step`. Only the particle
+side is truncated and no rigid-soft radius cap is added, so this covers
+particles found within the soft contact margin at detection. Body-attached
+shapes and full-surface mesh contacts are left to rigid-soft DAT.
 
 How to set the distances, and what they cost, is on the tuning page:
 :ref:`vbd-contact-handling` and :ref:`vbd-margin-gap-guide`. The contact
@@ -884,8 +890,10 @@ shape margin); that budget is fixed at construction. The pass runs after the
 forward step and after every body colour of every iteration, and the particle
 pass re-enforces the same planes after the particles move. Kinematic bodies
 move outside the solver and are not truncated. A pair for which no separating
-plane can be certified freezes. :ref:`vbd-contact-handling` describes the
-parts for tuning and illustrates the planes.
+plane can be certified freezes. With the option off and self-contact on, only
+the particle side of analytic contacts with static shapes is
+truncated, as described under Truncation above. :ref:`vbd-contact-handling`
+describes the parts for tuning and illustrates the planes.
 
 The guarantee has a price: a vertex cannot move faster than about one motion
 budget per detection cycle. The motion that the truncation removes is called

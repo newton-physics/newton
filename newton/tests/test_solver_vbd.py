@@ -9712,6 +9712,7 @@ def _run_vt_dat_row(
             wp.zeros(1, dtype=wp.vec3, device=device) if moving_body else wp.empty(0, dtype=wp.vec3, device=device),
             0.85,
             False,
+            False,
         ],
         outputs=[truncation_ts, body_truncation_ts],
         device=device,
@@ -9764,6 +9765,7 @@ def test_bvh_dat_uses_geometric_separator_for_back_facing_ee(test, device):
                 wp.empty(0, dtype=wp.transform, device=device),
                 wp.empty(0, dtype=wp.vec3, device=device),
                 0.85,
+                False,
                 False,
             ],
             outputs=[truncation_ts, wp.empty(0, dtype=float, device=device)],
@@ -9877,6 +9879,105 @@ def test_dat_production_paths_and_replay(test, device):
         test.assertGreater(float(proposed.particle_q.numpy()[0, 2] - proposed.body_q.numpy()[0, 2]), 0.05)
 
 
+def test_self_contact_dat_truncates_static_shape_contacts(test, device):
+    """Verify self-contact DAT keeps particles from moving into a static shape (#5143).
+
+    Without rigid-soft DAT, only the self-contact planes truncated particle motion,
+    so a pile resting on a static shape could walk through it.
+    """
+    builder = newton.ModelBuilder()
+    # A negligible contact stiffness leaves the truncation as the only thing that stops the sheet.
+    ground_cfg = builder.default_shape_cfg.copy()
+    ground_cfg.ke, ground_cfg.kd, ground_cfg.mu = 1.0e-6, 0.0, 0.0
+    builder.add_ground_plane(cfg=ground_cfg)
+    builder.add_cloth_grid(
+        pos=wp.vec3(-0.01, -0.01, 0.002),
+        rot=wp.quat_identity(),
+        vel=wp.vec3(0.0, 0.0, -0.6),
+        dim_x=2,
+        dim_y=2,
+        cell_x=0.01,
+        cell_y=0.01,
+        mass=1.0e-4,
+        particle_radius=5.0e-4,
+    )
+    builder.color()
+    model = builder.finalize(device=device)
+    model.soft_contact_ke, model.soft_contact_kd, model.soft_contact_mu = 1.0e-6, 0.0, 0.0
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    solver = newton.solvers.SolverVBD(
+        model,
+        iterations=4,
+        particle_enable_self_contact=True,
+        particle_self_contact_margin=0.005,
+        particle_self_contact_gap=0.005,
+    )
+
+    state_in, state_out = model.state(), model.state()
+    pipeline.collide(state_in, contacts)
+    test.assertGreater(int(contacts.soft_contact_count.numpy()[0]), 0)
+    # The 3 mm inertial step stays within the self-contact radius bound, so only a
+    # static-shape plane can stop the sheet above the ground.
+    solver.step(state_in, state_out, None, contacts, 5.0e-3)
+
+    z = state_out.particle_q.numpy()[:, 2]
+    test.assertTrue(np.all(z > 0.0), f"particles moved into the ground plane: min z = {z.min():.6f} m")
+
+
+def test_self_contact_dat_leaves_full_surface_mesh_rows_to_rigid_dat(test, device):
+    """Verify the static-shape pass under self-contact DAT skips full-surface (BVH) mesh rows.
+
+    Those rows stay opt-in behind ``rigid_soft_enable_dat``. Truncating them here would
+    lock a cloth that starts slightly inside a static mesh below its surface.
+    """
+    builder = newton.ModelBuilder()
+    builder.add_shape_mesh(
+        -1,
+        xform=wp.transform(wp.vec3(0.0, 0.0, 0.05), wp.quat_identity()),
+        mesh=newton.Mesh.create_box(0.05, duplicate_vertices=False, compute_uvs=False),
+    )
+    # The sheet starts 2 mm below the top face of the mesh box.
+    builder.add_cloth_grid(
+        pos=wp.vec3(-0.02, -0.02, 0.098),
+        rot=wp.quat_identity(),
+        vel=wp.vec3(0.0, 0.0, 0.0),
+        dim_x=4,
+        dim_y=4,
+        cell_x=0.01,
+        cell_y=0.01,
+        mass=1.0e-4,
+        tri_ke=1.0e2,
+        tri_ka=1.0e2,
+        tri_kd=1.0e-6,
+        edge_ke=1.0e-4,
+        particle_radius=2.0e-3,
+    )
+    builder.color()
+    model = builder.finalize(device=device)
+    model.soft_contact_ke, model.soft_contact_kd, model.soft_contact_mu = 1.0e3, 1.0e-3, 0.2
+    pipeline = newton.CollisionPipeline(model, enable_rigid_soft_full_surface_contact=True)
+    contacts = pipeline.contacts()
+    solver = newton.solvers.SolverVBD(
+        model,
+        iterations=10,
+        particle_enable_self_contact=True,
+        particle_self_contact_margin=2.0e-3,
+        particle_self_contact_gap=2.0e-3,
+    )
+
+    state_0, state_1 = model.state(), model.state()
+    for _ in range(20):
+        state_0.clear_forces()
+        pipeline.collide(state_0, contacts)
+        solver.step(state_0, state_1, None, contacts, 2.5e-3)
+        state_0, state_1 = state_1, state_0
+
+    # The contact force pushes the sheet out through the top face.
+    z = state_0.particle_q.numpy()[:, 2]
+    test.assertTrue(np.all(z > 0.1), f"sheet held inside the mesh: min z = {z.min():.6f} m")
+
+
 class TestVBDRigidDAT(unittest.TestCase):
     pass
 
@@ -9963,6 +10064,18 @@ add_function_test(
     TestVBDRigidDAT,
     "test_rigid_dat_rejects_missing_body_pose",
     test_rigid_dat_rejects_missing_body_pose,
+    devices=devices,
+)
+add_function_test(
+    TestVBDRigidDAT,
+    "test_self_contact_dat_truncates_static_shape_contacts",
+    test_self_contact_dat_truncates_static_shape_contacts,
+    devices=devices,
+)
+add_function_test(
+    TestVBDRigidDAT,
+    "test_self_contact_dat_leaves_full_surface_mesh_rows_to_rigid_dat",
+    test_self_contact_dat_leaves_full_surface_mesh_rows_to_rigid_dat,
     devices=devices,
 )
 add_function_test(

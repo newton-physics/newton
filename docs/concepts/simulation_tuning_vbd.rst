@@ -114,7 +114,9 @@ can inherit ``model.vbd`` settings.
      - Rarely; DAT damping with a query radius you cannot raise.
      - Values near 1 leave no safety for detection error.
    * - ``particle_enable_self_contact`` (False)
-     - Vertex-triangle and edge-edge self-contact with DAT.
+     - Vertex-triangle and edge-edge self-contact with DAT. Without
+       ``rigid_soft_enable_dat``, particles are also truncated against
+       analytic contacts with static shapes.
      - Cloth folds or stacks; soft bodies touch themselves.
      - Detection cost; requires a non-``NONE`` self-contact schedule.
    * - ``particle_self_contact_margin`` (0.2)
@@ -511,7 +513,7 @@ are :class:`~newton.solvers.SolverVBD` constructor arguments
 (:ref:`vbd-solver-parameters`): ``dat_conservative_bound_relaxation`` is the
 relaxation factor used below (default 0.85), ``particle_self_contact_margin``
 and ``particle_self_contact_gap`` set the self-contact query radius,
-``rigid_soft_enable_dat`` turns on the rigid-soft part, and
+``rigid_soft_enable_dat`` turns on the full rigid-soft part, and
 ``collision_frequency_type`` with ``collision_frequency`` sets how often
 detection refreshes the budget.
 
@@ -548,6 +550,13 @@ in the pipeline; see :ref:`contact matching <vbd-contact-matching>` on the
 solver page). When self-contact is enabled too, the ``RIGID`` and
 ``SOFT_SELF_CONTACT`` slots must use the same schedule type, and the same
 frequency for ``ITERATIONS``; the solver raises otherwise.
+
+With ``rigid_soft_enable_dat`` off and self-contact on, DAT still applies
+planar truncation to particles, not bodies, against analytic contacts with
+static shapes, using the contacts passed to ``step()``. That pass adds
+no rigid-soft radius cap, so it covers only particles found within the soft
+contact margin at detection. It skips body-attached shapes and full-surface
+mesh contacts; those need the option.
 
 Both parts remove motion. A cloth that falls fast onto a shape, or a sheet
 pressed between fingers, can therefore move slower than physics would predict,

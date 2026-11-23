@@ -511,7 +511,10 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             particle_enable_self_contact: Whether to enable self-contact detection for particles.
                 Requires an active soft self-contact collision schedule: ``CollisionFrequencyType.NONE``
                 for the ``SOFT_SELF_CONTACT`` slot raises at :meth:`step`, because the self-contact
-                trajectory reference is refreshed only when detection runs.
+                trajectory reference is refreshed only when detection runs. With ``rigid_soft_enable_dat``
+                off, DAT also truncates particle motion against analytic contacts with static
+                shapes in the ``contacts`` passed to :meth:`step` (particle side only; body-attached shapes
+                and full-surface mesh contacts are left to ``rigid_soft_enable_dat``).
             particle_self_contact_radius: Deprecated; use ``particle_self_contact_margin`` +
                 ``particle_self_contact_gap`` instead. When set, the legacy interpretation applies
                 exactly: radius = interaction distance and ``particle_self_contact_margin`` = detection
@@ -3266,6 +3269,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     self.model.body_com,
                     self.dat_conservative_bound_relaxation,
                     self.rigid_soft_dat_use_interval_arithmetic,
+                    False,
                 ],
                 outputs=[
                     self.truncation_ts,
@@ -3384,10 +3388,47 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     self.model.body_com,
                     self.dat_conservative_bound_relaxation,
                     self.rigid_soft_dat_use_interval_arithmetic,
+                    False,
                 ],
                 outputs=[
                     self.truncation_ts,
                     self.body_truncation_ts,
+                ],
+                device=self.device,
+            )
+        elif self.particle_enable_self_contact and contacts is not None and contacts.soft_contact_max > 0:
+            # Self-contact planes can cut a particle's motion out of a static shape while
+            # its motion into the shape stays free, which walks a resting pile through the
+            # shape. Truncate the particle side of analytic static-shape contacts as well;
+            # static shapes have no reference pose, so the given contacts suffice. Full-surface
+            # (BVH) rows stay with rigid-soft DAT, whose uncertified rows freeze the particle.
+            wp.launch(
+                kernel=apply_rigid_soft_truncation,
+                dim=contacts.soft_contact_max,
+                inputs=[
+                    contacts.soft_contact_count,
+                    contacts.soft_contact_indices,
+                    contacts.soft_contact_shape,
+                    contacts.soft_contact_body_pos,
+                    contacts.soft_contact_normal,
+                    contacts.soft_contact_barycentric,
+                    contacts.soft_contact_rigid_indices,
+                    self.model.shape_body,
+                    self.model.shape_transform,
+                    self.model.shape_scale,
+                    self.model.shape_source_ptr,
+                    self.pos_prev_collision_detection,
+                    self.particle_displacements,
+                    None,
+                    None,
+                    None,
+                    self.dat_conservative_bound_relaxation,
+                    self.rigid_soft_dat_use_interval_arithmetic,
+                    True,
+                ],
+                outputs=[
+                    self.truncation_ts,
+                    None,
                 ],
                 device=self.device,
             )

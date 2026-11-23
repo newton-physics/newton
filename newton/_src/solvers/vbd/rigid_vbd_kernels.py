@@ -8067,6 +8067,7 @@ def apply_rigid_soft_truncation(
     body_com: wp.array[wp.vec3],
     gamma: float,
     use_interval_arithmetic: bool,
+    static_shapes_only: bool,
     # outputs
     truncation_ts: wp.array[float],
     body_truncation_ts: wp.array[float],
@@ -8091,6 +8092,10 @@ def apply_rigid_soft_truncation(
     The soft straight-ray guard treats a vertex numerically on its plane as a
     boundary case: approach is blocked and separation remains free. Rigid curved
     trajectories instead distinguish only valid and wrong-side initial states.
+
+    With ``static_shapes_only``, only analytic rows of world-attached shapes are
+    processed; rows of body-attached shapes and full-surface (BVH) rows are
+    skipped. Those rows never read the body arrays, so those may then be empty.
     """
     contact_index = wp.tid()
 
@@ -8118,6 +8123,8 @@ def apply_rigid_soft_truncation(
 
     shape_index = soft_contact_shape[contact_index]
     body_index = shape_body[shape_index]
+    if static_shapes_only and (body_index >= 0 or rigid_indices[0] >= 0):
+        return
 
     # Contact anchor on the rigid surface at the reference pose (world frame for statics).
     X_wb_ref = wp.transform_identity()
