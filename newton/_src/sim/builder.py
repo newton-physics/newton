@@ -83,7 +83,7 @@ from ..geometry.inertia import (
 from ..geometry.rest_shape import _dihedral_angles, _tet_rest_geometry, _triangle_rest_geometry
 from ..geometry.sdf_utils import _resolve_paired_samples_flag
 from ..geometry.support_function import _CONVEX_HULL_VALID
-from ..geometry.types import Heightfield, _normalize_texture_input
+from ..geometry.types import Heightfield, _ConvexSupportData, _normalize_texture_input
 from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_convex_hull, remesh_mesh
 from ..math import quat_between_vectors_robust
 from ..usd.schema_resolver import SchemaResolver
@@ -459,6 +459,33 @@ def _build_convex_support_acceleration(
         neighbors.extend(sorted(values))
         offsets[vertex + 1] = len(neighbors)
     return lut, offsets, np.asarray(neighbors, dtype=np.int32)
+
+
+def _build_convex_support_data(source: Mesh) -> _ConvexSupportData | None:
+    """Pack hull certificates and acceleration tables using mesh-local offsets."""
+    topology = _convex_hull_adjacency(source)
+    adjacent = None
+    flags = 0
+    if topology is not None:
+        adjacent, edges = topology
+        flags = _CONVEX_HULL_VALID
+        # Verified hulls lead the neighbor block with their edge count and faces.
+        edge_block = np.empty(1 + edges.size, dtype=np.int32)
+        edge_block[0] = len(edges)
+        edge_block[1:] = edges.ravel()
+
+    acceleration = _build_convex_support_acceleration(source, adjacency=adjacent)
+    if acceleration is None:
+        if topology is None:
+            return None
+        empty = np.empty(0, dtype=np.int32)
+        return _ConvexSupportData(flags, empty, empty, edge_block)
+
+    lut, offsets, neighbors = acceleration
+    if topology is not None:
+        offsets += len(edge_block)
+        neighbors = np.concatenate((edge_block, neighbors))
+    return _ConvexSupportData(flags | _CONVEX_SUPPORT_LUT_RESOLUTION, lut, offsets, neighbors)
 
 
 def _build_joint_ancestor(
@@ -16259,37 +16286,26 @@ class ModelBuilder:
                 if isinstance(source, Mesh):
                     source_key = hash(source)
                     if source_key not in support_cache:
-                        topology = _convex_hull_adjacency(source)
-                        adjacent = None
-                        hull_flag = 0
-                        # Verified hulls lead their neighbor block with their edge
-                        # count and faces for exact separating-axis certificates.
-                        edge_block = np.zeros(0, dtype=np.int32)
-                        if topology is not None:
-                            adjacent, edges = topology
-                            hull_flag = _CONVEX_HULL_VALID
-                            edge_block = np.concatenate(([len(edges)], edges.ravel())).astype(np.int32)
-                        cached = (-1, -1, neighbor_offset if len(edge_block) else -1, hull_flag)
-                        acceleration = _build_convex_support_acceleration(source, adjacency=adjacent)
-                        neighbors = np.zeros(0, dtype=np.int32)
-                        if acceleration is not None:
-                            lut, offsets, neighbors = acceleration
-                            cached = (
-                                lut_offset,
-                                vertex_offset,
-                                neighbor_offset,
-                                _CONVEX_SUPPORT_LUT_RESOLUTION | hull_flag,
-                            )
-                            # Neighbor offsets are relative to the block start.
-                            offsets = offsets + len(edge_block)
-                            support_lut_chunks.append(lut)
-                            support_offset_chunks.append(offsets)
-                            lut_offset += len(lut)
-                            vertex_offset += len(offsets)
-                        if len(edge_block) or len(neighbors):
-                            support_neighbor_chunks.append(np.concatenate((edge_block, neighbors)).astype(np.int32))
-                            neighbor_offset += len(support_neighbor_chunks[-1])
-                        support_cache[source_key] = cached
+                        # A deduplicated collision source can be temporary. Keep
+                        # its tables on the original mesh that owns the geometry.
+                        owner = self.shape_source[shape_idx]
+                        tables = owner._convex_support_data
+                        if tables is None:
+                            tables = _build_convex_support_data(source)
+                            owner._convex_support_data = tables
+
+                        packed = (-1, -1, -1, 0)
+                        if tables is not None:
+                            packed = (-1, -1, neighbor_offset, tables.flags)
+                            if tables.lut.size:
+                                packed = (lut_offset, vertex_offset, neighbor_offset, tables.flags)
+                                support_lut_chunks.append(tables.lut)
+                                support_offset_chunks.append(tables.vertex_offsets)
+                                lut_offset += len(tables.lut)
+                                vertex_offset += len(tables.vertex_offsets)
+                            support_neighbor_chunks.append(tables.neighbors)
+                            neighbor_offset += len(tables.neighbors)
+                        support_cache[source_key] = packed
                     shape_support_data[shape_idx] = support_cache[source_key]
 
             m._shape_support_data = wp.array(shape_support_data, dtype=wp.vec4i, device=device)
