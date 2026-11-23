@@ -1072,9 +1072,6 @@ def solve_body_joints(
     lin_delta_c = wp.vec3(0.0)
     ang_delta_c = wp.vec3(0.0)
 
-    rel_pose = wp.transform_inverse(X_wp) * X_wc
-    rel_p = wp.transform_get_translation(rel_pose)
-
     # joint connection points
     x_p = wp.transform_get_translation(X_wp)
     x_c = wp.transform_get_translation(X_wc)
@@ -1086,6 +1083,24 @@ def solve_body_joints(
     target_axis_start = joint_target_q_start[tid]
     lin_axis_count = joint_dof_dim[tid, 0]
     ang_axis_count = joint_dof_dim[tid, 1]
+
+    # turn the frames so a single angular axis is their +X or -X axis: rows along or about other axes couple
+    q_p = wp.transform_get_rotation(X_wp)
+    q_c = wp.transform_get_rotation(X_wc)
+    twist_axis = wp.vec3(1.0, 0.0, 0.0)
+    if ang_axis_count == 1:
+        ang_axis = joint_axis[axis_start + lin_axis_count]
+        twist_axis = wp.vec3(wp.sign(ang_axis[0]), 0.0, 0.0)
+        q_align = wp.quat_between_vectors(twist_axis, ang_axis)
+        q_p = q_p * q_align
+        q_c = q_c * q_align
+        if lin_axis_count == 0:
+            # linear axes are given in the joint frame, so the linear rows turn only without them
+            X_wp = wp.transform(x_p, q_p)
+            X_wc = wp.transform(x_c, q_c)
+
+    rel_pose = wp.transform_inverse(X_wp) * X_wc
+    rel_p = wp.transform_get_translation(rel_pose)
 
     world_com_p = wp.transform_point(pose_p, com_p)
     world_com_c = wp.transform_point(pose_c, com_c)
@@ -1382,19 +1397,6 @@ def solve_body_joints(
 
     elif type == JointType.FIXED or type == JointType.PRISMATIC or type == JointType.REVOLUTE or type == JointType.D6:
         # handle angular constraints
-
-        # local joint rotations
-        q_p = wp.transform_get_rotation(X_wp)
-        q_c = wp.transform_get_rotation(X_wc)
-
-        # turn the frames so a single angular axis is the twist: the swing rows couple at large angles
-        twist_axis = wp.vec3(1.0, 0.0, 0.0)
-        if ang_axis_count == 1:
-            ang_axis = joint_axis[axis_start + lin_axis_count]
-            twist_axis = wp.vec3(wp.sign(ang_axis[0]), 0.0, 0.0)
-            q_align = wp.quat_between_vectors(twist_axis, ang_axis)
-            q_p = q_p * q_align
-            q_c = q_c * q_align
 
         # make quats lie in same hemisphere
         if wp.dot(q_p, q_c) < 0.0:

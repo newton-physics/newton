@@ -366,9 +366,15 @@ def test_prismatic_joint_retains_extension_in_parent_moment_arm(test, device):
 
 
 def test_revolute_joint_frame_axis_does_not_change_motion(test, device):
-    """Drive the same two-link arm through joint frames whose hinge axis is X, -X, Y, or Z."""
+    """Drive the same two-link arm through joint frames with different hinge axes."""
     half_length = 0.1
-    axes = {"X": (1.0, 0.0, 0.0), "-X": (-1.0, 0.0, 0.0), "Y": (0.0, 1.0, 0.0), "Z": (0.0, 0.0, 1.0)}
+    axes = {
+        "X": (1.0, 0.0, 0.0),
+        "-X": (-1.0, 0.0, 0.0),
+        "Y": (0.0, 1.0, 0.0),
+        "Z": (0.0, 0.0, 1.0),
+        "oblique": (-1.0 / 3.0, 2.0 / 3.0, 2.0 / 3.0),
+    }
 
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     for axis in axes.values():
@@ -407,16 +413,22 @@ def test_revolute_joint_frame_axis_does_not_change_motion(test, device):
     control.joint_target_q.assign(np.tile(np.array((-0.8, 0.6), dtype=np.float32), len(axes)))
 
     solver = newton.solvers.SolverXPBD(model)
-    for _ in range(100):
+    body_q = []
+    for step in range(100):
         solver.step(state0, state1, control, None, 0.002)
         state0, state1 = state1, state0
+        if step in (0, 99):
+            body_q.append(state0.body_q.numpy().reshape(len(axes), 2, 7).copy())
 
-    body_q = state0.body_q.numpy().reshape(len(axes), 2, 7)
-    for name, arm_q in zip(axes, body_q, strict=True):
+    for name, first_q, last_q in zip(axes, *body_q, strict=True):
         with test.subTest(axis=name):
             # the links start unrotated, so quaternion x and y hold the rotation out of the hinge plane
-            test.assertLess(np.abs(arm_q[:, 3:5]).max(), 1.0e-4, msg="Arm left its hinge plane")
-            np.testing.assert_allclose(arm_q, body_q[0], atol=1.0e-4, err_msg="Arm moved unlike the X-axis arm")
+            test.assertLess(np.abs(first_q[:, 3:5]).max(), 1.0e-5, msg="Joint rows pushed the arm out of its plane")
+            if name == "oblique":
+                # the unconverged solve depends on how the frame is rolled about the hinge
+                continue
+            test.assertLess(np.abs(last_q[:, 3:5]).max(), 1.0e-4, msg="Arm left its hinge plane")
+            np.testing.assert_allclose(last_q, body_q[1][0], atol=1.0e-4, err_msg="Arm moved unlike the X-axis arm")
 
 
 def test_optional_control_and_contacts(test, device):
