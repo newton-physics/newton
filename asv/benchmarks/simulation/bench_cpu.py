@@ -47,6 +47,8 @@ class CpuMuJoCoAnt:
                 actuation="None",
                 use_cuda_graph=False,
                 world_count=1,
+                fps=60,
+                sim_substeps=2,
             )
             # Load the stepping kernels before timing.
             self.example.step()

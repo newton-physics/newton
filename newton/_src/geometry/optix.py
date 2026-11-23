@@ -152,9 +152,16 @@ def compute_optix_shape_instances(
         center + world_offset(world, grid, extent),
         shape_traversables[si],
         wp.uint32(si),
-        wp.uint32(wp.where(kind == GeoType.MESH, 0, 1)),
+        wp.uint32(wp.where(kind == GeoType.MESH or kind == GeoType.BOX, 0, 1)),
         wp.uint32(mask),
-        wp.uint32(wp.static(int(wo.InstanceFlags.DISABLE_ANYHIT))),
+        # Boxes keep the analytic box's behavior: their inside faces are visible with culling.
+        wp.uint32(
+            wp.where(
+                kind == GeoType.BOX,
+                wp.static(int(wo.InstanceFlags.DISABLE_ANYHIT | wo.InstanceFlags.DISABLE_TRIANGLE_FACE_CULLING)),
+                wp.static(int(wo.InstanceFlags.DISABLE_ANYHIT)),
+            )
+        ),
     )
 
 
@@ -177,7 +184,8 @@ def check_supported(model: Model) -> None:
 def build_shape_geometry(
     model: Model, shapes: np.ndarray, shape_types: np.ndarray
 ) -> tuple[list[wo.Accel], wp.array[wp.uint64]]:
-    """Build the triangle structures of the meshes used by ``shapes`` and the primitives' unit cube."""
+    """Build the triangle structures of the meshes used by ``shapes``, a triangle cube for boxes, and the
+    other primitives' unit cube."""
     sources = model.shape_source_ptr.numpy()
     geometry = []
     mesh_ids = {}
@@ -186,11 +194,21 @@ def build_shape_geometry(
         if mesh.id in used_meshes and mesh.id not in mesh_ids:
             geometry.append(wo.Accel([wo.triangles(mesh.points, mesh.indices)], compact=True))
             mesh_ids[mesh.id] = geometry[-1].id
+    # Boxes are traced as hardware triangles: the unit cube, wound outward.
+    corners = wp.array(
+        [[x, y, z] for x in (-1, 1) for y in (-1, 1) for z in (-1, 1)], dtype=wp.vec3, device=model.device
+    )
+    faces = [0, 1, 3, 0, 3, 2, 4, 6, 7, 4, 7, 5, 0, 4, 5, 0, 5, 1, 2, 3, 7, 2, 7, 6, 0, 2, 6, 0, 6, 4, 1, 5, 7, 1, 7, 3]
+    box = wo.Accel([wo.triangles(corners, wp.array(faces, dtype=wp.int32, device=model.device))], compact=True)
     bounds = wp.array([[-1.001] * 3 + [1.001] * 3], dtype=float, device=model.device)
-    geometry.append(wo.Accel([wo.aabbs(bounds=bounds)], compact=True))
+    primitive = wo.Accel([wo.aabbs(bounds=bounds)], compact=True)
+    geometry += [box, primitive]
     traversables = np.zeros(model.shape_count, dtype=np.uint64)
     for si in shapes:
-        traversables[si] = mesh_ids[int(sources[si])] if shape_types[si] == GeoType.MESH else geometry[-1].id
+        kind = shape_types[si]
+        traversables[si] = (
+            mesh_ids[int(sources[si])] if kind == GeoType.MESH else box.id if kind == GeoType.BOX else primitive.id
+        )
     return geometry, wp.array(traversables, dtype=wp.uint64, device=model.device)
 
 
@@ -253,15 +271,15 @@ def create_pipeline(shapes: OptixShapes, kernel: wp.Kernel, *, enable_backface_c
 
 def intersect_rays(
     model: Model,
-    ray_origins,
-    ray_directions,
-    ray_worlds,
+    ray_origins: wp.array[wp.vec3],
+    ray_directions: wp.array[wp.vec3],
+    ray_worlds: wp.array[wp.int32],
     *,
-    enable_global_world,
-    out_dist,
-    out_shape_id,
-    out_normal,
-    fast_math,
+    enable_global_world: bool,
+    out_dist: wp.array[float] | None,
+    out_shape_id: wp.array[wp.int32] | None,
+    out_normal: wp.array[wp.vec3] | None,
+    fast_math: bool,
 ) -> None:
     """Intersect rays with :attr:`Model.optix_shapes`."""
     shapes = model.optix_shapes
@@ -294,7 +312,14 @@ def intersect_rays(
     )
 
 
-def _create_ray_pipeline(shapes, enable_global_world, write_dist, write_shape_id, write_normal, fast_math):
+def _create_ray_pipeline(
+    shapes: OptixShapes,
+    enable_global_world: bool,
+    write_dist: bool,
+    write_shape_id: bool,
+    write_normal: bool,
+    fast_math: bool,
+) -> wo.Pipeline:
     grid, extent, world_count = shapes.grid, shapes.extent, shapes.world_count
 
     @wp.func
@@ -307,7 +332,7 @@ def _create_ray_pipeline(shapes, enable_global_world, write_dist, write_shape_id
         distance: float,
         shape: int,
         normal: wp.vec3,
-    ):
+    ) -> tuple[float, int, wp.vec3]:
         plane_distance, plane_normal = raycast.ray_intersect_shape(
             shape_transforms[si], shape_sizes[si], GeoType.PLANE, origin, direction, False
         )

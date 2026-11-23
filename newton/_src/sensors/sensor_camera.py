@@ -13,8 +13,8 @@ import warp as wp
 
 from ..core.types import Devicelike
 from ..geometry.deformable_visual import DeformableVisuals
-from .sensor_camera_render import Utils
-from .sensor_camera_render.types import (
+from ..render import Utils
+from ..render.types import (
     AntiAliasing,
     ClearData,
     DeformableSurfaceMode,
@@ -154,7 +154,7 @@ class SensorCamera:
                 ``clear_data`` argument is ``None``. Defaults to ``ClearData()``.
             default_render_config: Render settings used by :meth:`update` when
                 its ``render_config`` argument is ``None``. Defaults to
-                ``RenderConfig()``.
+                ``RenderConfig()``, with ``render_order=RenderOrder.TILED`` for the OptiX backend.
             load_textures: Load the textures of shape meshes and deformable visual
                 meshes from file paths or in-memory images. A texture that cannot
                 be loaded raises ``ValueError`` here, so pass ``False`` for
@@ -185,12 +185,13 @@ class SensorCamera:
         """
         self.default_clear_data: ClearData = default_clear_data if default_clear_data is not None else ClearData()
         """Clear values used by :meth:`update` when its ``clear_data`` argument is ``None``."""
-        self.default_render_config: RenderConfig = (
-            default_render_config if default_render_config is not None else RenderConfig()
-        )
+        if default_render_config is None:
+            order = RenderOrder.TILED if backend == "optix" else RenderOrder.PIXEL_PRIORITY
+            default_render_config = RenderConfig(render_order=order)
+        self.default_render_config: RenderConfig = default_render_config
         """Render settings used by :meth:`update` when its ``render_config`` argument is ``None``."""
 
-        from .sensor_camera_render.render_context import RenderContext  # noqa: PLC0415
+        from ..render.render_context import RenderContext  # noqa: PLC0415
 
         self._render_context = RenderContext(
             model,
@@ -358,7 +359,7 @@ class SensorCamera:
             Ray origins and directions, shape
             ``(height, width, sample_count, 2)`` of ``vec3f``.
         """
-        from .sensor_camera_render import camera_utils  # noqa: PLC0415
+        from ..render import camera_utils  # noqa: PLC0415
 
         width, height, sample_count, out_rays, device = _validate_camera_ray_output(
             width, height, out_rays, device, sample_count=sample_count
@@ -445,7 +446,7 @@ class SensorCamera:
             Ray origins (``[..., 0]``) and directions (``[..., 1]``), shape
             ``(height, width, sample_count, 2)`` of ``vec3f``.
         """
-        from .sensor_camera_render import camera_utils  # noqa: PLC0415
+        from ..render import camera_utils  # noqa: PLC0415
 
         width, height, sample_count, out_rays, device = _validate_camera_ray_output(
             width, height, out_rays, device, sample_count=sample_count
@@ -532,7 +533,7 @@ class SensorCamera:
             ValueError: If any focal length or calibration image dimension is
                 non-positive, or if any calibration value is non-finite.
         """
-        from .sensor_camera_render import camera_utils  # noqa: PLC0415
+        from ..render import camera_utils  # noqa: PLC0415
 
         width, height, sample_count, out_rays, device = _validate_camera_ray_output(
             width, height, out_rays, device, sample_count=sample_count
@@ -632,7 +633,7 @@ class SensorCamera:
             Ray origins (``[..., 0]``) and directions (``[..., 1]``), shape
             ``(height, width, sample_count, 2)`` of ``vec3f``.
         """
-        from .sensor_camera_render import camera_utils  # noqa: PLC0415
+        from ..render import camera_utils  # noqa: PLC0415
 
         width, height, sample_count, out_rays, device = _validate_camera_ray_output(
             width, height, out_rays, device, sample_count=sample_count
@@ -716,7 +717,7 @@ class SensorCamera:
             Ray origins (``[..., 0]``) and directions (``[..., 1]``), shape
             ``(height, width, sample_count, 2)`` of ``vec3f``.
         """
-        from .sensor_camera_render import camera_utils  # noqa: PLC0415
+        from ..render import camera_utils  # noqa: PLC0415
 
         width, height, sample_count, out_rays, device = _validate_camera_ray_output(
             width, height, out_rays, device, sample_count=sample_count
@@ -796,7 +797,7 @@ class SensorCamera:
             Ray origins (``[..., 0]``) and directions (``[..., 1]``), shape
             ``(height, width, sample_count, 2)`` of ``vec3f``.
         """
-        from .sensor_camera_render import camera_utils  # noqa: PLC0415
+        from ..render import camera_utils  # noqa: PLC0415
 
         width, height, sample_count, out_rays, device = _validate_camera_ray_output(
             width, height, out_rays, device, sample_count=sample_count
@@ -855,7 +856,7 @@ class SensorCamera:
             ``transformf``, on the model device.
         """
         from ..core import Axis  # noqa: PLC0415
-        from .sensor_camera_render import camera_utils  # noqa: PLC0415
+        from ..render import camera_utils  # noqa: PLC0415
 
         model = self._render_context.model
         return camera_utils.compute_camera_transforms_usd(
@@ -1028,8 +1029,8 @@ class SensorCamera:
         :meth:`~newton.Model.bvh_refit_particles` (both are built initially by
         :meth:`~newton.ModelBuilder.finalize`) before calling this; otherwise the
         render reads stale bounds. With the OptiX backend, build
-        :attr:`~newton.Model.optix_shapes` once and refit them by passing ``backend="optix"``
-        to the same methods instead. Deformable triangle-mesh points are synced from
+        :attr:`~newton.Model.optix_shapes` once with ``bvh_build_shapes(state, backend="optix")``
+        and refit them with ``bvh_refit_shapes(state, backend="optix")`` instead. Deformable triangle-mesh points are synced from
         *state* automatically (see ``sync_deformables``).
 
         The camera looks along its local ``-Z`` axis with ``+Y`` up and ``+X``

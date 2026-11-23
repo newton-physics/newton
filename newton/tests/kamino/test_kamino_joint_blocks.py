@@ -19,6 +19,8 @@ from newton._src.solvers.kamino._src.solvers.scc.joint_blocks import (
     _build_body_masks,
     _build_topology,
 )
+from newton.tests.kamino import setup_test_output, setup_tests
+from newton.tests.unittest_utils import NewtonTestCase
 
 
 def _fixture(device, *, topology="chain"):
@@ -42,11 +44,10 @@ def _fixture(device, *, topology="chain"):
     def floats(values):
         return wp.array(np.asarray(values, dtype=np.float32).ravel(), dtype=wp.float32, device=device)
 
-    mio = np.array([3, 3 + ld * ld])
     vio = np.array([2, 2 + n + 3])
     rio = np.array([5, 5 + n * stride + 3])
     nus = np.array([3, 7])
-    matrix = np.full(int(mio[-1] + ld * ld + 5), 71.0, dtype=np.float32)
+    matrix = np.full((worlds, ld * ld + 5), 71.0, dtype=np.float32)
     dense = []
     pair_world, pair_row, pair_col = [], [], []
     for world in range(worlds):
@@ -58,15 +59,15 @@ def _fixture(device, *, topology="chain"):
         a = (a + a.T) * 0.5 + np.eye(n) * (2 + world)
         dense.append(a)
         for row in range(n):
-            matrix[mio[world] + row * ld : mio[world] + row * ld + row + 1] = a[row, : row + 1]
+            matrix[world, row * ld : row * ld + row + 1] = a[row, : row + 1]
         for i in range(n):
             for j in range(i + 1, n):
                 if a[i, j] != 0:
                     pair_world.append(world)
                     pair_row.append(i)
                     pair_col.append(j)
-    info = SimpleNamespace(dim=ints([n, n]), mio=ints(mio), vio=ints(vio), maxdim=ints([ld, ld]))
-    operator = SimpleNamespace(info=info, mat=floats(matrix))
+    info = SimpleNamespace(dim=ints([n, n]), vio=ints(vio), maxdim=ints([ld, ld]))
+    operator = SimpleNamespace(info=info, mat=wp.array(matrix, dtype=wp.float32, device=device))
     scale = rng.uniform(0.5, 2.0, int(vio[-1] + n + 5)).astype(np.float32)
     coupling = np.full(int(rio[-1] + n * stride + 5), 83.0, dtype=np.float32)
     for world, nu in enumerate(nus):
@@ -110,30 +111,33 @@ def _fixture(device, *, topology="chain"):
         bilateral_entry_starts=ints(np.arange(len(pair_world) + 1)),
     )
     problem = SimpleNamespace(data=SimpleNamespace(dim=ints(n + nus), njc=info.dim))
-    return path, problem, dense, matrix, mio, vio, rio, nus, scale, coupling
+    return path, problem, dense, matrix, vio, rio, nus, scale, coupling
 
 
-def _packed_matrix(solver, matrix, mio, ld):
+def _packed_matrix(solver, matrix, ld):
     """Pack a CPU matrix reference, including identity padding for short groups."""
     order = solver._schedule["order"].numpy()
     rows = solver._schedule["rows"].numpy()
     cols = solver._schedule["cols"].numpy()
-    packed = np.zeros((len(mio), solver._blocks, 6, 6), dtype=np.float32)
-    for world, offset in enumerate(mio):
+    packed = np.zeros((len(matrix), solver._blocks, 6, 6), dtype=np.float32)
+    for world in range(len(matrix)):
         for block, (row, col) in enumerate(zip(rows, cols, strict=True)):
             for i in range(6):
                 for j in range(6):
                     original_i, original_j = order[row * 6 + i], order[col * 6 + j]
                     if original_i >= 0 and original_j >= 0:
                         packed[world, block, i, j] = matrix[
-                            offset + max(original_i, original_j) * ld + min(original_i, original_j)
+                            world, max(original_i, original_j) * ld + min(original_i, original_j)
                         ]
                     elif row == col and i == j:
                         packed[world, block, i, j] = 1.0
     return packed.ravel()
 
 
-class TestKaminoJointBlocks(unittest.TestCase):
+class TestKaminoJointBlocks(NewtonTestCase):
+    def setUp(self):
+        setup_test_output(self)
+
     def _device(self, conditional=False):
         """Select a CUDA device with the capabilities required by the test."""
         if not wp.get_cuda_device_count():
@@ -146,10 +150,10 @@ class TestKaminoJointBlocks(unittest.TestCase):
     def test_mixed_group_dense_reference(self):
         """Match dense solves and response Grams with padding and inactive worlds."""
         device = self._device()
-        path, problem, matrices, matrix, mio, vio, rio, nus, scale, coupling = _fixture(device)
+        path, problem, matrices, matrix, vio, rio, nus, scale, coupling = _fixture(device)
         solver = JointBlockSolver.create(path)
         self.assertIsNotNone(solver)
-        solver._matrix.assign(_packed_matrix(solver, matrix, mio, 20))
+        solver._matrix.assign(_packed_matrix(solver, matrix, 20))
         solver.prepare(path, problem)
         self.assertEqual(int(solver.failure.numpy()[0]), 0)
         rng = np.random.default_rng(419)
@@ -192,7 +196,7 @@ class TestKaminoJointBlocks(unittest.TestCase):
         device = self._device()
         for topology in ("cycle", "wide"):
             with self.subTest(topology=topology):
-                path, problem, matrices, matrix, mio, vio, *_ = _fixture(device, topology=topology)
+                path, problem, matrices, matrix, vio, *_ = _fixture(device, topology=topology)
                 metadata, reason = _build_topology(path, *path.bilateral_nzb_pairs[:3])
                 self.assertIsNone(metadata)
                 self.assertIn("nonchordal", reason)
@@ -210,7 +214,7 @@ class TestKaminoJointBlocks(unittest.TestCase):
                     self.assertIn("budget", reason)
                 solver = JointBlockSolver(path, metadata, persistent=True)
                 n, ld = matrices[0].shape[0], int(path.data.bilateral_operator.info.maxdim.numpy()[0])
-                packed = _packed_matrix(solver, matrix, mio, ld)
+                packed = _packed_matrix(solver, matrix, ld)
                 solver._matrix.assign(packed)
                 solver.prepare(path, problem)
                 self.assertEqual(int(solver.failure.numpy()[0]), 0)
@@ -245,14 +249,14 @@ class TestKaminoJointBlocks(unittest.TestCase):
     def test_persistent_capture_changes_and_recovers(self):
         """Refresh filled factors on replay and preserve inactive worlds through fallback recovery."""
         device = self._device(conditional=True)
-        path, problem, matrices, matrix, mio, vio, *_ = _fixture(device, topology="cycle")
+        path, problem, matrices, matrix, vio, *_ = _fixture(device, topology="cycle")
         metadata, _ = _build_topology(path, *path.bilateral_nzb_pairs[:3], allow_fill=True)
         solver = JointBlockSolver(path, metadata, persistent=True)
         n, ld = matrices[0].shape[0], int(path.data.bilateral_operator.info.maxdim.numpy()[0])
         rhs = wp.ones(int(vio[-1] + n + 5), dtype=wp.float32, device=device)
         out = wp.full(rhs.size, -123.0, dtype=wp.float32, device=device)
         active = wp.array([n, 0], dtype=wp.int32, device=device)
-        solver._matrix.assign(_packed_matrix(solver, matrix, mio, ld))
+        solver._matrix.assign(_packed_matrix(solver, matrix, ld))
         solver.prepare(path, problem)
         solver.solve(rhs, out, active)
         with wp.ScopedCapture(device=device) as capture:
@@ -269,10 +273,10 @@ class TestKaminoJointBlocks(unittest.TestCase):
             elif case == "zeros":
                 dense = [np.diag(np.diag(value)) for value in dense]
             current = matrix.copy()
-            for world, offset in enumerate(mio):
+            for world in range(len(dense)):
                 for row in range(n):
-                    current[offset + row * ld : offset + row * ld + row + 1] = dense[world][row, : row + 1]
-            solver._matrix.assign(_packed_matrix(solver, current, mio, ld))
+                    current[world, row * ld : row * ld + row + 1] = dense[world][row, : row + 1]
+            solver._matrix.assign(_packed_matrix(solver, current, ld))
             out.fill_(-123.0)
             wp.capture_launch(capture.graph)
             self.assertEqual(bool(solver.failure.numpy()[0]), case == "factor")
@@ -290,10 +294,10 @@ class TestKaminoJointBlocks(unittest.TestCase):
     def test_response_reach_tracks_contact_body_changes(self):
         """Match unpruned ragged responses and erase stale groups as contacts move."""
         device = self._device()
-        path, problem, matrices, matrix, mio, vio, rio, _, scale, coupling = _fixture(device)
+        path, problem, matrices, matrix, vio, rio, _, scale, coupling = _fixture(device)
         solver = JointBlockSolver.create(path)
         self.assertIsNotNone(solver._body_reach)
-        solver._matrix.assign(_packed_matrix(solver, matrix, mio, 20))
+        solver._matrix.assign(_packed_matrix(solver, matrix, 20))
 
         def ints(values):
             return wp.array(values, dtype=wp.int32, device=device)
@@ -376,7 +380,7 @@ class TestKaminoJointBlocks(unittest.TestCase):
     def test_direct_assembly_matches_original(self):
         """Match original assembly after Jacobian, inertia, and compliance changes."""
         device = self._device()
-        path, problem, _, _, mio, vio, *_ = _fixture(device)
+        path, problem, _, _, vio, *_ = _fixture(device)
         rng = np.random.default_rng(80149)
         groups = [[0, 3, 4, 5, 6], [1, 7, 8, 9, 10, 11], [2, 12, 13, 14, 15]]
         owners = {row: group for group, rows in enumerate(groups) for row in rows}
@@ -437,6 +441,14 @@ class TestKaminoJointBlocks(unittest.TestCase):
         self.assertEqual(ordinary._entry_target.size, 2 * solver._entry_target.size)
         raw_values = rng.normal(0, 0.2, (len(entries), 6)).astype(np.float32)
         reference = path.data.bilateral_operator.mat
+        empty_reference = np.zeros(reference.shape, dtype=np.float32)
+        empty_reference[:, 20 * 20 :] = 71.0
+
+        def pack_reference(solver):
+            matrix = reference.numpy()
+            np.testing.assert_array_equal(matrix[:, 20 * 20 :], 71.0)
+            return _packed_matrix(solver, matrix, 20)
+
         for iteration in range(2):
             values = raw_values.copy()
             if iteration:
@@ -458,9 +470,9 @@ class TestKaminoJointBlocks(unittest.TestCase):
             inv_mass.assign(masses)
             inv_inertia.assign(inertias)
             diagonal.assign(raw_diagonal)
-            reference.zero_()
+            reference.assign(empty_reference)
             sparse._assemble_sparse_bilateral_block(path, problem, reference)
-            expected = _packed_matrix(solver, reference.numpy(), mio, 20)
+            expected = pack_reference(solver)
             expected_scale = path.data.state.bilateral_preconditioner.numpy()
             path.data.state.bilateral_preconditioner.fill_(-99.0)
             solver.assemble(path, problem)
@@ -507,9 +519,9 @@ class TestKaminoJointBlocks(unittest.TestCase):
                 self.assertIsNotNone(fallback)
                 self.assertIsNone(fallback._assembly_template)
                 np.testing.assert_array_equal(fallback._schedule["order"].numpy(), solver._schedule["order"].numpy())
-                reference.zero_()
+                reference.assign(empty_reference)
                 sparse._assemble_sparse_bilateral_block(path, problem, reference)
-                expected = _packed_matrix(fallback, reference.numpy(), mio, 20)
+                expected = pack_reference(fallback)
                 fallback.assemble(path, problem)
                 np.testing.assert_allclose(fallback._matrix.numpy(), expected, atol=2e-6, rtol=2e-6)
         path.bilateral_nzb_pairs = tuple(ints(array) for array in original_pairs)
@@ -540,9 +552,9 @@ class TestKaminoJointBlocks(unittest.TestCase):
     def test_captured_failure_and_recovery(self):
         """Reset fallback selection across invalid factors, dimensions, and recovery."""
         device = self._device(conditional=True)
-        path, problem, matrices, matrix, mio, vio, *_ = _fixture(device)
+        path, problem, matrices, matrix, vio, *_ = _fixture(device)
         solver = JointBlockSolver.create(path)
-        solver._matrix.assign(_packed_matrix(solver, matrix, mio, 20))
+        solver._matrix.assign(_packed_matrix(solver, matrix, 20))
         rhs = wp.ones(40, dtype=wp.float32, device=device)
         out = wp.zeros_like(rhs)
         solver.prepare(path, problem)
@@ -557,8 +569,8 @@ class TestKaminoJointBlocks(unittest.TestCase):
             if case == "dimension":
                 dims[1] = 33
             elif case == "factor":
-                current[mio[1]] = -1.0
-            solver._matrix.assign(_packed_matrix(solver, current, mio, 20))
+                current[1, 0] = -1.0
+            solver._matrix.assign(_packed_matrix(solver, current, 20))
             problem.data.dim.assign(dims)
             wp.capture_launch(capture.graph)
             expected_failure = case != "valid"
@@ -578,7 +590,7 @@ class TestKaminoJointBlocks(unittest.TestCase):
     def test_bilateral_only_dispatch_keeps_selected_factor(self):
         """Use the selected block factor when no unilateral constraints need elimination."""
         path = SimpleNamespace(
-            data=SimpleNamespace(state=SimpleNamespace(projected_mio=None)),
+            data=SimpleNamespace(state=SimpleNamespace(dummy_permutation=None)),
             size=SimpleNamespace(
                 max_of_num_bilateral_joint_cts=384,
                 max_of_num_bounded_joint_cts=0,
@@ -650,4 +662,5 @@ class TestKaminoJointBlocks(unittest.TestCase):
 
 if __name__ == "__main__":
     newton.utils.setup_console_logging()
+    setup_tests()
     unittest.main()

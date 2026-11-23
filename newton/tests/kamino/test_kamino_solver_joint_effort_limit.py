@@ -11,7 +11,7 @@ import warp as wp
 import newton
 from newton._src.solvers.kamino._src.core.joints import JOINT_TAUMAX
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
-from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino import setup_test_output, setup_tests, test_context
 from newton.tests.kamino.utils.solver_configs import (
     KAMINO_CONFIGS,
     PADMM_CONFIG_NAMES,
@@ -19,6 +19,7 @@ from newton.tests.kamino.utils.solver_configs import (
     make_padmm_sparse_fused_config,
     make_single_iteration_config,
 )
+from newton.tests.unittest_utils import NewtonTestCase
 
 _BODY_MASS = 1.0
 _BODY_INERTIA = 1.0
@@ -94,9 +95,10 @@ def _step(
     return state_out
 
 
-class TestSolverKaminoJointEffortLimit(unittest.TestCase):
+class TestSolverKaminoJointEffortLimit(NewtonTestCase):
     def setUp(self):
         """Initialize the shared public Kamino test context."""
+        setup_test_output(self)
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
 
@@ -164,9 +166,10 @@ class TestSolverKaminoJointEffortLimit(unittest.TestCase):
                         self.assertAlmostEqual(float(velocities[world]), expected, delta=3.0e-4)
 
 
-class TestSolverKaminoJointEffortLimitImplicitPd(unittest.TestCase):
+class TestSolverKaminoJointEffortLimitImplicitPd(NewtonTestCase):
     def setUp(self):
         """Initialize the shared public Kamino test context."""
+        setup_test_output(self)
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
 
@@ -275,9 +278,10 @@ class TestSolverKaminoJointEffortLimitImplicitPd(unittest.TestCase):
                     self.assertAlmostEqual(float(velocities[world]), DT * effort / inertia, delta=0.002)
 
 
-class TestSolverKaminoJointEffortLimitWarmstart(unittest.TestCase):
+class TestSolverKaminoJointEffortLimitWarmstart(NewtonTestCase):
     def setUp(self):
         """Initialize the shared public Kamino test context."""
+        setup_test_output(self)
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
 
@@ -363,7 +367,7 @@ class TestSolverKaminoJointEffortLimitWarmstart(unittest.TestCase):
                             self.assertLess(warm_residual, cold_residual)
 
 
-class TestSolverKaminoJointEffortLimitDominantArmature(unittest.TestCase):
+class TestSolverKaminoJointEffortLimitDominantArmature(NewtonTestCase):
     """
     The effort and armature rows act on the same joint DoF. With ``armature / I = 1e5`` their
     body-space impulses nearly cancel, so a small relative error in either produces a large
@@ -372,6 +376,7 @@ class TestSolverKaminoJointEffortLimitDominantArmature(unittest.TestCase):
 
     def setUp(self):
         """Initialize the shared public Kamino test context."""
+        setup_test_output(self)
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
 

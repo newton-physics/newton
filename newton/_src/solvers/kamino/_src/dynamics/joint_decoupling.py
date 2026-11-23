@@ -221,9 +221,8 @@ def _compute_body_share_dense(
     dofs: wp.array[DecoupledJointDof],
     inv_m_j: wp.array[wp.float32],
     dim: wp.array[wp.int32],
-    mio: wp.array[wp.int32],
     vio: wp.array[wp.int32],
-    D: wp.array[wp.float32],
+    D: wp.array2d[wp.float32],
     # Outputs:
     body_share: wp.array[wp.float32],
 ):
@@ -235,7 +234,7 @@ def _compute_body_share_dense(
     # The off-diagonal entry between the joint dynamics row and either other row is not
     # regularized, so it is the body-space term ``d`` of the DoF
     row = wp.where(dof.friction_row >= 0, dof.friction_row, dof.effort_row)
-    d = D[mio[dof.wid] + ncts * (dof.dynamic_row - vio_w) + row - vio_w]
+    d = D[dof.wid, ncts * (dof.dynamic_row - vio_w) + row - vio_w]
     body_share[tid] = compute_body_share(d, inv_m_j[dof.dynamic_cts])
 
 
@@ -245,7 +244,6 @@ def _scale_dense_row(
     k: wp.int32,
     s: wp.float32,
     ncts: wp.int32,
-    m: wp.int32,
     vio_w: wp.int32,
     columns: wp.bool,
     D: wp.array[wp.float32],
@@ -255,9 +253,9 @@ def _scale_dense_row(
         return
     local = row - vio_w
     if columns:
-        D[m + ncts * k + local] *= s
+        D[ncts * k + local] *= s
     else:
-        D[m + ncts * local + k] *= s
+        D[ncts * local + k] *= s
 
 
 @wp.kernel
@@ -266,11 +264,10 @@ def _scale_rows_dense(
     dofs: wp.array[DecoupledJointDof],
     body_share: wp.array[wp.float32],
     dim: wp.array[wp.int32],
-    mio: wp.array[wp.int32],
     vio: wp.array[wp.int32],
     columns: wp.bool,
     # Outputs:
-    D: wp.array[wp.float32],
+    D: wp.array2d[wp.float32],
 ):
     """Scale the friction and effort rows, or columns, of each DoF in a dense Delassus matrix by its body share."""
     # Columns are launched with the DoF index varying fastest, so that the threads of a warp write
@@ -283,11 +280,10 @@ def _scale_rows_dense(
     ncts = dim[dof.wid]
     if k >= ncts:
         return
-    m = mio[dof.wid]
     vio_w = vio[dof.wid]
     s = body_share[tid]
-    _scale_dense_row(dof.friction_row, k, s, ncts, m, vio_w, columns, D)
-    _scale_dense_row(dof.effort_row, k, s, ncts, m, vio_w, columns, D)
+    _scale_dense_row(dof.friction_row, k, s, ncts, vio_w, columns, D[dof.wid])
+    _scale_dense_row(dof.effort_row, k, s, ncts, vio_w, columns, D[dof.wid])
 
 
 @wp.kernel
@@ -298,16 +294,14 @@ def _add_joint_terms_dense(
     inv_m_j: wp.array[wp.float32],
     inv_m_a: wp.array[wp.float32],
     dim: wp.array[wp.int32],
-    mio: wp.array[wp.int32],
     vio: wp.array[wp.int32],
     # Outputs:
-    D: wp.array[wp.float32],
+    D: wp.array2d[wp.float32],
 ):
     """Add the joint-space terms of the friction and effort rows to the row-scaled dense Delassus matrix."""
     tid = wp.tid()
     dof = dofs[tid]
     ncts = dim[dof.wid]
-    m = mio[dof.wid]
     vio_w = vio[dof.wid]
     row_q = dof.dynamic_row - vio_w
     row_f = dof.friction_row - vio_w
@@ -317,17 +311,17 @@ def _add_joint_terms_dense(
     compliance = c * c * inv_m_j[dof.dynamic_cts]
     # The change of variables decouples the rows, so set the cancelling terms to exact zeros
     if dof.friction_row >= 0:
-        D[m + ncts * row_f + row_f] += compliance
-        D[m + ncts * row_q + row_f] = 0.0
-        D[m + ncts * row_f + row_q] = 0.0
+        D[dof.wid, ncts * row_f + row_f] += compliance
+        D[dof.wid, ncts * row_q + row_f] = 0.0
+        D[dof.wid, ncts * row_f + row_q] = 0.0
     if dof.effort_row >= 0:
         # Undo the row scaling of the effort compliance, which the change of variables leaves unchanged
-        D[m + ncts * row_e + row_e] += compliance + (1.0 - s * s) * inv_m_a[dof.effort_cts]
-        D[m + ncts * row_q + row_e] = 0.0
-        D[m + ncts * row_e + row_q] = 0.0
+        D[dof.wid, ncts * row_e + row_e] += compliance + (1.0 - s * s) * inv_m_a[dof.effort_cts]
+        D[dof.wid, ncts * row_q + row_e] = 0.0
+        D[dof.wid, ncts * row_e + row_q] = 0.0
         if dof.friction_row >= 0:
-            D[m + ncts * row_f + row_e] += compliance
-            D[m + ncts * row_e + row_f] += compliance
+            D[dof.wid, ncts * row_f + row_e] += compliance
+            D[dof.wid, ncts * row_e + row_f] += compliance
 
 
 ###
@@ -464,26 +458,24 @@ class DynamicJointDecoupling:
         """Device of the decoupling arrays."""
         return self._device
 
-    def compute_body_share_dense(
-        self, inv_m_j: wp.array, dim: wp.array, mio: wp.array, vio: wp.array, D: wp.array[wp.float32]
-    ):
+    def compute_body_share_dense(self, inv_m_j: wp.array, dim: wp.array, vio: wp.array, D: wp.array2d[wp.float32]):
         """
         Updates the body share from a dense body-space Delassus matrix.
 
         Args:
             inv_m_j: Compliance of the joint dynamics rows.
-            dim, mio, vio: Per-world dimension, matrix offset and vector offset of the Delassus matrix.
+            dim, vio: Per-world dimension and vector offset of the Delassus matrix.
             D: The dense Delassus matrix, before any change of variables.
         """
         wp.launch(
             _compute_body_share_dense,
             dim=self.num_dofs,
-            inputs=[self.dofs, inv_m_j, dim, mio, vio, D],
+            inputs=[self.dofs, inv_m_j, dim, vio, D],
             outputs=[self.body_share],
             device=self.device,
         )
 
-    def scale_rows_dense(self, dim: wp.array, mio: wp.array, vio: wp.array, max_rows: int, D: wp.array[wp.float32]):
+    def scale_rows_dense(self, dim: wp.array, vio: wp.array, max_rows: int, D: wp.array2d[wp.float32]):
         """
         Scales the friction and effort rows and columns of a dense Delassus matrix by the body share.
 
@@ -491,7 +483,7 @@ class DynamicJointDecoupling:
         to their number rather than to the size of the matrix.
 
         Args:
-            dim, mio, vio: Per-world dimension, matrix offset and vector offset of the Delassus matrix.
+            dim, vio: Per-world dimension and vector offset of the Delassus matrix.
             max_rows: Maximum number of constraint rows of any world.
             D: The dense Delassus matrix, modified in place.
         """
@@ -500,7 +492,7 @@ class DynamicJointDecoupling:
             wp.launch(
                 _scale_rows_dense,
                 dim=(max_rows, self.num_dofs) if columns else (self.num_dofs, max_rows),
-                inputs=[self.dofs, self.body_share, dim, mio, vio, columns],
+                inputs=[self.dofs, self.body_share, dim, vio, columns],
                 outputs=[D],
                 device=self.device,
             )
@@ -510,9 +502,8 @@ class DynamicJointDecoupling:
         inv_m_j: wp.array,
         inv_m_a: wp.array,
         dim: wp.array,
-        mio: wp.array,
         vio: wp.array,
-        D: wp.array[wp.float32],
+        D: wp.array2d[wp.float32],
     ):
         """
         Completes the change of variables of a dense Delassus matrix that is already scaled by
@@ -521,13 +512,13 @@ class DynamicJointDecoupling:
         Args:
             inv_m_j: Compliance of the joint dynamics rows.
             inv_m_a: Compliance of the effort rows.
-            dim, mio, vio: Per-world dimension, matrix offset and vector offset of the Delassus matrix.
+            dim, vio: Per-world dimension and vector offset of the Delassus matrix.
             D: The dense, row-scaled Delassus matrix, modified in place.
         """
         wp.launch(
             _add_joint_terms_dense,
             dim=self.num_dofs,
-            inputs=[self.dofs, self.body_share, inv_m_j, inv_m_a, dim, mio, vio],
+            inputs=[self.dofs, self.body_share, inv_m_j, inv_m_a, dim, vio],
             outputs=[D],
             device=self.device,
         )

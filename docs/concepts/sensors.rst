@@ -40,7 +40,7 @@ Most Newton sensors follow a common pattern:
    model = builder.finalize()
 
    # 1. Create sensor and specify what to measure
-   imu = SensorIMU(model, sites="imu_*", request_state_attributes=False)
+   imu = SensorIMU(model, sites="imu_*")
 
    # Create solver and state
    solver = newton.solvers.SolverMuJoCo(model)
@@ -92,10 +92,10 @@ link filters are matched against the final path component of each label.
    import re
 
    # single pattern: all shapes whose label starts with "foot_"
-   SensorIMU(model, sites="foot_*", request_state_attributes=False)
+   SensorIMU(model, sites="foot_*")
 
    # compiled regular expression: full-match an environment and object label
-   SensorIMU(model, sites=re.compile(r"/World/envs/env_[0-9]+/imu_(left|right)"), request_state_attributes=False)
+   SensorIMU(model, sites=re.compile(r"/World/envs/env_[0-9]+/imu_(left|right)"))
 
    # list of patterns: union of two groups
    SensorContact(model, sensing_shapes=["*Plate*", "*Flap*"])
@@ -106,7 +106,7 @@ link filters are matched against the final path component of each label.
 Available Sensors
 -----------------
 
-Newton provides five sensor types. See the
+Newton provides four sensor types. See the
 :doc:`API reference <../api/newton_sensors>` for constructor arguments,
 attributes, and usage examples.
 
@@ -117,8 +117,9 @@ attributes, and usage examples.
 * :class:`~newton.sensors.SensorCamera` -- raytraced color, HDR color, depth, forward-depth, normal, albedo, and
   shape-index rendering; one view per camera transform, mapped to worlds via a per-view selector. Deformable
   visual meshes render too; see :ref:`deformable-visual-camera-output`. Installing ``newton[optix]`` enables
-  experimental OptiX ray tracing with ``backend="optix"``.
-* :class:`~newton.sensors.SensorTiledCamera` -- deprecated; superseded by :class:`~newton.sensors.SensorCamera`.
+  experimental OptiX ray tracing with ``backend="optix"``; build its shapes with
+  ``model.bvh_build_shapes(state, backend="optix")`` and refit them with
+  ``model.bvh_refit_shapes(state, backend="optix")``.
 
 Camera Rays from USD and Calibration Data
 -----------------------------------------

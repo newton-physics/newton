@@ -31,10 +31,35 @@ __all__ = [
     "DenseLinearOperatorData",
     "DenseRectangularMultiLinearInfo",
     "DenseSquareMultiLinearInfo",
+    "dense_matrix_layout",
     "make_dtype_tolerance",
     "prefix_offsets",
     "segment_local_indices",
+    "validate_dense_matrix_shape",
 ]
+
+
+def dense_matrix_layout(block_sizes: list[int]) -> tuple[int, int]:
+    """Return the aligned shape for matrix block rows."""
+    row_size = (max(block_sizes, default=0) + 31) // 32 * 32
+    return len(block_sizes), row_size
+
+
+def validate_dense_matrix_shape(shape: tuple[int, ...], dtype: type[FloatType]) -> None:
+    """Check the byte stride of an allocated per-world matrix row."""
+    if len(shape) == 2:
+        row_bytes = shape[1] * wp.types.type_size_in_bytes(dtype)
+        stride_limit = np.iinfo(np.int32).max
+        if row_bytes > stride_limit:
+            raise ValueError(f"Dense matrix row stride is {row_bytes} bytes; Warp supports at most {stride_limit}.")
+
+
+def _has_unit_inner_stride(a: wp.array) -> bool:
+    """Check that consecutive elements along the last dimension are adjacent in memory.
+
+    Required by kernels that wrap raw pointers into contiguous per-block views.
+    """
+    return a.strides[-1] == wp.types.type_size_in_bytes(a.dtype)
 
 
 ###
@@ -51,26 +76,26 @@ class DenseRectangularMultiLinearInfo(Generic[ScalarType, IndexType]):
 
     where:
     - each `A_i` is a rectangular matrix of active shape `(dim[i][0], dim[i][1])` and
-      maximum shape `(maxdim[i][0], maxdim[i][1])` starting at offset `mio[i]`
+      maximum shape `(maxdim[i][0], maxdim[i][1])` stored in row `i`
     - each `b_i` is a right-hand-side (rhs) vector of active shape `(dim[i][0],)`
       and maximum shape `(maxdim[i][1],)` starting at offset `rvio[i]`
     - each `x_i` is a input vector of active shape `(dim[i][1],)` and
       maximum shape `(maxdim[i][0],)` starting at offset `ivio[i]`
     - `num_blocks` is the number of linear systems managed by this data structure
 
-    The underlying data allocation is determined by the sum of `maxdim[i]` values, while the "active"
+    The matrix allocation uses `matrix_shape`, while the "active"
     shapes are determined by the `dim[i]` values. Thus the allocated memory corresponds to:
-    - `sum(maxdim[i][0]*maxdim[i][1] for i in range(num_blocks))` for matrices
+    - `matrix_shape` for matrices, including per-block row padding when needed
     - `sum(maxdim[i][1] for i in range(num_blocks))` for rhs vectors
     - `sum(maxdim[i][0] for i in range(num_blocks))` for input vectors
 
     Kernels operating on data described by this structure can then use the max over `maxdims` to set
     the multi-dimensional thread block size, while using the `dim` values at execution time to determine
-    the actual active shape of each block and access the correct data offsets using the `mio` and `vio` arrays.
+    the actual active shape of each block and access the correct vector offsets.
     """
 
     num_blocks: int = 0
-    """Host-side cache of the number of data blocks represented in each flat data array."""
+    """Host-side cache of the number of data blocks represented in each data array."""
 
     dimensions: list[tuple[int, int]] | None = None
     """Host-side cache of the dimensions of each rectangular linear system."""
@@ -78,9 +103,12 @@ class DenseRectangularMultiLinearInfo(Generic[ScalarType, IndexType]):
     max_dimensions: tuple[int, int] = (0, 0)
     """Host-side cache of the maximum dimension over all matrix blocks."""
 
+    matrix_shape: tuple[int, int] = (0, 0)
+    """Shape of the aligned per-block matrix allocation."""
+
     total_mat_size: int = 0
     """
-    Host-side cache of the total size of the flat matrix data array.
+    Host-side cache of the matrix elements reserved before per-block row padding.
     This is equal to `sum(maxdim[i][0]*maxdim[i][1] for i in range(num_blocks))`.
     """
 
@@ -119,12 +147,6 @@ class DenseRectangularMultiLinearInfo(Generic[ScalarType, IndexType]):
     Each entry corresponds to the shape `(rows, cols)`.
     """
 
-    mio: wp.array[IndexType] | None = None
-    """
-    The matrix index offset (mio) of each block in the flat data array.
-    Shape of ``(num_blocks,)``.
-    """
-
     rvio: wp.array[IndexType] | None = None
     """
     The rhs vector index offset (vio) of each block in the flat data array.
@@ -136,6 +158,9 @@ class DenseRectangularMultiLinearInfo(Generic[ScalarType, IndexType]):
     The input vector index offset (vio) of each block in the flat data array.
     Shape of ``(num_blocks,)``.
     """
+
+    max_mat_size: int = 0
+    """Largest matrix block size in elements, before row padding."""
 
     @staticmethod
     def _check_dimensions(dims: list[tuple[int, int]] | tuple[int, int]) -> list[tuple[int, int]]:
@@ -179,11 +204,12 @@ class DenseRectangularMultiLinearInfo(Generic[ScalarType, IndexType]):
         if device is not None:
             self.device = device
 
-        # Compute the allocation sizes and offsets for the flat data arrays
+        # Matrix rows are independent; vectors retain packed offsets.
         np_itype = wp.dtype_to_numpy(self.itype)
         mat_sizes = [m * n for m, n in self.dimensions]
-        mat_offsets = prefix_offsets(mat_sizes, validate_dtype=np_itype)
-        mat_flat_size = int(mat_offsets[-1])
+        self.max_mat_size = max(mat_sizes)
+        self.matrix_shape = dense_matrix_layout(mat_sizes)
+        mat_flat_size = sum(mat_sizes)
         max_mat_rows = max(m for m, _ in self.dimensions)
         max_mat_cols = max(n for _, n in self.dimensions)
         rhs_sizes = [m for m, _ in self.dimensions]
@@ -208,7 +234,6 @@ class DenseRectangularMultiLinearInfo(Generic[ScalarType, IndexType]):
         with wp.ScopedDevice(self.device):
             self.maxdim = wp.array(self.dimensions, dtype=_vec2i)
             self.dim = wp.array(self.dimensions, dtype=_vec2i)
-            self.mio = wp.array(mat_offsets[: self.num_blocks], dtype=self.itype)
             self.rvio = wp.array(rhs_offsets[: self.num_blocks], dtype=self.itype)
             self.ivio = wp.array(inp_offsets[: self.num_blocks], dtype=self.itype)
 
@@ -216,7 +241,6 @@ class DenseRectangularMultiLinearInfo(Generic[ScalarType, IndexType]):
         self,
         maxdim: wp.array[Any],  # wp.array[vec2<IndexType>]
         dim: wp.array[Any],  # wp.array[vec2<IndexType>]
-        mio: wp.array[IndexType],
         rvio: wp.array[IndexType],
         ivio: wp.array[IndexType],
         dtype: type[ScalarType] = wp.float32,  # type: ignore[assignment]
@@ -226,7 +250,7 @@ class DenseRectangularMultiLinearInfo(Generic[ScalarType, IndexType]):
         Assigns the data of the square multi-linear system info from externally allocated arrays.
         """
         # Ensure the problem dimensions are valid and cache them
-        self.dimensions = self._check_dimensions(maxdim.list())
+        self.dimensions = self._check_dimensions([tuple(int(value) for value in dim) for dim in maxdim.list()])
 
         # Ensure the dtype and itype are valid
         if not issubclass(dtype, FloatType):
@@ -239,8 +263,6 @@ class DenseRectangularMultiLinearInfo(Generic[ScalarType, IndexType]):
             raise TypeError(
                 "Invalid dtype of `dim` argument. Expected integer vector type, e.g. `wp.vec2i` or `wp.vec2l`."
             )
-        if not issubclass(mio.dtype, IntType):
-            raise TypeError("Invalid dtype of `mio` argument. Expected IntType type, e.g. `wp.int32` or `wp.int64`.")
         if not issubclass(rvio.dtype, IntType):
             raise TypeError("Invalid dtype of `rvio` argument. Expected IntType type, e.g. `wp.int32` or `wp.int64`.")
         if not issubclass(ivio.dtype, IntType):
@@ -254,9 +276,10 @@ class DenseRectangularMultiLinearInfo(Generic[ScalarType, IndexType]):
         if device is not None:
             self.device = device
 
-        # Compute the allocation sizes and offsets for the flat data arrays
         mat_sizes = [m * n for m, n in self.dimensions]
+        self.max_mat_size = max(mat_sizes)
         mat_flat_size = sum(mat_sizes)
+        self.matrix_shape = dense_matrix_layout(mat_sizes)
         max_mat_rows = max(m for m, _ in self.dimensions)
         max_mat_cols = max(n for _, n in self.dimensions)
         rhs_sizes = [m for m, _ in self.dimensions]
@@ -274,21 +297,26 @@ class DenseRectangularMultiLinearInfo(Generic[ScalarType, IndexType]):
         # Capture references the rectangular multi-linear system info data on the specified device
         self.maxdim = maxdim
         self.dim = dim
-        self.mio = mio
         self.rvio = rvio
         self.ivio = ivio
 
-    def is_matrix_compatible(self, A: wp.array[ScalarType]) -> bool:
+    def is_matrix_compatible(self, A: wp.array2d[ScalarType]) -> bool:
         """Checks if the provided matrix data array is compatible with the specified info structure."""
-        return A.dtype == self.dtype and A.size >= self.total_mat_size
+        return (
+            A.dtype == self.dtype
+            and A.ndim == 2
+            and A.shape[0] >= self.num_blocks
+            and A.shape[1] >= self.max_mat_size
+            and _has_unit_inner_stride(A)
+        )
 
     def is_rhs_compatible(self, b: wp.array[ScalarType]) -> bool:
         """Checks if the provided rhs vector data array is compatible with the specified info structure."""
-        return b.dtype == self.dtype and b.size >= self.total_rhs_size
+        return b.dtype == self.dtype and b.size >= self.total_rhs_size and _has_unit_inner_stride(b)
 
     def is_input_compatible(self, x: wp.array[ScalarType]) -> bool:
         """Checks if the provided input vector data array is compatible with the specified info structure."""
-        return x.dtype == self.dtype and x.size >= self.total_inp_size
+        return x.dtype == self.dtype and x.size >= self.total_inp_size and _has_unit_inner_stride(x)
 
     def __str__(self) -> str:
         return (
@@ -315,26 +343,26 @@ class DenseSquareMultiLinearInfo(Generic[ScalarType, IndexType]):
 
     where:
     - each `A_i` is a square matrix of active shape `(dim[i], dim[i])` and
-      maximum shape `(maxdim[i], maxdim[i])` starting at offset `mio[i]`
+      maximum shape `(maxdim[i], maxdim[i])` stored in row `i`
     - each `b_i` is a right-hand-side (rhs) vector of active shape `(dim[i],)`
       and maximum shape `(maxdim[i],)` starting at offset `vio[i]`
     - each `x_i` is a input vector of active shape `(dim[i],)` and
       maximum shape `(maxdim[i],)` starting at offset `vio[i]`
     - `num_blocks` is the number of linear systems managed by this data structure
 
-    The underlying data allocation is determined by the sum of `maxdim[i]` values, while the "active"
+    The matrix allocation uses `matrix_shape`, while the "active"
     shapes are determined by the `dim[i]` values. Thus the allocated memory corresponds to:
-    - `sum(maxdim[i]*maxdim[i] for i in range(num_blocks))` for matrices
+    - `matrix_shape` for matrices, including per-block row padding when needed
     - `sum(maxdim[i] for i in range(num_blocks))` for rhs vectors
     - `sum(maxdim[i] for i in range(num_blocks))` for input vectors
 
     Kernels operating on data described by this structure can then use the max over `maxdims` to set
     the multi-dimensional thread block size, while using the `dim` values at execution time to determine
-    the actual active shape of each block and access the correct data offsets using the `mio` and `vio` arrays.
+    the actual active shape of each block and access the correct vector offsets.
     """
 
     num_blocks: int = 0
-    """Host-side cache of the number of data blocks represented in each flat data array."""
+    """Host-side cache of the number of data blocks represented in each data array."""
 
     dimensions: list[int] | None = None
     """Host-side cache of the dimensions of each square linear system."""
@@ -342,10 +370,13 @@ class DenseSquareMultiLinearInfo(Generic[ScalarType, IndexType]):
     max_dimension: int = 0
     """Host-side cache of the maximum dimension over all matrix blocks."""
 
+    matrix_shape: tuple[int, int] = (0, 0)
+    """Shape of the aligned per-block matrix allocation."""
+
     total_mat_size: int = 0
     """
-    Host-side cache of the total size of the flat data array of matrix blocks.
-    This is equal to `sum(maxdim[i][0]*maxdim[i][1] for i in range(num_blocks))`.
+    Host-side cache of matrix elements reserved before per-block row padding.
+    This is equal to `sum(maxdim[i] ** 2 for i in range(num_blocks))`.
     """
 
     total_vec_size: int = 0
@@ -372,12 +403,6 @@ class DenseSquareMultiLinearInfo(Generic[ScalarType, IndexType]):
     dim: wp.array[IndexType] | None = None
     """
     The active dimensions of each square matrix block.
-    Shape of ``(num_blocks,)`` and type :class:`int | int32 | int64`.
-    """
-
-    mio: wp.array[IndexType] | None = None
-    """
-    The matrix index offset (mio) of each matrix block in the flat data array.
     Shape of ``(num_blocks,)`` and type :class:`int | int32 | int64`.
     """
 
@@ -425,11 +450,11 @@ class DenseSquareMultiLinearInfo(Generic[ScalarType, IndexType]):
         if device is not None:
             self.device = device
 
-        # Compute the allocation sizes and offsets for the flat data arrays
+        # Matrix rows are independent; vectors retain packed offsets.
         np_itype = wp.dtype_to_numpy(self.itype)
         mat_sizes = [n * n for n in self.dimensions]
-        mat_offsets = prefix_offsets(mat_sizes, validate_dtype=np_itype)
-        mat_flat_size = int(mat_offsets[-1])
+        self.matrix_shape = dense_matrix_layout(mat_sizes)
+        mat_flat_size = sum(mat_sizes)
         vec_sizes = self.dimensions
         vec_offsets = prefix_offsets(vec_sizes, validate_dtype=np_itype)
         vec_flat_size = int(vec_offsets[-1])
@@ -444,14 +469,12 @@ class DenseSquareMultiLinearInfo(Generic[ScalarType, IndexType]):
         with wp.ScopedDevice(self.device):
             self.maxdim = wp.array(self.dimensions, dtype=self.itype)
             self.dim = wp.array(self.dimensions, dtype=self.itype)
-            self.mio = wp.array(mat_offsets[: self.num_blocks], dtype=self.itype)
             self.vio = wp.array(vec_offsets[: self.num_blocks], dtype=self.itype)
 
     def assign(
         self,
         maxdim: wp.array[IndexType],
         dim: wp.array[IndexType],
-        mio: wp.array[IndexType],
         vio: wp.array[IndexType],
         dtype: type[ScalarType] = wp.float32,  # type: ignore[assignment]
         device: wp.DeviceLike = None,
@@ -469,8 +492,6 @@ class DenseSquareMultiLinearInfo(Generic[ScalarType, IndexType]):
             raise TypeError("Invalid dtype of `maxdim` argument. Expected IntType type, e.g. `wp.int32` or `wp.int64`.")
         if not issubclass(dim.dtype, IntType):
             raise TypeError("Invalid dtype of `dim` argument. Expected IntType type, e.g. `wp.int32` or `wp.int64`.")
-        if not issubclass(mio.dtype, IntType):
-            raise TypeError("Invalid dtype of `mio` argument. Expected IntType type, e.g. `wp.int32` or `wp.int64`.")
         if not issubclass(vio.dtype, IntType):
             raise TypeError("Invalid dtype of `vio` argument. Expected IntType type, e.g. `wp.int32` or `wp.int64`.")
 
@@ -482,9 +503,9 @@ class DenseSquareMultiLinearInfo(Generic[ScalarType, IndexType]):
         if device is not None:
             self.device = device
 
-        # Compute the allocation sizes and offsets for the flat data arrays
         mat_sizes = [n * n for n in self.dimensions]
         mat_flat_size = sum(mat_sizes)
+        self.matrix_shape = dense_matrix_layout(mat_sizes)
         vec_sizes = self.dimensions
         vec_flat_size = sum(vec_sizes)
 
@@ -497,20 +518,25 @@ class DenseSquareMultiLinearInfo(Generic[ScalarType, IndexType]):
         # Capture references the multi-linear square system info data on the specified device
         self.maxdim = maxdim
         self.dim = dim
-        self.mio = mio
         self.vio = vio
 
-    def is_matrix_compatible(self, A: wp.array[ScalarType]) -> bool:
+    def is_matrix_compatible(self, A: wp.array2d[ScalarType]) -> bool:
         """Checks if the provided matrix data array is compatible with the specified info structure."""
-        return A.dtype == self.dtype and A.size >= self.total_mat_size
+        return (
+            A.dtype == self.dtype
+            and A.ndim == 2
+            and A.shape[0] >= self.num_blocks
+            and A.shape[1] >= self.max_dimension**2
+            and _has_unit_inner_stride(A)
+        )
 
     def is_rhs_compatible(self, b: wp.array[ScalarType]) -> bool:
         """Checks if the provided rhs vector data array is compatible with the specified info structure."""
-        return b.dtype == self.dtype and b.size >= self.total_vec_size
+        return b.dtype == self.dtype and b.size >= self.total_vec_size and _has_unit_inner_stride(b)
 
     def is_input_compatible(self, x: wp.array[ScalarType]) -> bool:
         """Checks if the provided input vector data array is compatible with the specified info structure."""
-        return x.dtype == self.dtype and x.size >= self.total_vec_size
+        return x.dtype == self.dtype and x.size >= self.total_vec_size and _has_unit_inner_stride(x)
 
     def __str__(self) -> str:
         return (
@@ -532,7 +558,7 @@ class DenseLinearOperatorData(Generic[ScalarType, IndexType]):
     """
     A data structure for encapsulating a multi-linear matrix operator.
 
-    This object essentially wraps a flattened memory allocation of multiple
+    This object wraps a per-block row allocation of multiple
     matrix blocks along with a data structure describing the layout of the
     blocks, and provides a unified interface for linear solvers to operate
     on the encapsulated operator.
@@ -548,8 +574,8 @@ class DenseLinearOperatorData(Generic[ScalarType, IndexType]):
     ) = None
     """The multi-linear data structure describing the operator."""
 
-    mat: wp.array[ScalarType] | None = None
-    """The flat data array containing the matrix blocks."""
+    mat: wp.array2d[ScalarType] | None = None
+    """Matrix blocks stored in one aligned row per block."""
 
     def zero(self) -> None:
         self.mat.zero_()

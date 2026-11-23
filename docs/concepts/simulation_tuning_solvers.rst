@@ -70,8 +70,8 @@ Contact reduction
    ``CollisionPipeline(reduce_contacts=...)`` controls the mesh/heightfield
    reduction every solver consumes. The opt-in
    ``CollisionPipeline(body_pair_reduction=...)`` reduction changes which contacts
-   the solver sees and is supported by :class:`newton.solvers.SolverSteel`
-   only. Keep it off unless it lowers the
+   the solver sees and applies to built-in solvers consuming Newton contacts,
+   like mesh/SDF reduction. Keep it off unless it lowers the
    measured step time, and check tipping and yaw behavior when it is on.
 
 Contact material
@@ -409,6 +409,11 @@ repository examples spend tuning effort, not a shared solver API.
        ``use_parallel_streams`` overlaps the work of articulation-size groups and
        ``double_buffer`` clears a step's buffers on a side stream, without changing
        results; measure the full step before relying on them.
+       If you are porting a PhysX or Isaac Lab scene, start from Skild's
+       `porting-from-PhysX guide <https://steel.skild.ai/guides/porting-from-physx/>`_,
+       which covers attribute mapping, solver option equivalents, what
+       differs and a migration procedure (see :doc:`/solvers/steel` for
+       the other Skild resources).
    * - :class:`~newton.solvers.SolverSemiImplicit`
      - ``angular_damping``, ``joint_attach_ke``,
        ``joint_attach_kd``, ``enable_tri_contact``.

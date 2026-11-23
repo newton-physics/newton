@@ -10,7 +10,8 @@ import warp as wp
 
 import newton
 from newton.sensors import SensorIMU
-from newton.tests.unittest_utils import add_function_test, get_test_devices
+from newton.tests.kamino import setup_test_output, setup_tests
+from newton.tests.unittest_utils import NewtonTestCase, add_function_test, get_test_devices
 
 DT = 1.0 / 120.0
 INERTIA = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
@@ -303,8 +304,11 @@ def test_body_acceleration_cuda_graph(test, device):
     test.assertEqual(observables.body_qdd.ptr, pointer)
 
 
-class TestKaminoBodyAcceleration(unittest.TestCase):
+class TestKaminoBodyAcceleration(NewtonTestCase):
     """Test Kamino body acceleration support."""
+
+    def setUp(self):
+        setup_test_output(self)
 
 
 devices = get_test_devices(mode="basic")
@@ -372,4 +376,5 @@ add_function_test(
 
 if __name__ == "__main__":
     newton.utils.setup_console_logging()
+    setup_tests()
     unittest.main(verbosity=2)

@@ -60,15 +60,15 @@ def make_sparse_bilateral_solve_kernel(block_size: int):
         solution_lambdas: wp.array[float32],
         compact_layout: bool,
         bilateral_dim: wp.array[int32],
-        bilateral_mio: wp.array[int32],
         bilateral_vio: wp.array[int32],
         bilateral_P: wp.array[float32],
-        L: wp.array[float32],
+        L_storage: wp.array2d[float32],
         y: wp.array[float32],
         bilateral_rhs: wp.array[float32],
         bilateral_solution: wp.array[float32],
     ):
         wid, tid = wp.tid()
+        L = L_storage[wid]
         njc = problem_njc[wid]
         pvio = problem_vio[wid]
         bvio = bilateral_vio[wid]
@@ -89,7 +89,7 @@ def make_sparse_bilateral_solve_kernel(block_size: int):
             if row < njc and lane == 0:
                 bilateral_rhs[bvio + row] = -bilateral_P[bvio + row] * (value + problem_v_f[pvio + row])
         _sync_threads()
-        solve(wid, tid, bilateral_dim, bilateral_mio, bilateral_vio, L, bilateral_rhs, y, bilateral_solution)
+        solve(wid, tid, bilateral_dim, bilateral_vio, L, bilateral_rhs, y, bilateral_solution)
         _sync_threads()
         for row in range(tid, njc, wp.block_dim()):
             solution_lambdas[pvio + row] = bilateral_P[bvio + row] * bilateral_solution[bvio + row]
@@ -1981,13 +1981,19 @@ def _assemble_compact_unilateral_schur_blocked(
     offset = response_mio[wid]
     y = wp.array(ptr=get_float32_array_offset_ptr(response, offset), shape=(njc, nu), dtype=float32)
     blocks = (nu + int32(3)) / int32(4)
+    triangle = blocks * (blocks + int32(1)) / int32(2)
     # Each pass assigns one upper-triangle 4x4 block per thread; larger
     # operators stream the responses again for the remaining blocks.
-    for first in range(int32(0), blocks * blocks, wp.block_dim()):
+    for first in range(int32(0), triangle, wp.block_dim()):
         block = first + lane
-        block_row = block / blocks
-        block_col = block - block_row * blocks
-        active = block < blocks * blocks and block_row <= block_col
+        active = block < triangle
+        # Walk the upper-triangle rows to map the linear index to (row, col).
+        block_row = int32(0)
+        block_col = block
+        while block_row < blocks - int32(1) and block_col >= blocks - block_row:
+            block_col -= blocks - block_row
+            block_row += int32(1)
+        block_col += block_row
         row0 = int32(4) * block_row
         col0 = int32(4) * block_col
         accum = wp.mat44f()
@@ -2981,14 +2987,27 @@ def _scheduled_compact_id(
     return float32(uid)
 
 
+COMPACT_SCHUR_PGS_BLOCK_DIM = 128
+"""Threads per block for compact Schur sweeps: four one-warp worlds per block."""
+
+COMPACT_SCHUR_PGS_TIERS = (64, 96, 128)
+"""Row capacities of the compact sweeps; each world uses the smallest that fits."""
+
+
 @cache
 def make_compact_schur_pgs_kernel(max_rows: int):
-    """Build a compact sweep with register storage matched to its row range."""
-    if max_rows not in (32, 64, 128):
-        raise ValueError("Compact Schur kernels support 32, 64, or 128 rows.")
+    """Build a compact sweep with register storage matched to its row range.
+
+    Each world is swept by one warp; launch with ``dim = num_worlds * 32`` and
+    :data:`COMPACT_SCHUR_PGS_BLOCK_DIM` threads per block.
+    """
+    if max_rows not in (32, *COMPACT_SCHUR_PGS_TIERS):
+        raise ValueError(f"Compact Schur kernels support 32 or {COMPACT_SCHUR_PGS_TIERS} rows.")
     chunks = max_rows // 32
-    min_rows = 0 if max_rows <= 64 else 64
+    # Each tier sweeps the worlds above the next smaller tier.
+    min_rows = max((tier for tier in COMPACT_SCHUR_PGS_TIERS if tier < max_rows), default=0)
     vector = wp.types.vector(length=chunks, dtype=float32)
+    index_vector = wp.types.vector(length=chunks, dtype=int32)
 
     @wp.func
     def get_component(values: vector, index: int32) -> float32:
@@ -3015,7 +3034,9 @@ def make_compact_schur_pgs_kernel(max_rows: int):
             values[i] = schur[base + target]
         return values
 
-    @wp.kernel(module="unique", enable_backward=False)
+    # Capping registers keeps 24 warps resident per SM with 128-thread blocks;
+    # the serial sweeps are latency bound, so occupancy outweighs minor spills.
+    @wp.kernel(module="unique", enable_backward=False, cuda_max_registers=80)
     def solve_compact_schur_pgs(
         limit_indices: wp.array[int32],
         contact_indices: wp.array[int32],
@@ -3091,9 +3112,9 @@ def make_compact_schur_pgs_kernel(max_rows: int):
 
         # Forward sweeps visit slots in storage order; odd tangent sweeps reverse
         # the colors and the slots within each group but keep groups in order.
-        # Tile element writes synchronize the block, so keep them uniform: lanes
-        # past the end of a group write to a scratch slot instead.
-        reverse = wp.tile_zeros(shape=(160,), dtype=int32, storage="shared")
+        # Each lane resolves the reversed slots it owns directly, so the sweep
+        # needs no shared memory or block barriers and blocks can hold several worlds.
+        reverse = index_vector()
         num_colors = inequality_num_colors[wid]
         position = int32(0)
         for color_index in range(num_colors):
@@ -3105,16 +3126,11 @@ def make_compact_schur_pgs_kernel(max_rows: int):
                 slot_start = inequality_group_starts[schedule_offset + group]
                 slot_end = inequality_group_starts[schedule_offset + group + int32(1)]
                 count = slot_end - slot_start
-                for base in range(int32(0), count, int32(32)):
-                    iteration = base + lane
-                    index = int32(128) + lane
-                    value = int32(0)
-                    if iteration < count:
-                        index = position + iteration
-                        value = inequality_ids_by_color[uio + slot_end - int32(1) - iteration]
-                    reverse[index] = value
+                for chunk in range(wp.static(chunks)):
+                    iteration = lane + int32(32) * chunk - position
+                    if iteration >= int32(0) and iteration < count:
+                        reverse[chunk] = inequality_ids_by_color[uio + slot_end - int32(1) - iteration]
                 position += count
-        _sync_warp_32()
 
         # Keep both schedules in registers, with skipped slots marked as -1, so
         # the serial chain shuffles them instead of issuing dependent loads.
@@ -3127,8 +3143,31 @@ def make_compact_schur_pgs_kernel(max_rows: int):
                     inequality_ids_by_color[uio + step], nbc, scalar_count, lio, cio, limit_indices, contact_indices
                 )
                 reverse_ids[chunk] = _scheduled_compact_id(
-                    reverse[step], nbc, scalar_count, lio, cio, limit_indices, contact_indices
+                    reverse[chunk], nbc, scalar_count, lio, cio, limit_indices, contact_indices
                 )
+
+        # Tangent phases only update contacts, so compact both schedules to their
+        # mapped contact slots once instead of skipping scalar slots every sweep.
+        tangent_forward_ids = vector()
+        tangent_reverse_ids = vector()
+        tangent_slots = int32(0)
+        for step in range(slots):
+            forward_uid = int32(_shuffle_lane_32(get_component(forward_ids, step / int32(32)), step % int32(32)))
+            if forward_uid >= scalar_count:
+                if lane == tangent_slots % int32(32):
+                    tangent_forward_ids = set_component(
+                        tangent_forward_ids, tangent_slots / int32(32), float32(forward_uid)
+                    )
+                tangent_slots += int32(1)
+        reverse_slot = int32(0)
+        for step in range(slots):
+            reverse_uid = int32(_shuffle_lane_32(get_component(reverse_ids, step / int32(32)), step % int32(32)))
+            if reverse_uid >= scalar_count:
+                if lane == reverse_slot % int32(32):
+                    tangent_reverse_ids = set_component(
+                        tangent_reverse_ids, reverse_slot / int32(32), float32(reverse_uid)
+                    )
+                reverse_slot += int32(1)
 
         # Each lane owns a fixed number of rows throughout the solve. Only Schur rows
         # are streamed during the serial update chain.
@@ -3162,10 +3201,13 @@ def make_compact_schur_pgs_kernel(max_rows: int):
         for sweep in range(sweep_count):
             for phase in range(2):
                 use_reverse = phase == int32(1) and (sweep % cfg.inequality_sweeps_per_iteration) % int32(2) != int32(0)
-                for step in range(slots):
-                    ids = wp.where(use_reverse, reverse_ids, forward_ids)
+                phase_slots = wp.where(phase == int32(0), slots, tangent_slots)
+                for step in range(phase_slots):
+                    ids = forward_ids
+                    if phase != int32(0):
+                        ids = wp.where(use_reverse, tangent_reverse_ids, tangent_forward_ids)
                     uid = int32(_shuffle_lane_32(get_component(ids, step / int32(32)), step % int32(32)))
-                    if uid < int32(0) or (uid < scalar_count and phase != int32(0)):
+                    if uid < int32(0):
                         continue
                     row = _compact_unilateral_row(uid, nbc, scalar_count, bcgo, lcgo, ccgo, njc)
                     component = _cooperative_unilateral_component(uid, scalar_count, phase)
@@ -3259,21 +3301,22 @@ _INVERSE_TILE = 32
 @wp.kernel(module="unique", enable_backward=False)
 def _invert_small_bilateral_block(
     dim: wp.array[int32],
-    mio: wp.array[int32],
-    L: wp.array[float32],
-    lower_inverse: wp.array[float32],
-    inverse: wp.array[float32],
+    L_storage: wp.array2d[float32],
+    lower_inverse_storage: wp.array2d[float32],
+    inverse_storage: wp.array2d[float32],
 ):
     """Form ``(L L^T)^-1 = X^T X`` with ``X = L^-1`` using 32x32 tiles, one block per world."""
     wid, lane = wp.tid()
+    L = L_storage[wid]
+    lower_inverse = lower_inverse_storage[wid]
+    inverse = inverse_storage[wid]
     threads = wp.block_dim()
     size = wp.static(_INVERSE_TILE)
     n = dim[wid]
-    offset = mio[wid]
     tiles = (n + size - 1) // size
-    L_i = wp.array(ptr=get_float32_array_offset_ptr(L, offset), shape=(n, n), dtype=float32)
-    X_i = wp.array(ptr=get_float32_array_offset_ptr(lower_inverse, offset), shape=(n, n), dtype=float32)
-    D_i = wp.array(ptr=get_float32_array_offset_ptr(inverse, offset), shape=(n, n), dtype=float32)
+    L_i = wp.array(ptr=get_float32_array_offset_ptr(L, 0), shape=(n, n), dtype=float32)
+    X_i = wp.array(ptr=get_float32_array_offset_ptr(lower_inverse, 0), shape=(n, n), dtype=float32)
+    D_i = wp.array(ptr=get_float32_array_offset_ptr(inverse, 0), shape=(n, n), dtype=float32)
     for tile_j in range(tiles):
         for tile_i in range(tile_j, tiles):
             i = tile_i * size
@@ -3304,12 +3347,11 @@ def _invert_small_bilateral_block(
             wp.tile_store(D_i, block, offset=(tile_i * size, tile_j * size))
 
 
-@wp.kernel
+@wp.kernel(module="unique", enable_backward=False)
 def _apply_small_bilateral_inverse(
     dim: wp.array[int32],
-    mio: wp.array[int32],
     vio: wp.array[int32],
-    inverse: wp.array[float32],
+    inverse_storage: wp.array2d[float32],
     bilateral_rhs: wp.array[float32],
     problem_vio: wp.array[int32],
     problem_njc: wp.array[int32],
@@ -3322,13 +3364,13 @@ def _apply_small_bilateral_inverse(
     A zero active dimension keeps the previous solution.
     """
     wid, row = wp.tid()
+    inverse = inverse_storage[wid]
     n = dim[wid]
     v = vio[wid]
     if row < n:
-        m = mio[wid]
         value = float32(0.0)
         for col in range(n):
-            value += inverse[m + col * n + row] * bilateral_rhs[v + col]
+            value += inverse[col * n + row] * bilateral_rhs[v + col]
         bilateral_solution[v + row] = value
     if row < problem_njc[wid]:
         solution_lambdas[problem_vio[wid] + row] = bilateral_P[v + row] * bilateral_solution[v + row]
@@ -3348,10 +3390,9 @@ def make_sparse_bilateral_inverse_kernel(body_capacity: int):
         problem_njc: wp.array[int32],
         problem_v_f: wp.array[float32],
         active_dim: wp.array[int32],
-        bilateral_mio: wp.array[int32],
         bilateral_vio: wp.array[int32],
         bilateral_P: wp.array[float32],
-        inverse: wp.array[float32],
+        inverse_storage: wp.array2d[float32],
         bilateral_rhs: wp.array[float32],
         bilateral_solution: wp.array[float32],
         solution_lambdas: wp.array[float32],
@@ -3371,6 +3412,7 @@ def make_sparse_bilateral_inverse_kernel(body_capacity: int):
     ):
         wid, lane = wp.tid()
         wid += world_start
+        inverse = inverse_storage[wid]
         n = active_dim[wid]
         njc = problem_njc[wid]
         pvio = problem_vio[wid]
@@ -3416,7 +3458,7 @@ def make_sparse_bilateral_inverse_kernel(body_capacity: int):
             for row in range(lane, n, wp.block_dim()):
                 value = float32(0.0)
                 for col in range(n):
-                    value += inverse[bilateral_mio[wid] + col * n + row] * workspace[body_capacity + col]
+                    value += inverse[col * n + row] * workspace[body_capacity + col]
                 bilateral_solution[bvio + row] = value
         for row in range(lane, njc, wp.block_dim()):
             solution_lambdas[pvio + row] = bilateral_P[bvio + row] * bilateral_solution[bvio + row]
@@ -3424,7 +3466,7 @@ def make_sparse_bilateral_inverse_kernel(body_capacity: int):
     return sparse_bilateral_inverse
 
 
-@wp.kernel
+@wp.kernel(module="unique", enable_backward=False)
 def _build_sparse_bilateral_block(
     # Inputs:
     model_bodies_inv_m_i: wp.array[float32],
@@ -3437,12 +3479,11 @@ def _build_sparse_bilateral_block(
     pair_i: wp.array[int32],
     pair_j: wp.array[int32],
     jacobian_cts_nzb_values: wp.array[vec6f],
-    bilateral_mio: wp.array[int32],
     bilateral_ld: wp.array[int32],
     bilateral_vio: wp.array[int32],
     bilateral_P: wp.array[float32],
     # Output:
-    bilateral_D: wp.array[float32],
+    bilateral_D_storage: wp.array2d[float32],
     inverse_permutation: wp.array[int32],
     use_permutation: bool,
 ):
@@ -3461,44 +3502,44 @@ def _build_sparse_bilateral_block(
         D_ij += model_bodies_inv_m_i[bid_k] * wp.dot(Jv_i, Jv_j) + wp.dot(Jw_i, data_bodies_inv_I_i[bid_k] @ Jw_j)
 
     wid = pair_wid[first]
+    bilateral_D = bilateral_D_storage[wid]
     row = pair_row[first]
     col = pair_col[first]
     bvio = bilateral_vio[wid]
     val = bilateral_P[bvio + row] * D_ij * bilateral_P[bvio + col]
 
-    bmio = bilateral_mio[wid]
     ld = bilateral_ld[wid]
     if use_permutation:
         # The permuted matrix feeds the factorization directly, which reads only its lower triangle.
         permuted_row = inverse_permutation[bvio + row]
         permuted_col = inverse_permutation[bvio + col]
-        bilateral_D[bmio + ld * wp.max(permuted_row, permuted_col) + wp.min(permuted_row, permuted_col)] = val
+        bilateral_D[ld * wp.max(permuted_row, permuted_col) + wp.min(permuted_row, permuted_col)] = val
     else:
-        bilateral_D[bmio + ld * row + col] = val
-        bilateral_D[bmio + ld * col + row] = val
+        bilateral_D[ld * row + col] = val
+        bilateral_D[ld * col + row] = val
 
 
-@wp.kernel
+@wp.kernel(module="unique", enable_backward=False)
 def _set_sparse_bilateral_diagonal(
     # Inputs:
     problem_njc: wp.array[int32],
     problem_vio: wp.array[int32],
-    bilateral_mio: wp.array[int32],
     bilateral_ld: wp.array[int32],
     bilateral_vio: wp.array[int32],
     problem_diag: wp.array[float32],
     # Outputs:
-    bilateral_D: wp.array[float32],
+    bilateral_D_storage: wp.array2d[float32],
     bilateral_P: wp.array[float32],
     inverse_permutation: wp.array[int32],
     use_permutation: bool,
 ):
     wid, row = wp.tid()
+    bilateral_D = bilateral_D_storage[wid]
 
     njc = problem_njc[wid]
     if njc == 0:
         if row == 0:
-            bilateral_D[bilateral_mio[wid]] = float32(1.0)
+            bilateral_D[0] = float32(1.0)
             bilateral_P[bilateral_vio[wid]] = float32(1.0)
         return
     if row >= njc:
@@ -3506,13 +3547,12 @@ def _set_sparse_bilateral_diagonal(
 
     pvio = problem_vio[wid]
     bvio = bilateral_vio[wid]
-    bmio = bilateral_mio[wid]
     diag = wp.abs(problem_diag[pvio + row])
     p = wp.sqrt(1.0 / (diag + FLOAT32_EPS))
     bilateral_P[bvio + row] = p
     if use_permutation:
         row = inverse_permutation[bvio + row]
-    diagonal_index = bmio + bilateral_ld[wid] * row + row
+    diagonal_index = bilateral_ld[wid] * row + row
     bilateral_D[diagonal_index] = p * diag * p + float32(BILATERAL_DIAGONAL_FLOOR)
 
 

@@ -9,6 +9,7 @@ import numpy as np
 import warp as wp
 
 from newton._src.solvers.kamino._src.core.types import FloatArrayLike
+from newton._src.solvers.kamino._src.linalg.core import dense_matrix_layout
 from newton._src.solvers.kamino._src.linalg.utils.rand import (
     random_rhs_for_matrix,
     random_spd_matrix,
@@ -86,23 +87,21 @@ class RandomProblemLLT:
         # Declare the warp arrays of concatenated problem data
         self.maxdim_wp: wp.array[wp.int32] | None = None
         self.dim_wp: wp.array[wp.int32] | None = None
-        self.mio_wp: wp.array[wp.int32] | None = None
         self.vio_wp: wp.array[wp.int32] | None = None
-        self.A_wp: wp.array[wp.float32] | None = None
+        self.A_wp: wp.array2d[wp.float32] | None = None
         self.b_wp: wp.array[wp.float32] | None = None
 
-        # Initialize the flattened problem data
+        # Store each matrix in its own aligned row.
         A_sizes = [n * n for n in self.maxdims]
-        A_offsets = [0] + [sum(A_sizes[:i]) for i in range(1, len(A_sizes) + 1)]
-        A_flat_size = sum(A_sizes)
-        A_flat = np.full(shape=(A_flat_size,), fill_value=np.inf, dtype=np_dtype)
+        A_shape = dense_matrix_layout(A_sizes)
+        A_storage = np.full(shape=A_shape, fill_value=np.inf, dtype=np_dtype)
         b_sizes = list(self.maxdims)
         b_offsets = [0] + [sum(b_sizes[:i]) for i in range(1, len(b_sizes) + 1)]
         b_flat_size = sum(b_sizes)
         b_flat = np.full(shape=(b_flat_size,), fill_value=np.inf, dtype=np_dtype)
 
         # Generate randomized problem data
-        for i, (n, nmax) in enumerate(zip(self.dims, self.maxdims, strict=False)):
+        for i, n in enumerate(self.dims):
             # Generate a random SPD matrix if not provided
             if A is None:
                 A_mat = random_spd_matrix(dim=n, seed=self.seed, dtype=np_dtype)
@@ -126,15 +125,9 @@ class RandomProblemLLT:
             self.X_np.append(X_mat)
             self.y_np.append(y_vec)
             self.x_np.append(x_vec)
-            # Flatten the matrix and store it in the A_flat array
-            A_start = A_offsets[len(self.A_np) - 1]
-            # Fill the flattened array row-wise to account for dim <= maxdim
-            if n == nmax:
-                A_end = A_offsets[len(self.A_np)]
-                A_flat[A_start:A_end] = A_mat.flat
-            else:
-                A_end = A_start + n * n
-                A_flat[A_start:A_end] = A_mat.flat
+            # Store the active matrix at the start of its row.
+            A_row = A_storage[i]
+            A_row[: n * n] = A_mat.flat
             # Flatten the vector and store it in the b_flat array
             b_start = b_offsets[len(self.b_np) - 1]
             b_end = b_start + n
@@ -144,9 +137,8 @@ class RandomProblemLLT:
         with wp.ScopedDevice(self.device):
             self.maxdim_wp = wp.array(self.maxdims, dtype=wp.int32)
             self.dim_wp = wp.array(self.dims, dtype=wp.int32)
-            self.mio_wp = wp.array(A_offsets[: self.num_blocks], dtype=wp.int32)
             self.vio_wp = wp.array(b_offsets[: self.num_blocks], dtype=wp.int32)
-            self.A_wp = wp.array(A_flat, dtype=wp.float32)
+            self.A_wp = wp.array(A_storage, dtype=wp.float32)
             self.b_wp = wp.array(b_flat, dtype=wp.float32)
 
     def __str__(self) -> str:
@@ -166,7 +158,6 @@ class RandomProblemLLT:
             f"\nx_np (shape): {[x.shape for x in self.x_np]}"
             f"\nmaxdim_wp: {self.maxdim_wp.numpy()}"
             f"\ndim_wp: {self.dim_wp.numpy()}"
-            f"\nmio_wp: {self.mio_wp.numpy()}"
             f"\nvio_wp: {self.vio_wp.numpy()}"
             f"\nA_wp (shape): {self.A_wp.shape}"
             f"\nb_wp (shape): {self.b_wp.shape}"

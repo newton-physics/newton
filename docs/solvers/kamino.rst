@@ -79,7 +79,7 @@ Set ``sparse_jacobian=False`` for fully dense SCC, or set
 ``sparse_dynamics=True`` to use sparse dynamics with the Conjugate Residual
 solver.
 
-SCC defaults to ``"LLTB"`` for its bilateral joint solve. Select ``"LDL"``
+SCC defaults to ``"LLTBRCM"`` for its bilateral joint solve. Select ``"LDL"``
 explicitly to use the block-sparse backend, which factors the reordered matrix
 as :math:`L D L^T`, storing unit-lower :math:`L` separately from the scalar
 diagonal :math:`D`. It stores only joint
@@ -113,7 +113,6 @@ parallel factorization:
 
 .. code-block:: python
 
-   config.scc.bilateral_solver_type = "LLTBRCM"
    config.scc.bilateral_solver_kwargs = {
        "block_size": 32,
        "reuse_permutation": True,
@@ -122,7 +121,8 @@ parallel factorization:
 
 The cached permutation remains mathematically valid when matrix values or
 sparsity change and is recomputed automatically if the active dimension
-changes. Keep ``"LLTB"`` for small systems.
+changes. To factor dense tiles without reordering, set
+``config.scc.bilateral_solver_type = "LLTB"``.
 
 The level-scheduled sparse backend can incur more launch overhead on small
 systems or long chains, so benchmark representative workloads when choosing
@@ -163,6 +163,36 @@ defaults. LDL options raise an error with another physics solver, sparse
 PADMM, or an explicitly selected LLT backend. Selecting an ordering never
 silently overrides an explicit ``--bilateral-solver-type LLTBRCM`` or
 ``--linear-solver-type LLTB``.
+
+PADMM closed kinematic loops
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Closed kinematic loops make some joint constraints redundant. By default,
+PADMM handles them with three settings of ``config.padmm``:
+
+* ``detect_redundant_kinematics`` drops the redundant kinematic joint rows of
+  models with closed loops, by a pivoted Cholesky elimination of the joint
+  block, and ``reuse_redundant_kinematics_set`` repeats the elimination only
+  in the worlds where the dropped rows fail a check.
+* ``unpenalized_bilateral_rows`` removes the ALM penalty from the bilateral
+  joint rows.
+* ``dual_residual_mode="delassus"`` measures the dual residual as the change of
+  constraint velocity, which ignores impulse drift along the null space of the
+  Delassus matrix (see `Inspecting terminal status`_).
+
+With the iterative linear solvers ``"CR"`` and ``"CRF"`` of
+``config.dynamics.linear_solver_type``, which sparse dynamics always uses, the
+three settings are turned off
+and PADMM keeps its standard handling of redundant constraints. These solvers
+never factorize the singular Delassus matrix, and are more accurate without them.
+
+The internal stress of a loop is then carried by the kept rows rather than
+split with minimum norm, so reported joint reactions can change when the
+dropped rows change at a singular configuration; the motion does not. The
+elimination runs on one thread block per world, which is slow for a single
+world with thousands of kinematic joint rows. Such models can set
+``detect_redundant_kinematics = False``, together with
+``unpenalized_bilateral_rows = False`` if their joints are redundant.
 
 SCC unilateral subsolvers
 ^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -373,6 +403,56 @@ Enable these features through ``config.lox`` after selecting
   retain the classical 3D contact solve. Kamino's primitive collision pipeline
   provides no angular coefficients.
 
+Heterogeneous worlds
+--------------------
+
+Kamino supports solving, in a single batch, worlds in a model that differ in
+bodies, joints, and contact capacity. While arbitrarily different worlds
+are supported, Kamino targets worlds that are small variations of the same
+problem, for example the same robot with different payloads, terrain, or
+optional parts. As world dimensions diverge, memory and throughput resources
+are increasingly wasted.
+
+More specifically, dense quantities (constraint Jacobians, Delassus matrices,
+and their factorizations) are stored with one row per world, sized for the
+largest world, and per-world kernels are launched over grids sized by the
+largest world. This design has the following consequences:
+
+* **Memory:** every world reserves dense storage for the largest world.
+  Delassus matrices and their factors grow quadratically with the number of
+  constraints, so a few large worlds among many small ones can multiply the
+  dense memory footprint.
+* **Throughput:** threads assigned to the unused part of a smaller world
+  stay idle, so a single large world slows down the whole batch.
+
+If worlds differ substantially, for example a few large mechanisms among many
+small ones, consider simulating each group with its own model and solver.
+
+The dense storage row of each world is limited to 2\ :sup:`31` bytes by the
+32-bit array strides of Warp, which bounds a single world's dense Delassus
+matrix to about 23,000 constraints. Larger worlds raise an error during
+solver construction; for these, consider sparse Jacobians and dynamics
+(``sparse_jacobian=True`` and ``sparse_dynamics=True``).
+
+.. _kamino-rod-joints:
+
+Rod joints
+----------
+
+All dynamics backends support ``JointType.ROD`` joints between rigid bodies,
+as built by :meth:`newton.ModelBuilder.add_joint_rod`. Each
+rod DOF with nonzero stiffness or damping adds an implicit dynamic constraint on
+one rod strain: shear and stretch along the axes of the joint frame on the
+parent body, then bend and twist. The rest pose
+of each rod is its structural rest, :attr:`newton.Model.joint_rest_q`: its
+translation sets the rest shear and stretch, and its rotation sets the rest bend
+and twist. Builders store zero translation, so the anchors coincide at rest
+unless ``joint_rest_q`` is edited. The constraints are linearized at the beginning
+of each time step. LOX additionally adds the rotational stiffness of the rod tension
+acting at each segment's lever arm, which keeps light segments under high tension
+stable at large time steps. Rod joints require zero armature, joint damping, and joint
+friction, unbounded joint limits, no target mode, and ``use_fk_solver=False``.
+
 Inspecting terminal status
 --------------------------
 
@@ -386,8 +466,13 @@ residual definitions are backend-specific:
   preconditioner, and ``eta`` and ``rho`` the proximal and penalty parameters.
   ``r_p = ||P (x - y)||_inf`` is the primal consensus residual
   [N·s or N·m·s].
-  ``r_d = ||P^-1 (eta (x - x_prev) + rho (y - y_prev))||_inf`` is the ADMM dual
-  residual [m/s or rad/s]. ``r_c`` is the maximum absolute impulse-velocity
+  ``r_d = ||P^-1 D (x - x_prev)||_inf`` is the change of constraint velocity
+  between iterates [m/s or rad/s], with ``D`` the preconditioned Delassus
+  matrix. With ``dual_residual_mode="standard"`` or an iterative linear solver,
+  it is instead the ADMM dual
+  residual ``r_d = ||P^-1 (eta (x - x_prev) + rho_i (y - y_prev))||_inf``, with
+  ``rho_i`` the penalty of each row, which is zero on unpenalized bilateral
+  joint rows. ``r_c`` is the maximum absolute impulse-velocity
   inner product over inequality blocks [J]. The ``P`` factors
   convert the first two residuals from solver scaling to physical constraint
   units.

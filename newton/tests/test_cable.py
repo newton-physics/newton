@@ -297,6 +297,51 @@ def _run_sim_loop(simulate_fn, num_steps, device):
             simulate_fn()
 
 
+def _simulate_sinusoidal_anchor(model, anchor, anchor_z, device):
+    """Step SolverVBD while the kinematic ``anchor`` body oscillates along X; return the final state."""
+    state0 = model.state()
+    state1 = model.state()
+    control = model.control()
+    collision_pipeline = newton.CollisionPipeline(model)
+    contacts = collision_pipeline.contacts()
+
+    solver = newton.solvers.SolverVBD(model, iterations=10)
+
+    # Smoothly move the anchor with substeps (mirrors cable example pattern).
+    frame_dt = 1.0 / 60.0
+    sim_substeps = 10
+    sim_dt = frame_dt / sim_substeps
+    num_steps = 20
+
+    sim_time_arr = wp.zeros(1, dtype=float, device=device)
+    anchor_id = wp.int32(anchor)
+
+    def simulate():
+        nonlocal state0, state1
+        for _substep in range(sim_substeps):
+            wp.launch(
+                _set_kinematic_sinusoidal_pose,
+                dim=1,
+                inputs=[
+                    anchor_id,
+                    sim_time_arr,
+                    anchor_z,
+                    0.05,
+                    1.5,
+                    state0.body_q,
+                    state0.body_qd,
+                ],
+                device=device,
+            )
+            collision_pipeline.collide(state0, contacts)
+            solver.step(state0, state1, control, contacts, dt=sim_dt)
+            state0, state1 = state1, state0
+            wp.launch(_advance_time, dim=1, inputs=[sim_time_arr, sim_dt], device=device)
+
+    _run_sim_loop(simulate, num_steps, device)
+    return state0
+
+
 # -----------------------------------------------------------------------------
 # Geometry helpers
 # -----------------------------------------------------------------------------
@@ -1344,50 +1389,7 @@ def _cable_ball_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, device
     model = builder.finalize(device=device)
     model.set_gravity((0.0, 0.0, -9.81))
 
-    state0 = model.state()
-    state1 = model.state()
-    control = model.control()
-    collision_pipeline = newton.CollisionPipeline(model)
-    contacts = collision_pipeline.contacts()
-
-    solver = newton.solvers.SolverVBD(
-        model,
-        iterations=10,
-    )
-
-    # Smoothly move the anchor with substeps (mirrors cable example pattern).
-    frame_dt = 1.0 / 60.0
-    sim_substeps = 10
-    sim_dt = frame_dt / sim_substeps
-    num_steps = 20
-
-    sim_time_arr = wp.zeros(1, dtype=float, device=device)
-    anchor_id = wp.int32(anchor)
-    anchor_z = float(anchor_pos[2])
-
-    def simulate():
-        nonlocal state0, state1
-        for _substep in range(sim_substeps):
-            wp.launch(
-                _set_kinematic_sinusoidal_pose,
-                dim=1,
-                inputs=[
-                    anchor_id,
-                    sim_time_arr,
-                    anchor_z,
-                    0.05,
-                    1.5,
-                    state0.body_q,
-                    state0.body_qd,
-                ],
-                device=device,
-            )
-            collision_pipeline.collide(state0, contacts)
-            solver.step(state0, state1, control, contacts, dt=sim_dt)
-            state0, state1 = state1, state0
-            wp.launch(_advance_time, dim=1, inputs=[sim_time_arr, sim_dt], device=device)
-
-    _run_sim_loop(simulate, num_steps, device)
+    state0 = _simulate_sinusoidal_anchor(model, anchor, float(anchor_pos[2]), device)
 
     err = _compute_ball_joint_anchor_error(model, state0.body_q, j_ball)
     test.assertLess(err, 1.0e-3, f"BALL joint: final anchor error {err:.6f} m > 1e-3 m")
@@ -1522,49 +1524,7 @@ def _cable_fixed_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, devic
     model = builder.finalize(device=device)
     model.set_gravity((0.0, 0.0, -9.81))
 
-    state0 = model.state()
-    state1 = model.state()
-    control = model.control()
-    collision_pipeline = newton.CollisionPipeline(model)
-    contacts = collision_pipeline.contacts()
-
-    solver = newton.solvers.SolverVBD(
-        model,
-        iterations=10,
-    )
-
-    frame_dt = 1.0 / 60.0
-    sim_substeps = 10
-    sim_dt = frame_dt / sim_substeps
-    num_steps = 20
-
-    sim_time_arr = wp.zeros(1, dtype=float, device=device)
-    anchor_id = wp.int32(anchor)
-    anchor_z = float(anchor_pos[2])
-
-    def simulate():
-        nonlocal state0, state1
-        for _substep in range(sim_substeps):
-            wp.launch(
-                _set_kinematic_sinusoidal_pose,
-                dim=1,
-                inputs=[
-                    anchor_id,
-                    sim_time_arr,
-                    anchor_z,
-                    0.05,
-                    1.5,
-                    state0.body_q,
-                    state0.body_qd,
-                ],
-                device=device,
-            )
-            collision_pipeline.collide(state0, contacts)
-            solver.step(state0, state1, control, contacts, dt=sim_dt)
-            state0, state1 = state1, state0
-            wp.launch(_advance_time, dim=1, inputs=[sim_time_arr, sim_dt], device=device)
-
-    _run_sim_loop(simulate, num_steps, device)
+    state0 = _simulate_sinusoidal_anchor(model, anchor, float(anchor_pos[2]), device)
 
     pos_err_x, ang_err_x = _compute_fixed_joint_frame_error(model, state0.body_q, j_fixed_x)
     test.assertLess(pos_err_x, 1.0e-3, f"FIXED joint (X): pos error {pos_err_x:.6f}")
@@ -1721,49 +1681,7 @@ def _cable_revolute_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, de
     model = builder.finalize(device=device)
     model.set_gravity((0.0, 0.0, -9.81))
 
-    state0 = model.state()
-    state1 = model.state()
-    control = model.control()
-    collision_pipeline = newton.CollisionPipeline(model)
-    contacts = collision_pipeline.contacts()
-
-    solver = newton.solvers.SolverVBD(
-        model,
-        iterations=10,
-    )
-
-    frame_dt = 1.0 / 60.0
-    sim_substeps = 10
-    sim_dt = frame_dt / sim_substeps
-    num_steps = 20
-
-    sim_time_arr = wp.zeros(1, dtype=float, device=device)
-    anchor_id = wp.int32(anchor)
-    anchor_z = float(anchor_pos[2])
-
-    def simulate():
-        nonlocal state0, state1
-        for _substep in range(sim_substeps):
-            wp.launch(
-                _set_kinematic_sinusoidal_pose,
-                dim=1,
-                inputs=[
-                    anchor_id,
-                    sim_time_arr,
-                    anchor_z,
-                    0.05,
-                    1.5,
-                    state0.body_q,
-                    state0.body_qd,
-                ],
-                device=device,
-            )
-            collision_pipeline.collide(state0, contacts)
-            solver.step(state0, state1, control, contacts, dt=sim_dt)
-            state0, state1 = state1, state0
-            wp.launch(_advance_time, dim=1, inputs=[sim_time_arr, sim_dt], device=device)
-
-    _run_sim_loop(simulate, num_steps, device)
+    state0 = _simulate_sinusoidal_anchor(model, anchor, float(anchor_pos[2]), device)
 
     pos_err_x, ang_perp_err_x, _ = _compute_revolute_joint_error(model, state0.body_q, j_revolute_x)
     test.assertLess(pos_err_x, 1.0e-3, f"REVOLUTE joint (X): pos error {pos_err_x:.6f}")
@@ -2726,46 +2644,7 @@ def _cable_d6_joint_all_locked_impl(test: unittest.TestCase, device):
     model = builder.finalize(device=device)
     model.set_gravity((0.0, 0.0, -9.81))
 
-    state0 = model.state()
-    state1 = model.state()
-    control = model.control()
-    collision_pipeline = newton.CollisionPipeline(model)
-    contacts = collision_pipeline.contacts()
-
-    solver = newton.solvers.SolverVBD(model, iterations=10)
-
-    frame_dt = 1.0 / 60.0
-    sim_substeps = 10
-    sim_dt = frame_dt / sim_substeps
-    num_steps = 20
-
-    sim_time_arr = wp.zeros(1, dtype=float, device=device)
-    anchor_id = wp.int32(anchor)
-    anchor_z = float(anchor_pos[2])
-
-    def simulate():
-        nonlocal state0, state1
-        for _substep in range(sim_substeps):
-            wp.launch(
-                _set_kinematic_sinusoidal_pose,
-                dim=1,
-                inputs=[
-                    anchor_id,
-                    sim_time_arr,
-                    anchor_z,
-                    0.05,
-                    1.5,
-                    state0.body_q,
-                    state0.body_qd,
-                ],
-                device=device,
-            )
-            collision_pipeline.collide(state0, contacts)
-            solver.step(state0, state1, control, contacts, dt=sim_dt)
-            state0, state1 = state1, state0
-            wp.launch(_advance_time, dim=1, inputs=[sim_time_arr, sim_dt], device=device)
-
-    _run_sim_loop(simulate, num_steps, device)
+    state0 = _simulate_sinusoidal_anchor(model, anchor, float(anchor_pos[2]), device)
 
     pos_err, ang_err = _compute_fixed_joint_frame_error(model, state0.body_q, j_d6)
     test.assertLess(pos_err, 1.0e-3, "D6 all-locked: position error too large")
@@ -2860,48 +2739,9 @@ def _cable_d6_joint_locked_x_impl(test: unittest.TestCase, device):
     model = builder.finalize(device=device)
     model.set_gravity((0.0, 0.0, -9.81))
 
-    state0 = model.state()
-    state1 = model.state()
-    control = model.control()
-    collision_pipeline = newton.CollisionPipeline(model)
-    contacts = collision_pipeline.contacts()
-
-    solver = newton.solvers.SolverVBD(model, iterations=10)
-
-    frame_dt = 1.0 / 60.0
-    sim_substeps = 10
-    sim_dt = frame_dt / sim_substeps
-    num_steps = 20
-
     locked_axis_local = wp.vec3(1.0, 0.0, 0.0)
 
-    sim_time_arr = wp.zeros(1, dtype=float, device=device)
-    anchor_id = wp.int32(anchor)
-    anchor_z = float(anchor_pos[2])
-
-    def simulate():
-        nonlocal state0, state1
-        for _substep in range(sim_substeps):
-            wp.launch(
-                _set_kinematic_sinusoidal_pose,
-                dim=1,
-                inputs=[
-                    anchor_id,
-                    sim_time_arr,
-                    anchor_z,
-                    0.05,
-                    1.5,
-                    state0.body_q,
-                    state0.body_qd,
-                ],
-                device=device,
-            )
-            collision_pipeline.collide(state0, contacts)
-            solver.step(state0, state1, control, contacts, dt=sim_dt)
-            state0, state1 = state1, state0
-            wp.launch(_advance_time, dim=1, inputs=[sim_time_arr, sim_dt], device=device)
-
-    _run_sim_loop(simulate, num_steps, device)
+    state0 = _simulate_sinusoidal_anchor(model, anchor, float(anchor_pos[2]), device)
 
     # Position error along the locked X axis.
     X_wp, X_wc = _get_joint_world_frames(model, state0.body_q, j_d6)

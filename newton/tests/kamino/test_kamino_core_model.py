@@ -26,12 +26,11 @@ from newton._src.solvers.kamino._src.core.joints import (
     JointActuationType,
 )
 from newton._src.solvers.kamino._src.core.model import ModelKamino
-from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
 from newton.tests import get_kamino_basics_asset
-from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino import setup_test_output, setup_tests, test_context
 from newton.tests.kamino.utils import print as print_utils
-from newton.tests.unittest_utils import requires
+from newton.tests.unittest_utils import NewtonTestCase, requires
 from newton.tests.utils.basics import (
     build_box_pendulum,
     build_boxes_fourbar,
@@ -47,24 +46,14 @@ logger = logging.getLogger(__name__)
 ###
 
 
-class TestModel(unittest.TestCase):
+class TestModel(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose  # Set to True for verbose output
 
-        # Set debug-level logging to print verbose test output to console
-        if self.verbose:
-            set_log_level(logging.DEBUG)
-            logger.debug("\n")  # Add newline before test output for better readability
-        else:
-            reset_log_level()
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
+        setup_test_output(self, verbose=self.verbose)
 
     def test_01_single_model(self):
         # Create a model builder
@@ -161,24 +150,14 @@ class TestModel(unittest.TestCase):
         self.assertEqual(model.info.num_worlds, num_worlds)
 
 
-class TestModelConversions(unittest.TestCase):
+class TestModelConversions(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose  # Set to True to enable verbose output
 
-        # Set debug-level logging to print verbose test output to console
-        if self.verbose:
-            set_log_level(logging.DEBUG)
-            logger.debug("\n")  # Add newline before test output for better readability
-        else:
-            reset_log_level()
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
+        setup_test_output(self, verbose=self.verbose)
 
     def test_01_model_conversions_consistency_fourbar_from_builder(self):
         """
@@ -1075,24 +1054,14 @@ class TestModelConversions(unittest.TestCase):
         self.assertEqual(geom_material[1], -1)
 
 
-class TestStateControlConversions(unittest.TestCase):
+class TestStateControlConversions(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose  # Set to True to enable verbose output
 
-        # Set debug-level logging to print verbose test output to console
-        if self.verbose:
-            set_log_level(logging.DEBUG)
-            logger.debug("\n")  # Add newline before test output for better readability
-        else:
-            reset_log_level()
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
+        setup_test_output(self, verbose=self.verbose)
 
     def test_01_state_conversions(self):
         """
@@ -1237,14 +1206,12 @@ class TestStateControlConversions(unittest.TestCase):
         )
 
 
-class TestConvertModelMaterials(unittest.TestCase):
+class TestConvertModelMaterials(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
+        setup_test_output(self)
         self.default_device = wp.get_device(test_context.device)
-
-    def tearDown(self):
-        self.default_device = None
 
     def _build_two_material_model(self) -> tuple[Model, ModelKamino]:
         """Build a model with 2 shapes sharing a material and 1 shape with a distinct one."""

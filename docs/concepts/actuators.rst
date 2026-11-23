@@ -18,6 +18,26 @@ output array before stepping actuators each frame.  The simulator does not
 need to be part of Newton: actuators can be used in any simulator that
 provides the state arrays and applies the computed effort.
 
+.. _actuator-stepping:
+
+Newton supports two actuation paths:
+
+* **Internal joint drives** use the model's ``joint_target_ke`` and
+  ``joint_target_kd`` drive gains and the control's position and velocity
+  targets. The physics solver evaluates
+  them during ``solver.step()``; there is no separate actuator step. This also
+  applies to standard USD joint drives imported with
+  :meth:`~newton.ModelBuilder.add_usd`, subject to the solver's
+  :ref:`Joint feature support`.
+* **External actuators** are :class:`Actuator` objects, including those created
+  with :meth:`~newton.ModelBuilder.add_actuator` or imported from USD
+  ``NewtonActuator`` prims. The caller must call ``actuator.step()`` before
+  ``solver.step()``. Finalization creates ``model.actuators`` but the solver
+  does not step them automatically. Batteries in ``model.batteries`` also
+  require an explicit ``battery.step(control)`` after the actuators.
+
+The rest of this page describes external Newton actuators.
+
 Each :class:`Actuator` instance is **vectorized**: a single actuator object
 operates on a batch of DOF indices in global state and control arrays, allowing
 efficient integration into RL workflows with many parallel environments.
@@ -127,7 +147,7 @@ when the model is finalized:
    )
 
    builder = newton.ModelBuilder()
-   link = builder.add_link()
+   link = builder.add_link(mass=1.0, inertia=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0))
    joint = builder.add_joint_revolute(parent=-1, child=link, axis=newton.Axis.Z)
    builder.add_articulation([joint])
    dof_index = builder.joint_qd_start[joint]
@@ -144,6 +164,48 @@ when the model is finalized:
    )
 
    model = builder.finalize()
+
+Step the external actuators separately from the physics solver, once per
+simulation substep. Actuators accumulate effort, so clear ``control.joint_f``
+before the actuator loop (and add any other applied joint effort afterwards).
+This loop also applies when :meth:`~newton.ModelBuilder.add_usd` populated
+``model.actuators`` and ``model.batteries``:
+
+.. testcode:: actuator-usage
+
+   solver = newton.solvers.SolverFeatherstone(model)
+   state_0, state_1 = model.state(), model.state()
+   control = model.control()
+   act_states = [actuator.state() for actuator in model.actuators]
+   next_act_states = [actuator.state() for actuator in model.actuators]
+   control.joint_target_q.fill_(0.5)
+   dt = 0.001
+
+   for _ in range(10):
+       state_0.clear_forces()
+       control.joint_f.zero_()
+       for actuator, act_state, next_act_state in zip(model.actuators, act_states, next_act_states):
+           actuator.step(state_0, control, act_state, next_act_state, dt=dt)
+       act_states, next_act_states = next_act_states, act_states
+       for battery in model.batteries:
+           battery.step(control)
+       # Apply the computed effort and advance physics.
+       solver.step(state_0, state_1, control, None, dt)
+       state_0, state_1 = state_1, state_0
+
+This model has no collision shapes, so the solver receives ``None`` for
+contacts. For models with collision shapes, including USD imports, generate
+contacts each substep with :meth:`newton.CollisionPipeline.collide` and pass
+the contacts buffer to ``solver.step()`` instead of ``None``.
+
+.. testcode:: actuator-usage
+   :hide:
+
+   import numpy as np
+
+   assert np.isfinite(state_0.joint_q.numpy()).all()
+   assert np.isfinite(state_0.joint_qd.numpy()).all()
+   assert state_0.joint_q.numpy()[0] > 0.0  # moved from zero toward the 0.5 target
 
 For manual construction (outside of :class:`~newton.ModelBuilder`), compose the
 components directly:
@@ -163,15 +225,8 @@ components directly:
        control_target_vel_attr="joint_target_qd",
    )
 
-Step an actuator with the :class:`newton.State` and :class:`newton.Control`
-of the model:
-
-.. testcode:: actuator-usage
-
-   state = model.state()
-   control = model.control()
-   control.joint_f.zero_()
-   actuator.step(state, control, dt=0.01)
+Step a manually constructed actuator directly with ``actuator.step()`` before
+the physics solver, following the same ordering as the loop above.
 
 The simulation state and control objects do not need to be a full
 :class:`newton.State` / :class:`newton.Control`: any objects exposing joint
@@ -907,7 +962,13 @@ USD
 
 :meth:`~newton.ModelBuilder.add_usd` imports ``NewtonActuator`` prims from
 the `newton-usd-schemas <https://github.com/newton-physics/newton-usd-schemas>`__
-package.  Each applied API schema becomes one component:
+package. These become external actuators in ``model.actuators`` after
+finalization and require explicit stepping before the physics solver, as
+shown in `Usage`_. Imported batteries must also be stepped after
+the actuators. Standard USD joint drives instead run inside ``solver.step()``;
+see :ref:`the stepping guidance above <actuator-stepping>`.
+
+Each applied API schema becomes one component:
 
 .. list-table::
    :header-rows: 1

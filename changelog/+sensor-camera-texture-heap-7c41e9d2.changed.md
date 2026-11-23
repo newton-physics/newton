@@ -1,0 +1,1 @@
+Speed up `SensorCamera` construction for models with several large texture files on Linux, where every texture after the first paid again for memory the allocator had just returned to the OS. No migration is required.

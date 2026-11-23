@@ -16,11 +16,11 @@ from newton._src.solvers.kamino._src.linalg.factorize import (
     llt_sequential_solve,
     llt_sequential_solve_inplace,
 )
-from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
-from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino import setup_test_output, setup_tests, test_context
 from newton.tests.kamino.utils.extract import get_matrix_block, get_vector_block
 from newton.tests.kamino.utils.print import debug_print_error_stats
 from newton.tests.kamino.utils.rand import RandomProblemLLT
+from newton.tests.unittest_utils import NewtonTestCase
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 ###
 
 
-class TestLinAlgLLTSequential(unittest.TestCase):
+class TestLinAlgLLTSequential(NewtonTestCase):
     def setUp(self):
         # Configs
         if not test_context.setup_done:
@@ -38,17 +38,7 @@ class TestLinAlgLLTSequential(unittest.TestCase):
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose  # Set to True for verbose output
 
-        # Set debug-level logging to print verbose test output to console
-        if self.verbose:
-            set_log_level(logging.DEBUG)
-            logger.debug("\n")  # Add newline before test output for better readability
-        else:
-            reset_log_level()
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
+        setup_test_output(self, verbose=self.verbose)
 
     def test_01_single_problem_dims_all_active(self):
         """
@@ -74,7 +64,11 @@ class TestLinAlgLLTSequential(unittest.TestCase):
         logger.debug("X_np:\n%s\n", problem.X_np[0])
         logger.debug("y_np:\n%s\n", problem.y_np[0])
         logger.debug("x_np:\n%s\n", problem.x_np[0])
-        logger.debug("A_wp (%s):\n%s\n", problem.A_wp.shape, problem.A_wp.numpy().reshape((N, N)))
+        logger.debug(
+            "A_wp (%s):\n%s\n",
+            problem.A_wp.shape,
+            get_matrix_block(0, problem.A_wp.numpy(), problem.dims),
+        )
         logger.debug("b_wp (%s):\n%s\n", problem.b_wp.shape, problem.b_wp.numpy().reshape((N,)))
 
         # Create the linear operator meta-data
@@ -85,7 +79,11 @@ class TestLinAlgLLTSequential(unittest.TestCase):
         # Create the linear operator data structure
         operator = DenseLinearOperatorData(info=opinfo, mat=problem.A_wp)
         logger.debug("operator.info:\n%s\n", operator.info)
-        logger.debug("operator.mat (%s):\n%s\n", operator.mat.shape, operator.mat.numpy().reshape((N, N)))
+        logger.debug(
+            "operator.mat (%s):\n%s\n",
+            operator.mat.shape,
+            get_matrix_block(0, operator.mat.numpy(), problem.dims),
+        )
 
         # Allocate LLT data arrays
         L_wp = wp.zeros_like(problem.A_wp, device=self.default_device)
@@ -99,13 +97,12 @@ class TestLinAlgLLTSequential(unittest.TestCase):
         llt_sequential_factorize(
             num_blocks=problem.num_blocks,
             dim=operator.info.dim,
-            mio=operator.info.mio,
             A=problem.A_wp,
             L=L_wp,
         )
 
         # Check matrix factorization against numpy
-        L_wp_np = get_matrix_block(0, L_wp.numpy(), problem.dims, problem.maxdims)
+        L_wp_np = get_matrix_block(0, L_wp.numpy(), problem.dims)
         logger.debug("L_wp_np (%s):\n%s\n", L_wp_np.shape, L_wp_np)
         debug_print_error_stats("L", L_wp_np, problem.X_np[0], problem.dims[0])
         np.testing.assert_allclose(L_wp_np, problem.X_np[0], rtol=1e-3, atol=1e-4, err_msg="L")
@@ -128,7 +125,6 @@ class TestLinAlgLLTSequential(unittest.TestCase):
         llt_sequential_solve(
             num_blocks=problem.num_blocks,
             dim=operator.info.dim,
-            mio=operator.info.mio,
             vio=operator.info.vio,
             L=L_wp,
             b=problem.b_wp,
@@ -162,7 +158,6 @@ class TestLinAlgLLTSequential(unittest.TestCase):
         llt_sequential_solve_inplace(
             num_blocks=problem.num_blocks,
             dim=operator.info.dim,
-            mio=operator.info.mio,
             vio=operator.info.vio,
             L=L_wp,
             x=x_wp,
@@ -207,7 +202,11 @@ class TestLinAlgLLTSequential(unittest.TestCase):
         logger.debug("X_np:\n%s\n", problem.X_np[0])
         logger.debug("y_np:\n%s\n", problem.y_np[0])
         logger.debug("x_np:\n%s\n", problem.x_np[0])
-        logger.debug("A_wp (%s):\n%s\n", problem.A_wp.shape, problem.A_wp.numpy().reshape((N_max, N_max)))
+        logger.debug(
+            "A_wp (%s):\n%s\n",
+            problem.A_wp.shape,
+            get_matrix_block(0, problem.A_wp.numpy(), problem.dims),
+        )
         logger.debug("b_wp (%s):\n%s\n", problem.b_wp.shape, problem.b_wp.numpy().reshape((N_max,)))
 
         # Create the linear operator meta-data
@@ -218,7 +217,11 @@ class TestLinAlgLLTSequential(unittest.TestCase):
         # Create the linear operator data structure
         operator = DenseLinearOperatorData(info=opinfo, mat=problem.A_wp)
         logger.debug("operator.info:\n%s\n", operator.info)
-        logger.debug("operator.mat (%s):\n%s\n", operator.mat.shape, operator.mat.numpy().reshape((N_max, N_max)))
+        logger.debug(
+            "operator.mat (%s):\n%s\n",
+            operator.mat.shape,
+            get_matrix_block(0, operator.mat.numpy(), problem.dims),
+        )
 
         # IMPORTANT: Now we set the active dimensions in the operator info
         operator.info.dim.fill_(N_act)
@@ -235,13 +238,12 @@ class TestLinAlgLLTSequential(unittest.TestCase):
         llt_sequential_factorize(
             num_blocks=problem.num_blocks,
             dim=operator.info.dim,
-            mio=operator.info.mio,
             A=problem.A_wp,
             L=L_wp,
         )
 
         # Check matrix factorization against numpy
-        L_wp_np = get_matrix_block(0, L_wp.numpy(), problem.dims, problem.maxdims)
+        L_wp_np = get_matrix_block(0, L_wp.numpy(), problem.dims)
         logger.debug("L_wp_np (%s):\n%s\n", L_wp_np.shape, L_wp_np)
         debug_print_error_stats("L", L_wp_np, problem.X_np[0], problem.dims[0])
         np.testing.assert_allclose(L_wp_np, problem.X_np[0], rtol=1e-3, atol=1e-4, err_msg="L")
@@ -264,7 +266,6 @@ class TestLinAlgLLTSequential(unittest.TestCase):
         llt_sequential_solve(
             num_blocks=problem.num_blocks,
             dim=operator.info.dim,
-            mio=operator.info.mio,
             vio=operator.info.vio,
             L=L_wp,
             b=problem.b_wp,
@@ -296,7 +297,6 @@ class TestLinAlgLLTSequential(unittest.TestCase):
         llt_sequential_solve_inplace(
             num_blocks=problem.num_blocks,
             dim=operator.info.dim,
-            mio=operator.info.mio,
             vio=operator.info.vio,
             L=L_wp,
             x=x_wp,
@@ -334,7 +334,7 @@ class TestLinAlgLLTSequential(unittest.TestCase):
 
         # Optional verbose output
         for i in range(problem.num_blocks):
-            A_wp_np = get_matrix_block(i, problem.A_wp.numpy(), problem.dims, problem.maxdims)
+            A_wp_np = get_matrix_block(i, problem.A_wp.numpy(), problem.dims)
             b_wp_np = get_vector_block(i, problem.b_wp.numpy(), problem.dims, problem.maxdims)
             logger.debug("[%d]: b_np:\n%s\n", i, problem.b_np[i])
             logger.debug("[%d]: A_np:\n%s\n", i, problem.A_np[i])
@@ -366,7 +366,6 @@ class TestLinAlgLLTSequential(unittest.TestCase):
         llt_sequential_factorize(
             num_blocks=problem.num_blocks,
             dim=operator.info.dim,
-            mio=operator.info.mio,
             A=problem.A_wp,
             L=L_wp,
         )
@@ -374,7 +373,7 @@ class TestLinAlgLLTSequential(unittest.TestCase):
         # Iterate over all problems for verification
         for i in range(problem.num_blocks):
             # Check matrix factorization against numpy
-            L_wp_np = get_matrix_block(i, L_wp.numpy(), problem.dims, problem.maxdims)
+            L_wp_np = get_matrix_block(i, L_wp.numpy(), problem.dims)
             logger.debug("L_wp_np (%s):\n%s\n", L_wp_np.shape, L_wp_np)
             logger.debug("X_np (%s):\n%s\n", problem.X_np[i].shape, problem.X_np[i])
             debug_print_error_stats("L", L_wp_np, problem.X_np[i], problem.dims[i])
@@ -398,7 +397,6 @@ class TestLinAlgLLTSequential(unittest.TestCase):
         llt_sequential_solve(
             num_blocks=problem.num_blocks,
             dim=operator.info.dim,
-            mio=operator.info.mio,
             vio=operator.info.vio,
             L=L_wp,
             b=problem.b_wp,
@@ -434,7 +432,6 @@ class TestLinAlgLLTSequential(unittest.TestCase):
         llt_sequential_solve_inplace(
             num_blocks=problem.num_blocks,
             dim=operator.info.dim,
-            mio=operator.info.mio,
             vio=operator.info.vio,
             L=L_wp,
             x=x_wp,
@@ -479,7 +476,7 @@ class TestLinAlgLLTSequential(unittest.TestCase):
 
         # Optional verbose output
         for i in range(problem.num_blocks):
-            A_wp_np = get_matrix_block(i, problem.A_wp.numpy(), problem.dims, problem.maxdims)
+            A_wp_np = get_matrix_block(i, problem.A_wp.numpy(), problem.dims)
             b_wp_np = get_vector_block(i, problem.b_wp.numpy(), problem.dims, problem.maxdims)
             logger.debug("[%d]: b_np:\n%s\n", i, problem.b_np[i])
             logger.debug("[%d]: A_np:\n%s\n", i, problem.A_np[i])
@@ -514,7 +511,6 @@ class TestLinAlgLLTSequential(unittest.TestCase):
         llt_sequential_factorize(
             num_blocks=problem.num_blocks,
             dim=operator.info.dim,
-            mio=operator.info.mio,
             A=problem.A_wp,
             L=L_wp,
         )
@@ -522,7 +518,7 @@ class TestLinAlgLLTSequential(unittest.TestCase):
         # Iterate over all problems for verification
         for i in range(problem.num_blocks):
             # Check matrix factorization against numpy
-            L_wp_np = get_matrix_block(i, L_wp.numpy(), problem.dims, problem.maxdims)
+            L_wp_np = get_matrix_block(i, L_wp.numpy(), problem.dims)
             logger.debug("L_wp_np (%s):\n%s\n", L_wp_np.shape, L_wp_np)
             logger.debug("X_np (%s):\n%s\n", problem.X_np[i].shape, problem.X_np[i])
             debug_print_error_stats("L", L_wp_np, problem.X_np[i], problem.dims[i])
@@ -546,7 +542,6 @@ class TestLinAlgLLTSequential(unittest.TestCase):
         llt_sequential_solve(
             num_blocks=problem.num_blocks,
             dim=operator.info.dim,
-            mio=operator.info.mio,
             vio=operator.info.vio,
             L=L_wp,
             b=problem.b_wp,
@@ -582,7 +577,6 @@ class TestLinAlgLLTSequential(unittest.TestCase):
         llt_sequential_solve_inplace(
             num_blocks=problem.num_blocks,
             dim=operator.info.dim,
-            mio=operator.info.mio,
             vio=operator.info.vio,
             L=L_wp,
             x=x_wp,

@@ -31,6 +31,7 @@ class TestViewerUI(unittest.TestCase):
         self.addCleanup(imgui.destroy_context, context)
         # Exercise ImGui state without an OpenGL renderer or window.
         self.ui = UI.__new__(UI)
+        self.ui._context = context
         self.ui.imgui = imgui
         self.ui.giz = imguizmo.im_guizmo
         self.ui.io = imgui.get_io()
@@ -56,6 +57,25 @@ class TestViewerUI(unittest.TestCase):
                         self.assertAlmostEqual(self.ui.imgui.get_time(), elapsed)
                     finally:
                         self.ui.imgui.end_frame()
+
+    def test_modifier_reset_on_focus_loss(self) -> None:
+        """Forget a modifier key whose release was missed while the window was unfocused."""
+        import_pyglet_window(shadow_window=False)
+        from pyglet.window import key
+
+        self.ui.window = mock.MagicMock()
+        self.ui._attach_input()
+        handlers = self.ui.window.push_handlers.call_args.kwargs
+        self.ui.io.config_input_trickle_event_queue = False
+
+        handlers["on_key_press"](key.LCTRL, 0)
+        handlers["on_deactivate"]()
+        self.ui.io.clear_input_keys()
+        handlers["on_key_press"](key.RCTRL, 0)
+        handlers["on_key_release"](key.RCTRL, 0)
+        self.ui.begin_frame()
+        self.ui.imgui.end_frame()
+        self.assertFalse(self.ui.io.key_ctrl)
 
     def test_dpi_scaling(self) -> None:
         """Keep style sizes stable on reapplication and restore them at scale one."""
@@ -368,6 +388,7 @@ class TestViewerGizmos(unittest.TestCase):
         self.gui = ViewerGui.__new__(ViewerGui)
         self.gui._viewer = self.viewer
         self.gui.ui = UI.__new__(UI)
+        self.gui.ui._context = context
         self.gui.ui.is_available = True
         self.gui.ui.imgui = imgui
         self.gui.ui.io = self.io

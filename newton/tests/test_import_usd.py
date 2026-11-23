@@ -3,7 +3,6 @@
 
 import builtins
 import hashlib
-import inspect
 import logging
 import math
 import os
@@ -1845,6 +1844,53 @@ def Xform "Articulation" (
         self.assertAlmostEqual(float(model.joint_limit_ke.numpy()[dof]), builder.default_joint_cfg.limit_ke, places=4)
         self.assertAlmostEqual(float(model.joint_limit_kd.numpy()[dof]), builder.default_joint_cfg.limit_kd, places=4)
         self.assertEqual(int(model.mujoco.solreflimit_mode.numpy()[dof]), SOLREF_MODE_MJCF_DEFAULT)
+
+    @requires("pxr.Usd")
+    def test_physics_scene_declaration_keeps_solver_update_flags(self):
+        """Merge a PhysicsScene declaration of a solver attribute with its registration, in either order."""
+        from pxr import Usd
+
+        usd_content = """#usda 1.0
+(
+    upAxis = "Z"
+)
+
+def PhysicsScene "physicsScene"
+{
+    custom float newton:mujoco:gravcomp = 0 (
+        customData = {
+            string assignment = "model"
+            string frequency = "body"
+        }
+    )
+}
+
+def Xform "Body" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+)
+{
+    def Sphere "Collision" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double radius = 0.1
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+        for register_first in (True, False):
+            with self.subTest(register_first=register_first):
+                builder = newton.ModelBuilder()
+                if register_first:
+                    SolverMuJoCo.register_custom_attributes(builder)
+                builder.add_usd(stage)
+                if not register_first:
+                    SolverMuJoCo.register_custom_attributes(builder)
+                model = builder.finalize(device="cpu")
+                self.assertEqual(
+                    model.get_attribute_update_flags("mujoco:gravcomp"), newton.ModelFlags.BODY_INERTIAL_PROPERTIES
+                )
 
     @requires("pxr.Usd", *MUJOCO_MODULES)
     def test_unauthored_usd_solreflimit_uses_mujoco_default(self):
@@ -4405,6 +4451,55 @@ def Xform "NotPSD" (
         self.assertTrue(any("not positive semidefinite" in m and "NotPSD" in m for m in warning_messages))
 
     @requires("pxr.Usd")
+    def test_newton_inertia_empty_is_no_opinion(self):
+        """An authored empty newton:inertia defers to physics:diagonalInertia without a warning."""
+        from pxr import Usd
+
+        usd_content = """#usda 1.0
+(
+    upAxis = "Z"
+)
+
+def PhysicsScene "physicsScene"
+{
+}
+
+def Xform "EmptyTensor" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI", "NewtonMassAPI"]
+)
+{
+    double3 xformOp:translate = (0, 0, 1)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    float physics:mass = 3.0
+    float3 physics:diagonalInertia = (0.5, 1.0, 1.5)
+    double[] newton:inertia = []
+
+    def Sphere "Collider" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double radius = 0.5
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            builder = newton.ModelBuilder()
+            builder.add_usd(stage)
+
+        warning_messages = [str(w.message) for w in caught]
+        self.assertFalse(any("newton:inertia" in m for m in warning_messages), warning_messages)
+
+        body_id = builder.body_label.index("/EmptyTensor")
+        self.assertAlmostEqual(builder.body_mass[body_id], 3.0, places=5)
+        inertia = np.array(builder.body_inertia[body_id]).reshape(3, 3)
+        np.testing.assert_allclose(inertia, np.diag([0.5, 1.0, 1.5]), atol=1e-5)
+
+    @requires("pxr.Usd")
     def test_import_usd_gravcomp(self):
         """Test parsing of gravcomp from USD"""
         from pxr import Sdf, Usd, UsdPhysics
@@ -4440,9 +4535,8 @@ def Xform "NotPSD" (
         self.assertTrue(np.any(np.isclose(gravcomp, 0.5)))
         self.assertTrue(np.any(np.isclose(gravcomp, 0.0)))
 
-    @requires("pxr.Usd")
-    def test_joint_stiffness_damping(self):
-        """Verify joint stiffness and damping are parsed correctly from USD."""
+    def _make_joint_stiffness_damping_model(self):
+        """Build the shared USD joint-gains fixture."""
         from pxr import Usd
 
         usd_content = """#usda 1.0
@@ -4521,6 +4615,7 @@ def Xform "Articulation" (
         float physics:upperLimit = 30
         float drive:angular:physics:stiffness = 5000.0
         float drive:angular:physics:damping = 1000.0
+        uniform double[] mjc:springdamper = [0.2, 1.5]
     }
 
     def Xform "Body3" (
@@ -4563,8 +4658,12 @@ def Xform "Articulation" (
         # mjc:damping resolves through SchemaResolverMjc into joint_damping;
         # mjc:stiffness resolves into core joint_stiffness.
         builder.add_usd(stage, schema_resolvers=[usd.SchemaResolverNewton(), usd.SchemaResolverMjc()])
-        model = builder.finalize()
+        return builder.finalize()
 
+    @requires("pxr.Usd")
+    def test_joint_stiffness_damping(self):
+        """Verify joint stiffness and damping are parsed correctly from USD."""
+        model = self._make_joint_stiffness_damping_model()
         self.assertTrue(hasattr(model, "mujoco"))
         self.assertFalse(hasattr(model.mujoco, "dof_passive_damping"))
 
@@ -4601,6 +4700,36 @@ def Xform "Articulation" (
             self.assertAlmostEqual(joint_damping[dof_idx], expected["damping"], places=4)
             self.assertAlmostEqual(joint_target_ke[dof_idx], expected["target_ke"], places=1)
             self.assertAlmostEqual(joint_target_kd[dof_idx], expected["target_kd"], places=1)
+
+        springdamper = model.mujoco.dof_springdamper.numpy()
+        expected_springdamper = np.zeros_like(springdamper)
+        expected_springdamper[joint_qd_start[joint_names.index("/Articulation/Joint2")]] = [0.2, 1.5]
+        np.testing.assert_allclose(springdamper, expected_springdamper)
+
+    @requires("pxr.Usd", *MUJOCO_MODULES)
+    def test_usd_springdamper_core_gains(self):
+        """Resolve the authored USD springdamper to the same gains as native MuJoCo."""
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        model = self._make_joint_stiffness_damping_model()
+        with tempfile.TemporaryDirectory() as directory:
+            filename = f"{directory}/model.xml"
+            solver = SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True, save_to_mjcf=filename)
+            native_spec = mujoco.MjSpec.from_file(filename)
+        dof = model.joint_qd_start.numpy()[model.joint_label.index("/Articulation/Joint2")]
+        joint = np.flatnonzero(solver.mjc_jnt_to_newton_dof.numpy()[0] == dof)[0]
+        native_spec.joints[joint].springdamper[:] = [0.2, 1.5]
+        native = native_spec.compile()
+        np.testing.assert_allclose(
+            [model.joint_stiffness.numpy()[dof], solver.mj_model.jnt_stiffness[joint]],
+            native.jnt_stiffness[joint],
+            rtol=2e-5,
+        )
+        mjc_dof = native.jnt_dofadr[joint]
+        np.testing.assert_allclose(
+            [model.joint_damping.numpy()[dof], solver.mj_model.dof_damping[mjc_dof]],
+            native.dof_damping[mjc_dof],
+            rtol=2e-5,
+        )
 
     @requires("pxr.Usd")
     def test_joint_damping_respects_schema_resolver_priority(self):
@@ -13563,24 +13692,6 @@ def Mesh "cube"
 
 
 class TestTetMesh(unittest.TestCase):
-    def test_tetmesh_keyword_only_deprecation_shim(self):
-        """Keep legacy TetMesh positional arguments working with a deprecation."""
-        signature = inspect.signature(newton.TetMesh)
-        parameters = list(signature.parameters.values())
-        self.assertEqual([parameter.name for parameter in parameters[:2]], ["vertices", "tet_indices"])
-        self.assertTrue(all(parameter.kind == inspect.Parameter.KEYWORD_ONLY for parameter in parameters[2:]))
-
-        vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float32)
-        tet_indices = np.array([0, 1, 2, 3], dtype=np.int32)
-        with self.assertWarnsRegex(
-            DeprecationWarning,
-            "Passing 'k_mu', 'k_lambda', 'k_damp', 'density', 'custom_attributes' positionally",
-        ):
-            tet_mesh = newton.TetMesh(vertices, tet_indices, 1.0, 2.0, 3.0, 4.0, None)
-
-        assert_np_equal(tet_mesh.k_mu, np.array([1.0], dtype=np.float32))
-        self.assertEqual(tet_mesh.density, 4.0)
-
     def test_tetmesh_basic(self):
         """Test TetMesh construction from raw arrays."""
         vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 1]], dtype=np.float32)
@@ -13802,10 +13913,10 @@ def Mesh "JustAMesh" ()
     def test_get_tetmesh_vendor_namespace_legacy_recovery(self):
         """Vendor-namespaced material reads follow the ``compat_namespaces`` opt-in.
 
-        Canonical-only (``compat_namespaces=()``) reads moduli only from a ``physics:`` material
-        that applies ``PhysicsVolumeDeformableMaterialAPI``. The deprecated default (``None``) reads
-        vendor namespaces off any bound material and emits a ``DeprecationWarning``;
-        ``DEFORMABLE_LEGACY_NAMESPACES`` keeps that behavior explicitly (without the warning).
+        Canonical-only (the default and ``compat_namespaces=()``) reads moduli only from a
+        ``physics:`` material that applies ``PhysicsVolumeDeformableMaterialAPI``; only the
+        default warns about the attributes it ignores. ``DEFORMABLE_LEGACY_NAMESPACES`` reads
+        vendor namespaces off any bound material.
         """
         from pxr import Usd
 
@@ -13862,49 +13973,99 @@ def Xform "World" ()
         custom float physics:youngsModulus = 300000
         custom float physics:poissonsRatio = 0.3
     }
+    def TetMesh "VendorApiBody" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1)]
+        int4[] tetVertexIndices = [(0, 1, 2, 3)]
+        rel material:binding:physics = </World/VendorApiMaterial>
+    }
+    def Material "VendorApiMaterial" (
+        prepend apiSchemas = ["PhysicsVolumeDeformableMaterialAPI"]
+    )
+    {
+        float omniphysics:density = 40
+        float omniphysics:youngsModulus = 300000
+        float omniphysics:poissonsRatio = 0.3
+    }
+    def TetMesh "BaseDensityBody" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1)]
+        int4[] tetVertexIndices = [(0, 1, 2, 3)]
+        rel material:binding:physics = </World/BaseDensityMaterial>
+    }
+    def Material "BaseDensityMaterial" (
+        prepend apiSchemas = ["PhysicsMaterialAPI"]
+    )
+    {
+        float physics:density = 40
+    }
+    def TetMesh "TimeSampledBody" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1)]
+        int4[] tetVertexIndices = [(0, 1, 2, 3)]
+        rel material:binding:physics = </World/TimeSampledMaterial>
+    }
+    def Material "TimeSampledMaterial" (
+        prepend apiSchemas = ["PhysicsVolumeDeformableMaterialAPI"]
+    )
+    {
+        float omniphysics:density.timeSamples = {
+            1: 40,
+        }
+    }
 }
 """
         stage = Usd.Stage.CreateInMemory()
         stage.GetRootLayer().ImportFromString(usda)
-        prim = stage.GetPrimAtPath("/World/SoftBody")
 
-        # Canonical-only: vendor moduli are ignored.
-        tm_canonical = usd.get_tetmesh(prim, compat_namespaces=())
-        self.assertIsNone(tm_canonical.k_mu)
-        self.assertIsNone(tm_canonical.density)
+        # Vendor moduli, and canonical moduli on a material WITHOUT the deformable material
+        # API, are ignored: silently with explicit (), with a warning by default.
+        for path in ("/World/SoftBody", "/World/UnscopedBody"):
+            with self.subTest(path=path):
+                ignored = stage.GetPrimAtPath(path)
+                with warnings.catch_warnings():
+                    warnings.simplefilter("error")
+                    tm_canonical = usd.get_tetmesh(ignored, compat_namespaces=())
+                with self.assertWarnsRegex(newton.NewtonWarning, f"{path}: ignoring .*:youngsModulus"):
+                    tm_default = usd.get_tetmesh(ignored)
+                for tm in (tm_canonical, tm_default):
+                    self.assertIsNone(tm.k_mu)
+                    self.assertIsNone(tm.density)
 
-        # Deprecated default: reads the vendor namespaces off the bound material and warns.
-        with self.assertWarns(DeprecationWarning):
-            tm_default = usd.get_tetmesh(prim)
-        self.assertIsNotNone(tm_default.k_mu)
-        self.assertAlmostEqual(tm_default.density, 40.0)
+                # Explicit legacy namespaces read them off any bound material.
+                with warnings.catch_warnings():
+                    warnings.simplefilter("error")
+                    tm_legacy = usd.get_tetmesh(ignored, compat_namespaces=usd.DEFORMABLE_LEGACY_NAMESPACES)
+                self.assertAlmostEqual(tm_legacy.k_mu[0], 300000.0 / (2.0 * 1.3), places=0)
+                self.assertAlmostEqual(tm_legacy.density, 40.0)
 
-        # Explicit legacy namespaces: same reads, no deprecation warning.
-        tm_legacy = usd.get_tetmesh(prim, compat_namespaces=usd.DEFORMABLE_LEGACY_NAMESPACES)
-        self.assertIsNotNone(tm_legacy.k_mu)
-        self.assertAlmostEqual(tm_legacy.k_mu[0], 300000.0 / (2.0 * 1.3), places=0)
-        self.assertAlmostEqual(tm_legacy.density, 40.0)
-
-        # A canonical material under the deprecated default reads identically and must NOT
-        # warn: the default change alters nothing for it (the gate matches add_usd's).
+        # Vendor values on a material WITH the API never warned before, so the default keeps
+        # reading them for a deprecation window; explicit () ignores them.
+        vendor_api = stage.GetPrimAtPath("/World/VendorApiBody")
+        with self.assertWarnsRegex(newton.NewtonDeprecationWarning, "reading omniphysics:youngsModulus"):
+            tm_vendor_api = usd.get_tetmesh(vendor_api)
+        self.assertAlmostEqual(tm_vendor_api.k_mu[0], 300000.0 / (2.0 * 1.3), places=0)
+        self.assertAlmostEqual(tm_vendor_api.density, 40.0)
         with warnings.catch_warnings():
-            warnings.simplefilter("error", DeprecationWarning)
+            warnings.simplefilter("error")
+            self.assertIsNone(usd.get_tetmesh(vendor_api, compat_namespaces=()).density)
+            # A vendor value authored only as time samples is read by neither default.
+            self.assertIsNone(usd.get_tetmesh(stage.GetPrimAtPath("/World/TimeSampledBody")).density)
+
+        # A canonical material, and base-material density, are read by default and must NOT warn.
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
             tm_canonical_default = usd.get_tetmesh(stage.GetPrimAtPath("/World/CanonicalBody"))
+            tm_base_density = usd.get_tetmesh(stage.GetPrimAtPath("/World/BaseDensityBody"))
         self.assertAlmostEqual(tm_canonical_default.density, 40.0)
         self.assertIsNotNone(tm_canonical_default.k_mu)
-
-        # Canonical physics: moduli on a material WITHOUT the deformable material API: the
-        # deprecated default reads them off any bound material, but canonical-only scopes
-        # moduli to API-applied materials and drops them. The default is load-bearing, so
-        # it must warn.
-        unscoped = stage.GetPrimAtPath("/World/UnscopedBody")
-        with self.assertWarns(DeprecationWarning):
-            tm_unscoped_default = usd.get_tetmesh(unscoped)
-        self.assertIsNotNone(tm_unscoped_default.k_mu)
-        self.assertAlmostEqual(tm_unscoped_default.density, 40.0)
-        tm_unscoped_canonical = usd.get_tetmesh(unscoped, compat_namespaces=())
-        self.assertIsNone(tm_unscoped_canonical.k_mu)
-        self.assertIsNone(tm_unscoped_canonical.density)
+        self.assertAlmostEqual(tm_base_density.density, 40.0)
 
     @requires("pxr.Usd")
     def test_get_tetmesh_no_material(self):
@@ -14061,13 +14222,9 @@ def Xform "World"
         finally:
             os.unlink(path)
 
+    @requires("meshio")
     def test_tetmesh_save_load_vtk(self):
         """Test TetMesh round-trip save/load via .vtk (meshio)."""
-
-        try:
-            import meshio  # noqa: F401
-        except ImportError:
-            self.skipTest("meshio not installed")
 
         vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 1]], dtype=np.float32)
         tet_indices = np.array([0, 1, 2, 3, 1, 2, 3, 4], dtype=np.int32)
@@ -14402,6 +14559,7 @@ def Xform "World"
         finally:
             os.unlink(path)
 
+    @requires("trimesh")
     def test_mesh_create_from_file_glb_scene_transforms(self):
         """Test Mesh.create_from_file applies glTF scene-graph node transforms.
 
@@ -14410,10 +14568,7 @@ def Xform "World"
         compose those transforms, otherwise all parts collapse onto the
         origin as overlapping local geometry.
         """
-        try:
-            import trimesh
-        except ImportError:
-            self.skipTest("trimesh not installed")
+        import trimesh
 
         scene = trimesh.Scene()
         part = trimesh.creation.box(extents=[2.0, 2.0, 2.0])
@@ -15064,6 +15219,84 @@ class TestUsdMaterialColorSpaces(unittest.TestCase):
                     self.assertIsNone(material_props[key])
                 else:
                     np.testing.assert_allclose(material_props[key], expected, atol=1e-6, rtol=1e-6)
+
+    @requires("pxr.Usd")
+    def test_uniform_display_primvars_resolve_per_face(self):
+        """Resolve uniform display primvars per face, clamping or dropping invalid values."""
+        from pxr import Sdf, Usd, UsdGeom, UsdShade, Vt
+
+        from newton._src.usd.utils import resolve_material_properties_for_prim  # noqa: PLC0415
+
+        srgb = color_linear_to_srgb
+        uniform, vertex = UsdGeom.Tokens.uniform, UsdGeom.Tokens.vertex
+        color_path = "/World/Mesh.primvars:displayColor"
+        opacity_path = "/World/Mesh.primvars:displayOpacity"
+        nan = float("nan")
+        two_colors = [(0.2, 0.4, 0.6), (0.6, 0.4, 0.2)]
+        # (name, interpolation, displayColor, displayOpacity, bind, color, opacity, expected logs)
+        cases = (
+            ("per_face", uniform, two_colors, [0.25, 0.75], False,
+             [srgb((0.2, 0.4, 0.6)), srgb((0.6, 0.4, 0.2))], [0.25, 0.75], ()),
+            ("out_of_range", uniform, [(1.5, 0.4, 0.6), (0.6, 0.4, 0.2)], [0.25, 1.5], False,
+             [srgb((1.0, 0.4, 0.6)), srgb((0.6, 0.4, 0.2))], [0.25, 1.0],
+             (f"{color_path}: clamping 1 of 2 imported face colors to [0, 1].",
+              f"{opacity_path}: clamping 1 of 2 imported face opacities to [0, 1].")),
+            ("non_finite", uniform, [(nan, 0.4, 0.6), (0.6, 0.4, 0.2)], [0.25, 0.75], False,
+             [(nan, nan, nan), srgb((0.6, 0.4, 0.2))], [0.25, 0.75],
+             (f"{color_path}: ignoring imported face colors: 1 of 2 are non-finite; those faces use the default.",)),
+            ("all_non_finite", uniform, [(nan, 0.4, 0.6), (nan, 0.4, 0.2)], [0.25, 0.75], False,
+             None, [0.25, 0.75], (f"{color_path}: ignoring imported face colors: all 2 are non-finite.",)),
+            # Both indexed to one value: the fallbacks are the flattened first values, not the first authored ones.
+            ("single_value", uniform, two_colors, [0.25, 0.75], False, srgb((0.6, 0.4, 0.2)), 0.75,
+             (f"{color_path}: uniform primvar length 1 does not match 2 faces",
+              f"{opacity_path}: uniform primvar length 1 does not match 2 faces")),
+            ("wrong_count", uniform, [*two_colors, (0.1, 0.1, 0.1)], [0.25, 0.75, 0.5], False,
+             srgb((0.2, 0.4, 0.6)), 0.25,
+             (f"{color_path}: uniform primvar length 3 does not match 2 faces",
+              f"{opacity_path}: uniform primvar length 3 does not match 2 faces")),
+            ("vertex_stays_scalar", vertex, [*two_colors, *two_colors], [0.25, 0.75, 0.25, 0.75], False,
+             srgb((0.2, 0.4, 0.6)), 0.25, (f"{opacity_path}: opacity data contains 4 values",)),
+            ("material_color_wins", uniform, two_colors, [0.25, 0.75], True,
+             srgb((0.8, 0.2, 0.1)), [0.25, 0.75], ()),
+        )  # fmt: skip
+        for name, interpolation, colors, opacities, bind, expected_color, expected_opacity, messages in cases:
+            with self.subTest(name=name):
+                stage = Usd.Stage.CreateInMemory()
+                mesh = UsdGeom.Mesh.Define(stage, "/World/Mesh")
+                mesh.CreatePointsAttr().Set([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0), (0.0, 1.0, 0.0)])
+                mesh.CreateFaceVertexCountsAttr().Set([3, 3])
+                mesh.CreateFaceVertexIndicesAttr().Set([0, 1, 2, 0, 2, 3])
+                primvars = UsdGeom.PrimvarsAPI(mesh)
+                color = primvars.CreatePrimvar("displayColor", Sdf.ValueTypeNames.Color3fArray, interpolation)
+                color.Set(colors)
+                opacity = primvars.CreatePrimvar("displayOpacity", Sdf.ValueTypeNames.FloatArray, interpolation)
+                opacity.Set(opacities)
+                if name == "single_value":
+                    color.SetIndices(Vt.IntArray([1]))
+                    opacity.SetIndices(Vt.IntArray([1]))
+                if bind:
+                    material = UsdShade.Material.Define(stage, "/World/Looks/Material")
+                    shader = UsdShade.Shader.Define(stage, "/World/Looks/Material/PreviewSurface")
+                    shader.CreateIdAttr("UsdPreviewSurface")
+                    shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set((0.8, 0.2, 0.1))
+                    material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+                    UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(material)
+
+                if not messages:
+                    with self.assertNoLogs("newton", level="WARNING"):
+                        props = resolve_material_properties_for_prim(mesh.GetPrim(), face_count=2)
+                else:
+                    with self.assertLogs("newton", level="WARNING") as caught:
+                        props = resolve_material_properties_for_prim(mesh.GetPrim(), face_count=2)
+                    self.assertEqual(len(caught.output), len(messages), caught.output)
+                    for message in messages:
+                        self.assertIn(message, "\n".join(caught.output))
+
+                if expected_color is None:
+                    self.assertIsNone(props["color"])
+                else:
+                    np.testing.assert_allclose(props["color"], expected_color, atol=1e-6, rtol=1e-6)
+                np.testing.assert_allclose(props["opacity"], expected_opacity, atol=1e-6, rtol=1e-6)
 
     @requires("pxr.Usd")
     def test_ancestor_binding_overrides_unapplied_mesh_binding(self):

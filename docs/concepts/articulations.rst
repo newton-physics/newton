@@ -90,8 +90,9 @@ energies. Supply explicit per-joint builder stiffnesses instead.
 :attr:`~newton.JointType.FREE` joint: seven ``joint_q`` coordinates for relative
 position and orientation, and six ``joint_qd`` entries for relative twist.
 :func:`newton.eval_fk` and :func:`newton.eval_ik` convert between joint and body
-state. :class:`newton.solvers.SolverVBD` is currently the only solver that
-evaluates the rod's constitutive response.
+state. :class:`newton.solvers.SolverVBD` and :class:`newton.solvers.SolverKamino`
+evaluate the rod's constitutive response; see :ref:`kamino-rod-joints` for the
+rod joint properties that Kamino supports.
 
 In :class:`newton.Rod`, ``points`` and ``quaternions`` define the initial
 centerline and segment orientations. Optional ``rest_points`` and
@@ -118,7 +119,9 @@ the relative rest rotation as a unit quaternion. For individual joints, specify
 ``rest_rotation`` on :meth:`newton.ModelBuilder.add_joint_rod`; its default is
 the initial relative anchor rotation. :class:`newton.solvers.SolverVBD` reads
 only the quaternion entries; direct edits to the three translation entries
-have no effect.
+have no effect. :class:`newton.solvers.SolverKamino` reads all seven entries,
+so edited translation entries set a rest shear and stretch offset between the
+anchors.
 
 Rod stiffness and damping use :attr:`newton.Model.joint_target_ke` and
 :attr:`newton.Model.joint_target_kd` in canonical XYZ linear/angular order:

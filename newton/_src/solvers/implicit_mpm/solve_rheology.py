@@ -19,12 +19,15 @@ from warp.optim.linear import LinearOperator, cg, cr, gmres
 
 from .contact_solver_kernels import (
     ColoredContacts,
+    EnvironmentGate,
     apply_nodal_impulse_warmstart,
     apply_subgrid_impulse,
     apply_subgrid_impulse_warmstart,
     compute_collider_delassus_diagonal,
     compute_collider_inv_mass,
     compute_collider_unsplit_diagonal,
+    environment_index,
+    environment_stopped,
     solve_nodal_friction,
     solve_subgrid_friction,
 )
@@ -337,23 +340,209 @@ def _update_environment_convergence(
         residual[1, environment] = accepted_residual[1, environment]
 
 
+_NESTEROV_RESIDUAL_INIT = wp.constant(1.0e38)
+_GRAPH_SOLVE_GRANULARITY = 5
+"""Number of iterations between residual evaluations of graph-captured solves."""
+_NESTEROV_RESTART_INTERVAL = _GRAPH_SOLVE_GRANULARITY
+"""Number of iterations between momentum restart checks, matching graph-captured residual evaluations."""
+
+
 @wp.kernel
-def _copy_converged_environment_state(
-    restore: bool,
-    environment_offsets: wp.array[int],
-    status: wp.array[int],
-    values: wp.array[Any],
-    saved_values: wp.array[Any],
+def _nesterov_reset(state: wp.array2d[float]):
+    environment = wp.tid()
+    state[0, environment] = 0.0
+    state[1, environment] = _NESTEROV_RESIDUAL_INIT
+
+
+@wp.kernel
+def _nesterov_check_restart(residual: wp.array2d[float], interval: int, state: wp.array2d[float]):
+    """Update each environment's ``(iterations since restart, previous squared residual)``.
+
+    An environment restarts its momentum when its residual grew.
+    """
+    environment = wp.tid()
+    total = residual[0, environment]
+    if total > state[1, environment]:
+        state[0, environment] = 0.0
+    else:
+        state[0, environment] += float(interval)
+    state[1, environment] = total
+
+
+@wp.func
+def _nesterov_weight(gate: EnvironmentGate, node: int, offset: int, momentum: float, state: wp.array2d[float]):
+    """FISTA weight (k - 1) / (k + 2) for the k-th iteration since the environment's last restart.
+
+    Negative for nodes that keep their iterate: stopped environments and reserved capacity.
+    """
+    environment = environment_index(gate, node)
+    if environment < 0 or environment_stopped(gate, node):
+        return -1.0
+    k = state[0, environment] + float(offset)
+    return momentum * wp.max(k, 0.0) / (k + 3.0)
+
+
+@wp.kernel
+def _nesterov_extrapolate(
+    offset: int,
+    momentum: float,
+    state: wp.array2d[float],
+    strain_gate: EnvironmentGate,
+    velocity_gate: EnvironmentGate,
+    collider_gate: EnvironmentGate,
+    stress: wp.array[vec6],
+    stress_prev: wp.array[vec6],
+    velocity: wp.array[wp.vec3],
+    velocity_prev: wp.array[wp.vec3],
+    impulse: wp.array[wp.vec3],
+    impulse_prev: wp.array[wp.vec3],
+    collider_friction: wp.array[float],
+    collider_velocity: wp.array[wp.vec3],
+    collider_velocity_prev: wp.array[wp.vec3],
 ):
-    environment, lane = wp.tid()
-    if (restore and status[environment] != 0) or (not restore and status[environment] == 1):
-        begin = environment_offsets[environment] + lane
-        end = environment_offsets[environment + 1]
-        for node in range(begin, end, wp.block_dim()):
-            if restore:
-                values[node] = saved_values[node]
-            else:
-                saved_values[node] = values[node]
+    i = wp.tid()
+
+    if i < stress.shape[0]:
+        beta = _nesterov_weight(strain_gate, i, offset, momentum, state)
+        if beta >= 0.0:
+            sig = stress[i]
+            stress[i] = sig + beta * (sig - stress_prev[i])
+            stress_prev[i] = sig
+    if i < velocity.shape[0]:
+        beta = _nesterov_weight(velocity_gate, i, offset, momentum, state)
+        if beta >= 0.0:
+            v = velocity[i]
+            velocity[i] = v + beta * (v - velocity_prev[i])
+            velocity_prev[i] = v
+    if i < impulse.shape[0] or i < collider_velocity.shape[0]:
+        beta = _nesterov_weight(collider_gate, i, offset, momentum, state)
+        # Disabled contacts keep a zero impulse; skipping them avoids most of the impulse traffic
+        if beta >= 0.0 and i < impulse.shape[0] and collider_friction[i] >= 0.0:
+            lam = impulse[i]
+            impulse[i] = lam + beta * (lam - impulse_prev[i])
+            impulse_prev[i] = lam
+        if beta >= 0.0 and i < collider_velocity.shape[0]:
+            v_col = collider_velocity[i]
+            collider_velocity[i] = v_col + beta * (v_col - collider_velocity_prev[i])
+            collider_velocity_prev[i] = v_col
+
+
+class _EnvironmentGates:
+    """Environment ranges of strain, velocity and collider nodes, and the environments' stop status.
+
+    Solver kernels leave the nodes of stopped environments untouched, so these environments
+    keep their iterate while the others iterate.
+    """
+
+    def __init__(
+        self,
+        device,
+        strain_offsets: wp.array[int] | None = None,
+        velocity_offsets: wp.array[int] | None = None,
+        collider_offsets: wp.array[int] | None = None,
+        status: wp.array[int] | None = None,
+    ):
+        self.status = status
+        self.environment_count = 1 if strain_offsets is None else strain_offsets.shape[0] - 1
+        empty = wp.empty(0, dtype=int, device=device)
+
+        def make_gate(offsets):
+            gate = EnvironmentGate()
+            gate.offsets = empty if offsets is None else offsets
+            gate.status = empty if status is None else status
+            return gate
+
+        self.strain = make_gate(strain_offsets)
+        self.velocity = make_gate(velocity_offsets)
+        self.collider = make_gate(collider_offsets)
+
+
+class _NesterovAcceleration:
+    """Nesterov momentum on the nonlinear solver iterates, with adaptive restart.
+
+    Extrapolates stress and collider impulses together with the velocities they
+    determine, which are affine in both, so the solver state stays consistent
+    without re-applying the extrapolated stress. Every
+    ``_NESTEROV_RESTART_INTERVAL`` iterations, each environment restarts its
+    momentum if its squared residual increased, so environments accelerate
+    independently.
+    """
+
+    def __init__(
+        self,
+        momentum: MomentumData,
+        rheology: RheologyData,
+        collision: CollisionData,
+        environment_gates: _EnvironmentGates,
+        temporary_store: fem.TemporaryStore | None = None,
+    ):
+        device = momentum.velocity.device
+        # Collider velocities only change with the impulses through the rigidity coupling
+        collider_velocity = collision.collider_velocities
+        if collision.rigidity_operator is None:
+            collider_velocity = wp.empty(shape=(0,), dtype=wp.vec3, device=device)
+
+        self.iterates = [rheology.stress, momentum.velocity, collision.collider_impulse, collider_velocity]
+        self.previous = [fem.borrow_temporary_like(x, temporary_store) for x in self.iterates]
+        self.state = fem.borrow_temporary(
+            temporary_store, shape=(2, environment_gates.environment_count), dtype=float, device=device
+        )
+
+        stress, velocity, impulse, collider_velocity = self.iterates
+        stress_prev, velocity_prev, impulse_prev, collider_velocity_prev = self.previous
+        self.extrapolate_launch = wp.launch(
+            _nesterov_extrapolate,
+            dim=max(x.shape[0] for x in self.iterates),
+            inputs=[
+                0,
+                1.0,
+                self.state,
+                environment_gates.strain,
+                environment_gates.velocity,
+                environment_gates.collider,
+                stress,
+                stress_prev,
+                velocity,
+                velocity_prev,
+                impulse,
+                impulse_prev,
+                collision.collider_friction,
+                collider_velocity,
+                collider_velocity_prev,
+            ],
+            device=device,
+            record_cmd=True,
+        )
+
+    def reset(self):
+        wp.launch(_nesterov_reset, dim=self.state.shape[1], inputs=[self.state], device=self.state.device)
+        for x, x_prev in zip(self.iterates, self.previous, strict=True):
+            wp.copy(x_prev, x)
+
+    def extrapolate(self, offset: int):
+        """Extrapolate with the momentum of the ``offset``-th iteration since the last restart check.
+
+        The iteration before each check starts from an unextrapolated iterate, so the checked
+        residual measures the solver's own fixed-point residual, as without acceleration. An
+        ``offset`` of -1 applies the momentum of the iteration before the check, once the check
+        has advanced the counter or restarted the momentum.
+        """
+        self.extrapolate_launch.set_param_at_index(0, offset)
+        self.extrapolate_launch.set_param_at_index(1, 0.0 if offset == _NESTEROV_RESTART_INTERVAL - 2 else 1.0)
+        self.extrapolate_launch.launch()
+
+    def check_restart(self, residual: wp.array2d[float]):
+        wp.launch(
+            _nesterov_check_restart,
+            dim=self.state.shape[1],
+            inputs=[residual, _NESTEROV_RESTART_INTERVAL, self.state],
+            device=self.state.device,
+        )
+
+    def release(self):
+        self.state.release()
+        for x_prev in self.previous:
+            x_prev.release()
 
 
 def apply_rigidity_operator(rigidity_operator, delta_collider_impulse, collider_velocity, delta_body_qd):
@@ -515,10 +704,13 @@ class _DelassusOperator:
         self,
         rheology: RheologyData,
         momentum: MomentumData,
+        delassus_scale: wp.array,
         temporary_store: fem.TemporaryStore | None = None,
     ):
         self.rheology = rheology
         self.momentum = momentum
+        # Per-environment inertial scale [1/Pa] of the proximal regularization
+        self.delassus_scale = delassus_scale
 
         self.delassus_rotation = fem.borrow_temporary(temporary_store, shape=self.size, dtype=mat55)
         self.delassus_diagonal = fem.borrow_temporary(temporary_store, shape=self.size, dtype=vec6)
@@ -605,6 +797,8 @@ class _DelassusOperator:
                 batch_map,
                 mult,
                 majorize,
+                self.delassus_scale,
+                self.rheology.strain_environment_offsets,
             ],
             outputs=[
                 self.delassus_rotation,
@@ -722,11 +916,13 @@ class _RheologySolver:
         split_mass: bool,
         temporary_store: fem.TemporaryStore | None = None,
         skip_factorization: bool = False,
+        environment_gates: _EnvironmentGates | None = None,
     ):
         self.delassus_operator = delassus_operator
         self.momentum = delassus_operator.momentum
         self.rheology = delassus_operator.rheology
         self.device = self.momentum.velocity.device
+        self.environment_gates = environment_gates if environment_gates is not None else _EnvironmentGates(self.device)
 
         self.delta_stress = fem.borrow_temporary_like(self.rheology.stress, temporary_store)
         # Colored solvers only write active strain nodes; the residual reads every entry.
@@ -924,6 +1120,7 @@ class _RheologySolver:
                 self.rheology.color_blocks,
                 rows,
                 colors_per_batch,
+                self.environment_gates.strain,
                 self.rheology.yield_params,
                 self.rheology.strain_node_volume,
                 self.rheology.compliance_mat.offsets,
@@ -957,8 +1154,14 @@ class _GaussSeidelSolver(_RheologySolver):
         delassus_operator: _DelassusOperator,
         temporary_store: fem.TemporaryStore | None = None,
         contact_solver: _SubgridContactSolver | None = None,
+        environment_gates: _EnvironmentGates | None = None,
     ) -> None:
-        super().__init__(delassus_operator, split_mass=False, temporary_store=temporary_store)
+        super().__init__(
+            delassus_operator,
+            split_mass=False,
+            temporary_store=temporary_store,
+            environment_gates=environment_gates,
+        )
 
         self.color_count = self.rheology.color_offsets.shape[0] - 1
 
@@ -1082,10 +1285,17 @@ class _BatchedGaussSeidelSolver(_RheologySolver):
         delassus_operator: _DelassusOperator,
         temporary_store: fem.TemporaryStore | None = None,
         n_batches: int | None = None,
+        environment_gates: _EnvironmentGates | None = None,
     ) -> None:
         # split_mass=False, skip_factorization=True — we compute the diagonal ourselves
         # with per-batch mass splitting after building the batch structures below
-        super().__init__(delassus_operator, split_mass=False, temporary_store=temporary_store, skip_factorization=True)
+        super().__init__(
+            delassus_operator,
+            split_mass=False,
+            temporary_store=temporary_store,
+            skip_factorization=True,
+            environment_gates=environment_gates,
+        )
 
         self.color_count = self.rheology.color_offsets.shape[0] - 1
         self.n_batches, self.colors_per_batch = _resolve_batched_gs_batching(self.color_count, n_batches)
@@ -1315,8 +1525,14 @@ class _JacobiSolver(_RheologySolver):
         self,
         delassus_operator: _DelassusOperator,
         temporary_store: fem.TemporaryStore | None = None,
+        environment_gates: _EnvironmentGates | None = None,
     ) -> None:
-        super().__init__(delassus_operator, split_mass=True, temporary_store=temporary_store)
+        super().__init__(
+            delassus_operator,
+            split_mass=True,
+            temporary_store=temporary_store,
+            environment_gates=environment_gates,
+        )
 
         self.apply_stress_launch = self.delassus_operator.apply_stress_delta(
             self.delta_stress,
@@ -1335,6 +1551,7 @@ class _JacobiSolver(_RheologySolver):
             kernel=jacobi_kernel,
             dim=self.size,
             inputs=[
+                self.environment_gates.strain,
                 self.rheology.yield_params,
                 self.rheology.strain_node_volume,
                 self.rheology.compliance_mat.offsets,
@@ -1586,9 +1803,13 @@ class _ContactSolver:
         momentum: MomentumData,
         collision: CollisionData,
         temporary_store: fem.TemporaryStore | None = None,
+        environment_gates: _EnvironmentGates | None = None,
     ) -> None:
         self.momentum = momentum
         self.collision = collision
+        self.environment_gates = (
+            environment_gates if environment_gates is not None else _EnvironmentGates(momentum.velocity.device)
+        )
 
         self.delta_impulse = fem.borrow_temporary_like(self.collision.collider_impulse, temporary_store)
         self.collider_inv_mass = fem.borrow_temporary_like(self.collision.collider_friction, temporary_store)
@@ -1639,14 +1860,16 @@ class _NodalContactSolver(_ContactSolver):
         momentum: MomentumData,
         collision: CollisionData,
         temporary_store: fem.TemporaryStore | None = None,
+        environment_gates: _EnvironmentGates | None = None,
     ) -> None:
-        super().__init__(momentum, collision, temporary_store)
+        super().__init__(momentum, collision, temporary_store, environment_gates)
 
         # define solve operation
         self.solve_collider_launch = wp.launch(
             kernel=solve_nodal_friction,
             dim=self.collision.collider_impulse.shape[0],
             inputs=[
+                self.environment_gates.collider,
                 self.momentum.inv_volume,
                 self.collision.collider_friction,
                 self.collision.collider_adhesion,
@@ -1688,8 +1911,9 @@ class _SubgridContactSolver(_ContactSolver):
         momentum: MomentumData,
         collision: CollisionData,
         temporary_store: fem.TemporaryStore | None = None,
+        environment_gates: _EnvironmentGates | None = None,
     ) -> None:
-        super().__init__(momentum, collision, temporary_store)
+        super().__init__(momentum, collision, temporary_store, environment_gates)
 
         self.collider_delassus_diagonal = fem.borrow_temporary_like(self.collider_inv_mass, temporary_store)
 
@@ -1747,6 +1971,7 @@ class _SubgridContactSolver(_ContactSolver):
                 kernel=solve_subgrid_friction,
                 dim=self.collision.collider_impulse.shape[0],
                 inputs=[
+                    self.environment_gates.collider,
                     self.momentum.velocity,
                     self.collision.collider_mat.offsets,
                     self.collision.collider_mat.columns,
@@ -1799,79 +2024,39 @@ def _nonlinear_solver_result_norms(residual, l2_tolerance_scale: float | np.ndar
 
 
 class _EnvironmentConvergence:
-    """Retain each environment's first converged iterate while the batch finishes.
+    """Stop each environment at its first converged check while the batch finishes.
 
-    Save all primary unknowns together, before stress/strain postprocessing.
-    Environments that exhaust the iteration budget keep their final iterate;
-    unmapped nodes in fixed-capacity arrays are never copied.
+    Solver kernels skip the nodes of environments with a nonzero status, which keep their
+    converged iterate; their accepted residuals drive stopping and logging. Environments that
+    exhaust the iteration budget keep their final iterate.
     """
 
     def __init__(
         self,
-        momentum: MomentumData,
-        rheology: RheologyData,
-        collision: CollisionData,
+        status: wp.array[int],
         tolerance: float,
         l2_tolerance_scales: wp.array[float],
         temporary_store: fem.TemporaryStore | None,
     ):
-        self.device = momentum.velocity.device
-        self.environment_count = rheology.strain_environment_offsets.shape[0] - 1
-        self.block_dim = 256 if self.device.is_cuda else 1
-        self.status = fem.borrow_temporary(temporary_store, shape=self.environment_count, dtype=int, device=self.device)
-        self.status.zero_()
+        self.status = status
+        environment_count = status.shape[0]
         self.residual = fem.borrow_temporary(
-            temporary_store, shape=(2, self.environment_count), dtype=float, device=self.device
+            temporary_store, shape=(2, environment_count), dtype=float, device=status.device
         )
         self.update_launch = wp.launch(
             _update_environment_convergence,
-            dim=self.environment_count,
+            dim=environment_count,
             inputs=[tolerance * tolerance, l2_tolerance_scales, self.residual, self.status, self.residual],
-            device=self.device,
+            device=status.device,
             record_cmd=True,
         )
-
-        # Collider velocities are rasterized again on the next step, and body
-        # feedback reads collider impulses. Nothing consumes the corrected
-        # velocities after the solve returns.
-        fields = [
-            (momentum.velocity, momentum.velocity_environment_offsets),
-            (rheology.stress, rheology.strain_environment_offsets),
-            (collision.collider_impulse, collision.collider_environment_offsets),
-        ]
-
-        self.saved_fields = []
-        self.copy_launches = []
-        for values, offsets in fields:
-            saved_values = fem.borrow_temporary_like(values, temporary_store)
-            self.saved_fields.append(saved_values)
-            self.copy_launches.append(
-                wp.launch(
-                    _copy_converged_environment_state,
-                    dim=(self.environment_count, self.block_dim),
-                    inputs=[False, offsets, self.status, values, saved_values],
-                    block_dim=self.block_dim,
-                    device=self.device,
-                    record_cmd=True,
-                )
-            )
 
     def update(self, residual):
         self.update_launch.set_param_at_index(2, residual)
         self.update_launch.launch()
-        for launch in self.copy_launches:
-            launch.launch()
-
-    def restore(self):
-        for launch in self.copy_launches:
-            launch.set_param_at_index(0, True)
-            launch.launch()
 
     def release(self):
-        self.status.release()
         self.residual.release()
-        for values in self.saved_fields:
-            values.release()
 
 
 def _run_solver_loop(
@@ -1883,21 +2068,34 @@ def _run_solver_loop(
     use_graph: bool,
     verbose: bool,
     temporary_store: fem.TemporaryStore,
+    environment_status: wp.array[int] | None = None,
+    acceleration: _NesterovAcceleration | None = None,
 ):
+    def iterate(count: int, checked_externally: bool):
+        """Run ``count`` iterations; with acceleration, extrapolate before each and check restarts periodically.
+
+        Each restart check follows an iteration from an unextrapolated iterate, and the momentum of
+        that iteration applies after the check, to the environments that keep iterating. Batches
+        of a multiple of ``_NESTEROV_RESTART_INTERVAL`` iterations thus end on a plain solver
+        iterate in every environment.
+        """
+        for k in range(count):
+            offset = k % _NESTEROV_RESTART_INTERVAL
+            if acceleration is not None:
+                acceleration.extrapolate(offset - 1)
+            contact_solver.solve()
+            rheology_solver.solve()
+            if acceleration is not None and offset == _NESTEROV_RESTART_INTERVAL - 1 and not checked_externally:
+                acceleration.check_restart(rheology_solver.eval_residual())
+
     solve_graph = None
     convergence = None
-    if tolerance > 0.0 and rheology_solver.rheology.strain_environment_offsets is not None:
-        convergence = _EnvironmentConvergence(
-            rheology_solver.momentum,
-            rheology_solver.rheology,
-            contact_solver.collision,
-            tolerance,
-            l2_tolerance_scale,
-            temporary_store,
-        )
+    if tolerance > 0.0 and environment_status is not None:
+        convergence = _EnvironmentConvergence(environment_status, tolerance, l2_tolerance_scale, temporary_store)
 
     if use_graph:
-        solve_granularity = 5
+        # Momentum restart checks reuse the convergence residual
+        solve_granularity = _GRAPH_SOLVE_GRANULARITY
 
         iteration_and_condition = fem.borrow_temporary(temporary_store, shape=(2,), dtype=int)
         iteration_and_condition.fill_(1)
@@ -1906,10 +2104,10 @@ def _run_solver_loop(
         condition = iteration_and_condition[1:]
 
         def do_iteration_with_condition():
-            for _k in range(solve_granularity):
-                contact_solver.solve()
-                rheology_solver.solve()
+            iterate(solve_granularity, checked_externally=True)
             residual = rheology_solver.eval_residual()
+            if acceleration is not None:
+                acceleration.check_restart(residual)
             if convergence is not None:
                 convergence.update(residual)
                 wp.launch(
@@ -1984,6 +2182,8 @@ def _run_solver_loop(
         iteration_and_condition.release()
     else:
         solve_granularity = rheology_solver.solve_granularity
+        if acceleration is not None and solve_granularity % _NESTEROV_RESTART_INTERVAL != 0:
+            raise RuntimeError("Accelerated batches must end on a restart check")
         host_tolerance_scale = (
             l2_tolerance_scale
             if rheology_solver.rheology.strain_environment_offsets is None
@@ -1992,9 +2192,7 @@ def _run_solver_loop(
 
         # Round up like the graph path, so budgets below one batch still iterate.
         for batch in range((max_iterations + solve_granularity - 1) // solve_granularity):
-            for _k in range(solve_granularity):
-                contact_solver.solve()
-                rheology_solver.solve()
+            iterate(solve_granularity, checked_externally=False)
 
             residual = rheology_solver.eval_residual()
             if convergence is not None:
@@ -2017,7 +2215,6 @@ def _run_solver_loop(
                 break
 
     if convergence is not None:
-        convergence.restore()
         convergence.release()
 
     return solve_graph
@@ -2030,10 +2227,12 @@ def solve_rheology(
     momentum: MomentumData,
     rheology: RheologyData,
     collision: CollisionData,
+    delassus_scale: wp.array,
     jacobi_warmstart_smoother_iterations: int = 5,
     temporary_store: fem.TemporaryStore | None = None,
     use_graph: bool = True,
     verbose: bool | None = None,
+    acceleration: str = "nesterov",
 ):
     """Solve coupled plasticity and collider contact to compute grid velocities.
 
@@ -2084,6 +2283,11 @@ def solve_rheology(
             yield parameters, coloring data, and output stress/strain arrays.
         collision: :class:`CollisionData` containing collider matrices, friction,
             adhesion, normals, velocities, rigidity operator, and impulse arrays.
+        delassus_scale: Device array holding a full cell's inertial Delassus scale
+            dt^2 / (rho dx^2) [1/Pa] for each environment of
+            ``rheology.strain_environment_offsets``, or one value for a single shared
+            solve; the proximal regularization of the Delassus diagonal blocks is a
+            fixed fraction of it.
         jacobi_warmstart_smoother_iterations: Number of Jacobi smoother
             iterations to run before the main Gauss-Seidel solve (ignored
             for Jacobi solver).
@@ -2091,6 +2295,11 @@ def solve_rheology(
         use_graph: If True, uses conditional CUDA graphs for the iteration loop.
         verbose: If True, log residuals/iteration counts. If False, suppress details. If None, log details when
             ``wp.config.log_level`` is configured for debug logging.
+        acceleration: Acceleration of the final nonlinear solver iterations.
+            ``"nesterov"`` extrapolates stress, collider impulses and velocities
+            between iterations and restarts the momentum when the residual
+            grows, separately in each environment. ``"none"`` runs the plain
+            iterations.
 
     Returns:
         A captured execution graph handle when ``use_graph`` is True and the
@@ -2098,15 +2307,32 @@ def solve_rheology(
     """
 
     verbose = verbose if verbose is not None else wp.config.log_level <= wp.LOG_DEBUG
+    if acceleration not in ("none", "nesterov"):
+        raise ValueError(f"Invalid acceleration {acceleration!r}. Accepted values: ['none', 'nesterov'].")
+    device = momentum.velocity.device
+    environment_status = None
+    if tolerance > 0.0 and rheology.strain_environment_offsets is not None:
+        environment_status = fem.borrow_temporary(
+            temporary_store, shape=rheology.strain_environment_offsets.shape[0] - 1, dtype=int, device=device
+        )
+        environment_status.zero_()
+    gates = _EnvironmentGates(
+        device,
+        strain_offsets=rheology.strain_environment_offsets,
+        velocity_offsets=momentum.velocity_environment_offsets,
+        collider_offsets=collision.collider_environment_offsets,
+        status=environment_status,
+    )
+
     subgrid_collisions = collision.colored_cell_offsets is not None or collision.collider_mat.nnz > 0
     if subgrid_collisions:
-        contact_solver = _SubgridContactSolver(momentum, collision, temporary_store)
+        contact_solver = _SubgridContactSolver(momentum, collision, temporary_store, gates)
     else:
-        contact_solver = _NodalContactSolver(momentum, collision, temporary_store)
+        contact_solver = _NodalContactSolver(momentum, collision, temporary_store, gates)
 
     contact_solver.apply_initial_guess()
 
-    delassus_operator = _DelassusOperator(rheology, momentum, temporary_store)
+    delassus_operator = _DelassusOperator(rheology, momentum, delassus_scale, temporary_store)
     batch_tolerance_scales = None
     if rheology.strain_environment_offsets is None:
         tolerance_scale = math.sqrt(1 + delassus_operator.size)
@@ -2150,6 +2376,8 @@ def solve_rheology(
             contact_solver.release()
             if batch_tolerance_scales is not None:
                 batch_tolerance_scales.release()
+            if environment_status is not None:
+                environment_status.release()
             return None
 
         # linear solver as warmstart
@@ -2158,7 +2386,7 @@ def solve_rheology(
     if len(solvers) > 1 and solvers[0] == "jacobi":
         # jacobi warmstart smoother
         old_v = wp.clone(momentum.velocity)
-        warmstart_solver = _JacobiSolver(delassus_operator, temporary_store)
+        warmstart_solver = _JacobiSolver(delassus_operator, temporary_store, environment_gates=gates)
         warmstart_solver.apply_initial_guess()
         for _ in range(jacobi_warmstart_smoother_iterations):
             warmstart_solver.solve()
@@ -2181,10 +2409,17 @@ def solve_rheology(
     if collision.colored_cell_offsets is not None:
         if not issubclass(rheology_solver_class, _GaussSeidelSolver):
             raise ValueError("Colored cell contact requires GS or GS-SOA")
-        rheology_solver = rheology_solver_class(delassus_operator, temporary_store, contact_solver=contact_solver)
+        rheology_solver = rheology_solver_class(
+            delassus_operator, temporary_store, contact_solver=contact_solver, environment_gates=gates
+        )
     else:
-        rheology_solver = rheology_solver_class(delassus_operator, temporary_store)
+        rheology_solver = rheology_solver_class(delassus_operator, temporary_store, environment_gates=gates)
     rheology_solver.apply_initial_guess()
+
+    nesterov = None
+    if acceleration == "nesterov":
+        nesterov = _NesterovAcceleration(momentum, rheology, collision, gates, temporary_store)
+        nesterov.reset()
 
     solve_graph = _run_solver_loop(
         rheology_solver,
@@ -2195,13 +2430,19 @@ def solve_rheology(
         use_graph,
         verbose,
         temporary_store,
+        environment_status=environment_status,
+        acceleration=nesterov,
     )
+    if nesterov is not None:
+        nesterov.release()
 
     # release temporary storage
     rheology_solver.release()
     contact_solver.release()
     if batch_tolerance_scales is not None:
         batch_tolerance_scales.release()
+    if environment_status is not None:
+        environment_status.release()
 
     delassus_operator.postprocess_stress_and_strain()
     delassus_operator.release()
