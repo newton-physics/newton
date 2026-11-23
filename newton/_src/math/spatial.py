@@ -202,8 +202,9 @@ def quat_velocity(q_now: wp.quat, q_prev: wp.quat, dt: float) -> wp.vec3:
     if wp.dot(q1, q0) < 0.0:
         q0 = wp.quat(-q0[0], -q0[1], -q0[2], -q0[3])
 
-    # dq = q1 * conj(q0)
-    dq = wp.normalize(wp.mul(q1, wp.quat_inverse(q0)))
+    # Subtract first so identical orientations give exactly zero angular motion.
+    difference = wp.mul(q1 - q0, wp.quat_inverse(q0))
+    dq = wp.quat(difference[0], difference[1], difference[2], wp.dot(q1, q0))
 
     axis, angle = wp.quat_to_axis_angle(dq)
     return axis * (angle / dt)

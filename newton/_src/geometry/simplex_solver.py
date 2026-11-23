@@ -49,6 +49,22 @@ GJK_REFINE_TOLERANCE = 4.0 * FLOAT32_EPS
 Mat83f = wp.types.matrix(shape=(8, 3), dtype=wp.float32)
 
 
+def _pack_simplex_slots() -> tuple[int, ...]:
+    """Pack occupied slots followed by the highest free slot for each reachable mask."""
+    words = [0] * 6
+    for mask in range(15):
+        occupied = [slot for slot in range(4) if mask & (1 << slot)]
+        free = max(slot for slot in range(4) if not mask & (1 << slot))
+        order = [*occupied, free]
+        values = order + [0] * (4 - len(order)) + [free, len(occupied)]
+        for index, value in enumerate(values):
+            words[index] |= value << (2 * mask)
+    return tuple(words)
+
+
+_SIMPLEX_SLOT_WORDS = _pack_simplex_slots()
+
+
 @wp.func
 def coordinate_scale(x: wp.vec3) -> float:
     """Return the sum of absolute coordinates, an upper bound on the length [m]."""
@@ -490,21 +506,17 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
             if is_duplicate:
                 break
 
-            # Inline simplex_add_vertex
-            # Count used vertices and find free slot
-            use_count = 0
-            free_slot = 0
-            indices = wp.vec4i(0)
+            # Unsigned packed words avoid a slot scan on every GJK iteration.
+            shift = wp.uint32(2) * simplex_usage_mask
+            index0 = int((wp.static(wp.uint32(_SIMPLEX_SLOT_WORDS[0])) >> shift) & wp.uint32(3))
+            index1 = int((wp.static(wp.uint32(_SIMPLEX_SLOT_WORDS[1])) >> shift) & wp.uint32(3))
+            index2 = int((wp.static(wp.uint32(_SIMPLEX_SLOT_WORDS[2])) >> shift) & wp.uint32(3))
+            index3 = int((wp.static(wp.uint32(_SIMPLEX_SLOT_WORDS[3])) >> shift) & wp.uint32(3))
+            free_slot = int((wp.static(wp.uint32(_SIMPLEX_SLOT_WORDS[4])) >> shift) & wp.uint32(3))
+            used_count = int((wp.static(wp.uint32(_SIMPLEX_SLOT_WORDS[5])) >> shift) & wp.uint32(3))
+            indices = wp.vec4i(index0, index1, index2, index3)
+            use_count = used_count + 1
 
-            for i in range(4):
-                if (simplex_usage_mask & (wp.uint32(1) << wp.uint32(i))) != wp.uint32(0):
-                    indices[use_count] = i
-                    use_count += 1
-                else:
-                    free_slot = i
-
-            indices[use_count] = free_slot
-            use_count += 1
             # Set vertex in simplex using new storage convention: B, then BtoA
             simplex_v[2 * free_slot] = w.B
             simplex_v[2 * free_slot + 1] = w.BtoA
