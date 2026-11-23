@@ -318,7 +318,7 @@ kernel covers every world.
   targets for reset worlds. :meth:`Control.clear(model) <newton.Control.clear>` restores
   all of them to ``model.particle_q``.
 - **Collision.** Contacts from :meth:`~newton.CollisionPipeline.collide` are generated
-  at ``state_in``, and discontinuity-aware truncation does not sweep the kinematic path.
+  at ``state_in``, and Divide and Truncate (DAT) does not sweep the kinematic path.
   Keep per-step target motion within the contact margin; a fast kinematic particle can
   tunnel through cloth, as with kinematic bodies.
 - **Input state.** Kinematic particles are driven only through

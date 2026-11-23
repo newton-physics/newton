@@ -1407,6 +1407,64 @@ def test_kinematic_particle_parity(test, device):
             np.testing.assert_allclose(state.particle_qd.numpy()[0], step_offset / dt, rtol=1.0e-3)
 
 
+def test_kinematic_particle_xpbd_spring_neighbor(test, device):
+    """XPBD moves only the dynamic neighbor of a KINEMATIC particle to satisfy a stiff spring."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    builder.add_particle(pos=wp.vec3(0.0, 0.0, 0.0), vel=wp.vec3(0.0), mass=1.0, radius=1.0e-3)
+    builder.add_particle(pos=wp.vec3(0.1, 0.0, 0.0), vel=wp.vec3(0.0), mass=1.0, radius=1.0e-3)
+    builder.add_spring(0, 1, ke=1.0e9, kd=0.0, control=0.0)
+    builder.particle_flags[0] |= int(ParticleFlags.KINEMATIC)
+    model = builder.finalize(device=device)
+    solver = newton.solvers.SolverXPBD(model, iterations=1)
+    state_0, state_1 = model.state(), model.state()
+    control = model.control()
+    offset = 5.0e-4
+    wp.launch(
+        _kinematic_offset_target_kernel,
+        dim=1,
+        inputs=[0, model.particle_q, wp.vec3(offset, 0.0, 0.0)],
+        outputs=[control.particle_target_q],
+        device=device,
+    )
+    solver.step(state_0, state_1, control, None, 1.0e-3)
+    q = state_1.particle_q.numpy()
+    np.testing.assert_allclose(q[0], (offset, 0.0, 0.0), atol=1.0e-7)
+    test.assertLess(abs(np.linalg.norm(q[1] - q[0]) - 0.1), 1.0e-5)
+
+
+def test_kinematic_particle_vbd_hard_attachment(test, device):
+    """A light KINEMATIC particle drags a heavy body through a hard VBD attachment."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    body = builder.add_body(
+        mass=1.0,
+        inertia=wp.mat33(0.1, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 0.1),
+        lock_inertia=True,
+    )
+    particle = builder.add_particle(pos=wp.vec3(0.0), vel=wp.vec3(0.0), mass=1.0e-3)
+    builder.particle_flags[particle] |= int(ParticleFlags.KINEMATIC)
+    builder.add_attachment_particle_body(particle, body, stiffness=float("inf"))
+    builder.color()
+    model = builder.finalize(device=device)
+    solver = newton.solvers.SolverVBD(model, iterations=10)
+    state_0, state_1 = model.state(), model.state()
+    control = model.control()
+    dt = 2.0e-3
+    speed = 0.5
+    for k in range(50):
+        wp.launch(
+            _kinematic_offset_target_kernel,
+            dim=1,
+            inputs=[particle, model.particle_q, wp.vec3(speed * dt * float(k + 1), 0.0, 0.0)],
+            outputs=[control.particle_target_q],
+            device=device,
+        )
+        state_0.clear_forces()
+        solver.step(state_0, state_1, control, None, dt)
+        state_0, state_1 = state_1, state_0
+    gap = np.linalg.norm(state_0.particle_q.numpy()[particle] - state_0.body_q.numpy()[body][:3])
+    test.assertLess(gap, 1.0e-3)
+
+
 def test_kinematic_particle_control_defaults(test, device):
     """Model.control() seeds particle_target_q from particle_q; clear() never zeroes it."""
     model = _kinematic_corner_model(device)
@@ -1444,6 +1502,8 @@ def test_kinematic_particle_unsupported_solvers(test, device):
 
 for _test in (
     test_kinematic_particle_parity,
+    test_kinematic_particle_xpbd_spring_neighbor,
+    test_kinematic_particle_vbd_hard_attachment,
     test_kinematic_particle_control_defaults,
 ):
     add_function_test(TestClothKinematicParticles, _test.__name__, _test, devices=devices)

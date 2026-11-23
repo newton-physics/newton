@@ -1068,6 +1068,7 @@ class SolverBase:
         state_in: State,
         state_out: State,
         dt: float,
+        *,
         control: Control | None = None,
     ) -> None:
         """

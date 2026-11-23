@@ -584,7 +584,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                 self.particle_q_init = wp.clone(state_in.particle_q)
                 particle_deltas = wp.empty_like(state_out.particle_qd)
 
-                self.integrate_particles(model, state_in, state_out, dt, control)
+                self.integrate_particles(model, state_in, state_out, dt, control=control)
                 particle_inv_mass = self._particle_inv_mass_effective(requires_grad)
                 if self.enable_restitution:
                     self.particle_qd_init = wp.clone(state_out.particle_qd)

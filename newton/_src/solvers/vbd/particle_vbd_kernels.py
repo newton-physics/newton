@@ -2027,7 +2027,7 @@ def step_particle_body_attachment_lambda_rho(
     attachment_lambda[i] = lambda_retention * attachment_lambda[i]
     p = attachment_particle[i]
     w_p = particle_inv_mass[p]
-    if not particle_flags[p] & ParticleFlags.ACTIVE:
+    if vbd_particle_is_fixed(particle_flags[p], w_p):
         w_p = 0.0
     material_h = wp.mat33(0.0)
     if w_p > 0.0:
