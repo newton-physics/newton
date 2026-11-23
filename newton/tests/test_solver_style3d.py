@@ -18,27 +18,41 @@ from newton.tests.unittest_utils import add_function_test, get_test_devices
 def _assert_pd_matrix(test, model, solver):
     """Compare the stored matrix with independently assembled dense element contributions."""
     expected = np.zeros((model.particle_count, model.particle_count), dtype=np.float64)
-    for face, pose, area, stiffness in zip(
-        model.tri_indices.numpy(),
-        model.tri_poses.numpy(),
-        model.tri_areas.numpy(),
-        model.style3d.tri_aniso_ke.numpy(),
-        strict=True,
-    ):
+    tri_data = ()
+    if model.tri_count > 0:
+        tri_data = zip(
+            model.tri_indices.numpy(),
+            model.tri_poses.numpy(),
+            model.tri_areas.numpy(),
+            model.style3d.tri_aniso_ke.numpy(),
+            strict=True,
+        )
+    for face, pose, area, stiffness in tri_data:
         gradients = np.vstack((-pose.sum(axis=0), pose)).astype(np.float64)
         weights = stiffness[:2] + stiffness[2]
         expected[np.ix_(face, face)] += area * (gradients * weights) @ gradients.T
-    for edge, prop, area, cot in zip(
-        model.edge_indices.numpy(),
-        model.edge_bending_properties.numpy(),
-        model.style3d.edge_rest_area.numpy(),
-        model.style3d.edge_bending_cot.numpy(),
-        strict=True,
-    ):
+    edge_data = ()
+    if model.edge_count > 0:
+        edge_data = zip(
+            model.edge_indices.numpy(),
+            model.edge_bending_properties.numpy(),
+            model.style3d.edge_rest_area.numpy(),
+            model.style3d.edge_bending_cot.numpy(),
+            strict=True,
+        )
+    for edge, prop, area, cot in edge_data:
         if edge[0] < 0 or edge[1] < 0:
             continue
         weights = np.array([-cot[0] - cot[2], -cot[1] - cot[3], cot[2] + cot[3], cot[0] + cot[1]])
         expected[np.ix_(edge, edge)] += prop[0] * (3.0 / area) * np.outer(weights, weights)
+    if model.tet_count > 0:
+        for tet, pose, material in zip(
+            model.tet_indices.numpy(), model.tet_poses.numpy(), model.tet_materials.numpy(), strict=True
+        ):
+            gradients = np.vstack((-pose.sum(axis=0), pose)).astype(np.float64)
+            volume = 1.0 / (6.0 * np.linalg.det(pose))
+            weight = 2.0 * material[0] + 3.0 * material[1] * solver.config.tet_volume_ratio
+            expected[np.ix_(tet, tet)] += volume * weight * (gradients @ gradients.T)
     actual = np.diag(solver._pd_diag.numpy())
     counts = solver._pd_off_diag.num_nz.numpy()
     entries = solver._pd_off_diag.nz_ell.numpy()
@@ -135,6 +149,62 @@ def test_constructor_precomputes_fixed_pd_matrix(test, device):
         actual = current_solver._dx.numpy()
         np.testing.assert_array_equal(actual[:particle_count], 0.0)
         np.testing.assert_array_equal(actual[particle_count:], 7.0)
+
+
+def test_tet_constraint_assembles_float_psd_matrix(test, device):
+    """Assemble a co-rotational tetrahedral constraint in the scalar PD matrix."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    newton.solvers.SolverStyle3D.register_custom_attributes(builder)
+    newton.solvers.style3d.add_cloth_mesh(
+        builder,
+        pos=(0.0, 0.0, 0.0),
+        rot=wp.quat_identity(),
+        vel=(0.0, 0.0, 0.0),
+        vertices=((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
+        indices=(0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3),
+        panel_verts=((0.0, 0.0), (1.0, 0.0), (0.0, 1.0)) * 4,
+        panel_indices=tuple(range(12)),
+        density=1.0,
+        tri_aniso_ke=wp.vec3(0.0),
+        edge_aniso_ke=wp.vec3(0.0),
+    )
+    builder.particle_mass[:] = [1.0] * 4
+    builder.add_tetrahedron(0, 1, 2, 3, 100.0, 200.0, 0.0)
+    model = builder.finalize(device=device)
+    solver = newton.solvers.SolverStyle3D(
+        model,
+        config=newton.solvers.SolverStyle3D.Config(iterations=2, linear_iterations=8, tet_volume_ratio=1.0),
+    )
+
+    _assert_pd_matrix(test, model, solver)
+    matrix = np.diag(solver._pd_diag.numpy())
+    counts = solver._pd_off_diag.num_nz.numpy()
+    entries = solver._pd_off_diag.nz_ell.numpy()
+    for row, count in enumerate(counts):
+        matrix[row, entries["column_index"][:count, row]] += entries["value"][:count, row]
+    test.assertEqual(solver._pd_diag.dtype, wp.float32)
+    test.assertGreaterEqual(float(np.linalg.eigvalsh(matrix).min()), -2.0e-4)
+
+    state_in, state_out = model.state(), model.state()
+    contacts = newton.CollisionPipeline(model).contacts()
+    solver.step(state_in, state_out, model.control(), contacts, 0.01)
+    np.testing.assert_allclose(state_out.particle_q.numpy(), state_in.particle_q.numpy(), atol=2.0e-6)
+
+    # A stretched element must respond elastically while preserving its center of mass.
+    rest = state_in.particle_q.numpy().copy()
+    stretched = rest.copy()
+    stretched[1, 0] = 1.2
+    state_in.particle_q.assign(stretched)
+    solver.step(state_in, state_out, model.control(), contacts, 0.01)
+    result = state_out.particle_q.numpy()
+    test.assertTrue(np.isfinite(result).all())
+    test.assertLess(np.linalg.norm(result[1] - result[0]), 1.2)
+    np.testing.assert_allclose(result.mean(axis=0), stretched.mean(axis=0), atol=2.0e-6)
+    test.assertGreater(np.linalg.norm(state_out.particle_qd.numpy()), 0.0)
+
+    solver.config.tet_volume_ratio = 0.5
+    with test.assertRaisesRegex(ValueError, "Recreate SolverStyle3D"):
+        solver.step(state_in, state_out, model.control(), contacts, 0.01)
 
 
 def test_config_constructor_options(test, device):
@@ -1537,6 +1607,14 @@ add_function_test(
     TestSolverStyle3D,
     "test_global_particles_use_global_gravity",
     test_global_particles_use_global_gravity,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverStyle3D,
+    "test_tet_constraint_assembles_float_psd_matrix",
+    test_tet_constraint_assembles_float_psd_matrix,
     devices=devices,
     check_output=False,
 )

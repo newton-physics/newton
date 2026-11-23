@@ -1889,6 +1889,16 @@ add_example_test(
     TestMultiphysicsExamples,
     name="multiphysics.example_softbody_dropping_to_cloth",
     devices=test_devices,
+    test_options={"num-frames": 200, "solver": "style3d"},
+    test_options_cpu={"num-frames": 2},
+    use_viewer=True,
+    test_suffix="style3d",
+    allow_output_regexes=[(_STYLE3D_PRECOMPUTE_OUTPUT_RE, "stdout")],
+)
+add_example_test(
+    TestMultiphysicsExamples,
+    name="multiphysics.example_softbody_dropping_to_cloth",
+    devices=test_devices,
     test_options={"num-frames": 2, "solver": "coupled", "vbd-iterations": 2},
     use_viewer=True,
     test_suffix="coupled",
@@ -1914,6 +1924,13 @@ add_example_batch(
             "test_options": {"num-frames": 180, "solver": "vbd"},
             "test_options_cpu": {"num-frames": 2},
             "test_suffix": "vbd",
+        },
+        {
+            "devices": test_devices,
+            "test_options": {"num-frames": 180, "solver": "style3d"},
+            "test_options_cpu": {"num-frames": 2},
+            "test_suffix": "style3d",
+            "allow_output_regexes": [(_STYLE3D_PRECOMPUTE_OUTPUT_RE, "stdout")],
         },
         {
             "devices": test_devices,
@@ -2052,6 +2069,17 @@ add_example_test(
     test_options={"num-frames": 120},
     test_options_cpu={"num-frames": 2},
     use_viewer=True,
+)
+
+add_example_test(
+    TestSoftbodyExamples,
+    name="softbody.example_softbody_hanging",
+    devices=test_devices,
+    test_options={"num-frames": 120, "solver": "style3d"},
+    test_options_cpu={"num-frames": 2},
+    use_viewer=True,
+    test_suffix="style3d",
+    allow_output_regexes=[(_STYLE3D_PRECOMPUTE_OUTPUT_RE, "stdout")],
 )
 
 
@@ -2195,6 +2223,14 @@ add_example_test(
     devices=cuda_test_devices,
     test_options={"requires": ("pxr.Usd", "trimesh", "collada")},
     use_viewer=True,
+)
+add_example_test(
+    TestUSDDependentExamples,
+    name="softbody.example_softbody_franka",
+    devices=cuda_test_devices,
+    test_options={"requires": ("pxr.Usd", "trimesh", "collada"), "solver": "style3d"},
+    use_viewer=True,
+    test_suffix="style3d",
 )
 # 120 frames reaches the first engagement (~1.0 s) and holds the panel well past the seal settling,
 # so test_final can assert that the pads latched and the seal quality stayed healthy. test_final is valid
