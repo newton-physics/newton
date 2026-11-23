@@ -16565,7 +16565,7 @@ class TestMuJoCoBodyGravityScale(unittest.TestCase):
         np.testing.assert_allclose(state_1.body_qd.numpy()[:, 2], [-1.0 * self.DT, -2.5 * self.DT], atol=1.0e-5)
 
     def test_scale_changes_refresh_native_gravcomp(self):
-        """Refresh native gravcomp on scale changes, also in a model compiled without gravcomp."""
+        """Refresh only native gravcomp on scale changes, also in a model compiled without gravcomp."""
         cases = ((False, 1.0, 0.0), (False, 0.0, 0.5), (True, 1.0, 0.0), (True, 0.0, 0.5))
         for use_mujoco_cpu, initial_scale, gravcomp in cases:
             with self.subTest(use_mujoco_cpu=use_mujoco_cpu, initial_scale=initial_scale, gravcomp=gravcomp):
@@ -16576,12 +16576,19 @@ class TestMuJoCoBodyGravityScale(unittest.TestCase):
                 states = [model.state(), model.state()]
                 for scale in (0.0, 1.0, 0.5, 1.0):
                     model.body_gravity_scale.fill_(scale)
-                    solver.notify_model_changed(ModelFlags.BODY_INERTIAL_PROPERTIES)
                     native = 1.0 - scale * (1.0 - gravcomp)
+                    recount = use_mujoco_cpu and solver.mj_model.ngravcomp == 0 and native > 0.0
+                    with (
+                        patch.object(solver, "_update_model_inertial_properties") as inertial,
+                        patch.object(solver, "_set_const_0", wraps=solver._set_const_0) as set_const,
+                    ):
+                        solver.notify_model_changed(ModelFlags.BODY_GRAVITY_PROPERTIES)
+                    inertial.assert_not_called()
+                    # Native MuJoCo skips gravcomp while ngravcomp is 0; only then are constants recomputed to recount it.
+                    self.assertEqual(set_const.called, recount)
                     np.testing.assert_allclose(solver.mjw_model.body_gravcomp.numpy()[0, 1], native, rtol=1.0e-6)
-                    if use_mujoco_cpu:
-                        # Native MuJoCo skips gravcomp while ngravcomp is 0; the notification recounts it.
-                        self.assertEqual(solver.mj_model.ngravcomp, int(native != 0.0))
+                    if use_mujoco_cpu and native != 0.0:
+                        self.assertGreater(solver.mj_model.ngravcomp, 0)
                     before = states[0].body_qd.numpy()[0, 2]
                     solver.step(states[0], states[1], model.control(), None, self.DT)
                     states.reverse()
@@ -16602,7 +16609,7 @@ class TestMuJoCoBodyGravityScale(unittest.TestCase):
         model = builder.finalize(device="cpu")
         solver = SolverMuJoCo(model, use_mujoco_cpu=True)
         model.body_gravity_scale.assign([2.0, 1.0])
-        solver.notify_model_changed(ModelFlags.BODY_INERTIAL_PROPERTIES)
+        solver.notify_model_changed(ModelFlags.BODY_GRAVITY_PROPERTIES)
         state_0, state_1 = model.state(), model.state()
         solver.step(state_0, state_1, model.control(), None, self.DT)
         np.testing.assert_allclose(state_1.body_qd.numpy()[:, 2], [-20.0 * self.DT, -5.0 * self.DT], atol=1.0e-5)

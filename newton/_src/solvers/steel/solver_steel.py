@@ -3274,9 +3274,9 @@ class SolverSteel(SolverBase, CouplingInterface):
         raises :class:`ValueError` for invalid values, after applying every other update. With loop-closing
         REVOLUTE joints, an eager joint, joint DOF, DOF force or DOF inertial notification also reads their
         DOF inputs and axes on the host to warn about the ones a closure ignores. A captured notification
-        skips both checks. An eager body inertial notification also reads
+        skips both checks. An eager body gravity notification also checks
         :attr:`~newton.Model.body_gravity_scale` on the host and raises :class:`ValueError` for non-finite
-        values; a captured one skips the check.
+        values; a captured one skips the check. Body gravity changes wake the sleeping islands they belong to.
 
         Args:
             flags: Bit-mask of :class:`~newton.ModelFlags` indicating which model properties changed.
@@ -3286,8 +3286,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 discards the warm-start impulses of every world.
         """
         world_mask = self._normalize_reset_world_mask(world_mask)
-        if flags & ModelFlags.BODY_INERTIAL_PROPERTIES:
-            self._validate_body_gravity_scale(applies_scale=True)
+        self._notify_body_gravity_scale(flags, applies_scale=True)
         if flags & ModelFlags.CONSTRAINT_PROPERTIES:
             _validate_equality_constraints(self.model)
         self._coupling_patch_history_snapshot_pending = False
@@ -3300,6 +3299,7 @@ class SolverSteel(SolverBase, CouplingInterface):
             | dof_inertial
             | ModelFlags.BODY_PROPERTIES
             | ModelFlags.BODY_INERTIAL_PROPERTIES
+            | ModelFlags.BODY_GRAVITY_PROPERTIES
             | ModelFlags.MODEL_PROPERTIES
         ):
             # The carried kinematics and inverse-dynamics terms read these properties.
@@ -3377,6 +3377,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 ModelFlags.JOINT_PROPERTIES
                 | ModelFlags.JOINT_DOF_PROPERTIES
                 | ModelFlags.BODY_INERTIAL_PROPERTIES
+                | ModelFlags.BODY_GRAVITY_PROPERTIES
                 | ModelFlags.SHAPE_PROPERTIES
             )
         mujoco = getattr(self.model, "mujoco", None)

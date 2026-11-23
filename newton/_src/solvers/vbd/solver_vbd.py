@@ -1501,12 +1501,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         host-side edits outside capture; captured updates must preserve finite,
         nonnegative material coefficients.
         """
-        # A kinematic body made dynamic brings its scale into the dynamics.
-        if flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
-            self._validate_body_gravity_scale(
-                applies_scale=not self._integrates_rigid_bodies,
-                scale_changed=bool(flags & ModelFlags.BODY_INERTIAL_PROPERTIES),
-            )
+        self._notify_body_gravity_scale(flags, applies_scale=not self._integrates_rigid_bodies)
         self._apply_module_options()
         if flags & ModelFlags.SHAPE_PROPERTIES:
             self._validate_contact_materials()

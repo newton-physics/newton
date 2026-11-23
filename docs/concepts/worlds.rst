@@ -445,7 +445,7 @@ A body's gravity can also be scaled on its own with :attr:`~newton.Model.body_gr
 The gravity force on body ``b`` is ``body_gravity_scale[b] * body_mass[b] * gravity[body_world[b]]``,
 so a scale of ``0`` removes gravity from the body, for example from a robot arm whose drives should
 not carry its weight. After changing scales in place, call
-``solver.notify_model_changed(ModelFlags.BODY_INERTIAL_PROPERTIES)``.
+``solver.notify_model_changed(ModelFlags.BODY_GRAVITY_PROPERTIES)``.
 
 
 .. _Body shape variants:

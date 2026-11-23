@@ -545,7 +545,7 @@ class Model:
         "body_mass": AttributeSpec(AttributeFrequency.BODY, update_flags=ModelFlags.BODY_INERTIAL_PROPERTIES),
         "body_inv_mass": AttributeSpec(AttributeFrequency.BODY, update_flags=ModelFlags.BODY_INERTIAL_PROPERTIES),
         "body_flags": AttributeSpec(AttributeFrequency.BODY, update_flags=ModelFlags.BODY_PROPERTIES),
-        "body_gravity_scale": AttributeSpec(AttributeFrequency.BODY, update_flags=ModelFlags.BODY_INERTIAL_PROPERTIES),
+        "body_gravity_scale": AttributeSpec(AttributeFrequency.BODY, update_flags=ModelFlags.BODY_GRAVITY_PROPERTIES),
         "body_f": AttributeSpec(AttributeFrequency.BODY),
         "body_label": AttributeSpec(AttributeFrequency.BODY),
         "body_world": AttributeSpec(AttributeFrequency.BODY, references=AttributeFrequency.WORLD),
@@ -1472,8 +1472,7 @@ class Model:
         exclude the removed weight. :class:`~newton.solvers.SolverMuJoCo` compensates it with MuJoCo's
         gravity compensation, with the limitations listed there. The other rigid-body solvers raise
         :class:`NotImplementedError` when a dynamic body they integrate has a scale other than ``1``. After
-        changing values in place, call ``notify_model_changed(ModelFlags.BODY_INERTIAL_PROPERTIES)``
-        outside CUDA graph capture.
+        changing values in place, call ``notify_model_changed(ModelFlags.BODY_GRAVITY_PROPERTIES)``.
         """
         self.body_label: list[str] = []
         """Rigid body labels, shape [body_count], str."""

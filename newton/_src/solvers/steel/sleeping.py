@@ -127,6 +127,7 @@ class _SleepState:
             ModelFlags.JOINT_DOF_PROPERTIES: (frequency.JOINT_DOF, dof_art),
             ModelFlags.BODY_PROPERTIES: (frequency.BODY, body_nodes),
             ModelFlags.BODY_INERTIAL_PROPERTIES: (frequency.BODY, body_nodes),
+            ModelFlags.BODY_GRAVITY_PROPERTIES: (frequency.BODY, body_nodes),
             ModelFlags.SHAPE_PROPERTIES: (frequency.SHAPE, shape_art),
         }
         # Per-entity model arrays, compared on notification so only islands whose properties changed wake.

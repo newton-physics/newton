@@ -2726,7 +2726,9 @@ class SolverCoupled(SolverBase, CouplingInterface):
         return flags
 
     def _gravity_acceleration_refresh_flags(self) -> int:
-        return int(ModelFlags.MODEL_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES)
+        return int(
+            ModelFlags.MODEL_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES | ModelFlags.BODY_GRAVITY_PROPERTIES
+        )
 
     def _refresh_gravity_accelerations(self) -> None:
         for entry in self._entries.values():
@@ -3853,6 +3855,9 @@ class SolverCoupled(SolverBase, CouplingInterface):
 
             if flags & int(ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
                 self._refresh_body_inertial_view_overrides(entry)
+            if flags & int(
+                ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES | ModelFlags.BODY_GRAVITY_PROPERTIES
+            ):
                 self._mark_view_proxy_bodies(entry.view, entry.proxy_body_local_indices)
 
             if flags & int(

@@ -1092,8 +1092,11 @@ def test_property_notification_wakes_only_changed_islands(test, device):
     solver.notify_model_changed(newton.ModelFlags.BODY_INERTIAL_PROPERTIES)
     _advance(pipeline, solver, states, model.control(), 1)
     np.testing.assert_array_equal(solver._sleeping.art_awake.numpy(), [1, 0])
+    solver.notify_model_changed(newton.ModelFlags.BODY_GRAVITY_PROPERTIES)
+    _advance(pipeline, solver, states, model.control(), 1)
+    np.testing.assert_array_equal(solver._sleeping.art_awake.numpy(), [1, 0])
     model.body_gravity_scale.assign([1.0, 0.0])
-    solver.notify_model_changed(newton.ModelFlags.BODY_INERTIAL_PROPERTIES)
+    solver.notify_model_changed(newton.ModelFlags.BODY_GRAVITY_PROPERTIES)
     _advance(pipeline, solver, states, model.control(), 1)
     np.testing.assert_array_equal(solver._sleeping.art_awake.numpy(), [1, 1])
 

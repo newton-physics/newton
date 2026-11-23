@@ -64,6 +64,15 @@ class TestBodyGravityScale(unittest.TestCase):
         view.set_attribute("body_gravity_scale", model, np.full(scales.shape, 2.0, dtype=np.float32))
         np.testing.assert_array_equal(model.body_gravity_scale.numpy(), [-1.0, *([2.0] * 8)])
 
+    def test_update_flags(self):
+        """Report BODY_GRAVITY_PROPERTIES as the flag for scale edits."""
+        builder = newton.ModelBuilder()
+        builder.add_body(mass=1.0, inertia=INERTIA)
+        model = builder.finalize(device="cpu")
+        self.assertEqual(
+            model.get_attribute_update_flags("body_gravity_scale"), newton.ModelFlags.BODY_GRAVITY_PROPERTIES
+        )
+
     def test_collapse_keeps_joints_between_different_scales(self):
         """Merge fixed joints between equal scales and keep them between different ones."""
         builder = newton.ModelBuilder()
@@ -208,7 +217,7 @@ def test_graph_replay_after_notify(test, device, solver_fn, mujoco):
 
     def replay(scale):
         model.body_gravity_scale.fill_(scale)
-        solver.notify_model_changed(newton.ModelFlags.BODY_INERTIAL_PROPERTIES)
+        solver.notify_model_changed(newton.ModelFlags.BODY_GRAVITY_PROPERTIES)
         before = states[0].body_qd.numpy()[0, 2]
         wp.capture_launch(capture.graph)
         return states[0].body_qd.numpy()[0, 2] - before
@@ -228,7 +237,22 @@ def test_notify_rejects_nonfinite_scale(test, device, solver_fn, mujoco):
     solver = solver_fn(model)
     model.body_gravity_scale.fill_(float("nan"))
     with test.assertRaisesRegex(ValueError, "body_gravity_scale of body 0 must be finite"):
-        solver.notify_model_changed(newton.ModelFlags.BODY_INERTIAL_PROPERTIES)
+        solver.notify_model_changed(newton.ModelFlags.BODY_GRAVITY_PROPERTIES)
+
+
+def test_scale_checked_only_on_gravity_notify(test, device, solver_fn, mujoco):
+    """Check scales on body gravity notifications only, in solvers that apply them."""
+    builder = newton.ModelBuilder()
+    if mujoco:
+        SolverMuJoCo.register_custom_attributes(builder)
+    builder.add_body(mass=1.0, inertia=INERTIA, gravity_scale=0.5)
+    model = builder.finalize(device=device)
+    solver = solver_fn(model)
+    with mock.patch.object(solver, "_validate_body_gravity_scale") as validate:
+        solver.notify_model_changed(newton.ModelFlags.BODY_PROPERTIES | newton.ModelFlags.BODY_INERTIAL_PROPERTIES)
+        validate.assert_not_called()
+        solver.notify_model_changed(newton.ModelFlags.BODY_GRAVITY_PROPERTIES)
+        validate.assert_called_once()
 
 
 def test_unsupported_solver_raises(test, device, solver_fn):
@@ -251,25 +275,38 @@ def test_unsupported_solver_raises(test, device, solver_fn):
 
     model.body_gravity_scale.assign([0.5, 0.0, 0.0])
     with test.assertRaisesRegex(NotImplementedError, "body_gravity_scale"):
-        solver.notify_model_changed(newton.ModelFlags.BODY_INERTIAL_PROPERTIES)
+        solver.notify_model_changed(newton.ModelFlags.BODY_GRAVITY_PROPERTIES)
     with test.assertRaisesRegex(NotImplementedError, "body_gravity_scale"):
         solver_fn(model)
 
 
-def test_unsupported_solver_notify_after_unit_scales(test, device, solver_fn):
-    """Skip the host read on body notifications while every scale is 1, and check again after a scale change."""
+def test_unsupported_solver_notify_host_reads(test, device, solver_fn):
+    """Read the model on body and body inertial notifications only when they can make a scaled body dynamic."""
     builder = newton.ModelBuilder()
     body = builder.add_body(mass=1.0, inertia=INERTIA)
     builder.add_shape_sphere(body, radius=0.1)
     builder.add_body(mass=1.0, inertia=INERTIA, is_kinematic=True)
+    builder.add_body(mass=0.0)
     builder.color()
     model = builder.finalize(device=device)
     solver = solver_fn(model)
-    with mock.patch.object(wp.array, "numpy", side_effect=AssertionError("host read")):
-        solver.notify_model_changed(newton.ModelFlags.BODY_PROPERTIES)
+    no_host_read = mock.patch.object(wp.array, "numpy", side_effect=AssertionError("host read"))
+    with no_host_read:
+        solver.notify_model_changed(newton.ModelFlags.BODY_PROPERTIES | newton.ModelFlags.BODY_INERTIAL_PROPERTIES)
 
-    model.body_gravity_scale.assign([1.0, 0.0])
-    solver.notify_model_changed(newton.ModelFlags.BODY_INERTIAL_PROPERTIES)
+    # A massless scaled body can only become dynamic through an inertial change.
+    model.body_gravity_scale.assign([1.0, 1.0, 0.0])
+    solver.notify_model_changed(newton.ModelFlags.BODY_GRAVITY_PROPERTIES)
+    with no_host_read:
+        solver.notify_model_changed(newton.ModelFlags.BODY_PROPERTIES)
+    model.body_inv_mass.assign([1.0, 1.0, 1.0])
+    with test.assertRaisesRegex(NotImplementedError, "body_gravity_scale"):
+        solver.notify_model_changed(newton.ModelFlags.BODY_INERTIAL_PROPERTIES)
+    model.body_inv_mass.assign([1.0, 1.0, 0.0])
+
+    # A kinematic scaled body with mass can become dynamic through its flags.
+    model.body_gravity_scale.assign([1.0, 0.0, 0.0])
+    solver.notify_model_changed(newton.ModelFlags.BODY_GRAVITY_PROPERTIES)
     model.body_flags.fill_(int(newton.BodyFlags.DYNAMIC))
     with test.assertRaisesRegex(NotImplementedError, "body_gravity_scale"):
         solver.notify_model_changed(newton.ModelFlags.BODY_PROPERTIES)
@@ -296,7 +333,7 @@ def test_vbd_external_rigid_solver_accepts_scale(test, device):
         SolverVBD(model)
 
     solver = SolverVBD(model, integrate_with_external_rigid_solver=True)
-    flags = newton.ModelFlags.BODY_PROPERTIES | newton.ModelFlags.BODY_INERTIAL_PROPERTIES
+    flags = newton.ModelFlags.BODY_PROPERTIES | newton.ModelFlags.BODY_GRAVITY_PROPERTIES
     model.body_gravity_scale.fill_(0.5)
     solver.notify_model_changed(flags)
     model.body_gravity_scale.fill_(float("nan"))
@@ -331,6 +368,15 @@ def test_coupled_proxy(test, device, destination_fn):
     states = [model.state(), model.state()]
     _advance(coupled, model, states, model.control(), 10)
     np.testing.assert_allclose(states[0].body_qd.numpy()[:, :3], _expected_gravity(model) * 10 * DT, atol=1.0e-4)
+
+    # The destination view keeps proxy scales at 1 after a scale change.
+    model.body_gravity_scale.assign(SCALES[::-1])
+    coupled.notify_model_changed(newton.ModelFlags.BODY_GRAVITY_PROPERTIES)
+    before = states[0].body_qd.numpy()[:, :3].copy()
+    _advance(coupled, model, states, model.control(), 10)
+    np.testing.assert_allclose(
+        states[0].body_qd.numpy()[:, :3] - before, _expected_gravity(model) * 10 * DT, atol=1.0e-4
+    )
 
 
 def test_coupled_admm_joint_proxy_raises(test, device, destination_fn):
@@ -428,6 +474,15 @@ for device in get_test_devices():
             mujoco=mujoco,
             requires=requires,
         )
+        add_function_test(
+            TestBodyGravityScaleSolvers,
+            f"test_scale_checked_only_on_gravity_notify_{name}",
+            test_scale_checked_only_on_gravity_notify,
+            devices=[device],
+            solver_fn=solver_fn,
+            mujoco=mujoco,
+            requires=requires,
+        )
         if device.is_cuda and name in ("featherstone", "steel", "mujoco_warp"):
             add_function_test(
                 TestBodyGravityScaleSolvers,
@@ -450,8 +505,8 @@ for device in get_test_devices():
         if name != "kamino":
             add_function_test(
                 TestBodyGravityScaleUnsupported,
-                f"test_unsupported_solver_notify_after_unit_scales_{name}",
-                test_unsupported_solver_notify_after_unit_scales,
+                f"test_unsupported_solver_notify_host_reads_{name}",
+                test_unsupported_solver_notify_host_reads,
                 devices=[device],
                 solver_fn=solver_fn,
             )

@@ -32,7 +32,7 @@ class ModelFlags(IntEnum):
     """Indicates body property updates: body_q (together with :attr:`JOINT_REFERENCE_POSE_PROPERTIES`), body_qd, body_flags."""
 
     BODY_INERTIAL_PROPERTIES = 1 << 3
-    """Indicates body inertial property updates: body_com, body_inertia, body_inv_inertia, body_mass, body_inv_mass, body_gravity_scale."""
+    """Indicates body inertial property updates: body_com, body_inertia, body_inv_inertia, body_mass, body_inv_mass."""
 
     SHAPE_PROPERTIES = 1 << 4
     """Indicates shape property updates: shape_transform, shape_scale, shape_margin, shape_gap, shape_collision_radius, shape_is_solid, and the shape_material_* coefficients such as shape_material_mu, shape_material_mu_static, shape_material_restitution, shape_material_ke, shape_material_kd, shape_material_mu_torsional, and shape_material_mu_rolling."""
@@ -66,6 +66,9 @@ class ModelFlags(IntEnum):
         Body variants, including this flag, may change without a deprecation period.
     """
 
+    BODY_GRAVITY_PROPERTIES = 1 << 13
+    """Indicates body gravity property updates: body_gravity_scale."""
+
     ALL = (
         JOINT_PROPERTIES
         | JOINT_DOF_PROPERTIES
@@ -80,6 +83,7 @@ class ModelFlags(IntEnum):
         | JOINT_DOF_INERTIAL_PROPERTIES
         | JOINT_REFERENCE_POSE_PROPERTIES
         | SHAPE_TYPE_AND_SOURCE
+        | BODY_GRAVITY_PROPERTIES
     )
     """Indicates all property updates."""
 

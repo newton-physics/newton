@@ -359,8 +359,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
 
     @override
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
-        if flags & ModelFlags.BODY_INERTIAL_PROPERTIES:
-            self._validate_body_gravity_scale(applies_scale=True)
+        self._notify_body_gravity_scale(flags, applies_scale=True)
         self._apply_module_options()
         if flags & (
             ModelFlags.BODY_PROPERTIES | ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES

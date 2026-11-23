@@ -1367,11 +1367,7 @@ class SolverKamino(SolverBase, CouplingInterface):
             flags: Bitmask of :class:`~newton.ModelFlags` or custom ``int`` bits indicating which properties changed.
         """
         self._validate_rod_joint_properties(flags)
-        # A kinematic body made dynamic brings its scale into the dynamics.
-        if flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
-            self._validate_body_gravity_scale(
-                applies_scale=False, scale_changed=bool(flags & ModelFlags.BODY_INERTIAL_PROPERTIES)
-            )
+        self._notify_body_gravity_scale(flags, applies_scale=False)
         self._validate_structural_invariants(flags)
         self._solver_kamino.validate_model_changed(flags)
 
@@ -1421,6 +1417,7 @@ class SolverKamino(SolverBase, CouplingInterface):
             ModelFlags.MODEL_PROPERTIES
             | ModelFlags.BODY_PROPERTIES
             | ModelFlags.BODY_INERTIAL_PROPERTIES
+            | ModelFlags.BODY_GRAVITY_PROPERTIES
             | ModelFlags.SHAPE_PROPERTIES
             | ModelFlags.JOINT_PROPERTIES
             | ModelFlags.JOINT_DOF_PROPERTIES

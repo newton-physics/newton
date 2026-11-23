@@ -115,6 +115,7 @@ from .kernels import (
     sync_worldbody_geom_xposes_kernel,
     update_actuator_properties_kernel,
     update_axis_properties_kernel,
+    update_body_gravcomp_kernel,
     update_body_inertia_kernel,
     update_body_mass_ipos_kernel,
     update_connect_constraint_anchors_kernel,
@@ -6128,8 +6129,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         if flags & ModelFlags.SHAPE_PROPERTIES:
             self._validate_compiled_mesh_scales()
 
+        self._notify_body_gravity_scale(flags, applies_scale=True)
         if flags & ModelFlags.BODY_INERTIAL_PROPERTIES:
-            self._validate_body_gravity_scale(applies_scale=True)
             self._update_model_inertial_properties()
             # set_const_fixed / set_const_0 (called below) recompute MuJoCo
             # constants that feed into contact solver parameters (invweight0,
@@ -6139,6 +6140,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self._invalidate_contact_fast_path()
             need_const_fixed = True
             need_const_0 = True
+        elif flags & ModelFlags.BODY_GRAVITY_PROPERTIES:
+            self._update_body_gravcomp()
+            if self.use_mujoco_cpu:
+                self.mj_model.body_gravcomp[:] = self.mjw_model.body_gravcomp.numpy()[0]
+                # mj_setConst recounts ngravcomp, and MuJoCo skips all gravcomp while that count is 0.
+                need_const_0 = self.mj_model.ngravcomp == 0 and bool(np.any(self.mj_model.body_gravcomp > 0.0))
         if flags & ModelFlags.JOINT_PROPERTIES:
             self._update_joint_properties()
         if flags & ModelFlags.BODY_PROPERTIES:
@@ -6247,7 +6254,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self._set_const_0()
             # mj_setConst counts only positive gravcomp, and MuJoCo skips all gravcomp while that count is 0.
             if (
-                flags & ModelFlags.BODY_INERTIAL_PROPERTIES
+                flags & (ModelFlags.BODY_INERTIAL_PROPERTIES | ModelFlags.BODY_GRAVITY_PROPERTIES)
                 and self.mj_model.ngravcomp == 0
                 and np.any(self.mj_model.body_gravcomp != 0.0)
             ):
@@ -10504,6 +10511,20 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             device=self.model.device,
         )
 
+    def _update_body_gravcomp(self) -> None:
+        """Write MuJoCo's gravcomp ``1 - s * (1 - gravcomp)`` from ``mujoco:gravcomp`` and the body gravity scales."""
+        if self.model.body_count == 0:
+            return
+        mujoco_attrs = getattr(self.model, "mujoco", None)
+        gravcomp = getattr(mujoco_attrs, "gravcomp", None) if mujoco_attrs is not None else None
+        wp.launch(
+            update_body_gravcomp_kernel,
+            dim=self.mjc_body_to_newton.shape,
+            inputs=[self.mjc_body_to_newton, gravcomp, self.model.body_gravity_scale],
+            outputs=[self.mjw_model.body_gravcomp],
+            device=self.model.device,
+        )
+
     def _update_model_inertial_properties(self):
         if self.model.body_count == 0:
             return
@@ -10524,7 +10545,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.model.body_com,
                 self.model.body_mass,
                 gravcomp,
-                self.model.body_gravity_scale,
             ],
             outputs=[
                 self.mjw_model.body_ipos,
@@ -10533,6 +10553,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             ],
             device=self.model.device,
         )
+        self._update_body_gravcomp()
 
         wp.launch(
             update_body_inertia_kernel,

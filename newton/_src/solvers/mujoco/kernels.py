@@ -1924,7 +1924,6 @@ def update_body_mass_ipos_kernel(
     body_com: wp.array[wp.vec3f],
     body_mass: wp.array[float],
     body_gravcomp: wp.array[float],
-    body_gravity_scale: wp.array[wp.float32],
     # outputs
     body_ipos: wp.array2d[wp.vec3f],
     body_mass_out: wp.array2d[float],
@@ -1933,8 +1932,7 @@ def update_body_mass_ipos_kernel(
     """Update MuJoCo body mass and inertial position from Newton body properties.
 
     Iterates over MuJoCo bodies [world, mjc_body], looks up Newton body index,
-    and copies mass, COM, and gravcomp ``1 - s * (1 - gravcomp)`` for the
-    body's gravity scale ``s``.
+    and copies mass, COM, and gravcomp.
     """
     world, mjc_body = wp.tid()
     newton_body = mjc_body_to_newton[world, mjc_body]
@@ -1947,10 +1945,28 @@ def update_body_mass_ipos_kernel(
     # update mass
     body_mass_out[world, mjc_body] = body_mass[newton_body]
 
-    # update gravcomp; equal to 1 - s * (1 - gravcomp) and exact at s = 1
+    # update gravcomp
+    if body_gravcomp:
+        body_gravcomp_out[world, mjc_body] = body_gravcomp[newton_body]
+
+
+@wp.kernel
+def update_body_gravcomp_kernel(
+    mjc_body_to_newton: wp.array2d[wp.int32],
+    body_gravcomp: wp.array[float],
+    body_gravity_scale: wp.array[wp.float32],
+    # outputs
+    body_gravcomp_out: wp.array2d[float],
+):
+    """Write MuJoCo body gravcomp ``1 - s * (1 - gravcomp)`` for each body's gravity scale ``s``."""
+    world, mjc_body = wp.tid()
+    newton_body = mjc_body_to_newton[world, mjc_body]
+    if newton_body < 0:
+        return
     gravcomp = float(0.0)
     if body_gravcomp:
         gravcomp = body_gravcomp[newton_body]
+    # Exact at s = 1.
     body_gravcomp_out[world, mjc_body] = gravcomp + (1.0 - body_gravity_scale[newton_body]) * (1.0 - gravcomp)
 
 

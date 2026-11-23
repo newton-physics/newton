@@ -179,17 +179,13 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
 
     @override
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
-        """Reject gravity scales the solver does not apply after body or body inertial changes.
+        """Reject gravity scales the solver does not apply after body, body inertial or body gravity changes.
 
         Args:
             flags: Bitmask of :class:`~newton.ModelFlags` or custom ``int`` bits indicating which model properties
                 changed.
         """
-        # A kinematic body made dynamic brings its scale into the dynamics.
-        if flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
-            self._validate_body_gravity_scale(
-                applies_scale=False, scale_changed=bool(flags & ModelFlags.BODY_INERTIAL_PROPERTIES)
-            )
+        self._notify_body_gravity_scale(flags, applies_scale=False)
 
     @override
     def _non_graphable_model_flags(self) -> int:
