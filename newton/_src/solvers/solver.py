@@ -1148,12 +1148,12 @@ class SolverBase:
             )
 
     def _raise_if_kinematic_particles(self) -> None:
-        """Raise ``NotImplementedError`` if any particle sets :attr:`~newton.ParticleFlags.KINEMATIC`."""
+        """Raise ``NotImplementedError`` if any active particle sets :attr:`~newton.ParticleFlags.KINEMATIC`."""
         model = self.model
         if not model.particle_count or model.particle_flags is None:
             return
-        flags = model.particle_flags.numpy()
-        if (flags & int(ParticleFlags.KINEMATIC)).any():
+        kinematic = int(ParticleFlags.ACTIVE | ParticleFlags.KINEMATIC)
+        if ((model.particle_flags.numpy() & kinematic) == kinematic).any():
             raise NotImplementedError(f"{type(self).__name__} does not support ParticleFlags.KINEMATIC particles.")
 
     def reset(

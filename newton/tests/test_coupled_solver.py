@@ -5145,6 +5145,25 @@ class TestSolverCoupledKinematicParticles(unittest.TestCase):
         np.testing.assert_array_equal(coupled._entries["a"].solver.particle_target_q, targets)
         np.testing.assert_array_equal(coupled._entries["b"].solver.particle_target_q, targets)
 
+    def test_unsupported_entry_ignores_foreign_kinematic_particles(self):
+        """Build an entry without kinematic support next to an entry that owns KINEMATIC particles."""
+
+        class _NoKinematicSolver(_StepCountingCopySolver):
+            def __init__(self, model):
+                super().__init__(model)
+                self._raise_if_kinematic_particles()
+
+        model = self._model()
+        SolverCoupled(
+            model,
+            [
+                SolverCoupled.Entry("a", _NoKinematicSolver, particles=[0, 1]),
+                SolverCoupled.Entry("b", _StepCountingCopySolver, particles=[2]),
+            ],
+        )
+        with self.assertRaises(NotImplementedError):
+            SolverCoupled(model, [SolverCoupled.Entry("a", _NoKinematicSolver, particles=[0, 1, 2])])
+
     def test_substepped_entry_rejects_kinematic_particles(self):
         """Refuse substeps > 1 for an entry owning KINEMATIC particles, since targets are not interpolated."""
         model = self._model()

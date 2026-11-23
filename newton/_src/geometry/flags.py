@@ -37,7 +37,7 @@ class ParticleFlags(IntEnum):
         :class:`~newton.solvers.SolverSemiImplicit`, :class:`~newton.solvers.SolverFeatherstone`
         and :class:`~newton.solvers.SolverXPBD`. :class:`~newton.solvers.SolverStyle3D`,
         :class:`~newton.solvers.SolverImplicitMPM` and :class:`~newton.solvers.SolverMuJoCo`
-        raise ``NotImplementedError`` at construction if any particle sets it.
+        raise ``NotImplementedError`` at construction if any active particle sets it.
     """
 
 
