@@ -4724,6 +4724,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         if separate_worlds is not None:
             warnings.warn(_SEPARATE_WORLDS_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         super().__init__(model)
+        self._raise_if_kinematic_particles()
         self._kinematic_switchable_roots = kinematic_switchable_roots
         if use_speculative_contacts and use_mujoco_contacts:
             raise ValueError("use_speculative_contacts=True requires Newton contacts on the MuJoCo Warp backend.")

@@ -327,9 +327,10 @@ kernel covers every world.
   into ``state_in.particle_q`` at the start of the step.
 - **Support.** :class:`~newton.solvers.SolverVBD`,
   :class:`~newton.solvers.SolverXPBD`, :class:`~newton.solvers.SolverSemiImplicit`, and
-  :class:`~newton.solvers.SolverFeatherstone`. :class:`~newton.solvers.SolverStyle3D`
-  and :class:`~newton.solvers.SolverImplicitMPM` raise ``NotImplementedError`` if a
-  particle is kinematic at construction; they ignore the flag if it is set later.
+  :class:`~newton.solvers.SolverFeatherstone`. :class:`~newton.solvers.SolverStyle3D`,
+  :class:`~newton.solvers.SolverImplicitMPM`, and :class:`~newton.solvers.SolverMuJoCo`
+  raise ``NotImplementedError`` if a particle is kinematic at construction; they ignore
+  the flag if it is set later.
   :class:`~newton.solvers.SolverCoupled` entries copy particle flags at construction,
   so set the flag before building the coupled solver. An entry with kinematic particles
   must use ``substeps=1``, and kinematic particles cannot be coupling proxies.

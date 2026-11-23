@@ -1471,6 +1471,7 @@ def test_kinematic_particle_control_defaults(test, device):
     control = model.control()
     np.testing.assert_array_equal(control.particle_target_q.numpy(), model.particle_q.numpy())
     test.assertIsNot(control.particle_target_q, model.particle_q)
+    test.assertEqual(control.get_attribute_frequency("particle_target_q"), newton.Model.AttributeFrequency.PARTICLE)
     test.assertIsNone(model.control(clone_variables=False).particle_target_q)
 
     control.particle_target_q.fill_(wp.vec3(1.0, 2.0, 3.0))
@@ -1498,6 +1499,8 @@ def test_kinematic_particle_unsupported_solvers(test, device):
         newton.solvers.SolverStyle3D(model)
     with test.assertRaises(NotImplementedError):
         newton.solvers.SolverImplicitMPM(model, newton.solvers.SolverImplicitMPM.Config())
+    with test.assertRaises(NotImplementedError):
+        newton.solvers.SolverMuJoCo(model)
 
 
 for _test in (

@@ -502,6 +502,7 @@ class Model:
         "particle_q": AttributeSpec(AttributeFrequency.PARTICLE),
         "particle_qd": AttributeSpec(AttributeFrequency.PARTICLE),
         "particle_f": AttributeSpec(AttributeFrequency.PARTICLE),
+        "particle_target_q": AttributeSpec(AttributeFrequency.PARTICLE),
         "particle_mass": AttributeSpec(AttributeFrequency.PARTICLE),
         "particle_inv_mass": AttributeSpec(AttributeFrequency.PARTICLE),
         "particle_radius": AttributeSpec(AttributeFrequency.PARTICLE),

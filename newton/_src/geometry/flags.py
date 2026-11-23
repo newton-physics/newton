@@ -35,9 +35,9 @@ class ParticleFlags(IntEnum):
 
         ``ParticleFlags.KINEMATIC`` is supported by :class:`~newton.solvers.SolverVBD`,
         :class:`~newton.solvers.SolverSemiImplicit`, :class:`~newton.solvers.SolverFeatherstone`
-        and :class:`~newton.solvers.SolverXPBD`. :class:`~newton.solvers.SolverStyle3D` and
-        :class:`~newton.solvers.SolverImplicitMPM` raise ``NotImplementedError`` at
-        construction if any particle sets it.
+        and :class:`~newton.solvers.SolverXPBD`. :class:`~newton.solvers.SolverStyle3D`,
+        :class:`~newton.solvers.SolverImplicitMPM` and :class:`~newton.solvers.SolverMuJoCo`
+        raise ``NotImplementedError`` at construction if any particle sets it.
     """
 
 
