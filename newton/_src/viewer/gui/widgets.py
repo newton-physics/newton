@@ -61,6 +61,7 @@ class PhysicsWidgets:
         self.gui = gui
         self._text_centers: dict[tuple[int, float, str], float] = {}
         self._property_summary: Callable[[], str] | None = None
+        self._compound_depth = 0
 
     @contextmanager
     def property_tooltip(self, summary: Callable[[], str] | None) -> Iterator[None]:
@@ -291,17 +292,18 @@ class PhysicsWidgets:
         """A flat, softly rounded card with a disclosure header and inset fields."""
         ui, scale = self.ui, self.scale
         ui.push_style_var(ui.StyleVar_.child_rounding, 5 * scale)
-        ui.push_style_var(ui.StyleVar_.child_border_size, 0)
-        ui.push_style_var(ui.StyleVar_.window_padding, ui.ImVec2(8 * scale, 4 * scale))
-        ui.push_style_var(ui.StyleVar_.item_spacing, ui.ImVec2(6 * scale, 5 * scale))
+        ui.push_style_var(ui.StyleVar_.child_border_size, 1 * scale)
+        ui.push_style_var(ui.StyleVar_.window_padding, ui.ImVec2(10 * scale, 6 * scale))
+        ui.push_style_var(ui.StyleVar_.item_spacing, ui.ImVec2(6 * scale, 6 * scale))
         ui.push_style_color(ui.Col_.child_bg, ui.ImVec4(*theme.GROUP_BACKGROUND))
+        ui.push_style_color(ui.Col_.border, ui.ImVec4(*theme.GROUP_BORDER))
         ui.push_style_color(ui.Col_.header, ui.ImVec4(*theme.GROUP_BACKGROUND))
         ui.push_style_color(ui.Col_.header_hovered, ui.ImVec4(*theme.GROUP_HOVERED))
         ui.push_style_color(ui.Col_.header_active, ui.ImVec4(*theme.GROUP_ACTIVE))
         visible = ui.begin_child(
             "##group_" + label,
             ui.ImVec2(0, 0),
-            ui.ChildFlags_.auto_resize_y | ui.ChildFlags_.always_use_window_padding,
+            ui.ChildFlags_.auto_resize_y | ui.ChildFlags_.always_use_window_padding | ui.ChildFlags_.borders,
         )
         ui.push_style_var(ui.StyleVar_.frame_border_size, 0)
         ui.push_style_var(ui.StyleVar_.frame_rounding, 2 * scale)
@@ -313,7 +315,7 @@ class PhysicsWidgets:
             yield opened
         finally:
             ui.end_child()
-            ui.pop_style_color(4)
+            ui.pop_style_color(5)
             ui.pop_style_var(4)
 
     @contextmanager
@@ -325,20 +327,32 @@ class PhysicsWidgets:
         yield opened
 
     @contextmanager
-    def _child_rows(self) -> Iterator[None]:
+    def _child_rows(self, *, indent_rows: bool = True) -> Iterator[None]:
         """Keep a shallow, balanced indent for compound property children."""
-        indent = 12 * self.scale
-        self.ui.indent(indent)
+        indent = 10 * self.scale if indent_rows else 0.0
+        self._compound_depth += 1
+        if indent:
+            self.ui.indent(indent)
         try:
             yield
         finally:
-            self.ui.unindent(indent)
+            if indent:
+                self.ui.unindent(indent)
+            self._compound_depth -= 1
 
     @contextmanager
-    def compound(self, label: str, *, editable: bool = False, unit: str = "", reason: str = "") -> Iterator[None]:
-        """Group compound attribute children using indentation and a regular label."""
+    def compound(
+        self,
+        label: str,
+        *,
+        editable: bool = False,
+        unit: str = "",
+        reason: str = "",
+        indent: bool = True,
+    ) -> Iterator[None]:
+        """Group compound attribute children with a clean aligned header."""
         self._label(label, editable, unit, reason)
-        with self._child_rows():
+        with self._child_rows(indent_rows=indent):
             yield
 
     def _label(
@@ -356,21 +370,36 @@ class PhysicsWidgets:
         if not label or label.startswith("##"):
             return
         if inline:
-            width = width if width is not None else ui.get_content_region_avail().x * 0.46
+            width = width if width is not None else ui.get_content_region_avail().x * 0.44
             self._fixed_label(label, width, locked=not editable, reason=reason, unit=unit)
             ui.same_line(spacing=6 * s)
             return
-        ui.text(label)
-        self._tooltip()
+        avail = max(1.0, ui.get_content_region_avail().x)
+        height = ui.get_text_line_height() + 2 * s
+        pos = ui.get_cursor_screen_pos()
+        ui.dummy(ui.ImVec2(avail, height))
+        if not ui.is_item_visible():
+            return
+        draw = ui.get_window_draw_list()
+        lock_space = 16 * s if not editable else 0.0
+        unit_w = ui.calc_text_size(unit).x if unit else 0.0
+        label_w = ui.calc_text_size(label).x
+        text_y = self.text_top(pos.y, height)
+        clip_right = pos.x + max(1.0, avail - lock_space - (unit_w + 6 * s if unit else 0.0))
+        draw.add_text(
+            ui.get_font(),
+            ui.get_font_size(),
+            ui.ImVec2(pos.x, text_y),
+            self.color(theme.TEXT),
+            label,
+            cpu_fine_clip_rect=ui.ImVec4(pos.x, pos.y, clip_right, pos.y + height),
+        )
         if unit:
-            ui.same_line(spacing=5 * s)
-            ui.text_disabled(unit)
+            unit_x = min(pos.x + label_w + 6 * s, pos.x + avail - lock_space - unit_w)
+            draw.add_text(ui.ImVec2(unit_x, text_y), self.color(self.muted), unit)
         if not editable:
-            ui.same_line(spacing=6 * s)
-            pos = ui.get_cursor_screen_pos()
-            self.icon("lock", (pos.x, pos.y + 2 * s), 11 * s)
-            ui.dummy(ui.ImVec2(13 * s, ui.get_text_line_height()))
-            self._tooltip(reason)
+            self.icon("lock", (pos.x + avail - 11 * s, pos.y + (height - 11 * s) / 2), 11 * s)
+        self._tooltip(reason if not editable else "")
 
     def text_value(self, label: str, value: Any, *, reason: str = "") -> None:
         """Render read-only text with explicit missing and empty-string values."""
@@ -426,6 +455,7 @@ class PhysicsWidgets:
         label_width: float | None = None,
         format_spec: str | None = None,
         slider: bool = False,
+        flush_left: bool = False,
     ) -> PropertyEdit:
         """Render a bounded slider or constant-speed numeric drag with text entry.
 
@@ -441,9 +471,8 @@ class PhysicsWidgets:
         else:
             ui.set_next_item_width(-1)
         ui.push_id(label)
-        ui.push_style_color(
-            ui.Col_.frame_bg, ui.ImVec4(*theme.EDITOR_BACKGROUND if editable else theme.EDITOR_READONLY_BACKGROUND)
-        )
+        frame_bg = theme.EDITOR_BACKGROUND if editable else theme.EDITOR_READONLY_BACKGROUND
+        ui.push_style_color(ui.Col_.frame_bg, ui.ImVec4(*frame_bg))
         ui.push_style_color(ui.Col_.text, ui.ImVec4(*theme.EDITOR_TEXT if editable else theme.EDITOR_READONLY_TEXT))
         ui.push_style_var(ui.StyleVar_.disabled_alpha, 1.0)
         ui.begin_disabled(not editable)
@@ -462,12 +491,13 @@ class PhysicsWidgets:
         if bounds is not None:
             flags |= ui.SliderFlags_.always_clamp
         low, high = bounds or (0, 0)
+        display_value = value if integer else (0.0 if float(value) == 0.0 else float(value))
         precision = 6
         if not integer:
             available = (
                 width if width is not None else ui.get_content_region_avail().x
             ) - 2 * ui.get_style().frame_padding.x
-            while precision > 1 and ui.calc_text_size(f"{float(value):.{precision}g}").x > available:
+            while precision > 1 and ui.calc_text_size(f"{float(display_value):.{precision}g}").x > available:
                 precision -= 1
         format_spec = format_spec or f".{precision}g"
         # Keep native dragging, focus, keyboard entry and selection. Only replace
@@ -478,13 +508,13 @@ class PhysicsWidgets:
             ui.push_style_color(ui.Col_.text, ui.ImVec4(*theme.TRANSPARENT))
         if slider and bounds is not None and not integer:
             changed, result = ui.slider_float(
-                "##value", float(value), float(low), float(high), "%" + format_spec, flags
+                "##value", float(display_value), float(low), float(high), "%" + format_spec, flags
             )
         elif integer:
-            changed, result = ui.drag_int("##value", int(value), speed, int(low), int(high), "%d", flags)
+            changed, result = ui.drag_int("##value", int(display_value), speed, int(low), int(high), "%d", flags)
         else:
             changed, result = ui.drag_float(
-                "##value", float(value), speed, float(low), float(high), "%" + format_spec, flags
+                "##value", float(display_value), speed, float(low), float(high), "%" + format_spec, flags
             )
         # Submit the native control even offscreen to preserve active edits and
         # keyboard navigation. Only its custom decoration/text can be skipped.
@@ -492,11 +522,22 @@ class PhysicsWidgets:
         if visible:
             lo, hi = ui.get_item_rect_min(), ui.get_item_rect_max()
             draw, scale = ui.get_window_draw_list(), self.scale
-            inset = 3 * scale
+            if flush_left:
+                join = min(ui.get_style().frame_rounding + scale, (hi.x - lo.x) * 0.5)
+                bg_color = (
+                    ui.get_color_u32(ui.Col_.frame_bg_active)
+                    if ui.is_item_active()
+                    else ui.get_color_u32(ui.Col_.frame_bg_hovered)
+                    if editable and ui.is_item_hovered()
+                    else self.color(frame_bg)
+                )
+                draw.add_rect_filled(lo, ui.ImVec2(lo.x + join, hi.y), bg_color)
+                draw.add_line(lo, ui.ImVec2(lo.x, hi.y), self.color(theme.AXIS_TAG_SEPARATOR), scale)
+            inset = 0.0 if flush_left else 3 * scale
             for offset, alpha in ((0.5, 0.15), (1.5, 0.05)):
                 draw.add_line(
                     ui.ImVec2(lo.x + inset, lo.y + offset * scale),
-                    ui.ImVec2(hi.x - inset, lo.y + offset * scale),
+                    ui.ImVec2(hi.x - 3 * scale, lo.y + offset * scale),
                     self.color((*theme.BLACK[:3], alpha)),
                     scale,
                 )
@@ -504,7 +545,8 @@ class PhysicsWidgets:
             ui.pop_style_color()
             if visible and not ui.internal.temp_input_is_active(item_id):
                 padding = ui.get_style().frame_padding
-                text = str(int(result)) if integer else format(float(result), format_spec)
+                shown = int(result) if integer else (0.0 if float(result) == 0.0 else float(result))
+                text = str(shown) if integer else format(shown, format_spec)
                 draw.add_text(
                     ui.get_font(),
                     ui.get_font_size(),
@@ -542,7 +584,7 @@ class PhysicsWidgets:
             ui.pop_font()
         # Keep the normal label column whenever possible. The index stays at
         # five digits; extra panel width belongs to the name and attribute label.
-        label_width = min(available * 0.46, max(0, available - 2.5 * index_width - 2 * spacing))
+        label_width = min(available * 0.44, max(0, available - 2.5 * index_width - 2 * spacing))
         fields_width = max(1, available - label_width - 2 * spacing)
         index_width = min(index_width, fields_width * 0.4)
         button_width = max(1, fields_width - index_width)
@@ -590,6 +632,50 @@ class PhysicsWidgets:
             ui.set_tooltip(target)
         return clicked and target is not None
 
+    def _component_tag(self, text: str) -> None:
+        """Draw a compact left-rounded axis/index cap meant to sit flush against a numeric field."""
+        ui, scale = self.ui, self.scale
+        axis_index = "XYZW".index(text[0]) if text and text[0] in "XYZW" and len(text) <= 2 else None
+        font = getattr(self.gui.ui, "number_font", None)
+        height = ui.get_frame_height()
+        if font:
+            ui.push_font(font, 12.0)
+        text_w = ui.calc_text_size(text).x
+        stripe = 3.0 * scale if axis_index is not None else 0.0
+        width = max(21.0 * scale, stripe + text_w + 8.0 * scale)
+        pos = ui.get_cursor_screen_pos()
+        ui.dummy(ui.ImVec2(width, height))
+        if ui.is_item_visible():
+            draw = ui.get_window_draw_list()
+            end = ui.ImVec2(pos.x + width, pos.y + height)
+            rounding = ui.get_style().frame_rounding
+            left_corners = ui.ImDrawFlags_.round_corners_left
+            if axis_index is not None:
+                axis_rgb = self.axes[axis_index][:3]
+                draw.add_rect_filled(pos, end, self.color((*axis_rgb, 0.16)), rounding, left_corners)
+                draw.add_rect_filled(
+                    pos,
+                    ui.ImVec2(pos.x + stripe, pos.y + height),
+                    self.color((*axis_rgb, 0.92)),
+                    rounding,
+                    left_corners,
+                )
+                text_color = self.color(theme.AXIS_BUTTON_TEXT)
+            else:
+                draw.add_rect_filled(pos, end, self.color(theme.AXIS_TAG_BACKGROUND), rounding, left_corners)
+                text_color = self.color(theme.AXIS_BUTTON_INACTIVE_TEXT)
+            text_x = pos.x + stripe + (width - stripe - text_w) / 2
+            draw.add_text(
+                ui.get_font(),
+                ui.get_font_size(),
+                ui.ImVec2(text_x, self.text_top(pos.y, height, numeric=True)),
+                text_color,
+                text,
+                cpu_fine_clip_rect=ui.ImVec4(pos.x, pos.y, end.x, end.y),
+            )
+        if font:
+            ui.pop_font()
+
     def array(
         self,
         label: str,
@@ -610,10 +696,20 @@ class PhysicsWidgets:
         values = np.asarray(value).reshape(-1)
         count = len(values)
         heading = header and bool(label) and not label.startswith("##")
-        with self.compound(label, editable=editable, unit=unit, reason=reason) if heading else nullcontext():
+        with (
+            self.compound(label, editable=editable, unit=unit, reason=reason, indent=False)
+            if heading
+            else nullcontext()
+        ):
             result = PropertyEdit(values)
             ui.push_id(label)
-            columns = max(1, min(3, int(ui.get_content_region_avail().x / (92 * scale))))
+            avail = ui.get_content_region_avail().x
+            if count == 3 and avail >= 185 * scale:
+                columns = 3
+            elif count == 4 and avail < 320 * scale:
+                columns = 2
+            else:
+                columns = max(1, min(3, int(avail / (80 * scale))))
             page_size = columns * 8
             start, stop = 0, count
             if count > page_size:
@@ -640,18 +736,14 @@ class PhysicsWidgets:
                 start, stop = page * page_size, min(count, (page + 1) * page_size)
                 ui.same_line()
                 self.label(f"{start + 1}-{stop} / {count}", muted=True)
-            ui.push_style_var(ui.StyleVar_.cell_padding, ui.ImVec2(4 * scale, 2 * scale))
-            ui.push_style_var(ui.StyleVar_.frame_padding, ui.ImVec2(4 * scale, ui.get_style().frame_padding.y))
+            ui.push_style_var(ui.StyleVar_.cell_padding, ui.ImVec2(3 * scale, 2 * scale))
+            ui.push_style_var(ui.StyleVar_.frame_padding, ui.ImVec2(5 * scale, ui.get_style().frame_padding.y))
             if count and ui.begin_table("##components", columns, ui.TableFlags_.sizing_stretch_same):
                 for i in range(start, stop):
                     ui.table_next_column()
                     name = labels[i] if labels is not None else str(i)
-                    self._fixed_label(
-                        name,
-                        24 * scale,
-                        color=self.axes["XYZW".index(name[0])] if name and name[0] in "XYZW" else self.muted,
-                    )
-                    ui.same_line(spacing=4 * scale)
+                    self._component_tag(name)
+                    ui.same_line(spacing=0)
                     ui.push_id(i)
                     edit = self.number(
                         "",
@@ -662,6 +754,7 @@ class PhysicsWidgets:
                         speed=speed,
                         reason=reason,
                         unit=component_units[i] if component_units is not None else unit,
+                        flush_left=True,
                     )
                     if edit.changed:
                         if not result.changed:
@@ -843,7 +936,7 @@ class PhysicsWidgets:
             tuple("XYZW") if mode == "Quaternion" else ("X", "Y", "Z", "A") if mode == "Axis angle" else tuple("XYZ")
         )
         unit = "" if mode == "Quaternion" else "deg" if state["degrees"] else "rad"
-        with self._child_rows():
+        with self._child_rows(indent_rows=False):
             edit = self.array(
                 label,
                 state["values"],
@@ -929,7 +1022,7 @@ class PhysicsWidgets:
         values = np.asarray(value).reshape(3, 3).copy()
         result = PropertyEdit(values)
         self.ui.push_id(label)
-        with self.compound(label, editable=editable, unit=unit, reason=reason):
+        with self.compound(label, editable=editable, unit=unit, reason=reason, indent=False):
             for i, axis in enumerate("XYZ"):
                 edit = self.vector(
                     "##" + axis,
@@ -947,23 +1040,43 @@ class PhysicsWidgets:
         return result
 
     def axis(self, label: str, value: int | ArrayLike, *, editable: bool = False, reason: str = "") -> PropertyEdit:
-        """Render an integer X/Y/Z axis choice and return the selected value as a PropertyEdit."""
-        ui = self.ui
+        """Render a full-width segmented X/Y/Z axis choice and return the selected value as a PropertyEdit."""
+        ui, scale = self.ui, self.scale
+        selected = int(value)
         self._label(label, editable, reason=reason, inline=True)
         ui.push_id(label)
-        result = PropertyEdit(int(value))
+        avail = max(1.0, ui.get_content_region_avail().x)
+        spacing = 3.0 * scale
+        button_width = max(24.0 * scale, (avail - 2.0 * spacing) / 3.0)
+        result = PropertyEdit(selected)
+        ui.push_style_var(ui.StyleVar_.disabled_alpha, 1.0)
+        ui.begin_disabled(not editable)
         for i, name in enumerate("XYZ"):
             if i:
-                ui.same_line()
+                ui.same_line(spacing=spacing)
+            active = i == selected
+            axis_rgb = self.axes[i][:3]
             ui.push_style_color(
                 ui.Col_.button,
-                ui.ImVec4(*(*self.axes[i][:3], 0.35) if i == int(value) else theme.AXIS_BUTTON_BACKGROUND),
+                ui.ImVec4(*(*axis_rgb, 0.26) if active else theme.AXIS_BUTTON_BACKGROUND),
             )
-            ui.begin_disabled(not editable)
-            if self.button(name, ui.ImVec2(44 * self.scale, 0)):
-                result = PropertyEdit(i, i != int(value), True, True)
-            ui.end_disabled()
-            ui.pop_style_color()
+            ui.push_style_color(
+                ui.Col_.text,
+                ui.ImVec4(*(theme.AXIS_BUTTON_TEXT if active else theme.AXIS_BUTTON_INACTIVE_TEXT)),
+            )
+            if self.button(name, ui.ImVec2(button_width, 0)):
+                result = PropertyEdit(i, i != selected, True, True)
+            if active and ui.is_item_visible():
+                lo, hi = ui.get_item_rect_min(), ui.get_item_rect_max()
+                ui.get_window_draw_list().add_rect_filled(
+                    ui.ImVec2(lo.x + scale, hi.y - 2.0 * scale),
+                    ui.ImVec2(hi.x - scale, hi.y),
+                    self.color((*axis_rgb, 0.95)),
+                    scale,
+                )
+            ui.pop_style_color(2)
+        ui.end_disabled()
+        ui.pop_style_var()
         ui.pop_id()
         return result
 

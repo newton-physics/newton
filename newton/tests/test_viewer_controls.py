@@ -492,6 +492,189 @@ class TestViewerUI(unittest.TestCase):
                 draw()
                 self.assertIs(gizmo._faces, faces)
 
+    def test_example_browser_tree_view(self) -> None:
+        """Render the Examples browser as a searchable folder tree reflecting directory hierarchy."""
+        ui = self.ui.imgui
+        example_tree = {
+            "basic": [
+                ("basic_pendulum", "newton.examples.basic.example_basic_pendulum"),
+                ("basic_shapes", "newton.examples.basic.example_basic_shapes"),
+            ],
+            "contacts": [
+                ("adaptive_collision", "newton.examples.contacts.example_adaptive_collision"),
+                ("contacts_rj45_plug", "newton.examples.contacts.example_contacts_rj45_plug"),
+            ],
+            "nested": [
+                ("nested_demo", "newton.examples.nested.sub.example_nested_demo"),
+            ],
+            "surface_gripper": [
+                ("surface_gripper", "newton.examples.surface_gripper.example_surface_gripper"),
+            ],
+        }
+        selected: list[str] = []
+        viewer = ViewerNull()
+        gui = SimpleNamespace(
+            ui=self.ui,
+            _viewer=viewer,
+            console_capture=None,
+            _example_tree=example_tree,
+            _example_current="newton.examples.basic.example_basic_shapes",
+            select_example=selected.append,
+        )
+        ws = ViewerWorkspace(gui)
+
+        ws._rebuild_example_rows(example_tree)
+        # Active example's folder auto-expands; other folders start collapsed.
+        self.assertIn("basic", ws._example_expanded)
+        self.assertNotIn("contacts", ws._example_expanded)
+        kinds_labels = [(row[0], row[1], row[2]) for row in ws._example_rows]
+        self.assertEqual(
+            kinds_labels,
+            [
+                ("folder", 0, "basic"),
+                ("example", 1, "pendulum"),
+                ("example", 1, "shapes"),
+                ("folder", 0, "contacts"),
+                ("folder", 0, "nested"),
+                ("folder", 0, "surface_gripper"),
+            ],
+        )
+
+        # Expanding all folders reflects nested folder depth and trims only redundant <folder>_ prefixes.
+        ws._example_expanded.update(ws._example_all_folders)
+        ws._rebuild_example_rows(example_tree)
+        by_path = {row[3]: (row[1], row[2]) for row in ws._example_rows if row[0] == "example"}
+        self.assertEqual(by_path["newton.examples.contacts.example_adaptive_collision"], (1, "adaptive_collision"))
+        self.assertEqual(by_path["newton.examples.contacts.example_contacts_rj45_plug"], (1, "rj45_plug"))
+        self.assertEqual(by_path["newton.examples.nested.sub.example_nested_demo"], (2, "nested_demo"))
+        self.assertEqual(by_path["newton.examples.surface_gripper.example_surface_gripper"], (1, "surface_gripper"))
+
+        # Search prunes non-matching folders and expands matching ones regardless of manual collapse state.
+        ws._example_expanded.clear()
+        ws.example_search = "rj45"
+        ws._rebuild_example_rows(example_tree)
+        self.assertEqual(
+            [(row[0], row[1], row[2]) for row in ws._example_rows],
+            [("folder", 0, "contacts"), ("example", 1, "rj45_plug")],
+        )
+        self.assertEqual(ws._example_stats, (5, 1, 6))
+
+        # Render both filtered and unfiltered tree frames in ImGui without error.
+        for query in ("", "shapes"):
+            ws.example_search = query
+            self.ui.begin_frame()
+            try:
+                ui.begin("TestExamples")
+                ws._example_browser(example_tree)
+                ui.end()
+            finally:
+                ui.end_frame()
+
+    def test_timeline_live_readouts_and_compact_height_without_recording(self) -> None:
+        """Track live frame/time with recording off and collapse the timeline track until recording or frames exist."""
+        ui = self.ui.imgui
+        builder = newton.ModelBuilder()
+        body = builder.add_body()
+        builder.add_shape_sphere(body, radius=0.1)
+        model = builder.finalize(device="cpu")
+        viewer = ViewerNull()
+        viewer.set_model(model)
+        viewer.gui = SimpleNamespace(ui=self.ui)
+        viewer.is_paused = lambda: False
+
+        history = FrameHistory(viewer)
+        history.set_recording(False)
+        timeline = TimelineView(history)
+        self.assertFalse(timeline.has_track)
+        self.assertIsNone(timeline._live_readout(viewer))
+
+        # Logging frames with recording off tracks live frame/time and dt with zero recorded frames.
+        for step in range(4):
+            history.begin_frame(step * 0.02)
+            history.end_frame()
+        self.assertEqual(len(history.frames), 0)
+        self.assertEqual(history.live_frame, 3)
+        self.assertAlmostEqual(history.live_time, 0.06, places=6)
+        self.assertAlmostEqual(history.dt, 0.02, places=6)
+        self.assertFalse(timeline.has_track)
+        live = timeline._live_readout(viewer, now=10.0)
+        self.assertEqual(live, (3, 0.06))
+
+        # Render compact mode (recording off, no frames) cleanly in ImGui.
+        self.ui.begin_frame()
+        try:
+            ui.set_next_window_size(ui.ImVec2(800, TimelineView.compact_height))
+            ui.begin("CompactTimeline")
+            try:
+                timeline.draw_gui(ui, viewer, embedded=True)
+            finally:
+                ui.end()
+        finally:
+            ui.end_frame()
+
+        # Enabling recording expands the track; disabling and clearing collapses it again while keeping live readout.
+        history.set_recording(True)
+        self.assertTrue(timeline.has_track)
+        state = model.state()
+        history.begin_frame(0.08)
+        history.state(state)
+        history.end_frame()
+        self.assertEqual(len(history.frames), 1)
+        history.set_recording(False)
+        self.assertTrue(timeline.has_track)
+        history.clear()
+        self.assertFalse(timeline.has_track)
+        self.assertEqual(history.live_frame, 4)
+        self.assertAlmostEqual(history.live_time, 0.08, places=6)
+
+    def test_transform_and_matrix_component_alignment(self) -> None:
+        """Keep transform Position/Rotation and sibling vec3/matrix3 component grids aligned on the left edge."""
+        ui = self.ui.imgui
+        w = PhysicsWidgets(SimpleNamespace(ui=self.ui))
+        tag_x: list[tuple[str, float]] = []
+        original_tag = w._component_tag
+
+        def record_tag(text: str) -> None:
+            tag_x.append((text, float(ui.get_cursor_screen_pos().x)))
+            original_tag(text)
+
+        w._component_tag = record_tag  # type: ignore[method-assign]
+        self.ui.begin_frame()
+        try:
+            ui.set_next_window_size(ui.ImVec2(280, 600))
+            ui.begin("AlignmentCheck")
+            try:
+                base_x = float(ui.get_cursor_screen_pos().x)
+                w.transform("joint_target_q", np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0], dtype=np.float32))
+                transform_tags = list(tag_x)
+                tag_x.clear()
+
+                w.vec3("body_com", np.zeros(3, dtype=np.float32))
+                w.matrix3("body_inertia", np.eye(3, dtype=np.float32))
+                sibling_tags = list(tag_x)
+            finally:
+                ui.end()
+        finally:
+            ui.end_frame()
+
+        # Position ("X") and Rotation ("X", "Z" in 2x2 grid) share the exact same single compound indent.
+        pos_x = transform_tags[0][1]
+        rot_x = transform_tags[3][1]
+        rot_z = transform_tags[5][1]
+        self.assertGreater(pos_x, base_x)
+        self.assertAlmostEqual(pos_x, rot_x, places=4)
+        self.assertAlmostEqual(pos_x, rot_z, places=4)
+
+        # Sibling vec3 ("X") and matrix3 ("XX", "YX", "ZX") start at the exact same left margin.
+        vec_x = sibling_tags[0][1]
+        mat_xx = sibling_tags[3][1]
+        mat_yx = sibling_tags[6][1]
+        mat_zx = sibling_tags[9][1]
+        self.assertAlmostEqual(vec_x, base_x, places=4)
+        self.assertAlmostEqual(mat_xx, vec_x, places=4)
+        self.assertAlmostEqual(mat_yx, vec_x, places=4)
+        self.assertAlmostEqual(mat_zx, vec_x, places=4)
+
 
 def _make_gl_state(paused: bool = False, step_requested: bool = False) -> ViewerGL:
     # Lightweight stand-in with just the fields ViewerGL.should_step() needs.

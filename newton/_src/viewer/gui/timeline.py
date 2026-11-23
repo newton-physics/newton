@@ -55,6 +55,7 @@ class TimelineView:
         """Set the recorded-frame playback multiplier on the history store."""
         self.history.playback_speed = value
 
+    compact_height = 34
     default_height = 58
     contact_log = True
     show_rigid_contacts = True
@@ -93,6 +94,29 @@ class TimelineView:
                 ("Soft contacts", "soft_self_contacts", "show_soft_self_contacts", 2, theme.CONTACT_SOFT[:3])
             )
         return channels
+
+    @property
+    def has_track(self) -> bool:
+        """Report whether the timeline needs the expanded scrubber track below the transport bar."""
+        return self.recording or bool(self.history.frames) or bool(self.history.message)
+
+    def _live_readout(self, viewer: ViewerBase, *, now: float | None = None) -> tuple[int, float] | None:
+        """Sample live frame and simulation time at 10 Hz without recording history."""
+        if self.history.live_time is None or self.history.live_frame < 0:
+            return None
+        now = perf_counter() if now is None else now
+        previous = getattr(self, "_live_readout_value", None)
+        if (
+            previous is None
+            or viewer.is_paused()
+            or self._live_readout_history is not self.history
+            or self.history.live_time < previous[1]
+            or now - self._live_readout_at >= 0.1
+        ):
+            self._live_readout_value = (self.history.live_frame, self.history.live_time)
+            self._live_readout_history = self.history
+            self._live_readout_at = now
+        return self._live_readout_value
 
     def _readout_frame(self, viewer: ViewerBase, *, now: float | None = None) -> tuple[int, HistoryFrame]:
         """Sample live numbers at 10 Hz, retaining an actual frame/time pair."""
@@ -295,15 +319,24 @@ class TimelineView:
             ui.end_tooltip()
 
     def draw_gui(self, ui: ModuleType, viewer: ViewerBase, *, embedded: bool = False) -> None:
-        """Draw a scrub-enabled track beside the editable frame and time."""
+        """Draw a scrub-enabled track beside the editable frame and time, or a compact transport bar when idle."""
         scale = viewer.gui.ui.dpi_scale
+        expanded = self.has_track
         if not embedded:
+            height = (self.default_height if expanded else self.compact_height) * scale
             screen = ui.get_io().display_size
-            ui.set_next_window_pos(ui.ImVec2(0, screen.y - self.default_height * scale))
-            ui.set_next_window_size(ui.ImVec2(screen.x, self.default_height * scale))
-            ui.begin("Trajectory timeline", flags=ui.WindowFlags_.no_title_bar)
+            ui.set_next_window_pos(ui.ImVec2(0, screen.y - height))
+            ui.set_next_window_size(ui.ImVec2(screen.x, height))
+            flags = ui.WindowFlags_.no_title_bar
+            if not expanded:
+                flags |= ui.WindowFlags_.no_scrollbar | ui.WindowFlags_.no_scroll_with_mouse
+            ui.begin("Trajectory timeline", flags=flags)
         widgets = PhysicsWidgets(viewer.gui)
-        if ui.begin_table("##timeline_layout", 2, ui.TableFlags_.sizing_stretch_prop):
+        if not expanded:
+            row_y = ui.get_cursor_pos_y()
+            self._draw_transport(ui, viewer, widgets)
+            self._draw_compact_readouts(ui, viewer, widgets, row_y)
+        elif ui.begin_table("##timeline_layout", 2, ui.TableFlags_.sizing_stretch_prop):
             ui.table_setup_column("Track", ui.TableColumnFlags_.width_stretch)
             ui.table_setup_column(
                 "Readouts",
@@ -403,15 +436,102 @@ class TimelineView:
         ui.same_line(spacing=10 * scale)
         ui.set_cursor_pos_y(row_y)
         self.draw_recording_control(ui)
+        if not self.recording and self.history.frames:
+            ui.same_line(spacing=6 * scale)
+            ui.set_cursor_pos_y(row_y)
+            if widgets.icon_button(
+                "##timeline_clear",
+                "clear",
+                "Clear recorded history and collapse timeline",
+                size=22,
+                show_lock=False,
+            ):
+                self.history.clear()
         ui.pop_style_var()
         if self.history.message:
             ui.text_wrapped(self.history.message)
 
+    def _draw_compact_readouts(self, ui: ModuleType, viewer: ViewerBase, widgets: PhysicsWidgets, row_y: float) -> None:
+        """Draw live frame and time right-aligned on the compact transport bar when history is off."""
+        scale = viewer.gui.ui.dpi_scale
+        live = self._live_readout(viewer)
+        frame_text = f"{live[0]:,}" if live is not None else "—"
+        time_text = (f"{live[1]:.6f} s" if viewer.is_paused() else f"{live[1]:.3f} s") if live is not None else "—"
+        font = getattr(viewer.gui.ui, "number_font", None)
+        frame_label_w = ui.calc_text_size("Frame").x
+        time_label_w = ui.calc_text_size("Time").x
+        if font:
+            ui.push_font(font, 13.0)
+        frame_val_w = max(ui.calc_text_size("00000").x, ui.calc_text_size(frame_text).x)
+        time_val_w = max(ui.calc_text_size("00.000 s").x, ui.calc_text_size(time_text).x)
+        if font:
+            ui.pop_font()
+        gap = 6 * scale
+        section_gap = 16 * scale
+        total_w = frame_label_w + gap + frame_val_w + section_gap + time_label_w + gap + time_val_w + 10 * scale
+        right_x = ui.get_window_pos().x + ui.get_window_width() - ui.get_style().window_padding.x
+        start_x = right_x - total_w
+        ui.same_line()
+        min_x = ui.get_cursor_screen_pos().x + 8 * scale
+        if start_x < min_x:
+            return
+        row_h = 22 * scale
+        y = ui.get_window_pos().y + row_y
+        draw = ui.get_window_draw_list()
+        draw.add_line(
+            ui.ImVec2(start_x, y + 3 * scale),
+            ui.ImVec2(start_x, y + row_h - 3 * scale),
+            ui.get_color_u32(ui.ImVec4(*theme.TIMELINE_SEPARATOR)),
+            scale,
+        )
+        x = start_x + 10 * scale
+        muted = ui.get_color_u32(ui.Col_.text_disabled)
+        value_color = widgets.color(theme.STATUS_VALUE if live is not None else theme.TEXT_DISABLED)
+        label_y = widgets.text_top(y, row_h)
+        for label, label_w, value, val_w in (
+            ("Frame", frame_label_w, frame_text, frame_val_w),
+            ("Time", time_label_w, time_text, time_val_w),
+        ):
+            draw.add_text(ui.ImVec2(x, label_y), muted, label)
+            x += label_w + gap
+            if font:
+                ui.push_font(font, 13.0)
+            draw.add_text(
+                ui.get_font(),
+                ui.get_font_size(),
+                ui.ImVec2(x, widgets.text_top(y, row_h, numeric=True)),
+                value_color,
+                value,
+            )
+            if font:
+                ui.pop_font()
+            x += val_w + section_gap
+
     def _draw_readouts(self, ui: ModuleType, viewer: ViewerBase, widgets: PhysicsWidgets) -> None:
         """Draw frame and time editors, pausing playback and selecting a retained frame when edited."""
         if not self.history.frames:
-            ui.text_disabled("Frame  —")
-            ui.text_disabled("Time   —")
+            live = self._live_readout(viewer)
+            if live is None:
+                ui.text_disabled("Frame  —")
+                ui.text_disabled("Time   —")
+                return
+            widgets.number(
+                "Frame",
+                live[0],
+                editable=False,
+                integer=True,
+                label_width=56 * widgets.scale,
+                reason="Enable Record history to scrub frames.",
+            )
+            widgets.number(
+                "Time",
+                live[1],
+                editable=False,
+                unit="s",
+                label_width=56 * widgets.scale,
+                format_spec=".6f" if viewer.is_paused() else ".3f",
+                reason="Enable Record history to scrub time.",
+            )
             return
         count = len(self.history.frames)
         absolute, frame = self._readout_frame(viewer)

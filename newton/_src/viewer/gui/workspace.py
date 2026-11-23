@@ -152,6 +152,10 @@ class ViewerWorkspace:
         self.example_search = ""
         self._example_rows = []
         self._example_query = None
+        self._example_expanded: set[str] = set()
+        self._example_last_current: str | None = None
+        self._example_all_folders: tuple[str, ...] = ()
+        self._example_stats: tuple[int, int, int] = (0, 0, 0)
         self.left_width = 280.0
         self.right_width = 350.0
         self.timeline_height = TimelineView.default_height
@@ -872,7 +876,9 @@ class ViewerWorkspace:
         s = self.gui.ui.dpi_scale
         w, h = ui.get_io().display_size
         top, status = 34 * s, 28 * s
-        bottom = min(self.timeline_height * s, h * 0.36)
+        active_timeline = self._active_timeline
+        timeline_expanded = active_timeline is not None and active_timeline.has_track
+        bottom = min(self.timeline_height * s, h * 0.36) if timeline_expanded else TimelineView.compact_height * s
         left = min(self.left_width * s, w * 0.28) if self.show_left else 0
         right = min(self.right_width * s, w * 0.31) if self.show_right and w > 740 * s else 0
         panel_h = max(40, h - top - bottom - status)
@@ -927,13 +933,17 @@ class ViewerWorkspace:
                 700,
             )
         timeline = self._active_timeline
-        if self._window("##workspace_timeline", 0, h - bottom - status, w, bottom):
+        timeline_flags = (
+            0 if timeline_expanded else (ui.WindowFlags_.no_scrollbar | ui.WindowFlags_.no_scroll_with_mouse)
+        )
+        if self._window("##workspace_timeline", 0, h - bottom - status, w, bottom, flags=timeline_flags):
             if timeline is not None:
                 self._bind_timeline(timeline)
                 self.gui.ui.draw_section("Timeline", lambda: timeline.draw_gui(ui, self.viewer, embedded=True))
             else:
                 self._transport()
-                ui.text_disabled("Select an example to begin.")
+                ui.same_line(spacing=10 * s)
+                self.widgets.label("Select an example to begin.", height=22 * s, muted=True)
         ui.end()
         if self._window(
             "##workspace_status",
@@ -947,17 +957,18 @@ class ViewerWorkspace:
         ui.end()
         self._splitter("left", left - 3 * s, top, 6 * s, view_h, "left_width", 1, 190, 440) if left else None
         self._splitter("right", w - right - 3 * s, top, 6 * s, view_h, "right_width", -1, 250, 500) if right else None
-        self._splitter(
-            "bottom",
-            0,
-            h - bottom - status - 3 * s,
-            w,
-            6 * s,
-            "timeline_height",
-            -1,
-            TimelineView.default_height,
-            380,
-        )
+        if timeline_expanded:
+            self._splitter(
+                "bottom",
+                0,
+                h - bottom - status - 3 * s,
+                w,
+                6 * s,
+                "timeline_height",
+                -1,
+                TimelineView.default_height,
+                380,
+            )
         self._sync_selection_outline()
         if self.dockspace.viewport_visible:
             self.viewport_controls.draw()
@@ -1226,32 +1237,200 @@ class ViewerWorkspace:
             ui.end_tab_item()
         tree = self.gui._example_tree
         if tree and self.widgets.tab_item("Examples")[0]:
-            ui.set_next_item_width(-1)
-            _, self.example_search = ui.input_text_with_hint(
-                "##example_search", "Find an example...", self.example_search
-            )
-            if self.example_search != self._example_query:
-                query = self.example_search.casefold()
-                self._example_rows = [
-                    (category, name, path)
-                    for category, entries in tree.items()
-                    for name, path in entries
-                    if query in f"{category} {name}".casefold()
-                ]
-                self._example_query = self.example_search
-            ui.text_disabled(f"{len(self._example_rows)} examples")
-            if ui.begin_child("##example_rows"):
-                clipper = ui.ListClipper()
-                clipper.begin(len(self._example_rows))
-                while clipper.step():
-                    for row in range(clipper.display_start, clipper.display_end):
-                        category, name, path = self._example_rows[row]
-                        if ui.selectable(f"{category} / {name}", path == self.gui._example_current)[0]:
-                            self.gui.select_example(path)
-                clipper.end()
-            ui.end_child()
+            self._example_browser(tree)
             ui.end_tab_item()
         ui.end_tab_bar()
+
+    @staticmethod
+    def _example_folder_parts(category: str, module_path: str) -> tuple[str, ...]:
+        """Return folder segments for an example from its module path or category."""
+        if module_path.startswith("newton.examples."):
+            parts = tuple(part for part in module_path.split(".")[2:-1] if part)
+            if parts:
+                return parts
+        parts = tuple(part for part in category.split("/") if part)
+        return parts or (category,)
+
+    @staticmethod
+    def _example_display_name(folder: str, name: str) -> str:
+        """Trim a redundant leading ``<folder>_`` prefix for display inside that folder."""
+        prefix = f"{folder}_"
+        return name[len(prefix) :] if name.startswith(prefix) and len(name) > len(prefix) else name
+
+    def _rebuild_example_rows(self, tree: dict[str, list[tuple[str, str]]]) -> None:
+        """Build clipped folder/example tree rows reflecting the directory hierarchy and search filter."""
+        query = self.example_search.strip().casefold()
+        current = self.gui._example_current
+        root: dict[str, Any] = {"folders": {}, "examples": []}
+        total_examples = 0
+        current_ancestors: list[str] = []
+
+        for category, entries in sorted(tree.items()):
+            for name, path in entries:
+                total_examples += 1
+                parts = self._example_folder_parts(category, path)
+                node = root
+                prefix_parts: list[str] = []
+                for part in parts:
+                    prefix_parts.append(part)
+                    folder_key = "/".join(prefix_parts)
+                    child = node["folders"].get(part)
+                    if child is None:
+                        child = {"key": folder_key, "name": part, "folders": {}, "examples": []}
+                        node["folders"][part] = child
+                    node = child
+                display = self._example_display_name(parts[-1], name)
+                node["examples"].append((name, display, path, "/".join(parts)))
+                if path == current:
+                    current_ancestors = ["/".join(parts[: i + 1]) for i in range(len(parts))]
+
+        if current != self._example_last_current:
+            self._example_last_current = current
+            if current_ancestors:
+                self._example_expanded.update(current_ancestors)
+
+        all_folders: list[str] = []
+
+        def collect_rows(node: dict[str, Any], depth: int) -> tuple[list[tuple[str, int, str, str, Any]], int]:
+            rows: list[tuple[str, int, str, str, Any]] = []
+            matched = 0
+            for folder_name in sorted(node["folders"]):
+                child = node["folders"][folder_name]
+                all_folders.append(child["key"])
+                child_rows, child_count = collect_rows(child, depth + 1)
+                if query and child_count == 0:
+                    continue
+                matched += child_count
+                rows.append(("folder", depth, folder_name, child["key"], child_count))
+                if query or child["key"] in self._example_expanded:
+                    rows.extend(child_rows)
+            for name, display, path, folder_path in sorted(node["examples"], key=lambda item: item[1]):
+                if query and query not in f"{folder_path} {name} {display}".casefold():
+                    continue
+                matched += 1
+                rows.append(("example", depth, display, path, name))
+            return rows, matched
+
+        rows, matched_examples = collect_rows(root, 0)
+        self._example_rows = rows
+        self._example_all_folders = tuple(all_folders)
+        self._example_stats = (len(all_folders), matched_examples, total_examples)
+        self._example_query = (id(tree), self.example_search, frozenset(self._example_expanded), current)
+
+    def _example_browser(self, tree: dict[str, list[tuple[str, str]]]) -> None:
+        """Draw the Examples tab as a searchable, clipped folder tree matching the Scene explorer."""
+        ui, widgets = self.gui.ui.imgui, self.widgets
+        ui.set_next_item_width(-1)
+        _, self.example_search = ui.input_text_with_hint(
+            "##example_search", "Search examples or folders...", self.example_search
+        )
+        current = self.gui._example_current
+        cache_key = (id(tree), self.example_search, frozenset(self._example_expanded), current)
+        if cache_key != self._example_query:
+            self._rebuild_example_rows(tree)
+
+        query = self.example_search.strip()
+        if not query:
+            if self._example_expanded:
+                if widgets.button("Collapse", small=True):
+                    self._example_expanded.clear()
+                    self._rebuild_example_rows(tree)
+            elif widgets.button("Expand", small=True):
+                self._example_expanded.update(self._example_all_folders)
+                self._rebuild_example_rows(tree)
+            ui.same_line()
+
+        folder_count, matched_count, total_count = self._example_stats
+        if query:
+            noun = "example" if total_count == 1 else "examples"
+            ui.text_disabled(f"{matched_count:,} / {total_count:,} {noun}")
+        else:
+            folders = "folder" if folder_count == 1 else "folders"
+            examples = "example" if total_count == 1 else "examples"
+            ui.text_disabled(f"{folder_count:,} {folders} · {total_count:,} {examples}")
+        ui.separator()
+
+        if ui.begin_child("##example_rows"):
+            table_flags = ui.TableFlags_.row_bg | ui.TableFlags_.sizing_stretch_prop
+            if ui.begin_table("##example_columns", 2, table_flags):
+                ui.table_setup_column("Example", ui.TableColumnFlags_.width_stretch)
+                ui.table_setup_column("Count", ui.TableColumnFlags_.width_fixed, 34 * widgets.scale)
+                ui.table_headers_row()
+                clipper = ui.ListClipper()
+                rows = self._example_rows
+                clipper.begin(len(rows))
+                while clipper.step():
+                    for row in range(clipper.display_start, clipper.display_end):
+                        self._example_tree_row(*rows[row], filtering=bool(query))
+                clipper.end()
+                ui.end_table()
+        ui.end_child()
+
+    def _example_tree_row(self, kind: str, depth: int, label: str, value: str, meta: Any, *, filtering: bool) -> None:
+        """Draw one folder or example row in the Examples tree table."""
+        ui, widgets = self.gui.ui.imgui, self.widgets
+        ui.push_id(f"{kind}:{value}")
+        ui.table_next_row()
+        ui.table_next_column()
+        indent = depth * 12 * widgets.scale
+        ui.set_cursor_pos_x(ui.get_cursor_pos_x() + indent)
+        pos = ui.get_cursor_screen_pos()
+
+        is_folder = kind == "folder"
+        active = not is_folder and value == self.gui._example_current
+        flags = (
+            ui.TreeNodeFlags_.no_tree_push_on_open
+            | ui.TreeNodeFlags_.span_avail_width
+            | ui.TreeNodeFlags_.frame_padding
+        )
+        if not is_folder:
+            flags |= ui.TreeNodeFlags_.leaf
+        if active:
+            flags |= ui.TreeNodeFlags_.selected
+            ui.table_set_bg_color(ui.TableBgTarget_.row_bg0, widgets.color(theme.TREE_SELECTED))
+            ui.push_style_color(ui.Col_.header, ui.ImVec4(*theme.TRANSPARENT))
+            ui.push_style_color(ui.Col_.text, ui.ImVec4(*widgets.accent))
+        if is_folder:
+            ui.set_next_item_open(filtering or value in self._example_expanded, ui.Cond_.always)
+        ui.tree_node_ex("        " + label + "##node", flags)
+        if active:
+            ui.pop_style_color(2)
+
+        row_height = ui.get_item_rect_max().y - ui.get_item_rect_min().y
+        if is_folder:
+            if not filtering and ui.is_item_toggled_open():
+                if value in self._example_expanded:
+                    self._example_expanded.discard(value)
+                else:
+                    self._example_expanded.add(value)
+        elif ui.is_item_clicked():
+            self.gui.select_example(value)
+
+        icon_pos = (pos.x + ui.get_tree_node_to_label_spacing(), pos.y + (row_height - 16 * widgets.scale) / 2)
+        widgets.icon(
+            "folder" if is_folder else "play",
+            icon_pos,
+            16 * widgets.scale,
+            active=active,
+            tint=widgets.explorer_colors.get("group") if is_folder else widgets.explorer_colors.get("root"),
+            solid=is_folder or active,
+        )
+        if ui.is_item_hovered(ui.HoveredFlags_.delay_normal):
+            if is_folder:
+                noun = "example" if meta == 1 else "examples"
+                ui.set_tooltip(f"newton/examples/{value} ({meta} {noun})")
+            else:
+                ui.set_tooltip(f"{meta}\n{value}")
+
+        ui.table_next_column()
+        if is_folder:
+            text = str(meta)
+            avail = ui.get_content_region_avail().x
+            width = ui.calc_text_size(text).x
+            if avail > width:
+                ui.set_cursor_pos_x(ui.get_cursor_pos_x() + avail - width)
+            ui.text_disabled(text)
+        ui.pop_id()
 
     def _scene_tree(self) -> None:
         """Draw searchable, clipped tree rows with independent name scrolling and background-click deselection."""

@@ -221,6 +221,10 @@ class FrameHistory:
         self._recording_blocked = False
         self.message = ""
         self.dt = 1.0 / 60.0
+        self.live_frame = -1
+        """Monotonic live simulation frame counter updated on begin_frame() even when recording is off."""
+        self.live_time: float | None = None
+        """Latest live simulation time [s] passed to begin_frame(), updated even when recording is off."""
         self.frame_open = False
         """True between begin_frame() and end_frame(), when application logging calls are recorded."""
         self.display_control: Control | None = None
@@ -269,9 +273,18 @@ class FrameHistory:
         self._logged_states.clear()
         self._pending = None
         self._replay = self.frames[self.index] if self.replaying else None
+        time = float(time)
+        if self._replay is None:
+            if self.live_time is None:
+                self.live_frame = 0
+                self.live_time = time
+            elif time != self.live_time:
+                if time > self.live_time:
+                    self.dt = max(1e-9, time - self.live_time)
+                self.live_frame += 1
+                self.live_time = time
         if self._replay is not None or not self.recording or self._recording_blocked:
             return
-        time = float(time)
         if not self.frames or time != self.frames[-1].time or self._replace_next:
             self._pending = HistoryFrame(time)
 
@@ -646,12 +659,16 @@ class FrameHistory:
         """Return the first frame at or after time [s], clamped to the last; return -1 if empty."""
         return min(len(self.frames) - 1, bisect_left(self.frames, time, key=lambda frame: frame.time))
 
+    def clear(self) -> None:
+        """Discard retained history snapshots while keeping live frame/time tracking intact."""
+        self.message = ""
+        self._recording_blocked = False
+        self.frames.clear()
+        self.index = self.bytes_used = self.first_frame = 0
+        self._loaded.clear()
+
     def set_recording(self, enabled: bool) -> None:
         """Start a fresh bounded recording, or retain the current snapshots."""
         self.recording = enabled
         if enabled:
-            self.message = ""
-            self._recording_blocked = False
-            self.frames.clear()
-            self.index = self.bytes_used = self.first_frame = 0
-            self._loaded.clear()
+            self.clear()
