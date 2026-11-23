@@ -409,6 +409,11 @@ repository examples spend tuning effort, not a shared solver API.
        ``use_parallel_streams`` overlaps the work of articulation-size groups and
        ``double_buffer`` clears a step's buffers on a side stream, without changing
        results; measure the full step before relying on them.
+       If you are porting a PhysX or Isaac Lab scene, start from Skild's
+       `porting-from-PhysX guide <https://steel.skild.ai/guides/porting-from-physx/>`_,
+       which covers attribute mapping, solver option equivalents, what
+       differs and a migration procedure (see :doc:`/solvers/steel` for
+       the other Skild resources).
    * - :class:`~newton.solvers.SolverSemiImplicit`
      - ``angular_damping``, ``joint_attach_ke``,
        ``joint_attach_kd``, ``enable_tri_contact``.

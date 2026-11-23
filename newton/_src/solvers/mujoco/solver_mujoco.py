@@ -141,7 +141,7 @@ from .kernels import (
     update_tendon_properties_kernel,
     wake_changed_trees_kernel,
 )
-from .utils import solref_invalid_mask
+from .utils import import_mujoco_module, solref_invalid_mask
 
 if TYPE_CHECKING:
     from mujoco import MjData, MjModel
@@ -502,6 +502,13 @@ _UPDATE_DATA_INTERVAL_DEPRECATION_MSG = (
     "Remove its use to adopt that behavior now."
 )
 
+_SEPARATE_WORLDS_DEPRECATION_MSG = (
+    "SolverMuJoCo separate_worlds is deprecated in Newton 1.9 and will be removed; "
+    "multi-world models always map each world to its own MuJoCo world. Remove its use. "
+    "Stepping only the first world of a multi-world model with use_mujoco_cpu=True "
+    "has no replacement; build a single-world model instead."
+)
+
 
 class SolverMuJoCo(SolverBase, CouplingInterface):
     """
@@ -765,6 +772,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         Determines where an actuator gets its control input from:
 
         - :attr:`JOINT_TARGET`: Maps from Newton's :attr:`~newton.Control.joint_target_q`/:attr:`~newton.Control.joint_target_qd` arrays.
+          Runtime edits to ``actuator_ctrlrange`` apply to these rows, as do edits to
+          ``actuator_forcerange`` when ``actuator_has_forcerange`` is set. Runtime edits to their
+          other ``mujoco:actuator_*`` parameters are ignored.
         - :attr:`CTRL_DIRECT`: Uses ``control.mujoco.ctrl`` directly (for MuJoCo-native control)
         """
 
@@ -868,7 +878,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     # This is useful to debug import errors on Windows, for example
                     warnings.simplefilter("always", category=ImportWarning)
 
-                    import mujoco
+                    mujoco = import_mujoco_module()
+
                     import mujoco_warp
                     from mujoco_warp._src.types import ContactType
 
@@ -1420,7 +1431,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         ``Model.joint_stiffness`` and ``Model.joint_rest_q`` during finalization.
         Runtime ``dof_passive_stiffness`` remains a deprecated alias to the core stiffness
         array. Runtime ``dof_springref`` is a deprecated alias to ``Model.joint_rest_q`` when
-        their layouts and values coincide and raises an error otherwise; see
+        their layouts and values coincide and does not exist otherwise; see
         :ref:`mujoco-joint-spring-migration`.
         ``dof_springdamper`` holds construction-time pairs (time constant [s], damping ratio).
         Solver construction resolves positive pairs into ``Model.joint_stiffness`` and
@@ -1615,6 +1626,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="geom_solimp",
+                update_flags=ModelFlags.SHAPE_PROPERTIES,
                 frequency=AttributeFrequency.SHAPE,
                 assignment=AttributeAssignment.MODEL,
                 dtype=vec5,
@@ -1627,6 +1639,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="geom_solmix",
+                update_flags=ModelFlags.SHAPE_PROPERTIES,
                 frequency=AttributeFrequency.SHAPE,
                 assignment=AttributeAssignment.MODEL,
                 dtype=wp.float32,
@@ -1639,6 +1652,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="solref",
+                update_flags=ModelFlags.SHAPE_PROPERTIES,
                 frequency=AttributeFrequency.SHAPE,
                 assignment=AttributeAssignment.MODEL,
                 dtype=wp.vec2,
@@ -1654,6 +1668,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="solref_mode",
+                update_flags=ModelFlags.SHAPE_PROPERTIES,
                 frequency=AttributeFrequency.SHAPE,
                 assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
@@ -1674,6 +1689,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="limit_margin",
+                update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES,
                 frequency=AttributeFrequency.JOINT_DOF,
                 assignment=AttributeAssignment.MODEL,
                 dtype=wp.float32,
@@ -1686,6 +1702,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="solimplimit",
+                update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES,
                 frequency=AttributeFrequency.JOINT_DOF,
                 assignment=AttributeAssignment.MODEL,
                 dtype=vec5,
@@ -1697,6 +1714,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="solreflimit",
+                update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES,
                 frequency=AttributeFrequency.JOINT_DOF,
                 assignment=AttributeAssignment.MODEL,
                 dtype=wp.vec2,
@@ -1712,6 +1730,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="solreflimit_mode",
+                update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES,
                 frequency=AttributeFrequency.JOINT_DOF,
                 assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
@@ -1746,6 +1765,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="solreffriction",
+                update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES,
                 frequency=AttributeFrequency.JOINT_DOF,
                 assignment=AttributeAssignment.MODEL,
                 dtype=wp.vec2,
@@ -1757,6 +1777,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="solimpfriction",
+                update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES,
                 frequency=AttributeFrequency.JOINT_DOF,
                 assignment=AttributeAssignment.MODEL,
                 dtype=vec5,
@@ -1768,6 +1789,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="gravcomp",
+                update_flags=ModelFlags.BODY_INERTIAL_PROPERTIES,
                 frequency=AttributeFrequency.BODY,
                 assignment=AttributeAssignment.MODEL,
                 dtype=wp.float32,
@@ -1835,6 +1857,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="dof_ref",
+                update_flags=ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES,
                 frequency=AttributeFrequency.JOINT_DOF,
                 assignment=AttributeAssignment.MODEL,
                 dtype=wp.float32,
@@ -2192,6 +2215,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="pair_solref",
+                update_flags=ModelFlags.SHAPE_PROPERTIES,
                 frequency="mujoco:pair",
                 dtype=wp.vec2,
                 default=wp.vec2(0.02, 1.0),
@@ -2202,6 +2226,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="pair_solreffriction",
+                update_flags=ModelFlags.SHAPE_PROPERTIES,
                 frequency="mujoco:pair",
                 dtype=wp.vec2,
                 default=wp.vec2(0.0, 0.0),
@@ -2212,6 +2237,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="pair_solimp",
+                update_flags=ModelFlags.SHAPE_PROPERTIES,
                 frequency="mujoco:pair",
                 dtype=vec5,
                 default=vec5(0.9, 0.95, 0.001, 0.5, 2.0),
@@ -2222,6 +2248,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="pair_margin",
+                update_flags=ModelFlags.SHAPE_PROPERTIES,
                 frequency="mujoco:pair",
                 dtype=wp.float32,
                 default=0.0,
@@ -2232,6 +2259,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="pair_gap",
+                update_flags=ModelFlags.SHAPE_PROPERTIES,
                 frequency="mujoco:pair",
                 dtype=wp.float32,
                 default=0.0,
@@ -2242,6 +2270,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="pair_friction",
+                update_flags=ModelFlags.SHAPE_PROPERTIES,
                 frequency="mujoco:pair",
                 dtype=vec5,
                 default=vec5(1.0, 1.0, 0.005, 0.0001, 0.0001),
@@ -2810,6 +2839,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="actuator_ctrlrange",
+                update_flags=ModelFlags.ACTUATOR_PROPERTIES,
                 frequency="mujoco:actuator",
                 assignment=AttributeAssignment.MODEL,
                 dtype=wp.vec2,
@@ -2837,6 +2867,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="actuator_forcerange",
+                update_flags=ModelFlags.ACTUATOR_PROPERTIES,
                 frequency="mujoco:actuator",
                 assignment=AttributeAssignment.MODEL,
                 dtype=wp.vec2,
@@ -2864,6 +2895,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="actuator_gear",
+                update_flags=ModelFlags.ACTUATOR_PROPERTIES,
                 frequency="mujoco:actuator",
                 assignment=AttributeAssignment.MODEL,
                 dtype=wp.types.vector(length=6, dtype=wp.float32),
@@ -2915,6 +2947,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="actuator_cranklength",
+                update_flags=ModelFlags.ACTUATOR_PROPERTIES,
                 frequency="mujoco:actuator",
                 assignment=AttributeAssignment.MODEL,
                 dtype=wp.float32,
@@ -2927,6 +2960,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="actuator_dynprm",
+                update_flags=ModelFlags.ACTUATOR_PROPERTIES,
                 frequency="mujoco:actuator",
                 assignment=AttributeAssignment.MODEL,
                 dtype=vec10,
@@ -2940,6 +2974,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="actuator_gainprm",
+                update_flags=ModelFlags.ACTUATOR_PROPERTIES,
                 frequency="mujoco:actuator",
                 assignment=AttributeAssignment.MODEL,
                 dtype=vec10,
@@ -2953,6 +2988,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="actuator_biasprm",
+                update_flags=ModelFlags.ACTUATOR_PROPERTIES,
                 frequency="mujoco:actuator",
                 assignment=AttributeAssignment.MODEL,
                 dtype=vec10,
@@ -2981,6 +3017,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="actuator_actrange",
+                update_flags=ModelFlags.ACTUATOR_PROPERTIES,
                 frequency="mujoco:actuator",
                 assignment=AttributeAssignment.MODEL,
                 dtype=wp.vec2,
@@ -3112,6 +3149,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="tendon_stiffness",
+                update_flags=ModelFlags.TENDON_PROPERTIES,
                 frequency="mujoco:tendon",
                 dtype=wp.float32,
                 default=0.0,
@@ -3123,6 +3161,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="tendon_damping",
+                update_flags=ModelFlags.TENDON_PROPERTIES,
                 frequency="mujoco:tendon",
                 dtype=wp.float32,
                 default=0.0,
@@ -3134,6 +3173,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="tendon_frictionloss",
+                update_flags=ModelFlags.TENDON_PROPERTIES,
                 frequency="mujoco:tendon",
                 dtype=wp.float32,
                 default=0.0,
@@ -3199,6 +3239,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="tendon_range",
+                update_flags=ModelFlags.TENDON_PROPERTIES,
                 frequency="mujoco:tendon",
                 dtype=wp.vec2,
                 default=wp.vec2(0.0, 0.0),
@@ -3211,6 +3252,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="tendon_margin",
+                update_flags=ModelFlags.TENDON_PROPERTIES,
                 frequency="mujoco:tendon",
                 dtype=wp.float32,
                 default=0.0,
@@ -3222,6 +3264,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="tendon_solref_limit",
+                update_flags=ModelFlags.TENDON_PROPERTIES,
                 frequency="mujoco:tendon",
                 dtype=wp.vec2,
                 default=wp.vec2(0.02, 1.0),
@@ -3233,12 +3276,18 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         for name in ("tendon_limit_ke", "tendon_limit_kd"):
             builder.add_custom_attribute(
                 ModelBuilder.CustomAttribute(
-                    name=name, frequency="mujoco:tendon", dtype=wp.float32, default=0.0, namespace="mujoco"
+                    name=name,
+                    frequency="mujoco:tendon",
+                    dtype=wp.float32,
+                    default=0.0,
+                    namespace="mujoco",
+                    update_flags=ModelFlags.TENDON_PROPERTIES,
                 )
             )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="tendon_solref_limit_mode",
+                update_flags=ModelFlags.TENDON_PROPERTIES,
                 frequency="mujoco:tendon",
                 dtype=wp.int32,
                 # Reuse the joint-limit authoring modes for tendon gain provenance.
@@ -3249,6 +3298,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="tendon_solimp_limit",
+                update_flags=ModelFlags.TENDON_PROPERTIES,
                 frequency="mujoco:tendon",
                 dtype=vec5,
                 default=vec5(0.9, 0.95, 0.001, 0.5, 2.0),
@@ -3260,6 +3310,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="tendon_solref_friction",
+                update_flags=ModelFlags.TENDON_PROPERTIES,
                 frequency="mujoco:tendon",
                 dtype=wp.vec2,
                 default=wp.vec2(0.02, 1.0),
@@ -3271,6 +3322,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="tendon_solimp_friction",
+                update_flags=ModelFlags.TENDON_PROPERTIES,
                 frequency="mujoco:tendon",
                 dtype=vec5,
                 default=vec5(0.9, 0.95, 0.001, 0.5, 2.0),
@@ -3282,6 +3334,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="tendon_armature",
+                update_flags=ModelFlags.TENDON_PROPERTIES,
                 frequency="mujoco:tendon",
                 dtype=wp.float32,
                 default=0.0,
@@ -3328,6 +3381,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="tendon_actuator_force_range",
+                update_flags=ModelFlags.TENDON_PROPERTIES,
                 frequency="mujoco:tendon",
                 dtype=wp.vec2,
                 default=wp.vec2(0.0, 0.0),
@@ -4627,11 +4681,16 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         Direct actuators keep their ``dampratio`` (a positive ``biasprm[2]``), which is resolved
         from each world's current physical inertia and position gain whenever model changes
         refresh MuJoCo's constants.
-        With ``use_mujoco_cpu=True``, only the template world is simulated when ``separate_worlds=True``.
+        ``use_mujoco_cpu=True`` supports single-world models only.
 
         Args:
             model: The model to be simulated.
-            separate_worlds: If True, each Newton world is mapped to a separate MuJoCo world. Defaults to `not use_mujoco_cpu`.
+            separate_worlds: If True, each Newton world is mapped to a separate MuJoCo world; with
+                ``use_mujoco_cpu=True``, only the first world is simulated. If None, each world of a
+                multi-world model is mapped to its own MuJoCo world.
+
+                .. deprecated:: 1.9
+                    Passing any value is deprecated; the mapping will always follow the model's world count.
             njmax: Maximum number of constraints per world. If None, a default
                 value is estimated automatically. An explicit value is preserved
                 unless it cannot hold the initial MuJoCo constraints; in that case,
@@ -4722,6 +4781,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         """
         if update_data_interval is not None:
             warnings.warn(_UPDATE_DATA_INTERVAL_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
+        if separate_worlds is not None:
+            warnings.warn(_SEPARATE_WORLDS_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         super().__init__(model)
         self._kinematic_switchable_roots = kinematic_switchable_roots
         if use_speculative_contacts and use_mujoco_contacts:
@@ -5028,7 +5089,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         stacklevel=2,
                     )
         if separate_worlds is None:
-            separate_worlds = not use_mujoco_cpu and model.world_count > 1
+            separate_worlds = model.world_count > 1
+            if separate_worlds and use_mujoco_cpu:
+                raise ValueError(
+                    f"SolverMuJoCo with use_mujoco_cpu=True supports only single-world models; got "
+                    f"world_count={model.world_count}. Use use_mujoco_cpu=False to simulate multiple worlds."
+                )
         # Buffers for the fast-path contact conversion optimisation.
         # See _convert_contacts_to_mjwarp / convert_newton_contacts_to_mjwarp_kernel.
         # Initialised before _convert_to_mjc because notify_model_changed (called
@@ -6032,6 +6098,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         else:
             with self._scoped_mujoco_warp_execution():
                 self._notify_model_changed(flags)
+
+    @override
+    def _non_graphable_model_flags(self) -> int:
+        # The MuJoCo Warp path skips its host-side validation while capturing. Recomputing constants
+        # allocates from the memory pool, as step() does. The CPU backend mirrors into mj_model.
+        return ~0 if self.use_mujoco_cpu else 0
 
     def _notify_model_changed(self, flags: ModelFlags | int) -> None:
         need_const_fixed = False
@@ -7249,7 +7321,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         Args:
             model: The Newton model to convert.
             state: The Newton state to convert (optional).
-            separate_worlds: If True, each world is a separate MuJoCo simulation. If None, defaults to True for GPU mode (not use_mujoco_cpu).
+            separate_worlds: If True, each world is a separate MuJoCo simulation. If None, defaults to True.
             iterations: Maximum solver iterations. If None, uses model custom attribute or MuJoCo's default (100).
             ls_iterations: Maximum line search iterations. If None, uses model custom attribute or MuJoCo's default (50).
             njmax: Maximum number of constraints per world.
@@ -7291,8 +7363,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # Validate that separate_worlds=False is only used with single world
         if not separate_worlds and model.world_count > 1:
             raise ValueError(
-                f"separate_worlds=False is only supported for single-world models. "
-                f"Got world_count={model.world_count}. Use separate_worlds=True for multi-world models."
+                f"separate_worlds=False is only supported for single-world models; got world_count={model.world_count}."
             )
 
         self._option_world = self._resolve_option_world(model, separate_worlds)
@@ -8678,12 +8749,24 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         NewtonWarning,
                         stacklevel=2,
                     )
-                body.add_joint(
-                    name=name,
-                    type=mujoco.mjtJoint.mjJNT_FREE,
-                    damping=0.0,
-                    limited=False,
-                )
+                free_params = {
+                    "name": name,
+                    "type": mujoco.mjtJoint.mjJNT_FREE,
+                    "limited": False,
+                    "armature": joint_armature[qd_start],
+                    "frictionloss": joint_friction[qd_start],
+                }
+                if joint_stiffness is not None:
+                    free_params["stiffness"] = float(joint_stiffness[qd_start])
+                if joint_damping is not None:
+                    free_params["damping"] = float(joint_damping[qd_start])
+                if joint_actgravcomp is not None:
+                    free_params["actgravcomp"] = bool(joint_actgravcomp[qd_start])
+                if joint_dof_solref is not None:
+                    free_params["solref_friction"] = joint_dof_solref[qd_start]
+                if joint_dof_solimp is not None:
+                    free_params["solimp_friction"] = joint_dof_solimp[qd_start]
+                body.add_joint(**free_params)
                 mjc_joint_names.append(name)
                 for i in range(6):
                     dof_to_mjc_joint[qd_start + i] = num_mjc_joints
@@ -11449,9 +11532,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         Updates the randomizable pair properties (solref, solreffriction, solimp,
         margin, gap, friction) for explicit contact pairs defined in the model.
         """
-        if self.use_mujoco_cpu:
-            return  # CPU mode not supported for pair runtime updates
-
         npair = self.mj_model.npair
         if npair == 0:
             return
@@ -11506,6 +11586,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 ],
                 device=self.model.device,
             )
+            if self.use_mujoco_cpu:
+                for field in ("solref", "solreffriction", "solimp", "margin", "gap", "friction"):
+                    getattr(self.mj_model, f"pair_{field}")[:] = getattr(self.mjw_model, f"pair_{field}").numpy()[0]
 
     def _update_model_properties(self):
         """Update model properties including gravity in the MuJoCo model."""
@@ -11713,6 +11796,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self.mj_model.tendon_margin[:] = self.mjw_model.tendon_margin.numpy()[0]
             self.mj_model.tendon_solimp_lim[:] = self.mjw_model.tendon_solimp_lim.numpy()[0]
             self.mj_model.tendon_armature[:] = self.mjw_model.tendon_armature.numpy()[0]
+            self.mj_model.tendon_stiffness[:] = self.mjw_model.tendon_stiffness.numpy()[0]
+            self.mj_model.tendon_frictionloss[:] = self.mjw_model.tendon_frictionloss.numpy()[0]
+            self.mj_model.tendon_solref_lim[:] = self.mjw_model.tendon_solref_lim.numpy()[0]
+            self.mj_model.tendon_solref_fri[:] = self.mjw_model.tendon_solref_fri.numpy()[0]
+            self.mj_model.tendon_solimp_fri[:] = self.mjw_model.tendon_solimp_fri.numpy()[0]
+            self.mj_model.tendon_actfrcrange[:] = self.mjw_model.tendon_actfrcrange.numpy()[0]
 
     def _resolve_joint_springdamper(self, spec: Any) -> None:
         """Consume imported time constants [s] and damping ratios into per-world core gains."""
@@ -12053,7 +12142,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             rows = np.flatnonzero((actuator_world >= 0) & (actuator_world < world_count))
             row_counts = np.bincount(actuator_world[rows], minlength=world_count)
             if np.any(row_counts != row_counts[0]):
-                raise ValueError("SolverMuJoCo with separate_worlds=True requires matching actuator layouts.")
+                raise ValueError("SolverMuJoCo requires matching actuator layouts across worlds.")
             rows = rows[np.argsort(actuator_world[rows], kind="stable")].reshape(world_count, row_counts[0])
             for name in ("actuator_damping", "actuator_dampingpoly", "actuator_armature", "actuator_ctrlspec"):
                 attribute = getattr(model.mujoco, name, None)
@@ -12061,8 +12150,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     values = attribute.numpy()[rows]
                     if np.any(values != values[0]):
                         raise ValueError(
-                            "SolverMuJoCo with separate_worlds=True requires "
-                            f"identical actuator template parameters (mujoco:{name}) across worlds."
+                            "SolverMuJoCo requires identical actuator template parameters "
+                            f"(mujoco:{name}) across worlds."
                         )
             dcmotor.validate_worlds(model, rows, dcmotor_type=SolverMuJoCo.CtrlType.DCMOTOR)
 
