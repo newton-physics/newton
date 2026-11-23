@@ -642,8 +642,8 @@ def parse_mjcf(
         parse_visuals: Whether visual geometries (non-collision shapes) should be loaded. If False, visual shapes are not loaded (different from `hide_visuals` which loads but hides them). Default is True.
         parse_mujoco_options: Whether solver options from the MJCF `<option>` tag should be parsed. If False, solver options are not loaded and custom attributes retain their default values; the ``gravity`` and ``filterparent`` flags, which change the Newton model rather than a solver option, are then ignored as well. Default is True.
         up_axis: The up axis of the MuJoCo scene. The default is Z up.
-        ignore_names: A list of regular expressions. Bodies and joints with a name matching one of the regular expressions will be ignored.
-        ignore_classes: A list of regular expressions. Bodies and joints with a class matching one of the regular expressions will be ignored.
+        ignore_names: A list of regular expressions. Geoms and sites with a name matching one of the regular expressions will be ignored.
+        ignore_classes: A list of regular expressions. Geoms and sites with a ``class`` matching one of the regular expressions will be ignored, as will bodies with a matching ``childclass`` and everything nested in them.
         visual_classes: A list of regular expressions. Visual geometries with a class matching one of the regular expressions will be parsed.
         collider_classes: A list of regular expressions. Collision geometries with a class matching one of the regular expressions will be parsed.
         no_class_as_colliders: If True, geometries without a class are parsed as collision geometries. If False, geometries without a class are parsed as visual geometries.
