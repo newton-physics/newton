@@ -5790,10 +5790,12 @@ class TestMuJoCoSolverContactKf(unittest.TestCase):
     def test_kf_sets_contact_solreffriction(self):
         """Verify positive kf sets the mixed contact solreffriction."""
         model, solver = self._make_sphere_scene(kf_sphere=800.0, kf_plane=200.0)
+        contact_owners = []
         for solmix in ((1.0, 1.0), (5e-16, 0.0)):
             with self.subTest(solmix=solmix):
                 solver.mjw_model.geom_solmix.assign(np.array([solmix], dtype=np.float32))
-                nacon, _, _ = self._step_and_read_solreffriction(model, solver)
+                nacon, contact_owner, _ = self._step_and_read_solreffriction(model, solver)
+                contact_owners.append(contact_owner)
                 solreffriction = solver.mjw_data.contact.solreffriction.numpy()[:nacon]
                 expected = self._expected_solreffriction(solver, nacon, kf_pair=500.0)
                 for i in range(nacon):
