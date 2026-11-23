@@ -412,7 +412,8 @@ class TestImportMjcfNativeSemantics(unittest.TestCase):
         builder.custom_attributes["mujoco:tendon_armature"].values[0] = 0.2
         model = builder.finalize()
         stiffness, damping = model.joint_stiffness.numpy().copy(), model.joint_damping.numpy().copy()
-        SolverMuJoCo(model, use_mujoco_cpu=True, separate_worlds=True, disable_contacts=True)
+        with self.assertWarns(newton.NewtonDeprecationWarning):
+            SolverMuJoCo(model, use_mujoco_cpu=True, separate_worlds=True, disable_contacts=True)
         self.assertGreater(model.joint_stiffness.numpy()[0], stiffness[0])
         self.assertEqual(model.joint_stiffness.numpy()[1], stiffness[1])
         self.assertEqual(model.joint_damping.numpy()[1], damping[1])
@@ -446,7 +447,7 @@ class TestImportMjcfNativeSemantics(unittest.TestCase):
                             builder.joint_stiffness[0] = ke[0] = 0
                             builder.joint_damping[1] = kd[1] = 7
                         model = builder.finalize()
-                        solver = SolverMuJoCo(model, use_mujoco_cpu=cpu, separate_worlds=not cpu, disable_contacts=True)
+                        solver = SolverMuJoCo(model, use_mujoco_cpu=cpu, disable_contacts=True)
                         np.testing.assert_allclose(model.joint_stiffness.numpy(), ke, rtol=3e-5)
                         np.testing.assert_allclose(model.joint_damping.numpy(), kd, rtol=3e-5)
                         np.testing.assert_allclose(solver.mjw_model.jnt_stiffness.numpy().reshape(-1), ke, rtol=3e-5)
@@ -454,9 +455,7 @@ class TestImportMjcfNativeSemantics(unittest.TestCase):
                         np.testing.assert_array_equal(model.mujoco.native_joint_springdamper.numpy(), 0)
                         model.joint_stiffness.zero_()
                         model.joint_damping.zero_()
-                        rebuilt = SolverMuJoCo(
-                            model, use_mujoco_cpu=cpu, separate_worlds=not cpu, disable_contacts=True
-                        )
+                        rebuilt = SolverMuJoCo(model, use_mujoco_cpu=cpu, disable_contacts=True)
                         np.testing.assert_array_equal(rebuilt.mjw_model.jnt_stiffness.numpy(), 0)
                         np.testing.assert_array_equal(rebuilt.mjw_model.dof_damping.numpy(), 0)
 
@@ -497,7 +496,7 @@ class TestImportMjcfNativeSemantics(unittest.TestCase):
                     ke = np.repeat(reference.jnt_stiffness, (6, 3, 1))
                     kd = reference.dof_damping
                     model = builder.finalize()
-                    solver = SolverMuJoCo(model, use_mujoco_cpu=cpu, separate_worlds=not cpu, disable_contacts=True)
+                    solver = SolverMuJoCo(model, use_mujoco_cpu=cpu, disable_contacts=True)
                     np.testing.assert_allclose(model.joint_stiffness.numpy(), np.r_[ke, ke * 2], rtol=3e-5)
                     np.testing.assert_allclose(model.joint_damping.numpy(), np.r_[kd, kd * 2], rtol=3e-5)
                     np.testing.assert_allclose(

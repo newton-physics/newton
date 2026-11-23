@@ -1477,7 +1477,7 @@ class TestImportMjcfNative(unittest.TestCase):
             data.qpos[0] = 0.25
             data.qvel[:] = 0.4
             references.append((reference, data))
-        solver = SolverMuJoCo(builder.finalize(), separate_worlds=True, disable_contacts=True)
+        solver = SolverMuJoCo(builder.finalize(), disable_contacts=True)
         for field in (
             "geom_surfacevel",
             "geom_adhesion",
@@ -1527,7 +1527,7 @@ class TestImportMjcfNative(unittest.TestCase):
             builder.end_world()
             native = mujoco.MjModel.from_xml_string(source)
             references.append((native, mujoco.MjData(native)))
-        solver = SolverMuJoCo(builder.finalize(), separate_worlds=True, kinematic_switchable_roots=False)
+        solver = SolverMuJoCo(builder.finalize(), kinematic_switchable_roots=False)
         mujoco_warp.step(solver.mjw_model, solver.mjw_data)
         for native, data in references:
             mujoco.mj_step(native, data)
@@ -1553,7 +1553,7 @@ class TestImportMjcfNative(unittest.TestCase):
                 builder.replicate(asset, 2)
                 builder.custom_attributes[f"mujoco:{name}"].values[1] = value
                 with self.assertRaisesRegex(ValueError, name):
-                    SolverMuJoCo(builder.finalize(), separate_worlds=True)
+                    SolverMuJoCo(builder.finalize())
 
     def test_native_actuator_history_and_dcmotor(self):
         """Preserve actuator history, passive properties, and DC-motor inputs."""

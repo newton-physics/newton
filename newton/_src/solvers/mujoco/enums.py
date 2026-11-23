@@ -71,6 +71,9 @@ class CtrlSource(IntEnum):
     Determines where an actuator gets its control input from:
 
     - :attr:`JOINT_TARGET`: Maps from Newton's :attr:`~newton.Control.joint_target_q`/:attr:`~newton.Control.joint_target_qd` arrays.
+      Runtime edits to ``actuator_ctrlrange`` apply to these rows, as do edits to
+      ``actuator_forcerange`` when ``actuator_has_forcerange`` is set. Runtime edits to their
+      other ``mujoco:actuator_*`` parameters are ignored.
     - :attr:`CTRL_DIRECT`: Uses ``control.mujoco.ctrl`` directly (for MuJoCo-native control)
     """
 

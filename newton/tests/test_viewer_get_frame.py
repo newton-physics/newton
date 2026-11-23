@@ -69,7 +69,7 @@ def _make_headless_viewer_gl_or_skip(test: unittest.TestCase, *, width: int = 64
         raise
 
 
-def _make_box_model(device: str | wp.Device):
+def _make_box_model(device: wp.DeviceLike):
     builder = newton.ModelBuilder()
     body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
     builder.add_shape_box(body, hx=0.25, hy=0.25, hz=0.25, color=(1.0, 0.0, 0.0))

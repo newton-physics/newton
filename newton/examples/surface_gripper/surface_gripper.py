@@ -937,7 +937,7 @@ class SurfaceGripperBuilder:
         self.grippers.append(gripper)
         return len(self.grippers) - 1
 
-    def finalize(self, device: str | wp.Device | None = None) -> "SurfaceGripperModel":
+    def finalize(self, device: wp.DeviceLike = None) -> "SurfaceGripperModel":
         """Flatten all grippers into a device-resident :class:`SurfaceGripperModel`.
 
         The constant pad-frame perimeter points are precomputed once into ``pad_perimeter_local`` so the kernels

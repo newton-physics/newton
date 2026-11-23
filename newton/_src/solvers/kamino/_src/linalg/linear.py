@@ -724,6 +724,10 @@ class LLTBlockedSolver(DirectSolver[ScalarType, IndexType]):
             A=A,
             L=self._L,
         )
+        self._retry_failed_factors(A, self._operator.info.dim)
+
+    def _retry_failed_factors(self, A: wp.array2d[ScalarType], dim: wp.array[wp.int32]) -> None:
+        """Refactorizes the blocks of nonzero dimension in ``dim`` with a non-finite pivot, if enabled."""
         if self._failed_pivot_shift > 0.0:
             # Round-off can break near-singular blocks; refactorize only those,
             # since the per-block kernel exits immediately for zero dimensions.
@@ -733,7 +737,7 @@ class LLTBlockedSolver(DirectSolver[ScalarType, IndexType]):
             wp.launch(
                 factorize.flag_failed_llt_factors,
                 dim=retry_shape,
-                inputs=[info.dim, info.dim, self._L, self._retry_dim],
+                inputs=[dim, info.dim, self._L, self._retry_dim],
                 device=self._device,
             )
             wp.launch(
@@ -790,6 +794,33 @@ class LLTBlockedSolver(DirectSolver[ScalarType, IndexType]):
             y=self._y,
             x=x,
         )
+
+    ###
+    # Partial refactorization
+    ###
+
+    @property
+    def stride(self) -> wp.array[wp.int32]:
+        """The row stride of each block of :attr:`L`."""
+        return self._operator.info.dim
+
+    def refactorize(self, A: wp.array2d[ScalarType], dim: wp.array[wp.int32]) -> None:
+        """
+        Refactorizes the blocks with a nonzero dimension in ``dim``, and keeps the factors of the others.
+
+        Args:
+            A: The matrix blocks, one per row.
+            dim: The dimension of each block to refactorize, or zero to keep its factor, of shape ``(num_blocks,)``.
+        """
+        factorize.llt_blocked_factorize(
+            kernel=self._factorize_kernel,
+            num_blocks=self._operator.info.num_blocks,
+            block_dim=self._factorize_block_dim,
+            dim=dim,
+            A=A,
+            L=self._L,
+        )
+        self._retry_failed_factors(A, dim)
 
 
 ###

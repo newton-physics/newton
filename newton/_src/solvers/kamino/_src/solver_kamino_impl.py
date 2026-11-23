@@ -317,6 +317,7 @@ class SolverKaminoImpl(SolverBase):
         elif self._config.dynamics_solver == "padmm":
             self._solver_fd = PADMMSolver(
                 model=self._model,
+                problem=self._problem_fd,
                 config=self._config.padmm,
                 warmstart=self._warmstart_mode,
                 use_acceleration=self._config.padmm.use_acceleration,
