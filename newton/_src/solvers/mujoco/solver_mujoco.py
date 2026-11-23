@@ -6134,6 +6134,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self._update_site_properties()
             self._update_pair_properties()
             self._invalidate_contact_fast_path()
+            # Site geometry affects tendon reference lengths and transmission inertia.
+            if self.mj_model.nsite:
+                need_const_0 = True
         if flags & ModelFlags.MODEL_PROPERTIES:
             self._update_model_properties()
             self._invalidate_contact_fast_path()
@@ -11233,8 +11236,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         )
 
         if self.use_mujoco_cpu:
-            self.mj_model.site_pos[:] = self.mjw_model.site_pos.numpy()[0]
-            self.mj_model.site_quat[:] = self.mjw_model.site_quat.numpy()[0]
+            self.mj_model.site_pos[:] = self.mjw_model.site_pos[0].numpy()
+            self.mj_model.site_quat[:] = self.mjw_model.site_quat[0].numpy()
             self.mj_model.site_size[:] = self.mjw_model.site_size.numpy()
             # Runtime edits invalidate the compiler's shared-frame shortcut.
             self.mj_model.site_sameframe[:] = self._mujoco.mjtSameFrame.mjSAMEFRAME_NONE

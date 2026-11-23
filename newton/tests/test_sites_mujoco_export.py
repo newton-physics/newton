@@ -10,13 +10,44 @@ import warp as wp
 
 import newton
 from newton import GeoType
-from newton.solvers import SolverMuJoCo
+from newton.solvers import SolverMuJoCo, mujoco
 from newton.tests.unittest_utils import MUJOCO_MODULES, requires
 
 
 @requires(*MUJOCO_MODULES)
 class TestMuJoCoSiteExport(unittest.TestCase):
     """Test exporting sites to MuJoCo models."""
+
+    def test_site_edit_refreshes_tendon_constants(self):
+        """Keep a tendon equality at rest after changing its site geometry."""
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        joint = builder.add_joint_revolute(-1, body, axis=newton.Axis.Z)
+        builder.add_articulation([joint])
+        moving = builder.add_site(body, xform=wp.transform((1.0, 0.0, 0.0), wp.quat_identity()))
+        fixed = builder.add_site(-1, xform=wp.transform((1.0, -1.0, 0.0), wp.quat_identity()))
+        tendon = mujoco.add_tendon_spatial(builder, [mujoco.TendonWrapSite(moving), mujoco.TendonWrapSite(fixed)])
+        mujoco.add_equality_tendon(builder, tendon)
+
+        for cpu in (False, True):
+            with self.subTest(cpu=cpu):
+                model = builder.finalize()
+                solver = SolverMuJoCo(model, use_mujoco_cpu=cpu, disable_contacts=True)
+                poses = model.shape_transform.numpy().copy()
+                poses[moving, 0] = 2.0
+                model.shape_transform.assign(poses)
+                solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+                reference = SolverMuJoCo(model, use_mujoco_cpu=cpu, disable_contacts=True)
+
+                output, expected = model.state(), model.state()
+                solver.step(model.state(), output, model.control(), None, 0.001)
+                reference.step(model.state(), expected, model.control(), None, 0.001)
+                np.testing.assert_allclose(expected.joint_qd.numpy(), 0.0, atol=1e-7)
+                np.testing.assert_allclose(output.joint_qd.numpy(), expected.joint_qd.numpy(), atol=1e-7)
+                for field in ("tendon_length0", "tendon_invweight0"):
+                    actual = getattr(solver.mj_model if cpu else solver.mjw_model, field)
+                    fresh = getattr(reference.mj_model if cpu else reference.mjw_model, field)
+                    np.testing.assert_allclose(actual if cpu else actual.numpy(), fresh if cpu else fresh.numpy())
 
     def test_worldbody_site_poses_across_worlds(self):
         """Keep batched worldbody site poses synchronized with Newton."""
