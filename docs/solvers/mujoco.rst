@@ -165,11 +165,12 @@ applied before the hinges, which changes the body's motion and emits
 :class:`~newton.NewtonDeprecationWarning`; a future release will raise an
 error.
 
-Hinge axes meet if one point lies within 1e-4 MJCF length units of each axis.
-Two axes are parallel if the angle between them is below 0.06 degrees. A body
-without hinges is anchored at its first slide's position. None of this applies
-to a root body whose joints are replaced through ``floating``, ``base_joint``
-or ``parent_body``.
+Hinge axes meet if the point with the smallest summed squared distance to them
+lies within 1e-4 MJCF length units of every axis. Two axes are
+parallel if the angle between them is below 0.06 degrees. A body without
+hinges is anchored at its first slide's position. None of this applies to a
+root body whose joints are replaced through ``floating``, ``base_joint`` or
+``parent_body``.
 
 Joint reference values (``ref``)
 --------------------------------
