@@ -1495,8 +1495,11 @@ class ViewerViser(ViewerBase):
         """
         # Match viser's startup URL: a wildcard bind is reachable on localhost.
         host = self._server.get_host()
-        if host in ("0.0.0.0", "::"):
+        if host == "0.0.0.0":
             host = "localhost"
+        elif host == "::":
+            # The bind is IPv6-only, and localhost may resolve to 127.0.0.1 alone.
+            host = "[::1]"
         elif ":" in host and not host.startswith("["):
             # IPv6 literals have to be bracketed in a URL authority.
             host = f"[{host}]"

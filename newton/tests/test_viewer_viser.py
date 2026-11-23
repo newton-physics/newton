@@ -931,12 +931,12 @@ class TestViewerViserBindHost(unittest.TestCase):
         self.assertTrue(url.startswith(f"http://127.0.0.1:{viewer._server.get_port()}"), url)
 
     def test_ipv6_host_url_is_bracketed(self):
-        """Bracket IPv6 bind addresses and report localhost for the IPv6 wildcard."""
+        """Bracket IPv6 bind addresses and report the loopback for the IPv6 wildcard."""
         from urllib.parse import urlsplit  # noqa: PLC0415
 
         viewer = self._viewer(host="127.0.0.1")
         port = viewer._server.get_port()
-        for host, expected_host in (("::1", "[::1]"), ("::", "localhost")):
+        for host, expected_host in (("::1", "[::1]"), ("::", "[::1]")):
             with self.subTest(host=host), mock.patch.object(viewer._server, "get_host", return_value=host):
                 url = viewer.url
                 self.assertEqual(url, f"http://{expected_host}:{port}")
