@@ -158,7 +158,6 @@ def eval_tet_constraint_kernel(
     tet_poses: wp.array[wp.mat33],
     tet_materials: wp.array2d[float],
     volume_targets: wp.array[wp.mat33],
-    volume_ratio: float,
     # outputs
     forces: wp.array[wp.vec3],
 ):
@@ -172,10 +171,9 @@ def eval_tet_constraint_kernel(
     mu = tet_materials[tid, 0]
     lam = tet_materials[tid, 1]
     stress = (2.0 * mu * volume) * (F - rotation)
-    if volume_ratio > 0.0:
-        target = project_tet_volume(F, volume_targets[tid])
-        volume_targets[tid] = target
-        stress += (3.0 * lam * volume_ratio * volume) * (F - target)
+    target = project_tet_volume(F, volume_targets[tid])
+    volume_targets[tid] = target
+    stress += (3.0 * lam * volume) * (F - target)
 
     for i in range(4):
         gradient = -(inv_dm[0] + inv_dm[1] + inv_dm[2]) if i == 0 else inv_dm[i - 1]

@@ -1,1 +1,1 @@
-Add experimental Style3D tetrahedral co-rotational elasticity and configurable volume projection using the existing scalar PD matrix, with `--solver style3d` modes in the hanging softbody, rigid-soft contact, softbody-on-cloth, and Franka softbody examples.
+Add experimental Style3D tetrahedral co-rotational elasticity using per-tetrahedron material parameters in the existing scalar PD matrix, with `--solver style3d` modes in the hanging softbody, rigid-soft contact, softbody-on-cloth, and Franka softbody examples.

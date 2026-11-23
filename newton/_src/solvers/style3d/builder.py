@@ -261,18 +261,15 @@ class PDMatrixBuilder:
         )
         self._check_overflow()
 
-    def add_tet_constraints(self, tet_indices, tet_poses, tet_materials, *, volume_ratio: float = 1.0):
+    def add_tet_constraints(self, tet_indices, tet_poses, tet_materials):
         """Add the scalar operator of the projective tetrahedral energy.
 
         Each spatial block is ``K_ij * I`` with
-        ``K_ij = V * (2 * mu + 3 * lambda * volume_ratio) * grad(N_i).grad(N_j)``.
+        ``K_ij = V * (2 * mu + 3 * lambda) * grad(N_i).grad(N_j)``.
         Consequently the existing float ELL matrix stores the complete operator.
-        The volume target has determinant one. At ``volume_ratio=1`` its
-        converged projection matches the Lamé volume response near rest.
+        The volume target has determinant one and matches the Lamé volume
+        response near rest.
         """
-        if not np.isfinite(volume_ratio) or volume_ratio < 0.0:
-            raise ValueError("Tetrahedral PD volume ratio must be finite and nonnegative.")
-
         indices = np.asarray(tet_indices, dtype=np.int32).reshape(-1, 4)
         poses = np.asarray(tet_poses, dtype=np.float32).reshape(-1, 3, 3)
         materials = np.asarray(tet_materials, dtype=np.float32).reshape(-1, 3)
@@ -295,7 +292,7 @@ class PDMatrixBuilder:
         diags = self.diags.numpy()
         gradients = np.concatenate((-poses.sum(axis=1, keepdims=True), poses), axis=1)
         volume = 1.0 / (6.0 * determinants)
-        weight = 2.0 * materials[:, 0] + 3.0 * materials[:, 1] * volume_ratio
+        weight = 2.0 * materials[:, 0] + 3.0 * materials[:, 1]
         stiffness = (volume * weight)[:, None, None] * (gradients @ gradients.transpose(0, 2, 1))
         np.add.at(diags, indices.ravel(), np.diagonal(stiffness, axis1=1, axis2=2).ravel())
 

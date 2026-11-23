@@ -51,7 +51,7 @@ def _assert_pd_matrix(test, model, solver):
         ):
             gradients = np.vstack((-pose.sum(axis=0), pose)).astype(np.float64)
             volume = 1.0 / (6.0 * np.linalg.det(pose))
-            weight = 2.0 * material[0] + 3.0 * material[1] * solver.config.tet_volume_ratio
+            weight = 2.0 * material[0] + 3.0 * material[1]
             expected[np.ix_(tet, tet)] += volume * weight * (gradients @ gradients.T)
     actual = np.diag(solver._pd_diag.numpy())
     counts = solver._pd_off_diag.num_nz.numpy()
@@ -173,7 +173,7 @@ def test_tet_constraint_assembles_float_psd_matrix(test, device):
     model = builder.finalize(device=device)
     solver = newton.solvers.SolverStyle3D(
         model,
-        config=newton.solvers.SolverStyle3D.Config(iterations=2, linear_iterations=8, tet_volume_ratio=1.0),
+        config=newton.solvers.SolverStyle3D.Config(iterations=2, linear_iterations=8),
     )
 
     _assert_pd_matrix(test, model, solver)
@@ -201,10 +201,6 @@ def test_tet_constraint_assembles_float_psd_matrix(test, device):
     test.assertLess(np.linalg.norm(result[1] - result[0]), 1.2)
     np.testing.assert_allclose(result.mean(axis=0), stretched.mean(axis=0), atol=2.0e-6)
     test.assertGreater(np.linalg.norm(state_out.particle_qd.numpy()), 0.0)
-
-    solver.config.tet_volume_ratio = 0.5
-    with test.assertRaisesRegex(ValueError, "Recreate SolverStyle3D"):
-        solver.step(state_in, state_out, model.control(), contacts, 0.01)
 
 
 def test_config_constructor_options(test, device):

@@ -169,7 +169,9 @@ class Example:
             )
             # The duck uses external particle-shape contacts; its surface
             # self-collision constraints are not needed in this example.
-            self.soft_solver.collision = None
+            self.soft_solver.collision.stiff_vf = 0.0
+            self.soft_solver.collision.stiff_ee = 0.0
+            self.soft_solver.collision.stiff_ef = 0.0
         else:
             self.soft_solver = SolverVBD(
                 self.model,

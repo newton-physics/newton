@@ -226,21 +226,19 @@ attributes. Models containing only tetrahedra without surface topology are
 not supported by this integration. Disable surface stiffness when only volumetric elasticity is desired.
 
 The elastic energy per element is
-``V * mu * ||F - R||^2 + 1.5 * V * lambda * r * ||F - Q||^2``, where ``R`` is
+``V * mu * ||F - R||^2 + 1.5 * V * lambda * ||F - Q||^2``, where ``R`` is
 a proper rotation and ``Q`` has determinant one. The volume projection uses
 an approximate local minimizer and retains its previous feasible target when
 that gives a smaller residual. This is a projective co-rotational model,
 not the full stable Neo-Hookean constitutive law.
 
-``SolverStyle3D.Config(tet_volume_ratio=1.0)`` sets the dimensionless volume
-stiffness multiplier ``r``. It must be finite and nonnegative; zero disables
-the volume penalty. Recreate the solver to change this value because it is
-included in the precomputed scalar stiffness matrix. Rest tetrahedra must
+The volume term uses the tetrahedron's material Lamé parameter ``lambda``
+directly. Rest tetrahedra must
 have positive orientation, and material coefficients must be finite and
 nonnegative. The tetrahedral damping coefficient is currently unused.
 
 USD-authored volumes use the existing deformable-volume importer and its
 standard tetrahedral model arrays; no additional material schema is introduced.
-The volume multiplier is a runtime solver setting. Contact handling continues
+Contact handling continues
 to use surface triangles, edges, and particle contacts; tetrahedra do not
 implicitly generate a collision surface.

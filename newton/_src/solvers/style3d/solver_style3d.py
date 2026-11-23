@@ -6,7 +6,6 @@ from __future__ import annotations
 import warnings
 from dataclasses import dataclass
 from enum import IntFlag
-from math import isfinite
 from typing import Any
 
 import warp as wp
@@ -185,8 +184,7 @@ class SolverStyle3D(SolverBase):
         The solver keeps the supplied object as :attr:`SolverStyle3D.config`.
         Changes made before a subsequent :meth:`SolverStyle3D.step` take
         effect on that step. Captured CUDA graphs must be recaptured to use
-        updated configuration values. The construction-only ``tet_volume_ratio``
-        requires recreating the solver.
+        updated configuration values.
 
         Example:
             Configure a solver for an existing model::
@@ -219,13 +217,6 @@ class SolverStyle3D(SolverBase):
 
         enable_mouse_dragging: bool = False
         """Whether to enable the mouse-dragging kernel."""
-
-        tet_volume_ratio: float = 1.0
-        """Experimental dimensionless volumetric tetrahedral stiffness multiplier.
-
-        Must be finite and nonnegative. Set at construction; recreate the solver
-        to change it. Zero disables the volume penalty.
-        """
 
     config: Config
     """Live solver options, retained by reference when supplied at construction.
@@ -530,9 +521,6 @@ class SolverStyle3D(SolverBase):
             dtype=wp.mat33,
             device=model.device,
         )
-        if not isfinite(config.tet_volume_ratio) or config.tet_volume_ratio < 0.0:
-            raise ValueError("Config.tet_volume_ratio must be finite and nonnegative.")
-
         # Number of DOF blocks in the linear system, with three scalar DOFs per block.
         self._particle_count = model.particle_count if enable_deformable else 0
         self._affine_body_count = model.body_count if enable_affine_body else 0
@@ -548,7 +536,6 @@ class SolverStyle3D(SolverBase):
         self._pd_off_diag = SparseMatrixELL()
         self._pd_diag = wp.zeros(self._dof_block_count, dtype=float, device=self.device)
         self._precompute(model)
-        self._matrix_tet_volume_ratio = config.tet_volume_ratio
 
         # Non-linear equation variables
         self._x = wp.zeros(self._dof_block_count, dtype=wp.vec3, device=self.device)
@@ -623,9 +610,6 @@ class SolverStyle3D(SolverBase):
             return
         elif self.config.iterations < 1:
             raise ValueError(f"Config.iterations must be at least 1, got {self.config.iterations}.")
-
-        if self.config.tet_volume_ratio != self._matrix_tet_volume_ratio:
-            raise ValueError("Recreate SolverStyle3D after changing tet_volume_ratio.")
 
         self._to_internal_state(state_in, dt)
         particle_q = self._x[: self._particle_count]
@@ -728,7 +712,6 @@ class SolverStyle3D(SolverBase):
                         self.model.tet_poses,
                         self.model.tet_materials,
                         self._tet_volume_targets,
-                        self.config.tet_volume_ratio,
                     ],
                     outputs=[self._rhs],
                     device=self.device,
@@ -933,9 +916,7 @@ class SolverStyle3D(SolverBase):
                 if self._particle_count > 0:
                     matrix.add_stretch_constraints(tri_indices, tri_poses, tri_aniso_ke, tri_areas)
                     matrix.add_bend_constraints(edge_indices, edge_bending_properties, edge_rest_area, edge_bending_cot)
-                    matrix.add_tet_constraints(
-                        tet_indices, tet_poses, tet_materials, volume_ratio=self.config.tet_volume_ratio
-                    )
+                    matrix.add_tet_constraints(tet_indices, tet_poses, tet_materials)
                 return matrix
 
             try:

@@ -119,6 +119,7 @@ class Example:
             self.solver = SolverVBD(model=self.model, **vbd_kwargs)
         elif self.solver_type == "style3d":
             self.solver = SolverStyle3D(self.model)
+            self.solver.config.iterations = 15
         else:
 
             def configure_soft_view(view: ModelView) -> None:
