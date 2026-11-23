@@ -283,7 +283,10 @@ truncated against analytic contacts with static shapes, using the
 contacts passed to :meth:`~newton.solvers.SolverVBD.step`. Only the particle
 side is truncated and no rigid-soft radius cap is added, so this covers
 particles found within the soft contact margin at detection. Body-attached
-shapes and full-surface mesh contacts are left to rigid-soft DAT.
+shapes and full-surface mesh rows that pair complete mesh primitives are left
+to rigid-soft DAT. Penetration-recovery rows of a full-surface static mesh
+are truncated like analytic contacts: a particle inside the mesh may move
+toward its surface but not deeper.
 
 How to set the distances, and what they cost, is on the tuning page:
 :ref:`vbd-contact-handling` and :ref:`vbd-margin-gap-guide`. The contact

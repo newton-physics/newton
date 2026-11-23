@@ -8094,8 +8094,10 @@ def apply_rigid_soft_truncation(
     trajectories instead distinguish only valid and wrong-side initial states.
 
     With ``static_shapes_only``, only analytic rows of world-attached shapes are
-    processed; rows of body-attached shapes and full-surface (BVH) rows are
-    skipped. Those rows never read the body arrays, so those may then be empty.
+    processed; rows of body-attached shapes and full-surface rows that pair
+    complete mesh primitives are skipped. Full-surface penetration-recovery rows
+    carry no rigid primitive and count as analytic. Analytic static rows never
+    read the body arrays, so those may then be empty.
     """
     contact_index = wp.tid()
 

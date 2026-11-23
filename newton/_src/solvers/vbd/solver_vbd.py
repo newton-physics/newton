@@ -514,7 +514,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 trajectory reference is refreshed only when detection runs. With ``rigid_soft_enable_dat``
                 off, DAT also truncates particle motion against analytic contacts with static
                 shapes in the ``contacts`` passed to :meth:`step` (particle side only; body-attached shapes
-                and full-surface mesh contacts are left to ``rigid_soft_enable_dat``).
+                and full-surface mesh rows that pair complete mesh primitives are left to
+                ``rigid_soft_enable_dat``, while full-surface penetration-recovery rows are truncated
+                like analytic contacts).
             particle_self_contact_radius: Deprecated; use ``particle_self_contact_margin`` +
                 ``particle_self_contact_gap`` instead. When set, the legacy interpretation applies
                 exactly: radius = interaction distance and ``particle_self_contact_margin`` = detection
@@ -3430,7 +3432,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             # its motion into the shape stays free, which walks a resting pile through the
             # shape. Truncate the particle side of analytic static-shape contacts as well;
             # static shapes have no reference pose, so the given contacts suffice. Full-surface
-            # (BVH) rows stay with rigid-soft DAT, whose uncertified rows freeze the particle.
+            # rows with complete mesh primitives stay with rigid-soft DAT, whose uncertified
+            # rows freeze the particle. Mesh penetration-recovery rows carry no primitive and
+            # are truncated like analytic rows.
             wp.launch(
                 kernel=apply_rigid_soft_truncation,
                 dim=contacts.soft_contact_max,

@@ -9978,6 +9978,63 @@ def test_self_contact_dat_leaves_full_surface_mesh_rows_to_rigid_dat(test, devic
     test.assertTrue(np.all(z > 0.1), f"sheet held inside the mesh: min z = {z.min():.6f} m")
 
 
+def test_self_contact_dat_truncates_full_surface_recovery_rows(test, device):
+    """Verify the static-shape pass under self-contact DAT keeps mesh recovery rows.
+
+    Full-surface penetration-recovery rows carry no rigid primitive, so they are
+    truncated like analytic rows: a particle inside a static mesh cannot move deeper.
+    """
+    builder = newton.ModelBuilder()
+    # A negligible contact stiffness leaves the truncation as the only thing that stops the sheet.
+    mesh_cfg = builder.default_shape_cfg.copy()
+    mesh_cfg.ke, mesh_cfg.kd, mesh_cfg.mu = 1.0e-6, 0.0, 0.0
+    builder.add_shape_mesh(
+        -1,
+        xform=wp.transform(wp.vec3(0.0, 0.0, 0.05), wp.quat_identity()),
+        mesh=newton.Mesh.create_box(0.05, duplicate_vertices=False, compute_uvs=False),
+        cfg=mesh_cfg,
+    )
+    # The sheet starts 20 mm below the top face of the mesh box, deeper than the contact
+    # band, so every vertex gets a recovery row; it moves further down.
+    z0 = 0.08
+    builder.add_cloth_grid(
+        pos=wp.vec3(-0.02, -0.02, z0),
+        rot=wp.quat_identity(),
+        vel=wp.vec3(0.0, 0.0, -0.4),
+        dim_x=4,
+        dim_y=4,
+        cell_x=0.01,
+        cell_y=0.01,
+        mass=1.0e-4,
+        particle_radius=1.0e-4,
+    )
+    builder.color()
+    model = builder.finalize(device=device)
+    model.soft_contact_ke, model.soft_contact_kd, model.soft_contact_mu = 1.0e-6, 0.0, 0.0
+    pipeline = newton.CollisionPipeline(model, enable_rigid_soft_full_surface_contact=True)
+    contacts = pipeline.contacts()
+    solver = newton.solvers.SolverVBD(
+        model,
+        iterations=4,
+        particle_enable_self_contact=True,
+        particle_self_contact_margin=2.0e-3,
+        particle_self_contact_gap=2.0e-3,
+    )
+
+    state_in, state_out = model.state(), model.state()
+    pipeline.collide(state_in, contacts)
+    count = int(contacts.soft_contact_count.numpy()[0])
+    soft = contacts.soft_contact_indices.numpy()[:count]
+    rigid = contacts.soft_contact_rigid_indices.numpy()[:count]
+    recovery_particles = {int(row[0]) for row, rigid_row in zip(soft, rigid, strict=True) if rigid_row[0] < 0}
+    test.assertEqual(recovery_particles, set(range(model.particle_count)))
+    # Without truncation, the inertial step moves the sheet 1 mm deeper.
+    solver.step(state_in, state_out, None, contacts, 2.5e-3)
+
+    z = state_out.particle_q.numpy()[:, 2]
+    test.assertTrue(np.all(z >= z0 - 1.0e-6), f"particles moved deeper into the mesh: min z = {z.min():.6f} m")
+
+
 class TestVBDRigidDAT(unittest.TestCase):
     pass
 
@@ -10076,6 +10133,12 @@ add_function_test(
     TestVBDRigidDAT,
     "test_self_contact_dat_leaves_full_surface_mesh_rows_to_rigid_dat",
     test_self_contact_dat_leaves_full_surface_mesh_rows_to_rigid_dat,
+    devices=devices,
+)
+add_function_test(
+    TestVBDRigidDAT,
+    "test_self_contact_dat_truncates_full_surface_recovery_rows",
+    test_self_contact_dat_truncates_full_surface_recovery_rows,
     devices=devices,
 )
 add_function_test(
