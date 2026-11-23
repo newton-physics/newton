@@ -143,12 +143,15 @@ def assemble_nz_ell_kernel(
 ########################################################################################################################
 
 
-def _compute_max_neighbors(num_verts, tri_indices, edge_indices):
-    """Count the unique target slots inserted by stretch and valid bending stencils."""
+def _compute_max_neighbors(num_verts, tri_indices, edge_indices, tet_indices=None):
+    """Count the unique target slots inserted by surface and tetrahedral stencils."""
     pairs = []
-    for indices, width in ((tri_indices, 3), (edge_indices, 4)):
+    stencils_and_widths = [(tri_indices, 3), (edge_indices, 4)]
+    if tet_indices is not None:
+        stencils_and_widths.append((tet_indices, 4))
+    for indices, width in stencils_and_widths:
         stencils = np.asarray(indices, dtype=np.int64).reshape(-1, width)
-        if width == 4:
+        if indices is edge_indices:
             stencils = stencils[(stencils[:, 0] >= 0) & (stencils[:, 1] >= 0)]
         if len(stencils) == 0:
             continue
@@ -225,7 +228,9 @@ class PDMatrixBuilder:
         edge_inds = np.array(edge_indices).reshape(-1, 4)
         edge_area = np.array(edge_rest_area)
         edge_prop = np.array(edge_bending_properties).reshape(-1, 2)
-        edge_stiff = edge_prop[:, 0] * (3.0 / edge_area)
+        edge_stiff = np.zeros(num_edge, dtype=np.float32)
+        active = edge_prop[:, 0] != 0.0
+        edge_stiff[active] = edge_prop[active, 0] * (3.0 / edge_area[active])
 
         bend_cot = np.array(edge_bending_cot).reshape(-1, 4)
         bend_weight = np.zeros(shape=(num_edge, 4), dtype=np.float32)
@@ -255,6 +260,75 @@ class PDMatrixBuilder:
             device="cpu",
         )
         self._check_overflow()
+
+    def add_tet_constraints(self, tet_indices, tet_poses, tet_materials, *, volume_ratio: float = 1.0):
+        """Add the scalar operator of the projective tetrahedral energy.
+
+        Each spatial block is ``K_ij * I`` with
+        ``K_ij = V * (2 * mu + 3 * lambda * volume_ratio) * grad(N_i).grad(N_j)``.
+        Consequently the existing float ELL matrix stores the complete operator.
+        The volume target has determinant one. At ``volume_ratio=1`` its
+        converged projection matches the Lamé volume response near rest.
+        """
+        if not np.isfinite(volume_ratio) or volume_ratio < 0.0:
+            raise ValueError("Tetrahedral PD volume ratio must be finite and nonnegative.")
+
+        indices = np.asarray(tet_indices, dtype=np.int32).reshape(-1, 4)
+        poses = np.asarray(tet_poses, dtype=np.float32).reshape(-1, 3, 3)
+        materials = np.asarray(tet_materials, dtype=np.float32).reshape(-1, 3)
+        if not (len(indices) == len(poses) == len(materials)):
+            raise ValueError("Tetrahedral indices, poses, and materials must have the same length.")
+        if len(indices) == 0:
+            return
+
+        determinants = np.linalg.det(poses)
+        if np.any(~np.isfinite(determinants)) or np.any(determinants <= 0.0):
+            raise ValueError("Tetrahedral PD requires finite, positively oriented rest tetrahedra.")
+        if np.any(~np.isfinite(materials)) or np.any(materials < 0.0):
+            raise ValueError("Tetrahedral PD material coefficients must be finite and nonnegative.")
+        if np.any(indices < 0) or np.any(indices >= self.num_verts):
+            raise ValueError("Tetrahedral PD indices must reference existing particles.")
+
+        counts = self.counts.numpy()
+        neighbors = self.neighbors.numpy()
+        values = self.values.numpy()
+        diags = self.diags.numpy()
+        gradients = np.concatenate((-poses.sum(axis=1, keepdims=True), poses), axis=1)
+        volume = 1.0 / (6.0 * determinants)
+        weight = 2.0 * materials[:, 0] + 3.0 * materials[:, 1] * volume_ratio
+        stiffness = (volume * weight)[:, None, None] * (gradients @ gradients.transpose(0, 2, 1))
+        np.add.at(diags, indices.ravel(), np.diagonal(stiffness, axis1=1, axis2=2).ravel())
+
+        # Merge surface and tet entries together so shared edges occupy one
+        # slot. Stable sorting preserves the order of tet contributions.
+        local_i, local_j = np.nonzero(~np.eye(4, dtype=bool))
+        old_rows, old_slots = np.nonzero(np.arange(self.max_neighbors)[None, :] < counts[:, None])
+        rows = np.concatenate((old_rows, indices[:, local_i].ravel())).astype(np.int64)
+        cols = np.concatenate((neighbors[old_rows, old_slots], indices[:, local_j].ravel())).astype(np.int64)
+        entries = np.concatenate((values[old_rows, old_slots], stiffness[:, local_i, local_j].ravel()))
+        keys = rows * self.num_verts + cols
+        order = np.argsort(keys, kind="stable")
+        keys = keys[order]
+        starts = np.r_[0, np.flatnonzero(keys[1:] != keys[:-1]) + 1]
+        unique_keys = keys[starts]
+        rows = unique_keys // self.num_verts
+        cols = unique_keys % self.num_verts
+        entries = np.add.reduceat(entries[order], starts)
+        counts = np.bincount(rows, minlength=self.num_verts).astype(np.int32)
+        overflow = np.flatnonzero(counts > self.max_neighbors)
+        if len(overflow):
+            raise ValueError(f"PD matrix capacity {self.max_neighbors} exceeded at vertex {overflow[0]}.")
+        row_starts = np.cumsum(counts, dtype=np.int64) - counts
+        slots = np.arange(len(rows)) - row_starts[rows]
+        neighbors.fill(0)
+        values.fill(0.0)
+        neighbors[rows, slots] = cols
+        values[rows, slots] = entries
+
+        self.counts.assign(counts)
+        self.neighbors.assign(neighbors)
+        self.values.assign(values)
+        self.diags.assign(diags)
 
     def finalize(self, device):
         """Assembles final sparse matrix in ELL format.

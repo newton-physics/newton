@@ -54,6 +54,134 @@ def triangle_deformation_gradient(x0: wp.vec3, x1: wp.vec3, x2: wp.vec3, inv_dm:
     return Fu, Fv
 
 
+@wp.func
+def proper_rotation(F: wp.mat33):
+    U, _s, V = wp.svd3(F)
+    correction = wp.identity(3, dtype=float)
+    if wp.determinant(U * wp.transpose(V)) < 0.0:
+        correction[2, 2] = -1.0
+    return U * correction * wp.transpose(V)
+
+
+@wp.func
+def volume_roots(s: wp.vec3, multiplier: float, small_root: bool):
+    result = wp.vec3(0.0)
+    for i in range(3):
+        root = wp.sqrt(wp.max(0.0, s[i] * s[i] + 4.0 * multiplier))
+        if s[i] < 0.0:
+            result[i] = 2.0 * multiplier / (root - s[i])
+        else:
+            result[i] = 0.5 * (s[i] + root)
+    if small_root:
+        result[2] = -2.0 * multiplier / (s[2] + wp.sqrt(wp.max(0.0, s[2] * s[2] + 4.0 * multiplier)))
+    return result
+
+
+@wp.func
+def project_tet_volume(F: wp.mat33, previous: wp.mat33):
+    """Choose a feasible SL(3) target without increasing the local PD residual.
+
+    Scalar KKT roots give the compression projection. For expansion, test
+    both bracketed branches plus a normalized feasible seed. This is an
+    approximate local minimizer, not an exact global closest-point oracle.
+    """
+    U, s, V = wp.svd3(F)
+    # Warp's signed SVD places orientation in the smallest singular value.
+    correction = wp.identity(3, dtype=float)
+    if wp.determinant(U * wp.transpose(V)) < 0.0:
+        correction[2, 2] = -1.0
+    Q = U * correction * wp.transpose(V)
+    residual = F - Q
+    best = wp.ddot(residual, residual)
+    residual = F - previous
+    if wp.ddot(residual, residual) < best:
+        Q = previous
+        best = wp.ddot(residual, residual)
+    product = s[0] * s[1] * s[2]
+    if product > 0.0:
+        candidate = F / wp.pow(product, 1.0 / 3.0)
+        residual = F - candidate
+        if wp.ddot(residual, residual) < best:
+            Q = candidate
+            best = wp.ddot(residual, residual)
+    for branch in range(2):
+        lower = float(0.0)
+        upper = float(0.0)
+        active = bool(False)
+        small = branch == 1
+        if product <= 1.0 and branch == 0:
+            # At this upper bound every positive root is at least one.
+            upper = wp.max(1.0, 1.0 - s[2])
+            active = True
+        elif product > 1.0:
+            lower = -0.25 * s[2] * s[2]
+            end = volume_roots(s, lower, False)
+            end_product = end[0] * end[1] * end[2]
+            active = (branch == 0 and end_product <= 1.0) or (branch == 1 and end_product >= 1.0)
+        if active:
+            for _iteration in range(24):
+                middle = 0.5 * (lower + upper)
+                roots = volume_roots(s, middle, small)
+                below = roots[0] * roots[1] * roots[2] < 1.0
+                if below != small:
+                    lower = middle
+                else:
+                    upper = middle
+            roots = volume_roots(s, 0.5 * (lower + upper), small)
+            roots /= wp.pow(roots[0] * roots[1] * roots[2], 1.0 / 3.0)
+            candidate = U * wp.diag(roots) * wp.transpose(V)
+            residual = F - candidate
+            if wp.ddot(residual, residual) < best:
+                Q = candidate
+                best = wp.ddot(residual, residual)
+    return Q
+
+
+@wp.func
+def tet_deformation_gradient(
+    pos: wp.array[wp.vec3], tet_indices: wp.array2d[wp.int32], tet_poses: wp.array[wp.mat33], tet_id: int
+):
+    """Return ``Ds * inverse(Dm)`` for one tetrahedron."""
+    i0 = tet_indices[tet_id, 0]
+    ds = wp.matrix_from_cols(
+        pos[tet_indices[tet_id, 1]] - pos[i0],
+        pos[tet_indices[tet_id, 2]] - pos[i0],
+        pos[tet_indices[tet_id, 3]] - pos[i0],
+    )
+    return ds * tet_poses[tet_id]
+
+
+@wp.kernel
+def eval_tet_constraint_kernel(
+    pos: wp.array[wp.vec3],
+    tet_indices: wp.array2d[wp.int32],
+    tet_poses: wp.array[wp.mat33],
+    tet_materials: wp.array2d[float],
+    volume_targets: wp.array[wp.mat33],
+    volume_ratio: float,
+    # outputs
+    forces: wp.array[wp.vec3],
+):
+    """Evaluate co-rotational tet elasticity with a volumetric penalty."""
+    tid = wp.tid()
+    inv_dm = tet_poses[tid]
+    F = tet_deformation_gradient(pos, tet_indices, tet_poses, tid)
+    rotation = proper_rotation(F)
+
+    volume = 1.0 / (6.0 * wp.determinant(inv_dm))
+    mu = tet_materials[tid, 0]
+    lam = tet_materials[tid, 1]
+    stress = (2.0 * mu * volume) * (F - rotation)
+    if volume_ratio > 0.0:
+        target = project_tet_volume(F, volume_targets[tid])
+        volume_targets[tid] = target
+        stress += (3.0 * lam * volume_ratio * volume) * (F - target)
+
+    for i in range(4):
+        gradient = -(inv_dm[0] + inv_dm[1] + inv_dm[2]) if i == 0 else inv_dm[i - 1]
+        wp.atomic_add(forces, tet_indices[tid, i], -(stress * gradient))
+
+
 @wp.kernel
 def eval_stretch_kernel(
     pos: wp.array[wp.vec3],
@@ -68,6 +196,9 @@ def eval_stretch_kernel(
     Ref. Large Steps in Cloth Simulation, Baraff & Witkin in 1998.
     """
     fid = wp.tid()
+
+    if aniso_ke[fid][0] == 0.0 and aniso_ke[fid][1] == 0.0 and aniso_ke[fid][2] == 0.0:
+        return
 
     inv_dm = inv_dms[fid]
     face_area = face_areas[fid]
@@ -127,6 +258,8 @@ def eval_bend_kernel(
     if edges[eid][0] < 0 or edges[eid][1] < 0:
         return
     edge = edges[eid]
+    if edge_bending_properties[eid][0] == 0.0:
+        return
     edge_stiff = edge_bending_properties[eid][0] * (3.0 / edge_rest_area[eid])
     bend_weight = wp.vec4(0.0)
     bend_weight[2] = edge_bending_cot[eid][2] + edge_bending_cot[eid][3]

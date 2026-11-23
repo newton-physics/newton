@@ -6,6 +6,7 @@ from __future__ import annotations
 import warnings
 from dataclasses import dataclass
 from enum import IntFlag
+from math import isfinite
 from typing import Any
 
 import warp as wp
@@ -24,6 +25,7 @@ from .kernels import (
     eval_bend_kernel,
     eval_drag_force_kernel,
     eval_stretch_kernel,
+    eval_tet_constraint_kernel,
     init_rhs_kernel,
     init_step_kernel,
     nonlinear_step_kernel,
@@ -71,10 +73,10 @@ def _warn_legacy_internal_attribute(
 
 
 class SolverStyle3D(SolverBase):
-    r"""Implicit solver for cloth and free rigid bodies using affine body dynamics.
+    r"""Implicit solver for cloth, tetrahedral solids, and free rigid bodies using affine body dynamics.
 
     Select :attr:`Dynamics.DEFORMABLE` (the default), :attr:`Dynamics.AFFINE_BODY`,
-    or :attr:`Dynamics.ALL` to advance cloth, rigid bodies, or both together.
+    or :attr:`Dynamics.ALL` to advance deformable particles, rigid bodies, or both together.
     Joint constraints are not supported. See the :doc:`Style3D solver guide
     </solvers/style3d>` for setup, rigidity, and contact parameters.
 
@@ -183,7 +185,8 @@ class SolverStyle3D(SolverBase):
         The solver keeps the supplied object as :attr:`SolverStyle3D.config`.
         Changes made before a subsequent :meth:`SolverStyle3D.step` take
         effect on that step. Captured CUDA graphs must be recaptured to use
-        updated configuration values.
+        updated configuration values. The construction-only ``tet_volume_ratio``
+        requires recreating the solver.
 
         Example:
             Configure a solver for an existing model::
@@ -216,6 +219,13 @@ class SolverStyle3D(SolverBase):
 
         enable_mouse_dragging: bool = False
         """Whether to enable the mouse-dragging kernel."""
+
+        tet_volume_ratio: float = 1.0
+        """Experimental dimensionless volumetric tetrahedral stiffness multiplier.
+
+        Must be finite and nonnegative. Set at construction; recreate the solver
+        to change it. Zero disables the volume penalty.
+        """
 
     config: Config
     """Live solver options, retained by reference when supplied at construction.
@@ -514,6 +524,14 @@ class SolverStyle3D(SolverBase):
         self.collision = Collision(model) if enable_deformable else None  # set None to disable
         self.dynamics = dynamics
         self.config = config
+        self._tet_volume_targets = wp.full(
+            model.tet_count if enable_deformable else 0,
+            wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
+            dtype=wp.mat33,
+            device=model.device,
+        )
+        if not isfinite(config.tet_volume_ratio) or config.tet_volume_ratio < 0.0:
+            raise ValueError("Config.tet_volume_ratio must be finite and nonnegative.")
 
         # Number of DOF blocks in the linear system, with three scalar DOFs per block.
         self._particle_count = model.particle_count if enable_deformable else 0
@@ -530,6 +548,7 @@ class SolverStyle3D(SolverBase):
         self._pd_off_diag = SparseMatrixELL()
         self._pd_diag = wp.zeros(self._dof_block_count, dtype=float, device=self.device)
         self._precompute(model)
+        self._matrix_tet_volume_ratio = config.tet_volume_ratio
 
         # Non-linear equation variables
         self._x = wp.zeros(self._dof_block_count, dtype=wp.vec3, device=self.device)
@@ -604,6 +623,9 @@ class SolverStyle3D(SolverBase):
             return
         elif self.config.iterations < 1:
             raise ValueError(f"Config.iterations must be at least 1, got {self.config.iterations}.")
+
+        if self.config.tet_volume_ratio != self._matrix_tet_volume_ratio:
+            raise ValueError("Recreate SolverStyle3D after changing tet_volume_ratio.")
 
         self._to_internal_state(state_in, dt)
         particle_q = self._x[: self._particle_count]
@@ -692,6 +714,21 @@ class SolverStyle3D(SolverBase):
                         self._style3d_attr.edge_bending_cot,
                         self.model.edge_indices,
                         self.model.edge_bending_properties,
+                    ],
+                    outputs=[self._rhs],
+                    device=self.device,
+                )
+
+                wp.launch(
+                    eval_tet_constraint_kernel,
+                    dim=self.model.tet_count,
+                    inputs=[
+                        particle_q,
+                        self.model.tet_indices,
+                        self.model.tet_poses,
+                        self.model.tet_materials,
+                        self._tet_volume_targets,
+                        self.config.tet_volume_ratio,
                     ],
                     outputs=[self._rhs],
                     device=self.device,
@@ -886,6 +923,9 @@ class SolverStyle3D(SolverBase):
                 tri_aniso_ke = model.style3d.tri_aniso_ke.numpy().tolist()
                 edge_rest_area = model.style3d.edge_rest_area.numpy().tolist()
                 edge_bending_cot = model.style3d.edge_bending_cot.numpy().tolist()
+                tet_indices = model.tet_indices.numpy() if model.tet_count > 0 else []
+                tet_poses = model.tet_poses.numpy() if model.tet_count > 0 else []
+                tet_materials = model.tet_materials.numpy() if model.tet_count > 0 else []
 
             def assemble(max_neighbors):
                 """Assemble from scratch so failed attempts never contribute partial entries."""
@@ -893,14 +933,22 @@ class SolverStyle3D(SolverBase):
                 if self._particle_count > 0:
                     matrix.add_stretch_constraints(tri_indices, tri_poses, tri_aniso_ke, tri_areas)
                     matrix.add_bend_constraints(edge_indices, edge_bending_properties, edge_rest_area, edge_bending_cot)
+                    matrix.add_tet_constraints(
+                        tet_indices, tet_poses, tet_materials, volume_ratio=self.config.tet_volume_ratio
+                    )
                 return matrix
 
             try:
                 pd_matrix_builder = assemble(32)
             except ValueError:
-                # Only overflowing meshes pay for counting stretch and bending connections.
+                # Only overflowing meshes pay for counting surface and tetrahedral connections.
                 if self._particle_count > 0:
-                    max_neighbors = _compute_max_neighbors(self._dof_block_count, tri_indices, edge_indices)
+                    max_neighbors = _compute_max_neighbors(
+                        self._dof_block_count,
+                        tri_indices,
+                        edge_indices,
+                        tet_indices,
+                    )
                     pd_matrix_builder = assemble(max_neighbors)
             self._pd_diag, self._pd_off_diag.num_nz, self._pd_off_diag.nz_ell = pd_matrix_builder.finalize(self.device)
 
