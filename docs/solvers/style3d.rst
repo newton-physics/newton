@@ -217,11 +217,11 @@ Tetrahedral elasticity
 
 Style3D supports experimental co-rotational tetrahedral elasticity with a
 volume-preserving projection. Build tetrahedra with
-:meth:`ModelBuilder.add_tetrahedron`, :meth:`ModelBuilder.add_soft_grid`, or
-:meth:`ModelBuilder.add_soft_mesh`; the solver consumes the standard
+:meth:`~newton.ModelBuilder.add_tetrahedron`, :meth:`~newton.ModelBuilder.add_soft_grid`, or
+:meth:`~newton.ModelBuilder.add_soft_mesh`; the solver consumes the standard
 ``tet_indices``, ``tet_poses``, and ``tet_materials`` model arrays. The existing surface collision path requires surface triangles and edges,
 along with
-:meth:`SolverStyle3D.register_custom_attributes` and the corresponding cloth
+:meth:`~newton.solvers.SolverStyle3D.register_custom_attributes` and the corresponding cloth
 attributes. Models containing only tetrahedra without surface topology are
 not supported by this integration. Disable surface stiffness when only volumetric elasticity is desired.
 
