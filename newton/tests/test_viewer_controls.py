@@ -43,6 +43,7 @@ from newton._src.viewer.viewer_gl import ViewerGL
 from newton._src.viewer.viewer_history import FrameHistory
 from newton._src.viewer.viewer_model_tree import ModelTree
 from newton._src.viewer.viewer_null import ViewerNull
+from newton._src.viewer.viewer_rtx import ViewerRTX
 from newton.tests.unittest_utils import get_test_devices, import_pyglet_window, patch_sys_module, requires
 
 
@@ -2057,6 +2058,36 @@ class TestCollisionInspector(unittest.TestCase):
                 high = np.minimum(offset + measure(text), other + measure(other_text))
                 low = np.maximum(offset, other)
                 self.assertTrue(np.any(high <= low))
+
+
+@requires("pyglet")
+class TestViewerRTXShortcuts(unittest.TestCase):
+    def test_repeated_frame_key_through_window_events(self) -> None:
+        """Frame the scene on every F press routed through ViewerRTX's window events."""
+        import_pyglet_window(shadow_window=False)
+        from pyglet.window import key
+
+        handlers = {}
+        window = SimpleNamespace(
+            event=lambda handler: handlers.setdefault(handler.__name__, handler), close=mock.Mock()
+        )
+        viewer = ViewerRTX.__new__(ViewerRTX)
+        viewer._window = window
+        viewer._keys_down = set()
+        gui = ViewerGui.__new__(ViewerGui)
+        gui._viewer, gui.ui, gui.workspace = viewer, None, None
+        gui._loading_splash_active = gui._frame_key_down = gui._follow_held = False
+        gui.frame_camera_on_model = mock.Mock()
+        viewer.gui = gui
+        viewer._register_input_events()
+
+        handlers["on_key_press"](key.F, 0)
+        handlers["on_key_press"](key.F, 0)  # OS key repeat frames once.
+        self.assertEqual(gui.frame_camera_on_model.call_count, 1)
+        handlers["on_key_release"](key.F, 0)
+        self.assertNotIn(key.F, viewer._keys_down)
+        handlers["on_key_press"](key.F, 0)
+        self.assertEqual(gui.frame_camera_on_model.call_count, 2)
 
 
 @requires("imgui_bundle", "pyglet")

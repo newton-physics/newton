@@ -466,6 +466,37 @@ void main() {
         gl.glGenVertexArrays(1, vao)
         self._gl_vao = vao[0]
 
+        self._register_input_events()
+
+        @self._window.event
+        def on_resize(width, height):
+            self._window_width = width
+            self._window_height = height
+
+        @self._window.event
+        def on_close():
+            self._should_close = True
+
+        self.gui = ViewerGui(self, self._window)
+        self.gui.register_ui_callback(self._ui_populate_rendering_panel, position="rendering")
+        # Drain any registrations that arrived before the GUI was ready.
+        for callback, position in self._pending_ui_callbacks:
+            self.gui.register_ui_callback(callback, position=position)
+        self._pending_ui_callbacks = []
+        if self._pending_splash is not None:
+            active, text = self._pending_splash
+            if active:
+                self.gui.show_loading_splash(text)
+            else:
+                self.gui.hide_loading_splash()
+            self._pending_splash = None
+        for (name, fullscreen), image in self._pending_images.items():
+            self._image_logger.log(name, image, fullscreen=fullscreen)
+        self._pending_images.clear()
+
+    def _register_input_events(self) -> None:
+        """Route window mouse and keyboard events to the camera and shared GUI."""
+
         # With ImGui, mouse input is routed during prepare_frame() so the
         # camera and gizmos see the same processed events and hover state.
         # ---- input callbacks ------------------------------------------------
@@ -499,36 +530,13 @@ void main() {
         @self._window.event
         def on_key_release(symbol, modifiers):
             self._keys_down.discard(symbol)
+            if self.gui:
+                # Clears the F latch so the next press frames the scene again.
+                self.gui.handle_key_release(symbol)
 
         @self._window.event
         def on_deactivate():
             self._keys_down.clear()
-
-        @self._window.event
-        def on_resize(width, height):
-            self._window_width = width
-            self._window_height = height
-
-        @self._window.event
-        def on_close():
-            self._should_close = True
-
-        self.gui = ViewerGui(self, self._window)
-        self.gui.register_ui_callback(self._ui_populate_rendering_panel, position="rendering")
-        # Drain any registrations that arrived before the GUI was ready.
-        for callback, position in self._pending_ui_callbacks:
-            self.gui.register_ui_callback(callback, position=position)
-        self._pending_ui_callbacks = []
-        if self._pending_splash is not None:
-            active, text = self._pending_splash
-            if active:
-                self.gui.show_loading_splash(text)
-            else:
-                self.gui.hide_loading_splash()
-            self._pending_splash = None
-        for (name, fullscreen), image in self._pending_images.items():
-            self._image_logger.log(name, image, fullscreen=fullscreen)
-        self._pending_images.clear()
 
     def _discard_partial_window(self) -> None:
         """Close and clear resources left by failed window initialization."""
