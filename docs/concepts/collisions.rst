@@ -2386,9 +2386,9 @@ Shape material properties control contact resolution. Configure via :class:`~Mod
      - :attr:`~ModelBuilder.ShapeConfig.mu`
      - :attr:`~Model.shape_material_mu`
    * - ``mu_static``
-     - Coefficient of static (break-away) friction; ``None`` keeps a single
-       coefficient (``mu``), and a value below ``mu`` is rejected. Not used by
-       any built-in solver yet.
+     - Coefficient of static (break-away) friction. ``None`` uses ``mu``, and a
+       value below ``mu`` is rejected. Built-in solvers use ``mu`` for per-shape
+       friction. XPBD supports static friction through :ref:`Material pair friction`.
      - None
      - :attr:`~ModelBuilder.ShapeConfig.mu_static`
      - :attr:`~Model.shape_material_mu_static`

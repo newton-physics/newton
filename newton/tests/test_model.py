@@ -4337,6 +4337,24 @@ class TestModelJoints(unittest.TestCase):
 
 
 class TestModelWorld(unittest.TestCase):
+    def test_material_ids_allocate_on_first_assignment(self):
+        """Keep shape material IDs implicit until a shape acquires a material."""
+        template = newton.ModelBuilder()
+        template.add_shape_sphere(-1, radius=0.1)
+        scene = newton.ModelBuilder()
+        scene.replicate(template, copy_count=3)
+        material = scene.add_material("surface")
+
+        self.assertIsNone(template._shape_material_id)
+        self.assertIsNone(scene._shape_material_id)
+        self.assertIsNone(scene.finalize(device="cpu").shape_material_id)
+
+        scene.add_shape_sphere(-1, radius=0.1, cfg=scene.ShapeConfig(material_id=material))
+        scene.add_shape_sphere(-1, radius=0.1)
+        model = scene.finalize(device="cpu")
+        np.testing.assert_array_equal(model.shape_material_id.numpy(), [-1, -1, -1, material, -1])
+        self.assertIsNone(model.material_pair_values)
+
     def test_material_pair_registry_reused_across_builder_copies(self):
         """Resolve same-source pairs consistently across batched, sequential, and multi-world copies."""
         template = newton.ModelBuilder()

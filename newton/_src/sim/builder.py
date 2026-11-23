@@ -1180,7 +1180,8 @@ class ModelBuilder:
         """The coefficient of static friction [dimensionless], the break-away threshold for sticking
         contacts. ``None`` uses :attr:`mu` (no static/dynamic distinction); a set value must not be
         below :attr:`mu`, so code that overrides :attr:`mu` alone has to resolve this field as well.
-        No built-in solver models stick-slip friction yet; the value is stored for solvers that do."""
+        Built-in solvers use :attr:`mu` for per-shape friction. XPBD supports a separate
+        static coefficient through :ref:`Material pair friction`."""
         restitution: float = 0.0
         """The coefficient of restitution.
 
@@ -2299,8 +2300,7 @@ class ModelBuilder:
         """Adhesion distances [m] accumulated for :attr:`Model.shape_material_ka`."""
         self._material_names: dict[int, str] = {}
         self._material_pairs: dict[int, dict[str, float]] = {}
-        self.shape_material_id: list[int] = []
-        """Contact material IDs accumulated for :attr:`Model.shape_material_id`."""
+        self._shape_material_id: list[int] | None = None
         self.shape_material_mu: list[float] = []
         """Friction coefficients accumulated for :attr:`Model.shape_material_mu`."""
         self.shape_material_restitution: list[float] = []
@@ -4479,14 +4479,20 @@ class ModelBuilder:
         shape_starts = starts("shape")
         body_starts = starts("body")
 
-        attribute_specs.pop("shape_material_id")
-        material_offset = self._merge_material_registry(builder) if copy_count else 0
-        shape_material_ids = source_list("shape_material_id")
-        if material_offset:
-            shape_material_ids = [
-                material_offset + material if material >= 0 else -1 for material in shape_material_ids
-            ]
-        self.shape_material_id.extend(shape_material_ids * copy_count)
+        material_offset = self._merge_material_registry(builder) if copy_count and builder._material_names else 0
+        if (
+            counts["shape"]
+            and copy_count
+            and (builder._shape_material_id is not None or self._shape_material_id is not None)
+        ):
+            shape_material_ids = builder._shape_material_id
+            if shape_material_ids is None:
+                shape_material_ids = [-1] * counts["shape"]
+            elif material_offset:
+                shape_material_ids = [
+                    material_offset + material if material >= 0 else -1 for material in shape_material_ids
+                ]
+            self.shape_material_id.extend(shape_material_ids * copy_count)
 
         attribute_specs.pop("shape_transform")
         shape_transform_start = array_starts.get("shape_transform", int(bases["shape"]))
@@ -6696,6 +6702,24 @@ class ModelBuilder:
                     offset_args.append(proc_args)
                 entry.input_processor_args.append(offset_args)
 
+    @property
+    def shape_material_id(self) -> list[int]:
+        """Contact material IDs per shape, with -1 for unassigned shapes."""
+        if self._shape_material_id is None:
+            self._shape_material_id = [-1] * self.shape_count
+        return self._shape_material_id
+
+    @shape_material_id.setter
+    def shape_material_id(self, values: list[int]) -> None:
+        self._shape_material_id = values
+
+    def _append_shape_material_id(self, shape: int, material_id: int) -> None:
+        if self._shape_material_id is None:
+            if material_id < 0:
+                return
+            self._shape_material_id = [-1] * shape
+        self._shape_material_id.append(material_id)
+
     def add_material(self, name: str) -> int:
         """Register a contact material identity for use in shape and pair configuration.
 
@@ -7160,7 +7184,7 @@ class ModelBuilder:
         for variant, snapshot in zip(variants, variant_set.variants, strict=True):
             offset = self._copy_materials(variant)
             for shape in snapshot.shapes:
-                material_id = shape.values["shape_material_id"]
+                material_id = shape.values.get("shape_material_id", -1)
                 if material_id >= 0:
                     shape.values["shape_material_id"] = material_id + offset
 
@@ -7189,8 +7213,10 @@ class ModelBuilder:
     def _append_shape_row(self, row: _VariantShape, body: int, world: int, label: str) -> int:
         """Append a shape with the attributes of ``row``, attached to ``body`` in ``world``."""
         shape = self.shape_count
+        self._append_shape_material_id(shape, row.values.get("shape_material_id", -1))
         for name, value in row.values.items():
-            getattr(self, name).append(value)
+            if name != "shape_material_id":
+                getattr(self, name).append(value)
         self.shape_body[shape] = body
         self.shape_world[shape] = world
         self.shape_label[shape] = label
@@ -10101,7 +10127,8 @@ class ModelBuilder:
         self.shape_material_kd.append(cfg.kd)
         self.shape_material_kf.append(cfg.kf)
         self.shape_material_ka.append(cfg.ka)
-        self.shape_material_id.append(int(cfg.material_id) if cfg.material_id is not None else -1)
+        if cfg.material_id is not None or self._shape_material_id is not None:
+            self._append_shape_material_id(shape, int(cfg.material_id) if cfg.material_id is not None else -1)
         self.shape_material_mu.append(cfg.mu)
         self.shape_material_mu_static.append(cfg.mu_static)
         self.shape_material_restitution.append(cfg.restitution)
@@ -11194,7 +11221,11 @@ class ModelBuilder:
                             kf=self.shape_material_kf[shape],
                             ka=self.shape_material_ka[shape],
                             mu=self.shape_material_mu[shape],
-                            material_id=self.shape_material_id[shape] if self.shape_material_id[shape] >= 0 else None,
+                            material_id=(
+                                self._shape_material_id[shape]
+                                if self._shape_material_id is not None and self._shape_material_id[shape] >= 0
+                                else None
+                            ),
                             mu_static=self.shape_material_mu_static[shape],
                             restitution=self.shape_material_restitution[shape],
                             mu_torsional=self.shape_material_mu_torsional[shape],
@@ -16490,8 +16521,8 @@ class ModelBuilder:
             m.shape_material_kf = wp.array(self.shape_material_kf, dtype=wp.float32, requires_grad=requires_grad)
             m.shape_material_ka = wp.array(self.shape_material_ka, dtype=wp.float32, requires_grad=requires_grad)
             m.material_names = tuple(self._material_names.values())
-            if self._material_names:
-                m.shape_material_id = wp.array(self.shape_material_id, dtype=wp.int32)
+            if self._material_names and self._shape_material_id is not None:
+                m.shape_material_id = wp.array(self._shape_material_id, dtype=wp.int32)
             if self._material_pairs:
                 pair_keys = sorted(self._material_pairs)
                 row_count = m.world_count if material_pairs_per_world else 1

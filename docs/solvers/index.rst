@@ -224,9 +224,9 @@ formulation.
   :class:`~newton.solvers.SolverVBD` also supports these properties for
   compliant-ALM rigid-rigid contacts.
 - ``mu_static``: stored as :attr:`~newton.Model.shape_material_mu_static` and
-  carried into :class:`~newton.solvers.SolverKamino`'s material tables, but no
-  built-in solver distinguishes static from dynamic friction in its contact
-  model yet; all of them use ``mu``.
+  carried into :class:`~newton.solvers.SolverKamino`'s material tables. Built-in
+  solvers use ``mu`` for per-shape friction. :class:`~newton.solvers.SolverXPBD`
+  supports a separate static coefficient through :ref:`Material pair friction`.
 - ``kh``: consumed by hydroelastic contact generation for Newton-generated
   contacts used by :class:`~newton.solvers.SolverFeatherstone`,
   :class:`~newton.solvers.SolverSemiImplicit`, and

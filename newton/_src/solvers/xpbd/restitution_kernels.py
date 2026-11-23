@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+from typing import Any
+
 import warp as wp
 
 from ...geometry.materials import MaterialPairProperties, material_pair_value
@@ -74,7 +76,17 @@ _restitution_vecNf = wp.types.vector(length=RESTITUTION_MANIFOLD_MAX_CONTACTS, d
 _restitution_vecNi = wp.types.vector(length=RESTITUTION_MANIFOLD_MAX_CONTACTS, dtype=wp.int32)
 
 
-@wp.kernel
+@wp.func
+def _contact_restitution(contact_pairs: int, tid: int, restitution: float) -> float:
+    return restitution
+
+
+@wp.func
+def _contact_restitution(contact_pairs: wp.array[MaterialPairProperties], tid: int, restitution: float) -> float:
+    return material_pair_value(contact_pairs[tid].restitution, restitution)
+
+
+@wp.kernel(module="unique")
 def build_restitution_manifolds(
     body_q_pre_solve: wp.array[wp.transform],
     body_qd_pre_solve: wp.array[wp.spatial_vector],
@@ -89,7 +101,7 @@ def build_restitution_manifolds(
     contact_shape0: wp.array[int],
     contact_shape1: wp.array[int],
     shape_material_restitution: wp.array[float],
-    contact_pairs: wp.array[MaterialPairProperties],
+    contact_pairs: Any,
     contact_point0: wp.array[wp.vec3],
     contact_point1: wp.array[wp.vec3],
     contact_offset0: wp.array[wp.vec3],
@@ -162,8 +174,7 @@ def build_restitution_manifolds(
         body_b = shape_body[shape_b]
     if mat_nonzero > 0:
         restitution /= float(mat_nonzero)
-    if contact_pairs:
-        restitution = material_pair_value(contact_pairs[tid].restitution, restitution)
+    restitution = _contact_restitution(contact_pairs, tid, restitution)
     if body_a == body_b or restitution < 0.0:
         return
 

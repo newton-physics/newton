@@ -117,7 +117,8 @@ class TestBodyVariants(unittest.TestCase):
         repeated.add_world(plain)
         model = repeated.finalize(device="cpu")
         self.assertEqual(model._variant_shape_count, 1)
-        np.testing.assert_array_equal(model.shape_material_id.numpy(), [-1, -1])
+        self.assertIsNone(model.shape_material_id)
+        self.assertIsNone(model._body_variant_material_offset)
 
     def test_finalize_tables_and_initial_selection(self):
         cube, spheres = _variant("cube"), _variant("spheres")

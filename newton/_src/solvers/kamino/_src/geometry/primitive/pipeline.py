@@ -200,7 +200,9 @@ class CollisionPipelinePrimitive:
             default_gap=self._default_gap,
         )
         # The primitive pipeline only supplies angular friction for explicit material pairs.
-        if contacts.angular_friction is not None and self._model.material_pair_table.keys is None:
+        if contacts.angular_friction is not None and (
+            self._model.material_pair_table.keys is None or self._model.shape_material_id is None
+        ):
             contacts.angular_friction.zero_()
         for array in (contacts.stiffness, contacts.damping):
             if array is not None:

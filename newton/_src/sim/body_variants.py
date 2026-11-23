@@ -199,7 +199,14 @@ def _snapshot_variants(
                 tuple(
                     _VariantShape(
                         variant.shape_label[shape],
-                        {name: getattr(variant, name)[shape] for name in shape_attributes},
+                        {
+                            **{name: getattr(variant, name)[shape] for name in shape_attributes},
+                            **(
+                                {"shape_material_id": variant._shape_material_id[shape]}
+                                if variant._shape_material_id is not None
+                                else {}
+                            ),
+                        },
                         tuple(
                             (key, replace(attribute, values=None), value)
                             for key, attribute in variant.custom_attributes.items()
@@ -277,6 +284,8 @@ class _VariantShapeRows:
             return
         for name in builder._shape_row_attributes():
             del getattr(builder, name)[self.start :]
+        if builder._shape_material_id is not None:
+            del builder._shape_material_id[self.start :]
         for attribute in builder.custom_attributes.values():
             if attribute.frequency == Model.AttributeFrequency.SHAPE and isinstance(attribute.values, dict):
                 for key in [k for k in attribute.values if k >= self.start]:
@@ -423,14 +432,15 @@ class _VariantShapeRows:
         m._body_variant_first = wp.array(body_first, dtype=wp.int32, device=device)
         m._body_variant_rows = wp.array(body_rows, dtype=wp.vec2i, device=device)
         m._body_variant_inertia_start = wp.array(body_inertia_start, dtype=wp.int32, device=device)
-        m._body_variant_material_offset = wp.array(
-            [
-                builder._body_variants[body].material_offset if body in builder._body_variants else 0
-                for body in range(builder.body_count)
-            ],
-            dtype=wp.int32,
-            device=device,
-        )
+        if m.shape_material_id is not None:
+            m._body_variant_material_offset = wp.array(
+                [
+                    builder._body_variants[body].material_offset if body in builder._body_variants else 0
+                    for body in range(builder.body_count)
+                ],
+                dtype=wp.int32,
+                device=device,
+            )
         m._variant_mass = wp.array(masses, dtype=wp.float32, device=device)
         m._variant_com = wp.array(np.asarray(coms, dtype=np.float32).reshape(-1, 3), dtype=wp.vec3, device=device)
         m._variant_inertia = wp.array(

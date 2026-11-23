@@ -984,12 +984,68 @@ class ContactsKamino:
 ###
 
 
+@wp.kernel(enable_backward=False)
+def _apply_contact_material_pairs(
+    table: MaterialPairTable,
+    shape_material_id: wp.array[wp.int32],
+    active_count: wp.array[wp.int32],
+    worlds: wp.array[wp.int32],
+    shapes: wp.array[wp.vec2i],
+    preserve_angular_friction: bool,
+    material: wp.array[wp.vec2f],
+    angular_friction: wp.array[wp.vec2f],
+):
+    cid = wp.tid()
+    if cid >= active_count[0]:
+        return
+    ids = shapes[cid]
+    pair = resolve_material_pair(table, shape_material_id, ids[0], ids[1], worlds[cid])
+    fallback = material[cid]
+    material[cid] = wp.vec2f(
+        material_pair_value(pair.mu, fallback[0]), material_pair_value(pair.restitution, fallback[1])
+    )
+    if angular_friction:
+        angular = wp.vec2f(0.0)
+        if preserve_angular_friction:
+            angular = angular_friction[cid]
+        angular_friction[cid] = wp.vec2f(
+            material_pair_value(pair.mu_torsional, angular[0]), material_pair_value(pair.mu_rolling, angular[1])
+        )
+
+
+def apply_contact_material_pairs(
+    table: MaterialPairTable,
+    shape_material_id: wp.array[wp.int32] | None,
+    contacts: ContactsKaminoData,
+    *,
+    preserve_angular_friction: bool = True,
+) -> None:
+    """Apply authored overrides after a native collision pipeline writes its fallback coefficients."""
+    if table.keys is None or shape_material_id is None:
+        return
+    wp.launch(
+        _apply_contact_material_pairs,
+        dim=len(contacts.gid_AB),
+        inputs=[
+            table,
+            shape_material_id,
+            contacts.model_active_contacts,
+            contacts.wid,
+            contacts.gid_AB,
+            preserve_angular_friction,
+        ],
+        outputs=[contacts.material, contacts.angular_friction],
+        device=contacts.material.device,
+    )
+
+
 @functools.cache
 def make_convert_contacts_newton_to_kamino(
     friction_mix_mode: MaterialMixMode = MaterialMixMode.AVERAGE,
     restitution_mix_mode: MaterialMixMode = MaterialMixMode.MIN,
     cull_speculative: bool = DEFAULT_CULL_SPECULATIVE_CONTACTS,
     kinematic_only_immovable: bool = False,
+    use_material_pairs: bool = False,
 ):
     """
     Generates a kernel to convert Newton contacts to the Kamino format.
@@ -1001,6 +1057,7 @@ def make_convert_contacts_newton_to_kamino(
             whose margin-shifted distance exceeds the kernel's ``contact_dead_zone``.
         kinematic_only_immovable: Whether only KINEMATIC bodies are immovable,
             see :func:`is_immovable_for_kamino`.
+        use_material_pairs: Whether to use authored material pair overrides.
 
     Returns:
         A kernel function that converts Newton contacts to the Kamino format.
@@ -1192,10 +1249,6 @@ def make_convert_contacts_newton_to_kamino(
         mu = wp.static(make_get_mixed_material_pair_property(friction_mix_mode))(mu_0, mu_1)
         epsilon = wp.static(make_get_mixed_material_pair_property(restitution_mix_mode))(epsilon_0, epsilon_1)
 
-        pair = resolve_material_pair(material_pair_table, shape_material_id, sid_0, sid_1, wid)
-        mu = material_pair_value(pair.mu, mu)
-        epsilon = material_pair_value(pair.restitution, epsilon)
-
         # Store the contact data in the Kamino format
         gapfunc = wp.vec4f(normal[0], normal[1], normal[2], distance)
         q_frame = wp.quat_from_matrix(make_contact_frame_znorm(normal))
@@ -1223,16 +1276,20 @@ def make_convert_contacts_newton_to_kamino(
         kamino_position_B[mcid] = pos_B
         kamino_gapfunc[mcid] = gapfunc
         kamino_frame[mcid] = q_frame
-        kamino_material[mcid] = wp.vec2f(mu, epsilon)
         torsional = wp.static(make_get_mixed_material_pair_property(friction_mix_mode))(
             shape_mu_torsional[sid_0], shape_mu_torsional[sid_1]
         )
         rolling = wp.static(make_get_mixed_material_pair_property(friction_mix_mode))(
             shape_mu_rolling[sid_0], shape_mu_rolling[sid_1]
         )
-        kamino_angular_friction[mcid] = wp.vec2f(
-            material_pair_value(pair.mu_torsional, torsional), material_pair_value(pair.mu_rolling, rolling)
-        )
+        if wp.static(use_material_pairs):
+            pair = resolve_material_pair(material_pair_table, shape_material_id, sid_0, sid_1, wid)
+            mu = material_pair_value(pair.mu, mu)
+            epsilon = material_pair_value(pair.restitution, epsilon)
+            torsional = material_pair_value(pair.mu_torsional, torsional)
+            rolling = material_pair_value(pair.mu_rolling, rolling)
+        kamino_material[mcid] = wp.vec2f(mu, epsilon)
+        kamino_angular_friction[mcid] = wp.vec2f(torsional, rolling)
         kamino_stiffness[mcid] = 0.0
         kamino_damping[mcid] = 0.0
         if newton_stiffness:
@@ -1582,6 +1639,7 @@ def convert_contacts_newton_to_kamino(
         restitution_mix_mode=MaterialMixMode.from_string(restitution_mix_mode),
         cull_speculative=cull_speculative_contacts,
         kinematic_only_immovable=kinematic_only_immovable,
+        use_material_pairs=model._material_pair_table.keys is not None and model.shape_material_id is not None,
     )
 
     # Launch the conversion kernel to convert Newton contacts to Kamino's format.

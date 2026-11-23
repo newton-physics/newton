@@ -2184,7 +2184,9 @@ def register_materials(model: Model, materials_manager: MaterialManager) -> np.n
     shape_friction = model.shape_material_mu.numpy().tolist()
     shape_static_friction = model.shape_material_mu_static.numpy().tolist()
     shape_restitution = model.shape_material_restitution.numpy().tolist()
-    shape_material_id = model.shape_material_id.numpy().tolist() if model.material_names else None
+    shape_material_id = None
+    if model._material_pair_table.keys is not None and model.shape_material_id is not None:
+        shape_material_id = model.shape_material_id.numpy().tolist()
     # Mapping from geom to material index
     geom_material = np.zeros((model.shape_count,), dtype=int)
     # TODO: Integrate world index for shape material

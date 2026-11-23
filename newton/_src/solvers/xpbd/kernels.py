@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+from typing import Any
+
 import warp as wp
 
 from ...geometry import ParticleFlags
@@ -1950,6 +1952,23 @@ def compute_angular_correction(
 
 
 @wp.func
+def _contact_friction(contact_pairs: int, tid: int, mu: float, torsional: float, rolling: float):
+    return mu, -1.0, torsional, rolling
+
+
+@wp.func
+def _contact_friction(
+    contact_pairs: wp.array[MaterialPairProperties], tid: int, mu: float, torsional: float, rolling: float
+):
+    pair = contact_pairs[tid]
+    mu = material_pair_value(pair.mu, mu)
+    static = -1.0
+    if pair.mu_static >= 0.0:
+        static = wp.max(pair.mu_static, mu)
+    return mu, static, material_pair_value(pair.mu_torsional, torsional), material_pair_value(pair.mu_rolling, rolling)
+
+
+@wp.func
 def _solve_body_contact_positions(
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
@@ -1972,7 +1991,7 @@ def _solve_body_contact_positions(
     shape_material_mu: wp.array[float],
     shape_material_mu_torsional: wp.array[float],
     shape_material_mu_rolling: wp.array[float],
-    contact_pairs: wp.array[MaterialPairProperties],
+    contact_pairs: Any,
     relaxation: float,
     dt: float,
     deltas: wp.array[wp.spatial_vector],
@@ -2079,14 +2098,7 @@ def _solve_body_contact_positions(
         mu /= float(mat_nonzero)
         mu_torsional /= float(mat_nonzero)
         mu_rolling /= float(mat_nonzero)
-    mu_static = -1.0
-    if contact_pairs:
-        pair = contact_pairs[tid]
-        mu = material_pair_value(pair.mu, mu)
-        if pair.mu_static >= 0.0:
-            mu_static = wp.max(pair.mu_static, mu)
-        mu_torsional = material_pair_value(pair.mu_torsional, mu_torsional)
-        mu_rolling = material_pair_value(pair.mu_rolling, mu_rolling)
+    mu, mu_static, mu_torsional, mu_rolling = _contact_friction(contact_pairs, tid, mu, mu_torsional, mu_rolling)
 
     r_a = bx_a - wp.transform_point(X_wb_a, com_a)
     r_b = bx_b - wp.transform_point(X_wb_b, com_b)
@@ -2224,7 +2236,7 @@ def _solve_body_contact_positions(
         wp.atomic_add(contact_impulse, tid, wp.spatial_vector(lin_delta_a, ang_delta_a))
 
 
-@wp.kernel
+@wp.kernel(module="unique")
 def solve_body_contact_positions(
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
@@ -2247,7 +2259,7 @@ def solve_body_contact_positions(
     shape_material_mu: wp.array[float],
     shape_material_mu_torsional: wp.array[float],
     shape_material_mu_rolling: wp.array[float],
-    contact_pairs: wp.array[MaterialPairProperties],
+    contact_pairs: Any,
     relaxation: float,
     dt: float,
     recovery: MeshRecoveryData,
