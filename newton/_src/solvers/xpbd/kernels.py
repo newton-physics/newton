@@ -1091,13 +1091,14 @@ def solve_body_joints(
     if ang_axis_count == 1:
         ang_axis = joint_axis[axis_start + lin_axis_count]
         twist_axis = wp.vec3(wp.sign(ang_axis[0]), 0.0, 0.0)
-        q_align = wp.quat_between_vectors(twist_axis, ang_axis)
-        q_p = q_p * q_align
-        q_c = q_c * q_align
-        if lin_axis_count == 0:
-            # linear axes are given in the joint frame, so the linear rows turn only without them
-            X_wp = wp.transform(x_p, q_p)
-            X_wc = wp.transform(x_c, q_c)
+        if ang_axis[1] != 0.0 or ang_axis[2] != 0.0:
+            q_align = wp.quat_between_vectors(twist_axis, ang_axis)
+            q_p = q_p * q_align
+            q_c = q_c * q_align
+            if lin_axis_count == 0:
+                # linear axes are given in the joint frame, so the linear rows turn only without them
+                X_wp = wp.transform(x_p, q_p)
+                X_wc = wp.transform(x_c, q_c)
 
     rel_pose = wp.transform_inverse(X_wp) * X_wc
     rel_p = wp.transform_get_translation(rel_pose)
