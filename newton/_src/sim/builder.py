@@ -16485,17 +16485,31 @@ class ModelBuilder:
                 ((shape_type_arr == GeoType.MESH) | (shape_type_arr == GeoType.CONVEX_MESH))
                 & ((shape_flags_arr & (ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES)) != 0)
             )
-            for shape_idx in collidable_mesh_indices.tolist():
-                geo = generated_shape_sources[shape_idx]
-                if isinstance(geo, Mesh):
-                    geo_hash = hash(geo)
-                    mesh_properties = mesh_properties_by_geo_hash.get(geo_hash)
-                    if mesh_properties is None:
-                        mesh_properties = int(MeshProperties.WATERTIGHT) if geo.is_watertight else 0
-                        mesh_properties_by_geo_hash[geo_hash] = mesh_properties
-                    if shape_type_arr[shape_idx] == GeoType.MESH and geo.enable_surface_velocity:
-                        mesh_properties |= int(MeshProperties.SURFACE_VELOCITY)
-                    shape_mesh_properties[shape_idx] = mesh_properties
+            if len(collidable_mesh_indices) > 0:
+                # Shapes with the same source and type have the same properties, so resolve them
+                # once per such group. A mesh without duplicate vertices is also the source of its
+                # convex hulls, which never take the surface velocity bit.
+                group_first, shape_group = _group_rows(
+                    np.fromiter(
+                        map(id, map(generated_shape_sources.__getitem__, collidable_mesh_indices.tolist())),
+                        dtype=np.uintp,
+                        count=len(collidable_mesh_indices),
+                    ),
+                    shape_type_arr[collidable_mesh_indices],
+                )
+                group_mesh_properties = np.zeros(len(group_first), dtype=np.int32)
+                for group, shape_idx in enumerate(collidable_mesh_indices[group_first].tolist()):
+                    geo = generated_shape_sources[shape_idx]
+                    if isinstance(geo, Mesh):
+                        geo_hash = hash(geo)
+                        mesh_properties = mesh_properties_by_geo_hash.get(geo_hash)
+                        if mesh_properties is None:
+                            mesh_properties = int(MeshProperties.WATERTIGHT) if geo.is_watertight else 0
+                            mesh_properties_by_geo_hash[geo_hash] = mesh_properties
+                        if shape_type_arr[shape_idx] == GeoType.MESH and geo.enable_surface_velocity:
+                            mesh_properties |= int(MeshProperties.SURFACE_VELOCITY)
+                        group_mesh_properties[group] = mesh_properties
+                shape_mesh_properties[collidable_mesh_indices] = group_mesh_properties[shape_group]
 
             m.shape_type = wp.array(shape_type_arr, dtype=wp.int32)
             m.shape_source_ptr = wp.array(geo_sources, dtype=wp.uint64)
