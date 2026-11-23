@@ -1014,7 +1014,7 @@ and the `geom mask attributes
 
 **Importing MJCF masks.**
 
-:func:`~newton.utils.parse_mjcf` resolves inherited ``contype`` and
+:meth:`~newton.ModelBuilder.add_mjcf` resolves inherited ``contype`` and
 ``conaffinity`` values and determines which shape pairs may collide. It stores
 the same result in Newton collision groups and explicit excluded pairs. The
 original 32-bit values are also retained as
@@ -1022,7 +1022,7 @@ original 32-bit values are also retained as
 for a lossless round trip back to MuJoCo.
 
 A *mask domain* is the set of shapes whose mask bits were authored together.
-Each :func:`~newton.utils.parse_mjcf` call creates a new domain and records it
+Each :meth:`~newton.ModelBuilder.add_mjcf` call creates a new domain and records it
 in the internal ``model.mujoco.collision_mask_domain`` attribute. The domain
 is only a source label. It is not another collision mask and does not enable
 or disable contacts. When :meth:`~newton.ModelBuilder.add_builder` combines
