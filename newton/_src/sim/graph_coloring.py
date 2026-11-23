@@ -106,16 +106,21 @@ def construct_trimesh_graph_edges(
     return_wp_array=True,
 ):
     """
-    A function that generates vertex coloring for a trimesh, which is represented by the number of vertices and edges of the mesh.
-    It will convert the trimesh to a graph and then apply coloring.
-    It returns a list of `np.array` with `dtype`=`int`. The length of the list is the number of colors
-    and each `np.array` contains the indices of vertices with this color.
+    Build the vertex graph edges of a triangle mesh for graph coloring.
+
+    Each triangle contributes its three edges. Each bending edge (o1, o2, v1, v2) contributes all pairs of
+    its four vertices, skipping negative indices, so vertices coupled by bending get different colors.
 
     Args:
-        num_nodes: The number of the nodes in the graph
-        trimesh_edge_indices: A `wp.array` with of shape (number_edges, 4), each row is (o1, o2, v1, v2), see `sim.Model`'s definition of `edge_indices`.
-        include_bending_energy: whether to consider bending energy in the coloring process. If set to `True`, the generated
-            graph will contain all the edges connecting o1 and o2; otherwise, the graph will be equivalent to the trimesh.
+        tri_indices: Triangle vertex indices of shape (num_tris, 3), as a `wp.array` or a numpy array.
+        tri_active_mask: Optional boolean mask over the triangles, or a scalar that applies to all of them.
+        bending_edge_indices: Optional array of shape (num_edges, 4), each row is (o1, o2, v1, v2),
+            see `Model`'s definition of `edge_indices`.
+        bending_edge_active_mask: Optional boolean mask over the bending edges, or a scalar that applies to all of them.
+        return_wp_array: If `True`, return a `wp.array` on CPU; otherwise return a numpy array.
+
+    Returns:
+        Canonicalized graph edges (N_edges x 2), where each row [i, j] represents an edge with i < j.
     """
     edges_np_list = []
 
