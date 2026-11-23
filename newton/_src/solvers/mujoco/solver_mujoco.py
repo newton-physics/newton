@@ -6260,12 +6260,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     getattr(self.mj_model, name)[ctrl_direct] = getattr(self.mjw_model, name).numpy()[0, ctrl_direct]
             if need_const_fixed or need_const_0:
                 self._set_const_0()
-            # mj_setConst counts only positive gravcomp, and MuJoCo skips all gravcomp while that count is 0.
-            if (
-                flags & (ModelFlags.BODY_INERTIAL_PROPERTIES | ModelFlags.BODY_GRAVITY_PROPERTIES)
-                and self.mj_model.ngravcomp == 0
-                and np.any(self.mj_model.body_gravcomp != 0.0)
-            ):
+            # mj_setConst counts only positive gravcomp, so any later constant refresh drops a negative-only one.
+            body_gravcomp = self.mj_model.body_gravcomp
+            if np.any(body_gravcomp < 0.0) and not np.any(body_gravcomp > 0.0):
                 raise NotImplementedError(
                     "Native MuJoCo skips negative gravcomp, as from body_gravity_scale * (1 - gravcomp) > 1, unless a body has a positive one"
                 )

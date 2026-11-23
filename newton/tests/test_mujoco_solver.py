@@ -16617,6 +16617,17 @@ class TestMuJoCoBodyGravityScale(unittest.TestCase):
         with self.assertRaisesRegex(NotImplementedError, "unless a body has a positive one"):
             solver.notify_model_changed(ModelFlags.BODY_INERTIAL_PROPERTIES)
 
+        # Removing the last positive gravcomp by a scale change raises, and so does any later constant refresh.
+        builder = self._builder((0.0, 0.0, -10.0))
+        self._add_free_body(builder, 2.0, 0.0)
+        self._add_free_body(builder, 0.0, 0.0, x=2.0)
+        model = builder.finalize(device="cpu")
+        solver = SolverMuJoCo(model, use_mujoco_cpu=True)
+        model.body_gravity_scale.assign([2.0, 1.0])
+        for flags in (ModelFlags.BODY_GRAVITY_PROPERTIES, ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES):
+            with self.assertRaisesRegex(NotImplementedError, "unless a body has a positive one"):
+                solver.notify_model_changed(flags)
+
     def _passive_flags_model(self, scale, spring, damper, use_mujoco_cpu):
         builder = self._builder((0.0, 0.0, -10.0))
         self._add_free_body(builder, scale, 0.0)
