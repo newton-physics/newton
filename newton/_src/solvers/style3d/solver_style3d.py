@@ -12,7 +12,7 @@ import warp as wp
 
 from ...core.types import override
 from ...exceptions import NewtonDeprecationWarning
-from ...sim import Contacts, Control, Model, ModelBuilder, State
+from ...sim import Contacts, Control, Model, ModelBuilder, State, StateFlags
 from ..solver import SolverBase
 from .affine_body import AffineBody
 from .builder import PDMatrixBuilder, _compute_max_neighbors
@@ -29,6 +29,7 @@ from .kernels import (
     init_step_kernel,
     nonlinear_step_kernel,
     prepare_jacobi_preconditioner_kernel,
+    reset_tet_volume_targets_kernel,
     update_velocity_kernel,
 )
 from .linear_solver import PcgSolver, SparseMatrixELL
@@ -565,6 +566,47 @@ class SolverStyle3D(SolverBase):
         self._drag_pos = wp.zeros(1, dtype=wp.vec3, device=self.device)
         self._drag_index = wp.array([-1], dtype=int, device=self.device)
         self._drag_bary_coord = wp.zeros(1, dtype=wp.vec3, device=self.device)
+
+    @override
+    def reset(
+        self,
+        state: State,
+        world_mask: wp.array[wp.bool] | None = None,
+        flags: StateFlags | int | None = None,
+    ) -> None:
+        """Reset tetrahedral projection history after restoring particle state.
+
+        Restore particle positions and velocities in ``state`` before calling
+        this method; it leaves those arrays unchanged. Selected volume targets
+        return to identity, matching a new solver rather than restoring the
+        history of an arbitrary saved frame. Other step buffers are refreshed
+        by the next :meth:`step`. Storage is updated in place for CUDA graphs.
+
+        Args:
+            state: Restored simulation state. Its arrays are not modified.
+            world_mask: Optional world selection as described in
+                :meth:`~newton.solvers.SolverBase.reset`.
+            flags: Reset history when particle positions or velocities are
+                selected. ``None`` selects all state flags.
+        """
+        if state is None:
+            raise ValueError("'state' argument is required.")
+        world_mask = self._normalize_reset_world_mask(world_mask)
+        flags_value = int(StateFlags.ALL if flags is None else flags)
+        if len(self._tet_volume_targets) and flags_value & int(StateFlags.PARTICLE):
+            wp.launch(
+                reset_tet_volume_targets_kernel,
+                dim=len(self._tet_volume_targets),
+                inputs=[
+                    self.model.tet_indices,
+                    self.model.particle_world,
+                    world_mask,
+                    world_mask is None,
+                    self.model.world_count,
+                ],
+                outputs=[self._tet_volume_targets],
+                device=self.model.device,
+            )
 
     @override
     def step(

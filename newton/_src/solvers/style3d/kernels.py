@@ -3,9 +3,26 @@
 
 import warp as wp
 
+from ...core.reset import reset_world_selected
 from ...geometry import ParticleFlags
 from ...sim import BodyFlags
 from .affine_body import affine_mass_multiply, inertia_to_second_moment
+
+
+@wp.kernel
+def reset_tet_volume_targets_kernel(
+    tet_indices: wp.array2d[wp.int32],
+    particle_world: wp.array[wp.int32],
+    world_mask: wp.array[wp.bool],
+    reset_all: bool,
+    world_count: int,
+    volume_targets: wp.array[wp.mat33],
+):
+    """Reset projection history for tetrahedra in selected worlds."""
+    tid = wp.tid()
+    world = particle_world[tet_indices[tid, 0]]
+    if reset_all or reset_world_selected(world, world_mask, world_count):
+        volume_targets[tid] = wp.identity(3, dtype=float)
 
 
 @wp.kernel

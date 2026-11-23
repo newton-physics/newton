@@ -200,11 +200,49 @@ def test_tet_constraint_assembles_float_psd_matrix(test, device):
     stretched[1, 0] = 1.2
     state_in.particle_q.assign(stretched)
     solver.step(state_in, state_out, model.control(), contacts, 0.01)
-    result = state_out.particle_q.numpy()
+    result = state_out.particle_q.numpy().copy()
     test.assertTrue(np.isfinite(result).all())
     test.assertLess(np.linalg.norm(result[1] - result[0]), 1.2)
     np.testing.assert_allclose(result.mean(axis=0), stretched.mean(axis=0), atol=2.0e-6)
     test.assertGreater(np.linalg.norm(state_out.particle_qd.numpy()), 0.0)
+
+    # Reset projection history after restoring particle state, without replacing
+    # buffers that may already be referenced by a captured graph.
+    velocity = state_out.particle_qd.numpy().copy()
+    history = solver._tet_volume_targets.numpy().copy()
+    test.assertGreater(np.linalg.norm(history[0] - np.eye(3)), 1.0e-4)
+    target_ptr = solver._tet_volume_targets.ptr
+    solver.reset(state_in, flags=newton.StateFlags.BODY_Q)
+    np.testing.assert_array_equal(solver._tet_volume_targets.numpy(), history)
+    mask = wp.zeros(model.world_count + 1, dtype=wp.bool, device=device)
+    solver.reset(state_in, world_mask=mask)
+    np.testing.assert_array_equal(solver._tet_volume_targets.numpy(), history)
+    mask.fill_(True)
+    solver.reset(state_in, world_mask=mask, flags=newton.StateFlags.PARTICLE_Q)
+    np.testing.assert_array_equal(solver._tet_volume_targets.numpy(), np.eye(3)[None])
+    test.assertEqual(solver._tet_volume_targets.ptr, target_ptr)
+    np.testing.assert_array_equal(state_in.particle_q.numpy(), stretched)
+    solver.step(state_in, state_out, model.control(), contacts, 0.01)
+    np.testing.assert_allclose(state_out.particle_q.numpy(), result, atol=2.0e-6)
+    np.testing.assert_allclose(state_out.particle_qd.numpy(), velocity, atol=2.0e-6)
+
+    solver.reset(state_in)
+    np.testing.assert_array_equal(solver._tet_volume_targets.numpy(), np.eye(3)[None])
+    fresh_solver = newton.solvers.SolverStyle3D(model, config=solver.config)
+    fresh_out = model.state()
+    fresh_solver.step(state_in, fresh_out, model.control(), contacts, 0.01)
+    solver.step(state_in, state_out, model.control(), contacts, 0.01)
+    np.testing.assert_allclose(state_out.particle_q.numpy(), fresh_out.particle_q.numpy(), atol=2.0e-6)
+    np.testing.assert_allclose(state_out.particle_qd.numpy(), fresh_out.particle_qd.numpy(), atol=2.0e-6)
+
+    if wp.get_device(device).is_cuda:
+        with wp.ScopedCapture(device=device) as capture:
+            solver.reset(state_in)
+        for _ in range(2):
+            solver._tet_volume_targets.assign(history)
+            wp.capture_launch(capture.graph)
+            np.testing.assert_array_equal(solver._tet_volume_targets.numpy(), np.eye(3)[None])
+            test.assertEqual(solver._tet_volume_targets.ptr, target_ptr)
 
 
 def test_config_constructor_options(test, device):

@@ -232,6 +232,16 @@ an approximate local minimizer and retains its previous feasible target when
 that gives a smaller residual. This is a projective co-rotational model,
 not the full stable Neo-Hookean constitutive law.
 
+The volume projection retains history in the solver, outside
+:class:`~newton.State`. After restoring particle positions and velocities,
+call :meth:`solver.reset(state) <newton.solvers.SolverStyle3D.reset>` to clear
+this history before stepping again. This restarts projection from identity,
+matching a newly constructed solver at the restored state. It does not restore
+the projection history of an arbitrary saved frame or guarantee exact
+continuation of that frame's trajectory. Optional ``world_mask`` and ``flags``
+arguments select which worlds and particle state changes reset the history.
+The example browser's Reset button recreates the example and its solver.
+
 The volume term uses the tetrahedron's material Lamé parameter ``lambda``
 directly. Rest tetrahedra must
 have positive orientation, and material coefficients must be finite and
