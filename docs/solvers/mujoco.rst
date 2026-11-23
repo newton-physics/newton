@@ -214,8 +214,7 @@ per-DOF values or positive pairs on joints without MuJoCo DOFs, such as loop
 joints mapped to CONNECT constraints, raise ``ValueError``.
 Resolution uses each world's initial physical inertia and authored armature,
 excluding kinematic-lock regularization, and leaves ``joint_rest_q`` unchanged.
-Both backends initialize these passive gains in every model world. With
-``use_mujoco_cpu=True, separate_worlds=True``, only the template world is simulated.
+Both backends initialize these passive gains in every model world.
 Positive pairs override explicit gains; nonpositive pairs retain them. After resolution,
 core edits remain authoritative through inertia updates and solver reconstruction;
 gains are not automatically retuned. Other solvers can use the resolved core
@@ -656,7 +655,7 @@ DC-motor trajectory parity with native MuJoCo is tested with ``integrator="euler
 MuJoCo-Warp's approximate implicit DC-motor derivatives can produce different
 trajectories with ``implicitfast``.
 
-When using ``separate_worlds=True``, corresponding high-level ``<dcmotor>``
+In multi-world models, corresponding high-level ``<dcmotor>``
 actuators (including those created by the helper) must have identical parameters because MuJoCo-Warp replicates one
 compiled template model across worlds.
 
@@ -1118,9 +1117,9 @@ parsed into MuJoCo's geom-pair contact structures by
 Multi-world support
 -------------------
 
-Constructing :class:`~newton.solvers.SolverMuJoCo` with
-``separate_worlds=True`` (the default for GPU mode with multiple
-worlds) builds a shared MuJoCo topology across worlds via ``mujoco_warp``.
+For a model with multiple worlds, :class:`~newton.solvers.SolverMuJoCo`
+builds a shared MuJoCo topology across worlds via ``mujoco_warp``. The native
+MuJoCo CPU backend (``use_mujoco_cpu=True``) supports single-world models only.
 Bodies, joints, equality constraints, mimic relationships, primitive geoms,
 and sites must have matching layouts. With ``use_mujoco_cpu=False``, mesh,
 heightfield, and cone assets, scales, and convex-hull counts may differ across worlds. Collision
@@ -1132,10 +1131,11 @@ per-world mesh scales are compiled into the MuJoCo assets, so changing their
 recreate the solver to resize them. The solver validates
 compatibility at construction and raises ``ValueError`` on a mismatch.
 
-Bodies, joints, equality constraints, and mimic relationships cannot have
-a negative world index — assigning any of them to the global world
-raises ``ValueError``. Only shapes may live in the global world (-1);
-they are shared across all worlds without replication.
+In a multi-world model, bodies, joints, equality constraints, and mimic
+relationships cannot have a negative world index — assigning any of them to
+the global world raises ``ValueError``. Only shapes may live in the global
+world (-1); they are shared across all worlds without replication.
+Single-world models have no such restriction.
 
 
 Runtime state synchronization
