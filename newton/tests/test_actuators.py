@@ -1039,9 +1039,16 @@ class TestDriveNeuralGRU(unittest.TestCase):
         np.testing.assert_allclose(effort, self._expected(metadata, case)[0], rtol=1e-5, atol=1e-6)
 
     def test_gru_without_bias(self):
-        """Evaluate a checkpoint whose GRU nodes carry no bias initializer."""
+        """Evaluate a bias-free GRU with inferred hidden size and internal Y_h."""
         metadata = self._metadata(self.FEATURES[:-1])
-        path = self._save_gru("no_gru_bias.onnx", metadata, input_size=3, include_bias=False)
+        source = self._save_gru("no_gru_bias.onnx", metadata, input_size=3, include_bias=False)
+
+        def omit_optional_fields(model):
+            gru = next(node for node in model.graph.node if node.op_type == "GRU")
+            del gru.attribute[next(i for i, attr in enumerate(gru.attribute) if attr.name == "hidden_size")]
+            del model.graph.output[1:]
+
+        path = self._mutate_gru(source, "no_optional_fields.onnx", omit_optional_fields)
         case = self._make_case(path, 2)
 
         effort, hidden = self._step(case)
@@ -1218,7 +1225,7 @@ class TestDriveNeuralGRU(unittest.TestCase):
                 DriveNeuralGRU(path)
 
     def test_checkpoint_and_network_validation(self):
-        """Validate checkpoint paths, weights, and supported GRU attributes."""
+        """Reject missing files, non-ONNX paths, and shape-inconsistent weights."""
         with self.assertRaisesRegex(ValueError, "model_path"):
             DriveNeuralGRU.resolve_arguments({})
         with self.assertRaisesRegex(ValueError, "non-empty"):
@@ -1236,83 +1243,164 @@ class TestDriveNeuralGRU(unittest.TestCase):
         _build_mlp_onnx(path, np.zeros((1, 4), np.float32), np.zeros(1, np.float32), self._metadata())
         with self.assertRaisesRegex(ValueError, "no GRU"):
             DriveNeuralGRU(path)
-        with self.assertRaisesRegex(ValueError, "one scalar effort"):
-            Actuator(
-                indices=wp.array([0], dtype=wp.uint32, device=self.device),
-                drive=DriveNeuralGRU(self._save_gru("vector_output.onnx", output_size=2)),
-            )
-        with self.assertRaisesRegex(NotImplementedError, "linear_before_reset"):
-            Actuator(
-                indices=wp.array([0], dtype=wp.uint32, device=self.device),
-                drive=DriveNeuralGRU(self._save_gru("reset_gate.onnx", linear_before_reset=0)),
-            )
+        with self.assertRaisesRegex(ValueError, "linear_before_reset"):
+            DriveNeuralGRU(self._save_gru("bad_reset.onnx", linear_before_reset=0))
+        with self.assertRaisesRegex(ValueError, "one scalar|output head"):
+            DriveNeuralGRU(self._save_gru("vector_output.onnx", output_size=2))
 
-        _, _, helper, numpy_helper = _onnx_modules()
-        metadata = self._metadata()
-        source = self._save_gru("attribute_variants.onnx", metadata)
-        for attribute, value, message in (
-            ("layout", 1, "layout"),
-            ("clip", 1.0, "clip"),
-            ("activations", ["Relu", "Tanh"], "non-default activations"),
-            ("activation_alpha", [0.1, 0.1], "activation_alpha"),
-            ("activation_beta", [0.1, 0.1], "activation_beta"),
-            ("sequence_lens", None, "sequence_lens"),
-            ("direction", "reverse", None),
-            ("activations", ["Sigmoid", "Tanh"], None),
-        ):
-            with self.subTest(attribute=attribute, value=value):
+    def test_rejects_unsupported_onnx_graphs(self):
+        """Reject GRU graphs whose structure the drive cannot reconstruct faithfully."""
+        _, TensorProto, helper, numpy_helper = _onnx_modules()
+        source = self._save_gru("valid_for_mutation.onnx")
 
-                def edit(model, attribute=attribute, value=value):
-                    node = next(node for node in model.graph.node if node.op_type == "GRU")
-                    if attribute == "sequence_lens":
-                        node.input[4] = "sequence_lengths"
-                        model.graph.initializer.append(
-                            numpy_helper.from_array(np.array([1], dtype=np.int32), name="sequence_lengths")
-                        )
-                    else:
-                        node.attribute.append(helper.make_attribute(attribute, value))
+        def node(model, op_type, index=0):
+            return [item for item in model.graph.node if item.op_type == op_type][index]
 
-                path = self._mutate_gru(source, f"{attribute}_{message is None}.onnx", edit)
-                if message is not None:
-                    with self.assertRaisesRegex(NotImplementedError, message):
-                        Actuator(
-                            indices=wp.array([0], dtype=wp.uint32, device=self.device),
-                            drive=DriveNeuralGRU(path),
-                        )
-                else:
-                    # A one-sample sequence has identical forward and reverse semantics.
-                    case = self._make_case(path, 1)
-                    expected_effort, expected_hidden = self._expected(metadata, case)
-                    effort, hidden = self._step(case)
-                    np.testing.assert_allclose(effort, expected_effort, rtol=1e-5, atol=1e-6)
-                    np.testing.assert_allclose(hidden, expected_hidden, rtol=1e-5, atol=1e-6)
+        def set_attribute(model, op_type, name, value, index=0):
+            target = node(model, op_type, index)
+            for attribute in target.attribute:
+                if attribute.name == name:
+                    attribute.CopyFrom(helper.make_attribute(name, value))
+                    return
+            target.attribute.append(helper.make_attribute(name, value))
 
-    def test_rejects_graphs_without_hidden_state_wiring(self):
-        """Reject graphs whose GRU hidden state is not a graph input and output."""
-        _, TensorProto, helper, _ = _onnx_modules()
-        source = self._save_gru("valid_for_mutation.onnx", layer_count=2)
+        def replace_initializer(model, name, value):
+            target = next(item for item in model.graph.initializer if item.name == name)
+            target.CopyFrom(numpy_helper.from_array(np.asarray(value), name=name))
 
-        def gru(model, index=0):
-            return [item for item in model.graph.node if item.op_type == "GRU"][index]
+        edits = []
+
+        def reverse(model):
+            set_attribute(model, "GRU", "direction", "reverse")
+
+        edits.append(("reverse.onnx", reverse, "forward"))
+
+        def batch_major(model):
+            set_attribute(model, "GRU", "layout", 1)
+
+        edits.append(("batch_major.onnx", batch_major, "layout"))
 
         def missing_initial_hidden(model):
-            gru(model).input[5] = ""
+            node(model, "GRU").input[5] = ""
 
-        def shared_initial_hidden(model):
-            gru(model, 1).input[5] = gru(model, 0).input[5]
+        edits.append(("missing_initial_hidden.onnx", missing_initial_hidden, "initial_h|initial hidden"))
 
-        def hidden_not_output(model):
-            del model.graph.output[1]
+        def sequence_lengths(model):
+            model.graph.input.append(helper.make_tensor_value_info("sequence_lens", TensorProto.INT32, [None]))
+            node(model, "GRU").input[4] = "sequence_lens"
 
-        def extra_input(model):
-            model.graph.input.append(helper.make_tensor_value_info("extra", TensorProto.FLOAT, [1, None, 4]))
+        edits.append(("sequence_lengths.onnx", sequence_lengths, "sequence_lens"))
 
-        edits = (
-            ("missing_initial_hidden.onnx", missing_initial_hidden, "external initial_h"),
-            ("shared_initial_hidden.onnx", shared_initial_hidden, "distinct initial_h"),
-            ("hidden_not_output.onnx", hidden_not_output, "Y_h as a graph output"),
-            ("extra_input.onnx", extra_input, "one network input"),
-        )
+        def clipped_gru(model):
+            set_attribute(model, "GRU", "clip", 0.25)
+
+        edits.append(("clipped_gru.onnx", clipped_gru, "clip"))
+
+        def custom_activations(model):
+            set_attribute(model, "GRU", "activations", ["HardSigmoid", "Tanh"])
+
+        edits.append(("custom_activations.onnx", custom_activations, "activations"))
+
+        for attribute in ("activation_alpha", "activation_beta"):
+
+            def custom_activation_parameter(model, attribute=attribute):
+                set_attribute(model, "GRU", attribute, [0.25, 0.5])
+
+            edits.append((f"{attribute}.onnx", custom_activation_parameter, attribute))
+
+        def missing_weights(model):
+            node(model, "GRU").input[1] = "missing_weight"
+
+        edits.append(("missing_weights.onnx", missing_weights, "embed GRU weights"))
+
+        def flat_input_weights(model):
+            replace_initializer(model, "gru_0_W", np.zeros((12, 4), dtype=np.float32))
+
+        edits.append(("flat_input_weights.onnx", flat_input_weights, "input weights"))
+
+        def mismatched_input_weights(model):
+            set_attribute(model, "GRU", "hidden_size", 5)
+
+        edits.append(("mismatched_input_weights.onnx", mismatched_input_weights, "input weights"))
+
+        def mismatched_hidden_weights(model):
+            replace_initializer(model, "gru_0_R", np.zeros((1, 12, 3), dtype=np.float32))
+
+        edits.append(("mismatched_hidden_weights.onnx", mismatched_hidden_weights, "hidden weights"))
+
+        def missing_bias(model):
+            node(model, "GRU").input[3] = "missing_bias"
+
+        edits.append(("missing_bias.onnx", missing_bias, "embed GRU biases"))
+
+        def mismatched_bias(model):
+            replace_initializer(model, "gru_0_B", np.zeros((1, 23), dtype=np.float32))
+
+        edits.append(("mismatched_bias.onnx", mismatched_bias, "biases"))
+
+        def missing_head(model):
+            node(model, "Gemm").op_type = "MatMul"
+
+        edits.append(("missing_head.onnx", missing_head, "one scalar Gemm"))
+
+        def unsupported_head(model):
+            set_attribute(model, "Gemm", "alpha", 2.0)
+
+        edits.append(("unsupported_head.onnx", unsupported_head, "unsupported Gemm"))
+
+        def missing_head_weight(model):
+            node(model, "Gemm").input[1] = "missing_head_weight"
+
+        edits.append(("missing_head_weight.onnx", missing_head_weight, "output-head weights"))
+
+        def branched_head(model):
+            model.graph.node.append(helper.make_node("Identity", ["head"], ["unused_head"]))
+
+        edits.append(("branched_head.onnx", branched_head, "one linear path"))
+
+        def vector_scale(model):
+            replace_initializer(model, "output_scale", np.array([1.0, 2.0], dtype=np.float32))
+
+        edits.append(("vector_scale.onnx", vector_scale, "scale must be scalar"))
+
+        def nonfinite_scale(model):
+            replace_initializer(model, "output_scale", np.array(math.nan, dtype=np.float32))
+
+        edits.append(("nonfinite_scale.onnx", nonfinite_scale, "scale must be finite"))
+
+        def unsupported_output(model):
+            node(model, "Tanh").op_type = "Relu"
+
+        edits.append(("unsupported_output.onnx", unsupported_output, "unsupported output operation"))
+
+        def reversed_output_operations(model):
+            tanh = node(model, "Tanh")
+            scale = node(model, "Mul")
+            tanh.op_type = "Mul"
+            tanh.input.append("output_scale")
+            scale.op_type = "Tanh"
+            del scale.input[1:]
+
+        edits.append(("reversed_output_operations.onnx", reversed_output_operations, "order|unsupported output"))
+
+        def disconnected_head(model):
+            model.graph.input.append(helper.make_tensor_value_info("unrelated_features", TensorProto.FLOAT, [None, 4]))
+            node(model, "Gemm").input[0] = "unrelated_features"
+
+        edits.append(("disconnected_head.onnx", disconnected_head, "GRU|output head"))
+
+        def disconnected_output(model):
+            model.graph.output[0].name = "not_the_head_output"
+
+        edits.append(("disconnected_output.onnx", disconnected_output, "does not reach"))
+
+        def mix_lanes(model):
+            effort = model.graph.output[0]
+            model.graph.node.append(helper.make_node("Softmax", [effort.name], ["mixed_effort"], axis=0))
+            effort.name = "mixed_effort"
+
+        edits.append(("lane_mixing.onnx", mix_lanes, "unsupported output operation.*Softmax"))
+
         for filename, edit, message in edits:
             with self.subTest(filename=filename):
                 path = self._mutate_gru(source, filename, edit)
@@ -1663,7 +1751,7 @@ class TestDriveNeuralGRU(unittest.TestCase):
         self.assertEqual(os.path.realpath(parsed.drive_kwargs["model_path"]), os.path.realpath(model_path))
 
     def test_gru_implicit_linearized(self):
-        """The GRU enters the implicit solve as a per-step linearization."""
+        """Linearize a stacked GRU for the implicit solve across recurrent steps."""
         device = self.device
         h = self.SAMPLE_DT
         q0, qd0, target, target_vel = 0.2, 0.3, 1.0, -0.4
@@ -1678,11 +1766,13 @@ class TestDriveNeuralGRU(unittest.TestCase):
         control.joint_target_qd.assign(np.array([target_vel], dtype=np.float32))
         control.bias_force = wp.full(1, 0.7, dtype=wp.float32, device=device)
 
-        path = self._save_gru("implicit_gru.onnx", metadata=metadata)
+        path = self._save_gru("implicit_gru.onnx", metadata=metadata, layer_count=2)
         drive = DriveNeuralGRU(path)
         response = JointSpaceResponse(model)
         actuator = Actuator(indices=wp.array([0], dtype=wp.uint32, device=device), drive=drive)
 
+        self.assertIsNone(drive._lin_params)
+        self.assertFalse(drive._net_input.requires_grad)
         actuator.set_effort_mode_implicit(response=response)
         # Reusing the same configuration must preserve the first solver's binding.
         Actuator(indices=actuator.indices, drive=drive)
