@@ -24,7 +24,7 @@ from newton import BodyFlags, JointType, Mesh, ModelFlags, NewtonDeprecationWarn
 from newton._src.core.types import vec5
 from newton._src.solvers.mujoco.constants import (
     DEFAULT_LIMIT_SOLREF,
-    MJ_MINVAL,
+    FLOAT64_EPS,
     SOLREF_MODE_FORCE_SPACE,
     SOLREF_MODE_MJCF_DEFAULT,
     SOLREF_MODE_RAW,
@@ -89,8 +89,8 @@ def _add_deprecated_mimic_constraint(
 
 
 def _expected_positive_limit_solref(ke: float, kd: float, factor: float) -> np.ndarray:
-    direct_stiffness = max(float(ke) * float(factor), MJ_MINVAL)
-    direct_damping = max(float(kd) * float(factor), MJ_MINVAL)
+    direct_stiffness = max(float(ke) * float(factor), FLOAT64_EPS)
+    direct_damping = max(float(kd) * float(factor), FLOAT64_EPS)
     return np.array(
         [2.0 / direct_damping, direct_damping / (2.0 * math.sqrt(direct_stiffness))],
         dtype=np.float64,
@@ -5790,13 +5790,15 @@ class TestMuJoCoSolverContactKf(unittest.TestCase):
     def test_kf_sets_contact_solreffriction(self):
         """Verify positive kf sets the mixed contact solreffriction."""
         model, solver = self._make_sphere_scene(kf_sphere=800.0, kf_plane=200.0)
-        nacon, _, _ = self._step_and_read_solreffriction(model, solver)
-        solreffriction = solver.mjw_data.contact.solreffriction.numpy()[:nacon]
-        # equal solmix/priority -> mix = 0.5
-        expected = self._expected_solreffriction(solver, nacon, kf_pair=500.0)
-        for i in range(nacon):
-            self.assertAlmostEqual(float(solreffriction[i][0]) / expected[i], 1.0, places=5)
-            self.assertEqual(float(solreffriction[i][1]), 1.0)
+        for solmix in ((1.0, 1.0), (5e-16, 0.0)):
+            with self.subTest(solmix=solmix):
+                solver.mjw_model.geom_solmix.assign(np.array([solmix], dtype=np.float32))
+                nacon, _, _ = self._step_and_read_solreffriction(model, solver)
+                solreffriction = solver.mjw_data.contact.solreffriction.numpy()[:nacon]
+                expected = self._expected_solreffriction(solver, nacon, kf_pair=500.0)
+                for i in range(nacon):
+                    self.assertAlmostEqual(float(solreffriction[i][0]) / expected[i], 1.0, places=5)
+                    self.assertEqual(float(solreffriction[i][1]), 1.0)
 
     def test_kf_zero_mixes_with_positive_value(self):
         """Verify zero kf participates in the usual contact-material mixing."""
@@ -14741,7 +14743,7 @@ class TestMuJoCoSolverForceSpaceContactSolref(unittest.TestCase):
         invw_b = float(body_invweight0[0, body_b, 0]) if body_b >= 0 else 0.0
         dmax = float(solver.mjw_data.contact.solimp.numpy()[contact_idx, 1])
         factor = (invw_a + invw_b) * (1.0 - dmax)
-        solref = convert_solref(max(ke * factor, MJ_MINVAL), max(kd * factor, MJ_MINVAL), 1.0, 1.0)
+        solref = convert_solref(max(ke * factor, FLOAT64_EPS), max(kd * factor, FLOAT64_EPS), 1.0, 1.0)
         return float(solref[0]), float(solref[1])
 
     def test_force_space_contact_solref_uses_invweight0_and_dmax(self):
@@ -15026,7 +15028,7 @@ class TestMuJoCoSolverForceSpaceContactSolref(unittest.TestCase):
         self._run_to_first_contact(model, solver)
         actual_solref = solver.mjw_data.contact.solref.numpy()[0]
         # dmax=1 zeroes the factor → override skipped; solref[0] stays sub-1.0
-        # instead of the ~2/MJ_MINVAL a fired override would produce.
+        # instead of the ~2/FLOAT64_EPS a fired override would produce.
         self.assertLess(float(actual_solref[0]), 1.0)
 
     def test_force_space_contact_stiff_contact_stays_finite(self):
