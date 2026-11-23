@@ -22,7 +22,7 @@ from ..exceptions import NewtonDeprecationWarning, NewtonWarning
 from ..geometry.deformable_visual import DeformableVisualMesh, _DeformableVisualSkinBatches
 from ..geometry.flags import ShapeFlags
 from ..geometry.inertia import _inverse_inertia_wp
-from ..geometry.materials import MaterialPairFriction
+from ..geometry.materials import MaterialPairProperties, MaterialPairTable, material_pair_key
 from ..utils.deprecation import warn_deprecation
 from ..utils.mesh import MeshAdjacency, MeshAdjacencyData
 from .contacts import Contacts
@@ -1115,7 +1115,8 @@ class Model:
         """
         self.material_names: tuple[str, ...] = ()
         """Builder-assigned contact material names, indexed by material ID."""
-        self._material_pair_friction = MaterialPairFriction()
+        self._material_pair_table = MaterialPairTable()
+        self._material_pair_columns: dict[int, int] = {}
         self.shape_material_mu: wp.array[wp.float32] | None = None
         """Shape coefficient of friction [dimensionless], shape [shape_count], float. The dynamic (kinetic)
         coefficient for solvers that model stick-slip friction (see :attr:`shape_material_mu_static`)."""
@@ -2016,6 +2017,48 @@ class Model:
         """Total number of actuators added with :meth:`ModelBuilder.add_actuator() <newton.ModelBuilder.add_actuator>`."""
         self.batteries: list[BatteryBase] = []
         """List of battery instances for this model."""
+
+    @property
+    def material_pair_values(self) -> wp.array2d[MaterialPairProperties] | None:
+        """Experimental device array of mutable rigid contact material pair values.
+
+        The array has shape [row_count, pair_count], or is None if no pair
+        was configured. By default all worlds share row zero. Finalize with
+        ``material_pairs_per_world=True`` to allocate one row per world.
+        Contacts between two global shapes use row zero. Use
+        :meth:`get_material_pair_index` to find the column for a pair, then
+        update that column in place across any set of worlds. Each negative
+        field selects the solver's usual contact behavior. Supply finite
+        float32 coefficients when updating values in place.
+        """
+        if not self._material_pair_columns:
+            return None
+        return self._material_pair_table.values
+
+    def get_material_pair_index(self, material_a: int, material_b: int) -> int:
+        """Return the column of an unordered pair in :attr:`material_pair_values`.
+
+        This experimental method returns -1 for an invalid ID or unregistered pair.
+        """
+        if not all(
+            isinstance(value, (int, np.integer)) or wp.types.type_is_int(type(value))
+            for value in (material_a, material_b)
+        ):
+            return -1
+        material_a = int(material_a)
+        material_b = int(material_b)
+        material_count = len(self.material_names)
+        if not (0 <= material_a < material_count and 0 <= material_b < material_count):
+            return -1
+        return self._material_pair_columns.get(material_pair_key(material_a, material_b), -1)
+
+    def _set_material_pair_table(self, keys: list[int] | np.ndarray, values: np.ndarray | None) -> None:
+        table = MaterialPairTable()
+        if values is not None:
+            table.keys = wp.array(keys, dtype=wp.uint64, device=self.device)
+            table.values = wp.array(values, dtype=MaterialPairProperties, device=self.device)
+        self._material_pair_columns = {int(key): column for column, key in enumerate(keys)}
+        self._material_pair_table = table
 
     @property
     def shape_contact_pairs(self) -> wp.array[wp.vec2i] | None:

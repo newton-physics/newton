@@ -22,6 +22,7 @@ from ._src.geometry import (
 from ._src.geometry.deformable_visual import DeformableVisualMesh, DeformableVisuals
 from ._src.geometry.inertia import compute_inertia_shape, transform_inertia
 from ._src.geometry.kernels import sdf_box, sdf_capsule, sdf_cone, sdf_cylinder, sdf_mesh, sdf_plane, sdf_sphere
+from ._src.geometry.materials import MaterialPairProperties
 from ._src.geometry.narrow_phase import NarrowPhase
 from ._src.geometry.particle_surface import ParticleSurface, extract_particle_surface
 from ._src.geometry.sdf_hydroelastic import HydroelasticSDF
@@ -34,6 +35,7 @@ __all__ = [
     "DeformableVisualMesh",
     "DeformableVisuals",
     "HydroelasticSDF",
+    "MaterialPairProperties",
     "NarrowPhase",
     "ParticleSurface",
     "TriMeshCollisionInfo",

@@ -19,7 +19,7 @@ from .....geometry.broad_phase_nxn import BroadPhaseAllPairs, BroadPhaseExplicit
 from .....geometry.broad_phase_sap import BroadPhaseSAP
 from .....geometry.collision_core import compute_tight_aabb_from_support
 from .....geometry.contact_data import ContactData
-from .....geometry.materials import MaterialPairFriction, resolve_material_pair_friction
+from .....geometry.materials import MaterialPairTable, material_pair_value, resolve_material_pair
 from .....geometry.narrow_phase import NarrowPhase
 from .....geometry.sdf_texture import TextureSDFData
 from .....geometry.support_function import GenericShapeData, SupportMapDataProvider, pack_mesh_ptr
@@ -79,7 +79,7 @@ class ContactWriterDataKamino:
     material_pair_restitution: wp.array[wp.float32]
     material_pair_static_friction: wp.array[wp.float32]
     material_pair_dynamic_friction: wp.array[wp.float32]
-    material_pair_friction: MaterialPairFriction
+    material_pair_table: MaterialPairTable
     shape_material_id: wp.array[wp.int32]
 
     # Contact limit and active count (Newton interface)
@@ -222,10 +222,8 @@ def _write_contact_unified_kamino(
         writer_data.material_pair_static_friction,
         writer_data.material_pair_dynamic_friction,
     )
-    mu_ab = resolve_material_pair_friction(
-        writer_data.material_pair_friction, writer_data.shape_material_id, gid_a, gid_b, mu_ab
-    )
-    material = wp.vec2f(mu_ab, restitution_ab)
+    pair = resolve_material_pair(writer_data.material_pair_table, writer_data.shape_material_id, gid_a, gid_b, wid)
+    material = wp.vec2f(material_pair_value(pair.mu, mu_ab), material_pair_value(pair.restitution, restitution_ab))
 
     # Generate the gap-function (normal.x, normal.y, normal.z, distance),
     # contact frame (z-norm aligned with contact normal)
@@ -243,9 +241,10 @@ def _write_contact_unified_kamino(
     writer_data.contact_gapfunc[mcid] = gapfunc
     writer_data.contact_frame[mcid] = q_frame
     writer_data.contact_material[mcid] = material
+    torsional = 0.5 * (writer_data.geom_torsional_friction[gid_a] + writer_data.geom_torsional_friction[gid_b])
+    rolling = 0.5 * (writer_data.geom_rolling_friction[gid_a] + writer_data.geom_rolling_friction[gid_b])
     writer_data.contact_angular_friction[mcid] = wp.vec2f(
-        0.5 * (writer_data.geom_torsional_friction[gid_a] + writer_data.geom_torsional_friction[gid_b]),
-        0.5 * (writer_data.geom_rolling_friction[gid_a] + writer_data.geom_rolling_friction[gid_b]),
+        material_pair_value(pair.mu_torsional, torsional), material_pair_value(pair.mu_rolling, rolling)
     )
     writer_data.contact_margins[mcid] = margins
     writer_data.contact_key[mcid] = key
@@ -786,7 +785,7 @@ class CollisionPipelineUnifiedKamino:
         writer_data.material_pair_restitution = self._model.material_pairs.restitution
         writer_data.material_pair_static_friction = self._model.material_pairs.static_friction
         writer_data.material_pair_dynamic_friction = self._model.material_pairs.dynamic_friction
-        writer_data.material_pair_friction = self._model.material_pair_friction
+        writer_data.material_pair_table = self._model.material_pair_table
         writer_data.shape_material_id = self._model.shape_material_id
         writer_data.contact_max = wp.int32(contacts.model_max_contacts_host)
         writer_data.contact_count = self.narrow_phase_contact_count

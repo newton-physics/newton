@@ -93,7 +93,11 @@ class TestImportUsdPhysics(unittest.TestCase):
             "newton:materialPair:mu", Sdf.ValueTypeNames.Float
         )
         mu.Set(0.25)
-        expected.set_material_pair(*expected_ids, mu=0.25)
+        restitution = pair.GetAttribute("newton:materialPair:restitution") or pair.CreateAttribute(
+            "newton:materialPair:restitution", Sdf.ValueTypeNames.Float
+        )
+        restitution.Set(0.5)
+        expected.set_material_pair(*expected_ids, mu=0.25, restitution=0.5)
 
         builder = newton.ModelBuilder()
         result = builder.add_usd(stage, root_path="/World", load_visual_shapes=False)
@@ -106,15 +110,11 @@ class TestImportUsdPhysics(unittest.TestCase):
         np.testing.assert_array_equal(
             model.shape_material_mu.numpy()[shape_ids], expected_model.shape_material_mu.numpy()
         )
-        np.testing.assert_array_equal(
-            model._material_pair_friction.keys.numpy(), expected_model._material_pair_friction.keys.numpy()
-        )
-        np.testing.assert_array_equal(
-            model._material_pair_friction.mu.numpy(), expected_model._material_pair_friction.mu.numpy()
-        )
+        self.assertEqual(model.get_material_pair_index(*expected_ids), 0)
+        np.testing.assert_array_equal(model.material_pair_values.numpy(), expected_model.material_pair_values.numpy())
 
         mu.Set(-0.25)
-        with self.assertRaisesRegex(ValueError, "Invalid contact material pair friction"):
+        with self.assertRaisesRegex(ValueError, "Invalid contact material pair mu"):
             newton.ModelBuilder().add_usd(stage, root_path="/World", load_visual_shapes=False)
         mu.Set(0.25)
         for target in ("/World/Steel", "/Missing"):

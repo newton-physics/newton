@@ -3319,10 +3319,10 @@ class TestSCCSolver(NewtonTestCase):
                         self.assertAlmostEqual(float(positions[body, 0]), expected_distance, delta=1.0e-5)
 
     def test_material_pair_friction_overrides_all_contact_paths(self):
-        """Apply material-pair friction to sliding contacts through every collision path."""
+        """Apply material-pair friction to sliding contacts and restitution through every collision path."""
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         SolverKamino.register_custom_attributes(builder)
-        expected_friction = np.array([0.0, 0.0, 0.25, 0.75, 0.625], dtype=np.float32)
+        expected_friction = np.array([0.0, 0.125, 0.25, 0.75, 0.625], dtype=np.float32)
         for mu, self_pair, unassigned, copies in (
             (0.0, False, False, 2),
             (0.25, True, False, 1),
@@ -3334,7 +3334,9 @@ class TestSCCSolver(NewtonTestCase):
             ground_material = box_material if self_pair else world.add_material("ground")
             if mu is not None:
                 world.set_material_pair(box_material, ground_material, mu=0.125)
-                world.set_material_pair(ground_material, box_material, mu=mu)
+                world.set_material_pair(
+                    ground_material, box_material, mu=mu, restitution=0.25, mu_torsional=0.125, mu_rolling=0.25
+                )
 
             shape_cfg = world.ShapeConfig(mu=0.5, gap=0.0, margin=0.0, material_id=box_material)
             body = world.add_link(xform=wp.transformf((0.0, 0.0, 0.1), wp.quat_identity()), mass=1.0)
@@ -3347,7 +3349,11 @@ class TestSCCSolver(NewtonTestCase):
             world.add_shape_box(-1, xform=ground_pose, hx=1.0, hy=1.0, hz=0.1, cfg=ground_cfg)
             builder.replicate(world, copy_count=copies)
 
-        model = builder.finalize(device=self.device)
+        model = builder.finalize(device=self.device, material_pairs_per_world=True)
+        pair_column = model.get_material_pair_index(1, 0)
+        self.assertEqual(pair_column, 0)
+        self.assertEqual(model.shape_material_id.numpy()[model.body_shapes[0][0]], 0)
+        self.assertEqual(model.shape_material_id.numpy()[model.body_shapes[1][0]], 0)
         dt = 2.0e-3
         steps = 10
         initial_speed = 3.0
@@ -3361,6 +3367,9 @@ class TestSCCSolver(NewtonTestCase):
                         pipeline=pipeline, max_contacts_per_world=16, max_contacts_per_pair=8
                     )
                 solver = SolverKamino(model, config=config)
+                pair_values = model.material_pair_values.numpy()
+                pair_values["mu"][1, pair_column] = 0.125
+                model.material_pair_values.assign(pair_values)
                 updated = np.full(model.shape_count, 0.625, dtype=np.float32)
                 updated[model.body_shapes[3][0]] = 0.875
                 model.shape_material_mu.assign(updated)
@@ -3386,6 +3395,11 @@ class TestSCCSolver(NewtonTestCase):
                 np.testing.assert_array_equal(
                     resolved.material.numpy()[:count, 0], expected_friction[resolved.wid.numpy()[:count]]
                 )
+                worlds = resolved.wid.numpy()[:count]
+                overridden = worlds < 3
+                np.testing.assert_array_equal(resolved.material.numpy()[:count, 1][overridden], 0.25)
+                angular = resolved.angular_friction.numpy()[:count][overridden]
+                np.testing.assert_array_equal(angular, np.tile([0.125, 0.25], (len(angular), 1)))
                 expected_speed = initial_speed - expected_friction * 9.81 * dt * steps
                 np.testing.assert_allclose(state_in.body_qd.numpy()[:, 0], expected_speed, rtol=0.0, atol=1.5e-3)
 

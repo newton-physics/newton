@@ -199,8 +199,10 @@ class CollisionPipelinePrimitive:
             self._contact_overflow_warning_emitted,
             default_gap=self._default_gap,
         )
-        # The primitive pipeline ignores torsional and rolling friction, and per-contact stiffness and damping
-        for array in (contacts.angular_friction, contacts.stiffness, contacts.damping):
+        # The primitive pipeline only supplies angular friction for explicit material pairs.
+        if contacts.angular_friction is not None and self._model.material_pair_table.keys is None:
+            contacts.angular_friction.zero_()
+        for array in (contacts.stiffness, contacts.damping):
             if array is not None:
                 array.zero_()
 

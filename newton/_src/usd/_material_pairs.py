@@ -28,15 +28,28 @@ def _parse_material_pair(builder: ModelBuilder, prim: Usd.Prim, material_ids: di
             raise ValueError(f"Material pair {prim.GetPath()} target {targets[0]} must be a physics material.")
         material_paths.append(str(targets[0]))
 
-    mu = prim.GetAttribute("newton:materialPair:mu").Get()
-    if mu is None:
-        raise ValueError(f"Material pair {prim.GetPath()} requires newton:materialPair:mu.")
-    if not isinstance(mu, float):
-        raise ValueError(f"Material pair {prim.GetPath()} requires a floating-point value for newton:materialPair:mu.")
+    properties = {}
+    for field, token in (
+        ("mu", "mu"),
+        ("mu_static", "muStatic"),
+        ("mu_torsional", "muTorsional"),
+        ("mu_rolling", "muRolling"),
+        ("restitution", "restitution"),
+    ):
+        name = f"newton:materialPair:{token}"
+        attr = prim.GetAttribute(name)
+        if not attr or not attr.HasAuthoredValueOpinion():
+            continue
+        value = attr.Get()
+        if not isinstance(value, float):
+            raise ValueError(f"Material pair {prim.GetPath()} requires a floating-point value for {name}.")
+        properties[field] = value
+    if not properties:
+        raise ValueError(f"Material pair {prim.GetPath()} requires at least one coefficient.")
 
     ids = []
     for path in material_paths:
         if path not in material_ids:
             material_ids[path] = builder.add_material(path)
         ids.append(material_ids[path])
-    builder.set_material_pair(*ids, mu=mu)
+    builder.set_material_pair(*ids, **properties)

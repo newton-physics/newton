@@ -18,6 +18,7 @@ from warp._src import types as warp_types
 from ..core.types import override
 from ..geometry import Mesh
 from ..geometry.deformable_visual import DeformableVisualMesh
+from ..geometry.materials import MaterialPairProperties
 from ..sim import Model, ModelFlags, State
 from ..sim.shape_contact_pairs import _ShapeContactPairs
 from .viewer import ViewerBase
@@ -483,6 +484,16 @@ def serialize(obj, callback, _visited=None, _path="", format_type="json", cache:
                 if pair_count is not None:
                     attributes["shape_contact_pair_count"] = pair_count
                 attributes.pop("_shape_contact_pair_counts", None)
+                table = attributes.pop("_material_pair_table")
+                attributes.pop("_material_pair_columns")
+                attributes["material_pair_data"] = None
+                if table.values is not None:
+                    # Record named scalar arrays because the generic recorder skips Warp struct arrays.
+                    values = table.values.numpy()
+                    attributes["material_pair_data"] = {
+                        "keys": table.keys.numpy(),
+                        "values": {name: values[name] for name in values.dtype.names},
+                    }
                 # Keep the public name in the file; the skinning batches are derived from the
                 # meshes and rebuilt on demand.
                 attributes["deformable_visual_meshes"] = attributes.pop("_deformable_visual_meshes", ())
@@ -796,6 +807,17 @@ def transfer_to_model(source_dict: Mapping[str, Any], target_obj, post_load_init
             pass
 
     if target_is_model:
+        if "material_pair_data" in source_dict:
+            material_pairs = source_dict["material_pair_data"]
+            if material_pairs is None:
+                target_obj._set_material_pair_table([], None)
+            else:
+                fields = material_pairs["values"]
+                values = np.empty(fields["mu"].shape, dtype=MaterialPairProperties.numpy_dtype())
+                for name in values.dtype.names:
+                    values[name] = fields[name]
+                target_obj._set_material_pair_table(material_pairs["keys"], values)
+
         # Restore pair storage and topology; the count is derived from their contents.
         pairs = source_dict.get("shape_contact_pairs", source_dict.get("_shape_contact_pairs", _MISSING))
         if pairs is not _MISSING:

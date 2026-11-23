@@ -11,7 +11,7 @@ import numpy as np
 import warp as wp
 
 # Newton imports
-from .....geometry.materials import MaterialPairFriction
+from .....geometry.materials import MaterialPairTable
 from .....sim import Model
 from ....coupled.model_view import ModelView
 
@@ -552,7 +552,7 @@ class ModelKamino:
     The material-pairs data is currently defined globally to be shared by all worlds.
     """
 
-    material_pair_friction: MaterialPairFriction = field(default_factory=MaterialPairFriction)
+    material_pair_table: MaterialPairTable = field(default_factory=MaterialPairTable)
 
     @property
     def shape_material_id(self) -> wp.array[wp.int32] | None:
@@ -889,5 +889,5 @@ class ModelKamino:
             geoms=model_geoms,
             materials=model_materials,
             material_pairs=model_material_pairs,
-            material_pair_friction=model._material_pair_friction,
+            material_pair_table=model._material_pair_table,
         )

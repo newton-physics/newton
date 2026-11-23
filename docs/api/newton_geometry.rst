@@ -19,6 +19,7 @@ newton.geometry
    DeformableVisualMesh
    DeformableVisuals
    HydroelasticSDF
+   MaterialPairProperties
    NarrowPhase
    ParticleSurface
    TriMeshCollisionInfo

@@ -81,8 +81,9 @@ class TestBodyVariants(unittest.TestCase):
         self.assertEqual(model.material_names, ("scene", "env", "cube", "spheres"))
         _select(model, [1, 0])
         np.testing.assert_array_equal(model.shape_material_id.numpy()[[0, 1, 2]], [3, 3, 2])
-        np.testing.assert_array_equal(model._material_pair_friction.keys.numpy(), [(2 << 32) | 2, (3 << 32) | 3])
-        np.testing.assert_array_equal(model._material_pair_friction.mu.numpy(), [0.25, 0.5])
+        self.assertEqual(model.get_material_pair_index(2, 2), 0)
+        self.assertEqual(model.get_material_pair_index(3, 3), 1)
+        np.testing.assert_array_equal(model.material_pair_values.numpy()["mu"], [[0.25, 0.5]])
 
         # Repeated merges keep distinct material registries but share the
         # geometry and variant rows, including through another merge.

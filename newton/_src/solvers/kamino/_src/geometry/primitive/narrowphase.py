@@ -27,7 +27,7 @@ from ......geometry.collision_primitive import (
     collide_sphere_cylinder,
     collide_sphere_sphere,
 )
-from ......geometry.materials import MaterialPairFriction, resolve_material_pair_friction
+from ......geometry.materials import MaterialPairTable, material_pair_value, resolve_material_pair
 from ......geometry.types import GeoType
 from ...core.data import DataKamino
 from ...core.materials import make_get_material_pair_properties
@@ -1419,8 +1419,6 @@ def _primitive_narrowphase(
     material_pair_restitution: wp.array[wp.float32],
     material_pair_static_friction: wp.array[wp.float32],
     material_pair_dynamic_friction: wp.array[wp.float32],
-    material_pair_friction: MaterialPairFriction,
-    shape_material_id: wp.array[wp.int32],
     contact_overflow_warning_emitted: wp.array[wp.int32],
     # Outputs:
     contact_model_num: wp.array[wp.int32],
@@ -1496,7 +1494,6 @@ def _primitive_narrowphase(
         material_pair_static_friction,
         material_pair_dynamic_friction,
     )
-    mu_12 = resolve_material_pair_friction(material_pair_friction, shape_material_id, gid1, gid2, mu_12)
 
     # TODO(team): static loop unrolling to remove unnecessary branching
     if sid1 == GeoType.SPHERE and sid2 == GeoType.SPHERE:
@@ -1855,6 +1852,31 @@ def _primitive_narrowphase(
         )
 
 
+@wp.kernel(enable_backward=False)
+def _apply_contact_material_pairs(
+    table: MaterialPairTable,
+    shape_material_id: wp.array[wp.int32],
+    active_count: wp.array[wp.int32],
+    worlds: wp.array[wp.int32],
+    shapes: wp.array[wp.vec2i],
+    material: wp.array[wp.vec2f],
+    angular_friction: wp.array[wp.vec2f],
+):
+    cid = wp.tid()
+    if cid >= active_count[0]:
+        return
+    ids = shapes[cid]
+    pair = resolve_material_pair(table, shape_material_id, ids[0], ids[1], worlds[cid])
+    fallback = material[cid]
+    material[cid] = wp.vec2f(
+        material_pair_value(pair.mu, fallback[0]), material_pair_value(pair.restitution, fallback[1])
+    )
+    if angular_friction:
+        angular_friction[cid] = wp.vec2f(
+            material_pair_value(pair.mu_torsional, 0.0), material_pair_value(pair.mu_rolling, 0.0)
+        )
+
+
 ###
 # Kernel Launcher
 ###
@@ -1910,8 +1932,6 @@ def primitive_narrowphase(
             model.material_pairs.restitution,
             model.material_pairs.static_friction,
             model.material_pairs.dynamic_friction,
-            model.material_pair_friction,
-            model.shape_material_id,
             contact_overflow_warning_emitted,
         ],
         outputs=[
@@ -1930,3 +1950,17 @@ def primitive_narrowphase(
         ],
         device=model.device,
     )
+    if model.material_pair_table.keys is not None:
+        wp.launch(
+            _apply_contact_material_pairs,
+            dim=len(contacts.gid_AB),
+            inputs=[
+                model.material_pair_table,
+                model.shape_material_id,
+                contacts.model_active_contacts,
+                contacts.wid,
+                contacts.gid_AB,
+            ],
+            outputs=[contacts.material, contacts.angular_friction],
+            device=model.device,
+        )

@@ -9,7 +9,7 @@ import warp as wp
 
 from ...core.types import override
 from ...exceptions import NewtonDeprecationWarning
-from ...geometry.materials import resolve_contact_material_pair_friction
+from ...geometry.materials import MaterialPairProperties, resolve_contact_material_pairs
 from ...geometry.sdf_planar_recovery import empty_mesh_recovery
 from ...sim import Contacts, Control, JointType, Model, ModelFlags, State, StateFlags
 from ...sim.joint_mimic import has_supported_joint_mimics
@@ -492,7 +492,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
         if contacts is not None and contacts._mesh_recovery_contacts is not None:
             contact_recovery = contacts._mesh_recovery_contacts
         rigid_contact_inv_weight = None
-        contact_pair_mu = None
+        contact_pairs = None
         restitution_contact_active = None
         restitution_manifold_key = None
         restitution_manifold_size = None
@@ -512,20 +512,21 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
 
         if contacts:
             # Contact shape pairs stay fixed over the position iterations.
-            pair_friction = model._material_pair_friction
-            if model.body_count and contacts.rigid_contact_max and pair_friction.keys is not None:
-                contact_pair_mu = wp.empty(contacts.rigid_contact_max, dtype=float, device=model.device)
+            pair_table = model._material_pair_table
+            if model.body_count and contacts.rigid_contact_max and pair_table.keys is not None:
+                contact_pairs = wp.empty(contacts.rigid_contact_max, dtype=MaterialPairProperties, device=model.device)
                 wp.launch(
-                    kernel=resolve_contact_material_pair_friction,
+                    kernel=resolve_contact_material_pairs,
                     dim=contacts.rigid_contact_max,
                     inputs=[
-                        pair_friction,
+                        pair_table,
                         model.shape_material_id,
+                        model.shape_world,
                         contacts.rigid_contact_count,
                         contacts.rigid_contact_shape0,
                         contacts.rigid_contact_shape1,
                     ],
-                    outputs=[contact_pair_mu],
+                    outputs=[contact_pairs],
                     device=model.device,
                 )
             if self.rigid_contact_con_weighting:
@@ -868,7 +869,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                                 model.shape_material_mu,
                                 model.shape_material_mu_torsional,
                                 model.shape_material_mu_rolling,
-                                contact_pair_mu,
+                                contact_pairs,
                                 self.rigid_contact_relaxation,
                                 dt,
                                 contact_recovery,
@@ -1387,6 +1388,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                             contacts.rigid_contact_shape0,
                             contacts.rigid_contact_shape1,
                             model.shape_material_restitution,
+                            contact_pairs,
                             contacts.rigid_contact_point0,
                             contacts.rigid_contact_point1,
                             contacts.rigid_contact_offset0,

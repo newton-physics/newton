@@ -4,6 +4,7 @@
 import warp as wp
 
 from ...geometry import ParticleFlags
+from ...geometry.materials import MaterialPairProperties, material_pair_value
 from ...geometry.sdf_planar_recovery import MeshRecoveryData, active_recovery_contact, recovery_step_depth
 from ...math import (
     vec_abs,
@@ -1971,7 +1972,7 @@ def _solve_body_contact_positions(
     shape_material_mu: wp.array[float],
     shape_material_mu_torsional: wp.array[float],
     shape_material_mu_rolling: wp.array[float],
-    contact_pair_mu: wp.array[float],
+    contact_pairs: wp.array[MaterialPairProperties],
     relaxation: float,
     dt: float,
     deltas: wp.array[wp.spatial_vector],
@@ -2078,10 +2079,14 @@ def _solve_body_contact_positions(
         mu /= float(mat_nonzero)
         mu_torsional /= float(mat_nonzero)
         mu_rolling /= float(mat_nonzero)
-    if contact_pair_mu:
-        pair_mu = contact_pair_mu[tid]
-        if pair_mu >= 0.0:
-            mu = pair_mu
+    mu_static = -1.0
+    if contact_pairs:
+        pair = contact_pairs[tid]
+        mu = material_pair_value(pair.mu, mu)
+        if pair.mu_static >= 0.0:
+            mu_static = wp.max(pair.mu_static, mu)
+        mu_torsional = material_pair_value(pair.mu_torsional, mu_torsional)
+        mu_rolling = material_pair_value(pair.mu_rolling, mu_rolling)
 
     r_a = bx_a - wp.transform_point(X_wb_a, com_a)
     r_b = bx_b - wp.transform_point(X_wb_b, com_b)
@@ -2118,7 +2123,7 @@ def _solve_body_contact_positions(
     ang_delta_b = angular_b * lambda_n
 
     # linear friction
-    if mu > 0.0:
+    if mu > 0.0 or mu_static > 0.0:
         # add on displacement from surface offsets, this ensures we include any rotational effects due to thickness from feature
         # need to use the current rotation to account for friction due to angular effects (e.g.: slipping contact)
         bx_a = contact_surface_point(X_wb_a, contact_point0[tid], offset_a)
@@ -2170,7 +2175,8 @@ def _solve_body_contact_positions(
             )
 
             # limit friction based on incremental normal force, good approximation to limiting on total force
-            lambda_fr = wp.max(lambda_fr, -lambda_n * mu)
+            if mu_static < 0.0 or lambda_fr < -lambda_n * mu_static:
+                lambda_fr = wp.max(lambda_fr, -lambda_n * mu)
 
             lin_delta_a -= perp * lambda_fr
             lin_delta_b += perp * lambda_fr
@@ -2241,7 +2247,7 @@ def solve_body_contact_positions(
     shape_material_mu: wp.array[float],
     shape_material_mu_torsional: wp.array[float],
     shape_material_mu_rolling: wp.array[float],
-    contact_pair_mu: wp.array[float],
+    contact_pairs: wp.array[MaterialPairProperties],
     relaxation: float,
     dt: float,
     recovery: MeshRecoveryData,
@@ -2276,7 +2282,7 @@ def solve_body_contact_positions(
         shape_material_mu,
         shape_material_mu_torsional,
         shape_material_mu_rolling,
-        contact_pair_mu,
+        contact_pairs,
         relaxation,
         dt,
         deltas,

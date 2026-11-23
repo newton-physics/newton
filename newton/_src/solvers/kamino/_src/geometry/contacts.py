@@ -33,7 +33,7 @@ from typing import Literal
 
 import warp as wp
 
-from .....geometry.materials import MaterialPairFriction, resolve_material_pair_friction
+from .....geometry.materials import MaterialPairTable, material_pair_value, resolve_material_pair
 from .....math import safe_div
 from .....sim.contacts import Contacts, contact_surface_point, contact_surface_separation
 from .....sim.model import Model
@@ -1030,7 +1030,7 @@ def make_convert_contacts_newton_to_kamino(
         shape_body: wp.array[wp.int32],
         shape_world: wp.array[wp.int32],
         shape_mu: wp.array[wp.float32],
-        material_pair_friction: MaterialPairFriction,
+        material_pair_table: MaterialPairTable,
         shape_material_id: wp.array[wp.int32],
         shape_restitution: wp.array[wp.float32],
         shape_mu_torsional: wp.array[wp.float32],
@@ -1190,8 +1190,11 @@ def make_convert_contacts_newton_to_kamino(
         epsilon_0 = shape_restitution[sid_0]
         epsilon_1 = shape_restitution[sid_1]
         mu = wp.static(make_get_mixed_material_pair_property(friction_mix_mode))(mu_0, mu_1)
-        mu = resolve_material_pair_friction(material_pair_friction, shape_material_id, sid_0, sid_1, mu)
         epsilon = wp.static(make_get_mixed_material_pair_property(restitution_mix_mode))(epsilon_0, epsilon_1)
+
+        pair = resolve_material_pair(material_pair_table, shape_material_id, sid_0, sid_1, wid)
+        mu = material_pair_value(pair.mu, mu)
+        epsilon = material_pair_value(pair.restitution, epsilon)
 
         # Store the contact data in the Kamino format
         gapfunc = wp.vec4f(normal[0], normal[1], normal[2], distance)
@@ -1221,13 +1224,14 @@ def make_convert_contacts_newton_to_kamino(
         kamino_gapfunc[mcid] = gapfunc
         kamino_frame[mcid] = q_frame
         kamino_material[mcid] = wp.vec2f(mu, epsilon)
+        torsional = wp.static(make_get_mixed_material_pair_property(friction_mix_mode))(
+            shape_mu_torsional[sid_0], shape_mu_torsional[sid_1]
+        )
+        rolling = wp.static(make_get_mixed_material_pair_property(friction_mix_mode))(
+            shape_mu_rolling[sid_0], shape_mu_rolling[sid_1]
+        )
         kamino_angular_friction[mcid] = wp.vec2f(
-            wp.static(make_get_mixed_material_pair_property(friction_mix_mode))(
-                shape_mu_torsional[sid_0], shape_mu_torsional[sid_1]
-            ),
-            wp.static(make_get_mixed_material_pair_property(friction_mix_mode))(
-                shape_mu_rolling[sid_0], shape_mu_rolling[sid_1]
-            ),
+            material_pair_value(pair.mu_torsional, torsional), material_pair_value(pair.mu_rolling, rolling)
         )
         kamino_stiffness[mcid] = 0.0
         kamino_damping[mcid] = 0.0
@@ -1606,7 +1610,7 @@ def convert_contacts_newton_to_kamino(
             model.shape_body,
             model.shape_world,
             model.shape_material_mu,
-            model._material_pair_friction,
+            model._material_pair_table,
             model.shape_material_id,
             model.shape_material_restitution,
             model.shape_material_mu_torsional,
