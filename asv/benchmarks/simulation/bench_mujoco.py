@@ -46,7 +46,7 @@ _CONTROL_STEPS = {"cartpole": (60, 2), "humanoid": (60, 4), "g1": (50, 8), "alle
 class _KpiBenchmark(_SimulationMetricTracksMuJoCo):
     """Utility base class for KPI benchmarks."""
 
-    version = "2"  # IsaacLab timesteps; one frame is one control step.
+    version = "3"  # Each sample starts with one untimed frame.
     param_names = ["world_count"]
     num_frames = None
     params = None
@@ -343,7 +343,7 @@ class FastNewtonOverheadHumanoid(_NewtonOverheadBenchmark):
 
 
 class FastAllegro(_KpiBenchmark):
-    version = "3"  # Finger armature for the 240 Hz step rate.
+    version = "4"  # Each sample starts with one untimed frame.
     params = [[8192]]
     num_frames = 300
     robot = "allegro"
@@ -365,7 +365,7 @@ class FastKitchenG1(_KpiBenchmark):
     num_frames = 50
     robot = "g1"
     timeout = 900
-    version = "3"  # IsaacLab timesteps; one frame is one control step.
+    version = "4"  # Each sample starts with one untimed frame.
     samples = 2
     random_init = True
     environment = "kitchen"

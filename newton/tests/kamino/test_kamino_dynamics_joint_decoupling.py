@@ -220,7 +220,7 @@ class TestDynamicJointDecoupling(NewtonTestCase):
         decoupling = problem.joint_decoupling
         body_share = decoupling.body_share.numpy()
         self.assertTrue(np.all(body_share > 0.0))
-        solver = PADMMSolver(model=model, warmstart=PADMMWarmStartMode.INTERNAL)
+        solver = PADMMSolver(model=model, problem=problem, warmstart=PADMMWarmStartMode.INTERNAL)
         solver.reset()
         solver.coldstart()
         solver.solve(problem=problem)

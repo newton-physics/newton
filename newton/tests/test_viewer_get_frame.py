@@ -16,7 +16,7 @@ from newton._src.viewer import viewer_gl
 from newton._src.viewer.gl import opengl
 from newton._src.viewer.gl.opengl import RendererGL
 from newton._src.viewer.viewer_gl import ViewerGL
-from newton.tests.unittest_utils import import_pyglet_window
+from newton.tests.unittest_utils import import_pyglet_window, requires
 
 
 def _viewer_gl_unavailable_error_types(test: unittest.TestCase) -> tuple[type[BaseException], ...]:
@@ -69,7 +69,7 @@ def _make_headless_viewer_gl_or_skip(test: unittest.TestCase, *, width: int = 64
         raise
 
 
-def _make_box_model(device: str | wp.Device):
+def _make_box_model(device: wp.DeviceLike):
     builder = newton.ModelBuilder()
     body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
     builder.add_shape_box(body, hx=0.25, hy=0.25, hz=0.25, color=(1.0, 0.0, 0.0))
@@ -182,12 +182,10 @@ class _FakeGL:
 
 
 class TestViewerGLGetFrame(unittest.TestCase):
+    @requires("pyglet")
     def test_backend_error_types_do_not_force_window_import(self):
         """Verify backend error discovery does not import pyglet.window."""
-        try:
-            import pyglet
-        except ImportError as exc:
-            self.skipTest(f"ViewerGL dependencies not available: {exc}")
+        import pyglet
 
         class _WindowProxy:
             _module = None

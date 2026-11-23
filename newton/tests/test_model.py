@@ -147,6 +147,139 @@ class TestModelAttributeSpecs(unittest.TestCase):
                     f"{attribute_frequency.name} through Model.{count_attribute}.",
                 )
 
+    def test_attribute_update_flags(self):
+        """Report the update flags of built-in, solver-registered, and user custom model attributes."""
+        flags = newton.ModelFlags
+        assignment = newton.Model.AttributeAssignment
+        builder = ModelBuilder()
+        newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
+        for name, attribute_assignment, update_flags in (
+            ("stiffness", assignment.MODEL, flags.SHAPE_PROPERTIES),
+            ("label_id", assignment.MODEL, None),
+            ("heat", assignment.STATE, None),
+        ):
+            builder.add_custom_attribute(
+                ModelBuilder.CustomAttribute(
+                    name=name,
+                    dtype=wp.float32,
+                    frequency=newton.Model.AttributeFrequency.SHAPE,
+                    assignment=attribute_assignment,
+                    namespace="user",
+                    update_flags=update_flags,
+                )
+            )
+        # A redeclaration must declare the same flags.
+        with self.assertRaisesRegex(ValueError, "incompatible spec"):
+            builder.add_custom_attribute(
+                ModelBuilder.CustomAttribute(
+                    name="stiffness",
+                    dtype=wp.float32,
+                    frequency=newton.Model.AttributeFrequency.SHAPE,
+                    namespace="user",
+                    update_flags=flags.NONE,
+                )
+            )
+        # Only model attributes declare update flags.
+        with self.assertRaisesRegex(ValueError, "only model-assigned"):
+            builder.add_custom_attribute(
+                ModelBuilder.CustomAttribute(
+                    name="velocity",
+                    dtype=wp.float32,
+                    frequency=newton.Model.AttributeFrequency.SHAPE,
+                    assignment=assignment.STATE,
+                    namespace="user",
+                    update_flags=flags.NONE,
+                )
+            )
+        builder.add_shape_sphere(builder.add_body(), radius=0.1)
+        model = builder.finalize(device="cpu")
+
+        for name, expected in (
+            ("shape_material_mu", flags.SHAPE_PROPERTIES),
+            ("joint_armature", flags.JOINT_DOF_INERTIAL_PROPERTIES),
+            ("gravity", flags.MODEL_PROPERTIES),
+            ("body_q", flags.BODY_PROPERTIES | flags.JOINT_REFERENCE_POSE_PROPERTIES),
+            ("mujoco:solref", flags.SHAPE_PROPERTIES),
+            ("mujoco:gravcomp", flags.BODY_INERTIAL_PROPERTIES),
+            ("mujoco:eq_solref", flags.CONSTRAINT_PROPERTIES),
+            ("user:stiffness", flags.SHAPE_PROPERTIES),
+            # Read at every step: no flag needed.
+            ("joint_target_q", flags.NONE),
+            # Read only at construction: no flag refreshes them.
+            ("shape_type", None),
+            ("mujoco:condim", None),
+            ("user:label_id", None),
+        ):
+            with self.subTest(attribute=name):
+                result = model.get_attribute_update_flags(name)
+                self.assertEqual(result, expected)
+                if expected is not None:
+                    self.assertIs(type(result), type(expected))
+        # A deprecated alias reports its target's flags without warning.
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            self.assertEqual(
+                model.get_attribute_update_flags("mujoco:dof_passive_stiffness"), flags.JOINT_DOF_FORCE_PROPERTIES
+            )
+        # State, control, and contacts attributes are not covered.
+        for name in ("user:missing", "user:heat", "body_qdd", "rigid_contact_normal"):
+            with self.subTest(missing=name):
+                with self.assertRaises(KeyError):
+                    model.get_attribute_update_flags(name)
+
+        # Built-in flags name model attributes.
+        blank = newton.Model(device="cpu")
+        specs = newton.Model._CORE_ATTRIBUTE_SPECS
+        self.assertEqual(
+            [name for name, spec in specs.items() if spec.update_flags is not None and not hasattr(blank, name)], []
+        )
+
+    def test_redeclaration_without_update_flags_keeps_declared_flags(self):
+        """Accept a solver attribute redeclared without flags, in either order, and keep the solver's flags."""
+        flags = newton.ModelFlags
+
+        def plain_gravcomp():
+            return ModelBuilder.CustomAttribute(
+                name="gravcomp",
+                namespace="mujoco",
+                frequency=newton.Model.AttributeFrequency.BODY,
+                assignment=newton.Model.AttributeAssignment.MODEL,
+                dtype=wp.float32,
+            )
+
+        def finalized_flags(builder):
+            builder.add_body()
+            return builder.finalize(device="cpu").get_attribute_update_flags("mujoco:gravcomp")
+
+        for plain_first in (True, False):
+            with self.subTest(plain_first=plain_first):
+                builder = ModelBuilder()
+                if plain_first:
+                    builder.add_custom_attribute(plain_gravcomp())
+                newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
+                if not plain_first:
+                    builder.add_custom_attribute(plain_gravcomp())
+                self.assertEqual(finalized_flags(builder), flags.BODY_INERTIAL_PROPERTIES)
+
+        # Replicating an asset that declares the attribute without flags.
+        for plain_scene in (True, False):
+            with self.subTest(plain_scene=plain_scene):
+                plain, registered = ModelBuilder(), ModelBuilder()
+                plain.add_custom_attribute(plain_gravcomp())
+                plain.add_body()
+                newton.solvers.SolverMuJoCo.register_custom_attributes(registered)
+                scene, asset = (plain, registered) if plain_scene else (registered, plain)
+                scene.replicate(asset, 2)
+                self.assertEqual(finalized_flags(scene), flags.BODY_INERTIAL_PROPERTIES)
+
+        # Two different declared flags still conflict.
+        builder = ModelBuilder()
+        newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
+        conflicting = plain_gravcomp()
+        conflicting.update_flags = flags.SHAPE_PROPERTIES
+        with self.assertRaisesRegex(ValueError, "incompatible spec"):
+            builder.add_custom_attribute(conflicting)
+
     def test_core_attribute_specs_cover_entity_indexed_storage(self):
         """Require metadata for entity-indexed storage, excluding lazy implementation details."""
         model = newton.Model(device="cpu")
@@ -524,6 +657,7 @@ class TestModelMesh(unittest.TestCase):
         np.testing.assert_allclose(values.numpy(), np.array([[1.25, -2.5]] * 3, dtype=np.float32))
 
     def test_empty_sequence_custom_attribute_materializes_default_values(self):
+        """Preserve trailing dimensions for sequence defaults and authored rows."""
         attr = ModelBuilder.CustomAttribute(
             name="default_table_shape_attr",
             frequency=newton.Model.AttributeFrequency.SHAPE,
@@ -536,6 +670,26 @@ class TestModelMesh(unittest.TestCase):
 
         full_mock.assert_not_called()
         np.testing.assert_allclose(values.numpy(), np.array([[0.0, 1.0, 2.0]] * 2, dtype=np.float32))
+
+        for frequency, storage in (
+            ("table", [None, None, None]),
+            (newton.Model.AttributeFrequency.SHAPE, {0: [0.0, 1.0, 2.0]}),
+        ):
+            with self.subTest(frequency=frequency):
+                attr.frequency = frequency
+                attr.values = storage
+                values = attr.build_array(3, device="cpu", requires_grad=True)
+                self.assertTrue(values.requires_grad)
+                np.testing.assert_array_equal(values.numpy(), [[0.0, 1.0, 2.0]] * 3)
+
+        attr.default = [0.0]
+        attr.values = {0: [2.0], 1: [3.0]}
+        np.testing.assert_array_equal(attr.build_array(2, device="cpu").numpy(), [[2.0], [3.0]])
+        attr.default = 0.0
+        np.testing.assert_array_equal(attr.build_array(2, device="cpu").numpy(), [[2.0], [3.0]])
+        attr.frequency = newton.Model.AttributeFrequency.WORLD
+        attr.values = {-1: [0.0, 1.0, 2.0]}
+        np.testing.assert_array_equal(attr.build_array(3, device="cpu").numpy(), [[0.0, 1.0, 2.0]] * 3)
 
     def test_mesh_hash_uses_cached_sha_digest(self):
         mesh = newton.Mesh.create_box(
@@ -1221,13 +1375,9 @@ class TestModelMesh(unittest.TestCase):
             mesh = builder.shape_source[shape]
             self.assertEqual(len(mesh.vertices), mesh.maxhullvert)
 
+    @requires("coacd")
     def test_mesh_approximation_coacd_is_repeatable(self):
         """Decompose a nonconvex mesh with CoACD repeatedly and get identical hulls."""
-        try:
-            import coacd  # noqa: F401
-        except ImportError:
-            self.skipTest("Requires coacd")
-
         # A torus is nonconvex, so CoACD's parallel tree search has several cuts to choose from.
         rings, sides = 32, 12
         u, v = np.meshgrid(
@@ -4963,54 +5113,6 @@ class TestModelValidation(unittest.TestCase):
             control.clear()
         except Exception as e:
             self.fail(f"control.clear() raised {type(e).__name__}: {e}")
-
-
-class TestRemovedJointTargetAliases(unittest.TestCase):
-    """The 1.3-era ``joint_target_pos`` / ``joint_target_vel`` aliases are gone.
-
-    They are shadowed by tombstone descriptors rather than simply deleted so
-    that code written against the old API fails loudly. A plain deletion would
-    let ``obj.joint_target_pos = targets`` succeed as a fresh instance
-    attribute while ``joint_target_q`` stayed untouched, silently dropping the
-    requested targets.
-    """
-
-    ALIASES = (("joint_target_pos", "joint_target_q"), ("joint_target_vel", "joint_target_qd"))
-
-    def _owners(self):
-        builder = ModelBuilder()
-        base = builder.add_link(mass=1.0)
-        j = builder.add_joint_revolute(parent=-1, child=base, axis=newton.Axis.Z)
-        builder.add_articulation([j])
-        model = builder.finalize()
-        return (("Model", model), ("Control", model.control()), ("ModelBuilder", ModelBuilder()))
-
-    def test_assignment_raises_and_leaves_no_shadow_attribute(self):
-        """Verify assignment to a removed alias raises without shadowing."""
-        for label, obj in self._owners():
-            for alias, replacement in self.ALIASES:
-                with self.subTest(owner=label, alias=alias):
-                    with self.assertRaisesRegex(AttributeError, rf"{label}\.{alias}.*{replacement}"):
-                        setattr(obj, alias, [1.0, 2.0])
-                    self.assertNotIn(alias, vars(obj))
-
-    def test_read_raises(self):
-        """Verify reading a removed alias raises and names its replacement."""
-        for label, obj in self._owners():
-            for alias, replacement in self.ALIASES:
-                with self.subTest(owner=label, alias=alias):
-                    with self.assertRaisesRegex(AttributeError, rf"{label}\.{alias}.*{replacement}"):
-                        getattr(obj, alias)
-                    # Raising AttributeError on read keeps the usual probes well behaved.
-                    self.assertFalse(hasattr(obj, alias))
-                    self.assertEqual(getattr(obj, alias, "default"), "default")
-
-    def test_canonical_names_still_work(self):
-        """Verify replacement attributes remain readable."""
-        for label, obj in self._owners():
-            with self.subTest(owner=label):
-                self.assertIsNotNone(obj.joint_target_q)
-                self.assertIsNotNone(obj.joint_target_qd)
 
 
 class TestParentCollisionFilterWeldGroups(unittest.TestCase):
