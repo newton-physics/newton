@@ -406,7 +406,7 @@ def picked_box_seal_modes(
     return modes
 
 
-def box_sdf_mesh(hx: float, hy: float, hz: float, device: wp.Device | str | None = None) -> wp.Mesh:
+def box_sdf_mesh(hx: float, hy: float, hz: float, device: wp.DeviceLike = None) -> wp.Mesh:
     """A ``wp.Mesh`` of an axis-aligned box (half-extents [m]) for SDF queries only (not collision).
 
     In general the gripped object would supply its own surface mesh; here the pick boxes are primitives,

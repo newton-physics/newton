@@ -491,7 +491,7 @@ class TestSolverMetrics(NewtonTestCase):
         )
 
         # Create the PADMM solver
-        solver = PADMMSolver(model=test.model, use_acceleration=False, collect_info=True)
+        solver = PADMMSolver(model=test.model, problem=test.problem, use_acceleration=False, collect_info=True)
 
         # Creating a default solver metrics evaluator from the test model
         metrics = SolutionMetrics(model=test.model)
@@ -580,7 +580,7 @@ class TestSolverMetrics(NewtonTestCase):
         )
 
         # Create the PADMM solver
-        solver = PADMMSolver(model=test.model, use_acceleration=False, collect_info=True)
+        solver = PADMMSolver(model=test.model, problem=test.problem, use_acceleration=False, collect_info=True)
 
         # Creating a default solver metrics evaluator from the test model
         metrics = SolutionMetrics(model=test.model)
@@ -669,7 +669,7 @@ class TestSolverMetrics(NewtonTestCase):
         )
 
         # Create the PADMM solver
-        solver = PADMMSolver(model=test.model, use_acceleration=False, collect_info=True)
+        solver = PADMMSolver(model=test.model, problem=test.problem, use_acceleration=False, collect_info=True)
 
         # Creating a default solver metrics evaluator from the test model
         metrics = SolutionMetrics(model=test.model)
@@ -746,7 +746,7 @@ class TestSolverMetrics(NewtonTestCase):
         )
 
         # Create the PADMM solver
-        solver = PADMMSolver(model=test.model, use_acceleration=False, collect_info=True)
+        solver = PADMMSolver(model=test.model, problem=test.problem, use_acceleration=False, collect_info=True)
 
         # Creating a default solver metrics evaluator from the test model
         metrics_dense = SolutionMetrics(model=test.model)
@@ -789,7 +789,9 @@ class TestSolverMetrics(NewtonTestCase):
         solver.solve(problem=test.problem)
         integrate_euler_semi_implicit(model=test.model, data=test.data)
 
+        # Match the uniform regularization of the dense Delassus matrix after the solve
         solver._initialize()
+        solver.data.state.rho_scale.fill_(1.0)
         solver._update_sparse_regularization(problem_sparse)
         problem_sparse.delassus.update()
 

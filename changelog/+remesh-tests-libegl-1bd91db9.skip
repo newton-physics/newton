@@ -1,0 +1,1 @@
+Tests only: skip the Open3D remeshing tests when Open3D cannot load a shared library such as libEGL.

@@ -1,0 +1,1 @@
+Fixes a memory leak introduced by the unreleased MuJoCo 4.0.1 upgrade; no change relative to the last release.
