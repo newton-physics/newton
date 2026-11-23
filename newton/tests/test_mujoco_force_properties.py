@@ -133,20 +133,19 @@ class TestMuJoCoForceProperties(unittest.TestCase):
         ]
         natives = [mujoco.MjModel.from_xml_string(xml) for xml in xmls]
         # The BALL loop adds three Newton DOFs with no corresponding MuJoCo DOFs.
-        expected_k = np.concatenate(
-            [np.pad(np.repeat(m.jnt_stiffness, np.diff(m.jnt_dofadr, append=m.nv)), (0, 3)) for m in natives]
-        )
-        expected_d = np.concatenate([np.pad(m.dof_damping, (0, 3)) for m in natives])
+        expected_k = [np.pad(np.repeat(m.jnt_stiffness, np.diff(m.jnt_dofadr, append=m.nv)), (0, 3)) for m in natives]
+        expected_d = [np.pad(m.dof_damping, (0, 3)) for m in natives]
         loop_anchors = [0.0, 0.0, 0.1, 0.0, 0.0, 0.3]
-        backends = [(True, "cpu"), (False, "cpu")]
+        # The native CPU backend supports only single-world models, so it gets one model per variant.
+        backends = [(True, "cpu", [0]), (True, "cpu", [1]), (False, "cpu", [0, 1])]
         if wp.get_device().is_cuda:
-            backends.append((False, wp.get_device()))
-        for (cpu, device), locked in product(backends, (False, True)):
-            with self.subTest(native_cpu=cpu, device=device, locked=locked):
+            backends.append((False, wp.get_device(), [0, 1]))
+        for (cpu, device, worlds), locked in product(backends, (False, True)):
+            with self.subTest(native_cpu=cpu, device=device, worlds=worlds, locked=locked):
                 builder = newton.ModelBuilder()
-                for xml in xmls:
+                for world in worlds:
                     source = newton.ModelBuilder()
-                    source.add_mjcf(xml)
+                    source.add_mjcf(xmls[world])
                     source.add_joint_ball(
                         *source.joint_child[1:3],
                         parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.1), wp.quat_identity()),
@@ -155,27 +154,32 @@ class TestMuJoCoForceProperties(unittest.TestCase):
                     )
                     builder.add_world(source)
                 model = builder.finalize(device=device)
+                world_k = np.concatenate([expected_k[world] for world in worlds])
+                world_d = np.concatenate([expected_d[world] for world in worlds])
+                template = natives[worlds[0]]
                 if locked:
                     roots = model.joint_child.numpy()[model.joint_type.numpy() == newton.JointType.FREE]
                     flags = model.body_flags.numpy()
                     flags[roots] = int(newton.BodyFlags.KINEMATIC)
                     model.body_flags.assign(flags)
-                solver = SolverMuJoCo(model, use_mujoco_cpu=cpu, separate_worlds=True, disable_contacts=True)
-                np.testing.assert_allclose(model.joint_stiffness.numpy(), expected_k, rtol=2e-5)
-                np.testing.assert_allclose(model.joint_damping.numpy(), expected_d, rtol=2e-5)
-                np.testing.assert_allclose(solver.mj_model.jnt_stiffness, natives[0].jnt_stiffness, rtol=2e-5)
-                np.testing.assert_allclose(solver.mj_model.dof_damping, natives[0].dof_damping, rtol=2e-5)
+                solver = SolverMuJoCo(model, use_mujoco_cpu=cpu, disable_contacts=True)
+                np.testing.assert_allclose(model.joint_stiffness.numpy(), world_k, rtol=2e-5)
+                np.testing.assert_allclose(model.joint_damping.numpy(), world_d, rtol=2e-5)
+                np.testing.assert_allclose(solver.mj_model.jnt_stiffness, template.jnt_stiffness, rtol=2e-5)
+                np.testing.assert_allclose(solver.mj_model.dof_damping, template.dof_damping, rtol=2e-5)
                 with self.subTest("CONNECT anchors"):
                     loop_rows = solver.mjc_eq_to_newton_jnt.numpy() >= 0
-                    np.testing.assert_allclose(solver.mjw_model.eq_data.numpy()[loop_rows, :6], [loop_anchors] * 2)
+                    np.testing.assert_allclose(
+                        solver.mjw_model.eq_data.numpy()[loop_rows, :6], [loop_anchors] * len(worlds)
+                    )
                     if cpu:
                         np.testing.assert_allclose(solver.mj_model.eq_data[loop_rows[0], :6], [loop_anchors])
                 if locked:
                     flags[roots] = int(newton.BodyFlags.DYNAMIC)
                     model.body_flags.assign(flags)
                     solver.notify_model_changed(ModelFlags.BODY_PROPERTIES)
-                    np.testing.assert_allclose(model.joint_stiffness.numpy(), expected_k, rtol=2e-5)
-                    np.testing.assert_allclose(model.joint_damping.numpy(), expected_d, rtol=2e-5)
+                    np.testing.assert_allclose(model.joint_stiffness.numpy(), world_k, rtol=2e-5)
+                    np.testing.assert_allclose(model.joint_damping.numpy(), world_d, rtol=2e-5)
                 if not cpu:
                     np.testing.assert_allclose(
                         solver.mjw_model.jnt_stiffness.numpy(), [m.jnt_stiffness for m in natives], rtol=2e-5
@@ -188,7 +192,7 @@ class TestMuJoCoForceProperties(unittest.TestCase):
                     ratios[-3:] = [0.2, 1.5]
                     model.mujoco.dof_springdamper.assign(ratios)
                     with self.assertRaisesRegex(ValueError, "springdamper.*ball_loop.*MuJoCo DOF"):
-                        SolverMuJoCo(model, use_mujoco_cpu=True, separate_worlds=True, disable_contacts=True)
+                        SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
 
     def test_inertial_and_reference_updates_preserve_pending_limit_parameters(self):
         """Recompute limits from published parameters until a force notification arrives."""
@@ -359,7 +363,7 @@ class TestMuJoCoForceProperties(unittest.TestCase):
                     body_flags = model.body_flags.numpy()
                     body_flags[0] = int(newton.BodyFlags.KINEMATIC)
                     model.body_flags.assign(body_flags)
-                    solver = SolverMuJoCo(model, use_mujoco_cpu=cpu, separate_worlds=False, disable_contacts=True)
+                    solver = SolverMuJoCo(model, use_mujoco_cpu=cpu, disable_contacts=True)
                     mapping = solver.mjc_dof_to_newton_dof.numpy()
                     armature = solver.mjw_model.dof_armature.numpy().copy()
                     invweight = solver.mjw_model.dof_invweight0.numpy().copy()

@@ -23,6 +23,7 @@ from newton._src.geometry.kernels import (
     mesh_sdf,
     resolve_mesh_sign_method,
 )
+from newton._src.geometry.narrow_phase import _PipelineNarrowPhase
 from newton._src.geometry.sdf_contact import (
     compute_mesh_boundary_flags,
     sample_sdf_grad_using_mesh,
@@ -450,7 +451,9 @@ class TestCollisionPipeline(unittest.TestCase):
                 self.__dict__ = wrapped.__dict__
 
             def launch_custom_write(self, **kwargs):
+                np.testing.assert_array_equal(self._counter_array.numpy(), 0)
                 new_parameters = {
+                    "_counters_prepared",
                     "collision_update_dt",
                     "hydroelastic_shape_sdf_data_prepared",
                     "max_speculative_extension",
@@ -475,6 +478,9 @@ class TestCollisionPipeline(unittest.TestCase):
         pipeline.narrow_phase = LegacyNarrowPhase(pipeline.narrow_phase)
         contacts = pipeline.contacts()
 
+        # The bounds pass must clear routed work before dispatching an expert
+        # narrow phase, including one that retains the legacy call signature.
+        pipeline.narrow_phase._counter_array.fill_(37)
         pipeline.collide(model.state(), contacts)
 
         self.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
@@ -3203,7 +3209,7 @@ class TestShapePairsMaxScaling(unittest.TestCase):
                     "newton._src.sim.collide._compute_per_world_shape_pairs_max",
                     side_effect=AssertionError("explicit pairs already provide their own bound"),
                 ),
-                mock.patch("newton._src.sim.collide.NarrowPhase", wraps=NarrowPhase) as narrow_phase,
+                mock.patch("newton._src.sim.collide._PipelineNarrowPhase", wraps=_PipelineNarrowPhase) as narrow_phase,
             ):
                 shape_pairs = (
                     wp.array(np.array(pairs, dtype=np.int32).reshape(-1, 2), dtype=wp.vec2i, device="cpu")
@@ -4848,13 +4854,13 @@ def test_split_gjk_mpr_matches_fused_under_graph_capture(test, device):
     fused = newton.CollisionPipeline(
         model,
         broad_phase="sap",
-        shape_pairs_max=_SPLIT_GJK_MPR_LEAN_PAIR_COUNT_THRESHOLD,
+        shape_pairs_max=_SPLIT_GJK_MPR_LEAN_PAIR_COUNT_THRESHOLD - 1,
         deterministic=True,
         rigid_contact_max=16384,
         verify_buffers=False,
     )
     test.assertTrue(split.narrow_phase.split_gjk_mpr)
-    fused.narrow_phase.split_gjk_mpr = False
+    test.assertFalse(fused.narrow_phase.split_gjk_mpr)
 
     state = model.state()
     body_q = state.body_q.numpy()
@@ -4893,6 +4899,25 @@ def test_split_gjk_mpr_matches_fused_under_graph_capture(test, device):
             rtol=1.0e-5,
             atol=1.0e-5,
         )
+
+    # Replay the same graph across empty, sparse, and dense query batches.
+    # Both the work counters and the fused kernel's runtime assignment must
+    # follow the new poses rather than the batch used while recording.
+    body_world = model.body_world.numpy()
+    for active_worlds in (0, 1, 768):
+        replay_q = body_q.copy()
+        inactive = body_world >= active_worlds
+        replay_q[inactive, 0] += 1000.0 + 10.0 * np.arange(len(body_world))[inactive]
+        replay_q[inactive, 2] += 100.0
+        state.body_q.assign(replay_q)
+        wp.capture_launch(capture.graph)
+        test.assertEqual(int(fused.narrow_phase.gjk_candidate_pairs_count.numpy()[0]), 2 * active_worlds)
+        replay_count = int(fused_contacts.rigid_contact_count.numpy()[0])
+        test.assertEqual(replay_count, int(split_contacts.rigid_contact_count.numpy()[0]))
+        if active_worlds:
+            test.assertGreater(replay_count, 0)
+        else:
+            test.assertEqual(replay_count, 0)
 
 
 add_function_test(
@@ -7981,6 +8006,204 @@ add_function_test(
     "test_plane_convex_support",
     test_plane_convex_support,
     devices=get_test_devices(),
+)
+
+
+def test_small_hull_broad_phase_bounds(test, device):
+    """Cull separated tetrahedra using padded world vertices, including reflected and off-origin hulls."""
+    vertices = np.array([[-0.5, -0.5, -0.5], [0.5, 0.5, -0.5], [0.5, -0.5, 0.5], [-0.5, 0.5, 0.5]], dtype=np.float32)
+    vertices += np.array([0.3, -0.2, 0.7], dtype=np.float32)
+    offset = np.array([1000.0, -2000.0, 3000.0], dtype=np.float32)
+    meshes = [
+        newton.Mesh(v, [0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3], compute_inertia=False)
+        for v in (vertices, vertices + offset)
+    ]
+    expected_vertices = []
+    builder = newton.ModelBuilder()
+    cfg = builder.ShapeConfig(margin=0.003, gap=0.007)
+    rotation = wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 2.0, 3.0)), 0.63)
+    local = wp.transform(wp.vec3(0.1, -0.03, 0.05), wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.2))
+    # 128 routed hulls activate the CUDA specialization; two additional worlds
+    # cover static transforms, which do not produce static-static candidate pairs.
+    for world in range(66):
+        builder.begin_world()
+        scale = (-1.0, 0.7, 1.2) if world % 2 else (1.0, 0.7, 1.2)
+        mesh = meshes[int(world >= 32)]
+        shift = (
+            wp.quat_rotate(rotation * wp.transform_get_rotation(local), wp.vec3(*(offset * scale)))
+            if world >= 32
+            else wp.vec3(0.0)
+        )
+        position = wp.vec3(10.0, -2.0, 3.0) - shift
+        xform = wp.transform_multiply(wp.transform(position, rotation), local)
+        points = np.array([wp.transform_point(xform, wp.vec3(*(v * scale))) for v in mesh.vertices])
+        spacing = float(np.ptp(points[:, 0])) + 2.0 * (cfg.margin + cfg.gap) + 0.08
+        for side in range(2):
+            pose = wp.transform(position + wp.vec3(side * spacing, 0.0, 0.0), rotation)
+            if world < 64:
+                body = builder.add_body(xform=pose, mass=1.0, inertia=wp.mat33(np.eye(3)), lock_inertia=True)
+                builder.add_shape_convex_hull(body, mesh=mesh, scale=scale, xform=local, cfg=cfg)
+            else:
+                builder.add_shape_convex_hull(
+                    -1, mesh=mesh, scale=scale, xform=wp.transform_multiply(pose, local), cfg=cfg
+                )
+            expected_vertices.append(np.asarray(mesh.vertices, dtype=np.float64))
+        builder.end_world()
+    # Retain excluded parent geometry to exercise prefix-view classification.
+    prefix_body_count = builder.body_count
+    prefix_shape_count = builder.shape_count
+    builder.begin_world()
+    body = builder.add_body()
+    builder.add_shape_sphere(body, radius=0.1)
+    builder.end_world()
+    parent = builder.finalize(device=device)
+    model = ModelView(parent, "prefix")
+    model.body_count = prefix_body_count
+    model.shape_count = prefix_shape_count
+    model.shape_contact_pairs = wp.array(
+        [[2 * world, 2 * world + 1] for world in range(64)], dtype=wp.vec2i, device=device
+    )
+    test.assertGreater(len(model.shape_source), model.shape_count)
+    state = model.state()
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
+    test.assertEqual(int(pipeline.broad_phase_pair_count.numpy()[0]), 0)
+
+    def check_bounds():
+        poses = state.body_q.numpy()
+        transforms, bodies = model.shape_transform.numpy(), model.shape_body.numpy()
+        scales = model.shape_scale.numpy()
+        lower, upper = pipeline.narrow_phase.shape_aabb_lower.numpy(), pipeline.narrow_phase.shape_aabb_upper.numpy()
+        for shape, body in enumerate(bodies):
+            transform = wp.transform(*transforms[shape])
+            if body >= 0:
+                transform = wp.transform_multiply(wp.transform(*poses[body]), transform)
+            rotation_matrix = np.asarray(wp.quat_to_matrix(wp.transform_get_rotation(transform))).reshape(3, 3)
+            scaled_vertices = expected_vertices[shape] * scales[shape]
+            points = scaled_vertices @ rotation_matrix.astype(np.float64).T
+            points += np.asarray(wp.transform_get_translation(transform))
+            expected_lower = points.min(axis=0) - cfg.margin - cfg.gap
+            expected_upper = points.max(axis=0) + cfg.margin + cfg.gap
+            np.testing.assert_array_less(lower[shape], expected_lower)
+            np.testing.assert_array_less(expected_upper, upper[shape])
+            # Roundoff scales with the transformed input coordinates, including
+            # cases whose large authoring offset cancels the body translation.
+            magnitude = max(
+                1.0, np.max(np.abs(scaled_vertices)), np.max(np.abs(wp.transform_get_translation(transform)))
+            )
+            np.testing.assert_allclose(lower[shape], expected_lower, atol=1e-5 * magnitude, rtol=0)
+            np.testing.assert_allclose(upper[shape], expected_upper, atol=1e-5 * magnitude, rtol=0)
+
+    check_bounds()
+    poses = state.body_q.numpy()
+    poses[1, :3] = poses[0, :3] + np.array([0.05, 0.0, 0.0])
+    state.body_q.assign(poses)
+    pipeline.collide(state, contacts)
+    count = int(contacts.rigid_contact_count.numpy()[0])
+    test.assertGreater(count, 0)
+    np.testing.assert_array_equal(contacts.rigid_contact_shape0.numpy()[:count], 0)
+    np.testing.assert_array_equal(contacts.rigid_contact_shape1.numpy()[:count], 1)
+    for pose in poses:
+        pose[3:] = np.asarray(wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.3) * wp.quat(*pose[3:]))
+    gc_was_enabled = _WARP_NEEDS_CAPTURE_GC_GUARD and gc.isenabled()
+    if gc_was_enabled:
+        gc.disable()
+    try:
+        with wp.ScopedCapture(device=device) as capture:
+            pipeline.collide(state, contacts)
+    finally:
+        if gc_was_enabled:
+            gc.enable()
+    state.body_q.assign(poses)
+    wp.capture_launch(capture.graph)
+    check_bounds()
+
+
+add_function_test(
+    TestCollisionPipeline,
+    "test_small_hull_broad_phase_bounds",
+    test_small_hull_broad_phase_bounds,
+    devices=get_cuda_test_devices(),
+)
+
+
+def test_tetrahedron_local_bounds_routing(test, device):
+    """Reject distant tetrahedra while retaining overlap and near-gap queries across graph replays."""
+    vertices = np.array([[-0.5, -0.5, -0.5], [0.5, 0.5, -0.5], [0.5, -0.5, 0.5], [-0.5, 0.5, 0.5]])
+    # Finalization deduplicates face-local authoring vertices for collision.
+    indices = [0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3]
+    mesh = newton.Mesh(vertices[indices], list(range(12)), compute_inertia=False)
+    rotation = wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 2.0, 3.0)), 0.63)
+    offsets = (
+        wp.vec3(0.96, 0.96, 0.0),
+        wp.vec3(0.96, 0.0, 0.0),
+        wp.quat_rotate(rotation, wp.vec3(1.005, 0.0, 0.0)),
+        wp.quat_rotate(rotation, wp.vec3(1.1, 0.0, 0.0)),
+    )
+    builder = newton.ModelBuilder()
+    cfg = builder.ShapeConfig(margin=0.0, gap=0.01)
+    # The minimum 128 routed hulls activate the specialization.
+    for world in range(64):
+        builder.begin_world()
+        for side in range(2):
+            position = wp.vec3(0.0, 0.0, 2.0) + (offsets[world % 4] if side else wp.vec3(0.0))
+            body = builder.add_body(
+                xform=wp.transform(position, rotation), mass=1.0, inertia=wp.mat33(np.eye(3)), lock_inertia=True
+            )
+            builder.add_shape_convex_hull(body, mesh=mesh, cfg=cfg)
+        builder.end_world()
+    model = builder.finalize(device=device)
+    state = model.state()
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
+    test.assertEqual(int(pipeline.broad_phase_pair_count.numpy()[0]), 64)
+    test.assertEqual(int(pipeline.narrow_phase.gjk_candidate_pairs_count.numpy()[0]), 32)
+    count = int(contacts.rigid_contact_count.numpy()[0])
+    worlds = set((contacts.rigid_contact_shape0.numpy()[:count] // 2).tolist())
+    test.assertEqual(worlds, {world for world in range(64) if world % 4 in (1, 2)})
+
+    gc_was_enabled = _WARP_NEEDS_CAPTURE_GC_GUARD and gc.isenabled()
+    if gc_was_enabled:
+        gc.disable()
+    try:
+        with wp.ScopedCapture(device=device) as capture:
+            pipeline.collide(state, contacts)
+    finally:
+        if gc_was_enabled:
+            gc.enable()
+    poses = state.body_q.numpy()
+    poses[1::2, :3] = poses[::2, :3] + np.array([0.96, 0.0, 0.0])
+    state.body_q.assign(poses)
+    wp.capture_launch(capture.graph)
+    test.assertEqual(int(pipeline.narrow_phase.gjk_candidate_pairs_count.numpy()[0]), 64)
+    count = int(contacts.rigid_contact_count.numpy()[0])
+    test.assertEqual(set((contacts.rigid_contact_shape0.numpy()[:count] // 2).tolist()), set(range(64)))
+
+    # Keep the original routing for mixed convex geometry, including NumPy
+    # boolean classification results at the Python/Warp specialization boundary.
+    builder.begin_world()
+    cube = newton.Mesh.create_box(0.5, 0.5, 0.5, duplicate_vertices=False, compute_inertia=False)
+    for x in (0.0, 0.8):
+        body = builder.add_body(
+            xform=wp.transform(wp.vec3(x, 0.0, 2.0)), mass=1.0, inertia=wp.mat33(np.eye(3)), lock_inertia=True
+        )
+        builder.add_shape_convex_hull(body, mesh=cube, cfg=cfg)
+    builder.end_world()
+    mixed = builder.finalize(device=device)
+    mixed_pipeline = newton.CollisionPipeline(mixed)
+    mixed_contacts = mixed_pipeline.contacts()
+    mixed_pipeline.collide(mixed.state(), mixed_contacts)
+    test.assertEqual(int(mixed_pipeline.broad_phase_pair_count.numpy()[0]), 65)
+    test.assertEqual(int(mixed_pipeline.narrow_phase.gjk_candidate_pairs_count.numpy()[0]), 65)
+
+
+add_function_test(
+    TestCollisionPipeline,
+    "test_tetrahedron_local_bounds_routing",
+    test_tetrahedron_local_bounds_routing,
+    devices=get_cuda_test_devices(),
 )
 
 

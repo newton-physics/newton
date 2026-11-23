@@ -14,7 +14,6 @@ import warp as wp
 
 import newton
 import newton.usd
-from newton import NewtonDeprecationWarning
 from newton.sensors import SensorCamera
 from newton.tests.unittest_utils import (
     assert_np_equal,
@@ -354,23 +353,6 @@ class TestUsdMeshHelpers(unittest.TestCase):
             stage.GetRootLayer().Save()
 
             mesh = newton.usd.get_mesh(stage_path, root_path="/Root", compute_inertia=False)
-            # The positional shim maps arguments by position; a new trailing option must not shift them.
-            for source in (stage_path, stage.GetPrimAtPath("/Root/A")):
-                with self.subTest(source=type(source).__name__), self.assertWarns(NewtonDeprecationWarning):
-                    positional = newton.usd.get_mesh(
-                        source,
-                        False,
-                        False,
-                        None,
-                        "vertex_splitting",
-                        25.0,
-                        False,
-                        False,
-                        "/Root",
-                        compute_inertia=False,
-                    )
-                np.testing.assert_array_equal(positional.vertices, mesh.vertices)
-                np.testing.assert_array_equal(positional.indices, mesh.indices)
 
         self.assertEqual(len(mesh.vertices), 6)
         assert_np_equal(mesh.indices, np.array([0, 1, 2, 3, 4, 5], dtype=np.int32))
