@@ -220,11 +220,6 @@ _ACTUATOR_ENTRY_DELAY_ARGS_UNSET = object()
 _ACTUATOR_ENTRY_DELAY_ARGS_DEPRECATION_MSG = (
     "ModelBuilder.ActuatorEntry.delay_args is deprecated in Newton 1.9; use input_processor_args instead."
 )
-_JOINT_TWIST_LIMIT_DEPRECATION_MSG = (
-    "ModelBuilder.joint_twist_lower and ModelBuilder.joint_twist_upper are deprecated in Newton 1.7 and "
-    "will be removed in a future release. They were never used; limit joint rotations with the per-DOF "
-    "limits of ModelBuilder.JointDofConfig instead."
-)
 _ADD_MUSCLE_DEPRECATION_MSG = (
     "ModelBuilder.add_muscle() is deprecated in Newton 1.9 and will be removed in a future release. "
     "Legacy muscles ignore their parameters and are only evaluated by SolverSemiImplicit. "
@@ -1661,6 +1656,18 @@ class ModelBuilder:
         default: Any = None
         """Default value for the attribute. If None, the default value is determined based on the dtype."""
 
+        update_flags: int | None = field(default=None, kw_only=True)
+        """:class:`~newton.ModelFlags` announcing an edit of a model-assigned attribute in a finalized
+        :class:`~newton.Model`, to pass to :meth:`~newton.solvers.SolverBase.notify_model_changed`, or
+        ``None`` when no flag covers it, for example because solvers read the attribute only at
+        construction. :attr:`ModelFlags.NONE <newton.ModelFlags.NONE>` declares that solvers read the
+        attribute at every step. Only attributes assigned to :attr:`Model.AttributeAssignment.MODEL`
+        declare it. Solvers set it for the custom attributes they register.
+        :meth:`Model.get_attribute_update_flags() <newton.Model.get_attribute_update_flags>` returns it.
+
+        A redeclaration of the attribute without flags, for example from an imported asset, is
+        compatible with the declared flags and keeps them; two different non-``None`` flags conflict."""
+
         values: dict[int, Any] | list[Any] | None = None
         """Storage for specific values (overrides).
 
@@ -2560,10 +2567,6 @@ class ModelBuilder:
         self.joint_friction: list[float] = []
         """Joint friction values accumulated for :attr:`Model.joint_friction`."""
 
-        # Created on first access so a fresh builder has no merge-managed list for them.
-        self._deprecated_joint_twist_lower: list[float] | None = None
-        self._deprecated_joint_twist_upper: list[float] | None = None
-
         self.joint_enabled: list[bool] = []
         """Joint enabled flags accumulated for :attr:`Model.joint_enabled`."""
 
@@ -2928,7 +2931,19 @@ class ModelBuilder:
             and Model._normalize_attribute_reference(existing.references)
             == Model._normalize_attribute_reference(incoming.references)
             and existing.reference_value_transformer is incoming.reference_value_transformer
+            # A declaration without update flags is compatible with any flags.
+            and (
+                existing.update_flags is None
+                or incoming.update_flags is None
+                or existing.update_flags == incoming.update_flags
+            )
         )
+
+    def _adopt_custom_attribute_update_flags(self, existing: CustomAttribute, incoming: CustomAttribute) -> None:
+        """Keep the update flags of a matching redeclaration when ``existing`` declares none."""
+        if existing.update_flags is None and incoming.update_flags is not None:
+            existing.update_flags = incoming.update_flags
+            self._custom_schema_epoch += 1
 
     @staticmethod
     def _custom_frequency_specs_match(existing: CustomFrequency, incoming: CustomFrequency) -> bool:
@@ -2956,6 +2971,7 @@ class ModelBuilder:
             ValueError: If the attribute key already exists with incompatible specification,
                 if the attribute uses a custom string frequency that hasn't been registered,
                 if the attribute uses a contact frequency (reserved for solver observables),
+                if it declares ``update_flags`` without being assigned to the model,
                 or if ``usd_attribute_name`` is ``"*"`` without a ``usd_value_transformer``.
 
         Example:
@@ -2989,12 +3005,15 @@ class ModelBuilder:
             raise ValueError(
                 "Contact frequencies are only supported by SolverBase.Observables, not builder custom attributes."
             )
+        if attribute.update_flags is not None and attribute.assignment != Model.AttributeAssignment.MODEL:
+            raise ValueError(f"Custom attribute '{attribute.key}': only model-assigned attributes declare update flags")
         key = attribute.key
 
         existing = self.custom_attributes.get(key)
         if existing:
             if not self._custom_attribute_specs_match(existing, attribute):
                 raise ValueError(f"Custom attribute '{key}' already exists with incompatible spec")
+            self._adopt_custom_attribute_update_flags(existing, attribute)
             self._index_custom_world_reference_attribute(existing)
             return
 
@@ -4111,42 +4130,6 @@ class ModelBuilder:
         """
         return len(self.articulation_start)
 
-    @property
-    def joint_twist_lower(self) -> list[float]:
-        """Lower twist limits, never used by :meth:`finalize` or any solver.
-
-        .. deprecated:: 1.7
-            Limit joint rotations with the per-DOF limits of :class:`JointDofConfig` instead.
-        """
-        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-        if self._deprecated_joint_twist_lower is None:
-            self._deprecated_joint_twist_lower = []
-        return self._deprecated_joint_twist_lower
-
-    @joint_twist_lower.setter
-    def joint_twist_lower(self, value: list[float]) -> None:
-        # stacklevel skips ModelBuilder.__setattr__ to report the caller.
-        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=3)
-        self._deprecated_joint_twist_lower = value
-
-    @property
-    def joint_twist_upper(self) -> list[float]:
-        """Upper twist limits, never used by :meth:`finalize` or any solver.
-
-        .. deprecated:: 1.7
-            Limit joint rotations with the per-DOF limits of :class:`JointDofConfig` instead.
-        """
-        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-        if self._deprecated_joint_twist_upper is None:
-            self._deprecated_joint_twist_upper = []
-        return self._deprecated_joint_twist_upper
-
-    @joint_twist_upper.setter
-    def joint_twist_upper(self, value: list[float]) -> None:
-        # stacklevel skips ModelBuilder.__setattr__ to report the caller.
-        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=3)
-        self._deprecated_joint_twist_upper = value
-
     @staticmethod
     def _quat_from_axis_targets(t_x: float, t_y: float, t_z: float) -> tuple[float, float, float, float]:
         """Compose per-axis angles into a unit quaternion using extrinsic ZYX
@@ -4899,6 +4882,7 @@ class ModelBuilder:
             if merged is not None:
                 if not self._custom_attribute_specs_match(merged, attr):
                     raise ValueError(f"Custom attribute '{full_key}' already exists with incompatible spec")
+                self._adopt_custom_attribute_update_flags(merged, attr)
                 if not self._custom_attribute_defaults_match(merged.default, attr.default):
                     raise ValueError(
                         f"Custom attribute '{full_key}' default mismatch when merging builders: "
@@ -5697,7 +5681,8 @@ class ModelBuilder:
                 - ``None`` (default): Uses format-specific default (honors ``<freejoint>`` tags in MJCF,
                   otherwise creates a FIXED joint).
                 - ``True``: Creates a FREE joint with 6 DOF (3 translation + 3 rotation). Only valid when
-                  ``parent_body == -1`` since FREE joints must connect to world frame.
+                  ``parent_body == -1`` since FREE joints must connect to world frame. A root that already
+                  has an MJCF free joint keeps that joint's parameters.
                 - ``False``: Creates a FIXED joint (0 DOF).
 
                 Cannot be specified together with ``base_joint``.
@@ -7009,20 +6994,25 @@ class ModelBuilder:
             _validate_variant_builder(self, variant)
         variant_set = _snapshot_variants(variants, labels, self._shape_row_attributes())
         rows = _plan_variant_rows(variant_set, initial, self.body_label[body])
-        declarations = dict(self.custom_attributes)
+        # Merge the declarations into copies, so the variants' own declarations keep their update flags.
+        declarations: dict[str, ModelBuilder.CustomAttribute] = {}
         for row in rows:
             for candidate in row.candidates:
                 for key, declaration, _ in candidate.custom:
-                    if not self._custom_attribute_specs_match(declarations.setdefault(key, declaration), declaration):
+                    merged = declarations.get(key)
+                    if merged is None:
+                        merged = declarations[key] = copy.copy(self.custom_attributes.get(key, declaration))
+                    if not self._custom_attribute_specs_match(merged, declaration):
                         raise ValueError(
                             f"Variant shape custom attribute '{key}' is declared differently than in this "
                             "builder or another variant."
                         )
+                    if merged.update_flags is None:
+                        merged.update_flags = declaration.update_flags
         # Declare every variant's attributes now, so later declarations are checked against them and
-        # finalize() declares nothing.
-        for key, declaration in declarations.items():
-            if key not in self.custom_attributes:
-                self.add_custom_attribute(declaration)
+        # finalize() declares nothing. This also adopts flags for attributes declared without them.
+        for declaration in declarations.values():
+            self.add_custom_attribute(declaration)
 
         # A row's builder flags are the union over the shapes it can hold, which all have the row's
         # role, so contact pairs and joint filters include every one of them.
@@ -16214,7 +16204,6 @@ class ModelBuilder:
 
             m.shape_type = wp.array(shape_type_arr, dtype=wp.int32)
             m.shape_source_ptr = wp.array(geo_sources, dtype=wp.uint64)
-            m._shape_mesh_properties = wp.array(shape_mesh_properties, dtype=wp.int32, device=device)
             m.heightfield_meshes = heightfield_meshes
             m._mesh_keep_alive = mesh_keep_alive
 
@@ -16802,6 +16791,22 @@ class ModelBuilder:
                         wt_tex_data.subgrid_start_slots if wt_c_tex is not None else None
                     )
 
+            # A separate shell beyond the far wall face must not determine the
+            # support of the penetrating shell. Check only potential probes.
+            recovery_probe_by_source = {}
+            closed_sdf_shapes = (shape_sdf_index >= 0) & ((shape_mesh_properties & int(MeshProperties.WATERTIGHT)) != 0)
+            for i in np.flatnonzero(closed_sdf_shapes):
+                if compact_texture_sdf_coarse_textures[shape_sdf_index[i]] is None:
+                    continue
+                source = int(geo_sources[i])
+                if source not in recovery_probe_by_source:
+                    mesh = generated_shape_sources[i]
+                    recovery_probe_by_source[source] = (
+                        len(mesh.vertices) <= 4096 and len(split_mesh_components(mesh)) == 1
+                    )
+                if recovery_probe_by_source[source]:
+                    shape_mesh_properties[i] |= int(MeshProperties.RECOVERY_PROBE)
+            m._shape_mesh_properties = wp.array(shape_mesh_properties, dtype=wp.int32, device=device)
             m._shape_sdf_index = wp.array(shape_sdf_index, dtype=wp.int32, device=device)
             m._texture_sdf_data = (
                 wp.array(compact_texture_sdf_data, dtype=TextureSDFData, device=device)
@@ -17580,6 +17585,11 @@ class ModelBuilder:
                 m._set_attribute_spec(
                     custom_attr.key, replace(m.attribute_specs[custom_attr.key], default=custom_attr.default)
                 )
+            # Also covers attributes finalized by their own callback.
+            for key, custom_attr in self.custom_attributes.items():
+                spec = m.attribute_specs.get(key)
+                if spec is not None and custom_attr.update_flags is not None:
+                    m._set_attribute_spec(key, replace(spec, update_flags=custom_attr.update_flags))
 
             self._finalize_custom_frequency_metadata(m, device)
             self._variant_shape_rows.finalize(self, m, validate_inertia=validate_inertia)

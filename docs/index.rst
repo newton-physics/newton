@@ -56,6 +56,7 @@ Newton Physics
    Kamino <solvers/kamino>
    Style3D <solvers/style3d>
    VBD <solvers/vbd>
+   Steel <solvers/steel>
 
 .. toctree::
    :maxdepth: 1

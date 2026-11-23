@@ -9,6 +9,7 @@ import warp as wp
 
 from ...core.types import override
 from ...exceptions import NewtonDeprecationWarning
+from ...geometry.sdf_planar_recovery import empty_mesh_recovery
 from ...sim import Contacts, Control, JointType, Model, ModelFlags, State, StateFlags
 from ...sim.joint_mimic import has_supported_joint_mimics
 from ..coupled.interface import CouplingInterface
@@ -173,7 +174,8 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                 active contacts. Defaults to ``True``.
             angular_damping: Rigid-body angular velocity damping coefficient [1/s]. Defaults to 0.0.
             enable_restitution: Whether to apply restitution to rigid and particle-shape contacts after the
-                positional solve. Defaults to ``False``.
+                positional solve. Deep thin-wall recovery contacts suppress restitution while they
+                guide the shapes apart. Defaults to ``False``.
             tendon_max_sweeps: Maximum capstan material-relaxation sweeps per solver iteration.
             tendon_settle_tol: Relative final capstan-force residual tolerance [dimensionless].
                 Zero disables early-out; must be finite and nonnegative.
@@ -244,6 +246,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
             # reserve space for the particle hash grid
             with wp.ScopedDevice(model.device):
                 model.particle_grid.reserve(model.particle_count)
+        self._empty_mesh_recovery = empty_mesh_recovery(model.device.alias)
 
     @override
     def reset(
@@ -283,6 +286,11 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
             self._refresh_kinematic_state()
         if self.enable_restitution and flags & ModelFlags.SHAPE_PROPERTIES:
             self._refresh_rigid_restitution_enabled()
+
+    @override
+    def _non_graphable_model_flags(self) -> int:
+        # The tendon refresh validates on the host and rebuilds the tendon reset state.
+        return int(ModelFlags.TENDON_PROPERTIES) if self.model.tendon_count > 0 else 0
 
     def _refresh_rigid_restitution_enabled(self) -> None:
         restitution = self.model.shape_material_restitution
@@ -479,6 +487,9 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
         body_qd_pre_solve = None
         body_deltas = None
 
+        contact_recovery = self._empty_mesh_recovery
+        if contacts is not None and contacts._mesh_recovery_contacts is not None:
+            contact_recovery = contacts._mesh_recovery_contacts
         rigid_contact_inv_weight = None
         restitution_contact_active = None
         restitution_manifold_key = None
@@ -599,13 +610,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                         device=model.device,
                     )
 
-                if body_f_tmp is state_in.body_f:
-                    self.integrate_bodies(model, state_in, state_out, dt, self.angular_damping)
-                else:
-                    body_f_prev = state_in.body_f
-                    state_in.body_f = body_f_tmp
-                    self.integrate_bodies(model, state_in, state_out, dt, self.angular_damping)
-                    state_in.body_f = body_f_prev
+                self.integrate_bodies(model, state_in, state_out, dt, self.angular_damping, body_f=body_f_tmp)
 
                 if self.enable_restitution:
                     body_q_pre_solve = wp.clone(state_out.body_q)
@@ -812,6 +817,8 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                                     contacts.rigid_contact_margin1,
                                     contacts.rigid_contact_shape0,
                                     contacts.rigid_contact_shape1,
+                                    contact_recovery,
+                                    contacts.contact_generation,
                                 ],
                                 outputs=[restitution_contact_active],
                                 device=model.device,
@@ -844,6 +851,8 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                                 model.shape_material_mu_rolling,
                                 self.rigid_contact_relaxation,
                                 dt,
+                                contact_recovery,
+                                contacts.contact_generation,
                             ],
                             outputs=[
                                 body_deltas,

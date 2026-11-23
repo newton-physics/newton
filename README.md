@@ -846,6 +846,18 @@ python -m newton.examples --describe robot_omniwheel
     </td>
   </tr>
   <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/diffsim/example_diffsim_anymal_backflip.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_diffsim_anymal_backflip.jpg" alt="DiffSim Anymal Backflip">
+      </a>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <code>python -m newton.examples diffsim_anymal_backflip</code>
+    </td>
+  </tr>
+  <tr>
     <td colspan="3"><h3>Multi-Physics Examples</h3></td>
   </tr>
   <tr>

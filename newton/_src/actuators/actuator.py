@@ -13,7 +13,6 @@ import warp as wp
 
 from ..exceptions import NewtonDeprecationWarning, NewtonWarning
 from ..utils import is_graph_capture_allocation_enabled
-from ..utils.deprecation import RemovedAttribute
 from .clamping.base import ClampingBase
 from .clamping.clamping_current_duty import ClampingCurrentDuty
 from .drives.base import DriveBase
@@ -292,8 +291,6 @@ class Actuator:
                     return
             if value is not None:
                 self.input_processor_states = [value, *states]
-
-        controller_state = RemovedAttribute("drive_state", removed_in="1.8")
 
         def reset(self, mask: wp.array[wp.bool] | None = None) -> None:
             """Reset composed state.
@@ -598,8 +595,6 @@ class Actuator:
     # To achieve public API Actuator.ImplicitOptions.
     # Defining ImplicitOptions inside Actuator would create a circular import issue.
     ImplicitOptions = ImplicitOptions
-
-    controller = RemovedAttribute("drive", removed_in="1.8")
 
     def set_effort_mode_implicit(
         self,

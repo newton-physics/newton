@@ -7,10 +7,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import IntEnum
+from typing import Any
 
 import numpy as np
 import warp as wp
-from warp._src.types import Any, Int, Vector
+from warp._src.types import Vector
 
 from .....core.types import MAXVAL, override
 from .....sim import JointTargetMode, JointType
@@ -770,7 +771,7 @@ class JointDoFType(IntEnum):
             raise ValueError(f"Unknown joint DoF type: {self.value}")
 
     @property
-    def cts_axes(self) -> Vector[Any, Int]:
+    def cts_axes(self) -> Vector[Any, wp.Int]:
         """
         Returns the indices of the joint's constraint axes.
         """
@@ -796,7 +797,7 @@ class JointDoFType(IntEnum):
             raise ValueError(f"Unknown joint DoF type: {self.value}")
 
     @property
-    def dofs_axes(self) -> Vector[Any, Int]:
+    def dofs_axes(self) -> Vector[Any, wp.Int]:
         """
         Returns the indices of the joint's DoF axes.
         """
