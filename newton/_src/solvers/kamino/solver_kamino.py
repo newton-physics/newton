@@ -844,6 +844,7 @@ class SolverKamino(SolverBase, CouplingInterface):
         """
         # Initialize the base solver
         super().__init__(model=model)
+        self._validate_body_gravity_scale(applies_scale=False)
         self._contact_observable_state: State | None = None
 
         # Import all Kamino dependencies and cache them
@@ -1366,6 +1367,11 @@ class SolverKamino(SolverBase, CouplingInterface):
             flags: Bitmask of :class:`~newton.ModelFlags` or custom ``int`` bits indicating which properties changed.
         """
         self._validate_rod_joint_properties(flags)
+        # A kinematic body made dynamic brings its scale into the dynamics.
+        if flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
+            self._validate_body_gravity_scale(
+                applies_scale=False, scale_changed=bool(flags & ModelFlags.BODY_INERTIAL_PROPERTIES)
+            )
         self._validate_structural_invariants(flags)
         self._solver_kamino.validate_model_changed(flags)
 

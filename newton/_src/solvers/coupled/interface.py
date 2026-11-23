@@ -309,6 +309,7 @@ class CouplingInterface:
     ) -> None:
         """Evaluate solver-applied gravity-like acceleration for all local entities.
 
+        The default returns each body's gravity scaled by :attr:`~newton.Model.body_gravity_scale`.
         The coupled solvers cache these arrays at initialization and refresh
         them on relevant model changes. Solvers that apply scaled or compensated
         gravity should override this hook so proxy and ADMM coupling can remove
@@ -323,7 +324,7 @@ class CouplingInterface:
             wp.launch(
                 _coupling_eval_body_gravity_acceleration_kernel,
                 dim=out_body_acceleration.shape[0],
-                inputs=[model.gravity, model.body_world],
+                inputs=[model.gravity, model.body_world, model.body_gravity_scale],
                 outputs=[out_body_acceleration],
                 device=model.device,
             )
@@ -514,10 +515,11 @@ class CouplingInterface:
 def _coupling_eval_body_gravity_acceleration_kernel(
     gravity: wp.array[wp.vec3],
     body_world: wp.array[wp.int32],
+    body_gravity_scale: wp.array[wp.float32],
     out: wp.array[wp.vec3],
 ):
     i = wp.tid()
-    out[i] = gravity[body_world[i]]
+    out[i] = body_gravity_scale[i] * gravity[body_world[i]]
 
 
 @wp.kernel(enable_backward=False)
