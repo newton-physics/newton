@@ -504,7 +504,10 @@ class SolverCoupled(SolverBase, CouplingInterface):
             shapes: Global shape ids owned by this entry.
             configure_view: Optional callback invoked after compaction for
                 entry-local view overrides.
-            substeps: Number of substeps to run per coupled step.
+            substeps: Number of substeps to run per coupled step. A sub-stepped proxy
+                destination with stiff contact, such as MPM sand under rigid proxy bodies,
+                needs ``SolverCoupledProxy.Config(iterations=2)`` or more to converge; see
+                the coupling guide's current limitations.
             in_place: Whether the sub-solver may step in-place.
         """
 

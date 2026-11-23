@@ -302,8 +302,9 @@ class _AffineProxyBodyFeedbackSolver(SolverBase, CouplingInterface):
         coupling_forces,
         body_gravity_acceleration,
         dt,
+        body_qd_start=None,
     ):
-        del body_local_to_proxy_global, state, coupling_forces, body_gravity_acceleration, dt
+        del body_local_to_proxy_global, state, coupling_forces, body_gravity_acceleration, dt, body_qd_start
 
     def coupling_harvest_proxy_wrenches(
         self,
@@ -1200,19 +1201,25 @@ class _FixedBodyCopySolver(SolverBase, CouplingInterface):
             wp.copy(state_out.body_qd, state_in.body_qd)
 
 
-def _harvest_mpm_proxy_wrench_on_fixed_plate(device, substeps, mode, in_place, step_count=12, dt=0.01):
-    """Rest a sand column on a fixed proxy plate and return the harvested vertical force and sand weight.
+def _harvest_mpm_proxy_wrench_on_fixed_plate(device, substeps, mode, in_place, kinematic, step_count=12, dt=0.01):
+    """Rest a sand column on a fixed proxy plate and return (harvested vertical force, sand weight, sand motion).
 
     The plate never moves, so after the sand settles the MPM collider impulses summed over one coupled
-    step must equal the sand weight times ``dt`` regardless of how many MPM substeps run inside it.
+    step must equal the sand weight times ``dt`` regardless of how many MPM substeps run inside it, and
+    the sand must stay at rest. Sand motion is (lowest particle height above the plate, RMS speed).
+    A kinematic plate is prescribed by the source; a dynamic one is held still by the source, as a
+    tray resting on rigid ground would be, and must not be seen falling or rising inside the step.
     """
     voxel_size = 0.05
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0))
     SolverImplicitMPM.register_custom_attributes(builder)
-    # A kinematic plate with mass: the source prescribes its motion, so it must not respond to the sand.
-    builder.default_shape_cfg.density = 0.0
+    # The dynamic plate takes its 200 kg and inertia from its shape; the kinematic one is a light shell.
+    if kinematic:
+        builder.default_shape_cfg.density = 0.0
     plate = builder.add_body(
-        xform=wp.transform(wp.vec3(0.0, 0.0, -0.1), wp.quat_identity()), mass=1.0, is_kinematic=True
+        xform=wp.transform(wp.vec3(0.0, 0.0, -0.1), wp.quat_identity()),
+        mass=1.0 if kinematic else 0.0,
+        is_kinematic=kinematic,
     )
     builder.add_shape_box(plate, hx=0.5, hy=0.5, hz=0.1)
     builder.add_particle_grid(
@@ -1272,27 +1279,45 @@ def _harvest_mpm_proxy_wrench_on_fixed_plate(device, substeps, mode, in_place, s
 
     harvested = coupled._proxy_mappings[0].coupling_forces.numpy()[plate]
     weight = float(model.particle_mass.numpy().sum()) * 10.0
-    return float(harvested[2]), weight
+    particle_q, particle_qd = state.particle_q.numpy(), state.particle_qd.numpy()
+    motion = (float(particle_q[:, 2].min()), float(np.sqrt((particle_qd**2).sum(axis=1).mean())))
+    return float(harvested[2]), weight, motion
 
 
 def _coupled_mpm_proxy_wrench_harvest_independent_of_substeps(test, device):
     """Verify the MPM proxy wrench spans the whole coupled step when the MPM entry is sub-stepped.
 
     The plate never moves, so lagged and staggered proxies synchronize the same inputs; the two
-    configurations cover the in-place and non-in-place sub-stepping paths of the destination entry.
+    configurations cover the in-place and non-in-place sub-stepping paths of the destination entry,
+    with a dynamic plate the source holds still and a kinematic one it prescribes.
     """
-    for mode, in_place in (("lagged", True), ("staggered", False)):
-        with test.subTest(mode=mode, in_place=in_place):
-            reference, weight = _harvest_mpm_proxy_wrench_on_fixed_plate(device, 1, mode, in_place)
+    for mode, in_place, kinematic in (("lagged", True, False), ("staggered", False, True)):
+        with test.subTest(mode=mode, in_place=in_place, kinematic=kinematic):
+            reference, weight, rest = _harvest_mpm_proxy_wrench_on_fixed_plate(device, 1, mode, in_place, kinematic)
             test.assertLess(reference, 0.0)
             test.assertAlmostEqual(reference, -weight, delta=0.25 * weight)
             substeps = 4
-            harvested, _weight = _harvest_mpm_proxy_wrench_on_fixed_plate(device, substeps, mode, in_place)
+            harvested, _weight, motion = _harvest_mpm_proxy_wrench_on_fixed_plate(
+                device, substeps, mode, in_place, kinematic
+            )
             test.assertAlmostEqual(
                 harvested,
                 reference,
                 delta=0.1 * abs(reference),
                 msg=f"substeps={substeps}: harvested {harvested:.3f} N vs {reference:.3f} N with substeps=1",
+            )
+            test.assertAlmostEqual(
+                motion[0],
+                rest[0],
+                delta=2.0e-3,
+                msg=f"substeps={substeps}: lowest sand particle at {motion[0]:.4f} m vs {rest[0]:.4f} m",
+            )
+            # The column is still compacting after 12 steps at either substep count; a proxy seen moving
+            # inside the step would multiply the residual speed instead.
+            test.assertLess(
+                motion[1],
+                2.0 * rest[1],
+                msg=f"substeps={substeps}: sand RMS speed {motion[1]:.4f} m/s vs {rest[1]:.4f} m/s with substeps=1",
             )
 
 
@@ -1470,6 +1495,81 @@ def _coupled_mpm_leaves_owned_bodies_alone(test, device):
     test.assertLess(state.body_q.numpy()[proxied][2], 5.0)
 
 
+def _coupled_mpm_staggered_proxy_stops_at_source_pose(test, device):
+    """Leave resting particles alone when a staggered proxy ends its step short of them at any substep count."""
+    for substeps in (1, 4):
+        with test.subTest(substeps=substeps):
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+            SolverImplicitMPM.register_custom_attributes(builder)
+            builder.default_shape_cfg.density = 0.0
+            plate = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, -0.1), wp.quat_identity()), mass=10.0)
+            builder.add_shape_box(plate, hx=0.5, hy=0.5, hz=0.1)
+            # The plate top ends 0.05 m below the particles after one step of 0.1 m, closer than it travels.
+            builder.add_particle_grid(
+                pos=wp.vec3(-0.1, -0.1, 0.15),
+                rot=wp.quat_identity(),
+                vel=wp.vec3(0.0),
+                dim_x=5,
+                dim_y=5,
+                dim_z=3,
+                cell_x=0.025,
+                cell_y=0.025,
+                cell_z=0.025,
+                mass=0.1,
+                jitter=0.0,
+                radius_mean=0.0125,
+            )
+            model = builder.finalize(device=device)
+            config = SolverImplicitMPM.Config()
+            config.voxel_size = 0.05
+            config.grid_type = "fixed"
+            config.grid_padding = 6
+            config.max_active_cell_count = 1 << 12
+            config.max_iterations = 10
+            coupled = SolverCoupledProxy(
+                model=model,
+                entries=[
+                    SolverCoupledProxy.Entry(name="rigid", solver=_RisingBodySolver, bodies=[plate]),
+                    SolverCoupledProxy.Entry(
+                        name="mpm",
+                        solver=lambda view, config=config: SolverImplicitMPM(view, config=config, enable_timers=False),
+                        particles=range(model.particle_count),
+                        substeps=substeps,
+                        in_place=True,
+                    ),
+                ],
+                coupling=SolverCoupledProxy.Config(
+                    proxies=[
+                        SolverCoupledProxy.Proxy(
+                            source="rigid",
+                            destination="mpm",
+                            bodies=[plate],
+                            mode="staggered",
+                            collision_pipeline=lambda _view: None,
+                        )
+                    ],
+                    iterations=2,
+                ),
+            )
+            state = model.state()
+            control = model.control()
+            particle_q = state.particle_q.numpy().copy()
+            state.clear_forces()
+            coupled.step(state, state, control, None, 0.01)
+
+            np.testing.assert_array_equal(state.particle_q.numpy(), particle_q)
+            np.testing.assert_array_equal(state.particle_qd.numpy(), 0.0)
+            np.testing.assert_array_equal(coupled._proxy_mappings[0].coupling_forces.numpy()[plate], 0.0)
+
+
+add_function_test(
+    TestSolverCoupledContactsAndMPM,
+    "test_mpm_staggered_proxy_stops_at_source_pose",
+    _coupled_mpm_staggered_proxy_stops_at_source_pose,
+    devices=get_test_devices(),
+)
+
+
 add_function_test(
     TestSolverCoupledContactsAndMPM,
     "test_mpm_leaves_owned_bodies_alone",
@@ -1487,14 +1587,16 @@ add_function_test(
 
 
 class _RisingBodySolver(SolverBase, CouplingInterface):
-    """Source solver that lifts its bodies by 0.1 m per step."""
+    """Source solver that lifts its bodies by 0.1 m per step at the matching constant velocity."""
 
     def step(self, state_in, state_out, control, contacts, dt):
-        del control, contacts, dt
+        del control, contacts
         body_q = state_in.body_q.numpy()
         body_q[:, 2] += 0.1
+        body_qd = np.zeros((body_q.shape[0], 6), dtype=np.float32)
+        body_qd[:, 2] = 0.1 / dt
         state_out.body_q.assign(wp.array(body_q, dtype=wp.transform, device=state_out.body_q.device))
-        wp.copy(state_out.body_qd, state_in.body_qd)
+        state_out.body_qd.assign(wp.array(body_qd, dtype=wp.spatial_vector, device=state_out.body_qd.device))
 
 
 class _ProxyPoseRecordingSolver(SolverBase, CouplingInterface):
@@ -1551,14 +1653,6 @@ def _coupled_substeps_see_current_proxy_pose(test, device):
     heights = _ProxyPoseRecordingSolver.instances[-1].proxy_heights
     expected = [0.1 * step for step in range(1, step_count + 1) for _substep in range(2)]
     np.testing.assert_allclose(heights, expected, rtol=0.0, atol=1.0e-6)
-
-
-add_function_test(
-    TestSolverCoupledContactsAndMPM,
-    "test_substeps_see_current_proxy_pose",
-    _coupled_substeps_see_current_proxy_pose,
-    devices=get_test_devices("basic"),
-)
 
 
 class TestSolverCoupledBasic(unittest.TestCase):
@@ -3489,6 +3583,13 @@ add_function_test(
     "test_coupled_model_omits_rod_with_replaced_joint",
     test_coupled_model_omits_rod_with_replaced_joint,
     devices=get_test_devices(),
+)
+
+add_function_test(
+    TestSolverCoupledBasic,
+    "test_substeps_see_current_proxy_pose",
+    _coupled_substeps_see_current_proxy_pose,
+    devices=get_test_devices("basic"),
 )
 
 

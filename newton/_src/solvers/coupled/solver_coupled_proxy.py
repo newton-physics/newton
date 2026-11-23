@@ -53,6 +53,7 @@ class _ProxyEntityMapping:
     coupling_forces: wp.array = field(default=None)
     coupling_forces_previous: wp.array = field(default=None)
     proxy_qd_before: wp.array = field(default=None)
+    proxy_qd_start: wp.array = field(default=None)
     mass_scale: float = 1.0
     mode: int = 0
     proxy_relaxation: float = 1.0
@@ -316,7 +317,10 @@ class SolverCoupledProxy(SolverCoupled):
 
         Args:
             proxies: Directed proxy mappings between solver entries.
-            iterations: Positive number of proxy relaxation passes per step.
+            iterations: Positive number of proxy relaxation passes per step. Use 2 or more
+                when a destination entry runs ``substeps > 1`` with stiff contact: a single
+                lagged pass applies the stiffer sub-stepped feedback a full step late and
+                oscillates; see the coupling guide's current limitations.
         """
 
         proxies: Sequence[SolverCoupledProxy.Proxy]
@@ -1080,6 +1084,7 @@ class SolverCoupledProxy(SolverCoupled):
             mapping.aitken_relaxation = wp.array([mapping.proxy_relaxation], dtype=float, device=device)
             mapping.aitken_has_previous = wp.zeros(1, dtype=int, device=device)
         mapping.proxy_qd_before = wp.zeros(entity_count, dtype=force_dtype, device=device)
+        mapping.proxy_qd_start = wp.zeros(entity_count, dtype=force_dtype, device=device)
 
     def _entry_needs_gravity_acceleration(self, entry) -> bool:
         return any(mapping.dst_name == entry.name for mapping in self._proxy_mappings) or any(
@@ -1445,18 +1450,22 @@ class SolverCoupledProxy(SolverCoupled):
                 is_staggered = int(proxy.mode) == int(_ProxyMode.STAGGERED)
                 sync_body_q = src.state_1.body_q if is_staggered else src.state_0.body_q
 
-                wp.launch(
-                    sync_proxy_states_kernel,
-                    dim=proxy.source_local_to_proxy_local.shape[0],
-                    inputs=[
-                        sync_body_q,
-                        src.state_1.body_qd,
-                        proxy.source_local_to_proxy_local,
-                        dst.state_0.body_q,
-                        dst.state_0.body_qd,
-                    ],
-                    device=self.model.device,
-                )
+                # Start-of-step velocities first, so the destination can ramp through its sub-steps.
+                for body_q, body_qd in ((src.state_0.body_q, src.state_0.body_qd), (sync_body_q, src.state_1.body_qd)):
+                    wp.launch(
+                        sync_proxy_states_kernel,
+                        dim=proxy.source_local_to_proxy_local.shape[0],
+                        inputs=[
+                            body_q,
+                            body_qd,
+                            proxy.source_local_to_proxy_local,
+                            dst.state_0.body_q,
+                            dst.state_0.body_qd,
+                        ],
+                        device=self.model.device,
+                    )
+                    if body_qd is src.state_0.body_qd:
+                        wp.copy(proxy.proxy_qd_start, dst.state_0.body_qd)
 
                 self._notify_input_state_update(
                     dst,
@@ -1475,6 +1484,7 @@ class SolverCoupledProxy(SolverCoupled):
                     proxy.coupling_forces,
                     dst.body_gravity_acceleration,
                     dt,
+                    body_qd_start=proxy.proxy_qd_start,
                 )
                 self._notify_input_state_update(dst, StateFlags.BODY_QD | StateFlags.BODY_F, dt=dt)
 

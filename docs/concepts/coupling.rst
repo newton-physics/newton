@@ -147,7 +147,10 @@ The protocol currently covers these concepts:
   double-applying it.
 - ``coupling_rewind_proxy_body()`` and
   ``coupling_rewind_proxy_particle()`` let a
-  destination solver prepare proxy velocities before a lagged proxy pass.
+  destination solver prepare proxy velocities before a lagged proxy pass. The
+  body hook also receives ``body_qd_start``, the source bodies' velocities at
+  the start of the coupled step, so a sub-stepped destination can ramp its
+  proxies from there to the synchronized end-of-step velocity.
 - ``coupling_harvest_proxy_wrenches()`` and
   ``coupling_harvest_proxy_particle_forces()`` let a destination solver
   report feedback forces from solver-native contact or transfer data.
@@ -448,10 +451,11 @@ The coupled-solver framework is useful today, but it is still experimental:
   affect damping and convergence. A sub-stepped destination with stiff contact,
   such as MPM sand under a rigid proxy body, feeds back a force that a single
   lagged pass per step applies one full step late; use ``iterations=2`` or more
-  so the pass converges instead of oscillating. Within such a step the MPM
-  destination advances finite-mass proxy bodies as free bodies under gravity and
-  its contact impulses, so a proxy that its source holds against gravity drifts
-  by at most ``dt² |g| / 2`` inside the step; the source state is unaffected.
+  so the pass converges instead of oscillating. Inside such a step the MPM
+  destination ramps each proxy body's velocity from the source's start-of-step
+  value to its synchronized end-of-step value and adds the response to the
+  contact impulses of each sub-step, with the mass and inertia the collider was
+  configured with; proxy poses stay where the coupler put them.
 - Generic momentum harvesting is only a fallback. Solver-private contact modes
   should expose custom harvest hooks where possible.
 - ADMM contact detection is internal and does not consume arbitrary caller

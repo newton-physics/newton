@@ -58,7 +58,7 @@ Supported hook signatures are:
 
 
     def coupling_rewind_proxy_body(
-        body_local_to_proxy_global, state, coupling_forces, body_gravity_acceleration, dt
+        body_local_to_proxy_global, state, coupling_forces, body_gravity_acceleration, dt, body_qd_start=None
     ) -> None: ...
 
 
@@ -365,13 +365,18 @@ class CouplingInterface:
         coupling_forces: wp.array[wp.spatial_vector],
         body_gravity_acceleration: wp.array[wp.vec3],
         dt: float,
+        body_qd_start: wp.array[wp.spatial_vector] | None = None,
     ) -> None:
         """Rewind lagged proxy-body feedback, gravity acceleration and external forces
         before the destination solve, so those are not double-counted.
 
         Implementations may update either ``state.body_qd`` or ``state.body_f``.
+        ``body_qd_start`` holds, in the destination's local body rows, the source bodies'
+        velocities at the start of the coupled step; a destination that sub-steps can ramp
+        its proxies from there to the synchronized end-of-step velocity instead of seeing a
+        full step of pre-applied gravity. The default ignores it.
         """
-        del dt
+        del dt, body_qd_start
         if body_local_to_proxy_global.shape[0] == 0 or state.body_f is None:
             return
 

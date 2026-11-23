@@ -3753,6 +3753,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         coupling_forces: wp.array[wp.spatial_vector],
         body_gravity_acceleration: wp.array[wp.vec3],
         dt: float,
+        body_qd_start: wp.array[wp.spatial_vector] | None = None,
     ) -> None:
         """Reject use as a proxy destination."""
         raise NotImplementedError("SolverSteel cannot be a proxy coupling destination.")

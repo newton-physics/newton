@@ -120,6 +120,20 @@ def test_proxy_feedback_sums_substep_impulses(test, device):
 
     _assert_feedback_matches_contact(forces, contact_impulse / dt)
 
+    # So does a new proxy pose or velocity sync, which starts another solve, and a full reset.
+    solver.step(state, state, None, None, dt)
+    solver.coupling_notify_input_state_update(state, newton.StateFlags.PARTICLE_QD)
+    solver.step(state, state, None, None, dt)
+    _assert_feedback_matches_contact(_harvest_proxy_particle_forces(solver, state, dt, device), contact_impulse / dt)
+    solver.step(state, state, None, None, dt)
+    solver.reset(state)
+    solver.step(state, state, None, None, dt)
+    _assert_feedback_matches_contact(_harvest_proxy_particle_forces(solver, state, dt, device), contact_impulse / dt)
+
+    # A map longer than the model is rejected before any kernel reads past the accumulator.
+    with test.assertRaises(ValueError):
+        _harvest_proxy_particle_forces(solver, state, dt, device, mapping=(0, 1, 2, -1, -1))
+
 
 def test_proxy_feedback_without_notification_uses_last_step(test, device):
     """Convert only the most recent step's impulses until the coupler declares particle proxy feedback."""
