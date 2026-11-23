@@ -116,6 +116,10 @@ def test_constructor_precomputes_fixed_pd_matrix(test, device):
         newton.solvers.SolverStyle3D(model, dynamics=mode) for mode in (dynamics.ALL, dynamics.AFFINE_BODY)
     ]
     for current_solver in solvers:
+        selected_dynamics = current_solver.dynamics
+        with test.assertRaises(AttributeError):
+            current_solver.dynamics = dynamics.NONE
+        test.assertEqual(current_solver.dynamics, selected_dynamics)
         particle_count = model.particle_count if current_solver.dynamics & dynamics.DEFORMABLE else 0
         for legacy_name, internal_name in aliases:
             with test.subTest(dynamics=current_solver.dynamics, attribute=legacy_name):

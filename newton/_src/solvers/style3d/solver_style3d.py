@@ -226,6 +226,11 @@ class SolverStyle3D(SolverBase):
     """
 
     @property
+    def dynamics(self) -> Dynamics:
+        """Read-only dynamics mode selected at construction."""
+        return self._dynamics
+
+    @property
     def linear_iterations(self) -> int:
         """Legacy alias for :attr:`Config.linear_iterations`.
 
@@ -513,7 +518,7 @@ class SolverStyle3D(SolverBase):
         super().__init__(model)
         self._style3d_attr = getattr(model, "style3d", None)
         self.collision = Collision(model) if enable_deformable else None  # set None to disable
-        self.dynamics = dynamics
+        self._dynamics = dynamics
         self.config = config
         self._tet_volume_targets = wp.full(
             model.tet_count if enable_deformable else 0,
