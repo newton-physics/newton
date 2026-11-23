@@ -1,0 +1,1 @@
+Internal: ModelBuilder.finalize() converts array-backed attributes in one loop per frequency; finalized arrays are unchanged.

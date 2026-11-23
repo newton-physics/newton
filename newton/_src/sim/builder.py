@@ -828,10 +828,10 @@ class ModelBuilder:
         "shape_sdf_texture_format": Model.AttributeSpec(Model.AttributeFrequency.SHAPE),
         "shape_sdf_padding": Model.AttributeSpec(Model.AttributeFrequency.SHAPE),
         "muscle_start": Model.AttributeSpec("muscle", references="muscle_point", compaction_policy="start"),
-        "muscle_params": Model.AttributeSpec("muscle", dtype=wp.float32),
-        "muscle_activations": Model.AttributeSpec("muscle", dtype=wp.float32),
-        "muscle_bodies": Model.AttributeSpec("muscle_point", references=Model.AttributeFrequency.BODY, dtype=wp.int32),
-        "muscle_points": Model.AttributeSpec("muscle_point", dtype=wp.vec3),
+        "muscle_params": Model.AttributeSpec("muscle"),
+        "muscle_activations": Model.AttributeSpec("muscle"),
+        "muscle_bodies": Model.AttributeSpec("muscle_point", references=Model.AttributeFrequency.BODY),
+        "muscle_points": Model.AttributeSpec("muscle_point"),
         "world_gravity": Model.AttributeSpec(Model.AttributeFrequency.WORLD, compaction_policy="passthrough"),
         "_equality_constraint_world_start": Model.AttributeSpec(
             Model.AttributeFrequency.WORLD,
@@ -16006,22 +16006,22 @@ class ModelBuilder:
 
             m.world_count = self.world_count
 
-            def _set_spec_arrays(frequency, *, exclude=(), empty_as_none=False):
-                # Convert the builder attributes of a frequency to the dtypes their specs declare.
-                for name, spec in _ARRAY_BACKED_ATTRIBUTE_SPECS.items():
-                    if spec.frequency != frequency or name in exclude:
+            def _set_arrays(frequency, *, exclude=(), empty_as_none=False):
+                # Convert the array-backed attributes of a frequency to their Warp arrays.
+                for name, dtype, differentiable in _ARRAY_BACKED_ATTRIBUTES_BY_FREQUENCY[frequency]:
+                    if name in exclude:
                         continue
                     values = getattr(self, name)
                     if empty_as_none and len(values) == 0:
                         setattr(m, name, None)
                         continue
-                    grad = requires_grad and spec.differentiable
-                    setattr(m, name, warp_array_from_values(values, dtype=spec.dtype, requires_grad=grad))
+                    grad = requires_grad and differentiable
+                    setattr(m, name, warp_array_from_values(values, dtype=dtype, requires_grad=grad))
 
             # ---------------------
             # particles
 
-            _set_spec_arrays(Model.AttributeFrequency.PARTICLE, exclude=("particle_flags",))
+            _set_arrays(Model.AttributeFrequency.PARTICLE, exclude=("particle_flags",))
             m.particle_inv_mass = wp.array(particle_inv_mass, dtype=wp.float32, requires_grad=requires_grad)
             particle_flags = (
                 self.particle_flags
@@ -16315,7 +16315,7 @@ class ModelBuilder:
             m.gaussians_count = len(gaussians)
             m.gaussians_data = wp.array(gaussians, dtype=Gaussian.Data)
             # shape_material_mu_static holds None for "same as mu" until it is resolved here.
-            _set_spec_arrays(Model.AttributeFrequency.SHAPE, exclude=("shape_material_mu_static",))
+            _set_arrays(Model.AttributeFrequency.SHAPE, exclude=("shape_material_mu_static",))
             m.shape_source = self.shape_source  # used for rendering
             m.shape_material_mu_static = wp.array(
                 self._resolve_shape_material_mu_static(), dtype=wp.float32, requires_grad=requires_grad
@@ -16961,7 +16961,7 @@ class ModelBuilder:
                     return None
                 return wp.array(data, dtype=dtype, requires_grad=requires_grad)
 
-            _set_spec_arrays(Model.AttributeFrequency.SPRING, empty_as_none=True)
+            _set_arrays(Model.AttributeFrequency.SPRING, empty_as_none=True)
 
             # ---------------------
             # tendons
@@ -17034,12 +17034,12 @@ class ModelBuilder:
             # ---------------------
             # triangles
 
-            _set_spec_arrays(Model.AttributeFrequency.TRIANGLE, empty_as_none=True)
+            _set_arrays(Model.AttributeFrequency.TRIANGLE, empty_as_none=True)
 
             # ---------------------
             # edges
 
-            _set_spec_arrays(Model.AttributeFrequency.EDGE, empty_as_none=True)
+            _set_arrays(Model.AttributeFrequency.EDGE, empty_as_none=True)
             # Build the soft-mesh adjacency from the accumulated bending edges and triangles:
             # keep the builder's edge numbering (it stays aligned with the bending materials) and
             # derive the edge/triangle maps against the final triangles.
@@ -17063,7 +17063,7 @@ class ModelBuilder:
             # ---------------------
             # tetrahedra
 
-            _set_spec_arrays(Model.AttributeFrequency.TETRAHEDRON, empty_as_none=True)
+            _set_arrays(Model.AttributeFrequency.TETRAHEDRON, empty_as_none=True)
 
             # -----------------------
             # muscles
@@ -17073,8 +17073,8 @@ class ModelBuilder:
             muscle_start.append(len(self.muscle_bodies))
 
             m.muscle_start = wp.array(muscle_start, dtype=wp.int32)
-            _set_spec_arrays("muscle")
-            _set_spec_arrays("muscle_point")
+            _set_arrays("muscle")
+            _set_arrays("muscle_point")
 
             # --------------------------------------
             # rigid bodies
@@ -17150,7 +17150,7 @@ class ModelBuilder:
                     outputs=[m.body_inv_mass, m.body_inv_inertia],
                 )
 
-            _set_spec_arrays(
+            _set_arrays(
                 Model.AttributeFrequency.BODY,
                 exclude=("body_mass", "body_inv_mass", "body_inertia", "body_inv_inertia"),
             )
@@ -17173,9 +17173,9 @@ class ModelBuilder:
             m.joint_type = wp.array(self.joint_type, dtype=wp.int32)
             m.joint_dof_dim = wp.array(np.array(self.joint_dof_dim), dtype=wp.int32, ndim=2)
             m.joint_label = self.joint_label
-            _set_spec_arrays(Model.AttributeFrequency.JOINT)
-            _set_spec_arrays(Model.AttributeFrequency.JOINT_COORD)
-            _set_spec_arrays(Model.AttributeFrequency.JOINT_DOF)
+            _set_arrays(Model.AttributeFrequency.JOINT)
+            _set_arrays(Model.AttributeFrequency.JOINT_COORD)
+            _set_arrays(Model.AttributeFrequency.JOINT_DOF)
             # compute joint ancestors
             parent_joint = _build_joint_ancestor(joint_parent_np, joint_child_np, joint_articulation_np)
             m.joint_ancestor = wp.array(parent_joint, dtype=wp.int32)
@@ -17248,7 +17248,7 @@ class ModelBuilder:
                     m._fk_level_parent_pos = wp.array(fk_level_parent_pos, dtype=wp.int32)
                     m._fk_level_capacity = fk_level_capacity
             m.articulation_label = self.articulation_label
-            _set_spec_arrays(Model.AttributeFrequency.ARTICULATION)
+            _set_arrays(Model.AttributeFrequency.ARTICULATION)
             m.max_joints_per_articulation = max_joints_per_articulation
             m.max_dofs_per_articulation = max_dofs_per_articulation
 
@@ -17270,7 +17270,7 @@ class ModelBuilder:
                 m.mujoco = Model.AttributeNamespace("mujoco")
 
             # deprecated sparse mimic constraints
-            _set_spec_arrays(Model.AttributeFrequency.CONSTRAINT_MIMIC)
+            _set_arrays(Model.AttributeFrequency.CONSTRAINT_MIMIC)
             m.constraint_mimic_label = self.constraint_mimic_label
 
             # ---------------------
@@ -17767,17 +17767,136 @@ _ArrayBackedListDescriptor = tuple[Literal["ctypes", "tuple", "list", "ndarray",
 _ArrayBackedAttribute = tuple[np.ndarray, _ArrayBackedListDescriptor]
 
 
-_ARRAY_BACKED_ATTRIBUTE_SPECS: dict[str, Model.AttributeSpec] = {
-    name: spec
-    for specs in (Model._CORE_ATTRIBUTE_SPECS, ModelBuilder._BUILDER_ATTRIBUTE_SPECS)
-    for name, spec in specs.items()
-    if spec.dtype is not None
-}
-"""Builder attributes retained as NumPy arrays between replication and finalization: the list
-attributes whose :class:`Model.AttributeSpec` declares a dtype."""
 _ARRAY_BACKED_ATTRIBUTE_DTYPES: dict[str, Any] = {
-    name: spec.dtype for name, spec in _ARRAY_BACKED_ATTRIBUTE_SPECS.items()
+    "particle_q": wp.vec3,
+    "particle_qd": wp.vec3,
+    "particle_mass": wp.float32,
+    "particle_radius": wp.float32,
+    "particle_flags": wp.int32,
+    "particle_world": wp.int32,
+    "shape_transform": wp.transform,
+    "shape_body": wp.int32,
+    "shape_material_ke": wp.float32,
+    "shape_material_kd": wp.float32,
+    "shape_material_kf": wp.float32,
+    "shape_material_ka": wp.float32,
+    "shape_material_mu": wp.float32,
+    # Holds None for "same as mu" until finalize() resolves it, so the merged array is an object array.
+    "shape_material_mu_static": wp.float32,
+    "shape_material_restitution": wp.float32,
+    "shape_material_mu_torsional": wp.float32,
+    "shape_material_mu_rolling": wp.float32,
+    "shape_material_kh": wp.float32,
+    "shape_gap": wp.float32,
+    "shape_is_solid": wp.bool,
+    "shape_margin": wp.float32,
+    "shape_scale": wp.vec3,
+    "shape_color": wp.vec3,
+    "shape_opacity": wp.float32,
+    "shape_collision_group": wp.int32,
+    "shape_collision_radius": wp.float32,
+    "shape_world": wp.int32,
+    "spring_indices": wp.int32,
+    "spring_rest_length": wp.float32,
+    "spring_stiffness": wp.float32,
+    "spring_damping": wp.float32,
+    "spring_control": wp.float32,
+    "tri_indices": wp.int32,
+    "tri_poses": wp.mat22,
+    "tri_activations": wp.float32,
+    "tri_materials": wp.float32,
+    "tri_areas": wp.float32,
+    "tri_color": wp.vec3,
+    "tri_opacity": wp.float32,
+    "edge_indices": wp.int32,
+    "edge_rest_angle": wp.float32,
+    "edge_rest_length": wp.float32,
+    "edge_bending_properties": wp.float32,
+    "tet_indices": wp.int32,
+    "tet_poses": wp.mat33,
+    "tet_activations": wp.float32,
+    "tet_materials": wp.float32,
+    "muscle_params": wp.float32,
+    "muscle_bodies": wp.int32,
+    "muscle_points": wp.vec3,
+    "muscle_activations": wp.float32,
+    "body_q": wp.transform,
+    "body_qd": wp.spatial_vector,
+    "body_com": wp.vec3,
+    "body_inertia": wp.mat33,
+    "body_inv_inertia": wp.mat33,
+    "body_mass": wp.float32,
+    "body_inv_mass": wp.float32,
+    "body_flags": wp.int32,
+    "body_world": wp.int32,
+    "joint_q": wp.float32,
+    "joint_qd": wp.float32,
+    "joint_f": wp.float32,
+    "joint_target_q": wp.float32,
+    "joint_target_qd": wp.float32,
+    "joint_act": wp.float32,
+    "joint_articulation": wp.int32,
+    "joint_parent": wp.int32,
+    "joint_child": wp.int32,
+    "joint_X_p": wp.transform,
+    "joint_X_c": wp.transform,
+    "joint_axis": wp.vec3,
+    "joint_armature": wp.float32,
+    "joint_target_mode": wp.int32,
+    "joint_target_ke": wp.float32,
+    "joint_target_kd": wp.float32,
+    "joint_stiffness": wp.float32,
+    "joint_rest_q": wp.float32,
+    "joint_damping": wp.float32,
+    "joint_effort_limit": wp.float32,
+    "joint_velocity_limit": wp.float32,
+    "joint_friction": wp.float32,
+    "joint_enabled": wp.bool,
+    "joint_limit_lower": wp.float32,
+    "joint_limit_upper": wp.float32,
+    "joint_limit_ke": wp.float32,
+    "joint_limit_kd": wp.float32,
+    "joint_world": wp.int32,
+    "articulation_world": wp.int32,
+    "constraint_mimic_joint0": wp.int32,
+    "constraint_mimic_joint1": wp.int32,
+    "constraint_mimic_coef0": wp.float32,
+    "constraint_mimic_coef1": wp.float32,
+    "constraint_mimic_enabled": wp.bool,
+    "constraint_mimic_world": wp.int32,
 }
+"""Builder attributes retained as NumPy arrays between replication and finalization, and the Warp dtypes
+:meth:`ModelBuilder.finalize` converts them to."""
+# could be replaced by introspection if Model instance attribute annotations were moved to class level
+
+_NON_DIFFERENTIABLE_ARRAY_BACKED_ATTRIBUTES = frozenset(
+    {
+        "shape_color",
+        "shape_opacity",
+        "tri_color",
+        "tri_opacity",
+        "constraint_mimic_coef0",
+        "constraint_mimic_coef1",
+    }
+)
+"""Floating-point array-backed attributes that ``finalize(requires_grad=True)`` creates without gradients."""
+
+
+def _group_array_backed_attributes() -> dict[Model.AttributeFrequency | str, tuple[tuple[str, Any, bool], ...]]:
+    """Group the array-backed attributes by frequency as ``(name, dtype, differentiable)`` entries."""
+    specs = {**Model._CORE_ATTRIBUTE_SPECS, **ModelBuilder._BUILDER_ATTRIBUTE_SPECS}
+    groups: dict[Model.AttributeFrequency | str, list[tuple[str, Any, bool]]] = {}
+    for name, dtype in _ARRAY_BACKED_ATTRIBUTE_DTYPES.items():
+        scalar_dtype = getattr(dtype, "_wp_scalar_type_", dtype)
+        differentiable = (
+            wp.types.type_is_float(scalar_dtype) and name not in _NON_DIFFERENTIABLE_ARRAY_BACKED_ATTRIBUTES
+        )
+        groups.setdefault(specs[name].frequency, []).append((name, dtype, differentiable))
+    return {frequency: tuple(entries) for frequency, entries in groups.items()}
+
+
+_ARRAY_BACKED_ATTRIBUTES_BY_FREQUENCY = _group_array_backed_attributes()
+"""Array-backed attributes that :meth:`ModelBuilder.finalize` converts, grouped by frequency."""
 
 
 def _list_for_iteration(values: list[Any] | np.ndarray) -> list[Any]:

@@ -24,6 +24,7 @@ import newton
 import newton.utils
 from newton import ModelBuilder, NewtonDeprecationWarning
 from newton._src.geometry.utils import transform_points
+from newton._src.sim.builder import _ARRAY_BACKED_ATTRIBUTE_DTYPES, _ARRAY_BACKED_ATTRIBUTES_BY_FREQUENCY
 from newton._src.solvers.coupled.model_view import ModelView
 from newton._src.solvers.mujoco.equality import _add_equality_constraint
 from newton._src.viewer.viewer_file import depointer_as_key, pointer_as_key, transfer_to_model
@@ -338,8 +339,8 @@ class TestModelAttributeSpecs(unittest.TestCase):
             with self.subTest(attribute=name):
                 self.assertEqual(model.get_attribute_frequency(name), expected_frequency)
 
-    def test_finalize_follows_spec_dtypes(self):
-        """Finalize attributes with a spec dtype to that dtype, with gradients only where differentiable."""
+    def test_finalize_converts_array_backed_attributes(self):
+        """Finalize array-backed attributes to their dtypes, with gradients only for differentiable ones."""
         builder = ModelBuilder()
         builder.add_cloth_grid(
             pos=wp.vec3(0.0, 0.0, 1.0),
@@ -376,20 +377,23 @@ class TestModelAttributeSpecs(unittest.TestCase):
             builder.add_constraint_mimic(joint, joint, coef0=0.1, coef1=0.5)
         model = builder.finalize(device="cpu", requires_grad=True)
 
-        specs = {**newton.Model._CORE_ATTRIBUTE_SPECS, **ModelBuilder._BUILDER_ATTRIBUTE_SPECS}
-        typed = {name: spec for name, spec in specs.items() if spec.dtype is not None}
-        self.assertGreater(len(typed), 90)
-        for name, spec in typed.items():
+        conversions = {
+            name: (dtype, differentiable)
+            for entries in _ARRAY_BACKED_ATTRIBUTES_BY_FREQUENCY.values()
+            for name, dtype, differentiable in entries
+        }
+        self.assertEqual(set(conversions), set(_ARRAY_BACKED_ATTRIBUTE_DTYPES))
+        for name, (dtype, differentiable) in conversions.items():
             with self.subTest(attribute=name):
                 array = getattr(model, name)
                 self.assertIsNotNone(array)
-                self.assertEqual(array.dtype, spec.dtype)
-                self.assertEqual(array.requires_grad, spec.differentiable)
+                self.assertEqual(array.dtype, dtype)
+                self.assertEqual(array.requires_grad, differentiable)
         # Display colors and the deprecated mimic coefficients opt out of gradients.
         for name in ("shape_color", "tri_opacity", "constraint_mimic_coef0"):
-            self.assertFalse(typed[name].differentiable)
-        self.assertTrue(typed["body_q"].differentiable)
-        self.assertFalse(typed["joint_parent"].differentiable)
+            self.assertFalse(getattr(model, name).requires_grad)
+        self.assertTrue(model.body_q.requires_grad)
+        self.assertFalse(model.joint_parent.requires_grad)
 
 
 class TestParallelJointWarning(unittest.TestCase):

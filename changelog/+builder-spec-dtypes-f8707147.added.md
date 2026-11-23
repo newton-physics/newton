@@ -1,1 +1,0 @@
-Add `Model.AttributeSpec.dtype` and `Model.AttributeSpec.differentiable`, which declare the Warp dtype of each built-in attribute that `ModelBuilder.finalize()` converts and whether `finalize(requires_grad=True)` allocates its gradient.
