@@ -118,7 +118,19 @@ def _parse_articulations(
         art_bodies = []
         if verbose:
             logger.info("Bodies under articulation %s:%s", path, "".join(f"\n\t{p!s}" for p in desc.articulatedBodies))
-        for p in desc.articulatedBodies:
+        articulated_bodies = list(desc.articulatedBodies)
+        if any(p != Sdf.Path.emptyPath for p in articulated_bodies):
+            # USD lists a link only as the neighbor of another link, which misses a link whose joints
+            # all lead to the world. Alone, such a link stays outside the articulations.
+            world_links = set()
+            for p in desc.articulatedJoints:
+                joint_desc = joint_descriptions[str(p)]
+                for body, other in ((joint_desc.body0, joint_desc.body1), (joint_desc.body1, joint_desc.body0)):
+                    if other == Sdf.Path.emptyPath and str(body) in body_specs:
+                        world_links.add(body)
+            if not world_links.issubset(articulated_bodies):
+                articulated_bodies = sorted({*articulated_bodies, *world_links})
+        for p in articulated_bodies:
             if p == Sdf.Path.emptyPath:
                 continue
             key = str(p)
@@ -186,9 +198,6 @@ def _parse_articulations(
             if str(joint_desc.body0) in ignored_body_paths:
                 continue
             if str(joint_desc.body1) in ignored_body_paths:
-                continue
-            if str(joint_desc.body0) not in body_ids and str(joint_desc.body1) not in body_ids:
-                # USD lists no body for a link whose joints all lead to the world; the orphan pass imports them.
                 continue
             parent_id, child_id = resolve_joint_parent_child(joint_desc, body_ids, get_transforms=False)  # pyright: ignore[reportAssignmentType]
             joint_plan.add_joint(joint_path, parent_id, child_id, excluded=joint_desc.excludeFromArticulation)

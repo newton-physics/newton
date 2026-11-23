@@ -1923,26 +1923,26 @@ def Xform "Articulation" (
                     source=source,
                 )
 
-            # USD lists no body for a link that only has a joint to the world, which stays outside the articulations
+            # USD does not list a link that only has a joint to the world among the articulated bodies
             test_filtering(
                 "disable the joint behind the first body",
                 ignore_paths=[],
                 bodies_follow_joint_ordering=bodies_follow_joint_ordering,
-                expected_articulation_count=1,
+                expected_articulation_count=2,
                 expected_joint_types=[
+                    newton.JointType.FIXED,
                     newton.JointType.FREE,
                     newton.JointType.REVOLUTE,
                     newton.JointType.REVOLUTE,
-                    newton.JointType.FIXED,
                 ],
                 expected_body_keys=[
+                    "/Articulation/Body0",
                     "/Articulation/Body1",
                     "/Articulation/Body2",
                     "/Articulation/Body3",
-                    "/Articulation/Body0",
                 ],
-                expected_joint_keys=["joint_1", "/Articulation/Joint2", "/Articulation/Joint3", "/Articulation/Joint0"],
-                expected_articulation_keys=["/Articulation"],
+                expected_joint_keys=["/Articulation/Joint0", "joint_2", "/Articulation/Joint2", "/Articulation/Joint3"],
+                expected_articulation_keys=["/Articulation", "/Articulation/Body1"],
                 source=disable_joint("/Articulation/Joint1"),
             )
 

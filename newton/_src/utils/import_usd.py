@@ -259,10 +259,10 @@ def parse_usd(
         joint_drive_gains_scaling: The default scaling of the PD control gains (stiffness and damping), if not set in the PhysicsScene with as "newton:joint_drive_gains_scaling".
         verbose: If True, log additional information about the parsed USD file. Default is False.
         ignore_paths: A list of regular expressions matched against the start of each prim path (:func:`re.match`).
-            The stage is imported as if the matching prims were not on it. A joint to an ignored body is dropped,
-            and bodies that lose their connection to the rest of an articulation stay in the model with their
-            own base joint, chosen by ``floating`` and ``base_joint`` as for any body without a joint. Add their
-            paths to ``ignore_paths`` to drop them as well.
+            Rigid bodies and joints are imported as if the matching prims were not on the stage. A joint to an
+            ignored body is dropped, and bodies that lose their connection to the rest of an articulation stay
+            in the model with their own base joint, chosen by ``floating`` and ``base_joint`` as for any body
+            without a joint. Add their paths to ``ignore_paths`` to drop them as well.
         collapse_fixed_joints: If True, fixed joints are removed and the respective bodies are merged. Only considered if not set on the PhysicsScene as "newton:collapse_fixed_joints".
         enable_self_collisions: Default for whether self-collisions are enabled for all shapes within an articulation. Resolved via the schema resolver from ``newton:selfCollisionEnabled`` (NewtonArticulationRootAPI) or ``physxArticulation:enabledSelfCollisions`` on the articulation root, or on the cable ``BasisCurves`` prim for cable-owned articulations; if neither is authored, this value takes precedence.
         apply_up_axis_from_stage: If True, the up axis of the stage will be used to set :attr:`newton.ModelBuilder.up_axis`. Otherwise, the stage will be rotated such that its up axis aligns with the builder's up axis. Default is False.
