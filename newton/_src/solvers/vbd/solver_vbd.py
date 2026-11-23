@@ -1897,6 +1897,10 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 np.any((shape_body < 0) & ((shape_flags & int(ShapeFlags.COLLIDE_PARTICLES)) != 0))
             )
 
+    def _static_shape_dat_active(self) -> bool:
+        """Return whether self-contact DAT also truncates particles against static-shape contacts."""
+        return self.particle_enable_self_contact and not self.rigid_soft_enable_dat and self._has_static_particle_shapes
+
     def _validate_contact_materials(self) -> None:
         """Validate shape materials for particle contacts and compliant rigid contacts."""
         if self.device.is_capturing or self.model.shape_count == 0:
@@ -3238,6 +3242,11 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         run_soft_self_collision: bool,
     ):
         """Run selected collision detectors, then reset their DAT references."""
+        if run_rigid_collision and self._static_shape_dat_active():
+            # The static-shape pass truncates particles against these contacts from the
+            # particle reference, so that reference must be reset where they are detected.
+            # It also anchors self-contact DAT, so self-contact is detected again with it.
+            run_soft_self_collision = True
         if run_rigid_collision:
             self._run_rigid_collision(state, dt)
         if run_soft_self_collision:
@@ -3422,11 +3431,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 device=self.device,
             )
         elif (
-            static_shapes
-            and self.particle_enable_self_contact
-            and self._has_static_particle_shapes
-            and contacts is not None
-            and contacts.soft_contact_max > 0
+            static_shapes and self._static_shape_dat_active() and contacts is not None and contacts.soft_contact_max > 0
         ):
             # Self-contact planes can cut a particle's motion out of a static shape while
             # its motion into the shape stays free, which walks a resting pile through the

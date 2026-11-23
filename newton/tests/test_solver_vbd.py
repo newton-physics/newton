@@ -10035,6 +10035,54 @@ def test_self_contact_dat_truncates_full_surface_recovery_rows(test, device):
     test.assertTrue(np.all(z >= z0 - 1.0e-6), f"particles moved deeper into the mesh: min z = {z.min():.6f} m")
 
 
+def test_self_contact_dat_static_reference_follows_rigid_detection(test, device):
+    """Verify rigid detection also resets the particle reference of the static-shape pass.
+
+    That pass truncates from the particle reference, so with a solver-owned pipeline
+    that detects rigid contacts after initialization, self-contact is detected there too.
+    """
+    Slot = newton.solvers.SolverBase.CollisionSlot
+    Frequency = newton.solvers.SolverBase.CollisionFrequencyType
+    builder = newton.ModelBuilder()
+    builder.add_ground_plane()
+    builder.add_cloth_grid(
+        pos=wp.vec3(-0.01, -0.01, 0.002),
+        rot=wp.quat_identity(),
+        vel=wp.vec3(0.0, 0.0, -0.6),
+        dim_x=2,
+        dim_y=2,
+        cell_x=0.01,
+        cell_y=0.01,
+        mass=1.0e-4,
+        particle_radius=5.0e-4,
+    )
+    builder.color()
+    model = builder.finalize(device=device)
+    solver = newton.solvers.SolverVBD(
+        model,
+        iterations=4,
+        particle_enable_self_contact=True,
+        particle_self_contact_margin=0.005,
+        particle_self_contact_gap=0.005,
+        collision_pipeline=newton.CollisionPipeline(model),
+        collision_frequency_type={Slot.RIGID: Frequency.PRE_POST_INIT, Slot.SOFT_SELF_CONTACT: Frequency.PRE_INIT},
+    )
+    detect = solver._collision_detection_penetration_free
+    references = []
+
+    def counting_detect(current_state, **kwargs):
+        detect(current_state, **kwargs)
+        references.append(current_state.particle_q.numpy().copy())
+
+    solver._collision_detection_penetration_free = counting_detect
+    state_in, state_out = model.state(), model.state()
+    solver.step(state_in, state_out, None, None, 5.0e-3)
+
+    # Before and after initialization, matching the rigid detections.
+    test.assertEqual(len(references), 2)
+    np.testing.assert_array_equal(references[1], solver.pos_prev_collision_detection.numpy())
+
+
 class TestVBDRigidDAT(unittest.TestCase):
     pass
 
@@ -10139,6 +10187,12 @@ add_function_test(
     TestVBDRigidDAT,
     "test_self_contact_dat_truncates_full_surface_recovery_rows",
     test_self_contact_dat_truncates_full_surface_recovery_rows,
+    devices=devices,
+)
+add_function_test(
+    TestVBDRigidDAT,
+    "test_self_contact_dat_static_reference_follows_rigid_detection",
+    test_self_contact_dat_static_reference_follows_rigid_detection,
     devices=devices,
 )
 add_function_test(

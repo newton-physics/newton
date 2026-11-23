@@ -559,7 +559,8 @@ contact margin at detection. It skips body-attached shapes and full-surface
 mesh rows that pair complete mesh primitives; those need the option.
 Penetration-recovery rows of a full-surface static mesh are truncated like
 analytic contacts, so a particle inside the mesh may move toward its surface
-but not deeper.
+but not deeper. The pass truncates from the self-contact reference, so with a
+solver-owned pipeline every rigid detection also reruns self-contact detection.
 
 Both parts remove motion. A cloth that falls fast onto a shape, or a sheet
 pressed between fingers, can therefore move slower than physics would predict,
