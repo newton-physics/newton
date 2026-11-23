@@ -8169,7 +8169,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             if not compiled_masks.exact:
                 # Groups alone often still fit in 32 bits; body excludes then carry the pair filters.
                 group_masks = self._compile_group_collision_masks(model, colliding_shapes, body_filters)
-                if group_masks is not None:
+                # Flexes need a mask bit of their own.
+                if group_masks is not None and (group_masks.bit_count < 32 or len(selected_particles) == 0):
                     compiled_masks = group_masks
         if compiled_masks is not None:
             if compiled_masks.exact:
