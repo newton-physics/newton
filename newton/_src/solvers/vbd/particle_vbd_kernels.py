@@ -350,12 +350,13 @@ def compute_cofactor(F: wp.mat33) -> wp.mat33:
 
 
 @wp.func
-def evaluate_neo_hookean_membrane_force_hessian(
-    face: int,
+def _evaluate_membrane_from_vertices(
+    v0: int,
+    v1: int,
+    v2: int,
     v_order: int,
     pos: wp.array[wp.vec3],
     pos_anchor: wp.array[wp.vec3],
-    tri_indices: wp.array2d[wp.int32],
     tri_pose: wp.mat22,
     area: float,
     mu: float,
@@ -367,10 +368,6 @@ def evaluate_neo_hookean_membrane_force_hessian(
     #   psi = (mu/2)(I_c - 2) + (lambda/2)(J_s - alpha)^2
     # where I_c = tr(F^T F), J_s = sqrt(det(F^T F)) = area ratio,
     # alpha = 1 + mu/lambda (ensures zero stress at the rest configuration).
-
-    v0 = tri_indices[face, 0]
-    v1 = tri_indices[face, 1]
-    v2 = tri_indices[face, 2]
 
     x0 = pos[v0]
     x01 = pos[v1] - x0
@@ -384,6 +381,16 @@ def evaluate_neo_hookean_membrane_force_hessian(
     # Deformation gradient F = [f0, f1] (3x2 as two column vectors)
     f0 = x01 * DmInv00 + x02 * DmInv10
     f1 = x01 * DmInv01 + x02 * DmInv11
+
+    f0_prev = wp.vec3(0.0)
+    f1_prev = wp.vec3(0.0)
+    if damping > 0.0:
+        x0_prev = pos_anchor[v0]
+        x01_prev = pos_anchor[v1] - x0_prev
+        x02_prev = pos_anchor[v2] - x0_prev
+
+        f0_prev = x01_prev * DmInv00 + x02_prev * DmInv10
+        f1_prev = x01_prev * DmInv01 + x02_prev * DmInv11
 
     # The Gram determinant subtracts nearly equal large values for stretched,
     # almost collinear columns. Use the equivalent cross-product area instead.
@@ -451,13 +458,6 @@ def evaluate_neo_hookean_membrane_force_hessian(
         f1_dot_f1 = wp.dot(f1, f1)
         f0_dot_f1 = wp.dot(f0, f1)
 
-        x0_prev = pos_anchor[v0]
-        x01_prev = pos_anchor[v1] - x0_prev
-        x02_prev = pos_anchor[v2] - x0_prev
-
-        f0_prev = x01_prev * DmInv00 + x02_prev * DmInv10
-        f1_prev = x01_prev * DmInv01 + x02_prev * DmInv11
-
         c00_rate = (f0_dot_f0 - wp.dot(f0_prev, f0_prev)) * inv_dt
         c01_rate = (f0_dot_f1 - wp.dot(f0_prev, f1_prev)) * inv_dt
         c11_rate = (f1_dot_f1 - wp.dot(f1_prev, f1_prev)) * inv_dt
@@ -480,6 +480,36 @@ def evaluate_neo_hookean_membrane_force_hessian(
     hessian *= area
 
     return force, hessian
+
+
+@wp.func
+def evaluate_neo_hookean_membrane_force_hessian(
+    face: int,
+    v_order: int,
+    pos: wp.array[wp.vec3],
+    pos_anchor: wp.array[wp.vec3],
+    tri_indices: wp.array2d[wp.int32],
+    tri_pose: wp.mat22,
+    area: float,
+    mu: float,
+    lmbd: float,
+    damping: float,
+    dt: float,
+):
+    return _evaluate_membrane_from_vertices(
+        tri_indices[face, 0],
+        tri_indices[face, 1],
+        tri_indices[face, 2],
+        v_order,
+        pos,
+        pos_anchor,
+        tri_pose,
+        area,
+        mu,
+        lmbd,
+        damping,
+        dt,
+    )
 
 
 @wp.func
@@ -523,6 +553,7 @@ def evaluate_dihedral_angle_based_bending_force_hessian(
     stiffness: float,
     damping: float,
     dt: float,
+    selected_corner_only: bool = False,
 ):
     # Skip invalid edges (boundary edges with missing opposite vertices)
     if edge_indices[bending_index, 0] == -1 or edge_indices[bending_index, 1] == -1:
@@ -571,57 +602,82 @@ def evaluate_dihedral_angle_based_bending_force_hessian(
     cos_theta = wp.dot(n1_hat, n2_hat)
     theta = wp.atan2(sin_theta, cos_theta)
 
-    k = stiffness * edge_rest_length[bending_index]
+    rest_len = edge_rest_length[bending_index]
+    k = stiffness * rest_len
     dE_dtheta = k * (theta - edge_rest_angle[bending_index])
 
-    # Pre-compute skew matrices (shared across all angle derivative computations)
-    skew_e = wp.skew(e)
-    skew_x03 = wp.skew(x03)
-    skew_x02 = wp.skew(x02)
-    skew_x13 = wp.skew(x13)
-    skew_x12 = wp.skew(x12)
-    skew_n1 = wp.skew(n1_hat)
-    skew_n2 = wp.skew(n2_hat)
+    if selected_corner_only:
+        # A triangle tile owns a single corner of this hinge.
+        raw1_dx = wp.skew(e)
+        raw2_dx = -raw1_dx
+        if v_order == 2:
+            raw1_dx = -wp.skew(x03)
+            raw2_dx = wp.skew(x13)
+        elif v_order == 3:
+            raw1_dx = wp.skew(x02)
+            raw2_dx = -wp.skew(x12)
 
-    # Compute the derivatives of unit normals with respect to each vertex; required for computing angle derivatives
-    dn1hat_dx0 = compute_normalized_vector_derivative(n1_norm, n1_hat, skew_e)
-    dn2hat_dx0 = wp.mat33(0.0)
+        on_hinge = v_order == 2 or v_order == 3
+        dn1hat_dx = wp.mat33(0.0)
+        dn2hat_dx = wp.mat33(0.0)
+        if v_order == 0 or on_hinge:
+            dn1hat_dx = compute_normalized_vector_derivative(n1_norm, n1_hat, raw1_dx)
+        if v_order == 1 or on_hinge:
+            dn2hat_dx = compute_normalized_vector_derivative(n2_norm, n2_hat, raw2_dx)
 
-    dn1hat_dx1 = wp.mat33(0.0)
-    dn2hat_dx1 = compute_normalized_vector_derivative(n2_norm, n2_hat, -skew_e)
+        dtheta_dx = compute_angle_derivative(
+            n1_hat, n2_hat, e_hat, dn1hat_dx, dn2hat_dx, sin_theta, cos_theta, wp.skew(n1_hat), wp.skew(n2_hat)
+        )
+    else:
+        # Pre-compute skew matrices (shared across all angle derivative computations)
+        skew_e = wp.skew(e)
+        skew_x03 = wp.skew(x03)
+        skew_x02 = wp.skew(x02)
+        skew_x13 = wp.skew(x13)
+        skew_x12 = wp.skew(x12)
+        skew_n1 = wp.skew(n1_hat)
+        skew_n2 = wp.skew(n2_hat)
 
-    dn1hat_dx2 = compute_normalized_vector_derivative(n1_norm, n1_hat, -skew_x03)
-    dn2hat_dx2 = compute_normalized_vector_derivative(n2_norm, n2_hat, skew_x13)
+        # Compute the derivatives of unit normals with respect to each vertex; required for computing angle derivatives
+        dn1hat_dx0 = compute_normalized_vector_derivative(n1_norm, n1_hat, skew_e)
+        dn2hat_dx0 = wp.mat33(0.0)
 
-    dn1hat_dx3 = compute_normalized_vector_derivative(n1_norm, n1_hat, skew_x02)
-    dn2hat_dx3 = compute_normalized_vector_derivative(n2_norm, n2_hat, -skew_x12)
+        dn1hat_dx1 = wp.mat33(0.0)
+        dn2hat_dx1 = compute_normalized_vector_derivative(n2_norm, n2_hat, -skew_e)
 
-    # Compute all angle derivatives (required for damping)
-    dtheta_dx0 = compute_angle_derivative(
-        n1_hat, n2_hat, e_hat, dn1hat_dx0, dn2hat_dx0, sin_theta, cos_theta, skew_n1, skew_n2
-    )
-    dtheta_dx1 = compute_angle_derivative(
-        n1_hat, n2_hat, e_hat, dn1hat_dx1, dn2hat_dx1, sin_theta, cos_theta, skew_n1, skew_n2
-    )
-    dtheta_dx2 = compute_angle_derivative(
-        n1_hat, n2_hat, e_hat, dn1hat_dx2, dn2hat_dx2, sin_theta, cos_theta, skew_n1, skew_n2
-    )
-    dtheta_dx3 = compute_angle_derivative(
-        n1_hat, n2_hat, e_hat, dn1hat_dx3, dn2hat_dx3, sin_theta, cos_theta, skew_n1, skew_n2
-    )
+        dn1hat_dx2 = compute_normalized_vector_derivative(n1_norm, n1_hat, -skew_x03)
+        dn2hat_dx2 = compute_normalized_vector_derivative(n2_norm, n2_hat, skew_x13)
 
-    # Use float masks for branch-free selection
-    mask0 = float(v_order == 0)
-    mask1 = float(v_order == 1)
-    mask2 = float(v_order == 2)
-    mask3 = float(v_order == 3)
+        dn1hat_dx3 = compute_normalized_vector_derivative(n1_norm, n1_hat, skew_x02)
+        dn2hat_dx3 = compute_normalized_vector_derivative(n2_norm, n2_hat, -skew_x12)
 
-    # Select the derivative for the current vertex without branching
-    dtheta_dx = dtheta_dx0 * mask0 + dtheta_dx1 * mask1 + dtheta_dx2 * mask2 + dtheta_dx3 * mask3
+        # Compute all angle derivatives (required for damping)
+        dtheta_dx0 = compute_angle_derivative(
+            n1_hat, n2_hat, e_hat, dn1hat_dx0, dn2hat_dx0, sin_theta, cos_theta, skew_n1, skew_n2
+        )
+        dtheta_dx1 = compute_angle_derivative(
+            n1_hat, n2_hat, e_hat, dn1hat_dx1, dn2hat_dx1, sin_theta, cos_theta, skew_n1, skew_n2
+        )
+        dtheta_dx2 = compute_angle_derivative(
+            n1_hat, n2_hat, e_hat, dn1hat_dx2, dn2hat_dx2, sin_theta, cos_theta, skew_n1, skew_n2
+        )
+        dtheta_dx3 = compute_angle_derivative(
+            n1_hat, n2_hat, e_hat, dn1hat_dx3, dn2hat_dx3, sin_theta, cos_theta, skew_n1, skew_n2
+        )
+
+        # Use float masks for branch-free selection
+        mask0 = float(v_order == 0)
+        mask1 = float(v_order == 1)
+        mask2 = float(v_order == 2)
+        mask3 = float(v_order == 3)
+
+        # Select the derivative for the current vertex without branching
+        dtheta_dx = dtheta_dx0 * mask0 + dtheta_dx1 * mask1 + dtheta_dx2 * mask2 + dtheta_dx3 * mask3
 
     # Compute elastic force and hessian
     bending_force = -dE_dtheta * dtheta_dx
-    bending_hessian = k * wp.outer(dtheta_dx, dtheta_dx)
+    gradient_outer = wp.outer(dtheta_dx, dtheta_dx)
+    bending_hessian = k * gradient_outer
 
     if damping > 0.0:
         inv_dt = 1.0 / dt
@@ -661,9 +717,8 @@ def evaluate_dihedral_angle_based_bending_force_hessian(
 
         dtheta_dt = dtheta * inv_dt
 
-        rest_len = edge_rest_length[bending_index]
         damping_force = -damping * rest_len * dtheta_dt * dtheta_dx
-        damping_hessian = damping * rest_len * inv_dt * wp.outer(dtheta_dx, dtheta_dx)
+        damping_hessian = damping * rest_len * inv_dt * gradient_outer
 
         bending_force = bending_force + damping_force
         bending_hessian = bending_hessian + damping_hessian
@@ -2281,6 +2336,14 @@ def make_solve_elasticity_tile(include_triangles: bool, include_tets: bool, two_
     # _warp_half_reduce_sum hardcodes a width-16 shuffle ladder.
     assert TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE == 16
 
+    # The general face walk emits per-face diagnostics when connectivity tracing is enabled.
+    use_cloth_tile = (
+        two_particles_per_warp
+        and include_triangles
+        and not include_tets
+        and "connectivity" not in VBD_DEBUG_PRINTING_OPTIONS
+    )
+
     @wp.kernel(module="unique", enable_backward=False)
     def solve_elasticity_tile_kernel(
         dt: float,
@@ -2321,7 +2384,15 @@ def make_solve_elasticity_tile(include_triangles: bool, include_tets: bool, two_
 
         particle_index = wp.int32(0)
         particle_is_dynamic = False
-        if particle_slot_valid:
+        if wp.static(use_cloth_tile):
+            particle_index = particle_ids_in_color[wp.min(particle_slot, particle_ids_in_color.shape[0] - 1)]
+            vertex_mass = mass[particle_index]
+            particle_is_dynamic = (
+                particle_slot_valid
+                and (particle_flags[particle_index] & ParticleFlags.ACTIVE) != 0
+                and vertex_mass != 0.0
+            )
+        elif particle_slot_valid:
             particle_index = particle_ids_in_color[particle_slot]
             particle_is_dynamic = (
                 particle_flags[particle_index] & ParticleFlags.ACTIVE != 0 and mass[particle_index] != 0.0
@@ -2337,7 +2408,107 @@ def make_solve_elasticity_tile(include_triangles: bool, include_tets: bool, two_
         f = wp.vec3(0.0)
         h = wp.mat33(0.0)
 
-        if particle_is_dynamic:
+        if wp.static(use_cloth_tile):
+            # Issue independent vertex and first-element loads before evaluating the membrane.
+            saved_mass = vertex_mass
+            saved_hessian = particle_hessians[particle_index]
+            saved_inertia = inertia[particle_index]
+            saved_position = pos[particle_index]
+            saved_force = particle_forces[particle_index]
+            saved_displacement = particle_displacements[particle_index]
+            saved_world = int(0)
+            if world_residual:
+                saved_world = particle_world[particle_index]
+
+            face_offset = int(0)
+            face_end = int(0)
+            edge_offset = int(0)
+            edge_end = int(0)
+            face = int(0)
+            order = int(0)
+            edge_index = int(0)
+            edge_order = int(0)
+            if tri_indices.shape[0] > 0 and particle_adjacency.v_adj_tris.shape[0] > 0:
+                face_offset = particle_adjacency.v_adj_tris_offsets[particle_index] + 2 * thread_idx
+                face_end = particle_adjacency.v_adj_tris_offsets[particle_index + 1]
+                # Each entry contains an element ID and local corner. Inactive lanes
+                # can read a valid pair but contribute zero to the reduction.
+                address = wp.max(0, wp.min(face_offset, face_end - 2))
+                face = particle_adjacency.v_adj_tris[address]
+                order = particle_adjacency.v_adj_tris[address + 1]
+            if edge_indices.shape[0] > 0 and particle_adjacency.v_adj_edges.shape[0] > 0:
+                edge_offset = particle_adjacency.v_adj_edges_offsets[particle_index] + 2 * thread_idx
+                edge_end = particle_adjacency.v_adj_edges_offsets[particle_index + 1]
+                address = wp.max(0, wp.min(edge_offset, edge_end - 2))
+                edge_index = particle_adjacency.v_adj_edges[address]
+                edge_order = particle_adjacency.v_adj_edges[address + 1]
+
+            stiffness = float(0.0)
+            if edge_indices.shape[0] > 0 and particle_adjacency.v_adj_edges.shape[0] > 0:
+                stiffness = edge_bending_properties[edge_index, 0]
+
+            if tri_indices.shape[0] > 0 and particle_adjacency.v_adj_tris.shape[0] > 0:
+                v0 = tri_indices[face, 0]
+                v1 = tri_indices[face, 1]
+                v2 = tri_indices[face, 2]
+                mu = tri_materials[face, 0]
+                lmbd = tri_materials[face, 1]
+                damping = tri_materials[face, 2]
+                pose = tri_poses[face]
+                area = tri_areas[face]
+                if face_offset < face_end and particle_is_dynamic and (mu > 0.0 or lmbd > 0.0):
+                    f, h = _evaluate_membrane_from_vertices(
+                        v0, v1, v2, order, pos, pos_prev, pose, area, mu, lmbd, damping, dt
+                    )
+
+            if particle_is_dynamic:
+                face_offset += 2 * TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE
+                while face_offset < face_end:
+                    face = particle_adjacency.v_adj_tris[face_offset]
+                    order = particle_adjacency.v_adj_tris[face_offset + 1]
+                    mu = tri_materials[face, 0]
+                    lmbd = tri_materials[face, 1]
+                    if mu > 0.0 or lmbd > 0.0:
+                        face_force, face_stiffness = evaluate_neo_hookean_membrane_force_hessian(
+                            face,
+                            order,
+                            pos,
+                            pos_prev,
+                            tri_indices,
+                            tri_poses[face],
+                            tri_areas[face],
+                            mu,
+                            lmbd,
+                            tri_materials[face, 2],
+                            dt,
+                        )
+                        f += face_force
+                        h += face_stiffness
+                    face_offset += 2 * TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE
+
+                while edge_offset < edge_end:
+                    if stiffness > 0.0:
+                        edge_force, edge_stiffness = evaluate_dihedral_angle_based_bending_force_hessian(
+                            edge_index,
+                            edge_order,
+                            pos,
+                            pos_prev,
+                            edge_indices,
+                            edge_rest_angles,
+                            edge_rest_length,
+                            stiffness,
+                            edge_bending_properties[edge_index, 1],
+                            dt,
+                            True,
+                        )
+                        f += edge_force
+                        h += edge_stiffness
+                    edge_offset += 2 * TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE
+                    if edge_offset < edge_end:
+                        edge_index = particle_adjacency.v_adj_edges[edge_offset]
+                        edge_order = particle_adjacency.v_adj_edges[edge_offset + 1]
+                        stiffness = edge_bending_properties[edge_index, 0]
+        elif particle_is_dynamic:
             if wp.static(include_triangles):
                 if tri_indices.shape[0] > 0:
                     batch_counter = wp.int32(0)
@@ -2446,17 +2617,27 @@ def make_solve_elasticity_tile(include_triangles: bool, include_tets: bool, two_
                 _warp_half_reduce_sum(f[1]),
                 _warp_half_reduce_sum(f[2]),
             )
-            h_total = wp.mat33(
-                _warp_half_reduce_sum(h[0, 0]),
-                _warp_half_reduce_sum(h[0, 1]),
-                _warp_half_reduce_sum(h[0, 2]),
-                _warp_half_reduce_sum(h[1, 0]),
-                _warp_half_reduce_sum(h[1, 1]),
-                _warp_half_reduce_sum(h[1, 2]),
-                _warp_half_reduce_sum(h[2, 0]),
-                _warp_half_reduce_sum(h[2, 1]),
-                _warp_half_reduce_sum(h[2, 2]),
-            )
+            if wp.static(use_cloth_tile):
+                # Internal force derivatives are symmetric; the external Hessian is added in full below.
+                xx = _warp_half_reduce_sum(h[0, 0])
+                xy = _warp_half_reduce_sum(h[0, 1])
+                xz = _warp_half_reduce_sum(h[0, 2])
+                yy = _warp_half_reduce_sum(h[1, 1])
+                yz = _warp_half_reduce_sum(h[1, 2])
+                zz = _warp_half_reduce_sum(h[2, 2])
+                h_total = wp.mat33(xx, xy, xz, xy, yy, yz, xz, yz, zz)
+            else:
+                h_total = wp.mat33(
+                    _warp_half_reduce_sum(h[0, 0]),
+                    _warp_half_reduce_sum(h[0, 1]),
+                    _warp_half_reduce_sum(h[0, 2]),
+                    _warp_half_reduce_sum(h[1, 0]),
+                    _warp_half_reduce_sum(h[1, 1]),
+                    _warp_half_reduce_sum(h[1, 2]),
+                    _warp_half_reduce_sum(h[2, 0]),
+                    _warp_half_reduce_sum(h[2, 1]),
+                    _warp_half_reduce_sum(h[2, 2]),
+                )
         else:
             f_tile = wp.tile(f, preserve_type=True)
             h_tile = wp.tile(h, preserve_type=True)
@@ -2470,23 +2651,33 @@ def make_solve_elasticity_tile(include_triangles: bool, include_tets: bool, two_
                     particle_displacements[particle_index] = wp.vec3(0.0)
                     return
             dt_sqr_reciprocal = 1.0 / (dt * dt)
-            h_total = (
-                h_total
-                + mass[particle_index] * dt_sqr_reciprocal * wp.identity(n=3, dtype=float)
-                + particle_hessians[particle_index]
-            )
+            if wp.static(use_cloth_tile):
+                h_total = h_total + saved_mass * dt_sqr_reciprocal * wp.identity(n=3, dtype=float) + saved_hessian
+            else:
+                h_total = (
+                    h_total
+                    + mass[particle_index] * dt_sqr_reciprocal * wp.identity(n=3, dtype=float)
+                    + particle_hessians[particle_index]
+                )
             det = wp.determinant(h_total)
             if abs(det) > 1e-8:
                 h_inv = wp.inverse(h_total)
-                f_total = (
-                    f_total
-                    + mass[particle_index] * (inertia[particle_index] - pos[particle_index]) * dt_sqr_reciprocal
-                    + particle_forces[particle_index]
-                )
-                dx = h_inv * f_total
-                particle_displacements[particle_index] = particle_displacements[particle_index] + dx
-                if world_residual:
-                    record_world_residual(world_residual, particle_world[particle_index], wp.dot(f_total, dx))
+                if wp.static(use_cloth_tile):
+                    f_total = f_total + saved_mass * (saved_inertia - saved_position) * dt_sqr_reciprocal + saved_force
+                    dx = h_inv * f_total
+                    particle_displacements[particle_index] = saved_displacement + dx
+                    if world_residual:
+                        record_world_residual(world_residual, saved_world, wp.dot(f_total, dx))
+                else:
+                    f_total = (
+                        f_total
+                        + mass[particle_index] * (inertia[particle_index] - pos[particle_index]) * dt_sqr_reciprocal
+                        + particle_forces[particle_index]
+                    )
+                    dx = h_inv * f_total
+                    particle_displacements[particle_index] = particle_displacements[particle_index] + dx
+                    if world_residual:
+                        record_world_residual(world_residual, particle_world[particle_index], wp.dot(f_total, dx))
             elif world_residual and not wp.isfinite(det):
                 # A non-finite Hessian also skips the update; report it instead of dropping the particle.
                 record_world_residual(world_residual, particle_world[particle_index], wp.inf)
