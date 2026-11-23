@@ -10098,7 +10098,7 @@ def test_self_contact_dat_static_rows_hold_after_self_contact_detection(test, de
     By default, rigid contacts are detected before initialization and self-contact also
     after it, which moves the particle reference past the pose the rows were detected at.
     A row's plane is anchored at its static contact point and normal, and only its offset
-    along the normal follows the reference, so the particle stays outside the shape.
+    along the normal follows the reference, so the particle stays on the outer side of that plane.
     """
     builder = newton.ModelBuilder()
     # A negligible contact stiffness leaves the truncation as the only thing that stops the sheet.
