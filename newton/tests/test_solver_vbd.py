@@ -10092,6 +10092,67 @@ def test_self_contact_dat_static_reference_follows_rigid_detection(test, device)
     np.testing.assert_array_equal(references[1], solver.pos_prev_collision_detection.numpy())
 
 
+def test_self_contact_dat_static_rows_hold_after_self_contact_detection(test, device):
+    """Verify static-shape rows stay valid after a self-contact-only detection.
+
+    By default, rigid contacts are detected before initialization and self-contact also
+    after it, which moves the particle reference past the pose the rows were detected at.
+    A row's plane is anchored at its static contact point and normal, and only its offset
+    along the normal follows the reference, so the particle stays outside the shape.
+    """
+    builder = newton.ModelBuilder()
+    # A negligible contact stiffness leaves the truncation as the only thing that stops the sheet.
+    sphere_cfg = builder.default_shape_cfg.copy()
+    sphere_cfg.ke, sphere_cfg.kd, sphere_cfg.mu = 1.0e-6, 0.0, 0.0
+    builder.add_shape_sphere(-1, radius=0.05, cfg=sphere_cfg)
+    # The sheet slides across the sphere, so the contact points of the rows move every step.
+    builder.add_cloth_grid(
+        pos=wp.vec3(-0.01, -0.01, 0.052),
+        rot=wp.quat_identity(),
+        vel=wp.vec3(0.4, 0.3, -0.6),
+        dim_x=2,
+        dim_y=2,
+        cell_x=0.01,
+        cell_y=0.01,
+        mass=1.0e-4,
+        particle_radius=5.0e-4,
+    )
+    builder.color()
+    model = builder.finalize(device=device)
+    model.soft_contact_ke, model.soft_contact_kd, model.soft_contact_mu = 1.0e-6, 0.0, 0.0
+    solver = newton.solvers.SolverVBD(
+        model,
+        iterations=4,
+        particle_enable_self_contact=True,
+        particle_self_contact_margin=0.005,
+        particle_self_contact_gap=0.005,
+        collision_pipeline=newton.CollisionPipeline(model),
+    )
+    detect, rigid_detect = solver._collision_detection_penetration_free, solver._run_rigid_collision
+    detections = []
+
+    def counting_detect(current_state, **kwargs):
+        detections.append("self")
+        detect(current_state, **kwargs)
+
+    def counting_rigid_detect(current_state, dt):
+        detections.append("rigid")
+        rigid_detect(current_state, dt)
+
+    solver._collision_detection_penetration_free = counting_detect
+    solver._run_rigid_collision = counting_rigid_detect
+    state_0, state_1 = model.state(), model.state()
+    min_distance = np.inf
+    for _ in range(20):
+        solver.step(state_0, state_1, None, None, 5.0e-3)
+        state_0, state_1 = state_1, state_0
+        min_distance = min(min_distance, float(np.linalg.norm(state_0.particle_q.numpy(), axis=1).min()))
+
+    # Rigid and self-contact detection before initialization, self-contact only after it.
+    test.assertEqual(detections, ["rigid", "self", "self"] * 20)
+    test.assertGreater(min_distance, 0.05, "particles moved into the static sphere")
+
+
 class TestVBDRigidDAT(unittest.TestCase):
     pass
 
@@ -10202,6 +10263,12 @@ add_function_test(
     TestVBDRigidDAT,
     "test_self_contact_dat_static_reference_follows_rigid_detection",
     test_self_contact_dat_static_reference_follows_rigid_detection,
+    devices=devices,
+)
+add_function_test(
+    TestVBDRigidDAT,
+    "test_self_contact_dat_static_rows_hold_after_self_contact_detection",
+    test_self_contact_dat_static_rows_hold_after_self_contact_detection,
     devices=devices,
 )
 add_function_test(
