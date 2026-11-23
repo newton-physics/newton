@@ -257,7 +257,8 @@ coordinates use ``rigid_joint_linear_ke`` and ``rigid_joint_angular_ke``,
 respectively. VBD captures these structural stiffnesses
 at construction; rebuild the solver after changing them. Within about 6 degrees
 of a multi-axis D6 gimbal lock, where the Euler coordinates are ill-conditioned,
-VBD softens the affected angular mimic rows to keep the solve finite.
+VBD softens mimic rows whose follower or reference coordinate is affected,
+including linear followers of an angular reference, to keep the solve finite.
 Increase the solver's
 ``iterations`` setting when tighter convergence is needed. Both solvers act on
 the follower and reference joints, so forces applied to the follower also affect

@@ -291,7 +291,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         - Joint-owned mimic relationships are supported for PRISMATIC, REVOLUTE, and D6 joints.
           They contribute implicit finite-stiffness rows to the body solve, using
           ``rigid_joint_linear_ke`` or ``rigid_joint_angular_ke`` for each follower coordinate.
-          Angular rows within about 6 degrees of a multi-axis D6 gimbal lock are softened to stay finite.
+          Rows whose follower or reference coordinate is within about 6 degrees of a multi-axis D6
+          gimbal lock are softened to stay finite, including linear followers of angular references.
           After changing mimic properties, call :meth:`notify_model_changed` with
           :attr:`~newton.ModelFlags.JOINT_PROPERTIES` to clear mimic history.
           If the solver was constructed without supported mimics, rebuild it after adding the first one.
@@ -1092,6 +1093,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             self._joint_mimics.angular_ke = self.rigid_joint_angular_ke
             self._joint_mimics.lambda_ = wp.zeros((model.joint_count, 6), dtype=float, device=self.device)
             self._joint_mimics.rho = wp.zeros((model.joint_count, 6), dtype=float, device=self.device)
+            self._joint_mimics.joint_angle_prev = self.joint_angle_prev
             self._set_module_options(options, module=accumulate_joint_mimics.module)
 
         # Initialize rigid penetration-free (DAT) truncation state
@@ -4853,8 +4855,6 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     self.joint_C0_ang,
                     self.rigid_joint_alpha,
                     self.joint_material_k,
-                    self.rigid_joint_linear_ke,
-                    self.rigid_joint_angular_ke,
                     self.joint_rho,
                     model.joint_target_ke,
                     model.joint_target_kd,

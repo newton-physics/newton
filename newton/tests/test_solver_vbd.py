@@ -2535,8 +2535,6 @@ def _joint_angular_dual_projects_free_axis_lambda(test, device):
                 joint_c0_ang,
                 0.0,
                 joint_material_k,
-                10.0,
-                10.0,
                 joint_material_k,
                 joint_target_ke,
                 joint_target_kd,
@@ -2629,8 +2627,6 @@ def _rod_zero_support_slots_clear_preserved_lambda(test, device):
                 joint_c0_ang,
                 0.0,
                 joint_material_k,
-                10.0,
-                10.0,
                 joint_rho,
                 joint_target_ke,
                 joint_target_kd,
@@ -4231,6 +4227,57 @@ def _rigid_compliant_limit_holds_under_load(test, device):
         solver.step(state_0, state_1, None, None, dt)
         state_0, state_1 = state_1, state_0
     test.assertLess(float(state_0.body_q.numpy()[body, 0]), 0.08)
+
+
+def _rigid_compliant_limit_holds_on_arrival_and_under_effort(test, device):
+    """Stop a link arriving at a compliant limit, and one a joint effort presses into it."""
+    # Even iteration counts exposed a multiplier step that released the limit on alternate sweeps.
+    for limit_ke in (1.0e5, 1.0e8):
+        for iterations in (4, 5):
+            with test.subTest(limit_ke=limit_ke, iterations=iterations):
+                builder = newton.ModelBuilder()
+                link = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3) * 0.01), com=wp.vec3(0.3, 0.0, 0.0))
+                joint = builder.add_joint_revolute(
+                    -1, link, axis=newton.Axis.Y, limit_lower=-0.5, limit_upper=0.5, limit_ke=limit_ke, limit_kd=10.0
+                )
+                builder.add_articulation([joint])
+                builder.color()
+                model = builder.finalize(device=device)
+                solver = newton.solvers.SolverVBD(model, iterations=iterations)
+                state, other = model.state(), model.state()
+                for _ in range(60):
+                    solver.step(state, other, None, None, 1.0 / 60.0)
+                    state, other = other, state
+                    pose = state.body_q.numpy()[0]
+                    # Falling under gravity, it must stop at its upper limit with the hinge intact.
+                    test.assertLess(2.0 * np.arctan2(pose[4], pose[6]), 0.5 + 0.1)
+                    test.assertLess(float(np.linalg.norm(pose[:3])), 5.0e-3)
+
+    # A joint effort enters each step's free-body prediction far past the limit,
+    # so the limit must hold from an unconverged first iterate.
+    with test.subTest(case="joint effort"):
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        link = builder.add_link(mass=0.05, inertia=wp.mat33(np.eye(3) * 1.0e-5), com=wp.vec3(0.03, 0.0, 0.0))
+        joint = builder.add_joint_revolute(
+            -1, link, axis=newton.Axis.Y, limit_lower=-0.5, limit_upper=0.5, limit_ke=1.0e4, limit_kd=0.5
+        )
+        builder.add_articulation([joint])
+        builder.joint_q[0] = 0.49
+        builder.color()
+        model = builder.finalize(device=device)
+        state, other = model.state(), model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+        model.body_q.assign(state.body_q)
+        control = model.control()
+        control.joint_f.assign(np.array([0.2], dtype=np.float32))
+        solver = newton.solvers.SolverVBD(model)
+        for _ in range(120):
+            solver.step(state, other, control, None, 1.0 / 60.0)
+            state, other = other, state
+        pose = state.body_q.numpy()[0]
+        # It must rest effort / limit_ke past the bound with the hinge intact.
+        test.assertAlmostEqual(2.0 * np.arctan2(pose[4], pose[6]), 0.5 + 0.2 / 1.0e4, delta=0.01)
+        test.assertLess(float(np.linalg.norm(pose[:3])), 5.0e-3)
 
 
 def _body_structural_k_refreshes_after_joint_enable_notification(test, device):
@@ -7870,6 +7917,12 @@ add_function_test(
     TestSolverVBD,
     "test_rigid_compliant_limit_holds_under_load",
     _rigid_compliant_limit_holds_under_load,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_rigid_compliant_limit_holds_on_arrival_and_under_effort",
+    _rigid_compliant_limit_holds_on_arrival_and_under_effort,
     devices=devices,
 )
 add_function_test(

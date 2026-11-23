@@ -11,6 +11,7 @@ from .rigid_vbd_kernels import (
     _alm_relaxed_ascent,
     _bilateral_auto_rho,
     _compliant_alm_coefficients,
+    _unwrap_hinge_angle,
 )
 
 wp.set_module_options({"enable_backward": False})
@@ -45,6 +46,7 @@ class JointMimicData:
     angular_ke: float
     lambda_: wp.array2d[float]
     rho: wp.array2d[float]
+    joint_angle_prev: wp.array[float]
 
 
 @wp.struct
@@ -105,7 +107,9 @@ def _coordinate(data: JointMimicData, joint: int, component: int, body_q: wp.arr
     if angular_count == 1:
         axis = data.joint_axis[start]
         relative = wp.quat_inverse(q_p) * q_c
-        coordinate = wp.quat_twist_angle_signed(axis, relative)
+        # Count full turns against the step-start winding, so multi-turn
+        # references do not make their followers' targets jump.
+        coordinate = _unwrap_hinge_angle(wp.quat_twist_angle_signed(axis, relative), data.joint_angle_prev[start])
         # Differentiate the signed twist even when structural swing error remains.
         v = wp.vec3(relative[0], relative[1], relative[2])
         w = relative[3]
@@ -144,13 +148,20 @@ def _row(data: JointMimicData, follower: int, component: int, body_q: wp.array[w
     if component >= data.joint_dof_dim[follower, 0]:
         row.error = wp.atan2(wp.sin(row.error), wp.cos(row.error))
         row.stiffness = data.angular_ke
-        # Near a D6 gimbal lock, scale the error and gradient together. This
-        # keeps the Gauss-Newton row consistent while bounding its Hessian.
-        covector_norm = wp.max(wp.length(wp.spatial_bottom(g_fc)), wp.length(wp.spatial_bottom(g_rc)))
-        if covector_norm > _MAX_ANGULAR_COVECTOR_NORM:
-            scale = _MAX_ANGULAR_COVECTOR_NORM / covector_norm
-            row.error = row.error * scale
-            row.gradients = row.gradients * scale
+
+    # Near a D6 gimbal lock, scale the error and gradient together. This keeps
+    # the Gauss-Newton row consistent while bounding its Hessian. Either
+    # coordinate may be angular, including an angular reference driving a
+    # linear follower; linear-coordinate moment arms are not covectors.
+    covector_norm = float(0.0)
+    if component >= data.joint_dof_dim[follower, 0]:
+        covector_norm = wp.length(wp.spatial_bottom(g_fc))
+    if component >= data.joint_dof_dim[reference, 0]:
+        covector_norm = wp.max(covector_norm, wp.length(wp.spatial_bottom(g_rc)))
+    if covector_norm > _MAX_ANGULAR_COVECTOR_NORM:
+        scale = _MAX_ANGULAR_COVECTOR_NORM / covector_norm
+        row.error = row.error * scale
+        row.gradients = row.gradients * scale
 
     # Shared parents and serial pairs need the cross terms of their combined gradient.
     for i in range(4):

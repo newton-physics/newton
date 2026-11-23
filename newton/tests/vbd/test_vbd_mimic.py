@@ -82,17 +82,18 @@ def test_vbd_mimic_articulated_chain(test, device):
 
 def test_vbd_driven_finger_limit(test, device):
     """Converge a light articulated finger's limit without delayed-force oscillation."""
-    # The revolute case isolates the limit fix; the D6 case adds its fully free
-    # angular classes and the mimic. Previous limit conditioning violates the
-    # bounds within 100 steps; the mimic case needs about 1850 steps to settle.
-    for mimic, d6, steps in ((False, False, 1000), (True, True, 3000)):
+    # The revolute case isolates the limit fix at the default structural
+    # stiffness; the D6 case adds its fully free angular classes and the mimic
+    # at the Dexmate stiffness. Previous limit conditioning violates the bounds
+    # within 100 steps; the mimic case needs about 1850 steps to settle.
+    for mimic, d6, steps, structural_ke in ((False, False, 1000, None), (True, True, 3000, 1.0e6)):
         with test.subTest(mimic=mimic, d6=d6):
             model, masses, inertias, target = _build_finger(device, mimic=mimic, driven=True, d6=d6)
             state, other = model.state(), model.state()
             newton.eval_fk(model, state.joint_q, state.joint_qd, state)
             model.body_q.assign(state.body_q)
             solver = newton.solvers.SolverVBD(
-                model, iterations=5, rigid_joint_linear_ke=1.0e6, rigid_joint_angular_ke=1.0e6
+                model, iterations=5, rigid_joint_linear_ke=structural_ke, rigid_joint_angular_ke=structural_ke
             )
             for step in range(steps):
                 solver.step(state, other, None, None, 1.0 / 960.0)
@@ -311,32 +312,81 @@ def test_vbd_mimic_property_updates(test, device):
 
 
 def test_vbd_mimic_d6_gimbal_lock(test, device):
-    """Resolve a three-axis D6 mismatch authored at the Euler-angle singularity."""
-    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    """Keep D6 mimic rows finite when a coordinate sits at the Euler-angle singularity."""
     axis = newton.ModelBuilder.JointDofConfig.create_unlimited
-    joints = []
-    for _ in range(2):
-        body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
-        joints.append(
-            builder.add_joint_d6(-1, body, angular_axes=[axis(newton.Axis.X), axis(newton.Axis.Y), axis(newton.Axis.Z)])
-        )
-    builder.body_flags[0] = int(newton.BodyFlags.KINEMATIC)
-    builder.add_articulation(joints)
-    builder.set_joint_mimic(joints[1], joints[0])
+    xyz = [newton.Axis.X, newton.Axis.Y, newton.Axis.Z]
+    # An angular follower, and a linear follower of an angular reference.
+    for follower_angular, dt, steps in ((True, 1.0 / 960.0, 100), (False, 1.0 / 60.0, 3)):
+        with test.subTest(follower_angular=follower_angular):
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+            bodies = [builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3))) for _ in range(2)]
+            reference = builder.add_joint_d6(-1, bodies[0], angular_axes=[axis(a) for a in xyz])
+            if follower_angular:
+                follower = builder.add_joint_d6(-1, bodies[1], angular_axes=[axis(a) for a in xyz])
+            else:
+                follower = builder.add_joint_d6(-1, bodies[1], linear_axes=[axis(a) for a in xyz])
+            # Prescribe the joint that should not move: the reference, or the linear follower.
+            builder.body_flags[bodies[0] if follower_angular else bodies[1]] = int(newton.BodyFlags.KINEMATIC)
+            builder.add_articulation([reference, follower])
+            builder.set_joint_mimic(follower, reference)
+            builder.color()
+            model = builder.finalize(device=device)
+            q = np.array([0.1, 0.5 * np.pi, 0.2, 0.101, 0.5 * np.pi, 0.2], dtype=np.float32)
+            if not follower_angular:
+                q[3] = 0.1001
+            model.joint_q.assign(q)
+            state, other = model.state(), model.state()
+            newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+            model.body_q.assign(state.body_q)
+            solver = newton.solvers.SolverVBD(model, iterations=5)
+            for _ in range(steps):
+                solver.step(state, other, None, None, dt)
+                state, other = other, state
+                test.assertTrue(np.all(np.isfinite(state.body_q.numpy())))
+                test.assertTrue(np.all(np.isfinite(state.body_qd.numpy())))
+            if follower_angular:
+                body_q = state.body_q.numpy().astype(np.float64)
+                # The Euler split is undefined here, so compare orientations instead.
+                alignment = min(1.0, abs(float(np.dot(body_q[0, 3:], body_q[1, 3:]))))
+                test.assertLess(2.0 * np.arccos(alignment), 5.0e-3)
+
+
+def test_vbd_mimic_multi_turn_reference(test, device):
+    """Track a reference past a full revolution with a lead-screw nut and a 1/3 gear."""
+    pitch = 0.05
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    screw = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3) * 1.0e-3))
+    nut = builder.add_link(mass=0.2, inertia=wp.mat33(np.eye(3) * 1.0e-4))
+    gear = builder.add_link(mass=0.5, inertia=wp.mat33(np.eye(3) * 5.0e-4))
+    j_screw = builder.add_joint_revolute(-1, screw, axis=newton.Axis.Z)
+    j_nut = builder.add_joint_prismatic(
+        -1, nut, axis=newton.Axis.Z, parent_xform=wp.transform((0.3, 0.0, 0.0), wp.quat_identity())
+    )
+    j_gear = builder.add_joint_revolute(
+        -1, gear, axis=newton.Axis.Z, parent_xform=wp.transform((-0.3, 0.0, 0.0), wp.quat_identity())
+    )
+    builder.add_articulation([j_screw, j_nut, j_gear])
+    builder.set_joint_mimic(j_nut, j_screw, coeffs=(0.0, pitch / (2.0 * np.pi)))
+    builder.set_joint_mimic(j_gear, j_screw, coeffs=(0.0, 1.0 / 3.0))
     builder.color()
     model = builder.finalize(device=device)
-    model.joint_q.assign(np.array([0.1, 0.5 * np.pi, 0.2, 0.101, 0.5 * np.pi, 0.2], dtype=np.float32))
+    # One turn per second, with the followers moving consistently.
+    model.joint_qd.assign(np.array([2.0 * np.pi, pitch, 2.0 * np.pi / 3.0], dtype=np.float32))
     state, other = model.state(), model.state()
     newton.eval_fk(model, model.joint_q, model.joint_qd, state)
-    solver = newton.solvers.SolverVBD(model, iterations=5)
-    for _ in range(100):
-        solver.step(state, other, None, None, 1.0 / 960.0)
+    model.body_q.assign(state.body_q)
+    solver = newton.solvers.SolverVBD(model)
+    for _ in range(360):
+        solver.step(state, other, None, None, 1.0 / 240.0)
         state, other = other, state
-    body_q = state.body_q.numpy().astype(np.float64)
-    test.assertTrue(np.all(np.isfinite(body_q)))
-    # The Euler split is undefined here, so compare orientations instead.
-    alignment = min(1.0, abs(float(np.dot(body_q[0, 3:], body_q[1, 3:]))))
-    test.assertLess(2.0 * np.arccos(alignment), 5.0e-3)
+    body_q = state.body_q.numpy()
+    # Recover the screw's angle near its expected 1.5 turns from its orientation.
+    angle = 2.0 * np.arctan2(body_q[screw, 5], body_q[screw, 6])
+    angle += 2.0 * np.pi * np.round((3.0 * np.pi - angle) / (2.0 * np.pi))
+    test.assertGreater(angle, 2.5 * np.pi)
+    test.assertAlmostEqual(float(body_q[nut, 2]), pitch * angle / (2.0 * np.pi), delta=1.0e-3)
+    gear_error = 2.0 * np.arctan2(body_q[gear, 5], body_q[gear, 6]) - angle / 3.0
+    test.assertLess(abs(np.arctan2(np.sin(gear_error), np.cos(gear_error))), 0.02)
 
 
 class TestSolverVBDMimic(unittest.TestCase):
@@ -366,6 +416,9 @@ add_function_test(TestSolverVBDMimic, "test_vbd_driven_finger_limit", test_vbd_d
 add_function_test(TestSolverVBDMimic, "test_vbd_mimic_gradients", test_vbd_mimic_gradients, devices=devices)
 add_function_test(TestSolverVBDMimic, "test_vbd_mimic_reset", test_vbd_mimic_reset, devices=devices)
 add_function_test(TestSolverVBDMimic, "test_vbd_mimic_d6_gimbal_lock", test_vbd_mimic_d6_gimbal_lock, devices=devices)
+add_function_test(
+    TestSolverVBDMimic, "test_vbd_mimic_multi_turn_reference", test_vbd_mimic_multi_turn_reference, devices=devices
+)
 add_function_test(
     TestSolverVBDMimic, "test_vbd_mimic_property_updates", test_vbd_mimic_property_updates, devices=devices
 )
