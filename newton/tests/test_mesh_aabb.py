@@ -4,13 +4,23 @@
 """Tests for mesh/heightfield broadphase AABB computation and bounding-sphere radius."""
 
 import unittest
+import warnings
+from unittest import mock
 
 import numpy as np
 import warp as wp
 
 import newton
-from newton import GeoType, Heightfield, Mesh
+from newton import GeoType, Heightfield, Mesh, Model
 from newton._src.geometry.utils import compute_shape_radius
+
+
+def _make_box_mesh(lower, upper):
+    """Return a closed box mesh spanning ``lower`` to ``upper``, away from the origin so its bounds are asymmetric."""
+    lower = np.asarray(lower, dtype=np.float32)
+    upper = np.asarray(upper, dtype=np.float32)
+    box = Mesh.create_box(*((upper - lower) * 0.5).tolist(), duplicate_vertices=False, compute_inertia=False)
+    return Mesh(np.asarray(box.vertices) + (upper + lower) * 0.5, np.asarray(box.indices), compute_inertia=False)
 
 
 class TestMeshShapeAABB(unittest.TestCase):
@@ -212,6 +222,215 @@ class TestHeightfieldLocalAABB(unittest.TestCase):
 
         np.testing.assert_allclose(lo, [-4.0, -1.5, -3.0], atol=1e-5)
         np.testing.assert_allclose(hi, [4.0, 1.5, 12.0], atol=1e-5)
+
+
+class TestSourceShapeLocalBounds(unittest.TestCase):
+    """Verify the local AABB, interior point, and voxel resolution of shapes whose bounds come from a source."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.mesh = _make_box_mesh((0.1, -0.2, 0.3), (0.5, 0.2, 0.9))
+        cls.mesh_copy = Mesh(cls.mesh.vertices.copy(), cls.mesh.indices.copy(), compute_inertia=False)
+        cls.other_mesh = _make_box_mesh((-1.0, -1.0, -1.0), (1.0, 1.0, 1.0))
+        cls.heightfield = Heightfield(
+            data=np.zeros((4, 4), dtype=np.float32), nrow=4, ncol=4, hx=2.0, hy=3.0, min_z=-1.0, max_z=4.0
+        )
+        # Shapes that share a source are spread out, with primitives in between, so that a result
+        # written to the wrong row shows up.
+        world = newton.ModelBuilder()
+        cls.sphere = world.add_shape_sphere(body=-1, radius=0.1)
+        cls.mesh_first = world.add_shape_mesh(body=-1, mesh=cls.mesh)
+        cls.hull_first = world.add_shape_convex_hull(body=-1, mesh=cls.mesh)
+        cls.mesh_scaled = world.add_shape_mesh(body=-1, mesh=cls.mesh, scale=(2.0, 0.5, 3.0))
+        cls.mesh_equal_content = world.add_shape_mesh(body=-1, mesh=cls.mesh_copy)
+        cls.hull_scaled = world.add_shape_convex_hull(body=-1, mesh=cls.mesh, scale=(2.0, 0.5, 3.0))
+        cls.box = world.add_shape_box(body=-1, hx=0.1, hy=0.2, hz=0.3)
+        cls.mesh_again = world.add_shape_mesh(body=-1, mesh=cls.mesh)
+        cls.mesh_mirrored = world.add_shape_mesh(body=-1, mesh=cls.mesh, scale=(-1.0, 1.0, 1.0))
+        cls.mesh_scaled_y = world.add_shape_mesh(body=-1, mesh=cls.mesh, scale=(1.0, 0.5, 1.0))
+        cls.mesh_scaled_z = world.add_shape_mesh(body=-1, mesh=cls.mesh, scale=(1.0, 1.0, 3.0))
+        cls.mesh_other = world.add_shape_mesh(body=-1, mesh=cls.other_mesh)
+        cls.hull_other = world.add_shape_convex_hull(body=-1, mesh=cls.other_mesh)
+        cls.hull_again = world.add_shape_convex_hull(body=-1, mesh=cls.mesh)
+        cls.world_shape_count = world.shape_count
+
+        builder = newton.ModelBuilder()
+        builder.replicate(world, 2)
+        cls.heightfield_first = builder.add_shape_heightfield(heightfield=cls.heightfield)
+        cls.heightfield_scaled = builder.add_shape_heightfield(heightfield=cls.heightfield, scale=(2.0, 0.5, 3.0))
+        cls.heightfield_again = builder.add_shape_heightfield(heightfield=cls.heightfield)
+        with warnings.catch_warnings():
+            # The builder warns for any two heightfields, even static ones that never need to collide.
+            warnings.filterwarnings(
+                "ignore", "Heightfield-vs-heightfield collision is not supported", newton.NewtonWarning
+            )
+            model = builder.finalize(device="cpu")
+        cls.lower = model.shape_collision_aabb_lower.numpy()
+        cls.upper = model.shape_collision_aabb_upper.numpy()
+        cls.interior = model._shape_interior_point.numpy()
+        cls.voxel = model._shape_voxel_resolution.numpy()
+
+    def test_shapes_sharing_a_source_share_bounds(self):
+        """Verify that every shape of one mesh at one scale gets the mesh's bounds, in both replicated worlds."""
+        second = self.world_shape_count
+        np.testing.assert_allclose(self.lower[self.mesh_first], [0.1, -0.2, 0.3], rtol=1e-6)
+        np.testing.assert_allclose(self.upper[self.mesh_first], [0.5, 0.2, 0.9], rtol=1e-6)
+        np.testing.assert_array_equal(self.interior[self.mesh_first], [0.0, 0.0, 0.0])
+        np.testing.assert_array_equal(self.voxel[self.mesh_first], [4, 4, 6])
+        np.testing.assert_allclose(self.lower[self.mesh_again], [0.1, -0.2, 0.3], rtol=1e-6)
+        np.testing.assert_allclose(self.upper[self.mesh_again], [0.5, 0.2, 0.9], rtol=1e-6)
+        np.testing.assert_array_equal(self.interior[self.mesh_again], [0.0, 0.0, 0.0])
+        np.testing.assert_array_equal(self.voxel[self.mesh_again], [4, 4, 6])
+        np.testing.assert_allclose(self.lower[second + self.mesh_first], [0.1, -0.2, 0.3], rtol=1e-6)
+        np.testing.assert_allclose(self.upper[second + self.mesh_first], [0.5, 0.2, 0.9], rtol=1e-6)
+        np.testing.assert_array_equal(self.interior[second + self.mesh_first], [0.0, 0.0, 0.0])
+        np.testing.assert_array_equal(self.voxel[second + self.mesh_first], [4, 4, 6])
+        np.testing.assert_allclose(self.lower[second + self.mesh_again], [0.1, -0.2, 0.3], rtol=1e-6)
+        np.testing.assert_allclose(self.upper[second + self.mesh_again], [0.5, 0.2, 0.9], rtol=1e-6)
+        np.testing.assert_array_equal(self.interior[second + self.mesh_again], [0.0, 0.0, 0.0])
+        np.testing.assert_array_equal(self.voxel[second + self.mesh_again], [4, 4, 6])
+
+    def test_distinct_sources_with_equal_content_match(self):
+        """Verify that a second mesh object with the same vertices gets the same bounds."""
+        second = self.world_shape_count
+        np.testing.assert_allclose(self.lower[self.mesh_equal_content], [0.1, -0.2, 0.3], rtol=1e-6)
+        np.testing.assert_allclose(self.upper[self.mesh_equal_content], [0.5, 0.2, 0.9], rtol=1e-6)
+        np.testing.assert_array_equal(self.interior[self.mesh_equal_content], [0.0, 0.0, 0.0])
+        np.testing.assert_array_equal(self.voxel[self.mesh_equal_content], [4, 4, 6])
+        np.testing.assert_allclose(self.lower[second + self.mesh_equal_content], [0.1, -0.2, 0.3], rtol=1e-6)
+        np.testing.assert_allclose(self.upper[second + self.mesh_equal_content], [0.5, 0.2, 0.9], rtol=1e-6)
+        np.testing.assert_array_equal(self.interior[second + self.mesh_equal_content], [0.0, 0.0, 0.0])
+        np.testing.assert_array_equal(self.voxel[second + self.mesh_equal_content], [4, 4, 6])
+
+    def test_scales_of_one_source_get_their_own_bounds(self):
+        """Verify that each scale of one mesh gets its own bounds and voxel grid, on every axis.
+
+        A mirrored scale swaps the bounds.
+        """
+        second = self.world_shape_count
+        np.testing.assert_allclose(self.lower[self.mesh_scaled], [0.2, -0.1, 0.9], rtol=1e-6)
+        np.testing.assert_allclose(self.upper[self.mesh_scaled], [1.0, 0.1, 2.7], rtol=1e-6)
+        np.testing.assert_array_equal(self.interior[self.mesh_scaled], [0.0, 0.0, 0.0])
+        np.testing.assert_array_equal(self.voxel[self.mesh_scaled], [6, 1, 13])
+        np.testing.assert_allclose(self.lower[self.mesh_mirrored], [-0.5, -0.2, 0.3], rtol=1e-6)
+        np.testing.assert_allclose(self.upper[self.mesh_mirrored], [-0.1, 0.2, 0.9], rtol=1e-6)
+        np.testing.assert_array_equal(self.interior[self.mesh_mirrored], [0.0, 0.0, 0.0])
+        np.testing.assert_array_equal(self.voxel[self.mesh_mirrored], [4, 4, 6])
+        np.testing.assert_allclose(self.lower[self.mesh_scaled_y], [0.1, -0.1, 0.3], rtol=1e-6)
+        np.testing.assert_allclose(self.upper[self.mesh_scaled_y], [0.5, 0.1, 0.9], rtol=1e-6)
+        np.testing.assert_array_equal(self.interior[self.mesh_scaled_y], [0.0, 0.0, 0.0])
+        np.testing.assert_array_equal(self.voxel[self.mesh_scaled_y], [5, 3, 6])
+        np.testing.assert_allclose(self.lower[self.mesh_scaled_z], [0.1, -0.2, 0.9], rtol=1e-6)
+        np.testing.assert_allclose(self.upper[self.mesh_scaled_z], [0.5, 0.2, 2.7], rtol=1e-6)
+        np.testing.assert_array_equal(self.interior[self.mesh_scaled_z], [0.0, 0.0, 0.0])
+        np.testing.assert_array_equal(self.voxel[self.mesh_scaled_z], [3, 3, 11])
+        np.testing.assert_allclose(self.lower[second + self.mesh_scaled], [0.2, -0.1, 0.9], rtol=1e-6)
+        np.testing.assert_allclose(self.upper[second + self.mesh_scaled], [1.0, 0.1, 2.7], rtol=1e-6)
+        np.testing.assert_array_equal(self.interior[second + self.mesh_scaled], [0.0, 0.0, 0.0])
+        np.testing.assert_array_equal(self.voxel[second + self.mesh_scaled], [6, 1, 13])
+        np.testing.assert_allclose(self.lower[second + self.mesh_mirrored], [-0.5, -0.2, 0.3], rtol=1e-6)
+        np.testing.assert_allclose(self.upper[second + self.mesh_mirrored], [-0.1, 0.2, 0.9], rtol=1e-6)
+        np.testing.assert_array_equal(self.interior[second + self.mesh_mirrored], [0.0, 0.0, 0.0])
+        np.testing.assert_array_equal(self.voxel[second + self.mesh_mirrored], [4, 4, 6])
+        np.testing.assert_allclose(self.lower[second + self.mesh_scaled_y], [0.1, -0.1, 0.3], rtol=1e-6)
+        np.testing.assert_allclose(self.upper[second + self.mesh_scaled_y], [0.5, 0.1, 0.9], rtol=1e-6)
+        np.testing.assert_array_equal(self.interior[second + self.mesh_scaled_y], [0.0, 0.0, 0.0])
+        np.testing.assert_array_equal(self.voxel[second + self.mesh_scaled_y], [5, 3, 6])
+        np.testing.assert_allclose(self.lower[second + self.mesh_scaled_z], [0.1, -0.2, 0.9], rtol=1e-6)
+        np.testing.assert_allclose(self.upper[second + self.mesh_scaled_z], [0.5, 0.2, 2.7], rtol=1e-6)
+        np.testing.assert_array_equal(self.interior[second + self.mesh_scaled_z], [0.0, 0.0, 0.0])
+        np.testing.assert_array_equal(self.voxel[second + self.mesh_scaled_z], [3, 3, 11])
+
+    def test_convex_hull_of_a_shared_source(self):
+        """Verify that a convex hull of a mesh that mesh shapes also use gets the hull's centroid as interior point."""
+        second = self.world_shape_count
+        np.testing.assert_allclose(self.lower[self.hull_first], [0.1, -0.2, 0.3], rtol=1e-6)
+        np.testing.assert_allclose(self.upper[self.hull_first], [0.5, 0.2, 0.9], rtol=1e-6)
+        np.testing.assert_allclose(self.interior[self.hull_first], [0.3, 0.0, 0.6], rtol=1e-6, atol=1e-7)
+        np.testing.assert_array_equal(self.voxel[self.hull_first], [4, 4, 6])
+        np.testing.assert_allclose(self.lower[self.hull_scaled], [0.2, -0.1, 0.9], rtol=1e-6)
+        np.testing.assert_allclose(self.upper[self.hull_scaled], [1.0, 0.1, 2.7], rtol=1e-6)
+        np.testing.assert_allclose(self.interior[self.hull_scaled], [0.6, 0.0, 1.8], rtol=1e-6, atol=1e-7)
+        np.testing.assert_array_equal(self.voxel[self.hull_scaled], [6, 1, 13])
+        np.testing.assert_allclose(self.lower[self.hull_again], [0.1, -0.2, 0.3], rtol=1e-6)
+        np.testing.assert_allclose(self.upper[self.hull_again], [0.5, 0.2, 0.9], rtol=1e-6)
+        np.testing.assert_allclose(self.interior[self.hull_again], [0.3, 0.0, 0.6], rtol=1e-6, atol=1e-7)
+        np.testing.assert_array_equal(self.voxel[self.hull_again], [4, 4, 6])
+        np.testing.assert_allclose(self.lower[second + self.hull_first], [0.1, -0.2, 0.3], rtol=1e-6)
+        np.testing.assert_allclose(self.upper[second + self.hull_first], [0.5, 0.2, 0.9], rtol=1e-6)
+        np.testing.assert_allclose(self.interior[second + self.hull_first], [0.3, 0.0, 0.6], rtol=1e-6, atol=1e-7)
+        np.testing.assert_array_equal(self.voxel[second + self.hull_first], [4, 4, 6])
+        np.testing.assert_allclose(self.lower[second + self.hull_scaled], [0.2, -0.1, 0.9], rtol=1e-6)
+        np.testing.assert_allclose(self.upper[second + self.hull_scaled], [1.0, 0.1, 2.7], rtol=1e-6)
+        np.testing.assert_allclose(self.interior[second + self.hull_scaled], [0.6, 0.0, 1.8], rtol=1e-6, atol=1e-7)
+        np.testing.assert_array_equal(self.voxel[second + self.hull_scaled], [6, 1, 13])
+        np.testing.assert_allclose(self.lower[second + self.hull_again], [0.1, -0.2, 0.3], rtol=1e-6)
+        np.testing.assert_allclose(self.upper[second + self.hull_again], [0.5, 0.2, 0.9], rtol=1e-6)
+        np.testing.assert_allclose(self.interior[second + self.hull_again], [0.3, 0.0, 0.6], rtol=1e-6, atol=1e-7)
+        np.testing.assert_array_equal(self.voxel[second + self.hull_again], [4, 4, 6])
+
+    def test_distinct_sources_get_their_own_bounds(self):
+        """Verify that a different mesh keeps its own bounds, as a mesh and as a convex hull."""
+        np.testing.assert_array_equal(self.lower[self.mesh_other], [-1.0, -1.0, -1.0])
+        np.testing.assert_array_equal(self.upper[self.mesh_other], [1.0, 1.0, 1.0])
+        np.testing.assert_array_equal(self.interior[self.mesh_other], [0.0, 0.0, 0.0])
+        np.testing.assert_array_equal(self.voxel[self.mesh_other], [4, 5, 5])
+        np.testing.assert_array_equal(self.lower[self.hull_other], [-1.0, -1.0, -1.0])
+        np.testing.assert_array_equal(self.upper[self.hull_other], [1.0, 1.0, 1.0])
+        np.testing.assert_allclose(self.interior[self.hull_other], [0.0, 0.0, 0.0], atol=1e-7)
+        np.testing.assert_array_equal(self.voxel[self.hull_other], [4, 5, 5])
+
+    def test_heightfield_bounds(self):
+        """Verify that heightfields sharing one source get its extents, scaled per shape, and no interior point."""
+        np.testing.assert_array_equal(self.lower[self.heightfield_first], [-2.0, -3.0, -1.0])
+        np.testing.assert_array_equal(self.upper[self.heightfield_first], [2.0, 3.0, 4.0])
+        np.testing.assert_array_equal(self.interior[self.heightfield_first], [0.0, 0.0, 0.0])
+        np.testing.assert_array_equal(self.voxel[self.heightfield_first], [4, 5, 5])
+        np.testing.assert_array_equal(self.lower[self.heightfield_scaled], [-4.0, -1.5, -3.0])
+        np.testing.assert_array_equal(self.upper[self.heightfield_scaled], [4.0, 1.5, 12.0])
+        np.testing.assert_array_equal(self.interior[self.heightfield_scaled], [0.0, 0.0, 0.0])
+        np.testing.assert_array_equal(self.voxel[self.heightfield_scaled], [5, 2, 10])
+        np.testing.assert_array_equal(self.lower[self.heightfield_again], [-2.0, -3.0, -1.0])
+        np.testing.assert_array_equal(self.upper[self.heightfield_again], [2.0, 3.0, 4.0])
+        np.testing.assert_array_equal(self.interior[self.heightfield_again], [0.0, 0.0, 0.0])
+        np.testing.assert_array_equal(self.voxel[self.heightfield_again], [4, 5, 5])
+
+    def test_primitives_between_source_shapes_keep_their_bounds(self):
+        """Verify that primitive shapes between the source-dependent ones keep their own bounds."""
+        second = self.world_shape_count
+        np.testing.assert_allclose(self.lower[self.sphere], [-0.1, -0.1, -0.1], rtol=1e-6)
+        np.testing.assert_allclose(self.upper[self.sphere], [0.1, 0.1, 0.1], rtol=1e-6)
+        np.testing.assert_allclose(self.lower[self.box], [-0.1, -0.2, -0.3], rtol=1e-6)
+        np.testing.assert_allclose(self.upper[self.box], [0.1, 0.2, 0.3], rtol=1e-6)
+        np.testing.assert_allclose(self.lower[second + self.sphere], [-0.1, -0.1, -0.1], rtol=1e-6)
+        np.testing.assert_allclose(self.upper[second + self.sphere], [0.1, 0.1, 0.1], rtol=1e-6)
+        np.testing.assert_allclose(self.lower[second + self.box], [-0.1, -0.2, -0.3], rtol=1e-6)
+        np.testing.assert_allclose(self.upper[second + self.box], [0.1, 0.2, 0.3], rtol=1e-6)
+
+    def test_missing_source_keeps_default_bounds(self):
+        """Verify that a shape whose source is gone keeps the unit default, and its neighbors their own bounds."""
+        builder = newton.ModelBuilder()
+        before = builder.add_shape_mesh(body=-1, mesh=self.mesh)
+        missing = builder.add_shape_mesh(body=-1, mesh=self.other_mesh)
+        after = builder.add_shape_mesh(body=-1, mesh=self.mesh, scale=(2.0, 0.5, 3.0))
+        builder.shape_source[missing] = None
+        # The shape BVH build dereferences every source, so it cannot run on this model.
+        with mock.patch.object(Model, "bvh_build_shapes"):
+            model = builder.finalize(device="cpu")
+        lower = model.shape_collision_aabb_lower.numpy()
+        upper = model.shape_collision_aabb_upper.numpy()
+        interior = model._shape_interior_point.numpy()
+        voxel = model._shape_voxel_resolution.numpy()
+        np.testing.assert_array_equal(lower[missing], [-1.0, -1.0, -1.0])
+        np.testing.assert_array_equal(upper[missing], [1.0, 1.0, 1.0])
+        np.testing.assert_array_equal(interior[missing], [0.0, 0.0, 0.0])
+        np.testing.assert_array_equal(voxel[missing], [1, 1, 1])
+        np.testing.assert_allclose(lower[before], [0.1, -0.2, 0.3], rtol=1e-6)
+        np.testing.assert_allclose(upper[before], [0.5, 0.2, 0.9], rtol=1e-6)
+        np.testing.assert_array_equal(voxel[before], [4, 4, 6])
+        np.testing.assert_allclose(lower[after], [0.2, -0.1, 0.9], rtol=1e-6)
+        np.testing.assert_allclose(upper[after], [1.0, 0.1, 2.7], rtol=1e-6)
+        np.testing.assert_array_equal(voxel[after], [6, 1, 13])
 
 
 class TestCylinderLocalAABB(unittest.TestCase):
