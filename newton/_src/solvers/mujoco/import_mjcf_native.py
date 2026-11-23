@@ -1256,7 +1256,9 @@ def parse_mjcf(
         if native_parent == 0:
             local = placement if override_root_xform else placement * local
         world = local if parent == -1 else builder.body_q[parent] * local
-        rotation = np.asarray(wp.quat_to_matrix(_transform(np.zeros(3), model.body_iquat[i]).q)).reshape(3, 3)
+        rotation = np.empty(9)
+        mujoco.mju_quat2Mat(rotation, model.body_iquat[i])
+        rotation = rotation.reshape(3, 3)
         inertia = rotation @ np.diag(model.body_inertia[i]) @ rotation.T
         body = builder.add_link(
             xform=world,
