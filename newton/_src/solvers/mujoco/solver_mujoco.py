@@ -52,6 +52,7 @@ from .collision_masks import (
     MUJOCO_COLLISION_MASK_UNSET,
     NEWTON_COLLISION_MASK_MAX_SHAPE_COUNT,
     compile_newton_collision_graph,
+    compile_newton_collision_groups,
     mujoco_mask_to_signed,
 )
 from .constants import (
@@ -6911,14 +6912,34 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         return compile_newton_collision_graph(groups, excluded_pairs=local_filter_pairs)
 
     @staticmethod
-    def _preserved_masks_cover_collision_filters(
+    def _compile_group_collision_masks(
+        model: Model,
+        selected_shapes: np.ndarray,
+        body_filters: Iterable[tuple[int, int]],
+    ):
+        """Compile collision groups alone, or return ``None`` unless body excludes cover every pair filter."""
+        masks = compile_newton_collision_groups(model.shape_collision_group.numpy()[selected_shapes])
+        if masks is None:
+            return None
+        collision_type = np.zeros(model.shape_count, dtype=np.uint32)
+        collision_affinity = np.zeros(model.shape_count, dtype=np.uint32)
+        collision_type[selected_shapes] = masks.collision_type
+        collision_affinity[selected_shapes] = masks.collision_affinity
+        if not SolverMuJoCo._masks_cover_collision_filters(
+            model, selected_shapes, collision_type, collision_affinity, body_filters
+        ):
+            return None
+        return masks
+
+    @staticmethod
+    def _masks_cover_collision_filters(
         model: Model,
         selected_shapes: np.ndarray,
         collision_type: np.ndarray,
         collision_affinity: np.ndarray,
         body_filters: Iterable[tuple[int, int]],
     ) -> bool:
-        """Return whether preserved masks and body excludes cover Newton pair filters."""
+        """Return whether masks and body excludes cover Newton pair filters."""
         filter_pairs = model.shape_collision_filter_pairs_array()
         if filter_pairs.shape[0] == 0:
             return True
@@ -8120,7 +8141,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             and np.all(shape_mjc_conaffinity[colliding_shapes] != MUJOCO_COLLISION_MASK_UNSET)
             and np.all(shape_mjc_collision_mask_domain[colliding_shapes] != MUJOCO_COLLISION_MASK_DOMAIN_UNSET)
             and np.unique(shape_mjc_collision_mask_domain[colliding_shapes]).shape[0] <= 1
-            and self._preserved_masks_cover_collision_filters(
+            and self._masks_cover_collision_filters(
                 model,
                 colliding_shapes,
                 shape_mjc_contype,
@@ -8140,6 +8161,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 compiled_collision_affinity = np.ones(model.shape_count, dtype=np.uint32)
         elif not use_preserved_collision_masks:
             compiled_masks = self._compile_newton_collision_masks(model, colliding_shapes)
+            if not compiled_masks.exact:
+                # Groups alone often still fit in 32 bits; body excludes then carry the pair filters.
+                group_masks = self._compile_group_collision_masks(model, colliding_shapes, body_filters)
+                if group_masks is not None:
+                    compiled_masks = group_masks
         if compiled_masks is not None:
             if compiled_masks.exact:
                 compiled_collision_type = np.zeros(model.shape_count, dtype=np.uint32)

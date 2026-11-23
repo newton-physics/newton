@@ -112,15 +112,18 @@ class TestMuJoCoSolver(unittest.TestCase):
         isolated_shape_count = 24
         shape_count = clique_size + isolated_shape_count
         builder = newton.ModelBuilder()
-        for i in range(shape_count):
+        for i in range(shape_count - 1):
             body = builder.add_link(label=f"body_{i}")
             builder.add_shape_sphere(body, radius=0.1, label=f"shape_{i}")
             joint = builder.add_joint_free(body)
             builder.add_articulation([joint])
+        builder.add_shape_sphere(-1, radius=0.1, label=f"shape_{shape_count - 1}")
 
         # The 33-shape clique requires 33 colors. Isolating another 24 shapes
         # creates more than 1,024 sparse exclusions, which also forces the
         # legacy fallback when the bounded mask compiler from #3714 is used.
+        # Body excludes cannot carry the filters of the static shape, which
+        # rules out group-only masks as well.
         colliding_pairs = set(itertools.combinations(range(clique_size), 2))
         for pair in itertools.combinations(range(shape_count), 2):
             if pair not in colliding_pairs:
@@ -3506,6 +3509,44 @@ class TestMuJoCoSolverCollisionMasks(unittest.TestCase):
             warnings.filterwarnings("error", message=r"The selected Newton collision graph.*")
             solver = SolverMuJoCo(builder.finalize(device="cpu"), use_mujoco_contacts=True)
         self.assertEqual(solver.mj_model.ngeom, 66)
+
+    @requires(*MUJOCO_MODULES)
+    def test_large_graph_keeps_collision_groups_exact(self):
+        """Keep collision groups and body filters exact above the pair-graph shape limit."""
+        builder = newton.ModelBuilder()
+        static_shape = builder.add_shape_sphere(-1, radius=0.1, cfg=newton.ModelBuilder.ShapeConfig(collision_group=-1))
+        shapes = []
+        for group, shape_count in ((1, 1), (1, 1), (1, 128), (2, 128)):
+            body = builder.add_body()
+            cfg = newton.ModelBuilder.ShapeConfig(collision_group=group)
+            shapes.append([builder.add_shape_sphere(body, radius=0.1, cfg=cfg) for _ in range(shape_count)])
+        builder.add_shape_collision_filter_pair(shapes[0][0], shapes[1][0])
+
+        model = builder.finalize(device="cpu")
+        solver = SolverMuJoCo(model, use_mujoco_contacts=True)
+        mjm = solver.mj_model
+        self.assertEqual(mjm.ngeom, 259)
+
+        geom_a, geom_b = np.triu_indices(mjm.ngeom, k=1)
+        body_a, body_b = mjm.geom_bodyid[geom_a], mjm.geom_bodyid[geom_b]
+        different_bodies = body_a != body_b
+        contype, conaffinity = mjm.geom_contype, mjm.geom_conaffinity
+        actual = ((contype[geom_a] & conaffinity[geom_b]) | (contype[geom_b] & conaffinity[geom_a])) != 0
+        actual &= ~np.isin((np.minimum(body_a, body_b) << 16) + np.maximum(body_a, body_b), mjm.exclude_signature)
+
+        shape = solver.mjc_geom_to_newton_shape.numpy()[0]
+        group = model.shape_collision_group.numpy()[shape]
+        group_a, group_b = group[geom_a], group[geom_b]
+        expected = ((group_a > 0) & ((group_a == group_b) | (group_b < 0))) | ((group_a < 0) & (group_a != group_b))
+        expected &= ~model.shape_collision_filter_mask(np.stack((shape[geom_a], shape[geom_b]), axis=1))
+        np.testing.assert_array_equal(actual[different_bodies], expected[different_bodies])
+
+        # No body exclude can carry a filter against a single static shape.
+        builder.add_shape_collision_filter_pair(static_shape, shapes[2][0])
+        model = builder.finalize(device="cpu")
+        self.assertIsNone(
+            SolverMuJoCo._compile_group_collision_masks(model, np.arange(model.shape_count), body_filters=[(0, 1)])
+        )
 
 
 class TestMuJoCoSolverGeomProperties(unittest.TestCase):
