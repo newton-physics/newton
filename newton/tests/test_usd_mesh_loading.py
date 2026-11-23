@@ -14,20 +14,11 @@ import warp as wp
 
 import newton
 import newton.usd
-from newton.exceptions import NewtonDeprecationWarning
-from newton.sensors import SensorTiledCamera
+from newton.sensors import SensorCamera
 from newton.tests.unittest_utils import (
-    USD_AVAILABLE,
     assert_np_equal,
-    ignore_sensor_tiled_camera_deprecation,
+    requires,
 )
-
-
-def setUpModule():
-    # test_sensor_renders_resolved_shading exercises the deprecated
-    # SensorTiledCamera intentionally; keep its construction warning from
-    # escalating to an error under --strict-warnings.
-    ignore_sensor_tiled_camera_deprecation()
 
 
 def _create_referenced_mesh_stage(tmpdir: str) -> Path:
@@ -87,7 +78,7 @@ def _define_folded_mesh(stage, path="/Fold", scheme=None):
     return mesh
 
 
-@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+@requires("pxr.Usd")
 class TestUsdMeshHelpers(unittest.TestCase):
     """Tests for loading Newton meshes from USD source variants."""
 
@@ -253,14 +244,12 @@ class TestUsdMeshHelpers(unittest.TestCase):
                 builder = newton.ModelBuilder()
                 builder.add_shape_mesh(-1, mesh=mesh)
                 model = builder.finalize(device="cpu")
-                sensor = SensorTiledCamera(model=model)
-                transforms = wp.array(
-                    [[wp.transform(wp.vec3(0.25, 0.25, 2.0), wp.quat_identity())]], dtype=wp.transform
-                )
-                rays = sensor.utils.compute_camera_rays_pinhole(1, 1, camera_fovs=0.5)
-                image = sensor.utils.create_normal_image_output(1, 1)
+                sensor = SensorCamera(model)
+                transforms = wp.array([wp.transform(wp.vec3(0.25, 0.25, 2.0), wp.quat_identity())], dtype=wp.transformf)
+                rays = SensorCamera.compute_camera_rays_pinhole(1, 1, camera_fov=0.5)
+                image = sensor.allocate_image_normal(1, 1, 1)
                 sensor.update(model.state(), transforms, rays, normal_image=image)
-                normal = image.numpy()[0, 0, 0, 0]
+                normal = image.numpy()[0, 0, 0]
                 if scheme == "none":
                     np.testing.assert_allclose(normal, [0, 0, 1], atol=1e-6)
                 else:
@@ -364,23 +353,6 @@ class TestUsdMeshHelpers(unittest.TestCase):
             stage.GetRootLayer().Save()
 
             mesh = newton.usd.get_mesh(stage_path, root_path="/Root", compute_inertia=False)
-            # The positional shim maps arguments by position; a new trailing option must not shift them.
-            for source in (stage_path, stage.GetPrimAtPath("/Root/A")):
-                with self.subTest(source=type(source).__name__), self.assertWarns(NewtonDeprecationWarning):
-                    positional = newton.usd.get_mesh(
-                        source,
-                        False,
-                        False,
-                        None,
-                        "vertex_splitting",
-                        25.0,
-                        False,
-                        False,
-                        "/Root",
-                        compute_inertia=False,
-                    )
-                np.testing.assert_array_equal(positional.vertices, mesh.vertices)
-                np.testing.assert_array_equal(positional.indices, mesh.indices)
 
         self.assertEqual(len(mesh.vertices), 6)
         assert_np_equal(mesh.indices, np.array([0, 1, 2, 3, 4, 5], dtype=np.int32))

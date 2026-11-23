@@ -9,6 +9,7 @@ import warp as wp
 
 from ...core.types import override
 from ...exceptions import NewtonDeprecationWarning
+from ...geometry.sdf_planar_recovery import empty_mesh_recovery
 from ...sim import Contacts, Control, JointType, Model, ModelFlags, State, StateFlags
 from ...sim.joint_mimic import has_supported_joint_mimics
 from ..coupled.interface import CouplingInterface
@@ -32,10 +33,8 @@ from .kernels import (
     solve_joint_mimics,
     solve_particle_particle_contacts,
     solve_particle_shape_contacts,
-    # solve_simple_body_joints,
     solve_springs,
     solve_tetrahedra,
-    update_body_velocities,
     update_particle_inv_mass_effective,
 )
 from .restitution_kernels import (
@@ -47,12 +46,6 @@ from .restitution_kernels import (
     solve_manifold_restitution,
 )
 from .tendon_kernels import solve_tendon_slip, solve_tendon_stretch, update_tendon_diagnostics
-
-_COMPUTE_BODY_VELOCITY_DEPRECATION_MSG = (
-    "SolverXPBD.compute_body_velocity_from_position_delta is deprecated in Newton 1.6 and will be removed in 1.7 "
-    "or later. Leave it at False because XPBD now updates rigid-body velocities incrementally after every position "
-    "correction."
-)
 
 
 class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
@@ -151,6 +144,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
         enable_restitution: bool = False,
         tendon_max_sweeps: int = 256,
         tendon_settle_tol: float = 1.0e-3,
+        tendon_settle_atol: float = 1.0e-6,
         tendon_activation_tol: float = 2.0e-3,
         deterministic: wp.DeterministicMode | None = None,
     ):
@@ -181,9 +175,14 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                 active contacts. Defaults to ``True``.
             angular_damping: Rigid-body angular velocity damping coefficient [1/s]. Defaults to 0.0.
             enable_restitution: Whether to apply restitution to rigid and particle-shape contacts after the
-                positional solve. Defaults to ``False``.
+                positional solve. Deep thin-wall recovery contacts suppress restitution while they
+                guide the shapes apart. Defaults to ``False``.
             tendon_max_sweeps: Maximum capstan material-relaxation sweeps per solver iteration.
-            tendon_settle_tol: Relative tension-change tolerance for stopping capstan material relaxation.
+            tendon_settle_tol: Relative final capstan-force residual tolerance [dimensionless].
+                Zero disables early-out; must be finite and nonnegative.
+            tendon_settle_atol: Absolute final capstan-force residual tolerance [N].
+                Combined with the relative tolerance; must be finite and nonnegative.
+                Ignored when ``tendon_settle_tol`` is zero.
             tendon_activation_tol: Relative radius gap that inactive dynamic rollers must cross before activation.
             deterministic: Opt-in determinism for this solver's atomic-emitting
                 kernel module. Pass a :class:`warp.DeterministicMode`, or
@@ -206,6 +205,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
         self.iterations = iterations
         self.tendon_max_sweeps = tendon_max_sweeps
         self.tendon_settle_tol = tendon_settle_tol
+        self.tendon_settle_atol = tendon_settle_atol
         self.tendon_activation_tol = tendon_activation_tol
 
         self.soft_body_relaxation = soft_body_relaxation
@@ -229,7 +229,6 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
         self.enable_restitution = enable_restitution
         self._rigid_restitution_enabled = False
         self._refresh_rigid_restitution_enabled()
-        self._compute_body_velocity_from_position_delta = False
 
         self._has_joint_mimics = has_supported_joint_mimics(model, "SolverXPBD")
         if self._has_joint_mimics:
@@ -243,28 +242,13 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
         self._body_delta_counter = 0
 
         self._init_tendon_state(model)
+        self._tendon_guide_spin_impulse = wp.zeros(model.tendon_guide_count, dtype=wp.vec3, device=model.device)
 
         if model.particle_count > 1 and model.particle_grid is not None:
             # reserve space for the particle hash grid
             with wp.ScopedDevice(model.device):
                 model.particle_grid.reserve(model.particle_count)
-
-    @property
-    def compute_body_velocity_from_position_delta(self) -> bool:
-        """Whether to reconstruct rigid-body velocities after position projection.
-
-        .. deprecated:: 1.6
-            Leave this setting at ``False`` because XPBD now maintains rigid-body
-            velocities incrementally. ``True`` temporarily retains the legacy
-            full-step velocity reconstruction for compatibility.
-        """
-        warnings.warn(_COMPUTE_BODY_VELOCITY_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-        return self._compute_body_velocity_from_position_delta
-
-    @compute_body_velocity_from_position_delta.setter
-    def compute_body_velocity_from_position_delta(self, value: bool) -> None:
-        warnings.warn(_COMPUTE_BODY_VELOCITY_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-        self._compute_body_velocity_from_position_delta = value
+        self._empty_mesh_recovery = empty_mesh_recovery(model.device.alias)
 
     @override
     def reset(
@@ -509,11 +493,13 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
 
         body_q = None
         body_qd = None
-        body_q_step_start = None
         body_q_pre_solve = None
         body_qd_pre_solve = None
         body_deltas = None
 
+        contact_recovery = self._empty_mesh_recovery
+        if contacts is not None and contacts._mesh_recovery_contacts is not None:
+            contact_recovery = contacts._mesh_recovery_contacts
         rigid_contact_inv_weight = None
         restitution_contact_active = None
         restitution_manifold_key = None
@@ -600,9 +586,6 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                 body_q = state_out.body_q
                 body_qd = state_out.body_qd
 
-                if self._compute_body_velocity_from_position_delta and not requires_grad:
-                    body_q_step_start = wp.clone(state_in.body_q)
-
                 body_deltas = wp.empty_like(state_out.body_qd)
 
                 body_f_tmp = state_in.body_f
@@ -638,13 +621,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                         device=model.device,
                     )
 
-                if body_f_tmp is state_in.body_f:
-                    self.integrate_bodies(model, state_in, state_out, dt, self.angular_damping)
-                else:
-                    body_f_prev = state_in.body_f
-                    state_in.body_f = body_f_tmp
-                    self.integrate_bodies(model, state_in, state_out, dt, self.angular_damping)
-                    state_in.body_f = body_f_prev
+                self.integrate_bodies(model, state_in, state_out, dt, self.angular_damping, body_f=body_f_tmp)
 
                 if self.enable_restitution:
                     body_q_pre_solve = wp.clone(state_out.body_q)
@@ -672,6 +649,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                 self._prepare_tendon_route(model, state_in.body_q)
                 self._rebaseline_tendon_geometry(state_in.body_q)
                 self.tendon_segment_lambda.zero_()
+                self._tendon_guide_spin_impulse.zero_()
                 self.tendon_segment_material_tension.zero_()
 
             for i in range(self.iterations):
@@ -850,6 +828,8 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                                     contacts.rigid_contact_margin1,
                                     contacts.rigid_contact_shape0,
                                     contacts.rigid_contact_shape1,
+                                    contact_recovery,
+                                    contacts.contact_generation,
                                 ],
                                 outputs=[restitution_contact_active],
                                 device=model.device,
@@ -882,6 +862,8 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                                 model.shape_material_mu_rolling,
                                 self.rigid_contact_relaxation,
                                 dt,
+                                contact_recovery,
+                                contacts.contact_generation,
                             ],
                             outputs=[
                                 body_deltas,
@@ -1041,6 +1023,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                                 model.tendon_guide_body,
                                 model.tendon_guide_type,
                                 model.tendon_guide_radius,
+                                model.tendon_guide_orientation,
                                 model.tendon_guide_offset,
                                 model.tendon_guide_axis,
                                 self.tendon_segment_rest_length,
@@ -1055,7 +1038,6 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                                 self.tendon_segment_active_damping,
                                 self.tendon_guide_active,
                                 self.tendon_guide_active_step,
-                                self.tendon_guide_route_rest_length,
                                 self.tendon_segment_attachment_l,
                                 self.tendon_segment_attachment_r,
                                 self.tendon_segment_length,
@@ -1074,6 +1056,9 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                                 1,
                                 self.tendon_max_sweeps,
                                 self.tendon_settle_tol,
+                                self.tendon_settle_atol,
+                                0,
+                                self._tendon_guide_material_transfer,
                             ],
                             device=model.device,
                         )
@@ -1143,8 +1128,9 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                                 self.tendon_segment_active_compliance,
                                 self.tendon_segment_material_tension,
                                 self.tendon_segment_damping_tension,
-                                self.tendon_segment_delta_lambda,
-                                self.joint_linear_relaxation,
+                                self.tendon_segment_lambda,
+                                dt,
+                                self._tendon_guide_spin_impulse,
                             ],
                             outputs=[body_deltas],
                             device=model.device,
@@ -1203,6 +1189,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                         model.tendon_guide_body,
                         model.tendon_guide_type,
                         model.tendon_guide_radius,
+                        model.tendon_guide_orientation,
                         model.tendon_guide_offset,
                         model.tendon_guide_axis,
                         self.tendon_segment_rest_length,
@@ -1217,7 +1204,6 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                         self.tendon_segment_active_damping,
                         self.tendon_guide_active,
                         self.tendon_guide_active_step,
-                        self.tendon_guide_route_rest_length,
                         self.tendon_segment_attachment_l,
                         self.tendon_segment_attachment_r,
                         self.tendon_segment_length,
@@ -1236,6 +1222,9 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                         1,
                         self.tendon_max_sweeps,
                         self.tendon_settle_tol,
+                        self.tendon_settle_atol,
+                        1,
+                        self._tendon_guide_material_transfer,
                     ],
                     device=model.device,
                 )
@@ -1318,16 +1307,6 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                 if body_q.ptr != state_out.body_q.ptr:
                     state_out.body_q.assign(body_q)
                     state_out.body_qd.assign(body_qd)
-
-            if self._compute_body_velocity_from_position_delta and model.body_count and not requires_grad:
-                assert body_q_step_start is not None
-                wp.launch(
-                    kernel=update_body_velocities,
-                    dim=model.body_count,
-                    inputs=[state_out.body_q, body_q_step_start, model.body_com, dt],
-                    outputs=[state_out.body_qd],
-                    device=model.device,
-                )
 
             # Rigid integration and every positional correction update all
             # bodies' public COM-referenced velocities incrementally. Velocity

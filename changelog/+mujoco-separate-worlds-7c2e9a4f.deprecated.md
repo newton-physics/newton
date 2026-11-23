@@ -1,0 +1,1 @@
+Deprecate `SolverMuJoCo(separate_worlds=...)` in Newton 1.9; the solver maps each world of a multi-world model to its own MuJoCo world. Passing `True` or `False` emits a `NewtonDeprecationWarning`. Remove its use. Stepping only the first world of a multi-world model with `use_mujoco_cpu=True` has no replacement; build a single-world model instead.

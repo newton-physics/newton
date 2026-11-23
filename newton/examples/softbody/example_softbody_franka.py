@@ -100,9 +100,7 @@ class Example:
         duck_path = newton.utils.download_asset("manipulation_objects/rubber_duck")
         usd_stage = Usd.Stage.Open(str(duck_path / "model.usda"))
         prim = usd_stage.GetPrimAtPath("/root/Model/TetMesh")
-        # The duck authors no physics material; canonical-only reads avoid the
-        # legacy-default deprecation window.
-        tetmesh = newton.TetMesh.create_from_usd(prim, compat_namespaces=())
+        tetmesh = newton.TetMesh.create_from_usd(prim)
 
         # Duck USDA is in meters (metersPerUnit=1.0).
         # Table top is at z=0.2m. Duck center offset ~0.03m above table.

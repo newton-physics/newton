@@ -165,6 +165,10 @@ def update_incremental_plane_tracker(
     elif current_point_id == 1:
         tracker.previous_point = current_point
     else:
+        # Preserve a nonzero segment when the reference vertex is revisited.
+        reference = tracker.reference_point
+        if current_point[0] == reference[0] and current_point[1] == reference[1] and current_point[2] == reference[2]:
+            return tracker
         if check_planarity and tracker.largest_area_sq > 0.0:
             offset = wp.dot(tracker.normal, current_point - tracker.reference_point)
             if offset * offset > EPS * EPS * tracker.largest_area_sq:
@@ -473,17 +477,35 @@ def trim_all_in_place(
             other_start = loop[0]
             other_end = loop[1]
             other_direction = other_end - other_start
-            cross = direction[0] * other_direction[1] - direction[1] * other_direction[0]
-            if wp.abs(cross) > 1.0e-6 * wp.sqrt(length_sq * wp.length_sq(other_direction)):
-                # Two nonparallel line features have at most one contact;
-                # the caller uses the deepest GJK/MPR witness in this case.
-                return 0
             # The pair already has a GJK/MPR contact. Project parallel
             # supporting lines onto a shared tangent to tolerate normal error.
             t0 = wp.dot(other_start - start, direction) / length_sq
             t1 = wp.dot(other_end - start, direction) / length_sq
             lo = wp.max(lo, wp.min(t0, t1))
             hi = wp.min(hi, wp.max(t0, t1))
+            other_length_sq = wp.length_sq(other_direction)
+            cross = direction[0] * other_direction[1] - direction[1] * other_direction[0]
+            if other_length_sq > 0.0 and wp.abs(cross) > 1.0e-6 * wp.sqrt(length_sq * other_length_sq):
+                # Keep separation within EPS of its closest value so normal
+                # error does not drop nearly parallel contacts.
+                inv_other_length = 1.0 / wp.sqrt(other_length_sq)
+                offset = (
+                    other_direction[0] * (start[1] - other_start[1]) - other_direction[1] * (start[0] - other_start[0])
+                ) * inv_other_length
+                slope = -cross * inv_other_length
+                separation_lo = offset + slope * lo
+                separation_hi = offset + slope * hi
+                closest = float(0.0)
+                if separation_lo * separation_hi > 0.0:
+                    closest = wp.min(wp.abs(separation_lo), wp.abs(separation_hi))
+                band_lo = (-(closest + EPS) - offset) / slope
+                band_hi = (closest + EPS - offset) / slope
+                overlap = (hi - lo) * wp.sqrt(length_sq)
+                lo = wp.max(lo, wp.min(band_lo, band_hi))
+                hi = wp.min(hi, wp.max(band_lo, band_hi))
+                # A short band uses the caller's single deepest GJK/MPR witness.
+                if (hi - lo) * wp.sqrt(length_sq) < wp.min(0.5 * overlap, MAX_CLIP_VERTEX_MERGE_DISTANCE):
+                    return 0
         else:
             polygon = trim_poly
             polygon_count = trim_poly_count
@@ -712,6 +734,27 @@ def add_avoid_duplicates_vec2(arr: wp.array[wp.vec2], arr_count: int, vec: wp.ve
 
     arr[arr_count] = vec
     return arr_count + 1, True
+
+
+@wp.func
+def add_contact_feature_point(
+    projected: wp.array[wp.vec2],
+    points: _SamplePoints,
+    count: int,
+    point_2d: wp.vec2,
+    point_3d: wp.vec3,
+    eps: float,
+) -> tuple[int, bool]:
+    """Append a projection unless its source or projected position is already present.
+
+    The caller stores accepted source points in ``points`` at the returned index minus one.
+    """
+    # Repeated support vertices can project differently after floating-point rounding.
+    for i in range(count):
+        previous = points[i]
+        if point_3d[0] == previous[0] and point_3d[1] == previous[1] and point_3d[2] == previous[2]:
+            return count, False
+    return add_avoid_duplicates_vec2(projected, count, point_2d, eps)
 
 
 def create_build_manifold(support_func: Any, writer_func: Any, post_process_contact: Any, _support_funcs: Any = None):
@@ -1146,7 +1189,7 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
             pt_a_3d = support_contact_feature(geom_a, dir_a, feature_normal_a, data_provider)
             projected_a = pt_a_3d - center
             pt_a_2d = wp.vec2(wp.dot(tangent_a, projected_a), wp.dot(tangent_b, projected_a))
-            a_count, was_added_a = add_avoid_duplicates_vec2(a_buffer, a_count, pt_a_2d, EPS)
+            a_count, was_added_a = add_contact_feature_point(a_buffer, points_a, a_count, pt_a_2d, pt_a_3d, EPS)
             if was_added_a:
                 points_a[a_count - 1] = pt_a_3d
                 plane_tracker_a = update_incremental_plane_tracker(plane_tracker_a, pt_a_3d, a_count - 1, planar_a)
@@ -1157,7 +1200,7 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
             pt_b_3d = wp.quat_rotate(relative_orientation_b, pt_b_local) + relative_position_b
             projected_b = pt_b_3d - center
             pt_b_2d = wp.vec2(wp.dot(tangent_a, projected_b), wp.dot(tangent_b, projected_b))
-            b_count, was_added_b = add_avoid_duplicates_vec2(b_buffer, b_count, pt_b_2d, EPS)
+            b_count, was_added_b = add_contact_feature_point(b_buffer, points_b, b_count, pt_b_2d, pt_b_3d, EPS)
             if was_added_b:
                 points_b[b_count - 1] = pt_b_3d
                 plane_tracker_b = update_incremental_plane_tracker(plane_tracker_b, pt_b_3d, b_count - 1, planar_b)

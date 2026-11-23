@@ -9,6 +9,7 @@ import unittest
 import numpy as np
 import warp as wp
 
+import newton
 from newton import ModelBuilder
 from newton._src.solvers.kamino._src.core.data import DataKamino
 from newton._src.solvers.kamino._src.core.model import ModelKamino
@@ -33,9 +34,8 @@ from newton._src.solvers.kamino._src.geometry.primitive.narrowphase import (
     PRIMITIVE_NARROWPHASE_SUPPORTED_SHAPE_PAIRS,
     primitive_narrowphase,
 )
-from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
-from newton.tests.kamino import allow_verbose_output, expect_contact_capacity_warning, setup_tests, test_context
-from newton.tests.unittest_utils import MODULE_LOAD_OUTPUT_RE, NewtonTestCase
+from newton.tests.kamino import expect_contact_capacity_warning, setup_test_output, setup_tests, test_context
+from newton.tests.unittest_utils import NewtonTestCase
 from newton.tests.utils import basics, testing
 
 logger = logging.getLogger(__name__)
@@ -282,6 +282,14 @@ def check_contacts(
     """
     Checks the contents of a ContactsKamino container against expected values.
     """
+    # A misspelled or missing count key would otherwise skip the checks silently.
+    checked = ("model_active_contacts", "world_active_contacts", "wid", "cid")
+    checked += ("gid_AB", "bid_AB", "position_A", "position_B", "gapfunc", "frame")
+    if unchecked := set(expected).difference(checked):
+        raise KeyError(f"{header}: unchecked expected keys {sorted(unchecked)} for `{case}`")
+    if "model_active_contacts" not in expected:
+        raise KeyError(f"{header}: `model_active_contacts` is required for `{case}`")
+
     # Run contact counts checks
     if "model_active_contacts" in expected:
         np.testing.assert_equal(
@@ -475,18 +483,14 @@ def test_narrowphase_on_shape_pair(
 ###
 
 
-class TestPrimitiveBroadPhase(unittest.TestCase):
+class TestPrimitiveBroadPhase(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose  # Set to True for detailed output
 
-        # Set debug-level logging to print verbose test output to console
-        if self.verbose:
-            set_log_level(logging.DEBUG)
-        else:
-            reset_log_level()
+        setup_test_output(self, verbose=self.verbose)
 
         # Construct a list of all supported primitive shape pairs
         self.supported_shape_pairs: list[tuple[str, str]] = []
@@ -496,11 +500,6 @@ class TestPrimitiveBroadPhase(unittest.TestCase):
                 shape_B_name = shape_B.name.lower()
                 self.supported_shape_pairs.append((shape_A_name, shape_B_name))
         logger.debug("supported_shape_pairs:\n%s\n", self.supported_shape_pairs)
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
 
     def test_01_bspheres_on_each_primitive_shape_pair_exact(self):
         # Each shape pair in its own world with
@@ -702,18 +701,14 @@ class TestPrimitiveBroadPhase(unittest.TestCase):
         )
 
 
-class TestPrimitiveNarrowPhase(unittest.TestCase):
+class TestPrimitiveNarrowPhase(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose  # Set to True for detailed output
 
-        # Set debug-level logging to print verbose test output to console
-        if self.verbose:
-            set_log_level(logging.DEBUG)
-        else:
-            reset_log_level()
+        setup_test_output(self, verbose=self.verbose)
 
         # Construct a list of all supported primitive shape pairs
         self.supported_shape_pairs: list[tuple[str, str]] = []
@@ -724,11 +719,6 @@ class TestPrimitiveNarrowPhase(unittest.TestCase):
                 if (shape_A, shape_B) in PRIMITIVE_NARROWPHASE_SUPPORTED_SHAPE_PAIRS:
                     self.supported_shape_pairs.append((shape_A_name, shape_B_name))
         logger.debug("supported_shape_pairs:\n%s\n", self.supported_shape_pairs)
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
 
     def test_01_on_each_primitive_shape_pair_exact(self):
         """
@@ -982,13 +972,13 @@ class TestPrimitiveNarrowPhase(unittest.TestCase):
         lie exactly on the Z-axis. thus the bottom corner of the top box touches the
         top face of the bottom box at a single point, slightly penetrating each other.
         """
-        # NOTE: We set to negative value to move the geoms into each other,
-        # i.e. move the bottom geom upwards and the top geom downwards.
+        # NOTE: Negative, lowering the top box so its vertex penetrates the bottom face.
         penetration = -0.01
 
         # Define expected contact data
         expected = {
-            "num_contacts": 1,
+            "model_active_contacts": 1,
+            "world_active_contacts": [1],
             "gid_AB": np.tile(np.array([0, 1], dtype=np.int32), reps=(1, 1)),
             "bid_AB": np.tile(np.array([0, 1], dtype=np.int32), reps=(1, 1)),
             "position_A": np.array([[0.0, 0.0, 0.0]], dtype=np.float32),
@@ -1000,7 +990,7 @@ class TestPrimitiveNarrowPhase(unittest.TestCase):
         # Create a builder for the specified shape pair
         builder = testing.make_single_shape_pair_builder(
             shapes=("box", "box"),
-            top_xyz=[0.0, 0.0, 0.5 * np.sqrt(3) + 0.5],
+            top_xyz=[0.0, 0.0, 0.5 * np.sqrt(3) + penetration],
             top_rpy=[np.pi / 4, -np.arctan(1.0 / np.sqrt(2)), 0.0],
         )
 
@@ -1021,20 +1011,9 @@ class TestPipelinePrimitive(NewtonTestCase):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
-        self.allowOutputRegex(MODULE_LOAD_OUTPUT_RE, stream="stdout")
         self.verbose = test_context.verbose  # Set to True for detailed output
 
-        # Set debug-level logging to print verbose test output to console
-        if self.verbose:
-            allow_verbose_output(self)
-            set_log_level(logging.DEBUG)
-        else:
-            reset_log_level()
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
+        setup_test_output(self, verbose=self.verbose)
 
     def test_00_make_default(self):
         """Tests the default constructor of CollisionPipelinePrimitive."""
@@ -1130,6 +1109,7 @@ class TestPipelinePrimitive(NewtonTestCase):
 
 if __name__ == "__main__":
     # Test setup
+    newton.utils.setup_console_logging()
     setup_tests()
 
     # Run all tests

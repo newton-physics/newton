@@ -838,6 +838,16 @@ def _locate_cell(sdf: TextureSDFData, f: wp.vec3) -> _CellLookup:
 
 
 @wp.func
+def _texture_sdf_cell_radius(sdf: TextureSDFData, point: wp.vec3) -> float:
+    """Return half the diagonal of the interpolation cell containing the point."""
+    f = wp.cw_mul(point - sdf.sdf_box_lower, sdf.inv_sdf_dx)
+    cell = _locate_cell(sdf, f)
+    if cell.start_slot >= SLOT_LINEAR:
+        return sdf.voxel_radius * sdf.subgrid_size_f
+    return sdf.voxel_radius
+
+
+@wp.func
 def _locate_cell_pair(sdf: TextureSDFData, f0: wp.vec3, f1: wp.vec3) -> tuple[_CellLookup, _CellLookup]:
     """Resolve two cells while sharing a common subgrid-slot lookup."""
     loc0 = _locate_cell_coords(sdf, f0)
@@ -855,7 +865,7 @@ def _locate_cell_pair(sdf: TextureSDFData, f0: wp.vec3, f1: wp.vec3) -> tuple[_C
 def _read_cell_corners(
     sdf: TextureSDFData,
     f: wp.vec3,
-) -> tuple[vec8f, float, float, float]:
+) -> tuple[vec8f, float, float, float, float]:
     """Locate the fine-grid cell containing *f* and read 8 corner texel values.
 
     Point-samples each corner at integer+0.5 coordinates (exact texel centres)
@@ -868,9 +878,11 @@ def _read_cell_corners(
             (``cw_mul(clamped - sdf_box_lower, inv_sdf_dx)``).
 
     Returns:
-        ``(corners, tx, ty, tz)`` where *corners* packs the 8 SDF values as
+        ``(corners, tx, ty, tz, cell_fraction)`` where *corners* packs the 8 SDF values as
         ``[v000, v100, v010, v110, v001, v101, v011, v111]`` and
         ``(tx, ty, tz)`` are the fractional interpolation weights in [0, 1].
+        ``cell_fraction`` converts fine-grid inverse spacing to this cell's
+        inverse spacing (one for fine cells, ``fine_to_coarse`` otherwise).
     """
     loc = _locate_cell(sdf, f)
 
@@ -886,8 +898,10 @@ def _read_cell_corners(
     tx = loc.tx
     ty = loc.ty
     tz = loc.tz
+    cell_fraction = float(1.0)
 
     if loc.start_slot >= SLOT_LINEAR:
+        cell_fraction = sdf.fine_to_coarse
         cx = float(loc.x_base)
         cy = float(loc.y_base)
         cz = float(loc.z_base)
@@ -931,7 +945,7 @@ def _read_cell_corners(
         v111 = apply_subgrid_sdf_scale(v111, sdf.subgrids_min_sdf_value, sdf.subgrids_sdf_value_range)
 
     corners = vec8f(v000, v100, v010, v110, v001, v101, v011, v111)
-    return corners, tx, ty, tz
+    return corners, tx, ty, tz, cell_fraction
 
 
 @wp.func
@@ -1557,26 +1571,6 @@ def _texture_sample_sdf_hw_pair(
 
 
 @wp.func
-def _texture_sample_sdf_hw_pair_paired(
-    sdf: TextureSDFData,
-    local_pos0: wp.vec3,
-    local_pos1: wp.vec3,
-) -> wp.vec2f:
-    """Sample two positions from an X-paired SDF texture."""
-    return _texture_sample_sdf_hw_pair_variant(sdf, local_pos0, local_pos1, True)
-
-
-@wp.func
-def _texture_sample_sdf_hw_pair_scalar(
-    sdf: TextureSDFData,
-    local_pos0: wp.vec3,
-    local_pos1: wp.vec3,
-) -> wp.vec2f:
-    """Sample two positions from a scalar SDF texture."""
-    return _texture_sample_sdf_hw_pair_variant(sdf, local_pos0, local_pos1, False)
-
-
-@wp.func
 def _texture_sample_sdf_hw_clamped_variant(
     sdf: TextureSDFData,
     clamped: wp.vec3,
@@ -1637,26 +1631,6 @@ def _texture_sample_sdf_hw_clamped(
 
 
 @wp.func
-def _texture_sample_sdf_hw_clamped_paired(
-    sdf: TextureSDFData,
-    clamped: wp.vec3,
-    diff_mag: float,
-) -> float:
-    """Sample a clamped position from an X-paired SDF texture."""
-    return _texture_sample_sdf_hw_clamped_variant(sdf, clamped, diff_mag, True)
-
-
-@wp.func
-def _texture_sample_sdf_hw_clamped_scalar(
-    sdf: TextureSDFData,
-    clamped: wp.vec3,
-    diff_mag: float,
-) -> float:
-    """Sample a clamped position from a scalar SDF texture."""
-    return _texture_sample_sdf_hw_clamped_variant(sdf, clamped, diff_mag, False)
-
-
-@wp.func
 def _texture_sample_sdf_hw_variant(
     sdf: TextureSDFData,
     local_pos: wp.vec3,
@@ -1704,24 +1678,6 @@ def texture_sample_sdf_hw(
 
 
 @wp.func
-def _texture_sample_sdf_hw_paired(
-    sdf: TextureSDFData,
-    local_pos: wp.vec3,
-) -> float:
-    """Sample an X-paired SDF with hardware interpolation."""
-    return _texture_sample_sdf_hw_variant(sdf, local_pos, True)
-
-
-@wp.func
-def _texture_sample_sdf_hw_scalar(
-    sdf: TextureSDFData,
-    local_pos: wp.vec3,
-) -> float:
-    """Sample a scalar SDF with hardware interpolation."""
-    return _texture_sample_sdf_hw_variant(sdf, local_pos, False)
-
-
-@wp.func
 def texture_sample_sdf_grad(
     sdf: TextureSDFData,
     local_pos: wp.vec3,
@@ -1749,7 +1705,7 @@ def texture_sample_sdf_grad(
     diff_mag = wp.length(diff)
 
     f = wp.cw_mul(clamped - sdf.sdf_box_lower, sdf.inv_sdf_dx)
-    corners, tx, ty, tz = _read_cell_corners(sdf, f)
+    corners, tx, ty, tz, cell_fraction = _read_cell_corners(sdf, f)
 
     sdf_val = _trilinear(corners, tx, ty, tz)
 
@@ -1771,11 +1727,16 @@ def texture_sample_sdf_grad(
     gy = omtx * omtz * (v010 - v000) + tx * omtz * (v110 - v100) + omtx * tz * (v011 - v001) + tx * tz * (v111 - v101)
     gz = omtx * omty * (v001 - v000) + tx * omty * (v101 - v100) + omtx * ty * (v011 - v010) + tx * ty * (v111 - v110)
 
-    grad = wp.cw_mul(wp.vec3(gx, gy, gz), sdf.inv_sdf_dx)
+    grad = wp.cw_mul(wp.vec3(gx, gy, gz), sdf.inv_sdf_dx) * cell_fraction
 
     if diff_mag > 0.0:
         sdf_val = sdf_val + diff_mag
-        grad = diff / diff_mag
+        # Differentiate sdf(clamp(p)) + length(p - clamp(p)). Clamped axes
+        # lose the interpolant derivative; tangential axes retain it.
+        for axis in range(3):
+            if diff[axis] != 0.0:
+                grad[axis] = 0.0
+        grad = grad + diff / diff_mag
 
     return sdf_val, grad
 
@@ -1791,8 +1752,10 @@ def _texture_sample_sdf_grad_hw_impl_variant(
     Shared body for :func:`texture_sample_sdf_grad_hw` and
     :func:`texture_sample_sdf_grad_only_hw`. When ``local_pos`` is
     outside the SDF box, returns the unit vector from the clamped
-    boundary point to ``local_pos`` (matches the
-    :func:`texture_sample_sdf_grad` extrapolation convention). Inside
+    boundary point to ``local_pos``. This inexpensive contact-normal
+    approximation omits tangential field derivatives; use
+    :func:`texture_sample_sdf_grad` for the derivative of the extrapolated
+    scalar field. Inside
     the box, issues six hardware-filtered fetches (one per ±axis) for
     a centred-difference gradient with half-step ``0.5 / inv_sdf_dx``.
     """
@@ -1911,8 +1874,9 @@ def texture_sample_sdf_grad_only_hw(
     from prior context.
 
     When ``local_pos`` is outside the SDF box, the gradient is the
-    unit vector from the clamped boundary point to ``local_pos`` --
-    same extrapolation convention as :func:`texture_sample_sdf_grad`.
+    unit vector from the clamped boundary point to ``local_pos``. Unlike
+    :func:`texture_sample_sdf_grad`, this contact-normal approximation
+    omits tangential field derivatives.
 
     Args:
         sdf: texture SDF data
@@ -1922,24 +1886,6 @@ def texture_sample_sdf_grad_only_hw(
         Gradient [unitless].
     """
     return _texture_sample_sdf_grad_hw_impl(sdf, local_pos)
-
-
-@wp.func
-def _texture_sample_sdf_grad_only_hw_paired(
-    sdf: TextureSDFData,
-    local_pos: wp.vec3,
-) -> wp.vec3:
-    """Sample an X-paired SDF hardware gradient."""
-    return _texture_sample_sdf_grad_hw_impl_variant(sdf, local_pos, True)
-
-
-@wp.func
-def _texture_sample_sdf_grad_only_hw_scalar(
-    sdf: TextureSDFData,
-    local_pos: wp.vec3,
-) -> wp.vec3:
-    """Sample a scalar SDF hardware gradient."""
-    return _texture_sample_sdf_grad_hw_impl_variant(sdf, local_pos, False)
 
 
 # ============================================================================
@@ -2139,7 +2085,7 @@ def _build_sparse_sdf(
     # but .numpy() on the full array is fine — the sync is unavoidable because
     # we need num_required on the host to size the texture allocation.
     subgrid_addresses = wp.zeros(total_subgrids, dtype=wp.int32, device=device)
-    wp._src.utils.array_scan(subgrid_required, subgrid_addresses, inclusive=False)
+    wp.utils.array_scan(subgrid_required, subgrid_addresses, inclusive=False)
 
     required_np = subgrid_required.numpy()
     num_required = int(np.sum(required_np))

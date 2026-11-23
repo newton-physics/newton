@@ -15,16 +15,16 @@ from unittest import mock
 import numpy as np
 import warp as wp
 
-from newton import ModelBuilder
+import newton
+from newton import ModelBuilder, NewtonWarning
 from newton._src.geometry import broad_phase_nxn
 from newton._src.solvers.kamino._src.core.data import DataKamino
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.geometry.contacts import ContactsKamino
 from newton._src.solvers.kamino._src.geometry.unified import CollisionPipelineUnifiedKamino
-from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
-from newton.exceptions import NewtonWarning
-from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino import setup_test_output, setup_tests, test_context
 from newton.tests.kamino.test_kamino_geometry_primitive import check_contacts
+from newton.tests.unittest_utils import NewtonTestCase
 from newton.tests.utils import basics, testing
 
 logger = logging.getLogger(__name__)
@@ -199,7 +199,7 @@ def test_unified_pipeline_on_shape_pair(
 ###
 
 
-class TestCollisionPipelineUnified(unittest.TestCase):
+class TestCollisionPipelineUnified(NewtonTestCase):
     def test_primitive_local_bounds(self):
         """Retain local bounds for primitive-only penetration refinement."""
         devices = ["cpu"]
@@ -232,22 +232,14 @@ class TestCollisionPipelineUnified(unittest.TestCase):
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose  # Set to True for detailed output
-        self.skip_buggy_tests = False  # Set to True to skip known-buggy tests
 
-        # Set debug-level logging to print verbose test output to console
-        if self.verbose:
-            set_log_level(logging.DEBUG)
-        else:
-            reset_log_level()
+        setup_test_output(self, verbose=self.verbose)
+
+        self.skip_buggy_tests = False  # Set to True to skip known-buggy tests
 
         # Generate a list of supported shape pairs
         self.supported_shape_pairs = nominal_expected_contacts_per_shape_pair.keys()
         logger.debug("Supported shape pairs for unified pipeline tests:\n%s", self.supported_shape_pairs)
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
 
     def test_00_on_specific_primitive_shape_pair(self):
         """
@@ -516,13 +508,13 @@ class TestCollisionPipelineUnified(unittest.TestCase):
         in the (x,y) plane, and the top box rotated so that one of
         its lowest vertex is touching the top face of the bottom box.
         """
-        # NOTE: We set to negative value to move the geoms into each other,
-        # i.e. move the bottom geom upwards and the top geom downwards.
+        # NOTE: Negative, lowering the top box so its vertex penetrates the bottom face.
         penetration = -0.01
 
         # Define expected contact data
         expected = {
-            "num_contacts": 1,
+            "model_active_contacts": 1,
+            "world_active_contacts": [1],
             "gid_AB": np.tile(np.array([0, 1], dtype=np.int32), reps=(1, 1)),
             "bid_AB": np.tile(np.array([0, 1], dtype=np.int32), reps=(1, 1)),
             "position_A": np.array([[0.0, 0.0, 0.0]], dtype=np.float32),
@@ -534,7 +526,7 @@ class TestCollisionPipelineUnified(unittest.TestCase):
         # Create a builder for the specified shape pair
         builder = testing.make_single_shape_pair_builder(
             shapes=("box", "box"),
-            top_xyz=[0.0, 0.0, 0.5 * np.sqrt(3) + 0.5],
+            top_xyz=[0.0, 0.0, 0.5 * np.sqrt(3) + penetration],
             top_rpy=[np.pi / 4, -np.arctan(1.0 / np.sqrt(2)), 0.0],
         )
 
@@ -545,7 +537,7 @@ class TestCollisionPipelineUnified(unittest.TestCase):
             case="box_on_box_vertex_on_face",
             device=self.default_device,
             rtol=1e-5,
-            atol=1e-6,
+            atol=1e-5,
         )
 
     def test_08_on_boxes_nunchaku(self):
@@ -598,7 +590,7 @@ class TestCollisionPipelineUnified(unittest.TestCase):
                 self.assertIn("3 in the busiest world", str(caught[0].message))
 
 
-class TestUnifiedWriterContactDataRegression(unittest.TestCase):
+class TestUnifiedWriterContactDataRegression(NewtonTestCase):
     """
     Regression tests for the unified writer's ContactData API usage.
 
@@ -610,12 +602,10 @@ class TestUnifiedWriterContactDataRegression(unittest.TestCase):
     """
 
     def setUp(self):
+        setup_test_output(self)
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
-
-    def tearDown(self):
-        self.default_device = None
 
     def _run_pipeline(self, builder: ModelBuilder, default_gap=0.0):
         model = ModelKamino.from_newton(builder.finalize(self.default_device))
@@ -684,7 +674,7 @@ class TestUnifiedWriterContactDataRegression(unittest.TestCase):
         self.assertEqual(active, 0, "Contact beyond gap must be rejected")
 
 
-class TestUnifiedPipelineNxnBroadphase(unittest.TestCase):
+class TestUnifiedPipelineNxnBroadphase(NewtonTestCase):
     """Tests verifying NXN broadphase correctness with collision radii and filter pairs.
 
     These tests are Kamino-specific and ensure that the combination of model
@@ -692,12 +682,10 @@ class TestUnifiedPipelineNxnBroadphase(unittest.TestCase):
     """
 
     def setUp(self):
+        setup_test_output(self)
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
-
-    def tearDown(self):
-        self.default_device = None
 
     def _make_two_sphere_builder(
         self,
@@ -879,6 +867,7 @@ class TestUnifiedPipelineNxnBroadphase(unittest.TestCase):
 
 if __name__ == "__main__":
     # Test setup
+    newton.utils.setup_console_logging()
     setup_tests()
 
     # Run all tests

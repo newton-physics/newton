@@ -6,10 +6,10 @@
 import unittest
 
 import newton.usd
-from newton.tests.unittest_utils import USD_AVAILABLE
+from newton.tests.unittest_utils import requires
 
 
-@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+@requires("pxr.Usd")
 class TestUsdDeformableVisualDiscovery(unittest.TestCase):
     def test_visual_discovery_respects_body_ownership(self):
         """Find visual geometry without claiming simulation, collision, or nested-body geometry.

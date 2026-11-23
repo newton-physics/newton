@@ -476,8 +476,6 @@ class Example:
                 # Just update the forward kinematics to get body positions from joint coordinates
                 self.robot_solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
 
-                self.state_0.particle_f.zero_()
-
                 # restore original settings
                 self.model.particle_count = particle_count
                 self.model.gravity.assign(self.gravity_earth)

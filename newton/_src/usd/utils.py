@@ -8,12 +8,13 @@ import logging
 import math
 import os
 import warnings
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any, overload
 
 import numpy as np
 import warp as wp
 
+from ..core._warnings import _external_warning_stacklevel
 from ..core.host_transform import _builtin
 from ..core.types import Axis, AxisType
 from ..exceptions import NewtonDeprecationWarning, NewtonWarning
@@ -29,7 +30,7 @@ from ..utils.import_usd_deformable_utils import (
     _prim_has_collision_api,
     _warn_geometry_authored_material_attrs,
 )
-from ..utils.texture import linear_texture_to_srgb, load_texture
+from ..utils.texture import _linear_to_srgb, linear_texture_to_srgb, load_texture
 from ._mesh_loading import (  # noqa: F401
     _get_mesh_from_source,
     corner_angles,
@@ -125,18 +126,16 @@ def _get_raw_api_schemas(prim: Usd.Prim) -> list[str]:
     listop = prim.GetMetadata("apiSchemas")
     if listop is None:
         return []
-    return (
-        list(getattr(listop, "prependedItems", []))
-        + list(getattr(listop, "appendedItems", []))
-        + list(getattr(listop, "explicitItems", []))
-    )
+    return list(listop.GetAppliedItems())
 
 
 def get_applied_api_schemas(prim: Usd.Prim) -> list[str]:
-    """Return the API schema tokens applied to *prim*.
+    """Return the API schema tokens applied to *prim*, in authored order.
 
-    Falls back to raw ``apiSchemas`` list-op metadata when the schema plugin
-    is not loaded and :meth:`pxr.Usd.Prim.GetAppliedSchemas` returns nothing.
+    Combines the raw ``apiSchemas`` list-op metadata, which also holds tokens
+    whose schema plugin is not loaded, with
+    :meth:`pxr.Usd.Prim.GetAppliedSchemas`, which returns only schemas
+    registered with USD and adds the schemas they include.
 
     Args:
         prim: Prim to query.
@@ -144,8 +143,8 @@ def get_applied_api_schemas(prim: Usd.Prim) -> list[str]:
     Returns:
         Applied API schema tokens (e.g. ``["NewtonPDControlAPI"]``).
     """
-    schemas = list(prim.GetAppliedSchemas())
-    return schemas if schemas else _get_raw_api_schemas(prim)
+    schemas = _get_raw_api_schemas(prim)
+    return schemas + [name for name in prim.GetAppliedSchemas() if name not in schemas]
 
 
 def has_applied_api_schema(prim: Usd.Prim, schema_name: str) -> bool:
@@ -201,33 +200,6 @@ def get_float(prim: Usd.Prim, name: str, default: float | None = None) -> float 
     if np.isfinite(val):
         return val
     return default
-
-
-def get_float_with_fallback(prims: Iterable[Usd.Prim], name: str, default: float = 0.0) -> float:
-    """
-    Get a float attribute value from the first prim in a list that has it defined.
-
-    Args:
-        prims: An iterable of USD prims to query in order.
-        name: The name of the float attribute to retrieve.
-        default: The default value to return if no prim has the attribute.
-
-    Returns:
-        The float attribute value from the first prim that has a finite value,
-        otherwise the default value.
-    """
-    ret = default
-    for prim in prims:
-        if not prim:
-            continue
-        attr = prim.GetAttribute(name)
-        if not attr or not attr.HasAuthoredValue():
-            continue
-        val = attr.Get()
-        if np.isfinite(val):
-            ret = val
-            break
-    return ret
 
 
 @overload
@@ -774,9 +746,8 @@ _TETMESH_SCHEMA_ATTRS = frozenset(
 )
 
 
-# Vendor attribute namespaces that get_tetmesh() read by default before the canonical
-# ``physics:`` deformable schema existed. Pass as ``compat_namespaces`` to read them
-# off a bound material.
+# Vendor attribute namespaces that predate the canonical ``physics:`` deformable schema.
+# Pass as ``compat_namespaces`` to read them off a bound material.
 DEFORMABLE_LEGACY_NAMESPACES: tuple[str, ...] = ("omniphysics", "physxDeformableBody")
 
 
@@ -784,10 +755,9 @@ def _material_authors_legacy_deformable_attrs(prim: Usd.Prim) -> bool:
     """Return whether ``prim``'s bound physics material authors deformable moduli only under
     the legacy vendor namespaces (see :data:`DEFORMABLE_LEGACY_NAMESPACES`).
 
-    True means a canonical-only read would silently drop the authored stiffness/density:
-    the material lacks ``PhysicsVolumeDeformableMaterialAPI`` but carries vendor-namespaced
-    ``youngsModulus`` / ``poissonsRatio`` / ``density``. Callers use this to keep a
-    deprecation window for such assets.
+    True means a canonical-only read drops the authored stiffness/density: the material
+    lacks ``PhysicsVolumeDeformableMaterialAPI`` but carries vendor-namespaced
+    ``youngsModulus`` / ``poissonsRatio`` / ``density``. Callers use this to warn.
     """
     material_prim = _find_physics_material_prim(prim)
     if material_prim is None or has_applied_api_schema(material_prim, "PhysicsVolumeDeformableMaterialAPI"):
@@ -803,10 +773,7 @@ def _material_authors_unscoped_canonical_attrs(prim: Usd.Prim) -> bool:
     """Return whether ``prim``'s bound physics material authors canonical ``physics:``
     deformable moduli without ``PhysicsVolumeDeformableMaterialAPI``.
 
-    The deprecated ``get_tetmesh()`` default reads these off any bound material, while
-    canonical-only behavior (``compat_namespaces=()``) scopes moduli to materials with the
-    applied API and would silently drop them -- the second case where the legacy default
-    is load-bearing and deserves the deprecation warning.
+    Canonical-only behavior scopes moduli to materials with the applied API and drops these.
     """
     material_prim = _find_physics_material_prim(prim)
     if material_prim is None or has_applied_api_schema(material_prim, "PhysicsVolumeDeformableMaterialAPI"):
@@ -815,6 +782,31 @@ def _material_authors_unscoped_canonical_attrs(prim: Usd.Prim) -> bool:
         material_prim.GetAttribute(f"physics:{name}").HasAuthoredValue()
         for name in ("youngsModulus", "poissonsRatio", "density")
     )
+
+
+def _ignored_tetmesh_material_attrs(prim: Usd.Prim) -> list[str]:
+    """List bound-material attributes that only a ``compat_namespaces`` read of ``prim`` uses."""
+    from pxr import UsdPhysics
+
+    material_prim = _find_physics_material_prim(prim)
+    if material_prim is None:
+        return []
+    volume_api = has_applied_api_schema(material_prim, "PhysicsVolumeDeformableMaterialAPI")
+    base_api = material_prim.HasAPI(UsdPhysics.MaterialAPI) or has_applied_api_schema(
+        material_prim, "PhysicsMaterialAPI"
+    )
+    ignored = []
+    for name in ("youngsModulus", "poissonsRatio", "density"):
+        for namespace in ("physics", *DEFORMABLE_LEGACY_NAMESPACES):
+            attr = material_prim.GetAttribute(f"{namespace}:{name}")
+            if attr.HasAuthoredValue():
+                # Time samples alone supply no value to either read.
+                if attr.Get() is not None and (
+                    namespace != "physics" or not (volume_api or (name == "density" and base_api))
+                ):
+                    ignored.append(f"{namespace}:{name}")
+                break
+    return ignored
 
 
 def _should_load_tetmesh_material_for_import(prim: Usd.Prim) -> bool:
@@ -890,18 +882,13 @@ def get_tetmesh(
     frequency is ambiguous or cannot be inferred emit a warning and are
     omitted without preventing the TetMesh from loading.
 
-    Material-attribute namespaces (deprecated default): with ``compat_namespaces=None``
-    (the default) the legacy vendor namespaces (``omniphysics:`` / ``physxDeformableBody:``)
-    are read off any bound material, matching the pre-canonical behavior. That default is
-    deprecated and emits a ``DeprecationWarning`` when it is load-bearing: the bound material
-    authors vendor-namespaced deformable attributes, or canonical ``physics:`` attributes
-    without ``PhysicsVolumeDeformableMaterialAPI`` (API-applied canonical or render-only
-    materials do not warn); a future
-    release will default to canonical ``physics:``-only. Pass ``compat_namespaces=()`` to adopt
-    the canonical-only behavior now -- moduli are then read only from a material that applies
-    ``PhysicsVolumeDeformableMaterialAPI`` -- or pass an explicit list (e.g.
-    ``newton.usd.DEFORMABLE_LEGACY_NAMESPACES``) to keep reading vendor namespaces without the
-    warning.
+    Material-attribute namespaces: by default, only canonical ``physics:`` attributes are
+    read, moduli from a material that applies ``PhysicsVolumeDeformableMaterialAPI`` and
+    density also from one that applies ``UsdPhysicsMaterialAPI``. Omitting
+    ``compat_namespaces`` warns when this ignores attributes authored on the bound material.
+    Pass an explicit list (e.g. ``newton.usd.DEFORMABLE_LEGACY_NAMESPACES``) to read the
+    canonical and the listed vendor namespaces off any bound material.
+    One deprecated exception to the default is described under ``compat_namespaces``.
 
     Example:
 
@@ -921,24 +908,51 @@ def get_tetmesh(
         prim: The USD prim to load the tetrahedral mesh from.
         compat_namespaces: Vendor attribute namespaces accepted as a fallback to the canonical
             ``physics:`` material attributes, lifting the ``PhysicsVolumeDeformableMaterialAPI``
-            gate. ``None`` (the default) selects the deprecated legacy namespaces; pass ``()`` for
-            canonical-only.
+            gate. ``None`` (the default) and ``()`` are canonical-only; only ``None`` warns
+            about ignored attributes.
+
+            .. deprecated:: 1.9
+                ``None`` still reads vendor-namespaced values without a ``physics:`` counterpart
+                from a material that applies ``PhysicsVolumeDeformableMaterialAPI``. A future
+                release ignores them.
 
     Returns:
         A :class:`newton.TetMesh` with vertex positions and tet connectivity.
     """
-    return _get_tetmesh(
+    ignored = _ignored_tetmesh_material_attrs(prim) if compat_namespaces is None else []
+    # The earlier default never warned about vendor values on a volume-API material.
+    deprecated_read = bool(ignored) and has_applied_api_schema(
+        _find_physics_material_prim(prim), "PhysicsVolumeDeformableMaterialAPI"
+    )
+    tetmesh = _get_tetmesh(
         prim,
-        compat_namespaces=compat_namespaces,
+        compat_namespaces=DEFORMABLE_LEGACY_NAMESPACES if deprecated_read else (compat_namespaces or ()),
         load_custom_attributes=_load_custom_attributes,
         load_material=True,
     )
+    if deprecated_read:
+        warnings.warn(
+            f"{prim.GetPath()}: reading {', '.join(ignored)} from the bound material by default is "
+            "deprecated; a future release ignores them. Author canonical physics: attributes, or "
+            "pass compat_namespaces=newton.usd.DEFORMABLE_LEGACY_NAMESPACES to keep reading them.",
+            NewtonDeprecationWarning,
+            stacklevel=_external_warning_stacklevel(),
+        )
+    elif ignored:
+        warnings.warn(
+            f"{prim.GetPath()}: ignoring {', '.join(ignored)} on the bound material. Author "
+            "canonical physics: attributes with PhysicsVolumeDeformableMaterialAPI, or pass "
+            "compat_namespaces=newton.usd.DEFORMABLE_LEGACY_NAMESPACES to read them.",
+            NewtonWarning,
+            stacklevel=_external_warning_stacklevel(),
+        )
+    return tetmesh
 
 
 def _get_tetmesh(
     prim: Usd.Prim,
     *,
-    compat_namespaces: Sequence[str] | None,
+    compat_namespaces: Sequence[str],
     load_custom_attributes: bool,
     load_material: bool,
 ) -> TetMesh:
@@ -981,27 +995,6 @@ def _get_tetmesh(
         )
 
     material_prim = _find_physics_material_prim(prim) if load_material else None
-    if compat_namespaces is None:
-        # Deprecated legacy default: read vendor namespaces off any bound material, and
-        # canonical moduli off materials without the deformable material API. Warn only when
-        # that default is load-bearing -- vendor attrs authored, or canonical attrs on an
-        # API-less material -- so materials whose reads the default change does not alter
-        # (API-applied canonical, render-only) never warn.
-        if load_material and (
-            _material_authors_legacy_deformable_attrs(prim) or _material_authors_unscoped_canonical_attrs(prim)
-        ):
-            warnings.warn(
-                "get_tetmesh(): the default reads deformable material attributes off any bound "
-                "material (canonical physics: and legacy omniphysics: / physxDeformableBody: "
-                "namespaces); this is deprecated, and a future release will read canonical "
-                "physics: attributes only off a material applying "
-                "PhysicsVolumeDeformableMaterialAPI. Pass compat_namespaces=() to adopt the "
-                "canonical-only behavior now, or compat_namespaces="
-                "newton.usd.DEFORMABLE_LEGACY_NAMESPACES to keep the current behavior explicitly.",
-                NewtonDeprecationWarning,
-                stacklevel=2,
-            )
-        compat_namespaces = DEFORMABLE_LEGACY_NAMESPACES
     # Canonical behavior (compat_namespaces=()) scopes the moduli to the volume deformable material
     # API, so they are not read off an unrelated physics material. A non-empty compat_namespaces reads
     # the listed vendor namespaces off any bound material.
@@ -1486,6 +1479,18 @@ def load_physics_from_range(stage, root_paths, exclude_paths=()):
     if load is None:
         load = UsdPhysics.LoadUsdPhysicsFromRange
     return load(stage, list(root_paths), excludePaths=list(exclude_paths))
+
+
+def physics_parser_skips_disabled_bodies() -> bool:
+    """Whether the native physics parser treats disabled rigid bodies as unapplied.
+
+    From OpenUSD 26.11, the colliders and joints of a rigid body with
+    ``physics:rigidBodyEnabled = false`` resolve to the nearest enabled ancestor body, and
+    colliders without one are static. Earlier versions assign them to the disabled body.
+    """
+    from pxr import Usd
+
+    return Usd.GetVersion() >= (0, 26, 11)
 
 
 def _get_physics_material_density(material_prim) -> float | None:
@@ -1973,17 +1978,18 @@ def _resolve_color_space(name: str, default: ColorSpace, what: str, path: Any) -
 
 
 def _color_to_display_space(
-    color: tuple[float, float, float],
+    color: tuple[float, float, float] | np.ndarray,
     attr: Usd.Attribute | None,
-) -> tuple[float, float, float]:
-    """Normalize a USD scalar color to Newton's display/sRGB model color space."""
-    if attr is None:
-        return color_linear_to_srgb(color)
-    # Untagged scalar colors follow USD Preview Surface and are linear.
-    color_space = _resolve_color_space(_get_attribute_color_space(attr), ColorSpace.LINEAR, "Color", attr.GetPath())
-    if color_space == ColorSpace.LINEAR:
-        return color_linear_to_srgb(color)
-    return color
+) -> tuple[float, float, float] | np.ndarray:
+    """Normalize a USD color, or an ``(N, 3)`` array of colors, to Newton's display/sRGB model color space."""
+    if attr is not None:
+        # Untagged colors follow USD Preview Surface and are linear.
+        color_space = _resolve_color_space(_get_attribute_color_space(attr), ColorSpace.LINEAR, "Color", attr.GetPath())
+        if color_space != ColorSpace.LINEAR:
+            return color
+    if np.ndim(color) == 2:
+        return _linear_to_srgb(np.asarray(color))
+    return color_linear_to_srgb(color)
 
 
 def _resolve_color_texture_asset(
@@ -2175,10 +2181,64 @@ def _coerce_color_opacity(value: Any, attr: Usd.Attribute | None) -> float | Non
     return _coerce_opacity(value_np[3], attr)
 
 
+def _uniform_primvar_face_values(primvar: UsdGeom.Primvar, face_count: int | None) -> tuple[np.ndarray | None, Any]:
+    """Return a ``uniform`` primvar's per-face values, or its first flattened value after a logged length mismatch.
+
+    The values are None unless the primvar holds exactly one value per face; the fallback is a one-element list.
+    """
+    if face_count is None or primvar.GetInterpolation() != UsdGeom.Tokens.uniform:
+        return None, None
+    if not primvar.GetTypeName().isArray:
+        return None, None
+    values = primvar.ComputeFlattened()
+    if values is None or len(values) == 0:
+        return None, None
+    if len(values) != face_count:
+        _warn_imported_value(
+            primvar.GetAttr(),
+            "uniform primvar length %d does not match %d faces; using the first value.",
+            len(values),
+            face_count,
+        )
+        return None, [values[0]]
+    try:
+        return np.asarray(values, dtype=np.float64).reshape(face_count, -1), None
+    except (TypeError, ValueError):
+        return None, None
+
+
+def _coerce_face_values(values: np.ndarray, attr: Usd.Attribute, what: str) -> np.ndarray | None:
+    """Clamp per-face values read from ``attr`` to [0, 1]; faces with a non-finite value become NaN.
+
+    Returns None if every face is non-finite.
+    """
+    finite = np.all(np.isfinite(values), axis=1)
+    if not np.any(finite):
+        _warn_imported_value(attr, "ignoring imported face %s: all %d are non-finite.", what, len(values))
+        return None
+    if not np.all(finite):
+        _warn_imported_value(
+            attr,
+            "ignoring imported face %s: %d of %d are non-finite; those faces use the default.",
+            what,
+            int(np.count_nonzero(~finite)),
+            len(values),
+        )
+    clamped = np.clip(values, 0.0, 1.0)
+    clamped[~finite] = np.nan
+    clamped_count = int(np.count_nonzero(finite & np.any(clamped != values, axis=1)))
+    if clamped_count:
+        _warn_imported_value(attr, "clamping %d of %d imported face %s to [0, 1].", clamped_count, len(values), what)
+    return clamped
+
+
 def _extract_display_primvar_properties(
-    prim: Usd.Prim, *, read_color: bool = True, read_opacity: bool = True
+    prim: Usd.Prim, *, read_color: bool = True, read_opacity: bool = True, face_count: int | None = None
 ) -> dict[str, Any]:
-    """Extract displayColor/displayOpacity primvars from a prim, skipping those not requested."""
+    """Extract displayColor/displayOpacity primvars from a prim, skipping those not requested.
+
+    With ``face_count``, a ``uniform`` primvar holding one value per face is returned as a per-face array.
+    """
     properties = _empty_material_properties()
     if UsdGeom is None or not prim or not prim.IsValid():
         return properties
@@ -2187,17 +2247,30 @@ def _extract_display_primvar_properties(
     if read_color:
         display_color = primvars_api.FindPrimvarWithInheritance("displayColor")
         if display_color:
-            color_value = display_color.Get()
-            color = _coerce_color(color_value, display_color.GetAttr())
-            if color is not None:
-                properties["color"] = _color_to_display_space(color, display_color.GetAttr())
+            face_colors, mismatch_value = _uniform_primvar_face_values(display_color, face_count)
+            if face_colors is not None and face_colors.shape[1] >= 3:
+                colors = _coerce_face_values(face_colors[:, :3], display_color.GetAttr(), "colors")
+                if colors is not None:
+                    properties["color"] = _color_to_display_space(colors, display_color.GetAttr())
+            else:
+                value = display_color.Get() if mismatch_value is None else mismatch_value
+                color = _coerce_color(value, display_color.GetAttr())
+                if color is not None:
+                    properties["color"] = _color_to_display_space(color, display_color.GetAttr())
 
     if read_opacity:
         display_opacity = primvars_api.FindPrimvarWithInheritance("displayOpacity")
         if display_opacity:
-            opacity = _coerce_opacity(display_opacity.Get(), display_opacity.GetAttr(), warn_on_multiple=True)
-            if opacity is not None:
-                properties["opacity"] = opacity
+            face_opacities, mismatch_value = _uniform_primvar_face_values(display_opacity, face_count)
+            if face_opacities is not None:
+                opacities = _coerce_face_values(face_opacities[:, :1], display_opacity.GetAttr(), "opacities")
+                if opacities is not None:
+                    properties["opacity"] = opacities[:, 0]
+            else:
+                value = display_opacity.Get() if mismatch_value is None else mismatch_value
+                opacity = _coerce_opacity(value, display_opacity.GetAttr(), warn_on_multiple=mismatch_value is None)
+                if opacity is not None:
+                    properties["opacity"] = opacity
 
         if properties["opacity"] is None:
             attr = prim.GetAttribute("displayOpacity")
@@ -2577,7 +2650,7 @@ def _get_bound_material(target_prim: Usd.Prim) -> UsdShade.Material | None:
     return bound_material if bound_material else None
 
 
-def _resolve_prim_material_properties(target_prim: Usd.Prim) -> dict[str, Any] | None:
+def _resolve_prim_material_properties(target_prim: Usd.Prim, *, face_count: int | None = None) -> dict[str, Any] | None:
     """Resolve material properties from a prim's bound material.
 
     Returns None if no material is bound or no properties could be extracted.
@@ -2623,7 +2696,7 @@ def _resolve_prim_material_properties(target_prim: Usd.Prim) -> dict[str, Any] |
     need_opacity = properties["opacity"] is None
     if need_color or need_opacity:
         display_props = _extract_display_primvar_properties(
-            target_prim, read_color=need_color, read_opacity=need_opacity
+            target_prim, read_color=need_color, read_opacity=need_opacity, face_count=face_count
         )
         if display_props.get("color") is not None:
             properties["color"] = display_props["color"]
@@ -2633,22 +2706,29 @@ def _resolve_prim_material_properties(target_prim: Usd.Prim) -> dict[str, Any] |
     return properties
 
 
-def resolve_material_properties_for_prim(prim: Usd.Prim, *, include_subsets: bool = True) -> dict[str, Any]:
+def resolve_material_properties_for_prim(
+    prim: Usd.Prim, *, include_subsets: bool = True, face_count: int | None = None
+) -> dict[str, Any]:
     """Resolve surface material properties bound to a prim.
 
     Args:
         prim: The prim whose bound material should be inspected.
         include_subsets: If ``False``, a mesh without its own material skips the
             ``GeomSubset`` fallback and uses its display primvars.
+        face_count: Number of authored faces of the prim. If given, a ``uniform``
+            ``displayColor`` or ``displayOpacity`` with one value per face is returned
+            as a per-face array of shape ``(face_count, 3)`` or ``(face_count,)``, with
+            NaN for faces whose authored value is non-finite.
 
     Returns:
-        Dictionary with scalar surface properties (including opacity), texture
-        data, and a standard texture-coordinate transform.
+        Dictionary with surface properties (including opacity), texture data, and a
+        standard texture-coordinate transform. Color and opacity are scalars unless
+        ``face_count`` selects per-face display primvars.
     """
     if not prim or not prim.IsValid():
         return _empty_material_properties()
 
-    properties = _resolve_prim_material_properties(prim)
+    properties = _resolve_prim_material_properties(prim, face_count=face_count)
     if properties is not None:
         return properties
 
@@ -2661,7 +2741,7 @@ def resolve_material_properties_for_prim(prim: Usd.Prim, *, include_subsets: boo
     except Exception:
         proto_prim = None
     if proto_prim and proto_prim.IsValid():
-        properties = _resolve_prim_material_properties(proto_prim)
+        properties = _resolve_prim_material_properties(proto_prim, face_count=face_count)
         if properties is not None:
             return properties
 
@@ -2693,7 +2773,7 @@ def resolve_material_properties_for_prim(prim: Usd.Prim, *, include_subsets: boo
             if fallback_props is not None:
                 return fallback_props
 
-    display_props = _extract_display_primvar_properties(prim)
+    display_props = _extract_display_primvar_properties(prim, face_count=face_count)
     if display_props.get("color") is not None or display_props.get("opacity") is not None:
         return display_props
 

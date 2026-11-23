@@ -70,6 +70,23 @@ def zero_kinematic_body_forces(
 
 
 @wp.kernel
+def apply_kinematic_armature(
+    joint_armature: wp.array[float],
+    kinematic_dof: wp.array[wp.int32],
+    kinematic_armature: float,
+    # outputs
+    armature_effective: wp.array[float],
+):
+    """Substitute ``kinematic_armature`` on kinematic DOFs; dynamic DOFs keep
+    (and stay differentiable w.r.t.) their model armature."""
+    i = wp.tid()
+    if kinematic_dof[i] != 0:
+        armature_effective[i] = kinematic_armature
+    else:
+        armature_effective[i] = joint_armature[i]
+
+
+@wp.kernel
 def reduce_mimic_inertia(
     articulation_start: wp.array[int],
     articulation_end: wp.array[int],
@@ -1011,31 +1028,6 @@ def compute_link_velocity(
     body_I_s[child] = I_s
 
 
-# Convert body forces from COM-frame to world-origin-frame and negate for use in Featherstone dynamics.
-@wp.kernel
-def convert_body_force_com_to_origin(
-    body_q: wp.array[wp.transform],
-    body_X_com: wp.array[wp.transform],
-    # outputs
-    body_f_ext: wp.array[wp.spatial_vector],
-):
-    tid = wp.tid()
-
-    f_ext_com = body_f_ext[tid]
-
-    # skip if force is zero
-    if wp.length(f_ext_com) == 0.0:
-        return
-
-    body_q_com_val = body_q[tid] * body_X_com[tid]
-    r_com = wp.transform_get_translation(body_q_com_val)
-
-    force = wp.spatial_top(f_ext_com)
-    torque_com = wp.spatial_bottom(f_ext_com)
-
-    body_f_ext[tid] = -wp.spatial_vector(force, torque_com + wp.cross(r_com, force))
-
-
 @wp.kernel
 def accumulate_free_distance_joint_f_to_body_force(
     joint_type: wp.array[int],
@@ -1485,8 +1477,9 @@ def eval_rigid_tau(
         force = wp.spatial_top(f_ext_public)
         torque_com = wp.spatial_bottom(f_ext_public)
         x_com_s = wp.transform_get_translation(body_q_com[child]) - body_solve_origin[child]
+        # shift the public wrench into the solve frame locally; writing it back
+        # into body_f_ext would corrupt the recompute-based adjoint
         f_ext = -wp.spatial_vector(force, torque_com + wp.cross(x_com_s, force))
-        body_f_ext[child] = f_ext
         f_s = f_b_s + f_t_s + f_ext
 
         # compute joint-space forces, writes out tau
@@ -1928,7 +1921,8 @@ def adj_dense_cholesky(
     # outputs
     L: wp.array[float],
 ):
-    # nop, use dense_solve to differentiate through (A^-1)b = x
+    # nop: adj_dense_solve differentiates through (A^-1)b = x and deposits
+    # directly into adjoint[A] and adjoint[R]
     pass
 
 
@@ -1986,13 +1980,16 @@ def dense_solve(
     L_start: int,
     b_start: int,
     A: wp.array[float],
+    R: wp.array[float],
+    R_start: int,
     L: wp.array[float],
     b: wp.array[float],
     # outputs
     x: wp.array[float],
     tmp: wp.array[float],
 ):
-    # helper function to include tmp argument for backward pass
+    # helper function to include adjoint-only arguments (A, R, tmp) for the
+    # backward pass
     dense_subs(n, L_start, b_start, L, b, x)
 
 
@@ -2002,13 +1999,16 @@ def adj_dense_solve(
     L_start: int,
     b_start: int,
     A: wp.array[float],
+    R: wp.array[float],
+    R_start: int,
     L: wp.array[float],
     b: wp.array[float],
     # outputs
     x: wp.array[float],
     tmp: wp.array[float],
 ):
-    if not tmp or not wp.adjoint[x] or not wp.adjoint[A] or not wp.adjoint[L]:
+    # adjoint[L] is intentionally not checked - see the deposit below
+    if not tmp or not wp.adjoint[x] or not wp.adjoint[A]:
         return
     for i in range(n):
         tmp[b_start + i] = 0.0
@@ -2018,14 +2018,21 @@ def adj_dense_solve(
     for i in range(n):
         wp.adjoint[b][b_start + i] += tmp[b_start + i]
 
-    # A* = -adj_b*x^T
+    # dense_cholesky reads only the lower triangle of A, so deposit the
+    # symmetrized gradient -(tmp x^T + x tmp^T) there; L is internal and gets
+    # no adjoint
     for i in range(n):
-        for j in range(n):
-            wp.adjoint[L][L_start + dense_index(n, i, j)] += -tmp[b_start + i] * x[b_start + j]
+        for j in range(i + 1):
+            g = -tmp[b_start + i] * x[b_start + j]
+            if i != j:
+                g -= tmp[b_start + j] * x[b_start + i]
+            wp.adjoint[A][L_start + dense_index(n, i, j)] += g
 
-    for i in range(n):
-        for j in range(n):
-            wp.adjoint[A][L_start + dense_index(n, i, j)] += -tmp[b_start + i] * x[b_start + j]
+    # R (armature) is added to the diagonal before factorization; this is also
+    # its only gradient route on the fused tile path
+    if wp.adjoint[R]:
+        for i in range(n):
+            wp.adjoint[R][R_start + i] += -tmp[b_start + i] * x[b_start + i]
 
 
 @wp.kernel
@@ -2034,6 +2041,8 @@ def eval_dense_solve_batched(
     L_dim: wp.array[int],
     b_start: wp.array[int],
     A: wp.array[float],
+    R: wp.array[float],
+    R_start: wp.array[int],
     L: wp.array[float],
     b: wp.array[float],
     # outputs
@@ -2042,7 +2051,7 @@ def eval_dense_solve_batched(
 ):
     batch = wp.tid()
 
-    dense_solve(L_dim[batch], L_start[batch], b_start[batch], A, L, b, x, tmp)
+    dense_solve(L_dim[batch], L_start[batch], b_start[batch], A, R, R_start[batch], L, b, x, tmp)
 
 
 @wp.kernel
@@ -2584,16 +2593,21 @@ def compute_body_parent_f(
 
     * ``body_f_s = I*a + spatial_cross_dual(v, I*v) - f_g_s``  (inertial bias minus gravity)
     * ``body_ft_s``                          (accumulated descendant wrenches)
-    * ``body_f_ext``                         (external + contact wrenches,
-      stored with the negated sign convention used by ``eval_rigid_tau``)
+    * ``body_f_ext``                         (external + contact wrenches in
+      the public convention: world-frame force, torque referenced to the
+      body COM -- ``State.body_f`` plus contact and FREE/DISTANCE wrenches)
 
-    Their sum is the spatial wrench transmitted from the parent through the
-    inbound joint, expressed in Featherstone's internal solve frame. For
-    floating-root articulations this frame is translated to the root COM; for
-    other roots it remains at the world origin. We translate it to the body's
-    COM (matching :class:`SolverMuJoCo` and the ``SolverBase.Observables.body_parent_f``
-    convention -- linear ``[N]`` first, torque ``[N·m]`` referenced to the COM,
-    both in world frame).
+    ``body_f_s`` and ``body_ft_s`` are in Featherstone's internal solve
+    frame, but ``body_f_ext`` is not, so this kernel applies the same
+    solve-frame shift and negation as ``eval_rigid_tau`` before summing.
+    Their sum is the spatial
+    wrench transmitted from the parent through the inbound joint, still in
+    the solve frame. For floating-root articulations this frame is
+    translated to the root COM; for other roots it remains at the world
+    origin. We translate it to the body's COM (matching
+    :class:`SolverMuJoCo` and the ``SolverBase.Observables.body_parent_f``
+    convention -- linear ``[N]`` first, torque ``[N·m]`` referenced to the
+    COM, both in world frame).
 
     The kernel does not special-case roots: it writes the same
     RNEA-backward-pass sum for every body.  For a FREE-jointed body that
@@ -2605,11 +2619,17 @@ def compute_body_parent_f(
     """
     tid = wp.tid()
 
-    f_s = body_f_s[tid] + body_ft_s[tid] + body_f_ext[tid]
+    f_ext_public = body_f_ext[tid]
+    force = wp.spatial_top(f_ext_public)
+    torque_com = wp.spatial_bottom(f_ext_public)
+    r_com = wp.transform_get_translation(body_q_com[tid]) - body_solve_origin[tid]
+    # same solve-frame shift and negation as eval_rigid_tau
+    f_ext = -wp.spatial_vector(force, torque_com + wp.cross(r_com, force))
+
+    f_s = body_f_s[tid] + body_ft_s[tid] + f_ext
     f_lin = wp.spatial_top(f_s)
     f_ang_at_origin = wp.spatial_bottom(f_s)
 
-    r_com = wp.transform_get_translation(body_q_com[tid]) - body_solve_origin[tid]
     f_ang_at_com = f_ang_at_origin - wp.cross(r_com, f_lin)
 
     body_parent_f[tid] = wp.spatial_vector(f_lin, f_ang_at_com)

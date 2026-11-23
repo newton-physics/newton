@@ -31,7 +31,13 @@ from newton.solvers.experimental.coupled import (
     SolverCoupledProxy,
 )
 from newton.tests._deformable_test_utils import _add_curve, _add_surface, _add_test_anchored_cable, _add_volume
-from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
+from newton.tests.unittest_utils import (
+    MUJOCO_MODULES,
+    add_function_test,
+    get_cuda_test_devices,
+    get_test_devices,
+    requires,
+)
 
 
 @wp.kernel(enable_backward=False)
@@ -536,6 +542,8 @@ class TestModelView(unittest.TestCase):
         """disable_body_dynamics should zero inverse inertia without changing flags."""
         view = ModelView(self.model, "test")
         indices = wp.array([1], dtype=int, device="cpu")
+        mass_before = self.model.body_mass.numpy().copy()
+        inertia_before = self.model.body_inertia.numpy().copy()
         view.disable_body_dynamics(indices)
 
         mass = view.body_mass.numpy()
@@ -552,9 +560,9 @@ class TestModelView(unittest.TestCase):
         self.assertNotEqual(flags[0] & dynamic, 0)
         self.assertEqual(flags[0] & kinematic, 0)
         # Body 1 should keep forward inertial metadata but become immovable.
-        self.assertEqual(mass[1], self.model.body_mass.numpy()[1])
+        self.assertEqual(mass[1], mass_before[1])
         self.assertEqual(inv_mass[1], 0.0)
-        np.testing.assert_allclose(inertia[1], self.model.body_inertia.numpy()[1])
+        np.testing.assert_allclose(inertia[1], inertia_before[1])
         np.testing.assert_allclose(inv_inertia[1], np.zeros((3, 3)))
         self.assertNotEqual(flags[1] & dynamic, 0)
         self.assertEqual(flags[1] & kinematic, 0)
@@ -574,13 +582,14 @@ class TestModelView(unittest.TestCase):
         )
         model = builder.finalize(device="cpu")
         view = ModelView(model, "test")
+        dof_dim_before = model.joint_dof_dim.numpy()[joint].copy()
 
         view.disable_joints(wp.array([joint], dtype=int, device="cpu"))
 
         self.assertFalse(bool(view.joint_enabled.numpy()[joint]))
         self.assertEqual(int(view.joint_type.numpy()[joint]), int(newton.JointType.FREE))
         self.assertEqual(int(model.joint_type.numpy()[joint]), int(newton.JointType.ROD))
-        np.testing.assert_array_equal(view.joint_dof_dim.numpy()[joint], model.joint_dof_dim.numpy()[joint])
+        np.testing.assert_array_equal(view.joint_dof_dim.numpy()[joint], dof_dim_before)
 
     def test_zero_particle_mass(self):
         """zero_particle_mass should zero forward and inverse mass arrays."""
@@ -730,17 +739,6 @@ class TestModelView(unittest.TestCase):
 
 class TestSolverCoupledContactsAndMPM(unittest.TestCase):
     """Test coupled contact preparation and implicit MPM integration."""
-
-    def test_graph_capture_setup_stays_solver_specific(self):
-        """Verify coupled solvers do not expose a generic graph protocol."""
-        for name in ("supports_graph_capture", "prepare_graph_capture", "check_status"):
-            with self.subTest(name=name):
-                self.assertFalse(hasattr(SolverCoupled, name))
-
-        self.assertFalse(hasattr(SolverImplicitMPM, "supports_graph_capture"))
-        self.assertFalse(hasattr(SolverImplicitMPM, "prepare_graph_capture"))
-        self.assertFalse(hasattr(SolverImplicitMPM, "check_status"))
-        self.assertTrue(hasattr(SolverImplicitMPM, "check_sparse_grid_rebuild_status"))
 
     def test_implicit_mpm_reset_syncs_namespaced_non_in_place_state(self):
         """Verify coupled reset mirrors MPM history into the non-in-place output state."""
@@ -1089,7 +1087,7 @@ def _coupled_reset_replays_with_mutable_device_mask(test, device):
         (
             SolverCoupled.Entry(
                 "vbd",
-                lambda view: SolverVBD(view, iterations=0, rigid_compliant_alm=True),
+                lambda view: SolverVBD(view, iterations=0),
                 bodies=range(model.body_count),
                 joints=range(model.joint_count),
             ),
@@ -1327,23 +1325,22 @@ class TestSolverCoupledBasic(unittest.TestCase):
         builder.color()
         model = builder.finalize(device="cpu")
 
-        with self.assertWarns(DeprecationWarning):
-            coupled = SolverCoupled(
-                model,
-                (
-                    SolverCoupled.Entry(
-                        "other",
-                        _StepCountingCopySolver,
-                        particles=(external_particle,),
-                    ),
-                    SolverCoupled.Entry(
-                        "vbd",
-                        lambda view: SolverVBD(view, iterations=0, rigid_compliant_alm=False),
-                        bodies=(body_a, body_b),
-                        particles=(owned_particle,),
-                    ),
+        coupled = SolverCoupled(
+            model,
+            (
+                SolverCoupled.Entry(
+                    "other",
+                    _StepCountingCopySolver,
+                    particles=(external_particle,),
                 ),
-            )
+                SolverCoupled.Entry(
+                    "vbd",
+                    lambda view: SolverVBD(view, iterations=0),
+                    bodies=(body_a, body_b),
+                    particles=(owned_particle,),
+                ),
+            ),
+        )
         view = coupled.view("vbd")
 
         # The view compacts bodies but keeps every particle visible, so the retained row pairs a
@@ -1953,12 +1950,9 @@ class TestSolverCoupledBasic(unittest.TestCase):
         np.testing.assert_allclose(body_q[base, :3], [0.0, 0.0, 0.0], atol=1.0e-6)
         self.assertLess(body_q[child, 2], -0.01)
 
+    @requires(*MUJOCO_MODULES)
     def test_split_articulation_mujoco_child_moves_with_parent(self):
         """Let SolverMuJoCo step a split child through its synthesized FREE root joint."""
-        try:
-            SolverMuJoCo.import_mujoco()
-        except ImportError as exc:
-            self.skipTest(str(exc))
         model, parent, child, root = self._split_pair_model()
 
         coupled = SolverCoupled(
@@ -1975,12 +1969,9 @@ class TestSolverCoupledBasic(unittest.TestCase):
         self.assertLess(body_q[parent, 2], -0.01)
         np.testing.assert_allclose(body_q[child, 2], body_q[parent, 2], atol=1.0e-4)
 
+    @requires(*MUJOCO_MODULES)
     def test_uneven_world_selection_solver_error_names_entry(self):
         """Explain uneven entry views when a solver requiring identical worlds rejects them."""
-        try:
-            SolverMuJoCo.import_mujoco()
-        except ImportError as exc:
-            self.skipTest(str(exc))
         builder = newton.ModelBuilder()
         bodies = []
         for _ in range(2):
@@ -3041,7 +3032,6 @@ class TestSolverCoupledBasic(unittest.TestCase):
             rod=newton.Rod([(0.0, 0.0, 1.0), (0.1, 0.0, 1.0)], radius=0.02),
             label="segment",
             wrap_in_articulation=False,
-            body_frame_origin="com",
         )
         curve, _ = _add_curve(builder, label="partial")
         model = builder.finalize(device="cpu")
@@ -3151,7 +3141,7 @@ class TestSolverMuJoCoCouplingHooks(unittest.TestCase):
                 wp.launch(
                     eval_mujoco_coupling_gravity_acceleration_kernel,
                     dim=3,
-                    inputs=[gravity, body_world, mjc_body_to_newton, body_gravcomp],
+                    inputs=[gravity, body_world, mjc_body_to_newton, body_gravcomp, 0],
                     outputs=[acceleration],
                     device=device,
                 )
@@ -3162,12 +3152,8 @@ class TestSolverMuJoCoCouplingHooks(unittest.TestCase):
                     atol=1.0e-6,
                 )
 
+    @requires(*MUJOCO_MODULES)
     def test_effective_inertia_preserves_anisotropic_free_body_inertia(self):
-        try:
-            SolverMuJoCo.import_mujoco()
-        except ImportError as exc:
-            self.skipTest(str(exc))
-
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         body = builder.add_link(
             mass=2.0,
@@ -3194,13 +3180,9 @@ class TestSolverMuJoCoCouplingHooks(unittest.TestCase):
         np.testing.assert_allclose(effective_mass.numpy(), model.body_mass.numpy(), rtol=1.0e-5)
         np.testing.assert_allclose(effective_inertia.numpy(), model.body_inertia.numpy(), rtol=1.0e-5)
 
+    @requires(*MUJOCO_MODULES)
     def test_proxy_effective_mass_follows_armature(self):
         """Refresh a MuJoCo source's proxy mass after an armature change."""
-        try:
-            SolverMuJoCo.import_mujoco()
-        except ImportError as exc:
-            self.skipTest(str(exc))
-
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3) * 0.01))
         joint = builder.add_joint_revolute(
@@ -3236,12 +3218,8 @@ class TestSolverMuJoCoCouplingHooks(unittest.TestCase):
         coupled.notify_model_changed(newton.ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES)
         self.assertGreater(proxy_mass(), 10.0 * before)
 
+    @requires(*MUJOCO_MODULES)
     def test_gravity_acceleration_hook_uses_body_gravcomp(self):
-        try:
-            SolverMuJoCo.import_mujoco()
-        except ImportError as exc:
-            self.skipTest(str(exc))
-
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0), up_axis=newton.Axis.Z)
         SolverMuJoCo.register_custom_attributes(builder)
 
@@ -3289,6 +3267,20 @@ class TestSolverMuJoCoCouplingHooks(unittest.TestCase):
             atol=1.0e-6,
         )
 
+        # A global body that shares the MuJoCo world with world 0 follows world 0's gravity.
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0))
+        builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.begin_world()
+        builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.end_world()
+        model = builder.finalize(device="cpu")
+        solver = SolverMuJoCo(model=model, iterations=1, disable_contacts=True)
+        model.set_gravity((0.0, 0.0, -4.0), world=-1)
+        solver.notify_model_changed(newton.ModelFlags.MODEL_PROPERTIES)
+        body_acceleration = wp.empty(model.body_count, dtype=wp.vec3, device=model.device)
+        solver.coupling_eval_gravity_acceleration(body_acceleration, None)
+        np.testing.assert_allclose(body_acceleration.numpy(), [[0.0, 0.0, -10.0]] * 2, atol=1.0e-6)
+
 
 def _coupled_vbd_reset_preserves_pose_history(test, device):
     """Preserve VBD pose history across coupled masked/full resets and restarts."""
@@ -3319,7 +3311,7 @@ def _coupled_vbd_reset_preserves_pose_history(test, device):
         entries=[
             SolverCoupled.Entry(
                 name="vbd",
-                solver=lambda view: SolverVBD(view, iterations=0, rigid_compliant_alm=True),
+                solver=lambda view: SolverVBD(view, iterations=0),
                 bodies=[dynamic_body, kinematic_body],
                 joints=[dynamic_joint, kinematic_joint],
             ),
@@ -3413,7 +3405,6 @@ def _harvest_wrench_on_one_proxy_body(buffer_size, particle_count, depth=0.01, r
         iterations=1,
         integrate_with_external_rigid_solver=False,
         rigid_body_particle_contact_buffer_size=buffer_size,
-        rigid_compliant_alm=True,
     )
     state_in = model.state()
     state_out = model.state()
@@ -3446,7 +3437,9 @@ def _harvest_comoving_proxy_contact(
     """Harvest the proxy force of one particle resting on a box that moves up at ``speed``.
 
     Without gravity, the particle slightly penetrates the box top and moves up at
-    ``particle_speed``, which defaults to ``speed`` (no relative motion). With ``proxy="body"``
+    ``particle_speed``, which defaults to ``speed`` (no relative motion). The VBD entry uses
+    closing-only contact damping: the penalty pushes the particle out of the box over the step, and
+    the default two-sided damping would damp that separation. With ``proxy="body"``
     the box is the proxy and the VBD destination entry simulates the particle; the harvested
     proxy-body force is returned. With ``proxy="particle"`` the roles are swapped and the
     harvested proxy-particle force is returned.
@@ -3485,7 +3478,7 @@ def _harvest_comoving_proxy_contact(
             ),
             SolverCoupled.Entry(
                 name="vbd",
-                solver=lambda view: _RecordingVBD(view, iterations=4, rigid_compliant_alm=True),
+                solver=lambda view: _RecordingVBD(view, iterations=4, soft_contact_damping_bidirectional=False),
                 bodies=[] if proxy_bodies else [body],
                 particles=[] if proxy_particles else [0],
                 substeps=vbd_substeps,
@@ -4620,7 +4613,7 @@ class TestSolverCoupledVBDColoring(unittest.TestCase):
                 ),
                 SolverCoupled.Entry(
                     name="dst",
-                    solver=lambda view: SolverVBD(view, iterations=1, rigid_compliant_alm=True),
+                    solver=lambda view: SolverVBD(view, iterations=1),
                     bodies=[2, 3, 4],
                     joints=[2, 3, 4, fixed_joint],
                 ),
@@ -4653,40 +4646,39 @@ class TestSolverCoupledVBDColoring(unittest.TestCase):
         SolverVBD.register_custom_attributes(builder)
         for _ in range(5):
             builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
-        soft_joint = builder.add_joint_fixed(parent=3, child=4, custom_attributes={"vbd:joint_is_hard": 0})
+        joint = builder.add_joint_fixed(parent=3, child=4, custom_attributes={"vbd:dahl_eps_max": 0.1})
         builder.color()
         model = builder.finalize(device="cpu")
         model.vbd.namespace_marker = "parent metadata"
 
-        parent_joint_is_hard = model.vbd.joint_is_hard.numpy().copy()
-        vbd_joint_order = [2, 3, 4, soft_joint]
+        parent_dahl_eps_max = model.vbd.dahl_eps_max.numpy().copy()
+        vbd_joint_order = [2, 3, 4, joint]
 
-        with self.assertWarnsRegex(DeprecationWarning, "joint_is_hard"):
-            coupled = SolverCoupled(
-                model=model,
-                entries=[
-                    SolverCoupled.Entry(
-                        name="src",
-                        solver=SolverSemiImplicit,
-                        bodies=[0, 1],
-                        joints=[0, 1],
-                    ),
-                    SolverCoupled.Entry(
-                        name="dst",
-                        solver=lambda view: SolverVBD(view, iterations=1, rigid_compliant_alm=True),
-                        bodies=[2, 3, 4],
-                        joints=vbd_joint_order,
-                    ),
-                ],
-            )
+        coupled = SolverCoupled(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(
+                    name="src",
+                    solver=SolverSemiImplicit,
+                    bodies=[0, 1],
+                    joints=[0, 1],
+                ),
+                SolverCoupled.Entry(
+                    name="dst",
+                    solver=lambda view: SolverVBD(view, iterations=1),
+                    bodies=[2, 3, 4],
+                    joints=vbd_joint_order,
+                ),
+            ],
+        )
 
-        np.testing.assert_array_equal(model.vbd.joint_is_hard.numpy(), parent_joint_is_hard)
+        np.testing.assert_array_equal(model.vbd.dahl_eps_max.numpy(), parent_dahl_eps_max)
 
         view = coupled.view("dst")
         self.assertIsNot(view.vbd, model.vbd)
         self.assertEqual(view.vbd.namespace_marker, model.vbd.namespace_marker)
-        self.assertEqual(view.vbd.joint_is_hard.shape[0], view.joint_count)
-        np.testing.assert_array_equal(view.vbd.joint_is_hard.numpy(), parent_joint_is_hard[vbd_joint_order])
+        self.assertEqual(view.vbd.dahl_eps_max.shape[0], view.joint_count)
+        np.testing.assert_array_equal(view.vbd.dahl_eps_max.numpy(), parent_dahl_eps_max[vbd_joint_order])
 
     def test_compacted_custom_frequency_namespace_metadata_is_generic(self):
         builder = newton.ModelBuilder()

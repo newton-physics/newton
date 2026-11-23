@@ -40,21 +40,17 @@ def rigid_contact_kinematics_kernel(
     contact_margin1: wp.array[float],
     # outputs
     out_distance: wp.array[float],
-    out_normal: wp.array[wp.vec3],
     out_point0_world: wp.array[wp.vec3],
     out_point1_world: wp.array[wp.vec3],
 ):
-    """Differentiable contact augmentation.
+    """Reconstruct rigid-contact kinematics through the differentiable ``body_q``.
 
-    Transforms body-local contact points into world space through the
-    differentiable ``body_q`` and computes the signed contact distance.
-    The world-space normal is passed through from the narrow phase as-is
-    (frozen, no orientation gradients).
+    Transforms body-local contact points into world space and computes the
+    signed contact distance along the frozen narrow-phase normal.
 
     Outputs (per contact):
 
     * ``out_distance`` — signed gap ``dot(n, p_b - p_a) - thickness`` [m].
-    * ``out_normal`` — world-space contact normal (frozen, equals input).
     * ``out_point0_world`` — contact point on shape A in world space [m].
     * ``out_point1_world`` — contact point on shape B in world space [m].
     """
@@ -87,8 +83,6 @@ def rigid_contact_kinematics_kernel(
         n = contact_normal[tid]
         thickness = contact_margin0[tid] + contact_margin1[tid]
         out_distance[tid] = wp.dot(n, bx_b - bx_a) - thickness
-    if out_normal.shape[0] > 0:
-        out_normal[tid] = contact_normal[tid]
     if out_point0_world.shape[0] > 0:
         out_point0_world[tid] = bx_a
     if out_point1_world.shape[0] > 0:
@@ -101,7 +95,6 @@ def _launch_rigid_contact_kinematics(
     shape_body: wp.array[int],
     *,
     out_distance: wp.array[float] | None,
-    out_normal: wp.array[wp.vec3] | None,
     out_point0_world: wp.array[wp.vec3] | None,
     out_point1_world: wp.array[wp.vec3] | None,
     device=None,
@@ -121,35 +114,6 @@ def _launch_rigid_contact_kinematics(
             contacts.rigid_contact_margin0,
             contacts.rigid_contact_margin1,
         ],
-        outputs=[out_distance, out_normal, out_point0_world, out_point1_world],
-        device=device,
-    )
-
-
-def launch_differentiable_contact_augment(
-    contacts: Contacts,
-    body_q: wp.array[wp.transform],
-    shape_body: wp.array[int],
-    device=None,
-) -> None:
-    """Launch the differentiable contact augmentation kernel.
-
-    Gradients flow through the contact points and distance but the normal
-    direction is frozen (constant).
-
-    Args:
-        contacts: :class:`~newton.Contacts` instance with differentiable arrays allocated.
-        body_q: Body transforms, shape ``(body_count,)``, dtype :class:`wp.transform`.
-        shape_body: Per-shape body index, shape ``(shape_count,)``, dtype ``int``.
-        device: Warp device.
-    """
-    _launch_rigid_contact_kinematics(
-        contacts,
-        body_q,
-        shape_body,
-        out_distance=contacts._rigid_contact_diff_distance,
-        out_normal=contacts._rigid_contact_diff_normal_override,
-        out_point0_world=contacts._rigid_contact_diff_point0_world,
-        out_point1_world=contacts._rigid_contact_diff_point1_world,
+        outputs=[out_distance, out_point0_world, out_point1_world],
         device=device,
     )
