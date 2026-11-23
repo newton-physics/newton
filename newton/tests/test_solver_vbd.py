@@ -10146,7 +10146,9 @@ def test_self_contact_dat_static_rows_hold_after_self_contact_detection(test, de
     for _ in range(20):
         solver.step(state_0, state_1, None, None, 5.0e-3)
         state_0, state_1 = state_1, state_0
-        min_distance = min(min_distance, float(np.linalg.norm(state_0.particle_q.numpy(), axis=1).min()))
+        distances = np.linalg.norm(state_0.particle_q.numpy(), axis=1)
+        test.assertTrue(np.all(np.isfinite(distances)), "particle positions became non-finite")
+        min_distance = min(min_distance, float(distances.min()))
 
     # Rigid and self-contact detection before initialization, self-contact only after it.
     test.assertEqual(detections, ["rigid", "self", "self"] * 20)
