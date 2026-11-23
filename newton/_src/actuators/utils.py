@@ -51,7 +51,7 @@ def load_metadata(path: str) -> dict[str, Any]:
 
 def load_checkpoint(
     path: str,
-    device: str | wp.Device | None = None,
+    device: wp.DeviceLike = None,
     input_batch_axes: int | dict[str, int] | None = None,
     requires_grad: bool = False,
 ):
