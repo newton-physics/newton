@@ -68,7 +68,7 @@ class Example:
         self.sim_time = 0.0
 
         # contact (meter scale)
-        self.particle_radius = args.style3d_thickness if self.solver_type == "style3d" else 0.005
+        self.particle_radius = getattr(args, "style3d_thickness", 0.002) if self.solver_type == "style3d" else 0.005
         self.soft_body_contact_margin = 0.01
         self.particle_self_contact_margin = 0.003
         self.particle_self_contact_gap = 0.002
