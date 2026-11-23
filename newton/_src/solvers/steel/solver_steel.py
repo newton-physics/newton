@@ -3243,9 +3243,10 @@ class SolverSteel(SolverBase, CouplingInterface):
         :attr:`~newton.Model.joint_friction` and ``steel:joint_friction_load_coefficient`` on the host and
         raises :class:`ValueError` for invalid values, after applying every other update. With loop-closing
         REVOLUTE joints, an eager joint, joint DOF, DOF force or DOF inertial notification also reads their
-        DOF inputs and axes on the host to warn about the ones a closure ignores. An eager joint DOF or DOF
-        force notification also warns about spring stiffness Steel ignores. A captured notification skips
-        all three checks.
+        DOF inputs and axes on the host to warn about the ones a closure ignores. When any DOF carries no
+        Steel spring, an eager joint DOF or DOF force notification also reads
+        :attr:`~newton.Model.joint_stiffness` on the host, whatever its values, to warn about stiffness
+        Steel ignores. A captured notification skips all three checks.
 
         Args:
             flags: Bit-mask of :class:`~newton.ModelFlags` indicating which model properties changed.
