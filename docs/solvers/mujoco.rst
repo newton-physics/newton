@@ -1071,10 +1071,11 @@ models whose collision groups have a regular structure.
 Finding that result requires checking every shape pair, so models above 256
 selected shapes or 1,024 explicit excluded pairs skip this search. When the
 search is skipped or its rules do not fit in 32 bits, the solver encodes the
-collision groups alone, which needs about one bit per positive group, and
-relies on body-wide excludes for the excluded pairs. If the groups do not fit
-either, or an excluded pair is not covered by an exclude, the solver uses the
-established legacy graph-color approximation, which may allow extra contacts.
+collision groups alone, which takes one bit per positive group with more than
+one shape, and relies on body-wide excludes for the excluded pairs. If the
+groups do not fit either, or an excluded pair between two bodies is not covered
+by an exclude, the solver uses the established legacy graph-color
+approximation, which may allow extra contacts.
 
 .. _mujoco-margin-gap-mapping:
 
