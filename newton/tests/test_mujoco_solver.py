@@ -16528,7 +16528,7 @@ class TestMuJoCoBodyGravityScale(unittest.TestCase):
                 if not global_bodies:
                     bodies = local
                 model = builder.finalize()
-                solver = SolverMuJoCo(model, separate_worlds=False)
+                solver = SolverMuJoCo(model)
                 observables = solver.observables(kinds={SolverMuJoCo.ObservableKind.BODY_PARENT_F})
                 state_0, state_1 = model.state(), model.state()
                 solver.step(state_0, state_1, model.control(), None, self.DT, observables=observables)
@@ -16555,11 +16555,11 @@ class TestMuJoCoBodyGravityScale(unittest.TestCase):
         builder.end_world()
         model = builder.finalize()
         with self.assertRaisesRegex(ValueError, "has one gravity"):
-            SolverMuJoCo(model, separate_worlds=False)
+            SolverMuJoCo(model)
 
         model.set_gravity((0.0, 0.0, -5.0), world=-1)
         model.body_gravity_scale.assign([0.4, 1.0])
-        solver = SolverMuJoCo(model, separate_worlds=False)
+        solver = SolverMuJoCo(model)
         state_0, state_1 = model.state(), model.state()
         solver.step(state_0, state_1, model.control(), None, self.DT)
         np.testing.assert_allclose(state_1.body_qd.numpy()[:, 2], [-1.0 * self.DT, -2.5 * self.DT], atol=1.0e-5)

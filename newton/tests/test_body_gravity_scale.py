@@ -372,7 +372,7 @@ supported_solvers = {
     "steel": (SolverSteel, False),
     "mujoco_warp": (lambda model: SolverMuJoCo(model, use_mujoco_cpu=False), True),
     # One MuJoCo world holding the bodies of world 0 and the global world.
-    "mujoco_warp_shared": (lambda model: SolverMuJoCo(model, use_mujoco_cpu=False, separate_worlds=False), True),
+    "mujoco_warp_shared": (lambda model: SolverMuJoCo(model, use_mujoco_cpu=False), True),
     "mujoco_cpu": (lambda model: SolverMuJoCo(model, use_mujoco_cpu=True), True),
 }
 # Separate MuJoCo worlds cannot hold global bodies, a shared MuJoCo world holds one Newton world and native
@@ -389,7 +389,7 @@ free_body_scenes = {
 unsupported_solvers = {
     "semi_implicit": SolverSemiImplicit,
     "xpbd": SolverXPBD,
-    "vbd": lambda model: SolverVBD(model, rigid_compliant_alm=True),
+    "vbd": SolverVBD,
     "kamino": SolverKamino,
 }
 

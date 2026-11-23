@@ -192,6 +192,11 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
             )
 
     @override
+    def _non_graphable_model_flags(self) -> int:
+        # The gravity scale check skips its host read during capture.
+        return 0
+
+    @override
     def step(
         self,
         state_in: State,
