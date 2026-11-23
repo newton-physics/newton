@@ -762,6 +762,14 @@ def test_affine_body_linear_system(test, device):
             solver = newton.solvers.SolverStyle3D(model, config=config, dynamics=dynamics)
             state_in, state_out, state_ref = model.state(), model.state(), model.state()
             state_in.body_f.assign(forces)
+            for ratio in (-1.0, float("nan"), float("inf"), -float("inf")):
+                with test.subTest(invalid_rigidity_ratio=ratio):
+                    config.affine_rigidity_ratio = ratio
+                    with test.assertRaisesRegex(
+                        ValueError, "Config.affine_rigidity_ratio must be finite and nonnegative"
+                    ):
+                        solver.step(state_in, state_out, control, contacts, 0.02)
+            config.affine_rigidity_ratio = 0.0
             offset = solver._particle_count
             test.assertEqual(len(solver._matrix_free_Ax), solver._dof_block_count)
             if offset:

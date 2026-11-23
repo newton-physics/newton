@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import math
 import warnings
 from dataclasses import dataclass
 from enum import IntFlag
@@ -209,7 +210,7 @@ class SolverStyle3D(SolverBase):
         affine_rigidity_ratio: float = 1e2
         """Dimensionless SO(3) stiffness ratio relative to mean directional inertia.
 
-        Zero disables the penalty. See :doc:`/solvers/style3d` for the stiffness
+        Must be finite and nonnegative. Zero disables the penalty. See :doc:`/solvers/style3d` for the stiffness
         formula and its distinction from contact stiffness.
         """
 
@@ -647,7 +648,9 @@ class SolverStyle3D(SolverBase):
                 container is accepted.
 
         Raises:
-            ValueError: If :attr:`Config.iterations` is less than 1. Neither
+            ValueError: If :attr:`Config.iterations` is less than 1, or if affine
+                body dynamics are enabled and :attr:`Config.affine_rigidity_ratio`
+                is negative or nonfinite. Neither
                 input nor output state is modified in this case.
         """
         self.validate_observables(observables, contacts)
@@ -657,6 +660,11 @@ class SolverStyle3D(SolverBase):
             return
         elif self.config.iterations < 1:
             raise ValueError(f"Config.iterations must be at least 1, got {self.config.iterations}.")
+
+        if self._affine_body is not None:
+            ratio = self.config.affine_rigidity_ratio
+            if not math.isfinite(ratio) or ratio < 0.0:
+                raise ValueError(f"Config.affine_rigidity_ratio must be finite and nonnegative, got {ratio}.")
 
         self._to_internal_state(state_in, dt)
         particle_q = self._x[: self._particle_count]
