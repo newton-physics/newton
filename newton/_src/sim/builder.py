@@ -220,11 +220,6 @@ _ACTUATOR_ENTRY_DELAY_ARGS_UNSET = object()
 _ACTUATOR_ENTRY_DELAY_ARGS_DEPRECATION_MSG = (
     "ModelBuilder.ActuatorEntry.delay_args is deprecated in Newton 1.9; use input_processor_args instead."
 )
-_JOINT_TWIST_LIMIT_DEPRECATION_MSG = (
-    "ModelBuilder.joint_twist_lower and ModelBuilder.joint_twist_upper are deprecated in Newton 1.7 and "
-    "will be removed in a future release. They were never used; limit joint rotations with the per-DOF "
-    "limits of ModelBuilder.JointDofConfig instead."
-)
 _ADD_MUSCLE_DEPRECATION_MSG = (
     "ModelBuilder.add_muscle() is deprecated in Newton 1.9 and will be removed in a future release. "
     "Legacy muscles ignore their parameters and are only evaluated by SolverSemiImplicit. "
@@ -2560,10 +2555,6 @@ class ModelBuilder:
         self.joint_friction: list[float] = []
         """Joint friction values accumulated for :attr:`Model.joint_friction`."""
 
-        # Created on first access so a fresh builder has no merge-managed list for them.
-        self._deprecated_joint_twist_lower: list[float] | None = None
-        self._deprecated_joint_twist_upper: list[float] | None = None
-
         self.joint_enabled: list[bool] = []
         """Joint enabled flags accumulated for :attr:`Model.joint_enabled`."""
 
@@ -4110,42 +4101,6 @@ class ModelBuilder:
         The number of articulations in the model.
         """
         return len(self.articulation_start)
-
-    @property
-    def joint_twist_lower(self) -> list[float]:
-        """Lower twist limits, never used by :meth:`finalize` or any solver.
-
-        .. deprecated:: 1.7
-            Limit joint rotations with the per-DOF limits of :class:`JointDofConfig` instead.
-        """
-        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-        if self._deprecated_joint_twist_lower is None:
-            self._deprecated_joint_twist_lower = []
-        return self._deprecated_joint_twist_lower
-
-    @joint_twist_lower.setter
-    def joint_twist_lower(self, value: list[float]) -> None:
-        # stacklevel skips ModelBuilder.__setattr__ to report the caller.
-        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=3)
-        self._deprecated_joint_twist_lower = value
-
-    @property
-    def joint_twist_upper(self) -> list[float]:
-        """Upper twist limits, never used by :meth:`finalize` or any solver.
-
-        .. deprecated:: 1.7
-            Limit joint rotations with the per-DOF limits of :class:`JointDofConfig` instead.
-        """
-        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-        if self._deprecated_joint_twist_upper is None:
-            self._deprecated_joint_twist_upper = []
-        return self._deprecated_joint_twist_upper
-
-    @joint_twist_upper.setter
-    def joint_twist_upper(self, value: list[float]) -> None:
-        # stacklevel skips ModelBuilder.__setattr__ to report the caller.
-        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=3)
-        self._deprecated_joint_twist_upper = value
 
     @staticmethod
     def _quat_from_axis_targets(t_x: float, t_y: float, t_z: float) -> tuple[float, float, float, float]:
@@ -5697,7 +5652,8 @@ class ModelBuilder:
                 - ``None`` (default): Uses format-specific default (honors ``<freejoint>`` tags in MJCF,
                   otherwise creates a FIXED joint).
                 - ``True``: Creates a FREE joint with 6 DOF (3 translation + 3 rotation). Only valid when
-                  ``parent_body == -1`` since FREE joints must connect to world frame.
+                  ``parent_body == -1`` since FREE joints must connect to world frame. A root that already
+                  has an MJCF free joint keeps that joint's parameters.
                 - ``False``: Creates a FIXED joint (0 DOF).
 
                 Cannot be specified together with ``base_joint``.
@@ -16214,7 +16170,6 @@ class ModelBuilder:
 
             m.shape_type = wp.array(shape_type_arr, dtype=wp.int32)
             m.shape_source_ptr = wp.array(geo_sources, dtype=wp.uint64)
-            m._shape_mesh_properties = wp.array(shape_mesh_properties, dtype=wp.int32, device=device)
             m.heightfield_meshes = heightfield_meshes
             m._mesh_keep_alive = mesh_keep_alive
 
@@ -16802,6 +16757,22 @@ class ModelBuilder:
                         wt_tex_data.subgrid_start_slots if wt_c_tex is not None else None
                     )
 
+            # A separate shell beyond the far wall face must not determine the
+            # support of the penetrating shell. Check only potential probes.
+            recovery_probe_by_source = {}
+            closed_sdf_shapes = (shape_sdf_index >= 0) & ((shape_mesh_properties & int(MeshProperties.WATERTIGHT)) != 0)
+            for i in np.flatnonzero(closed_sdf_shapes):
+                if compact_texture_sdf_coarse_textures[shape_sdf_index[i]] is None:
+                    continue
+                source = int(geo_sources[i])
+                if source not in recovery_probe_by_source:
+                    mesh = generated_shape_sources[i]
+                    recovery_probe_by_source[source] = (
+                        len(mesh.vertices) <= 4096 and len(split_mesh_components(mesh)) == 1
+                    )
+                if recovery_probe_by_source[source]:
+                    shape_mesh_properties[i] |= int(MeshProperties.RECOVERY_PROBE)
+            m._shape_mesh_properties = wp.array(shape_mesh_properties, dtype=wp.int32, device=device)
             m._shape_sdf_index = wp.array(shape_sdf_index, dtype=wp.int32, device=device)
             m._texture_sdf_data = (
                 wp.array(compact_texture_sdf_data, dtype=TextureSDFData, device=device)
