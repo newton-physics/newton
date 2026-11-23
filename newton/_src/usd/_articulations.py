@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import itertools
 import logging
 import re
 from collections.abc import Callable
@@ -51,6 +52,7 @@ def _parse_articulations(
     base_joint: dict[str, Any] | None,
     enable_self_collisions: bool,
     ignore_paths: list[str],
+    legacy_ignore_paths: bool,
     collect_schema_attrs: bool,
     verbose: bool,
     warn_invalid_desc: Callable[..., bool],
@@ -178,9 +180,7 @@ def _parse_articulations(
                 if verbose:
                     logger.info("Skipping equality connect/weld joint '%s' from articulation joint graph", joint_path)
                 continue
-            # it may be possible that a joint is filtered out in the middle of
-            # a chain of joints, which results in a disconnected graph
-            # we should raise an error in this case
+            # Filtering a joint in the middle of a chain splits the articulation.
             if any(re.match(p, joint_path) for p in ignore_paths):
                 continue
             if str(joint_desc.body0) in ignored_body_paths:
@@ -195,7 +195,6 @@ def _parse_articulations(
         joint_excluded = joint_plan.joint_excluded
         merged_joint_groups = joint_plan.merged_joint_groups
 
-        articulation_joint_indices = []
         articulation_ids: set[int] = set()
 
         if len(joint_edges) == 0:
@@ -261,28 +260,35 @@ def _parse_articulations(
                     )
                     articulation_ids.add(builder.joint_articulation[joint_id])
                     import_attached_cables([body_labels[i]])
-            sorted_joints = []
+            joint_orders = []
         else:
             # we have an articulation with joints, we need to sort them topologically
-            sorted_joints = joint_plan.get_joint_order(joint_ordering, verbose=verbose)
+            joint_orders = joint_plan.get_joint_orders(joint_ordering, verbose=verbose)
 
-        if len(sorted_joints) > 0:
+        if joint_orders and bodies_follow_joint_ordering:
             # insert the bodies in the order of the joints
-            if bodies_follow_joint_ordering:
-                inserted_bodies = set()
-                for jid in sorted_joints:
-                    parent, child = joint_edges[jid]
-                    if parent >= 0 and parent not in inserted_bodies:
-                        b = add_body(**body_data[parent])
-                        inserted_bodies.add(parent)
-                        art_bodies.append(b)
-                        path_body_map[body_data[parent]["label"]] = b
-                    if child >= 0 and child not in inserted_bodies:
-                        b = add_body(**body_data[child])
-                        inserted_bodies.add(child)
-                        art_bodies.append(b)
-                        path_body_map[body_data[child]["label"]] = b
+            inserted_bodies = set()
+            for jid in itertools.chain.from_iterable(joint_orders):
+                parent, child = joint_edges[jid]
+                if parent >= 0 and parent not in inserted_bodies:
+                    b = add_body(**body_data[parent])
+                    inserted_bodies.add(parent)
+                    art_bodies.append(b)
+                    path_body_map[body_data[parent]["label"]] = b
+                if child >= 0 and child not in inserted_bodies:
+                    b = add_body(**body_data[child])
+                    inserted_bodies.add(child)
+                    art_bodies.append(b)
+                    path_body_map[body_data[child]["label"]] = b
+            if not legacy_ignore_paths:
+                # Bodies whose joints were all filtered get a base joint with the other free bodies.
+                for i in body_ids.values():
+                    if i not in inserted_bodies:
+                        path_body_map[body_data[i]["label"]] = add_body(**body_data[i])
 
+        # Each connected component of the joint graph becomes its own articulation.
+        for sorted_joints in joint_orders:
+            articulation_joint_indices = []
             first_joint_parent = joint_edges[sorted_joints[0]][0]
             if first_joint_parent != -1:
                 # the mechanism is floating since there is no joint connecting it to the world
@@ -431,16 +437,17 @@ def _parse_articulations(
                         for gp in group:
                             processed_joints.add(gp)
 
-        # Create the articulation from all collected joints
-        if articulation_joint_indices:
-            builder._finalize_imported_articulation(
-                joint_indices=articulation_joint_indices,
-                parent_body=parent_body,
-                articulation_label=articulation_path,
-                custom_attributes=articulation_custom_attrs,
-            )
-            articulation_ids.add(builder.joint_articulation[articulation_joint_indices[0]])
-            import_attached_cables(body_labels)
+            # Create the articulation from all collected joints
+            if articulation_joint_indices:
+                builder._finalize_imported_articulation(
+                    joint_indices=articulation_joint_indices,
+                    parent_body=parent_body,
+                    articulation_label=articulation_path,
+                    custom_attributes=articulation_custom_attrs,
+                )
+                articulation_ids.add(builder.joint_articulation[articulation_joint_indices[0]])
+                component_bodies = {body for i in sorted_joints for body in joint_edges[i]}
+                import_attached_cables([label for i, label in enumerate(body_labels) if i in component_bodies])
 
         # Defer external constraints until later bodies and cables have extended their
         # articulations. Reserve these paths so the orphan-joint pass does not emit them.

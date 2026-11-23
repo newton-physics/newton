@@ -166,6 +166,7 @@ def parse_usd(
     convert_mjc_equality_constraints: bool = True,
     override_root_xform: bool = False,
     legacy_margin_gap: bool = False,
+    legacy_ignore_paths: bool = False,
     return_deformable_results: bool = False,
     allow_unsafe_torch_checkpoints: bool = False,
 ) -> dict[str, Any]:
@@ -257,7 +258,11 @@ def parse_usd(
         only_load_enabled_joints: If True, only joints which do not have `physics:jointEnabled` set to False are loaded.
         joint_drive_gains_scaling: The default scaling of the PD control gains (stiffness and damping), if not set in the PhysicsScene with as "newton:joint_drive_gains_scaling".
         verbose: If True, log additional information about the parsed USD file. Default is False.
-        ignore_paths: A list of regular expressions matching prim paths to ignore.
+        ignore_paths: A list of regular expressions matched against the start of each prim path (:func:`re.match`).
+            The stage is imported as if the matching prims were not on it. A joint to an ignored body is dropped,
+            and bodies that lose their connection to the rest of an articulation stay in the model with their
+            own base joint, chosen by ``floating`` and ``base_joint`` as for any body without a joint. Add their
+            paths to ``ignore_paths`` to drop them as well.
         collapse_fixed_joints: If True, fixed joints are removed and the respective bodies are merged. Only considered if not set on the PhysicsScene as "newton:collapse_fixed_joints".
         enable_self_collisions: Default for whether self-collisions are enabled for all shapes within an articulation. Resolved via the schema resolver from ``newton:selfCollisionEnabled`` (NewtonArticulationRootAPI) or ``physxArticulation:enabledSelfCollisions`` on the articulation root, or on the cable ``BasisCurves`` prim for cable-owned articulations; if neither is authored, this value takes precedence.
         apply_up_axis_from_stage: If True, the up axis of the stage will be used to set :attr:`newton.ModelBuilder.up_axis`. Otherwise, the stage will be rotated such that its up axis aligns with the builder's up axis. Default is False.
@@ -311,6 +316,17 @@ def parse_usd(
             where ``shape_margin`` is computed as ``mjc_margin - mjc_gap``.
             Use for USD files authored against MuJoCo <= 3.8. Defaults to
             False (identity translation matching MuJoCo 3.9 semantics).
+        legacy_ignore_paths: Temporary migration option. If True, an ``ignore_paths`` match that cuts an
+            articulation is handled as in earlier releases: a joint to a body ignored by
+            a path without ``.*`` is attached to the world instead of being dropped, and with
+            ``bodies_follow_joint_ordering=True`` a body left without joints is not imported when its
+            articulation keeps other joints. Defaults to False.
+
+            .. deprecated:: 1.9
+                Enabling this temporary flag emits a :class:`~newton.NewtonDeprecationWarning`. Add the bodies
+                that should be dropped to ``ignore_paths``, and use ``floating=False`` or ``base_joint`` to
+                attach the remaining bodies to the world.
+
         return_deformable_results: If True, include the experimental deformable entries in the
             returned mapping (``path_cable_map`` / ``path_cloth_map`` / ``path_soft_map`` / ``path_deformable_visual_map`` /
             ``path_attachment_map`` and the matching ``path_*_attrs``). Off by default, so the
@@ -449,6 +465,12 @@ def parse_usd(
 
         warn_deprecation(_ALLOW_UNSAFE_TORCH_CHECKPOINTS_DEPRECATION_MSG)
 
+    if legacy_ignore_paths:
+        warn_deprecation(
+            "legacy_ignore_paths=True is deprecated. Add the bodies that should be dropped to ignore_paths, and "
+            "use floating=False or base_joint to attach the remaining bodies to the world."
+        )
+
     # Early validation of base joint parameters
     builder._validate_base_joint_params(floating, base_joint, parent_body)
     first_imported_joint = builder.joint_count
@@ -562,6 +584,24 @@ def parse_usd(
         dict.fromkeys([*non_regex_ignore_paths, *_deformable_prims.native_physics_exclude_paths])
     )
     ret_dict = usd.load_physics_from_range(stage, [root_path], native_exclude_paths)
+    if non_regex_ignore_paths and not legacy_ignore_paths:
+        # An excluded body is missing from the results, so the joints that refer to it would attach
+        # to the world. Parse such bodies and let ignore_paths filter them like the other matches.
+        joint_bodies = {
+            str(body)
+            for _, descs in ret_dict.values()
+            for desc in descs
+            if isinstance(desc, UsdPhysics.JointDesc)
+            for body in (desc.body0, desc.body1)
+        }
+        referenced_paths = {
+            path
+            for path in non_regex_ignore_paths
+            if any(body == path or body.startswith(f"{path}/") for body in joint_bodies)
+        }
+        if referenced_paths:
+            native_exclude_paths = [path for path in native_exclude_paths if path not in referenced_paths]
+            ret_dict = usd.load_physics_from_range(stage, [root_path], native_exclude_paths)
     physics_scenes = usd._get_physics_scenes_from_results(stage, ret_dict)
     physics_scene_prim = physics_scenes[0].GetPrim() if physics_scenes else None
 
@@ -1794,6 +1834,7 @@ def parse_usd(
             base_joint=base_joint,
             enable_self_collisions=enable_self_collisions,
             ignore_paths=ignore_paths,
+            legacy_ignore_paths=legacy_ignore_paths,
             collect_schema_attrs=collect_schema_attrs,
             verbose=verbose,
             warn_invalid_desc=warn_invalid_desc,
