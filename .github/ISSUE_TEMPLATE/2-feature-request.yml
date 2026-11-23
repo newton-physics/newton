@@ -1,7 +1,7 @@
 name: Feature Request
 description: Suggest an idea for Newton.
 title: "[REQ] "
-labels: ["feature request"]
+type: Feature
 body:
   - type: textarea
     attributes:

@@ -43,7 +43,11 @@ class TestMuJoCoSiteExport(unittest.TestCase):
         for cpu in (False, True):
             with self.subTest(cpu=cpu):
                 model = builder.finalize()
-                solver = SolverMuJoCo(model, separate_worlds=True, disable_contacts=True, use_mujoco_cpu=cpu)
+                if cpu:
+                    with self.assertWarns(newton.NewtonDeprecationWarning):
+                        solver = SolverMuJoCo(model, separate_worlds=True, disable_contacts=True, use_mujoco_cpu=True)
+                else:
+                    solver = SolverMuJoCo(model, disable_contacts=True)
 
                 def assert_site_poses_match_model(model, solver) -> None:
                     site_shapes = np.flatnonzero(model.shape_flags.numpy() & int(newton.ShapeFlags.SITE))
@@ -127,7 +131,7 @@ class TestMuJoCoSiteExport(unittest.TestCase):
         builder.add_world(world)
         builder.add_world(world, xform=wp.transform(wp.vec3(4.0, 0.0, 0.0), wp.quat_identity()))
         model = builder.finalize()
-        solver = SolverMuJoCo(model, separate_worlds=True, disable_contacts=True)
+        solver = SolverMuJoCo(model, disable_contacts=True)
 
         np.testing.assert_allclose(solver.mjw_model.site_size.numpy(), [[0.1, 0.2, 0.3]], atol=1e-6)
 

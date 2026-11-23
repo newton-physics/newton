@@ -48,7 +48,7 @@ A typical example for using this module is:
     dual.build(model, data, limits, contacts, jacobians)
 
     # Create a forward-dynamics PADMM solver
-    solver = PADMMSolver(model, limits, contacts)
+    solver = PADMMSolver(model, dual)
 
     # Solve the dual forward dynamics problem
     solver.coldstart()

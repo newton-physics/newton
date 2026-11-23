@@ -1709,22 +1709,6 @@ def test_pipeline_soft_self_contact(test, device):
         detector_ref.vertex_colliding_triangles_count.numpy(),
     )
 
-    # The per-call soft_contact_margin override is deprecated but still honored.
-    with test.assertWarns(DeprecationWarning):
-        pipeline.collide(state, contacts_a, soft_contact_margin=0.1)
-
-    # The constructor parameter and attribute are deprecated aliases of soft_contact_gap.
-    with test.assertWarns(DeprecationWarning):
-        legacy = newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_margin=0.07)
-    test.assertEqual(legacy.soft_contact_gap, 0.07)
-    with test.assertWarns(DeprecationWarning):
-        test.assertEqual(legacy.soft_contact_margin, 0.07)
-    with test.assertWarns(DeprecationWarning):
-        legacy.soft_contact_margin = 0.08
-    test.assertEqual(legacy.soft_contact_gap, 0.08)
-    with test.assertRaises(ValueError):
-        newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_gap=0.01, soft_contact_margin=0.02)
-
     # set_collision_detection_range: partial update, applied at the next collide.
     pipeline.set_collision_detection_range(soft_contact_gap=0.02, soft_self_contact_gap=0.0)
     test.assertEqual(pipeline.soft_contact_gap, 0.02)
