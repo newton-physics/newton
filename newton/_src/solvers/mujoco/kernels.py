@@ -26,7 +26,6 @@ from .constants import (
     FLOAT64_EPS,
     HINGE_CONNECT_HALF_SPAN,
     MJ_MINMU,
-    MJ_MINVAL,
     MJC_OBJ_SITE,
     SOLREF_MODE_FORCE_SPACE,
     SOLREF_MODE_MJCF_DEFAULT,
@@ -132,6 +131,7 @@ def write_contact(
 
 @wp.func
 def contact_params(
+    mj_minval: float,
     geom_condim: wp.array[int],
     geom_priority: wp.array[int],
     geom_solmix: wp.array2d[float],
@@ -166,9 +166,9 @@ def contact_params(
         solmix1 = geom_solmix[worldid, g1]
         solmix2 = geom_solmix[worldid, g2]
         mix = safe_div(solmix1, solmix1 + solmix2)
-        mix = wp.where((solmix1 < MJ_MINVAL) and (solmix2 < MJ_MINVAL), 0.5, mix)
-        mix = wp.where((solmix1 < MJ_MINVAL) and (solmix2 >= MJ_MINVAL), 0.0, mix)
-        mix = wp.where((solmix1 >= MJ_MINVAL) and (solmix2 < MJ_MINVAL), 1.0, mix)
+        mix = wp.where((solmix1 < mj_minval) and (solmix2 < mj_minval), 0.5, mix)
+        mix = wp.where((solmix1 < mj_minval) and (solmix2 >= mj_minval), 0.0, mix)
+        mix = wp.where((solmix1 >= mj_minval) and (solmix2 < mj_minval), 1.0, mix)
         condim = wp.max(condim1, condim2)
         resolved_friction = wp.max(geom_friction[worldid, g1], geom_friction[worldid, g2])
 
@@ -506,6 +506,7 @@ def _recovery_solref(thickness: float, depth: float, dt: float, solimp: vec5) ->
 # fast math only approximates div/sqrt here; keep transcendentals out of this kernel
 @wp.kernel(module="unique", module_options={"fast_math": True})
 def convert_newton_contacts_to_mjwarp_kernel(
+    mj_minval: float,
     body_q: wp.array[wp.transform],
     shape_body: wp.array[int],
     body_flags: wp.array[int],
@@ -685,6 +686,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
             worldid = body_b // bodies_per_world
 
         margin, _gap, condim, friction, solref, solreffriction, solimp, mix = contact_params(
+            mj_minval,
             geom_condim,
             geom_priority,
             geom_solmix,

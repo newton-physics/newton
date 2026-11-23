@@ -5890,6 +5890,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             convert_newton_contacts_to_mjwarp_kernel,
             dim=(launch_dim,),
             inputs=[
+                self._mujoco.mjMINVAL,
                 state_in.body_q,
                 model.shape_body,
                 model.body_flags,
