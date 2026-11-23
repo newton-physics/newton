@@ -16,6 +16,7 @@ import warp as wp
 
 from ...core.reset import reset_world_selected as _reset_world_selected
 from ...geometry import ParticleFlags, ShapeFlags
+from ...geometry.sdf_planar_recovery import MeshRecoveryData
 from ...sim import JointType, Model, ModelFlags, StateFlags
 from ..solver import SolverBase
 from .interface import (
@@ -3038,7 +3039,8 @@ class SolverCoupled(SolverBase, CouplingInterface):
             self._step_coupled(state_in, state_out, control, contacts, dt)
         finally:
             self._active_observables = None
-        _copy_state(state_in, state_out)
+        # External force inputs are never written to the output state.
+        _copy_state(state_in, state_out, copy_forces=False)
         self._reconcile_state(state_out)
         if observables is not None:
             self._reconcile_observables(observables)
@@ -3589,6 +3591,12 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 inputs=[
                     contacts.contact_generation,
                     filtered.contact_generation,
+                    contacts._mesh_recovery_contacts.generation
+                    if contacts._mesh_recovery_contacts is not None
+                    else None,
+                    filtered._mesh_recovery_contacts.generation
+                    if filtered._mesh_recovery_contacts is not None
+                    else None,
                     self._entry_rigid_contact_generation[entry.name],
                     self._entry_soft_contact_generation[entry.name],
                     self._entry_rigid_contact_update[entry.name],
@@ -3784,6 +3792,19 @@ class SolverCoupled(SolverBase, CouplingInterface):
         filtered._contact_matching_mode = contacts.contact_matching_mode
         # Entry solvers check this stamp; the filtered rows are as reduced as their source.
         filtered._rigid_contact_body_pair_reduced = contacts.rigid_contact_body_pair_reduced
+        recovery = contacts._mesh_recovery_contacts
+        if recovery is None:
+            filtered._mesh_recovery_contacts = None
+        else:
+            if filtered._mesh_recovery_contacts is None:
+                filtered._mesh_recovery_contacts = MeshRecoveryData()
+                filtered._mesh_recovery_contacts.generation = wp.empty(1, dtype=int, device=contacts.device)
+            # Filtering preserves global shape IDs. Share immutable certificates
+            # while translating their generation to the filtered buffer's counter.
+            filtered._mesh_recovery_contacts.keys = recovery.keys
+            filtered._mesh_recovery_contacts.active_slots = recovery.active_slots
+            filtered._mesh_recovery_contacts.contacts = recovery.contacts
+            filtered._mesh_recovery_contacts.deterministic = recovery.deterministic
         filtered._enable_rigid_soft_full_surface_contact = bool(
             contacts._enable_rigid_soft_full_surface_contact and has_particles
         )
@@ -4147,14 +4168,20 @@ def _copy_state_to_entry(src: State, dst: State, entry: SolverEntry) -> int:
     return _sync_free_root_joint_state(entry, dst)
 
 
-def _copy_state(src: State, dst: State) -> None:
-    """Copy all matching state arrays from *src* to *dst*."""
+def _copy_state(src: State, dst: State, *, copy_forces: bool = True) -> None:
+    """Copy all matching state arrays from *src* to *dst*.
+
+    Args:
+        src: Source state.
+        dst: Destination state.
+        copy_forces: Whether to copy the ``body_f`` and ``particle_f`` force inputs.
+    """
     if src is dst:
         return
     if src.body_q is not None and dst.body_q is not None:
         _copy_prefix(dst.body_q, src.body_q, "body_q")
         _copy_prefix(dst.body_qd, src.body_qd, "body_qd")
-    if dst.body_f is not None:
+    if copy_forces and dst.body_f is not None:
         if src.body_f is not None:
             _copy_prefix(dst.body_f, src.body_f, "body_f")
         else:
@@ -4162,7 +4189,7 @@ def _copy_state(src: State, dst: State) -> None:
     if src.particle_q is not None and dst.particle_q is not None:
         _copy_prefix(dst.particle_q, src.particle_q, "particle_q")
         _copy_prefix(dst.particle_qd, src.particle_qd, "particle_qd")
-    if dst.particle_f is not None:
+    if copy_forces and dst.particle_f is not None:
         if src.particle_f is not None:
             _copy_prefix(dst.particle_f, src.particle_f, "particle_f")
         else:
@@ -4457,6 +4484,8 @@ def _add_mapped_particle_forces_kernel(
 def _prepare_filtered_contact_update_kernel(
     src_generation: wp.array[wp.int32],
     dst_generation: wp.array[wp.int32],
+    src_recovery_generation: wp.array[wp.int32],
+    dst_recovery_generation: wp.array[wp.int32],
     rigid_generation: wp.array[wp.int32],
     soft_generation: wp.array[wp.int32],
     rigid_update_out: wp.array[wp.int32],
@@ -4487,6 +4516,8 @@ def _prepare_filtered_contact_update_kernel(
             else:
                 generation = generation + 1
             dst_generation[0] = generation
+        if dst_recovery_generation:
+            dst_recovery_generation[0] = dst_generation[0] if src_recovery_generation[0] == src_generation[0] else -1
         if rigid_update != 0:
             rigid_generation[0] = src_generation[0]
         if soft_update != 0:

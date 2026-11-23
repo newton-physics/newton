@@ -25,14 +25,37 @@ from ...geometry.particle_surface import ParticleSurface
 from ...sim import ModelFlags, StateFlags
 from ..coupled.interface import CouplingInterface
 from ..solver import SolverBase
+from .density_measurement import (
+    critical_offset_values,
+    deformed_particle_volumes,
+    drop_shielded_contacts,
+    feedback_offset_values,
+    make_free_box_mask_kernel,
+    make_grid_capacity_kernel,
+    make_grid_readback_kernel,
+    make_grid_volume_kernel,
+    make_particle_capacity_kernel,
+    make_particle_volume_kernel,
+    make_shielded_contact_kernel,
+    point_density_offset,
+)
 from .implicit_mpm_model import ImplicitMPMModel
 from .particle_surface_colliders import extrapolate_surface_sdf_into_colliders
 from .rasterized_collisions import (
     Collider,
+    PicContactMotion,
     build_rigidity_operator,
+    collider_distance_reflect,
     interpolate_collider_normals,
+    particle_collider_penetration,
+    particle_contact_gap,
+    point_contact_radii,
+    prioritize_pic_contacts,
     project_outside_collider,
     rasterize_collider,
+    recover_node_penetration,
+    speculative_stop_distance,
+    stabilize_collider_velocity,
 )
 from .render_grains import sample_render_grains, update_render_grains
 from .solve_rheology import CollisionData, MomentumData, RheologyData, YieldParamVec, solve_rheology
@@ -47,6 +70,7 @@ from .implicit_mpm_solver_kernels import (
     YIELD_PARAM_LENGTH,
     YieldMomentVec,
     _rebuild_capacity,
+    add_critical_strain_offset,
     advect_particles,
     allocate_by_voxels,
     average_elastic_parameters,
@@ -57,7 +81,6 @@ from .implicit_mpm_solver_kernels import (
     compute_color_offsets,
     compute_lattice_node_keys,
     compute_nodal_diagonalization,
-    compute_unilateral_strain_offset,
     fill_uniform_color_block_indices,
     free_velocity,
     gather_point_dof_values,
@@ -65,13 +88,13 @@ from .implicit_mpm_solver_kernels import (
     gimp_domain_corners,
     gimp_half_size,
     gimp_store_point_stress,
+    inertial_delassus_scale,
     integrate_active_fraction,
-    integrate_collider_fraction,
-    integrate_collider_fraction_apic,
     integrate_elastic_parameters,
     integrate_fraction,
     integrate_gimp_point_stress,
     integrate_mass,
+    integrate_particle_scalar,
     integrate_particle_stress,
     integrate_transformed_yield_parameters,
     integrate_velocity,
@@ -113,8 +136,9 @@ from .implicit_mpm_solver_kernels import (
     voxel_coordinates,
 )
 
-# Disabled until Warp includes the fix for NVIDIA/warp#2036 (see #4506).
-_ROW_COMPRESSED_CONTACT_CONSTRUCTION = False
+# Features that need Warp 1.19 check this gate; remove it with their fallbacks once
+# Newton requires Warp 1.19.
+_WARP_AT_LEAST_1_19 = tuple(int(v) for v in wp.__version__.split(".")[:2]) >= (1, 19)
 
 
 def _as_2d_array(array, shape, dtype):
@@ -224,17 +248,35 @@ def _make_grid_basis_space(grid: fem.Geometry, basis_str: str, family: fem.Polyn
     )
 
 
-class _PicQuadrature(fem.PicQuadrature):
+class _DomainNamedPicQuadrature(fem.PicQuadrature):
     """PIC quadrature whose cache name includes its domain.
 
     Warp 1.18 names PIC quadratures by index scope only, so point bases built on
-    different geometries share generated kernels. Remove once Newton requires
-    Warp 1.19, which includes the domain name itself (GH-1984).
+    different geometries share generated kernels. Warp 1.19 includes the domain
+    name itself (GH-1984).
     """
 
     @property
     def name(self):
         return f"{super().name}_{self.domain.name}"
+
+
+_PicQuadrature = fem.PicQuadrature if _WARP_AT_LEAST_1_19 else _DomainNamedPicQuadrature
+
+
+def _recovery_time(time: float | None, name: str) -> float | None:
+    """Validate a recovery time constant, ``None`` to disable."""
+    if time is None:
+        return None
+    time = float(time)
+    if not math.isfinite(time) or time <= 0.0:
+        raise ValueError(f"{name} must be None or finite and positive")
+    return time
+
+
+def _recovery_fraction(time: float, dt: float) -> float:
+    """Fraction of an error corrected over one step of ``dt`` with exponential decay over ``time``."""
+    return -math.expm1(-dt / time)
 
 
 def _make_pic_basis_space(pic: fem.PicQuadrature, basis_str: str):
@@ -294,6 +336,7 @@ class ImplicitMPMScratchpad:
         self.particle_cells = None
         self.contact_pic = None
         self.collision_pic = None
+        self.density_pic = None
         self.pic_domain_element_indices = False
         self.gimp_particle_contact_nodes = None
         self.gimp_domain_corners = None
@@ -338,10 +381,10 @@ class ImplicitMPMScratchpad:
         self.transposed_collider_matrix = wps.bsr_zeros(0, 0, block_type=float)
 
         self.strain_node_particle_volume = None
+        self.delassus_scale = None
         self.strain_basis_transform = None
         self.strain_stress_transform = None
-        self.strain_node_volume = None
-        self.strain_node_collider_volume = None
+        self.critical_strain_offset = None
 
         self.collider_total_volumes = None
         self.collider_node_volume = None
@@ -672,7 +715,7 @@ class ImplicitMPMScratchpad:
         self,
         collider_count: int,
         has_compliant_bodies: bool,
-        has_critical_fraction: bool,
+        has_critical_offset: bool,
         max_colors: int,
         temporary_store: fem.TemporaryStore,
     ):
@@ -694,11 +737,8 @@ class ImplicitMPMScratchpad:
         wps.bsr_set_zero(self.strain_matrix, rows_of_blocks=strain_node_count, cols_of_blocks=vel_node_count)
         wps.bsr_set_zero(self.compliance_matrix, rows_of_blocks=strain_node_count, cols_of_blocks=strain_node_count)
 
-        if has_critical_fraction:
-            self.strain_node_volume = fem.borrow_temporary(temporary_store, shape=strain_node_count, dtype=float)
-            self.strain_node_collider_volume = fem.borrow_temporary(
-                temporary_store, shape=strain_node_count, dtype=float
-            )
+        if has_critical_offset:
+            self.critical_strain_offset = fem.borrow_temporary(temporary_store, shape=strain_node_count, dtype=float)
 
         if has_compliant_bodies:
             self.collider_total_volumes = fem.borrow_temporary(temporary_store, shape=collider_count, dtype=float)
@@ -726,9 +766,9 @@ class ImplicitMPMScratchpad:
         self.strain_node_particle_volume.release()
         self.unilateral_strain_offset.release()
 
-        if self.strain_node_volume is not None:
-            self.strain_node_volume.release()
-            self.strain_node_collider_volume.release()
+        if self.critical_strain_offset is not None:
+            self.critical_strain_offset.release()
+            self.critical_strain_offset = None
 
         if self.collider_total_volumes is not None:
             self.collider_total_volumes.release()
@@ -1026,7 +1066,13 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
         # material / background
         critical_fraction: float = 0.0
-        """Fraction for particles under which the yield surface collapses."""
+        """Packing fraction below which cohesion is disabled and recompression is allowed.
+
+        Each particle compares its measured packing with the available space
+        outside colliders, both from :attr:`critical_fraction_measurement`.
+        Underfilled material may recompress under external forces without
+        an attractive correction.
+        """
         air_drag: float = 1.0
         """Numerical drag for the background air."""
 
@@ -1048,8 +1094,111 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
             Cell-local contact solver ordering may change.
         """
+        collider_recovery_time: float | None = None
+        """Time constant of collider penetration recovery [s].
+
+        Each step adds an outward normal target velocity of
+        ``(1 - exp(-dt / time)) * penetration / dt`` to collider contacts, so
+        penetration decays over about this time whatever the step size.
+        ``None`` disables penetration recovery; 0.1 s is a reasonable starting
+        value. Particle collider bases (``"pic"`` and ``"picN"``) take the
+        penetration of each contact's particle surface. Grid collider bases
+        take, at each node, the average depth of the particle centers it
+        carries inside colliders, weighted by particle volume and the
+        nonnegative part of the node shape function.
+
+        .. experimental::
+
+            Collider recovery may change without prior notice.
+        """
+        volume_recovery_time: float | None = None
+        """Time constant of particle overpacking recovery [s].
+
+        Each step adds the nonpositive offset
+        ``(1 - exp(-dt / time)) * min(target * available / measured - 1, 0)``
+        to the divergence constraint, the volumetric strain that would bring the
+        measured particle volume fraction back to :attr:`volume_recovery_target`
+        times the space left free by colliders, with fractions from
+        :attr:`volume_recovery_measurement`. The strain quadrature samples the
+        offsets like the elastic strain, so they vary continuously as particles
+        move. Overfilled regions produce negative offsets, requesting expansion.
+        Underfilled regions, such as free surfaces, receive no correction.
+        ``None`` disables this feedback; 0.1 s is a reasonable starting value.
+
+        .. experimental::
+
+            Density-based divergence feedback may change without prior notice.
+        """
+        volume_recovery_target: float = 1.0
+        """Packing fraction restored by :attr:`volume_recovery_time`.
+
+        Particle volumes are ``(2 * radius)**3``, so particles spaced closer
+        than their diameter fill more than the available space at rest; set
+        the target to their rest packing fraction to keep such material from
+        expanding. Values slightly above one leave room for measurement noise
+        in disordered packings. Must be positive.
+
+        .. experimental::
+
+            Density-based divergence feedback may change without prior notice.
+        """
+        volume_recovery_measurement: Literal["grid", "particle"] = "grid"
+        """Measurement of the packing fractions for :attr:`volume_recovery_time`.
+
+        Each particle contributes its deformed volume, the reference volume
+        times ``det(F_e)`` of its elastic deformation gradient. The measured
+        fraction and the available fraction, the part of the same kernel
+        outside colliders, use matching kernels, so packed material reads
+        full against walls. ``"grid"`` deposits volumes into cells with
+        quadratic B-splines and reads them back linearly at each particle,
+        averaging over about two voxels. ``"particle"`` sums neighbor volumes
+        with a cubic B-spline of one voxel radius around each particle, which
+        keeps the band that reads as loose at free surfaces thin, at the cost
+        of a neighbor search and a slight overestimate in disordered packings.
+
+        .. experimental::
+
+            Density measurements may change without prior notice.
+        """
+        critical_fraction_measurement: Literal["grid", "particle"] = "particle"
+        """Measurement of the packing fractions for :attr:`critical_fraction`.
+
+        Accepts the measurements of :attr:`volume_recovery_measurement`. The
+        default ``"particle"`` keeps free surfaces from reading as loose over
+        a thick band, which would let them recompress without friction.
+
+        .. experimental::
+
+            Density measurements may change without prior notice.
+        """
+        collider_winding_number: bool = False
+        """Sign collider distances with generalized winding numbers.
+
+        Default collider meshes are then built with winding-number support, and planes become slabs below their
+        surface. Shapes merged into one collider mesh, such as boxes resting on the ground, are then signed as their
+        union. Custom collider meshes use winding numbers when built with ``support_winding_number=True``, which
+        requires them to be closed; other custom meshes keep the default sign.
+        """
         collider_normal_from_sdf_gradient: bool = False
-        """Compute collider normals from sdf gradient rather than closest point"""
+        """Compute collider normals from the signed-distance gradient rather than the closest point.
+
+        Normals come from a quadratic B-spline reconstruction of the collider distance sampled
+        at the cell vertices, so they turn smoothly around concave and convex collider edges,
+        such as the seams between assembled boxes. Nodes of the B-spline stencil behind a
+        contact's tangent plane contribute their depth below that plane, which keeps the
+        reconstructed distance at or below the exact one, also across walls thinner than a
+        cell. Particle collider bases (``"pic"`` and ``"picN"``) also take their gap from this
+        reconstruction; grid collider bases keep the exact distance at their nodes.
+        """
+        collider_contact_shielding: bool = True
+        """Deactivate particle collider contacts that another particle shields from the collider.
+
+        Applies to particle collider bases (``"pic"`` and ``"picN"``). A contact is shielded when
+        another particle lies on its closing path, between it and the collider, which then takes
+        the contact first. Resting contacts and contacts approaching faster than their gap allows
+        within the step stay active. Shielding removes most contacts behind the first particle
+        layer of piles and pools, which shortens the contact solve.
+        """
         collider_basis: _MPMColliderBasisName = "S2"
         """Collider basis function. Defaults to ``"S2"``; pass ``"Q1"``
         to restore the previous trilinear collider basis. Common values are
@@ -1059,9 +1208,13 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         form with integer ``N`` is accepted. Particle bases require an explicit
         per-cell limit for graph capture (``"picN"``).
 
-        Particle contacts activate within 0.25 voxels of the surface. Activated
-        contacts allow a normal approach speed up to the positive gap divided
-        by the timestep, so material can reach the surface without early stopping.
+        Particle contacts stop with their centers at the larger of their radius
+        and 0.25 voxels from the surface, in the band where grid contacts
+        activate, so particles near walls keep sampling the volume around them
+        instead of bunching against the surface. They activate within one
+        voxel of the particle surface, or within that stopping band if it is
+        farther, and allow a normal approach speed up to the remaining gap
+        divided by the timestep.
         """
         strain_basis: _MPMStrainBasisName = "P0"
         """Strain basis function. Common values are ``"P0"``, ``"P1d"``,
@@ -1576,6 +1729,9 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             )
         )
 
+    _rheology_acceleration = "nesterov"
+    """Acceleration of the rheology iterations, ``"nesterov"`` or ``"none"``, see ``solve_rheology``."""
+
     def __init__(
         self,
         model: newton.Model,
@@ -1640,6 +1796,16 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         self.verbose = verbose if verbose is not None else wp.config.log_level <= wp.LOG_DEBUG
         self.enable_timers = enable_timers
 
+        self._volume_recovery_time = _recovery_time(config.volume_recovery_time, "volume_recovery_time")
+        self._volume_recovery_target = float(config.volume_recovery_target)
+        if not math.isfinite(self._volume_recovery_target) or self._volume_recovery_target <= 0.0:
+            raise ValueError("volume_recovery_target must be finite and positive")
+        for name in ("volume_recovery_measurement", "critical_fraction_measurement"):
+            if getattr(config, name) not in ("grid", "particle"):
+                raise ValueError(f"{name} must be 'grid' or 'particle', got {getattr(config, name)!r}")
+        self._volume_recovery_measurement = config.volume_recovery_measurement
+        self._critical_fraction_measurement = config.critical_fraction_measurement
+
         self.velocity_basis = "Q1"
         self.strain_basis = config.strain_basis
         self.velocity_basis = config.velocity_basis
@@ -1676,6 +1842,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         self.gimp = config.integration_scheme == "gimp"
         self.collider_normal_from_sdf_gradient = config.collider_normal_from_sdf_gradient
         self.collider_basis = config.collider_basis
+        self.collider_contact_shielding = config.collider_contact_shielding
         supports_colored_contacts = (
             not self.strain_basis.startswith("pic")
             and _parse_grid_basis_name(self.strain_basis)[2]
@@ -1687,6 +1854,10 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         )
         if self.gs_colored_contacts and not supports_colored_contacts:
             raise ValueError("Colored contacts require discontinuous grid strain, particle contacts, and GS or GS-SOA")
+        self._collider_recovery_time = _recovery_time(config.collider_recovery_time, "collider_recovery_time")
+        self._collider_contact_gap = (
+            particle_contact_gap(self._mpm_model.voxel_size) if self.collider_basis.startswith("pic") else 0.0
+        )
 
         if config.collider_velocity_mode not in ("forward", "backward"):
             raise ValueError(f"Invalid collider velocity mode: {config.collider_velocity_mode}")
@@ -2237,6 +2408,30 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             ):
                 last_step_data.gimp_stress[1].zero_()
             pic = self._particles_to_cells(state_in.particle_q)
+            if self.collider_basis[:3] == "pic" and self.collider_basis[3:].isdigit():
+                contact_pic = self._scratchpad.contact_pic if self.gimp else pic
+                if contact_pic is not None:
+                    motion = PicContactMotion()
+                    motion.flags = self._mpm_model.particle_flags
+                    motion.positions = state_in.particle_q
+                    motion.velocities = state_in.particle_qd
+                    motion.radii = self._mpm_model.particle_radius
+                    motion.world = model.particle_world
+                    motion.gravity = model.gravity
+                    motion.forces = state_in.particle_f
+                    motion.inv_mass = model.particle_inv_mass
+                    prioritize_pic_contacts(
+                        contact_pic,
+                        int(self.collider_basis[3:]),
+                        self._particle_environment,
+                        motion,
+                        self._mpm_model.collider,
+                        state_in.body_q,
+                        state_in.body_qd,
+                        dt,
+                        self._mpm_model.voxel_size,
+                        self.temporary_store,
+                    )
             scratch = self._rebuild_scratchpad(pic)
             self._step_impl(state_in, state_out, dt, pic, scratch)
             scratch.release_temporaries()
@@ -2525,41 +2720,46 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             state_in: The input state.
             state_out: The output state. Only particle_q, particle_qd, and particle_qd_grad are written.
             dt: The time step, for extrapolating the collider end-of-step positions from its current position and velocity.
-            gap: Maximum distance for closest-point queries. If None, the default is the voxel size times sqrt(3).
+            gap: Maximum distance for closest-point queries. With particle collider bases (``"pic"`` and
+                ``"picN"``), it is measured from particle surfaces, so queries reach one particle radius further
+                from particle centers. If None, the default is the voxel size times sqrt(3).
         """
 
-        if gap is not None:
-            # Update max query dist if provided
-            prev_gap, self._mpm_model.collider.query_max_dist = self._mpm_model.collider.query_max_dist, gap
+        collider = self._mpm_model.collider
+        prev_gap = collider.query_max_dist
+        # Particle contacts measure distances from the particle surface, one radius closer than its center
+        query_gap = gap if gap is not None else self._default_query_distance()
+        collider.query_max_dist = query_gap + self._contact_radius_reach()
 
         self._last_step_data.require_collider_previous_position(state_in.body_q)
-        wp.launch(
-            project_outside_collider,
-            dim=state_in.particle_count,
-            inputs=[
-                state_in.particle_q,
-                state_in.particle_qd,
-                state_in.mpm.particle_qd_grad,
-                self._mpm_model.particle_flags,
-                self.model.particle_mass,
-                self._particle_environment,
-                self._mpm_model.collider,
-                state_in.body_q,
-                state_in.body_qd if self.collider_velocity_mode == "forward" else None,
-                self._last_step_data.body_q_prev if self.collider_velocity_mode == "backward" else None,
-                dt,
-            ],
-            outputs=[
-                state_out.particle_q,
-                state_out.particle_qd,
-                state_out.mpm.particle_qd_grad,
-            ],
-            device=state_in.particle_q.device,
-        )
-
-        if gap is not None:
-            # Restore previous max query dist
-            self._mpm_model.collider.query_max_dist = prev_gap
+        try:
+            wp.launch(
+                project_outside_collider,
+                dim=state_in.particle_count,
+                inputs=[
+                    state_in.particle_q,
+                    state_in.particle_qd,
+                    state_in.mpm.particle_qd_grad,
+                    self._mpm_model.particle_flags,
+                    self.model.particle_mass,
+                    self._particle_environment,
+                    self._mpm_model.collider,
+                    state_in.body_q,
+                    state_in.body_qd if self.collider_velocity_mode == "forward" else None,
+                    self._last_step_data.body_q_prev if self.collider_velocity_mode == "backward" else None,
+                    dt,
+                    # Particle contacts keep particles one radius from collider surfaces
+                    self._mpm_model.particle_radius if self.collider_basis[:3] == "pic" else None,
+                ],
+                outputs=[
+                    state_out.particle_q,
+                    state_out.particle_qd,
+                    state_out.mpm.particle_qd_grad,
+                ],
+                device=state_in.particle_q.device,
+            )
+        finally:
+            collider.query_max_dist = prev_gap
 
     def update_particle_frames(
         self,
@@ -2998,7 +3198,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             scratch.allocate_temporaries(
                 collider_count=self._mpm_model.collider.collider_mesh.shape[0],
                 has_compliant_bodies=self._mpm_model.has_compliant_colliders,
-                has_critical_fraction=self._mpm_model.critical_fraction > 0.0,
+                has_critical_offset=self._mpm_model.critical_fraction > 0.0,
                 max_colors=self._max_colors(),
                 temporary_store=self.temporary_store,
             )
@@ -3085,14 +3285,19 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     use_domain_element_indices=use_domain_element_indices,
                 )
                 self._scratchpad.particle_cells = particle_locations[0]
-                if self.collider_basis[:3] == "pic":
-                    self._scratchpad.contact_pic = _PicQuadrature(
+                center_pic = None
+                if self.collider_basis[:3] == "pic" or "particle" in self._density_measurements():
+                    center_pic = _PicQuadrature(
                         domain=domain,
                         positions=self._particle_cell_locations(domain, positions, self._particle_environment),
                         measures=self._mpm_model.particle_volume,
                         temporary_store=self.temporary_store,
                         use_domain_element_indices=use_domain_element_indices,
                     )
+                if self.collider_basis[:3] == "pic":
+                    self._scratchpad.contact_pic = center_pic
+                # Particle-centered density measurements gather neighbors through one point per particle center
+                self._scratchpad.density_pic = center_pic
             else:
                 particle_locations = self._particle_cell_locations(domain, positions, self._particle_environment)
                 self._scratchpad.particle_cells = particle_locations[0].reshape((-1, 1))
@@ -3103,6 +3308,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     temporary_store=self.temporary_store,
                     use_domain_element_indices=use_domain_element_indices,
                 )
+                self._scratchpad.density_pic = pic
 
         return pic
 
@@ -3359,7 +3565,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         self._require_velocity_space_fields(scratch, mpm_model.has_compliant_particles)
 
         # Rasterize colliders to discrete space
-        self._rasterize_colliders(state_in, dt, last_step_data, scratch, inv_cell_volume)
+        self._rasterize_colliders(state_in, dt, last_step_data, scratch, pic, inv_cell_volume)
 
         # Velocity right-hand side and inverse mass matrix
         self._compute_unconstrained_velocity(state_in, dt, pic, scratch, inv_cell_volume)
@@ -3474,13 +3680,19 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         dt: float,
         last_step_data: LastStepData,
         scratch: ImplicitMPMScratchpad,
+        pic: fem.PicQuadrature,
         inv_cell_volume: float,
     ):
         # Rasterize collider to grid
         collider_node_count = scratch.collider_node_count
         vel_node_count = scratch.velocity_node_count
 
+        # Particle contacts close their gap in the rasterized velocity
+        speculative = self.collider_basis[:3] == "pic"
+
         with self._timer("Rasterize collider"):
+            # Rasterization, the rigidity operator, and force harvesting share this distance during the step
+            self._mpm_model.collider.query_max_dist = self._collider_query_distance()
             # volume associated to each collider node
             fem.integrate(
                 integrate_fraction,
@@ -3490,6 +3702,21 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 output=scratch.collider_node_volume,
                 temporary_store=self.temporary_store,
             )
+
+            # Point contacts keep their particle's radius from collider surfaces
+            node_radii = None
+            if speculative:
+                node_radii = fem.borrow_temporary(self.temporary_store, shape=collider_node_count, dtype=float)
+                wp.launch(
+                    point_contact_radii,
+                    dim=collider_node_count,
+                    inputs=[
+                        scratch.collider_fraction_test.space_restriction.space_partition.space_node_indices(),
+                        scratch.collision_pic.cell_particle_indices,
+                        self._mpm_model.particle_radius,
+                    ],
+                    outputs=[node_radii],
+                )
 
             # rasterize sdf and properties to grid
             rasterize_collider(
@@ -3510,18 +3737,83 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 scratch.collider_ids,
                 temporary_store=self.temporary_store,
                 node_environment_offsets=scratch.collider_environment_offsets,
+                contact_gap=self._collider_contact_gap,
+                node_radii=node_radii,
             )
 
             # normal interpolation
             if self.collider_normal_from_sdf_gradient:
+                # Reflected-depth B-spline reconstruction of the collider distance at the cell vertices
+                distance_gradients, distance_values = collider_distance_reflect(
+                    scratch.grid,
+                    self._mpm_model.collider,
+                    state_in.body_q,
+                    self._mpm_model.voxel_size,
+                    scratch.collider_position_field.dof_values,
+                    scratch.collider_environment_offsets,
+                    self._separate_worlds,
+                    scratch.collider_normal_field.dof_values,
+                    scratch.collider_distance_field.dof_values,
+                    node_radii,
+                    self.temporary_store,
+                )
                 interpolate_collider_normals(
-                    scratch.collider_fraction_test.space_restriction,
                     scratch.collider_distance_field,
                     scratch.collider_normal_field,
-                    temporary_store=self.temporary_store,
+                    distance_gradients,
                     collider_velocity=scratch.collider_velocity,
                     dt=dt,
+                    stop_distance=speculative_stop_distance(self._mpm_model.voxel_size),
+                    node_radii=node_radii,
+                    distance_values=distance_values if speculative else None,
                 )
+
+            if speculative and self.collider_contact_shielding:
+                shield_pic = scratch.collision_pic
+                shielded = fem.borrow_temporary(self.temporary_store, shape=collider_node_count, dtype=int)
+                wp.launch(
+                    make_shielded_contact_kernel(shield_pic),
+                    dim=collider_node_count,
+                    inputs=[
+                        shield_pic.domain.geometry.cell_arg_value(self.model.device),
+                        shield_pic.domain.element_index_arg_value(self.model.device),
+                        shield_pic.cell_particle_offsets,
+                        shield_pic.cell_particle_indices,
+                        state_in.particle_q,
+                        self._mpm_model.particle_radius,
+                        self.model.particle_flags,
+                        self._particle_environment,
+                        scratch.collider_fraction_test.space_restriction.space_partition.space_node_indices(),
+                        scratch.collider_position_field.dof_values,
+                        scratch.collider_normal_field.dof_values,
+                        scratch.collider_distance_field.dof_values,
+                        scratch.collider_ids,
+                        state_in.particle_qd,
+                        self.model.gravity,
+                        self.model.particle_world,
+                        state_in.particle_f,
+                        self.model.particle_inv_mass,
+                        dt,
+                        scratch.collider_velocity,
+                        self._mpm_model.voxel_size,
+                        shielded,
+                    ],
+                    device=self.model.device,
+                )
+                wp.launch(
+                    drop_shielded_contacts,
+                    dim=collider_node_count,
+                    inputs=[
+                        shielded,
+                        scratch.collider_velocity,
+                        scratch.collider_normal_field.dof_values,
+                        scratch.collider_friction,
+                        scratch.collider_adhesion,
+                        scratch.collider_ids,
+                    ],
+                    device=self.model.device,
+                )
+                shielded.release()
 
             contact_nodes = scratch.gimp_particle_contact_nodes
             if contact_nodes is not None:
@@ -3556,12 +3848,100 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     bsr_options={"construction": "auto"} if self._use_local_contact_construction(scratch) else None,
                 )
 
+            if self._collider_recovery_time is not None:
+                fraction = _recovery_fraction(self._collider_recovery_time, dt)
+                if speculative:
+                    wp.launch(
+                        stabilize_collider_velocity,
+                        dim=collider_node_count,
+                        inputs=[
+                            dt,
+                            fraction,
+                            scratch.collider_distance_field.dof_values,
+                            scratch.collider_normal_field.dof_values,
+                            scratch.collider_velocity,
+                        ],
+                    )
+                else:
+                    self._recover_grid_contact_penetration(state_in, dt, fraction, scratch, pic, inv_cell_volume)
+
+    def _recover_grid_contact_penetration(
+        self,
+        state_in: newton.State,
+        dt: float,
+        fraction: float,
+        scratch: ImplicitMPMScratchpad,
+        pic: fem.PicQuadrature,
+        inv_cell_volume: float,
+    ):
+        """Push grid contacts out by the average penetration of the particle centers they carry, weighted by particle
+        volume and the nonnegative part of the node shape function."""
+        penetration = fem.borrow_temporary(self.temporary_store, shape=state_in.particle_count, dtype=float)
+        wp.launch(
+            particle_collider_penetration,
+            dim=state_in.particle_count,
+            inputs=[
+                state_in.particle_q,
+                self._mpm_model.particle_flags,
+                self._particle_environment,
+                self._mpm_model.collider,
+                state_in.body_q,
+                None,
+                None,
+            ],
+            outputs=[penetration],
+        )
+        # Generic assembly evaluates each node's shape function, which the nonnegative clamp of the weights needs
+        node_penetration = fem.integrate(
+            integrate_particle_scalar,
+            quadrature=pic,
+            assembly="generic",
+            fields={"phi": scratch.collider_fraction_test},
+            values={
+                "inv_cell_volume": inv_cell_volume,
+                "particle_flags": self._mpm_model.particle_flags,
+                "values": penetration,
+            },
+            output_dtype=float,
+            temporary_store=self.temporary_store,
+        )
+        node_volume = fem.integrate(
+            integrate_particle_scalar,
+            quadrature=pic,
+            assembly="generic",
+            fields={"phi": scratch.collider_fraction_test},
+            values={
+                "inv_cell_volume": inv_cell_volume,
+                "particle_flags": self._mpm_model.particle_flags,
+                "values": None,
+            },
+            output_dtype=float,
+            temporary_store=self.temporary_store,
+        )
+        wp.launch(
+            recover_node_penetration,
+            dim=scratch.collider_node_count,
+            inputs=[
+                dt,
+                fraction,
+                node_penetration,
+                node_volume,
+                scratch.collider_normal_field.dof_values,
+                scratch.collider_velocity,
+            ],
+        )
+        node_penetration.release()
+        node_volume.release()
+        penetration.release()
+
     def _use_local_contact_construction(self, scratch: ImplicitMPMScratchpad) -> bool:
         """Prefer row compression for validated CUDA contact-map layouts."""
         # Compact maps with many inactive partition rows can still favor triplets,
         # even when Warp packs active-row candidate capacity.
+        # Row compression resizes padded BSR rows after the matrix shrinks, which
+        # Warp 1.19 supports (NVIDIA/warp#2036, see #4506).
         return (
-            _ROW_COMPRESSED_CONTACT_CONSTRUCTION
+            _WARP_AT_LEAST_1_19
             and self.model.device.is_cuda
             and self.velocity_basis == "Q1"
             and self.collider_basis in ("S2", "S3")
@@ -3695,6 +4075,17 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
     ):
         mpm_model = self._mpm_model
 
+        # A full cell's inertial Delassus scale, dt^2 / (rho dx^2) for the densest material of each
+        # environment, sets that environment's rheology regularization
+        densities = mpm_model.environment_max_particle_density
+        scratch.delassus_scale = wp.empty(shape=densities.shape, dtype=float)
+        wp.launch(
+            inertial_delassus_scale,
+            dim=densities.shape,
+            inputs=[densities, dt * dt / (self.voxel_size * self.voxel_size)],
+            outputs=[scratch.delassus_scale],
+        )
+
         with self._timer("Strain-node particle volumes"):
             fem.integrate(
                 integrate_active_fraction,
@@ -3708,58 +4099,9 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 temporary_store=self.temporary_store,
             )
 
-        # Void fraction (unilateral incompressibility offset)
-        if mpm_model.critical_fraction > 0.0:
-            with self._timer("Unilateral offset"):
-                fem.integrate(
-                    integrate_fraction,
-                    fields={"phi": scratch.divergence_test},
-                    values={"inv_cell_volume": inv_cell_volume},
-                    output=scratch.strain_node_volume,
-                    temporary_store=self.temporary_store,
-                )
-
-                if isinstance(scratch.collider_distance_field.space.basis, fem.PointBasisSpace):
-                    fem.integrate(
-                        integrate_collider_fraction_apic,
-                        fields={
-                            "phi": scratch.divergence_test,
-                            "sdf": scratch.collider_distance_field,
-                            "sdf_gradient": scratch.collider_normal_field,
-                        },
-                        values={
-                            "inv_cell_volume": inv_cell_volume,
-                        },
-                        output=scratch.strain_node_collider_volume,
-                        temporary_store=self.temporary_store,
-                    )
-                else:
-                    fem.integrate(
-                        integrate_collider_fraction,
-                        fields={
-                            "phi": scratch.divergence_test,
-                            "sdf": scratch.collider_distance_field,
-                        },
-                        values={
-                            "inv_cell_volume": inv_cell_volume,
-                        },
-                        output=scratch.strain_node_collider_volume,
-                        temporary_store=self.temporary_store,
-                    )
-
-                wp.launch(
-                    compute_unilateral_strain_offset,
-                    dim=scratch.strain_node_count,
-                    inputs=[
-                        mpm_model.critical_fraction,
-                        scratch.strain_node_particle_volume,
-                        scratch.strain_node_collider_volume,
-                        scratch.strain_node_volume,
-                        scratch.unilateral_strain_offset,
-                    ],
-                )
-        else:
-            scratch.unilateral_strain_offset.zero_()
+        scratch.unilateral_strain_offset.zero_()
+        if self._measures_density():
+            self._build_density_strain_offset(state_in, scratch, pic, dt)
 
         # Strain jacobian
         with self._timer("Strain matrix"):
@@ -3814,6 +4156,211 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 inputs=[values[:, YIELD_PARAM_LENGTH:], parameters],
             )
             scratch.strain_yield_parameters_field.dof_values = parameters.view(YieldParamVec)
+
+    def _contact_radius_reach(self) -> float:
+        """Largest particle radius, which particle collider bases subtract from collider distances."""
+        if self.collider_basis[:3] != "pic":
+            return 0.0
+        return self._mpm_model.max_particle_radius
+
+    def _default_query_distance(self) -> float:
+        """Default closest-point query distance [m] from particle centers or surfaces: one cell diagonal."""
+        return self._mpm_model.voxel_size * math.sqrt(3.0)
+
+    def _collider_query_distance(self) -> float:
+        """Closest-point query distance [m] for collider rasterization.
+
+        Covers one cell diagonal, and for particle collider bases the largest
+        particle radius plus the predictive contact gap or the contact band.
+        """
+        contact_reach = self._contact_radius_reach() + max(
+            self._collider_contact_gap, speculative_stop_distance(self._mpm_model.voxel_size)
+        )
+        return max(self._default_query_distance(), contact_reach)
+
+    def _measures_density(self) -> bool:
+        """Whether critical packing or density feedback needs a density measurement."""
+        return self._mpm_model.critical_fraction > 0.0 or self._volume_recovery_time is not None
+
+    def _density_measurements(self) -> set[str]:
+        """Measurements needed this step, among ``"grid"`` and ``"particle"``."""
+        measurements = set()
+        if self._mpm_model.critical_fraction > 0.0:
+            measurements.add(self._critical_fraction_measurement)
+        if self._volume_recovery_time is not None:
+            measurements.add(self._volume_recovery_measurement)
+        return measurements
+
+    def _build_density_strain_offset(
+        self,
+        state_in: newton.State,
+        scratch: ImplicitMPMScratchpad,
+        pic: fem.PicQuadrature,
+        dt: float,
+    ):
+        """Measure packing independently of the mass and strain quadrature.
+
+        Each particle gets a measured and an available volume fraction from the measurement of
+        each consumer: density feedback pushes overfilled particles apart, and the critical bound
+        lets underfilled particles compress. The strain quadrature samples both offsets like the
+        elastic strain, so they share the weights of the strain mass and stay bounded in every
+        strain mode.
+        """
+        model = self._mpm_model
+        device = state_in.particle_q.device
+        particle_count = state_in.particle_q.shape[0]
+        volumes = fem.borrow_temporary_like(model.material_particle_volume, self.temporary_store)
+        wp.launch(
+            deformed_particle_volumes,
+            dim=volumes.shape[0],
+            inputs=[model.material_particle_volume, state_in.mpm.particle_elastic_strain, volumes],
+            device=device,
+        )
+
+        grid = scratch.grid
+        environments = self._particle_environment if self._separate_worlds else None
+        collider = model.collider
+        old_query_distance = collider.query_max_dist
+        # Wall masks need distances up to the cell half-diagonal
+        collider.query_max_dist = max(old_query_distance, model.voxel_size)
+        try:
+            masks = fem.borrow_temporary(self.temporary_store, shape=grid.cell_count(), dtype=wp.uint32, device=device)
+            collider_inputs = [collider, state_in.body_q, None, None, self._separate_worlds]
+            wp.launch(
+                make_free_box_mask_kernel(grid),
+                dim=grid.cell_count(),
+                inputs=[grid.cell_arg_value(device), *collider_inputs, model.voxel_size, masks],
+                device=device,
+            )
+
+            fractions = {}
+            for measurement in self._density_measurements():
+                measured = fem.borrow_temporary(self.temporary_store, shape=particle_count, dtype=float, device=device)
+                available = fem.borrow_temporary_like(measured, self.temporary_store)
+                if measurement == "grid":
+                    cell_values = fem.borrow_temporary(
+                        self.temporary_store, shape=grid.cell_count(), dtype=float, device=device
+                    )
+                    cell_values.zero_()
+                    wp.launch(
+                        make_grid_volume_kernel(grid),
+                        dim=particle_count,
+                        inputs=[
+                            grid.cell_arg_value(device),
+                            state_in.particle_q,
+                            volumes,
+                            model.material_particle_flags,
+                            environments,
+                            model.voxel_size,
+                            cell_values,
+                        ],
+                        device=device,
+                    )
+                    readback = make_grid_readback_kernel(grid)
+                    readback_inputs = [
+                        grid.cell_arg_value(device),
+                        state_in.particle_q,
+                        model.material_particle_flags,
+                        environments,
+                    ]
+                    wp.launch(
+                        readback,
+                        dim=particle_count,
+                        inputs=[*readback_inputs, cell_values, model.voxel_size, measured],
+                        device=device,
+                    )
+                    wp.launch(
+                        make_grid_capacity_kernel(grid),
+                        dim=grid.cell_count(),
+                        inputs=[grid.cell_arg_value(device), masks, *collider_inputs, model.voxel_size, cell_values],
+                        device=device,
+                    )
+                    wp.launch(
+                        readback,
+                        dim=particle_count,
+                        inputs=[*readback_inputs, cell_values, model.voxel_size, available],
+                        device=device,
+                    )
+                else:
+                    center_pic = scratch.density_pic
+                    wp.launch(
+                        make_particle_volume_kernel(center_pic),
+                        dim=particle_count,
+                        inputs=[
+                            grid.cell_arg_value(device),
+                            center_pic.domain.element_index_arg_value(device),
+                            center_pic.cell_particle_offsets,
+                            center_pic.cell_particle_indices,
+                            state_in.particle_q,
+                            volumes,
+                            model.material_particle_flags,
+                            environments,
+                            model.voxel_size,
+                            measured,
+                        ],
+                        device=device,
+                    )
+                    wp.launch(
+                        make_particle_capacity_kernel(grid),
+                        dim=particle_count,
+                        inputs=[
+                            grid.cell_arg_value(device),
+                            state_in.particle_q,
+                            model.material_particle_flags,
+                            environments,
+                            masks,
+                            *collider_inputs,
+                            model.voxel_size,
+                            available,
+                        ],
+                        device=device,
+                    )
+                fractions[measurement] = (measured, available)
+        finally:
+            collider.query_max_dist = old_query_distance
+
+        values = fem.borrow_temporary(self.temporary_store, shape=particle_count, dtype=float, device=device)
+        laws = []
+        if model.critical_fraction > 0.0:
+            scratch.critical_strain_offset.zero_()
+            laws.append(
+                (
+                    critical_offset_values,
+                    self._critical_fraction_measurement,
+                    (model.critical_fraction,),
+                    scratch.critical_strain_offset,
+                )
+            )
+        if self._volume_recovery_time is not None:
+            laws.append(
+                (
+                    feedback_offset_values,
+                    self._volume_recovery_measurement,
+                    (_recovery_fraction(self._volume_recovery_time, dt), self._volume_recovery_target),
+                    scratch.unilateral_strain_offset,
+                )
+            )
+        for law, measurement, parameters, output in laws:
+            measured, available = fractions[measurement]
+            wp.launch(
+                law,
+                dim=particle_count,
+                inputs=[measured, available, model.material_particle_flags, *parameters, values],
+                device=device,
+            )
+            fem.integrate(
+                point_density_offset,
+                quadrature=pic,
+                fields={"tau": scratch.divergence_test},
+                values={
+                    "values": values,
+                    "flags": model.material_particle_flags,
+                    "inv_cell_volume": 1.0 / model.voxel_size**3,
+                },
+                output=output,
+                add=True,
+                temporary_store=self.temporary_store,
+            )
 
     def _build_strain_basis_transform(
         self,
@@ -3874,7 +4421,9 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             wp.launch(
                 rotate_matrix_rows, dim=B.nnz, inputs=[basis_transform, B.offsets, B.columns, B.values, strain_mat_tmp]
             )
-            B.values = strain_mat_tmp
+            # Captured assembly retains this pointer; replacing it can free the
+            # warm-up allocation before the first graph replay.
+            wp.copy(B.values, strain_mat_tmp)
 
             C = scratch.compliance_matrix
             compliance_mat_tmp = wp.empty_like(C.values)
@@ -3901,6 +4450,13 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     _as_2d_array(scratch.stress_field.dof_values, shape=(node_count, 6), dtype=float),
                     _as_2d_array(scratch.unilateral_strain_offset, shape=(node_count, 1), dtype=float),
                 ],
+            )
+
+        if scratch.critical_strain_offset is not None:
+            wp.launch(
+                add_critical_strain_offset,
+                dim=node_count,
+                inputs=[basis_transform, scratch.critical_strain_offset, scratch.unilateral_strain_offset],
             )
 
         M_diag = scratch.strain_node_particle_volume
@@ -4051,9 +4607,11 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 momentum_data,
                 rheology_data,
                 collision_data,
+                scratch.delassus_scale,
                 temporary_store=self.temporary_store,
                 use_graph=self._use_cuda_graph,
                 verbose=self.verbose,
+                acceleration=self._rheology_acceleration,
             )
 
         for temporary in contact_temporaries:
