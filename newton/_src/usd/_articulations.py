@@ -381,15 +381,22 @@ def _parse_articulations(
 
             # Create the articulation from all collected joints
             if articulation_joint_indices:
+                component_bodies = {body for i in sorted_joints for body in joint_edges[i] if body >= 0}
+                # The part with the root body, or else the first one, keeps the articulation's label.
+                # The others are named after their root body.
+                if body_ids.get(articulation_path, -1) in component_bodies or (
+                    component == 0 and articulation_path not in body_ids
+                ):
+                    articulation_label = articulation_path
+                else:
+                    articulation_label = body_labels[first_joint_parent]
                 builder._finalize_imported_articulation(
                     joint_indices=articulation_joint_indices,
                     parent_body=parent_body,
-                    # A part split off the articulation is named after its root body.
-                    articulation_label=articulation_path if component == 0 else body_labels[first_joint_parent],
+                    articulation_label=articulation_label,
                     custom_attributes=articulation_custom_attrs,
                 )
                 articulation_ids.add(builder.joint_articulation[articulation_joint_indices[0]])
-                component_bodies = {body for i in sorted_joints for body in joint_edges[i] if body >= 0}
                 import_attached_cables([body_labels[i] for i in sorted(component_bodies)])
 
         # Bodies without joints get a joint to the world (or to parent_body) and their own articulation,
