@@ -146,6 +146,18 @@ class TestImportMjcfNative(unittest.TestCase):
         np.testing.assert_allclose(model.joint_stiffness.numpy(), reference.jnt_stiffness, rtol=3e-5)
         np.testing.assert_allclose(model.joint_target_kd.numpy(), -reference.actuator_biasprm[:, 2], rtol=3e-5)
 
+    def test_inherited_actuator_and_material_defaults(self):
+        """Resolve inherited actuator/material defaults without the legacy parser."""
+        xml = """<mujoco><default><general gear="7"/><material rgba="1 0 0 1"/></default>
+            <asset><material name="red"/></asset><worldbody><body name="b"><joint name="j"/>
+            <geom size=".1" material="red"/></body></worldbody>
+            <actuator><motor joint="j"/></actuator></mujoco>"""
+        builder = newton.ModelBuilder()
+        with patch("newton._src.utils.import_mjcf.parse_mjcf", side_effect=AssertionError("legacy parser called")):
+            builder.add_mjcf_native(xml, ctrl_direct=True)
+        np.testing.assert_allclose(builder.shape_color[0], [1, 0, 0])
+        np.testing.assert_allclose(builder.custom_attributes["mujoco:actuator_gear"].values[0], [7, 0, 0, 0, 0, 0])
+
     def test_slidercrank_nan_length(self):
         """Preserve MuJoCo's NaN warning behavior and legacy rejection."""
         import mujoco
@@ -170,6 +182,51 @@ class TestImportMjcfNative(unittest.TestCase):
         model = builder.finalize()
         self.assertTrue(np.isnan(reference.actuator_cranklength[0]))
         self.assertTrue(np.isnan(model.mujoco.actuator_cranklength.numpy()[0]))
+
+    def test_native_inertia_and_primitives(self):
+        """Preserve compiled inertia tensors and primitive dimensions and poses."""
+        import mujoco
+
+        xml = """<mujoco><compiler settotalmass="10"/><worldbody><body name="b" euler="20 30 40">
+            <joint/><geom type="box" size=".1 .2 .3" pos=".1 .2 .3" euler="10 20 30"
+                friction=".4 .03 .002" margin=".01" gap=".003" priority="3" condim="4"
+                solref=".01 1" solimp=".8 .9 .002 .4 3" solmix=".3"/>
+            <geom type="sphere" size=".1" pos=".4 0 0"/>
+            <geom type="capsule" size=".02" fromto="0 0 0 .4 .2 .3"/>
+            <geom type="cylinder" size=".1 .2"/><geom type="ellipsoid" size=".1 .2 .3"/>
+            </body></worldbody></mujoco>"""
+        reference = mujoco.MjModel.from_xml_string(xml)
+        builder = newton.ModelBuilder()
+        builder.rigid_gap = 0.0
+        with self.assertWarnsRegex(UserWarning, "settotalmass.*deprecated"):
+            builder.add_mjcf_native(xml)
+        self.assertEqual(builder.shape_scale[2][2], builder.shape_scale[2][0])
+        self.assertEqual(builder.shape_scale[3][2], 0)
+        np.testing.assert_allclose(builder.body_mass, reference.body_mass[1:], rtol=1e-6)
+        rotation = np.empty(9)
+        mujoco.mju_quat2Mat(rotation, reference.body_iquat[1])
+        rotation = rotation.reshape(3, 3)
+        expected = rotation @ np.diag(reference.body_inertia[1]) @ rotation.T
+        np.testing.assert_allclose(np.asarray(builder.body_inertia[0]).reshape(3, 3), expected, atol=1e-6)
+        # SolverMuJoCo zeroes native box margins for CCD compatibility.
+        np.testing.assert_allclose(builder.shape_margin, reference.geom_margin, atol=1e-6)
+        solver = SolverMuJoCo(builder.finalize(), disable_contacts=True, use_mujoco_contacts=False)
+        for i, dimensions in enumerate((3, 1, 2, 2, 3)):
+            np.testing.assert_allclose(
+                solver.mj_model.geom_size[i, :dimensions], reference.geom_size[i, :dimensions], atol=1e-6
+            )
+        np.testing.assert_allclose(solver.mj_model.geom_pos, reference.geom_pos, atol=1e-6)
+        for field in (
+            "geom_friction",
+            "geom_gap",
+            "geom_priority",
+            "geom_condim",
+            "geom_solref",
+            "geom_solimp",
+            "geom_solmix",
+        ):
+            with self.subTest(field=field):
+                np.testing.assert_allclose(getattr(solver.mj_model, field), getattr(reference, field), atol=1e-6)
 
     def test_inline_mesh_preserves_texcoords_for_textures(self):
         """Preserve per-vertex UVs on a textured inline mesh."""
@@ -295,6 +352,45 @@ class TestImportMjcfNative(unittest.TestCase):
                     [[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]],
                     normals=normals,
                 )
+
+    def test_scalar_joint_parameters_and_kinematics(self):
+        """Preserve joint references, passive parameters, anchors, and moving poses."""
+        import mujoco
+
+        xml = """<mujoco><worldbody><body name="base" pos=".2 .3 .4" euler="20 30 40">
+            <joint name="hinge" pos=".1 .2 .3" axis="0 1 0" ref="15" springref="10"
+                range="-30 60" stiffness="2" damping="3" armature=".2" frictionloss=".1" margin=".01"/>
+            <geom size=".1" mass="1"/><body name="slider" pos=".2 .1 .4" euler="30 10 20">
+            <joint name="slide" type="slide" axis="1 0 0" ref=".2" springref=".1" range="-.3 .5"/>
+            <geom type="box" size=".1 .2 .3" mass="2"/></body></body></worldbody></mujoco>"""
+        reference = mujoco.MjModel.from_xml_string(xml)
+        builder = newton.ModelBuilder()
+        builder.add_mjcf_native(xml)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, disable_contacts=True)
+        for field in (
+            "qpos0",
+            "qpos_spring",
+            "jnt_range",
+            "jnt_stiffness",
+            "jnt_margin",
+            "dof_damping",
+            "dof_armature",
+            "dof_frictionloss",
+        ):
+            with self.subTest(field=field):
+                np.testing.assert_allclose(getattr(solver.mj_model, field), getattr(reference, field), atol=2e-6)
+        state = model.state()
+        model.joint_q.assign(np.array([0.23, -0.12], dtype=np.float32))
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+        data = mujoco.MjData(reference)
+        data.qpos[:] = reference.qpos0 + np.array([0.23, -0.12])
+        mujoco.mj_forward(reference, data)
+        poses = state.body_q.numpy()
+        np.testing.assert_allclose(poses[:, :3], data.xpos[1:], atol=2e-6)
+        for i in range(2):
+            q = poses[i, 3:][[3, 0, 1, 2]]
+            self.assertAlmostEqual(abs(float(q @ data.xquat[i + 1])), 1.0, places=5)
 
     def test_free_ball_and_compound_joints(self):
         """Import free, ball, and co-located scalar joint groups."""
@@ -982,6 +1078,49 @@ class TestImportMjcfNative(unittest.TestCase):
                         newton.JointTargetMode.POSITION if position_first else newton.JointTargetMode.VELOCITY
                     )
                     self.assertEqual(builder.joint_target_mode, [expected_mode])
+
+    def test_actuator_parameters_and_forces(self):
+        """Preserve gear, inherited ranges, activation dynamics and force limits."""
+        import mujoco
+
+        xml = """<mujoco><default><general gear="2" forcelimited="true" forcerange="-2 3"/></default>
+            <worldbody><body><joint name="j" range="-30 60" ref="15"/><geom size=".1" mass="1"/></body></worldbody>
+            <actuator><motor joint="j" ctrlrange="-.2 .3"/>
+            <position joint="j" kp="12" kv=".3" timeconst=".02" inheritrange=".8"/>
+            <velocity joint="j" kv="4"/>
+            <intvelocity joint="j" kp="3" actrange="-.2 .4"/>
+            <general joint="j" dyntype="filterexact" dynprm=".1" gainprm="2"/>
+            </actuator></mujoco>"""
+        reference = mujoco.MjModel.from_xml_string(xml)
+        builder = newton.ModelBuilder()
+        builder.add_mjcf_native(xml, ctrl_direct=True)
+        solver = SolverMuJoCo(builder.finalize(), disable_contacts=True)
+        for field in (
+            "actuator_gainprm",
+            "actuator_biasprm",
+            "actuator_dynprm",
+            "actuator_gear",
+            "actuator_ctrlrange",
+            "actuator_forcerange",
+            "actuator_actrange",
+            "actuator_ctrllimited",
+            "actuator_forcelimited",
+            "actuator_actlimited",
+            "actuator_dyntype",
+            "actuator_gaintype",
+            "actuator_biastype",
+            "actuator_actnum",
+        ):
+            with self.subTest(field=field):
+                np.testing.assert_allclose(
+                    getattr(solver.mj_model, field), getattr(reference, field), rtol=2e-5, atol=1e-6
+                )
+        actual, expected = mujoco.MjData(solver.mj_model), mujoco.MjData(reference)
+        for native, data in ((solver.mj_model, actual), (reference, expected)):
+            data.qpos[:], data.qvel[:], data.ctrl[:], data.act[:] = 0.4, -0.3, 0.7, 0.15
+            mujoco.mj_forward(native, data)
+        for field in ("actuator_force", "qfrc_actuator", "act_dot"):
+            np.testing.assert_allclose(getattr(actual, field), getattr(expected, field), rtol=2e-5, atol=1e-6)
 
     def test_general_affine_gain(self):
         """Preserve affine gain terms even when the bias resembles a position servo."""
@@ -2217,6 +2356,12 @@ class TestImportMjcfNative(unittest.TestCase):
                 (f'<mujoco><include file="{root / "missing.xml"}"/></mujoco>', ValueError, ValueError, "missing.xml"),
                 ("<mujoco><worldbody>", ValueError, ET.ParseError, None),
                 ('<mujoco><worldbody unexpected="1"/></mujoco>', ValueError, ValueError, "unexpected"),
+                (
+                    '<mujoco><worldbody><body><geom size=".1" densitty="2"/></body></worldbody></mujoco>',
+                    ValueError,
+                    ValueError,
+                    "densitty",
+                ),
             )
             for source, error_type, cause_type, detail in cases:
                 with self.subTest(source=source):
@@ -2241,6 +2386,25 @@ class TestImportMjcfNative(unittest.TestCase):
                         (builder.body_count, builder.joint_count, builder.shape_count, set(builder.custom_attributes)),
                         before,
                     )
+
+    def test_include_replicate_frames(self):
+        """Let native parsing expand includes and replicated frames."""
+        import mujoco
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            (path / "part.xml").write_text(
+                '<mujoco><replicate count="3" offset="1 0 0"><frame pos="0 0 2">'
+                '<body name="b"><geom size=".1"/></body></frame></replicate></mujoco>'
+            )
+            source = path / "scene.xml"
+            source.write_text('<mujoco><worldbody><include file="part.xml"/></worldbody></mujoco>')
+            reference = mujoco.MjModel.from_xml_path(str(source))
+            builder = newton.ModelBuilder()
+            builder.add_mjcf_native(source)
+            self.assertEqual(builder.body_count, 3)
+            self.assertEqual(len(builder.articulation_start), 3)
+            np.testing.assert_allclose([list(q.p) for q in builder.body_q], reference.body_pos[1:])
 
     def test_custom_path_resolver(self):
         source = '<mujoco><worldbody><include file="part.xml"/></worldbody></mujoco>'
