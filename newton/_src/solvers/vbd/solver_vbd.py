@@ -16,7 +16,7 @@ import warp as wp
 from ...core._warnings import _external_warning_stacklevel
 from ...core.types import override
 from ...exceptions import NewtonDeprecationWarning
-from ...geometry import ParticleFlags, ShapeFlags
+from ...geometry import ParticleFlags
 from ...geometry.sdf_planar_recovery import MeshRecoveryData, empty_mesh_recovery
 from ...geometry.soft_contacts_mesh import _make_soft_contact_filter_data
 from ...geometry.tri_mesh_collision import (
@@ -1238,7 +1238,16 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         )
         self.rigid_avbd_gamma = rigid_avbd_gamma
         self._validate_contact_materials()
-        self._refresh_static_particle_shapes()
+        # Self-contact DAT truncates particles against static-shape contacts only when a
+        # world-attached shape exists. This is structural, so it is set once here. During
+        # graph capture the shape arrays cannot be read, so the pass stays enabled and the
+        # kernel filters the rows.
+        if self.model.shape_count == 0:
+            self._has_static_shapes = False
+        elif self.device.is_capturing:
+            self._has_static_shapes = True
+        else:
+            self._has_static_shapes = bool(np.any(self.model.shape_body.numpy() < 0))
         self._validate_compliant_joint_dof_materials()
 
         # Joint alpha precedence: joint override > shared override > default.
@@ -1508,7 +1517,6 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         self._apply_module_options()
         if flags & ModelFlags.SHAPE_PROPERTIES:
             self._validate_contact_materials()
-            self._refresh_static_particle_shapes()
         if flags & ModelFlags.TENDON_PROPERTIES:
             self._refresh_tendon_properties()
         refresh_structural_k = (
@@ -1879,27 +1887,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         self.body_body_contact_lambda_angular = wp.zeros(rigid_contact_max, dtype=wp.vec3, device=self.device)
         self.body_body_contact_C0 = wp.zeros(rigid_contact_max, dtype=wp.vec3, device=self.device)
 
-    def _refresh_static_particle_shapes(self) -> None:
-        """Record whether any world-attached shape collides with particles.
-
-        Self-contact DAT truncates particles against static-shape contacts only
-        when such a shape exists. During graph capture the shape arrays cannot be
-        read, so the pass stays enabled and the kernel filters the rows.
-        """
-        if self.model.shape_count == 0:
-            self._has_static_particle_shapes = False
-        elif self.device.is_capturing:
-            self._has_static_particle_shapes = True
-        else:
-            shape_body = self.model.shape_body.numpy()
-            shape_flags = self.model.shape_flags.numpy()
-            self._has_static_particle_shapes = bool(
-                np.any((shape_body < 0) & ((shape_flags & int(ShapeFlags.COLLIDE_PARTICLES)) != 0))
-            )
-
     def _static_shape_dat_active(self) -> bool:
         """Return whether self-contact DAT also truncates particles against static-shape contacts."""
-        return self.particle_enable_self_contact and not self.rigid_soft_enable_dat and self._has_static_particle_shapes
+        return self.particle_enable_self_contact and not self.rigid_soft_enable_dat and self._has_static_shapes
 
     def _validate_contact_materials(self) -> None:
         """Validate shape materials for particle contacts and compliant rigid contacts."""
@@ -4337,7 +4327,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             # A static-shape plane bounds only the particle's own motion, and truncation
             # moves the particle back along its ray from the detection pose, which keeps
             # every self-contact plane satisfied. Enforcing it once per iteration, after
-            # the last colour, therefore suffices.
+            # the last color, therefore suffices.
             self._penetration_free_truncation(
                 state_in, contacts, static_shapes=color == len(self.model.particle_color_groups) - 1
             )
