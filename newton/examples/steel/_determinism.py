@@ -73,6 +73,9 @@ class DeterminismExample:
             for copy in copies:
                 self.viewer.activate(copy.layer_id)
                 self.viewer.set_model(copy.model)
+                self.viewer.set_control(self.control)
+                self.viewer.set_solver(copy.solver)
+                self.viewer.set_collision_pipeline(copy.collision_pipeline)
                 self.viewer.set_layer_transform(copy.layer_id, wp.vec3(*side_offset) * sign)
         self.viewer.set_camera(**camera)
 
@@ -90,11 +93,12 @@ class DeterminismExample:
 
     def simulate(self):
         """Advance every copy by one frame with the same control."""
-        for _ in range(self.sim_substeps):
+        for substep in range(self.sim_substeps):
             self.apply_control(self.step_index)
+            last_substep = substep == self.sim_substeps - 1
             for copies in self.copies.values():
                 for copy in copies:
-                    copy.step(self.control, self.sim_dt)
+                    copy.step(self.control, self.sim_dt, last_substep=last_substep)
             wp.launch(_advance_step_index, dim=1, outputs=[self.step_index])
 
     def step(self):
@@ -118,6 +122,7 @@ class DeterminismExample:
             for copy in copies:
                 self.viewer.activate(copy.layer_id)
                 self.viewer.log_state(copy.state_0)
+                self.viewer.log_contacts(copy.contacts, copy.state_1, observables=copy.observables)
             # The plot is named under the active layer, one of this mode's copies.
             self.viewer.log_scalar(f"Max divergence [mm], {mode} ({side})", 1.0e3 * self.max_divergence[mode])
         self.viewer.end_frame()
@@ -176,15 +181,26 @@ class _SimulationCopy:
         )
         self.collision_pipeline = newton.CollisionPipeline(self.model, deterministic=deterministic)
         self.contacts = self.collision_pipeline.contacts()
+        self.observables = self.solver.observables(
+            {SolverSteel.ObservableKind.CONTACT_F},
+            contacts=self.contacts,
+        )
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
-    def step(self, control: newton.Control, dt: float):
+    def step(self, control: newton.Control, dt: float, *, last_substep: bool = False):
         """Collide and advance this copy by one substep."""
         self.state_0.clear_forces()
         self.collision_pipeline.collide(self.state_0, self.contacts)
-        self.solver.step(self.state_0, self.state_1, control, self.contacts, dt)
+        self.solver.step(
+            self.state_0,
+            self.state_1,
+            control,
+            self.contacts,
+            dt,
+            observables=self.observables if last_substep else None,
+        )
         self.state_0, self.state_1 = self.state_1, self.state_0
 
 
