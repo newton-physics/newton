@@ -6716,11 +6716,11 @@ class ModelBuilder:
         """Renumber negative collision groups compiled by :meth:`add_mjcf` that are already in use.
 
         Only groups whose shapes all have ``mujoco:collision_mask_domain`` set move; groups assigned by
-        hand are kept. Like :meth:`add_mjcf`, this scans the groups of all shapes added before the merge.
-        A copy can collide with the shapes in its own world and with global shapes, or with every shape
-        when the copy is global. Each compiled negative group of ``builder`` that such a shape already
-        uses, including earlier copies of this merge, moves to the smallest negative group unused in
-        that scope and in the copy. Only the first ``shape_count`` shapes of ``builder`` are read, since
+        hand are kept. A copy can collide with the shapes in its own world and with global shapes, or
+        with every shape when the copy is global. This reads the current groups of those shapes added
+        before the merge. Each compiled negative group of ``builder`` that such a shape already uses,
+        including earlier copies of this merge, moves to the smallest negative group unused in that
+        scope and in the copy. Only the first ``shape_count`` shapes of ``builder`` are read, since
         merging a builder into itself has already appended the copies.
         """
         source = np.asarray(builder.shape_collision_group[:shape_count], dtype=np.int64)
@@ -6737,16 +6737,25 @@ class ModelBuilder:
         movable = set(magnitude_list) - set((-source[negative & ~compiled]).tolist())
         if not movable:
             return
-        groups = np.asarray(self.shape_collision_group[:shape_start], dtype=np.int64)
-        in_use = groups < 0
         # Magnitudes used by any shape (read only by global copies) and per world (key -1 for global shapes).
         track_all = worlds.min() < 0
-        all_used = set(np.unique(-groups[in_use]).tolist()) if track_all else set()
+        all_used: set[int] = set()
         used: dict[int, set[int]] = {-1: set()}
-        if worlds.max() >= 0:
+        if track_all:
+            groups = np.asarray(self.shape_collision_group[:shape_start], dtype=np.int64)
+            all_used.update(np.unique(-groups[groups < 0]).tolist())
+        else:
+            # Copies in worlds collide only with global shapes and shapes of their own worlds, so read just those.
             shape_worlds = np.asarray(self.shape_world[:shape_start], dtype=np.int64)
-            in_use &= np.isin(shape_worlds, np.append(worlds, -1))
-            for world, magnitude in np.unique(np.stack((shape_worlds[in_use], -groups[in_use])), axis=1).T.tolist():
+            relevant = np.flatnonzero(np.isin(shape_worlds, np.append(worlds, -1)))
+            groups_source = self.shape_collision_group
+            if isinstance(groups_source, list):
+                groups = np.asarray([groups_source[shape] for shape in relevant.tolist()], dtype=np.int64)
+            else:
+                groups = np.asarray(groups_source, dtype=np.int64)[relevant]
+            in_use = groups < 0
+            in_use_worlds = shape_worlds[relevant][in_use]
+            for world, magnitude in np.unique(np.stack((in_use_worlds, -groups[in_use])), axis=1).T.tolist():
                 used.setdefault(world, set()).add(magnitude)
 
         claimed = np.tile(magnitudes, (len(worlds), 1))
