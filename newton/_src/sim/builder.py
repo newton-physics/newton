@@ -8727,10 +8727,10 @@ class ModelBuilder:
             joints_to_keep: An optional sequence of joint labels or original joint indices to be excluded from
                 the collapse process.
 
-        Fixed joints between bodies with different :attr:`body_gravity_scale` values are kept, since
-        one merged body cannot carry two scales.
-
         Note:
+            Fixed joints between bodies with different :attr:`body_gravity_scale` values are kept, since
+            one merged body cannot carry two scales.
+
             Deformable labels do not change which fixed joints are collapsed. A curve's
             record describes its surviving segment bodies and joints. It is omitted with
             a warning only when no segment bodies remain. Pass the relevant fixed joints

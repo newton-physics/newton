@@ -993,7 +993,7 @@ Newton can evaluate the **manipulator equation** for an articulated rigid-body s
    * - :math:`M(q)`
      - Joint-space mass matrix, shape ``(articulation_count, max_dofs_per_articulation, max_dofs_per_articulation)``.
    * - :math:`g(q) = \partial U / \partial q`
-     - Gravity force, where :math:`U(q) = \sum_i -m_i\, \mathbf{g} \cdot \mathbf{x}_{\text{com},i}` is the system's gravitational potential energy (sum over bodies of mass × gravity-vector · CoM position). Equivalently, the feed-forward joint-space force a controller must apply to hold the articulation static under gravity.
+     - Gravity force, where :math:`U(q) = \sum_i -s_i\, m_i\, \mathbf{g} \cdot \mathbf{x}_{\text{com},i}` is the system's gravitational potential energy (sum over bodies of gravity scale × mass × gravity-vector · CoM position, with :math:`s_i` = :attr:`Model.body_gravity_scale` ``[i]``). Equivalently, the feed-forward joint-space force a controller must apply to hold the articulation static under gravity.
    * - :math:`C(q, \dot{q})\, \dot{q}`
      - Coriolis + centrifugal force.
 
