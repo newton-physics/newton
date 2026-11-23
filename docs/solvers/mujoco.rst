@@ -247,10 +247,9 @@ layouts coincide and ``springref`` equals ``rest_q``, so the old name remains a
 warning alias to :attr:`~newton.Model.joint_rest_q` for at least one minor
 release. The alias
 tracks ``rest_q``, so it no longer reports the absolute spring reference if
-``dof_ref`` is edited later. For other models, reads, assignments, and
-deletions raise an ``AttributeError`` with migration guidance. Replace runtime
-accesses with ``joint_rest_q``, subtract ``ref`` from legacy values, and index
-by :attr:`~newton.Model.joint_q_start`.
+``dof_ref`` is edited later. For other models the old name does not exist.
+Replace runtime accesses with ``joint_rest_q``, subtract ``ref`` from legacy
+values, and index by :attr:`~newton.Model.joint_q_start`.
 
 To change a spring at runtime, edit :attr:`~newton.Model.joint_stiffness`
 or :attr:`~newton.Model.joint_rest_q` and notify the solver with
