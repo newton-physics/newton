@@ -1506,7 +1506,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         self._apply_module_options()
         if flags & ModelFlags.SHAPE_PROPERTIES:
             self._validate_contact_materials()
-        self._refresh_static_particle_shapes()
+            self._refresh_static_particle_shapes()
         if flags & ModelFlags.TENDON_PROPERTIES:
             self._refresh_tendon_properties()
         refresh_structural_k = (
