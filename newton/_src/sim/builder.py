@@ -4653,7 +4653,7 @@ class ModelBuilder:
             else:
                 destination.extend(source * copy_count)
 
-        self._renumber_merged_negative_collision_groups(builder, worlds, int(bases["shape"]))
+        self._renumber_merged_negative_collision_groups(builder, worlds, int(bases["shape"]), counts["shape"])
 
         self.joint_dof_count += copy_count * counts["joint_dof"]
         self.joint_coord_count += copy_count * counts["joint_coord"]
@@ -6711,7 +6711,7 @@ class ModelBuilder:
         self._adopt_builder_gravity(builder)
 
     def _renumber_merged_negative_collision_groups(
-        self, builder: ModelBuilder, worlds: np.ndarray, shape_start: int
+        self, builder: ModelBuilder, worlds: np.ndarray, shape_start: int, shape_count: int
     ) -> None:
         """Renumber negative collision groups compiled by :meth:`add_mjcf` that are already in use.
 
@@ -6720,9 +6720,10 @@ class ModelBuilder:
         A copy can collide with the shapes in its own world and with global shapes, or with every shape
         when the copy is global. Each compiled negative group of ``builder`` that such a shape already
         uses, including earlier copies of this merge, moves to the smallest negative group unused in
-        that scope and in the copy.
+        that scope and in the copy. Only the first ``shape_count`` shapes of ``builder`` are read, since
+        merging a builder into itself has already appended the copies.
         """
-        source = np.asarray(builder.shape_collision_group, dtype=np.int64)
+        source = np.asarray(builder.shape_collision_group[:shape_count], dtype=np.int64)
         negative = source < 0
         domain = builder.custom_attributes.get("mujoco:collision_mask_domain")
         if not negative.any() or domain is None or not domain.values:

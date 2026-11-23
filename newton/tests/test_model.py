@@ -4302,6 +4302,21 @@ class TestModelWorld(unittest.TestCase):
         builder.add_builder(mixed)
         self.assertEqual(builder.shape_collision_group, [-1, -1, -2, -1, -1, -3])
 
+    def test_add_builder_into_itself_renumbers_compiled_negative_collision_groups(self):
+        """Read the source groups from before the merge when a builder is merged into itself."""
+        builder = ModelBuilder()
+        newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
+        for group, is_compiled in ((-1, True), (-2, False)):
+            builder.add_shape_sphere(
+                -1,
+                radius=0.1,
+                cfg=ModelBuilder.ShapeConfig(collision_group=group),
+                custom_attributes={"mujoco:collision_mask_domain": 0} if is_compiled else None,
+            )
+        builder.add_builder(builder)
+        # The compiled -1 moves away from the original; the hand-set -2 stays shared.
+        self.assertEqual(builder.shape_collision_group, [-1, -2, -3, -2])
+
     def test_add_world_with_open_edges(self):
         builder = ModelBuilder()
 
