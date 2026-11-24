@@ -3,6 +3,7 @@
 
 import unittest
 from dataclasses import replace
+from pathlib import Path
 from unittest import mock
 
 import numpy as np
@@ -250,6 +251,51 @@ def test_tet_constraint_assembles_float_psd_matrix(test, device):
             wp.capture_launch(capture.graph)
             np.testing.assert_array_equal(solver._tet_volume_targets.numpy(), np.eye(3)[None])
             test.assertEqual(solver._tet_volume_targets.ptr, target_ptr)
+
+
+def test_usd_tet_matches_builder(test, device):
+    """A USD volume and its builder equivalent produce the same Style3D step."""
+    try:
+        import pxr.Usd  # noqa: F401
+    except ImportError:
+        test.skipTest("USD is not installed")
+
+    usd_builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Y)
+    direct_builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Y)
+    for builder in (usd_builder, direct_builder):
+        newton.solvers.SolverStyle3D.register_custom_attributes(builder)
+
+    usd_builder.add_usd(str(Path(__file__).parent / "assets" / "tetmesh_with_material.usda"))
+    direct_builder.add_soft_mesh(
+        pos=wp.vec3(0.0),
+        rot=wp.quat_identity(),
+        scale=1.0,
+        vel=wp.vec3(0.0),
+        vertices=[(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)],
+        indices=[0, 1, 2, 3],
+        density=40.0,
+        k_mu=300000.0 / (2.0 * 1.3),
+        k_lambda=300000.0 * 0.3 / (1.3 * 0.4),
+    )
+    models = [builder.finalize(device=device) for builder in (usd_builder, direct_builder)]
+    for name in ("tet_indices", "tet_poses", "tet_materials", "tri_indices", "edge_indices"):
+        np.testing.assert_allclose(getattr(models[0], name).numpy(), getattr(models[1], name).numpy(), rtol=1.0e-6)
+    for name in ("tri_aniso_ke", "edge_rest_area", "edge_bending_cot"):
+        np.testing.assert_allclose(
+            getattr(models[0].style3d, name).numpy(), getattr(models[1].style3d, name).numpy(), rtol=1.0e-6
+        )
+
+    outputs = []
+    for model in models:
+        solver = newton.solvers.SolverStyle3D(model)
+        state_in, state_out = model.state(), model.state()
+        positions = state_in.particle_q.numpy()
+        positions[1, 0] *= 1.1
+        state_in.particle_q.assign(positions)
+        solver.step(state_in, state_out, model.control(), None, 0.01)
+        outputs.append((state_out.particle_q.numpy(), state_out.particle_qd.numpy()))
+    for actual, expected in zip(outputs[0], outputs[1], strict=True):
+        np.testing.assert_allclose(actual, expected, atol=1.0e-4, rtol=1.0e-5)
 
 
 def test_config_constructor_options(test, device):
@@ -1697,6 +1743,10 @@ add_function_test(
     test_tet_constraint_assembles_float_psd_matrix,
     devices=devices,
     check_output=False,
+)
+
+add_function_test(
+    TestSolverStyle3D, "test_usd_tet_matches_builder", test_usd_tet_matches_builder, devices=devices, check_output=False
 )
 
 if __name__ == "__main__":
