@@ -8882,7 +8882,7 @@ def Xform "Articulation" (
         self.assertEqual(model.constraint_mimic_count, 1)
         self.assertFalse(bool(model.constraint_mimic_enabled.numpy()[0]))
 
-    @requires("pxr.Usd")
+    @requires("pxr.Usd", *MUJOCO_MODULES)
     def test_mjc_equality_connect_between_articulations(self):
         """Preserve body ownership when CONNECT endpoints span articulations."""
         import mujoco
@@ -9000,6 +9000,62 @@ def Xform "Articulation" (
                 self.assertEqual(
                     model.mujoco.equality_constraint_body2.numpy()[0], result["path_body_map"]["/World/First/Floater"]
                 )
+
+    @requires("pxr.Usd")
+    def test_excluded_joint_single_body_articulations(self):
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+        for path in ("/World/A", "/World/B"):
+            prim = UsdGeom.Xform.Define(stage, path).GetPrim()
+            UsdPhysics.RigidBodyAPI.Apply(prim)
+            UsdPhysics.ArticulationRootAPI.Apply(prim)
+            UsdPhysics.MassAPI.Apply(prim).CreateMassAttr(1.0)
+        joint = UsdPhysics.SphericalJoint.Define(stage, "/World/Connect")
+        joint.CreateBody0Rel().SetTargets(["/World/A"])
+        joint.CreateBody1Rel().SetTargets(["/World/B"])
+        joint.CreateExcludeFromArticulationAttr(True)
+        for ordered in (False, True):
+            with self.subTest(ordered=ordered):
+                builder = newton.ModelBuilder()
+                result = builder.add_usd(stage, bodies_follow_joint_ordering=ordered)
+                self.assertEqual(builder.body_count, 2)
+                self.assertEqual(builder.articulation_count, 2)
+                self.assertNotEqual(result["path_body_map"]["/World/A"], result["path_body_map"]["/World/B"])
+
+    @requires("pxr.Usd")
+    def test_excluded_descendant_override_root_xform(self):
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+        root = UsdGeom.Xform.Define(stage, "/World/Root")
+        root.AddTranslateOp().Set(Gf.Vec3d(100, 0, 0))
+        UsdPhysics.ArticulationRootAPI.Apply(root.GetPrim())
+        UsdPhysics.RigidBodyAPI.Apply(root.GetPrim())
+        UsdPhysics.MassAPI.Apply(root.GetPrim()).CreateMassAttr(1.0)
+        child = UsdGeom.Xform.Define(stage, "/World/Root/Child")
+        child.AddTranslateOp().Set(Gf.Vec3d(1, 0, 0))
+        UsdPhysics.RigidBodyAPI.Apply(child.GetPrim())
+        UsdPhysics.MassAPI.Apply(child.GetPrim()).CreateMassAttr(1.0)
+        joint = UsdPhysics.SphericalJoint.Define(stage, "/World/Root/Connect")
+        joint.CreateBody0Rel().SetTargets([root.GetPath()])
+        joint.CreateBody1Rel().SetTargets([child.GetPath()])
+        joint.CreateExcludeFromArticulationAttr(True)
+        for ordered in (False, True):
+            with self.subTest(ordered=ordered):
+                builder = newton.ModelBuilder()
+                result = builder.add_usd(
+                    stage,
+                    xform=wp.transform((5, 0, 0), wp.quat_identity()),
+                    override_root_xform=True,
+                    bodies_follow_joint_ordering=ordered,
+                )
+                for path, x in (("/World/Root", 5), ("/World/Root/Child", 6)):
+                    np.testing.assert_allclose(builder.body_q[result["path_body_map"][path]].p, (x, 0, 0))
 
     @requires("pxr.Usd")
     def test_mjc_equality_connect_site_parsing(self):

@@ -119,18 +119,23 @@ def _parse_articulations(
             if joint_key in mjc_equality_connect_or_weld_paths or joint_desc.excludeFromArticulation:
                 continue
             tree_body_paths.update((str(joint_desc.body0), str(joint_desc.body1)))
-        # Without tree joints (e.g. a single root body) keep the articulation root body,
-        # or every listed body when the root API sits on a non-body ancestor.
+        # A root body can be omitted from articulatedBodies when its only joint
+        # is excluded. Never claim the far endpoint as a substitute.
         if not tree_body_paths:
-            articulated_keys = {str(p) for p in desc.articulatedBodies}
-            tree_body_paths = {articulation_path} if articulation_path in articulated_keys else articulated_keys
+            if articulation_path in body_specs:
+                tree_body_paths.add(articulation_path)
+            else:
+                tree_body_paths.update(str(p) for p in desc.articulatedBodies)
         body_ids = {}
         body_labels = []
         current_body_id = 0
         art_bodies = []
         if verbose:
             logger.info("Bodies under articulation %s:%s", path, "".join(f"\n\t{p!s}" for p in desc.articulatedBodies))
-        for p in desc.articulatedBodies:
+        articulated_bodies = list(desc.articulatedBodies)
+        if articulation_path in tree_body_paths and path not in articulated_bodies:
+            articulated_bodies.append(path)
+        for p in articulated_bodies:
             if p == Sdf.Path.emptyPath:
                 continue
             key = str(p)
