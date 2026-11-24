@@ -171,10 +171,16 @@ def _restrict_to_collision_masks(builder: ModelBuilder, domain_attr: ModelBuilde
     class_affinity = np.asarray([key[1] for key in keys], dtype=np.uint32)
     class_group = np.asarray([key[2] for key in keys], dtype=np.int64)
     class_bodies = [{builder.shape_body[shape] for shape in classes[key]} for key in keys]
+    class_members_by_body = []
+    for key in keys:
+        by_body: dict[int, list[int]] = {}
+        for shape in classes[key]:
+            by_body.setdefault(builder.shape_body[shape], []).append(shape)
+        class_members_by_body.append(by_body)
     masked = {shape for members in classes.values() for shape in members}
     prefiltered = {
         (min(shape_a, shape_b), max(shape_a, shape_b))
-        for shape_a, shape_b in builder._shape_collision_filter_pairs.explicit_pairs
+        for shape_a, shape_b in builder._materialized_filter_template()
         if shape_a in masked and shape_b in masked
     }
     masks_widen_groups = False
@@ -185,12 +191,15 @@ def _restrict_to_collision_masks(builder: ModelBuilder, domain_attr: ModelBuilde
             (group < 0) & (other_groups != group)
         )
         for offset in np.flatnonzero(groups_allow & ~masks_allow):
-            members_a, members_b = classes[keys[i]], classes[keys[i + offset]]
-            pairs = itertools.combinations(members_a, 2) if offset == 0 else itertools.product(members_a, members_b)
-            for shape_a, shape_b in pairs:
-                pair = (min(shape_a, shape_b), max(shape_a, shape_b))
-                if pair not in prefiltered:
-                    builder.add_shape_collision_filter_pair(*pair)
+            by_body_a, by_body_b = class_members_by_body[i], class_members_by_body[i + offset]
+            for body_a, members_a in by_body_a.items():
+                for body_b, members_b in by_body_b.items():
+                    if body_a == body_b or (offset == 0 and body_a > body_b):
+                        continue
+                    for shape_a, shape_b in itertools.product(members_a, members_b):
+                        pair = (min(shape_a, shape_b), max(shape_a, shape_b))
+                        if pair not in prefiltered:
+                            builder.add_shape_collision_filter_pair(*pair)
         if not masks_widen_groups:
             for offset in np.flatnonzero(~groups_allow & masks_allow):
                 # MuJoCo never collides geoms of one body, so only pairs across bodies matter.

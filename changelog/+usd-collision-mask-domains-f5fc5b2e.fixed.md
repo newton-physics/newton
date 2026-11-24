@@ -1,1 +1,2 @@
 Preserve authored USD MuJoCo collision masks across imports by assigning collision-mask domains and lowering mask restrictions into Newton collision filter pairs without widening collision-group or explicit filtered-pair exclusions.
+Avoid redundant same-body filter pairs and support imports after reading builder filters. When MuJoCo contacts are enabled, reject collision filters that cannot be compiled exactly instead of silently widening contacts; use Newton contacts or simplify filtering in that case.

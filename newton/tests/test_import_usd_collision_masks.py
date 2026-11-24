@@ -165,6 +165,7 @@ class TestUsdCollisionMasks(unittest.TestCase):
                 cfg = newton.ModelBuilder.ShapeConfig(collision_group=2)
                 if native_first:
                     native = builder.add_shape_sphere(builder.add_body(), radius=0.1, cfg=cfg)
+                _ = builder.shape_collision_filter_pairs
                 result = builder.add_usd(self._stage([[(1, 0)], [(1, 0)]]), load_visual_shapes=False)
                 if not native_first:
                     native = builder.add_shape_sphere(builder.add_body(), radius=0.1, cfg=cfg)
@@ -210,6 +211,22 @@ class TestUsdCollisionMasks(unittest.TestCase):
         self.assertEqual(len(builder.shape_collision_filter_pairs), 0)
         # Enumerating all ~2M collider pairs peaks above 70 MB; the import itself needs well under this.
         self.assertLess(peak, 32 * 1024 * 1024)
+
+    def test_rejected_masks_on_same_body_do_not_emit_filters(self):
+        builder = self._builder()
+        builder.add_usd(self._stage([[(1, 0)] * 100]), load_visual_shapes=False)
+        self.assertEqual(len(builder.shape_collision_filter_pairs), 0)
+
+    def test_large_multi_domain_filters_do_not_widen(self):
+        builder = self._builder()
+        stage = self._stage([[(1, 1), (2, 2)] for _ in range(33)])
+        for i in range(33):
+            UsdGeom.Xformable(stage.GetPrimAtPath(f"/body{i}")).AddTranslateOp().Set((float(i), 0.0, 0.0))
+        for _ in range(4):
+            builder.add_usd(stage, load_visual_shapes=False)
+        model = builder.finalize(device="cpu")
+        with self.assertRaisesRegex(ValueError, "cannot be represented exactly"):
+            self._solver(model)
 
     def test_unauthored_masks_have_no_domain(self):
         """Leave unauthored shapes outside preserved collision mask domains."""
