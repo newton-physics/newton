@@ -11,17 +11,14 @@ import warp as wp
 import newton
 from newton._src.solvers.mujoco.constants import SOLREF_MODE_RAW
 from newton.solvers import SolverMuJoCo
+from newton.tests.unittest_utils import MUJOCO_MODULES, requires
 
 
 @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
+@requires(*MUJOCO_MODULES)
 class TestMuJoCoConvexResting(unittest.TestCase):
     def test_convex_cylinder_settles(self):
         """Settle small convex cylinders without sustained drift or energy growth."""
-        try:
-            SolverMuJoCo.import_mujoco()
-        except ImportError as error:
-            self.skipTest(str(error))
-
         radius, half_height, mass = 0.00725, 0.024375, 0.05
         inertia = np.diag([mass * (3 * radius**2 + 4 * half_height**2) / 12] * 2 + [mass * radius**2 / 2]).astype(
             np.float32

@@ -40,6 +40,7 @@ from newton._src.geometry.contact_reduction_global import (
 from newton._src.sim.contacts import Contacts
 from newton.geometry import HydroelasticSDF
 from newton.solvers.experimental.coupled import SolverCoupled
+from newton.tests.unittest_utils import MUJOCO_MODULES, requires
 
 DT = 1.0 / 240.0
 
@@ -984,14 +985,11 @@ class TestBodyPairReductionGuarantees(unittest.TestCase):
         self.assertFalse(coupled.entry_contacts("all", plain).rigid_contact_body_pair_reduced)
         self.assertTrue(coupled.entry_contacts("all", reduced).rigid_contact_body_pair_reduced)
 
+    @requires(*MUJOCO_MODULES)
     def test_mujoco_consumes_reduced_newton_contacts(self):
         """Resolve a penetrating compound patch through MuJoCo Warp's Newton contact adapter."""
         if not wp.get_device().is_cuda:
             self.skipTest("MuJoCo Warp requires CUDA")
-        try:
-            newton.solvers.SolverMuJoCo.import_mujoco()
-        except ImportError as error:
-            self.skipTest(str(error))
         builder = newton.ModelBuilder()
         newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
         _sphere_grid_body(builder, (0.0, 0.0, 0.0095))
