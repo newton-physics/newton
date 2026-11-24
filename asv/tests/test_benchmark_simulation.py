@@ -791,7 +791,7 @@ class TestSimulationBenchmarks(unittest.TestCase):
             with (
                 self.subTest(benchmark=benchmark_cls.__name__),
                 patch.dict("os.environ", {"NEWTON_ASV_PR_GATE": "1"}),
-                patch.object(bench_sensor_camera, "_SensorCameraSceneRig") as rig_cls,
+                patch.object(bench_sensor_camera, "SceneRig") as rig_cls,
                 patch.object(bench_sensor_camera.wp, "synchronize"),
             ):
                 rig = rig_cls.return_value
@@ -804,7 +804,7 @@ class TestSimulationBenchmarks(unittest.TestCase):
 
         with (
             patch.dict("os.environ", {}, clear=True),
-            patch.object(bench_sensor_camera, "_SensorCameraSceneRig") as rig_cls,
+            patch.object(bench_sensor_camera, "SceneRig") as rig_cls,
             patch.object(bench_sensor_camera.wp, "synchronize"),
         ):
             rig = rig_cls.return_value
