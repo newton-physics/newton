@@ -139,6 +139,36 @@ def Xform "World" {
                             model.shape_transform.numpy()[site_id, :3], local_position, atol=1.0e-7, rtol=0.0
                         )
 
+    def test_site_frame_cache_is_per_body(self):
+        """Multiple sites on different bodies retain their own local offsets."""
+        from pxr import Gf, Sdf, UsdGeom, UsdPhysics
+
+        stage = self._create_usd_stage('#usda 1.0\n(upAxis = "Z")\ndef Xform "World" {}')
+        offsets = ((0.125, -0.25, 0.375), (-0.3125, 0.1875, 0.4375))
+        for index, angle in enumerate((0.0, 90.0)):
+            path = f"/World/body{index}"
+            body = UsdGeom.Xform.Define(stage, path)
+            body.AddTranslateOp().Set(Gf.Vec3d(12345.0 + index * 100, -23456.0, 34567.0))
+            body.AddRotateZOp().Set(angle)
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            mass = UsdPhysics.MassAPI.Apply(body.GetPrim())
+            mass.CreateMassAttr(1.0)
+            mass.CreateDiagonalInertiaAttr(Gf.Vec3f(0.1))
+            for site_index, offset in enumerate(offsets):
+                site = UsdGeom.Sphere.Define(stage, f"{path}/site{site_index}")
+                site.CreateRadiusAttr(0.01)
+                site.AddTranslateOp().Set(Gf.Vec3d(*offset))
+                site.GetPrim().SetMetadata("apiSchemas", Sdf.TokenListOp.Create(prependedItems=["MjcSiteAPI"]))
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage, load_visual_shapes=False)
+        model = builder.finalize(device="cpu")
+        transforms = model.shape_transform.numpy()
+        for index in range(2):
+            for site_index, offset in enumerate(offsets):
+                site_id = model.shape_label.index(f"/World/body{index}/site{site_index}")
+                np.testing.assert_allclose(transforms[site_id, :3], offset, atol=1.0e-7, rtol=0.0)
+
     def test_site_matches_colocated_visual_on_sheared_articulated_body(self):
         """A site and a visual at the same place share the builder's body frame under ancestor shear."""
         stage = self._create_usd_stage(

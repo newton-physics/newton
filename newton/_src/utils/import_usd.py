@@ -826,6 +826,7 @@ def parse_usd(
         return tetmesh_cache[prim_path]
 
     bodies_with_visual_shapes: set[int] = set()
+    body_site_frame_cache = {}
 
     def _get_prim_world_mat(prim, articulation_root_xform, incoming_world_xform):
         prim_world_mat = usd.get_transform_matrix(prim, local=False, xform_cache=xform_cache)
@@ -934,18 +935,23 @@ def parse_usd(
             # far from the origin. Redo the subtraction in USD double precision and
             # rotate it into the builder's body frame, with the incoming/rebase
             # rotation applied to body_xform undone so both are in USD world axes.
-            body_rot = body_xform.q
-            if incoming_world_xform is not None:
-                body_rot = wp.quat_inverse(incoming_world_xform.q) * body_rot
-            if articulation_root_xform is not None:
-                body_rot = articulation_root_xform.q * body_rot
-            body_quat = Gf.Quatd(float(body_rot[3]), float(body_rot[0]), float(body_rot[1]), float(body_rot[2]))
-            body_prim = stage.GetPrimAtPath(_get_rigid_body_ancestor_path(prim))
-            offset = (
-                xform_cache.GetLocalToWorldTransform(prim).ExtractTranslation()
-                - xform_cache.GetLocalToWorldTransform(body_prim).ExtractTranslation()
-            )
-            xform_pos = wp.vec3(*body_quat.GetNormalized().GetInverse().Transform(offset))
+            cached_frame = body_site_frame_cache.get(parent_body_id)
+            if cached_frame is None:
+                body_rot = body_xform.q
+                if incoming_world_xform is not None:
+                    body_rot = wp.quat_inverse(incoming_world_xform.q) * body_rot
+                if articulation_root_xform is not None:
+                    body_rot = articulation_root_xform.q * body_rot
+                body_quat = Gf.Quatd(float(body_rot[3]), float(body_rot[0]), float(body_rot[1]), float(body_rot[2]))
+                body_prim = stage.GetPrimAtPath(_get_rigid_body_ancestor_path(prim))
+                cached_frame = (
+                    body_quat.GetNormalized().GetInverse(),
+                    xform_cache.GetLocalToWorldTransform(body_prim).ExtractTranslation(),
+                )
+                body_site_frame_cache[parent_body_id] = cached_frame
+            body_quat_inv, body_world_pos = cached_frame
+            offset = xform_cache.GetLocalToWorldTransform(prim).ExtractTranslation() - body_world_pos
+            xform_pos = wp.vec3(*body_quat_inv.Transform(offset))
         xform = wp.transform(xform_pos, xform_rot)
 
         shape_id = -1
