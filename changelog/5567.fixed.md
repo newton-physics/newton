@@ -1,0 +1,1 @@
+Apply `steel:rigid_body_max_depenetration_velocity` to penetrating contacts of articulation links under `SolverSteel`'s default `articulated_contact_response="immediate"`, matching `"propagation"` and PhysX. A contact now takes the smaller positive bound of its two bodies even when one of them has a zero bound.
