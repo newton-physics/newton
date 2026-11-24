@@ -277,7 +277,7 @@ class TestLOXContact(NewtonTestCase):
         self.assertLess(np.linalg.norm(residual[0]), 1.0e-6)
 
     def test_unbracketed_vanishing_load(self):
-        """Return a vanishing friction impulse when the sliding root lies beyond the bracket expansion."""
+        """Return no friction when the sliding root lies beyond the bracket expansion."""
         # The root grows like |rhs| / |offset|; a 1e-25 normal load puts it past the 2^64 bracket
         delassus = np.asarray([np.diag([1.0, 1.0, 2.0])], dtype=np.float32)
         free_velocity = np.asarray([[1.0, 0.0, -1.0e-25]], dtype=np.float32)
@@ -287,10 +287,8 @@ class TestLOXContact(NewtonTestCase):
         reaction, _velocity, _residual = self._solve(delassus, free_velocity, friction)
 
         self.assertEqual(status[0], _SlidingRootStatus.NOT_BRACKETED)
-        self.assertTrue(np.all(np.isfinite(reaction[0])))
-        self.assertGreaterEqual(reaction[0, 2], 0.0)
-        # The shifted solution at the last finite bracket end, 2^63, scales like |rhs| / 2^63
-        self.assertLess(np.linalg.norm(reaction[0]), 1.0e-18)
+        np.testing.assert_array_equal(reaction[0, :2], [0.0, 0.0])
+        self.assertEqual(reaction[0, 2], np.float32(-free_velocity[0, 2] / delassus[0, 2, 2]))
 
     def test_root_resolved_to_adjacent_floats(self):
         """Accept a sliding root once its bracket holds no float strictly inside."""

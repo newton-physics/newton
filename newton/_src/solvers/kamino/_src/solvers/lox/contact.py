@@ -409,8 +409,8 @@ def _make_sliding_root_quartic(*, iterations: int, tolerance: float):
     start lies outside a first bracket ``[0, 1]``, halving from the closed-form
     bound ``|rhs| (1 + |c|) / -offset`` narrows the bracket to a factor of two
     first, so that Newton converges within the step budget on roots far below one. An
-    unbracketed root returns the shifted solution at the last finite bracket end,
-    which tends to zero with the normal load. The bracket sign uses ``phi > 0  <=>  m <= 0 or P < 0``. The stopping test
+    unbracketed root, which a vanishing normal load produces, returns a zero friction
+    impulse. The bracket sign uses ``phi > 0  <=>  m <= 0 or P < 0``. The stopping test
     ``|P| <= tolerance (|a| + m) max(|a|, |offset| det)`` is the relative test
     ``|phi| <= tolerance max(|s|, |offset|)`` on the unsquared condition
     ``phi = |s| - c . s + offset``, since ``phi = (|a| - m) / det``. A bracket that
@@ -485,21 +485,17 @@ def _make_sliding_root_quartic(*, iterations: int, tolerance: float):
         lower = wp.float32(0.0)
         upper = wp.float32(1.0)
         bracketed = bool(False)
-        # Shifted solution at the last finite bracket end, returned when the root stays unbracketed
-        last_a = wp.vec2f(0.0)
-        last_det = wp.float32(1.0)
         for _ in range(_ROOT_EXPANSION_STEPS):
-            value, _slope, budget, a, det = evaluate(a0, rhs, trace, det0, p3, p2, p1, p0, m2, m1, m0, upper)
+            value, _slope, budget, _a, _det = evaluate(a0, rhs, trace, det0, p3, p2, p1, p0, m2, m1, m0, upper)
             if wp.isfinite(value) and budget > 0.0 and value >= 0.0:
                 bracketed = True
                 break
             if wp.isfinite(value):
                 lower = upper
-                last_a = a
-                last_det = det
             upper *= 2.0
         if not bracketed:
-            return (magnitude / last_det) * last_a, _SlidingRootStatus.NOT_BRACKETED
+            # A root beyond the expansion comes from a vanishing normal load, which carries no friction
+            return wp.vec2f(0.0), _SlidingRootStatus.NOT_BRACKETED
         if lower == 0.0 and not (start > 0.0 and start < upper):
             # Newton from the bracket midpoint creeps down a root far below it: halve to a factor-2 bracket,
             # from the closed-form bound |rhs| (1 + |c|) / -offset, past which phi <= 0
@@ -578,10 +574,10 @@ def _solve_contact_coulomb_newton_components(
     tangent_rhs = tangent_rhs_raw - (normal_rhs * inverse_normal_delassus) * normal_tangent
     friction_over_normal = friction * inverse_normal_delassus
     alpha_scale = wp.max(wp.max(wp.abs(schur[0]), wp.abs(schur[1])), wp.max(wp.abs(schur[2]), 1.0e-20))
-    # The status is ignored: with a negative normal right-hand side, only non-finite
-    # inputs leave the root unbracketed, and their impulse fails the world through the
-    # body twists; a root left unconverged by the iteration budget is still bracketed,
-    # and the following projection sweeps refine it.
+    # The status is ignored: an unbracketed root, from a vanishing normal load, returns no
+    # friction, and non-finite inputs fail the world through the body twists; a root left
+    # unconverged by the iteration budget is still bracketed, and the following projection
+    # sweeps refine it.
     s, _status = _solve_sliding_root_quartic(
         schur,
         tangent_rhs,
