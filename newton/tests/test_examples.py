@@ -636,7 +636,7 @@ add_example_batch(
         },
         {
             "devices": test_devices,
-            "test_options": {"num-frames": 150, "solver": "style3d"},
+            "test_options": {"requires": ("pxr.Usd",), "num-frames": 150, "solver": "style3d"},
             "test_suffix": "style3d",
             "allow_output_regexes": [
                 (_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr"),
