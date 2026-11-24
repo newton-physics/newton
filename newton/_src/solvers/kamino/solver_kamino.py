@@ -1316,6 +1316,8 @@ class SolverKamino(SolverBase, CouplingInterface):
                     kinematic_only_immovable=self._config.dynamics_solver == "lox",
                     contact_dead_zone=self._config.constraints.delta,
                     geom_friction_mode=self._model_kamino.geoms.friction_mode,
+                    cull_unreachable_speculative_contacts=self._config.dynamics.cull_unreachable_speculative_contacts,
+                    dt=dt,
                 )
         else:
             self._detector = None

@@ -1714,6 +1714,39 @@ class TestGeometryContactConversions(NewtonTestCase):
             err_msg="Culled contacts must not retain stale force data",
         )
 
+    def test_13_unreachable_speculative_contacts_culled(self):
+        """Speculative contacts are kept only if their approach velocity can close the gap within the step."""
+        half_extent, hover, dt = 0.25, 0.05, 1.0e-3
+
+        # Each case sets the downward box velocity and whether its contacts are reachable,
+        # i.e. whether `hover <= dt * (2 * approach_speed + 1 m/s)`
+        for approach_speed, reachable in ((0.0, False), (20.0, False), (30.0, True)):
+            with self.subTest(approach_speed=approach_speed):
+                scene = build_box_on_plane_scene(half_extent + hover, margin=0.0, gap=0.1, half_extent=half_extent)
+                model = scene.finalize(self.default_device)
+                state = model.state()
+                body_qd = state.body_qd.numpy()
+                body_qd[:, 2] = -approach_speed
+                state.body_qd.assign(body_qd)
+                collision_pipeline = newton.CollisionPipeline(model, rigid_contact_max=_NEWTON_CONTACT_CAPACITY)
+                contacts = collision_pipeline.contacts()
+                collision_pipeline.collide(state, contacts)
+                nc = int(contacts.rigid_contact_count.numpy()[0])
+                self.assertGreater(nc, 0, "Detector must report the hovering box as a (speculative) contact")
+
+                kamino = ContactsKamino(capacity=contacts.rigid_contact_max, device=self.default_device)
+                convert_contacts_newton_to_kamino(
+                    model,
+                    state,
+                    contacts,
+                    kamino,
+                    cull_speculative_contacts=False,
+                    cull_unreachable_speculative_contacts=True,
+                    dt=dt,
+                )
+                n_kamino = int(kamino.model_active_contacts.numpy()[0])
+                self.assertEqual(n_kamino, nc if reachable else 0)
+
     def test_14_angular_friction_transport(self):
         """Transport angular friction through the unified and external paths, ignoring it in the primitive path."""
         with wp.ScopedDevice(self.default_device):

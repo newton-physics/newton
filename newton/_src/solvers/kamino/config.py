@@ -502,6 +502,14 @@ class ConstrainedDynamicsConfig(ConfigBase):
     its contact law lets a separated contact close its gap within the step.
     """
 
+    cull_unreachable_speculative_contacts: bool = field(default=False, kw_only=True)
+    """
+    Whether to cull only the speculative contacts that cannot close their gap within the step, when
+    :attr:`cull_speculative_contacts` is `False`. A contact is kept if its gap beyond
+    :attr:`ConstraintStabilizationConfig.delta` is at most `dt * (2 * v_a + 1 m/s)`, where `v_a` is the
+    normal approach velocity of its points at the start of the step. Defaults to `False`.
+    """
+
     @override
     @staticmethod
     def register_custom_attributes(builder: ModelBuilder) -> None:
