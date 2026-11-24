@@ -49,7 +49,6 @@ class _AttributeNamespaceView(Model.AttributeNamespace):
     def __init__(self, parent: Model.AttributeNamespace, view: ModelView) -> None:
         super().__init__(object.__getattribute__(parent, "_name"))
         object.__setattr__(self, "_parent_namespace", parent)
-        self._removed_attributes.update(parent._removed_attributes)
         for name, (getter, message) in parent._deprecated_aliases.items():
             spec = view.parent._attribute_spec(f"{self._name}:{name}")
             view_getter = (
@@ -112,7 +111,7 @@ class ModelView:
         if name in overrides:
             return self._count_limited_attribute(name, overrides[name])
         value = getattr(parent, name)
-        if isinstance(value, Model.AttributeNamespace) and (value._deprecated_aliases or value._removed_attributes):
+        if isinstance(value, Model.AttributeNamespace) and value._deprecated_aliases:
             cache = object.__getattribute__(self, "_cache")
             if name not in cache:
                 cache[name] = _AttributeNamespaceView(value, self)
