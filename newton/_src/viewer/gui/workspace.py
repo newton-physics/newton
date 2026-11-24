@@ -22,6 +22,7 @@ from ...sim.enums import BodyFlags, JointType, ModelFlags
 from ...sim.model import Model
 from ...sim.state import State
 from ...solvers.solver import SolverBase
+from ..viewer_attributes import AttributeRows
 from ..viewer_bindings import InspectionBindings
 from ..viewer_history import FrameHistory, _component_arrays
 from ..viewer_model_tree import ModelTree
@@ -1936,14 +1937,10 @@ class ViewerWorkspace:
         kind, index = key
         flags = int(self.tree.meta.get(key, {}).get("flags", 0))
         if kind == "body":
-            runtime = type(self.bindings.solver).__name__ in (
-                "SolverMuJoCo",
-                "SolverXPBD",
-                "SolverVBD",
-                "SolverSteel",
-                "SolverKamino",
-                "SolverFeatherstone",
-                "SolverSemiImplicit",
+            solver = self.bindings.solver
+            runtime = (
+                isinstance(solver, SolverBase)
+                and type(solver).notify_model_changed is not SolverBase.notify_model_changed
             )
             enabled = runtime and self.can_edit_state() and not flags & int(BodyFlags.PROXY)
             options = (
@@ -1990,7 +1987,47 @@ class ViewerWorkspace:
 
     def _at_live_frame(self) -> bool:
         """Report whether the displayed timeline is at its latest frame rather than a historical snapshot."""
-        return self.history is None or not self.history.replaying
+        history = getattr(self, "history", None)
+        return history is None or not history.replaying
+
+    def logged_observables(self) -> SolverBase.Observables | None:
+        """Return solver observables explicitly supplied via ``log_observables()`` or ``log_contacts()``."""
+        if self.model is None:
+            return None
+        for attr in ("_last_observables", "_last_contact_observables"):
+            obs = getattr(self.viewer, attr, None)
+            if obs is not None and obs.model is self.model:
+                return obs
+        return None
+
+    def _active_world(self) -> int:
+        """Resolve the world index matching the current selection or explorer root."""
+        world = getattr(self, "world", 0)
+        tree = getattr(self, "tree", None)
+        if tree is not None:
+            if self.selected is not None:
+                world = tree.world_for(self.selected)
+            elif ("root", world) not in tree.roots and ("root", -1) in tree.roots:
+                world = -1
+        return world
+
+    def _active_world_slot(self) -> int:
+        """Map the active world (including global world ``-1``) to a ``world_count + 1`` array index."""
+        if self.model is None:
+            return 0
+        world = self._active_world()
+        return self.model.world_count if world < 0 else min(world, self.model.world_count)
+
+    def _read_world_column(self, array: wp.array, slot: int) -> np.ndarray:
+        """Read one world column of a 2D ``(steps, world_count + 1)`` observable array once per frame."""
+        key = (id(array), "world_col", slot)
+        if key not in self._live_cache:
+            host = self._live_cache.get((id(array), "host_2d"))
+            if host is None:
+                host = np.asarray(array.numpy())
+                self._live_cache[(id(array), "host_2d")] = host
+            self._live_cache[key] = np.asarray(host[:, slot]) if slot < host.shape[1] else np.empty(0, dtype=host.dtype)
+        return self._live_cache[key]
 
     def can_edit_state(self) -> bool:
         """Allow state mutation only while paused at the newest retained frame."""
@@ -2173,12 +2210,7 @@ class ViewerWorkspace:
         with w.group("Environment") as opened:
             if opened:
                 w.axis("Up axis", int(m.up_axis))
-                world = self.world
-                if self.tree is not None:
-                    if self.selected is not None:
-                        world = self.tree.world_for(self.selected)
-                    elif ("root", world) not in self.tree.roots and ("root", -1) in self.tree.roots:
-                        world = -1
+                world = self._active_world()
                 slot = len(m.gravity) - 1 if world < 0 else min(world, len(m.gravity) - 1)
                 gravity = self.read(m, "gravity", slot)
                 if gravity.size:
@@ -2347,215 +2379,200 @@ class ViewerWorkspace:
         return False
 
     def _solver_properties(self) -> None:
-        """Show available solver iteration, convergence, and method settings as read-only properties."""
+        """Show generic ``SolverBase`` metadata and logged solver observables."""
         ui, w = self.gui.ui.imgui, self.widgets
         solver = self.bindings.solver
-        if solver is None:
+        observables = self.logged_observables()
+        if solver is None and observables is None:
+            ui.text_wrapped("No solver or observables supplied. Call viewer.set_solver() or viewer.log_observables().")
             return
-        solver_name = type(solver).__name__
-        ui.text(solver_name.removeprefix("Solver"))
-        ui.spacing()
-        mj = getattr(solver, "mjw_model", None)
-        # Prefer explicit config objects (e.g. SolverStyle3D.config, SolverKamino.config)
-        # to avoid triggering deprecated legacy attribute aliases on the solver.
-        config = getattr(solver, "config", None) if mj is None else None
-        source = mj.opt if mj is not None else config if config is not None else solver
-        reason = "Configured by the example; changing these settings can require solver and graph reconstruction."
-
-        def draw_value(label: str, value: Any) -> None:
-            if value is None:
-                return
-            if isinstance(value, bool):
-                w.boolean(label, value, reason=reason)
-            elif isinstance(value, str):
-                w.text_value(label, value, reason=reason)
-            elif hasattr(value, "name") and hasattr(value, "value"):
-                w.text_value(label, str(value.name), reason=reason)
-            elif hasattr(value, "numpy"):
-                arr = value[min(self.world, len(value) - 1) : min(self.world, len(value) - 1) + 1].numpy().reshape(-1)
-                if len(arr) == 1:
-                    w.number(label, arr[0], integer=np.issubdtype(arr.dtype, np.integer), reason=reason)
-                else:
-                    w.array(label, arr, reason=reason)
-            else:
-                arr = np.asarray(value).reshape(-1)
-                if len(arr) == 1 and arr.dtype.kind in "iuf":
-                    w.number(label, arr[0], integer=np.issubdtype(arr.dtype, np.integer), reason=reason)
-                elif arr.dtype.kind in "iuf":
-                    w.array(label, arr, reason=reason)
-                else:
-                    w.text_value(label, str(value), reason=reason)
-
-        def read_attr(obj: object, attr: str) -> Any:
-            value = getattr(obj, attr, None)
-            if hasattr(value, "numpy"):
-                return self.read(obj, attr, min(self.world, len(value) - 1), live=True).reshape(-1)
-            return value
-
-        for title, properties in (
-            (
-                "Iterations",
-                (
-                    ("Solver", "iterations"),
-                    ("Max iterations", "max_iterations"),
-                    ("Velocity", "velocity_iterations"),
-                    ("Linear", "linear_iterations"),
-                    ("Line search", "ls_iterations"),
-                    ("CCD", "ccd_iterations"),
-                    ("Restitution", "rigid_contact_restitution_iterations"),
-                ),
-            ),
-            (
-                "Convergence",
-                (
-                    ("Solver tolerance", "tolerance"),
-                    ("Line tolerance", "ls_tolerance"),
-                    ("CCD tolerance", "ccd_tolerance"),
-                ),
-            ),
-        ):
-            present = [
-                (label, read_attr(source, attr))
-                for label, attr in properties
-                if getattr(source, attr, None) is not None
-            ]
-            if not present:
-                continue
-            with w.group(title) as opened:
-                if opened:
-                    for label, value in present:
-                        draw_value(label, value)
-
-        # Solver-specific modern settings
-        if solver_name == "SolverKamino" and config is not None:
-            with w.group("Kamino") as opened:
-                if opened:
-                    draw_value("Use collision detector", getattr(solver, "_use_collision_detector", None))
-                    dynamics = getattr(config, "dynamics", None)
-                    if dynamics is not None:
-                        draw_value("Dynamics backend", getattr(dynamics, "backend", None))
-                    padmm = getattr(config, "padmm", None)
-                    if padmm is not None:
-                        draw_value("PADMM max iterations", getattr(padmm, "max_iterations", None))
-                        draw_value("PADMM primal tol", getattr(padmm, "primal_tolerance", None))
-                        draw_value("PADMM dual tol", getattr(padmm, "dual_tolerance", None))
-        elif solver_name == "SolverSteel":
-            with w.group("Steel") as opened:
-                if opened:
-                    for label, attr in (
-                        ("Solve mode", "solve_mode"),
-                        ("Friction mode", "friction_mode"),
-                        ("Sleeping", "enable_sleeping"),
-                        ("Contact warmstart", "contact_warmstart"),
-                        ("Baumgarte", "baumgarte"),
-                        ("CFM", "cfm"),
-                    ):
-                        draw_value(label, getattr(solver, attr, None))
-        elif solver_name == "SolverStyle3D" and config is not None:
-            with w.group("Style3D") as opened:
-                if opened:
-                    draw_value("Drag spring stiffness", getattr(config, "drag_spring_stiff", None))
-                    draw_value("Mouse dragging", getattr(config, "enable_mouse_dragging", None))
-        elif solver_name == "SolverVBD":
-            with w.group("VBD") as opened:
-                if opened:
-                    for label, attr in (
-                        ("Rigid contact k", "rigid_contact_k"),
-                        ("Friction epsilon", "friction_epsilon"),
-                    ):
-                        draw_value(label, getattr(solver, attr, None))
-        elif solver_name == "SolverImplicitMPM":
-            with w.group("Implicit MPM") as opened:
-                if opened:
-                    for label, attr in (("Voxel size", "voxel_size"), ("Grid type", "grid_type")):
-                        draw_value(label, getattr(solver, attr, None))
-        elif solver_name == "SolverCoupled":
-            entries = getattr(solver, "_entries", None)
-            if isinstance(entries, dict) and entries:
-                with w.group("Sub-solvers") as opened:
+        if solver is not None:
+            ui.text(type(solver).__name__.removeprefix("Solver"))
+            ui.spacing()
+            if (
+                isinstance(solver, SolverBase)
+                and solver.supports_collision_pipeline
+                and solver.collision_pipeline is not None
+            ):
+                freq_types = solver.collision_frequency_type
+                freqs = solver.collision_frequency
+                reason = "Collision schedule configured on SolverBase."
+                with w.group("Collision schedule") as opened:
                     if opened:
-                        for name, entry in entries.items():
-                            sub = getattr(entry, "solver", None)
-                            w.text_value(
-                                str(name), type(sub).__name__.removeprefix("Solver") if sub is not None else "None"
-                            )
+                        for slot in SolverBase.CollisionSlot:
+                            ftype = freq_types.get(slot)
+                            if ftype is None:
+                                continue
+                            label = slot.name.replace("_", " ").capitalize()
+                            text = ftype.name.replace("_", " ").title()
+                            if ftype == SolverBase.CollisionFrequencyType.ITERATIONS:
+                                text = f"{text} (every {freqs.get(slot, 1)})"
+                            w.text_value(label, text, reason=reason)
+        self._solver_observables(solver, observables)
 
-        supported = solver.supported_observables if isinstance(solver, SolverBase) else frozenset()
-        if supported:
-            logged = self.viewer._last_contact_observables
-            logged = logged.kinds if logged is not None and logged.model is self.model else frozenset()
-            with w.group("Observables", default_open=False) as opened:
-                if opened:
-                    for kind in sorted(supported):
-                        w.text_value(
-                            kind.replace("_", " ").capitalize(),
-                            "Logged" if kind in logged else "Available",
-                            reason="Request solver observables and pass them to log_contacts() to inspect them.",
-                        )
-        if mj is not None:
-            mju = solver._mujoco
-            with w.group("Methods") as opened:
-                if opened:
-                    for label, value, enum in (
-                        ("Integrator", source.integrator, mju.mjtIntegrator),
-                        ("Algorithm", source.solver, mju.mjtSolver),
-                        ("Friction cone", source.cone, mju.mjtCone),
-                    ):
-                        w.choice(
-                            label,
-                            int(value),
-                            {
-                                int(item): name.split("_", 1)[-1].replace("_", " ").title()
-                                for name, item in enum.__members__.items()
-                            },
-                            reason=reason,
-                        )
-                    w.boolean("MuJoCo contacts", bool(getattr(solver, "use_mujoco_contacts", False)), reason=reason)
-                    if hasattr(solver, "use_mujoco_cpu"):
-                        w.boolean("MuJoCo CPU", bool(solver.use_mujoco_cpu), reason=reason)
-
-    def _shape_solver_properties(self, index: int) -> None:
-        """Resolve a shape to its MuJoCo geometry and lazily display effective contact parameters."""
+    def _solver_observables(self, solver: Any, observables: SolverBase.Observables | None) -> None:
+        """Render logged solver observables through ``PropertyInspector`` and list unrequested capabilities."""
+        if self.model is None:
+            return
         w = self.widgets
-        solver = self.bindings.solver
-        model = getattr(solver, "mjw_model", None)
-        if model is None:
+        Frequency, Assignment = Model.AttributeFrequency, Model.AttributeAssignment
+        supported = solver.supported_observables if isinstance(solver, SolverBase) else frozenset()
+        logged_kinds: set[str] = set()
+        entries_1d: list[tuple[AttributeRows, str, Model.AttributeSpec, object, str, Any]] = []
+        entries_2d: list[tuple[AttributeRows, str, Model.AttributeSpec, wp.array]] = []
+        empty_labels: list[tuple[str, str]] = []
+        if observables is not None:
+            for kind, (attr_name, field_spec) in observables._observable_fields().items():
+                if kind not in observables.kinds:
+                    continue
+                array = getattr(observables, attr_name, None)
+                if not isinstance(array, wp.array):
+                    continue
+                logged_kinds.add(kind)
+                freq = field_spec.frequency
+                spec = Model.AttributeSpec(freq)
+                if array.ndim == 2 and freq == Frequency.WORLD:
+                    if array.size == 0 or array.shape[1] == 0:
+                        empty_labels.append((attr_name, "Empty"))
+                    else:
+                        slot = min(self._active_world_slot(), array.shape[1] - 1)
+                        entries_2d.append((AttributeRows(self.model, Frequency.WORLD, [slot]), attr_name, spec, array))
+                elif freq in (Frequency.CONTACT, Frequency.CONTACT_RIGID, Frequency.CONTACT_SOFT):
+                    contacts = observables.contacts_for_kind(kind) or self.collision.contacts
+                    if contacts is None:
+                        empty_labels.append((attr_name, "No contacts"))
+                        continue
+                    counters = self.read(contacts, "contact_counters", 0, 2, live=True)
+                    n_rigid = (
+                        max(0, min(int(counters[0]), contacts.rigid_contact_max, len(array)))
+                        if len(counters) > 0
+                        else 0
+                    )
+                    n_soft = max(0, min(int(counters[1]), contacts.soft_contact_max)) if len(counters) > 1 else 0
+                    if freq == Frequency.CONTACT_RIGID:
+                        indices: Any = range(n_rigid)
+                    elif freq == Frequency.CONTACT_SOFT:
+                        indices = range(min(n_soft, len(array)))
+                    elif n_soft == 0:
+                        indices = range(n_rigid)
+                    else:
+                        soft_end = min(contacts.rigid_contact_max + n_soft, len(array))
+                        indices = np.r_[
+                            np.arange(n_rigid, dtype=np.int32),
+                            np.arange(contacts.rigid_contact_max, soft_end, dtype=np.int32),
+                        ]
+                    if len(indices) == 0:
+                        empty_labels.append((attr_name, "0 active contacts"))
+                    else:
+                        entries_1d.append(
+                            (AttributeRows(self.model, freq, indices), attr_name, spec, observables, attr_name, array)
+                        )
+                elif freq == Frequency.WORLD:
+                    if len(array) == 0:
+                        empty_labels.append((attr_name, "Empty"))
+                    elif self.model.world_count <= 1:
+                        slot = min(self._active_world_slot(), len(array) - 1)
+                        entries_1d.append(
+                            (
+                                AttributeRows(self.model, Frequency.WORLD, [slot]),
+                                attr_name,
+                                spec,
+                                observables,
+                                attr_name,
+                                array,
+                            )
+                        )
+                    else:
+                        world_indices = list(range(min(self.model.world_count, len(array))))
+                        if (
+                            self.tree is not None
+                            and ("root", -1) in self.tree.roots
+                            and self.model.world_count < len(array)
+                        ):
+                            world_indices.append(self.model.world_count)
+                        entries_1d.append(
+                            (
+                                AttributeRows(self.model, Frequency.WORLD, world_indices),
+                                attr_name,
+                                spec,
+                                observables,
+                                attr_name,
+                                array,
+                            )
+                        )
+                elif freq == Frequency.ONCE:
+                    if len(array) == 0:
+                        empty_labels.append((attr_name, "Empty"))
+                    else:
+                        entries_1d.append(
+                            (
+                                AttributeRows(self.model, Frequency.ONCE, [0]),
+                                attr_name,
+                                spec,
+                                observables,
+                                attr_name,
+                                array,
+                            )
+                        )
+                elif freq in (Frequency.JOINT_DOF, Frequency.JOINT_COORD):
+                    if self.model.joint_count == 0 or len(array) == 0:
+                        empty_labels.append((attr_name, "0 active DOFs"))
+                    else:
+                        offsets = "joint_q_start" if freq == Frequency.JOINT_COORD else "joint_qd_start"
+                        spans = self.read(self.model, offsets, 0, self.model.joint_count + 1)
+                        active_joints = np.flatnonzero(spans[1:] > spans[:-1])
+                        if len(active_joints) == 0:
+                            empty_labels.append((attr_name, "0 active DOFs"))
+                        else:
+                            entries_1d.append(
+                                (
+                                    AttributeRows(self.model, freq, active_joints, joints=True),
+                                    attr_name,
+                                    spec,
+                                    observables,
+                                    attr_name,
+                                    array,
+                                )
+                            )
+                else:
+                    if len(array) == 0:
+                        empty_labels.append((attr_name, "Empty"))
+                    else:
+                        entries_1d.append(
+                            (
+                                AttributeRows(self.model, freq, range(len(array))),
+                                attr_name,
+                                spec,
+                                observables,
+                                attr_name,
+                                array,
+                            )
+                        )
+
+        if not supported and not logged_kinds:
             return
-        # The inverse mapping exists only for external Newton contacts. The
-        # forward mapping is available with MuJoCo's own collision pipeline
-        # too, and also accounts for visual-only shapes omitted by the solver.
-        mapping = getattr(solver, "mjc_geom_to_newton_shape", None)
-        if mapping is None or not mapping.shape[0]:
-            return
-        world = min(max(self.world, 0), mapping.shape[0] - 1)
-        cache_key = (id(mapping), "shape_geom", world, index)
-        if cache_key not in self._cache:
-            matches = np.flatnonzero(self.read(solver, "mjc_geom_to_newton_shape", world).reshape(-1) == index)
-            self._cache[cache_key] = int(matches[0]) if len(matches) else -1
-        geom = self._cache[cache_key]
-        if geom < 0:
-            return
-        with w.group("MuJoCo contact", default_open=False) as opened:
+        obs_reason = "Computed by the solver during step(); read-only."
+        unreq_reason = "Request with solver.observables() and pass to viewer.log_observables() or log_contacts()."
+        with w.group("Observables", default_open=bool(logged_kinds)) as opened:
             if not opened:
                 return
-            condim = int(self.read(model, "geom_condim", geom, live=True)[0])
-            w.choice(
-                "condim",
-                condim,
-                {1: "1 - Normal", 3: "3 - Sliding", 4: "4 - Torsional", 6: "6 - Rolling"},
-                reason="Contact dimension is fixed when the solver is constructed.",
-            )
-            for label, name in (("solref", "geom_solref"), ("solimp", "geom_solimp"), ("Friction", "geom_friction")):
-                array = getattr(model, name)
-                batch = min(world, array.shape[0] - 1)
-                key = (id(array), batch, geom)
-                if key not in self._live_cache:
-                    self._live_cache[key] = array[batch : batch + 1, geom : geom + 1].numpy().reshape(-1)
-                w.array(
-                    label,
-                    self._live_cache[key],
-                    reason="Effective solver values for this geometry; configured by the example.",
-                )
+            for entry in entries_1d:
+                count = len(entry[0].indices)
+                default_open = count <= 2 or (count <= 4 and getattr(entry[5].dtype, "_length_", 1) <= 3)
+                self.property_inspector._fields([entry], Assignment.STATE, flat=True, default_open=default_open)
+            if entries_2d:
+                self.property_inspector._draw_observables_2d(entries_2d)
+            for label, status in empty_labels:
+                w.text_value(label, status, reason=obs_reason)
+            unrequested = sorted(supported - logged_kinds)
+            if not logged_kinds:
+                for kind in unrequested:
+                    w.text_value(kind.replace("_", " ").capitalize(), "Available", reason=unreq_reason)
+            elif unrequested:
+                with w.disclosure(f"Available ({len(unrequested)} not requested)", default_open=False) as show_unreq:
+                    if show_unreq:
+                        for kind in unrequested:
+                            w.text_value(kind.replace("_", " ").capitalize(), "Available", reason=unreq_reason)
 
     def live_state(self) -> State | None:
         """Resolve the application live State through the bindings, falling back to the last logged State."""

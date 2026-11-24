@@ -16,14 +16,13 @@ from ..sim.contacts import Contacts
 from ..sim.control import Control
 from ..sim.model import Model
 from ..sim.state import State
+from ..solvers.solver import SolverBase
 
 if TYPE_CHECKING:
     from collections.abc import Hashable, Mapping, Sequence
     from typing import Any
 
     from numpy.typing import ArrayLike
-
-    from newton.solvers import SolverBase
 
     from .viewer import ViewerBase
 
@@ -138,8 +137,23 @@ class ContactRecord:
     """Key of a State logged in the same frame, when the contacts use that State."""
     state: dict[str, np.ndarray] = field(default_factory=dict)
     """Declared arrays of a separate contact State, such as the collision input poses."""
-    observables_source: SolverBase.Observables | None = None
-    """Logged observables container, whose solver allocates replay observables of the same kinds."""
+    observable_solver: SolverBase | None = None
+    """Solver that produced the logged observables; allocates replay observables without retaining live buffers."""
+    observable_kinds: frozenset[str] = field(default_factory=frozenset)
+    """Requested observable kinds of the logged container."""
+    observable_capacities: tuple[int, int] = (0, 0)
+    """``(rigid_contact_max, soft_contact_max)`` required when allocating contact-indexed replay observables."""
+
+
+@dataclass
+class ObservableRecord:
+    """Active observable rows of one :meth:`ViewerBase.log_observables` call."""
+
+    observables: dict[str, np.ndarray] = field(default_factory=dict)
+    contact_counts: tuple[int, int, int, int] | None = None
+    """``(rigid_count, soft_count, rigid_contact_max, soft_contact_max)`` when contact-indexed fields are present."""
+    observable_solver: SolverBase | None = None
+    observable_kinds: frozenset[str] = field(default_factory=frozenset)
 
 
 @dataclass
@@ -155,6 +169,7 @@ class HistoryFrame:
     states: dict[HistoryKey, dict[str, np.ndarray]] = field(default_factory=dict)
     """Declared arrays of each logged State."""
     contact_records: dict[HistoryKey, ContactRecord] = field(default_factory=dict)
+    observable_records: dict[HistoryKey, ObservableRecord] = field(default_factory=dict)
     arrays: dict[HistoryKey, dict[str, Any]] = field(default_factory=dict)
     """Arguments of logged points and lines, keyed by their logged names.
 
@@ -313,7 +328,7 @@ class FrameHistory:
         """Commit a recorded frame, evicting old snapshots to stay within the memory and frame limits."""
         self.frame_open = False
         frame, self._pending, self._replay = self._pending, None, None
-        if frame is None or not (frame.states or frame.contact_records or frame.arrays):
+        if frame is None or not (frame.states or frame.contact_records or frame.observable_records or frame.arrays):
             return
         control = self.viewer._inspection_components.get("control")
         # Layers own their Models; filter each call by the active layer's Model.
@@ -414,16 +429,18 @@ class FrameHistory:
         display = self._display.get(key)
         need_surface_velocity = "rigid_contact_surface_velocity" in record.arrays
         need_match_index = "rigid_contact_match_index" in record.arrays
+        rigid_max = max(contacts.rigid_contact_max, record.rigid_count, record.observable_capacities[0])
+        soft_max = max(contacts.soft_contact_max, record.soft_count, record.observable_capacities[1])
         if (
             display is None
-            or display.rigid_contact_max < contacts.rigid_contact_max
-            or display.soft_contact_max < contacts.soft_contact_max
+            or display.rigid_contact_max < rigid_max
+            or display.soft_contact_max < soft_max
             or (need_surface_velocity and display.rigid_contact_surface_velocity is None)
             or (need_match_index and display.rigid_contact_match_index is None)
         ):
             display = self._display[key] = Contacts(
-                contacts.rigid_contact_max,
-                contacts.soft_contact_max,
+                rigid_max,
+                soft_max,
                 device=contacts.rigid_contact_count.device,
                 contact_matching=need_match_index or contacts.contact_matching,
                 rigid_contact_surface_velocity=need_surface_velocity
@@ -463,18 +480,132 @@ class FrameHistory:
         The solver that produced the logged observables allocates them, so replay
         does not depend on the optional set_solver() binding.
         """
+        solver = record.observable_solver
+        kinds = record.observable_kinds
+        if solver is None or not kinds:
+            return None
         observables_key = ("observables", *key[1:])
         display = self._display.get(observables_key)
-        if display is not None:
+        if (
+            display is not None
+            and display._solver is solver
+            and display.kinds == kinds
+            and all(display.contacts_for_kind(kind) in (None, contacts) for kind in kinds)
+        ):
             return display
-        source = record.observables_source
-        solver = source._solver
-        if solver is None:
-            return None
-        display = solver.observables(kinds=source.kinds, contacts=contacts, requires_grad=False)
+        display = solver.observables(kinds=kinds, contacts=contacts, requires_grad=False)
         self._display[observables_key] = display
         self._loaded.pop(key, None)
         return display
+
+    def observables(self, observables: SolverBase.Observables | None) -> SolverBase.Observables | None:
+        """Record logged solver observables, or return display observables of the replayed frame."""
+        key = self._key("logged_observables")
+        if self._pending is not None:
+            self._record_observables(key, observables)
+            return observables
+        record = self._replay.observable_records.get(key) if self._replay is not None else None
+        if record is None:
+            return observables
+        solver = record.observable_solver
+        kinds = record.observable_kinds
+        if solver is None or not record.observables or not kinds:
+            return None
+        contacts_key = ("logged_observable_contacts", *key[1:])
+        display_contacts: Contacts | None = None
+        if record.contact_counts is not None:
+            r_cnt, s_cnt, r_max, s_max = record.contact_counts
+            r_max = max(r_max, r_cnt)
+            s_max = max(s_max, s_cnt)
+            display_contacts = self._display.get(contacts_key)
+            if (
+                display_contacts is None
+                or display_contacts.rigid_contact_max < r_max
+                or display_contacts.soft_contact_max < s_max
+            ):
+                display_contacts = self._display[contacts_key] = Contacts(r_max, s_max, device=solver.model.device)
+                self._display.pop(key, None)
+                self._loaded.pop(key, None)
+        display = self._display.get(key)
+        if (
+            display is None
+            or display._solver is not solver
+            or display.kinds != kinds
+            or (
+                display_contacts is not None
+                and any(display.contacts_for_kind(kind) not in (None, display_contacts) for kind in kinds)
+            )
+        ):
+            display = self._display[key] = solver.observables(
+                kinds=kinds, contacts=display_contacts, requires_grad=False
+            )
+            self._loaded.pop(key, None)
+        if not self._loaded_now(key):
+            if display_contacts is not None and record.contact_counts is not None:
+                r_cnt, s_cnt, _, _ = record.contact_counts
+                display_contacts.rigid_contact_count.assign(np.array([r_cnt], dtype=np.int32))
+                display_contacts.soft_contact_count.assign(np.array([s_cnt], dtype=np.int32))
+            else:
+                r_cnt = s_cnt = 0
+            for name, values in record.observables.items():
+                array = getattr(display, name)
+                ranges = (
+                    self._observable_ranges(display, name, array, display_contacts, r_cnt, s_cnt)
+                    if display_contacts is not None
+                    else ((0, len(array)),)
+                )
+                offset = 0
+                for start, n in ranges:
+                    if n:
+                        array[start : start + n].assign(values[offset : offset + n])
+                    offset += n
+        return display
+
+    def _record_observables(self, key: HistoryKey, observables: SolverBase.Observables | None) -> None:
+        frame = self._pending
+        model = self.viewer.model
+        if model is None:
+            return
+        if observables is None:
+            frame.observable_records[key] = ObservableRecord()
+            return
+        if not isinstance(observables, SolverBase.Observables) or observables.model is not model:
+            return
+        observable_arrays: dict[str, tuple[wp.array[Any], tuple[tuple[int, int], ...]]] = {}
+        contact_counts: tuple[int, int, int, int] | None = None
+        for kind, (name, spec) in observables._observable_fields().items():
+            if kind not in observables.kinds:
+                continue
+            array = getattr(observables, name, None)
+            if not isinstance(array, wp.array):
+                continue
+            if spec.frequency in (
+                Model.AttributeFrequency.CONTACT,
+                Model.AttributeFrequency.CONTACT_RIGID,
+                Model.AttributeFrequency.CONTACT_SOFT,
+            ):
+                contacts = observables.contacts_for_kind(kind)
+                if contacts is None:
+                    continue
+                counters = contacts.contact_counters.numpy()
+                r_cnt = min(int(counters[0]), contacts.rigid_contact_max)
+                s_cnt = min(int(counters[1]), contacts.soft_contact_max)
+                ranges = self._observable_ranges(observables, name, array, contacts, r_cnt, s_cnt)
+                contact_counts = (r_cnt, s_cnt, contacts.rigid_contact_max, contacts.soft_contact_max)
+            else:
+                ranges = ((0, len(array)),)
+            observable_arrays[name] = (array, ranges)
+        size = sum(sum(n for _, n in ranges) * array.strides[0] for array, ranges in observable_arrays.values())
+        if not self._reserve(frame, size):
+            return
+        record = ObservableRecord(
+            {name: self._snapshot_observable(array, ranges) for name, (array, ranges) in observable_arrays.items()},
+            contact_counts,
+            observables._solver if observable_arrays else None,
+            frozenset(observables.kinds) if observable_arrays else frozenset(),
+        )
+        frame.observable_records[key] = record
+        frame.size += sum(a.nbytes for a in record.observables.values())
 
     def _record_contacts(
         self, key: HistoryKey, contacts: Contacts, state: State, observables: SolverBase.Observables | None
@@ -515,7 +646,9 @@ class FrameHistory:
             {name: self._snapshot_observable(array, ranges) for name, (array, ranges) in observable_arrays.items()},
             state_key,
             {name: _snapshot_array(array) for name, array in state_arrays.items()},
-            observables if observable_arrays else None,
+            observables._solver if observable_arrays and observables is not None else None,
+            frozenset(observables.kinds) if observable_arrays and observables is not None else frozenset(),
+            (contacts.rigid_contact_max, contacts.soft_contact_max) if observable_arrays else (0, 0),
         )
         frame.contact_records[key] = record
         frame.size += sum(

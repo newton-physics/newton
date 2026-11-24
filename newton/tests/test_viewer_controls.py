@@ -595,9 +595,14 @@ class TestViewerUI(unittest.TestCase):
             contact_normal_max_pixels=64.0,
             contact_force_max_pixels=64.0,
         )
+
+        class _StubSolver(newton.solvers.SolverBase):
+            def step(self, *args, **kwargs):
+                pass
+
         viewer.set_model(model)
         viewer.set_control(control)
-        viewer._inspection_components["solver"] = SimpleNamespace(model=model, iterations=4, angular_damping=0.05)
+        viewer.set_solver(_StubSolver(model))
         viewer.set_collision_pipeline(pipeline)
         viewer.log_state(state)
         viewer.log_contacts(contacts, state)
@@ -847,6 +852,382 @@ class TestViewerUI(unittest.TestCase):
         self.assertAlmostEqual(mat_xx, vec_x, places=4)
         self.assertAlmostEqual(mat_yx, vec_x, places=4)
         self.assertAlmostEqual(mat_zx, vec_x, places=4)
+
+    def test_log_observables_and_generic_solver_inspector(self) -> None:
+        """Render logged solver observables generically across Solver, State, Contacts, and FrameHistory."""
+        from dataclasses import dataclass  # noqa: PLC0415
+
+        from newton._src.viewer.gui.properties import PropertyInspector  # noqa: PLC0415
+        from newton._src.viewer.gui.workspace import ViewerWorkspace  # noqa: PLC0415
+        from newton._src.viewer.viewer_model_tree import ModelTree  # noqa: PLC0415
+        from newton.viewer import ViewerNull  # noqa: PLC0415
+
+        Frequency = newton.Model.AttributeFrequency
+        Assignment = newton.Model.AttributeAssignment
+
+        class _MockDiagSolver(newton.solvers.SolverBase):
+            supports_collision_pipeline = True
+            SUPPORTED_OBSERVABLES = frozenset(
+                {
+                    newton.solvers.SolverBase.ObservableKind.SOLVER_RESIDUAL,
+                    "solver_residual_history",
+                    newton.solvers.SolverBase.ObservableKind.CONTACT_F,
+                    newton.solvers.SolverBase.ObservableKind.BODY_QDD,
+                    "body_awake",
+                    "joint_impulse",
+                }
+            )
+
+            @dataclass(eq=False)
+            class Observables(newton.solvers.SolverBase.Observables):
+                solver_residual_history: wp.array[wp.float32] | None = newton.solvers.SolverBase.Observables.field(
+                    dtype=wp.float32, frequency=Frequency.WORLD
+                )
+                body_awake: wp.array[wp.bool] | None = newton.solvers.SolverBase.Observables.field(
+                    dtype=wp.bool, frequency=Frequency.BODY
+                )
+                joint_impulse: wp.array[wp.float32] | None = newton.solvers.SolverBase.Observables.field(
+                    dtype=wp.float32, frequency=Frequency.JOINT_DOF
+                )
+
+            def __init__(
+                self,
+                model: newton.Model,
+                iterations: int = 4,
+                *,
+                collision_pipeline: newton.CollisionPipeline | None = None,
+            ) -> None:
+                super().__init__(model, collision_pipeline=collision_pipeline)
+                self.iterations = iterations
+                # Solver-private attributes must never be probed by the viewer.
+                self.mjw_model = SimpleNamespace(opt=SimpleNamespace(iterations=99, tolerance=1e-6))
+
+            def _observable_shape(self, kind: str, rows: int) -> tuple[int, ...]:
+                if kind == "solver_residual_history":
+                    return (self.iterations, rows)
+                return super()._observable_shape(kind, rows)
+
+            def step(
+                self,
+                state_in: newton.State,
+                state_out: newton.State,
+                control: newton.Control | None,
+                contacts: newton.Contacts | None,
+                dt: float,
+                *,
+                observables: newton.solvers.SolverBase.Observables | None = None,
+            ) -> None:
+                del state_in, state_out, control, dt
+                resolved = self._resolve_step_contacts(contacts)
+                self.validate_observables(observables, resolved)
+
+        builder = newton.ModelBuilder()
+        b0 = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        b1 = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.add_shape_box(b0, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_shape_box(b1, hx=0.1, hy=0.1, hz=0.1)
+        j0 = builder.add_joint_free(b0)
+        j1 = builder.add_joint_revolute(parent=b0, child=b1, axis=(0.0, 0.0, 1.0))
+        builder.add_articulation([j0, j1])
+        model = builder.finalize(device="cpu")
+        other_model = builder.finalize(device="cpu")
+        state = model.state()
+        pipeline = newton.CollisionPipeline(model, contact_matching="latest")
+        contacts = pipeline.contacts()
+        solver = _MockDiagSolver(model, iterations=4, collision_pipeline=pipeline)
+        solver.set_collision_frequency(
+            collision_frequency={newton.solvers.SolverBase.CollisionSlot.RIGID: 2},
+            collision_frequency_type={
+                newton.solvers.SolverBase.CollisionSlot.RIGID: newton.solvers.SolverBase.CollisionFrequencyType.ITERATIONS
+            },
+        )
+
+        # Validate ViewerBase.log_observables() error handling and layer isolation.
+        uninitialized = ViewerNull()
+        with self.assertRaisesRegex(RuntimeError, "set_model"):
+            uninitialized.log_observables(None)
+
+        viewer = ViewerNull(num_frames=10)
+        viewer.activate("primary")
+        viewer.set_model(model)
+        with self.assertRaisesRegex(TypeError, "Observables"):
+            viewer.log_observables(object())  # type: ignore[arg-type]
+        other_obs = _MockDiagSolver(other_model).observables({newton.solvers.SolverBase.ObservableKind.SOLVER_RESIDUAL})
+        with self.assertRaisesRegex(ValueError, "viewer's model"):
+            viewer.log_observables(other_obs)
+
+        viewer.log_state(state)
+        viewer.is_paused = lambda: True
+
+        gui = SimpleNamespace(ui=self.ui, _viewer=viewer, console_capture=None)
+        ws = ViewerWorkspace(gui)
+        ws.model = model
+        ws.tree = ModelTree(model)
+        ws.collision.contacts = contacts
+        ws.property_inspector = PropertyInspector(ws)
+        ui = self.ui.imgui
+
+        # Empty state when neither set_solver() nor log_observables() was called.
+        self.ui.begin_frame()
+        try:
+            ui.begin("TestSolverEmpty")
+            try:
+                ws._solver_properties()
+            finally:
+                ui.end()
+        finally:
+            self.ui.end_frame()
+
+        viewer.set_solver(solver)
+        # Stepping the solver alone does NOT implicitly expose observables to the viewer.
+        obs = solver.observables(solver.supported_observables)
+        solver.step(state, state, None, None, 1.0 / 60.0, observables=obs)
+        self.assertIsNone(ws.logged_observables())
+
+        group_calls: list[tuple[str, bool]] = []
+        orig_group = ws.widgets.group
+
+        def spy_group(title: str, *, default_open: bool = True):
+            group_calls.append((title, default_open))
+            return orig_group(title, default_open=default_open)
+
+        rendered_numbers: list[tuple[str, float, bool]] = []
+        rendered_arrays: list[tuple[str, list[float], bool]] = []
+        rendered_texts: list[tuple[str, str]] = []
+        rendered_spatial: list[tuple[str, list[float], bool]] = []
+
+        orig_number = ws.widgets.number
+        orig_array = ws.widgets.array
+        orig_text = ws.widgets.text_value
+        orig_spatial = ws.widgets.spatial_vector
+
+        def spy_number(label, value, **kwargs):
+            rendered_numbers.append((label, float(value), bool(kwargs.get("editable", False))))
+            return orig_number(label, value, **kwargs)
+
+        def spy_array(label, values, **kwargs):
+            rendered_arrays.append(
+                (label, np.asarray(values, dtype=float).reshape(-1).tolist(), bool(kwargs.get("editable", False)))
+            )
+            return orig_array(label, values, **kwargs)
+
+        def spy_text(label, value, **kwargs):
+            rendered_texts.append((label, str(value)))
+            return orig_text(label, value, **kwargs)
+
+        def spy_spatial(label, value, **kwargs):
+            rendered_spatial.append(
+                (
+                    label,
+                    np.asarray(value, dtype=float).reshape(-1).tolist(),
+                    bool(kwargs.get("force", False)),
+                )
+            )
+            return orig_spatial(label, value, **kwargs)
+
+        with (
+            mock.patch.object(ws.widgets, "group", side_effect=spy_group),
+            mock.patch.object(ws.widgets, "number", side_effect=spy_number),
+            mock.patch.object(ws.widgets, "text_value", side_effect=spy_text),
+        ):
+            self.ui.begin_frame()
+            try:
+                ui.begin("TestSolverUnlogged")
+                try:
+                    ws._solver_properties()
+                finally:
+                    ui.end()
+            finally:
+                self.ui.end_frame()
+        self.assertIn(("Collision schedule", True), group_calls)
+        self.assertIn(("Rigid", "Iterations (every 2)"), rendered_texts)
+        self.assertIn(("Observables", False), group_calls)
+        # Solver-specific attributes (iterations=99, tolerance=1e-6) are never probed.
+        self.assertEqual(rendered_numbers, [])
+
+        # Populate observables and explicitly log them via viewer.log_observables(obs).
+        # Because bodies were added without begin_world(), they live in global world -1 (slot == model.world_count).
+        obs.solver_residual.assign(np.array([0.0, 0.125], dtype=np.float32))
+        obs.solver_residual_history.assign(
+            np.array([[0.0, 0.5], [0.0, 0.25], [0.0, 0.125], [0.0, 0.0625]], dtype=np.float32)
+        )
+        obs.body_awake.assign(np.array([True, False], dtype=bool))
+        obs.body_qdd.assign(
+            np.array([[1.0, 2.0, 3.0, 0.1, 0.2, 0.3], [0.0, 0.0, -9.81, 0.0, 0.0, 0.0]], dtype=np.float32)
+        )
+        obs.joint_impulse.assign(np.arange(model.joint_dof_count, dtype=np.float32) + 10.0)
+        obs_contact_f = np.zeros((obs.contact_f.shape[0], 6), dtype=np.float32)
+        obs_contact_f[0] = [0.0, 0.0, 42.0, 1.0, 0.0, 0.0]
+        obs_contact_f[5] = [999.0, 999.0, 999.0, 0.0, 0.0, 0.0]  # Beyond active count; must never be read!
+        obs.contact_f.assign(obs_contact_f)
+        solver.contacts.rigid_contact_count.assign(np.array([1], dtype=np.int32))
+
+        viewer.log_observables(obs)
+        # Subsequent log_contacts(..., observables=None) must not clobber log_observables(obs).
+        viewer.log_contacts(solver.contacts, state)
+        self.assertIs(ws.logged_observables(), obs)
+
+        # Layer isolation: another layer does not inherit the primary layer's observables.
+        primary_layer = viewer.layer.layer_id
+        viewer.activate("secondary")
+        viewer.set_model(other_model)
+        self.assertIsNone(viewer._last_observables)
+        viewer.activate(primary_layer)
+        self.assertIs(ws.logged_observables(), obs)
+
+        ws._live_cache.clear()
+        group_calls.clear()
+        rendered_numbers.clear()
+        rendered_arrays.clear()
+        rendered_texts.clear()
+        rendered_spatial.clear()
+
+        with (
+            mock.patch.object(ws.widgets, "group", side_effect=spy_group),
+            mock.patch.object(ws.widgets, "number", side_effect=spy_number),
+            mock.patch.object(ws.widgets, "array", side_effect=spy_array),
+            mock.patch.object(ws.widgets, "text_value", side_effect=spy_text),
+            mock.patch.object(ws.widgets, "spatial_vector", side_effect=spy_spatial),
+        ):
+            self.ui.begin_frame()
+            try:
+                ui.begin("TestSolverLogged")
+                try:
+                    ws._solver_properties()
+                finally:
+                    ui.end()
+            finally:
+                self.ui.end_frame()
+
+        self.assertIn(("Observables", True), group_calls)
+        self.assertIn(("solver_residual", 0.125, False), rendered_numbers)
+        self.assertTrue(
+            any(
+                label == "solver_residual_history" and np.allclose(vals, [0.5, 0.25, 0.125, 0.0625]) and not ed
+                for label, vals, ed in rendered_arrays
+            )
+        )
+        # Only the 1 active contact row (42 N) is rendered; inactive slot 5 (999 N) is never read.
+        self.assertTrue(
+            any(np.allclose(vals, [0.0, 0.0, 42.0, 1.0, 0.0, 0.0]) and is_f for _, vals, is_f in rendered_spatial)
+        )
+        self.assertFalse(any(abs(vals[0] - 999.0) < 1e-3 for _, vals, _ in rendered_spatial))
+
+        # When 0 contacts are active, contact_f reports "0 active contacts".
+        solver.contacts.rigid_contact_count.assign(np.array([0], dtype=np.int32))
+        ws._live_cache.clear()
+        rendered_texts.clear()
+        with mock.patch.object(ws.widgets, "text_value", side_effect=spy_text):
+            self.ui.begin_frame()
+            try:
+                ui.begin("TestSolverZeroContacts")
+                try:
+                    ws._solver_properties()
+                finally:
+                    ui.end()
+            finally:
+                self.ui.end_frame()
+        self.assertIn(("contact_f", "0 active contacts"), rendered_texts)
+
+        # PropertyInspector surfaces JOINT_DOF observables on selected joints, BODY observables on
+        # selected bodies, and 2D WORLD observables on selected world/root nodes as read-only.
+        ws.selected, ws.selection = ("joint", j1), {("joint", j1)}
+        ws.property_inspector._contexts()
+        joint_obs = ws.property_inspector._observables()
+        self.assertEqual([entry[1] for entry in joint_obs], ["joint_impulse"])
+        rendered_numbers.clear()
+        with mock.patch.object(ws.widgets, "number", side_effect=spy_number):
+            self.ui.begin_frame()
+            try:
+                ui.begin("TestJointObservables")
+                try:
+                    ws.property_inspector.component = Assignment.STATE
+                    ws.property_inspector.draw()
+                finally:
+                    ui.end()
+            finally:
+                self.ui.end_frame()
+        self.assertIn(("joint_impulse", 16.0, False), rendered_numbers)
+
+        ws.selected, ws.selection = ("body", b0), {("body", b0)}
+        ws.property_inspector._contexts()
+        rendered_spatial.clear()
+        with mock.patch.object(ws.widgets, "spatial_vector", side_effect=spy_spatial):
+            self.ui.begin_frame()
+            try:
+                ui.begin("TestBodyObservables")
+                try:
+                    ws.property_inspector.component = Assignment.STATE
+                    ws.property_inspector.draw()
+                finally:
+                    ui.end()
+            finally:
+                self.ui.end_frame()
+        self.assertTrue(
+            any(
+                label == "body_qdd" and np.allclose(vals, [1.0, 2.0, 3.0, 0.1, 0.2, 0.3])
+                for label, vals, _ in rendered_spatial
+            )
+        )
+
+        ws.selected, ws.selection = ("root", -1), {("root", -1)}
+        ws.property_inspector._contexts()
+        self.assertEqual([entry[1] for entry in ws.property_inspector._observables_2d()], ["solver_residual_history"])
+
+        # FrameHistory records and replays log_observables() snapshots (including active contact counts and None clears).
+        history = FrameHistory(viewer)
+        solver.contacts.rigid_contact_count.assign(np.array([1], dtype=np.int32))
+        obs.solver_residual.assign(np.array([0.0, 0.25], dtype=np.float32))
+        obs_contact_f[0] = [0.0, 0.0, 42.0, 1.0, 0.0, 0.0]
+        obs.contact_f.assign(obs_contact_f)
+        history.begin_frame(0.0)
+        history.state(state)
+        viewer.log_observables(history.observables(obs))
+        history.end_frame()
+
+        history.begin_frame(1.0)
+        history.state(state)
+        viewer.log_observables(history.observables(None))
+        history.end_frame()
+        self.assertIsNone(ws.logged_observables())
+
+        obs.solver_residual.assign(np.array([0.0, 0.05], dtype=np.float32))
+        obs_contact_f[0] = [0.0, 0.0, 12.0, 0.0, 0.0, 0.0]
+        obs.contact_f.assign(obs_contact_f)
+        history.begin_frame(2.0)
+        history.state(state)
+        viewer.log_observables(history.observables(obs))
+        history.end_frame()
+        self.assertIs(ws.logged_observables(), obs)
+
+        ws.history = history
+        history.select(0)
+        history.begin_frame(2.0)
+        replayed_0 = history.observables(obs)
+        viewer.log_observables(replayed_0)
+        history.end_frame()
+        self.assertIsNotNone(replayed_0)
+        self.assertIsNot(replayed_0, obs)
+        np.testing.assert_allclose(replayed_0.solver_residual.numpy(), [0.0, 0.25])
+        np.testing.assert_allclose(replayed_0.contact_f.numpy()[0], [0.0, 0.0, 42.0, 1.0, 0.0, 0.0])
+        # Caller's live array remains untouched during replay.
+        np.testing.assert_allclose(obs.solver_residual.numpy(), [0.0, 0.05])
+
+        history.select(1)
+        history.begin_frame(2.0)
+        replayed_1 = history.observables(obs)
+        viewer.log_observables(replayed_1)
+        history.end_frame()
+        self.assertIsNone(replayed_1)
+        self.assertIsNone(ws.logged_observables())
+
+        history.select(2)
+        history.begin_frame(2.0)
+        live_2 = history.observables(obs)
+        viewer.log_observables(live_2)
+        history.end_frame()
+        self.assertIs(live_2, obs)
+        self.assertIs(ws.logged_observables(), obs)
 
 
 def _make_gl_state(paused: bool = False, step_requested: bool = False) -> ViewerGL:
@@ -1174,60 +1555,17 @@ class TestViewerShapeProperties(unittest.TestCase):
         self.assertEqual(inspected, [workspace.tree, workspace.tree])
         self.assertEqual(attached, inspected)
 
-    def test_mujoco_contact_properties_with_both_contact_pipelines(self) -> None:
-        """Inspect mapped shapes across worlds without requiring an external-contact inverse map."""
-        values = {}
+    def test_workspace_read_empty_array_slices(self) -> None:
+        """Preserve trailing dimensions and dtype when reading empty Warp arrays."""
         workspace = ViewerWorkspace.__new__(ViewerWorkspace)
         workspace._cache = {}
         workspace._live_cache = {}
-        workspace.viewer = ViewerNull()
-        workspace._bindings = workspace._bindings_components = None
-        workspace.model = None
-        workspace.world = 1
-        workspace.widgets = SimpleNamespace(
-            group=lambda *_args, **_kwargs: nullcontext(True),
-            choice=lambda label, value, *_args, **_kwargs: values.update({label: value}),
-            array=lambda label, value, **_kwargs: values.update({label: value}),
-        )
-        friction = np.arange(18, dtype=np.float32).reshape(2, 3, 3)
-        solver = SimpleNamespace(
-            mjw_model=SimpleNamespace(
-                geom_condim=wp.array([1, 3, 6], dtype=int, device="cpu"),
-                geom_solref=wp.array(np.full((1, 3, 2), 0.02), dtype=float, device="cpu"),
-                geom_solimp=wp.array(np.full((1, 3, 5), 0.9), dtype=float, device="cpu"),
-                geom_friction=wp.array(friction, dtype=float, device="cpu"),
-            ),
-            mjc_geom_to_newton_shape=wp.array([[1, 3, -1], [1, 7, 9]], dtype=int, device="cpu"),
-        )
-        workspace.viewer._inspection_components = {"solver": solver}
-        for inverse in (None, wp.array([-1, 0, -1, 1, -1, -1, -1, 1, -1, 2], dtype=int, device="cpu")):
-            with self.subTest(internal_contacts=inverse is None):
-                solver.newton_shape_to_mjc_geom = inverse
-                workspace._cache.clear()
-                workspace._live_cache.clear()
-                values.clear()
-                workspace._shape_solver_properties(7)
-                self.assertEqual(values["condim"], 3)
-                np.testing.assert_array_equal(values["Friction"], friction[1, 1])
-                np.testing.assert_allclose(values["solref"], [0.02, 0.02])
-                self.assertEqual(values["solimp"].shape, (5,))
-                values.clear()
-                workspace._shape_solver_properties(1)
-                self.assertEqual(values["condim"], 1)
-                np.testing.assert_array_equal(values["Friction"], friction[1, 0])
-                values.clear()
-                workspace._shape_solver_properties(6)
-                self.assertFalse(values)
-
-        # Collision-free models can have worlds but no solver geometries.
+        holder = SimpleNamespace()
         for shape in ((0,), (2, 0)):
-            with self.subTest(empty_mapping_shape=shape):
-                solver.mjc_geom_to_newton_shape = wp.empty(shape, dtype=int, device="cpu")
+            with self.subTest(empty_shape=shape):
+                holder.data = wp.empty(shape, dtype=int, device="cpu")
                 workspace._cache.clear()
-                values.clear()
-                workspace._shape_solver_properties(0)
-                self.assertFalse(values)
-                empty = workspace.read(solver, "mjc_geom_to_newton_shape", 0)
+                empty = workspace.read(holder, "data", 0)
                 self.assertEqual(empty.shape, (min(shape[0], 1), *shape[1:]))
                 self.assertEqual(empty.dtype, np.int32)
 
@@ -1773,24 +2111,162 @@ class TestViewerProperties(unittest.TestCase):
                 self.assertFalse(record.state)
 
                 # Replay rebuilds logged observables through the solver that
-                # produced them, without the optional set_solver() binding.
+                # produced them, without the optional set_solver() binding,
+                # without retaining live Observables/Contacts buffers, and across
+                # contact-capacity reductions and changing observable kinds/solvers.
+                import gc  # noqa: PLC0415
+                import weakref  # noqa: PLC0415
+
                 solver = newton.solvers.SolverXPBD(model)
-                observables = solver.observables(
-                    contacts=contacts, kinds={newton.solvers.SolverBase.ObservableKind.CONTACT_F}
+                solver_alt = newton.solvers.SolverXPBD(model)
+                large_contacts = newton.Contacts(8, 3, device=device)
+                large_contacts.rigid_contact_count.assign(np.array([2], dtype=np.int32))
+                large_contacts.soft_contact_count.assign(np.array([2], dtype=np.int32))
+                rigid_pts = np.zeros((8, 3), dtype=np.float32)
+                rigid_pts[:2] = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]
+                large_contacts.rigid_contact_point0.assign(rigid_pts)
+                soft_pts = np.zeros((3, 3), dtype=np.float32)
+                soft_pts[:2] = [[7.0, 8.0, 9.0], [10.0, 11.0, 12.0]]
+                large_contacts.soft_contact_body_pos.assign(soft_pts)
+
+                obs_contact_only = solver.observables(
+                    contacts=large_contacts,
+                    kinds={newton.solvers.SolverBase.ObservableKind.CONTACT_F},
                 )
+                cf_0 = np.zeros((len(obs_contact_only.contact_f), 6), dtype=np.float32)
+                cf_0[0, 0] = 11.0
+                cf_0[1, 0] = 22.0
+                cf_0[8, 0] = 33.0
+                cf_0[9, 0] = 44.0
+                obs_contact_only.contact_f.assign(cf_0)
+
+                obs_expanded = solver.observables(
+                    contacts=large_contacts,
+                    kinds={
+                        newton.solvers.SolverBase.ObservableKind.CONTACT_F,
+                        newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F,
+                    },
+                )
+                obs_expanded.contact_f.assign(cf_0 * 2.0)
+                obs_expanded.body_parent_f.assign(np.array([[1.5, 2.5, 3.5, 0.5, 0.25, 0.125]], dtype=np.float32))
+
+                obs_alt_solver = solver_alt.observables(
+                    contacts=large_contacts,
+                    kinds={newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F},
+                )
+                obs_alt_solver.body_parent_f.assign(np.array([[9.0, 8.0, 7.0, 0.0, 0.0, 0.0]], dtype=np.float32))
+
                 self.assertIsNone(viewer._inspection_components.get("solver"))
                 observed = FrameHistory(viewer)
-                for time in (0.0, 1.0):
-                    observed.begin_frame(time)
-                    observed.contacts(contacts, state, observables)
-                    observed.end_frame()
-                observed.select(0)
-                observed.begin_frame(1.0)
-                shown_contacts, _, shown_observables = observed.contacts(contacts, state, None)
+                observed.begin_frame(0.0)
+                observed.contacts(large_contacts, state, obs_contact_only)
                 observed.end_frame()
-                self.assertIsNotNone(shown_observables)
-                self.assertIsNot(shown_observables, observables)
-                self.assertIs(shown_observables.contacts, shown_contacts)
+
+                observed.begin_frame(1.0)
+                observed.contacts(large_contacts, state, obs_expanded)
+                observed.end_frame()
+
+                observed.begin_frame(2.0)
+                observed.contacts(large_contacts, state, obs_alt_solver)
+                observed.end_frame()
+
+                # Release all original source Contacts and Observables buffers before replay.
+                contacts_ref = weakref.ref(large_contacts)
+                obs_0_ref = weakref.ref(obs_contact_only)
+                obs_1_ref = weakref.ref(obs_expanded)
+                obs_2_ref = weakref.ref(obs_alt_solver)
+                del large_contacts, obs_contact_only, obs_expanded, obs_alt_solver
+                gc.collect()
+                self.assertIsNone(contacts_ref())
+                self.assertIsNone(obs_0_ref())
+                self.assertIsNone(obs_1_ref())
+                self.assertIsNone(obs_2_ref())
+
+                # Replace live contacts with a smaller capacity buffer (1 rigid, 1 soft)
+                # and verify both initial replay allocation and growth across frames.
+                tiny_contacts = newton.Contacts(1, 1, device=device)
+                observed.begin_frame(3.0)
+                observed.contacts(tiny_contacts, state, None)
+                observed.end_frame()
+
+                # First scrub to frame 2 (allocates display buffer with 2 active contacts despite tiny_contacts=(1, 1)).
+                observed.select(2)
+                observed.begin_frame(3.0)
+                shown_contacts_2, _, shown_obs_2 = observed.contacts(tiny_contacts, state, None)
+                observed.end_frame()
+                self.assertEqual(int(shown_contacts_2.rigid_contact_count.numpy()[0]), 2)
+                self.assertIsNotNone(shown_obs_2)
+                self.assertIs(shown_obs_2._solver, solver_alt)
+                self.assertEqual(shown_obs_2.kinds, frozenset({newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F}))
+                np.testing.assert_allclose(shown_obs_2.body_parent_f.numpy(), [[9.0, 8.0, 7.0, 0.0, 0.0, 0.0]])
+
+                # Scrub to frame 0 (CONTACT_F only) and verify active rigid & soft rows and forces.
+                observed.select(0)
+                observed.begin_frame(3.0)
+                shown_contacts_0, _, shown_obs_0 = observed.contacts(tiny_contacts, state, None)
+                observed.end_frame()
+                self.assertIsNotNone(shown_obs_0)
+                self.assertIs(shown_obs_0._solver, solver)
+                self.assertIs(shown_obs_0.contacts, shown_contacts_0)
+                self.assertEqual(shown_obs_0.kinds, frozenset({newton.solvers.SolverBase.ObservableKind.CONTACT_F}))
+                self.assertEqual(int(shown_contacts_0.rigid_contact_count.numpy()[0]), 2)
+                self.assertEqual(int(shown_contacts_0.soft_contact_count.numpy()[0]), 2)
+                np.testing.assert_allclose(
+                    shown_contacts_0.rigid_contact_point0.numpy()[:2], [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]
+                )
+                np.testing.assert_allclose(
+                    shown_contacts_0.soft_contact_body_pos.numpy()[:2], [[7.0, 8.0, 9.0], [10.0, 11.0, 12.0]]
+                )
+                np.testing.assert_allclose(shown_obs_0.contact_f.numpy()[:2, 0], [11.0, 22.0])
+                soft_start = shown_contacts_0.rigid_contact_max
+                np.testing.assert_allclose(shown_obs_0.contact_f.numpy()[soft_start : soft_start + 2, 0], [33.0, 44.0])
+
+                # Scrub to frame 1 (CONTACT_F + BODY_PARENT_F) and verify cache reallocates for new kinds.
+                observed.select(1)
+                observed.begin_frame(3.0)
+                shown_contacts_1, _, shown_obs_1 = observed.contacts(tiny_contacts, state, None)
+                observed.end_frame()
+                self.assertIsNotNone(shown_obs_1)
+                self.assertIs(shown_obs_1.contacts, shown_contacts_1)
+                self.assertEqual(
+                    shown_obs_1.kinds,
+                    frozenset(
+                        {
+                            newton.solvers.SolverBase.ObservableKind.CONTACT_F,
+                            newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F,
+                        }
+                    ),
+                )
+                np.testing.assert_allclose(shown_obs_1.contact_f.numpy()[:2, 0], [22.0, 44.0])
+                np.testing.assert_allclose(shown_obs_1.body_parent_f.numpy(), [[1.5, 2.5, 3.5, 0.5, 0.25, 0.125]])
+
+                # Also verify growth when an unobservable ContactRecord shrinks capacity:
+                shrink_history = FrameHistory(viewer)
+                big_plain = newton.Contacts(4, 2, device=device)
+                big_plain.rigid_contact_count.assign(np.array([3], dtype=np.int32))
+                big_plain.soft_contact_count.assign(np.array([2], dtype=np.int32))
+                shrink_history.begin_frame(0.0)
+                shrink_history.contacts(big_plain, state, None)
+                shrink_history.end_frame()
+                shrink_history.begin_frame(1.0)
+                shrink_history.contacts(tiny_contacts, state, None)
+                shrink_history.end_frame()
+                shrink_history.begin_frame(2.0)
+                shrink_history.contacts(tiny_contacts, state, None)
+                shrink_history.end_frame()
+                # Scrub to frame 1 first (allocates 1x1), then scrub to frame 0 (must grow to >= 3x2).
+                shrink_history.select(1)
+                shrink_history.begin_frame(2.0)
+                shrink_history.contacts(tiny_contacts, state, None)
+                shrink_history.end_frame()
+                shrink_history.select(0)
+                shrink_history.begin_frame(2.0)
+                grown_contacts, _, _ = shrink_history.contacts(tiny_contacts, state, None)
+                shrink_history.end_frame()
+                self.assertGreaterEqual(grown_contacts.rigid_contact_max, 3)
+                self.assertGreaterEqual(grown_contacts.soft_contact_max, 2)
+                self.assertEqual(int(grown_contacts.rigid_contact_count.numpy()[0]), 3)
+                self.assertEqual(int(grown_contacts.soft_contact_count.numpy()[0]), 2)
 
                 # Each layer's calls are filtered by that layer's own Model, not
                 # the Model active when history was created.
@@ -2218,7 +2694,7 @@ class TestViewerProperties(unittest.TestCase):
 
         builder = newton.ModelBuilder()
         builder.add_ground_plane()
-        builder.replicate(world_template, world_count=2)
+        builder.replicate(world_template, copy_count=2)
         model = builder.finalize(device="cpu")
         tree = ModelTree(model)
 

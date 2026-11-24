@@ -307,6 +307,7 @@ class PropertyInspector:
             for component in (Assignment.STATE, Assignment.CONTROL, Assignment.MODEL)
         }
         observed = self._observables()
+        observed_2d = self._observables_2d()
         summary_only = (
             len(ws.selection) == 1
             and ws.selected is not None
@@ -317,7 +318,7 @@ class PropertyInspector:
             for component, groups in components.items()
             if groups
             or (component == Assignment.MODEL and (self._counts() or summary_only))
-            or (component == Assignment.STATE and observed)
+            or (component == Assignment.STATE and (observed or observed_2d))
         ]
         contact_owner = (
             len(ws.selection) == 1
@@ -340,10 +341,11 @@ class PropertyInspector:
                 if w.tab_item(title, flags=ui.TabItemFlags_.set_selected if component == fallback else 0)[0]:
                     self.component = component
                     self._component(component, components[component])
-                    if component == Assignment.STATE and observed:
+                    if component == Assignment.STATE and (observed or observed_2d):
                         with w.group("Solver observables") as opened:
                             if opened:
                                 self._fields(observed, component)
+                                self._draw_observables_2d(observed_2d)
                     ui.end_tab_item()
             if contact_owner and w.tab_item("Contacts")[0]:
                 self.component = "contacts"
@@ -362,26 +364,91 @@ class PropertyInspector:
             ui.end_disabled()
 
     def _observables(self) -> list[tuple[AttributeRows, str, Model.AttributeSpec, object, str, Any]]:
-        """Match the last logged solver observables to the selected non-contact row domains.
+        """Match active solver observables to the selected non-contact row domains.
 
-        Contact observables belong to the Contacts tab. Only one-dimensional
-        arrays whose rows follow a selected frequency are listed; per-world
-        values exclude the trailing global-world entry.
+        Contact observables belong to the Contacts tab. One-dimensional arrays
+        whose rows follow a selected frequency (including joint DOF/coordinate
+        spans on selected joints and articulations) are listed here.
         """
         ws = self.workspace
-        observables = ws.viewer._last_contact_observables
+        logged_obs = getattr(ws, "logged_observables", None)
+        observables = (
+            logged_obs()
+            if callable(logged_obs)
+            else (
+                getattr(ws.viewer, "_last_observables", None) or getattr(ws.viewer, "_last_contact_observables", None)
+            )
+        )
         if observables is None or observables.model is not ws.model:
             return []
         contact = (Frequency.CONTACT, Frequency.CONTACT_RIGID, Frequency.CONTACT_SOFT)
+        joint_freqs = (Frequency.JOINT_COORD, Frequency.JOINT_DOF)
         result = []
-        for name, field in observables._observable_fields().values():
-            value = getattr(observables, name)
+        for kind, (name, field) in observables._observable_fields().items():
+            if kind not in observables.kinds:
+                continue
+            value = getattr(observables, name, None)
             if field.frequency in contact or not isinstance(value, wp.array) or value.ndim != 1:
                 continue
+            spec = Model.AttributeSpec(field.frequency)
             for domain in self.domains:
-                if domain.model is ws.model and domain.frequency == field.frequency and not domain.joints:
-                    result.append((domain, name, Model.AttributeSpec(field.frequency), observables, name, value))
+                if domain.model is ws.model and domain.frequency == field.frequency:
+                    if domain.joints and field.frequency not in joint_freqs:
+                        continue
+                    result.append((domain, name, spec, observables, name, value))
         return result
+
+    def _observables_2d(self) -> list[tuple[AttributeRows, str, Model.AttributeSpec, wp.array]]:
+        """Match 2D ``(steps, world_count + 1)`` per-world solver observables to selected worlds."""
+        ws = self.workspace
+        logged_obs = getattr(ws, "logged_observables", None)
+        observables = (
+            logged_obs()
+            if callable(logged_obs)
+            else (
+                getattr(ws.viewer, "_last_observables", None) or getattr(ws.viewer, "_last_contact_observables", None)
+            )
+        )
+        if observables is None or observables.model is not ws.model:
+            return []
+        result = []
+        for kind, (name, field) in observables._observable_fields().items():
+            if kind not in observables.kinds or field.frequency != Frequency.WORLD:
+                continue
+            value = getattr(observables, name, None)
+            if not isinstance(value, wp.array) or value.ndim != 2 or value.size == 0:
+                continue
+            spec = Model.AttributeSpec(field.frequency)
+            for domain in self.domains:
+                if domain.model is ws.model and domain.frequency == Frequency.WORLD and not domain.joints:
+                    result.append((domain, name, spec, value))
+        return result
+
+    def _draw_observables_2d(self, entries: Sequence[tuple[AttributeRows, str, Model.AttributeSpec, wp.array]]) -> None:
+        """Render 2D per-world observables (such as per-iteration residual history) for selected worlds."""
+        ws, w, ui = self.workspace, self.workspace.widgets, self.workspace.gui.ui.imgui
+        reason = "Computed by the solver during step(); read-only."
+        for domain, name, spec, array in entries:
+            ui.push_id(f"{id(domain.model)}:2d:{name}")
+            with w.property_tooltip(
+                lambda name=name, spec=spec, array=array: attribute_summary(name, spec, array, Assignment.STATE)
+            ):
+                indices = [int(i) for i in domain.indices if 0 <= int(i) < array.shape[1]]
+                if len(indices) == 1:
+                    w.array(name, ws._read_world_column(array, indices[0]), reason=reason)
+                elif len(indices) > 1:
+                    with w.group(name, default_open=True) as opened:
+                        if opened:
+                            for slot in self._page(indices):
+                                label = (
+                                    "shared world (-1)"
+                                    if slot == domain.model.world_count
+                                    else frequency_row_label(Frequency.WORLD, slot)
+                                )
+                                ui.push_id(int(slot))
+                                w.array(label, ws._read_world_column(array, int(slot)), reason=reason)
+                                ui.pop_id()
+            ui.pop_id()
 
     def _counts(self) -> dict[str, int]:
         """Return nonzero Model frequency counts for root or group selection; otherwise return an empty mapping."""
@@ -517,8 +584,6 @@ class PropertyInspector:
                         self._fields(groups[namespace], component, flat=True)
                         ui.end_tab_item()
                 ui.end_tab_bar()
-        if component == Assignment.MODEL and single is not None and single[0] == "shape":
-            ws._shape_solver_properties(single[1])
         ui.pop_id()
 
     def _fields(
@@ -527,6 +592,7 @@ class PropertyInspector:
         component: Model.AttributeAssignment,
         *,
         flat: bool = False,
+        default_open: bool | None = None,
     ) -> None:
         """Render attributes in domain order, paginating selected objects within each attribute.
 
@@ -534,17 +600,18 @@ class PropertyInspector:
         Flat groups avoid adding another panel around custom attributes.
         """
         w, ui = self.workspace.widgets, self.workspace.gui.ui.imgui
+        is_open = (component != Assignment.MODEL) if default_open is None else default_open
         # Attribute groups keep large articulations and meshes bounded and useful:
         # q for all joints together, then qd for all joints, with stable row labels.
         for domain, name, spec, owner, attr, array in fields:
-            ui.push_id(f"{id(domain.model)}:{name}")
+            ui.push_id(f"{id(domain.model)}:{name}:{int(domain.joints)}")
             with w.property_tooltip(
                 lambda name=name, spec=spec, array=array: attribute_summary(name, spec, array, component)
             ):
                 count = len(domain.indices)
                 if count > 1:
                     group = w.disclosure if flat else w.group
-                    with group(name.split(":")[-1], default_open=component != Assignment.MODEL) as opened:
+                    with group(name.split(":")[-1], default_open=is_open) as opened:
                         if opened:
                             visible = self._page(domain.indices)
                             self._prefetch(domain, name, spec, owner, attr, array, visible, component)
@@ -739,7 +806,7 @@ class PropertyInspector:
         else:
             values = np.asarray([array])
         editable = component == Assignment.CONTROL or (
-            component == Assignment.STATE and (joint is not None or spec.assignment == Assignment.STATE)
+            component == Assignment.STATE and (joint_state or spec.assignment == Assignment.STATE)
         )
         allowed = ws.can_edit_control() if component == Assignment.CONTROL else ws.can_edit_state()
         editable &= spec.references is None and isinstance(array, wp.array) and allowed
@@ -756,7 +823,7 @@ class PropertyInspector:
             reason = "Reference indices are read only."
         if isinstance(owner, SolverBase.Observables):
             editable = False
-            reason = "Solver output of the last logged step."
+            reason = "Computed by the solver during step(); read-only."
         if joint is not None:
             kind = JointType(int(ws.read(model, "joint_type", joint)[0]))
             art = int(ws.read(model, "joint_articulation", joint)[0])

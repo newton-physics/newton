@@ -488,15 +488,30 @@ class CollisionInspector:
                 if suffix in self.NON_PER_CONTACT_SUFFIXES or suffix.startswith("diff_"):
                     continue
                 yield None, name, value, Model.AttributeSpec(frequency, references=references.get(suffix)), index, 1
-        observables = getattr(self.workspace.viewer, "_last_contact_observables", None)
+        logged_obs = getattr(self.workspace, "logged_observables", None)
+        observables = (
+            logged_obs()
+            if callable(logged_obs)
+            else (
+                getattr(self.workspace.viewer, "_last_observables", None)
+                or getattr(self.workspace.viewer, "_last_contact_observables", None)
+            )
+        )
         if observables is not None:
-            for name, field in observables._observable_fields().values():
+            live = self.workspace._at_live_frame()
+            for kind, (name, field) in observables._observable_fields().items():
+                if kind not in observables.kinds:
+                    continue
+                obs_contacts = observables.contacts_for_kind(kind)
+                if live and obs_contacts not in (None, self.contacts):
+                    continue
                 value = getattr(observables, name, None)
                 if value is None or field.frequency not in (frequency, Frequency.CONTACT):
                     continue
-                row = index + (
-                    self.contacts.rigid_contact_max if not rigid and field.frequency == Frequency.CONTACT else 0
-                )
+                stride = (obs_contacts or self.contacts).rigid_contact_max
+                row = index + (stride if not rigid and field.frequency == Frequency.CONTACT else 0)
+                if row >= len(value):
+                    continue
                 yield "Solver observables", name, value, Model.AttributeSpec(field.frequency), row, 1
         if not self.workspace._at_live_frame():
             return
@@ -560,8 +575,6 @@ class CollisionInspector:
             ui.text_wrapped(
                 "Buffers describe the last collision pass; inspecting them does not run collision detection."
             )
-            if getattr(ws.bindings.solver, "use_mujoco_contacts", False):
-                ui.text_wrapped("The solver uses internal contacts. This Newton pipeline may not have been executed.")
             bvhs = ws.tree.resources.bvhs
             if bvhs.root in ws.tree.labels and w.button("Inspect BVHs", small=True):
                 ws.navigate(bvhs.root)

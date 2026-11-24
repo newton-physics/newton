@@ -10,11 +10,12 @@ Refresh geometry properties and BVH references when shape variants change, respe
 particle visibility during picking, and apply viewport display modes across layers.
 Inspect and edit custom joint-frequency attributes using their own namespace and row width.
 Expose deformable surfaces, volumes, curves, bending edges, skinned visual meshes, routed tendons, particle-body attachments, mimic constraints, actuators and batteries, OptiX query structures, and paused body-variant switching in the explorer and property panels, with a searchable folder tree in the Examples browser and a compact live-readout timeline bar when history recording is off.
-Record history from the application's `log_state()`, `log_contacts()`, `log_points()` and `log_lines()` calls and replay it through those calls, pausing stepping through `ViewerBase.should_step()` until playback reaches the newest frame. Recording is opt-in through the timeline's **Record history** checkbox.
+Record history from the application's `log_state()`, `log_contacts()`, `log_observables()`, `log_points()`, and `log_lines()` calls and replay it through those calls, pausing stepping through `ViewerBase.should_step()` until playback reaches the newest frame. Recording is opt-in through the timeline's **Record history** checkbox.
 Mirror `newton` log records and Newton warnings into the console only when the application passes `ViewerGL(capture_logs=True)`, as the example runner does.
 Frame scenes and selections from displayed geometry when rendering uses different units from the collision model.
 Filter contact glyphs to selected shapes and bodies by default, with a toggle to show all contacts.
-Show logged per-body and per-world solver observables, such as `solver_residual`, read-only in the State tab, and list a solver's supported observable kinds in the Solver tab.
-Add experimental `ViewerBase.set_control()`, `set_solver()`, and
-`set_collision_pipeline()` methods; with the existing frame logging methods,
-they are the inspector's only inputs, for examples and custom loops alike.
+Show logged solver observables (including per-world residuals and residual history, per-body, per-joint-DOF, and active contact arrays) read-only in the Solver, State, and Contacts tabs via their generic `SolverBase.Observables` metadata, and list remaining supported observable kinds when a solver is bound.
+Add experimental `ViewerBase.set_control()`, `set_solver()`,
+`set_collision_pipeline()`, and `log_observables()` methods; with the existing
+frame logging methods, they are the inspector's only inputs, for examples and
+custom loops alike.

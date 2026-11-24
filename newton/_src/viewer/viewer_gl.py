@@ -207,6 +207,8 @@ def _recorded(kind: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
                     arguments.update(contacts=contacts, state=state)
                     if observables is not None or "observables" in arguments:
                         arguments["observables"] = observables
+                elif kind == "observables":
+                    arguments["observables"] = history.observables(arguments["observables"])
                 else:
                     names = _RECORDED_ARRAYS[kind]
                     arguments.update(
@@ -2301,6 +2303,16 @@ class ViewerGL(ViewerBase):
         State, and solver observables of that frame are displayed instead.
         """
         super().log_contacts(contacts, state, observables=observables)
+
+    @override
+    @_recorded("observables")
+    def log_observables(self, observables: nt.solvers.SolverBase.Observables | None) -> None:
+        """Log solver observables for inspection; see :meth:`ViewerBase.log_observables`.
+
+        While the timeline replays history, the recorded solver observables of
+        that frame are displayed instead.
+        """
+        super().log_observables(observables)
 
     @override
     def end_frame(self):

@@ -430,7 +430,7 @@ All viewer backends inherit from :class:`~newton.viewer.ViewerBase` and share a 
 
 - :meth:`~newton.viewer.ViewerBase.set_model` — assign a :class:`~newton.Model` (use :meth:`~newton.viewer.ViewerBase.set_visible_worlds` afterwards to limit the number of rendered worlds)
 - :meth:`~newton.viewer.ViewerBase.set_control` — optionally expose Control inputs to the inspector
-- :meth:`~newton.viewer.ViewerBase.set_solver` — optionally expose solver settings and resources
+- :meth:`~newton.viewer.ViewerBase.set_solver` — optionally expose :class:`~newton.solvers.SolverBase` capabilities and resources
 - :meth:`~newton.viewer.ViewerBase.set_collision_pipeline` — optionally expose broadphase and narrowphase diagnostics
 - :meth:`~newton.viewer.ViewerBase.begin_frame` — start a new frame with the current simulation time
 - :meth:`~newton.viewer.ViewerBase.log_state` — update the viewer with the current :class:`~newton.State` (body transforms, particle positions, etc.)
@@ -506,6 +506,7 @@ outstanding async render.
 - :meth:`~newton.viewer.ViewerBase.log_lines` — draw line segments (e.g. rays, normals, force vectors)
 - :meth:`~newton.viewer.ViewerBase.log_points` — draw a point cloud (e.g. contact locations, particle positions)
 - :meth:`~newton.viewer.ViewerBase.log_contacts` — visualize :class:`~newton.Contacts` as normal lines at contact points
+- :meth:`~newton.viewer.ViewerBase.log_observables` — expose :ref:`solver observables <solver_observables>` to the inspection workspace without requiring :meth:`~newton.viewer.ViewerBase.log_contacts`
 - :meth:`~newton.viewer.ViewerBase.log_gizmo` — display a transform gizmo (position + orientation axes)
 - :meth:`~newton.viewer.ViewerBase.log_scalar` / :meth:`~newton.viewer.ViewerBase.log_array` — display numeric diagnostics as scalar plots or array visualizations; see :ref:`viewer-live-plots`
 - :meth:`~newton.viewer.ViewerBase.log_image` — display a single or batched image in a
@@ -577,7 +578,11 @@ particle-body attachments, mimic constraints, actuators and batteries, custom
 attribute frequencies, and available geometry and acceleration resources.
 Empty property categories are hidden. Custom attributes use their registered
 frequency, dtype, namespace, and reference metadata rather than solver-specific
-field-name rules.
+field-name rules. :ref:`Solver observables <solver_observables>` logged via
+:meth:`~newton.viewer.ViewerBase.log_observables` or
+:meth:`~newton.viewer.ViewerBase.log_contacts` appear read-only in the
+**Solver** tab (alongside unrequested supported kinds when a solver is bound)
+as well as on matching selections in **State** and **Contacts**.
 
 Select items in the explorer or viewport; Ctrl-click adds or removes selections.
 Press **F** to frame the selection, hold **F** to follow it, or pin following
@@ -617,19 +622,20 @@ Inspecting a custom simulation loop
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The existing ``set_model`` / ``log_state`` / ``log_contacts`` loop remains
-valid. To expose inputs, solver settings, and collision metadata to the
+valid. To expose inputs, solver capabilities, and collision metadata to the
 inspector, call :meth:`~newton.viewer.ViewerBase.set_control`,
 :meth:`~newton.viewer.ViewerBase.set_solver`, and
 :meth:`~newton.viewer.ViewerBase.set_collision_pipeline` after ``set_model``.
-Each setter is optional and changes only its component. State and Contacts
-inspection uses the objects supplied through ``log_state`` and ``log_contacts``:
+Each setter is optional and changes only its component. State, Contacts, and
+solver observable inspection uses the objects supplied through ``log_state``,
+``log_contacts``, and :meth:`~newton.viewer.ViewerBase.log_observables`:
 
 .. experimental::
-   ``ViewerBase.set_control``, ``ViewerBase.set_solver``, and
-   ``ViewerBase.set_collision_pipeline`` are experimental inspection methods
-   and may change without the normal deprecation period. The property editor
-   currently uses them in ViewerGL. They do not enable the GUI in ViewerRTX,
-   Viser, or other backends.
+   ``ViewerBase.set_control``, ``ViewerBase.set_solver``,
+   ``ViewerBase.set_collision_pipeline``, and ``ViewerBase.log_observables``
+   are experimental inspection methods and may change without the normal
+   deprecation period. The property editor currently uses them in ViewerGL.
+   They do not enable the GUI in ViewerRTX, Viser, or other backends.
 
 .. code-block:: python
 
@@ -702,7 +708,8 @@ Editing, history, and rebuilding
 * Recording is opt-in: enable **Record history** in the timeline to retain
   display snapshots. Between ``begin_frame`` and ``end_frame``, the viewer
   copies the arrays the application passes to ``log_state``, ``log_contacts``
-  (including solver observables), ``log_points``, and ``log_lines`` to the host,
+  (including solver observables), ``log_observables``, ``log_points``, and
+  ``log_lines`` to the host,
   together with the Control from ``set_control``. Frames are keyed by the time
   passed to ``begin_frame``, so a paused loop that renders the same time again
   records nothing new. Recording is bounded to 128 MiB and 60,000 display
