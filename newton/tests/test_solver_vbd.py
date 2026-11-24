@@ -85,6 +85,7 @@ from newton._src.solvers.vbd.solver_vbd import (
     _select_rigid_block_dim,
 )
 from newton._src.solvers.vbd.vbd_coupling_kernels import _harvest_vbd_proxy_wrenches_kernel
+from newton._src.utils.mesh import MeshAdjacencyData
 from newton.solvers.experimental.coupled import SolverCoupledProxy
 from newton.tests.unittest_utils import (
     add_function_test,
@@ -6579,6 +6580,20 @@ def _body_particle_attachment_to_cable_capsule(test, device):
     test.assertGreater(float(np.linalg.norm(particle_q[particle] - initial_particle_pos)), 1.0e-3)
 
 
+def _pin_tile_kernel_options(test, *kernels, fast_math=True):
+    """Compile memoized tile kernels with identical options for a bitwise comparison.
+
+    ``make_solve_elasticity_tile`` is cached per process, and each ``SolverVBD`` writes its
+    ``enable_fast_math`` into the cached kernel's module. Pin the option so the comparison
+    does not depend on which solvers earlier tests in the same worker created.
+    """
+    for kernel in kernels:
+        saved_fast_math = kernel.module.options.get("fast_math", False)
+        test.addCleanup(wp.set_module_options, {"fast_math": saved_fast_math}, module=kernel.module)
+        wp.set_module_options({"fast_math": fast_math}, module=kernel.module)
+    return kernels
+
+
 def _two_particle_tile_solve_matches_legacy_bits(test, device):
     """Pack odd-sized, high-valence cloth work without changing any result bit."""
     ring_count = 20
@@ -6657,8 +6672,11 @@ def _two_particle_tile_solve_matches_legacy_bits(test, device):
         model.edge_rest_length,
         model.edge_bending_properties,
     ]
+    legacy_kernel, packed_kernel = _pin_tile_kernel_options(
+        test, make_solve_elasticity_tile(True, True, False), make_solve_elasticity_tile(True, False, True)
+    )
     wp.launch(
-        make_solve_elasticity_tile(True, True, False),
+        legacy_kernel,
         dim=model.particle_count * TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
         block_dim=TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
         inputs=[
@@ -6675,7 +6693,7 @@ def _two_particle_tile_solve_matches_legacy_bits(test, device):
         device=device,
     )
     wp.launch(
-        make_solve_elasticity_tile(True, False, True),
+        packed_kernel,
         dim=((model.particle_count + 1) // 2) * (2 * TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE),
         block_dim=2 * TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
         inputs=[
@@ -6750,18 +6768,16 @@ def _tet_only_elasticity_eligibility_matches_active_materials(test, device):
     test.assertFalse(_is_tet_only_elasticity_model(empty_model))
 
 
-def _tet_only_tile_solve_matches_legacy_bits(test, device):
-    """Match the general tile solve bit for bit on a high-valence tet mesh."""
-    # The central particle has 17 adjacent tets, exercising a second 16-lane batch.
+def _make_tets_sharing_vertex(count, device, shear=0.0):
     vertices = [wp.vec3(0.0, 0.0, 0.0)]
     indices = []
-    for tet_index in range(17):
+    for tet_index in range(count):
         scale = 1.0 + 0.01 * tet_index
         first = len(vertices)
         vertices.extend(
             (
                 wp.vec3(scale, 0.0, 0.0),
-                wp.vec3(0.0, scale, 0.0),
+                wp.vec3(shear * scale, scale, 0.0),
                 wp.vec3(0.0, 0.0, scale),
             )
         )
@@ -6781,7 +6797,97 @@ def _tet_only_tile_solve_matches_legacy_bits(test, device):
         k_damp=0.1,
     )
     builder.color()
-    model = builder.finalize(device=device)
+    return builder.finalize(device=device)
+
+
+def _make_tet_accumulation_kernel(accumulate):
+    @wp.kernel(module="unique", enable_backward=False)
+    def evaluate(
+        pos_prev: wp.array[wp.vec3],
+        pos: wp.array[wp.vec3],
+        tet_indices: wp.array2d[int],
+        tet_poses: wp.array[wp.mat33],
+        tet_materials: wp.array2d[float],
+        adjacency: MeshAdjacencyData,
+        empty_indices: wp.array2d[int],
+        empty_poses: wp.array[wp.mat22],
+        empty_materials: wp.array2d[float],
+        empty_scalars: wp.array[float],
+        forces: wp.array[wp.vec3],
+        hessians: wp.array[wp.mat33],
+    ):
+        vertex = wp.tid()
+        force, hessian = accumulate(
+            vertex,
+            0.01,
+            pos_prev,
+            pos,
+            # Typed null arrays have zero length and disable membrane and bending.
+            empty_indices,
+            empty_poses,
+            empty_materials,
+            empty_scalars,
+            empty_indices,
+            empty_scalars,
+            empty_scalars,
+            empty_materials,
+            tet_indices,
+            tet_poses,
+            tet_materials,
+            adjacency,
+            wp.vec3(),
+            wp.mat33(),
+        )
+
+        forces[vertex] = force
+        hessians[vertex] = hessian
+
+    return evaluate
+
+
+def _scalar_tet_lookahead_matches_reference(test, device):
+    """Match force and Hessian across inactive, prefetched and trailing tet slots."""
+    model = _make_tets_sharing_vertex(6, device, shear=0.2)
+    adjacency = model.soft_mesh_adjacency_device
+    begin, end = adjacency.v_adj_tets_offsets.numpy()[:2]
+    tet_ids = adjacency.v_adj_tets.numpy()[begin:end:2]
+    test.assertEqual(len(tet_ids), 6)
+    materials = model.tet_materials.numpy()
+    for slot, tet_id in enumerate(tet_ids):
+        materials[tet_id] = (100.0 * (slot + 1), 15.0 * (slot + 1) ** 2, 0.01 * slot)
+    materials[tet_ids[2], :2] = 0.0
+    model.tet_materials.assign(materials)
+
+    rest = model.particle_q.numpy()
+    rng = np.random.default_rng(404)
+    pos = wp.array(rest + rng.normal(0, 0.02, rest.shape), dtype=wp.vec3, device=device)
+    previous = wp.array(rest + rng.normal(0, 0.01, rest.shape), dtype=wp.vec3, device=device)
+    inputs = [previous, pos, model.tet_indices, model.tet_poses, model.tet_materials, adjacency, None, None, None, None]
+    results = []
+    for accumulate in (
+        particle_vbd_kernels.accumulate_elasticity_force_and_hessian,
+        particle_vbd_kernels._scalar_native_accumulate_elasticity,
+    ):
+        forces = wp.empty(model.particle_count, dtype=wp.vec3, device=device)
+        hessians = wp.empty(model.particle_count, dtype=wp.mat33, device=device)
+        wp.launch(
+            _make_tet_accumulation_kernel(accumulate),
+            model.particle_count,
+            inputs=inputs,
+            outputs=[forces, hessians],
+            device=device,
+        )
+        results.append((forces.numpy(), hessians.numpy()))
+
+    # Bound float32 roundoff in the six-term sum relative to each output's scale.
+    for reference, scalar in zip(*results, strict=True):
+        np.testing.assert_allclose(scalar, reference, rtol=2e-6, atol=2e-6)
+
+
+def _tet_only_tile_solve_matches_legacy_bits(test, device):
+    """Match the general tile solve bit for bit on a high-valence tet mesh."""
+    # The central particle has 17 adjacent tets, exercising a second 16-lane batch.
+    model = _make_tets_sharing_vertex(17, device)
     test.assertTrue(_is_tet_only_elasticity_model(model))
 
     tet_offsets = model.soft_mesh_adjacency_device.v_adj_tets_offsets.numpy()
@@ -6814,8 +6920,11 @@ def _tet_only_tile_solve_matches_legacy_bits(test, device):
     legacy_displacements = wp.array(initial_displacements, dtype=wp.vec3, device=device)
     specialized_displacements = wp.array(initial_displacements, dtype=wp.vec3, device=device)
 
+    legacy_kernel, specialized_kernel = _pin_tile_kernel_options(
+        test, make_solve_elasticity_tile(True, True, False), make_solve_elasticity_tile(False, True, False)
+    )
     wp.launch(
-        make_solve_elasticity_tile(True, True, False),
+        legacy_kernel,
         dim=model.particle_count * TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
         block_dim=TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
         inputs=[
@@ -6846,7 +6955,7 @@ def _tet_only_tile_solve_matches_legacy_bits(test, device):
         device=device,
     )
     wp.launch(
-        make_solve_elasticity_tile(False, True, False),
+        specialized_kernel,
         dim=model.particle_count * TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
         block_dim=TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
         inputs=[
@@ -7656,6 +7765,12 @@ add_function_test(
     "test_tet_only_elasticity_eligibility_matches_active_materials",
     _tet_only_elasticity_eligibility_matches_active_materials,
     devices=cpu_devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_scalar_tet_lookahead_matches_reference",
+    _scalar_tet_lookahead_matches_reference,
+    devices=devices,
 )
 add_function_test(
     TestSolverVBD,
