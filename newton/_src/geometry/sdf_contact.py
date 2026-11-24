@@ -1596,6 +1596,12 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                 elif not use_bvh_for_sdf:
                     use_texture_sdf_for_search = True
                     texture_voxel_radius = texture_sdf.voxel_radius
+                # The coarse grid has the largest texel spacing. A hardware
+                # interpolation weight has eight fractional bits, so allow one
+                # weight increment per axis when screening a distance.
+                filter_error = float(0.0)
+                if use_texture_sdf_for_search:
+                    filter_error = wp.dot(texture_sdf.voxel_size, wp.vec3(1.0)) * texture_sdf.subgrid_size_f / 256.0
                 search_precision_unscaled = mesh_sdf_contact_search_precision(
                     margin_sum,
                     min_sdf_scale,
@@ -1709,6 +1715,12 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                     if aabb_dist_sq > 0.0:
                                         diff_mag = wp.sqrt(aabb_dist_sq)
                                     midpoint_sdf = wp.static(sample_clamped)(texture_sdf, clamped, diff_mag)
+                                    inner_radius = bsphere_radius + margin_sum / min_sdf_scale
+                                    if (
+                                        wp.abs(midpoint_sdf - culling_radius) <= filter_error
+                                        or wp.abs(midpoint_sdf - inner_radius) <= filter_error
+                                    ):
+                                        midpoint_sdf = texture_sample_sdf(texture_sdf, bsphere_center)
                                     add_edge = midpoint_sdf <= culling_radius
 
                         cull_result = EdgeCullResult()
@@ -1792,7 +1804,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                             owns_endpoint = (
                                 best_endpoint == 0 or corner_ownership == 0 or (corner_ownership & best_endpoint) != 0
                             )
-                            if dist_approx <= contact_threshold and owns_endpoint:
+                            if dist_approx <= contact_threshold + filter_error * min_sdf_scale and owns_endpoint:
                                 dist, point_world, direction_world, _flat = contact_geometry(
                                     dist_unscaled,
                                     point_unscaled,
@@ -1842,7 +1854,9 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                     min_sdf_scale,
                                     use_texture_sdf_for_search,
                                 )
-                                if inner_cull_consistent:
+                                if inner_cull_consistent and (
+                                    not use_texture_sdf_for_search or dist <= contact_threshold
+                                ):
                                     writer_func(contact_data, writer_data, -1)
 
                     # Cooperative reset before the next outer iteration.
@@ -2051,6 +2065,12 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                 elif not use_bvh_for_sdf:
                     use_texture_sdf_for_search = True
                     texture_voxel_radius = texture_sdf.voxel_radius
+                # The coarse grid has the largest texel spacing. A hardware
+                # interpolation weight has eight fractional bits, so allow one
+                # weight increment per axis when screening a distance.
+                filter_error = float(0.0)
+                if use_texture_sdf_for_search:
+                    filter_error = wp.dot(texture_sdf.voxel_size, wp.vec3(1.0)) * texture_sdf.subgrid_size_f / 256.0
                 search_precision_unscaled = mesh_sdf_contact_search_precision(
                     margin_sum,
                     min_sdf_scale,
@@ -2148,6 +2168,12 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                     if aabb_dist_sq > 0.0:
                                         diff_mag = wp.sqrt(aabb_dist_sq)
                                     midpoint_sdf = wp.static(sample_clamped)(texture_sdf, clamped, diff_mag)
+                                    inner_radius = bsphere_radius + margin_sum / min_sdf_scale
+                                    if (
+                                        wp.abs(midpoint_sdf - culling_radius) <= filter_error
+                                        or wp.abs(midpoint_sdf - inner_radius) <= filter_error
+                                    ):
+                                        midpoint_sdf = texture_sample_sdf(texture_sdf, bsphere_center)
                                     add_edge = midpoint_sdf <= culling_radius
 
                         cull_result = EdgeCullResult()
@@ -2228,7 +2254,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                             owns_endpoint = (
                                 best_endpoint == 0 or corner_ownership == 0 or (corner_ownership & best_endpoint) != 0
                             )
-                            if dist_approx <= contact_threshold and owns_endpoint:
+                            if dist_approx <= contact_threshold + filter_error * min_sdf_scale and owns_endpoint:
                                 X_tri_ws = shape_transform[tri_shape]
                                 X_sdf_ws = shape_transform[sdf_shape]
                                 dist, point_world, direction_world, flat = contact_geometry(
@@ -2259,6 +2285,9 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                     sdf_aabb_upper,
                                     min_sdf_scale,
                                     use_texture_sdf_for_search,
+                                )
+                                inner_cull_consistent = inner_cull_consistent and (
+                                    not use_texture_sdf_for_search or dist <= contact_threshold
                                 )
                                 if inner_cull_consistent and wp.static(flat_pass is False) and flat:
                                     wp.atomic_or(flat_blocks, block_id, 1)

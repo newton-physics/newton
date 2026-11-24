@@ -255,13 +255,12 @@ def test_mesh_mesh_contact_at_pair_gap(test, device):
 
 
 def test_mesh_sdf_gap_preserves_penetrating_contacts(test, device):
-    """Apply the inner edge cull to the resampled contact distance."""
+    """Keep true penetrations when the hardware sample rounds outside."""
     with wp.ScopedDevice(device):
         box = newton.Mesh.create_box(1.0, 1.0, 0.523)
         box.build_sdf(max_resolution=32, device=device)
-        # A tiny edge just inside the face can sample positive in the hardware
-        # filter. Its midpoint then fails the zero-gap cull even though the
-        # software interpolation at the chosen point is negative.
+        # Hardware filtering rounds this point outside the face. The
+        # software-interpolated distance is about -370 micrometers.
         size = 2.0e-5
         probe = newton.Mesh(
             np.array([[-size, -size, 0.0], [size, -size, 0.0], [0.0, size, 0.0]], dtype=np.float32),
@@ -285,9 +284,13 @@ def test_mesh_sdf_gap_preserves_penetrating_contacts(test, device):
                 p0 = contacts.rigid_contact_point0.numpy()[:count] + np.asarray(pose.p)
                 p1 = contacts.rigid_contact_point1.numpy()[:count]
                 normals = contacts.rigid_contact_normal.numpy()[:count]
-                counts.append(np.count_nonzero(np.sum((p1 - p0) * normals, axis=1) < 0))
+                distances = np.sum((p1 - p0) * normals, axis=1)
+                penetrating = distances[distances < 0.0]
+                np.testing.assert_allclose(penetrating, 0.52263 - 0.523, atol=1.0e-5)
+                counts.append(len(penetrating))
         for reduce_contacts, (inner, with_gap) in penetrating_counts.items():
             with test.subTest(reduce_contacts=reduce_contacts):
+                test.assertGreater(inner, 0)
                 test.assertEqual(inner, with_gap)
 
 
