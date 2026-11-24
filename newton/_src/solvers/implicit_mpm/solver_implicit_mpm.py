@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from functools import cache
 from itertools import pairwise
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 import warp as wp
@@ -38,6 +38,9 @@ from .rasterized_collisions import (
 )
 from .render_grains import sample_render_grains, update_render_grains
 from .solve_rheology import CollisionData, MomentumData, RheologyData, YieldParamVec, solve_rheology
+
+if TYPE_CHECKING:
+    from .particle_streaming import ParticleStreaming
 
 __all__ = ["SolverImplicitMPM"]
 
@@ -1858,6 +1861,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         self._mpm_model = ImplicitMPMModel(model, config)
         self._particle_activity = None
         self._particle_working_set = None
+        self._particle_streaming = None
 
         self.max_iterations = config.max_iterations
         self.tolerance = float(config.tolerance)
@@ -2312,6 +2316,79 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             working-set API in :meth:`set_particle_working_set`.
         """
         return None if self._particle_working_set is None else self._particle_working_set.count
+
+    def set_particle_streaming(
+        self,
+        state: newton.State,
+        *,
+        body_indices: Sequence[int] | None,
+        size: Sequence[float] = (1.0, 1.0),
+        margin: float = 0.2,
+        tile_size: float = 0.2,
+        surface_mesh: wp.Mesh | None = None,
+        world_origins: Sequence[Sequence[float]] | np.ndarray | None = None,
+        spawn_heights: Sequence[float] | np.ndarray | None = None,
+    ) -> ParticleStreaming | None:
+        """Configure an existing particle pool to follow one body per world.
+
+        The model owns a fixed number of particles. As the window moves, material
+        leaving the pool is recycled at the entering edge with fresh history.
+        The surrounding ring provides stationary support. Use the returned pool's
+        ``update(state)`` before each step, ``post_step(state)`` after it, and
+        ``check_status()`` before using the results of a rollout.
+
+        Args:
+            state: Current input state for particle history and anchor poses.
+            body_indices: Anchor body row per world. None disables streaming.
+            size: XY size of the dynamic window [m].
+            margin: Width of its stationary support ring [m].
+            tile_size: Step by which the window moves [m]. Must not exceed margin.
+            surface_mesh: Static surface used to place recycled particles.
+            world_origins: Positions of the initial pool centers [m].
+            spawn_heights: Surface height used to author each initial pool [m].
+
+        Returns:
+            The streaming pool, or None when disabled.
+
+        Raises:
+            RuntimeError: Configuration attempted inside capture or while already configured.
+            ValueError: Missing inputs or a model that does not own the particle pool.
+
+        .. experimental::
+
+            Streaming is an experimental runtime operation for standalone MPM.
+            Configure it between steps and recapture graphs after changing it.
+        """
+        if self.model.device.is_capturing:
+            raise RuntimeError("Configure particle streaming outside CUDA graph capture.")
+        if body_indices is None:
+            if self._particle_streaming is not None:
+                self._particle_streaming._restore_mass()
+                self._particle_streaming = None
+            return None
+        if self._particle_streaming is not None:
+            raise RuntimeError("Disable the existing particle streaming pool before configuring a new one.")
+        if not isinstance(self.model, newton.Model):
+            raise ValueError("Particle streaming requires a standalone MPM model.")
+        if surface_mesh is None or world_origins is None or spawn_heights is None:
+            raise ValueError("Provide the streaming surface mesh, world origins and spawn heights.")
+        self._validate_reset_inputs(state)
+        self.check_sparse_grid_rebuild_status()
+
+        from .particle_streaming import ParticleStreaming  # noqa: PLC0415
+
+        self._particle_streaming = ParticleStreaming(
+            self,
+            state,
+            body_indices=body_indices,
+            size=size,
+            margin=margin,
+            tile_size=tile_size,
+            surface_mesh=surface_mesh,
+            world_origins=world_origins,
+            spawn_heights=spawn_heights,
+        )
+        return self._particle_streaming
 
     def set_particle_working_set(
         self,

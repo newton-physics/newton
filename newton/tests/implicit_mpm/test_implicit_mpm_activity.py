@@ -538,6 +538,64 @@ def test_material_change_retains_velocity_partition(test, device):
     test.assertGreater(np.linalg.norm(state.mpm.particle_stress.numpy()), 1.0e-6)
 
 
+def test_streaming_recycles_only_leaving_sites(test, device):
+    """Keep overlapping sand and recycle the leaving strip across an anchor move."""
+    builder = newton.ModelBuilder()
+    SolverImplicitMPM.register_custom_attributes(builder)
+    body = builder.add_body(is_kinematic=True)
+    for i, x in enumerate((-0.225, -0.125, -0.025, 0.075, 0.175, 0.275)):
+        corner = 0.05 * (i % 2)
+        builder.add_particle(pos=(x, corner, 0.025 + corner), vel=(0.0, 0.0, 0.0), mass=1.0, radius=0.025)
+    builder.add_ground_plane()
+    model = builder.finalize(device=device)
+    solver = SolverImplicitMPM(model, SolverImplicitMPM.Config(grid_type="dense", voxel_size=0.05))
+    state = model.state()
+    surface = wp.Mesh(
+        points=wp.array(
+            [(-1.0, -1.0, 0.0), (1.0, -1.0, 0.0), (1.0, 1.0, 0.0), (-1.0, 1.0, 0.0)], dtype=wp.vec3, device=device
+        ),
+        indices=wp.array([0, 1, 2, 0, 2, 3], dtype=int, device=device),
+    )
+    pool = solver.set_particle_streaming(
+        state,
+        body_indices=[body],
+        size=(0.4, 0.4),
+        margin=0.1,
+        tile_size=0.1,
+        surface_mesh=surface,
+        world_origins=[(0.0, 0.0, 0.0)],
+        spawn_heights=[0.0],
+    )
+    pool.update(state)
+    np.testing.assert_array_equal(model.particle_mass.numpy(), [0, 1, 1, 1, 1, 0])
+
+    velocity = np.ones((6, 3), dtype=np.float32)
+    state.particle_qd.assign(velocity)
+    state.mpm.particle_Jp.fill_(0.7)
+    if wp.get_device(device).is_cuda and wp.is_conditional_graph_supported():
+        with wp.ScopedCapture(device=device) as capture:
+            pool.update(state)
+            pool.post_step(state)
+    else:
+        capture = None
+    state.body_q.assign(np.array([[0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]], dtype=np.float32))
+    if capture is not None:
+        wp.capture_launch(capture.graph)
+    else:
+        pool.update(state)
+        pool.post_step(state)
+    pool.check_status()
+    np.testing.assert_allclose(state.particle_q.numpy()[:, 0], [0.375, -0.125, -0.025, 0.075, 0.175, 0.275])
+    np.testing.assert_array_equal(model.particle_mass.numpy(), [0, 0, 1, 1, 1, 1])
+    np.testing.assert_array_equal(state.particle_qd.numpy()[2:5], velocity[2:5])
+    np.testing.assert_allclose(state.mpm.particle_Jp.numpy()[2:5], 0.7)
+    np.testing.assert_allclose(state.mpm.particle_Jp.numpy()[[0, 1, 5]], 1.0)
+
+    del capture
+    solver.set_particle_streaming(state, body_indices=None)
+    np.testing.assert_array_equal(model.particle_mass.numpy(), np.ones(6, dtype=np.float32))
+
+
 class TestImplicitMPMActivity(unittest.TestCase):
     """Exercise graph replay through public sleeping, working-set, and reset APIs."""
 
@@ -547,6 +605,14 @@ add_function_test(
     "test_activity_request_safety",
     test_activity_request_safety,
     devices=["cpu"],
+    check_output=False,
+)
+
+add_function_test(
+    TestImplicitMPMActivity,
+    "test_streaming_recycles_only_leaving_sites",
+    test_streaming_recycles_only_leaving_sites,
+    devices=["cpu", *get_selected_cuda_test_devices(mode="basic")],
     check_output=False,
 )
 

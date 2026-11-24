@@ -103,3 +103,27 @@ These controls manage runtime state and have no USD authoring representation.
 They are disabled by default. For a fully active reference, omit
 ``set_particle_sleeping`` and ``set_particle_working_set`` while keeping the
 material, geometry, resolution, and timestep unchanged.
+
+Streaming a fixed particle pool
+-------------------------------
+
+For a standalone MPM scene that traverses a large terrain, author only the
+particles in a moving window and its stationary ring.
+:meth:`~newton.solvers.SolverImplicitMPM.set_particle_streaming` configures a
+pool around one anchor body per world. The moving window retains overlapping
+particle state. Slots in the leaving strip are reused on the entering edge
+with fresh material state, so traveling back does not restore old tracks.
+
+Configure streaming outside capture. Call ``pool.update(state_in)`` before
+each solver step and ``pool.post_step(state_out)`` afterward. The supplied
+states must be the states used by the step. The update and pinning can be
+captured alongside stepping. Before using the results, call
+``pool.check_status()`` to detect failed terrain surface queries.
+Call ``pool.reset(world_mask)`` to reinitialize selected pools on the next
+update. Pick the ring width and sparse capacities for the expected motion and
+interaction distance, and compare forces against a full bed of the same
+resolution.
+
+This experimental runtime operation needs a static surface mesh in world
+coordinates and already authored particle pools. It adds no USD authoring
+schema.
