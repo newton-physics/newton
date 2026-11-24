@@ -102,17 +102,18 @@ def mesh_sdf_contact_passes_inner_cull_consistency(
     distance_world: float,
     inner_contact_threshold: float,
     midpoint_sdf: float,
-    bsphere_center: wp.vec3,
-    bsphere_radius: float,
+    edge_start: wp.vec3,
+    edge_end: wp.vec3,
     sdf_aabb_lower: wp.vec3,
     sdf_aabb_upper: wp.vec3,
     min_sdf_scale: float,
     use_texture_bounds: bool,
 ) -> bool:
-    """Reject gap-found penetrations that fail the inner edge cull."""
+    """Reject gap-found penetrations using the final contact distance."""
     if distance_world >= inner_contact_threshold:
         return True
 
+    bsphere_center, bsphere_radius = get_edge_bounding_sphere(edge_start, edge_end)
     inner_threshold_unscaled = inner_contact_threshold / min_sdf_scale
     culling_radius = bsphere_radius + inner_threshold_unscaled
     if use_texture_bounds:
@@ -1788,22 +1789,10 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                             # contact must still pass the inner cull implied
                             # by a 1-Lipschitz signed distance field.
                             dist_approx = dist_unscaled * min_sdf_scale
-                            bsphere_center_inner, bsphere_radius_inner = get_edge_bounding_sphere(v0, v1)
-                            inner_cull_consistent = mesh_sdf_contact_passes_inner_cull_consistency(
-                                dist_approx,
-                                margin_sum,
-                                cached_sdf_val,
-                                bsphere_center_inner,
-                                bsphere_radius_inner,
-                                sdf_aabb_lower,
-                                sdf_aabb_upper,
-                                min_sdf_scale,
-                                use_texture_sdf_for_search,
-                            )
                             owns_endpoint = (
                                 best_endpoint == 0 or corner_ownership == 0 or (corner_ownership & best_endpoint) != 0
                             )
-                            if dist_approx <= contact_threshold and inner_cull_consistent and owns_endpoint:
+                            if dist_approx <= contact_threshold and owns_endpoint:
                                 dist, point_world, direction_world, _flat = contact_geometry(
                                     dist_unscaled,
                                     point_unscaled,
@@ -1842,7 +1831,19 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                     contact_data.gap_sum = gap_sum
                                 contact_data.sort_sub_key = (my_edge_idx << 2) | (mode << 1)
 
-                                writer_func(contact_data, writer_data, -1)
+                                inner_cull_consistent = mesh_sdf_contact_passes_inner_cull_consistency(
+                                    dist,
+                                    margin_sum,
+                                    cached_sdf_val,
+                                    v0,
+                                    v1,
+                                    sdf_aabb_lower,
+                                    sdf_aabb_upper,
+                                    min_sdf_scale,
+                                    use_texture_sdf_for_search,
+                                )
+                                if inner_cull_consistent:
+                                    writer_func(contact_data, writer_data, -1)
 
                     # Cooperative reset before the next outer iteration.
                     # The drain loop above already left the stack empty,
@@ -2224,22 +2225,10 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                             # contact must still pass the inner cull implied
                             # by a 1-Lipschitz signed distance field.
                             dist_approx = dist_unscaled * min_sdf_scale
-                            bsphere_center_inner, bsphere_radius_inner = get_edge_bounding_sphere(v0, v1)
-                            inner_cull_consistent = mesh_sdf_contact_passes_inner_cull_consistency(
-                                dist_approx,
-                                margin_sum,
-                                cached_sdf_val,
-                                bsphere_center_inner,
-                                bsphere_radius_inner,
-                                sdf_aabb_lower,
-                                sdf_aabb_upper,
-                                min_sdf_scale,
-                                use_texture_sdf_for_search,
-                            )
                             owns_endpoint = (
                                 best_endpoint == 0 or corner_ownership == 0 or (corner_ownership & best_endpoint) != 0
                             )
-                            if dist_approx <= contact_threshold and inner_cull_consistent and owns_endpoint:
+                            if dist_approx <= contact_threshold and owns_endpoint:
                                 X_tri_ws = shape_transform[tri_shape]
                                 X_sdf_ws = shape_transform[sdf_shape]
                                 dist, point_world, direction_world, flat = contact_geometry(
@@ -2260,9 +2249,22 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                     min_sdf_scale,
                                     X_sdf_ws,
                                 )
-                                if wp.static(flat_pass is False) and flat:
+                                inner_cull_consistent = mesh_sdf_contact_passes_inner_cull_consistency(
+                                    dist,
+                                    margin_sum,
+                                    cached_sdf_val,
+                                    v0,
+                                    v1,
+                                    sdf_aabb_lower,
+                                    sdf_aabb_upper,
+                                    min_sdf_scale,
+                                    use_texture_sdf_for_search,
+                                )
+                                if inner_cull_consistent and wp.static(flat_pass is False) and flat:
                                     wp.atomic_or(flat_blocks, block_id, 1)
-                                if wp.static(flat_pass is None) or flat == wp.static(flat_pass is True):
+                                if inner_cull_consistent and (
+                                    wp.static(flat_pass is None) or flat == wp.static(flat_pass is True)
+                                ):
                                     contact_normal = -direction_world if mode == 0 else direction_world
                                     contact_center = point_world - 0.5 * dist * direction_world
                                     position_local_tri = wp.quat_rotate_inv(
