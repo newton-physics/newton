@@ -9442,7 +9442,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         spec.option.disableflags = spec.option.disableflags | int(mujoco.mjtDisableBit.mjDSBL_FILTERPARENT)
         for b1, b2 in body_filters:
             mb1, mb2 = body_mapping[b1], body_mapping[b2]
-            spec.add_exclude(bodyname1=spec.bodies[mb1].name, bodyname2=spec.bodies[mb2].name)
+            spec.add_exclude(bodyname1=mj_bodies[mb1].name, bodyname2=mj_bodies[mb2].name)
 
         # add explicit contact pairs from custom attributes
         mjc_pair_entries = self._init_pairs(model, spec, shape_mapping, first_world)
