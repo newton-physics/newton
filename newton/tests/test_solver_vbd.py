@@ -6580,6 +6580,20 @@ def _body_particle_attachment_to_cable_capsule(test, device):
     test.assertGreater(float(np.linalg.norm(particle_q[particle] - initial_particle_pos)), 1.0e-3)
 
 
+def _pin_tile_kernel_options(test, *kernels, fast_math=True):
+    """Compile memoized tile kernels with identical options for a bitwise comparison.
+
+    ``make_solve_elasticity_tile`` is cached per process, and each ``SolverVBD`` writes its
+    ``enable_fast_math`` into the cached kernel's module. Pin the option so the comparison
+    does not depend on which solvers earlier tests in the same worker created.
+    """
+    for kernel in kernels:
+        saved_fast_math = kernel.module.options.get("fast_math", False)
+        test.addCleanup(wp.set_module_options, {"fast_math": saved_fast_math}, module=kernel.module)
+        wp.set_module_options({"fast_math": fast_math}, module=kernel.module)
+    return kernels
+
+
 def _two_particle_tile_solve_matches_legacy_bits(test, device):
     """Pack odd-sized, high-valence cloth work without changing any result bit."""
     ring_count = 20
@@ -6658,8 +6672,11 @@ def _two_particle_tile_solve_matches_legacy_bits(test, device):
         model.edge_rest_length,
         model.edge_bending_properties,
     ]
+    legacy_kernel, packed_kernel = _pin_tile_kernel_options(
+        test, make_solve_elasticity_tile(True, True, False), make_solve_elasticity_tile(True, False, True)
+    )
     wp.launch(
-        make_solve_elasticity_tile(True, True, False),
+        legacy_kernel,
         dim=model.particle_count * TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
         block_dim=TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
         inputs=[
@@ -6676,7 +6693,7 @@ def _two_particle_tile_solve_matches_legacy_bits(test, device):
         device=device,
     )
     wp.launch(
-        make_solve_elasticity_tile(True, False, True),
+        packed_kernel,
         dim=((model.particle_count + 1) // 2) * (2 * TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE),
         block_dim=2 * TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
         inputs=[
@@ -6903,8 +6920,11 @@ def _tet_only_tile_solve_matches_legacy_bits(test, device):
     legacy_displacements = wp.array(initial_displacements, dtype=wp.vec3, device=device)
     specialized_displacements = wp.array(initial_displacements, dtype=wp.vec3, device=device)
 
+    legacy_kernel, specialized_kernel = _pin_tile_kernel_options(
+        test, make_solve_elasticity_tile(True, True, False), make_solve_elasticity_tile(False, True, False)
+    )
     wp.launch(
-        make_solve_elasticity_tile(True, True, False),
+        legacy_kernel,
         dim=model.particle_count * TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
         block_dim=TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
         inputs=[
@@ -6935,7 +6955,7 @@ def _tet_only_tile_solve_matches_legacy_bits(test, device):
         device=device,
     )
     wp.launch(
-        make_solve_elasticity_tile(False, True, False),
+        specialized_kernel,
         dim=model.particle_count * TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
         block_dim=TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
         inputs=[
