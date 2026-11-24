@@ -8080,7 +8080,7 @@ class TestMuJoCoAttributes(unittest.TestCase):
         assert np.allclose(model.mujoco.condim.numpy(), [6])
         assert np.allclose(solver.mjw_model.geom_condim.numpy(), [6])
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_collision_masks_ignore_mjc_usd_attributes(self):
         """Warn about and ignore ``mjc:contype`` and ``mjc:conaffinity``, which MjcPhysics does not define."""
         from pxr import Sdf, Usd, UsdGeom, UsdPhysics
