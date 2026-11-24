@@ -455,6 +455,20 @@ class TestModelBuilderReplicate(unittest.TestCase):
                     np.testing.assert_array_equal(source.tet_poses[0], rest_inverse)
                     np.testing.assert_array_equal(source.particle_q, points)
 
+        # Mat33 also accepts nine flat floats; rotated copies keep that element shape.
+        source.particle_q = rest.tolist()
+        source.tet_poses = [rest_inverse.reshape(9).tolist()]
+        expected = (rest_inverse @ rotation.T).reshape(9)
+        for method in ("add_builder", "replicate"):
+            with self.subTest(flat=True, method=method):
+                target = ModelBuilder()
+                if method == "replicate":
+                    target.replicate(source, 1, xforms=[xforms[2]])
+                else:
+                    target.add_builder(source, xforms[2])
+                self.assertEqual(np.shape(target.tet_poses[0]), (9,))
+                np.testing.assert_allclose(target.tet_poses[0], expected, atol=2e-6, rtol=0)
+
     def test_copy_rotation_rotates_world_velocities(self):
         """Verify that yaw rotates world-frame position and twist and that a pure translation leaves velocity unchanged."""
 

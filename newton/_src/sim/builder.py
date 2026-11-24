@@ -4482,6 +4482,8 @@ class ModelBuilder:
                 attribute_specs.pop(attr)
                 values = np.tile(pack_warp_values(source, warp_type), (copy_count, *(1,) * len(warp_type._shape_)))
                 rotate_copies(values)
+                # Keep the source element shape, e.g. Mat33 rows given as 9 flat floats.
+                values = values.reshape((-1, *np.shape(source[0])))
                 if attr in array_starts:
                     getattr(self, attr)[array_starts[attr] :] = values
                 else:
@@ -6756,10 +6758,10 @@ class ModelBuilder:
 
         Args:
             builder: The model builder to copy data from.
-            xform: Optional transform that places the copy as a whole. It moves everything
-                expressed in the world frame, including root bodies and joint frames, static
-                shapes, particles, tetrahedral rest poses, and free-root joint targets, and
-                rotates world-frame velocities.
+            xform: Optional transform that places the copy. It moves the root bodies and
+                root joint frames, static shapes, particles, tetrahedral rest poses, and
+                free-root joint state and targets, and rotates their world-frame velocities.
+                Other world-frame data, such as custom attributes, is copied unchanged.
             label_prefix: Optional prefix prepended to all entity labels
                 from the source builder. Labels are joined with ``/``
                 (e.g., ``"left/panda/base_link"``).
