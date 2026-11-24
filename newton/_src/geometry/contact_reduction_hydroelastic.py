@@ -68,6 +68,8 @@ EPS_LARGE = 1e-8
 EPS_SMALL = 1e-20
 MIN_FRICTION_SCALE = 1e-2
 SPECULATIVE_BIN_OFFSET = 128
+SPECULATIVE_CONTACT_AREA = 1.0e-2
+"""Area [m^2] that turns the pair's material stiffness into the activation stiffness of a speculative contact."""
 _NUM_VOXEL_GROUPS = (NUM_VOXEL_DEPTH_SLOTS + NUM_SPATIAL_DIRECTIONS) // (NUM_SPATIAL_DIRECTIONS + 1)
 assert NUM_NORMAL_BINS + _NUM_VOXEL_GROUPS <= SPECULATIVE_BIN_OFFSET
 assert SPECULATIVE_BIN_OFFSET + _NUM_VOXEL_GROUPS <= 256
@@ -979,7 +981,6 @@ def _create_accumulate_moments_kernel(
 
 def create_export_hydroelastic_reduced_contacts_kernel(
     writer_func: Any,
-    margin_contact_area: float,
     normal_matching: bool = True,
     anchor_contact: bool = False,
     moment_matching: bool = False,
@@ -997,8 +998,8 @@ def create_export_hydroelastic_reduced_contacts_kernel(
 
     This ensures the total contact force from the K reduced contacts equals the
     aggregate force from all original contacts under any user-supplied
-    ``pressure_func``. Speculative contact activation stiffness uses the
-    configured compatibility area and the pair's series-combined material slope.
+    ``pressure_func``. Speculative contact activation stiffness uses
+    ``SPECULATIVE_CONTACT_AREA`` and the pair's series-combined material slope.
 
     .. important::
 
@@ -1008,8 +1009,6 @@ def create_export_hydroelastic_reduced_contacts_kernel(
 
     Args:
         writer_func: A warp function with signature (ContactData, writer_data, int) -> None
-        margin_contact_area: Deprecated compatibility area [m^2] for
-            speculative contact activation stiffness.
         normal_matching: If True, rotate contact normals so their weighted sum aligns with aggregate force
         anchor_contact: If True, add an anchor contact at the center of pressure for each entry
         moment_matching: If True, adjust per-contact friction scales so that
@@ -1286,7 +1285,7 @@ def create_export_hydroelastic_reduced_contacts_kernel(
                         if depth < 0.0:
                             c_stiffness = area_i * pressure_i / wp.max(-depth, wp.static(EPS_SMALL))
                         else:
-                            c_stiffness = wp.static(margin_contact_area) * k_eff_first
+                            c_stiffness = SPECULATIVE_CONTACT_AREA * k_eff_first
 
                     # Moment matching friction adjustment
                     if wp.static(moment_matching) and depth < 0.0:
@@ -1385,12 +1384,12 @@ def create_export_hydroelastic_reduced_contacts_kernel(
                     elif depth < 0.0:
                         c_stiffness = area_i * pressure_i / wp.max(-depth, wp.static(EPS_SMALL))
                     else:
-                        c_stiffness = wp.static(margin_contact_area) * k_eff_first
+                        c_stiffness = SPECULATIVE_CONTACT_AREA * k_eff_first
 
                 if depth >= 0.0:
                     # Speculative contacts never inherit penetrating
                     # force/wrench-matching stiffness from a mixed bin.
-                    c_stiffness = wp.static(margin_contact_area) * k_eff_first
+                    c_stiffness = SPECULATIVE_CONTACT_AREA * k_eff_first
                     c_friction_scale = 1.0
 
                 # Transform contact to world space
@@ -1470,8 +1469,6 @@ class HydroelasticReductionConfig:
         moment_matching: If True, adjust per-contact friction scales so that the
             maximum friction moment per normal bin is preserved between reduced
             and unreduced contacts. Automatically enables ``anchor_contact``.
-        margin_contact_area: Deprecated compatibility area [m^2] for
-            speculative contact activation stiffness.
         hashtable_size_factor: Multiplier applied to the contact buffer capacity
             when allocating the reduction hashtable. Must be positive.
     """
@@ -1479,7 +1476,6 @@ class HydroelasticReductionConfig:
     normal_matching: bool = True
     anchor_contact: bool = False
     moment_matching: bool = False
-    margin_contact_area: float = 1e-2
     hashtable_size_factor: float = 0.25
 
 
@@ -1627,7 +1623,6 @@ class HydroelasticContactReduction:
         # Create the export kernel with the configured options
         self._export_kernel = create_export_hydroelastic_reduced_contacts_kernel(
             writer_func=writer_func,
-            margin_contact_area=config.margin_contact_area,
             normal_matching=config.normal_matching,
             anchor_contact=config.anchor_contact,
             moment_matching=config.moment_matching,

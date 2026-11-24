@@ -1,0 +1,1 @@
+Use optimized dodecahedral normal bins for contact reduction, retaining the 100-slot spatial depth budget for mesh and SDF contacts. No API or scene migration is required; contact selection and resulting simulation trajectories may change.

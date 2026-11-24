@@ -57,7 +57,7 @@ jobs:
     needs: [check-warp-update]
     if: ${{ !cancelled() && github.repository == 'newton-physics/newton' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 300  # Budget for sequential dispatch+poll of all sub-workflows
+    timeout-minutes: 330  # Budget for sequential dispatch+poll of all sub-workflows
     permissions:
       actions: write
       contents: read

@@ -8,11 +8,9 @@ VBD
 
 :class:`~newton.solvers.SolverVBD` is a unified implicit solver based on
 Vertex Block Descent (VBD): cloth, soft bodies, rigid bodies (joints,
-contacts, rods), and their interactions are all solved in one VBD loop, with
-joint and contact constraints enforced through an augmented-Lagrangian (ALM)
-extension of the method. The compliant ALM constraint path is enabled
-by default (``rigid_compliant_alm=True``). Pass ``rigid_compliant_alm=False``
-explicitly to retain the deprecated legacy path during its migration period.
+contacts, rods), and their interactions are all solved in one VBD loop.
+Rigid joints and body-body contacts use a compliant augmented-Lagrangian
+(ALM) formulation.
 
 .. experimental::
 
@@ -35,9 +33,6 @@ cited by :class:`~newton.solvers.SolverVBD`:
 
 - Anka He Chen, Ziheng Liu, Yin Yang, and Cem Yuksel. 2024. Vertex Block
   Descent. *ACM Trans. Graph.* 43, 4. https://doi.org/10.1145/3658179
-- Chris Giles, Elie Diaz, and Cem Yuksel. 2025. Augmented Vertex Block
-  Descent. *ACM Trans. Graph.* 44, 4. https://doi.org/10.1145/3731195
-  (the deprecated legacy rigid constraint path)
 - Anka H. Chen, Jerry Hsu, Youssef Ayman, and Miles Macklin. 2026. Divide
   and Truncate: A Penetration and Inversion Free Framework for Coupled
   Multi-physics System. In *ACM SIGGRAPH 2026 Conference Papers*.
@@ -101,10 +96,12 @@ labels and keeps the fresh geometry; ``"sticky"`` also replays the saved
 contact points and normal (experimental); the default ``"disabled"`` writes no
 labels (:ref:`Contact Matching`). The solver uses the labels in two places.
 Between steps, ``rigid_contact_history=True`` snapshots the solved state of
-every contact at the end of the step (multiplier, penalty stiffness, normal)
+every contact at the end of the step (multiplier and normal)
 and restores it onto the matched contacts at the next step's contact refresh:
 the normal multiplier along the new normal and, with ``"latest"`` matching,
-the tangential multiplier projected onto the friction disk. Unmatched contacts
+the tangential multiplier projected onto the friction disk. Both matching modes
+restore torsional and rolling multipliers, projected to the current contact
+frame and torque limits. Unmatched contacts
 start cold, and so does every contact when two detection passes run between
 two steps. Between iterations, a ``RIGID`` slot on the ``ITERATIONS`` schedule
 re-detects inside the iteration loop and replaces the contact set in the
@@ -166,15 +163,13 @@ the systems. The contact material between particles and shapes mixes
 with the shape values (:ref:`vbd-energy-terms`). The Model Parameters table of
 :ref:`Tuning VBD` gives the effect and typical values of each of these.
 
-Rigid constraint rows use the compliant ALM formulation by default
-(``rigid_compliant_alm=True``): the authored stiffness is the physical
-stiffness of the row and the solver picks the metric :math:`\rho` itself
-(:ref:`vbd-rigid-joints`). The legacy AVBD path (``rigid_compliant_alm=False``)
-is deprecated since 1.6, together with its controls: the per-joint
-``vbd:joint_is_hard`` custom attribute (``model.vbd.joint_is_hard``, declared
-by :meth:`~newton.solvers.SolverVBD.register_custom_attributes`) and
-:meth:`~newton.solvers.SolverVBD.set_joint_constraint_mode`. Under compliant
-ALM they have no solver-mode effect.
+Rigid constraint rows use the compliant ALM formulation: the authored
+stiffness is the physical stiffness of the row and the solver picks the
+metric :math:`\rho` itself (:ref:`vbd-rigid-joints`). The legacy AVBD path,
+deprecated in 1.6, has been removed together with its penalty-ramp controls,
+the hard-contact switch ``rigid_contact_hard``, and the hard/soft joint API
+(``vbd:joint_is_hard``, ``SolverVBD.set_joint_constraint_mode()``, and
+``SolverVBD.JointSlot``).
 
 Scene-authored settings
 ^^^^^^^^^^^^^^^^^^^^^^^
@@ -231,10 +226,6 @@ value.
 VBD runs exactly this many iterations per step, so assets authored for
 convergence-checked solvers (for example ``newton:maxSolverIterations = 100``)
 cost proportionally more. Pass ``iterations=`` to override.
-
-Scene values apply in both constraint modes: they are not skipped when the
-deprecated ``rigid_compliant_alm=False`` path is selected, even though the
-schema scopes them to the compliant ALM path.
 
 Coupling Modes
 ~~~~~~~~~~~~~~
@@ -309,7 +300,7 @@ The constructor has three groups. Common: ``iterations``, ``friction_epsilon``,
 ``collision_frequency_type`` and ``collision_frequency``. ``particle_*``:
 self-contact on or off, margin and gap, the candidate buffer sizes, the
 topological and rest-shape filters, and the tile solve. ``rigid_*``: the
-compliant ALM switch with its stabilization and retention factors, body-body
+ALM stabilization and retention factors, body-body
 contact history and two-sided damping (``rigid_contact_damping_bidirectional``),
 the per-body contact list capacities, the rigid-soft barrier law and DAT, and
 the structural joint stiffness and damping. Defaults and exact
@@ -560,9 +551,6 @@ friction is a Coulomb projection carrying :math:`\boldsymbol{\lambda}_t`. The
 complete law, with the material mixing and the damping, is in
 :ref:`vbd-energy-terms`.
 
-The deprecated legacy path (``rigid_compliant_alm=False``) replaces the
-finite-material rows with ramped penalties and hard or soft slots.
-
 .. _vbd-energy-terms:
 
 The energy terms
@@ -604,9 +592,10 @@ Each energy term depends on a few blocks and on model parameters:
      - ``compute_projected_isotropic_friction``
    * - Body-body contact, with friction and damping
      - two shapes, on two rigid bodies or on a rigid body and a static shape
-     - shape :attr:`~newton.ModelBuilder.ShapeConfig.ke`, :attr:`~newton.ModelBuilder.ShapeConfig.kd`, :attr:`~newton.ModelBuilder.ShapeConfig.mu` averaged over the pair; shape radius and
+     - shape :attr:`~newton.ModelBuilder.ShapeConfig.ke`, :attr:`~newton.ModelBuilder.ShapeConfig.kd`, :attr:`~newton.ModelBuilder.ShapeConfig.mu`,
+       :attr:`~newton.ModelBuilder.ShapeConfig.mu_torsional` and :attr:`~newton.ModelBuilder.ShapeConfig.mu_rolling`, combined over the pair; shape radius and
        :attr:`~newton.ModelBuilder.ShapeConfig.margin`
-     - ``evaluate_rigid_contact_from_collision``, ``update_duals_body_body_contacts``
+     - ``accumulate_body_body_contacts_per_body``, ``update_duals_body_body_contacts``
    * - Particle-body attachments
      - a particle and a point fixed on a body
      - attachment stiffness (finite: compliant; infinite: hard limit, damping
@@ -663,10 +652,11 @@ like :attr:`tri_kd <newton.Model.tri_materials>`. In both Neo-Hookean terms the 
 Lamé parameters; the kernels convert them to the Neo-Hookean parameters, which
 is why :math:`\lambda_{\text{NH}}` carries the extra :math:`\mu`.
 
-**Contact** is three different terms, one per contact kind. They share the
-friction smoothing length :math:`\epsilon_u = \mathtt{friction\_epsilon}\, h`
-and nothing else: each kind has its own distance, its own stiffness and its
-own law.
+**Contact** is three different terms, one per contact kind: each kind has its
+own distance, its own stiffness and its own law. For self-contact and
+rigid-soft contact, the friction smoothing length is
+:math:`\epsilon_u = \mathtt{friction\_epsilon}\, h`; compliant-ALM body-body
+friction is a Coulomb projection and does not use it.
 
 *Self-contact* acts between a vertex and a triangle, or between two edges, of
 one particle system (``accumulate_self_contact_force_and_hessian``). The
@@ -764,8 +754,7 @@ their bodies and :math:`t_0, t_1` the effective thicknesses (shape radius plus
 The material is the pair average of the shape values:
 :math:`k = \tfrac{1}{2}(\mathtt{ke}_0 + \mathtt{ke}_1)`,
 :math:`k_d = \tfrac{1}{2}(\mathtt{kd}_0 + \mathtt{kd}_1)` and
-:math:`\mu = \sqrt{\mathtt{mu}_0\,\mathtt{mu}_1}`. On the default compliant
-ALM path (``rigid_compliant_alm=True``) the normal force is
+:math:`\mu = \sqrt{\mathtt{mu}_0\,\mathtt{mu}_1}`. The normal force is
 
 .. math::
 
@@ -778,7 +767,10 @@ internal metric that the solver sets every step from the pair's inverse
 Delassus support over :math:`h^2` plus structural stiffness; the user does not set :math:`\rho_n`. The
 force acts along :math:`\mathbf{n}` at the support points with the matching
 torques, and the row adds :math:`k_{\text{eff}}\,\mathbf{n}\mathbf{n}^{\mathsf T}`
-to the body Hessians (``evaluate_rigid_contact_from_collision``). After every
+to the body Hessians (``accumulate_body_body_contacts_per_body``). For a
+contact between two dynamic bodies of the same color, the body solve doubles
+every Hessian block of the contact (normal, damping and friction) and leaves
+its forces unchanged, which bounds the two simultaneous corrections. After every
 iteration the multiplier is advanced by the relaxed ascent
 :math:`\lambda_n \leftarrow \max\big(s\,(\lambda_n + \rho_n C),\ 0\big)`
 (``update_duals_body_body_contacts``). At
@@ -786,31 +778,37 @@ the fixed point :math:`\lambda_n = k\,C` and :math:`f_n = k\,C`: a converged
 resting contact carries its load like a penalty of the material stiffness
 :math:`k`, with the penetration :math:`f_n/k`, while each single iteration
 uses the smaller :math:`k_{\text{eff}}`, which keeps the 6x6 systems well
-conditioned. Friction is a Coulomb bound, not a smooth law: the tangential
+conditioned.
+
+For a verified thin-wall mesh recovery contact, VBD temporarily treats positive
+normal stiffness as infinite. The hard constraint carries the load while
+limiting outward correction per step. Its normal force comes from the hard
+constraint solve, so the finite-stiffness relation :math:`f_n = k\,C` does
+not apply during recovery. The pair-averaged material stiffness applies again
+when collision detection returns the ordinary SDF manifold.
+
+Friction is a Coulomb bound, not a smooth law: the tangential
 force :math:`\rho_t\,\mathbf{u}_t + \boldsymbol{\lambda}_t`, with
 :math:`\mathbf{u}_t` the tangential offset between the two anchored surface
-points and :math:`\rho_t` the tangent metric, is projected onto the disk
-:math:`\lVert\mathbf{f}_t\rVert \le \mu f_n`,
+points and :math:`\rho_t` the tangent metric, a 2D response matrix in the
+contact plane, is projected onto the disk
+:math:`\lVert\mathbf{f}_t\rVert \le \mu f_n` in the inverse response metric,
 and :math:`\boldsymbol{\lambda}_t` is advanced and projected onto the disk of
-radius :math:`\mu\lambda_n` in the same dual step. Damping is
+radius :math:`\mu\lambda_n` in the same dual step. Torsional and rolling
+friction are two further Coulomb bounds on the relative rotation of the two
+bodies: the torque about the normal is clamped to
+:math:`\mu_{\text{tor}} f_n` and the torque in the contact plane is projected
+onto the disk of radius :math:`\mu_{\text{roll}} f_n`, with the pair's
+:attr:`~newton.ModelBuilder.ShapeConfig.mu_torsional` and
+:attr:`~newton.ModelBuilder.ShapeConfig.mu_rolling` [m], each the geometric
+mean of the two shapes' values, so a zero on either shape removes that
+resistance for the pair. Damping is
 :math:`-k_d\,(\mathbf{n}\cdot\mathbf{v}_{\text{rel}})\,\mathbf{n}` while the row
 carries load, only while the bodies approach by default and in both directions
 of the normal relative velocity with ``rigid_contact_damping_bidirectional=True``.
 The multipliers start from zero in
 every step unless ``rigid_contact_history=True`` warm-starts them from the
-matched contacts of the previous step. The legacy AVBD path
-(``rigid_compliant_alm=False``, deprecated) uses the pair stiffness as a fixed
-penalty by default (``rigid_avbd_beta`` is zero). With a positive beta
-(``rigid_avbd_linear_beta``, falling back to ``rigid_avbd_beta``) the penalty
-starts at ``rigid_contact_k_start`` and grows by beta times the penetration
-per iteration, capped at the pair stiffness. Its soft
-mode uses the IPC friction law instead of the Coulomb projection.
-
-The underlying methods are described in the references cited by
-:class:`~newton.solvers.SolverVBD`: VBD for the particle blocks, AVBD for the
-rigid rows, Divide and Truncate (DAT) for penetration-free contact and Offset
-Geometric Contact (OGC) for the feature regions of mesh contact. The two
-contact papers are also listed under Contact Handling above.
+matched contacts of the previous step.
 
 **Particle-body attachments** are compliant augmented-Lagrangian rows of the
 same form as the joint rows (:ref:`vbd-rigid-joints`). With :math:`C =

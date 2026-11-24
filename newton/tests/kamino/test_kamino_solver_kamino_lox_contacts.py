@@ -10,7 +10,8 @@ import warp as wp
 
 import newton
 from newton.solvers import SolverKamino
-from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino import setup_test_output, setup_tests, test_context
+from newton.tests.unittest_utils import NewtonTestCase
 
 _CPU_QR_SKIP_REASON = (
     "warp.fem.linalg.symmetric_eigenvalues_qr can return NaN eigenvalues on the CPU for denormal "
@@ -27,8 +28,9 @@ _PROJECTION_SCHEDULES = {
 }
 
 
-class TestSolverKaminoLOXContacts(unittest.TestCase):
+class TestSolverKaminoLOXContacts(NewtonTestCase):
     def setUp(self):
+        setup_test_output(self)
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
@@ -336,7 +338,9 @@ class TestSolverKaminoLOXContacts(unittest.TestCase):
                 results = []
                 for candidate in (solver, self._solver(model, contact_spatial_friction=spatial)):
                     candidate.step(state_in, state_out, control, contacts, dt=0.01)
-                    results.append((state_out.body_qd.numpy()[0], int(candidate.status.numpy()["iterations"][0])))
+                    results.append(
+                        (state_out.body_qd.numpy()[0].copy(), int(candidate.status.numpy()["iterations"][0]))
+                    )
                 np.testing.assert_allclose(results[0][0], results[1][0], rtol=0.0, atol=1.0e-6)
                 self.assertEqual(results[0][1], results[1][1])
 
@@ -354,7 +358,7 @@ class TestSolverKaminoLOXContacts(unittest.TestCase):
         pipeline.collide(state_in, contacts)
         self.assertEqual(int(contacts.rigid_contact_count.numpy()[0]), 2)
         solver.step(state_in, state_out, control, contacts, dt=0.01)
-        expected = state_out.body_qd.numpy()
+        expected = state_out.body_qd.numpy().copy()
         for name in (
             "point_id",
             "shape0",
@@ -422,6 +426,7 @@ class TestSolverKaminoLOXContacts(unittest.TestCase):
 
 if __name__ == "__main__":
     # Test setup
+    newton.utils.setup_console_logging()
     setup_tests()
 
     # Run all tests

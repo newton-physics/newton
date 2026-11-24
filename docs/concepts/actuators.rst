@@ -18,6 +18,26 @@ output array before stepping actuators each frame.  The simulator does not
 need to be part of Newton: actuators can be used in any simulator that
 provides the state arrays and applies the computed effort.
 
+.. _actuator-stepping:
+
+Newton supports two actuation paths:
+
+* **Internal joint drives** use the model's ``joint_target_ke`` and
+  ``joint_target_kd`` drive gains and the control's position and velocity
+  targets. The physics solver evaluates
+  them during ``solver.step()``; there is no separate actuator step. This also
+  applies to standard USD joint drives imported with
+  :meth:`~newton.ModelBuilder.add_usd`, subject to the solver's
+  :ref:`Joint feature support`.
+* **External actuators** are :class:`Actuator` objects, including those created
+  with :meth:`~newton.ModelBuilder.add_actuator` or imported from USD
+  ``NewtonActuator`` prims. The caller must call ``actuator.step()`` before
+  ``solver.step()``. Finalization creates ``model.actuators`` but the solver
+  does not step them automatically. Batteries in ``model.batteries`` also
+  require an explicit ``battery.step(control)`` after the actuators.
+
+The rest of this page describes external Newton actuators.
+
 Each :class:`Actuator` instance is **vectorized**: a single actuator object
 operates on a batch of DOF indices in global state and control arrays, allowing
 efficient integration into RL workflows with many parallel environments.
@@ -192,7 +212,7 @@ when the model is finalized:
    )
 
    builder = newton.ModelBuilder()
-   link = builder.add_link()
+   link = builder.add_link(mass=1.0, inertia=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0))
    joint = builder.add_joint_revolute(parent=-1, child=link, axis=newton.Axis.Z)
    builder.add_articulation([joint])
    dof_index = builder.joint_qd_start[joint]
@@ -209,6 +229,48 @@ when the model is finalized:
    )
 
    model = builder.finalize()
+
+Step the external actuators separately from the physics solver, once per
+simulation substep. Actuators accumulate effort, so clear ``control.joint_f``
+before the actuator loop (and add any other applied joint effort afterwards).
+This loop also applies when :meth:`~newton.ModelBuilder.add_usd` populated
+``model.actuators`` and ``model.batteries``:
+
+.. testcode:: actuator-usage
+
+   solver = newton.solvers.SolverFeatherstone(model)
+   state_0, state_1 = model.state(), model.state()
+   control = model.control()
+   act_states = [actuator.state() for actuator in model.actuators]
+   next_act_states = [actuator.state() for actuator in model.actuators]
+   control.joint_target_q.fill_(0.5)
+   dt = 0.001
+
+   for _ in range(10):
+       state_0.clear_forces()
+       control.joint_f.zero_()
+       for actuator, act_state, next_act_state in zip(model.actuators, act_states, next_act_states):
+           actuator.step(state_0, control, act_state, next_act_state, dt=dt)
+       act_states, next_act_states = next_act_states, act_states
+       for battery in model.batteries:
+           battery.step(control)
+       # Apply the computed effort and advance physics.
+       solver.step(state_0, state_1, control, None, dt)
+       state_0, state_1 = state_1, state_0
+
+This model has no collision shapes, so the solver receives ``None`` for
+contacts. For models with collision shapes, including USD imports, generate
+contacts each substep with :meth:`newton.CollisionPipeline.collide` and pass
+the contacts buffer to ``solver.step()`` instead of ``None``.
+
+.. testcode:: actuator-usage
+   :hide:
+
+   import numpy as np
+
+   assert np.isfinite(state_0.joint_q.numpy()).all()
+   assert np.isfinite(state_0.joint_qd.numpy()).all()
+   assert state_0.joint_q.numpy()[0] > 0.0  # moved from zero toward the 0.5 target
 
 For manual construction (outside of :class:`~newton.ModelBuilder`), compose the
 components directly:
@@ -228,15 +290,8 @@ components directly:
        control_target_vel_attr="joint_target_qd",
    )
 
-Step an actuator with the :class:`newton.State` and :class:`newton.Control`
-of the model:
-
-.. testcode:: actuator-usage
-
-   state = model.state()
-   control = model.control()
-   control.joint_f.zero_()
-   actuator.step(state, control, dt=0.01)
+Step a manually constructed actuator directly with ``actuator.step()`` before
+the physics solver, following the same ordering as the loop above.
 
 The simulation state and control objects do not need to be a full
 :class:`newton.State` / :class:`newton.Control`: any objects exposing joint
@@ -300,6 +355,9 @@ objects with :meth:`Actuator.state` and swap them after each step:
        control.joint_f.zero_()  # zero output before stepping actuators
        model.actuators[0].step(state, control, state_0, state_1, dt=0.01)
        state_0, state_1 = state_1, state_0
+
+For gradients over several steps, use one state per step instead; see
+:ref:`Differentiability and Graph Capture <actuator-taped-rollouts>`.
 
 The swap rebinds Python names, while a CUDA graph records fixed buffer
 addresses. A captured region with an odd number of actuator steps therefore
@@ -771,10 +829,34 @@ Whether an actuator supports differentiability and CUDA graph capture depends on
 its components.  All built-in sensors, input processors, clamps, motors,
 transmissions and drives are graphable, except neural-network drives with a Torch checkpoint, due to
 framework interop overhead; with an ONNX checkpoint they are graphable.
-Implicit mode is not differentiable.  Gradients are correct for one actuator
-step per tape; several steps on one tape reuse internal buffers and give wrong
-gradients.  :meth:`Actuator.is_graphable` returns
+Implicit mode is not differentiable.  :meth:`Actuator.is_graphable` returns
 ``True`` when all components can be captured in a CUDA graph.
+
+.. _actuator-taped-rollouts:
+
+To differentiate several steps on one :class:`warp.Tape`, finalize the model
+with ``requires_grad=True`` and, as the differentiable-simulation examples do
+for ``State``, give each step its own ``Control`` and actuator state instead of
+swapping two.  Actuators write ``joint_f`` into ``Control`` on every step, so
+reusing one would overwrite values that earlier steps need in the backward
+pass.  Neural-network drives support one step per tape.
+
+.. code-block:: python
+
+   states = [model.state() for _ in range(num_steps + 1)]
+   controls = [model.control() for _ in range(num_steps + 1)]
+   act_states = [[actuator.state() for actuator in model.actuators] for _ in range(num_steps + 1)]
+   with wp.Tape() as tape:
+       for k in range(num_steps):
+           for i, actuator in enumerate(model.actuators):
+               actuator.step(states[k], controls[k], act_states[k][i], act_states[k + 1][i], dt=dt)
+           for battery in model.batteries:
+               battery.step(controls[k], controls[k + 1])
+           solver.step(states[k], states[k + 1], controls[k], None, dt)
+
+Each step then allocates fresh intermediate buffers, so capturing such steps in
+a CUDA graph needs Warp's memory pool; :meth:`Actuator.is_graphable` returns
+``False`` otherwise.
 
 :meth:`Actuator.is_graphable` describes the components, not the captured region.
 A stateful actuator also needs the region's state exchange to be graph-safe.  See
@@ -892,7 +974,8 @@ entry per actuator of the model
 * input ``control.actuator_supply_current``: the current each motor draws
   from its battery, written by the motor in :meth:`Actuator.step`;
 * output ``control.actuator_supply_voltage``: the supply voltage of each
-  motor, read by the motor in the next :meth:`Actuator.step`.
+  motor, read by the motor in the next :meth:`Actuator.step`.  With one
+  ``Control`` per step, :meth:`BatteryBase.step` writes it to the next one.
 
 To set up and run batteries:
 
@@ -965,7 +1048,13 @@ USD
 
 :meth:`~newton.ModelBuilder.add_usd` imports ``NewtonActuator`` prims from
 the `newton-usd-schemas <https://github.com/newton-physics/newton-usd-schemas>`__
-package.  Each applied API schema becomes one component:
+package. These become external actuators in ``model.actuators`` after
+finalization and require explicit stepping before the physics solver, as
+shown in `Usage`_. Imported batteries must also be stepped after
+the actuators. Standard USD joint drives instead run inside ``solver.step()``;
+see :ref:`the stepping guidance above <actuator-stepping>`.
+
+Each applied API schema becomes one component:
 
 .. list-table::
    :header-rows: 1

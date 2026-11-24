@@ -1,10 +1,10 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-from enum import Enum
+from enum import StrEnum
 
 
-class DriveOutputSpace(str, Enum):
+class DriveOutputSpace(StrEnum):
     """Physical interpretation of a drive output or clamping input."""
 
     EFFORT = "effort"

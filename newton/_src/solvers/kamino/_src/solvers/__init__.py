@@ -3,17 +3,17 @@
 
 """Numerical Solvers for Constraint Rigid Multi-Body Kinematics & Dynamics"""
 
-from .dvi import DVISolver
 from .fk import ForwardKinematicsSolver
 from .padmm import PADMMSolver, PADMMWarmStartMode
+from .scc import SCCSolver
 
 ###
 # Module interface
 ###
 
 __all__ = [
-    "DVISolver",
     "ForwardKinematicsSolver",
     "PADMMSolver",
     "PADMMWarmStartMode",
+    "SCCSolver",
 ]

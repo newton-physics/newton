@@ -3,6 +3,7 @@
 
 """Kernel selection, launch configuration, streams and double buffering of SolverSteel."""
 
+import gc
 import itertools
 import types
 import unittest
@@ -1801,25 +1802,40 @@ def test_reused_kinematics_follow_a_timestep_change(test, device):
 
 
 def test_captured_step_replays_the_same_result_from_an_unchanged_input(test, device):
-    """A step captured on a fresh solver and replayed from the same input gives the same result every replay."""
+    """Check that a step captured on a fresh solver replays the same result from an unchanged input.
+
+    Releasing an earlier capture that never ran leaves the later capture's result unchanged.
+    """
     model = _build_contact_scene(device)
     pipeline = newton.CollisionPipeline(model, rigid_contact_max=256)
     contacts = pipeline.contacts()
     control = model.control()
     names = ("joint_q", "joint_qd", "body_q", "body_qd")
 
-    def replays(reuse):
+    def replays(reuse, release_first=False):
         solver = SolverSteel(model, reuse_kinematics=reuse)
         state_in, state_out = model.state(), model.state()
         newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
         state_in.clear_forces()
         pipeline.collide(state_in, contacts)
+        if release_first:
+            with wp.ScopedCapture(device) as first:
+                solver.step(state_in, state_out, control, contacts, 1.0 / 240.0)
         with wp.ScopedCapture(device) as capture:
             solver.step(state_in, state_out, control, contacts, 1.0 / 240.0)
+        if release_first:
+            del first
+            gc.collect()
         outputs = []
         for _ in range(3):
+            for name in names:
+                output = getattr(state_out, name)
+                output.assign(np.full_like(output.numpy(), np.nan))
             wp.capture_launch(capture.graph)
-            outputs.append(tuple(getattr(state_out, name).numpy().copy() for name in names))
+            snapshot = tuple(getattr(state_out, name).numpy().copy() for name in names)
+            for name, value in zip(names, snapshot, strict=True):
+                test.assertTrue(np.all(np.isfinite(value)), f"replay left non-finite {name}")
+            outputs.append(snapshot)
         return solver, outputs
 
     _, reference = replays(False)
@@ -1829,6 +1845,10 @@ def test_captured_step_replays_the_same_result_from_an_unchanged_input(test, dev
         for name, first, later in zip(names, carried[0], carried[replay], strict=True):
             np.testing.assert_array_equal(later, first, err_msg=f"{name} changed on replay {replay}")
     _assert_histories_close(test, reference, carried)
+    _, released = replays(False, release_first=True)
+    for replay in range(3):
+        for name, expected, actual in zip(names, reference[replay], released[replay], strict=True):
+            np.testing.assert_array_equal(actual, expected, err_msg=f"{name} differs on replay {replay}")
 
 
 def test_extra_free_joints_keep_the_generic_publication(test, device):
@@ -2285,6 +2305,8 @@ def test_velocity_limit_pass_visits_every_active_row(test, device):
                     zeros((worlds, rows)),
                     zeros((worlds, rows)),
                     zeros((worlds, 1)),
+                    # Nesterov momentum history: off.
+                    zeros((1, 1)),
                     1,
                     1.0,
                     0,

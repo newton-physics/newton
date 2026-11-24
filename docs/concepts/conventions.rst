@@ -449,9 +449,7 @@ result to linear light once per ray. Pass
 ``sh_color_space=newton.utils.ColorSpace.LINEAR`` for scene-linear radiance,
 which is blended in linear light and not decoded. :class:`~newton.sensors.SensorCamera`
 clamps negative radiance to zero in both cases before blending, while values
-above one are kept as HDR. The deprecated
-:class:`~newton.sensors.SensorTiledCamera` ignores ``sh_color_space``; only
-:class:`~newton.sensors.SensorCamera` honors it.
+above one are kept as HDR.
 
 .. note::
 
@@ -580,7 +578,7 @@ The following tables compare how different engines and formats define common col
      - Distance from center to face
    * - **MuJoCo**
      - Half-sizes in ``size`` attribute
-     - Can use ``fromto`` (Newton importer doesn't support)
+     - Can use ``fromto``: the segment sets the ``z`` half-length and ``size[0]`` sets both transverse half-sizes (imported this way by Newton)
    * - **USD (UsdGeomCube)**
      - ``size`` attribute (full dimensions)
      - Edge length, not half-extent

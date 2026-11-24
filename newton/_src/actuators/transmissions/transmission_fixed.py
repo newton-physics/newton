@@ -153,11 +153,14 @@ class TransmissionFixed(TransmissionBase):
         dof_indices: wp.array2d[wp.uint32],
         device: wp.Device | None = None,
     ) -> tuple[wp.array[float], wp.array[wp.uint32], wp.array[float], wp.array[wp.uint32]]:
+        out_positions, out_velocities = self._positions, self._velocities
+        if self._positions.requires_grad:
+            out_positions, out_velocities = wp.empty_like(out_positions), wp.empty_like(out_velocities)
         wp.launch(
             kernel=_transmission_fixed_state_kernel,
             dim=self._positions.shape[0],
             inputs=[positions, velocities, pos_indices, dof_indices, self.gear],
-            outputs=[self._positions, self._velocities],
+            outputs=[out_positions, out_velocities],
             device=device,
         )
-        return self._positions, self._indices, self._velocities, self._indices
+        return out_positions, self._indices, out_velocities, self._indices

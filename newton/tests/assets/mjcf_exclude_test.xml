@@ -6,6 +6,7 @@
       <freejoint/>
       <geom name="body1_geom1" type="box" size="0.1 0.1 0.1" pos="0 0 0"/>
       <geom name="body1_geom2" type="sphere" size="0.05" pos="0.1 0 0"/>
+      <site name="body1_site"/>
     </body>
 
     <!-- Body 2 with two geoms -->
@@ -13,6 +14,7 @@
       <freejoint/>
       <geom name="body2_geom1" type="box" size="0.1 0.1 0.1" pos="0 0 0"/>
       <geom name="body2_geom2" type="sphere" size="0.05" pos="0.1 0 0"/>
+      <site name="body2_site"/>
     </body>
 
     <!-- Body 3 with one geom (should still collide with body1 and body2) -->

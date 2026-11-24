@@ -15,7 +15,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.tests.unittest_utils import add_function_test, get_test_devices
+from newton.tests.unittest_utils import MUJOCO_MODULES, add_function_test, get_test_devices, requires
 
 
 class TestParentForce(unittest.TestCase):
@@ -245,28 +245,28 @@ for device in devices:
         "test_parent_force_static_pendulum_mjwarp",
         test_parent_force_static_pendulum,
         devices=[device],
-        solver_fn=lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False),
+        solver_fn=requires(*MUJOCO_MODULES)(lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False)),
     )
     add_function_test(
         TestParentForce,
         "test_parent_force_centrifugal_mjwarp",
         test_parent_force_centrifugal,
         devices=[device],
-        solver_fn=lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False),
+        solver_fn=requires(*MUJOCO_MODULES)(lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False)),
     )
     add_function_test(
         TestParentForce,
         "test_apply_body_f_mjwarp",
         test_apply_body_f,
         devices=[device],
-        solver_fn=lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False),
+        solver_fn=requires(*MUJOCO_MODULES)(lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False)),
     )
     add_function_test(
         TestParentForce,
         "test_parent_force_solver_observables_mjwarp",
         test_parent_force_solver_observables,
         devices=[device],
-        solver_fn=lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False),
+        solver_fn=requires(*MUJOCO_MODULES)(lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False)),
     )
 
     # Featherstone uses the same RNEA math under the hood, so the same

@@ -66,6 +66,7 @@ from ..core.model import ModelKamino
 from ..core.size import SizeKamino
 from ..core.types import vec6f
 from ..dynamics.delassus import BlockSparseMatrixFreeDelassusOperator, DelassusOperator
+from ..dynamics.joint_decoupling import DynamicJointDecoupling
 from ..geometry.contacts import ContactsKamino
 from ..kinematics.jacobians import DenseSystemJacobians, SparseSystemJacobians
 from ..kinematics.limits import LimitsKamino
@@ -134,7 +135,7 @@ class DualProblemData:
     """Physical impulse-space compliance in unscaled row coordinates; absent for hard constraints."""
 
     v_b_friction: wp.array[wp.float32] | None = None
-    """Contact bias excluded from DVI friction loads; zero for physical spring forces.
+    """Contact bias excluded from SCC friction loads; zero for physical spring forces.
 
     Aliases ``v_b`` unless contact compliance is enabled. Only contact-normal
     entries are used, in the same unscaled row coordinates as ``v_b``.
@@ -241,13 +242,6 @@ class DualProblemData:
     Shape of `(num_worlds,)`.
     """
 
-    mio: wp.array[wp.int32] | None = None
-    """
-    The matrix index offset of each Delassus matrix block.
-    This is applicable to `D` as well as to its (optional) factorizations.
-    Shape of `(num_worlds,)`.
-    """
-
     vio: wp.array[wp.int32] | None = None
     """
     The vector index offset of each constraint dimension vector block.
@@ -255,11 +249,10 @@ class DualProblemData:
     Shape of `(num_worlds,)`.
     """
 
-    D: wp.array[wp.float32] | None = None
+    D: wp.array2d[wp.float32] | None = None
     """
-    The flat array of Delassus matrix blocks (constraint-space apparent inertia).
+    Delassus matrix blocks stored in one row per world.
     Includes physical compliance when enabled, before numerical regularization.
-    Shape of `(sum_of_max_total_delassus_size,)`.
     """
 
     P: wp.array[wp.float32] | None = None
@@ -929,8 +922,7 @@ def _build_free_velocity(
     # Inputs:
     model_info_bodies_offset: wp.array[wp.int32],
     data_bodies_u_i: wp.array[wp.spatial_vectorf],
-    jacobians_J_cts_offsets: wp.array[wp.int32],
-    jacobians_J_cts_data: wp.array[wp.float32],
+    jacobians_J_cts_data_storage: wp.array2d[wp.float32],
     problem_dim: wp.array[wp.int32],
     problem_vio: wp.array[wp.int32],
     problem_u_f: wp.array[wp.spatial_vectorf],
@@ -941,6 +933,7 @@ def _build_free_velocity(
 ):
     # Retrieve the thread index
     wid, tid = wp.tid()
+    jacobians_J_cts_data = jacobians_J_cts_data_storage[wid]
 
     # Retrieve the problem dimensions and matrix block index offset
     ncts = problem_dim[wid]
@@ -952,7 +945,6 @@ def _build_free_velocity(
     # Retrieve the world-specific data
     bio = model_info_bodies_offset[wid]
     nb = model_info_bodies_offset[wid + 1] - bio
-    cjmio = jacobians_J_cts_offsets[wid]
     vio = problem_vio[wid]
 
     # Compute the number of Jacobian rows, i.e. the number of body DoFs
@@ -961,8 +953,8 @@ def _build_free_velocity(
     # Compute the thread-specific index offset
     cts_offset = vio + tid
 
-    # Append the column offset to the Jacobian index
-    cjmio += nbd * tid
+    # Compute the Jacobian row offset
+    cjmio = nbd * tid
 
     # Extract the cached impact bias scaling (i.e. restitution coefficient)
     # NOTE: This is a quick hack to avoid multiple kernels. The
@@ -1063,17 +1055,17 @@ def _build_dual_preconditioner_all_constraints(
     # Inputs:
     problem_config: wp.array[DualProblemConfigStruct],
     problem_dim: wp.array[wp.int32],
-    problem_mio: wp.array[wp.int32],
     problem_vio: wp.array[wp.int32],
     problem_njc: wp.array[wp.int32],
     problem_nbc: wp.array[wp.int32],
     problem_nl: wp.array[wp.int32],
-    problem_D: wp.array[wp.float32],
+    problem_D_storage: wp.array2d[wp.float32],
     # Outputs:
     problem_P: wp.array[wp.float32],
 ):
     # Retrieve the thread index
     wid, tid = wp.tid()
+    problem_D = problem_D_storage[wid]
 
     # Retrieve the world-specific problem config
     config = problem_config[wid]
@@ -1084,9 +1076,6 @@ def _build_dual_preconditioner_all_constraints(
     # Skip if row index exceed the problem size
     if tid >= ncts or not config.preconditioning:
         return
-
-    # Retrieve the matrix index offset of the world
-    mio = problem_mio[wid]
 
     # Retrieve the vector index offset of the world
     vio = problem_vio[wid]
@@ -1101,7 +1090,7 @@ def _build_dual_preconditioner_all_constraints(
         tid,
         njlc,
         problem_D,
-        mio,
+        0,
         ncts + 1,
         vio,
         problem_P,
@@ -1157,14 +1146,14 @@ def _build_dual_preconditioner_all_constraints_sparse(
 def _apply_dual_preconditioner_to_matrix(
     # Inputs:
     problem_dim: wp.array[wp.int32],
-    problem_mio: wp.array[wp.int32],
     problem_vio: wp.array[wp.int32],
     problem_P: wp.array[wp.float32],
     # Outputs:
-    X: wp.array[wp.float32],
+    X_storage: wp.array2d[wp.float32],
 ):
     # Retrieve the thread index
     wid, tid = wp.tid()
+    X = X_storage[wid]
 
     # Retrieve the number of active constraints in the world
     ncts = problem_dim[wid]
@@ -1181,14 +1170,11 @@ def _apply_dual_preconditioner_to_matrix(
     if i >= ncts or j >= ncts:
         return
 
-    # Retrieve the matrix index offset of the world
-    mio = problem_mio[wid]
-
     # Retrieve the vector index offset of the world
     vio = problem_vio[wid]
 
-    # Compute the global index of the matrix entry
-    m_ij = mio + ncts * i + j
+    # Compute the index within the world row
+    m_ij = ncts * i + j
 
     # Retrieve the i,j-th entry of the target matrix
     X_ij = X[m_ij]
@@ -1336,6 +1322,7 @@ class DualProblem:
         config: list[DualProblem.Config] | DualProblem.Config | None = None,
         compute_h: bool = False,
         sparse: bool = True,
+        decouple_joint_dynamics: bool = False,
     ):
         """
         Constructs a dual problem interface container.
@@ -1357,6 +1344,11 @@ class DualProblem:
                 Defaults to `None`, indicating that default config will be used for all worlds.
             compute_h: Set to `True` to enable the computation of the nonlinear
                 generalized forces vectors in construction of the dual problem.
+                Defaults to `False`.
+            sparse: Set to `True` to use the matrix-free sparse Delassus operator.
+            decouple_joint_dynamics: Set to `True` to decouple the Coulomb friction and effort-limit
+                rows of each joint DoF that also has a joint dynamics row (armature, damping, or
+                implicit PD) from that row by a change of variables, see :class:`DynamicJointDecoupling`.
                 Defaults to `False`.
         """
         # Ensure Jacobians are given if model is provided.
@@ -1380,6 +1372,12 @@ class DualProblem:
 
         self._sparse: bool = sparse
         """Flag to indicate whether the dual uses a sparse data representation."""
+
+        self._decouple_joint_dynamics: bool = decouple_joint_dynamics
+        """Flag to indicate whether joint friction and effort rows are decoupled from joint dynamics rows."""
+
+        self._joint_decoupling: DynamicJointDecoupling | None = None
+        """Helper for the decoupling of joint friction and effort rows from joint dynamics rows, if any."""
 
         # Finalize the dual problem data if a model is provided
         if model is not None:
@@ -1453,6 +1451,14 @@ class DualProblem:
         Returns whether the dual problem is using sparse operators.
         """
         return self._sparse
+
+    @property
+    def joint_decoupling(self) -> DynamicJointDecoupling | None:
+        """
+        Returns the decoupling of joint friction and effort rows from joint dynamics rows,
+        or ``None`` if the problem solves the original rows.
+        """
+        return self._joint_decoupling
 
     ###
     # Operations
@@ -1574,7 +1580,6 @@ class DualProblem:
                     # Capture references to arrays already create by the Delassus operator
                     maxdim=self._delassus.info.maxdim,
                     dim=self._delassus.info.dim,
-                    mio=None,
                     vio=self._delassus.info.vio,
                     D=None,
                     # Allocate new memory for the remaining dual problem quantities
@@ -1613,7 +1618,6 @@ class DualProblem:
                     # Capture references to arrays already create by the Delassus operator
                     maxdim=self._delassus.info.maxdim,
                     dim=self._delassus.info.dim,
-                    mio=self._delassus.info.mio,
                     vio=self._delassus.info.vio,
                     D=self._delassus.D,
                     # Allocate new memory for the remaining dual problem quantities
@@ -1638,6 +1642,16 @@ class DualProblem:
         self._data.v_b_friction = self._data.v_b
         if any(c.constraints.contact_compliance for c in self._config):
             self._data.v_b_friction = wp.zeros_like(self._data.v_b)
+
+        # Pair the joint friction and effort rows with the joint dynamics rows of the same DoFs,
+        # dropping any decoupling of a previously finalized model
+        self._joint_decoupling = None
+        if self._decouple_joint_dynamics:
+            decoupling = DynamicJointDecoupling(model, device=self._device)
+            if decoupling.num_dofs > 0:
+                self._joint_decoupling = decoupling
+                if self._sparse:
+                    self._delassus.set_joint_decoupling(decoupling)
 
     def zero(self):
         if self._compute_h:
@@ -1736,7 +1750,6 @@ class DualProblem:
                     # Inputs:
                     model.info.bodies_offset,
                     data.bodies.u_i,
-                    jacobians.data.J_cts_offsets,
                     jacobians.data.J_cts_data,
                     self._data.dim,
                     self._data.vio,
@@ -1748,6 +1761,10 @@ class DualProblem:
                 ],
                 device=self.device,
             )
+
+        # Decouple joint friction and effort rows from the joint dynamics rows of the same DoFs
+        if self._joint_decoupling is not None:
+            self._build_joint_decoupling(data)
 
         # Optionally build and apply the Delassus diagonal preconditioner
         if any(s.dynamics.preconditioning for s in self._config):
@@ -1802,6 +1819,23 @@ class DualProblem:
             return config
         else:
             raise TypeError(f"Expected List[DualProblem.Config] or DualProblem.Config, got {type(config)}")
+
+    def _build_joint_decoupling(self, data: DataKamino):
+        """
+        Applies the change of variables of :class:`DynamicJointDecoupling` to the Delassus operator
+        and the free velocity. The sparse Delassus operator applies it to its products itself.
+        """
+        decoupling = self._joint_decoupling
+        if self._sparse:
+            self._delassus.update_joint_decoupling()
+        else:
+            problem = self._data
+            decoupling.compute_body_share_dense(data.joints.inv_m_j, problem.dim, problem.vio, problem.D)
+            decoupling.scale_rows_dense(problem.dim, problem.vio, self._size.max_of_max_total_cts, problem.D)
+            decoupling.add_joint_terms_dense(
+                data.joints.inv_m_j, data.joints.inv_m_a, problem.dim, problem.vio, problem.D
+            )
+        decoupling.decouple_free_velocity(self._data.v_f)
 
     def _build_nonlinear_generalized_force(model: ModelKamino, data: DataKamino, problem: DualProblemData):
         """
@@ -2024,7 +2058,6 @@ class DualProblem:
                 # Inputs:
                 model.info.bodies_offset,
                 data.bodies.u_i,
-                jacobians.data.J_cts_offsets,
                 jacobians.data.J_cts_data,
                 self._data.dim,
                 self._data.vio,
@@ -2067,7 +2100,6 @@ class DualProblem:
                     # Inputs:
                     self._data.config,
                     self._data.dim,
-                    self._data.mio,
                     self._data.vio,
                     self._data.njc,
                     self._data.nbc,
@@ -2094,7 +2126,6 @@ class DualProblem:
                 inputs=[
                     # Inputs:
                     self._data.dim,
-                    self._data.mio,
                     self._data.vio,
                     self._data.P,
                     # Outputs:
@@ -2127,7 +2158,6 @@ class DualProblem:
             inputs=[
                 # Inputs:
                 self._data.dim,
-                self._data.mio,
                 self._data.vio,
                 self._data.P,
                 # Outputs:

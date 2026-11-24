@@ -891,7 +891,7 @@ def parse_urdf(
             axis /= np.linalg.norm(axis)
 
             # create helper vector that is not parallel to the axis
-            helper = np.array([1, 0, 0]) if np.allclose(axis, [0, 1, 0]) else np.array([0, 1, 0])
+            helper = np.array([1, 0, 0]) if np.allclose(np.abs(axis), [0, 1, 0]) else np.array([0, 1, 0])
 
             u = np.cross(helper, axis)
             u /= np.linalg.norm(u)

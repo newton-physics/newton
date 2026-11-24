@@ -8,10 +8,17 @@ import warp.fem as fem
 import warp.sparse as sp
 from warp.fem.linalg import symmetric_eigenvalues_qr
 
-from .contact_solver_kernels import ColoredContacts, make_solve_colored_cell_contacts
+from .contact_solver_kernels import (
+    ColoredContacts,
+    EnvironmentGate,
+    environment_stopped,
+    make_solve_colored_cell_contacts,
+)
 
-_DELASSUS_PROXIMAL_REG = wp.constant(1.0e-6)
-"""Cutoff for the trace of the diagonal block of the Delassus operator to disable constraints"""
+_DELASSUS_SCALED_REG = wp.constant(1.0e-2)
+"""Proximal regularization of the Delassus diagonal blocks, as a fraction of a full cell's inertial scale.
+
+Blocks far below that scale, such as those of nearly empty cells, are damped accordingly."""
 
 _SLIDING_NEWTON_TOL = wp.constant(1.0e-7)
 """Tolerance for the Newton method to solve for the sliding velocity"""
@@ -169,6 +176,8 @@ def compute_delassus_diagonal(
     strain_batch: wp.array[int],
     mass_multiplicity: wp.array2d[float],
     majorize: bool,
+    delassus_scale: wp.array[float],
+    environment_offsets: wp.array[int],
     delassus_rotation: wp.array[mat55],
     delassus_diagonal: wp.array[vec6],
 ):
@@ -179,6 +188,11 @@ def compute_delassus_diagonal(
 
     Empty ``mass_multiplicity`` uses unit weights (GS); otherwise use the
     supplied per-batch weights (Jacobi or batched GS).
+
+    ``delassus_scale`` holds a full cell's inertial Delassus scale dt^2 / (rho dx^2)
+    for each environment delimited by ``environment_offsets`` (a single one when empty);
+    the proximal regularization is a fixed fraction of it, which makes it independent
+    of units and time step.
     """
     tau_i = wp.tid()
     block_beg = strain_mat_offsets[tau_i]
@@ -212,7 +226,11 @@ def compute_delassus_diagonal(
         b_v2 = _symmetric_part_op(b_val, wp.vec3(0.0, 0.0, 1.0))
         diag_block += inv_frac * wp.outer(b_v2, b_v2)
 
-    diag_block += _DELASSUS_PROXIMAL_REG * wp.identity(n=6, dtype=float)
+    environment = int(0)
+    if environment_offsets.shape[0] > 0:
+        environment = wp.clamp(wp.lower_bound(environment_offsets, tau_i + 1) - 1, 0, delassus_scale.shape[0] - 1)
+    reg = _DELASSUS_SCALED_REG * delassus_scale[environment]
+    diag_block += reg * wp.identity(n=6, dtype=float)
 
     coupling = vec6(0.0)
     for k in range(1, 6):
@@ -220,7 +238,7 @@ def compute_delassus_diagonal(
         diag_block[0, k] = 0.0
         diag_block[k, 0] = 0.0
 
-    diag, ev = symmetric_eigenvalues_qr(diag_block, _DELASSUS_PROXIMAL_REG * 0.1)
+    diag, ev = symmetric_eigenvalues_qr(diag_block, reg * 0.1)
 
     if not (wp.ddot(ev, ev) < 1.0e16 and wp.length_sq(diag) < 1.0e16):
         diag = wp.get_diag(diag_block)
@@ -256,7 +274,7 @@ def preprocess_stress_and_strain(
 ):
     """Prepare stress and strain for the rheology solve.
 
-    Adds the unilateral strain offset to ``strain_rhs`` (removed in
+    Adds the signed strain offset to ``strain_rhs`` (removed in
     :func:`postprocess_stress_and_strain`), disables cohesion for nodes
     with a positive offset, and projects the initial stress guess onto
     the yield surface.
@@ -267,13 +285,13 @@ def preprocess_stress_and_strain(
     yield_params = yield_stress[tau_i]
     offset = unilateral_strain_offset[tau_i]
 
-    if offset > 0.0:
-        # add unilateral strain offset to strain rhs
-        # will be removed in postprocess_stress_and_strain
+    if offset != 0.0:
+        # Accept signed feedback; postprocessing removes the offset again.
         b = strain_rhs[tau_i]
         b += unilateral_offset_to_strain_rhs(offset)
         strain_rhs[tau_i] = b
 
+    if offset > 0.0:
         yield_params[1] = 0.0  # disable cohesion if offset > 0 (not compact)
         yield_stress[tau_i] = yield_params
 
@@ -935,6 +953,7 @@ def make_jacobi_solve_kernel(
 
     @fem.cache.dynamic_kernel(suffix=key, kernel_options={"fast_math": True})
     def jacobi_solve_kernel_impl(
+        gate: EnvironmentGate,
         yield_params: wp.array[YieldParamVec],
         strain_node_volume: wp.array[float],
         compliance_mat_offsets: wp.array[int],
@@ -952,7 +971,7 @@ def make_jacobi_solve_kernel(
     ):
         tau_i = wp.tid()
 
-        if strain_mat_offsets[tau_i] == strain_mat_offsets[tau_i + 1]:
+        if strain_mat_offsets[tau_i] == strain_mat_offsets[tau_i + 1] or environment_stopped(gate, tau_i):
             delta_correction[tau_i] = vec6(0.0)
             return
 
@@ -1210,6 +1229,7 @@ def make_gs_solve_kernel(
         color_blocks: wp.array2d[int],
         rows: Any,
         colors_per_batch: int,
+        gate: EnvironmentGate,
         yield_params: wp.array[YieldParamVec],
         strain_node_volume: wp.array[float],
         compliance_mat_offsets: wp.array[int],
@@ -1241,6 +1261,11 @@ def make_gs_solve_kernel(
                 beg, end = int(rows.block_offsets[block]), int(rows.block_offsets[block + 1])
             else:
                 beg, end = int(color_blocks[0, block]), int(color_blocks[1, block])
+            # A block's rows and contacts belong to one environment
+            if end > beg and environment_stopped(gate, _strain_row_node(rows, beg)):
+                for row in range(beg, end):
+                    delta_correction[_strain_row_node(rows, row)] = vec6(0.0)
+                continue
             wp.static(solve_rows)(
                 beg,
                 end,

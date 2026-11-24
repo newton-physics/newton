@@ -151,65 +151,15 @@ def rand_init(seed: wp.uint32, thread_id: wp.uint32) -> wp.uint32:
 
 
 @wp.func
-def rand_next(state: wp.uint32) -> wp.uint32:
-    """Advance the random state and return the new state."""
-    return state * _LCG_A + _LCG_C
-
-
-@wp.func
 def rand_float(state: wp.uint32) -> float:
     """Convert random state to a float in [0, 1]."""
     # Use upper 31 bits (better quality in LCG)
     return wp.float32(state & wp.uint32(0x7FFFFFFF)) / wp.float32(0x7FFFFFFF)
 
 
-@wp.func
-def rand_next_float(state: wp.uint32) -> tuple[wp.uint32, float]:
-    """Advance state and return (new_state, random_float).
-
-    Use this when you need multiple random numbers in sequence.
-    """
-    new_state = state * _LCG_A + _LCG_C
-    rand_val = wp.float32(new_state & wp.uint32(0x7FFFFFFF)) / wp.float32(0x7FFFFFFF)
-    return new_state, rand_val
-
-
 # -----------------------------------------------------------------------------
 # VoxelHashGrid - sparse voxel grid with online accumulation
 # -----------------------------------------------------------------------------
-
-
-@wp.kernel
-def _accumulate_point_kernel(
-    point: wp.vec3,
-    normal: wp.vec3,
-    inv_voxel_size: wp.float32,
-    # Hash table arrays
-    keys: wp.array[wp.uint64],
-    active_slots: wp.array[wp.int32],
-    # Accumulator arrays
-    sum_positions_x: wp.array[wp.float32],
-    sum_positions_y: wp.array[wp.float32],
-    sum_positions_z: wp.array[wp.float32],
-    sum_normals_x: wp.array[wp.float32],
-    sum_normals_y: wp.array[wp.float32],
-    sum_normals_z: wp.array[wp.float32],
-    counts: wp.array[wp.int32],
-):
-    """Accumulate a single point into the voxel grid (for testing)."""
-    key = compute_voxel_key(point, inv_voxel_size)
-    idx = hashtable_find_or_insert(key, keys, active_slots)
-    if idx >= 0:
-        old_count = wp.atomic_add(counts, idx, 1)
-        # Only store position on first hit
-        if old_count == 0:
-            sum_positions_x[idx] = point[0]
-            sum_positions_y[idx] = point[1]
-            sum_positions_z[idx] = point[2]
-        # Always accumulate normals
-        wp.atomic_add(sum_normals_x, idx, normal[0])
-        wp.atomic_add(sum_normals_y, idx, normal[1])
-        wp.atomic_add(sum_normals_z, idx, normal[2])
 
 
 @wp.kernel

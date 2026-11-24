@@ -23,10 +23,10 @@ from newton.tests._usd_deformable_test_utils import (
     _deformable_stage,
     group_range,
 )
-from newton.tests.unittest_utils import USD_AVAILABLE
+from newton.tests.unittest_utils import requires
 
 
-@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+@requires("pxr.Usd")
 class TestUSDDeformableAttachments(unittest.TestCase):
     """Verify proposal attachment and element-collision-filter import."""
 
@@ -456,7 +456,7 @@ class TestUSDDeformableAttachments(unittest.TestCase):
         initial_body_q = state.body_q.numpy().copy()
         newton.eval_fk(model, state.joint_q, state.joint_qd, state)
         np.testing.assert_allclose(state.body_q.numpy(), initial_body_q, atol=1.0e-6)
-        newton.solvers.SolverVBD(model, iterations=1, rigid_compliant_alm=True)
+        newton.solvers.SolverVBD(model, iterations=1)
 
     def test_physics_attachment_joins_earlier_articulation_from_last_endpoint(self):
         """Join a cable's last endpoint to a rigid articulation imported before unrelated bodies."""
@@ -537,7 +537,7 @@ class TestUSDDeformableAttachments(unittest.TestCase):
 
         builder.color()
         model = builder.finalize()
-        newton.solvers.SolverVBD(model, iterations=1, rigid_compliant_alm=True)
+        newton.solvers.SolverVBD(model, iterations=1)
 
     def test_physics_attachments_join_multiple_rigid_articulations(self):
         """Join each cable to its own rigid articulation."""
@@ -722,7 +722,7 @@ class TestUSDDeformableAttachments(unittest.TestCase):
 
                 builder.color()
                 model = builder.finalize()
-                newton.solvers.SolverVBD(model, iterations=1, rigid_compliant_alm=True)
+                newton.solvers.SolverVBD(model, iterations=1)
 
     def test_physics_attachment_follows_excluded_articulation_joint(self):
         """Keep an excluded loop joint outside an articulation extended by a cable."""
@@ -1101,7 +1101,7 @@ class TestUSDDeformableAttachments(unittest.TestCase):
 
         builder.color()
         model = builder.finalize()
-        newton.solvers.SolverVBD(model, iterations=1, rigid_compliant_alm=True)
+        newton.solvers.SolverVBD(model, iterations=1)
 
     def test_physics_attachment_disabled_or_unsupported_is_recorded_not_imported(self):
         """Disabled cable and world-target cloth attachments create nothing; both preserve their

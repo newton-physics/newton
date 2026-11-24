@@ -12,6 +12,7 @@ from numbers import Real
 import numpy as np
 import warp as wp
 
+from ..core._warnings import _external_warning_stacklevel
 from ..exceptions import NewtonWarning
 from .types import (
     GeoType,
@@ -115,7 +116,7 @@ def _validate_hollow_thickness(
         warnings.warn(
             f"A hollow {shape_name} geom with zero thickness has zero mass and inertia.",
             NewtonWarning,
-            stacklevel=2,
+            stacklevel=_external_warning_stacklevel(),
         )
         return thickness
 

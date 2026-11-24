@@ -108,11 +108,12 @@ class SensorEncoder(SensorBase):
         pos_indices: wp.array2d[wp.uint32],
         device: wp.Device | None = None,
     ) -> tuple[wp.array[float], wp.array2d[wp.uint32]]:
+        out_pos = wp.empty_like(self._out_pos) if self._out_pos.requires_grad else self._out_pos
         wp.launch(
             kernel=_sensor_encoder_kernel,
             dim=pos_indices.shape,
             inputs=[positions, pos_indices, self.output_joint_pos_indices],
-            outputs=[self._out_pos],
+            outputs=[out_pos],
             device=device,
         )
-        return self._out_pos, self._indices
+        return out_pos, self._indices

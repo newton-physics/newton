@@ -327,7 +327,7 @@ class _SPDInverse:
     work and a second launch.
     """
 
-    def __init__(self, block_count: int, max_dim: int, device: wp.context.Device):
+    def __init__(self, block_count: int, max_dim: int, device: wp.Device):
         self._device = device
         self._block_count = block_count
         self._column_count = max_dim if device.is_cuda else 1

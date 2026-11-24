@@ -10,20 +10,20 @@ on top of margin; contacts are generated when the surface distance is within
 ``margin + gap``, but the resting position is controlled solely by margin.
 """
 
-import logging
 import unittest
 
 import numpy as np
 import warp as wp
 
+import newton
 from newton import ModelBuilder
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.geometry.contacts import ContactsKamino
 from newton._src.solvers.kamino._src.geometry.detector import CollisionDetector
 from newton._src.solvers.kamino._src.geometry.primitive import CollisionPipelinePrimitive
 from newton._src.solvers.kamino._src.solver_kamino_impl import SolverKaminoImpl
-from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
-from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino import setup_test_output, setup_tests, test_context
+from newton.tests.unittest_utils import NewtonTestCase
 
 ###
 # Helpers
@@ -79,20 +79,15 @@ def _run_primitive_pipeline(builder: ModelBuilder, device):
 ###
 
 
-class TestMarginGapNarrowphase(unittest.TestCase):
+class TestMarginGapNarrowphase(NewtonTestCase):
     """Verify that margin and gap are correctly handled in the primitive narrowphase."""
 
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
-        if test_context.verbose:
-            set_log_level(logging.DEBUG)
-        else:
-            reset_log_level()
 
-    def tearDown(self):
-        reset_log_level()
+        setup_test_output(self, verbose=test_context.verbose)
 
     # ------------------------------------------------------------------
     # Margin tests
@@ -371,7 +366,7 @@ def _step_solver(builder: ModelBuilder, device, num_steps: int = 5, dt: float = 
 ###
 
 
-class TestMarginGapSolver(unittest.TestCase):
+class TestMarginGapSolver(NewtonTestCase):
     """Verify that the solver treats margin as the rest offset and gap as detection-only.
 
     Uses a single free-joint sphere above a static ground box (same pattern as
@@ -383,13 +378,8 @@ class TestMarginGapSolver(unittest.TestCase):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
-        if test_context.verbose:
-            set_log_level(logging.DEBUG)
-        else:
-            reset_log_level()
 
-    def tearDown(self):
-        reset_log_level()
+        setup_test_output(self, verbose=test_context.verbose)
 
     def test_10_penetrating_margin_gets_pushed_out(self):
         """Sphere placed inside the margin envelope should be pushed upward."""
@@ -456,5 +446,6 @@ class TestMarginGapSolver(unittest.TestCase):
 ###
 
 if __name__ == "__main__":
+    newton.utils.setup_console_logging()
     setup_tests()
     unittest.main(verbosity=2)

@@ -142,6 +142,8 @@ class Example:
         self.solver = SolverSteel(
             self.model,
             solve_mode="serial",
+            # With the default 12 iterations the tallest tower can keep swaying at the sleep threshold.
+            iterations=24,
             articulated_contact_response="immediate",
             enable_sleeping=True,
         )

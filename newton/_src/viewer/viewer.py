@@ -522,6 +522,9 @@ class ViewerBase(ABC):
         elif not isinstance(xform, wp.transform):
             raise TypeError(type_error)
         self._layers[layer_id].xform = xform
+        self._layers[layer_id].model_changed = True
+        if layer_id == self._active_layer_id:
+            self.model_changed = True
 
     @staticmethod
     def _is_identity_transform(xform: wp.transform) -> bool:
@@ -1127,6 +1130,7 @@ class ViewerBase(ABC):
 
         # Convert to warp array
         self.world_offsets = wp.array(full_offsets, dtype=wp.vec3, device=self.device)
+        self.model_changed = True
 
     def _estimate_scene_scale(self) -> float:
         """Estimate a characteristic body size in world units.
@@ -3176,7 +3180,14 @@ class ViewerBase(ABC):
         packed arrays.
         """
         variant_instances = self._variant_instances()
+
         batches = list(self._shape_instances.values())
+        order = np.argsort([batch.static for batch in batches], kind="stable")
+        if variant_instances is not None:
+            instances, ordinals = variant_instances
+            variant_instances = instances, np.argsort(order)[ordinals]
+        batches = [batches[i] for i in order]
+        self._shape_instances = dict(sorted(self._shape_instances.items(), key=lambda item: item[1].static))
         for batch in batches:
             if getattr(batch, "_populated", None) is None:
                 # Created for variant rows after population.

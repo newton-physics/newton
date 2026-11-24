@@ -1,0 +1,1 @@
+Add `newton.utils.setup_console_logging()` for script entry points, which prints `INFO` records logged by the script and optionally prints Newton's default console log output with the time, source location, and level of each record, colored by level.

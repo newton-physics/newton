@@ -13,7 +13,7 @@ import newton
 from newton import Heightfield
 from newton._src.utils import is_graph_capture_allocation_enabled
 from newton.solvers import SolverMuJoCo
-from newton.tests.unittest_utils import assert_np_equal
+from newton.tests.unittest_utils import MUJOCO_MODULES, assert_np_equal, requires
 
 _cuda_available = wp.is_cuda_available()
 
@@ -224,13 +224,9 @@ class TestHeightfield(unittest.TestCase):
         self.assertAlmostEqual(hfield.min_z, 0.0)  # The base does not shift the surface.
         self.assertAlmostEqual(hfield.max_z, 1.0)  # size_z=1 → max_z=1
 
+    @requires(*MUJOCO_MODULES)
     def test_solver_mujoco_hfield(self):
         """Test converting Newton model with heightfield to MuJoCo."""
-        try:
-            SolverMuJoCo.import_mujoco()
-        except ImportError:
-            self.skipTest("MuJoCo not installed")
-
         builder = newton.ModelBuilder()
 
         nrow, ncol = 5, 5
@@ -249,13 +245,9 @@ class TestHeightfield(unittest.TestCase):
         except Exception as e:
             self.fail(f"Failed to create MuJoCo solver with heightfield: {e}")
 
+    @requires(*MUJOCO_MODULES)
     def test_heightfield_collision(self):
         """Test that a sphere doesn't fall through a heightfield."""
-        try:
-            SolverMuJoCo.import_mujoco()
-        except ImportError:
-            self.skipTest("MuJoCo not installed")
-
         builder = newton.ModelBuilder()
 
         nrow, ncol = 10, 10
@@ -306,6 +298,7 @@ class TestHeightfield(unittest.TestCase):
             f"Sphere fell through heightfield: z={final_z:.4f}",
         )
 
+    @requires(*MUJOCO_MODULES)
     def test_solver_mujoco_hfield_pose_and_size_honor_min_z_and_scale(self):
         """Place the MuJoCo heightfield at the scaled min_z, at compile time and after every geom sync.
 
@@ -314,10 +307,6 @@ class TestHeightfield(unittest.TestCase):
         scale applies to hx, hy, min_z, and max_z. The heightfield is rotated
         so a shift along world z instead would be caught.
         """
-        try:
-            SolverMuJoCo.import_mujoco()
-        except ImportError:
-            self.skipTest("MuJoCo not installed")
         import mujoco
 
         builder = newton.ModelBuilder()
@@ -348,13 +337,9 @@ class TestHeightfield(unittest.TestCase):
         np.testing.assert_allclose(runtime_pos, expected_pos, atol=1e-6)
 
     @unittest.skipUnless(_cuda_available, "graph capture requires CUDA")
+    @requires(*MUJOCO_MODULES)
     def test_solver_mujoco_hfield_shape_update_is_graph_capturable(self):
         """Capture a SHAPE_PROPERTIES notification for a scene with an offset heightfield."""
-        try:
-            SolverMuJoCo.import_mujoco()
-        except ImportError:
-            self.skipTest("MuJoCo not installed")
-
         builder = newton.ModelBuilder()
         elevation = np.array([[0.0, 1.0], [1.0, 0.0]], dtype=np.float32)
         builder.add_shape_heightfield(
@@ -369,12 +354,9 @@ class TestHeightfield(unittest.TestCase):
             solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
         wp.capture_launch(capture.graph)
 
+    @requires(*MUJOCO_MODULES)
     def test_solver_mujoco_hfield_rescale_after_construction_keeps_compiled_geometry(self):
         """Keep the heightfield offset at its construction-time scale, matching MuJoCo's compiled hfield_size."""
-        try:
-            SolverMuJoCo.import_mujoco()
-        except ImportError:
-            self.skipTest("MuJoCo not installed")
         import mujoco
 
         builder = newton.ModelBuilder()
@@ -401,13 +383,9 @@ class TestHeightfield(unittest.TestCase):
         np.testing.assert_allclose(runtime_pos, compiled_pos, atol=1e-6)
         np.testing.assert_allclose(compiled_pos, [0.0, 0.0, 0.5], atol=1e-6)
 
+    @requires(*MUJOCO_MODULES)
     def test_solver_mujoco_sphere_settles_at_negative_min_z(self):
         """Settle a sphere at the bottom of a bowl whose lowest point is below the heightfield origin."""
-        try:
-            SolverMuJoCo.import_mujoco()
-        except ImportError:
-            self.skipTest("MuJoCo not installed")
-
         builder = newton.ModelBuilder()
         # A bowl from z = -0.3 at its center up to z = 0.3 at its rim.
         n = 21
@@ -459,12 +437,10 @@ class TestHeightfield(unittest.TestCase):
             state_in, state_out = state_out, state_in
         return state_in.body_q.numpy()[:, 2]
 
+    @requires(*MUJOCO_MODULES)
     def test_solver_mujoco_hfield_per_world_bounds(self):
         """Bound each world's heightfield geom by that world's terrain, so the broadphase keeps its contacts."""
-        try:
-            mujoco, _ = SolverMuJoCo.import_mujoco()
-        except ImportError:
-            self.skipTest("MuJoCo not installed")
+        mujoco, _ = SolverMuJoCo.import_mujoco()
 
         # Flat terrains 1 m and 4 m wide. A sphere dropped 1.5 m off center misses
         # world 0's terrain and lands on world 1's.
@@ -495,13 +471,9 @@ class TestHeightfield(unittest.TestCase):
         self.assertLess(heights[0], -0.5)
         self.assertAlmostEqual(float(heights[1]), 0.05, delta=0.01)
 
+    @requires(*MUJOCO_MODULES)
     def test_solver_mujoco_hfield_identical_worlds_share_asset(self):
         """Keep one MuJoCo heightfield and a shared ``geom_dataid`` when every world has the same terrain."""
-        try:
-            SolverMuJoCo.import_mujoco()
-        except ImportError:
-            self.skipTest("MuJoCo not installed")
-
         elevation = np.random.default_rng(0).random((6, 6)).astype(np.float32)
         # Equal terrains in distinct objects, as when each world builds its own.
         heightfields = [Heightfield(data=elevation, nrow=6, ncol=6, hx=1.0, hy=1.0) for _ in range(3)]
@@ -511,13 +483,9 @@ class TestHeightfield(unittest.TestCase):
         self.assertEqual(solver.mj_model.nhfield, 1)
         self.assertEqual(solver.mjw_model.geom_dataid.shape[0], 1)
 
+    @requires(*MUJOCO_MODULES)
     def test_solver_mujoco_hfield_per_world_after_in_place_edit(self):
         """Collide each world against its heightfield's current data after an in-place edit keeps its cached hash."""
-        try:
-            SolverMuJoCo.import_mujoco()
-        except ImportError:
-            self.skipTest("MuJoCo not installed")
-
         heightfields = [
             Heightfield(data=np.zeros((5, 5), dtype=np.float32), nrow=5, ncol=5, hx=0.5, hy=0.5, min_z=0.0, max_z=0.3)
             for _ in range(2)

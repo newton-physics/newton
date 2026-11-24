@@ -314,7 +314,7 @@ def build_transpose_index(
 
 
 @functools.cache
-def make_fused_cr_kernel(max_rows: int, max_cols: int, max_blocks: int, block_dim: int = 0):
+def make_fused_cr_kernel(max_rows: int, max_cols: int, max_blocks: int, block_dim: int = 0, coupled_rows: int = 0):
     """Build the single-kernel sparse CR solver.
 
     Each block solves one world with ``block_dim`` threads; each thread owns
@@ -327,6 +327,11 @@ def make_fused_cr_kernel(max_rows: int, max_cols: int, max_blocks: int, block_di
         max_cols: Static upper bound on body DoFs per world.
         max_blocks: Static maximum number of blocks per constraint row.
         block_dim: Threads per block. Defaults to ``max_rows``.
+        coupled_rows: Number of leading rows of each world that may have joint-space couplings of
+            decoupled joint rows, read from a per-row table (see
+            :meth:`.delassus.BlockSparseMatrixFreeDelassusOperator.update_decoupled_coupled_rows`).
+            Each thread loads the couplings of its rows among them into registers once per solve.
+            Defaults to ``0``, which adds no couplings.
 
     Launch with ``wp.launch_tiled(dim=n_worlds, block_dim=block_dim)``.
     """
@@ -347,6 +352,13 @@ def make_fused_cr_kernel(max_rows: int, max_cols: int, max_blocks: int, block_di
     while T * 2 <= 32 and bodies_per_world * (T * 2) <= _block_dim:
         T *= 2
     ThreadRowsVector = wp.types.vector(length=rows_per_thread, dtype=wp.float32)
+    # Only the leading ``coupled_rows`` rows of a world (its joint rows) can have couplings, so each
+    # thread holds their couplings for its first ``coupled_rows_per_thread`` rows only.
+    coupled_rows_per_thread = min(rows_per_thread, (coupled_rows + _block_dim - 1) // _block_dim)
+    _coupled_rows = coupled_rows_per_thread > 0
+    _nc = max(1, coupled_rows_per_thread)
+    CoupledRowsIndex = wp.types.vector(length=_nc, dtype=wp.int32)
+    CoupledRowsVector = wp.types.vector(length=_nc, dtype=wp.float32)
     # CR reductions: two-level (warp __shfl + NW-element shared combine) when block_dim % 32 == 0, else tile_sum.
     warps_per_block = _block_dim // 32  # warps per block
     warp_reduce = _block_dim % 32 == 0 and warps_per_block >= 1
@@ -408,10 +420,18 @@ def make_fused_cr_kernel(max_rows: int, max_cols: int, max_blocks: int, block_di
         inv_m: wp.array[wp.float32],
         inv_I: wp.array[wp.mat33f],
         bodies_offset: wp.array[wp.int32],
+        c_row0: CoupledRowsIndex,
+        c_row1: CoupledRowsIndex,
+        c_coef0: CoupledRowsVector,
+        c_coef1: CoupledRowsVector,
     ) -> ThreadRowsVector:
         # A @ vv = P (J M^-1 J^T (P vv)) + eta vv, kept in shared memory via wp.tile (logical index
         # e lives at tile element [e // BD, e % BD]; the tile carries Warp's barrier on cross-lane
-        # gathers and overwrites, so no per-call zeroing).
+        # gathers and overwrites, so no per-call zeroing). With decoupled joint rows, the joint-space
+        # couplings add C vv, with coefficients relative to the coupled row's entry of sv.
+        # Reference the coupling vector types so that Warp resolves the annotations above
+        _ci = CoupledRowsIndex()
+        _cv = CoupledRowsVector()
         pv = ThreadRowsVector()
         for i in range(wp.static(rows_per_thread)):
             pv[i] = p_rowv[i] * vv[i]
@@ -475,6 +495,14 @@ def make_fused_cr_kernel(max_rows: int, max_cols: int, max_blocks: int, block_di
                         acc += wp.dot(nzb_values[gb], st[bl])  # st[bl] = M^-1 (J^T P v) for the body
                 av = p_rowv[i] * acc + eta_rowv[i] * vv[i]
             out[i] = av
+        if wp.static(_coupled_rows):
+            for i in range(wp.static(_nc)):
+                c0 = c_row0[i]
+                if c0 >= 0:
+                    out[i] += c_coef0[i] * sv[c0 // _block_dim, c0 % _block_dim]
+                c1 = c_row1[i]
+                if c1 >= 0:
+                    out[i] += c_coef1[i] * sv[c1 // _block_dim, c1 % _block_dim]
         return out
 
     @wp.kernel(module="unique", module_options={"enable_backward": False})
@@ -504,6 +532,10 @@ def make_fused_cr_kernel(max_rows: int, max_cols: int, max_blocks: int, block_di
         precond: wp.array[wp.float32],
         use_precond: wp.int32,
         eta: wp.array[wp.float32],
+        # Joint-space couplings of decoupled joint rows (only read if ``coupled_rows``):
+        coupled_row: wp.array2d[wp.int32],
+        coupled_coef: wp.array2d[wp.float32],
+        use_coupled_rows: wp.int32,
         # RHS / solution:
         b: wp.array[wp.float32],
         x: wp.array[wp.float32],
@@ -548,6 +580,25 @@ def make_fused_cr_kernel(max_rows: int, max_cols: int, max_blocks: int, block_di
             b_rowv[i] = b[voff + row]
             x_rowv[i] = x[voff + row]
 
+        # Joint-space couplings of decoupled joint rows, loop-invariant across the CR iterations
+        c_row0 = CoupledRowsIndex()
+        c_row1 = CoupledRowsIndex()
+        c_coef0 = CoupledRowsVector()
+        c_coef1 = CoupledRowsVector()
+        for i in range(wp.static(_nc)):
+            c_row0[i] = -1
+            c_row1[i] = -1
+        if wp.static(_coupled_rows):
+            if use_coupled_rows != 0:
+                for i in range(wp.static(_nc)):
+                    row = t + i * _block_dim
+                    if row >= n:
+                        break
+                    c_row0[i] = coupled_row[roff + row, 0]
+                    c_row1[i] = coupled_row[roff + row, 1]
+                    c_coef0[i] = coupled_coef[roff + row, 0]
+                    c_coef1[i] = coupled_coef[roff + row, 1]
+
         bb = wp.float32(0.0)
         for i in range(wp.static(rows_per_thread)):
             if t + i * _block_dim >= n:
@@ -577,6 +628,10 @@ def make_fused_cr_kernel(max_rows: int, max_cols: int, max_blocks: int, block_di
             inv_m,
             inv_I,
             bodies_offset,
+            c_row0,
+            c_row1,
+            c_coef0,
+            c_coef1,
         )
         r_rowv = ThreadRowsVector()
         for i in range(wp.static(rows_per_thread)):
@@ -603,6 +658,10 @@ def make_fused_cr_kernel(max_rows: int, max_cols: int, max_blocks: int, block_di
             inv_m,
             inv_I,
             bodies_offset,
+            c_row0,
+            c_row1,
+            c_coef0,
+            c_coef1,
         )
         ap_rowv = ar_rowv
 
@@ -660,6 +719,10 @@ def make_fused_cr_kernel(max_rows: int, max_cols: int, max_blocks: int, block_di
                 inv_m,
                 inv_I,
                 bodies_offset,
+                c_row0,
+                c_row1,
+                c_coef0,
+                c_coef1,
             )
 
             rAr_new_local = wp.float32(0.0)

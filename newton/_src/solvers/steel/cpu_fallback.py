@@ -10,7 +10,8 @@ with the same update math, so a CPU solve tracks the CUDA one to float
 round-off (the CUDA kernels reduce dot products in a different order).
 
 Only the configurations the CPU accepts are mirrored: ``friction_mode=
-"fixed_normal"`` without contact torsion, contact compliance or joint friction.
+"fixed_normal"`` without contact torsion, contact compliance, joint friction or
+Nesterov momentum.
 """
 
 import warp as wp
@@ -34,6 +35,8 @@ def reject_cpu_unsupported_features(solver, *, enable_sleeping: bool) -> None:
     Contact torsion rejects CPU devices when it is configured, so it is not repeated here.
     """
     unsupported = []
+    if solver._nesterov_momentum:
+        unsupported.append("nesterov_momentum=True")
     if solver._contact_compliance:
         unsupported.append("contact_compliance=True")
     if solver._friction_mode != "fixed_normal":
