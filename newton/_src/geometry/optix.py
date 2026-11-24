@@ -208,8 +208,6 @@ def check_supported(model: Model) -> None:
     """Raise :class:`UnsupportedError` if OptiX cannot trace the model's shapes on its device."""
     if not model.device.is_cuda:
         raise UnsupportedError("The OptiX backend requires a CUDA device")
-    if not hasattr(wo, "spheres"):
-        raise UnsupportedError("The OptiX backend requires warp-optix 0.3.1 or newer")
     try:
         wo.get_context(model.device)
     except Exception as exc:
@@ -317,9 +315,11 @@ def gaussian_slots(model: Model, instance_shapes: np.ndarray, shape_types: np.nd
     slots[local] = local_slots
     slots[global_shapes] = local_slot_count + np.arange(len(global_shapes))
     assets = model.shape_source_ptr.numpy()[gaussian].astype(np.int64)
-    if len(gaussian) and (slots[gaussian].max() >= 256 or assets.max() >= 1 << GAUSSIAN_ASSET_BITS):
+    # Instance IDs have 24 bits.
+    max_slots = 1 << (24 - GAUSSIAN_ASSET_BITS)
+    if len(gaussian) and (slots[gaussian].max() >= max_slots or assets.max() >= 1 << GAUSSIAN_ASSET_BITS):
         raise UnsupportedError(
-            f"OptiX cameras support 256 Gaussian shapes per world and {1 << GAUSSIAN_ASSET_BITS} assets"
+            f"OptiX cameras support {max_slots} Gaussian shapes per world and {1 << GAUSSIAN_ASSET_BITS} assets"
         )
     instance_ids[gaussian] = (slots[gaussian] << GAUSSIAN_ASSET_BITS | assets).astype(np.uint32)
     slot_gaussians = np.full((model.world_count, local_slot_count + len(global_shapes)), -1, dtype=np.int32)
@@ -443,7 +443,6 @@ def create_pipeline(
     }
     if particle_build_flags is not None:
         hit_groups["particles"] = wo.HitGroup(builtin=wo.PrimitiveType.SPHERE, build_flags=particle_build_flags)
-    options = {"clustered_geometry": True} if clustered_geometry else {}
     return wo.Pipeline(
         kernel,
         device=shapes.shape_types.device,
@@ -452,7 +451,7 @@ def create_pipeline(
         payload_words=payload_words,
         module_options={"fast_math": kernel.module.options["fast_math"]},
         graph_flags=wo.TraversableGraphFlags.ALLOW_SINGLE_LEVEL_INSTANCING,
-        **options,
+        clustered_geometry=clustered_geometry,
     )
 
 

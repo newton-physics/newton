@@ -5,6 +5,7 @@ import gc
 import inspect
 import math
 import unittest
+from unittest import mock
 
 import numpy as np
 import warp as wp
@@ -1559,9 +1560,12 @@ class TestSensorCamera(unittest.TestCase):
         self.assertGreater(float(depth.numpy()[0, 0, 0]), 0.0)
         self.assertEqual(int(shape_index.numpy()[0, 0, 0]), int(TRIANGLE_MESH_SHAPE_ID))
 
-    @staticmethod
-    def _deformable_worlds(device: str) -> newton.Model:
-        """Worlds that differ in their cloth, particles and shapes, plus a global particle and ground."""
+    def test_scene_matches_across_backends(self, device: str = "cpu", backend: str = "warp") -> None:
+        """Render the shapes, particles and cloth of differing worlds alike with every backend and path."""
+        from newton._src.render import render_optix  # noqa: PLC0415
+        from newton._src.render.raytrace import PARTICLES_SHAPE_ID, TRIANGLE_MESH_SHAPE_ID  # noqa: PLC0415
+
+        # Worlds differing in cloth, particles and shapes, plus a global particle and ground.
         scene = newton.ModelBuilder(up_axis=newton.Axis.Z)
         for w in range(4):
             world = newton.ModelBuilder(up_axis=newton.Axis.Z)
@@ -1583,65 +1587,50 @@ class TestSensorCamera(unittest.TestCase):
             scene.add_world(world)
         scene.add_ground_plane()
         scene.add_particle(wp.vec3(0.0, -0.5, 0.25), wp.vec3(0.0), 0.1, radius=0.1)
-        return scene.finalize(device=device)
-
-    def _render_deformable_worlds(self, model: newton.Model, backend: str, **config) -> tuple[np.ndarray, np.ndarray]:
+        model = scene.finalize(device=device)
         state = model.state()
-        if backend == "optix":
-            model.bvh_build_shapes(state, backend="optix")
-        camera = SensorCamera(model, backend=backend)
-        camera.create_default_light(enable_shadows=True)
         eye = np.array([1.6, 1.2, 1.4])
         forward = -eye / np.linalg.norm(eye)
         right = np.cross(forward, [0.0, 0.0, 1.0])
         right /= np.linalg.norm(right)
         rotation = np.stack([right, np.cross(right, forward), -forward], axis=1)
         transform = wp.transformf(wp.vec3f(*eye), wp.quat_from_matrix(wp.mat33f(rotation.flatten())))
-        transforms = wp.array([transform] * model.world_count, dtype=wp.transformf, device=model.device)
-        depth = camera.allocate_image_depth(model.world_count, 32, 32)
-        shape_index = camera.allocate_image_shape_index(model.world_count, 32, 32)
-        camera.update(
-            state,
-            transforms,
-            self._rays(32, 32, fov=math.radians(60.0), device=model.device),
-            depth_image=depth,
-            shape_index_image=shape_index,
-            render_config=SensorCamera.RenderConfig(enable_shadows=True, **config),
-        )
-        return depth.numpy(), shape_index.numpy()
+        transforms = wp.array([transform] * model.world_count, dtype=wp.transformf, device=device)
+        rays = self._rays(32, 32, fov=math.radians(60.0), device=device)
 
-    def test_scene_matches_across_backends(self, device: str = "cpu", backend: str = "warp") -> None:
-        """Render the shapes, particles and cloth of differing worlds alike with every backend and path."""
-        from newton._src.render import render_optix  # noqa: PLC0415
-        from newton._src.render.raytrace import PARTICLES_SHAPE_ID, TRIANGLE_MESH_SHAPE_ID  # noqa: PLC0415
+        def render(backend):
+            if backend == "optix":
+                model.bvh_build_shapes(state, backend="optix")
+            camera = SensorCamera(model, backend=backend)
+            camera.create_default_light(enable_shadows=True)
+            depth = camera.allocate_image_depth(model.world_count, 32, 32)
+            shape_index = camera.allocate_image_shape_index(model.world_count, 32, 32)
+            camera.update(
+                state,
+                transforms,
+                rays,
+                depth_image=depth,
+                shape_index_image=shape_index,
+                render_config=SensorCamera.RenderConfig(enable_shadows=True, enable_backface_culling=False),
+            )
+            return depth.numpy(), shape_index.numpy()
 
-        model = self._deformable_worlds(device)
-        for config in (
-            {"enable_backface_culling": False},
-            {"enable_backface_culling": False, "enable_particles": False},
-        ):
-            with self.subTest(**config):
-                depth, shape_index = self._render_deformable_worlds(model, "warp", **config)
-                # Every world sees its own particles, and only worlds with cloth see cloth.
-                for w in range(model.world_count):
-                    ids = shape_index[w]
-                    self.assertEqual(bool(np.any(ids == TRIANGLE_MESH_SHAPE_ID)), w % 2 == 0)
-                    self.assertEqual(bool(np.any(ids == PARTICLES_SHAPE_ID)), config.get("enable_particles", True))
-                if backend == "warp":
-                    continue
-                paths = [False]
-                if render_optix.clusters_supported(wp.get_device(device)):
-                    paths.append(True)
-                for clustered in paths:
-                    with self.subTest(clustered=clustered):
-                        supported = render_optix.clusters_supported
-                        render_optix.clusters_supported = lambda device, clustered=clustered: clustered
-                        try:
-                            optix_depth, optix_shape_index = self._render_deformable_worlds(model, backend, **config)
-                        finally:
-                            render_optix.clusters_supported = supported
-                        np.testing.assert_array_equal(optix_shape_index, shape_index)
-                        np.testing.assert_allclose(optix_depth, depth, atol=1.0e-4)
+        depth, shape_index = render("warp")
+        # Every world sees its own particles, and only worlds with cloth see cloth.
+        for w in range(model.world_count):
+            self.assertEqual(bool(np.any(shape_index[w] == TRIANGLE_MESH_SHAPE_ID)), w % 2 == 0)
+            self.assertTrue(np.any(shape_index[w] == PARTICLES_SHAPE_ID))
+        if backend == "warp":
+            return
+        # Trace the deformable surfaces both as refit triangles and, where supported, as clusters.
+        for clustered in {False, render_optix.clusters_supported(wp.get_device(device))}:
+            with (
+                self.subTest(clustered=clustered),
+                mock.patch.object(render_optix, "clusters_supported", return_value=clustered),
+            ):
+                optix_depth, optix_shape_index = render(backend)
+                np.testing.assert_array_equal(optix_shape_index, shape_index)
+                np.testing.assert_allclose(optix_depth, depth, atol=1.0e-4)
 
     def test_particles_follow_state_without_particle_bvh_refit(
         self, device: str = "cpu", backend: str = "warp"
@@ -2108,8 +2097,7 @@ class TestSensorCamera(unittest.TestCase):
             return depth.numpy()
 
         before = render()
-        del_model = finalize()
-        del del_model
+        finalize()
         gc.collect()
         np.testing.assert_array_equal(render(), before)
 

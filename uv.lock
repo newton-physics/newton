@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = ">=3.11"
 resolution-markers = [
     "(python_full_version == '3.14.*' and platform_machine != 'ARM64' and platform_machine != 'aarch64') or (python_full_version == '3.14.*' and platform_machine != 'aarch64' and sys_platform != 'win32')",
@@ -3165,7 +3165,7 @@ requires-dist = [
     { name = "viser", marker = "extra == 'notebook'", specifier = ">=1.1.1" },
     { name = "warp-lang", specifier = ">=1.17.0", index = "https://pypi.nvidia.com/" },
     { name = "warp-nn", extras = ["onnx"], marker = "extra == 'onnx'", specifier = "~=0.4.0" },
-    { name = "warp-optix", marker = "(python_full_version == '3.12.*' and platform_machine == 'AMD64' and sys_platform == 'linux' and extra == 'optix') or (python_full_version == '3.12.*' and platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'optix') or (python_full_version == '3.12.*' and platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'optix') or (python_full_version == '3.12.*' and platform_machine == 'x86_64' and sys_platform == 'win32' and extra == 'optix')", specifier = "~=0.3.0" },
+    { name = "warp-optix", marker = "(python_full_version == '3.12.*' and platform_machine == 'AMD64' and sys_platform == 'linux' and extra == 'optix') or (python_full_version == '3.12.*' and platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'optix') or (python_full_version == '3.12.*' and platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'optix') or (python_full_version == '3.12.*' and platform_machine == 'x86_64' and sys_platform == 'win32' and extra == 'optix')", specifier = "~=0.3.1" },
 ]
 provides-extras = ["optix", "sim", "onnx", "importers", "remesh", "examples", "rtx", "torch-cu12", "torch-cu13", "dev", "docs", "notebook"]
 
@@ -5759,17 +5759,17 @@ onnx = [
 
 [[package]]
 name = "warp-optix"
-version = "0.3.0"
+version = "0.3.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.12.*' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
     { name = "pyoptix", marker = "python_full_version == '3.12.*' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
     { name = "warp-lang", marker = "python_full_version == '3.12.*' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/db/90/f61ceaf0d85592296f611bf58fc469e7118a5b28be4bc5fcb4345427fe98/warp_optix-0.3.0.tar.gz", hash = "sha256:9695d5c81a88eb4d6297cb2af654658ce10cac504c11d5b4316b6059e836a348", size = 1028895, upload-time = "2026-11-11T09:13:50.484Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/8a/b8/cc9353c33bfb25ebcec85aa615906fc1e1d05f09c278c090a0d7d2270e57/warp_optix-0.3.1.tar.gz", hash = "sha256:7b8991cdb5d5372241ab8ef453fb49d2cb39ed62776ff7e61aaf52147b7016ad", size = 1062318, upload-time = "2026-11-23T12:45:51.457Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/9e/85/e8c069138970d4283b41ef4c7e398f6a2b9a96dd8a83b5c7cd1cd9ffb730/warp_optix-0.3.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:add960e79449cda2ac6d0a86344717f8b74246d13345db456e1f785ffd276355", size = 499652, upload-time = "2026-11-11T09:13:47.547Z" },
-    { url = "https://files.pythonhosted.org/packages/37/4e/2dc092e601c3f999b8e9c744cb6d3636c2cd1fecece6b6e823a137acb47f/warp_optix-0.3.0-cp312-cp312-win_amd64.whl", hash = "sha256:a3038bcaf6d41489d70c6a026cfa8a2b8e6767e079dc48ead1b0245f5037f540", size = 470514, upload-time = "2026-11-11T09:13:49.001Z" },
+    { url = "https://files.pythonhosted.org/packages/cd/03/0b6f77631520379f3bf8e761a6847b0f75fb10f95f358f7809b154b97cc8/warp_optix-0.3.1-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:5fbf6882ebdcb8986bef2a5a2695d997325d906b4cc7a2a244e4cbc7331f76ea", size = 588514, upload-time = "2026-11-23T12:45:48.657Z" },
+    { url = "https://files.pythonhosted.org/packages/45/2a/42e7da44552ba2a1000fe65d5cc74377973958fd3f11c417c1618745fc10/warp_optix-0.3.1-cp312-cp312-win_amd64.whl", hash = "sha256:5444592ce06e055582495a3207a109e58840515d6006f556ea2d81a2a2ee3b8c", size = 529758, upload-time = "2026-11-23T12:45:50.032Z" },
 ]
 
 [[package]]

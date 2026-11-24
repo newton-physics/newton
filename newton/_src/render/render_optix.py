@@ -247,9 +247,7 @@ class OptixScene:
     :meth:`Model.bvh_refit_shapes` with ``backend="optix"`` must run before :meth:`refit`.
     """
 
-    def __init__(
-        self, model: Model, shapes: OptixShapes, items: SceneItems, state: State, *, use_clusters: bool | None = None
-    ):
+    def __init__(self, model: Model, shapes: OptixShapes, items: SceneItems, state: State):
         self.model = model
         self.shapes = shapes
         self.items = items
@@ -257,15 +255,12 @@ class OptixScene:
         device = model.device
         self.has_particles = items.particle_count > 0
         self.has_triangles = items.triangle_count > 0
-        if use_clusters is None:
-            use_clusters = self.has_triangles and clusters_supported(device)
-        self.clustered = bool(use_clusters and self.has_triangles)
+        self.clustered = self.has_triangles and clusters_supported(device)
         self.has_gaussians = shapes.slot_gaussians.shape[1] > 0
         self.has_global_items = shapes.has_global_instances
         self.accel: wo.Accel | None = None
         self.triangle_accel = None
         self.particle_accel: wo.Accel | None = None
-        self._empty_int = wp.empty(0, dtype=wp.int32, device=device)
         if not (self.has_particles or self.has_triangles):
             return
 
@@ -285,7 +280,7 @@ class OptixScene:
                 self.cluster_triangle_start = wp.array(clusters[:, 2], dtype=wp.int32, device=device)
                 self.cluster_triangles = wp.array(faces, dtype=wp.int32, device=device)
             else:
-                self._point_sources = self._empty_int
+                self._point_sources = wp.empty(0, dtype=wp.int32, device=device)
                 self._packed_points = wp.empty(items.triangle_points.shape[0], dtype=wp.vec3f, device=device)
             self._pack_points()
             if self.clustered:

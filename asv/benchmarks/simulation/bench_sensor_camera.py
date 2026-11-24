@@ -635,6 +635,7 @@ if __name__ == "__main__":
         "FastSensorCameraPixel": FastSensorCameraPixel,
         "SensorCameraQuadruped": SensorCameraQuadruped,
         "SensorCameraShapes256": SensorCameraShapes256,
+        "SensorCameraGaussians": SensorCameraGaussians,
         "SensorCameraCloth": SensorCameraCloth,
         "SensorCameraParticles": SensorCameraParticles,
     }

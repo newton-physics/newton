@@ -219,12 +219,6 @@ def start_blend() -> SplatBlend:
     return blend
 
 
-@wp.func
-def after_blended(blend: SplatBlend, t: wp.float32, id: wp.uint32) -> wp.bool:
-    """Whether hit ``(t, id)`` comes after the hits already blended, so a round gathers it."""
-    return hit_before(blend.last_t, blend.last_id, t, id)
-
-
 def create_blend_function(config: RenderConfig) -> wp.Function:
     @wp.func
     def blend_hits(
@@ -343,7 +337,7 @@ def create_shade_function(config: RenderConfig) -> wp.Function:
                         wp.min(hits[hits.shape[0] - 1].t, max_distance),
                     )
                     id = splat_hit_id(slot, splat)
-                    if alpha > 0.0 and after_blended(blend, t, id):
+                    if alpha > 0.0 and hit_before(blend.last_t, blend.last_id, t, id):
                         insert_hit(hits, t, id)
             blend, count = blend_hits(
                 blend,
