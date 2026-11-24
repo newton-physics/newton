@@ -435,8 +435,9 @@ repository examples spend tuning effort, not a shared solver API.
        ``affine_rigidity_ratio`` controls the SO(3) penalty relative to mean
        directional inertia; it does not set contact stiffness. Rigid contacts
        use shape material coefficients, while particle-rigid contacts use
-       ``Model.soft_contact_ke``, ``soft_contact_kd``, ``soft_contact_kf``, and
-       ``soft_contact_mu``. See :doc:`/solvers/style3d` for formulas and mixing
+       ``Model.soft_contact_ke``, ``soft_contact_kd``, and ``soft_contact_mu``.
+       When affine body dynamics are enabled, particle-rigid contacts also use
+       ``soft_contact_kf``. See :doc:`/solvers/style3d` for formulas and mixing
        rules. The original constructor keyword
        options and solver attribute aliases are deprecated as of Newton 1.8;
        use ``Config`` and ``solver.config`` instead. Deprecated constructor

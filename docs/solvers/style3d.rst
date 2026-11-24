@@ -215,7 +215,7 @@ substeps per frame:
 Tetrahedral elasticity
 ---------------------
 
-Style3D supports experimental co-rotational tetrahedral elasticity with a
+Style3D supports co-rotational tetrahedral elasticity with a
 volume-preserving projection. Build tetrahedra with
 :meth:`~newton.ModelBuilder.add_tetrahedron`, :meth:`~newton.ModelBuilder.add_soft_grid`, or
 :meth:`~newton.ModelBuilder.add_soft_mesh`; the solver consumes the standard
