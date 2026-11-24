@@ -10029,10 +10029,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     # MuJoCo Warp's default njmax does not follow nconmax, so size the
                     # rows from the per-world contact capacity as the Newton-contacts
                     # branch does; otherwise raising nconmax alone overflows the rows.
+                    # The initial nefc already holds the rows of contacts active at init,
+                    # so only the non-contact rows are added to the contact capacity;
+                    # _default_njmax still covers the initial nefc.
                     contact_max = nconmax if nconmax is not None else _default_nconmax(self.mj_model, self.mj_data)
+                    non_contact_rows = self.mj_data.ne + self.mj_data.nf + self.mj_data.nl
                     njmax = max(
                         _default_njmax(self.mj_model, self.mj_data),
-                        self.mj_data.nefc + contact_max * constraint_rows_per_contact(),
+                        non_contact_rows + contact_max * constraint_rows_per_contact(),
                     )
 
             if njmax is not None and njmax < self.mj_data.nefc:

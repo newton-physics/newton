@@ -5329,6 +5329,24 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
                 solver = SolverMuJoCo(model, use_mujoco_contacts=True, nconmax=nconmax)
                 self.assertGreaterEqual(solver.mjw_data.njmax, solver.mjw_data.naconmax * 4)
 
+        # Boxes that start in contact must not count their initial contact rows
+        # twice: nefc already holds them, so only the non-contact rows are added.
+        resting = newton.ModelBuilder()
+        for box_index in range(5):
+            body = resting.add_body(xform=wp.transform(wp.vec3(0.4 * box_index, 0.0, 0.0295), wp.quat_identity()))
+            resting.add_shape_box(body, hx=0.03, hy=0.03, hz=0.03)
+        resting.add_ground_plane()
+        resting_model = resting.finalize()
+        solver = SolverMuJoCo(resting_model, use_mujoco_contacts=True, nconmax=96)
+        self.assertGreater(solver.mj_data.ncon, 0)
+        from mujoco_warp._src.io import _default_njmax
+
+        non_contact_rows = solver.mj_data.ne + solver.mj_data.nf + solver.mj_data.nl
+        self.assertEqual(
+            solver.mjw_data.njmax,
+            max(_default_njmax(solver.mj_model, solver.mj_data), non_contact_rows + 96 * 4),
+        )
+
         solver = SolverMuJoCo(model, use_mujoco_contacts=True, nconmax=96, njmax=300)
         self.assertEqual(solver.mjw_data.njmax, 300)
 
