@@ -109,6 +109,16 @@ def _world_thread_count(device: wp.DeviceLike, num_worlds: int, max_world_items:
 ###
 
 
+def _proximal_window_iterations(window: float, max_iterations: int) -> int:
+    """Return ``ceil(window * max_iterations)``, the splitting iterations of the proximal warm-start pull.
+
+    The product is shrunk by a few rounding errors first, so that a product such as ``0.1 * 30``, which
+    rounds just above three, keeps three iterations. A positive window gives at least one iteration, and
+    zero disables the pull.
+    """
+    return math.ceil(window * max_iterations * (1.0 - 4.0 * np.finfo(np.float64).eps))
+
+
 class LOXSolver:
     """Run a fixed LOX splitting solve on one frozen linearization.
 
@@ -570,9 +580,8 @@ class LOXSolver:
             ProjectionAcceleration.from_string(self._config.projection_acceleration),
             contact_proximal_regularization=self._config.contact_proximal_regularization,
             contact_proximal_warmstart_scale=self._config.contact_proximal_warmstart_scale,
-            # Zero disables the pull; rounding first keeps 0.1 * 30 = 3.0000000000000004 at three iterations
-            contact_proximal_target_iterations=math.ceil(
-                round(self._config.contact_proximal_warmstart_window * self._config.max_iterations, 6)
+            contact_proximal_target_iterations=_proximal_window_iterations(
+                self._config.contact_proximal_warmstart_window, self._config.max_iterations
             ),
             iteration_count=self._data.state.iteration_count,
         )
