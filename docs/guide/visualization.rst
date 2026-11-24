@@ -430,7 +430,7 @@ All viewer backends inherit from :class:`~newton.viewer.ViewerBase` and share a 
 
 - :meth:`~newton.viewer.ViewerBase.set_model` — assign a :class:`~newton.Model` (use :meth:`~newton.viewer.ViewerBase.set_visible_worlds` afterwards to limit the number of rendered worlds)
 - :meth:`~newton.viewer.ViewerBase.set_control` — optionally expose Control inputs to the inspector
-- :meth:`~newton.viewer.ViewerBase.set_solver` — optionally expose :class:`~newton.solvers.SolverBase` capabilities and resources
+- :meth:`~newton.viewer.ViewerBase.set_solver` — optionally expose :class:`~newton.solvers.SolverBase` capabilities, resources, and solver-synchronized runtime edits
 - :meth:`~newton.viewer.ViewerBase.set_collision_pipeline` — optionally expose broadphase and narrowphase diagnostics
 - :meth:`~newton.viewer.ViewerBase.begin_frame` — start a new frame with the current simulation time
 - :meth:`~newton.viewer.ViewerBase.log_state` — update the viewer with the current :class:`~newton.State` (body transforms, particle positions, etc.)
@@ -698,9 +698,11 @@ Editing, history, and rebuilding
   Edits update existing arrays so captured simulation graphs retain their
   bindings. Reset Control restores the values first seen by the inspector.
 * Joint State coordinates and velocities and authored body shape variants can
-  be edited only while paused at the latest frame. A joint mask limits forward
-  kinematics to the edited branch, and rejected variant switches roll back
-  cleanly. Unsupported or read-only properties remain visibly locked.
+  be edited only while paused at the latest frame; body motion flags and body
+  shape variants also require a compatible solver bound via ``set_solver``. A
+  joint mask limits forward kinematics to the edited branch, and rejected
+  variant switches roll back cleanly while preserving pre-existing live edits.
+  Unsupported or read-only properties remain visibly locked.
 * Recorded historical frames are display snapshots. They are read-only;
   playback reaches the latest frame before live simulation resumes. They
   are not solver checkpoints and cannot restart simulation from an arbitrary

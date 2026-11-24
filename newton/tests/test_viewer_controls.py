@@ -2737,46 +2737,86 @@ class TestViewerProperties(unittest.TestCase):
         self.assertEqual(inspector.reference_target(model, Frequency.WORLD, model.world_count), ("root", -1))
         self.assertEqual(inspector.reference_label(model, Frequency.WORLD, -1, ("root", -1)), "Shared (-1)")
 
-        # 2) Interactive body variant switching requires pause and rolls back on solver rejection.
+        # 2) Interactive body variant switching requires a bound solver and pause, and preserves
+        # both solver caches and pre-existing live runtime edits when a switch is rejected.
+        class _VariantTestSolver(newton.solvers.SolverBase):
+            def __init__(self, m: newton.Model, callback) -> None:
+                super().__init__(m)
+                self._callback = callback
+
+            def step(self, state_in, state_out, control, contacts, dt: float) -> None:
+                pass
+
+            def notify_model_changed(self, flags: int) -> None:
+                self._callback(int(flags))
+
+            def _non_graphable_model_flags(self) -> int:
+                return 0
+
+        paused = True
         self.assertEqual(int(model.body_variant.numpy()[0]), 0)
+        self.assertFalse(ws.select_body_variant(0, 1))
+        self.assertEqual(int(model.body_variant.numpy()[0]), 0)
+        self.assertIn("set_solver", ws.message)
+
+        notified: list[int] = []
+        viewer._inspection_components["solver"] = _VariantTestSolver(model, notified.append)
+        ws._bindings = ws._bindings_components = None
+        paused = False
         self.assertFalse(ws.select_body_variant(0, 1))
         self.assertEqual(int(model.body_variant.numpy()[0]), 0)
 
         paused = True
-        notified: list[int] = []
-        ok_solver = SimpleNamespace(notify_model_changed=lambda flags: notified.append(int(flags)))
-        viewer._inspection_components["solver"] = ok_solver
         self.assertTrue(ws.select_body_variant(0, 1))
         self.assertTrue(ws.select_body_variant(1, 1))
         self.assertEqual(int(model.body_variant.numpy()[0]), 1)
         self.assertTrue(notified)
 
+        # Apply pre-existing live runtime edits to shape_material_mu (0.9 -> 0.55) and body_mass (2.5)
+        # on body 0 after variant 1 is active.
+        body0_row = int(model._body_variant_rows.numpy()[0, 0])
+        live_mu = model.shape_material_mu.numpy().copy()
+        live_mu[body0_row] = 0.55
+        model.shape_material_mu.assign(live_mu)
+        live_mass = model.body_mass.numpy().copy()
+        live_mass[0] = 2.5
+        model.body_mass.assign(live_mass)
+
         cached_mu: list[np.ndarray] = [model.shape_material_mu.numpy().copy()]
-        accepted_mu = cached_mu[0].copy()
+        cached_mass: list[np.ndarray] = [model.body_mass.numpy().copy()]
+        expected_mu = cached_mu[0].copy()
+        expected_mass = cached_mass[0].copy()
 
         def track_and_validate(_flags: int) -> None:
             cached_mu[0] = model.shape_material_mu.numpy().copy()
+            cached_mass[0] = model.body_mass.numpy().copy()
             if float(model.shape_material_restitution.numpy().max()) > 0.0:
                 raise ValueError("unsupported positive restitution")
 
-        viewer._inspection_components["solver"] = SimpleNamespace(notify_model_changed=track_and_validate)
+        viewer._inspection_components["solver"] = _VariantTestSolver(model, track_and_validate)
         ws._bindings = ws._bindings_components = None
 
         # Switching body 0 back to variant 0 (restitution=0.8) mutates solver caches before
-        # rejecting; rollback must refresh the solver from the restored Model (variant 1).
+        # rejecting; rollback must restore live pre-switch values (0.55 mu, 2.5 mass) and refresh
+        # the solver from them rather than reverting to variant 1's authored defaults.
         self.assertFalse(ws.select_body_variant(0, 0))
         self.assertEqual(int(model.body_variant.numpy()[0]), 1)
-        np.testing.assert_allclose(cached_mu[0], accepted_mu)
+        np.testing.assert_allclose(model.shape_material_mu.numpy(), expected_mu)
+        np.testing.assert_allclose(model.body_mass.numpy(), expected_mass)
+        np.testing.assert_allclose(cached_mu[0], expected_mu)
+        np.testing.assert_allclose(cached_mass[0], expected_mass)
         self.assertIn("unsupported positive restitution", ws.message)
 
         # Explicit handling when solver recovery itself fails during rollback.
         def always_fail(_flags: int) -> None:
             raise RuntimeError("unrecoverable notify failure")
 
-        viewer._inspection_components["solver"] = SimpleNamespace(notify_model_changed=always_fail)
+        viewer._inspection_components["solver"] = _VariantTestSolver(model, always_fail)
         ws._bindings = ws._bindings_components = None
         self.assertFalse(ws.select_body_variant(0, 0))
         self.assertEqual(int(model.body_variant.numpy()[0]), 1)
+        np.testing.assert_allclose(model.shape_material_mu.numpy(), expected_mu)
+        np.testing.assert_allclose(model.body_mass.numpy(), expected_mass)
         self.assertIn("rollback failed", ws.message)
 
         # 3) Body-motion edits stay read-only when CUDA step graphs cannot absorb BODY_PROPERTIES.

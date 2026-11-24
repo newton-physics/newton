@@ -839,13 +839,14 @@ class PropertyInspector:
             and len(values) == 1
             and (variant_labels := model.body_variant_labels(start))
         ):
-            can_switch = ws.can_edit_state()
+            supported, variant_reason = ws._body_variant_support()
+            can_switch = supported and ws.can_edit_state()
             edit = w.choice(
                 label,
                 int(values[0]),
                 {i: text or f"Variant {i}" for i, text in enumerate(variant_labels)},
                 editable=can_switch,
-                reason="Pause at the live frame to switch body variants.",
+                reason="Pause at the live frame to switch body variants." if supported else variant_reason,
             )
             if can_switch and edit.changed:
                 ws.select_body_variant(start, int(edit.value))

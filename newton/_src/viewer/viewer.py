@@ -924,8 +924,9 @@ class ViewerBase(ABC):
     def set_solver(self, solver: SolverBase | None) -> None:
         """Set the solver inspected in the active viewer layer.
 
-        Call after :meth:`set_model`. Retains a reference for ViewerGL settings
-        and resource inspection; the application still owns and steps the solver.
+        Call after :meth:`set_model`. Retains a reference for ViewerGL settings,
+        resource inspection, and solver-synchronized runtime edits; the
+        application still owns and steps the solver.
         Other components are unchanged. Clearing or replacing the Model clears
         this reference. Other backends retain it without adding a GUI.
 

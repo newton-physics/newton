@@ -2157,13 +2157,64 @@ class ViewerWorkspace:
         self._cache.clear()
         self._live_cache.clear()
 
+    _BODY_VARIANT_FLAGS: ClassVar[int] = int(
+        ModelFlags.SHAPE_TYPE_AND_SOURCE | ModelFlags.SHAPE_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES
+    )
+
+    def _body_variant_support(self) -> tuple[bool, str]:
+        """Return whether the bound solver supports runtime body-variant edits and a read-only reason if not."""
+        solver = self.bindings.solver
+        if not isinstance(solver, SolverBase) or self.model is None:
+            return False, "Read only: bind a solver with viewer.set_solver() to switch body variants."
+        if type(solver).__name__ in ("SolverImplicitMPM", "SolverStyle3D"):
+            return False, "Read only: configured when the model and solver are built."
+        if self.model.device.is_cuda and (
+            (
+                type(solver).__name__ != "SolverSteel"
+                and not solver.is_notify_model_changed_graphable(self._BODY_VARIANT_FLAGS)
+            )
+            or (
+                type(solver).__name__ == "SolverFeatherstone" and getattr(solver, "update_mass_matrix_interval", 1) != 1
+            )
+        ):
+            return False, "Read only: switching body variants on CUDA requires recapturing the solver step."
+        return True, ""
+
+    @staticmethod
+    def _snapshot_body_variant_state(model: Model, body: int) -> list[tuple[wp.array, int, int, np.ndarray]]:
+        """Snapshot the live Model slices touched by ``model.select_body_variants()`` for one body."""
+        saved: list[tuple[wp.array, int, int, np.ndarray]] = []
+        seen: set[int] = set()
+
+        def capture(array: Any, start: int, stop: int) -> None:
+            if not isinstance(array, wp.array) or stop <= start or id(array) in seen:
+                return
+            seen.add(id(array))
+            saved.append((array, start, stop, array[start:stop].numpy().copy()))
+
+        for name in ("body_variant", "body_mass", "body_inv_mass", "body_com", "body_inertia", "body_inv_inertia"):
+            capture(getattr(model, name, None), body, body + 1)
+        if model._body_variant_rows is not None and body < len(model._body_variant_rows):
+            row_start, row_count = (int(v) for v in model._body_variant_rows[body : body + 1].numpy()[0])
+            row_stop = row_start + row_count
+            if row_count > 0:
+                for name in ("_shape_variant_shape", "shape_flags", "bvh_shape_bounds", *model._variant_shape_geometry):
+                    capture(getattr(model, name, None), row_start, row_stop)
+                for _variant_values, target in model._variant_shape_custom.values():
+                    capture(target, row_start, row_stop)
+        return saved
+
     def select_body_variant(self, body: int, variant: int) -> bool:
         """Switch one body's active shape variant while paused at the live frame.
 
-        Notify both the bound solver and viewer. Restore the previous variant
-        and refresh solver caches if solver notification fails so the inspector
-        never leaves Model and solver state out of sync.
+        Require a bound solver so simulation caches stay synchronized. Restore
+        the exact live pre-switch Model slices and refresh solver caches if
+        solver notification fails.
         """
+        supported, reason = self._body_variant_support()
+        if not supported:
+            self.message = reason
+            return False
         if not self.can_edit_state():
             self.message = "Pause at the live frame to switch body variants."
             return False
@@ -2176,33 +2227,32 @@ class ViewerWorkspace:
         previous = int(self.read(model, "body_variant", body)[0])
         if variant == previous:
             return True
+        saved = self._snapshot_body_variant_state(model, body)
         device = model.device
         bodies_arr = wp.array([body], dtype=wp.int32, device=device)
         flags = model.select_body_variants(wp.array([variant], dtype=wp.int32, device=device), bodies=bodies_arr)
         solver = self.bindings.solver
-        if solver is not None:
+        try:
+            solver.notify_model_changed(flags)
+        except Exception as exc:
+            for array, start, stop, values in saved:
+                array[start:stop].assign(values)
+            rollback_exc: Exception | None = None
             try:
                 solver.notify_model_changed(flags)
-            except Exception as exc:
-                rollback_flags = model.select_body_variants(
-                    wp.array([previous], dtype=wp.int32, device=device), bodies=bodies_arr
+            except Exception as recovery_exc:
+                rollback_exc = recovery_exc
+            self.viewer.notify_model_changed(flags)
+            self._cache.clear()
+            self._live_cache.clear()
+            if rollback_exc is not None:
+                self.message = (
+                    f"Solver rejected variant change ({exc}) and rollback failed ({rollback_exc}); "
+                    "restart the simulation to resynchronize solver state."
                 )
-                rollback_exc: Exception | None = None
-                try:
-                    solver.notify_model_changed(rollback_flags)
-                except Exception as recovery_exc:
-                    rollback_exc = recovery_exc
-                self.viewer.notify_model_changed(rollback_flags)
-                self._cache.clear()
-                self._live_cache.clear()
-                if rollback_exc is not None:
-                    self.message = (
-                        f"Solver rejected variant change ({exc}) and rollback failed ({rollback_exc}); "
-                        "restart the simulation to resynchronize solver state."
-                    )
-                else:
-                    self.message = f"Solver rejected variant change: {exc}"
-                return False
+            else:
+                self.message = f"Solver rejected variant change: {exc}"
+            return False
         self.viewer.notify_model_changed(flags)
         if self.history is not None and self.viewer.is_paused():
             self.history.replace_next_frame()
