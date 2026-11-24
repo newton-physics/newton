@@ -355,8 +355,8 @@ LOX regularizes the local contact solves with
 ``config.lox.contact_proximal_regularization`` (default ``0.01``), scaling their
 Delassus diagonals by one plus this value. The contact law retains its mechanical
 response, so converged solutions retain the hard-contact fixed point. For rigid
-contacts without spatial friction, the first splitting iterations center the
-proximal term on
+contacts without spatial friction, the first splitting iterations
+(``contact_proximal_warmstart_window``) center the proximal term on
 ``contact_proximal_warmstart_scale`` (default ``0.9``) times the warm-start
 reaction. Later iterations center it on the current reaction. Set
 ``contact_proximal_regularization=0.0`` to disable both terms.

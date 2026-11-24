@@ -1429,12 +1429,21 @@ class LOXSolverConfig:
     """Scale of the warm-start contact reactions that the first iterations are pulled toward, in [0, 1].
 
     Applies to the rigid contacts without spatial friction, which carry a per-contact warm start.
-    The iterations start from the full contact warm start. During the first
-    ``max(1, max_iterations // 8)`` splitting iterations, the local contact solves center their
+    The iterations start from the full contact warm start. During the first splitting iterations,
+    set by :attr:`contact_proximal_warmstart_window`, the local contact solves center their
     proximal term on this scale times the warm-start reaction, which steers the impulses of
     redundant contacts toward a smaller, more even distribution. The later iterations keep the
     proximal term of :attr:`contact_proximal_regularization` centered on the current iterate, so
     converged solutions satisfy the hard contact law.
+    """
+
+    contact_proximal_warmstart_window: float = 0.1
+    """Fraction of :attr:`max_iterations` that pulls toward the scaled warm start, in [0, 1].
+
+    The first ``ceil(contact_proximal_warmstart_window * max_iterations)`` splitting iterations
+    center the proximal term of the rigid contacts without spatial friction on
+    :attr:`contact_proximal_warmstart_scale` times their warm-start reaction. Zero disables the
+    proximal warm start.
     """
 
     contact_implicit_restitution: bool = False
@@ -1633,6 +1642,15 @@ class LOXSolverConfig:
         ):
             raise ValueError(
                 f"Invalid contact_proximal_warmstart_scale: {self.contact_proximal_warmstart_scale}. "
+                "Must be in range [0, 1]."
+            )
+        if (
+            not np.isfinite(self.contact_proximal_warmstart_window)
+            or self.contact_proximal_warmstart_window < 0.0
+            or self.contact_proximal_warmstart_window > 1.0
+        ):
+            raise ValueError(
+                f"Invalid contact_proximal_warmstart_window: {self.contact_proximal_warmstart_window}. "
                 "Must be in range [0, 1]."
             )
         if (

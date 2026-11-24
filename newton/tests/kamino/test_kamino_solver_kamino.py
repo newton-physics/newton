@@ -566,6 +566,9 @@ class TestSolverKaminoConfig(NewtonTestCase):
             ({"projected_twist_fraction": float("nan")}, "projected_twist_fraction"),
             ({"weight_beta": 0.5}, "weight_beta"),
             ({"max_joint_penalty_ratio": 50.0}, "max_joint_penalty_ratio"),
+            ({"contact_proximal_regularization": -0.01}, "contact_proximal_regularization"),
+            ({"contact_proximal_warmstart_scale": 1.5}, "contact_proximal_warmstart_scale"),
+            ({"contact_proximal_warmstart_window": float("nan")}, "contact_proximal_warmstart_window"),
         )
         for kwargs, message in invalid_values:
             with self.subTest(kwargs=kwargs), self.assertRaisesRegex(ValueError, message):

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -569,8 +570,10 @@ class LOXSolver:
             ProjectionAcceleration.from_string(self._config.projection_acceleration),
             contact_proximal_regularization=self._config.contact_proximal_regularization,
             contact_proximal_warmstart_scale=self._config.contact_proximal_warmstart_scale,
-            # The first eighth of the splitting iterations pull toward the scaled warm start
-            contact_proximal_target_iterations=max(1, self._config.max_iterations // 8),
+            # Zero disables the pull; rounding first keeps 0.1 * 30 = 3.0000000000000004 at three iterations
+            contact_proximal_target_iterations=math.ceil(
+                round(self._config.contact_proximal_warmstart_window * self._config.max_iterations, 6)
+            ),
             iteration_count=self._data.state.iteration_count,
         )
 
