@@ -2687,9 +2687,19 @@ class TestViewerProperties(unittest.TestCase):
         world_template = newton.ModelBuilder()
         body = world_template.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
         variant_a = newton.ModelBuilder()
-        variant_a.add_shape_box(variant_a.add_body(), hx=0.1, hy=0.1, hz=0.1)
+        variant_a.add_shape_box(
+            variant_a.add_body(),
+            hx=0.1,
+            hy=0.1,
+            hz=0.1,
+            cfg=newton.ModelBuilder.ShapeConfig(mu=0.2, restitution=0.8),
+        )
         variant_b = newton.ModelBuilder()
-        variant_b.add_shape_sphere(variant_b.add_body(), radius=0.15)
+        variant_b.add_shape_sphere(
+            variant_b.add_body(),
+            radius=0.15,
+            cfg=newton.ModelBuilder.ShapeConfig(mu=0.9, restitution=0.0),
+        )
         world_template.add_body_variants(body, [variant_a, variant_b], initial=0, labels=["cube", "sphere"])
 
         builder = newton.ModelBuilder()
@@ -2737,16 +2747,76 @@ class TestViewerProperties(unittest.TestCase):
         ok_solver = SimpleNamespace(notify_model_changed=lambda flags: notified.append(int(flags)))
         viewer._inspection_components["solver"] = ok_solver
         self.assertTrue(ws.select_body_variant(0, 1))
+        self.assertTrue(ws.select_body_variant(1, 1))
         self.assertEqual(int(model.body_variant.numpy()[0]), 1)
         self.assertTrue(notified)
 
-        def reject(_flags: int) -> None:
-            raise RuntimeError("unsupported variant switch")
+        cached_mu: list[np.ndarray] = [model.shape_material_mu.numpy().copy()]
+        accepted_mu = cached_mu[0].copy()
 
-        viewer._inspection_components["solver"] = SimpleNamespace(notify_model_changed=reject)
+        def track_and_validate(_flags: int) -> None:
+            cached_mu[0] = model.shape_material_mu.numpy().copy()
+            if float(model.shape_material_restitution.numpy().max()) > 0.0:
+                raise ValueError("unsupported positive restitution")
+
+        viewer._inspection_components["solver"] = SimpleNamespace(notify_model_changed=track_and_validate)
+        ws._bindings = ws._bindings_components = None
+
+        # Switching body 0 back to variant 0 (restitution=0.8) mutates solver caches before
+        # rejecting; rollback must refresh the solver from the restored Model (variant 1).
         self.assertFalse(ws.select_body_variant(0, 0))
         self.assertEqual(int(model.body_variant.numpy()[0]), 1)
-        self.assertIn("unsupported variant switch", ws.message)
+        np.testing.assert_allclose(cached_mu[0], accepted_mu)
+        self.assertIn("unsupported positive restitution", ws.message)
+
+        # Explicit handling when solver recovery itself fails during rollback.
+        def always_fail(_flags: int) -> None:
+            raise RuntimeError("unrecoverable notify failure")
+
+        viewer._inspection_components["solver"] = SimpleNamespace(notify_model_changed=always_fail)
+        ws._bindings = ws._bindings_components = None
+        self.assertFalse(ws.select_body_variant(0, 0))
+        self.assertEqual(int(model.body_variant.numpy()[0]), 1)
+        self.assertIn("rollback failed", ws.message)
+
+        # 3) Body-motion edits stay read-only when CUDA step graphs cannot absorb BODY_PROPERTIES.
+        viewer._inspection_components["solver"] = newton.solvers.SolverFeatherstone(model)
+        ws._bindings = ws._bindings_components = None
+        self.assertTrue(ws._body_flag_support()[0])
+        ws.set_flag("body", 0, int(newton.BodyFlags.KINEMATIC))
+        self.assertEqual(int(model.body_flags.numpy()[0]), int(newton.BodyFlags.KINEMATIC))
+        ws.set_flag("body", 0, int(newton.BodyFlags.DYNAMIC))
+        self.assertEqual(int(model.body_flags.numpy()[0]), int(newton.BodyFlags.DYNAMIC))
+
+        if wp.is_cuda_available():
+            cuda_builder = newton.ModelBuilder()
+            cuda_body = cuda_builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+            j = cuda_builder.add_joint_revolute(-1, cuda_body, axis=newton.Axis.Z)
+            cuda_builder.add_articulation([j])
+            cuda_model = cuda_builder.finalize(device="cuda:0")
+            cuda_viewer = ViewerNull()
+            cuda_viewer.set_model(cuda_model)
+            cuda_viewer.is_paused = lambda: True
+            cuda_ws = ViewerWorkspace.__new__(ViewerWorkspace)
+            cuda_ws.model, cuda_ws.tree, cuda_ws.viewer = cuda_model, ModelTree(cuda_model), cuda_viewer
+            cuda_ws._bindings = cuda_ws._bindings_components = None
+            cuda_ws.history = None
+            cuda_ws._cache, cuda_ws._live_cache = {}, {}
+            cuda_ws.message = ""
+
+            cuda_viewer._inspection_components["solver"] = newton.solvers.SolverFeatherstone(cuda_model)
+            cuda_ws._bindings = cuda_ws._bindings_components = None
+            supported, reason = cuda_ws._body_flag_support()
+            self.assertFalse(supported)
+            self.assertIn("recapturing", reason)
+            cuda_ws.set_flag("body", 0, int(newton.BodyFlags.KINEMATIC))
+            self.assertEqual(int(cuda_model.body_flags.numpy()[0]), int(newton.BodyFlags.DYNAMIC))
+
+            cuda_viewer._inspection_components["solver"] = newton.solvers.SolverXPBD(cuda_model)
+            cuda_ws._bindings = cuda_ws._bindings_components = None
+            self.assertTrue(cuda_ws._body_flag_support()[0])
+            cuda_ws.set_flag("body", 0, int(newton.BodyFlags.KINEMATIC))
+            self.assertEqual(int(cuda_model.body_flags.numpy()[0]), int(newton.BodyFlags.KINEMATIC))
 
     def test_contacts_history_and_solver_classification(self) -> None:
         """Preserve new contact fields in history, filter non-row fields, and classify maximal solvers."""

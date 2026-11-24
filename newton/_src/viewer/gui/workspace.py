@@ -1937,11 +1937,7 @@ class ViewerWorkspace:
         kind, index = key
         flags = int(self.tree.meta.get(key, {}).get("flags", 0))
         if kind == "body":
-            solver = self.bindings.solver
-            runtime = (
-                isinstance(solver, SolverBase)
-                and type(solver).notify_model_changed is not SolverBase.notify_model_changed
-            )
+            runtime, readonly_reason = self._body_flag_support()
             enabled = runtime and self.can_edit_state() and not flags & int(BodyFlags.PROXY)
             options = (
                 (BodyFlags.DYNAMIC, "dynamic", "Dynamic: responds to forces"),
@@ -1949,6 +1945,7 @@ class ViewerWorkspace:
             )
         elif kind == "shape":
             enabled = False
+            readonly_reason = "Read only: configured when the model and collision pipeline are built."
             options = (
                 (ShapeFlags.COLLIDE_SHAPES, "collision", "Shape collisions"),
                 (ShapeFlags.COLLIDE_PARTICLES, "particles", "Particle collisions"),
@@ -1972,7 +1969,7 @@ class ViewerWorkspace:
                     if kind == "body" and flags & int(BodyFlags.PROXY)
                     else "\nPause at the live frame to edit."
                     if kind == "body" and runtime
-                    else "\nRead only: configured when the model and collision pipeline are built."
+                    else f"\n{readonly_reason}"
                 )
             if widgets.icon_button(
                 f"##flag{int(flag)}",
@@ -2090,29 +2087,72 @@ class ViewerWorkspace:
         """Recognize the live Control and its registered namespace containers."""
         return self.bindings.owns_control(owner)
 
+    def _body_flag_support(self) -> tuple[bool, str]:
+        """Return whether the bound solver supports runtime body-motion edits and a read-only reason if not."""
+        solver = self.bindings.solver
+        if not isinstance(solver, SolverBase) or self.model is None:
+            return False, "Read only: configured when the model and collision pipeline are built."
+        if type(solver).__name__ in ("SolverImplicitMPM", "SolverKamino", "SolverStyle3D"):
+            return False, "Read only: configured when the model and solver are built."
+        if self.model.device.is_cuda and not solver.is_notify_model_changed_graphable(ModelFlags.BODY_PROPERTIES):
+            return False, "Read only: changing body motion on CUDA requires recapturing the solver step."
+        return True, ""
+
     def set_flag(self, kind: str, index: int, flag: int) -> None:
         """Set a body motion flag or toggle shape visibility, notifying its solver or renderer.
 
         Reject unsupported edits and proxy-body changes. Restore the original
-        array value if notification fails, then propagate the exception.
+        array value and solver caches if notification fails.
         """
+        if self.model is None:
+            return
         array = getattr(self.model, kind + "_flags")
         previous = int(array[index : index + 1].numpy()[0])
         value = flag if kind == "body" else previous ^ flag
-        if kind == "body" and (not self.can_edit_state() or previous & int(BodyFlags.PROXY)):
-            return
-        if kind == "shape" and flag != int(ShapeFlags.VISIBLE):
+        if kind == "body":
+            runtime, reason = self._body_flag_support()
+            if not runtime:
+                self.message = reason
+                return
+            if not self.can_edit_state():
+                self.message = "Pause at the live frame to edit."
+                return
+            if previous & int(BodyFlags.PROXY) or value == previous:
+                return
+        elif kind != "shape" or flag != int(ShapeFlags.VISIBLE):
             return
         array[index : index + 1].fill_(value)
-        try:
-            if kind == "body":
-                self.bindings.solver.notify_model_changed(ModelFlags.BODY_PROPERTIES)
-            else:
+        if kind == "body":
+            solver = self.bindings.solver
+            try:
+                solver.notify_model_changed(ModelFlags.BODY_PROPERTIES)
+            except Exception as exc:
+                array[index : index + 1].fill_(previous)
+                rollback_exc: Exception | None = None
+                try:
+                    solver.notify_model_changed(ModelFlags.BODY_PROPERTIES)
+                except Exception as recovery_exc:
+                    rollback_exc = recovery_exc
+                self._cache.clear()
+                self._live_cache.clear()
+                if rollback_exc is not None:
+                    self.message = (
+                        f"Solver rejected body flag change ({exc}) and rollback failed ({rollback_exc}); "
+                        "restart the simulation to resynchronize solver state."
+                    )
+                else:
+                    self.message = f"Solver rejected body flag change: {exc}"
+                return
+            if self.history is not None and self.viewer.is_paused():
+                self.history.replace_next_frame()
+            self.message = ""
+        else:
+            try:
                 self.viewer._rebuild_shape_batches_for_opacity_groups()
                 self.gui.update_shape_counts(self.model)
-        except Exception:
-            array[index : index + 1].fill_(previous)
-            raise
+            except Exception:
+                array[index : index + 1].fill_(previous)
+                raise
         self.tree.meta[(kind, index)]["flags"] = value
         self._cache.clear()
         self._live_cache.clear()
@@ -2121,8 +2161,8 @@ class ViewerWorkspace:
         """Switch one body's active shape variant while paused at the live frame.
 
         Notify both the bound solver and viewer. Restore the previous variant
-        if solver notification fails so the inspector never leaves Model and
-        solver state out of sync.
+        and refresh solver caches if solver notification fails so the inspector
+        never leaves Model and solver state out of sync.
         """
         if not self.can_edit_state():
             self.message = "Pause at the live frame to switch body variants."
@@ -2147,8 +2187,21 @@ class ViewerWorkspace:
                 rollback_flags = model.select_body_variants(
                     wp.array([previous], dtype=wp.int32, device=device), bodies=bodies_arr
                 )
+                rollback_exc: Exception | None = None
+                try:
+                    solver.notify_model_changed(rollback_flags)
+                except Exception as recovery_exc:
+                    rollback_exc = recovery_exc
                 self.viewer.notify_model_changed(rollback_flags)
-                self.message = f"Solver rejected variant change: {exc}"
+                self._cache.clear()
+                self._live_cache.clear()
+                if rollback_exc is not None:
+                    self.message = (
+                        f"Solver rejected variant change ({exc}) and rollback failed ({rollback_exc}); "
+                        "restart the simulation to resynchronize solver state."
+                    )
+                else:
+                    self.message = f"Solver rejected variant change: {exc}"
                 return False
         self.viewer.notify_model_changed(flags)
         if self.history is not None and self.viewer.is_paused():
