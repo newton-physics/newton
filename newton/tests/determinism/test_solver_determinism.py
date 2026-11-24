@@ -267,6 +267,88 @@ def test_articulation_determinism(test, device, solver_name):
     _run_isolated(test, "_check_articulation_determinism", str(device), solver_name)
 
 
+def _build_rigid_pile(device):
+    builder = newton.ModelBuilder()
+    builder.add_ground_plane()
+    rng = np.random.default_rng(42)
+    half = 0.1
+    for k in range(3):
+        for j in range(3):
+            for i in range(3):
+                body = builder.add_body(
+                    xform=wp.transform(
+                        wp.vec3(i * 0.19 + 0.02 * k, j * 0.19, half + k * 0.21),
+                        wp.quat_rpy(*rng.uniform(-0.3, 0.3, size=3)),
+                    )
+                )
+                if (i + j + k) % 2:
+                    builder.add_shape_box(body, hx=half, hy=half, hz=half)
+                else:
+                    builder.add_shape_sphere(body, radius=half)
+    builder.request_contact_attributes("force")
+    return builder.finalize(device=device)
+
+
+def _make_rigid_solver(model, solver_name):
+    if solver_name == "xpbd":
+        return newton.solvers.SolverXPBD(model, iterations=4, deterministic=DETERMINISTIC_MODE)
+    if solver_name == "semi_implicit":
+        return newton.solvers.SolverSemiImplicit(model, deterministic=DETERMINISTIC_MODE)
+    if solver_name == "featherstone":
+        return newton.solvers.SolverFeatherstone(model, deterministic=DETERMINISTIC_MODE)
+    raise ValueError(f"Unsupported rigid solver: {solver_name}")
+
+
+def _run_rigid_pile_rollout(device, solver_name, use_graph):
+    model = _build_rigid_pile(device)
+    solver = _make_rigid_solver(model, solver_name)
+    pipeline = newton.CollisionPipeline(model, deterministic=True)
+    contacts = pipeline.contacts()
+    state_0, state_1 = model.state(), model.state()
+    control = model.control()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+    dt = 1.0 / 600.0
+
+    def step_pair():
+        nonlocal state_0, state_1
+        for _ in range(2):
+            state_0.clear_forces()
+            pipeline.collide(state_0, contacts)
+            solver.step(state_0, state_1, control, contacts, dt)
+            state_0, state_1 = state_1, state_0
+
+    # Step eagerly first so Warp checks its deterministic record buffers for overflow.
+    step_pair()
+    if use_graph:
+        with wp.ScopedCapture() as capture:
+            step_pair()
+        for _ in range(39):
+            wp.capture_launch(capture.graph)
+    else:
+        for _ in range(40):
+            step_pair()
+
+    if contacts.rigid_contact_count.numpy()[0] == 0:
+        raise AssertionError("rigid pile produced no contacts")
+    snapshot = _snapshot(state_0, ("body_q", "body_qd"))
+    if solver_name == "xpbd":
+        snapshot["contact_force"] = np.array(contacts.force.numpy(), copy=True)
+    return snapshot
+
+
+def _check_rigid_pile_determinism(device, solver_name, use_graph):
+    with wp.ScopedDevice(device):
+        first = _run_rigid_pile_rollout(device, solver_name, use_graph)
+        second = _run_rigid_pile_rollout(device, solver_name, use_graph)
+    _assert_snapshots_equal(first, second)
+
+
+def test_rigid_pile_determinism(test, device, solver_name, use_graph):
+    if use_graph and not wp.get_device(device).is_cuda:
+        test.skipTest("CUDA graph capture requires a CUDA device")
+    _run_isolated(test, "_check_rigid_pile_determinism", str(device), solver_name, use_graph)
+
+
 class TestSolverDeterminism(unittest.TestCase):
     pass
 
@@ -461,6 +543,18 @@ for solver_name in ("xpbd", "semi_implicit", "vbd"):
         solver_name=solver_name,
         check_output=False,
     )
+
+for solver_name in ("xpbd", "semi_implicit", "featherstone"):
+    for use_graph in (False, True):
+        add_function_test(
+            TestSolverDeterminism,
+            f"test_rigid_pile_determinism_{solver_name}{'_graph' if use_graph else ''}",
+            test_rigid_pile_determinism,
+            devices=devices,
+            solver_name=solver_name,
+            use_graph=use_graph,
+            check_output=False,
+        )
 
 for solver_name in ("featherstone", "mujoco"):
     add_function_test(

@@ -223,6 +223,8 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
         borrowed_options = {"deterministic": effective_deterministic, "deterministic_max_records": 0}
         for module in borrowed_modules:
             self._set_module_options(borrowed_options, module=module)
+        # Gather contact wrenches per body instead of recording them as deterministic atomics.
+        self._gather_contact_wrenches = effective_deterministic != wp.DeterministicMode.NOT_GUARANTEED
 
         self.angular_damping = angular_damping
         self.update_mass_matrix_interval = update_mass_matrix_interval
@@ -815,7 +817,14 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                         body_qd=state_aug.body_qd_fk,
                     )
 
-                eval_body_contact_forces(model, state_in, contacts, body_f_out=body_f, body_qd=state_aug.body_qd_fk)
+                eval_body_contact_forces(
+                    model,
+                    state_in,
+                    contacts,
+                    body_f_out=body_f,
+                    body_qd=state_aug.body_qd_fk,
+                    deterministic=self._gather_contact_wrenches,
+                )
 
                 if self.has_kinematic_bodies and body_f is not None:
                     wp.launch(
