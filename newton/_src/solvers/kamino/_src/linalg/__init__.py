@@ -31,6 +31,7 @@ from .linear import (
     LLTBlockedSolver,
     LLTSequentialSolver,
 )
+from .redundancy import RedundantRowShift
 
 # Register the additional factorization backends for selection through
 # ConstrainedDynamicsConfig.linear_solver_type.
@@ -73,6 +74,7 @@ __all__ = [
     "LinearSolverNameToType",
     "LinearSolverType",
     "LinearSolverTypeToName",
+    "RedundantRowShift",
     "prefix_offsets",
     "segment_local_indices",
     "utils",

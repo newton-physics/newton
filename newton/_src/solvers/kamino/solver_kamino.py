@@ -1001,10 +1001,13 @@ class SolverKamino(SolverBase, CouplingInterface):
         the diagonal dual preconditioner, and ``eta`` and ``rho`` are the
         proximal and penalty parameters. PADMM reports
         ``r_p = ||P (x - y)||_inf`` [N·s or N·m·s],
-        ``r_d = ||P^-1 (eta (x - x_prev) + rho (y - y_prev))||_inf``
-        [m/s or rad/s], and the maximum inequality impulse-velocity inner
-        product ``r_c`` [J]. The ``P`` factors convert the first two residuals
-        back from solver scaling to physical constraint units.
+        ``r_d = ||P^-1 D (x - x_prev)||_inf`` [m/s or rad/s], the change of
+        constraint velocity with the preconditioned Delassus matrix ``D``, and
+        the maximum inequality impulse-velocity inner product ``r_c`` [J].
+        With ``dual_residual_mode="standard"`` or an iterative linear solver,
+        ``r_d`` is instead the ADMM residual ``||P^-1 (eta (x - x_prev) + rho_i (y - y_prev))||_inf``, with
+        the penalty ``rho_i`` of each row. The ``P`` factors convert the first
+        two residuals back from solver scaling to physical constraint units.
 
         SCC uses physical impulse ``lambda`` and augmented constraint velocity
         ``v`` without normalization. Its ``r_p`` [N·s or N·m·s] is the maximum
@@ -1433,6 +1436,23 @@ class SolverKamino(SolverBase, CouplingInterface):
             )
 
     @override
+    def _non_graphable_model_flags(self) -> int:
+        # Structural validation reads its violation flags on the host, and the LOX solver reallocates
+        # its joint penalty seeds.
+        flags = (
+            ModelFlags.BODY_PROPERTIES
+            | ModelFlags.BODY_INERTIAL_PROPERTIES
+            | ModelFlags.JOINT_DOF_PROPERTIES
+            | ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+            | ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES
+            | ModelFlags.ACTUATOR_PROPERTIES
+        )
+        if self._collision_detector_kamino is not None:
+            # Material updates check for conflicting shared materials on the host.
+            flags |= ModelFlags.SHAPE_PROPERTIES
+        return int(flags)
+
+    @override
     def update_contacts(self, contacts: Contacts, state: State | None = None) -> None:
         """Update contact geometry and optional legacy force storage from Kamino.
 
@@ -1550,6 +1570,7 @@ class SolverKamino(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="fk_actuation_flag",
+                update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES,
                 assignment=Model.AttributeAssignment.MODEL,
                 frequency=Model.AttributeFrequency.JOINT,
                 dtype=wp.int32,

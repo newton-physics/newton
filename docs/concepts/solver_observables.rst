@@ -434,8 +434,9 @@ The bit layout is:
      - Newton generated more rigid contacts than ``contacts.rigid_contact_max``.
    * - 17
      - :attr:`~newton.solvers.SolverMuJoCo.OverflowBits.SOLVER_NCONMAX`
-     - Newton generated more rigid contacts than the solver's shared
-       ``naconmax`` buffer can consume.
+     - Newton contacts exceeded the solver's shared ``naconmax`` capacity.
+       When the solver packs eligible rows, expired thin-wall recovery
+       contacts do not count toward this limit.
 
 The Newton flags describe shared contact buffers and are repeated in every
 world's mask when the global count exceeds capacity. They do not identify which
