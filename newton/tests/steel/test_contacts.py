@@ -1336,18 +1336,23 @@ UPPER_MASS = 0.5
 FILL = -7.0
 
 
-def _stacked_boxes(device):
-    """Two free boxes stacked on the ground: ground-box and box-box contacts."""
-    builder = newton.ModelBuilder()
-    builder.add_ground_plane()
+def _stacked_boxes(device, worlds=1, contact_matching="disabled"):
+    """Two free boxes stacked on the ground per world: ground-box and box-box contacts."""
+    template = newton.ModelBuilder()
     for z, half, mass in ((0.1, 0.1, LOWER_MASS), (0.25, 0.05, UPPER_MASS)):
         inertia = wp.mat33(np.eye(3) * mass * (2.0 * half) ** 2 / 6.0)
-        body = builder.add_body(
+        body = template.add_body(
             xform=wp.transform(wp.vec3(0.0, 0.0, z), wp.quat_identity()), mass=mass, inertia=inertia
         )
-        builder.add_shape_box(body, hx=half, hy=half, hz=half, cfg=newton.ModelBuilder.ShapeConfig(density=0.0))
+        template.add_shape_box(body, hx=half, hy=half, hz=half, cfg=newton.ModelBuilder.ShapeConfig(density=0.0))
+    if worlds == 1:
+        builder = template
+    else:
+        builder = newton.ModelBuilder()
+        builder.replicate(template, worlds, spacing=(1.0, 0.0, 0.0))
+    builder.add_ground_plane()
     model = builder.finalize(device=device)
-    pipeline = newton.CollisionPipeline(model, rigid_contact_max=64)
+    pipeline = newton.CollisionPipeline(model, rigid_contact_max=64 * worlds, contact_matching=contact_matching)
     return model, pipeline
 
 
@@ -1453,7 +1458,7 @@ def test_contact_f_in_a_captured_graph(test, device):
 
 
 def test_contact_f_of_sleeping_islands(test, device, skip_constraints=True):
-    """Report a sleeping island's contact forces: zero with skipped rows, else the resting force."""
+    """Report a sleeping island's contact forces: zero with skipped rows and no matching, else the resting force."""
     model, pipeline = _stacked_boxes(device)
     solver = SolverSteel(
         model,
@@ -1484,6 +1489,150 @@ def test_contact_f_of_sleeping_islands(test, device, skip_constraints=True):
         weight = np.linalg.norm(model.gravity.numpy()[0])
         np.testing.assert_allclose(net[0, 2], LOWER_MASS * weight, rtol=0.03)
         np.testing.assert_allclose(net[1, 2], UPPER_MASS * weight, rtol=0.03)
+
+
+class _SleepingContactForces:
+    """Stacked boxes in ``worlds`` worlds under a sleeping solver that skips rows, with contact matching."""
+
+    def __init__(self, device, worlds=1, contact_matching="latest", skip_constraints=True):
+        self.model, self.pipeline = _stacked_boxes(device, worlds, contact_matching)
+        self.solver = SolverSteel(
+            self.model,
+            iterations=32,
+            enable_sleeping=True,
+            sleep_quiet_time=0.05,
+            sleep_skip_constraints=skip_constraints,
+            friction_anchor_beta=0.0,
+        )
+        self.contacts = self.pipeline.contacts()
+        kinds = {SolverBase.ObservableKind.CONTACT_F}
+        self.observables = self.solver.observables(kinds, contacts=self.contacts)
+        self.states = [self.model.state(), self.model.state()]
+        self.control = self.model.control()
+        self.weight = np.linalg.norm(self.model.gravity.numpy()[0])
+
+    def step(self, body_f=None, observables=True, collide=True):
+        self.states[0].clear_forces()
+        if body_f is not None:
+            self.states[0].body_f.assign(body_f)
+        if collide:
+            self.pipeline.collide(self.states[0], self.contacts)
+        if observables:
+            self.observables.contact_f.fill_(wp.spatial_vector(FILL, FILL, FILL, FILL, FILL, FILL))
+        self.solver.step(
+            self.states[0],
+            self.states[1],
+            self.control,
+            self.contacts,
+            DT,
+            observables=self.observables if observables else None,
+        )
+        self.states.reverse()
+
+    def net(self):
+        contact_f = self.observables.contact_f.numpy()
+        return _net_body_forces(self.model, self.contacts, contact_f)
+
+    def awake(self):
+        return self.solver._sleeping.body_awake.numpy()
+
+    def assert_resting(self, net):
+        weights = np.tile([LOWER_MASS, UPPER_MASS], self.model.body_count // 2) * self.weight
+        np.testing.assert_allclose(net[:, 2], weights, rtol=0.03)
+        np.testing.assert_allclose(net[:, :2], 0.0, atol=0.03 * self.weight)
+
+
+def test_sleeping_contact_f_keeps_the_last_force(test, device):
+    """Report the last solved force of a sleeping island's skipped contacts, as the row-solving solver does."""
+    scene = _SleepingContactForces(device)
+    reference = _SleepingContactForces(device, skip_constraints=False)
+    asleep_steps = 0
+    last = None
+    for _ in range(170):
+        scene.step()
+        reference.step()
+        if scene.awake().any():
+            last = scene.net()
+            continue
+        asleep_steps += 1
+        net = scene.net()
+        _check_rows(test, scene.contacts, scene.observables.contact_f.numpy())
+        scene.assert_resting(net)
+        np.testing.assert_allclose(net, reference.net(), rtol=0.0, atol=0.01 * scene.weight)
+        # The step an island falls asleep still solves its rows; later steps carry that force bit for bit.
+        if asleep_steps > 1:
+            np.testing.assert_array_equal(net, last)
+        last = net
+    test.assertGreaterEqual(asleep_steps, 10)
+
+
+def test_sleeping_contact_f_wakes_to_the_solved_force(test, device):
+    """Report the solved force again once a wake event restores the island's rows."""
+    scene = _SleepingContactForces(device)
+    for _ in range(150):
+        scene.step()
+    np.testing.assert_array_equal(scene.awake(), [0, 0])
+    # Half the upper box's weight pulls it up: a carried force would still report the full weight.
+    body_f = np.zeros((2, 6), dtype=np.float32)
+    body_f[1, 2] = 0.5 * UPPER_MASS * scene.weight
+    scene.step(body_f)
+    np.testing.assert_array_equal(scene.awake(), [1, 1])
+    net = scene.net()
+    np.testing.assert_allclose(net[1, 2], 0.5 * UPPER_MASS * scene.weight, rtol=0.05)
+    np.testing.assert_allclose(net[0, 2], LOWER_MASS * scene.weight, rtol=0.05)
+
+
+def test_sleeping_contact_f_across_reset(test, device):
+    """Keep carried forces in worlds a masked reset leaves asleep and restart them in the woken worlds."""
+    scene = _SleepingContactForces(device, worlds=2)
+    for _ in range(150):
+        scene.step()
+    np.testing.assert_array_equal(scene.awake(), [0, 0, 0, 0])
+    asleep = scene.net()
+    scene.assert_resting(asleep)
+    world_mask = wp.array([True, False, False], dtype=wp.bool, device=device)
+    scene.solver.reset(scene.states[0], world_mask)
+    scene.step()
+    np.testing.assert_array_equal(scene.awake(), [1, 1, 0, 0])
+    net = scene.net()
+    scene.assert_resting(net)
+    np.testing.assert_array_equal(net[2:], asleep[2:])
+    scene.solver.reset(scene.states[0])
+    for _ in range(150):
+        scene.step()
+    np.testing.assert_array_equal(scene.awake(), [0, 0, 0, 0])
+    scene.assert_resting(scene.net())
+
+
+def test_sleeping_contact_f_needs_every_step(test, device, collide=True):
+    """Report zero for skipped contacts after a step that did not request the force, until the island wakes."""
+    scene = _SleepingContactForces(device)
+    for _ in range(150):
+        scene.step()
+    np.testing.assert_array_equal(scene.awake(), [0, 0])
+    carried = scene.net()
+    scene.assert_resting(carried)
+    # A step on the unchanged contact set carries the force without a match.
+    scene.step(collide=False)
+    np.testing.assert_array_equal(scene.net(), carried)
+    scene.step(observables=False, collide=collide)
+    scene.step(collide=collide)
+    np.testing.assert_array_equal(scene.net(), 0.0)
+    scene.step()
+    np.testing.assert_array_equal(scene.net(), 0.0)
+
+
+def test_sleeping_contact_f_in_a_captured_graph(test, device):
+    """Carry the force through graph replays, which see the generations on the device."""
+    scene = _SleepingContactForces(device)
+    scene.step()
+    with wp.ScopedCapture(device) as recorded:
+        scene.step()
+        scene.step()
+    for _ in range(80):
+        wp.capture_launch(recorded.graph)
+    np.testing.assert_array_equal(scene.awake(), [0, 0])
+    scene.assert_resting(scene.net())
 
 
 def test_contact_f_of_compliant_hydroelastic_rows(test, device):
@@ -1704,6 +1853,33 @@ add_function_test(
     test_contact_f_of_sleeping_islands,
     devices=cuda_devices,
     skip_constraints=False,
+)
+
+
+for _name in (
+    "test_sleeping_contact_f_keeps_the_last_force",
+    "test_sleeping_contact_f_wakes_to_the_solved_force",
+    "test_sleeping_contact_f_across_reset",
+    "test_sleeping_contact_f_needs_every_step",
+):
+    add_function_test(TestSteelContactObservable, _name, globals()[_name], devices=all_devices)
+
+
+# Without a collision pass the contact generation stays the same, so only the step count can break the chain.
+add_function_test(
+    TestSteelContactObservable,
+    "test_sleeping_contact_f_needs_every_step_on_a_reused_contact_set",
+    test_sleeping_contact_f_needs_every_step,
+    devices=all_devices,
+    collide=False,
+)
+
+
+add_function_test(
+    TestSteelContactObservable,
+    "test_sleeping_contact_f_in_a_captured_graph",
+    test_sleeping_contact_f_in_a_captured_graph,
+    devices=cuda_devices,
 )
 
 

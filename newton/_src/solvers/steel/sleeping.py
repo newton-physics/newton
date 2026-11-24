@@ -11,7 +11,7 @@ import warp as wp
 from ...core.reset import reset_world_selected
 from ...sim import Model
 from ...sim.enums import BodyFlags, JointType, ModelFlags
-from .kernels import WARP_DETERMINISM_OFF
+from .kernels import CONTACT_GENERATION_NONE, WARP_DETERMINISM_OFF, warmstart_history_relation
 
 wp.set_module_options(WARP_DETERMINISM_OFF)
 
@@ -46,6 +46,17 @@ class _SleepState:
         self.body_nodes = wp.array(body_nodes, dtype=int, device=device)
         self.body_prescribed = wp.array(prescribed.astype(np.int32), dtype=int, device=device)
         self.contact_response_mask = wp.clone(solver._body_has_response_dofs)
+        # Solver steps finished, on the device so captured steps count during replay.
+        self.step_stamp = wp.zeros(1, dtype=int, device=device)
+        # Last reported linear force [N] of each contact, and the step and contact set it was reported for.
+        self.contact_force_history = None
+        if skip_constraints:
+            self.contact_force_history = wp.zeros(solver._max_contacts_alloc, dtype=wp.vec3, device=device)
+            self.contact_force_history_step = wp.full(1, -1, dtype=int, device=device)
+            self.contact_force_history_generation = wp.full(1, CONTACT_GENERATION_NONE, dtype=wp.int32, device=device)
+            self.contact_force_history_stream = wp.zeros(1, dtype=wp.int32, device=device)
+            self._no_match_index = wp.zeros(0, dtype=wp.int32, device=device)
+            self._no_match_generation = wp.full(1, CONTACT_GENERATION_NONE, dtype=wp.int32, device=device)
         limit_q_index = solver._joint_limit_q_index
         self.limit_q_index = wp.clone(limit_q_index) if limit_q_index is not None else None
         count = model.articulation_count
@@ -476,6 +487,57 @@ class _SleepState:
         )
         return self.parent_wrench_history_active
 
+    def latch_contact_forces(self, contacts, contact_f, contact_stream):
+        """Report the last force of contacts whose rows sleeping skipped, then record this step's forces.
+
+        A force carries only between consecutive solver steps that both request ``CONTACT_F``, on one buffer,
+        through contact matching or an unchanged contact set.
+        """
+        device = self.model.device
+        match_index = contacts.rigid_contact_match_index
+        match_generation = contacts.rigid_contact_match_generation
+        if match_index is None:
+            match_index, match_generation = self._no_match_index, self._no_match_generation
+        history = (self.contact_force_history_generation, self.contact_force_history_stream)
+        wp.launch(
+            _latch_contact_forces,
+            contacts.rigid_contact_max,
+            [
+                contacts.rigid_contact_count,
+                contacts.rigid_contact_max,
+                contacts.rigid_contact_shape0,
+                contacts.rigid_contact_shape1,
+                self.model.shape_body,
+                self.model.body_flags,
+                self.solver._body_has_response_dofs,
+                self.contact_response_mask,
+                match_index,
+                match_generation,
+                contacts.contact_generation,
+                contact_stream,
+                *history,
+                self.step_stamp,
+                self.contact_force_history_step,
+                self.contact_force_history,
+            ],
+            outputs=[contact_f],
+            device=device,
+        )
+        wp.launch(
+            _record_contact_forces,
+            contacts.rigid_contact_max,
+            [
+                contacts.rigid_contact_count,
+                contacts.rigid_contact_max,
+                contact_f,
+                contacts.contact_generation,
+                contact_stream,
+                self.step_stamp,
+            ],
+            outputs=[self.contact_force_history, *history, self.contact_force_history_step],
+            device=device,
+        )
+
     def finish(self, state_in, state_out, state_aug, dt):
         """Freeze quiet supported islands and publish synchronized state history."""
         model = self.model
@@ -544,7 +606,7 @@ class _SleepState:
         wp.launch(
             _publish_components,
             self.parent.size,
-            [self.parent, self.root_ready, self.art_awake, self.previous_root, self.asleep_steps],
+            [self.parent, self.root_ready, self.art_awake, self.previous_root, self.asleep_steps, self.step_stamp],
             device=device,
         )
         wp.launch(
@@ -1122,9 +1184,16 @@ def _quiet_components(
 
 @wp.kernel(enable_backward=False)
 def _publish_components(
-    parent: wp.array[int], ready: wp.array[int], awake: wp.array[int], previous: wp.array[int], asleep: wp.array[int]
+    parent: wp.array[int],
+    ready: wp.array[int],
+    awake: wp.array[int],
+    previous: wp.array[int],
+    asleep: wp.array[int],
+    step_stamp: wp.array[int],
 ):
     i = wp.tid()
+    if i == 0:
+        step_stamp[0] += 1
     awake[i] = 1 - ready[parent[i]]
     previous[i] = parent[i]
     if awake[i] == 0:
@@ -1233,6 +1302,92 @@ def _freeze_parent_wrenches(
     node = nodes[i]
     if node >= 0 and source_current[node] != 0 and _frozen(node, parent, awake, step_asleep, veto):
         target[i] = source[i]
+
+
+@wp.func
+def _row_free_sleeper(body: int, flags: wp.array[int], response: wp.array[int], mask: wp.array[int]):
+    """Whether ``body`` could respond but its sleeping island's rows are skipped."""
+    return body >= 0 and response[body] != 0 and mask[body] == 0 and (flags[body] & BodyFlags.KINEMATIC) == 0
+
+
+@wp.func
+def _contact_responder(body: int, flags: wp.array[int], mask: wp.array[int]):
+    return body >= 0 and mask[body] != 0 and (flags[body] & BodyFlags.KINEMATIC) == 0
+
+
+@wp.kernel(enable_backward=False)
+def _latch_contact_forces(
+    contact_count: wp.array[int],
+    rigid_contact_max: int,
+    shape0: wp.array[int],
+    shape1: wp.array[int],
+    shape_body: wp.array[int],
+    body_flags: wp.array[int],
+    response: wp.array[int],
+    mask: wp.array[int],
+    match_index: wp.array[wp.int32],
+    match_generation: wp.array[wp.int32],
+    contact_generation: wp.array[wp.int32],
+    contact_stream: int,
+    history_generation: wp.array[wp.int32],
+    history_stream: wp.array[wp.int32],
+    step_stamp: wp.array[int],
+    history_step: wp.array[int],
+    history: wp.array[wp.vec3],
+    contact_f: wp.array[wp.spatial_vector],
+):
+    """Write the previous step's force of each contact that got no rows because a sleeping island skipped them."""
+    c = wp.tid()
+    if c >= wp.min(contact_count[0], rigid_contact_max):
+        return
+    a = -1
+    b = -1
+    if shape0[c] >= 0:
+        a = shape_body[shape0[c]]
+    if shape1[c] >= 0:
+        b = shape_body[shape1[c]]
+    if _contact_responder(a, body_flags, mask) or _contact_responder(b, body_flags, mask):
+        return
+    if not (_row_free_sleeper(a, body_flags, response, mask) or _row_free_sleeper(b, body_flags, response, mask)):
+        return
+    relation = warmstart_history_relation(
+        contact_generation, match_generation, contact_stream, history_generation, history_stream
+    )
+    source = int(-1)
+    # The history must come from the step just before this one; an unrequested step in between breaks it.
+    if history_step[0] != step_stamp[0] - 1:
+        relation = 0
+    if relation == 1:
+        source = c
+    elif relation == 2 and c < match_index.shape[0]:
+        source = match_index[c]
+    force = wp.vec3(0.0)
+    if source >= 0 and source < history.shape[0]:
+        force = history[source]
+    contact_f[c] = wp.spatial_vector(force, wp.vec3(0.0))
+
+
+@wp.kernel(enable_backward=False)
+def _record_contact_forces(
+    contact_count: wp.array[int],
+    rigid_contact_max: int,
+    contact_f: wp.array[wp.spatial_vector],
+    contact_generation: wp.array[wp.int32],
+    contact_stream: int,
+    step_stamp: wp.array[int],
+    history: wp.array[wp.vec3],
+    history_generation: wp.array[wp.int32],
+    history_stream: wp.array[wp.int32],
+    history_step: wp.array[int],
+):
+    """Record each live contact's reported linear force and the contact set it belongs to."""
+    c = wp.tid()
+    if c == 0:
+        history_generation[0] = contact_generation[0]
+        history_stream[0] = contact_stream
+        history_step[0] = step_stamp[0]
+    if c < wp.min(contact_count[0], rigid_contact_max):
+        history[c] = wp.spatial_top(contact_f[c])
 
 
 @wp.kernel(enable_backward=False)
