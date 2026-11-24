@@ -457,10 +457,7 @@ def get_transform(prim: Usd.Prim, local: bool = True, xform_cache: UsdGeom.Xform
         cameras, should build their frame from the authored axes instead.
     """
     mat = _get_xform_matrix(prim, local=local, xform_cache=xform_cache)
-    # Use ``Gf.Transform`` so the rotation matches the UsdPhysics parser. Warp's
-    # decompose agrees for a pure scaled rotation, but a child rotation under an
-    # inherited nonuniform (and especially mirrored) scale is sheared, and
-    # negating that basis is not enough to recover the same quaternion.
+    # Use ``Gf.Transform`` so the rotation matches the UsdPhysics parser convention.
     gf_xform = Gf.Transform(Gf.Matrix4d(*np.asarray(mat, dtype=np.float64).reshape(-1)))
     translation = gf_xform.GetTranslation()
     quat = gf_xform.GetRotation().GetQuat()
