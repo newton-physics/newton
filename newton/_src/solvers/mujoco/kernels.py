@@ -27,6 +27,35 @@ from .constants import (
 from .enums import EqType
 
 
+@wp.kernel
+def eval_standalone_root_ref_poses(
+    roots: wp.array[int],
+    joint_type: wp.array[int],
+    joint_child: wp.array[int],
+    joint_q_start: wp.array[int],
+    joint_qd_start: wp.array[int],
+    joint_dof_dim: wp.array2d[int],
+    joint_axis: wp.array[wp.vec3],
+    joint_X_p: wp.array[wp.transform],
+    joint_X_c: wp.array[wp.transform],
+    ref_q: wp.array[float],
+    ref_qd: wp.array[float],
+    body_q: wp.array[wp.transform],
+):
+    joint = roots[wp.tid()]
+    motion, _velocity = eval_joint_motion(
+        joint_type[joint],
+        joint_q_start[joint],
+        joint_qd_start[joint],
+        joint_dof_dim[joint, 0],
+        joint_dof_dim[joint, 1],
+        ref_q,
+        ref_qd,
+        joint_axis,
+    )
+    body_q[joint_child[joint]] = joint_X_p[joint] * motion * wp.transform_inverse(joint_X_c[joint])
+
+
 def _import_contact_force_fn():
     from mujoco_warp._src.support import contact_force_fn
 

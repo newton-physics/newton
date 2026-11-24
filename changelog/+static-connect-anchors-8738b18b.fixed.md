@@ -1,1 +1,1 @@
-Preserve translated and rotated standalone static body poses when computing MuJoCo reference-pose CONNECT anchors, including property notifications.
+Correct MuJoCo CONNECT reference anchors for standalone fixed and movable world-root joints, including property notifications.

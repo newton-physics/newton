@@ -93,6 +93,7 @@ from .kernels import (
     eval_mujoco_coupling_effective_mass_block_kernel,
     eval_mujoco_coupling_effective_mass_kernel,
     eval_mujoco_coupling_gravity_acceleration_kernel,
+    eval_standalone_root_ref_poses,
     frictionloss_force_from_efc_kernel,
     hinge_connect_anchor,
     mass_matrix_diagonal_kernel,
@@ -7558,6 +7559,26 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # Keep fixed and dynamic roots separate because they use different MuJoCo body creation paths.
         joints_static_roots = np.asarray(joints_static_roots, dtype=np.int32)
         joints_dynamic_roots = np.asarray(joints_dynamic_roots, dtype=np.int32)
+        # Reference FK also needs the roots in every replicated world, not
+        # just the template world selected for MuJoCo conversion.
+        all_articulated = np.flatnonzero(joint_articulation >= 0)
+        owned = {int(body) for body in joint_child[all_articulated]}
+        owned.update(int(body) for body in joint_parent[all_articulated] if body >= 0)
+        equality_joints = set()
+        if eq_constraint_target_kind is not None and eq_constraint_target is not None:
+            equality_joints = {
+                int(target)
+                for kind, target in zip(eq_constraint_target_kind, eq_constraint_target, strict=True)
+                if int(kind) == int(MjcEqualityTargetKind.JOINT) and target >= 0
+            }
+        roots = []
+        for joint in np.flatnonzero(joint_articulation == -1):
+            child = int(joint_child[joint])
+            if joint_parent[joint] == -1 and child not in owned and int(joint) not in equality_joints:
+                owned.add(child)
+                if joint_type[joint] != JointType.FIXED:
+                    roots.append(int(joint))
+        self._standalone_dynamic_roots = wp.array(roots, dtype=wp.int32, device=model.device)
         standalone_root_set = set(joints_static_roots) | set(joints_dynamic_roots)
 
         # Once each standalone body has a world root, its other unassigned joints are loop closures.
@@ -10768,6 +10789,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         ref_qd: wp.array | None = None,
         ref_body_q: wp.array | None = None,
         ref_body_qd: wp.array | None = None,
+        standalone_roots: wp.array | None = None,
     ) -> wp.array:
         """Compute body transforms at the reference joint configuration.
 
@@ -10798,6 +10820,26 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         ref_state.body_q = ref_body_q
         ref_state.body_qd = ref_body_qd
         eval_fk(model, ref_q, ref_qd, ref_state)
+        if standalone_roots is not None and len(standalone_roots):
+            wp.launch(
+                eval_standalone_root_ref_poses,
+                dim=len(standalone_roots),
+                inputs=[
+                    standalone_roots,
+                    model.joint_type,
+                    model.joint_child,
+                    model.joint_q_start,
+                    model.joint_qd_start,
+                    model.joint_dof_dim,
+                    model.joint_axis,
+                    model.joint_X_p,
+                    model.joint_X_c,
+                    ref_q,
+                    ref_qd,
+                ],
+                outputs=[ref_body_q],
+                device=model.device,
+            )
         return ref_body_q
 
     def _notify_connect_constraints_changed(
@@ -10828,6 +10870,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self._notify_ref_qd,
                 self._notify_ref_body_q,
                 self._notify_ref_body_qd,
+                self._standalone_dynamic_roots,
             )
             wp.launch(
                 update_connect_constraint_rel_xform_at_qref_kernel,

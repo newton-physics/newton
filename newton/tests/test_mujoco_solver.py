@@ -3973,6 +3973,39 @@ class TestMuJoCoSolverGeomProperties(unittest.TestCase):
 
 @requires(*MUJOCO_MODULES)
 class TestMuJoCoSolverEqualityConstraintProperties(unittest.TestCase):
+    def test_connect_standalone_root_reference_anchors(self):
+        for movable in (False, True):
+            with self.subTest(movable=movable):
+                builder = newton.ModelBuilder()
+                SolverMuJoCo.register_custom_attributes(builder)
+                root_pose = wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_rpy(0.0, 0.0, 0.5 if movable else 0.0))
+                root = builder.add_link(xform=root_pose, mass=1.0, inertia=wp.mat33(np.eye(3)))
+                joint_pose = wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity())
+                if movable:
+                    joint = builder.add_joint_revolute(-1, root, axis=(0, 0, 1), parent_xform=joint_pose)
+                    builder.joint_q[builder.joint_q_start[joint]] = 0.5
+                else:
+                    builder.add_joint_fixed(-1, root, parent_xform=joint_pose)
+                other_pose = wp.transform(wp.vec3(2.0, 0.0, 0.0), wp.quat_identity())
+                other = builder.add_link(xform=other_pose, mass=1.0, inertia=wp.mat33(np.eye(3)))
+                builder.add_articulation([builder.add_joint_free(child=other)])
+                constraint = _add_equality_constraint(
+                    builder,
+                    constraint_type=SolverMuJoCo.EqType.CONNECT,
+                    body1=root,
+                    body2=other,
+                    anchor=wp.vec3(0.5, 0.0, 0.0),
+                )
+                model = builder.finalize(device="cpu")
+                with self.assertWarnsRegex(newton.NewtonWarning, "outside articulations as standalone"):
+                    solver = SolverMuJoCo(model, disable_contacts=True)
+                eq = np.flatnonzero(solver.mjc_eq_to_newton_eq.numpy()[0] == constraint)[0]
+                for notify in (False, True):
+                    if notify:
+                        solver._notify_ref_body_q.zero_()
+                        solver.notify_model_changed(ModelFlags.JOINT_PROPERTIES)
+                    np.testing.assert_allclose(solver.mjw_model.eq_data.numpy()[0, eq, 3:6], [-0.5, 0, 0], atol=1e-6)
+
     def test_connect_anchor_precision_far_from_origin(self):
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
