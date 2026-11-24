@@ -24,7 +24,7 @@ from newton._src.solvers.implicit_mpm.rasterized_collisions import (
     rasterize_collider_kernel,
 )
 from newton._src.solvers.implicit_mpm.rheology_solver_kernels import (
-    _DELASSUS_PROXIMAL_REG,
+    _DELASSUS_SCALED_REG,
     YieldParamVec,
     _symmetric_part_op,
     _symmetric_part_transposed_op,
@@ -47,6 +47,8 @@ from newton._src.solvers.implicit_mpm.solve_rheology import (
     _DelassusOperator,
     _linear_solver_result_norms,
     _nonlinear_solver_result_norms,
+    _update_environment_convergence,
+    _update_environment_stop_condition,
     solve_rheology,
     update_batched_condition,
 )
@@ -234,6 +236,7 @@ def test_assembled_elastic_stiffness(test, device):
                     stress=scratch.stress_field.dof_values,
                 ),
                 MomentumData(scratch.inv_mass_matrix, scratch.velocity_field.dof_values),
+                scratch.delassus_scale,
                 temporary_store=solver.temporary_store,
             )
             operator.require_strain_mat_transpose()
@@ -363,6 +366,7 @@ def _coupled_rheology(device, grid_type="dense", max_active_cell_count=-1, strai
             operator = _DelassusOperator(
                 rheology,
                 MomentumData(scratch.inv_mass_matrix, scratch.velocity_field.dof_values),
+                scratch.delassus_scale,
                 temporary_store=solver.temporary_store,
             )
             yield operator, solver.temporary_store
@@ -403,7 +407,9 @@ def test_delassus_majorizer(test, device):
     count = len(blocks)
     with wp.ScopedDevice(device):
         values = np.asarray(blocks, dtype=np.float32)
-        W = (values + np.float32(_DELASSUS_PROXIMAL_REG) * np.eye(6, dtype=np.float32)).astype(float)
+        # Unit inertial scale: the blocks are of order one
+        reg = float(_DELASSUS_SCALED_REG)
+        W = (values + np.float32(reg) * np.eye(6, dtype=np.float32)).astype(float)
         rotation, diagonal = wp.empty(count, dtype=mat55), wp.empty(count, dtype=vec6)
         inputs = [
             wp.zeros(count + 1, dtype=int),
@@ -417,7 +423,9 @@ def test_delassus_majorizer(test, device):
             wp.empty((0, 0), dtype=float),
         ]
         outputs = [rotation, diagonal]
-        wp.launch(compute_delassus_diagonal, count, inputs=[*inputs, True], outputs=outputs)
+        wp.launch(
+            compute_delassus_diagonal, count, inputs=[*inputs, True, wp.ones(1, dtype=float), None], outputs=outputs
+        )
         for i, (d, R) in enumerate(zip(diagonal.numpy(), rotation.numpy(), strict=True)):
             with test.subTest(block=i):
                 test.assertTrue(np.isfinite(d).all() and (d > 0).all())
@@ -427,7 +435,7 @@ def test_delassus_majorizer(test, device):
                 target = Q @ W[i] @ Q.T
                 target /= np.sqrt(np.outer(d.astype(float), d.astype(float)))
                 test.assertLessEqual(np.linalg.eigvalsh(target)[-1], 1.0 + 3e-6)
-        np.testing.assert_allclose(diagonal.numpy()[0], 1.0 + float(_DELASSUS_PROXIMAL_REG), rtol=1e-5)
+        np.testing.assert_allclose(diagonal.numpy()[0], 1.0 + reg, rtol=1e-5)
 
 
 def test_coupled_iteration_bound(test, device):
@@ -555,9 +563,10 @@ def test_majorized_rheology_solve(test, device, capture=False):
             collider_impulse=wp.zeros(nv, dtype=wp.vec3),
         )
         W = (B * inverse_mass) @ B.T + C
+        delassus_scale = wp.array([np.mean(np.diag(W))], dtype=float, device=operator.momentum.velocity.device)
         modes = ("gs", "gs-soa", "gs-batched", "jacobi", ("cg", "gs"), ("cg", "jacobi", "gs-batched"))
-        for contact, mode in itertools.product((False, True), modes):
-            with test.subTest(contact=contact, solver=mode, capture=capture):
+        for contact, mode, acceleration in itertools.product((False, True), modes, ("nesterov", "none")):
+            with test.subTest(contact=contact, solver=mode, capture=capture, acceleration=acceleration):
                 friction = np.full(nv, -1.0, dtype=np.float32)
                 normals = np.zeros((nv, 3), dtype=np.float32)
                 if contact:
@@ -566,7 +575,7 @@ def test_majorized_rheology_solve(test, device, capture=False):
                 collision.collider_normals.assign(normals)
                 collision.has_colliders = contact
 
-                def solve(mode=mode):
+                def solve(mode=mode, acceleration=acceleration):
                     wp.copy(operator.rheology.elastic_strain_delta, q_device)
                     wp.copy(operator.momentum.velocity, free_device)
                     operator.rheology.stress.zero_()
@@ -578,9 +587,11 @@ def test_majorized_rheology_solve(test, device, capture=False):
                         operator.momentum,
                         operator.rheology,
                         collision,
+                        delassus_scale,
                         temporary_store=store,
                         use_graph=capture,
                         verbose=False,
+                        acceleration=acceleration,
                     )
 
                 solve()
@@ -713,7 +724,7 @@ def test_strain_cell_velocity_cache(test, device, capture=False):
                             else:
                                 for _ in range(5):
                                     solver.solve()
-                            results.append((operator.momentum.velocity.numpy(), r.stress.numpy()))
+                            results.append((operator.momentum.velocity.numpy().copy(), r.stress.numpy().copy()))
                         finally:
                             solver.release()
                 for actual, expected in zip(results[1], results[0], strict=True):
@@ -934,6 +945,61 @@ def test_multiworld_residual_tolerance_scales(test, device):
     )
     test.assertEqual(condition.numpy()[0], 1)
 
+    # Accept worlds independently, including an empty world, and retain their
+    # accepted residuals once they stop iterating.
+    residual_device.assign(np.array(((3.6, 0.0, 11.0), (0.25, 0.0, 0.75)), dtype=np.float32))
+    status = wp.zeros(3, dtype=int, device=device)
+    accepted = wp.empty_like(residual_device)
+
+    def update():
+        wp.launch(
+            _update_environment_convergence,
+            dim=3,
+            inputs=[1.0, scales, residual_device, status, accepted],
+            device=device,
+        )
+
+    update()
+    np.testing.assert_array_equal(status.numpy(), (1, 1, 0))
+
+    residual_device.assign(np.array(((100.0, 0.0, 9.0), (100.0, 0.0, 0.75)), dtype=np.float32))
+    update()
+    np.testing.assert_array_equal(status.numpy(), (2, 2, 1))
+    np.testing.assert_allclose(accepted.numpy(), ((3.6, 0.0, 9.0), (0.25, 0.0, 0.75)))
+    np.testing.assert_allclose(residual_device.numpy(), ((3.6, 0.0, 9.0), (0.25, 0.0, 0.75)))
+
+    # Stopping reads the retained-environment status instead of repeating the threshold.
+    iteration.zero_()
+    condition.fill_(1)
+    wp.launch(
+        _update_environment_stop_condition,
+        dim=1,
+        inputs=[5, 100, status, iteration, condition],
+        device=device,
+    )
+    test.assertEqual(int(condition.numpy()[0]), 0)
+    test.assertEqual(int(iteration.numpy()[0]), 5)
+
+    status.assign(np.array([2, 0, 1], dtype=np.int32))
+    iteration.zero_()
+    condition.fill_(1)
+    wp.launch(
+        _update_environment_stop_condition,
+        dim=1,
+        inputs=[5, 100, status, iteration, condition],
+        device=device,
+    )
+    test.assertEqual(int(condition.numpy()[0]), 1)
+
+    wp.launch(
+        _update_environment_stop_condition,
+        dim=1,
+        inputs=[5, 5, status, iteration, condition],
+        device=device,
+    )
+    test.assertEqual(int(condition.numpy()[0]), 0)
+    test.assertEqual(int(iteration.numpy()[0]), 10)
+
 
 def test_multiworld_cr_matches_independent(test, device):
     """Verify multi-world CR matches independent."""
@@ -1080,6 +1146,80 @@ def test_multiworld_fixed_pic_matches_independent(test, device):
     _run_multiworld_reference_case(device, grid_type="fixed", integration_scheme="pic")
 
 
+def test_multiworld_nonlinear_convergence_is_independent(test, device):
+    """Preserve a world's converged state when another world needs more iterations or holds denser material."""
+    spacing = 1.25e-3
+    local_builder = newton.ModelBuilder()
+    SolverImplicitMPM.register_custom_attributes(local_builder)
+    local_builder.add_particle_grid(
+        pos=wp.vec3(-3.5 * spacing, -3.5 * spacing, 0.5 * spacing),
+        rot=wp.quat_identity(),
+        vel=wp.vec3(0.0),
+        dim_x=8,
+        dim_y=8,
+        dim_z=4,
+        cell_x=spacing,
+        cell_y=spacing,
+        cell_z=spacing,
+        mass=1000.0 * spacing**3,
+        radius_mean=0.5 * spacing,
+        jitter=0.0,
+        custom_attributes={"mpm:young_modulus": 1.0e4},
+    )
+    empty_builder = newton.ModelBuilder()
+    empty_builder.add_body(is_kinematic=True)
+    builder = newton.ModelBuilder()
+    SolverImplicitMPM.register_custom_attributes(builder)
+    for world in (local_builder, empty_builder, local_builder):
+        builder.add_world(world)
+    builder.add_ground_plane()
+
+    for mode in ("gs", "jacobi"):
+        results = []
+        for friction, density_scale in ((0.5, 1.0), (0.0, 8.0)):
+            model = builder.finalize(device=device)
+            starts = model.particle_world_start.numpy()
+            material_friction = model.mpm.friction.numpy()
+            material_friction[starts[2] : starts[3]] = friction
+            model.mpm.friction.assign(material_friction)
+            mass = model.particle_mass.numpy()
+            mass[starts[2] : starts[3]] *= density_scale
+            model.particle_mass.assign(mass)
+            model.particle_inv_mass.assign(1.0 / mass)
+            config = SolverImplicitMPM.Config(
+                voxel_size=2.5e-3,
+                grid_type="fixed",
+                grid_padding=2,
+                max_active_cell_count=256,
+                separate_worlds=True,
+                solver=mode,
+            )
+            solver, state = _step_mpm(model, config, step_count=8, dt=2.5e-3)
+            arrays = _mpm_particle_state_arrays(state)
+            arrays["particle_Jp"] = state.mpm.particle_Jp
+            first_world = {name: array.numpy()[: starts[1]] for name, array in arrays.items()}
+            scratch = solver._scratchpad
+            for name, values, offsets in (
+                ("grid_velocity", scratch.velocity_field.dof_values, scratch.velocity_environment_offsets),
+                ("grid_stress", scratch.stress_field.dof_values, scratch.strain_environment_offsets),
+                ("collider_impulse", scratch.impulse_field.dof_values, scratch.collider_environment_offsets),
+            ):
+                environment_offsets = offsets.numpy()
+                test.assertEqual(environment_offsets[1], environment_offsets[2])
+                test.assertTrue(np.isfinite(values.numpy()).all(), f"Non-finite {name}, including padding")
+                first_world[name] = values.numpy()[: environment_offsets[1]]
+            results.append((first_world, state.particle_q.numpy()[starts[2] : starts[3]]))
+
+        with test.subTest(solver=mode):
+            for name, reference in results[0][0].items():
+                np.testing.assert_allclose(
+                    results[1][0][name], reference, rtol=1.0e-6, atol=1.0e-8, equal_nan=False, err_msg=name
+                )
+            test.assertGreater(np.max(np.abs(results[1][1] - results[0][1])), 1.0e-4)
+            test.assertGreater(np.linalg.norm(results[0][0]["collider_impulse"]), 1.0e-4)
+            test.assertGreater(np.linalg.norm(results[0][0]["particle_stress"]), 1.0e-4)
+
+
 def _make_multiworld_fixed_outer_graph_case(device, max_active_cell_count=16):
     local_builder = _make_mpm_particle_builder(gravity=(0.0, 0.0, 0.0))
     builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=(0.0, 0.0, 0.0))
@@ -1169,7 +1309,7 @@ def test_multiworld_fixed_capped_jacobi_matches_uncapped(test, device):
         test.assertTrue(np.isfinite(array.numpy()).all(), f"Padded {name} contains non-finite values")
 
 
-def test_multiworld_fixed_outer_graph_matches_eager(test, device):
+def test_multiworld_fixed_outer_graph_matches_eager(test, device, convergence=False):
     """Verify multi-world fixed outer graph matches eager."""
     if (
         not device.is_cuda
@@ -1185,6 +1325,10 @@ def test_multiworld_fixed_outer_graph_matches_eager(test, device):
     captured_model, captured_solver, captured_state_0, captured_state_1, captured_world_starts = (
         _make_multiworld_fixed_outer_graph_case(device)
     )
+    if convergence:
+        for solver in (eager_solver, captured_solver):
+            solver.max_iterations = 100
+            solver.tolerance = 1.0e-4
     np.testing.assert_array_equal(captured_world_starts, world_starts)
     initial_q = eager_state_0.particle_q.numpy().copy()
     initial_qd_grad = eager_state_0.mpm.particle_qd_grad.numpy().copy()
@@ -1373,7 +1517,7 @@ def test_unbinned_particles_keep_state(test, device):
     model = builder.finalize(device=device)
     history = ("particle_Jp", "particle_elastic_strain", "particle_stress")
     active = int(newton.ParticleFlags.ACTIVE)
-    initial_flags = model.particle_flags.numpy()
+    initial_flags = model.particle_flags.numpy().copy()
     half = model.particle_count // 2
     for integration_scheme in ("pic", "gimp"):
         with test.subTest(grid_type="sparse", integration_scheme=integration_scheme):
@@ -1748,6 +1892,68 @@ def test_collider_face_materials(test, device):
     np.testing.assert_allclose(shape_solver.collider_materials(0)["adhesion"].numpy(), 7.0)
 
 
+def test_point_warmstart_unbinned_particles(test, device):
+    """Preserve particle history and zero unused point nodes during warm starts."""
+    with wp.ScopedDevice(device):
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        SolverImplicitMPM.register_custom_attributes(builder)
+        # Reverse the active particles' cell order and park the last two outside active cells.
+        for i, x in enumerate((0.125, 0.025, 0.325, 0.425)):
+            builder.add_particle(
+                pos=(x, 0.025, 0.025),
+                vel=(0.0, 0.0, 0.0),
+                mass=0.01,
+                radius=0.025,
+                flags=newton.ParticleFlags.ACTIVE if i < 2 else 0,
+            )
+        model = builder.finalize(device=device)
+        config = _make_mpm_config(grid_type="fixed")
+        config.separate_worlds = False
+        config.grid_padding = 1
+        config.max_active_cell_count = 2
+        config.collider_basis = "pic2"
+        config.strain_basis = "pic2"
+        config.warmstart_mode = "particles"
+        solver, _ = _step_mpm(model, config, step_count=2)
+        scratch = solver._scratchpad
+        history = solver._last_step_data
+        pic = scratch.collision_pic
+        fields = (
+            ("impulse", scratch.impulse_field, history.ws_impulse_field),
+            ("stress", scratch.stress_field, history.ws_stress_field),
+        )
+        references = []
+        for name, field, saved in fields:
+            space_nodes = field.space_partition.space_node_indices().numpy()
+            particles = pic.cell_particle_indices.numpy()[space_nodes]
+            valid = particles >= 0
+            test.assertEqual(np.count_nonzero(valid), 2)
+            test.assertEqual(np.count_nonzero(~valid), 2)
+            np.testing.assert_array_equal(np.sort(particles[valid]), [0, 1])
+            values = (
+                np.arange(saved.dof_values.numpy().size, dtype=np.float32).reshape(saved.dof_values.numpy().shape) + 1.0
+            )
+            saved.dof_values.assign(values)
+            field.dof_values.fill_(field.dof_values.dtype(-7.0))
+            references.append((name, field, saved, particles, valid, values))
+
+        solver._warmstart_fields(history, scratch, pic)
+        for name, field, _saved, particles, valid, values in references:
+            with test.subTest(field=name, transfer="gather"):
+                expected = np.zeros_like(field.dof_values.numpy())
+                expected[valid] = values[particles[valid]]
+                np.testing.assert_array_equal(field.dof_values.numpy(), expected)
+            # Poison unused slots too: scatter must not write them to the last particle.
+            field.dof_values.fill_(field.dof_values.dtype(42.0))
+
+        solver._save_for_next_warmstart(scratch, pic, history)
+        for name, _field, saved, particles, valid, values in references:
+            with test.subTest(field=name, transfer="scatter"):
+                expected = values.copy()
+                expected[particles[valid]] = 42.0
+                np.testing.assert_array_equal(saved.dof_values.numpy(), expected)
+
+
 def test_single_world_global_particles_supported(test, device):
     """Verify single world global particles supported."""
     initial_plastic_volume_strain = 0.975
@@ -1993,10 +2199,12 @@ def test_multiworld_rasterize_collider_node_environments(test, device):
             0.1,
             0.0,
             False,
+            0.0,
             0.01,
             node_positions,
             node_environment_offsets,
             node_volumes,
+            None,
             collider_sdf,
             collider_velocity,
             collider_normals,
@@ -3068,6 +3276,9 @@ class TestImplicitMPM(unittest.TestCase):
 
 
 add_function_test(TestImplicitMPM, "test_stress_virtual_work", test_stress_virtual_work, devices=devices)
+add_function_test(
+    TestImplicitMPM, "test_point_warmstart_unbinned_particles", test_point_warmstart_unbinned_particles, devices=devices
+)
 add_function_test(TestImplicitMPM, "test_delassus_majorizer", test_delassus_majorizer, devices=devices)
 add_function_test(TestImplicitMPM, "test_coupled_iteration_bound", test_coupled_iteration_bound, devices=devices)
 add_function_test(TestImplicitMPM, "test_reconstruction_factors", test_reconstruction_factors, devices=devices)
@@ -3175,9 +3386,24 @@ add_function_test(
 
 add_function_test(
     TestImplicitMPM,
+    "test_multiworld_nonlinear_convergence_is_independent",
+    test_multiworld_nonlinear_convergence_is_independent,
+    devices=basic_devices,
+)
+
+add_function_test(
+    TestImplicitMPM,
     "test_multiworld_fixed_outer_graph_matches_eager",
     test_multiworld_fixed_outer_graph_matches_eager,
     devices=basic_cuda_devices,
+)
+
+add_function_test(
+    TestImplicitMPM,
+    "test_multiworld_fixed_outer_graph_convergence_matches_eager",
+    test_multiworld_fixed_outer_graph_matches_eager,
+    devices=basic_cuda_devices,
+    convergence=True,
 )
 
 add_function_test(

@@ -1,1 +1,0 @@
-Add experimental deformable labels, worlds, counts, and element ranges on `Model`, with `newton.selection.DeformableCurveView`, `DeformableSurfaceView`, and `DeformableVolumeView` for batched state reads and masked updates across uneven worlds, plus selected particle inverse-mass and flag reads for surfaces and volumes.

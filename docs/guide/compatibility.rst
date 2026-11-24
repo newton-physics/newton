@@ -26,8 +26,7 @@ Newton releases are tested on the following configurations:
    * - GPU
      - NVIDIA Ada Lovelace, Blackwell
    * - Python
-     - 3.10+ (3.10 support is deprecated; removal planned for Newton 1.9; use 3.11+).
-       Full tests use ``.python-version``; CI imports 3.10-3.14 and resolves deps on 3.10-3.13.
+     - 3.11+. Full tests use ``.python-version``; CI imports 3.11-3.14 and resolves deps on 3.11-3.14.
    * - Dependencies
      - Latest known-good versions are pinned in the release branch's ``uv.lock``
    * - CUDA
@@ -74,7 +73,8 @@ CUDA Compatibility
        wheel, such as the standard Warp 1.17 wheel. See
        :ref:`system-requirements` for driver and GPU limits.
    * - 13.4+ (recommended)
-     - The standard Warp 1.18 wheel uses CUDA 13.4. Check the installed
+     - Since Warp 1.18, standard PyPI and nightly wheels require an NVIDIA
+       R580-series or newer driver for CUDA acceleration. Check the installed
        wheel's driver and GPU requirements on the `Warp compatibility page
        <https://nvidia.github.io/warp/stable/user_guide/compatibility.html>`__.
 
@@ -131,9 +131,10 @@ targets, and simulation behavior that user code or simulations may rely on.
   :ref:`deprecation-policy`.
 * **Deprecated**: A feature scheduled for removal in a future release.
   Remains fully functional during the deprecation window.
-* **Removed**: A feature no longer in the library.  Attempting to use
-  it raises an error.  Removals are breaking changes, but not all
-  breaking changes are removals.
+* **Removed**: A feature no longer in the library.  Newton usually keeps
+  no dedicated error for it: code that still uses it behaves as it would
+  for any name that does not exist.  Removals are breaking changes, but
+  not all breaking changes are removals.
 
 .. _deprecation-policy:
 
@@ -155,8 +156,8 @@ Assuming a feature is deprecated in release ``1.2.0``:
   ``CHANGELOG.md``.
 * ``1.2.x`` (micro releases): deprecated feature remains fully
   functional.
-* ``1.3.0`` or later: feature is eligible for removal.  Using it then
-  raises an error.
+* ``1.3.0`` or later: feature is eligible for removal.  Once removed, it
+  is gone without a dedicated error.
 
 How deprecations and breaking changes are communicated
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

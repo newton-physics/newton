@@ -2,54 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import unittest
-import warnings
 
 import numpy as np
 import warp as wp
 
 import newton
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
-
-
-def test_no_overhead_when_disabled(test, device):
-    """Differentiable arrays are None when requires_grad=False."""
-    with wp.ScopedDevice(device):
-        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 1.0)))
-        builder.add_shape_sphere(body=body, radius=0.5)
-        builder.add_ground_plane()
-        model = builder.finalize(device=device, requires_grad=False)
-
-        pipeline = newton.CollisionPipeline(model)
-        contacts = pipeline.contacts()
-
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            test.assertIsNone(contacts.rigid_contact_diff_distance)
-            test.assertIsNone(contacts.rigid_contact_diff_normal)
-            test.assertIsNone(contacts.rigid_contact_diff_point0_world)
-            test.assertIsNone(contacts.rigid_contact_diff_point1_world)
-
-
-def test_arrays_allocated_when_enabled(test, device):
-    """Differentiable arrays are allocated when requires_grad=True."""
-    with wp.ScopedDevice(device):
-        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 1.0)))
-        builder.add_shape_sphere(body=body, radius=0.5)
-        builder.add_ground_plane()
-        model = builder.finalize(device=device, requires_grad=True)
-
-        pipeline = newton.CollisionPipeline(model)
-        contacts = pipeline.contacts()
-
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            test.assertIsNotNone(contacts.rigid_contact_diff_distance)
-            test.assertIsNotNone(contacts.rigid_contact_diff_normal)
-            test.assertIsNotNone(contacts.rigid_contact_diff_point0_world)
-            test.assertIsNotNone(contacts.rigid_contact_diff_point1_world)
-            test.assertTrue(contacts.rigid_contact_diff_distance.requires_grad)
 
 
 def test_eval_rigid_contact_kinematics(test, device):
@@ -61,7 +19,7 @@ def test_eval_rigid_contact_kinematics(test, device):
         builder.add_ground_plane()
         model = builder.finalize(device=device, requires_grad=True)
 
-        pipeline = newton.CollisionPipeline(model, requires_grad=False)
+        pipeline = newton.CollisionPipeline(model)
         contacts = pipeline.contacts()
         state = model.state(requires_grad=True)
         distance = wp.empty(contacts.rigid_contact_max, dtype=float, device=device, requires_grad=True)
@@ -116,30 +74,6 @@ def test_eval_rigid_contact_kinematics(test, device):
         grad_q = tape.gradients.get(state.body_q)
         test.assertIsNotNone(grad_q)
         test.assertGreater(float(grad_q.numpy()[0, 2]), 0.0)
-
-
-def test_legacy_rigid_contact_kinematics_deprecated(test, device):
-    """Verify legacy rigid-contact kinematics attributes emit migration guidance."""
-    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-    body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.3)))
-    builder.add_shape_sphere(body=body, radius=0.5)
-    builder.add_ground_plane()
-    model = builder.finalize(device=device, requires_grad=True)
-    pipeline = newton.CollisionPipeline(model)
-    contacts = pipeline.contacts()
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", DeprecationWarning)
-        pipeline.collide(model.state(), contacts)
-
-    with test.assertWarnsRegex(DeprecationWarning, r"deprecated in Newton 1\.6.*out_distance"):
-        distance = contacts.rigid_contact_diff_distance
-        test.assertTrue(np.any(distance.numpy()[: contacts.rigid_contact_count.numpy()[0]] < 0.0))
-    with test.assertWarnsRegex(DeprecationWarning, "rigid_contact_normal"):
-        test.assertIs(contacts.rigid_contact_diff_normal, contacts.rigid_contact_normal)
-    with test.assertWarnsRegex(DeprecationWarning, "out_point0_world"):
-        test.assertIsNotNone(contacts.rigid_contact_diff_point0_world)
-    with test.assertWarnsRegex(DeprecationWarning, "out_point1_world"):
-        test.assertIsNotNone(contacts.rigid_contact_diff_point1_world)
 
 
 def test_sphere_on_plane_distance(test, device):
@@ -631,24 +565,9 @@ class TestDifferentiableContacts(unittest.TestCase):
 
 devices = get_cuda_test_devices()
 add_function_test(
-    TestDifferentiableContacts, "test_no_overhead_when_disabled", test_no_overhead_when_disabled, devices=devices
-)
-add_function_test(
-    TestDifferentiableContacts,
-    "test_arrays_allocated_when_enabled",
-    test_arrays_allocated_when_enabled,
-    devices=devices,
-)
-add_function_test(
     TestDifferentiableContacts,
     "test_eval_rigid_contact_kinematics",
     test_eval_rigid_contact_kinematics,
-    devices=devices,
-)
-add_function_test(
-    TestDifferentiableContacts,
-    "test_legacy_rigid_contact_kinematics_deprecated",
-    test_legacy_rigid_contact_kinematics_deprecated,
     devices=devices,
 )
 add_function_test(

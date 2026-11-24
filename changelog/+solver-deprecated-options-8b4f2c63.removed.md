@@ -1,0 +1,1 @@
+Remove `SolverXPBD.compute_body_velocity_from_position_delta`, deprecated in Newton 1.6, together with the full-step velocity reconstruction it enabled; XPBD maintains rigid-body velocities incrementally. Delete assignments to the attribute.

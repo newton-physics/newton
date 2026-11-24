@@ -15,6 +15,7 @@ from ..kinematics.joints import (
     correct_joint_coords_in_place,
     get_joint_coords_mapping_function,
     map_gimbal_angular_velocity_to_rates,
+    rod_joint_relative_twist,
     select_gimbal_coords,
     universal_intermediary_axes,
 )
@@ -144,7 +145,7 @@ def _compute_and_write_joint_coords_and_vel(
     elif dof_type == JointDoFType.FIXED:
         pass  # 0 coords and dofs
 
-    elif dof_type == JointDoFType.FREE:
+    elif dof_type == JointDoFType.FREE or dof_type == JointDoFType.ROD:
         wp.static(make_compute_and_write_joint_coords(JointDoFType.FREE))(r_j, q_j, coords_offset, joint_q_ref, joint_q)
         wp.static(make_compute_and_write_joint_vel(JointDoFType.FREE))(q_j, u_j, dofs_offset, joint_u)
 
@@ -355,7 +356,9 @@ def _reset_joints_state_from_bodies_state(
     u_F = body_u[bid_F]
 
     # Compute the relative motion of the follower w.r.t. the base body, in joint frame
-    _, r_j, q_j, u_j = compute_joint_pose_and_relative_motion(T_B, T_F, u_B, u_F, r_B, r_F, X_B, X_F)
+    p_j, r_j, q_j, u_j = compute_joint_pose_and_relative_motion(T_B, T_F, u_B, u_F, r_B, r_F, X_B, X_F)
+    if dof_type == JointDoFType.ROD:
+        u_j = rod_joint_relative_twist(T_B, T_F, u_B, u_F, wp.transform_get_rotation(p_j))
 
     # Evaluate joint coordinates/velocity from relative motion
     _compute_and_write_joint_coords_and_vel(

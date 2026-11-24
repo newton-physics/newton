@@ -8,8 +8,6 @@ from typing import Any
 
 import warp as wp
 
-from ..core.types import vec5
-from .broad_phase_common import binary_search
 from .collision_convex import (
     create_plane_convex_query,
     create_solve_convex_multi_contact,
@@ -72,81 +70,6 @@ def project_point_onto_plane(point: wp.vec3, plane_point: wp.vec3, plane_normal:
     distance_to_plane = wp.dot(to_point, plane_normal)
     projected_point = point - plane_normal * distance_to_plane
     return projected_point
-
-
-@wp.func
-def compute_plane_normal_from_contacts(
-    points: _mat53f,
-    normal: wp.vec3,
-    signed_distances: vec5,
-    count: int,
-) -> wp.vec3:
-    """
-    Compute plane normal from reconstructed plane points.
-
-    Reconstructs the plane points from contact data and computes the plane normal
-    using fan triangulation to find the largest area triangle for numerical stability.
-
-    Args:
-        points: Contact points matrix (5x3)
-        normal: Initial contact normal (used for reconstruction)
-        signed_distances: Signed distances vector (5 elements)
-        count: Number of contact points
-
-    Returns:
-        Normalized plane normal from the contact points
-    """
-    if count < 3:
-        # Not enough points to form a triangle, return original normal
-        return normal
-
-    # Reconstruct plane points from contact data
-    # Use first point as anchor for fan triangulation
-    # Contact points are at midpoint, move to discrete surface (plane)
-    p0 = points[0] + normal * (signed_distances[0] * 0.5)
-
-    # Find the triangle with the largest area for numerical stability
-    # This avoids issues with nearly collinear points
-    best_normal = wp.vec3(0.0, 0.0, 0.0)
-    max_area_sq = float(0.0)
-
-    for i in range(1, count - 1):
-        # Reconstruct plane points for this triangle
-        pi = points[i] + normal * (signed_distances[i] * 0.5)
-        pi_next = points[i + 1] + normal * (signed_distances[i + 1] * 0.5)
-
-        # Compute cross product for triangle (p0, pi, pi_next)
-        edge1 = pi - p0
-        edge2 = pi_next - p0
-        cross = wp.cross(edge1, edge2)
-        area_sq = wp.dot(cross, cross)
-
-        if area_sq > max_area_sq:
-            max_area_sq = area_sq
-            best_normal = cross
-
-    # Normalize, avoid zero
-    len_n = wp.sqrt(wp.max(1.0e-12, max_area_sq))
-    plane_normal = best_normal / len_n
-
-    # Ensure normal points in same direction as original normal
-    if wp.dot(plane_normal, normal) < 0.0:
-        plane_normal = -plane_normal
-
-    return plane_normal
-
-
-@wp.func
-def no_post_process_contact(
-    contact_data: ContactData,
-    shape_a: GenericShapeData,
-    pos_a_adjusted: wp.vec3,
-    rot_a: wp.quat,
-    shape_b: GenericShapeData,
-    pos_b_adjusted: wp.vec3,
-    rot_b: wp.quat,
-) -> ContactData:
-    return contact_data
 
 
 @wp.func
@@ -809,135 +732,6 @@ def create_find_contacts(writer_func: Any, support_func: Any = None, post_proces
 
 
 @wp.func
-def pre_contact_check(
-    shape_a: int,
-    shape_b: int,
-    pos_a: wp.vec3,
-    pos_b: wp.vec3,
-    quat_a: wp.quat,
-    quat_b: wp.quat,
-    shape_data_a: GenericShapeData,
-    shape_data_b: GenericShapeData,
-    aabb_a_lower: wp.vec3,
-    aabb_a_upper: wp.vec3,
-    aabb_b_lower: wp.vec3,
-    aabb_b_upper: wp.vec3,
-    pair: wp.vec2i,
-    mesh_id_a: wp.uint64,
-    mesh_id_b: wp.uint64,
-    shape_pairs_mesh: wp.array[wp.vec2i],
-    shape_pairs_mesh_count: wp.array[int],
-    shape_pairs_mesh_plane: wp.array[wp.vec2i],
-    shape_pairs_mesh_plane_cumsum: wp.array[int],
-    shape_pairs_mesh_plane_count: wp.array[int],
-    mesh_plane_vertex_total_count: wp.array[int],
-    shape_pairs_mesh_mesh: wp.array[wp.vec2i],
-    shape_pairs_mesh_mesh_count: wp.array[int],
-):
-    """
-    Perform pre-contact checks for early rejection and special case handling.
-
-    Args:
-        shape_a: Index of shape A
-        shape_b: Index of shape B
-        pos_a: Position of shape A in world space
-        pos_b: Position of shape B in world space
-        quat_a: Orientation of shape A
-        quat_b: Orientation of shape B
-        shape_data_a: Generic shape data for shape A (contains shape_type and scale)
-        shape_data_b: Generic shape data for shape B (contains shape_type and scale)
-        aabb_a_lower: Lower bound of AABB for shape A
-        aabb_a_upper: Upper bound of AABB for shape A
-        aabb_b_lower: Lower bound of AABB for shape B
-        aabb_b_upper: Upper bound of AABB for shape B
-        pair: Shape pair indices
-        mesh_id_a: Mesh ID pointer for shape A (wp.uint64(0) if not a mesh)
-        mesh_id_b: Mesh ID pointer for shape B (wp.uint64(0) if not a mesh)
-        shape_pairs_mesh: Output array for mesh collision pairs
-        shape_pairs_mesh_count: Counter for mesh collision pairs
-        shape_pairs_mesh_plane: Output array for mesh-plane collision pairs
-        shape_pairs_mesh_plane_cumsum: Cumulative sum array for mesh-plane vertices
-        shape_pairs_mesh_plane_count: Counter for mesh-plane collision pairs
-        mesh_plane_vertex_total_count: Total vertex count for mesh-plane collisions
-        shape_pairs_mesh_mesh: Output array for mesh-mesh collision pairs
-        shape_pairs_mesh_mesh_count: Counter for mesh-mesh collision pairs
-
-    Returns:
-        Tuple of (skip_pair, is_infinite_plane_a, is_infinite_plane_b, bsphere_radius_a, bsphere_radius_b)
-    """
-    # Get shape types from shape data
-    type_a = shape_data_a.shape_type
-    type_b = shape_data_b.shape_type
-
-    # Check if shapes are infinite planes (scale.x == 0 and scale.y == 0)
-    # Scale is already in shape_data, no need for array lookup
-    is_infinite_plane_a = (type_a == GeoType.PLANE) and (shape_data_a.scale[0] == 0.0 and shape_data_a.scale[1] == 0.0)
-    is_infinite_plane_b = (type_b == GeoType.PLANE) and (shape_data_b.scale[0] == 0.0 and shape_data_b.scale[1] == 0.0)
-
-    # Early return: both shapes are infinite planes
-    if is_infinite_plane_a and is_infinite_plane_b:
-        return True, is_infinite_plane_a, is_infinite_plane_b, float(0.0), float(0.0)
-
-    # Compute bounding spheres from AABBs instead of using mesh bounding spheres
-    bsphere_center_a, bsphere_radius_a = compute_bounding_sphere_from_aabb(aabb_a_lower, aabb_a_upper)
-    bsphere_center_b, bsphere_radius_b = compute_bounding_sphere_from_aabb(aabb_b_lower, aabb_b_upper)
-
-    # Check if infinite plane vs bounding sphere overlap - early rejection
-    if not check_infinite_plane_bsphere_overlap(
-        shape_data_a,
-        shape_data_b,
-        pos_a,
-        pos_b,
-        quat_a,
-        quat_b,
-        bsphere_center_a,
-        bsphere_center_b,
-        bsphere_radius_a,
-        bsphere_radius_b,
-    ):
-        return True, is_infinite_plane_a, is_infinite_plane_b, bsphere_radius_a, bsphere_radius_b
-
-    # Check for mesh vs infinite plane collision - special handling
-    # After sorting, type_a <= type_b, so we only need to check one direction
-    if type_a == GeoType.PLANE and type_b == GeoType.MESH:
-        # Check if plane is infinite (scale x and y are zero) - use scale from shape_data
-        if shape_data_a.scale[0] == 0.0 and shape_data_a.scale[1] == 0.0:
-            # Get mesh vertex count using the provided mesh_id
-            if mesh_id_b != wp.uint64(0):
-                mesh_obj = wp.mesh_get(mesh_id_b)
-                vertex_count = mesh_obj.points.shape[0]
-
-                # Add to mesh-plane collision buffer with cumulative vertex count
-                mesh_plane_idx = wp.atomic_add(shape_pairs_mesh_plane_count, 0, 1)
-                if mesh_plane_idx < shape_pairs_mesh_plane.shape[0]:
-                    # Store shape indices (mesh, plane)
-                    shape_pairs_mesh_plane[mesh_plane_idx] = wp.vec2i(shape_b, shape_a)
-                    # Store inclusive cumulative vertex count in separate array for better cache locality
-                    cumulative_count_before = wp.atomic_add(mesh_plane_vertex_total_count, 0, vertex_count)
-                    cumulative_count_inclusive = cumulative_count_before + vertex_count
-                    shape_pairs_mesh_plane_cumsum[mesh_plane_idx] = cumulative_count_inclusive
-            return True, is_infinite_plane_a, is_infinite_plane_b, bsphere_radius_a, bsphere_radius_b
-
-    # Check for mesh-mesh collisions - add to separate buffer for specialized handling
-    if type_a == GeoType.MESH and type_b == GeoType.MESH:
-        # Add to mesh-mesh collision buffer using atomic counter
-        mesh_mesh_pair_idx = wp.atomic_add(shape_pairs_mesh_mesh_count, 0, 1)
-        if mesh_mesh_pair_idx < shape_pairs_mesh_mesh.shape[0]:
-            shape_pairs_mesh_mesh[mesh_mesh_pair_idx] = pair
-        return True, is_infinite_plane_a, is_infinite_plane_b, bsphere_radius_a, bsphere_radius_b
-
-    # Check for other mesh collisions (mesh vs non-mesh) - add to separate buffer for specialized handling
-    if type_a == GeoType.MESH or type_b == GeoType.MESH:
-        # Add to mesh collision buffer using atomic counter
-        mesh_pair_idx = wp.atomic_add(shape_pairs_mesh_count, 0, 1)
-        if mesh_pair_idx < shape_pairs_mesh.shape[0]:
-            shape_pairs_mesh[mesh_pair_idx] = pair
-        return True, is_infinite_plane_a, is_infinite_plane_b, bsphere_radius_a, bsphere_radius_b
-
-    return False, is_infinite_plane_a, is_infinite_plane_b, bsphere_radius_a, bsphere_radius_b
-
-
-@wp.func
 def aabb_to_unscaled(
     aabb_lower: wp.vec3,
     aabb_upper: wp.vec3,
@@ -1267,40 +1061,6 @@ def mesh_vs_convex_midphase(
             out_idx = wp.atomic_add(triangle_pairs_count, 0, 1)
             if out_idx < triangle_pairs.shape[0]:
                 triangle_pairs[out_idx] = wp.vec3i(mesh_shape, non_mesh_shape, tri_index)
-
-
-@wp.func
-def find_pair_from_cumulative_index(
-    global_idx: int,
-    cumulative_sums: wp.array[int],
-    pair_count: int,
-) -> tuple[int, int]:
-    """
-    Binary search to find which pair a global index belongs to.
-
-    This function is useful for mapping a flat global index to a (pair_index, local_index)
-    tuple when work is distributed across multiple pairs with varying sizes.
-
-    Args:
-        global_idx: Global index to search for
-        cumulative_sums: Array of inclusive cumulative sums (end indices for each pair)
-        pair_count: Number of pairs
-
-    Returns:
-        Tuple of (pair_index, local_index_within_pair)
-    """
-    # Use binary_search to find first index where cumulative_sums[i] > global_idx
-    # This gives us the bucket that contains global_idx
-    pair_idx = binary_search(cumulative_sums, global_idx, 0, pair_count)
-
-    # Get cumulative start for this pair to calculate local index
-    cumulative_start = int(0)
-    if pair_idx > 0:
-        cumulative_start = int(cumulative_sums[pair_idx - 1])
-
-    local_idx = global_idx - cumulative_start
-
-    return pair_idx, local_idx
 
 
 @wp.func

@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import gc
+
 import warp as wp
 
 import newton
@@ -26,9 +28,15 @@ class CollisionPipelineSetup:
         builder.replicate(world, world_count)
         builder.add_ground_plane()
         self.model = builder.finalize()
-        self.pipeline = newton.CollisionPipeline(self.model, broad_phase=broad_phase)
+        # Warm up without keeping the pipeline, so the timed call does not release it.
+        newton.CollisionPipeline(self.model, broad_phase=broad_phase)
+        gc.collect()
         wp.synchronize_device(self.model.device)
 
     def time_construct(self, world_count, broad_phase):
         self.pipeline = newton.CollisionPipeline(self.model, broad_phase=broad_phase)
         wp.synchronize_device(self.model.device)
+
+    def teardown(self, world_count, broad_phase):
+        # ASV keeps the instance across samples; release the timed pipeline outside the next one.
+        del self.pipeline

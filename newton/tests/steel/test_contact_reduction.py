@@ -59,7 +59,7 @@ def _staged_contacts_kept(reducer, entries, pos):
 
 
 class TestSteelBodyPairReductionGate(unittest.TestCase):
-    """Steel configurations validated only on unreduced contacts reject reduced buffers."""
+    """Steel consumes the collision pipeline's reduced buffer in supported contact modes."""
 
     def _foot_model(self):
         return _foot_model()
@@ -67,19 +67,28 @@ class TestSteelBodyPairReductionGate(unittest.TestCase):
     def _foot_scene(self):
         return _foot_model((5.13, 5.07, 0.0149))
 
-    def test_steel_compliance_rejects_reduced_contacts(self):
-        """Reject reduced contacts when Steel's compliant contact law is on."""
+    def test_steel_compliance_consumes_reduced_contacts(self):
+        """Use reduced contacts with a compliant law when its required material arrays are supplied."""
         if not wp.get_device().is_cuda:
             self.skipTest("Steel contact compliance requires CUDA")
-        model = self._foot_model()
+        model = _foot_model((0.0, 0.0, 0.0149))
         state_0, state_1 = model.state(), model.state()
         pipeline = _make_pipeline(model, True)
         contacts = pipeline.contacts()
+        for name in ("stiffness", "damping", "friction"):
+            setattr(
+                contacts,
+                f"rigid_contact_{name}",
+                wp.zeros(contacts.rigid_contact_max, dtype=float, device=model.device),
+            )
         pipeline.collide(state_0, contacts)
         self.assertTrue(contacts.rigid_contact_body_pair_reduced)
+        self.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
+        contacts.rigid_contact_stiffness.fill_(2.0e4)
         solver = newton.solvers.SolverSteel(model, contact_compliance=True, friction_anchor_beta=0.0)
-        with self.assertRaisesRegex(ValueError, "contact_compliance=True"):
-            solver.step(state_0, state_1, model.control(), contacts, DT)
+        solver.step(state_0, state_1, model.control(), contacts, DT)
+        self.assertGreater(solver.compliance_contact_count, 0)
+        self.assertTrue(np.isfinite(state_1.body_q.numpy()).all())
 
     def test_captured_warmstart_step_keeps_accepting_reduced_contacts(self):
         """Capture collide and a warm-started Steel step before any eager step, then step eagerly after replay.
@@ -151,7 +160,11 @@ class TestSteelBodyPairReductionConformance(unittest.TestCase):
                 w_tail.append(float(np.abs(state_0.body_qd.numpy()[body][3:6]).max()))
         z_end = float(state_0.body_q.numpy()[body][2])
         watermarks = solver.constraint_row_watermarks() if hasattr(solver, "constraint_row_watermarks") else {}
-        return z_end, z_end < z0 - 0.005, peak_contacts, float(np.mean(w_tail)), watermarks
+        compacted = False
+        if reduce_on:
+            stats = pipeline._body_pair_reducer.stats()
+            compacted = stats["sum_contacts_kept"] < stats["sum_contacts_in"]
+        return z_end, z_end < z0 - 0.005, peak_contacts, float(np.mean(w_tail)), watermarks, compacted
 
     def _compare(
         self,
@@ -163,13 +176,13 @@ class TestSteelBodyPairReductionConformance(unittest.TestCase):
         *,
         deterministic=True,
     ):
-        z_off, fell_off, contacts_off, w_off, rows_off = self._settle(
+        z_off, fell_off, contacts_off, w_off, rows_off, _ = self._settle(
             build_fn,
             make_solver,
             False,
             deterministic=deterministic,
         )
-        z_on, fell_on, contacts_on, w_on, rows_on = self._settle(
+        z_on, fell_on, contacts_on, w_on, rows_on, compacted = self._settle(
             build_fn,
             make_solver,
             True,
@@ -178,7 +191,10 @@ class TestSteelBodyPairReductionConformance(unittest.TestCase):
         self.assertTrue(fell_off and fell_on, "body did not fall: the solver is not simulating it")
         self.assertGreater(contacts_off, 0)
         self.assertGreater(contacts_on, 0)
-        self.assertLess(contacts_on, contacts_off, "the reduced run never actually compacted a contact manifold")
+        # A conservative fallback may retain every row on some steps. Prove
+        # compaction against the reducer's own same-frame inputs, rather than
+        # comparing peak counts from two trajectories.
+        self.assertTrue(compacted, "the reduced run never actually compacted a contact manifold")
         if expected_row_path is not None:
             key = f"{expected_row_path}_high_water"
             self.assertGreater(rows_off[key], 0, f"unreduced run never exercised {expected_row_path} rows")
@@ -386,7 +402,10 @@ class TestSteelBodyPairReductionConformance(unittest.TestCase):
         probe_model = probe_builder.finalize(device=wp.get_device())
         ps0, ps1 = probe_model.state(), probe_model.state()
         probe_control = probe_model.control()
-        probe_pipe = _make_pipeline(probe_model, True)
+        # This characterizes competition in a single legacy projected cell.
+        # Automatic coverage uses normalized cached coordinates and is exercised
+        # by the dynamic comparison below and the other default-mode scenes.
+        probe_pipe = _make_pipeline(probe_model, True, body_pair_cell_size=10.0)
         probe_contacts = probe_pipe.contacts()
         probe_solver = newton.solvers.SolverXPBD(probe_model, iterations=8)
         reducer = probe_pipe.narrow_phase.group_contact_reducer

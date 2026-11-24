@@ -9,6 +9,7 @@ import unittest
 import numpy as np
 import warp as wp
 
+import newton
 from newton import ModelBuilder
 from newton._src.solvers.kamino._src import ModelKamino
 from newton._src.solvers.kamino._src.core.time import advance_time
@@ -85,7 +86,7 @@ class TestRandomController(unittest.TestCase):
         controller.compute(time=data.time, control=control)
         tau_j_np_0 = control.tau_j.numpy().copy()
         logger.debug("control.tau_j: %s", tau_j_np_0)
-        self.assertGreaterEqual(np.linalg.norm(control.tau_j.numpy()), 0.0)
+        self.assertGreater(np.linalg.norm(control.tau_j.numpy()), 0.0)
 
     def test_02_make_for_multiple_fourbar(self):
         # Define a model builder for the boxes_fourbar problem with 4 worlds
@@ -116,7 +117,7 @@ class TestRandomController(unittest.TestCase):
         controller.compute(time=data.time, control=control)
         tau_j_np_0 = control.tau_j.numpy().copy()
         logger.debug("control.tau_j: %s", tau_j_np_0)
-        self.assertGreaterEqual(np.linalg.norm(control.tau_j.numpy()), 0.0)
+        self.assertGreater(np.linalg.norm(control.tau_j.numpy()), 0.0)
 
     def _build_replicated_fourbar(self, num_worlds: int):
         """Build a replicated fourbar ``ModelKamino`` and its data/control containers."""
@@ -257,6 +258,7 @@ class TestRandomController(unittest.TestCase):
 
 if __name__ == "__main__":
     # Test setup
+    newton.utils.setup_console_logging()
     setup_tests()
 
     # Run all tests

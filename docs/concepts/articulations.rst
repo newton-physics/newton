@@ -90,8 +90,9 @@ energies. Supply explicit per-joint builder stiffnesses instead.
 :attr:`~newton.JointType.FREE` joint: seven ``joint_q`` coordinates for relative
 position and orientation, and six ``joint_qd`` entries for relative twist.
 :func:`newton.eval_fk` and :func:`newton.eval_ik` convert between joint and body
-state. :class:`newton.solvers.SolverVBD` is currently the only solver that
-evaluates the rod's constitutive response.
+state. :class:`newton.solvers.SolverVBD` and :class:`newton.solvers.SolverKamino`
+evaluate the rod's constitutive response; see :ref:`kamino-rod-joints` for the
+rod joint properties that Kamino supports.
 
 In :class:`newton.Rod`, ``points`` and ``quaternions`` define the initial
 centerline and segment orientations. Optional ``rest_points`` and
@@ -118,7 +119,9 @@ the relative rest rotation as a unit quaternion. For individual joints, specify
 ``rest_rotation`` on :meth:`newton.ModelBuilder.add_joint_rod`; its default is
 the initial relative anchor rotation. :class:`newton.solvers.SolverVBD` reads
 only the quaternion entries; direct edits to the three translation entries
-have no effect.
+have no effect. :class:`newton.solvers.SolverKamino` reads all seven entries,
+so edited translation entries set a rest shear and stretch offset between the
+anchors.
 
 Rod stiffness and damping use :attr:`newton.Model.joint_target_ke` and
 :attr:`newton.Model.joint_target_kd` in canonical XYZ linear/angular order:
@@ -245,18 +248,33 @@ maximal-coordinate body poses should reflect the mimic relationship.
 penalty spring and damping forces. Configure the global gains with
 ``joint_mimic_ke`` and ``joint_mimic_kd`` on the solver. As with other explicit
 springs, stronger gains may require a smaller simulation time step.
-:class:`newton.solvers.SolverXPBD` and :class:`newton.solvers.SolverVBD` enforce
-relationships between revolute, prismatic, and D6 joints with coupled
-maximal-coordinate corrections. Both approaches act on the follower and the
-reference joint, so forces applied to the follower also affect the reference.
-VBD performs one mimic correction after each rigid-body iteration. Increase
-the solver's ``iterations`` setting when mimic relationships need tighter
-convergence.
+:class:`newton.solvers.SolverXPBD` enforces relationships between revolute,
+prismatic, and D6 joints with coupled maximal-coordinate corrections.
+:class:`newton.solvers.SolverVBD` includes these relationships as implicit
+finite-stiffness rows in its rigid-body solve. Their forces and Hessians are
+solved together with structural joints and contacts. Linear and angular mimic
+coordinates use ``rigid_joint_linear_ke`` and ``rigid_joint_angular_ke``,
+respectively. VBD captures these structural stiffnesses
+at construction; rebuild the solver after changing them. Within about 6 degrees
+of a multi-axis D6 gimbal lock, where the Euler coordinates are ill-conditioned,
+VBD softens mimic rows whose follower or reference coordinate is affected,
+including linear followers of an angular reference, to keep the solve finite.
+Increase the solver's
+``iterations`` setting when tighter convergence is needed. Both solvers act on
+the follower and reference joints, so forces applied to the follower also affect
+the reference.
 :class:`newton.solvers.SolverFeatherstone` applies the same relationships in
 generalized coordinates. It removes follower degrees of freedom from the
 dynamics solve and transfers their forces and inertia to the reference joint.
 :class:`newton.solvers.SolverMuJoCo` applies the joint-owned mimic metadata
 directly through its joint equality constraints.
+
+After editing mimic properties or joint enable flags, call
+:meth:`newton.solvers.SolverVBD.notify_model_changed` with
+:attr:`newton.ModelFlags.JOINT_PROPERTIES` to refresh derived contact conditioning
+and clear mimic history.
+If VBD was constructed without supported mimics, rebuild it after adding
+the first supported mimic relationship.
 
 A separate :func:`newton.eval_mimic` call is not needed for a solver to enforce
 its supported mimic relationships during a step.
@@ -456,7 +474,7 @@ Implementation details differ by coordinate formulation:
   kinematic bodies can therefore be softer under SemiImplicit.
 - :class:`~newton.solvers.SolverKamino` with ``dynamics_solver="lox"`` advances the pose of
   kinematic bodies with their prescribed :attr:`newton.State.body_qd` over the step, while its
-  PADMM and DVI backends keep the input :attr:`newton.State.body_q`. Under LOX, write a velocity
+  PADMM and SCC backends keep the input :attr:`newton.State.body_q`. Under LOX, write a velocity
   that reaches the target pose within the step.
 
 :class:`~newton.solvers.SolverMuJoCo` holds kinematic roots with a weld constraint to the world, and

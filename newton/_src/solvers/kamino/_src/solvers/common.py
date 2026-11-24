@@ -72,6 +72,23 @@ class DualSolution:
         self.v_plus.zero_()
 
 
+@wp.func
+def tolerance_scaled_residual(residual: wp.float32, tolerance: wp.float32) -> wp.float32:
+    """Return ``residual / tolerance``, or zero or infinity for a zero tolerance.
+
+    A zero tolerance passes only for a zero residual, so the result is at most
+    one exactly when ``residual <= tolerance``. Non-finite residuals return
+    infinity, because a later maximum would drop NaN.
+    """
+    if not wp.isfinite(residual):
+        return wp.inf
+    if tolerance > 0.0:
+        return residual / tolerance
+    if residual > 0.0:
+        return wp.inf
+    return 0.0
+
+
 @wp.kernel
 def warmstart_joint_constraints(
     model_time_dt: wp.array[wp.float32],

@@ -7,8 +7,6 @@ from typing import TYPE_CHECKING
 
 import warp as wp
 
-from ..utils.deprecation import RemovedAttribute
-
 if TYPE_CHECKING:
     from .model import Model
 
@@ -23,9 +21,6 @@ class Control:
     :attr:`joint_target_qd`, matching the coordinate layout of
     :attr:`State.joint_q` and DOF layout of :attr:`State.joint_qd`, respectively.
     """
-
-    joint_target_pos = RemovedAttribute("joint_target_q", removed_in="1.5")
-    joint_target_vel = RemovedAttribute("joint_target_qd", removed_in="1.5")
 
     def __init__(self):
         self.joint_f: wp.array | None = None

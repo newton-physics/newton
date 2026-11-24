@@ -20,6 +20,8 @@ PATH = "/usr/local/bin:/usr/bin:/bin"
 ":minimal" = "read"
 "/proc" = "deny"
 "/sys" = "deny"
+# The sandbox re-executes Codex, which the action installs here.
+"/opt/hostedtoolcache/node" = "read"
 
 [permissions.review.filesystem.":workspace_roots"]
 "." = "read"

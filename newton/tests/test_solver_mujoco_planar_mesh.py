@@ -9,15 +9,11 @@ import warp as wp
 import newton
 from newton._src.core.types import vec5
 from newton.solvers import SolverMuJoCo
+from newton.tests.unittest_utils import MUJOCO_MODULES, requires
 
 
+@requires(*MUJOCO_MODULES)
 class TestSolverMuJoCoPlanarMesh(unittest.TestCase):
-    def setUp(self):
-        try:
-            SolverMuJoCo.import_mujoco()
-        except ImportError as exc:
-            self.skipTest(str(exc))
-
     @staticmethod
     def _build_mesh_model(vertices, indices):
         builder = newton.ModelBuilder()

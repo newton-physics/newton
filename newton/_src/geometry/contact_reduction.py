@@ -17,8 +17,8 @@ runtime overhead. Changing them requires restarting the process (standard Warp
 kernel-caching behavior).
 
 .. note::
-   Only the default ``"icosahedron"`` polyhedron configuration is currently
-   tested on CI. Other polyhedra (dodecahedron, octahedron, hexahedron) are
+   Only the default ``"dodecahedron"`` polyhedron configuration is currently
+   tested on CI. Other polyhedra (icosahedron, octahedron, hexahedron) are
    functional but should be considered experimental.
 
 **Contact Reduction Strategy Overview:**
@@ -57,21 +57,22 @@ See Also:
     hashtable-based approach used for mesh-mesh (SDF) collisions.
 """
 
+import numpy as np
 import warp as wp
 
 # =====================================================================
 # Contact Reduction Configuration
 # =====================================================================
 # Polyhedron for normal binning.  Determines NUM_NORMAL_BINS.
-#   "icosahedron"  -> 20 bins  (default, finer normal resolution)
-#   "dodecahedron" -> 12 bins  (good balance)
+#   "icosahedron"  -> 20 bins  (finer normal resolution)
+#   "dodecahedron" -> 12 bins  (default)
 #   "octahedron"   ->  8 bins  (cheaper, coarser)
 #   "hexahedron"   ->  6 bins  (cheapest, coarsest)
 #
-# NOTE: Only the default "icosahedron" configuration is currently tested
+# NOTE: Only the default "dodecahedron" configuration is currently tested
 # on CI. Other polyhedra are functional but should be considered
 # experimental. Use at your own discretion.
-NORMAL_BINNING_POLYHEDRON = "icosahedron"
+NORMAL_BINNING_POLYHEDRON = "dodecahedron"
 
 # Scan directions per normal bin (2D extremes on each face plane).
 # Range 3-6. More directions = more accurate convex hull but more slots.
@@ -112,6 +113,14 @@ uint32_t mask = (uint32_t)(-(int)(i >> 31)) | 0x80000000;
 return i ^ mask;
 """)
 def float_flip(f: float) -> wp.uint32: ...
+
+
+@wp.func_native("""
+uint32_t mask = (f >> 31) ? 0x80000000 : 0xFFFFFFFF;
+uint32_t bits = f ^ mask;
+return reinterpret_cast<float&>(bits);
+""")
+def float_unflip(f: wp.uint32) -> float: ...
 
 
 # =====================================================================
@@ -210,7 +219,79 @@ DODECAHEDRON_FACE_NORMALS = (
 
 @wp.func
 def get_face_normal(face_idx: int) -> wp.vec3:
-    """Return a face normal without materializing the full icosahedron matrix."""
+    """Return a face normal using scalar lookups for dodecahedra and icosahedra."""
+    if wp.static(NORMAL_BINNING_POLYHEDRON == "dodecahedron"):
+        if face_idx == 0:
+            return wp.vec3(
+                wp.static(_DODECAHEDRON_NORMALS[0]),
+                wp.static(_DODECAHEDRON_NORMALS[1]),
+                wp.static(_DODECAHEDRON_NORMALS[2]),
+            )
+        if face_idx == 1:
+            return wp.vec3(
+                wp.static(_DODECAHEDRON_NORMALS[3]),
+                wp.static(_DODECAHEDRON_NORMALS[4]),
+                wp.static(_DODECAHEDRON_NORMALS[5]),
+            )
+        if face_idx == 2:
+            return wp.vec3(
+                wp.static(_DODECAHEDRON_NORMALS[6]),
+                wp.static(_DODECAHEDRON_NORMALS[7]),
+                wp.static(_DODECAHEDRON_NORMALS[8]),
+            )
+        if face_idx == 3:
+            return wp.vec3(
+                wp.static(_DODECAHEDRON_NORMALS[9]),
+                wp.static(_DODECAHEDRON_NORMALS[10]),
+                wp.static(_DODECAHEDRON_NORMALS[11]),
+            )
+        if face_idx == 4:
+            return wp.vec3(
+                wp.static(_DODECAHEDRON_NORMALS[12]),
+                wp.static(_DODECAHEDRON_NORMALS[13]),
+                wp.static(_DODECAHEDRON_NORMALS[14]),
+            )
+        if face_idx == 5:
+            return wp.vec3(
+                wp.static(_DODECAHEDRON_NORMALS[15]),
+                wp.static(_DODECAHEDRON_NORMALS[16]),
+                wp.static(_DODECAHEDRON_NORMALS[17]),
+            )
+        if face_idx == 6:
+            return wp.vec3(
+                wp.static(_DODECAHEDRON_NORMALS[18]),
+                wp.static(_DODECAHEDRON_NORMALS[19]),
+                wp.static(_DODECAHEDRON_NORMALS[20]),
+            )
+        if face_idx == 7:
+            return wp.vec3(
+                wp.static(_DODECAHEDRON_NORMALS[21]),
+                wp.static(_DODECAHEDRON_NORMALS[22]),
+                wp.static(_DODECAHEDRON_NORMALS[23]),
+            )
+        if face_idx == 8:
+            return wp.vec3(
+                wp.static(_DODECAHEDRON_NORMALS[24]),
+                wp.static(_DODECAHEDRON_NORMALS[25]),
+                wp.static(_DODECAHEDRON_NORMALS[26]),
+            )
+        if face_idx == 9:
+            return wp.vec3(
+                wp.static(_DODECAHEDRON_NORMALS[27]),
+                wp.static(_DODECAHEDRON_NORMALS[28]),
+                wp.static(_DODECAHEDRON_NORMALS[29]),
+            )
+        if face_idx == 10:
+            return wp.vec3(
+                wp.static(_DODECAHEDRON_NORMALS[30]),
+                wp.static(_DODECAHEDRON_NORMALS[31]),
+                wp.static(_DODECAHEDRON_NORMALS[32]),
+            )
+        return wp.vec3(
+            wp.static(_DODECAHEDRON_NORMALS[33]),
+            wp.static(_DODECAHEDRON_NORMALS[34]),
+            wp.static(_DODECAHEDRON_NORMALS[35]),
+        )
     if wp.static(NORMAL_BINNING_POLYHEDRON != "icosahedron"):
         return FACE_NORMALS[face_idx]
     if face_idx == 0:
@@ -298,31 +379,44 @@ def get_slot(normal: wp.vec3) -> int:
     elif wp.static(NORMAL_BINNING_POLYHEDRON == "dodecahedron"):
         up_dot = wp.dot(normal, wp.vec3(-0.20209268, 0.94502682, 0.25706587))
 
-        # Conservative thresholds: only skip regions when clearly in a polar cap.
-        # Face layout: 0-3 = top group, 4-7 = equatorial, 8-11 = bottom group.
+        # Constant ranges and scalar lookups keep the face-normal matrix
+        # out of the fused contact kernels.
         if up_dot > 0.65:
-            start_idx = 0
-            end_idx = 4
+            best_slot = 0
+            max_dot = wp.dot(normal, get_face_normal(0))
+            for i in range(1, 4):
+                d = wp.dot(normal, get_face_normal(i))
+                if d > max_dot:
+                    max_dot = d
+                    best_slot = i
+            return best_slot
         elif up_dot < -0.65:
-            start_idx = 8
-            end_idx = 12
+            best_slot = 8
+            max_dot = wp.dot(normal, get_face_normal(8))
+            for i in range(9, 12):
+                d = wp.dot(normal, get_face_normal(i))
+                if d > max_dot:
+                    max_dot = d
+                    best_slot = i
+            return best_slot
         elif up_dot >= 0.0:
-            start_idx = 0
-            end_idx = 8
+            best_slot = 0
+            max_dot = wp.dot(normal, get_face_normal(0))
+            for i in range(1, 8):
+                d = wp.dot(normal, get_face_normal(i))
+                if d > max_dot:
+                    max_dot = d
+                    best_slot = i
+            return best_slot
         else:
-            start_idx = 4
-            end_idx = 12
-
-        best_slot = start_idx
-        max_dot = wp.dot(normal, FACE_NORMALS[start_idx])
-
-        for i in range(start_idx + 1, end_idx):
-            d = wp.dot(normal, FACE_NORMALS[i])
-            if d > max_dot:
-                max_dot = d
-                best_slot = i
-
-        return best_slot
+            best_slot = 4
+            max_dot = wp.dot(normal, get_face_normal(4))
+            for i in range(5, 12):
+                d = wp.dot(normal, get_face_normal(i))
+                if d > max_dot:
+                    max_dot = d
+                    best_slot = i
+            return best_slot
 
     elif wp.static(NORMAL_BINNING_POLYHEDRON == "icosahedron"):
         # Dot with the rotated cap axis, not world Y. Rotation preserves the
@@ -450,12 +544,16 @@ def compute_voxel_index(
     size = aabb_upper - aabb_lower
     # Normalize position to [0, 1]
     rel = wp.vec3(0.0, 0.0, 0.0)
-    if size[0] > 1e-6:
+    if size[0] > 0.0:
         rel = wp.vec3((pos_local[0] - aabb_lower[0]) / size[0], rel[1], rel[2])
-    if size[1] > 1e-6:
+    if size[1] > 0.0:
         rel = wp.vec3(rel[0], (pos_local[1] - aabb_lower[1]) / size[1], rel[2])
-    if size[2] > 1e-6:
+    if size[2] > 0.0:
         rel = wp.vec3(rel[0], rel[1], (pos_local[2] - aabb_lower[2]) / size[2])
+
+    # Stabilize cell boundaries against float32 reconstruction of scaled copies.
+    # This is a dimensionless grid, independent of the scene's length units.
+    rel = wp.vec3(wp.round(rel[0] * 1048576.0), wp.round(rel[1] * 1048576.0), wp.round(rel[2] * 1048576.0)) / 1048576.0
 
     # Clamp to [0, 1) and map to voxel indices
     nx = resolution[0]
@@ -467,3 +565,23 @@ def compute_voxel_index(
     vz = wp.clamp(int(rel[2] * float(nz)), 0, nz - 1)
 
     return vx + vy * nx + vz * nx * ny
+
+
+def compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget=NUM_VOXEL_DEPTH_SLOTS):
+    """Fit an approximately cubic reduction grid using aspect ratios, without a length threshold.
+
+    Degenerate axes get one cell. Normalize before computing volume so very
+    small and large geometries receive the same resolution.
+    """
+    size = np.asarray(aabb_upper, dtype=np.float64) - np.asarray(aabb_lower, dtype=np.float64)
+    largest = float(np.max(size))
+    if largest <= 0.0 or not np.all(np.isfinite(size)):
+        return 1, 1, 1
+    relative = size / largest
+    active = relative > 0.0
+    edge = np.exp((np.sum(np.log(relative[active])) - np.log(voxel_budget)) / np.count_nonzero(active))
+    # Clip before integer conversion; very slender shapes can request huge grids.
+    resolution = np.clip(np.rint(relative / edge), 1, voxel_budget).astype(np.int32)
+    while int(np.prod(resolution)) > voxel_budget:
+        resolution[np.argmax(resolution)] -= 1
+    return tuple(int(n) for n in resolution)

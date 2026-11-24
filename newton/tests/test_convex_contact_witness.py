@@ -3,6 +3,7 @@
 
 """Cover MPR portals whose normal projection lies outside the portal triangle."""
 
+import math
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -19,7 +20,7 @@ from newton._src.geometry.support_function import (
     support_map,
     support_map_lean,
 )
-from newton.tests.unittest_utils import add_function_test, get_test_devices
+from newton.tests.unittest_utils import add_function_test, get_test_devices, requires
 
 
 def _surface_error(vertices, indices, point):
@@ -325,6 +326,59 @@ def test_convex_contact_unconverged_distance_query(test, device):
     test_convex_contact_iteration_limit(test, device, distance_query=_unconverged_distance_query)
 
 
+def test_convex_contact_tilted_edge(test, device):
+    """Keep independent support points when a tilted prism rests on the edge of a box."""
+    builder = newton.ModelBuilder()
+    cfg = builder.ShapeConfig(gap=0.002, margin=0.0)
+    shelf = builder.add_body(xform=wp.transform(wp.vec3(-0.05, 0.0, -0.002), wp.quat_identity()))
+    builder.add_shape_box(shelf, hx=0.05, hy=0.06, hz=0.002, cfg=cfg)
+    prism = builder.add_body()
+    mesh = newton.Mesh.create_cylinder(
+        0.03, 0.008, up_axis=newton.Axis.Z, segments=16, compute_normals=False, compute_uvs=False
+    )
+    builder.add_shape_convex_hull(prism, mesh=mesh, cfg=cfg)
+    model = builder.finalize(device=device)
+    state = model.state()
+    poses = state.body_q.numpy()
+    pipeline = newton.CollisionPipeline(model, broad_phase="explicit")
+    contacts = pipeline.contacts()
+    for yaw, roll, x, margin in (
+        (30.0, 0.0, 0.0015, 0.0),
+        (20.0, -0.02, -0.001, 0.0),
+        (30.0, 0.0, 0.0015, 0.0001),
+        (20.0, -0.02, -0.001, 0.0001),
+    ):
+        model.shape_margin.fill_(margin)
+        rotation = wp.quat_rpy(math.radians(roll), math.radians(1.42), 0.0) * wp.quat_from_axis_angle(
+            wp.vec3(0.0, 0.0, 1.0), math.radians(yaw)
+        )
+        # Lift the margin cases so the cores separate while the margins overlap.
+        poses[prism, :3] = (x, 0.0, 0.00794 + margin)
+        poses[prism, 3:] = rotation
+        state.body_q.assign(poses)
+        pipeline.collide(state, contacts)
+        count = int(contacts.rigid_contact_count.numpy()[0])
+        points = contacts.rigid_contact_point0.numpy()[:count]
+        rims = contacts.rigid_contact_point1.numpy()[:count]
+        normals = contacts.rigid_contact_normal.numpy()[:count]
+        rim_points = rims @ np.asarray(wp.quat_to_matrix(rotation)).reshape(3, 3).T + poses[prism, :3]
+        delta = rim_points - (points + poses[shelf, :3])
+        geometric_depths = (delta * normals).sum(axis=1)
+        depths = geometric_depths - 2.0 * margin
+        with test.subTest(yaw=yaw, margin=margin):
+            if margin > 0.0:
+                test.assertGreater(np.min(geometric_depths), 0.0)
+            if yaw == 30.0:
+                # The two penetrating rim contacts span the shelf edge.
+                touching = points[depths < 0]
+                test.assertEqual(len(touching), 2)
+                test.assertGreater(np.ptp(touching[:, 1]), 0.05)
+            else:
+                # The rotated rim's deepest witness sits below every clipped endpoint.
+                test.assertLess(np.min(depths), -9.0e-5 - margin)
+                test.assertGreater(np.diff(np.sort(depths)[:2])[0], 1.0e-5)
+
+
 def test_convex_contact_sampled_line(test, device):
     """Keep the deepest contact when sampled endpoints lie below the supporting plane."""
     vertices = np.array([[-1, 0, 0], [1, 0, 0], [0, 0, 0.001], [0, -0.1, -0.1], [0, 0.1, -0.1]], dtype=np.float32)
@@ -360,6 +414,7 @@ def test_convex_contact_sampled_line(test, device):
                 test.assertAlmostEqual(abs(float(normal[2])), 1.0, delta=1.0e-6)
 
 
+@requires("scipy")
 def test_convex_contact_near_planar_face(test, device):
     """Report every corner of a resting face that is not planar to EPS, at its exact depth."""
     # A sole-sized box hull whose first bottom corner sits 20 um above the
@@ -540,6 +595,7 @@ for function in (
     test_convex_contact_unconverged_distance_query,
     test_convex_contact_bounded_refinement,
     test_convex_contact_sampled_line,
+    test_convex_contact_tilted_edge,
     test_convex_contact_near_planar_face,
     test_convex_contact_witness_margin,
     test_convex_contact_split_witness,

@@ -25,7 +25,12 @@ from newton.tests._usd_deformable_test_utils import (
     _bind_deformable_material,
     _deformable_stage,
 )
-from newton.tests.unittest_utils import USD_AVAILABLE, add_function_test, get_cuda_test_devices, get_test_devices
+from newton.tests.unittest_utils import (
+    add_function_test,
+    get_cuda_test_devices,
+    get_test_devices,
+    requires,
+)
 
 _CABLE_PTS = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
 _MIXED_ASSET = os.path.join(os.path.dirname(__file__), "assets", "deformables_mixed.usda")
@@ -70,7 +75,6 @@ def _add_test_cable(builder, label="cable"):
     builder.add_rod(
         rod=newton.Rod(_CABLE_PTS, radius=0.02),
         label=label,
-        body_frame_origin="com",
     )
 
 
@@ -479,7 +483,6 @@ class TestDeformableBuilderObjects(unittest.TestCase):
             rod=newton.Rod([(0.0, 2.0, 1.0), (0.1, 2.0, 1.0), (0.2, 2.0, 1.0)], radius=0.02),
             label="cable_proto",
             wrap_in_articulation=True,
-            body_frame_origin="com",
         )
 
         scene = newton.ModelBuilder()
@@ -567,7 +570,6 @@ class TestDeformableBuilderObjects(unittest.TestCase):
             rod=newton.Rod(_CABLE_PTS[:3], radius=0.02),
             label="anchored_curve",
             wrap_in_articulation=False,
-            body_frame_origin="com",
         )
         anchor = builder.add_joint_fixed(parent, bodies[0])
         builder.add_articulation([root, *joints, anchor], label="robot_with_cable")
@@ -736,7 +738,6 @@ class TestDeformableAndArticulationViews(unittest.TestCase):
         cable_bodies, _cable_joints = builder.add_rod(
             rod=newton.Rod([(0.0, 2.0, 1.0), (0.1, 2.0, 1.0), (0.2, 2.0, 1.0)], radius=0.02),
             label="cable",
-            body_frame_origin="com",
         )
         _add_test_cloth(builder)
         _add_test_soft_body(builder)
@@ -1720,7 +1721,7 @@ def test_compact_cable_requires_its_generated_root(test, device):
     stage = _deformable_stage()
     _add_cable_curve(stage, "/World/Cable", _CABLE_PTS)
     builder = newton.ModelBuilder()
-    builder.add_rod(rod=newton.Rod(_CABLE_PTS, radius=0.01), label="background", body_frame_origin="com")
+    builder.add_rod(rod=newton.Rod(_CABLE_PTS, radius=0.01), label="background")
     result = builder.add_usd(stage, return_deformable_results=True)
     bodies, rod_joints = result["path_cable_map"]["/World/Cable"]
     test.assertEqual(rod_joints, [4, 5])
@@ -1749,7 +1750,7 @@ def test_compact_cable_requires_its_generated_root(test, device):
             test.assertEqual(cable.ranges("joint"), [(3, 6)])
 
 
-@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+@requires("pxr.Usd")
 class TestUSDDeformableObjects(unittest.TestCase):
     """Prim-path deformable object lookup on the finalized Model across lifecycle transformations."""
 
@@ -1909,7 +1910,6 @@ class TestUSDDeformableObjects(unittest.TestCase):
             rod=newton.Rod(_CABLE_PTS[:3], radius=0.02),
             label="/World/Cable",
             wrap_in_articulation=False,
-            body_frame_origin="com",
         )
         anchor = native.add_joint_ball(
             -1,

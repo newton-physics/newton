@@ -11,8 +11,10 @@ import warp as wp
 import newton
 from newton import GeoType
 from newton.solvers import SolverMuJoCo
+from newton.tests.unittest_utils import MUJOCO_MODULES, requires
 
 
+@requires(*MUJOCO_MODULES)
 class TestMuJoCoSiteExport(unittest.TestCase):
     """Test exporting sites to MuJoCo models."""
 
@@ -39,7 +41,7 @@ class TestMuJoCoSiteExport(unittest.TestCase):
             ),
         )
         model = builder.finalize()
-        solver = SolverMuJoCo(model, separate_worlds=True, disable_contacts=True)
+        solver = SolverMuJoCo(model, disable_contacts=True)
 
         def assert_site_poses_match_model() -> None:
             site_shapes = np.flatnonzero(model.shape_flags.numpy() & int(newton.ShapeFlags.SITE))
@@ -96,7 +98,7 @@ class TestMuJoCoSiteExport(unittest.TestCase):
         builder.add_world(world)
         builder.add_world(world, xform=wp.transform(wp.vec3(4.0, 0.0, 0.0), wp.quat_identity()))
         model = builder.finalize()
-        solver = SolverMuJoCo(model, separate_worlds=True, disable_contacts=True)
+        solver = SolverMuJoCo(model, disable_contacts=True)
 
         np.testing.assert_allclose(solver.mjw_model.site_size.numpy(), [[0.1, 0.2, 0.3]], atol=1e-6)
 

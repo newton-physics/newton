@@ -10,6 +10,7 @@ import unittest
 
 import numpy as np
 
+import newton
 import newton.tests.kamino.utils.rand as rand
 from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
 from newton._src.solvers.kamino.tests import setup_tests, test_context
@@ -157,6 +158,7 @@ class TestRandomProblemLDLT(unittest.TestCase):
 
 if __name__ == "__main__":
     # Test setup
+    newton.utils.setup_console_logging()
     setup_tests()
 
     # Run all tests

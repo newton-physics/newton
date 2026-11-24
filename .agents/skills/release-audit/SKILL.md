@@ -154,7 +154,7 @@ existed at that tag.
      --base <base-ref> \
      --head <head-ref>
    ```
-   from the repo root. The helper requires Python 3.11+ for stdlib TOML parsing and exits with a clear preflight error on older Python versions. Capture stdout as `dependency_license_audit_md`. The helper compares:
+   from the repo root. Capture stdout as `dependency_license_audit_md`. The helper compares:
    - Direct requirements in `pyproject.toml`, grouped by runtime and optional extra.
    - Resolved package names, duplicate variants, and version sets in `uv.lock` when present.
    - `project.license` and `project.license-files` metadata in `pyproject.toml`.

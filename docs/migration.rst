@@ -289,8 +289,8 @@ Create a :class:`~newton.CollisionPipeline` and its contacts buffer before stepp
     contacts = pipeline.contacts()
     pipeline.collide(state, contacts)
 
-The compatibility helpers :meth:`~newton.Model.contacts` and
-:meth:`~newton.Model.collide` are deprecated in Newton 1.5.
+The compatibility helpers ``Model.contacts()`` and ``Model.collide()``, deprecated in
+Newton 1.5, were removed in Newton 1.9.
 
 
 Renderers
