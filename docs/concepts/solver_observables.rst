@@ -164,10 +164,11 @@ inertia, without joint armature, so a dynamic joint's projected wrench is its ge
 dynamics at zero joint acceleration instead.
 
 :class:`~newton.solvers.SolverSteel` reports only the linear part of each rigid
-contact force; the torque part is zero. Contacts without solved rows, such as rows
-dropped for capacity or skipped for sleeping islands, report zero. A sleeping body's
-contacts therefore read as unloaded even though they still support it; use
-``sleep_skip_constraints=False`` or disable sleeping when consumers rely on these forces.
+contact force; the torque part is zero. Contacts whose rows were dropped for capacity
+report zero. Contacts of sleeping islands whose rows are skipped report the force from the
+previous solver step when every step requests ``CONTACT_F`` and, across collision passes,
+contacts are matched; otherwise they report zero until their island wakes. See
+:ref:`steel_sleep_observable`.
 
 Kamino exports contact points in the step's input body frames and world-frame
 wrenches about the input centers of mass.

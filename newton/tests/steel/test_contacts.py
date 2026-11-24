@@ -1491,6 +1491,10 @@ def test_contact_f_of_sleeping_islands(test, device, skip_constraints=True):
         np.testing.assert_allclose(net[1, 2], UPPER_MASS * weight, rtol=0.03)
 
 
+# The boxes start at rest, so their islands fall asleep after sleep_quiet_time / DT = 6 steps.
+SLEEP_SETTLE_STEPS = 12
+
+
 class _SleepingContactForces:
     """Stacked boxes in ``worlds`` worlds under a sleeping solver that skips rows, with contact matching."""
 
@@ -1529,6 +1533,10 @@ class _SleepingContactForces:
         )
         self.states.reverse()
 
+    def settle(self):
+        for _ in range(SLEEP_SETTLE_STEPS):
+            self.step()
+
     def net(self):
         contact_f = self.observables.contact_f.numpy()
         return _net_body_forces(self.model, self.contacts, contact_f)
@@ -1548,11 +1556,10 @@ def test_sleeping_contact_f_keeps_the_last_force(test, device):
     reference = _SleepingContactForces(device, skip_constraints=False)
     asleep_steps = 0
     last = None
-    for _ in range(170):
+    for _ in range(SLEEP_SETTLE_STEPS + 10):
         scene.step()
         reference.step()
         if scene.awake().any():
-            last = scene.net()
             continue
         asleep_steps += 1
         net = scene.net()
@@ -1563,15 +1570,17 @@ def test_sleeping_contact_f_keeps_the_last_force(test, device):
         if asleep_steps > 1:
             np.testing.assert_array_equal(net, last)
         last = net
-    test.assertGreaterEqual(asleep_steps, 10)
+        if asleep_steps == 10:
+            break
+    test.assertEqual(asleep_steps, 10)
 
 
 def test_sleeping_contact_f_wakes_to_the_solved_force(test, device):
     """Report the solved force again once a wake event restores the island's rows."""
     scene = _SleepingContactForces(device)
-    for _ in range(150):
-        scene.step()
+    scene.settle()
     np.testing.assert_array_equal(scene.awake(), [0, 0])
+    scene.assert_resting(scene.net())
     # Half the upper box's weight pulls it up: a carried force would still report the full weight.
     body_f = np.zeros((2, 6), dtype=np.float32)
     body_f[1, 2] = 0.5 * UPPER_MASS * scene.weight
@@ -1585,8 +1594,7 @@ def test_sleeping_contact_f_wakes_to_the_solved_force(test, device):
 def test_sleeping_contact_f_across_reset(test, device):
     """Keep carried forces in worlds a masked reset leaves asleep and restart them in the woken worlds."""
     scene = _SleepingContactForces(device, worlds=2)
-    for _ in range(150):
-        scene.step()
+    scene.settle()
     np.testing.assert_array_equal(scene.awake(), [0, 0, 0, 0])
     asleep = scene.net()
     scene.assert_resting(asleep)
@@ -1598,8 +1606,7 @@ def test_sleeping_contact_f_across_reset(test, device):
     scene.assert_resting(net)
     np.testing.assert_array_equal(net[2:], asleep[2:])
     scene.solver.reset(scene.states[0])
-    for _ in range(150):
-        scene.step()
+    scene.settle()
     np.testing.assert_array_equal(scene.awake(), [0, 0, 0, 0])
     scene.assert_resting(scene.net())
 
@@ -1607,8 +1614,7 @@ def test_sleeping_contact_f_across_reset(test, device):
 def test_sleeping_contact_f_needs_every_step(test, device, collide=True):
     """Report zero for skipped contacts after a step that did not request the force, until the island wakes."""
     scene = _SleepingContactForces(device)
-    for _ in range(150):
-        scene.step()
+    scene.settle()
     np.testing.assert_array_equal(scene.awake(), [0, 0])
     carried = scene.net()
     scene.assert_resting(carried)
@@ -1629,7 +1635,7 @@ def test_sleeping_contact_f_in_a_captured_graph(test, device):
     with wp.ScopedCapture(device) as recorded:
         scene.step()
         scene.step()
-    for _ in range(80):
+    for _ in range(SLEEP_SETTLE_STEPS // 2):
         wp.capture_launch(recorded.graph)
     np.testing.assert_array_equal(scene.awake(), [0, 0])
     scene.assert_resting(scene.net())
