@@ -152,6 +152,26 @@ Joint types
      - *unsupported*
      - Not forwarded to MuJoCo.
 
+.. _mjcf-merged-joints:
+
+MJCF import combines a body's hinge and slide joints into a single Newton
+joint, which applies the slides in the parent frame and then the hinges about
+a single anchor. The anchor is the point where the hinge axes meet. If they do
+not meet, or are all nearly parallel without lying on one line, the anchor is
+the first hinge's position, which changes the body's motion and logs a
+warning. A slide listed after hinges keeps its motion
+only if it is parallel to every hinge listed before it. Otherwise it is still
+applied before the hinges, which changes the body's motion and emits
+:class:`~newton.NewtonDeprecationWarning`; a future release will raise an
+error.
+
+Hinge axes meet if the point with the smallest summed squared distance to them
+lies within 1e-4 MJCF length units of every axis. Two axes are
+parallel if the angle between them is below 0.06 degrees. A body without
+hinges is anchored at its first slide's position. None of this applies to a
+root body whose joints are replaced through ``floating``, ``base_joint`` or
+``parent_body``.
+
 Joint reference values (``ref``)
 --------------------------------
 

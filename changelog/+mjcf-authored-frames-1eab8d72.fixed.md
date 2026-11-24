@@ -1,0 +1,1 @@
+Anchor an MJCF body's merged joint where its hinge axes meet instead of at the first joint's position, which was wrong when a slide joint was listed first or the first hinge's position was off another hinge's axis.
