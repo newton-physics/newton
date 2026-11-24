@@ -410,6 +410,8 @@ class CollisionDetector:
                         model=self._model,
                         bvtype=self._config.bvtype,
                         default_gap=self._config.default_gap,
+                        friction_mix_mode=self._config.friction_mix_mode or "average",
+                        restitution_mix_mode=self._config.restitution_mix_mode or "average",
                     )
                 case CollisionPipelineType.UNIFIED:
                     self._unified_pipeline = CollisionPipelineUnifiedKamino(
@@ -419,6 +421,8 @@ class CollisionDetector:
                         default_gap=self._config.default_gap,
                         max_triangle_pairs=self._config.max_triangle_pairs,
                         max_contacts_per_pair=self._config.max_contacts_per_pair,
+                        friction_mix_mode=self._config.friction_mix_mode or "average",
+                        restitution_mix_mode=self._config.restitution_mix_mode or "average",
                     )
                 case _:
                     raise ValueError(f"Unsupported CollisionPipelineType: {self._pipeline_type}")

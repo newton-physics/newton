@@ -29,7 +29,7 @@ from ......geometry.collision_primitive import (
 )
 from ......geometry.types import GeoType
 from ...core.data import DataKamino
-from ...core.materials import make_get_material_pair_properties
+from ...core.materials import MaterialMixMode, get_material_pair_properties
 from ...core.model import ModelKamino
 from ...geometry.contacts import ContactsKaminoData, make_contact_frame_znorm, reserve_contact_capacity
 from ...geometry.keying import build_pair_key2
@@ -1417,6 +1417,8 @@ def _primitive_narrowphase(
     material_pair_restitution: wp.array[wp.float32],
     material_pair_static_friction: wp.array[wp.float32],
     material_pair_dynamic_friction: wp.array[wp.float32],
+    friction_mix_mode: wp.int32,
+    restitution_mix_mode: wp.int32,
     contact_overflow_warning_emitted: wp.array[wp.int32],
     # Outputs:
     contact_model_num: wp.array[wp.int32],
@@ -1481,9 +1483,11 @@ def _primitive_narrowphase(
     threshold_12 = margin_12 + contact_gap_12
 
     # Retrieve the material properties for the geom pair
-    restitution_12, _, mu_12 = wp.static(make_get_material_pair_properties())(
+    restitution_12, _, mu_12 = get_material_pair_properties(
         mid1,
         mid2,
+        friction_mix_mode,
+        restitution_mix_mode,
         material_restitution,
         material_static_friction,
         material_dynamic_friction,
@@ -1861,6 +1865,8 @@ def primitive_narrowphase(
     contacts: ContactsKaminoData,
     contact_overflow_warning_emitted: wp.array[wp.int32],
     default_gap: float | None = None,
+    friction_mix_mode: MaterialMixMode | str = MaterialMixMode.AVERAGE,
+    restitution_mix_mode: MaterialMixMode | str = MaterialMixMode.AVERAGE,
 ):
     """
     Launches the narrow-phase collision detection kernel optimized for primitive shapes.
@@ -1873,6 +1879,10 @@ def primitive_narrowphase(
         contact_overflow_warning_emitted: Overflow diagnostic flag.
         default_gap: Default detection gap [m] applied as a floor to per-geometry gaps.
             If None, ``0.0`` is used.
+        friction_mix_mode: How the friction of two materials combines when
+            their pair defines no friction of its own.
+        restitution_mix_mode: How the restitution of two materials combines when
+            their pair defines no restitution of its own.
     """
     if default_gap is None:
         default_gap = 0.0
@@ -1903,6 +1913,8 @@ def primitive_narrowphase(
             model.material_pairs.restitution,
             model.material_pairs.static_friction,
             model.material_pairs.dynamic_friction,
+            wp.int32(int(MaterialMixMode.from_value(friction_mix_mode))),
+            wp.int32(int(MaterialMixMode.from_value(restitution_mix_mode))),
             contact_overflow_warning_emitted,
         ],
         outputs=[

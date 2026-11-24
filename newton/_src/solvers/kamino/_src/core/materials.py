@@ -48,7 +48,9 @@ __all__ = [
     "MaterialPairProperties",
     "MaterialPairsModel",
     "MaterialsModel",
+    "get_material_pair_properties",
     "make_get_mixed_material_pair_property",
+    "mix_material_property",
 ]
 
 ###
@@ -103,6 +105,13 @@ class MaterialMixMode(IntEnum):
             return cls[s.upper()]
         except KeyError as e:
             raise ValueError(f"Invalid MaterialMixMode: {s}. Valid options are: {[e.name for e in cls]}") from e
+
+    @classmethod
+    def from_value(cls, value: MaterialMixMode | str | int) -> MaterialMixMode:
+        """Converts a string, integer, or enum value to a MaterialMixMode enum value."""
+        if isinstance(value, str):
+            return cls.from_string(value)
+        return cls(value)
 
     @override
     def __str__(self):
@@ -410,6 +419,88 @@ def material_geometric_average(
         The geometric average of the two material property values.
     """
     return wp.sqrt(value1 * value2)
+
+
+@wp.func
+def mix_material_property(
+    mixmode: wp.int32,
+    value1: wp.float32,
+    value2: wp.float32,
+) -> wp.float32:
+    """
+    Mixes two material property values with a mixing mode chosen at runtime.
+
+    Args:
+        mixmode: The :class:`MaterialMixMode` value, as an integer.
+        value1: The first material property value.
+        value2: The second material property value.
+
+    Returns:
+        The mixed material property value. Unknown modes fall back to the average.
+    """
+    if mixmode == wp.static(int(MaterialMixMode.MULTIPLY)):
+        return material_multiply(value1, value2)
+    if mixmode == wp.static(int(MaterialMixMode.MAX)):
+        return material_max(value1, value2)
+    if mixmode == wp.static(int(MaterialMixMode.MIN)):
+        return material_min(value1, value2)
+    if mixmode == wp.static(int(MaterialMixMode.GEOMETRIC_AVERAGE)):
+        return material_geometric_average(value1, value2)
+    return material_average(value1, value2)
+
+
+@wp.func
+def get_material_pair_properties(
+    mid1: wp.int32,
+    mid2: wp.int32,
+    friction_mix_mode: wp.int32,
+    restitution_mix_mode: wp.int32,
+    material_restitution: wp.array[wp.float32],
+    material_static_friction: wp.array[wp.float32],
+    material_dynamic_friction: wp.array[wp.float32],
+    material_pair_restitution: wp.array[wp.float32],
+    material_pair_static_friction: wp.array[wp.float32],
+    material_pair_dynamic_friction: wp.array[wp.float32],
+) -> tuple[wp.float32, wp.float32, wp.float32]:
+    """
+    Retrieves the properties of a material pair given their material indices.
+
+    Material-pair properties that are not defined (i.e., negative values) are
+    computed from the individual materials, mixing friction with
+    ``friction_mix_mode`` and restitution with ``restitution_mix_mode``.
+
+    Args:
+        mid1: The index of the first material.
+        mid2: The index of the second material.
+        friction_mix_mode: The :class:`MaterialMixMode` for static and dynamic friction, as an integer.
+        restitution_mix_mode: The :class:`MaterialMixMode` for restitution, as an integer.
+        material_restitution: The per-material restitution coefficients.
+        material_static_friction: The per-material static friction coefficients.
+        material_dynamic_friction: The per-material dynamic friction coefficients.
+        material_pair_restitution: The per-material-pair restitution coefficients.
+        material_pair_static_friction: The per-material-pair static friction coefficients.
+        material_pair_dynamic_friction: The per-material-pair dynamic friction coefficients.
+
+    Returns:
+        The restitution, static friction, and dynamic friction coefficients for the material pair.
+    """
+    mid_tril_idx = tril_index(mid1, mid2)
+    restitution = material_pair_restitution[mid_tril_idx]
+    static_friction = material_pair_static_friction[mid_tril_idx]
+    dynamic_friction = material_pair_dynamic_friction[mid_tril_idx]
+    if restitution < 0.0:
+        restitution = mix_material_property(
+            restitution_mix_mode, material_restitution[mid1], material_restitution[mid2]
+        )
+    if static_friction < 0.0:
+        static_friction = mix_material_property(
+            friction_mix_mode, material_static_friction[mid1], material_static_friction[mid2]
+        )
+    if dynamic_friction < 0.0:
+        dynamic_friction = mix_material_property(
+            friction_mix_mode, material_dynamic_friction[mid1], material_dynamic_friction[mid2]
+        )
+    return restitution, static_friction, dynamic_friction
 
 
 def get_material_mixing_function(

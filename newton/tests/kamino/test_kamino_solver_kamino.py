@@ -685,6 +685,49 @@ class TestCollisionCapacityInitialization(NewtonTestCase):
 
         self.assertIsInstance(solver._solver_kamino._integrator, IntegratorMoreauJean)
 
+    def test_internal_detection_uses_material_mix_modes(self):
+        """Mix the materials of internally detected contacts as ``config.materials`` says."""
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        SolverKamino.register_custom_attributes(builder)
+        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.049), wp.quat_identity()))
+        builder.add_shape_box(
+            body, hx=0.05, hy=0.05, hz=0.05, cfg=newton.ModelBuilder.ShapeConfig(mu=0.1, restitution=0.2)
+        )
+        builder.add_shape_box(
+            -1,
+            xform=wp.transform(wp.vec3(0.0, 0.0, -0.5), wp.quat_identity()),
+            hx=1.0,
+            hy=1.0,
+            hz=0.5,
+            cfg=newton.ModelBuilder.ShapeConfig(mu=1.0, restitution=0.6),
+        )
+        model = builder.finalize(device=self.default_device)
+
+        for pipeline, detector_mode, expected_mu, expected_restitution in (
+            # Default materials config: friction "max" set below, restitution "min".
+            ("unified", None, 1.0, 0.2),
+            ("primitive", None, 1.0, 0.2),
+            # An explicit detector setting takes precedence over config.materials.
+            ("unified", "min", 0.1, 0.2),
+            ("primitive", "min", 0.1, 0.2),
+        ):
+            with self.subTest(pipeline=pipeline, detector_mode=detector_mode):
+                detector_kwargs = {} if detector_mode is None else {"friction_mix_mode": detector_mode}
+                config = SolverKamino.Config(
+                    use_collision_detector=True,
+                    collision_detector=kamino_config.CollisionDetectorConfig(pipeline=pipeline, **detector_kwargs),
+                    materials=kamino_config.MaterialManagerConfig(friction_mix_mode="max"),
+                )
+                solver = SolverKamino(model, config=config)
+                solver._collision_detector_kamino.collide(
+                    data=solver._solver_kamino._data, contacts=solver._contacts_kamino
+                )
+                num_contacts = int(solver._contacts_kamino.model_active_contacts.numpy()[0])
+                self.assertGreater(num_contacts, 0)
+                material = solver._contacts_kamino.material.numpy()[:num_contacts]
+                np.testing.assert_allclose(material[:, 0], expected_mu, rtol=1e-6)
+                np.testing.assert_allclose(material[:, 1], expected_restitution, rtol=1e-6)
+
     def test_contact_observables_bind_at_allocation(self):
         """Allocate from the supplied contacts and populate them with native geometry."""
         model = self._make_three_world_model()
