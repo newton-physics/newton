@@ -2128,6 +2128,17 @@ class TestMuJoCoSiteActuators(unittest.TestCase):
         self.assertEqual(model.mujoco.actuator_trnid.numpy()[0, 1], reference_shape)
         assert_exports_reference_site(model)
 
+        # Reimporting the same prim paths must reference the second import's sites.
+        builder = ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        first = builder.add_usd(stage)
+        second = builder.add_usd(stage)
+        model = builder.finalize()
+        first_reference = first["path_shape_map"]["/World/base/reference_site"]
+        second_reference = second["path_shape_map"]["/World/base/reference_site"]
+        self.assertNotEqual(first_reference, second_reference)
+        np.testing.assert_array_equal(model.mujoco.actuator_trnid.numpy()[:, 1], [first_reference, second_reference])
+
         # Sites intentionally skipped by the import leave the reference unset instead of failing.
         builder = ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
