@@ -5665,6 +5665,9 @@ class ModelBuilder:
         mesh-file appearance and primitive palette colors are retained for compatibility.
         Other PBR texture layers are not imported.
 
+        A body's hinge and slide joints are merged into one Newton joint. See the
+        :ref:`limitations of merged MJCF joints <mjcf-merged-joints>` for anchor selection, warnings, and deprecations.
+
         Args:
             source: The filename of the MuJoCo file to parse, or the MJCF XML string content.
             xform: The transform to apply to the imported mechanism.
