@@ -133,14 +133,11 @@ rendering is the bottleneck.
 Open ``h1.nsys-rep`` in the Nsight Systems GUI, or print summaries with
 ``nsys stats h1.nsys-rep``. In the report, check:
 
-- **Gaps on the GPU row** between kernels during steady-state stepping. Gaps
-  mean the GPU waits for the CPU, usually because of launch overhead or a host
-  synchronization.
+- **Gaps on the GPU row** during steady-state stepping. Check the CPU timeline
+  around each gap for delayed launches or host synchronization.
 - **Synchronization and memory copies** in the CUDA API row, such as
-  ``cudaStreamSynchronize`` or device-to-host copies inside the step. Each one
-  points to a host read in the loop.
-- **Kernel time summary** (``cuda_gpu_kern_sum`` in ``nsys stats``) to see
-  which kernels dominate the step.
+  ``cudaStreamSynchronize`` or device-to-host copies inside the step. Match
+  them to the calling code to identify any readbacks or waits in the loop.
 - **Startup**: compilation, module loading, and graph capture before the first
   replay, kept separate from the steady state.
 
@@ -148,25 +145,32 @@ To label regions on the timeline, use :class:`warp.ScopedTimer` with
 ``use_nvtx=True``. To record only steady-state stepping, see Warp's guide to
 `limiting the profiler capture range
 <https://nvidia.github.io/warp/stable/user_guide/execution_and_performance/profiling.html#limiting-the-profiler-capture-range>`__.
-By default, Nsight Systems shows each graph launch as one range. To see the
-kernels inside the graph, add ``--cuda-graph-trace=node``. Node-level
-tracing adds overhead to every kernel in the graph and can hide the benefit of
-capture, so use it to see what runs inside the graph, not to measure how long
-the step takes.
+To find which kernels dominate a captured step, collect a separate trace with
+``--cuda-graph-trace=node``. Graph-level tracing omits individual kernel
+activity. Use the node-level trace to rank kernels, and use the graph-level
+trace for whole-step timing because node-level tracing adds per-kernel overhead.
+
+.. code-block:: console
+
+    nsys profile -o h1_nodes --trace=cuda --cuda-graph-trace=node \
+        uv run -m newton.examples robot_h1 --viewer null --num-frames 300
+    nsys stats --report cuda_gpu_kern_sum h1_nodes.nsys-rep
 
 Nsight Compute
 ^^^^^^^^^^^^^^
 
-Once you know which kernel dominates, use Nsight Compute to analyze a few of
-its launches:
+Replace ``KERNEL_NAME`` with a distinctive part of the kernel name from the
+Systems trace. Use Nsight Compute to analyze a few matching launches:
 
 .. code-block:: console
 
-    ncu -o h1_kernel --set full -k regex:<kernel_name> -c 5 \
+    ncu -o h1_kernel --section SpeedOfLight -k "regex:KERNEL_NAME" -c 5 \
         uv run -m newton.examples robot_h1 --viewer null --num-frames 20
 
-Reading GPU performance counters can require administrator privileges. For
-the options and for correlating the report with kernel source code, see Warp's
+In ``h1_kernel.ncu-rep``, compare compute and memory throughput in
+**GPU Speed of Light Throughput**. A high value points to a resource worth
+investigating. Reading GPU performance counters can require administrator
+privileges. For options and source correlation, see Warp's
 `Nsight Compute guide
 <https://nvidia.github.io/warp/stable/user_guide/execution_and_performance/profiling.html#nsight-compute-profiling>`__.
 
@@ -235,7 +239,7 @@ captures a full frame, including all substeps and collision detection:
 
     builder = newton.ModelBuilder()
     builder.add_ground_plane()
-    body = builder.add_body(xform=wp.transform((0.0, 0.0, 2.0), wp.quat_identity()))
+    body = builder.add_body(xform=wp.transform((0.0, 0.0, 0.8), wp.quat_identity()))
     builder.add_shape_sphere(body, radius=0.5)
     model = builder.finalize()
 
@@ -277,8 +281,8 @@ captures a full frame, including all substeps and collision detection:
                 self.simulate()
 
 Capturing a frame does not run it, so the warm-up frame is the first frame of
-the captured simulation. With that in mind, the captured and eager versions
-produce the same result:
+the captured simulation. The comparison counts that frame and runs long enough
+for the sphere to contact the ground:
 
 .. testcode:: performance-loop
 
@@ -288,6 +292,7 @@ produce the same result:
         eager = Simulation(model, sim_substeps=substeps, use_graph=False)
         for _ in range(num_frames):
             eager.step()
+        assert eager.contacts.rigid_contact_count.numpy()[0] > 0
 
         captured = Simulation(model, sim_substeps=substeps)
         replay_frames = num_frames - 1 if captured.graph is not None else num_frames
@@ -436,6 +441,8 @@ or decides on the host which kernels to launch, the graph keeps replaying what
 it recorded and you need to capture it again. If a solver's documentation
 does not say that its model updates are capture-safe, recapture after calling
 :meth:`~solvers.SolverBase.notify_model_changed`.
+See :class:`~solvers.SolverFeatherstone` for an example of a solver-specific
+recapture requirement.
 
 Sensors, actuators, selection views, and some solvers have further capture
 requirements, described on their own pages: :ref:`solver_observables`,
@@ -470,7 +477,9 @@ not expect, profile the run with Nsight Systems, which shows synchronization on
 its timeline.
 
 When the host needs data every frame, copy it asynchronously into pinned host
-memory and read it a frame later (see Warp's `synchronization guidance
+memory and record an event on the copy stream after the transfer. Read the
+buffer a frame later to overlap the copy with other work, and wait for the
+event before reading or reusing that buffer (see Warp's `synchronization guidance
 <https://nvidia.github.io/warp/stable/user_guide/execution_and_performance/concurrency.html#synchronization-guidance>`__).
 When passing data to PyTorch, keep it on the device: calls such as
 ``tensor.item()`` or ``tensor.cpu()`` synchronize.
@@ -564,8 +573,9 @@ Collision geometry
 
 Contact model
     SDF queries and hydroelastic contact generation can add collision work.
-    Hydroelastic contacts represent contact patches and pressure distributions. 
-    Enable expensive models only on the shapes that need them. See :ref:`Hydroelastic Contacts`.
+    Hydroelastic contacts represent contact patches and pressure distributions.
+    Enable expensive models only on the shapes that need them. See
+    :ref:`Hydroelastic Contacts`.
 
 Substeps, iterations, and tolerances
     Solver cost scales with substeps and iterations. Reduce iterations, or let
