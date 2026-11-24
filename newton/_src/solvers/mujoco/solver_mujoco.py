@@ -4807,8 +4807,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self.mjc_geom_to_newton_shape: wp.array2d[wp.int32] | None = None
         """Mapping from MuJoCo [world, geom] to Newton shape index. Shape [nworld, ngeom], dtype int32."""
         self.mjc_site_to_newton_shape: wp.array2d[wp.int32] | None = None
-        """Mapping from MuJoCo [world, site] to Newton shape index. Shape [nworld, nsite], dtype int32."""
-        self._mjc_site_to_newton_shape: wp.array2d[wp.int32] | None = None
+        """Mapping from MuJoCo [world, site] to Newton shape index. Shape [nworld, nsite], dtype int32.
+
+        Entries are ``-1`` for MuJoCo sites that have no corresponding Newton shape."""
         self.mjc_jnt_to_newton_jnt: wp.array2d[wp.int32] | None = None
         """Mapping from MuJoCo [world, joint] to Newton joint index. Shape [nworld, njnt], dtype int32."""
         self.mjc_jnt_to_newton_dof: wp.array2d[wp.int32] | None = None
@@ -9608,7 +9609,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self.mjc_site_to_newton_shape = wp.array(
                 entity_shape_mapping(site_to_shape_idx, self.mj_model.nsite), dtype=wp.int32
             )
-            self._mjc_site_to_newton_shape = self.mjc_site_to_newton_shape
             if heterogeneous_geoms:
                 self._initialize_geom_assets(
                     spec, mesh_assets, shape_mesh_names, hfield_assets, shape_hfield_names, geom_shape_mapping
@@ -11156,7 +11156,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             inputs=[
                 self.model.shape_transform,
                 self.model.shape_scale,
-                self._mjc_site_to_newton_shape,
+                self.mjc_site_to_newton_shape,
             ],
             outputs=[
                 self.mjw_model.site_pos,
