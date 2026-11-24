@@ -2953,19 +2953,33 @@ def test_dynamic_pulley_uses_angular_jacobian(test, device):
         test.assertGreater(theta, 0.05, f"Pulley should rotate from the full angular Jacobian: theta={theta:.4f}")
 
 
-def test_pulley_inertia_limit_locks_cable_travel(test, device):
-    """As pulley inertia tends to infinity, no-slip cable travel tends to zero."""
+def test_high_inertia_pulley_follows_atwood_law(test, device):
+    """Check that a heavy no-slip pulley follows the Atwood law instead of locking the cable.
+
+    A no-slip Atwood machine with pulley inertia ``I = M R^2 / 2`` accelerates the cable at
+    ``a = (m_r - m_l) g / (m_l + m_r + M / 2)``, so the rim travels ``a t^2 / 2`` from rest.
+    """
     with wp.ScopedDevice(device):
         radius = 0.15
-        model, _, _, pulley_idx = build_dynamic_pulley_atwood(
+        mass_left = 1.0
+        mass_right = 3.0
+        pulley_mass = 5000.0
+        num_frames = 80
+        fps = 60
+        model, left_idx, right_idx, pulley_idx = build_dynamic_pulley_atwood(
             mu=10.0,
-            mass_left=1.0,
-            mass_right=3.0,
-            pulley_mass=5000.0,
+            mass_left=mass_left,
+            mass_right=mass_right,
+            pulley_mass=pulley_mass,
             pulley_radius=radius,
             compliance=3.0e-8,
         )
-        state = run_model(model, num_frames=80)
+        g = float(np.linalg.norm(model.gravity.numpy()[0]))
+        body_mass = model.body_mass.numpy()
+        # The box shapes add their own mass, so read the finalized hanging masses from the model.
+        m_left = float(body_mass[left_idx])
+        m_right = float(body_mass[right_idx])
+        state = run_model(model, num_frames=num_frames, fps=fps)
         body_q = state.body_q.numpy()
         test.assertTrue(np.isfinite(body_q).all(), "Non-finite high-inertia pulley state")
 
@@ -2973,10 +2987,15 @@ def test_pulley_inertia_limit_locks_cable_travel(test, device):
         theta = abs(2.0 * np.arctan2(float(q[4]), float(q[6])))
         rim_travel = theta * radius
 
-        test.assertLess(
+        duration = num_frames / fps
+        accel = (m_right - m_left) * g / (m_left + m_right + 0.5 * pulley_mass)
+        expected_travel = 0.5 * accel * duration * duration
+        test.assertAlmostEqual(
             rim_travel,
-            5.0e-3,
-            f"High-inertia no-slip pulley should lock cable travel: R*theta={rim_travel:.6f}, theta={theta:.6f}",
+            expected_travel,
+            delta=0.1 * expected_travel,
+            msg=f"High-inertia no-slip pulley should follow the Atwood law: R*theta={rim_travel:.6f}, "
+            f"expected={expected_travel:.6f}",
         )
 
 
@@ -3903,7 +3922,10 @@ def test_unloaded_motorized_pulley_does_not_drive_slider(test, device):
         theta = abs(2.0 * np.arctan2(float(q[5]), float(q[6])))
 
         test.assertGreater(theta, 0.5, f"Drive pulley should rotate under its target: theta={theta:.4f}")
-        test.assertAlmostEqual(slider_x, -0.4, delta=1.0e-5)
+        # A gripped cable drags the slider about 0.6 m here. Without grip, the
+        # stretch row still nudges the free, undamped slider while the pulley
+        # spins up, so it drifts about 0.3 mm.
+        test.assertAlmostEqual(slider_x, -0.4, delta=1.0e-3)
 
 
 def test_frictionless_motorized_pulley_does_not_drive_slider(test, device):
@@ -3955,7 +3977,9 @@ def test_unloaded_motorized_pulley_preserves_rest(test, device):
 
         test.assertGreater(theta, 0.1, f"Pulley should have started rotating: theta={theta:.4f}")
         test.assertAlmostEqual(slider_dx, 0.0, delta=1.0e-5)
-        np.testing.assert_allclose(state_0.tendon_segment_rest_length.numpy(), initial_rest, atol=1.0e-6, rtol=0)
+        # A gripped cable moves about 1e-2 m of rest length between the spans in
+        # these 30 steps; the unloaded cable moves about 1.4e-6 m.
+        np.testing.assert_allclose(state_0.tendon_segment_rest_length.numpy(), initial_rest, atol=1.0e-5, rtol=0)
 
 
 def test_motorized_pulley_updates_rest_in_first_step(test, device):
@@ -4416,7 +4440,7 @@ add_test(
 add_test(TestTendonCapstan, "slack_pinhole_does_not_redistribute", devices, test_slack_pinhole_does_not_redistribute)
 add_test(TestTendonCapstan, "dynamic_pulley_uses_angular_jacobian", devices, test_dynamic_pulley_uses_angular_jacobian)
 add_test(
-    TestTendonCapstan, "pulley_inertia_limit_locks_cable_travel", devices, test_pulley_inertia_limit_locks_cable_travel
+    TestTendonCapstan, "high_inertia_pulley_follows_atwood_law", devices, test_high_inertia_pulley_follows_atwood_law
 )
 add_test(
     TestTendonCapstan,
