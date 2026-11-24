@@ -1811,12 +1811,12 @@ def parse_usd(
         key = str(path)
         # A deferred body under an articulation root must use the same root
         # rebasing as the bodies imported with that articulation.
-        root_path = Sdf.Path(path).GetParentPath()
-        while root_path != Sdf.Path.emptyPath and root_path not in articulation_roots:
-            root_path = root_path.GetParentPath()
+        body_root_path = Sdf.Path(path).GetParentPath()
+        while body_root_path != Sdf.Path.emptyPath and body_root_path not in articulation_roots:
+            body_root_path = body_root_path.GetParentPath()
         root_xform = (
-            usd.get_transform(stage.GetPrimAtPath(root_path), local=False, xform_cache=xform_cache)
-            if root_path in articulation_roots
+            usd.get_transform(stage.GetPrimAtPath(body_root_path), local=False, xform_cache=xform_cache)
+            if body_root_path in articulation_roots
             else None
         )
         origin = None
