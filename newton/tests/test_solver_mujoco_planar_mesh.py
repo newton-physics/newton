@@ -64,6 +64,58 @@ class TestSolverMuJoCoPlanarMesh(unittest.TestCase):
         self.assertEqual(model.shape_source[1].vertices.shape[0], 3)
         self.assertEqual(model.shape_source[1].indices.shape[0], 3)
 
+    def test_unused_vertex_does_not_hide_planar_mesh(self):
+        """Treat a flat mesh as flat when a vertex no triangle uses lies off its plane."""
+        vertices = np.array(
+            [
+                [-5.0, -5.0, 0.0],
+                [5.0, -5.0, 0.0],
+                [-5.0, 5.0, 0.0],
+                [5.0, 5.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ],
+            dtype=np.float32,
+        )
+        indices = np.array([0, 1, 2, 1, 3, 2], dtype=np.int32)
+        model = self._build_mesh_model(vertices, indices)
+
+        solver = SolverMuJoCo(model, use_mujoco_contacts=False)
+
+        # The unused vertex is dropped, so the mesh exports like the plain quad, which is thickened.
+        quad = SolverMuJoCo(self._build_mesh_model(vertices[:4], indices), use_mujoco_contacts=False)
+        np.testing.assert_array_equal(solver.mj_model.mesh_vert, quad.mj_model.mesh_vert)
+        np.testing.assert_array_equal(solver.mj_model.mesh_face, quad.mj_model.mesh_face)
+        with self.assertRaisesRegex(ValueError, "planar mesh collider"):
+            SolverMuJoCo(model, use_mujoco_cpu=True, use_mujoco_contacts=True)
+
+    def test_convex_hull_keeps_vertices_no_triangle_uses(self):
+        """Export every vertex of a convex hull, which spans them all, even those no triangle uses."""
+        vertices = np.array(
+            [[-1.0, -1.0, 0.0], [1.0, -1.0, 0.0], [-1.0, 1.0, 0.0], [1.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            dtype=np.float32,
+        )
+        builder = newton.ModelBuilder()
+        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 2.0), wp.quat_identity()))
+        builder.add_shape_sphere(body=body, radius=0.01)
+        mesh = newton.Mesh(
+            vertices=vertices, indices=np.array([0, 1, 2, 1, 3, 2], dtype=np.int32), compute_inertia=False
+        )
+        builder.add_shape_convex_hull(body=-1, mesh=mesh)
+        model = builder.finalize(device="cpu")
+
+        solver = SolverMuJoCo(model, use_mujoco_cpu=True, use_mujoco_contacts=True)
+
+        self.assertEqual(solver.mj_model.mesh_vertnum[0], 5)
+
+    def test_mesh_without_triangles_keeps_its_vertices(self):
+        """Export every vertex of a mesh without triangles, which MuJoCo turns into a convex hull."""
+        vertices = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], dtype=np.float32)
+        model = self._build_mesh_model(vertices, np.array([], dtype=np.int32))
+
+        solver = SolverMuJoCo(model, use_mujoco_contacts=False)
+
+        self.assertEqual(solver.mj_model.mesh_vertnum[0], 4)
+
     def test_nonplanar_mesh_is_not_inflated(self):
         vertices = np.array(
             [

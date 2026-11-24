@@ -301,8 +301,16 @@ def _mujoco_warp_deterministic_modules() -> list[Any]:
     ]
 
 
-def _mesh_scale_key(mesh: Mesh, scale: np.ndarray) -> tuple[int, tuple[float, float, float], int]:
-    return hash(mesh), tuple(float(s) for s in scale), mesh.maxhullvert
+def _mesh_scale_key(mesh: Mesh, scale: np.ndarray, convex: bool) -> tuple[int, tuple[float, float, float], int, bool]:
+    return hash(mesh), tuple(float(s) for s in scale), mesh.maxhullvert, convex
+
+
+def _drop_unused_vertices(vertices: np.ndarray, indices: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    # MuJoCo builds a convex hull from all vertices of a mesh without triangles, so keep them.
+    if not indices.size:
+        return vertices, indices
+    used, indices = np.unique(indices, return_inverse=True)
+    return vertices[used], indices
 
 
 def _mujoco_mesh_vertices_are_planar(
@@ -8124,11 +8132,19 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 mesh_columns = np.isin(shape_type[selected_shapes], (GeoType.MESH, GeoType.CONVEX_MESH))
                 for shapes in shape_layout.world_shapes[:, mesh_columns].T:
                     source = model.shape_source[shapes[0]]
-                    if all(model.shape_source[shape] is source for shape in shapes) and np.all(
-                        shape_size[shapes] == shape_size[shapes[0]]
+                    if (
+                        all(model.shape_source[shape] is source for shape in shapes)
+                        and np.all(shape_size[shapes] == shape_size[shapes[0]])
+                        # A triangle mesh and a convex hull of one mesh export different vertices.
+                        and np.all(shape_type[shapes] == shape_type[shapes[0]])
                     ):
                         continue
-                    keys = {_mesh_scale_key(model.shape_source[shape], shape_size[shape]) for shape in shapes}
+                    keys = {
+                        _mesh_scale_key(
+                            model.shape_source[shape], shape_size[shape], shape_type[shape] == GeoType.CONVEX_MESH
+                        )
+                        for shape in shapes
+                    }
                     if len(keys) > 1:
                         heterogeneous_geoms = True
                         break
@@ -8248,11 +8264,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         def add_mesh_asset(shape):
             mesh_src = model.shape_source[shape]
             size = shape_size[shape]
-            key = _mesh_scale_key(mesh_src, size)
+            # A convex hull spans all its vertices, a triangle mesh only those its triangles use.
+            convex = shape_type[shape] == GeoType.CONVEX_MESH
+            key = _mesh_scale_key(mesh_src, size, convex)
             mesh_export = mesh_export_cache.get(key)
             if mesh_export is None:
-                vertices = mesh_src.vertices * size
-                indices = mesh_src.indices.flatten()
+                vertices, indices = mesh_src.vertices * size, mesh_src.indices.flatten()
+                if not convex:
+                    vertices, indices = _drop_unused_vertices(vertices, indices)
                 maxhullvert = mesh_src.maxhullvert
                 extent_axis = vertices.max(axis=0) - vertices.min(axis=0)
                 is_planar = _mujoco_mesh_vertices_are_planar(vertices, extent_axis)

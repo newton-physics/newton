@@ -15894,6 +15894,24 @@ class TestMuJoCoPerWorldMeshLayout(unittest.TestCase):
         dataid = mjw_model.geom_dataid.numpy()
         self.assertNotEqual(dataid[0, 0], dataid[1, 0])
 
+    @requires(*MUJOCO_MODULES)
+    def test_per_world_mesh_and_convex_hull_of_one_mesh(self):
+        """Export separate assets when one mesh is a triangle mesh in one world and a convex hull in another."""
+        vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [3, 3, 3]], dtype=np.float32)
+        indices = np.array([0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3], dtype=np.int32)
+        mesh = newton.Mesh(vertices, indices, compute_inertia=False)
+        builder = newton.ModelBuilder()
+        for add_shape in ("add_shape_mesh", "add_shape_convex_hull"):
+            world = newton.ModelBuilder()
+            getattr(world, add_shape)(-1, mesh=mesh)
+            world.add_shape_sphere(world.add_body(xform=wp.transform((0.0, 0.0, 5.0), wp.quat_identity())), radius=0.1)
+            builder.add_world(world)
+        model = builder.finalize()
+        mjw_model = SolverMuJoCo(model, use_mujoco_contacts=False).mjw_model
+        dataid = np.broadcast_to(mjw_model.geom_dataid.numpy(), (2, mjw_model.ngeom))
+        # The triangle mesh drops the unused vertex (3, 3, 3). The convex hull keeps all 5.
+        np.testing.assert_array_equal(mjw_model.mesh_vertnum.numpy()[dataid[dataid >= 0]], [4, 5])
+
     def test_world_without_bodies(self):
         """Build heterogeneous static mesh worlds without dividing by body count."""
         builder = newton.ModelBuilder()
