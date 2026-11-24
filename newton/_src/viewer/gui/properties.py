@@ -355,6 +355,8 @@ class PropertyInspector:
         if ws._undo is not None:
             owner, attr, start, values, joint = ws._undo
             editable = ws.can_edit_control() if ws.is_control_owner(owner) else ws.can_edit_state()
+            if editable and isinstance(owner, State) and attr in ("joint_q", "joint_qd"):
+                editable, _ = ws._joint_state_support()
             ui.begin_disabled(not editable)
             if w.button("Undo last edit"):
                 if isinstance(owner, State) and attr in ("joint_q", "joint_qd"):
@@ -830,6 +832,11 @@ class PropertyInspector:
             if joint_state and (kind == JointType.ROD or art < 0):
                 editable = False
                 reason = "This joint is advanced by the solver, outside forward kinematics."
+            elif joint_state:
+                supported, joint_reason = ws._joint_state_support()
+                if not supported:
+                    editable = False
+                    reason = joint_reason
         if spec.references is not None:
             self._references(label, values, spec, domain, start, reason)
             edit = PropertyEdit(values)

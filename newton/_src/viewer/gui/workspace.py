@@ -2475,11 +2475,33 @@ class ViewerWorkspace:
         name = type(solver).__name__
         if name in ("SolverXPBD", "SolverVBD", "SolverSemiImplicit", "SolverKamino"):
             return True
-        if name == "SolverCoupled":
-            entries = getattr(solver, "_entries", None)
-            if isinstance(entries, dict):
-                return any(cls._uses_maximal_coordinates(getattr(entry, "solver", None)) for entry in entries.values())
+        if isinstance(entries := getattr(solver, "_entries", None), dict):
+            return any(cls._uses_maximal_coordinates(getattr(entry, "solver", None)) for entry in entries.values())
         return False
+
+    def _joint_state_support(self, solver: object | None = ...) -> tuple[bool, str]:
+        """Return whether the bound solver synchronizes runtime joint-state edits on resume."""
+        if solver is ...:
+            solver = self.bindings.solver
+        if solver is None:
+            return True, ""
+        name = type(solver).__name__
+        if name in ("SolverImplicitMPM", "SolverStyle3D"):
+            return False, "Read only: this solver does not step articulated joint coordinates."
+        if name == "SolverMuJoCo":
+            if getattr(solver, "update_data_interval", 1) != 1:
+                return (
+                    False,
+                    "Read only: SolverMuJoCo with update_data_interval != 1 does not synchronize joint state every step.",
+                )
+            if getattr(solver, "enable_sleeping", False):
+                return False, "Read only: SolverMuJoCo sleeping caches derived tree state across steps."
+        if isinstance(entries := getattr(solver, "_entries", None), dict):
+            for entry in entries.values():
+                supported, reason = self._joint_state_support(getattr(entry, "solver", None))
+                if not supported:
+                    return False, reason
+        return True, ""
 
     def _solver_properties(self) -> None:
         """Show generic ``SolverBase`` metadata and logged solver observables."""
@@ -2801,7 +2823,7 @@ class ViewerWorkspace:
             return False
         target = array[start : start + count]
         # Preserve the original scalar type, including integer and boolean custom attributes.
-        previous = target.numpy()
+        previous = target.numpy().copy()
         values = np.asarray(values, dtype=previous.dtype).reshape(previous.shape)
         if not np.isfinite(values).all():
             self.message = "Enter finite values."
@@ -2809,6 +2831,10 @@ class ViewerWorkspace:
         indices = mask = None
         joint_state = isinstance(owner, State) and attr in ("joint_q", "joint_qd")
         if joint_state:
+            supported, reason = self._joint_state_support()
+            if not supported:
+                self.message = reason
+                return False
             if joint_index is None and self.selected and self.selected[0] == "joint":
                 joint_index = self.selected[1]
             if joint_index is None:
@@ -2818,12 +2844,33 @@ class ViewerWorkspace:
                 return False
             if self._uses_maximal_coordinates(self.bindings.solver):
                 eval_ik(self.model, owner, owner.joint_q, owner.joint_qd, indices=indices)
-                previous = target.numpy()
-        if save_undo:
-            self._undo = (owner, attr, start, previous.copy(), joint_index)
+                previous = target.numpy().copy()
+        q_prev_target = prev_q_prev = None
+        if joint_state and attr == "joint_q" and isinstance(getattr(owner, "joint_q_prev", None), wp.array):
+            if start + count <= len(owner.joint_q_prev):
+                q_prev_target = owner.joint_q_prev[start : start + count]
+                prev_q_prev = q_prev_target.numpy().copy()
         target.assign(values)
+        if q_prev_target is not None:
+            q_prev_target.assign(values)
         if joint_state:
             eval_fk(self.model, owner.joint_q, owner.joint_qd, owner, indices=indices, joint_mask=mask)
+        if isinstance(owner, State):
+            notify_state = getattr(self.bindings.solver, "notify_state_changed", None)
+            if callable(notify_state):
+                try:
+                    notify_state(owner)
+                except Exception as exc:
+                    target.assign(previous)
+                    if q_prev_target is not None and prev_q_prev is not None:
+                        q_prev_target.assign(prev_q_prev)
+                    if joint_state:
+                        eval_fk(self.model, owner.joint_q, owner.joint_qd, owner, indices=indices, joint_mask=mask)
+                    self._live_cache.clear()
+                    self.message = f"Solver rejected state edit: {exc}"
+                    return False
+        if save_undo:
+            self._undo = (owner, attr, start, previous, joint_index)
         # Running edits are recorded with the next simulation frame. Avoid
         # downloading a second full snapshot on every control drag event.
         if self.history is not None and self.viewer.is_paused():

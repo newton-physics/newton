@@ -700,9 +700,10 @@ Editing, history, and rebuilding
 * Joint State coordinates and velocities and authored body shape variants can
   be edited only while paused at the latest frame; body motion flags and body
   shape variants also require a compatible solver bound via ``set_solver``. A
-  joint mask limits forward kinematics to the edited branch, and rejected
-  variant switches roll back cleanly while preserving pre-existing live edits.
-  Unsupported or read-only properties remain visibly locked.
+  joint mask limits forward kinematics to the edited branch, bound solver
+  state caches are invalidated on joint edits, and rejected variant switches
+  roll back cleanly while preserving pre-existing live edits. Unsupported or
+  read-only properties remain visibly locked.
 * Recorded historical frames are display snapshots. They are read-only;
   playback reaches the latest frame before live simulation resumes. They
   are not solver checkpoints and cannot restart simulation from an arbitrary

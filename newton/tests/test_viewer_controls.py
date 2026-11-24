@@ -3046,6 +3046,73 @@ class TestViewerProperties(unittest.TestCase):
         self.assertTrue(ws.reset_control())
         np.testing.assert_allclose(replacement.joint_target_q.numpy(), 0.4)
 
+        steel_devices = ["cpu", *(["cuda:0"] if wp.is_cuda_available() else [])]
+        for dev in steel_devices:
+            sb = newton.ModelBuilder()
+            b0 = sb.add_link(mass=1.0, com=wp.vec3(0.5, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
+            b1 = sb.add_link(mass=1.0, com=wp.vec3(0.5, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
+            j0 = sb.add_joint_revolute(-1, b0, axis=newton.Axis.Y)
+            j1 = sb.add_joint_revolute(b0, b1, parent_xform=wp.transform((1.0, 0.0, 0.0)), axis=newton.Axis.Y)
+            sb.add_articulation([j0, j1])
+            steel_model = sb.finalize(device=dev)
+            solver = newton.solvers.SolverSteel(steel_model, reuse_kinematics=True)
+            ref_solver = newton.solvers.SolverSteel(steel_model, reuse_kinematics=False)
+            s0, s1 = steel_model.state(), steel_model.state()
+            ref_s0, ref_s1 = steel_model.state(), steel_model.state()
+            dt = 1.0 / 60.0
+            if dev.startswith("cuda"):
+                with wp.ScopedCapture(device=dev) as step_ab_cap:
+                    solver.step(s0, s1, None, None, dt)
+                with wp.ScopedCapture(device=dev) as step_ba_cap:
+                    solver.step(s1, s0, None, None, dt)
+                wp.capture_launch(step_ab_cap.graph)
+            else:
+                solver.step(s0, s1, None, None, dt)
+            s0, s1 = s1, s0
+            steel_viewer = ViewerNull()
+            steel_viewer.set_model(steel_model)
+            steel_viewer.set_solver(solver)
+            steel_viewer._last_state = s0
+            steel_viewer.is_paused = lambda: True
+            steel_ws = ViewerWorkspace.__new__(ViewerWorkspace)
+            steel_ws.model, steel_ws.selected, steel_ws.world = steel_model, ("articulation", 0), 0
+            steel_ws.viewer = steel_viewer
+            steel_ws._bindings = steel_ws._bindings_components = None
+            steel_ws._cache, steel_ws._live_cache, steel_ws._drafts = {}, {}, {}
+            steel_ws._undo = steel_ws.history = None
+            steel_ws.message = ""
+            self.assertTrue(steel_ws.apply_edit(s0, "joint_q", 0, [1.1], joint_index=0))
+            self.assertTrue(steel_ws.apply_edit(s0, "joint_qd", 0, [-1.7], joint_index=0))
+            ref_s0.assign(s0)
+            if dev.startswith("cuda"):
+                wp.capture_launch(step_ba_cap.graph)
+            else:
+                solver.step(s0, s1, None, None, dt)
+            ref_solver.step(ref_s0, ref_s1, None, None, dt)
+            np.testing.assert_allclose(s1.joint_q.numpy(), ref_s1.joint_q.numpy(), atol=1e-6)
+            np.testing.assert_allclose(s1.joint_qd.numpy(), ref_s1.joint_qd.numpy(), atol=1e-5)
+
+        class _RejectingStateSolver(newton.solvers.SolverBase):
+            def step(self, state_in, state_out, control, contacts, dt, **kwargs):
+                pass
+
+            def notify_state_changed(self, state):
+                raise RuntimeError("cannot sync state")
+
+        reject_solver = _RejectingStateSolver(model)
+        ws.viewer = SimpleNamespace(
+            is_paused=lambda: True,
+            _last_state=state,
+            _inspection_components={"control": replacement, "solver": reject_solver},
+        )
+        ws._bindings = ws._bindings_components = None
+        q_before = state.joint_q.numpy().copy()
+        body_q_before = state.body_q.numpy().copy()
+        self.assertFalse(ws.apply_edit(state, "joint_q", 1, [1.25], joint_index=1))
+        self.assertIn("cannot sync state", ws.message)
+        np.testing.assert_allclose(state.joint_q.numpy(), q_before)
+        np.testing.assert_allclose(state.body_q.numpy(), body_q_before)
+
 
 class TestCollisionInspector(unittest.TestCase):
     @requires("imgui_bundle")
