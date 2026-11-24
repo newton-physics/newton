@@ -158,8 +158,8 @@ MJCF import combines a body's hinge and slide joints into a single Newton
 joint, which applies the slides in the parent frame and then the hinges about
 a single anchor. The anchor is the point where the hinge axes meet. If they do
 not meet, or are all nearly parallel without lying on one line, the anchor is
-the first hinge's position, which changes the body's motion and emits
-:class:`~newton.NewtonWarning`. A slide listed after hinges keeps its motion
+the first hinge's position, which changes the body's motion and logs a
+warning. A slide listed after hinges keeps its motion
 only if it is parallel to every hinge listed before it. Otherwise it is still
 applied before the hinges, which changes the body's motion and emits
 :class:`~newton.NewtonDeprecationWarning`; a future release will raise an

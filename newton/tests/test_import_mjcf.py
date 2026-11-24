@@ -1426,12 +1426,12 @@ class TestImportMjcfBasic(unittest.TestCase):
                 builder = newton.ModelBuilder()
                 mjcf = self._MERGED_JOINTS_MJCF.format(joints=joints)
                 if warning is None:
-                    with warnings.catch_warnings():
-                        warnings.simplefilter("error", newton.NewtonWarning)
+                    with self.assertNoLogs("newton", level="WARNING"):
                         builder.add_mjcf(mjcf)
                 else:
-                    with self.assertWarnsRegex(newton.NewtonWarning, warning):
+                    with self.assertLogs("newton", level="WARNING") as logs:
                         builder.add_mjcf(mjcf)
+                    self.assertRegex("\n".join(logs.output), warning)
                 self.assertEqual(builder.joint_dof_count, joints.count("<joint "))
                 np.testing.assert_allclose(builder.joint_X_p[0].p, expected, atol=1e-7)
                 np.testing.assert_allclose(builder.joint_X_c[0].p, expected, atol=1e-7)
@@ -1443,8 +1443,7 @@ class TestImportMjcfBasic(unittest.TestCase):
         for scale in (0.001, 1000.0):
             with self.subTest(scale=scale):
                 builder = newton.ModelBuilder()
-                with warnings.catch_warnings():
-                    warnings.simplefilter("error", newton.NewtonWarning)
+                with self.assertNoLogs("newton", level="WARNING"):
                     builder.add_mjcf(self._MERGED_JOINTS_MJCF.format(joints=joints), scale=scale)
                 np.testing.assert_allclose(builder.joint_X_c[0].p, [0, 0.000025 * scale, 0], atol=1e-7 * scale)
 
@@ -1475,16 +1474,17 @@ class TestImportMjcfBasic(unittest.TestCase):
                 np.testing.assert_allclose(builder.joint_X_c[0].p, [0.2, 0, 0], atol=1e-7)
 
     def test_base_joint_ignores_hinge_anchor(self):
-        """Leave a base joint that replaces a body's MJCF joints unaffected by where the hinge axes meet."""
-        # The hinge axes meet at (0.3, 0, 0), away from the body origin.
-        joints = '<joint axis="1 0 0"/><joint axis="0 0 1" pos="0.3 0 0.5"/>'
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(
-            self._MERGED_JOINTS_MJCF.format(joints=joints),
-            xform=wp.transform((1.0, 2.0, 3.0), wp.quat_identity()),
-            floating=False,
-        )
-        np.testing.assert_allclose(builder.joint_X_p[0].p, [1, 2, 3], atol=1e-7)
+        """Anchor kept MJCF joints where hinge axes meet; place a base joint replacing them at the first joint."""
+        # The hinge axes meet at (0.3, 0, 0); the first joint's pos is the body origin.
+        mjcf = self._MERGED_JOINTS_MJCF.format(joints='<joint axis="1 0 0"/><joint axis="0 0 1" pos="0.3 0 0.5"/>')
+        xform = wp.transform((1.0, 2.0, 3.0), wp.quat_identity())
+        # (case, add_mjcf options, expected joint position in the parent frame)
+        cases = (("joints kept", {}, [1.3, 2, 3]), ("base joint", {"floating": False}, [1, 2, 3]))
+        for name, options, expected in cases:
+            with self.subTest(case=name):
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(mjcf, xform=xform, **options)
+                np.testing.assert_allclose(builder.joint_X_p[0].p, expected, atol=1e-6)
 
     @requires("mujoco")
     def test_merged_joints_preserve_hinge_anchor(self):

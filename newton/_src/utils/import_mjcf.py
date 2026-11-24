@@ -3036,13 +3036,13 @@ def parse_mjcf(
                 hinge_anchor = _common_hinge_anchor(hinge_positions, hinge_axes, _HINGE_ANCHOR_TOLERANCE * scale)
                 if hinge_anchor is None:
                     hinge_anchor = wp.vec3(*hinge_positions[0])
-                    warnings.warn(
-                        f"MJCF body '{body_label_path}': hinge joints {hinge_names} cannot be merged about a common "
-                        "point: their axes are nearly parallel or do not meet. "
-                        f"The imported Newton joint rotates all of them about the position of '{hinge_names[0]}', "
-                        "which changes the body's motion.",
-                        NewtonWarning,
-                        stacklevel=_external_warning_stacklevel(),
+                    logger.warning(
+                        "MJCF body '%s': hinge joints %s cannot be merged about a common point: their axes are "
+                        "nearly parallel or do not meet. The imported Newton joint rotates all of them about the "
+                        "position of '%s', which changes the body's motion.",
+                        body_label_path,
+                        hinge_names,
+                        hinge_names[0],
                     )
                 joint_pos = hinge_anchor
             else:
