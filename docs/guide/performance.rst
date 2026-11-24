@@ -441,8 +441,12 @@ or decides on the host which kernels to launch, the graph keeps replaying what
 it recorded and you need to capture it again. If a solver's documentation
 does not say that its model updates are capture-safe, recapture after calling
 :meth:`~solvers.SolverBase.notify_model_changed`.
-See :class:`~solvers.SolverFeatherstone` for an example of a solver-specific
-recapture requirement.
+
+For example, after changing the joint armature in a
+:class:`~solvers.SolverFeatherstone` model with kinematic joints, notify the
+solver and recapture even if ``update_mass_matrix_interval=1``. The notification
+replaces the effective armature buffer, and the graph still uses the address
+recorded during capture.
 
 Sensors, actuators, selection views, and some solvers have further capture
 requirements, described on their own pages: :ref:`solver_observables`,
@@ -553,14 +557,14 @@ Collision and solver rates
     :ref:`collision-frequency-in-the-simulation-loop`.
 
 Contact gap and tunneling
-    A contact is found only when two shapes are within the contact gap at the
-    time of detection. If a body moves farther than the gap between two
-    detection passes, it can pass through thin geometry. A larger gap or
-    velocity-dependent speculative contacts can reduce this risk, at the cost
-    of more contacts; neither guarantees that tunneling is eliminated. Less
-    frequent detection or larger time steps increase the motion between passes,
-    so revisit the gap when changing either. See
-    :ref:`Collisions`.
+    A rigid contact candidate must be within the effective contact gap at the
+    time of detection. When :ref:`speculative contacts <speculative-contacts>`
+    are enabled, the effective gap can exceed the authored gap based on the
+    contact points' closing speed and the time until the next collision pass.
+    A larger gap can reduce tunneling risk and increase the number of contacts.
+    Fast bodies can still pass through thin geometry between collision passes.
+    Recheck for tunneling when reducing collision frequency or increasing the
+    timestep.
 
 Collision geometry
     Primitives and convex hulls can be cheaper than detailed meshes, but an
