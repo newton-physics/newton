@@ -3458,16 +3458,18 @@ def eval_rigid_tau_and_augmented_drives(
 
 @wp.kernel
 def build_mass_update_mask(
-    global_flag: int,
+    interval: int,
     dt: float,
+    mass_update_phase: wp.array[int],
     mass_update_requested: wp.array[int],
     articulation_active: wp.array[int],
     mass_update_mask: wp.array[int],
     mass_factor_dt: wp.array[float],
 ):
-    """Refresh active factors whose timestep differs, including during graph replay."""
+    """Advance the refresh cadence and check active factors, including during graph replay."""
     tid = wp.tid()
-    flag = 1 if global_flag != 0 else 0
+    phase = mass_update_phase[tid]
+    flag = 1 if phase == 0 else 0
     # Ignore float-rounding jitter, but retain relative sensitivity for tiny timesteps.
     factor_dt = mass_factor_dt[tid]
     dt_changed = wp.abs(factor_dt - dt) > 1.0e-6 * wp.max(wp.abs(factor_dt), wp.abs(dt))
@@ -3478,6 +3480,7 @@ def build_mass_update_mask(
     mass_update_mask[tid] = flag
     if flag != 0:
         mass_factor_dt[tid] = dt
+    mass_update_phase[tid] = (phase + 1) % interval
 
 
 # =============================================================================

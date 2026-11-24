@@ -491,31 +491,41 @@ def test_timestep_change_forces_a_refresh(test, device, solve_mode="serial"):
 
 
 def test_captured_two_substep_replay_matches_eager(test, device, solve_mode="serial"):
-    """Replay two captured substeps, including the first-step allocations, like eager stepping."""
-    graph_model = _build_model(device, ground=False)
-    eager_model = _build_model(device, ground=False)
-    graph_solver = SolverSteel(graph_model, solve_mode=solve_mode, update_mass_matrix_interval=2)
-    eager_solver = SolverSteel(eager_model, solve_mode=solve_mode, update_mass_matrix_interval=2)
-    graph_a, graph_b = _make_initial_state(graph_model), graph_model.state()
-    eager_a, eager_b = _make_initial_state(eager_model), eager_model.state()
-    graph_control, eager_control = graph_model.control(), eager_model.control()
+    """Match eager refreshes with first-use capture and with a graph shorter than the refresh interval."""
+    for interval, warmup_steps in ((2, 0), (4, 2)):
+        graph_model = _build_model(device, ground=False)
+        eager_model = _build_model(device, ground=False)
+        graph_solver = SolverSteel(graph_model, solve_mode=solve_mode, update_mass_matrix_interval=interval)
+        eager_solver = SolverSteel(eager_model, solve_mode=solve_mode, update_mass_matrix_interval=interval)
+        graph_a, graph_b = _make_initial_state(graph_model), graph_model.state()
+        eager_a, eager_b = _make_initial_state(eager_model), eager_model.state()
+        graph_control, eager_control = graph_model.control(), eager_model.control()
 
-    def two_substeps(solver, state_in, state_out, control):
-        for _ in range(2):
-            solver.step(state_in, state_out, control, None, DT)
-            for name in ("joint_q", "joint_qd", "body_q", "body_qd"):
-                wp.copy(getattr(state_in, name), getattr(state_out, name))
+        def two_substeps(solver, state_in, state_out, control):
+            for _ in range(2):
+                solver.step(state_in, state_out, control, None, DT)
+                for name in ("joint_q", "joint_qd", "body_q", "body_qd"):
+                    wp.copy(getattr(state_in, name), getattr(state_out, name))
 
-    # The very first launches of graph_solver happen inside the capture.
-    with wp.ScopedCapture(device) as capture:
-        two_substeps(graph_solver, graph_a, graph_b, graph_control)
-    for _ in range(64):
-        wp.capture_launch(capture.graph)
-        two_substeps(eager_solver, eager_a, eager_b, eager_control)
-    for name in ("joint_q", "joint_qd"):
-        captured = getattr(graph_a, name).numpy()
-        test.assertTrue(np.isfinite(captured).all(), f"{name} became non-finite under graph replay")
-        np.testing.assert_allclose(captured, getattr(eager_a, name).numpy(), rtol=0.0, atol=2.0e-6, err_msg=name)
+        # The second case warms up steps 0 and 1, then captures only reuse steps 2 and 3.
+        for _ in range(warmup_steps // 2):
+            two_substeps(graph_solver, graph_a, graph_b, graph_control)
+            two_substeps(eager_solver, eager_a, eager_b, eager_control)
+        with wp.ScopedCapture(device) as capture:
+            two_substeps(graph_solver, graph_a, graph_b, graph_control)
+        for reset in (False, True):
+            if reset:
+                graph_solver.reset(graph_a)
+                eager_solver.reset(eager_a)
+            for _ in range(4 if reset else 64):
+                wp.capture_launch(capture.graph)
+                two_substeps(eager_solver, eager_a, eager_b, eager_control)
+            for name in ("joint_q", "joint_qd"):
+                captured = getattr(graph_a, name).numpy()
+                test.assertTrue(np.isfinite(captured).all(), f"{name} became non-finite under graph replay")
+                np.testing.assert_allclose(
+                    captured, getattr(eager_a, name).numpy(), rtol=0.0, atol=2.0e-6, err_msg=name
+                )
 
 
 class TestSteelMassUpdateInterval(unittest.TestCase):

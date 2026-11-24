@@ -1,0 +1,1 @@
+Keep SolverSteel's mass-matrix refresh cadence advancing during CUDA graph replay, including when a graph captures fewer steps than the refresh interval, preventing indefinitely stale dynamics and numerical divergence.
