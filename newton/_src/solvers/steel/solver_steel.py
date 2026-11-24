@@ -173,6 +173,7 @@ from .kernels import (
     preelim_correct_Y_for_size,
     preelim_project_velocity_for_size,
     preelim_setup_for_size,
+    prepare_contact_recovery,
     prepare_fused_diagonal_joint_limits,
     prepare_world_contact_rows,
     prepare_world_impulses,
@@ -1416,7 +1417,9 @@ class SolverSteel(SolverBase, CouplingInterface):
       :attr:`~newton.Model.joint_rest_q` on PRISMATIC, REVOLUTE and D6 DOFs, applied
       explicitly as ``stiffness * (rest_q - q)`` like :class:`~newton.solvers.SolverFeatherstone`,
       independently of drives and joint limits. Unlike the implicit drives, explicit springs
-      stay stable only for roughly ``dt * sqrt(stiffness / m_eff) < 2`` per DOF.
+      stay stable only for roughly ``dt * sqrt(stiffness / m_eff) < 2`` per DOF. Construction and
+      eager :meth:`notify_model_changed` calls warn about stiffness on other DOFs, which is ignored; a
+      notification during CUDA graph capture skips the check.
     - Joint limits: with ``enable_joint_limits=True``, every finite
       :attr:`~newton.Model.joint_limit_lower` / :attr:`~newton.Model.joint_limit_upper` of a
       PRISMATIC, REVOLUTE or D6 DOF is a unilateral row. Joint limits are not enforced by
@@ -1720,7 +1723,8 @@ class SolverSteel(SolverBase, CouplingInterface):
         - ``steel:min_torsional_patch_radius`` [m] is the effective spin radius of the
           shape's contacts (``physxCollision:minTorsionalPatchRadius``, default 0, no
           torsion). PhysX also scales a radius with the penetration depth through
-          ``physxCollision:torsionalPatchRadius``; this solver does not.
+          ``physxCollision:torsionalPatchRadius``; this solver does not. Set it before
+          constructing the solver, which enables torsion only when a radius is positive.
 
         One per-DOF attribute makes joint friction grow with the load the joint transmits, see
         ``enable_joint_friction``:
@@ -1758,6 +1762,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="rigid_body_angular_damping",
+                update_flags=ModelFlags.NONE,
                 namespace=_ATTRIBUTE_NAMESPACE,
                 frequency=Model.AttributeFrequency.BODY,
                 assignment=Model.AttributeAssignment.MODEL,
@@ -1769,6 +1774,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="rigid_body_linear_damping",
+                update_flags=ModelFlags.NONE,
                 namespace=_ATTRIBUTE_NAMESPACE,
                 frequency=Model.AttributeFrequency.BODY,
                 assignment=Model.AttributeAssignment.MODEL,
@@ -1780,6 +1786,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="rigid_body_max_linear_velocity",
+                update_flags=ModelFlags.NONE,
                 namespace=_ATTRIBUTE_NAMESPACE,
                 frequency=Model.AttributeFrequency.BODY,
                 assignment=Model.AttributeAssignment.MODEL,
@@ -1791,6 +1798,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="rigid_body_max_angular_velocity",
+                update_flags=ModelFlags.NONE,
                 namespace=_ATTRIBUTE_NAMESPACE,
                 frequency=Model.AttributeFrequency.BODY,
                 assignment=Model.AttributeAssignment.MODEL,
@@ -1814,6 +1822,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="rigid_body_max_depenetration_velocity",
+                update_flags=ModelFlags.NONE,
                 namespace=_ATTRIBUTE_NAMESPACE,
                 frequency=Model.AttributeFrequency.BODY,
                 assignment=Model.AttributeAssignment.MODEL,
@@ -1825,6 +1834,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="joint_friction_load_coefficient",
+                update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES,
                 namespace=_ATTRIBUTE_NAMESPACE,
                 frequency=Model.AttributeFrequency.JOINT_DOF,
                 assignment=Model.AttributeAssignment.MODEL,
@@ -3264,8 +3274,10 @@ class SolverSteel(SolverBase, CouplingInterface):
         :attr:`~newton.Model.joint_friction` and ``steel:joint_friction_load_coefficient`` on the host and
         raises :class:`ValueError` for invalid values, after applying every other update. With loop-closing
         REVOLUTE joints, an eager joint, joint DOF, DOF force or DOF inertial notification also reads their
-        DOF inputs and axes on the host to warn about the ones a closure ignores. A captured notification
-        skips both checks.
+        DOF inputs and axes on the host to warn about the ones a closure ignores. When any DOF carries no
+        Steel spring, an eager joint DOF or DOF force notification also reads
+        :attr:`~newton.Model.joint_stiffness` on the host, whatever its values, to warn about stiffness
+        Steel ignores. A captured notification skips all three checks.
 
         Args:
             flags: Bit-mask of :class:`~newton.ModelFlags` indicating which model properties changed.
@@ -3353,6 +3365,29 @@ class SolverSteel(SolverBase, CouplingInterface):
         joint_inputs = ModelFlags.JOINT_PROPERTIES | dof_force | dof_inertial
         if flags & joint_inputs and not (self.model.device.is_cuda and wp.get_stream(self.model.device).is_capturing):
             self._warn_ignored_revolute_loop_inputs(stacklevel=3)
+            if flags & dof_force:
+                self._warn_ignored_spring_stiffness(stacklevel=3)
+
+    @override
+    def _non_graphable_model_flags(self) -> int:
+        # The kinematic-state refresh reads body flags on the host.
+        flags = ModelFlags.BODY_PROPERTIES
+        if self._sleeping is not None:
+            # Sleeping compares the tracked model arrays on the host to find the islands to wake.
+            flags |= (
+                ModelFlags.JOINT_PROPERTIES
+                | ModelFlags.JOINT_DOF_PROPERTIES
+                | ModelFlags.BODY_INERTIAL_PROPERTIES
+                | ModelFlags.SHAPE_PROPERTIES
+            )
+        mujoco = getattr(self.model, "mujoco", None)
+        if int(getattr(mujoco, "equality_constraint_count", 0) or 0):
+            # MuJoCo equality rows are validated on the host.
+            flags |= ModelFlags.CONSTRAINT_PROPERTIES
+        if self._enable_restitution and self._sparse_mass_matrix_size is not None:
+            # Sparse mass factors check restitution support on the host.
+            flags |= ModelFlags.SHAPE_PROPERTIES
+        return int(flags)
 
     def _validate_joint_friction(self) -> None:
         """Reject joint friction the per-DOF friction rows cannot represent."""
@@ -4608,9 +4643,16 @@ class SolverSteel(SolverBase, CouplingInterface):
             joint_type = model.joint_type.numpy()
             qd_start = model.joint_qd_start.numpy()
             sprung = np.isin(joint_type, [int(JointType.PRISMATIC), int(JointType.REVOLUTE), int(JointType.D6)])
-            sprung &= self._model_plan.loop_joint_articulation < 0
+            sprung &= model.joint_articulation.numpy() >= 0
             for joint in np.flatnonzero(sprung):
                 spring_dof_mask[qd_start[joint] : qd_start[joint + 1]] = 1
+            # Loop-closing REVOLUTE joints warn about their ignored inputs separately.
+            unsprung = ~sprung
+            unsprung[self._revolute_loop_joints] = False
+            self._spring_ignored_dof_mask = np.repeat(unsprung, np.diff(qd_start))
+        else:
+            self._spring_ignored_dof_mask = np.zeros(0, dtype=bool)
+        self._warn_ignored_spring_stiffness(stacklevel=4)
         self._passive_spring_dof_mask = wp.array(spring_dof_mask, dtype=wp.int32, device=model.device)
         self._passive_spring_stiffness = wp.zeros(n_dofs, dtype=wp.float32, device=model.device)
         self._passive_spring_rest_q = wp.zeros(
@@ -4618,6 +4660,20 @@ class SolverSteel(SolverBase, CouplingInterface):
         )
         self._refresh_passive_spring_stiffness()
         self._refresh_passive_spring_rest_q()
+
+    def _warn_ignored_spring_stiffness(self, stacklevel: int) -> None:
+        """Warn about nonzero spring stiffness on DOFs that carry no Steel spring."""
+        stiffness = self.model.joint_stiffness
+        if stiffness is None or not self._spring_ignored_dof_mask.any():
+            return
+        ignored = int(np.count_nonzero((stiffness.numpy() != 0.0) & self._spring_ignored_dof_mask))
+        if ignored:
+            warnings.warn(
+                f"SolverSteel ignores the passive spring stiffness on {ignored} DOF(s) of joints other than "
+                "tree PRISMATIC, REVOLUTE and D6 joints.",
+                NewtonWarning,
+                stacklevel=stacklevel,
+            )
 
     def _refresh_passive_spring_stiffness(self) -> None:
         """Copy the model's passive spring stiffness of sprung DOFs into the solver's fixed buffer."""
@@ -5982,6 +6038,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._contact_slot = wp.zeros((max_contacts,), dtype=wp.int32, device=device)
         self._contact_art_a = wp.zeros((max_contacts,), dtype=wp.int32, device=device)
         self._contact_art_b = wp.zeros((max_contacts,), dtype=wp.int32, device=device)
+        self._contact_recovery_phi = wp.empty(max_contacts, dtype=float, device=device)
         self._contact_path = wp.zeros((max_contacts,), dtype=wp.int32, device=device)
         # Rows reserved by each contact: 1 (normal only) or 3 (normal and friction).
         self._contact_slots_needed = wp.zeros((max_contacts,), dtype=wp.int32, device=device)
@@ -9946,6 +10003,8 @@ class SolverSteel(SolverBase, CouplingInterface):
             self._sparse_diagonal_row_dof.fill_(-1)
 
         if contacts is not None and contacts.rigid_contact_max > 0:
+            recovery = contacts._mesh_recovery_contacts
+            recovery_phi = self._contact_recovery_phi if recovery is not None else None
             contact_build_threads = min(contacts.rigid_contact_max, _CONTACT_BUILD_THREAD_CAP)
             contact_geometry = [
                 contacts.rigid_contact_count,
@@ -9958,6 +10017,21 @@ class SolverSteel(SolverBase, CouplingInterface):
                 contacts.rigid_contact_margin0,
                 contacts.rigid_contact_margin1,
             ]
+            if recovery is not None:
+                wp.launch(
+                    prepare_contact_recovery,
+                    dim=contact_build_threads,
+                    inputs=[
+                        *contact_geometry,
+                        model.shape_body,
+                        state_in.body_q,
+                        recovery,
+                        contacts.contact_generation,
+                        self._baumgarte,
+                    ],
+                    outputs=[recovery_phi],
+                    device=model.device,
+                )
             if self._friction_anchors_enabled:
                 self._friction_patches.build(
                     model,
@@ -9968,6 +10042,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                     contact_gap_limit=self._contact_gap_limit,
                     friction_gap_limit=self._friction_gap,
                     frozen_bodies=frozen_bodies,
+                    recovery_phi=recovery_phi,
                     dt=dt,
                 )
             wp.launch(
@@ -10005,6 +10080,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                     int(self._ordered_rows),
                     self._contact_torsion_shape_radius if self._propagation_torsion_rows else self._no_torsion_radius,
                     int(self._propagation_torsion_rows),
+                    recovery_phi,
                 ],
                 outputs=[
                     self._contact_world,
@@ -10051,6 +10127,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                     self._friction_patches.view,
                     *self._contact_anchor_args,
                     self._rebound_velocity_threshold,
+                    recovery_phi,
                 ],
                 outputs=[
                     self._row_type,
@@ -10176,7 +10253,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                     )
 
             if self._propagation_active:
-                self._propagation_build_rows(state_in, state_aug, contacts, contact_build_threads)
+                self._propagation_build_rows(state_in, state_aug, contacts, contact_build_threads, recovery_phi)
                 if self._contact_warmstart:
                     self._gather_warmstart(contacts, route=2, dt=dt)
 
@@ -10206,6 +10283,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                         self._friction_anchor_beta,
                         *self._contact_anchor_args,
                         self._rebound_velocity_threshold,
+                        recovery_phi,
                     ],
                     outputs=[
                         self._mf_body_a,
@@ -11255,7 +11333,12 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._propagation_body_seen.zero_()
 
     def _propagation_build_rows(
-        self, state_in: State, state_aug: State, contacts: Contacts, contact_build_threads: int
+        self,
+        state_in: State,
+        state_aug: State,
+        contacts: Contacts,
+        contact_build_threads: int,
+        recovery_phi: wp.array[float] | None,
     ):
         """Fill the propagation rows of the allocated contacts and count them per world."""
         model = self.model
@@ -11352,6 +11435,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 self._friction_patches.view,
                 self._friction_anchor_beta,
                 self._rebound_velocity_threshold,
+                recovery_phi,
             ],
             outputs=[
                 self._propagation_body_a,

@@ -119,7 +119,7 @@ torch-cu13 = [
 # Contains all w/o torch, plus development debugging dependencies
 dev = [
     "newton[examples]",      # includes examples, which pulls in sim and visualization
-    "coverage[toml]>=7.8.0", # for code coverage testing
+    "coverage>=7.8.0",       # for code coverage testing
     "viser>=1.1.1",          # exercise browser viewer interactions in CPU and GPU CI
     "newton[remesh]",        # Open3D and pyfqmr, so the remeshing tests run
 ]
@@ -133,11 +133,9 @@ docs = [
     "sphinxcontrib-mermaid>=1.0.0",
     "sphinx-copybutton>=0.5.0",
     "sphinx-design>=0.5.0,<=0.6.1",
-    "sphinx-tabs>=3.3.0",
     "nbsphinx>=0.9.0",              # for Jupyter notebook integration
     "ipykernel>=6.0.0,<7.0.0",      # required by nbsphinx to execute notebooks (pinned <7 for rerun-sdk compatibility)
-    "pypandoc>=1.11",               # required by nbsphinx for notebook conversion
-    "pypandoc_binary>=1.11",        # bundled pandoc binary
+    "pypandoc_binary>=1.11",        # pandoc binary for nbsphinx notebook conversion
     "GitPython>=3.1.58",            # for downloading tutorial assets via newton.utils.download_asset()
     "viser>=1.1.1",
 ]

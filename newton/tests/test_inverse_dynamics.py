@@ -86,7 +86,7 @@ def _eval_inverse_dynamics_force(
 class TestInverseDynamicsBase:
     """Shared test body. Concrete subclasses set :attr:`device`."""
 
-    device: wp.context.Device | None = None
+    device: wp.Device | None = None
 
     # Per-link inertia tensors swept by tests in :class:`TestGravCompForce`
     # to confirm G(q) is genuinely insensitive to the inertia tensor (it
