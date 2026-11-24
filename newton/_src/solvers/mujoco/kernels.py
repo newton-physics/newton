@@ -12,22 +12,28 @@ import warp as wp
 from ...core.types import vec5
 from ...geometry.flags import ShapeFlags
 from ...geometry.inertia import _eig_inertia
+from ...geometry.sdf_planar_recovery import (
+    MeshRecoveryData,
+    active_recovery_contact,
+    has_recovery_contacts,
+    recovery_step_depth,
+)
 from ...sim import BodyFlags, JointTargetMode, JointType
 from ...sim.articulation import eval_joint_motion
 from ...sim.contacts import contact_surface_point, contact_surface_separation
 from .constants import (
     DEFAULT_LIMIT_SOLREF_DAMPRATIO,
     DEFAULT_LIMIT_SOLREF_TIMECONST,
+    FLOAT64_EPS,
     HINGE_CONNECT_HALF_SPAN,
     MJ_MAXIMP,
     MJ_MINIMP,
     MJ_MINMU,
-    MJ_MINVAL,
     SOLREF_MODE_FORCE_SPACE,
     SOLREF_MODE_MJCF_DEFAULT,
     SOLREF_MODE_RAW,
 )
-from .enums import EqType
+from .enums import EqType, _JointType
 
 
 def _import_contact_force_fn():
@@ -44,7 +50,7 @@ vec12 = wp.types.vector(length=12, dtype=wp.float32)
 # Utility functions
 @wp.func
 def safe_div(x: float, y: float) -> float:
-    return x / wp.where(y != 0.0, y, MJ_MINVAL)
+    return x / wp.where(y != 0.0, y, FLOAT64_EPS)
 
 
 @wp.func
@@ -127,6 +133,7 @@ def write_contact(
 
 @wp.func
 def contact_params(
+    mj_minval: float,
     geom_condim: wp.array[int],
     geom_priority: wp.array[int],
     geom_solmix: wp.array2d[float],
@@ -161,9 +168,9 @@ def contact_params(
         solmix1 = geom_solmix[worldid, g1]
         solmix2 = geom_solmix[worldid, g2]
         mix = safe_div(solmix1, solmix1 + solmix2)
-        mix = wp.where((solmix1 < MJ_MINVAL) and (solmix2 < MJ_MINVAL), 0.5, mix)
-        mix = wp.where((solmix1 < MJ_MINVAL) and (solmix2 >= MJ_MINVAL), 0.0, mix)
-        mix = wp.where((solmix1 >= MJ_MINVAL) and (solmix2 < MJ_MINVAL), 1.0, mix)
+        mix = wp.where((solmix1 < mj_minval) and (solmix2 < mj_minval), 0.5, mix)
+        mix = wp.where((solmix1 < mj_minval) and (solmix2 >= mj_minval), 0.0, mix)
+        mix = wp.where((solmix1 >= mj_minval) and (solmix2 < mj_minval), 1.0, mix)
         condim = wp.max(condim1, condim2)
         resolved_friction = wp.max(geom_friction[worldid, g1], geom_friction[worldid, g2])
 
@@ -227,11 +234,11 @@ def hydroelastic_solref(stiffness: float, damping: float, invweight: float, time
     damping_implicit = wp.max(damping, 0.0) + timestep * stiffness
     compliance_scaled = invweight * timestep * damping_implicit
     # The reciprocal form avoids inf / inf for stiff contacts.
-    imp = wp.clamp(1.0 / (1.0 + 1.0 / wp.max(compliance_scaled, MJ_MINVAL)), MJ_MINIMP, MJ_MAXIMP)
+    imp = wp.clamp(1.0 / (1.0 + 1.0 / wp.max(compliance_scaled, FLOAT64_EPS)), MJ_MINIMP, MJ_MAXIMP)
     factor = invweight * (1.0 - imp)
     solref = convert_solref(
-        wp.max(stiffness * factor, MJ_MINVAL),
-        wp.max(damping_implicit * factor, MJ_MINVAL),
+        wp.max(stiffness * factor, FLOAT64_EPS),
+        wp.max(damping_implicit * factor, FLOAT64_EPS),
         1.0,
         1.0,
     )
@@ -532,10 +539,21 @@ def eval_mujoco_coupling_effective_mass_block_kernel(
     out_inertia[tid] = inertia
 
 
+@wp.func
+def _recovery_solref(thickness: float, depth: float, dt: float, solimp: vec5) -> wp.vec2:
+    """Limit the positional recovery target independently of the contact distance."""
+    imp_max = wp.clamp(solimp[1], 0.0001, 0.9999)
+    target_speed = recovery_step_depth(thickness, depth) / dt
+    damping = 1.0 / dt
+    stiffness = damping * target_speed / depth * imp_max
+    return wp.vec2(-stiffness, -damping * imp_max)
+
+
 # Kernel functions
 # fast math only approximates div/sqrt here; keep transcendentals out of this kernel
 @wp.kernel(module="unique", module_options={"fast_math": True})
 def convert_newton_contacts_to_mjwarp_kernel(
+    mj_minval: float,
     body_q: wp.array[wp.transform],
     shape_body: wp.array[int],
     shape_flags: wp.array[int],
@@ -572,6 +590,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
     rigid_contact_stiffness: wp.array[wp.float32],
     rigid_contact_damping: wp.array[wp.float32],
     rigid_contact_friction: wp.array[wp.float32],
+    rigid_contact_surface_velocity: wp.array[wp.vec3],
     shape_margin: wp.array[float],
     shape_material_kf: wp.array[float],
     opt_impratio_invsqrt: wp.array[float],
@@ -593,6 +612,9 @@ def convert_newton_contacts_to_mjwarp_kernel(
     contact_geom_out: wp.array[wp.vec2i],
     contact_efc_address_out: wp.array2d[int],
     contact_worldid_out: wp.array[int],
+    contact_type_out: wp.array[int],
+    constraint_contact_type: int,
+    contact_surfacevel_out: wp.array[wp.vec3],
     # Fast-path generation tracking
     contact_generation: wp.array[wp.int32],
     last_contact_generation: wp.array[wp.int32],
@@ -603,6 +625,8 @@ def convert_newton_contacts_to_mjwarp_kernel(
     last_contacts_epoch: wp.array[int],
     hydroelastic_compliance: bool,
     contacts_epoch: int,
+    recovery: MeshRecoveryData,
+    compact_stale: bool,
 ):
     # nacon_out is scratch storage, initialized to zero by the solver and
     # reset by _sync_nacon_count after each pass.
@@ -619,10 +643,14 @@ def convert_newton_contacts_to_mjwarp_kernel(
     tid = wp.tid()
 
     count = rigid_contact_count[0]
+    if tid >= count:
+        return
 
     gen = contact_generation[0]
     last_gen = last_contact_generation[0]
-    needs_full = gen != last_gen
+    # An expired recovery row must release its slot even when the detection
+    # generation is held. Actuators also consume the packed table directly.
+    needs_full = gen != last_gen or (compact_stale and has_recovery_contacts(recovery, gen))
     if last_contact_timestep:
         needs_full = (
             needs_full or opt_timestep[0] != last_contact_timestep[0] or contacts_epoch != last_contacts_epoch[0]
@@ -633,20 +661,12 @@ def convert_newton_contacts_to_mjwarp_kernel(
         # Runs on the first substep after collision detection, or when cached
         # hydroelastic timestep/buffer state changes. Records the tid→cid mapping.
 
-        if tid == 0:
-            if count > naconmax:
-                wp.printf(
-                    "Number of Newton contacts (%d) exceeded MJWarp limit (%d). Increase nconmax.\n",
-                    count,
-                    naconmax,
-                )
-
-        if count > naconmax:
-            count = naconmax
-
-        if tid >= count:
-            tid_to_cid[tid] = -1
-            return
+        if tid == 0 and not compact_stale and count > naconmax:
+            wp.printf(
+                "Number of Newton contacts (%d) exceeded MJWarp limit (%d). Increase nconmax.\n",
+                count,
+                naconmax,
+            )
 
         shape_a = rigid_contact_shape0[tid]
         shape_b = rigid_contact_shape1[tid]
@@ -678,6 +698,20 @@ def convert_newton_contacts_to_mjwarp_kernel(
             X_wb_a = body_q[body_a]
         if body_b >= 0:
             X_wb_b = body_q[body_b]
+
+        recovery_slot = active_recovery_contact(
+            recovery,
+            gen,
+            shape_a,
+            shape_b,
+            X_wb_a,
+            X_wb_b,
+            rigid_contact_normal[tid],
+        )
+
+        if compact_stale and recovery_slot < -1:
+            tid_to_cid[tid] = -1
+            return
 
         # Strip artificial shape margins from Newton offsets before computing MuJoCo's geometry-surface anchor.
         offset_scale_a = safe_div(rigid_contact_margin0[tid] - shape_margin[shape_a], rigid_contact_margin0[tid])
@@ -719,6 +753,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
             worldid = body_b // bodies_per_world
 
         margin, _gap, condim, friction, solref, solreffriction, solimp, mix = contact_params(
+            mj_minval,
             geom_condim,
             geom_priority,
             geom_solmix,
@@ -789,8 +824,8 @@ def convert_newton_contacts_to_mjwarp_kernel(
                         is_elliptic,
                     )
                     solref = convert_solref(
-                        wp.max(ke * factor, MJ_MINVAL),
-                        wp.max(kd * factor, MJ_MINVAL),
+                        wp.max(ke * factor, FLOAT64_EPS),
+                        wp.max(kd * factor, FLOAT64_EPS),
                         1.0,
                         1.0,
                     )
@@ -814,7 +849,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
                 if hydroelastic and pressure_contact[tid]:
                     if is_elliptic and condim > 1:
                         h = opt_timestep[0]
-                        normal_weight = wp.max(h * (wp.max(kd, 0.0) + h * contact_ke), MJ_MINVAL)
+                        normal_weight = wp.max(h * (wp.max(kd, 0.0) + h * contact_ke), FLOAT64_EPS)
                         ir = opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
                         tangent_scale = _hydroelastic_tangent_scale(
                             normal_weight, invweight, solimp[1], ir, friction[0]
@@ -832,9 +867,9 @@ def convert_newton_contacts_to_mjwarp_kernel(
                         is_elliptic,
                     )
                     solimp = vec5(imp, imp, 0.001, 1.0, 0.5)
-                    contact_ke = wp.max(contact_ke * factor, MJ_MINVAL)
+                    contact_ke = wp.max(contact_ke * factor, FLOAT64_EPS)
                     if kd > 0.0:
-                        timeconst = 2.0 / wp.max(kd * factor, MJ_MINVAL)
+                        timeconst = 2.0 / wp.max(kd * factor, FLOAT64_EPS)
                         dampratio = wp.sqrt(1.0 / (timeconst * timeconst * contact_ke))
                     else:
                         timeconst = wp.sqrt(1.0 / contact_ke)
@@ -871,12 +906,19 @@ def convert_newton_contacts_to_mjwarp_kernel(
                 friction[4] / tangent_scale,
             )
 
+        if recovery_slot >= 0 and dist < margin:
+            dt = opt_timestep[worldid % opt_timestep.shape[0]]
+            solref = _recovery_solref(recovery.contacts[recovery_slot].thickness, margin - dist, dt, solimp)
+
         cid = wp.atomic_add(nacon_out, 0, 1)
         if cid >= naconmax:
             tid_to_cid[tid] = -1
             return
 
         tid_to_cid[tid] = cid
+        # Keep a stable compacted slot for a held certificate. Its validity
+        # can change at each predictor pose without moving ordinary rows.
+        contact_type_out[cid] = 0 if recovery_slot < -1 else constraint_contact_type
 
         write_contact(
             dist_in=dist,
@@ -904,6 +946,11 @@ def convert_newton_contacts_to_mjwarp_kernel(
             contact_efc_address_out=contact_efc_address_out,
             contact_worldid_out=contact_worldid_out,
         )
+
+        if rigid_contact_surface_velocity:
+            # Newton contacts carry a linear surface velocity only, so the spin stays zero.
+            velocity = rigid_contact_surface_velocity[tid]
+            contact_surfacevel_out[cid] = wp.vec3(wp.dot(frame[1], velocity), wp.dot(frame[2], velocity), 0.0)
     else:
         # ── FAST PATH ────────────────────────────────────────────────────
         # Subsequent substeps with the same contact set.  Only dist, pos,
@@ -947,14 +994,26 @@ def convert_newton_contacts_to_mjwarp_kernel(
 
         n = rigid_contact_normal[tid]
         # rigid_contact_margin includes shape_margin; MuJoCo handles it explicitly, subtract to recover radius_eff.
-        contact_dist_out[cid] = contact_surface_separation(
+        dist = contact_surface_separation(
             bx_a,
             bx_b,
             n,
             rigid_contact_margin0[tid] - shape_margin[shape_a],
             rigid_contact_margin1[tid] - shape_margin[shape_b],
         )
+        contact_dist_out[cid] = dist
         contact_pos_out[cid] = 0.5 * (point_a + point_b)
+        if recovery.keys.shape[0]:
+            slot = active_recovery_contact(recovery, gen, shape_a, shape_b, X_wb_a, X_wb_b, n)
+            if slot != -1:
+                contact_type_out[cid] = constraint_contact_type if slot >= 0 else 0
+                depth = contact_includemargin_out[cid] - dist
+                if slot >= 0 and depth > 0.0:
+                    world = contact_worldid_out[cid]
+                    dt = opt_timestep[world % opt_timestep.shape[0]]
+                    contact_solref_out[cid] = _recovery_solref(
+                        recovery.contacts[slot].thickness, depth, dt, contact_solimp_out[cid]
+                    )
 
         for i in range(contact_efc_address_out.shape[1]):
             contact_efc_address_out[cid, i] = -1
@@ -1011,7 +1070,7 @@ def apply_hydroelastic_compliance_kernel(
         return
     h = timestep[world % timestep.shape[0]]
     kd_implicit = wp.max(damping[tid], 0.0) + h * ke
-    compliance = wp.max(h * kd_implicit, MJ_MINVAL)
+    compliance = wp.max(h * kd_implicit, FLOAT64_EPS)
     pos = contact_dist[cid] - contact_margin[cid]
     dim = contact_dim[cid]
     adhesion = contact_adhesion[cid] if contact_adhesion else 0.0
@@ -1038,20 +1097,27 @@ def _sync_nacon_count(
     last_contact_timestep: wp.array[float],
     last_contacts_epoch: wp.array[int],
     contacts_epoch: int,
+    recovery: MeshRecoveryData,
+    compact_stale: bool,
+    naconmax: int,
 ):
     """Publish the compacted count and reset scratch storage for the next pass."""
     gen = contact_generation[0]
-    needs_full = gen != last_contact_generation[0]
+    needs_full = gen != last_contact_generation[0] or (compact_stale and has_recovery_contacts(recovery, gen))
     if last_contact_timestep:
         needs_full = (
             needs_full or opt_timestep[0] != last_contact_timestep[0] or contacts_epoch != last_contacts_epoch[0]
         )
     if needs_full:
-        nacon[0] = contact_count[0]
         last_nacon_count[0] = contact_count[0]
         last_contact_generation[0] = gen
-    else:
-        nacon[0] = last_nacon_count[0]
+        if compact_stale and contact_count[0] > naconmax:
+            wp.printf(
+                "Number of eligible Newton contacts (%d) exceeded MJWarp limit (%d). Increase nconmax.\n",
+                contact_count[0],
+                naconmax,
+            )
+    nacon[0] = wp.min(last_nacon_count[0], naconmax)
     contact_count[0] = 0
     ncollision[0] = 0
     if last_contact_timestep:
@@ -1670,6 +1736,7 @@ def create_convert_mjw_contacts_to_newton_kernel():
         mj_xquat: wp.array2d[wp.quatf],
         njmax: int,
         newton_to_mjw: wp.array[wp.int32],
+        mj_xipos: wp.array2d[wp.vec3],
         # outputs
         rigid_contact_count: wp.array[wp.int32],
         rigid_contact_shape0: wp.array[wp.int32],
@@ -1739,7 +1806,7 @@ def create_convert_mjw_contacts_to_newton_kernel():
 
         if contact_force:
             # Negate: contact_force_fn returns force on geom2; Newton stores force on shape0 (geom1).
-            contact_force[output_idx] = -wp.static(_import_contact_force_fn())(
+            wrench = -wp.static(_import_contact_force_fn())(
                 mj_opt_cone,
                 mj_contact_frame,
                 mj_contact_friction,
@@ -1753,6 +1820,14 @@ def create_convert_mjw_contacts_to_newton_kernel():
                 contact_idx,
                 True,
             )
+            # Shift from the contact point to shape 0's COM at the force
+            # evaluation stage (which can be an intermediate RK4 pose).
+            geom = mj_contact_geom[contact_idx][0]
+            body = mj_geom_bodyid[geom] if geom >= 0 else 0
+            reference = mj_xipos[world, body] if body > 0 else wp.vec3()
+            force = wp.spatial_top(wrench)
+            torque = wp.spatial_bottom(wrench) + wp.cross(mj_contact_pos[contact_idx] - reference, force)
+            contact_force[output_idx] = wp.spatial_vector(force, torque)
 
     return convert_mjw_contacts_to_newton_kernel
 
@@ -2497,7 +2572,7 @@ def update_kinematic_weld_reference_kernel(
     anchor = wp.vec3(0.0)
     pos = wp.vec3(0.0)
     rot = wp.quat_identity()
-    if jnt_type[jnt] == 0:  # mjJNT_FREE
+    if jnt_type[jnt] == _JointType.FREE:
         adr = jnt_qposadr[jnt]
         pos = wp.vec3(q[adr], q[adr + 1], q[adr + 2])
         rot = wp.normalize(wp.quat(q[adr + 4], q[adr + 5], q[adr + 6], q[adr + 3]))
@@ -2510,13 +2585,13 @@ def update_kinematic_weld_reference_kernel(
             adr = jnt_qposadr[j]
             local_pos = jnt_pos[world % jnt_pos.shape[0], j]
             x_anchor = wp.quat_rotate(rot, local_pos) + pos
-            if jnt_type[j] == 1:  # mjJNT_BALL
+            if jnt_type[j] == _JointType.BALL:
                 rot = rot * wp.normalize(wp.quat(q[adr + 1], q[adr + 2], q[adr + 3], q[adr]))
                 pos = x_anchor - wp.quat_rotate(rot, local_pos)
             else:
                 axis = jnt_axis[world % jnt_axis.shape[0], j]
                 angle = q[adr] - qpos0[world % qpos0.shape[0], adr]
-                if jnt_type[j] == 2:  # mjJNT_SLIDE
+                if jnt_type[j] == _JointType.SLIDE:
                     pos = pos + wp.quat_rotate(rot, axis) * angle
                 else:
                     rot = rot * wp.quat_from_axis_angle(axis, angle)
@@ -2583,7 +2658,7 @@ def update_jnt_properties_kernel(
         jnt_margin[world, mjc_jnt] = limit_margin[newton_dof]
 
     ref = float(0.0)
-    if jnt_type[mjc_jnt] >= 2:  # mjJNT_SLIDE or mjJNT_HINGE
+    if jnt_type[mjc_jnt] >= _JointType.SLIDE:
         ref = qpos0[world, jnt_qposadr[mjc_jnt]]
     jnt_range[world, mjc_jnt] = wp.vec2(joint_limit_lower[newton_dof] + ref, joint_limit_upper[newton_dof] + ref)
     # update joint actuator force range (effort limit)
@@ -2603,7 +2678,7 @@ def update_jnt_reference_kernel(
     """Shift scalar joint limits to a new reference without changing their relative bounds."""
     world, jnt = wp.tid()
     dof = mjc_jnt_to_newton_dof[world, jnt]
-    if dof < 0 or jnt_type[jnt] < 2:
+    if dof < 0 or jnt_type[jnt] < _JointType.SLIDE:
         return
     ref = float(0.0)
     if dof_ref:
@@ -2649,7 +2724,7 @@ def update_joint_transforms_kernel(
 
     # Skip free joints
     jtype = mjc_jnt_type[mjc_jnt]
-    if jtype == 0:  # mjJNT_FREE
+    if jtype == _JointType.FREE:
         return
 
     # Get transforms from Newton (indexed by Newton joint)
@@ -2665,7 +2740,7 @@ def update_joint_transforms_kernel(
     body_quat[world, mjc_body] = quat_xyzw_to_wxyz(tf.q)
 
     # Only hinge and slide joints use a motion axis.
-    if newton_dof >= 0 and jtype >= 2:
+    if newton_dof >= 0 and jtype >= _JointType.SLIDE:
         axis = newton_joint_axis[newton_dof]
         jnt_axis[world, mjc_jnt] = wp.quat_rotate(child_xform.q, axis)
     jnt_pos[world, mjc_jnt] = child_xform.p
@@ -3036,8 +3111,8 @@ def update_jnt_solref_from_invweight0_kernel(
     if invw > 0.0 and dmax < 1.0:
         factor = invw * (1.0 - dmax)
 
-    direct_stiffness = wp.max(ke * factor, MJ_MINVAL)
-    direct_damping = wp.max(kd * factor, MJ_MINVAL)
+    direct_stiffness = wp.max(ke * factor, FLOAT64_EPS)
+    direct_damping = wp.max(kd * factor, FLOAT64_EPS)
     jnt_solref[world, mjc_jnt] = convert_solref(direct_stiffness, direct_damping, 1.0, 1.0)
 
 
@@ -3073,7 +3148,7 @@ def capture_actuator_dampratio_kernel(
     kp = actuator_gainprm[world % actuator_gainprm.shape[0], actuator][0]
     bias = actuator_biasprm[world, actuator]
     ratio = float(0.0)
-    if bias[2] > 0.0 and wp.abs(kp + bias[1]) <= MJ_MINVAL:
+    if bias[2] > 0.0 and wp.abs(kp + bias[1]) <= FLOAT64_EPS:
         ratio = bias[2]
     dampratio_out[world, actuator] = ratio
 
@@ -3082,7 +3157,7 @@ def capture_actuator_dampratio_kernel(
 def _dampratio_damping(ratio: float, kp: float, inv_weight: float):
     """Return the damping for a ``dampratio`` given the inverse reflected inertia ``J M^-1 J^T``, as MuJoCo's compiler."""
     inertia = float(0.0)
-    if inv_weight > MJ_MINVAL:
+    if inv_weight > FLOAT64_EPS:
         inertia = 1.0 / inv_weight
     return ratio * 2.0 * wp.sqrt(kp * inertia)
 
@@ -3629,7 +3704,7 @@ def convert_qfrc_from_mj_kernel(
 
 @wp.kernel
 def update_pair_properties_kernel(
-    pairs_per_world: int,
+    mjc_pair_to_newton_pair: wp.array2d[wp.int32],
     pair_solref_in: wp.array[wp.vec2],
     pair_solreffriction_in: wp.array[wp.vec2],
     pair_solimp_in: wp.array[vec5],
@@ -3648,9 +3723,17 @@ def update_pair_properties_kernel(
 
     Iterates over MuJoCo pairs [world, pair] and copies solver properties
     (solref, solimp, margin, gap, friction) from Newton custom attributes.
+    ``mjc_pair_to_newton_pair`` resolves each slot to the Newton row that produced
+    it, so a slot is read by the world that authored it: template-world rows are
+    resolved by rank within each world, global rows are read by every world at
+    their absolute index.
+    An unmapped slot is -1 and is left at MuJoCo's own value.
     """
     world, mjc_pair = wp.tid()
-    newton_pair = world * pairs_per_world + mjc_pair
+    newton_pair = mjc_pair_to_newton_pair[world, mjc_pair]
+
+    if newton_pair < 0:
+        return
 
     if pair_solref_in:
         pair_solref_out[world, mjc_pair] = pair_solref_in[newton_pair]
@@ -3920,7 +4003,7 @@ OVERFLOW_CONTACT_PIPELINE = wp.constant(wp.int32(1 << 16))
 """Collision pipeline overflowed: rigid_contact_count exceeded rigid_contact_max."""
 
 OVERFLOW_SOLVER_NCONMAX = wp.constant(wp.int32(1 << 17))
-"""Solver nconmax overflow: rigid_contact_count exceeded naconmax."""
+"""Solver nconmax overflow: the inputs to the solver exceeded naconmax."""
 
 
 @wp.kernel
@@ -3928,6 +4011,7 @@ def collect_overflow_kernel(
     # Newton collision pipeline diagnostics
     rigid_contact_count: wp.array[wp.int32],  # [1] — total contacts generated
     rigid_contact_max: int,  # collision pipeline buffer capacity
+    solver_contact_count: wp.array[wp.int32],  # [1] — before truncation to solver capacity
     naconmax: int,  # solver contact buffer capacity
     # 1 when Newton fed contacts to the solver (use_mujoco_contacts=False);
     # 0 when MuJoCo Warp ran its own collision detection — bits 16-17 are
@@ -3940,9 +4024,7 @@ def collect_overflow_kernel(
 ):
     """Collect overflow signals from the collision pipeline and solver into a per-world bitmask.
 
-    Runs with ``dim=nworld``. Thread 0 checks the global contact count against
-    both capacity limits and ORs the result into every world slot; all threads
-    independently OR in their world's mujoco-warp overflow bits.
+    Each world receives the shared contact overflow bits and its own MuJoCo Warp bits.
 
     Newton-defined bits (16-17) are only set when ``newton_contacts=1``.  When
     MuJoCo Warp performs its own collision detection the ``contacts`` argument
@@ -3957,7 +4039,7 @@ def collect_overflow_kernel(
         count = rigid_contact_count[0]
         if count > rigid_contact_max:
             newton_bits = newton_bits | OVERFLOW_CONTACT_PIPELINE
-        if count > naconmax:
+        if solver_contact_count[0] > naconmax:
             newton_bits = newton_bits | OVERFLOW_SOLVER_NCONMAX
 
     # Merge Newton bits and this world's mujoco-warp bits into the output.

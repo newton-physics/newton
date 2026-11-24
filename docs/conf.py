@@ -76,7 +76,6 @@ extensions = [
     "sphinxcontrib.mermaid",
     "sphinx_copybutton",
     "sphinx_design",
-    "sphinx_tabs.tabs",
     "autodoc_filter",
     "autodoc_wpfunc",
     "experimental",

@@ -292,7 +292,12 @@ def _run_padmm_sparse(solver_cls, device):
     config.rho_0 = 1.0
     config.max_iterations = 200
     solver = PADMMSolver(
-        model=model, config=config, warmstart=PADMMWarmStartMode.NONE, use_acceleration=False, collect_info=False
+        model=model,
+        problem=problem,
+        config=config,
+        warmstart=PADMMWarmStartMode.NONE,
+        use_acceleration=False,
+        collect_info=False,
     )
 
     problem.build(model=model, data=data, limits=limits, contacts=contacts, jacobians=jacobians)

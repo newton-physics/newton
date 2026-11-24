@@ -147,7 +147,7 @@ class TestMuJoCoHeightfieldBase(unittest.TestCase):
         # The builder also warns when the heightfields belong to separate worlds.
         with self.assertWarnsRegex(UserWarning, "^Heightfield-vs-heightfield collision is not supported;"):
             model = builder.finalize(device="cuda:0")
-        solver = SolverMuJoCo(model, use_mujoco_cpu=False, separate_worlds=True)
+        solver = SolverMuJoCo(model, use_mujoco_cpu=False)
         source = mujoco.MjModel.from_xml_string(_scene(0.1))
         np.testing.assert_allclose(solver.mjw_model.hfield_size.numpy()[0], source.hfield_size[0], rtol=1.0e-6)
         ground = int(np.flatnonzero(solver.mj_model.geom_type == int(mujoco.mjtGeom.mjGEOM_HFIELD))[0])
