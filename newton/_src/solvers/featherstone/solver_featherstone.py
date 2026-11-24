@@ -1,13 +1,10 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-import warnings
-
 import numpy as np
 import warp as wp
 
 from ...core.types import override
-from ...exceptions import NewtonDeprecationWarning
 from ...sim import BodyFlags, Contacts, Control, JointType, Model, ModelFlags, State
 from ...sim.joint_mimic import eval_joint_mimic, has_supported_joint_mimics
 from ..coupled.interface import CouplingInterface
@@ -62,11 +59,6 @@ from .kernels import (
 
 # armature substituted for kinematic joints so the solve leaves them unaccelerated
 _KINEMATIC_ARMATURE = 1.0e10
-
-_FRICTION_SMOOTHING_DEPRECATION_MSG = (
-    "friction_smoothing is deprecated in Newton 1.8 and is ignored. "
-    "Remove its use; configure shape material kf for the low-speed friction slope and mu for the Coulomb limit."
-)
 
 
 def _group_view(array: wp.array, start: int, shape: tuple[int, int, int]) -> wp.array:
@@ -167,7 +159,6 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
         *,
         angular_damping: float = 0.05,
         update_mass_matrix_interval: int = 1,
-        friction_smoothing: float | None = None,
         use_tile_gemm: bool = False,
         fuse_cholesky: bool = True,
         deterministic: wp.DeterministicMode | None = None,
@@ -177,11 +168,6 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
             model: The model to be simulated.
             angular_damping: Angular damping factor. Defaults to 0.05.
             update_mass_matrix_interval: How often to update the mass matrix (every n-th time the :meth:`step` function gets called). The update is also forced on the next step after :meth:`notify_model_changed` reports body, joint DOF or inertial changes. Both decisions are made on the host when :meth:`step` runs, so a captured CUDA graph replays the choice made at capture time; use an interval of 1 or recapture after such a notification. Defaults to 1.
-            friction_smoothing: Deprecated, ignored compatibility argument.
-
-                .. deprecated:: 1.8
-                    Remove this argument. Shape material ``kf`` controls the low-speed
-                    friction slope and ``mu`` controls the Coulomb limit.
             use_tile_gemm: Whether to use operators from Warp's Tile API to solve for joint accelerations. A kernel is compiled per distinct articulation size. Defaults to False.
             fuse_cholesky: Whether to fuse the Cholesky decomposition into the inertia matrix evaluation kernel when using the Tile API. Only used if `use_tile_gemm` is true. Defaults to True.
             deterministic: Opt-in determinism for this solver's atomic-emitting
@@ -240,13 +226,6 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
 
         self.angular_damping = angular_damping
         self.update_mass_matrix_interval = update_mass_matrix_interval
-        if friction_smoothing is not None:
-            warnings.warn(
-                _FRICTION_SMOOTHING_DEPRECATION_MSG,
-                NewtonDeprecationWarning,
-                stacklevel=2,
-            )
-        self._friction_smoothing = 1.0 if friction_smoothing is None else friction_smoothing
         self.use_tile_gemm = use_tile_gemm
         self.fuse_cholesky = fuse_cholesky
 
@@ -273,23 +252,6 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
             else:
                 create_kernel = create_inertia_matrix_kernel
             self._tile_kernels_by_size = {size: create_kernel(*size) for size in self._group_to_art}
-
-    @property
-    def friction_smoothing(self) -> float:
-        """Legacy value retained for attribute access; it has no effect on friction.
-
-        .. deprecated:: 1.8
-            Reading or assigning this attribute warns. Use shape material ``kf``
-            for the low-speed friction slope and ``mu`` for the Coulomb limit.
-        """
-        warnings.warn(_FRICTION_SMOOTHING_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-        return self._friction_smoothing
-
-    @friction_smoothing.setter
-    def friction_smoothing(self, value: float) -> None:
-        """Store the legacy value without changing the friction force."""
-        warnings.warn(_FRICTION_SMOOTHING_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-        self._friction_smoothing = value
 
     def _update_kinematic_state(self):
         """Recompute cached solver flags and effective joint armature."""
