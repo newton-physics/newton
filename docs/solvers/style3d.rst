@@ -240,6 +240,7 @@ matching a newly constructed solver at the restored state. It does not restore
 the projection history of an arbitrary saved frame or guarantee exact
 continuation of that frame's trajectory. Optional ``world_mask`` and ``flags``
 arguments select which worlds and particle state changes reset the history.
+For tetrahedra spanning worlds, selecting any vertex's world resets the element's history.
 The example browser's Reset button recreates the example and its solver.
 
 The volume term uses the tetrahedron's material Lamé parameter ``lambda``

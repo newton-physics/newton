@@ -217,6 +217,13 @@ def test_tet_constraint_assembles_float_psd_matrix(test, device):
     mask = wp.zeros(model.world_count + 1, dtype=wp.bool, device=device)
     solver.reset(state_in, world_mask=mask)
     np.testing.assert_array_equal(solver._tet_volume_targets.numpy(), history)
+    # Select a world belonging to a vertex other than the first one.
+    original_worlds = model.particle_world.numpy()
+    model.particle_world.assign(np.array([-1, 0, 0, 0], dtype=np.int32))
+    mask.assign(np.array([True, False], dtype=np.bool_))
+    solver.reset(state_in, world_mask=mask)
+    np.testing.assert_array_equal(solver._tet_volume_targets.numpy(), np.eye(3)[None])
+    model.particle_world.assign(original_worlds)
     mask.fill_(True)
     solver.reset(state_in, world_mask=mask, flags=newton.StateFlags.PARTICLE_Q)
     np.testing.assert_array_equal(solver._tet_volume_targets.numpy(), np.eye(3)[None])

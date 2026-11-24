@@ -586,7 +586,8 @@ class SolverStyle3D(SolverBase):
         Args:
             state: Restored simulation state. Its arrays are not modified.
             world_mask: Optional world selection as described in
-                :meth:`~newton.solvers.SolverBase.reset`.
+                :meth:`~newton.solvers.SolverBase.reset`. A tetrahedron's
+                history is reset if any of its vertices belongs to a selected world.
             flags: Reset history when particle positions or velocities are
                 selected. ``None`` selects all state flags.
         """

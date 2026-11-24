@@ -20,8 +20,13 @@ def reset_tet_volume_targets_kernel(
 ):
     """Reset projection history for tetrahedra in selected worlds."""
     tid = wp.tid()
-    world = particle_world[tet_indices[tid, 0]]
-    if reset_all or reset_world_selected(world, world_mask, world_count):
+    selected = reset_all
+    if not reset_all:
+        for vertex in range(4):
+            world = particle_world[tet_indices[tid, vertex]]
+            if reset_world_selected(world, world_mask, world_count):
+                selected = True
+    if selected:
         volume_targets[tid] = wp.identity(3, dtype=float)
 
 
