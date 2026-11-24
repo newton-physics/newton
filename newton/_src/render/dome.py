@@ -286,7 +286,7 @@ def sample_env(
 
     radiance = dome.environment_map[y, x]
     lum = 0.2126 * radiance[0] + 0.7152 * radiance[1] + 0.0722 * radiance[2]
-    return direction, radiance, wp.max(lum, 1.0e-8) * dome.probability_density_scale
+    return direction, radiance, wp.max(lum, 1.0e-8) * dome.probability_density_scale[0]
 
 
 @wp.func

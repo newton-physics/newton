@@ -134,7 +134,7 @@ class RenderConfig:
     """
 
     enable_ambient_lighting: bool = True
-    """Enable ambient lighting for the scene."""
+    """Enable the sky/ground dome when no HDRI override is active."""
 
     enable_dome_lighting: bool = True
     """Enable dome lighting for the ambient term.
@@ -170,12 +170,11 @@ class RenderConfig:
     """
 
     enable_dome_background: bool = False
-    """Show the HDRI dome environment map as the background for camera rays that miss all geometry.
+    """Show the selected dome map as the background for camera rays that miss all geometry.
 
-    Requires an environment set via
-    :meth:`~newton.sensors.SensorCamera.set_dome_light`; the built-in sky/ground
-    ambient has no per-direction image to display. Only used when
-    :attr:`enable_dome_lighting` is set.
+    Uses the explicit environment, or the sky/ground map from
+    :meth:`~newton.sensors.SensorCamera.set_ambient_light` when no HDRI override
+    is active. Only used when :attr:`enable_dome_lighting` is set.
     """
 
     enable_particles: bool = True
@@ -320,7 +319,7 @@ class DomeLight:
         up: Equirectangular basis up axis (the pole).
         row_cumulative_distribution: Marginal row CDF for importance sampling, shape ``[height]``.
         column_cumulative_distribution: Per-row conditional column CDF, shape ``[height, width]``.
-        probability_density_scale: Scale converting sampled luminance to a solid-angle pdf.
+        probability_density_scale: Single-element device array converting luminance to a solid-angle pdf.
     """
 
     spherical_harmonics: wp.array[wp.vec3f]
@@ -331,4 +330,4 @@ class DomeLight:
     up: wp.vec3f
     row_cumulative_distribution: wp.array[wp.float32]
     column_cumulative_distribution: wp.array2d[wp.float32]
-    probability_density_scale: wp.float32
+    probability_density_scale: wp.array[wp.float32]

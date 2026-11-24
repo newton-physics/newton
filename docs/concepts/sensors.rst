@@ -134,10 +134,13 @@ switches the default render config back to hemispheric lighting.
 The default dome response uses spherical harmonics. Set
 ``camera.default_render_config.dome_shadow_samples`` above zero for stochastic soft
 shadows, and ``enable_dome_background`` to display the environment behind geometry.
-Both options require an environment. Dome samples advance during CUDA graph replay
-as well as ordinary updates. Environment arrays must be nonempty, finite, and
-non-negative; integer arrays and LDR files are interpreted as sRGB. Dome lighting is configured at runtime on the
-camera; importing USD dome lights is not supported.
+When no HDRI is supplied, a two-row sky/ground environment supplies ambient
+lighting through the same dome shader. This also supports dome shadows and
+backgrounds. The unshadowed result is mathematically equivalent to the previous
+hemispheric blend, with small floating-point differences from SH evaluation.
+Dome samples advance during CUDA graph replay as well as ordinary updates. Environment arrays must be nonempty, finite, and
+non-negative; integer arrays and LDR files are interpreted as sRGB. Dome lighting
+is configured at runtime on the camera; importing USD dome lights is not supported.
 
 Camera Rays from USD and Calibration Data
 -----------------------------------------

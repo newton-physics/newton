@@ -461,10 +461,14 @@ class TestSensorCamera(unittest.TestCase):
 
     @staticmethod
     def _center_hdr(camera: SensorCamera, model: newton.Model, **update_kwargs) -> np.ndarray:
-        rays = SensorCamera.compute_camera_rays_pinhole(1, 1, camera_fov=0.8, device="cpu")
+        rays = SensorCamera.compute_camera_rays_pinhole(1, 1, camera_fov=0.8, device=model.device)
         hdr = camera.allocate_image_color_hdr(1, 1, 1)
         camera.update(
-            model.state(), TestSensorCamera._identity_transforms(1), rays, hdr_color_image=hdr, **update_kwargs
+            model.state(),
+            TestSensorCamera._identity_transforms(1, device=model.device),
+            rays,
+            hdr_color_image=hdr,
+            **update_kwargs,
         )
         return hdr.numpy().reshape(-1)[:3]
 
@@ -477,18 +481,52 @@ class TestSensorCamera(unittest.TestCase):
         albedo = np.where(srgb <= 0.04045, srgb / 12.92, ((srgb + 0.055) / 1.055) ** 2.4)
         np.testing.assert_allclose(hdr, albedo * np.array([0.2, 0.2, 0.225]), rtol=1.0e-3)
 
+        explicit = SensorCamera(model)
+        explicit.set_dome_light(np.array([[[0.2, 0.2, 0.225]], [[0.05, 0.05, 0.06]]], dtype=np.float32))
+        np.testing.assert_array_equal(hdr, self._center_hdr(explicit, model))
+
     def test_set_ambient_light_scales_ambient_without_recompiling(self) -> None:
-        model, camera = self._build_sphere_scene()
-        default_hdr = self._center_hdr(camera, model)
-        kernel_count = len(camera._render_context._kernel_cache)
+        """Update hemispheric dome colors without rebuilding kernels or captured buffers."""
+        for device in get_test_devices():
+            with self.subTest(device=device):
+                model = self._sphere_world_builder().finalize(device=device)
+                camera = SensorCamera(model)
+                default_hdr = self._center_hdr(camera, model)
+                kernel_count = len(camera._render_context._kernel_cache)
 
-        camera.set_ambient_light((0.4, 0.4, 0.45))
-        np.testing.assert_allclose(self._center_hdr(camera, model), 2.0 * default_hdr, rtol=1.0e-5)
+                camera.set_ambient_light((0.4, 0.4, 0.45))
+                np.testing.assert_allclose(self._center_hdr(camera, model), 2.0 * default_hdr, rtol=1.0e-5)
 
-        camera.set_ambient_light((0.2, 0.4, 0.9), ground_color=(0.0, 0.0, 0.0))
-        tinted = self._center_hdr(camera, model)
-        np.testing.assert_allclose(tinted, default_hdr * np.array([1.0, 2.0, 4.0]), rtol=1.0e-5)
-        self.assertEqual(len(camera._render_context._kernel_cache), kernel_count)
+                camera.set_ambient_light((0.2, 0.4, 0.9), ground_color=(0.0, 0.0, 0.0))
+                tinted = self._center_hdr(camera, model)
+                np.testing.assert_allclose(tinted, default_hdr * np.array([1.0, 2.0, 4.0]), rtol=1.0e-5)
+                self.assertEqual(len(camera._render_context._kernel_cache), kernel_count)
+                for invalid in ((-1.0, 0.0, 0.0), (float("nan"), 0.0, 0.0), (float("inf"), 0.0, 0.0)):
+                    with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                        camera.set_ambient_light(invalid)
+                np.testing.assert_array_equal(self._center_hdr(camera, model), tinted)
+
+                if device.is_cuda:
+                    sky = np.array((0.2, 0.4, 0.8), dtype=np.float32)
+                    ground = 0.5 * sky
+                    camera.set_ambient_light(sky, ground)
+                    camera.default_render_config.dome_shadow_samples = 32
+                    image = camera.allocate_image_color_hdr(1, 1, 1)
+                    rays = self._rays(1, 1, device=device)
+                    transforms = self._identity_transforms(1, device=device)
+                    state = model.state()
+                    camera.update(state, transforms, rays, hdr_color_image=image)
+                    with wp.ScopedCapture(device=device) as capture:
+                        camera.update(state, transforms, rays, hdr_color_image=image)
+                    # Hold random directions fixed to isolate the captured light update.
+                    camera._render_context._dome_shadow_seed.fill_(0)
+                    wp.capture_launch(capture.graph)
+                    before = image.numpy()
+                    self.assertGreater(float(before.max()), 0.0)
+                    camera.set_ambient_light(2.0 * sky, 2.0 * ground)
+                    camera._render_context._dome_shadow_seed.fill_(0)
+                    wp.capture_launch(capture.graph)
+                    np.testing.assert_allclose(image.numpy(), 2.0 * before, rtol=2.0e-6)
 
     def test_set_ambient_light_uniform_ground(self) -> None:
         """``ground_color=None`` gives the same ambient for every surface orientation."""
@@ -2032,15 +2070,16 @@ class TestSensorCamera(unittest.TestCase):
         )
         np.testing.assert_allclose(hdr.numpy(), expected, atol=1.0e-5)
 
-    def test_dome_shadow_sampling_requires_environment(self) -> None:
-        """Verify shadowed dome sampling without a dome environment raises a clear error."""
+    def test_dome_shadow_sampling_uses_ambient_environment(self) -> None:
+        """Sample the sky/ground environment when no explicit HDRI has been supplied."""
         width, height = 4, 4
         model, camera = self._build_sphere_scene()
         self.assertEqual(camera.default_render_config.dome_shadow_samples, 0)
         camera.default_render_config = SensorCamera.RenderConfig(enable_dome_lighting=True, dome_shadow_samples=4)
         hdr = camera.allocate_image_color_hdr(1, width, height)
-        with self.assertRaises(RuntimeError):
-            camera.update(model.state(), self._identity_transforms(1), self._rays(width, height), hdr_color_image=hdr)
+        camera.update(model.state(), self._identity_transforms(1), self._rays(width, height), hdr_color_image=hdr)
+        self.assertTrue(np.isfinite(hdr.numpy()).all())
+        self.assertGreater(float(hdr.numpy().max()), 0.0)
 
         camera.set_dome_light_color((1.0, 1.0, 1.0))
         for options in (
@@ -2068,15 +2107,24 @@ class TestSensorCamera(unittest.TestCase):
         camera.update(model.state(), self._identity_transforms(1), self._rays(width, height), hdr_color_image=hdr)
         np.testing.assert_array_equal(hdr.numpy(), expected)
 
-    def test_dome_background_requires_environment(self) -> None:
-        """Verify enabling the dome background without a dome environment raises a clear error."""
-        width, height = 4, 4
+    def test_dome_background_uses_ambient_environment(self) -> None:
+        """Display the sky/ground map even without an explicit HDRI or ambient shading."""
         model, camera = self._build_sphere_scene()
         self.assertFalse(camera.default_render_config.enable_dome_background)
-        camera.default_render_config = SensorCamera.RenderConfig(enable_dome_lighting=True, enable_dome_background=True)
-        hdr = camera.allocate_image_color_hdr(1, width, height)
-        with self.assertRaises(RuntimeError):
-            camera.update(model.state(), self._identity_transforms(1), self._rays(width, height), hdr_color_image=hdr)
+        camera.default_render_config.enable_dome_background = True
+        camera.default_render_config.enable_ambient_lighting = False
+        rays_np = np.zeros((1, 2, 1, 2, 3), dtype=np.float32)
+        rays_np[0, 0, 0, 1] = (0.0, 0.0, 1.0)
+        rays_np[0, 1, 0, 1] = (0.0, 0.0, -1.0)
+        rays = wp.array(rays_np, dtype=wp.vec3f, device="cpu")
+        transforms = wp.array(
+            [wp.transform(wp.vec3(20.0, 0.0, 0.0), wp.quat_identity())], dtype=wp.transformf, device="cpu"
+        )
+        hdr = camera.allocate_image_color_hdr(1, 2, 1)
+        camera.update(model.state(), transforms, rays, hdr_color_image=hdr)
+        np.testing.assert_array_equal(
+            hdr.numpy()[0, 0], np.array([[0.2, 0.2, 0.225], [0.05, 0.05, 0.06]], dtype=np.float32)
+        )
 
     def test_dome_background_shows_environment_on_miss(self) -> None:
         """Verify camera rays that miss all geometry sample the HDRI dome as background."""

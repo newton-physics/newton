@@ -116,8 +116,8 @@ def fill_body_camera_transforms(
 
 class Example:
     def __init__(self, viewer: ViewerGL, args):
-        if not args.dome_hdri and (args.dome_background or args.dome_shadow_samples != 0 or args.dome_intensity != 1.0):
-            raise ValueError("--dome-hdri is required for dome background, intensity, and shadow options")
+        if not args.dome_hdri and args.dome_intensity != 1.0:
+            raise ValueError("--dome-hdri is required for HDRI intensity")
         self.worlds_per_row = 6
         self.worlds_per_col = 4
         self.world_count_total = self.worlds_per_row * self.worlds_per_col
@@ -267,10 +267,10 @@ class Example:
         self.sensor_camera = SensorCamera(self.model)
         if args.dome_hdri:
             self.sensor_camera.set_dome_light(args.dome_hdri, intensity=args.dome_intensity)
-            self.sensor_camera.default_render_config.dome_shadow_samples = args.dome_shadow_samples
-            self.sensor_camera.default_render_config.enable_dome_background = args.dome_background
         else:
             self.sensor_camera.create_default_light(enable_shadows=True)
+        self.sensor_camera.default_render_config.dome_shadow_samples = args.dome_shadow_samples
+        self.sensor_camera.default_render_config.enable_dome_background = args.dome_background
         self.sensor_camera.assign_checkerboard_material(shape_indices=self.ground_shape_indices)
         self.sensor_camera.default_render_config.enable_shadows = True
         self.sensor_camera.default_render_config.enable_textures = True
@@ -637,9 +637,9 @@ class Example:
             "--dome-shadow-samples",
             type=int,
             default=0,
-            help="Shadow rays per pixel for HDRI dome soft shadows (0 disables; requires --dome-hdri).",
+            help="Shadow rays per pixel for dome soft shadows (0 disables; defaults to the sky/ground map).",
         )
-        parser.add_argument("--dome-background", action="store_true", help="Display the HDRI background.")
+        parser.add_argument("--dome-background", action="store_true", help="Display the HDRI or sky/ground background.")
         parser.add_argument(
             "--ply",
             help="Gaussian filename.",

@@ -286,11 +286,10 @@ def create_kernel(
         light_positions: wp.array[wp.vec3f],
         light_orientations: wp.array[wp.vec3f],
         light_colors: wp.array[wp.vec3f],
-        ambient_lighting: wp.array[wp.vec3f],
         dome: DomeLight,
         dome_shadow_seed: wp.array[wp.int32],
         dome_shadow_sample_count: wp.int32,
-        dome_is_set: wp.bool,
+        ambient_light_enabled: wp.bool,
         seed: wp.int32,
     ) -> ShadeResult:
         result = ShadeResult()
@@ -355,64 +354,50 @@ def create_kernel(
 
         shaded_color = closest_hit.color
         if not is_gaussian:
-            if wp.static(config.enable_dome_lighting):
-                if dome_is_set:
-                    up = dome.up
-                    len_n = wp.length(closest_hit.normal)
-                    n = wp.normalize(closest_hit.normal if len_n > 0.0 else up)
-                    if wp.static(config.dome_shadow_samples > 0):
-                        # Importance sampling targets bright regions of the environment.
-                        shadow_origin = hit_point + n * 1.0e-4
-                        rng = wp.rand_init(dome_shadow_seed[0], seed)
-                        inv_count = 1.0 / float(dome_shadow_sample_count)
-                        radiance_sum = wp.vec3f(0.0)
-                        # Keep the bound dynamic so Warp does not unroll the ray loop.
-                        for s in range(dome_shadow_sample_count):
-                            # Stratify rows to reduce variance at a fixed ray count.
-                            radiance_sum = radiance_sum + sample_dome_shadow(
-                                dome,
-                                bvh_shapes_size,
-                                bvh_shapes_id,
-                                bvh_shapes_group_roots,
-                                bvh_particles_size,
-                                bvh_particles_id,
-                                bvh_particles_group_roots,
-                                world_index,
-                                shape_enabled,
-                                shape_types,
-                                shape_sizes,
-                                shape_transforms,
-                                shape_source_ptr,
-                                particles_position,
-                                particles_radius,
-                                topology_particle_mask,
-                                triangle_mesh_id,
-                                triangle_mesh_group_roots,
-                                shadow_origin,
-                                n,
-                                (float(s) + wp.randf(rng)) * inv_count,
-                                wp.randf(rng),
-                                wp.randf(rng),
-                                wp.randf(rng),
-                            )
-                        dome_factor = radiance_sum * inv_count
-                        shaded_color = wp.cw_mul(albedo_color, dome_factor * dome.intensity)
-                    else:
-                        irradiance = dome_lighting.eval_dome_irradiance(dome, n)
-                        shaded_color = wp.cw_mul(albedo_color, irradiance * dome.intensity)
-
-            if wp.static(config.enable_ambient_lighting):
-                if not dome_is_set or not wp.static(config.enable_dome_lighting):
-                    # ambient_lighting holds (sky radiance, ground radiance, up vector).
-                    sky = ambient_lighting[0]
-                    ground = ambient_lighting[1]
-                    up = ambient_lighting[2]
-                    len_n = wp.length(closest_hit.normal)
-                    n = closest_hit.normal if len_n > 0.0 else up
-                    n = wp.normalize(n)
-                    hemispheric = 0.5 * (wp.dot(n, up) + 1.0)
-                    ambient_color = sky * hemispheric + ground * (1.0 - hemispheric)
-                    shaded_color = wp.cw_mul(albedo_color, ambient_color)
+            if ambient_light_enabled:
+                up = dome.up
+                len_n = wp.length(closest_hit.normal)
+                n = wp.normalize(closest_hit.normal if len_n > 0.0 else up)
+                if wp.static(config.enable_dome_lighting and config.dome_shadow_samples > 0):
+                    # Importance sampling targets bright regions of the environment.
+                    shadow_origin = hit_point + n * 1.0e-4
+                    rng = wp.rand_init(dome_shadow_seed[0], seed)
+                    inv_count = 1.0 / float(dome_shadow_sample_count)
+                    radiance_sum = wp.vec3f(0.0)
+                    # Keep the bound dynamic so Warp does not unroll the ray loop.
+                    for s in range(dome_shadow_sample_count):
+                        # Stratify rows to reduce variance at a fixed ray count.
+                        radiance_sum = radiance_sum + sample_dome_shadow(
+                            dome,
+                            bvh_shapes_size,
+                            bvh_shapes_id,
+                            bvh_shapes_group_roots,
+                            bvh_particles_size,
+                            bvh_particles_id,
+                            bvh_particles_group_roots,
+                            world_index,
+                            shape_enabled,
+                            shape_types,
+                            shape_sizes,
+                            shape_transforms,
+                            shape_source_ptr,
+                            particles_position,
+                            particles_radius,
+                            topology_particle_mask,
+                            triangle_mesh_id,
+                            triangle_mesh_group_roots,
+                            shadow_origin,
+                            n,
+                            (float(s) + wp.randf(rng)) * inv_count,
+                            wp.randf(rng),
+                            wp.randf(rng),
+                            wp.randf(rng),
+                        )
+                    dome_factor = radiance_sum * inv_count
+                    shaded_color = wp.cw_mul(albedo_color, dome_factor * dome.intensity)
+                else:
+                    irradiance = dome_lighting.eval_dome_irradiance(dome, n)
+                    shaded_color = wp.cw_mul(albedo_color, irradiance * dome.intensity)
 
             for light_index in range(light_count):
                 light_contribution = compute_lighting(
@@ -486,11 +471,10 @@ def create_kernel(
         light_positions: wp.array[wp.vec3f],
         light_orientations: wp.array[wp.vec3f],
         light_colors: wp.array[wp.vec3f],
-        ambient_lighting: wp.array[wp.vec3f],
         dome: DomeLight,
         dome_shadow_seed: wp.array[wp.int32],
         dome_shadow_sample_count: wp.int32,
-        dome_is_set: wp.bool,
+        ambient_light_enabled: wp.bool,
         seed: wp.int32,
     ) -> RenderSample:
         result = RenderSample()
@@ -582,11 +566,10 @@ def create_kernel(
             light_positions,
             light_orientations,
             light_colors,
-            ambient_lighting,
             dome,
             dome_shadow_seed,
             dome_shadow_sample_count,
-            dome_is_set,
+            ambient_light_enabled,
             seed,
         )
         result.albedo = shade.albedo
@@ -645,11 +628,10 @@ def create_kernel(
         light_positions: wp.array[wp.vec3f],
         light_orientations: wp.array[wp.vec3f],
         light_colors: wp.array[wp.vec3f],
-        ambient_lighting: wp.array[wp.vec3f],
         dome: DomeLight,
         dome_shadow_seed: wp.array[wp.int32],
         dome_shadow_sample_count: wp.int32,
-        dome_is_set: wp.bool,
+        ambient_light_enabled: wp.bool,
         # Outputs
         out_color: wp.array[wp.uint32],
         out_depth: wp.array[wp.float32],
@@ -754,11 +736,10 @@ def create_kernel(
                 light_positions,
                 light_orientations,
                 light_colors,
-                ambient_lighting,
                 dome,
                 dome_shadow_seed,
                 dome_shadow_sample_count,
-                dome_is_set,
+                ambient_light_enabled,
                 seed,
             )
             if not sample.hit:
@@ -863,11 +844,10 @@ def create_kernel(
                     light_positions,
                     light_orientations,
                     light_colors,
-                    ambient_lighting,
                     dome,
                     dome_shadow_seed,
                     dome_shadow_sample_count,
-                    dome_is_set,
+                    ambient_light_enabled,
                     seed,
                 )
                 if not sample.hit:
@@ -1061,11 +1041,10 @@ def create_kernel(
                             light_positions,
                             light_orientations,
                             light_colors,
-                            ambient_lighting,
                             dome,
                             dome_shadow_seed,
                             dome_shadow_sample_count,
-                            dome_is_set,
+                            ambient_light_enabled,
                             seed,
                         )
                         sample_color = shade.color

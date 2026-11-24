@@ -973,14 +973,20 @@ class SensorCamera:
         Surfaces facing the model's up axis receive *sky_color*, surfaces facing
         away receive *ground_color*, and other orientations blend between the
         two. The defaults are ``(0.2, 0.2, 0.225)`` and ``(0.05, 0.05, 0.06)``.
-        Changing the colors does not recompile the render kernel. This disables
-        dome lighting on :attr:`default_render_config`; a previously loaded
-        environment remains available for per-call render configs.
+        The colors form a two-row sky/ground dome map evaluated by the same
+        spherical-harmonic shader as HDRI lighting. This is mathematically
+        equivalent to the hemispheric blend, with small floating-point differences.
+        Changing the colors does not recompile the render kernel. This selects
+        the sky/ground map on :attr:`default_render_config`; a previously loaded
+        HDRI remains available for per-call render configs.
 
         Args:
-            sky_color: Linear RGB ambient radiance from above.
-            ground_color: Linear RGB ambient radiance from below. If ``None``,
-                *sky_color* is used, which gives uniform ambient light.
+            sky_color: Finite, non-negative linear RGB ambient radiance from above.
+            ground_color: Finite, non-negative linear RGB ambient radiance from
+                below. If ``None``, *sky_color* is used, which gives uniform light.
+
+        Raises:
+            ValueError: If a color contains negative or non-finite radiance.
 
         .. experimental::
 

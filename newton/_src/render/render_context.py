@@ -146,9 +146,7 @@ class RenderContext:
         self._dome_light_set = False
         self._dome_shadow_seed: wp.array[wp.int32] | None = None
 
-        self._ambient_sky_color = wp.vec3f(*DEFAULT_AMBIENT_SKY_COLOR)
-        self._ambient_ground_color = wp.vec3f(*DEFAULT_AMBIENT_GROUND_COLOR)
-        self._ambient_lighting: wp.array[wp.vec3f] | None = None
+        self._ambient_dome_light: DomeLight | None = None
 
         # Heightfields and convex hulls are triangle meshes (their wp.Mesh lives
         # in shape_source_ptr), so the renderer treats them as meshes: it reuses
@@ -328,11 +326,6 @@ class RenderContext:
                     )
             self._sync_triangle_mesh()
 
-    def _up_vector(self) -> wp.vec3f:
-        up = [0.0, 0.0, 0.0]
-        up[int(self.up_axis)] = 1.0
-        return wp.vec3f(*up)
-
     def set_dome_light(
         self,
         image: str | os.PathLike[str] | np.ndarray | wp.array,
@@ -340,33 +333,42 @@ class RenderContext:
         intensity: float = 1.0,
         rotation: float = 0.0,
     ) -> None:
-        """Set an HDRI dome light providing diffuse image-based ambient lighting.
+        """Replace hemispheric ambient lighting with an explicit environment."""
+        self._dome_light = self._build_dome_light(image, intensity=intensity, rotation=rotation)
+        self._dome_light_set = True
 
-        Projects the equirectangular environment onto order-2 spherical
-        harmonics (:func:`~newton._src.render.dome.compute_dome_sh9`);
-        rendering uses it for the ambient term when
-        :attr:`~newton.sensors.SensorCamera.RenderConfig.enable_dome_lighting` is
-        set, replacing the built-in sky/ground ambient. Also enables the
-        shadowed dome path (:attr:`~newton.sensors.SensorCamera.RenderConfig.dome_shadow_samples`).
+    def _build_dome_light(
+        self,
+        image: str | os.PathLike[str] | np.ndarray | wp.array,
+        *,
+        intensity: float = 1.0,
+        rotation: float = 0.0,
+        out: DomeLight | None = None,
+    ) -> DomeLight:
+        """Build an environment, or update the fixed-size ambient map in place.
 
-        Args:
-            image: Equirectangular environment. A linear-radiance array
-                ``(H, W, C>=3)``, a Warp array, or a path to a ``.hdr`` image or
-                an LDR image.
-            intensity: Scalar multiplier applied to the dome contribution.
-            rotation: Azimuth offset [rad] about the scene up axis (yaw).
+        ``out`` retains device-array addresses for ambient color updates during
+        CUDA graph replay. It must have the same image dimensions as ``image``.
         """
         if not math.isfinite(intensity) or intensity < 0.0:
             raise ValueError("Dome intensity must be finite and non-negative")
         if not math.isfinite(rotation):
             raise ValueError("Dome rotation must be finite")
         equirect = load_equirect_image(image)
-        dome_light = DomeLight()
+        dome_light = DomeLight() if out is None else out
+
+        def upload(name, data, dtype):
+            # The fixed-size ambient map updates in place for CUDA graph replay.
+            if out is None:
+                setattr(dome_light, name, wp.array(data, dtype=dtype, device=self.device))
+            else:
+                getattr(dome_light, name).assign(data)
+
         spherical_harmonics = compute_dome_sh9(equirect, self.up_axis, rotation)
         forward, bitangent, up = equirect_frame(self.up_axis, rotation)
-        dome_light.spherical_harmonics = wp.array(spherical_harmonics, dtype=wp.vec3f, device=self.device)
+        upload("spherical_harmonics", spherical_harmonics, wp.vec3f)
         dome_light.intensity = float(intensity)
-        dome_light.environment_map = wp.array(equirect, dtype=wp.vec3f, device=self.device)
+        upload("environment_map", equirect, wp.vec3f)
         dome_light.forward = wp.vec3f(float(forward[0]), float(forward[1]), float(forward[2]))
         dome_light.bitangent = wp.vec3f(float(bitangent[0]), float(bitangent[1]), float(bitangent[2]))
         dome_light.up = wp.vec3f(float(up[0]), float(up[1]), float(up[2]))
@@ -388,24 +390,19 @@ class RenderContext:
         row_cumulative_distribution[-1] = 1.0
         column_cumulative_distribution = np.cumsum(weight, axis=1) / row_weight[:, None]
         column_cumulative_distribution[:, -1] = 1.0
-        dome_light.row_cumulative_distribution = wp.array(
-            row_cumulative_distribution, dtype=wp.float32, device=self.device
+        upload("row_cumulative_distribution", row_cumulative_distribution, wp.float32)
+        upload("column_cumulative_distribution", column_cumulative_distribution, wp.float32)
+        upload(
+            "probability_density_scale",
+            np.array([env_width / (total_weight * 2.0 * np.pi)], dtype=np.float32),
+            wp.float32,
         )
-        dome_light.column_cumulative_distribution = wp.array(
-            column_cumulative_distribution, dtype=wp.float32, device=self.device
-        )
-        dome_light.probability_density_scale = env_width / (total_weight * 2.0 * np.pi)
-        self._dome_light = dome_light
-        self._dome_light_set = True
+        return dome_light
 
-    def _get_ambient_lighting(self) -> wp.array[wp.vec3f]:
-        if self._ambient_lighting is None:
-            self._ambient_lighting = wp.array(
-                [self._ambient_sky_color, self._ambient_ground_color, self._up_vector()],
-                dtype=wp.vec3f,
-                device=self.device,
-            )
-        return self._ambient_lighting
+    def _get_ambient_dome_light(self) -> DomeLight:
+        if self._ambient_dome_light is None:
+            self.set_ambient_light(DEFAULT_AMBIENT_SKY_COLOR, DEFAULT_AMBIENT_GROUND_COLOR)
+        return self._ambient_dome_light
 
     def set_ambient_light(
         self,
@@ -426,12 +423,8 @@ class RenderContext:
         """
         sky = wp.vec3f(*(float(c) for c in sky_color))
         ground = sky if ground_color is None else wp.vec3f(*(float(c) for c in ground_color))
-        self._ambient_sky_color = sky
-        self._ambient_ground_color = ground
-        if self._ambient_lighting is not None:
-            self._ambient_lighting.assign(
-                np.array([list(sky), list(ground), list(self._up_vector())], dtype=np.float32)
-            )
+        image = np.array([[list(sky)], [list(ground)]], dtype=np.float32)
+        self._ambient_dome_light = self._build_dome_light(image, out=self._ambient_dome_light)
 
     def create_default_light(
         self,
@@ -603,11 +596,6 @@ class RenderContext:
         if camera_rays.ndim == 4 and camera_rays.shape[2] > 1 and anti_aliasing == AntiAliasing.NONE:
             raise ValueError("anti_aliasing must be SSAA or MSAA for camera_rays with more than one sample")
 
-        if config.enable_dome_lighting and not self._dome_light_set:
-            if config.dome_shadow_samples > 0:
-                raise RuntimeError("dome_shadow_samples > 0 requires an environment map; call set_dome_light() first.")
-            if config.enable_dome_background:
-                raise RuntimeError("enable_dome_background requires an environment map; call set_dome_light() first.")
         if not isinstance(config.dome_shadow_samples, (int, np.integer)) or config.dome_shadow_samples < 0:
             raise ValueError("dome_shadow_samples must be a non-negative integer")
         if not math.isfinite(config.dome_shadow_max_distance) or config.dome_shadow_max_distance < 0.0:
@@ -753,6 +741,14 @@ class RenderContext:
                 from ..geometry.optix import wo  # noqa: PLC0415
 
                 launch, launch_options = wo.launch, {}
+            use_dome = config.enable_dome_lighting and self._dome_light_set
+            ambient_light_enabled = use_dome or config.enable_ambient_lighting
+            light = self._dome_light
+            if not use_dome and (
+                (ambient_light_enabled and (color_image is not None or hdr_color_image is not None))
+                or (config.enable_dome_lighting and config.enable_dome_background)
+            ):
+                light = self._get_ambient_dome_light()
             if config.enable_dome_lighting and config.dome_shadow_samples > 0:
                 if self._dome_shadow_seed is None:
                     self._dome_shadow_seed = wp.zeros(1, dtype=wp.int32, device=self.device)
@@ -811,11 +807,10 @@ class RenderContext:
                     self._lights_position,
                     self._lights_orientation,
                     self._lights_color,
-                    self._get_ambient_lighting(),
-                    self._dome_light,
+                    light,
                     self._dome_shadow_seed,
                     config.dome_shadow_samples,
-                    self._dome_light_set,
+                    ambient_light_enabled,
                     # Outputs
                     color_image,
                     depth_image,
