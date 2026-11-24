@@ -22,8 +22,8 @@ _CPU_QR_SKIP_REASON = (
 _PROJECTION_SCHEDULES = {
     "jacobi": {"gauss_seidel_max_colors": 1, "projection_acceleration": "none"},
     "gauss_seidel": {"gauss_seidel_max_colors": 4, "projection_acceleration": "none"},
-    "apgd": {"gauss_seidel_max_colors": 1, "projection_acceleration": "apgd"},
-    "gauss_seidel_apgd": {"gauss_seidel_max_colors": 4, "projection_acceleration": "apgd"},
+    "nesterov": {"gauss_seidel_max_colors": 1, "projection_acceleration": "nesterov"},
+    "gauss_seidel_nesterov": {"gauss_seidel_max_colors": 4, "projection_acceleration": "nesterov"},
     "jacobi_anderson": {"gauss_seidel_max_colors": 1, "projection_acceleration": "anderson"},
     "gauss_seidel_anderson": {"gauss_seidel_max_colors": 4, "projection_acceleration": "anderson"},
 }

@@ -32,7 +32,6 @@ if TYPE_CHECKING:
 ###
 
 __all__ = [
-    "APGDData",
     "AndersonData",
     "AndersonRowsData",
     "BoxRows",
@@ -46,6 +45,7 @@ __all__ = [
     "LOXResiduals",
     "LOXStatus",
     "LOXSystemData",
+    "NesterovData",
     "ProjectionAcceleration",
     "ProjectionData",
     "SpatialContactBlocks",
@@ -67,7 +67,7 @@ class ProjectionAcceleration(IntEnum):
     NONE = 0
     """Plain projection sweeps."""
 
-    APGD = 1
+    NESTEROV = 1
     """Restarted Nesterov extrapolation."""
 
     ANDERSON = 2
@@ -813,8 +813,8 @@ class AndersonData:
         """Whether the safeguard of each world must check the next map."""
 
 
-class APGDData:
-    """Momentum state of APGD-accelerated projection.
+class NesterovData:
+    """Momentum state of Nesterov-accelerated projection.
 
     Args:
         problem_data: Rows and body data of the LOX problem.
@@ -886,8 +886,8 @@ class ProjectionData:
         """Per-body correction accumulated by one sweep, zero between sweeps."""
         self.anderson = AndersonData(problem_data) if acceleration == ProjectionAcceleration.ANDERSON else None
         """Anderson acceleration state, if selected."""
-        self.apgd = APGDData(problem_data) if acceleration == ProjectionAcceleration.APGD else None
-        """APGD acceleration state, if selected."""
+        self.nesterov = NesterovData(problem_data) if acceleration == ProjectionAcceleration.NESTEROV else None
+        """Nesterov acceleration state, if selected."""
 
 
 class LOXSystemData:

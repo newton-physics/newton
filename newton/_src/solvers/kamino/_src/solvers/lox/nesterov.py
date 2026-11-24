@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Nesterov (APGD) extrapolation of the LOX projection sweeps.
+"""Nesterov extrapolation of the LOX projection sweeps.
 
 After every sweep but the last, the reactions are extrapolated along their
 last change, ``lambda <- lambda + beta (lambda - lambda_previous)``, with the
@@ -34,22 +34,22 @@ from .projection_kernels import is_active_row, scatter_box_impulse, scatter_cont
 from .system_kernels import ProjectionWeights
 
 if TYPE_CHECKING:
-    from .types import APGDData, LOXProblemData
+    from .types import LOXProblemData, NesterovData
 
 ###
 # Module interface
 ###
 
 __all__ = [
-    "APGDAcceleration",
-    "APGDRowState",
-    "apgd_momentum",
+    "NesterovAcceleration",
+    "NesterovRowState",
     "box_restart_dot",
     "contact_restart_dot",
-    "extrapolate_box_apgd_row",
-    "extrapolate_contact_apgd_row",
-    "initialize_box_apgd_row",
-    "initialize_contact_apgd_row",
+    "extrapolate_box_nesterov_row",
+    "extrapolate_contact_nesterov_row",
+    "initialize_box_nesterov_row",
+    "initialize_contact_nesterov_row",
+    "nesterov_momentum",
 ]
 
 
@@ -66,8 +66,8 @@ wp.set_module_options({"enable_backward": False})
 
 
 @wp.struct
-class APGDRowState:
-    """Trial and previous reactions of the APGD extrapolation, for the per-world projection."""
+class NesterovRowState:
+    """Trial and previous reactions of the Nesterov extrapolation, for the per-world projection."""
 
     box_trial: wp.array[wp.float32]
     box_previous: wp.array[wp.float32]
@@ -85,7 +85,7 @@ class APGDRowState:
 
 
 @wp.func
-def apgd_momentum(theta: wp.float32, restart_dot: wp.float32):
+def nesterov_momentum(theta: wp.float32, restart_dot: wp.float32):
     """Return the next ``theta`` and the extrapolation ``beta``, restarting when the last sweep moved away.
 
     ``theta`` starts at one and the recursion keeps it in ``(0, 1]``.
@@ -98,7 +98,7 @@ def apgd_momentum(theta: wp.float32, restart_dot: wp.float32):
 
 
 @wp.func
-def initialize_box_apgd_row(
+def initialize_box_nesterov_row(
     row: wp.int32,
     box_lower: wp.array[wp.float32],
     box_upper: wp.array[wp.float32],
@@ -114,7 +114,7 @@ def initialize_box_apgd_row(
 
 
 @wp.func
-def initialize_contact_apgd_row(
+def initialize_contact_nesterov_row(
     cid: wp.int32,
     contact_body_a: wp.array[wp.int32],
     contact_body_b: wp.array[wp.int32],
@@ -187,7 +187,7 @@ def contact_restart_dot(
 
 
 @wp.func
-def extrapolate_box_apgd_row(
+def extrapolate_box_nesterov_row(
     row: wp.int32,
     beta: wp.float32,
     box_body_a: wp.array[wp.int32],
@@ -219,7 +219,7 @@ def extrapolate_box_apgd_row(
 
 
 @wp.func
-def extrapolate_contact_apgd_row(
+def extrapolate_contact_nesterov_row(
     cid: wp.int32,
     beta: wp.float32,
     contact_body_a: wp.array[wp.int32],
@@ -337,12 +337,12 @@ def _initialize_reactions(
         row = tid
         wid = box_world[row]
         if box_local[row] < world_box_count[wid] and world_active[wid] and not (recycle and history[wid] == 1):
-            initialize_box_apgd_row(row, box_lower, box_upper, box_reaction, box_trial, box_previous)
+            initialize_box_nesterov_row(row, box_lower, box_upper, box_reaction, box_trial, box_previous)
         return
     cid = tid - box_capacity
     wid = contact_world[cid]
     if contact_local[cid] < world_contact_count[wid] and world_active[wid] and not (recycle and history[wid] == 1):
-        initialize_contact_apgd_row(
+        initialize_contact_nesterov_row(
             cid,
             contact_body_a,
             contact_body_b,
@@ -428,7 +428,7 @@ def _update_momentum(
     restart_dot[wid] = 0.0
     if world_failed[wid]:
         value = 0.0
-    next_theta, next_beta = apgd_momentum(theta[wid], value)
+    next_theta, next_beta = nesterov_momentum(theta[wid], value)
     theta[wid] = next_theta
     beta[wid] = next_beta
 
@@ -474,7 +474,7 @@ def _extrapolate_reactions(
         row = tid
         wid = box_world[row]
         if is_active_row(box_local[row], wid, world_box_count, world_active, world_failed):
-            extrapolate_box_apgd_row(
+            extrapolate_box_nesterov_row(
                 row,
                 beta[wid],
                 box_body_a,
@@ -491,7 +491,7 @@ def _extrapolate_reactions(
     cid = tid - box_capacity
     wid = contact_world[cid]
     if is_active_row(contact_local[cid], wid, world_contact_count, world_active, world_failed):
-        extrapolate_contact_apgd_row(
+        extrapolate_contact_nesterov_row(
             cid,
             beta[wid],
             contact_body_a,
@@ -515,14 +515,14 @@ def _extrapolate_reactions(
 ###
 
 
-class APGDAcceleration:
-    """Own the momentum state of APGD-accelerated projection."""
+class NesterovAcceleration:
+    """Own the momentum state of Nesterov-accelerated projection."""
 
-    def __init__(self, problem_data: LOXProblemData, data: APGDData):
+    def __init__(self, problem_data: LOXProblemData, data: NesterovData):
         self.problem_data = problem_data
         self._data = data
         self._capacity = problem_data.box_rows.capacity + problem_data.contact_rows.capacity
-        self.row_state = APGDRowState()
+        self.row_state = NesterovRowState()
         """Trial and previous reactions, for the per-world projection."""
         for name in ("box_trial", "box_previous", "contact_trial", "contact_previous", "theta", "history"):
             setattr(self.row_state, name, getattr(data, name))

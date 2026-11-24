@@ -549,7 +549,7 @@ class TestSolverKaminoConfig(NewtonTestCase):
         SolverKaminoImpl.Config(dynamics_solver="lox", sparse_jacobian=True, sparse_dynamics=True)
         self.assertEqual(SolverKaminoImpl.Config(dynamics_solver="lox", integrator="moreau").integrator, "moreau")
         kamino_config.LOXSolverConfig(gauss_seidel_max_colors=4, projection_acceleration="anderson")
-        kamino_config.LOXSolverConfig(gauss_seidel_max_colors=4, projection_acceleration="apgd")
+        kamino_config.LOXSolverConfig(gauss_seidel_max_colors=4, projection_acceleration="nesterov")
         kamino_config.LOXSolverConfig(
             contact_compliance=True, contact_implicit_restitution=True, contact_spatial_friction=True
         )

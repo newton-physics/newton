@@ -567,13 +567,11 @@ class LOXSolver:
             self._problem.data,
             self._config.gauss_seidel_max_colors,
             ProjectionAcceleration.from_string(self._config.projection_acceleration),
-        )
-        self._projection.contact_proximal_regularization = self._config.contact_proximal_regularization
-        # The first eighth of the splitting iterations pull toward the scaled warm start
-        self._projection.configure_proximal_target(
-            self._config.contact_proximal_warmstart_scale,
-            max(1, self._config.max_iterations // 8),
-            self._data.state.iteration_count,
+            contact_proximal_regularization=self._config.contact_proximal_regularization,
+            contact_proximal_warmstart_scale=self._config.contact_proximal_warmstart_scale,
+            # The first eighth of the splitting iterations pull toward the scaled warm start
+            contact_proximal_target_iterations=max(1, self._config.max_iterations // 8),
+            iteration_count=self._data.state.iteration_count,
         )
 
     def _initialize_splitting(

@@ -22,8 +22,8 @@ import warp as wp
 
 from ...core.types import mat66f, vec6f
 from .anderson import AndersonProjection
-from .apgd import APGDAcceleration
 from .coloring import RowColoring
+from .nesterov import NesterovAcceleration
 from .projection_kernels import (
     _apply_twist_delta,
     _prepare_box_blocks,
@@ -91,6 +91,13 @@ class ProjectionSchedule:
         problem_data: Box rows, contacts, and body incidence of the LOX problem.
         color_count: Maximum number of Gauss--Seidel colors; one selects Jacobi.
         acceleration: Acceleration of the projection sweeps.
+        contact_proximal_regularization: Relative proximal regularization of the diagonal of the local
+            contact solve blocks.
+        contact_proximal_warmstart_scale: Scale of the warm-start reactions that the first splitting
+            iterations pull the local contact solves toward.
+        contact_proximal_target_iterations: Number of first splitting iterations that pull toward the
+            scaled warm start; zero disables the target.
+        iteration_count: Splitting iterations performed so far by each world; required with a target.
     """
 
     def __init__(
@@ -98,26 +105,41 @@ class ProjectionSchedule:
         problem_data: LOXProblemData,
         color_count: int,
         acceleration: ProjectionAcceleration = ProjectionAcceleration.NONE,
+        *,
+        contact_proximal_regularization: float = 0.0,
+        contact_proximal_warmstart_scale: float = 1.0,
+        contact_proximal_target_iterations: int = 0,
+        iteration_count: wp.array[wp.int32] | None = None,
     ):
         self.problem_data = problem_data
         self.device = problem_data.device
         self._data = ProjectionData(problem_data, color_count, acceleration)
         self._acceleration = acceleration
-        self.contact_proximal_regularization = 0.0
+        self.contact_proximal_regularization = float(contact_proximal_regularization)
         """Relative proximal regularization of the diagonal of the local contact solve blocks."""
+        self.contact_proximal_warmstart_scale = float(contact_proximal_warmstart_scale)
+        """Scale of the warm-start reactions that form the proximal target."""
+        self.contact_proximal_target_iterations = int(contact_proximal_target_iterations)
+        """Number of first splitting iterations that pull toward the proximal target."""
+        self.iteration_count = iteration_count
+        """Splitting iterations performed so far by each world."""
         self.contact_proximal_target: wp.array[wp.vec3f] | None = None
         """Scaled warm-start reaction of each contact, the proximal target of the first iterations, or ``None``."""
-        self.contact_proximal_warmstart_scale = 1.0
-        """Scale of the warm-start reactions that form the proximal target."""
-        self.contact_proximal_target_iterations = 0
-        """Number of first splitting iterations that pull toward the proximal target."""
-        self.iteration_count: wp.array[wp.int32] | None = None
-        """Splitting iterations performed so far by each world."""
+        # The target only acts through the proximal weight, so a zero regularization leaves nothing to pull
+        contact_capacity = problem_data.contact_rows.capacity
+        if (
+            self.contact_proximal_target_iterations > 0
+            and self.contact_proximal_regularization > 0.0
+            and contact_capacity > 0
+        ):
+            if iteration_count is None:
+                raise ValueError("a proximal target requires the per-world iteration count")
+            self.contact_proximal_target = wp.zeros(contact_capacity, dtype=wp.vec3f, device=self.device)
         data = self._data
         self.coloring = RowColoring(problem_data, data.coloring) if data.coloring is not None else None
         self.color_count = data.coloring.color_count if data.coloring is not None else 1
         colored = self.coloring is not None
-        self.apgd = APGDAcceleration(problem_data, data.apgd) if data.apgd is not None else None
+        self.nesterov = NesterovAcceleration(problem_data, data.nesterov) if data.nesterov is not None else None
         self.anderson = AndersonProjection(problem_data, data.anderson) if data.anderson is not None else None
 
         row_capacity = problem_data.box_rows.capacity + problem_data.contact_rows.capacity
@@ -165,17 +187,6 @@ class ProjectionSchedule:
     # Public API
     ###
 
-    def configure_proximal_target(self, scale: float, iterations: int, iteration_count: wp.array[wp.int32]) -> None:
-        """Pull the local contact solves of the first ``iterations`` splitting iterations toward ``scale`` times
-        the warm-start reactions, with the proximal weight of :attr:`contact_proximal_regularization`."""
-        rows = self.problem_data.contact_rows
-        if iterations <= 0 or self.contact_proximal_regularization <= 0.0 or rows.capacity == 0:
-            return
-        self.contact_proximal_warmstart_scale = float(scale)
-        self.contact_proximal_target_iterations = int(iterations)
-        self.iteration_count = iteration_count
-        self.contact_proximal_target = wp.zeros(rows.capacity, dtype=wp.vec3f, device=self.device)
-
     def set_proximal_target(self) -> None:
         """Set the proximal target from the warm-start reactions of the time step."""
         if self.contact_proximal_target is None:
@@ -213,8 +224,8 @@ class ProjectionSchedule:
             self._prepare_blocks(inverse_weight, p.body_incidence, None, None, None, world_failed)
         if self.anderson is not None:
             self.anderson.reset()
-        if self.apgd is not None:
-            self.apgd.reset()
+        if self.nesterov is not None:
+            self.nesterov.reset()
 
     def project(
         self,
@@ -243,14 +254,14 @@ class ProjectionSchedule:
             self._project_by_world(iterations, recycle, world_active, self._weights, projected_twist, world_failed)
             return
 
-        if self.apgd is not None:
-            self.apgd.begin(world_active, recycle=recycle)
+        if self.nesterov is not None:
+            self.nesterov.begin(world_active, recycle=recycle)
         self._warmstart(world_active, self._weights, world_failed)
         self._apply(body_world, world_active, world_failed, projected_twist)
-        if self.apgd is not None and recycle:
+        if self.nesterov is not None and recycle:
             # The extrapolation deferred from the last sweep of the previous splitting iteration;
             # a world without row history restarts its momentum here and stays at its warm start
-            self.apgd.extrapolate(world_active, world_failed, self._weights, self._data.twist_delta)
+            self.nesterov.extrapolate(world_active, world_failed, self._weights, self._data.twist_delta)
             self._apply(body_world, world_active, world_failed, projected_twist)
 
         if self.anderson is not None:
@@ -262,8 +273,8 @@ class ProjectionSchedule:
             if self.anderson is not None:
                 self.anderson.finish_map(world_active, world_failed, self._weights, self._data.twist_delta)
                 self._apply(body_world, world_active, world_failed, projected_twist)
-            if self.apgd is not None and iteration + 1 < iterations:
-                self.apgd.extrapolate(world_active, world_failed, self._weights, self._data.twist_delta)
+            if self.nesterov is not None and iteration + 1 < iterations:
+                self.nesterov.extrapolate(world_active, world_failed, self._weights, self._data.twist_delta)
                 self._apply(body_world, world_active, world_failed, projected_twist)
         if self.coloring is not None:
             # An order-independent Jacobi sweep restores the symmetry lost to the color ordering.
@@ -579,8 +590,8 @@ class ProjectionSchedule:
         acceleration_state = NoAccelerationState()
         if self.anderson is not None:
             acceleration_state = self.anderson.world_state
-        elif self.apgd is not None:
-            acceleration_state = self.apgd.row_state
+        elif self.nesterov is not None:
+            acceleration_state = self.nesterov.row_state
         wp.launch(
             make_project_by_world_kernel(
                 spatial is not None, self.coloring is not None, self._acceleration, p.max_world_body_count

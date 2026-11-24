@@ -1278,11 +1278,11 @@ class LOXSolverConfig:
     impulses.
     """
 
-    projection_acceleration: Literal["none", "apgd", "anderson"] = "apgd"
+    projection_acceleration: Literal["none", "nesterov", "anderson"] = "nesterov"
     """Acceleration applied to the body-space projection map.
 
     Both accelerate either the Jacobi or the colored Gauss--Seidel map.
-    ``"apgd"`` applies restarted Nesterov extrapolation after every sweep but
+    ``"nesterov"`` applies restarted Nesterov extrapolation after every sweep but
     the last. ``"anderson"`` applies one safeguarded Anderson direction after
     every sweep; it retains one direction and uses a delayed residual-growth
     safeguard.
@@ -1291,7 +1291,7 @@ class LOXSolverConfig:
     projection_acceleration_recycle: bool = True
     """Whether the projection acceleration carries its state across LOX splitting iterations.
 
-    Reuse is limited to one frozen LOX solve. APGD keeps its momentum and
+    Reuse is limited to one frozen LOX solve. Nesterov keeps its momentum and
     reaction history, and applies the extrapolation of the last sweep of a
     splitting iteration at the start of the next projection. Anderson
     keeps its direction: raw samples always restart when the projection
@@ -1588,10 +1588,10 @@ class LOXSolverConfig:
             raise ValueError(
                 f"Invalid joint_penalty_seed_time_step: {self.joint_penalty_seed_time_step}. Must be positive."
             )
-        if self.projection_acceleration not in ("none", "apgd", "anderson"):
+        if self.projection_acceleration not in ("none", "nesterov", "anderson"):
             raise ValueError(
                 f"Invalid projection_acceleration: {self.projection_acceleration}. "
-                "Must be 'none', 'apgd', or 'anderson'."
+                "Must be 'none', 'nesterov', or 'anderson'."
             )
         if not isinstance(self.projection_acceleration_recycle, bool):
             raise ValueError(

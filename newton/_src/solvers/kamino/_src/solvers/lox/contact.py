@@ -510,7 +510,9 @@ def _make_sliding_root_quartic(*, iterations: int, tolerance: float):
                     upper = probe
                     probe *= 0.5
                 else:
-                    lower = probe
+                    # As in the expansion, only a finite value bounds the root from below
+                    if wp.isfinite(value):
+                        lower = probe
                     break
 
         # The finite bracket rejects a non-finite Newton start or step
