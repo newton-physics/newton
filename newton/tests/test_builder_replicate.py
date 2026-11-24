@@ -318,7 +318,8 @@ class TestModelBuilderReplicate(unittest.TestCase):
     def test_composition_transforms_particle_state(self):
         """Transform copied particle positions and velocities without changing the prefix."""
         source = ModelBuilder()
-        source.add_particle((1.0, 2.0, 3.0), (2.0, -1.0, 0.5), 1.0)
+        # 0.1 is not exact in float32; copies that are not rotated must keep it exact.
+        source.add_particle((1.0, 2.0, 3.0), (0.1, -1.0, 0.5), 1.0)
         rotation = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
         offset = np.array([3.0, -2.0, 1.0])
         xforms = [
@@ -348,8 +349,10 @@ class TestModelBuilderReplicate(unittest.TestCase):
                         )
                 np.testing.assert_array_equal(target.particle_q[0], [7.0, 8.0, 9.0])
                 np.testing.assert_array_equal(target.particle_qd[0], [4.0, 5.0, 6.0])
+                self.assertEqual(tuple(target.particle_qd[1]), source.particle_qd[0])
+                self.assertEqual(tuple(target.particle_qd[2]), source.particle_qd[0])
                 np.testing.assert_array_equal(source.particle_q, [[1.0, 2.0, 3.0]])
-                np.testing.assert_array_equal(source.particle_qd, [[2.0, -1.0, 0.5]])
+                np.testing.assert_array_equal(source.particle_qd, [[0.1, -1.0, 0.5]])
 
     def test_composition_transforms_free_root_targets(self):
         """Transform free-root pose and velocity targets with the copy, in each joint's parent frame."""

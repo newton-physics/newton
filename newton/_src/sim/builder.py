@@ -4350,10 +4350,11 @@ class ModelBuilder:
             vectors += np.cross(xyz, t) + w * t
 
         def rotate_copies(values: np.ndarray) -> None:
-            # Rotate the float32 (..., 3) rows of each rotated copy in place.
+            # Rotate the (..., 3) rows of each rotated copy in place, in float32 like Warp.
             rows = values.reshape((copy_count, -1, 3))
             rotated_copies = moved_copies[rotated]
-            rows[rotated_copies] = quat_rotate_rows(moved_xforms[rotated, None, 3:], rows[rotated_copies])
+            rotated_rows = rows[rotated_copies].astype(np.float32, copy=False)
+            rows[rotated_copies] = quat_rotate_rows(moved_xforms[rotated, None, 3:], rotated_rows)
 
         counts = self._builder_merge_counts(builder)
         self._validate_builder_merge(builder, set(counts))
@@ -4480,7 +4481,11 @@ class ModelBuilder:
                 if len(source) == 0:
                     continue
                 attribute_specs.pop(attr)
-                values = np.tile(pack_warp_values(source, warp_type), (copy_count, *(1,) * len(warp_type._shape_)))
+                # Python floats stay float64 so copies that are not rotated keep them exact.
+                packed = join_warp_values(source, warp_type)
+                if packed is None:
+                    packed = np.asarray(source, dtype=np.float64).reshape((-1, *warp_type._shape_))
+                values = np.tile(packed, (copy_count, *(1,) * len(warp_type._shape_)))
                 rotate_copies(values)
                 # Keep the source element shape, e.g. Mat33 rows given as 9 flat floats.
                 values = values.reshape((-1, *np.shape(source[0])))
