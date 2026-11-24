@@ -998,6 +998,10 @@ class Actuator:
         ):
             computed_output = _require_array(sim_control, self.control_computed_output_attr)
         self.transmission.compute(
+            positions,
+            velocities,
+            self.pos_indices,
+            self.indices,
             output_forces,
             self._computed_forces,
             self.effort_indices,

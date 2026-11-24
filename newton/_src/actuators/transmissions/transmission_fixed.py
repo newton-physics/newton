@@ -126,17 +126,21 @@ class TransmissionFixed(TransmissionBase):
 
     def compute(
         self,
+        positions: wp.array[float],
+        velocities: wp.array[float],
+        pos_indices: wp.array2d[wp.uint32],
+        dof_indices: wp.array2d[wp.uint32],
         forces: wp.array[float],
         computed_forces: wp.array[float],
-        dof_indices: wp.array2d[wp.uint32],
+        effort_indices: wp.array2d[wp.uint32],
         output: wp.array[float],
         computed_output: wp.array[float] | None,
         device: wp.Device | None = None,
     ) -> None:
         wp.launch(
             kernel=_transmission_fixed_kernel,
-            dim=dof_indices.shape,
-            inputs=[forces, computed_forces, dof_indices, self.gear, self.efficiency],
+            dim=effort_indices.shape,
+            inputs=[forces, computed_forces, effort_indices, self.gear, self.efficiency],
             outputs=[output, computed_output],
             device=device,
         )

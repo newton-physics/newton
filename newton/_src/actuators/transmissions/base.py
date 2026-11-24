@@ -28,7 +28,9 @@ class TransmissionBase:
     Both maps must be consistent, so that the actuator effort times the
     actuator velocity equals the summed joint effort times joint velocity,
     unless the transmission models losses, which only reduce the joint
-    effort. For example, with a gear ratio of 3, a joint at 0.1 rad is a motor at
+    effort. With a sensor, :meth:`compute_state` receives the measured
+    positions, so a transmission whose ratios depend on the pose evaluates
+    its velocity map at the measured pose. For example, with a gear ratio of 3, a joint at 0.1 rad is a motor at
     0.3 rad, and a clamp limit of 2 N·m allows 6 N·m at the joint.
 
     Subclasses must override :meth:`resolve_arguments`, :meth:`compute_state`
@@ -66,20 +68,34 @@ class TransmissionBase:
 
     def compute(
         self,
+        positions: wp.array[float],
+        velocities: wp.array[float],
+        pos_indices: wp.array2d[wp.uint32],
+        dof_indices: wp.array2d[wp.uint32],
         forces: wp.array[float],
         computed_forces: wp.array[float],
-        dof_indices: wp.array2d[wp.uint32],
+        effort_indices: wp.array2d[wp.uint32],
         output: wp.array[float],
         computed_output: wp.array[float] | None,
         device: wp.Device | None = None,
     ) -> None:
         """Accumulate the mapped effort into the output arrays.
 
+        Receives the joint state of the step, so a transmission whose ratios
+        depend on the pose can evaluate them where the effort acts. The
+        positions are the simulation's, even with a sensor.
+
         Args:
+            positions: Joint positions [m or rad].
+            velocities: Joint velocities [m/s or rad/s].
+            pos_indices: Index of each joint of each actuator into
+                *positions*, shape ``(joints, N)``.
+            dof_indices: DOF of each joint of each actuator, shape
+                ``(joints, N)``.
             forces: Applied effort of each actuator [N or N·m], shape ``(N,)``.
             computed_forces: Raw pre-clamp effort of each actuator [N or N·m],
                 shape ``(N,)``.
-            dof_indices: Output DOF of each joint of each actuator, shape
+            effort_indices: Output DOF of each joint of each actuator, shape
                 ``(joints, N)``.
             output: DOF-indexed array receiving the mapped applied effort.
             computed_output: DOF-indexed array receiving the mapped raw effort,

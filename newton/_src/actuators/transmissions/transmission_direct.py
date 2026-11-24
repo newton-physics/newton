@@ -44,9 +44,13 @@ class TransmissionDirect(TransmissionBase):
 
     def compute(
         self,
+        positions: wp.array[float],
+        velocities: wp.array[float],
+        pos_indices: wp.array2d[wp.uint32],
+        dof_indices: wp.array2d[wp.uint32],
         forces: wp.array[float],
         computed_forces: wp.array[float],
-        dof_indices: wp.array2d[wp.uint32],
+        effort_indices: wp.array2d[wp.uint32],
         output: wp.array[float],
         computed_output: wp.array[float] | None,
         device: wp.Device | None = None,
@@ -54,7 +58,7 @@ class TransmissionDirect(TransmissionBase):
         wp.launch(
             kernel=_scatter_add_kernel,
             dim=forces.shape[0],
-            inputs=[forces, computed_forces, dof_indices[0]],
+            inputs=[forces, computed_forces, effort_indices[0]],
             outputs=[output, computed_output],
             device=device,
         )
