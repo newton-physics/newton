@@ -358,27 +358,21 @@ class RenderContext:
         dome_light = DomeLight() if out is None else out
 
         def upload(name, data, dtype):
-            # The fixed-size ambient map updates in place for CUDA graph replay.
             if out is None:
                 setattr(dome_light, name, wp.array(data, dtype=dtype, device=self.device))
             else:
                 getattr(dome_light, name).assign(data)
 
-        spherical_harmonics = compute_dome_sh9(equirect, self.up_axis, rotation)
+        if equirect.shape[:2] != (2, 1):
+            upload("spherical_harmonics", compute_dome_sh9(equirect, self.up_axis, rotation), wp.vec3f)
         forward, bitangent, up = equirect_frame(self.up_axis, rotation)
-        upload("spherical_harmonics", spherical_harmonics, wp.vec3f)
         dome_light.intensity = float(intensity)
         upload("environment_map", equirect, wp.vec3f)
         dome_light.forward = wp.vec3f(float(forward[0]), float(forward[1]), float(forward[2]))
         dome_light.bitangent = wp.vec3f(float(bitangent[0]), float(bitangent[1]), float(bitangent[2]))
         dome_light.up = wp.vec3f(float(up[0]), float(up[1]), float(up[2]))
 
-        # Build the importance-sampling distribution over the environment, weighted
-        # by luminance and solid angle (``sin(theta)``): a marginal cumulative
-        # distribution over rows and a per-row conditional cumulative distribution
-        # over columns. Shadow rays sampled from this aim at bright directions
-        # (e.g. the sun), avoiding the fireflies and darkening that uniform/cosine
-        # sampling causes for concentrated sources.
+        # Weight each texel by luminance and solid angle. The sampler uses the same luminance floor.
         luminance = np.maximum(equirect[:, :, :3].astype(np.float64) @ (0.2126, 0.7152, 0.0722), 1.0e-8)
         env_height, env_width = luminance.shape
         theta_edges = np.arange(env_height + 1) / env_height * np.pi
@@ -709,8 +703,8 @@ class RenderContext:
             # snapshots the mutable config so a later mutation cannot alter a stored
             # key (state/clear_data are snapshotted the same way on insert).
             # OptiX pipelines are cached on the shapes they trace, so a rebuild releases them.
-            key_config = replace(config, block_dim=0)
-            key_config.dome_shadow_samples = min(config.dome_shadow_samples, 1)
+            # Positive dome sample counts share a kernel with a runtime loop bound.
+            key_config = replace(config, block_dim=0, dome_shadow_samples=min(config.dome_shadow_samples, 1))
             cache = self._kernel_cache if optix is None else optix.pipelines
             render_kernel = cache.get((key_config, self._render_state, clear_data))
             if render_kernel is None:

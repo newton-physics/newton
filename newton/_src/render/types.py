@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import enum
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import warp as wp
 
@@ -136,7 +136,7 @@ class RenderConfig:
     enable_ambient_lighting: bool = True
     """Enable the sky/ground dome when no HDRI override is active."""
 
-    enable_dome_lighting: bool = True
+    enable_dome_lighting: bool = field(default=True, kw_only=True)
     """Enable dome lighting for the ambient term.
 
     Uses the HDRI set via :meth:`~newton.sensors.SensorCamera.set_dome_light`
@@ -145,21 +145,15 @@ class RenderConfig:
     even when an environment has been supplied.
     """
 
-    dome_shadow_samples: int = 0
-    """Non-negative integer shadow-ray count for HDRI dome lighting.
+    dome_shadow_samples: int = field(default=0, kw_only=True)
+    """Number of importance-sampled shadow directions per shaded surface sample.
 
-    ``0`` uses the fast unshadowed spherical-harmonic irradiance. A value ``N > 0``
-    casts ``N`` shadow rays per pixel, importance-sampled toward the bright parts
-    of the environment (e.g. the sun), and accumulates the radiance from the
-    unoccluded directions. Occluders therefore cast soft shadows from concentrated
-    sources as well as diffuse sky, without the fireflies that uniform sampling
-    produces. Directions are drawn stochastically with a per-pixel, per-frame seed:
-    the estimate is unbiased and converges under temporal accumulation, but each
-    frame carries Monte-Carlo noise that varies frame to frame. Raise ``N`` to
-    reduce it. Only used when :attr:`enable_dome_lighting` is set.
+    Zero evaluates unshadowed diffuse irradiance. Positive counts sample the
+    environment in proportion to luminance and texel solid angle. Increasing
+    the count reduces frame-to-frame noise. Requires :attr:`enable_dome_lighting`.
     """
 
-    dome_shadow_max_distance: float = 0.0
+    dome_shadow_max_distance: float = field(default=0.0, kw_only=True)
     """Finite, non-negative length [m] of dome shadow rays; ``0`` uses :attr:`max_distance`.
 
     Dome occlusion is usually local (contact/ambient shadows), so capping the
@@ -169,7 +163,7 @@ class RenderConfig:
     :attr:`dome_shadow_samples` > 0.
     """
 
-    enable_dome_background: bool = False
+    enable_dome_background: bool = field(default=False, kw_only=True)
     """Show the selected dome map as the background for camera rays that miss all geometry.
 
     Uses the explicit environment, or the sky/ground map from
@@ -303,15 +297,8 @@ class TextureData:
 class DomeLight:
     """HDRI dome (environment) lighting data for diffuse ambient and shadowed sampling.
 
-    See :func:`~newton._src.render.dome.compute_dome_sh9` and
-    :func:`~newton._src.render.dome.equirect_frame` for how
-    ``spherical_harmonics``/``forward``/``bitangent``/``up`` are derived, and
-    :func:`~newton._src.render.dome.sample_env` for how
-    ``environment_map``/``row_cumulative_distribution``/``column_cumulative_distribution``/
-    ``probability_density_scale`` are consumed.
-
     Attributes:
-        spherical_harmonics: Order-2 diffuse-irradiance SH coefficients, shape ``[9]``, dtype ``vec3f``.
+        spherical_harmonics: Nine order-2 diffuse-irradiance coefficients. Unused for two-texel hemispheric maps.
         intensity: Scalar multiplier applied to the dome contribution.
         environment_map: Equirectangular radiance map, shape ``[height, width]``, dtype ``vec3f``.
         forward: Equirectangular basis forward axis (azimuth 0).

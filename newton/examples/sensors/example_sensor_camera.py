@@ -624,8 +624,8 @@ class Example:
         parser = newton.examples.create_parser()
         parser.add_argument(
             "--dome-hdri",
-            help="Path to an equirectangular .hdr environment for HDRI dome lighting "
-            "(diffuse image-based ambient). Omit to use the fixed hemispheric ambient.",
+            help="Light the scene with an equirectangular .hdr image. By default the scene uses "
+            "sky/ground ambient lighting and a directional light.",
         )
         parser.add_argument(
             "--dome-intensity",
@@ -637,7 +637,7 @@ class Example:
             "--dome-shadow-samples",
             type=int,
             default=0,
-            help="Shadow rays per pixel for dome soft shadows (0 disables; defaults to the sky/ground map).",
+            help="Number of dome shadow rays per shaded sample (default 0, unshadowed).",
         )
         parser.add_argument("--dome-background", action="store_true", help="Display the HDRI or sky/ground background.")
         parser.add_argument(

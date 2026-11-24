@@ -1,22 +1,15 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Diffuse HDRI dome lighting via order-2 spherical harmonics.
+"""Diffuse lighting and background sampling for equirectangular dome maps.
 
-The unshadowed diffuse response of a surface to an environment is the
-cosine-weighted hemisphere integral of incoming radiance around the surface
-normal. Following Ramamoorthi & Hanrahan (2001), "An Efficient Representation
-for Irradiance Environment Maps", this is captured almost exactly by 9
-spherical-harmonic coefficients per color channel: the equirectangular HDRI is
-projected onto the SH basis once (:func:`compute_dome_sh9`), and shading
-evaluates a 9-term polynomial in the world-space normal
-(:func:`eval_dome_irradiance`) with no texture sampling at render time.
-
-The convolution constants (``A_0 = pi``, ``A_1 = 2*pi/3``, ``A_2 = pi/4``) and
-the Lambert ``1/pi`` factor are baked into the coefficients so that evaluation
-returns the diffuse reflectance factor directly: a constant white environment
-of value ``L`` yields ``L`` for every normal, so a diffuse surface is lit to
-``albedo * L``.
+For a map with one texel per hemisphere, the unshadowed diffuse response is
+an analytic blend of the two texels. Other maps approximate the cosine-weighted
+irradiance with nine spherical-harmonic coefficients per color channel, following Ramamoorthi
+and Hanrahan (2001), "An Efficient Representation for Irradiance Environment
+Maps". The coefficients include the Lambertian factor of ``1/pi``, so a
+uniform environment of radiance ``L`` lights a diffuse surface to ``albedo * L``.
+Shadow rays and background lookups sample the environment texels directly.
 """
 
 from __future__ import annotations
@@ -60,7 +53,7 @@ def equirect_frame(up_axis: AxisType, rotation: float = 0.0) -> tuple[np.ndarray
     ``up*cos(theta) + sin(theta)*(forward*cos(phi) + bitangent*sin(phi))``. The
     ``rotation`` yaw is baked into ``forward``/``bitangent`` so the same frame
     reconstructs directions from environment samples (see
-    :func:`~newton._src.render.dome.sample_env`).
+    :func:`sample_env`).
 
     Args:
         up_axis: Scene up axis (the equirectangular pole).
@@ -167,6 +160,7 @@ def compute_dome_sh9(
 
 @wp.kernel(enable_backward=False)
 def advance_dome_seed(seed: wp.array[wp.int32]):
+    """Advance the frame seed on the device so captured graphs draw new shadow rays."""
     seed[0] = seed[0] + 1
 
 
@@ -175,13 +169,15 @@ def eval_dome_irradiance(dome: DomeLight, n: wp.vec3f) -> wp.vec3f:
     """Evaluate the diffuse dome reflectance factor for a world-space normal.
 
     Args:
-        dome: Dome light data; uses :attr:`DomeLight.spherical_harmonics` (SH
-            coefficients from :func:`compute_dome_sh9`).
+        dome: Dome light with two hemispheric texels or precomputed SH coefficients.
         n: Unit surface normal in world space.
 
     Returns:
-        Diffuse reflectance factor per channel, clamped to non-negative.
+        Diffuse lighting factor per channel before applying dome intensity.
     """
+    if dome.environment_map.shape[0] == 2 and dome.environment_map.shape[1] == 1:
+        hemispheric = 0.5 * (wp.dot(n, dome.up) + 1.0)
+        return dome.environment_map[0, 0] * hemispheric + dome.environment_map[1, 0] * (1.0 - hemispheric)
     spherical_harmonics = dome.spherical_harmonics
     dx = n[0]
     dy = n[1]
@@ -250,26 +246,17 @@ def sample_env(
     r3: wp.float32,
     r4: wp.float32,
 ) -> tuple[wp.vec3f, wp.vec3f, wp.float32]:
-    """Importance-sample the environment proportionally to radiance x solid angle.
-
-    Draws a texel from the precomputed marginal/conditional CDFs (built weighted
-    by luminance and texel solid angle), jitters within the texel, and returns the
-    world-space direction, that texel's radiance, and the sampling pdf in
-    solid-angle measure. Aiming rays at bright directions (e.g. the sun) is what
-    keeps a concentrated source from producing fireflies / undersampling.
+    """Sample a texel by luminance and solid angle, then a uniform direction within it.
 
     Args:
-        dome: Dome light data; uses :attr:`DomeLight.row_cumulative_distribution`,
-            :attr:`DomeLight.column_cumulative_distribution`, :attr:`DomeLight.environment_map`,
-            :attr:`DomeLight.forward`, :attr:`DomeLight.bitangent`,
-            :attr:`DomeLight.up`, and :attr:`DomeLight.probability_density_scale`.
+        dome: Environment map, sampling distribution, and world-space frame.
         r1: Uniform value selecting the row.
         r2: Uniform value selecting the column.
         r3: Uniform value jittering within the texel (polar).
         r4: Uniform value jittering within the texel (azimuth).
 
     Returns:
-        ``(direction, radiance, pdf)``.
+        World-space direction, texel radiance, and probability density per steradian.
     """
     height = dome.environment_map.shape[0]
     width = dome.environment_map.shape[1]
@@ -322,6 +309,7 @@ def sample_env_direction(dome: DomeLight, direction: wp.vec3f) -> wp.vec3f:
 def create_sample_dome_shadow_function(
     config: RenderConfig, state: RenderState, optix: OptixShapes | None = None
 ) -> wp.Function:
+    """Build a diffuse dome visibility estimator using the selected ray-tracing backend."""
     first_hit = raytrace.create_first_hit_function(config, state, optix)
     dome_shadow_max_distance = (
         config.dome_shadow_max_distance if config.dome_shadow_max_distance > 0.0 else config.max_distance
@@ -354,16 +342,7 @@ def create_sample_dome_shadow_function(
         r3: wp.float32,
         r4: wp.float32,
     ) -> wp.vec3f:
-        """Trace one dome shadow ray and return its (unoccluded) radiance contribution.
-
-        Kept as a standalone function, rather than inlined into the shadow-sample
-        loop in :func:`~newton._src.render.render.create_kernel`,
-        so the loop body's compiled size stays constant regardless of
-        :attr:`~newton.sensors.SensorCamera.RenderConfig.dome_shadow_samples`.
-        Inlining it let the Warp compiler's loop unroller occasionally blow up the
-        generated code for specific sample counts, corrupting the compiled kernel
-        (illegal memory access at launch).
-        """
+        """Return one diffuse lighting sample, including visibility and sampling weight."""
         sample_dir, sample_radiance, sample_pdf = sample_env(dome, r1, r2, r3, r4)
         cos_n = wp.dot(sample_dir, n)
         if cos_n <= 0.0:

@@ -910,15 +910,12 @@ class SensorCamera:
         """Set an HDRI dome light for diffuse image-based lighting.
 
         The equirectangular environment supplies the scene's diffuse ambient
-        term via order-2 spherical harmonics, replacing the built-in sky/ground
-        ambient. Directional lights created via
-        :meth:`create_default_light` still contribute on top.
+        term. Directional lights created via :meth:`create_default_light` also contribute.
 
         The dome is unshadowed by default. Set
         :attr:`~newton.sensors.SensorCamera.RenderConfig.dome_shadow_samples` to
-        ``N > 0`` to cast ``N`` importance-sampled shadow rays per pixel into the
-        environment for (noisy) soft shadows; the Monte-Carlo noise varies each
-        frame and converges under temporal accumulation.
+        a positive count to cast that many importance-sampled shadow rays per
+        shaded surface sample. The resulting soft shadows vary from frame to frame.
 
         Set :attr:`~newton.sensors.SensorCamera.RenderConfig.enable_dome_background`
         to show the environment itself as the background for camera rays that
@@ -952,14 +949,11 @@ class SensorCamera:
     def set_dome_light_color(self, color: tuple[float, float, float], *, intensity: float = 1.0) -> None:
         """Set a flat, uniform-color dome light for diffuse image-based lighting.
 
-        Convenience wrapper around :meth:`set_dome_light` for a constant
-        environment: since the SH projection of a uniform environment of
-        radiance ``L`` yields ``L`` for every normal, a single-texel image is
-        sufficient and exact (no HDRI file needed).
+        Equivalent to passing a single RGB texel to :meth:`set_dome_light`.
 
         Args:
-            color: Linear-radiance RGB of the environment, e.g. ``(0.5, 0.5, 0.5)``.
-            intensity: Scalar multiplier applied to the dome contribution.
+            color: Finite, non-negative linear RGB radiance, e.g. ``(0.5, 0.5, 0.5)``.
+            intensity: Finite, non-negative multiplier applied to the dome contribution.
         """
         self.set_dome_light(np.full((1, 1, 3), color, dtype=np.float32), intensity=intensity)
 
@@ -973,10 +967,9 @@ class SensorCamera:
         Surfaces facing the model's up axis receive *sky_color*, surfaces facing
         away receive *ground_color*, and other orientations blend between the
         two. The defaults are ``(0.2, 0.2, 0.225)`` and ``(0.05, 0.05, 0.06)``.
-        The colors form a two-row sky/ground dome map evaluated by the same
-        spherical-harmonic shader as HDRI lighting. This is mathematically
-        equivalent to the hemispheric blend, with small floating-point differences.
-        Changing the colors does not recompile the render kernel. This selects
+        The two colors form a dome map with one texel per hemisphere. Unshadowed
+        shading blends them using the surface normal's component along the up axis.
+        Updating the active map's colors reuses the render kernel. This selects
         the sky/ground map on :attr:`default_render_config`; a previously loaded
         HDRI remains available for per-call render configs.
 

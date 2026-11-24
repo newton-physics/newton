@@ -64,8 +64,9 @@ class TestEnvironmentImageLoading(unittest.TestCase):
     def test_decode_hdr_scanlines_and_orientation(self):
         """Decode flat and adaptive RGBE streams with both scanline orientations."""
         pixels = np.array([[[128, 64, 32, 129]] * 8, [[64, 128, 32, 129]] * 8], dtype=np.uint8)
+        pixels[:, 4:, 2] = 96
         header = b"#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n"
-        for resolution in (b"-Y 2 +X 8\n", b"+Y 2 -X 8\n"):
+        for resolution in (b"-Y 2 +X 8\n", b"+Y 2 +X 8\n", b"-Y 2 -X 8\n", b"+Y 2 -X 8\n"):
             for encoding in ("flat", "runs", "literals"):
                 body = bytearray()
                 for row in pixels:
@@ -75,13 +76,15 @@ class TestEnvironmentImageLoading(unittest.TestCase):
                         body.extend((2, 2, 0, 8))
                         for channel in range(4):
                             if encoding == "runs":
-                                body.extend((136, int(row[0, channel])))
+                                body.extend((132, int(row[0, channel]), 132, int(row[4, channel])))
                             else:
                                 body.append(8)
                                 body.extend(row[:, channel].tobytes())
                 expected = pixels[..., :3].astype(np.float32) / 128.0
                 if resolution.startswith(b"+Y"):
-                    expected = expected[::-1, ::-1]
+                    expected = expected[::-1]
+                if b"-X" in resolution:
+                    expected = expected[:, ::-1]
                 with self.subTest(resolution=resolution, encoding=encoding):
                     np.testing.assert_array_equal(_decode_hdr_rgbe(header + resolution + body), expected)
 

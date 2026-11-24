@@ -159,17 +159,15 @@ def load_texture(texture: str | os.PathLike[str] | np.ndarray | None) -> np.ndar
 def _decode_hdr_rgbe(data: bytes) -> np.ndarray:
     """Decode Radiance RGBE (``.hdr``) bytes into a linear float RGB image.
 
-    Supports the ``32-bit_rle_rgbe`` format with flat scanlines and the
-    new-style adaptive run-length encoding (the encodings emitted by virtually
-    all modern HDRI authoring tools). Old-style run-length encoding is not
-    handled.
+    Supports Y-major ``32-bit_rle_rgbe`` images with flat or adaptive
+    run-length-encoded scanlines. Old-style run-length packets are rejected.
 
     Args:
         data: Raw file contents of a Radiance ``.hdr`` image.
 
     Returns:
-        Linear radiance image, shape ``(H, W, 3)`` float32, first row at the
-        ``+up`` pole.
+        Linear float32 RGB image of shape ``(H, W, 3)``, ordered top to
+        bottom and left to right.
     """
     scan = np.frombuffer(data, dtype=np.uint8)
 

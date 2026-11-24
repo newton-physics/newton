@@ -123,26 +123,17 @@ def create_kernel(
 
     @wp.func
     def write_dome_background(
-        dome: DomeLight,
-        camera_rays: wp.array4d[wp.vec3f],
-        camera_transform: wp.transformf,
-        py: int,
-        px: int,
+        background: wp.vec3f,
         out_index: int,
         out_color: wp.array[wp.uint32],
         out_hdr_color: wp.array[wp.vec3f],
     ):
-        if wp.static(config.enable_dome_lighting and config.enable_dome_background):
-            background = wp.vec3f(0.0)
-            for sample_index in range(camera_rays.shape[2]):
-                background += dome_background(dome, camera_transform, camera_rays[py, px, sample_index, 1])
-            background /= float(camera_rays.shape[2])
-            if wp.static(state.render_hdr_color):
-                out_hdr_color[out_index] = background
-            if wp.static(state.render_color):
-                if wp.static(config.output_color_space == ColorSpace.SRGB):
-                    background = linear_to_srgb_wp(background)
-                out_color[out_index] = tiling.pack_rgba_to_uint32(background, 1.0)
+        if wp.static(state.render_hdr_color):
+            out_hdr_color[out_index] = background
+        if wp.static(state.render_color):
+            if wp.static(config.output_color_space == ColorSpace.SRGB):
+                background = linear_to_srgb_wp(background)
+            out_color[out_index] = tiling.pack_rgba_to_uint32(background, 1.0)
 
     @wp.func
     def write_clear_outputs(
@@ -753,7 +744,8 @@ def create_kernel(
                     out_albedo,
                     out_hdr_color,
                 )
-                write_dome_background(dome, camera_rays, camera_transform, py, px, out_index, out_color, out_hdr_color)
+                if wp.static(config.enable_dome_lighting and config.enable_dome_background):
+                    write_dome_background(sample.color, out_index, out_color, out_hdr_color)
                 return
 
             if wp.static(state.render_depth):
@@ -891,7 +883,11 @@ def create_kernel(
                     out_albedo,
                     out_hdr_color,
                 )
-                write_dome_background(dome, camera_rays, camera_transform, py, px, out_index, out_color, out_hdr_color)
+                if wp.static(config.enable_dome_lighting and config.enable_dome_background):
+                    background = hdr_color_sum
+                    if wp.static(state.render_color):
+                        background = wp.vec3f(color_sum[0], color_sum[1], color_sum[2])
+                    write_dome_background(background / float(sample_count), out_index, out_color, out_hdr_color)
                 return
 
             if wp.static(state.render_depth):
@@ -1079,7 +1075,8 @@ def create_kernel(
                     out_albedo,
                     out_hdr_color,
                 )
-                write_dome_background(dome, camera_rays, camera_transform, py, px, out_index, out_color, out_hdr_color)
+                if wp.static(config.enable_dome_lighting and config.enable_dome_background):
+                    write_dome_background(shaded_sum / float(sample_count), out_index, out_color, out_hdr_color)
                 return
 
             if wp.static(state.render_depth):

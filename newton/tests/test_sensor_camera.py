@@ -3,9 +3,9 @@
 
 import inspect
 import math
-import os
 import tempfile
 import unittest
+from pathlib import Path
 
 import numpy as np
 import warp as wp
@@ -15,7 +15,6 @@ from newton._src.geometry.types import SH_C0
 from newton._src.render import dome
 from newton._src.render.types import DomeLight, LightType
 from newton._src.render.utils import Utils
-from newton._src.utils.texture import load_hdr_image
 from newton.sensors import (
     SensorCamera,
 )
@@ -472,18 +471,16 @@ class TestSensorCamera(unittest.TestCase):
         )
         return hdr.numpy().reshape(-1)[:3]
 
-    def test_default_ambient_light_matches_previous_constants(self) -> None:
-        """The default ambient keeps the old ``0.5 * (0.4, 0.4, 0.45)`` sky term."""
-        model, camera = self._build_sphere_scene()
-        hdr = self._center_hdr(camera, model)
-        # The center ray hits the sphere facing +Z (the up axis), so only the sky term contributes.
-        srgb = np.array([0.25, 0.5, 0.75])
-        albedo = np.where(srgb <= 0.04045, srgb / 12.92, ((srgb + 0.055) / 1.055) ** 2.4)
-        np.testing.assert_allclose(hdr, albedo * np.array([0.2, 0.2, 0.225]), rtol=1.0e-3)
-
-        explicit = SensorCamera(model)
-        explicit.set_dome_light(np.array([[[0.2, 0.2, 0.225]], [[0.05, 0.05, 0.06]]], dtype=np.float32))
-        np.testing.assert_array_equal(hdr, self._center_hdr(explicit, model))
+    def test_default_ambient_light_matches_sky_ground_map(self) -> None:
+        """Render the default sky term exactly and match the equivalent explicit dome."""
+        model = self._shaded_sphere_model(color=(1.0, 1.0, 1.0))
+        camera = SensorCamera(model)
+        sky = np.array((0.2, 0.2, 0.225), dtype=np.float32)
+        ground = np.array((0.05, 0.05, 0.06), dtype=np.float32)
+        # The center ray hits a white surface with its normal along the up axis.
+        np.testing.assert_array_equal(self._center_hdr(camera, model), sky)
+        camera.set_dome_light(np.stack((sky, ground))[:, None])
+        np.testing.assert_array_equal(self._center_hdr(camera, model), sky)
 
     def test_set_ambient_light_scales_ambient_without_recompiling(self) -> None:
         """Update hemispheric dome colors without rebuilding kernels or captured buffers."""
@@ -1541,7 +1538,7 @@ class TestSensorCamera(unittest.TestCase):
             device="cpu",
         )
 
-        def render(transforms, **config):
+        def render(transforms, *args, **config):
             depth = camera.allocate_image_depth(1, 1, 1)
             shape_index = camera.allocate_image_shape_index(1, 1, 1)
             camera.update(
@@ -1550,11 +1547,17 @@ class TestSensorCamera(unittest.TestCase):
                 rays,
                 depth_image=depth,
                 shape_index_image=shape_index,
-                render_config=SensorCamera.RenderConfig(max_distance=10.0, **config),
+                render_config=SensorCamera.RenderConfig(*args, max_distance=10.0, **config),
             )
             return float(depth.numpy()[0, 0, 0]), int(shape_index.numpy()[0, 0, 0])
 
-        self.assertEqual(render(self._identity_transforms(1), enable_particles=False)[0], 0.0)
+        # Existing callers can disable particles with the sixth positional argument.
+        self.assertEqual(
+            render(
+                self._identity_transforms(1), True, False, SensorCamera.TextureProjectionMode.CUBIC, False, True, False
+            )[0],
+            0.0,
+        )
         depth, shape_index = render(self._identity_transforms(1), enable_particles=True)
         self.assertGreater(depth, 0.0)
         self.assertEqual(shape_index, int(PARTICLES_SHAPE_ID))
@@ -1950,18 +1953,6 @@ class TestSensorCamera(unittest.TestCase):
         self.assertGreater(abs(expected - per_splat_decode), 0.05)
         np.testing.assert_allclose(color, [expected] * 3, atol=1e-4)
 
-    # --- Dome (HDRI) lighting ---
-
-    @staticmethod
-    def _encode_flat_hdr(value: float, height: int, width: int) -> bytes:
-        """Encode a constant-gray Radiance ``.hdr`` (flat RGBE scanlines)."""
-        mant, exp2 = math.frexp(value)
-        byte = min(255, int(round(mant * 256.0)))
-        pixel = bytes((byte, byte, byte, exp2 + 128))
-        body = pixel * (width * height)
-        header = b"#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y %d +X %d\n" % (height, width)
-        return header + body
-
     def test_dome_lighting_constant_environment_matches_albedo(self) -> None:
         """Verify a constant dome lights a diffuse surface uniformly to albedo*env.
 
@@ -2040,26 +2031,13 @@ class TestSensorCamera(unittest.TestCase):
                 wp.launch(_evaluate_dome_irradiance, dim=2, inputs=[light, normals, result], device="cpu")
                 np.testing.assert_allclose(result.numpy(), ((3.0, 3.0, 3.0), (0.0, 0.0, 0.0)), atol=1.0e-5)
 
-    def test_dome_lighting_differs_from_fixed_ambient(self) -> None:
-        """Verify enabling the dome changes shading versus the fixed hemispheric ambient."""
+    def test_set_ambient_light_after_dome_light(self) -> None:
+        """Switch back to ambient shading after configuring a shadowed HDRI."""
         width, height = 16, 16
         model = self._shaded_sphere_model(color=(0.4, 0.6, 0.8))
         rays = self._rays(width, height)
-
-        def render(dome_env) -> np.ndarray:
-            camera = self._camera_with_model(model)
-            if dome_env is not None:
-                camera.set_dome_light(dome_env, intensity=1.0)
-            hdr = camera.allocate_image_color_hdr(1, width, height)
-            camera.update(model.state(), self._identity_transforms(1), rays, hdr_color_image=hdr)
-            return hdr.numpy()
-
-        env = np.zeros((32, 64, 3), dtype=np.float32)
-        env[:16, :, :] = 2.0
-        self.assertFalse(np.allclose(render(None), render(env)))
-
-        camera = self._camera_with_model(model)
-        camera.set_dome_light(env)
+        camera = SensorCamera(model)
+        camera.set_dome_light_color((2.0, 2.0, 2.0))
         camera.default_render_config.dome_shadow_samples = 4
         camera.default_render_config.enable_dome_background = True
         camera.set_ambient_light((0.3, 0.3, 0.3))
@@ -2135,34 +2113,36 @@ class TestSensorCamera(unittest.TestCase):
 
         camera = self._camera_with_model(model)
         camera.set_dome_light(env)
-        camera.default_render_config.enable_dome_background = True
         hdr = camera.allocate_image_color_hdr(1, width, height)
         shape_index = camera.allocate_image_shape_index(1, width, height)
-        # Exercise full and partial misses through each AA resolve path.
+        transforms = self._identity_transforms(1)
+        state = model.state()
         for mode in SensorCamera.AntiAliasing:
             camera.default_render_config.anti_aliasing = mode
             with self.subTest(anti_aliasing=mode):
-                # Wide FOV so the sphere (half-angle ~27 deg) does not fill the frame.
-                camera.update(
-                    model.state(),
-                    self._identity_transforms(1),
-                    SensorCamera.compute_camera_rays_pinhole(
-                        width,
-                        height,
-                        camera_fov=math.radians(90.0),
-                        sample_count=1 if mode == SensorCamera.AntiAliasing.NONE else 4,
-                        device="cpu",
-                    ),
-                    hdr_color_image=hdr,
-                    shape_index_image=shape_index,
+                # A wide field of view includes both the sphere and background.
+                rays = SensorCamera.compute_camera_rays_pinhole(
+                    width,
+                    height,
+                    camera_fov=math.radians(90.0),
+                    sample_count=1 if mode == SensorCamera.AntiAliasing.NONE else 4,
+                    device="cpu",
                 )
-
-                hdr_np = hdr.numpy()[0]
-                missed = shape_index.numpy()[0] == 0xFFFFFFFF
+                camera.default_render_config.enable_dome_background = True
+                camera.update(state, transforms, rays, hdr_color_image=hdr, shape_index_image=shape_index)
+                hdr_np = hdr.numpy()[0].copy()
+                shape_ids = shape_index.numpy()[0].copy()
+                missed = shape_ids == 0xFFFFFFFF
                 self.assertTrue(np.any(missed))
                 self.assertTrue(np.any(~missed))
                 expected = np.broadcast_to(background_color, hdr_np[missed].shape)
                 np.testing.assert_allclose(hdr_np[missed], expected, atol=1.0e-3)
+                if mode == SensorCamera.AntiAliasing.NONE:
+                    camera.default_render_config.enable_dome_background = False
+                    camera.update(state, transforms, rays, hdr_color_image=hdr, shape_index_image=shape_index)
+                    np.testing.assert_array_equal(shape_index.numpy()[0], shape_ids)
+                    np.testing.assert_array_equal(hdr.numpy()[0][~missed], hdr_np[~missed])
+                    self.assertFalse(np.allclose(hdr.numpy()[0][missed], hdr_np[missed]))
 
         empty_model = newton.ModelBuilder().finalize(device="cpu")
         empty_model.gaussians_data = None
@@ -2174,59 +2154,16 @@ class TestSensorCamera(unittest.TestCase):
         empty_camera.update(empty_model.state(), self._identity_transforms(1), self._rays(2, 2), hdr_color_image=image)
         np.testing.assert_allclose(image.numpy(), np.broadcast_to(background_color, (*image.shape, 3)), atol=1.0e-6)
 
-    def test_dome_background_does_not_affect_geometry_shading(self) -> None:
-        """Verify enabling the dome background leaves shaded (hit) pixels unchanged."""
-        width, height = 16, 16
-        model = self._shaded_sphere_model(color=(0.6, 0.6, 0.6))
-        env = np.full((32, 64, 3), (0.2, 0.5, 0.9), dtype=np.float32)
-        rays = self._rays(width, height, fov=math.radians(90.0))
-
-        def render(enable_background: bool) -> tuple[np.ndarray, np.ndarray]:
-            camera = self._camera_with_model(model)
-            camera.set_dome_light(env)
-            camera.default_render_config.enable_dome_background = enable_background
-            hdr = camera.allocate_image_color_hdr(1, width, height)
-            shape_index = camera.allocate_image_shape_index(1, width, height)
-            camera.update(
-                model.state(), self._identity_transforms(1), rays, hdr_color_image=hdr, shape_index_image=shape_index
-            )
-            return hdr.numpy()[0], shape_index.numpy()[0]
-
-        hdr_off, shape_index_off = render(False)
-        hdr_on, shape_index_on = render(True)
-        np.testing.assert_array_equal(shape_index_off, shape_index_on)
-        hit = shape_index_off != 0xFFFFFFFF
-        np.testing.assert_allclose(hdr_off[hit], hdr_on[hit])
-        self.assertFalse(np.allclose(hdr_off[~hit], hdr_on[~hit]))
-
     def test_set_dome_light_from_hdr_file(self) -> None:
-        """Verify a Radiance ``.hdr`` file loads and illuminates the scene."""
-        width, height = 8, 8
+        """Render a white surface lit by a Radiance RGBE file."""
         with tempfile.TemporaryDirectory() as tmp:
-            path = os.path.join(tmp, "env.hdr")
-            with open(path, "wb") as handle:
-                handle.write(self._encode_flat_hdr(0.5, 8, 16))
-
-            decoded = load_hdr_image(path)
-            self.assertEqual(decoded.shape[2], 3)
-            self.assertTrue(np.isfinite(decoded).all())
-            self.assertTrue((decoded >= 0.0).all())
-            np.testing.assert_allclose(decoded, 0.5, atol=1.0e-2)
-
-            model = self._shaded_sphere_model()
-            camera = self._camera_with_model(model)
-            camera.set_dome_light(path, intensity=1.0)
-            hdr = camera.allocate_image_color_hdr(1, width, height)
-            shape_index = camera.allocate_image_shape_index(1, width, height)
-            camera.update(
-                model.state(),
-                self._identity_transforms(1),
-                self._rays(width, height),
-                hdr_color_image=hdr,
-                shape_index_image=shape_index,
-            )
-            hit = shape_index.numpy()[0] != 0xFFFFFFFF
-            self.assertGreater(float(hdr.numpy()[0][hit].max()), 0.0)
+            path = Path(tmp) / "env.hdr"
+            # RGBE (128, 128, 128, 128) encodes linear gray 0.5.
+            path.write_bytes(b"#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y 1 +X 1\n" + bytes((128,) * 4))
+            model = self._shaded_sphere_model(color=(1.0, 1.0, 1.0))
+            camera = SensorCamera(model)
+            camera.set_dome_light(str(path))
+            np.testing.assert_allclose(self._center_hdr(camera, model), 0.5, atol=1.0e-6)
 
     @staticmethod
     def _sphere_with_occluder_model() -> newton.Model:
@@ -2255,12 +2192,7 @@ class TestSensorCamera(unittest.TestCase):
         return hdr.numpy()[0], shape_index.numpy()[0]
 
     def test_dome_shadow_sampling_varies_between_frames(self) -> None:
-        """Verify shadowed dome sampling is stochastic and reseeds each frame.
-
-        Directions are drawn from a per-frame RNG, so successive renders of the
-        same scene under a non-uniform environment differ (Monte-Carlo noise that
-        converges under temporal accumulation).
-        """
+        """Vary shadow samples between frames, including CUDA graph replays."""
         for device in get_test_devices():
             with self.subTest(device=device):
                 model = self._shaded_sphere_model(color=(0.6, 0.6, 0.6), device=device)
@@ -2312,22 +2244,14 @@ class TestSensorCamera(unittest.TestCase):
         np.testing.assert_allclose(shadowed[idx == 0].mean(), unshadowed[idx == 0].mean(), rtol=0.05)
 
     def test_dome_shadow_importance_sampling_bounds_concentrated_source(self) -> None:
-        """Verify importance sampling keeps a tiny bright source firefly-free.
-
-        A concentrated 'sun' would produce extreme per-pixel spikes (and, after
-        clipping, an overall-dark surface) under uniform sampling. Importance
-        sampling aims rays at it, so single-frame values track the analytic mean
-        with bounded maxima.
-        """
+        """Bound peak brightness and retain diffuse illumination from a small bright source."""
         model = self._shaded_sphere_model(color=(0.6, 0.6, 0.6))
         env = np.full((64, 128, 3), 0.1, dtype=np.float32)
-        env[:3, 60:66] = 2000.0  # tiny, very bright source
+        env[:3, 60:66] = 2000.0
         shadowed, idx = self._render_dome_hdr(model, env, samples=64)
         unshadowed, _ = self._render_dome_hdr(model, env, samples=0)
         lit = shadowed[idx == 0]
-        # No fireflies: the brightest sampled pixel stays close to the SH maximum.
         self.assertLess(float(lit.max()), 10.0 * float(unshadowed[idx == 0].max()))
-        # Energy preserved: the surface is not left dark by undersampling the source.
         self.assertGreater(float(lit.mean()), 0.5 * float(unshadowed[idx == 0].mean()))
 
 

@@ -125,22 +125,23 @@ Camera Dome Lighting
 --------------------
 
 Use :meth:`~newton.sensors.SensorCamera.set_dome_light` to light surfaces from an
-equirectangular environment, supplied as a linear RGB array or a Radiance ``.hdr``
-file. :meth:`~newton.sensors.SensorCamera.set_dome_light_color` supplies a uniform
-color. The environment replaces hemispheric ambient lighting; directional lights
-continue to contribute. Calling :meth:`~newton.sensors.SensorCamera.set_ambient_light`
-switches the default render config back to hemispheric lighting.
+equirectangular environment. Floating-point arrays and local Radiance ``.hdr``
+files supply linear radiance. Integer arrays and low-dynamic-range image files
+supply sRGB colors. Arrays must be nonempty and their RGB values must be finite
+and non-negative. Use :meth:`~newton.sensors.SensorCamera.set_dome_light_color`
+for a uniform environment. Directional lights contribute alongside the dome.
 
-The default dome response uses spherical harmonics. Set
-``camera.default_render_config.dome_shadow_samples`` above zero for stochastic soft
-shadows, and ``enable_dome_background`` to display the environment behind geometry.
-When no HDRI is supplied, a two-row sky/ground environment supplies ambient
-lighting through the same dome shader. This also supports dome shadows and
-backgrounds. The unshadowed result is mathematically equivalent to the previous
-hemispheric blend, with small floating-point differences from SH evaluation.
-Dome samples advance during CUDA graph replay as well as ordinary updates. Environment arrays must be nonempty, finite, and
-non-negative; integer arrays and LDR files are interpreted as sRGB. Dome lighting
-is configured at runtime on the camera; importing USD dome lights is not supported.
+By default the camera uses a two-row, one-column sky/ground map. Its unshadowed
+diffuse response is the hemispheric blend of the two colors. Other map sizes use
+a spherical-harmonic approximation. Calling
+:meth:`~newton.sensors.SensorCamera.set_ambient_light` after setting an explicit
+dome switches the default render configuration back to hemispheric lighting.
+
+With ``enable_dome_lighting`` enabled, set ``dome_shadow_samples`` above zero
+for stochastic soft shadows, or enable ``enable_dome_background`` to display
+the environment behind geometry. Both options also work with the sky/ground map.
+Shadow samples change on each render, including CUDA graph replays. Configure
+dome lighting on the camera at runtime. The USD importer does not import dome lights.
 
 Camera Rays from USD and Calibration Data
 -----------------------------------------
