@@ -421,7 +421,7 @@ def _position_rhs(family: str, *, phi, baumgarte, friction_anchor_beta, dt, devi
                 wp.array([-1], dtype=wp.int32, device=device),
                 wp.array([0], dtype=wp.int32, device=device),
                 wp.zeros((1,), dtype=wp.float32, device=device),
-                wp.array([float("inf")], dtype=wp.float32, device=device),
+                wp.full((1, 3), wp.inf, dtype=wp.float32, device=device),
                 1.0e-6,
                 baumgarte,
                 1.0,
