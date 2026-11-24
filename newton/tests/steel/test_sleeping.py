@@ -3,6 +3,7 @@
 
 """Experimental passive-island sleeping of SolverSteel."""
 
+import contextlib
 import functools
 import inspect
 import sys
@@ -1461,7 +1462,13 @@ def test_stiffness_without_a_spring_lets_articulations_sleep(test, device):
         builder.joint_stiffness = [stiffness] * builder.joint_dof_count
         model = builder.finalize(device=device)
         pipeline = newton.CollisionPipeline(model, rigid_contact_max=512, deterministic=True)
-        solver = newton.solvers.SolverSteel(model, **PROFILE)
+        # Construction warns that the FREE and BALL stiffness is ignored.
+        with (
+            test.assertWarnsRegex(newton.NewtonWarning, "stiffness on 18 DOF")
+            if stiffness
+            else contextlib.nullcontext()
+        ):
+            solver = newton.solvers.SolverSteel(model, **PROFILE)
         states = [model.state(), model.state()]
         _advance(pipeline, solver, states, model.control(), 400)
         np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0, 0, 0])
