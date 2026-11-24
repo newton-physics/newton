@@ -18,6 +18,7 @@ from ...geometry.types import GeoType
 from ...sim.enums import JointTargetMode, JointType
 from ...sim.model import Model
 from ...sim.state import State
+from ...sim.tendon import TendonGuideType
 from ...solvers.solver import SolverBase
 from ..viewer_attributes import (
     Assignment,
@@ -46,7 +47,13 @@ def joint_editor_options(
     attr: str, lower: float | None = None, upper: float | None = None
 ) -> dict[str, float | bool | tuple[float, float] | None]:
     """Keep simulation limits while using a human-sized drag for very wide ranges."""
-    speed = 0.001 if attr in ("joint_q", "joint_target_q") else 0.01 if attr in ("joint_qd", "joint_target_qd") else 0.1
+    speed = (
+        0.001
+        if attr in ("joint_q", "joint_target_q", "joint_rest_q")
+        else 0.01
+        if attr in ("joint_qd", "joint_target_qd")
+        else 0.1
+    )
     bounds = (
         (float(lower), float(upper))
         if lower is not None and upper is not None and np.isfinite([lower, upper]).all() and lower < upper
@@ -81,6 +88,13 @@ class PropertyInspector:
         "tet": Frequency.TETRAHEDRON,
         "edge": Frequency.EDGE,
         "spring": Frequency.SPRING,
+        "curve": Frequency.CURVE,
+        "tendon": Frequency.TENDON,
+        "tendon_guide": Frequency.TENDON_GUIDE,
+        "tendon_segment": Frequency.TENDON_SEGMENT,
+        "attachment_particle_body": Frequency.ATTACHMENT_PARTICLE_BODY,
+        "constraint_mimic": Frequency.CONSTRAINT_MIMIC,
+        "actuator": Frequency.ACTUATOR,
     }
 
     def __init__(self, workspace: ViewerWorkspace) -> None:
@@ -180,9 +194,19 @@ class PropertyInspector:
                 add(Frequency.PARTICLE, [index - source.offset], source=source.model)
             else:
                 add(self.kinds[kind], [index])
-                if kind in ("tri", "tet"):
+                if kind in ("tri", "tet", "edge"):
                     particles, _, _ = ws.tree.deformables.elements(selected)
                     add(Frequency.PARTICLE, particles)
+                elif kind == "curve":
+                    bodies, joints = ws.tree.deformables.curve_elements(index)
+                    add(Frequency.BODY, bodies)
+                    add(Frequency.JOINT, joints)
+                    add(Frequency.JOINT_COORD, joints, joints=True)
+                    add(Frequency.JOINT_DOF, joints, joints=True)
+                elif kind == "tendon":
+                    guides, segments = ws.tree.tendon_elements(index)
+                    add(Frequency.TENDON_GUIDE, guides)
+                    add(Frequency.TENDON_SEGMENT, segments)
             if kind in ("joint", "articulation"):
                 joints = [index]
                 if kind == "articulation":
@@ -208,8 +232,26 @@ class PropertyInspector:
         elif kind == "reference_group":
             frequency = ws.tree.meta[selected]["frequency"]
             add(frequency, [child[1] for child in ws.tree.children[selected]])
+        elif kind == "tendon_group":
+            add(Frequency.TENDON, ws.tree.tendons_in_world(index))
+        elif kind == "attachment_group":
+            add(Frequency.ATTACHMENT_PARTICLE_BODY, ws.tree.attachments_in_world(index))
+        elif kind == "attachment_page":
+            add(Frequency.ATTACHMENT_PARTICLE_BODY, ws.tree.meta[selected].get("indices", ()))
+        elif kind == "mimic_group":
+            add(Frequency.CONSTRAINT_MIMIC, ws.tree.mimics_in_world(index))
+        elif kind == "actuator_group":
+            if 0 <= index < len(model.actuators):
+                act_indices = model.actuators[index].actuator_indices
+                if act_indices is not None and len(act_indices):
+                    add(Frequency.ACTUATOR, act_indices.numpy().tolist())
         elif kind in ("surface", "volume", "particle_set", "elements"):
+            if kind in ("surface", "volume"):
+                obj = ws.tree.deformables.objects[index]
+                if obj.model_index is not None:
+                    add(Frequency.SURFACE if kind == "surface" else Frequency.VOLUME, [obj.model_index])
             particles, triangles, tets = ws.tree.deformables.elements(selected)
+            edges = ws.tree.deformables.element_edges(selected)
             for source in ws.tree.deformables.sources:
                 if isinstance(particles, range) and particles.step == 1:
                     local = range(
@@ -221,13 +263,17 @@ class PropertyInspector:
                     local = indices[(indices >= source.offset) & (indices < source.end)] - source.offset
                 add(Frequency.PARTICLE, local, source=source.model)
             add(Frequency.TRIANGLE, triangles)
+            add(Frequency.EDGE, edges)
             add(Frequency.TETRAHEDRON, tets)
         elif kind in ("scene", "root", "group"):
             add(Frequency.ONCE, [0])
-            if kind == "root" and index >= 0:
-                add(Frequency.WORLD, [index])
+            if kind == "root":
+                add(Frequency.WORLD, [index if index >= 0 else model.world_count])
+            elif kind == "group":
+                world = ws.tree.world_for(selected)
+                add(Frequency.WORLD, [world if world >= 0 else model.world_count])
             else:
-                add(Frequency.WORLD, range(model.world_count))
+                add(Frequency.WORLD, range(model.world_count + 1))
             for frequency, count in model.custom_frequency_counts.items():
                 add(frequency, range(count))
         return domains
@@ -261,12 +307,18 @@ class PropertyInspector:
             for component in (Assignment.STATE, Assignment.CONTROL, Assignment.MODEL)
         }
         observed = self._observables()
+        observed_2d = self._observables_2d()
+        summary_only = (
+            len(ws.selection) == 1
+            and ws.selected is not None
+            and ws.selected[0] in ("deformable_visual_mesh", "actuator_collection", "actuator_group", "battery")
+        )
         available = [
             component
             for component, groups in components.items()
             if groups
-            or (component == Assignment.MODEL and self._counts())
-            or (component == Assignment.STATE and observed)
+            or (component == Assignment.MODEL and (self._counts() or summary_only))
+            or (component == Assignment.STATE and (observed or observed_2d))
         ]
         contact_owner = (
             len(ws.selection) == 1
@@ -289,10 +341,11 @@ class PropertyInspector:
                 if w.tab_item(title, flags=ui.TabItemFlags_.set_selected if component == fallback else 0)[0]:
                     self.component = component
                     self._component(component, components[component])
-                    if component == Assignment.STATE and observed:
+                    if component == Assignment.STATE and (observed or observed_2d):
                         with w.group("Solver observables") as opened:
                             if opened:
                                 self._fields(observed, component)
+                                self._draw_observables_2d(observed_2d)
                     ui.end_tab_item()
             if contact_owner and w.tab_item("Contacts")[0]:
                 self.component = "contacts"
@@ -302,6 +355,8 @@ class PropertyInspector:
         if ws._undo is not None:
             owner, attr, start, values, joint = ws._undo
             editable = ws.can_edit_control() if ws.is_control_owner(owner) else ws.can_edit_state()
+            if editable and isinstance(owner, State) and attr in ("joint_q", "joint_qd"):
+                editable, _ = ws._joint_state_support()
             ui.begin_disabled(not editable)
             if w.button("Undo last edit"):
                 if isinstance(owner, State) and attr in ("joint_q", "joint_qd"):
@@ -311,26 +366,91 @@ class PropertyInspector:
             ui.end_disabled()
 
     def _observables(self) -> list[tuple[AttributeRows, str, Model.AttributeSpec, object, str, Any]]:
-        """Match the last logged solver observables to the selected non-contact row domains.
+        """Match active solver observables to the selected non-contact row domains.
 
-        Contact observables belong to the Contacts tab. Only one-dimensional
-        arrays whose rows follow a selected frequency are listed; per-world
-        values exclude the trailing global-world entry.
+        Contact observables belong to the Contacts tab. One-dimensional arrays
+        whose rows follow a selected frequency (including joint DOF/coordinate
+        spans on selected joints and articulations) are listed here.
         """
         ws = self.workspace
-        observables = ws.viewer._last_contact_observables
+        logged_obs = getattr(ws, "logged_observables", None)
+        observables = (
+            logged_obs()
+            if callable(logged_obs)
+            else (
+                getattr(ws.viewer, "_last_observables", None) or getattr(ws.viewer, "_last_contact_observables", None)
+            )
+        )
         if observables is None or observables.model is not ws.model:
             return []
         contact = (Frequency.CONTACT, Frequency.CONTACT_RIGID, Frequency.CONTACT_SOFT)
+        joint_freqs = (Frequency.JOINT_COORD, Frequency.JOINT_DOF)
         result = []
-        for name, field in observables._observable_fields().values():
-            value = getattr(observables, name)
+        for kind, (name, field) in observables._observable_fields().items():
+            if kind not in observables.kinds:
+                continue
+            value = getattr(observables, name, None)
             if field.frequency in contact or not isinstance(value, wp.array) or value.ndim != 1:
                 continue
+            spec = Model.AttributeSpec(field.frequency)
             for domain in self.domains:
-                if domain.model is ws.model and domain.frequency == field.frequency and not domain.joints:
-                    result.append((domain, name, Model.AttributeSpec(field.frequency), observables, name, value))
+                if domain.model is ws.model and domain.frequency == field.frequency:
+                    if domain.joints and field.frequency not in joint_freqs:
+                        continue
+                    result.append((domain, name, spec, observables, name, value))
         return result
+
+    def _observables_2d(self) -> list[tuple[AttributeRows, str, Model.AttributeSpec, wp.array]]:
+        """Match 2D ``(steps, world_count + 1)`` per-world solver observables to selected worlds."""
+        ws = self.workspace
+        logged_obs = getattr(ws, "logged_observables", None)
+        observables = (
+            logged_obs()
+            if callable(logged_obs)
+            else (
+                getattr(ws.viewer, "_last_observables", None) or getattr(ws.viewer, "_last_contact_observables", None)
+            )
+        )
+        if observables is None or observables.model is not ws.model:
+            return []
+        result = []
+        for kind, (name, field) in observables._observable_fields().items():
+            if kind not in observables.kinds or field.frequency != Frequency.WORLD:
+                continue
+            value = getattr(observables, name, None)
+            if not isinstance(value, wp.array) or value.ndim != 2 or value.size == 0:
+                continue
+            spec = Model.AttributeSpec(field.frequency)
+            for domain in self.domains:
+                if domain.model is ws.model and domain.frequency == Frequency.WORLD and not domain.joints:
+                    result.append((domain, name, spec, value))
+        return result
+
+    def _draw_observables_2d(self, entries: Sequence[tuple[AttributeRows, str, Model.AttributeSpec, wp.array]]) -> None:
+        """Render 2D per-world observables (such as per-iteration residual history) for selected worlds."""
+        ws, w, ui = self.workspace, self.workspace.widgets, self.workspace.gui.ui.imgui
+        reason = "Computed by the solver during step(); read-only."
+        for domain, name, spec, array in entries:
+            ui.push_id(f"{id(domain.model)}:2d:{name}")
+            with w.property_tooltip(
+                lambda name=name, spec=spec, array=array: attribute_summary(name, spec, array, Assignment.STATE)
+            ):
+                indices = [int(i) for i in domain.indices if 0 <= int(i) < array.shape[1]]
+                if len(indices) == 1:
+                    w.array(name, ws._read_world_column(array, indices[0]), reason=reason)
+                elif len(indices) > 1:
+                    with w.group(name, default_open=True) as opened:
+                        if opened:
+                            for slot in self._page(indices):
+                                label = (
+                                    "shared world (-1)"
+                                    if slot == domain.model.world_count
+                                    else frequency_row_label(Frequency.WORLD, slot)
+                                )
+                                ui.push_id(int(slot))
+                                w.array(label, ws._read_world_column(array, int(slot)), reason=reason)
+                                ui.pop_id()
+            ui.pop_id()
 
     def _counts(self) -> dict[str, int]:
         """Return nonzero Model frequency counts for root or group selection; otherwise return an empty mapping."""
@@ -393,9 +513,22 @@ class PropertyInspector:
         """Draw one component with built-in fields, namespace tabs, and applicable resource or Control actions."""
         ws, w, ui = self.workspace, self.workspace.widgets, self.workspace.gui.ui.imgui
         groups = self._collect(component) if groups is None else groups
-        single_shape = len(ws.selection) == 1 and ws.selected and ws.selected[0] == "shape"
-        if component == Assignment.MODEL and single_shape:
-            ws.tree.resources.shape_summary(ws, ws.selected[1])
+        single = ws.selected if len(ws.selection) == 1 else None
+        if component == Assignment.MODEL and single is not None:
+            if single[0] == "shape":
+                ws.tree.resources.shape_summary(ws, single[1])
+            elif single[0] == "deformable_visual_mesh":
+                ws.tree.deformables.visual_mesh_summary(ws, single[1])
+            elif single[0] == "actuator_collection":
+                with w.group("Actuators & Batteries") as opened:
+                    if opened:
+                        w.number("Actuator groups", len(ws.model.actuators), integer=True)
+                        w.number("Actuator count", ws.model.actuator_count, integer=True)
+                        w.number("Battery groups", len(ws.model.batteries), integer=True)
+            elif single[0] == "actuator_group":
+                self._actuator_summary(single[1])
+            elif single[0] == "battery":
+                self._battery_summary(single[1])
         if component == Assignment.CONTROL:
             editable = ws.can_edit_control()
             if w.icon_button(
@@ -453,8 +586,6 @@ class PropertyInspector:
                         self._fields(groups[namespace], component, flat=True)
                         ui.end_tab_item()
                 ui.end_tab_bar()
-        if component == Assignment.MODEL and single_shape:
-            ws._shape_solver_properties(ws.selected[1])
         ui.pop_id()
 
     def _fields(
@@ -463,6 +594,7 @@ class PropertyInspector:
         component: Model.AttributeAssignment,
         *,
         flat: bool = False,
+        default_open: bool | None = None,
     ) -> None:
         """Render attributes in domain order, paginating selected objects within each attribute.
 
@@ -470,17 +602,18 @@ class PropertyInspector:
         Flat groups avoid adding another panel around custom attributes.
         """
         w, ui = self.workspace.widgets, self.workspace.gui.ui.imgui
+        is_open = (component != Assignment.MODEL) if default_open is None else default_open
         # Attribute groups keep large articulations and meshes bounded and useful:
         # q for all joints together, then qd for all joints, with stable row labels.
         for domain, name, spec, owner, attr, array in fields:
-            ui.push_id(f"{id(domain.model)}:{name}")
+            ui.push_id(f"{id(domain.model)}:{name}:{int(domain.joints)}")
             with w.property_tooltip(
                 lambda name=name, spec=spec, array=array: attribute_summary(name, spec, array, component)
             ):
                 count = len(domain.indices)
                 if count > 1:
                     group = w.disclosure if flat else w.group
-                    with group(name.split(":")[-1], default_open=component != Assignment.MODEL) as opened:
+                    with group(name.split(":")[-1], default_open=is_open) as opened:
                         if opened:
                             visible = self._page(domain.indices)
                             self._prefetch(domain, name, spec, owner, attr, array, visible, component)
@@ -552,6 +685,63 @@ class PropertyInspector:
         w.label(f"/ {pages} · {len(indices):,} rows", muted=True)
         return indices[page * size : (page + 1) * size]
 
+    def _actuator_summary(self, index: int) -> None:
+        """Draw read-only composition and attribute bindings for one Model Actuator group."""
+        ws, w = self.workspace, self.workspace.widgets
+        actuators = ws.model.actuators
+        if not (0 <= index < len(actuators)):
+            return
+        act = actuators[index]
+        with w.group("Actuator") as opened:
+            if opened:
+                w.text_value("Drive", type(act.drive).__name__)
+                w.number("Actuators", act.num_actuators, integer=True)
+                if act.motor is not None:
+                    w.text_value("Motor", type(act.motor).__name__)
+                    w.boolean("Uses battery", bool(act.motor.uses_battery))
+                if act.input_processors:
+                    w.text_value("Input processors", ", ".join(type(proc).__name__ for proc in act.input_processors))
+                if act.clamping:
+                    w.text_value("Clamping", ", ".join(type(clamp).__name__ for clamp in act.clamping))
+        with w.group("Bindings", default_open=False) as opened:
+            if opened:
+                for label, attr in (
+                    ("State position", "state_pos_attr"),
+                    ("State velocity", "state_vel_attr"),
+                    ("Target position", "control_target_pos_attr"),
+                    ("Target velocity", "control_target_vel_attr"),
+                    ("Feedforward", "control_feedforward_attr"),
+                    ("Output", "control_output_attr"),
+                    ("Computed output", "control_computed_output_attr"),
+                ):
+                    value = getattr(act, attr, None)
+                    if value is not None:
+                        w.text_value(label, str(value))
+
+    def _battery_summary(self, index: int) -> None:
+        """Draw read-only parameters for one Model Battery group."""
+        ws, w = self.workspace, self.workspace.widgets
+        batteries = ws.model.batteries
+        if not (0 <= index < len(batteries)):
+            return
+        bat = batteries[index]
+        with w.group("Battery") as opened:
+            if opened:
+                w.text_value("Type", type(bat).__name__)
+                w.number("Batteries", bat.num_batteries, integer=True)
+                for attr, label, unit in (
+                    ("nominal_voltage", "Nominal voltage", "V"),
+                    ("resistance", "Internal resistance", "Ohm"),
+                    ("min_voltage", "Min voltage", "V"),
+                ):
+                    array = getattr(bat, attr, None)
+                    if isinstance(array, wp.array) and len(array):
+                        values = ws.read(bat, attr, 0, min(len(array), 16))
+                        if len(values) == 1:
+                            w.number(label, float(values[0]), unit=unit)
+                        else:
+                            w.array(label, values)
+
     def _field(
         self,
         domain: AttributeRows,
@@ -590,6 +780,8 @@ class PropertyInspector:
         if nested:
             if domain.joints or domain.frequency == Frequency.JOINT:
                 label = model.joint_label[index].rstrip("/").rsplit("/", 1)[-1] or f"Joint {index}"
+            elif domain.frequency == Frequency.WORLD and index == model.world_count:
+                label = "shared world (-1)"
             else:
                 label = frequency_row_label(domain.frequency, index)
                 label_attribute = model.custom_frequency_label_attributes.get(domain.frequency)
@@ -616,7 +808,7 @@ class PropertyInspector:
         else:
             values = np.asarray([array])
         editable = component == Assignment.CONTROL or (
-            component == Assignment.STATE and (joint is not None or spec.assignment == Assignment.STATE)
+            component == Assignment.STATE and (joint_state or spec.assignment == Assignment.STATE)
         )
         allowed = ws.can_edit_control() if component == Assignment.CONTROL else ws.can_edit_state()
         editable &= spec.references is None and isinstance(array, wp.array) and allowed
@@ -633,17 +825,49 @@ class PropertyInspector:
             reason = "Reference indices are read only."
         if isinstance(owner, SolverBase.Observables):
             editable = False
-            reason = "Solver output of the last logged step."
+            reason = "Computed by the solver during step(); read-only."
         if joint is not None:
             kind = JointType(int(ws.read(model, "joint_type", joint)[0]))
             art = int(ws.read(model, "joint_articulation", joint)[0])
             if joint_state and (kind == JointType.ROD or art < 0):
                 editable = False
                 reason = "This joint is advanced by the solver, outside forward kinematics."
+            elif joint_state:
+                supported, joint_reason = ws._joint_state_support()
+                if not supported:
+                    editable = False
+                    reason = joint_reason
         if spec.references is not None:
             self._references(label, values, spec, domain, start, reason)
             edit = PropertyEdit(values)
-        elif joint is not None and name in ("joint_q", "joint_qd", "joint_target_q", "joint_target_qd", "joint_f"):
+        elif (
+            component == Assignment.MODEL
+            and name == "body_variant"
+            and len(values) == 1
+            and (variant_labels := model.body_variant_labels(start))
+        ):
+            supported, variant_reason = ws._body_variant_support()
+            can_switch = supported and ws.can_edit_state()
+            edit = w.choice(
+                label,
+                int(values[0]),
+                {i: text or f"Variant {i}" for i, text in enumerate(variant_labels)},
+                editable=can_switch,
+                reason="Pause at the live frame to switch body variants." if supported else variant_reason,
+            )
+            if can_switch and edit.changed:
+                ws.select_body_variant(start, int(edit.value))
+            ui.pop_id()
+            return
+        elif joint is not None and name in (
+            "joint_q",
+            "joint_qd",
+            "joint_target_q",
+            "joint_target_qd",
+            "joint_rest_q",
+            "joint_f",
+            "joint_act",
+        ):
             edit = self._joint_widget(label, values, model, joint, kind, attr, editable, reason)
         else:
             # Joint offsets count logical coordinates/DOFs, whereas row_width
@@ -676,6 +900,15 @@ class PropertyInspector:
         ws = self.workspace
         if frequency in (Frequency.JOINT_COORD, Frequency.JOINT_DOF):
             return None
+        if frequency == Frequency.WORLD:
+            if model is not ws.model:
+                return None
+            if index in (-1, model.world_count):
+                return ("root", -1) if ("root", -1) in ws.tree.roots else None
+            if 0 <= index < model.world_count:
+                key = ("root", index)
+                return key if key in ws.tree.roots else ("root", -1) if ("root", -1) in ws.tree.roots else None
+            return None
         count = model._attribute_frequency_count(frequency)
         if index < 0 or index >= count:
             return None
@@ -686,11 +919,12 @@ class PropertyInspector:
             return None
         if isinstance(frequency, str):
             return CustomFrequencyIndex.key(frequency, index)
-        if frequency == Frequency.WORLD:
-            key = ("root", index)
-            return key if key in ws.tree.roots else ("root", -1)
+        if frequency in (Frequency.SURFACE, Frequency.VOLUME):
+            target = ws.tree.deformables.object_key_for_model(frequency.name.lower(), index, ws.tree)
+            if target is not None:
+                return target
         for kind, domain in self.kinds.items():
-            if frequency == domain and kind not in ("edge", "spring"):
+            if frequency == domain and kind not in ("spring", "actuator"):
                 return kind, index
         return "attribute:" + frequency.name, index
 
@@ -701,6 +935,8 @@ class PropertyInspector:
         tree = self.workspace.tree
         if isinstance(frequency, str):
             return tree.custom.label(frequency, index)
+        if frequency == Frequency.WORLD and index in (-1, model.world_count):
+            return "Shared (-1)"
         kind = target[0] if target[0] in self.kinds else frequency.name.lower()
         labels = getattr(model, kind + "_label", ())
         if index < len(labels) and isinstance(labels[index], str) and labels[index].strip():
@@ -827,7 +1063,12 @@ class PropertyInspector:
             return PropertyEdit(values)
         if (dtype == wp.bool or values.dtype.kind == "b") and flat.size == 1:
             return w.boolean(label, bool(flat[0]), **args)
-        enums = {"shape_type": GeoType, "joint_type": JointType, "joint_target_mode": JointTargetMode}
+        enums = {
+            "shape_type": GeoType,
+            "joint_type": JointType,
+            "joint_target_mode": JointTargetMode,
+            "tendon_guide_type": TendonGuideType,
+        }
         if attr in enums and flat.size == 1:
             return w.enum(label, int(flat[0]), list(enums[attr]), **args)
         if dtype == wp.transform and len(values) == 1:
@@ -874,14 +1115,20 @@ class PropertyInspector:
         """
         ws, w = self.workspace, self.workspace.widgets
         values = values.reshape(-1)
-        coord = attr in ("joint_q", "joint_target_q")
+        coord = attr in ("joint_q", "joint_target_q", "joint_rest_q")
         args = {"editable": editable, "reason": reason}
-        if coord and kind in (JointType.FREE, JointType.DISTANCE) and len(values) == 7:
+        if coord and kind in (JointType.FREE, JointType.DISTANCE, JointType.ROD) and len(values) == 7:
             return w.transform(label, values, **args)
         if coord and kind == JointType.BALL and len(values) == 4:
             return w.quat(label, values, **args)
-        if len(values) == 6 and kind in (JointType.FREE, JointType.DISTANCE):
-            return w.spatial_vector(label, values, force=attr == "joint_f", position=attr == "joint_target_q", **args)
+        if len(values) == 6 and kind in (JointType.FREE, JointType.DISTANCE, JointType.ROD):
+            return w.spatial_vector(
+                label,
+                values,
+                force=attr in ("joint_f", "joint_act"),
+                position=attr in ("joint_target_q", "joint_rest_q"),
+                **args,
+            )
         dof_start = int(ws.read(model, "joint_qd_start", joint)[0])
         linear = int(ws.read(model, "joint_dof_dim", joint)[0, 0])
         limits = coord and kind in (JointType.REVOLUTE, JointType.PRISMATIC, JointType.D6)
@@ -897,10 +1144,10 @@ class PropertyInspector:
                 editor = joint_editor_options(attr, lower[i], upper[i]) if limits else joint_editor_options(attr)
                 unit = (
                     ("m" if i < linear else "rad")
-                    if attr in ("joint_q", "joint_target_q")
+                    if attr in ("joint_q", "joint_target_q", "joint_rest_q")
                     else ("m/s" if i < linear else "rad/s")
                 )
-                if attr == "joint_f":
+                if attr in ("joint_f", "joint_act"):
                     unit = "N" if i < linear else "N m"
                 component = (
                     (f"Linear {i + 1}" if i < linear else f"Angular {i - linear + 1}") if len(values) > 1 else label

@@ -8,7 +8,7 @@ from __future__ import annotations
 import math
 from time import perf_counter
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 import numpy as np
 import warp as wp
@@ -22,6 +22,7 @@ from ...sim.enums import BodyFlags, JointType, ModelFlags
 from ...sim.model import Model
 from ...sim.state import State
 from ...solvers.solver import SolverBase
+from ..viewer_attributes import AttributeRows
 from ..viewer_bindings import InspectionBindings
 from ..viewer_history import FrameHistory, _component_arrays
 from ..viewer_model_tree import ModelTree
@@ -153,6 +154,10 @@ class ViewerWorkspace:
         self.example_search = ""
         self._example_rows = []
         self._example_query = None
+        self._example_expanded: set[str] = set()
+        self._example_last_current: str | None = None
+        self._example_all_folders: tuple[str, ...] = ()
+        self._example_stats: tuple[int, int, int] = (0, 0, 0)
         self.left_width = 280.0
         self.right_width = 350.0
         self.timeline_height = TimelineView.default_height
@@ -443,10 +448,12 @@ class ViewerWorkspace:
             if collision:
                 self.tree.meta[key]["world"] = self.collision.world_for(key)
             world = self.tree.world_for(key)
-            if not resource:
+            if not resource and key[0] not in ("actuator_collection", "actuator_group", "battery"):
                 self.tree.ensure_world(world)
-            if key[0] in ("particle", "tri", "tet"):
+            if key[0] in ("particle", "tri", "edge", "tet"):
                 self.tree.deformables.reveal(self.tree, key)
+            elif key[0] in ("tendon_guide", "tendon_segment", "attachment_particle_body", "actuator_group", "battery"):
+                self.tree.reveal_aux(key)
             elif self.tree.custom.frequency(key) is not None:
                 self.tree.custom.reveal(self.tree, key)
             if (not collision and not resource) or world >= 0:
@@ -462,7 +469,7 @@ class ViewerWorkspace:
             elif kind == "body":
                 # Physics ownership is independent of lazy explorer topology.
                 shapes.update(self.model.body_shapes.get(index, ()))
-            elif kind in ("articulation", "root", "group") and self.tree is not None:
+            elif kind in ("articulation", "root", "group", "curve") and self.tree is not None:
                 shapes.update(self.tree.shape_descendants(item))
                 joints.update(self.tree.joint_descendants(item))
             elif kind == "joint":
@@ -470,6 +477,36 @@ class ViewerWorkspace:
                 child = int(self.model.joint_child[index : index + 1].numpy()[0])
                 if child >= 0:
                     shapes.update(self.model.body_shapes.get(child, ()))
+            elif kind == "tendon" and self.tree is not None and self.model.tendon_guide_body is not None:
+                guides, _ = self.tree.tendon_elements(index)
+                if len(guides):
+                    bodies = self.model.tendon_guide_body[guides.start : guides.stop].numpy()
+                    for body in bodies:
+                        if body >= 0:
+                            shapes.update(self.model.body_shapes.get(int(body), ()))
+            elif kind == "tendon_guide" and self.model.tendon_guide_body is not None:
+                if 0 <= index < len(self.model.tendon_guide_body):
+                    body = int(self.model.tendon_guide_body[index : index + 1].numpy()[0])
+                    if body >= 0:
+                        shapes.update(self.model.body_shapes.get(body, ()))
+            elif kind == "attachment_particle_body" and self.model.attachment_particle_body_body is not None:
+                if 0 <= index < len(self.model.attachment_particle_body_body):
+                    body = int(self.model.attachment_particle_body_body[index : index + 1].numpy()[0])
+                    if body >= 0:
+                        shapes.update(self.model.body_shapes.get(body, ()))
+            elif (
+                kind == "constraint_mimic"
+                and self.model.constraint_mimic_joint0 is not None
+                and self.model.constraint_mimic_joint1 is not None
+            ):
+                if 0 <= index < self.model.constraint_mimic_count:
+                    for j_arr in (self.model.constraint_mimic_joint0, self.model.constraint_mimic_joint1):
+                        j_idx = int(j_arr[index : index + 1].numpy()[0])
+                        if 0 <= j_idx < self.model.joint_count:
+                            joints.add(j_idx)
+                            child = int(self.model.joint_child[j_idx : j_idx + 1].numpy()[0])
+                            if child >= 0:
+                                shapes.update(self.model.body_shapes.get(child, ()))
             elif self.tree is not None and (shape := self.tree.resources.shape_owner(item)) is not None:
                 shapes.add(shape)
             elif self.collision.handles(item):
@@ -554,11 +591,15 @@ class ViewerWorkspace:
             "group",
             "surface",
             "volume",
+            "curve",
             "particle_set",
             "elements",
             "particle",
             "tri",
+            "edge",
             "tet",
+            "tendon",
+            "tendon_guide",
         )
 
     def selection_bounds(self, *, include_contacts: bool = True, sync_selection: bool = True) -> np.ndarray | None:
@@ -920,7 +961,9 @@ class ViewerWorkspace:
         s = self.gui.ui.dpi_scale
         w, h = ui.get_io().display_size
         top, status = 34 * s, 28 * s
-        bottom = min(self.timeline_height * s, h * 0.36)
+        active_timeline = self._active_timeline
+        timeline_expanded = active_timeline is not None and active_timeline.has_track
+        bottom = min(self.timeline_height * s, h * 0.36) if timeline_expanded else TimelineView.compact_height * s
         left = min(self.left_width * s, w * 0.28) if self.show_left else 0
         right = min(self.right_width * s, w * 0.31) if self.show_right and w > 740 * s else 0
         panel_h = max(40, h - top - bottom - status)
@@ -978,15 +1021,18 @@ class ViewerWorkspace:
                 120,
                 700,
             )
-            ui.end()
         timeline = self._active_timeline
-        if self._window("##workspace_timeline", 0, h - bottom - status, w, bottom):
+        timeline_flags = (
+            0 if timeline_expanded else (ui.WindowFlags_.no_scrollbar | ui.WindowFlags_.no_scroll_with_mouse)
+        )
+        if self._window("##workspace_timeline", 0, h - bottom - status, w, bottom, flags=timeline_flags):
             if timeline is not None:
                 self._bind_timeline(timeline)
                 self.gui.ui.draw_section("Timeline", lambda: timeline.draw_gui(ui, self.viewer, embedded=True))
             else:
                 self._transport()
-                ui.text_disabled("Select an example to begin.")
+                ui.same_line(spacing=10 * s)
+                self.widgets.label("Select an example to begin.", height=22 * s, muted=True)
         ui.end()
         if self._window(
             "##workspace_status",
@@ -1000,17 +1046,18 @@ class ViewerWorkspace:
         ui.end()
         self._splitter("left", left - 3 * s, top, 6 * s, view_h, "left_width", 1, 190, 440) if left else None
         self._splitter("right", w - right - 3 * s, top, 6 * s, view_h, "right_width", -1, 250, 500) if right else None
-        self._splitter(
-            "bottom",
-            0,
-            h - bottom - status - 3 * s,
-            w,
-            6 * s,
-            "timeline_height",
-            -1,
-            TimelineView.default_height,
-            380,
-        )
+        if timeline_expanded:
+            self._splitter(
+                "bottom",
+                0,
+                h - bottom - status - 3 * s,
+                w,
+                6 * s,
+                "timeline_height",
+                -1,
+                TimelineView.default_height,
+                380,
+            )
         self._sync_selection_outline()
         if self.dockspace.viewport_visible:
             self.viewport_controls.draw()
@@ -1322,32 +1369,200 @@ class ViewerWorkspace:
             ui.end_tab_item()
         tree = self.gui._example_tree
         if tree and self.widgets.tab_item("Examples")[0]:
-            ui.set_next_item_width(-1)
-            _, self.example_search = ui.input_text_with_hint(
-                "##example_search", "Find an example...", self.example_search
-            )
-            if self.example_search != self._example_query:
-                query = self.example_search.casefold()
-                self._example_rows = [
-                    (category, name, path)
-                    for category, entries in tree.items()
-                    for name, path in entries
-                    if query in f"{category} {name}".casefold()
-                ]
-                self._example_query = self.example_search
-            ui.text_disabled(f"{len(self._example_rows)} examples")
-            if ui.begin_child("##example_rows"):
-                clipper = ui.ListClipper()
-                clipper.begin(len(self._example_rows))
-                while clipper.step():
-                    for row in range(clipper.display_start, clipper.display_end):
-                        category, name, path = self._example_rows[row]
-                        if ui.selectable(f"{category} / {name}", path == self.gui._example_current)[0]:
-                            self.gui.select_example(path)
-                clipper.end()
-            ui.end_child()
+            self._example_browser(tree)
             ui.end_tab_item()
         ui.end_tab_bar()
+
+    @staticmethod
+    def _example_folder_parts(category: str, module_path: str) -> tuple[str, ...]:
+        """Return folder segments for an example from its module path or category."""
+        if module_path.startswith("newton.examples."):
+            parts = tuple(part for part in module_path.split(".")[2:-1] if part)
+            if parts:
+                return parts
+        parts = tuple(part for part in category.split("/") if part)
+        return parts or (category,)
+
+    @staticmethod
+    def _example_display_name(folder: str, name: str) -> str:
+        """Trim a redundant leading ``<folder>_`` prefix for display inside that folder."""
+        prefix = f"{folder}_"
+        return name[len(prefix) :] if name.startswith(prefix) and len(name) > len(prefix) else name
+
+    def _rebuild_example_rows(self, tree: dict[str, list[tuple[str, str]]]) -> None:
+        """Build clipped folder/example tree rows reflecting the directory hierarchy and search filter."""
+        query = self.example_search.strip().casefold()
+        current = self.gui._example_current
+        root: dict[str, Any] = {"folders": {}, "examples": []}
+        total_examples = 0
+        current_ancestors: list[str] = []
+
+        for category, entries in sorted(tree.items()):
+            for name, path in entries:
+                total_examples += 1
+                parts = self._example_folder_parts(category, path)
+                node = root
+                prefix_parts: list[str] = []
+                for part in parts:
+                    prefix_parts.append(part)
+                    folder_key = "/".join(prefix_parts)
+                    child = node["folders"].get(part)
+                    if child is None:
+                        child = {"key": folder_key, "name": part, "folders": {}, "examples": []}
+                        node["folders"][part] = child
+                    node = child
+                display = self._example_display_name(parts[-1], name)
+                node["examples"].append((name, display, path, "/".join(parts)))
+                if path == current:
+                    current_ancestors = ["/".join(parts[: i + 1]) for i in range(len(parts))]
+
+        if current != self._example_last_current:
+            self._example_last_current = current
+            if current_ancestors:
+                self._example_expanded.update(current_ancestors)
+
+        all_folders: list[str] = []
+
+        def collect_rows(node: dict[str, Any], depth: int) -> tuple[list[tuple[str, int, str, str, Any]], int]:
+            rows: list[tuple[str, int, str, str, Any]] = []
+            matched = 0
+            for folder_name in sorted(node["folders"]):
+                child = node["folders"][folder_name]
+                all_folders.append(child["key"])
+                child_rows, child_count = collect_rows(child, depth + 1)
+                if query and child_count == 0:
+                    continue
+                matched += child_count
+                rows.append(("folder", depth, folder_name, child["key"], child_count))
+                if query or child["key"] in self._example_expanded:
+                    rows.extend(child_rows)
+            for name, display, path, folder_path in sorted(node["examples"], key=lambda item: item[1]):
+                if query and query not in f"{folder_path} {name} {display}".casefold():
+                    continue
+                matched += 1
+                rows.append(("example", depth, display, path, name))
+            return rows, matched
+
+        rows, matched_examples = collect_rows(root, 0)
+        self._example_rows = rows
+        self._example_all_folders = tuple(all_folders)
+        self._example_stats = (len(all_folders), matched_examples, total_examples)
+        self._example_query = (id(tree), self.example_search, frozenset(self._example_expanded), current)
+
+    def _example_browser(self, tree: dict[str, list[tuple[str, str]]]) -> None:
+        """Draw the Examples tab as a searchable, clipped folder tree matching the Scene explorer."""
+        ui, widgets = self.gui.ui.imgui, self.widgets
+        ui.set_next_item_width(-1)
+        _, self.example_search = ui.input_text_with_hint(
+            "##example_search", "Search examples or folders...", self.example_search
+        )
+        current = self.gui._example_current
+        cache_key = (id(tree), self.example_search, frozenset(self._example_expanded), current)
+        if cache_key != self._example_query:
+            self._rebuild_example_rows(tree)
+
+        query = self.example_search.strip()
+        if not query:
+            if self._example_expanded:
+                if widgets.button("Collapse", small=True):
+                    self._example_expanded.clear()
+                    self._rebuild_example_rows(tree)
+            elif widgets.button("Expand", small=True):
+                self._example_expanded.update(self._example_all_folders)
+                self._rebuild_example_rows(tree)
+            ui.same_line()
+
+        folder_count, matched_count, total_count = self._example_stats
+        if query:
+            noun = "example" if total_count == 1 else "examples"
+            ui.text_disabled(f"{matched_count:,} / {total_count:,} {noun}")
+        else:
+            folders = "folder" if folder_count == 1 else "folders"
+            examples = "example" if total_count == 1 else "examples"
+            ui.text_disabled(f"{folder_count:,} {folders} · {total_count:,} {examples}")
+        ui.separator()
+
+        if ui.begin_child("##example_rows"):
+            table_flags = ui.TableFlags_.row_bg | ui.TableFlags_.sizing_stretch_prop
+            if ui.begin_table("##example_columns", 2, table_flags):
+                ui.table_setup_column("Example", ui.TableColumnFlags_.width_stretch)
+                ui.table_setup_column("Count", ui.TableColumnFlags_.width_fixed, 34 * widgets.scale)
+                ui.table_headers_row()
+                clipper = ui.ListClipper()
+                rows = self._example_rows
+                clipper.begin(len(rows))
+                while clipper.step():
+                    for row in range(clipper.display_start, clipper.display_end):
+                        self._example_tree_row(*rows[row], filtering=bool(query))
+                clipper.end()
+                ui.end_table()
+        ui.end_child()
+
+    def _example_tree_row(self, kind: str, depth: int, label: str, value: str, meta: Any, *, filtering: bool) -> None:
+        """Draw one folder or example row in the Examples tree table."""
+        ui, widgets = self.gui.ui.imgui, self.widgets
+        ui.push_id(f"{kind}:{value}")
+        ui.table_next_row()
+        ui.table_next_column()
+        indent = depth * 12 * widgets.scale
+        ui.set_cursor_pos_x(ui.get_cursor_pos_x() + indent)
+        pos = ui.get_cursor_screen_pos()
+
+        is_folder = kind == "folder"
+        active = not is_folder and value == self.gui._example_current
+        flags = (
+            ui.TreeNodeFlags_.no_tree_push_on_open
+            | ui.TreeNodeFlags_.span_avail_width
+            | ui.TreeNodeFlags_.frame_padding
+        )
+        if not is_folder:
+            flags |= ui.TreeNodeFlags_.leaf
+        if active:
+            flags |= ui.TreeNodeFlags_.selected
+            ui.table_set_bg_color(ui.TableBgTarget_.row_bg0, widgets.color(theme.TREE_SELECTED))
+            ui.push_style_color(ui.Col_.header, ui.ImVec4(*theme.TRANSPARENT))
+            ui.push_style_color(ui.Col_.text, ui.ImVec4(*widgets.accent))
+        if is_folder:
+            ui.set_next_item_open(filtering or value in self._example_expanded, ui.Cond_.always)
+        ui.tree_node_ex("        " + label + "##node", flags)
+        if active:
+            ui.pop_style_color(2)
+
+        row_height = ui.get_item_rect_max().y - ui.get_item_rect_min().y
+        if is_folder:
+            if not filtering and ui.is_item_toggled_open():
+                if value in self._example_expanded:
+                    self._example_expanded.discard(value)
+                else:
+                    self._example_expanded.add(value)
+        elif ui.is_item_clicked():
+            self.gui.select_example(value)
+
+        icon_pos = (pos.x + ui.get_tree_node_to_label_spacing(), pos.y + (row_height - 16 * widgets.scale) / 2)
+        widgets.icon(
+            "folder" if is_folder else "play",
+            icon_pos,
+            16 * widgets.scale,
+            active=active,
+            tint=widgets.explorer_colors.get("group") if is_folder else widgets.explorer_colors.get("root"),
+            solid=is_folder or active,
+        )
+        if ui.is_item_hovered(ui.HoveredFlags_.delay_normal):
+            if is_folder:
+                noun = "example" if meta == 1 else "examples"
+                ui.set_tooltip(f"newton/examples/{value} ({meta} {noun})")
+            else:
+                ui.set_tooltip(f"{meta}\n{value}")
+
+        ui.table_next_column()
+        if is_folder:
+            text = str(meta)
+            avail = ui.get_content_region_avail().x
+            width = ui.calc_text_size(text).x
+            if avail > width:
+                ui.set_cursor_pos_x(ui.get_cursor_pos_x() + avail - width)
+            ui.text_disabled(text)
+        ui.pop_id()
 
     def _scene_tree(self) -> None:
         """Draw searchable, clipped tree rows with independent name scrolling and background-click deselection."""
@@ -1368,7 +1583,17 @@ class ViewerWorkspace:
             tree.expanded.clear()
             tree.rebuild()
         ui.same_line()
-        count = sum(getattr(m, kind + "_count", 0) for kind in tree.kinds) + m.surface_count + m.volume_count
+        count = (
+            sum(getattr(m, kind + "_count", 0) for kind in tree.kinds)
+            + m.surface_count
+            + m.volume_count
+            + m.curve_count
+            + m.deformable_visual_mesh_count
+            + m.tendon_count
+            + m.attachment_particle_body_count
+            + m.constraint_mimic_count
+            + m.actuator_count
+        )
         count += sum(tree.custom.counts.values())
         worlds = "world" if m.world_count == 1 else "worlds"
         objects = "object" if count == 1 else "objects"
@@ -1433,12 +1658,33 @@ class ViewerWorkspace:
             self._tree_scroll_x = 0.0
             self._tree_scroll_pending = 0.0
 
+    SHAPE_ICONS: ClassVar[dict[int, str]] = {
+        int(GeoType.NONE): "empty",
+        int(GeoType.MESH): "mesh",
+        int(GeoType.CONVEX_MESH): "convex",
+        int(GeoType.BOX): "box",
+        int(GeoType.SPHERE): "sphere",
+        int(GeoType.ELLIPSOID): "ellipsoid",
+        int(GeoType.CAPSULE): "capsule",
+        int(GeoType.CYLINDER): "cylinder",
+        int(GeoType.PLANE): "plane",
+        int(GeoType.CONE): "cone",
+        int(GeoType.HFIELD): "terrain",
+        int(GeoType.GAUSSIAN): "gaussian",
+    }
+
+    @staticmethod
+    def joint_icon(joint_type: JointType | int) -> str:
+        """Return the explorer icon name for a JointType value."""
+        joint_enum = JointType(joint_type)
+        return "joint_cable" if joint_enum == JointType.ROD else "joint_" + joint_enum.name.lower()
+
     def _tree_row(self, key: TreeKey, depth: int) -> None:
         """Draw a depth-indented explorer row with type icon, expansion, selection, visibility, and applicable flags."""
         ui, widgets, tree = self.gui.ui.imgui, self.widgets, self.tree
         kind, index = key
         resource = tree.resources.handles(key)
-        if kind not in ("root", "group") and not resource:
+        if kind not in ("root", "group", "actuator_collection", "actuator_group", "battery") and not resource:
             tree.ensure_world(tree.world_for(key))
         ui.push_id(f"{kind}:{index}")
         ui.table_next_row()
@@ -1483,15 +1729,56 @@ class ViewerWorkspace:
             self.select(key, toggle=ui.get_io().key_ctrl, extend=ui.get_io().key_shift)
         if has_children and ui.is_item_toggled_open():
             tree.toggle(key)
-        icon = {"root": "world", "group": "folder", "elements": "folder", "particle_set": "particles"}.get(kind, kind)
+        icon = {
+            "root": "world",
+            "group": "folder",
+            "elements": "folder",
+            "particle_set": "particles",
+            "curve": "joint_cable",
+            "deformable_visual_mesh": "mesh",
+            "edge": "tri",
+            "tendon_group": "folder",
+            "tendon": "joint_cable",
+            "tendon_guide": "joint_distance",
+            "tendon_segment": "joint_cable",
+            "attachment_group": "folder",
+            "attachment_page": "folder",
+            "attachment_particle_body": "joint_fixed",
+            "mimic_group": "folder",
+            "constraint_mimic": "link",
+            "actuator_collection": "folder",
+            "actuator_group": "custom",
+            "battery": "custom",
+        }.get(kind, kind)
         custom = (
-            kind in ("frequency", "reference_group")
+            kind
+            in (
+                "frequency",
+                "reference_group",
+                "deformable_visual_mesh",
+                "tendon_group",
+                "tendon",
+                "tendon_guide",
+                "tendon_segment",
+                "attachment_group",
+                "attachment_page",
+                "attachment_particle_body",
+                "mimic_group",
+                "constraint_mimic",
+                "actuator_collection",
+                "actuator_group",
+                "battery",
+            )
             or kind.startswith("attribute:")
             or tree.custom.frequency(key) is not None
             or self.collision.handles(key)
             or resource
         )
-        if custom:
+        if (
+            kind in ("frequency", "reference_group")
+            or kind.startswith("attribute:")
+            or tree.custom.frequency(key) is not None
+        ):
             icon = "folder" if kind in ("frequency", "reference_group") else "custom"
         if self.collision.handles(key):
             icon = "contact" if kind in ("contact", "soft_contact", "collision_contacts") else "collision"
@@ -1507,31 +1794,31 @@ class ViewerWorkspace:
             tree.meta.setdefault(key, {})["type"] = int(self.read(self.model, kind + "_type", index)[0])
         if kind == "shape":
             geo = tree.meta.get(key, {}).get("type", 0)
-            icon = {
-                int(GeoType.NONE): "empty",
-                int(GeoType.MESH): "mesh",
-                int(GeoType.CONVEX_MESH): "convex",
-                int(GeoType.BOX): "box",
-                int(GeoType.SPHERE): "sphere",
-                int(GeoType.ELLIPSOID): "ellipsoid",
-                int(GeoType.CAPSULE): "capsule",
-                int(GeoType.CYLINDER): "cylinder",
-                int(GeoType.PLANE): "plane",
-                int(GeoType.CONE): "cone",
-                int(GeoType.HFIELD): "terrain",
-                int(GeoType.GAUSSIAN): "gaussian",
-            }.get(geo, "shape")
+            icon = self.SHAPE_ICONS.get(geo, "shape")
         elif kind == "joint":
             joint_type = tree.meta.get(key, {}).get("type")
             if joint_type is not None:
-                icon = "joint_" + JointType(joint_type).name.lower()
+                icon = self.joint_icon(joint_type)
+        tint_kind = (
+            icon
+            if resource
+            else "surface"
+            if kind in ("curve", "deformable_visual_mesh")
+            else "tri"
+            if kind == "edge"
+            else "joint"
+            if kind in ("tendon", "tendon_guide", "tendon_segment", "attachment_particle_body", "constraint_mimic")
+            else "custom"
+            if custom
+            else kind
+        )
         icon_pos = (pos.x + ui.get_tree_node_to_label_spacing(), pos.y + (row_height - 16 * widgets.scale) / 2)
         widgets.icon(
             icon,
             icon_pos,
             16 * widgets.scale,
             active=key in self.selection,
-            tint=widgets.explorer_colors.get(icon if resource else "custom" if custom else kind),
+            tint=widgets.explorer_colors.get(tint_kind),
             solid=True,
         )
         if ui.is_item_hovered(ui.HoveredFlags_.delay_normal):
@@ -1549,7 +1836,7 @@ class ViewerWorkspace:
             ui.table_next_column()
             ui.pop_id()
             return
-        if kind in ("surface", "volume", "particle_set", "elements", "particle", "tri", "tet"):
+        if kind in ("surface", "volume", "particle_set", "elements", "particle", "tri", "edge", "tet"):
             if kind in ("surface", "volume", "particle_set"):
                 visible = self.tree.deformables.visible(tree, key)
                 if widgets.icon_button(
@@ -1618,10 +1905,25 @@ class ViewerWorkspace:
             "elements": "Element group",
             "surface": "Triangle surface",
             "volume": "Tetrahedral volume",
+            "curve": "Deformable curve / rod",
+            "deformable_visual_mesh": "Skinned deformable visual mesh",
             "particle_set": "Particles",
             "particle": "Particle",
             "tri": "Triangle",
+            "edge": "Bending edge",
             "tet": "Tetrahedron",
+            "tendon_group": "Massless routed tendons",
+            "tendon": "Massless routed tendon",
+            "tendon_guide": "Tendon guide point",
+            "tendon_segment": "Tendon segment",
+            "attachment_group": "Particle-body attachments",
+            "attachment_page": "Particle-body attachments",
+            "attachment_particle_body": "Particle-body attachment",
+            "mimic_group": "Joint mimic constraints",
+            "constraint_mimic": "Joint mimic constraint",
+            "actuator_collection": "Actuators and batteries",
+            "actuator_group": "Actuator group",
+            "battery": "Battery group",
             "contact": "Rigid contact",
             "soft_contact": "Soft-rigid contact",
             "collision_pair": "Candidate shape pair",
@@ -1648,6 +1950,7 @@ class ViewerWorkspace:
             "bvh_page": "Mesh BVHs",
             "shape_bvh": "BVH for this shape's geometry",
             "bvh_gaussian": "Gaussian BVH",
+            "bvh_optix": "OptiX shape acceleration structure",
         }.get(kind, kind.replace("_", " ").capitalize())
 
     def object_visible(self, key: TreeKey) -> bool:
@@ -1729,7 +2032,7 @@ class ViewerWorkspace:
         kind, index = key
         flags = int(self.tree.meta.get(key, {}).get("flags", 0))
         if kind == "body":
-            runtime = type(self.bindings.solver).__name__ in ("SolverMuJoCo", "SolverXPBD")
+            runtime, readonly_reason = self._body_flag_support()
             enabled = runtime and self.can_edit_state() and not flags & int(BodyFlags.PROXY)
             options = (
                 (BodyFlags.DYNAMIC, "dynamic", "Dynamic: responds to forces"),
@@ -1737,6 +2040,7 @@ class ViewerWorkspace:
             )
         elif kind == "shape":
             enabled = False
+            readonly_reason = "Read only: configured when the model and collision pipeline are built."
             options = (
                 (ShapeFlags.COLLIDE_SHAPES, "collision", "Shape collisions"),
                 (ShapeFlags.COLLIDE_PARTICLES, "particles", "Particle collisions"),
@@ -1760,7 +2064,7 @@ class ViewerWorkspace:
                     if kind == "body" and flags & int(BodyFlags.PROXY)
                     else "\nPause at the live frame to edit."
                     if kind == "body" and runtime
-                    else "\nRead only: configured when the model and collision pipeline are built."
+                    else f"\n{readonly_reason}"
                 )
             if widgets.icon_button(
                 f"##flag{int(flag)}",
@@ -1775,7 +2079,47 @@ class ViewerWorkspace:
 
     def _at_live_frame(self) -> bool:
         """Report whether the displayed timeline is at its latest frame rather than a historical snapshot."""
-        return self.history is None or not self.history.replaying
+        history = getattr(self, "history", None)
+        return history is None or not history.replaying
+
+    def logged_observables(self) -> SolverBase.Observables | None:
+        """Return solver observables explicitly supplied via ``log_observables()`` or ``log_contacts()``."""
+        if self.model is None:
+            return None
+        for attr in ("_last_observables", "_last_contact_observables"):
+            obs = getattr(self.viewer, attr, None)
+            if obs is not None and obs.model is self.model:
+                return obs
+        return None
+
+    def _active_world(self) -> int:
+        """Resolve the world index matching the current selection or explorer root."""
+        world = getattr(self, "world", 0)
+        tree = getattr(self, "tree", None)
+        if tree is not None:
+            if self.selected is not None:
+                world = tree.world_for(self.selected)
+            elif ("root", world) not in tree.roots and ("root", -1) in tree.roots:
+                world = -1
+        return world
+
+    def _active_world_slot(self) -> int:
+        """Map the active world (including global world ``-1``) to a ``world_count + 1`` array index."""
+        if self.model is None:
+            return 0
+        world = self._active_world()
+        return self.model.world_count if world < 0 else min(world, self.model.world_count)
+
+    def _read_world_column(self, array: wp.array, slot: int) -> np.ndarray:
+        """Read one world column of a 2D ``(steps, world_count + 1)`` observable array once per frame."""
+        key = (id(array), "world_col", slot)
+        if key not in self._live_cache:
+            host = self._live_cache.get((id(array), "host_2d"))
+            if host is None:
+                host = np.asarray(array.numpy())
+                self._live_cache[(id(array), "host_2d")] = host
+            self._live_cache[key] = np.asarray(host[:, slot]) if slot < host.shape[1] else np.empty(0, dtype=host.dtype)
+        return self._live_cache[key]
 
     def can_edit_state(self) -> bool:
         """Allow state mutation only while paused at the newest retained frame."""
@@ -1838,32 +2182,179 @@ class ViewerWorkspace:
         """Recognize the live Control and its registered namespace containers."""
         return self.bindings.owns_control(owner)
 
+    def _body_flag_support(self) -> tuple[bool, str]:
+        """Return whether the bound solver supports runtime body-motion edits and a read-only reason if not."""
+        solver = self.bindings.solver
+        if not isinstance(solver, SolverBase) or self.model is None:
+            return False, "Read only: configured when the model and collision pipeline are built."
+        if type(solver).__name__ in ("SolverImplicitMPM", "SolverKamino", "SolverStyle3D"):
+            return False, "Read only: configured when the model and solver are built."
+        if self.model.device.is_cuda and not solver.is_notify_model_changed_graphable(ModelFlags.BODY_PROPERTIES):
+            return False, "Read only: changing body motion on CUDA requires recapturing the solver step."
+        return True, ""
+
     def set_flag(self, kind: str, index: int, flag: int) -> None:
         """Set a body motion flag or toggle shape visibility, notifying its solver or renderer.
 
         Reject unsupported edits and proxy-body changes. Restore the original
-        array value if notification fails, then propagate the exception.
+        array value and solver caches if notification fails.
         """
+        if self.model is None:
+            return
         array = getattr(self.model, kind + "_flags")
         previous = int(array[index : index + 1].numpy()[0])
         value = flag if kind == "body" else previous ^ flag
-        if kind == "body" and (not self.can_edit_state() or previous & int(BodyFlags.PROXY)):
-            return
-        if kind == "shape" and flag != int(ShapeFlags.VISIBLE):
+        if kind == "body":
+            runtime, reason = self._body_flag_support()
+            if not runtime:
+                self.message = reason
+                return
+            if not self.can_edit_state():
+                self.message = "Pause at the live frame to edit."
+                return
+            if previous & int(BodyFlags.PROXY) or value == previous:
+                return
+        elif kind != "shape" or flag != int(ShapeFlags.VISIBLE):
             return
         array[index : index + 1].fill_(value)
-        try:
-            if kind == "body":
-                self.bindings.solver.notify_model_changed(ModelFlags.BODY_PROPERTIES)
-            else:
+        if kind == "body":
+            solver = self.bindings.solver
+            try:
+                solver.notify_model_changed(ModelFlags.BODY_PROPERTIES)
+            except Exception as exc:
+                array[index : index + 1].fill_(previous)
+                rollback_exc: Exception | None = None
+                try:
+                    solver.notify_model_changed(ModelFlags.BODY_PROPERTIES)
+                except Exception as recovery_exc:
+                    rollback_exc = recovery_exc
+                self._cache.clear()
+                self._live_cache.clear()
+                if rollback_exc is not None:
+                    self.message = (
+                        f"Solver rejected body flag change ({exc}) and rollback failed ({rollback_exc}); "
+                        "restart the simulation to resynchronize solver state."
+                    )
+                else:
+                    self.message = f"Solver rejected body flag change: {exc}"
+                return
+            if self.history is not None and self.viewer.is_paused():
+                self.history.replace_next_frame()
+            self.message = ""
+        else:
+            try:
                 self.viewer._rebuild_shape_batches_for_opacity_groups()
                 self.gui.update_shape_counts(self.model)
-        except Exception:
-            array[index : index + 1].fill_(previous)
-            raise
+            except Exception:
+                array[index : index + 1].fill_(previous)
+                raise
         self.tree.meta[(kind, index)]["flags"] = value
         self._cache.clear()
         self._live_cache.clear()
+
+    _BODY_VARIANT_FLAGS: ClassVar[int] = int(
+        ModelFlags.SHAPE_TYPE_AND_SOURCE | ModelFlags.SHAPE_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES
+    )
+
+    def _body_variant_support(self) -> tuple[bool, str]:
+        """Return whether the bound solver supports runtime body-variant edits and a read-only reason if not."""
+        solver = self.bindings.solver
+        if not isinstance(solver, SolverBase) or self.model is None:
+            return False, "Read only: bind a solver with viewer.set_solver() to switch body variants."
+        if type(solver).__name__ in ("SolverImplicitMPM", "SolverStyle3D"):
+            return False, "Read only: configured when the model and solver are built."
+        if self.model.device.is_cuda and (
+            (
+                type(solver).__name__ != "SolverSteel"
+                and not solver.is_notify_model_changed_graphable(self._BODY_VARIANT_FLAGS)
+            )
+            or (
+                type(solver).__name__ == "SolverFeatherstone" and getattr(solver, "update_mass_matrix_interval", 1) != 1
+            )
+        ):
+            return False, "Read only: switching body variants on CUDA requires recapturing the solver step."
+        return True, ""
+
+    @staticmethod
+    def _snapshot_body_variant_state(model: Model, body: int) -> list[tuple[wp.array, int, int, np.ndarray]]:
+        """Snapshot the live Model slices touched by ``model.select_body_variants()`` for one body."""
+        saved: list[tuple[wp.array, int, int, np.ndarray]] = []
+        seen: set[int] = set()
+
+        def capture(array: Any, start: int, stop: int) -> None:
+            if not isinstance(array, wp.array) or stop <= start or id(array) in seen:
+                return
+            seen.add(id(array))
+            saved.append((array, start, stop, array[start:stop].numpy().copy()))
+
+        for name in ("body_variant", "body_mass", "body_inv_mass", "body_com", "body_inertia", "body_inv_inertia"):
+            capture(getattr(model, name, None), body, body + 1)
+        if model._body_variant_rows is not None and body < len(model._body_variant_rows):
+            row_start, row_count = (int(v) for v in model._body_variant_rows[body : body + 1].numpy()[0])
+            row_stop = row_start + row_count
+            if row_count > 0:
+                for name in ("_shape_variant_shape", "shape_flags", "bvh_shape_bounds", *model._variant_shape_geometry):
+                    capture(getattr(model, name, None), row_start, row_stop)
+                for _variant_values, target in model._variant_shape_custom.values():
+                    capture(target, row_start, row_stop)
+        return saved
+
+    def select_body_variant(self, body: int, variant: int) -> bool:
+        """Switch one body's active shape variant while paused at the live frame.
+
+        Require a bound solver so simulation caches stay synchronized. Restore
+        the exact live pre-switch Model slices and refresh solver caches if
+        solver notification fails.
+        """
+        supported, reason = self._body_variant_support()
+        if not supported:
+            self.message = reason
+            return False
+        if not self.can_edit_state():
+            self.message = "Pause at the live frame to switch body variants."
+            return False
+        model = self.model
+        if model is None or model.body_variant is None:
+            return False
+        labels = model.body_variant_labels(body)
+        if not (0 <= variant < len(labels)):
+            return False
+        previous = int(self.read(model, "body_variant", body)[0])
+        if variant == previous:
+            return True
+        saved = self._snapshot_body_variant_state(model, body)
+        device = model.device
+        bodies_arr = wp.array([body], dtype=wp.int32, device=device)
+        flags = model.select_body_variants(wp.array([variant], dtype=wp.int32, device=device), bodies=bodies_arr)
+        solver = self.bindings.solver
+        try:
+            solver.notify_model_changed(flags)
+        except Exception as exc:
+            for array, start, stop, values in saved:
+                array[start:stop].assign(values)
+            rollback_exc: Exception | None = None
+            try:
+                solver.notify_model_changed(flags)
+            except Exception as recovery_exc:
+                rollback_exc = recovery_exc
+            self.viewer.notify_model_changed(flags)
+            self._cache.clear()
+            self._live_cache.clear()
+            if rollback_exc is not None:
+                self.message = (
+                    f"Solver rejected variant change ({exc}) and rollback failed ({rollback_exc}); "
+                    "restart the simulation to resynchronize solver state."
+                )
+            else:
+                self.message = f"Solver rejected variant change: {exc}"
+            return False
+        self.viewer.notify_model_changed(flags)
+        if self.history is not None and self.viewer.is_paused():
+            self.history.replace_next_frame()
+        self._cache.clear()
+        self._live_cache.clear()
+        self.message = ""
+        return True
 
     def _inspector(self) -> None:
         """Draw property, environment, solver, and available example tabs with history edit guards."""
@@ -1917,9 +2408,18 @@ class ViewerWorkspace:
         with w.group("Environment") as opened:
             if opened:
                 w.axis("Up axis", int(m.up_axis))
-                gravity = self.read(m, "gravity", min(self.world, len(m.gravity) - 1))
+                world = self._active_world()
+                slot = len(m.gravity) - 1 if world < 0 else min(world, len(m.gravity) - 1)
+                gravity = self.read(m, "gravity", slot)
                 if gravity.size:
-                    w.vec3("Gravity", gravity, unit="m/s²")
+                    gravity_label = (
+                        "Gravity (Shared)"
+                        if world < 0 and m.world_count > 1
+                        else f"Gravity (World {world})"
+                        if m.world_count > 1
+                        else "Gravity"
+                    )
+                    w.vec3(gravity_label, gravity, unit="m/s²")
         wind = getattr(self.viewer, "wind", None)
         if wind is None or not m.particle_count:
             return
@@ -2064,116 +2564,235 @@ class ViewerWorkspace:
             ui.separator()
             ui.text_wrapped(self.message)
 
+    @classmethod
+    def _uses_maximal_coordinates(cls, solver: object | None) -> bool:
+        """Report whether a solver steps maximal body coordinates without updating reduced joint_q/joint_qd."""
+        name = type(solver).__name__
+        if name in ("SolverXPBD", "SolverVBD", "SolverSemiImplicit", "SolverKamino"):
+            return True
+        if isinstance(entries := getattr(solver, "_entries", None), dict):
+            return any(cls._uses_maximal_coordinates(getattr(entry, "solver", None)) for entry in entries.values())
+        return False
+
+    def _joint_state_support(self, solver: object | None = ...) -> tuple[bool, str]:
+        """Return whether the bound solver synchronizes runtime joint-state edits on resume."""
+        if solver is ...:
+            solver = self.bindings.solver
+        if solver is None:
+            return True, ""
+        name = type(solver).__name__
+        if name in ("SolverImplicitMPM", "SolverStyle3D"):
+            return False, "Read only: this solver does not step articulated joint coordinates."
+        if name == "SolverMuJoCo":
+            if getattr(solver, "update_data_interval", 1) != 1:
+                return (
+                    False,
+                    "Read only: SolverMuJoCo with update_data_interval != 1 does not synchronize joint state every step.",
+                )
+            if getattr(solver, "enable_sleeping", False):
+                return False, "Read only: SolverMuJoCo sleeping caches derived tree state across steps."
+        if isinstance(entries := getattr(solver, "_entries", None), dict):
+            for entry in entries.values():
+                supported, reason = self._joint_state_support(getattr(entry, "solver", None))
+                if not supported:
+                    return False, reason
+        return True, ""
+
     def _solver_properties(self) -> None:
-        """Show available solver iteration, convergence, and method settings as read-only properties."""
+        """Show generic ``SolverBase`` metadata and logged solver observables."""
         ui, w = self.gui.ui.imgui, self.widgets
         solver = self.bindings.solver
-        if solver is None:
+        observables = self.logged_observables()
+        if solver is None and observables is None:
+            ui.text_wrapped("No solver or observables supplied. Call viewer.set_solver() or viewer.log_observables().")
             return
-        ui.text(type(solver).__name__.removeprefix("Solver"))
-        ui.spacing()
-        mj = getattr(solver, "mjw_model", None)
-        source = mj.opt if mj is not None else solver
-        reason = "Configured by the example; changing these settings can require solver and graph reconstruction."
-        for title, properties in (
-            ("Iterations", (("Solver", "iterations"), ("Line search", "ls_iterations"), ("CCD", "ccd_iterations"))),
-            (
-                "Convergence",
-                (
-                    ("Solver tolerance", "tolerance"),
-                    ("Line tolerance", "ls_tolerance"),
-                    ("CCD tolerance", "ccd_tolerance"),
-                ),
-            ),
-        ):
-            with w.group(title) as opened:
-                if not opened:
-                    continue
-                for label, attr in properties:
-                    value = getattr(source, attr, None)
-                    if value is None:
-                        continue
-                    if hasattr(value, "numpy"):
-                        value = self.read(source, attr, min(self.world, len(value) - 1), live=True).reshape(-1)
-                    else:
-                        value = np.asarray(value).reshape(-1)
-                    if len(value) == 1:
-                        w.number(label, value[0], integer=np.issubdtype(value.dtype, np.integer), reason=reason)
-                    else:
-                        w.array(label, value, reason=reason)
+        if solver is not None:
+            ui.text(type(solver).__name__.removeprefix("Solver"))
+            ui.spacing()
+            if (
+                isinstance(solver, SolverBase)
+                and solver.supports_collision_pipeline
+                and solver.collision_pipeline is not None
+            ):
+                freq_types = solver.collision_frequency_type
+                freqs = solver.collision_frequency
+                reason = "Collision schedule configured on SolverBase."
+                with w.group("Collision schedule") as opened:
+                    if opened:
+                        for slot in SolverBase.CollisionSlot:
+                            ftype = freq_types.get(slot)
+                            if ftype is None:
+                                continue
+                            label = slot.name.replace("_", " ").capitalize()
+                            text = ftype.name.replace("_", " ").title()
+                            if ftype == SolverBase.CollisionFrequencyType.ITERATIONS:
+                                text = f"{text} (every {freqs.get(slot, 1)})"
+                            w.text_value(label, text, reason=reason)
+        self._solver_observables(solver, observables)
+
+    def _solver_observables(self, solver: Any, observables: SolverBase.Observables | None) -> None:
+        """Render logged solver observables through ``PropertyInspector`` and list unrequested capabilities."""
+        if self.model is None:
+            return
+        w = self.widgets
+        Frequency, Assignment = Model.AttributeFrequency, Model.AttributeAssignment
         supported = solver.supported_observables if isinstance(solver, SolverBase) else frozenset()
-        if supported:
-            logged = self.viewer._last_contact_observables
-            logged = logged.kinds if logged is not None and logged.model is self.model else frozenset()
-            with w.group("Observables", default_open=False) as opened:
-                if opened:
-                    for kind in sorted(supported):
-                        w.text_value(
-                            kind.replace("_", " ").capitalize(),
-                            "Logged" if kind in logged else "Available",
-                            reason="Request solver observables and pass them to log_contacts() to inspect them.",
+        logged_kinds: set[str] = set()
+        entries_1d: list[tuple[AttributeRows, str, Model.AttributeSpec, object, str, Any]] = []
+        entries_2d: list[tuple[AttributeRows, str, Model.AttributeSpec, wp.array]] = []
+        empty_labels: list[tuple[str, str]] = []
+        if observables is not None:
+            for kind, (attr_name, field_spec) in observables._observable_fields().items():
+                if kind not in observables.kinds:
+                    continue
+                array = getattr(observables, attr_name, None)
+                if not isinstance(array, wp.array):
+                    continue
+                logged_kinds.add(kind)
+                freq = field_spec.frequency
+                spec = Model.AttributeSpec(freq)
+                if array.ndim == 2 and freq == Frequency.WORLD:
+                    if array.size == 0 or array.shape[1] == 0:
+                        empty_labels.append((attr_name, "Empty"))
+                    else:
+                        slot = min(self._active_world_slot(), array.shape[1] - 1)
+                        entries_2d.append((AttributeRows(self.model, Frequency.WORLD, [slot]), attr_name, spec, array))
+                elif freq in (Frequency.CONTACT, Frequency.CONTACT_RIGID, Frequency.CONTACT_SOFT):
+                    contacts = observables.contacts_for_kind(kind) or self.collision.contacts
+                    if contacts is None:
+                        empty_labels.append((attr_name, "No contacts"))
+                        continue
+                    counters = self.read(contacts, "contact_counters", 0, 2, live=True)
+                    n_rigid = (
+                        max(0, min(int(counters[0]), contacts.rigid_contact_max, len(array)))
+                        if len(counters) > 0
+                        else 0
+                    )
+                    n_soft = max(0, min(int(counters[1]), contacts.soft_contact_max)) if len(counters) > 1 else 0
+                    if freq == Frequency.CONTACT_RIGID:
+                        indices: Any = range(n_rigid)
+                    elif freq == Frequency.CONTACT_SOFT:
+                        indices = range(min(n_soft, len(array)))
+                    elif n_soft == 0:
+                        indices = range(n_rigid)
+                    else:
+                        soft_end = min(contacts.rigid_contact_max + n_soft, len(array))
+                        indices = np.r_[
+                            np.arange(n_rigid, dtype=np.int32),
+                            np.arange(contacts.rigid_contact_max, soft_end, dtype=np.int32),
+                        ]
+                    if len(indices) == 0:
+                        empty_labels.append((attr_name, "0 active contacts"))
+                    else:
+                        entries_1d.append(
+                            (AttributeRows(self.model, freq, indices), attr_name, spec, observables, attr_name, array)
                         )
-        if mj is not None:
-            mju = solver._mujoco
-            with w.group("Methods") as opened:
-                if opened:
-                    for label, value, enum in (
-                        ("Integrator", source.integrator, mju.mjtIntegrator),
-                        ("Algorithm", source.solver, mju.mjtSolver),
-                        ("Friction cone", source.cone, mju.mjtCone),
-                    ):
-                        w.choice(
-                            label,
-                            int(value),
-                            {
-                                int(item): name.split("_", 1)[-1].replace("_", " ").title()
-                                for name, item in enum.__members__.items()
-                            },
-                            reason=reason,
+                elif freq == Frequency.WORLD:
+                    if len(array) == 0:
+                        empty_labels.append((attr_name, "Empty"))
+                    elif self.model.world_count <= 1:
+                        slot = min(self._active_world_slot(), len(array) - 1)
+                        entries_1d.append(
+                            (
+                                AttributeRows(self.model, Frequency.WORLD, [slot]),
+                                attr_name,
+                                spec,
+                                observables,
+                                attr_name,
+                                array,
+                            )
+                        )
+                    else:
+                        world_indices = list(range(min(self.model.world_count, len(array))))
+                        if (
+                            self.tree is not None
+                            and ("root", -1) in self.tree.roots
+                            and self.model.world_count < len(array)
+                        ):
+                            world_indices.append(self.model.world_count)
+                        entries_1d.append(
+                            (
+                                AttributeRows(self.model, Frequency.WORLD, world_indices),
+                                attr_name,
+                                spec,
+                                observables,
+                                attr_name,
+                                array,
+                            )
+                        )
+                elif freq == Frequency.ONCE:
+                    if len(array) == 0:
+                        empty_labels.append((attr_name, "Empty"))
+                    else:
+                        entries_1d.append(
+                            (
+                                AttributeRows(self.model, Frequency.ONCE, [0]),
+                                attr_name,
+                                spec,
+                                observables,
+                                attr_name,
+                                array,
+                            )
+                        )
+                elif freq in (Frequency.JOINT_DOF, Frequency.JOINT_COORD):
+                    if self.model.joint_count == 0 or len(array) == 0:
+                        empty_labels.append((attr_name, "0 active DOFs"))
+                    else:
+                        offsets = "joint_q_start" if freq == Frequency.JOINT_COORD else "joint_qd_start"
+                        spans = self.read(self.model, offsets, 0, self.model.joint_count + 1)
+                        active_joints = np.flatnonzero(spans[1:] > spans[:-1])
+                        if len(active_joints) == 0:
+                            empty_labels.append((attr_name, "0 active DOFs"))
+                        else:
+                            entries_1d.append(
+                                (
+                                    AttributeRows(self.model, freq, active_joints, joints=True),
+                                    attr_name,
+                                    spec,
+                                    observables,
+                                    attr_name,
+                                    array,
+                                )
+                            )
+                else:
+                    if len(array) == 0:
+                        empty_labels.append((attr_name, "Empty"))
+                    else:
+                        entries_1d.append(
+                            (
+                                AttributeRows(self.model, freq, range(len(array))),
+                                attr_name,
+                                spec,
+                                observables,
+                                attr_name,
+                                array,
+                            )
                         )
 
-    def _shape_solver_properties(self, index: int) -> None:
-        """Resolve a shape to its MuJoCo geometry and lazily display effective contact parameters."""
-        w = self.widgets
-        solver = self.bindings.solver
-        model = getattr(solver, "mjw_model", None)
-        if model is None:
+        if not supported and not logged_kinds:
             return
-        # The inverse mapping exists only for external Newton contacts. The
-        # forward mapping is available with MuJoCo's own collision pipeline
-        # too, and also accounts for visual-only shapes omitted by the solver.
-        mapping = getattr(solver, "mjc_geom_to_newton_shape", None)
-        if mapping is None or not mapping.shape[0]:
-            return
-        world = min(max(self.world, 0), mapping.shape[0] - 1)
-        cache_key = (id(mapping), "shape_geom", world, index)
-        if cache_key not in self._cache:
-            matches = np.flatnonzero(self.read(solver, "mjc_geom_to_newton_shape", world).reshape(-1) == index)
-            self._cache[cache_key] = int(matches[0]) if len(matches) else -1
-        geom = self._cache[cache_key]
-        if geom < 0:
-            return
-        with w.group("MuJoCo contact", default_open=False) as opened:
+        obs_reason = "Computed by the solver during step(); read-only."
+        unreq_reason = "Request with solver.observables() and pass to viewer.log_observables() or log_contacts()."
+        with w.group("Observables", default_open=bool(logged_kinds)) as opened:
             if not opened:
                 return
-            condim = int(self.read(model, "geom_condim", geom, live=True)[0])
-            w.choice(
-                "condim",
-                condim,
-                {1: "1 - Normal", 3: "3 - Sliding", 4: "4 - Torsional", 6: "6 - Rolling"},
-                reason="Contact dimension is fixed when the solver is constructed.",
-            )
-            for label, name in (("solref", "geom_solref"), ("solimp", "geom_solimp"), ("Friction", "geom_friction")):
-                array = getattr(model, name)
-                batch = min(world, array.shape[0] - 1)
-                key = (id(array), batch, geom)
-                if key not in self._live_cache:
-                    self._live_cache[key] = array[batch : batch + 1, geom : geom + 1].numpy().reshape(-1)
-                w.array(
-                    label,
-                    self._live_cache[key],
-                    reason="Effective solver values for this geometry; configured by the example.",
-                )
+            for entry in entries_1d:
+                count = len(entry[0].indices)
+                default_open = count <= 2 or (count <= 4 and getattr(entry[5].dtype, "_length_", 1) <= 3)
+                self.property_inspector._fields([entry], Assignment.STATE, flat=True, default_open=default_open)
+            if entries_2d:
+                self.property_inspector._draw_observables_2d(entries_2d)
+            for label, status in empty_labels:
+                w.text_value(label, status, reason=obs_reason)
+            unrequested = sorted(supported - logged_kinds)
+            if not logged_kinds:
+                for kind in unrequested:
+                    w.text_value(kind.replace("_", " ").capitalize(), "Available", reason=unreq_reason)
+            elif unrequested:
+                with w.disclosure(f"Available ({len(unrequested)} not requested)", default_open=False) as show_unreq:
+                    if show_unreq:
+                        for kind in unrequested:
+                            w.text_value(kind.replace("_", " ").capitalize(), "Available", reason=unreq_reason)
 
     def live_state(self) -> State | None:
         """Resolve the application live State through the bindings, falling back to the last logged State."""
@@ -2186,11 +2805,7 @@ class ViewerWorkspace:
         if state is None:
             return shown
         historical = not self._at_live_frame()
-        maximal = type(self.bindings.solver).__name__ in (
-            "SolverXPBD",
-            "SolverVBD",
-            "SolverSemiImplicit",
-        )
+        maximal = self._uses_maximal_coordinates(self.bindings.solver)
         if not maximal and not historical:
             return state
         articulations = set()
@@ -2303,7 +2918,7 @@ class ViewerWorkspace:
             return False
         target = array[start : start + count]
         # Preserve the original scalar type, including integer and boolean custom attributes.
-        previous = target.numpy()
+        previous = target.numpy().copy()
         values = np.asarray(values, dtype=previous.dtype).reshape(previous.shape)
         if not np.isfinite(values).all():
             self.message = "Enter finite values."
@@ -2311,6 +2926,10 @@ class ViewerWorkspace:
         indices = mask = None
         joint_state = isinstance(owner, State) and attr in ("joint_q", "joint_qd")
         if joint_state:
+            supported, reason = self._joint_state_support()
+            if not supported:
+                self.message = reason
+                return False
             if joint_index is None and self.selected and self.selected[0] == "joint":
                 joint_index = self.selected[1]
             if joint_index is None:
@@ -2318,18 +2937,35 @@ class ViewerWorkspace:
             mask, indices = self._joint_edit_mask(joint_index)
             if mask is None or int(self.read(self.model, "joint_type", joint_index)[0]) == int(JointType.ROD):
                 return False
-            if type(self.bindings.solver).__name__ in (
-                "SolverXPBD",
-                "SolverVBD",
-                "SolverSemiImplicit",
-            ):
+            if self._uses_maximal_coordinates(self.bindings.solver):
                 eval_ik(self.model, owner, owner.joint_q, owner.joint_qd, indices=indices)
-                previous = target.numpy()
-        if save_undo:
-            self._undo = (owner, attr, start, previous.copy(), joint_index)
+                previous = target.numpy().copy()
+        q_prev_target = prev_q_prev = None
+        if joint_state and attr == "joint_q" and isinstance(getattr(owner, "joint_q_prev", None), wp.array):
+            if start + count <= len(owner.joint_q_prev):
+                q_prev_target = owner.joint_q_prev[start : start + count]
+                prev_q_prev = q_prev_target.numpy().copy()
         target.assign(values)
+        if q_prev_target is not None:
+            q_prev_target.assign(values)
         if joint_state:
             eval_fk(self.model, owner.joint_q, owner.joint_qd, owner, indices=indices, joint_mask=mask)
+        if isinstance(owner, State):
+            notify_state = getattr(self.bindings.solver, "notify_state_changed", None)
+            if callable(notify_state):
+                try:
+                    notify_state(owner)
+                except Exception as exc:
+                    target.assign(previous)
+                    if q_prev_target is not None and prev_q_prev is not None:
+                        q_prev_target.assign(prev_q_prev)
+                    if joint_state:
+                        eval_fk(self.model, owner.joint_q, owner.joint_qd, owner, indices=indices, joint_mask=mask)
+                    self._live_cache.clear()
+                    self.message = f"Solver rejected state edit: {exc}"
+                    return False
+        if save_undo:
+            self._undo = (owner, attr, start, previous, joint_index)
         # Running edits are recorded with the next simulation frame. Avoid
         # downloading a second full snapshot on every control drag event.
         if self.history is not None and self.viewer.is_paused():

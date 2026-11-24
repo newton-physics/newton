@@ -56,6 +56,7 @@ Newton Physics
    MuJoCo <solvers/mujoco>
    Kamino <solvers/kamino>
    VBD <solvers/vbd>
+   Steel <solvers/steel>
 
 .. toctree::
    :maxdepth: 1

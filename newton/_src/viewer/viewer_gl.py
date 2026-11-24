@@ -10,7 +10,7 @@ import inspect
 import re
 import time
 from collections.abc import Callable, Iterator, Sequence
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from importlib import metadata
 from pathlib import Path
 from typing import Any, Literal
@@ -208,6 +208,8 @@ def _recorded(kind: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
                     arguments.update(contacts=contacts, state=state)
                     if observables is not None or "observables" in arguments:
                         arguments["observables"] = observables
+                elif kind == "observables":
+                    arguments["observables"] = history.observables(arguments["observables"])
                 else:
                     names = _RECORDED_ARRAYS[kind]
                     arguments.update(
@@ -306,6 +308,8 @@ class ViewerGL(ViewerBase):
             legacy_gui: Use the legacy sidebar, statistics overlay, and floating
                 image/plot windows instead of the docked inspection workspace.
                 Defaults to False. Has no effect in headless mode.
+
+                .. experimental::
             capture_logs: Mirror ``newton`` log records and Newton warnings into
                 the workspace console until :meth:`close`. This adds a handler
                 to the ``newton`` logger and routes :class:`~newton.NewtonWarning`
@@ -338,7 +342,7 @@ class ViewerGL(ViewerBase):
         self._history: FrameHistory | None = None
         """Display history recorded from logging calls; owned by the inspection workspace."""
         self._history_depth = 0
-        # Scenes that replace a cleared Model are framed on their first state
+        # Examples the browser switches to are framed on their first state
         # unless they set a camera themselves.
         self._camera_revision = 0
         self._scene_camera_revision = 0
@@ -709,8 +713,17 @@ class ViewerGL(ViewerBase):
             self.gui.clear_example_callbacks()
 
         super().clear_model()
-        self._frame_next_model = True
-        self._scene_camera_revision = self._camera_revision
+
+    @override
+    @contextmanager
+    def _preserve_display_options(self, *, switching: bool = False) -> Iterator[None]:
+        """Frame the next Model when the example browser switches examples; resets keep the view."""
+        if switching:
+            # An example that sets no camera of its own is framed on its first state.
+            self._frame_next_model = True
+            self._scene_camera_revision = self._camera_revision
+        with super()._preserve_display_options(switching=switching):
+            yield
 
     @override
     def _init_layer_state(self, layer: Layer) -> None:
@@ -2351,6 +2364,16 @@ class ViewerGL(ViewerBase):
         super().log_contacts(contacts, state, observables=observables)
 
     @override
+    @_recorded("observables")
+    def log_observables(self, observables: nt.solvers.SolverBase.Observables | None) -> None:
+        """Log solver observables for inspection; see :meth:`ViewerBase.log_observables`.
+
+        While the timeline replays history, the recorded solver observables of
+        that frame are displayed instead.
+        """
+        super().log_observables(observables)
+
+    @override
     def end_frame(self):
         """
         Finish rendering the current frame and process window events.
@@ -2481,7 +2504,10 @@ class ViewerGL(ViewerBase):
             output:
                 Optional pre-allocated Warp array with shape `(height, width, 3)`
                 and dtype `wp.uint8`. If `None`, a new array will be created.
-            render_ui: Whether to render the UI.
+            render_ui: Whether to render the UI. With the default inspection
+                workspace in a visible window, the scene covers only the docked
+                viewport within the returned frame; set ``show_ui = False`` or
+                use ``legacy_gui=True`` to capture the scene at full size.
 
         Returns:
             wp.array: RGB image data on the viewer device with shape

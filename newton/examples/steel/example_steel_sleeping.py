@@ -149,7 +149,10 @@ class Example:
         )
         self.collision_pipeline = newton.CollisionPipeline(self.model)
         self.contacts = self.collision_pipeline.contacts()
-        self.observables = self.solver.observables({SolverSteel.ObservableKind.BODY_AWAKE})
+        self.observables = self.solver.observables(
+            {SolverSteel.ObservableKind.BODY_AWAKE, SolverSteel.ObservableKind.CONTACT_F},
+            contacts=self.contacts,
+        )
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -226,6 +229,7 @@ class Example:
         )
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
+        self.viewer.log_contacts(self.contacts, self.state_1, observables=self.observables)
         self.viewer.end_frame()
 
     def test_post_step(self):

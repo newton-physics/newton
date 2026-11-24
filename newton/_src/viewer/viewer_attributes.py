@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import warp as wp
 
-from ..sim.model import Model
+from ..sim.model import Model, ModelFlags
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Iterable, Iterator, Sequence
@@ -102,6 +102,17 @@ def attribute_summary(name: str, spec: Model.AttributeSpec, array: Any, componen
     if spec.references is not None:
         references = spec.references.name if isinstance(spec.references, Frequency) else str(spec.references)
         lines.append(f"References: {references}")
+    if component == Assignment.MODEL and spec.update_flags is not None:
+        flags = int(spec.update_flags)
+        if flags == int(ModelFlags.NONE):
+            lines.append("Update flags: NONE (read every step)")
+        else:
+            names = [
+                member.name
+                for member in ModelFlags
+                if member.value and (member.value & (member.value - 1)) == 0 and (flags & member.value)
+            ]
+            lines.append(f"Update flags: {' | '.join(names) if names else hex(flags)}")
     return "\n".join(lines)
 
 

@@ -8,6 +8,7 @@ import gc
 import inspect
 import sys
 import unittest
+import warnings
 from contextlib import nullcontext
 from types import ModuleType, SimpleNamespace
 from unittest import mock
@@ -43,6 +44,7 @@ from newton._src.viewer.viewer_gl import ViewerGL
 from newton._src.viewer.viewer_history import FrameHistory
 from newton._src.viewer.viewer_model_tree import ModelTree
 from newton._src.viewer.viewer_null import ViewerNull
+from newton._src.viewer.viewer_rtx import ViewerRTX
 from newton.tests.unittest_utils import get_test_devices, import_pyglet_window, patch_sys_module, requires
 
 
@@ -502,6 +504,742 @@ class TestViewerUI(unittest.TestCase):
                 draw()
                 self.assertIs(gizmo._faces, faces)
 
+    def test_workspace_panels_draw_across_selection_kinds(self) -> None:
+        """Render PropertyInspector, ViewportControls, CollisionInspector, and Environment in ImGui without errors."""
+        from newton.actuators import BatteryConstantResistance, DriveOutputSpace, DrivePD, MotorDC  # noqa: PLC0415
+
+        ui = self.ui.imgui
+        builder = newton.ModelBuilder()
+        body0 = builder.add_link(xform=wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity()))
+        variant_a = newton.ModelBuilder()
+        variant_a.add_shape_sphere(variant_a.add_body(), radius=0.3)
+        variant_b = newton.ModelBuilder()
+        variant_b.add_shape_box(variant_b.add_body(), hx=0.2, hy=0.2, hz=0.2)
+        builder.add_body_variants(body0, [variant_a, variant_b], initial=0, labels=["sphere", "box"])
+        body1 = builder.add_link(xform=wp.transform(wp.vec3(0.5, 0.0, 1.0), wp.quat_identity()))
+        builder.add_shape_sphere(body1, radius=0.3)
+        j0 = builder.add_joint_revolute(-1, body0)
+        j1 = builder.add_joint_revolute(body0, body1)
+        builder.add_articulation([j0, j1])
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            builder.add_constraint_mimic(j1, j0, coef0=0.0, coef1=1.0)
+        builder.add_cloth_grid(
+            pos=wp.vec3(0.0, 1.0, 0.5),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0, 0.0, 0.0),
+            dim_x=2,
+            dim_y=2,
+            cell_x=0.2,
+            cell_y=0.2,
+            mass=0.1,
+        )
+        builder.add_soft_grid(
+            pos=wp.vec3(1.0, 1.0, 0.5),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0, 0.0, 0.0),
+            dim_x=1,
+            dim_y=1,
+            dim_z=1,
+            cell_x=0.2,
+            cell_y=0.2,
+            cell_z=0.2,
+            density=100.0,
+            k_mu=1000.0,
+            k_lambda=1000.0,
+            k_damp=1.0,
+        )
+        builder.add_rod(
+            rod=newton.Rod([(0.0, 2.0, 1.0), (0.2, 2.0, 1.0), (0.4, 2.0, 1.0)], radius=0.02),
+            label="rod_draw",
+        )
+        builder.add_deformable_visual_mesh(
+            vertices=[(0.1, 1.1, 0.5), (0.3, 1.1, 0.5), (0.1, 1.3, 0.5)],
+            indices=[0, 1, 2],
+            kind="triangle",
+            surface=0,
+            label="skin_draw",
+        )
+        builder.add_attachment_particle_body(0, body0, body_point=wp.vec3(0.0, 0.0, 0.0))
+        builder.add_tendon(
+            [
+                newton.TendonGuide(body=body0, offset=wp.vec3(0.0, 0.0, 0.1), guide_type=newton.TendonGuideType.ANCHOR),
+                newton.TendonGuide(
+                    body=body1, offset=wp.vec3(0.0, 0.0, 0.1), guide_type=newton.TendonGuideType.ANCHOR, rest_length=0.5
+                ),
+            ],
+        )
+        act_idx = builder.add_actuator(
+            DrivePD,
+            index=0,
+            kp=10.0,
+            kd=1.0,
+            output_space=DriveOutputSpace.DUTY,
+            motor=(MotorDC, {"kt": 0.5, "resistance": 2.0, "supply_from_battery": True}),
+        )
+        builder.add_battery(
+            BatteryConstantResistance,
+            actuators=[act_idx],
+            nominal_voltage=24.0,
+            resistance=0.1,
+            min_voltage=18.0,
+        )
+        model = builder.finalize(device="cpu")
+        state = model.state()
+        control = model.control()
+        pipeline = newton.CollisionPipeline(model, broad_phase="nxn", rigid_contact_max=16, soft_contact_max=8)
+        contacts = pipeline.contacts()
+
+        viewer = ViewerNull()
+        viewer.objects = {}
+        viewer.contact_selection_only = False
+        viewer.show_contact_labels = False
+        viewer.contact_normal_scale = 1.0
+        viewer.contact_force_scale = 1.0
+        viewer._contact_force_scale_default = 1.0
+        viewer.contact_viz_scale = 1.0
+        viewer.contact_mode_eps_force = 1e-3
+        viewer.contact_mode_eps_velocity = 1e-3
+        viewer.renderer = SimpleNamespace(
+            contact_disk_scale=1.0,
+            contact_arrow_scale=1.0,
+            contact_normal_max_pixels=64.0,
+            contact_force_max_pixels=64.0,
+        )
+
+        class _StubSolver(newton.solvers.SolverBase):
+            def step(self, *args, **kwargs):
+                pass
+
+        viewer.set_model(model)
+        viewer.set_control(control)
+        viewer.set_solver(_StubSolver(model))
+        viewer.set_collision_pipeline(pipeline)
+        viewer.log_state(state)
+        viewer.log_contacts(contacts, state)
+        viewer.is_paused = lambda: True
+
+        gui = SimpleNamespace(ui=self.ui, _viewer=viewer, console_capture=None)
+        ws = ViewerWorkspace(gui)
+        ws.model = model
+        ws.tree = ModelTree(model)
+        ws.collision.attach(ws.tree)
+        ws.property_inspector = PropertyInspector(ws)
+
+        surface_key = ws.tree.deformables.object_key_for_model("surface", 0, ws.tree)
+        volume_key = ws.tree.deformables.object_key_for_model("volume", 0, ws.tree)
+        curve_key = ws.tree.deformables.object_key_for_model("curve", 0, ws.tree)
+        self.assertIsNotNone(surface_key)
+        self.assertIsNotNone(volume_key)
+        self.assertIsNotNone(curve_key)
+        selections = (
+            ("scene", 0),
+            ("world", 0),
+            ("root", -1),
+            ("body", 0),
+            ("shape", 0),
+            ("joint", 0),
+            surface_key,
+            volume_key,
+            curve_key,
+            ("deformable_visual_mesh", 0),
+            ("tendon", 0),
+            ("tendon_guide", 0),
+            ("tendon_segment", 0),
+            ("attachment_particle_body", 0),
+            ("constraint_mimic", 0),
+            ("actuator_collection", 0),
+            ("actuator_group", 0),
+            ("battery", 0),
+        )
+        for key in selections:
+            with self.subTest(selection=key):
+                ws.selected = key
+                ws.selection = {key}
+                for component in (Assignment.MODEL, Assignment.STATE, Assignment.CONTROL):
+                    self.ui.begin_frame()
+                    try:
+                        ui.begin("TestProperties")
+                        try:
+                            ws.property_inspector.component = component
+                            ws.property_inspector.draw()
+                        finally:
+                            ui.end()
+                    finally:
+                        ui.end_frame()
+
+        self.ui.begin_frame()
+        try:
+            ui.begin("TestAuxiliaryPanels")
+            try:
+                ws._environment()
+                ws._solver_properties()
+                ws.collision.draw(ws.property_inspector)
+                ws.viewport_controls._contact_settings()
+            finally:
+                ui.end()
+        finally:
+            ui.end_frame()
+
+    def test_example_browser_tree_view(self) -> None:
+        """Render the Examples browser as a searchable folder tree reflecting directory hierarchy."""
+        ui = self.ui.imgui
+        example_tree = {
+            "basic": [
+                ("basic_pendulum", "newton.examples.basic.example_basic_pendulum"),
+                ("basic_shapes", "newton.examples.basic.example_basic_shapes"),
+            ],
+            "contacts": [
+                ("adaptive_collision", "newton.examples.contacts.example_adaptive_collision"),
+                ("contacts_rj45_plug", "newton.examples.contacts.example_contacts_rj45_plug"),
+            ],
+            "nested": [
+                ("nested_demo", "newton.examples.nested.sub.example_nested_demo"),
+            ],
+            "surface_gripper": [
+                ("surface_gripper", "newton.examples.surface_gripper.example_surface_gripper"),
+            ],
+        }
+        selected: list[str] = []
+        viewer = ViewerNull()
+        gui = SimpleNamespace(
+            ui=self.ui,
+            _viewer=viewer,
+            console_capture=None,
+            _example_tree=example_tree,
+            _example_current="newton.examples.basic.example_basic_shapes",
+            select_example=selected.append,
+        )
+        ws = ViewerWorkspace(gui)
+
+        ws._rebuild_example_rows(example_tree)
+        # Active example's folder auto-expands; other folders start collapsed.
+        self.assertIn("basic", ws._example_expanded)
+        self.assertNotIn("contacts", ws._example_expanded)
+        kinds_labels = [(row[0], row[1], row[2]) for row in ws._example_rows]
+        self.assertEqual(
+            kinds_labels,
+            [
+                ("folder", 0, "basic"),
+                ("example", 1, "pendulum"),
+                ("example", 1, "shapes"),
+                ("folder", 0, "contacts"),
+                ("folder", 0, "nested"),
+                ("folder", 0, "surface_gripper"),
+            ],
+        )
+
+        # Expanding all folders reflects nested folder depth and trims only redundant <folder>_ prefixes.
+        ws._example_expanded.update(ws._example_all_folders)
+        ws._rebuild_example_rows(example_tree)
+        by_path = {row[3]: (row[1], row[2]) for row in ws._example_rows if row[0] == "example"}
+        self.assertEqual(by_path["newton.examples.contacts.example_adaptive_collision"], (1, "adaptive_collision"))
+        self.assertEqual(by_path["newton.examples.contacts.example_contacts_rj45_plug"], (1, "rj45_plug"))
+        self.assertEqual(by_path["newton.examples.nested.sub.example_nested_demo"], (2, "nested_demo"))
+        self.assertEqual(by_path["newton.examples.surface_gripper.example_surface_gripper"], (1, "surface_gripper"))
+
+        # Search prunes non-matching folders and expands matching ones regardless of manual collapse state.
+        ws._example_expanded.clear()
+        ws.example_search = "rj45"
+        ws._rebuild_example_rows(example_tree)
+        self.assertEqual(
+            [(row[0], row[1], row[2]) for row in ws._example_rows],
+            [("folder", 0, "contacts"), ("example", 1, "rj45_plug")],
+        )
+        self.assertEqual(ws._example_stats, (5, 1, 6))
+
+        # Render both filtered and unfiltered tree frames in ImGui without error.
+        for query in ("", "shapes"):
+            ws.example_search = query
+            self.ui.begin_frame()
+            try:
+                ui.begin("TestExamples")
+                ws._example_browser(example_tree)
+                ui.end()
+            finally:
+                ui.end_frame()
+
+    def test_timeline_live_readouts_and_compact_height_without_recording(self) -> None:
+        """Track live frame/time with recording off and collapse the timeline track until recording or frames exist."""
+        ui = self.ui.imgui
+        builder = newton.ModelBuilder()
+        body = builder.add_body()
+        builder.add_shape_sphere(body, radius=0.1)
+        model = builder.finalize(device="cpu")
+        viewer = ViewerNull()
+        viewer.set_model(model)
+        viewer.gui = SimpleNamespace(ui=self.ui)
+        viewer.is_paused = lambda: False
+
+        history = FrameHistory(viewer)
+        history.set_recording(False)
+        timeline = TimelineView(history)
+        self.assertFalse(timeline.has_track)
+        self.assertIsNone(timeline._live_readout(viewer))
+
+        # Logging frames with recording off tracks live frame/time and dt with zero recorded frames.
+        for step in range(4):
+            history.begin_frame(step * 0.02)
+            history.end_frame()
+        self.assertEqual(len(history.frames), 0)
+        self.assertEqual(history.live_frame, 3)
+        self.assertAlmostEqual(history.live_time, 0.06, places=6)
+        self.assertAlmostEqual(history.dt, 0.02, places=6)
+        self.assertFalse(timeline.has_track)
+        live = timeline._live_readout(viewer, now=10.0)
+        self.assertEqual(live, (3, 0.06))
+
+        # Render compact mode (recording off, no frames) cleanly in ImGui.
+        self.ui.begin_frame()
+        try:
+            ui.set_next_window_size(ui.ImVec2(800, TimelineView.compact_height))
+            ui.begin("CompactTimeline")
+            try:
+                timeline.draw_gui(ui, viewer, embedded=True)
+            finally:
+                ui.end()
+        finally:
+            ui.end_frame()
+
+        # Enabling recording expands the track; disabling and clearing collapses it again while keeping live readout.
+        history.set_recording(True)
+        self.assertTrue(timeline.has_track)
+        state = model.state()
+        history.begin_frame(0.08)
+        history.state(state)
+        history.end_frame()
+        self.assertEqual(len(history.frames), 1)
+        history.set_recording(False)
+        self.assertTrue(timeline.has_track)
+        history.clear()
+        self.assertFalse(timeline.has_track)
+        self.assertEqual(history.live_frame, 4)
+        self.assertAlmostEqual(history.live_time, 0.08, places=6)
+
+    def test_transform_and_matrix_component_alignment(self) -> None:
+        """Keep transform Position/Rotation and sibling vec3/matrix3 component grids aligned on the left edge."""
+        ui = self.ui.imgui
+        w = PhysicsWidgets(SimpleNamespace(ui=self.ui))
+        tag_x: list[tuple[str, float]] = []
+        original_tag = w._component_tag
+
+        def record_tag(text: str) -> None:
+            tag_x.append((text, float(ui.get_cursor_screen_pos().x)))
+            original_tag(text)
+
+        w._component_tag = record_tag  # type: ignore[method-assign]
+        self.ui.begin_frame()
+        try:
+            ui.set_next_window_size(ui.ImVec2(280, 600))
+            ui.begin("AlignmentCheck")
+            try:
+                base_x = float(ui.get_cursor_screen_pos().x)
+                w.transform("joint_target_q", np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0], dtype=np.float32))
+                transform_tags = list(tag_x)
+                tag_x.clear()
+
+                w.vec3("body_com", np.zeros(3, dtype=np.float32))
+                w.matrix3("body_inertia", np.eye(3, dtype=np.float32))
+                sibling_tags = list(tag_x)
+            finally:
+                ui.end()
+        finally:
+            ui.end_frame()
+
+        # Position ("X") and Rotation ("X", "Z" in 2x2 grid) share the exact same single compound indent.
+        pos_x = transform_tags[0][1]
+        rot_x = transform_tags[3][1]
+        rot_z = transform_tags[5][1]
+        self.assertGreater(pos_x, base_x)
+        self.assertAlmostEqual(pos_x, rot_x, places=4)
+        self.assertAlmostEqual(pos_x, rot_z, places=4)
+
+        # Sibling vec3 ("X") and matrix3 ("XX", "YX", "ZX") start at the exact same left margin.
+        vec_x = sibling_tags[0][1]
+        mat_xx = sibling_tags[3][1]
+        mat_yx = sibling_tags[6][1]
+        mat_zx = sibling_tags[9][1]
+        self.assertAlmostEqual(vec_x, base_x, places=4)
+        self.assertAlmostEqual(mat_xx, vec_x, places=4)
+        self.assertAlmostEqual(mat_yx, vec_x, places=4)
+        self.assertAlmostEqual(mat_zx, vec_x, places=4)
+
+    def test_log_observables_and_generic_solver_inspector(self) -> None:
+        """Render logged solver observables generically across Solver, State, Contacts, and FrameHistory."""
+        from dataclasses import dataclass  # noqa: PLC0415
+
+        from newton._src.viewer.gui.properties import PropertyInspector  # noqa: PLC0415
+        from newton._src.viewer.gui.workspace import ViewerWorkspace  # noqa: PLC0415
+        from newton._src.viewer.viewer_model_tree import ModelTree  # noqa: PLC0415
+        from newton.viewer import ViewerNull  # noqa: PLC0415
+
+        Frequency = newton.Model.AttributeFrequency
+        Assignment = newton.Model.AttributeAssignment
+
+        class _MockDiagSolver(newton.solvers.SolverBase):
+            supports_collision_pipeline = True
+            SUPPORTED_OBSERVABLES = frozenset(
+                {
+                    newton.solvers.SolverBase.ObservableKind.SOLVER_RESIDUAL,
+                    "solver_residual_history",
+                    newton.solvers.SolverBase.ObservableKind.CONTACT_F,
+                    newton.solvers.SolverBase.ObservableKind.BODY_QDD,
+                    "body_awake",
+                    "joint_impulse",
+                }
+            )
+
+            @dataclass(eq=False)
+            class Observables(newton.solvers.SolverBase.Observables):
+                solver_residual_history: wp.array[wp.float32] | None = newton.solvers.SolverBase.Observables.field(
+                    dtype=wp.float32, frequency=Frequency.WORLD
+                )
+                body_awake: wp.array[wp.bool] | None = newton.solvers.SolverBase.Observables.field(
+                    dtype=wp.bool, frequency=Frequency.BODY
+                )
+                joint_impulse: wp.array[wp.float32] | None = newton.solvers.SolverBase.Observables.field(
+                    dtype=wp.float32, frequency=Frequency.JOINT_DOF
+                )
+
+            def __init__(
+                self,
+                model: newton.Model,
+                iterations: int = 4,
+                *,
+                collision_pipeline: newton.CollisionPipeline | None = None,
+            ) -> None:
+                super().__init__(model, collision_pipeline=collision_pipeline)
+                self.iterations = iterations
+                # Solver-private attributes must never be probed by the viewer.
+                self.mjw_model = SimpleNamespace(opt=SimpleNamespace(iterations=99, tolerance=1e-6))
+
+            def _observable_shape(self, kind: str, rows: int) -> tuple[int, ...]:
+                if kind == "solver_residual_history":
+                    return (self.iterations, rows)
+                return super()._observable_shape(kind, rows)
+
+            def step(
+                self,
+                state_in: newton.State,
+                state_out: newton.State,
+                control: newton.Control | None,
+                contacts: newton.Contacts | None,
+                dt: float,
+                *,
+                observables: newton.solvers.SolverBase.Observables | None = None,
+            ) -> None:
+                del state_in, state_out, control, dt
+                resolved = self._resolve_step_contacts(contacts)
+                self.validate_observables(observables, resolved)
+
+        builder = newton.ModelBuilder()
+        b0 = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        b1 = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.add_shape_box(b0, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_shape_box(b1, hx=0.1, hy=0.1, hz=0.1)
+        j0 = builder.add_joint_free(b0)
+        j1 = builder.add_joint_revolute(parent=b0, child=b1, axis=(0.0, 0.0, 1.0))
+        builder.add_articulation([j0, j1])
+        model = builder.finalize(device="cpu")
+        other_model = builder.finalize(device="cpu")
+        state = model.state()
+        pipeline = newton.CollisionPipeline(model, contact_matching="latest")
+        contacts = pipeline.contacts()
+        solver = _MockDiagSolver(model, iterations=4, collision_pipeline=pipeline)
+        solver.set_collision_frequency(
+            collision_frequency={newton.solvers.SolverBase.CollisionSlot.RIGID: 2},
+            collision_frequency_type={
+                newton.solvers.SolverBase.CollisionSlot.RIGID: newton.solvers.SolverBase.CollisionFrequencyType.ITERATIONS
+            },
+        )
+
+        # Validate ViewerBase.log_observables() error handling and layer isolation.
+        uninitialized = ViewerNull()
+        with self.assertRaisesRegex(RuntimeError, "set_model"):
+            uninitialized.log_observables(None)
+
+        viewer = ViewerNull(num_frames=10)
+        viewer.activate("primary")
+        viewer.set_model(model)
+        with self.assertRaisesRegex(TypeError, "Observables"):
+            viewer.log_observables(object())  # type: ignore[arg-type]
+        other_obs = _MockDiagSolver(other_model).observables({newton.solvers.SolverBase.ObservableKind.SOLVER_RESIDUAL})
+        with self.assertRaisesRegex(ValueError, "viewer's model"):
+            viewer.log_observables(other_obs)
+
+        viewer.log_state(state)
+        viewer.is_paused = lambda: True
+
+        gui = SimpleNamespace(ui=self.ui, _viewer=viewer, console_capture=None)
+        ws = ViewerWorkspace(gui)
+        ws.model = model
+        ws.tree = ModelTree(model)
+        ws.collision.contacts = contacts
+        ws.property_inspector = PropertyInspector(ws)
+        ui = self.ui.imgui
+
+        # Empty state when neither set_solver() nor log_observables() was called.
+        self.ui.begin_frame()
+        try:
+            ui.begin("TestSolverEmpty")
+            try:
+                ws._solver_properties()
+            finally:
+                ui.end()
+        finally:
+            self.ui.end_frame()
+
+        viewer.set_solver(solver)
+        # Stepping the solver alone does NOT implicitly expose observables to the viewer.
+        obs = solver.observables(solver.supported_observables)
+        solver.step(state, state, None, None, 1.0 / 60.0, observables=obs)
+        self.assertIsNone(ws.logged_observables())
+
+        group_calls: list[tuple[str, bool]] = []
+        orig_group = ws.widgets.group
+
+        def spy_group(title: str, *, default_open: bool = True):
+            group_calls.append((title, default_open))
+            return orig_group(title, default_open=default_open)
+
+        rendered_numbers: list[tuple[str, float, bool]] = []
+        rendered_arrays: list[tuple[str, list[float], bool]] = []
+        rendered_texts: list[tuple[str, str]] = []
+        rendered_spatial: list[tuple[str, list[float], bool]] = []
+
+        orig_number = ws.widgets.number
+        orig_array = ws.widgets.array
+        orig_text = ws.widgets.text_value
+        orig_spatial = ws.widgets.spatial_vector
+
+        def spy_number(label, value, **kwargs):
+            rendered_numbers.append((label, float(value), bool(kwargs.get("editable", False))))
+            return orig_number(label, value, **kwargs)
+
+        def spy_array(label, values, **kwargs):
+            rendered_arrays.append(
+                (label, np.asarray(values, dtype=float).reshape(-1).tolist(), bool(kwargs.get("editable", False)))
+            )
+            return orig_array(label, values, **kwargs)
+
+        def spy_text(label, value, **kwargs):
+            rendered_texts.append((label, str(value)))
+            return orig_text(label, value, **kwargs)
+
+        def spy_spatial(label, value, **kwargs):
+            rendered_spatial.append(
+                (
+                    label,
+                    np.asarray(value, dtype=float).reshape(-1).tolist(),
+                    bool(kwargs.get("force", False)),
+                )
+            )
+            return orig_spatial(label, value, **kwargs)
+
+        with (
+            mock.patch.object(ws.widgets, "group", side_effect=spy_group),
+            mock.patch.object(ws.widgets, "number", side_effect=spy_number),
+            mock.patch.object(ws.widgets, "text_value", side_effect=spy_text),
+        ):
+            self.ui.begin_frame()
+            try:
+                ui.begin("TestSolverUnlogged")
+                try:
+                    ws._solver_properties()
+                finally:
+                    ui.end()
+            finally:
+                self.ui.end_frame()
+        self.assertIn(("Collision schedule", True), group_calls)
+        self.assertIn(("Rigid", "Iterations (every 2)"), rendered_texts)
+        self.assertIn(("Observables", False), group_calls)
+        # Solver-specific attributes (iterations=99, tolerance=1e-6) are never probed.
+        self.assertEqual(rendered_numbers, [])
+
+        # Populate observables and explicitly log them via viewer.log_observables(obs).
+        # Because bodies were added without begin_world(), they live in global world -1 (slot == model.world_count).
+        obs.solver_residual.assign(np.array([0.0, 0.125], dtype=np.float32))
+        obs.solver_residual_history.assign(
+            np.array([[0.0, 0.5], [0.0, 0.25], [0.0, 0.125], [0.0, 0.0625]], dtype=np.float32)
+        )
+        obs.body_awake.assign(np.array([True, False], dtype=bool))
+        obs.body_qdd.assign(
+            np.array([[1.0, 2.0, 3.0, 0.1, 0.2, 0.3], [0.0, 0.0, -9.81, 0.0, 0.0, 0.0]], dtype=np.float32)
+        )
+        obs.joint_impulse.assign(np.arange(model.joint_dof_count, dtype=np.float32) + 10.0)
+        obs_contact_f = np.zeros((obs.contact_f.shape[0], 6), dtype=np.float32)
+        obs_contact_f[0] = [0.0, 0.0, 42.0, 1.0, 0.0, 0.0]
+        obs_contact_f[5] = [999.0, 999.0, 999.0, 0.0, 0.0, 0.0]  # Beyond active count; must never be read!
+        obs.contact_f.assign(obs_contact_f)
+        solver.contacts.rigid_contact_count.assign(np.array([1], dtype=np.int32))
+
+        viewer.log_observables(obs)
+        # Subsequent log_contacts(..., observables=None) must not clobber log_observables(obs).
+        viewer.log_contacts(solver.contacts, state)
+        self.assertIs(ws.logged_observables(), obs)
+
+        # Layer isolation: another layer does not inherit the primary layer's observables.
+        primary_layer = viewer.layer.layer_id
+        viewer.activate("secondary")
+        viewer.set_model(other_model)
+        self.assertIsNone(viewer._last_observables)
+        viewer.activate(primary_layer)
+        self.assertIs(ws.logged_observables(), obs)
+
+        ws._live_cache.clear()
+        group_calls.clear()
+        rendered_numbers.clear()
+        rendered_arrays.clear()
+        rendered_texts.clear()
+        rendered_spatial.clear()
+
+        with (
+            mock.patch.object(ws.widgets, "group", side_effect=spy_group),
+            mock.patch.object(ws.widgets, "number", side_effect=spy_number),
+            mock.patch.object(ws.widgets, "array", side_effect=spy_array),
+            mock.patch.object(ws.widgets, "text_value", side_effect=spy_text),
+            mock.patch.object(ws.widgets, "spatial_vector", side_effect=spy_spatial),
+        ):
+            self.ui.begin_frame()
+            try:
+                ui.begin("TestSolverLogged")
+                try:
+                    ws._solver_properties()
+                finally:
+                    ui.end()
+            finally:
+                self.ui.end_frame()
+
+        self.assertIn(("Observables", True), group_calls)
+        self.assertIn(("solver_residual", 0.125, False), rendered_numbers)
+        self.assertTrue(
+            any(
+                label == "solver_residual_history" and np.allclose(vals, [0.5, 0.25, 0.125, 0.0625]) and not ed
+                for label, vals, ed in rendered_arrays
+            )
+        )
+        # Only the 1 active contact row (42 N) is rendered; inactive slot 5 (999 N) is never read.
+        self.assertTrue(
+            any(np.allclose(vals, [0.0, 0.0, 42.0, 1.0, 0.0, 0.0]) and is_f for _, vals, is_f in rendered_spatial)
+        )
+        self.assertFalse(any(abs(vals[0] - 999.0) < 1e-3 for _, vals, _ in rendered_spatial))
+
+        # When 0 contacts are active, contact_f reports "0 active contacts".
+        solver.contacts.rigid_contact_count.assign(np.array([0], dtype=np.int32))
+        ws._live_cache.clear()
+        rendered_texts.clear()
+        with mock.patch.object(ws.widgets, "text_value", side_effect=spy_text):
+            self.ui.begin_frame()
+            try:
+                ui.begin("TestSolverZeroContacts")
+                try:
+                    ws._solver_properties()
+                finally:
+                    ui.end()
+            finally:
+                self.ui.end_frame()
+        self.assertIn(("contact_f", "0 active contacts"), rendered_texts)
+
+        # PropertyInspector surfaces JOINT_DOF observables on selected joints, BODY observables on
+        # selected bodies, and 2D WORLD observables on selected world/root nodes as read-only.
+        ws.selected, ws.selection = ("joint", j1), {("joint", j1)}
+        ws.property_inspector._contexts()
+        joint_obs = ws.property_inspector._observables()
+        self.assertEqual([entry[1] for entry in joint_obs], ["joint_impulse"])
+        rendered_numbers.clear()
+        with mock.patch.object(ws.widgets, "number", side_effect=spy_number):
+            self.ui.begin_frame()
+            try:
+                ui.begin("TestJointObservables")
+                try:
+                    ws.property_inspector.component = Assignment.STATE
+                    ws.property_inspector.draw()
+                finally:
+                    ui.end()
+            finally:
+                self.ui.end_frame()
+        self.assertIn(("joint_impulse", 16.0, False), rendered_numbers)
+
+        ws.selected, ws.selection = ("body", b0), {("body", b0)}
+        ws.property_inspector._contexts()
+        rendered_spatial.clear()
+        with mock.patch.object(ws.widgets, "spatial_vector", side_effect=spy_spatial):
+            self.ui.begin_frame()
+            try:
+                ui.begin("TestBodyObservables")
+                try:
+                    ws.property_inspector.component = Assignment.STATE
+                    ws.property_inspector.draw()
+                finally:
+                    ui.end()
+            finally:
+                self.ui.end_frame()
+        self.assertTrue(
+            any(
+                label == "body_qdd" and np.allclose(vals, [1.0, 2.0, 3.0, 0.1, 0.2, 0.3])
+                for label, vals, _ in rendered_spatial
+            )
+        )
+
+        ws.selected, ws.selection = ("root", -1), {("root", -1)}
+        ws.property_inspector._contexts()
+        self.assertEqual([entry[1] for entry in ws.property_inspector._observables_2d()], ["solver_residual_history"])
+
+        # FrameHistory records and replays log_observables() snapshots (including active contact counts and None clears).
+        history = FrameHistory(viewer)
+        solver.contacts.rigid_contact_count.assign(np.array([1], dtype=np.int32))
+        obs.solver_residual.assign(np.array([0.0, 0.25], dtype=np.float32))
+        obs_contact_f[0] = [0.0, 0.0, 42.0, 1.0, 0.0, 0.0]
+        obs.contact_f.assign(obs_contact_f)
+        history.begin_frame(0.0)
+        history.state(state)
+        viewer.log_observables(history.observables(obs))
+        history.end_frame()
+
+        history.begin_frame(1.0)
+        history.state(state)
+        viewer.log_observables(history.observables(None))
+        history.end_frame()
+        self.assertIsNone(ws.logged_observables())
+
+        obs.solver_residual.assign(np.array([0.0, 0.05], dtype=np.float32))
+        obs_contact_f[0] = [0.0, 0.0, 12.0, 0.0, 0.0, 0.0]
+        obs.contact_f.assign(obs_contact_f)
+        history.begin_frame(2.0)
+        history.state(state)
+        viewer.log_observables(history.observables(obs))
+        history.end_frame()
+        self.assertIs(ws.logged_observables(), obs)
+
+        ws.history = history
+        history.select(0)
+        history.begin_frame(2.0)
+        replayed_0 = history.observables(obs)
+        viewer.log_observables(replayed_0)
+        history.end_frame()
+        self.assertIsNotNone(replayed_0)
+        self.assertIsNot(replayed_0, obs)
+        np.testing.assert_allclose(replayed_0.solver_residual.numpy(), [0.0, 0.25])
+        np.testing.assert_allclose(replayed_0.contact_f.numpy()[0], [0.0, 0.0, 42.0, 1.0, 0.0, 0.0])
+        # Caller's live array remains untouched during replay.
+        np.testing.assert_allclose(obs.solver_residual.numpy(), [0.0, 0.05])
+
+        history.select(1)
+        history.begin_frame(2.0)
+        replayed_1 = history.observables(obs)
+        viewer.log_observables(replayed_1)
+        history.end_frame()
+        self.assertIsNone(replayed_1)
+        self.assertIsNone(ws.logged_observables())
+
+        history.select(2)
+        history.begin_frame(2.0)
+        live_2 = history.observables(obs)
+        viewer.log_observables(live_2)
+        history.end_frame()
+        self.assertIs(live_2, obs)
+        self.assertIs(ws.logged_observables(), obs)
+
 
 def _make_gl_state(paused: bool = False, step_requested: bool = False) -> ViewerGL:
     # Lightweight stand-in with just the fields ViewerGL.should_step() needs.
@@ -827,60 +1565,17 @@ class TestViewerShapeProperties(unittest.TestCase):
         self.assertEqual(inspected, [workspace.tree, workspace.tree])
         self.assertEqual(attached, inspected)
 
-    def test_mujoco_contact_properties_with_both_contact_pipelines(self) -> None:
-        """Inspect mapped shapes across worlds without requiring an external-contact inverse map."""
-        values = {}
+    def test_workspace_read_empty_array_slices(self) -> None:
+        """Preserve trailing dimensions and dtype when reading empty Warp arrays."""
         workspace = ViewerWorkspace.__new__(ViewerWorkspace)
         workspace._cache = {}
         workspace._live_cache = {}
-        workspace.viewer = ViewerNull()
-        workspace._bindings = workspace._bindings_components = None
-        workspace.model = None
-        workspace.world = 1
-        workspace.widgets = SimpleNamespace(
-            group=lambda *_args, **_kwargs: nullcontext(True),
-            choice=lambda label, value, *_args, **_kwargs: values.update({label: value}),
-            array=lambda label, value, **_kwargs: values.update({label: value}),
-        )
-        friction = np.arange(18, dtype=np.float32).reshape(2, 3, 3)
-        solver = SimpleNamespace(
-            mjw_model=SimpleNamespace(
-                geom_condim=wp.array([1, 3, 6], dtype=int, device="cpu"),
-                geom_solref=wp.array(np.full((1, 3, 2), 0.02), dtype=float, device="cpu"),
-                geom_solimp=wp.array(np.full((1, 3, 5), 0.9), dtype=float, device="cpu"),
-                geom_friction=wp.array(friction, dtype=float, device="cpu"),
-            ),
-            mjc_geom_to_newton_shape=wp.array([[1, 3, -1], [1, 7, 9]], dtype=int, device="cpu"),
-        )
-        workspace.viewer._inspection_components = {"solver": solver}
-        for inverse in (None, wp.array([-1, 0, -1, 1, -1, -1, -1, 1, -1, 2], dtype=int, device="cpu")):
-            with self.subTest(internal_contacts=inverse is None):
-                solver.newton_shape_to_mjc_geom = inverse
-                workspace._cache.clear()
-                workspace._live_cache.clear()
-                values.clear()
-                workspace._shape_solver_properties(7)
-                self.assertEqual(values["condim"], 3)
-                np.testing.assert_array_equal(values["Friction"], friction[1, 1])
-                np.testing.assert_allclose(values["solref"], [0.02, 0.02])
-                self.assertEqual(values["solimp"].shape, (5,))
-                values.clear()
-                workspace._shape_solver_properties(1)
-                self.assertEqual(values["condim"], 1)
-                np.testing.assert_array_equal(values["Friction"], friction[1, 0])
-                values.clear()
-                workspace._shape_solver_properties(6)
-                self.assertFalse(values)
-
-        # Collision-free models can have worlds but no solver geometries.
+        holder = SimpleNamespace()
         for shape in ((0,), (2, 0)):
-            with self.subTest(empty_mapping_shape=shape):
-                solver.mjc_geom_to_newton_shape = wp.empty(shape, dtype=int, device="cpu")
+            with self.subTest(empty_shape=shape):
+                holder.data = wp.empty(shape, dtype=int, device="cpu")
                 workspace._cache.clear()
-                values.clear()
-                workspace._shape_solver_properties(0)
-                self.assertFalse(values)
-                empty = workspace.read(solver, "mjc_geom_to_newton_shape", 0)
+                empty = workspace.read(holder, "data", 0)
                 self.assertEqual(empty.shape, (min(shape[0], 1), *shape[1:]))
                 self.assertEqual(empty.dtype, np.int32)
 
@@ -1426,24 +2121,204 @@ class TestViewerProperties(unittest.TestCase):
                 self.assertFalse(record.state)
 
                 # Replay rebuilds logged observables through the solver that
-                # produced them, without the optional set_solver() binding.
+                # produced them, without the optional set_solver() binding,
+                # without retaining live Observables/Contacts buffers, and across
+                # contact-capacity reductions and changing observable kinds/solvers.
+                import gc  # noqa: PLC0415
+                import weakref  # noqa: PLC0415
+
                 solver = newton.solvers.SolverXPBD(model)
-                observables = solver.observables(
-                    contacts=contacts, kinds={newton.solvers.SolverBase.ObservableKind.CONTACT_F}
+                solver_alt = newton.solvers.SolverXPBD(model)
+                large_contacts = newton.Contacts(8, 3, device=device)
+                large_contacts.rigid_contact_count.assign(np.array([2], dtype=np.int32))
+                large_contacts.soft_contact_count.assign(np.array([2], dtype=np.int32))
+                rigid_pts = np.zeros((8, 3), dtype=np.float32)
+                rigid_pts[:2] = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]
+                large_contacts.rigid_contact_point0.assign(rigid_pts)
+                soft_pts = np.zeros((3, 3), dtype=np.float32)
+                soft_pts[:2] = [[7.0, 8.0, 9.0], [10.0, 11.0, 12.0]]
+                large_contacts.soft_contact_body_pos.assign(soft_pts)
+
+                obs_contact_only = solver.observables(
+                    contacts=large_contacts,
+                    kinds={newton.solvers.SolverBase.ObservableKind.CONTACT_F},
                 )
+                cf_0 = np.zeros((len(obs_contact_only.contact_f), 6), dtype=np.float32)
+                cf_0[0, 0] = 11.0
+                cf_0[1, 0] = 22.0
+                cf_0[8, 0] = 33.0
+                cf_0[9, 0] = 44.0
+                obs_contact_only.contact_f.assign(cf_0)
+
+                obs_expanded = solver.observables(
+                    contacts=large_contacts,
+                    kinds={
+                        newton.solvers.SolverBase.ObservableKind.CONTACT_F,
+                        newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F,
+                    },
+                )
+                obs_expanded.contact_f.assign(cf_0 * 2.0)
+                obs_expanded.body_parent_f.assign(np.array([[1.5, 2.5, 3.5, 0.5, 0.25, 0.125]], dtype=np.float32))
+
+                obs_alt_solver = solver_alt.observables(
+                    contacts=large_contacts,
+                    kinds={newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F},
+                )
+                obs_alt_solver.body_parent_f.assign(np.array([[9.0, 8.0, 7.0, 0.0, 0.0, 0.0]], dtype=np.float32))
+
                 self.assertIsNone(viewer._inspection_components.get("solver"))
                 observed = FrameHistory(viewer)
-                for time in (0.0, 1.0):
-                    observed.begin_frame(time)
-                    observed.contacts(contacts, state, observables)
-                    observed.end_frame()
-                observed.select(0)
-                observed.begin_frame(1.0)
-                shown_contacts, _, shown_observables = observed.contacts(contacts, state, None)
+                observed.begin_frame(0.0)
+                observed.contacts(large_contacts, state, obs_contact_only)
                 observed.end_frame()
-                self.assertIsNotNone(shown_observables)
-                self.assertIsNot(shown_observables, observables)
-                self.assertIs(shown_observables.contacts, shown_contacts)
+
+                observed.begin_frame(1.0)
+                observed.contacts(large_contacts, state, obs_expanded)
+                observed.end_frame()
+
+                observed.begin_frame(2.0)
+                observed.contacts(large_contacts, state, obs_alt_solver)
+                observed.end_frame()
+
+                # Release all original source Contacts and Observables buffers before replay.
+                contacts_ref = weakref.ref(large_contacts)
+                obs_0_ref = weakref.ref(obs_contact_only)
+                obs_1_ref = weakref.ref(obs_expanded)
+                obs_2_ref = weakref.ref(obs_alt_solver)
+                del large_contacts, obs_contact_only, obs_expanded, obs_alt_solver
+                gc.collect()
+                self.assertIsNone(contacts_ref())
+                self.assertIsNone(obs_0_ref())
+                self.assertIsNone(obs_1_ref())
+                self.assertIsNone(obs_2_ref())
+
+                # Replace live contacts with a smaller capacity buffer (1 rigid, 1 soft)
+                # and verify both initial replay allocation and growth across frames.
+                tiny_contacts = newton.Contacts(1, 1, device=device)
+                observed.begin_frame(3.0)
+                observed.contacts(tiny_contacts, state, None)
+                observed.end_frame()
+
+                # First scrub to frame 2 (allocates display buffer with 2 active contacts despite tiny_contacts=(1, 1)).
+                observed.select(2)
+                observed.begin_frame(3.0)
+                shown_contacts_2, _, shown_obs_2 = observed.contacts(tiny_contacts, state, None)
+                observed.end_frame()
+                self.assertEqual(int(shown_contacts_2.rigid_contact_count.numpy()[0]), 2)
+                self.assertIsNotNone(shown_obs_2)
+                self.assertIs(shown_obs_2._solver, solver_alt)
+                self.assertEqual(shown_obs_2.kinds, frozenset({newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F}))
+                np.testing.assert_allclose(shown_obs_2.body_parent_f.numpy(), [[9.0, 8.0, 7.0, 0.0, 0.0, 0.0]])
+
+                # Scrub to frame 0 (CONTACT_F only) and verify active rigid & soft rows and forces.
+                observed.select(0)
+                observed.begin_frame(3.0)
+                shown_contacts_0, _, shown_obs_0 = observed.contacts(tiny_contacts, state, None)
+                observed.end_frame()
+                self.assertIsNotNone(shown_obs_0)
+                self.assertIs(shown_obs_0._solver, solver)
+                self.assertIs(shown_obs_0.contacts, shown_contacts_0)
+                self.assertEqual(shown_obs_0.kinds, frozenset({newton.solvers.SolverBase.ObservableKind.CONTACT_F}))
+                self.assertEqual(int(shown_contacts_0.rigid_contact_count.numpy()[0]), 2)
+                self.assertEqual(int(shown_contacts_0.soft_contact_count.numpy()[0]), 2)
+                np.testing.assert_allclose(
+                    shown_contacts_0.rigid_contact_point0.numpy()[:2], [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]
+                )
+                np.testing.assert_allclose(
+                    shown_contacts_0.soft_contact_body_pos.numpy()[:2], [[7.0, 8.0, 9.0], [10.0, 11.0, 12.0]]
+                )
+                np.testing.assert_allclose(shown_obs_0.contact_f.numpy()[:2, 0], [11.0, 22.0])
+                soft_start = shown_contacts_0.rigid_contact_max
+                np.testing.assert_allclose(shown_obs_0.contact_f.numpy()[soft_start : soft_start + 2, 0], [33.0, 44.0])
+
+                # Scrub to frame 1 (CONTACT_F + BODY_PARENT_F) and verify cache reallocates for new kinds.
+                observed.select(1)
+                observed.begin_frame(3.0)
+                shown_contacts_1, _, shown_obs_1 = observed.contacts(tiny_contacts, state, None)
+                observed.end_frame()
+                self.assertIsNotNone(shown_obs_1)
+                self.assertIs(shown_obs_1.contacts, shown_contacts_1)
+                self.assertEqual(
+                    shown_obs_1.kinds,
+                    frozenset(
+                        {
+                            newton.solvers.SolverBase.ObservableKind.CONTACT_F,
+                            newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F,
+                        }
+                    ),
+                )
+                np.testing.assert_allclose(shown_obs_1.contact_f.numpy()[:2, 0], [22.0, 44.0])
+                np.testing.assert_allclose(shown_obs_1.body_parent_f.numpy(), [[1.5, 2.5, 3.5, 0.5, 0.25, 0.125]])
+
+                # Also verify growth when an unobservable ContactRecord shrinks capacity:
+                shrink_history = FrameHistory(viewer)
+                big_plain = newton.Contacts(4, 2, device=device)
+                big_plain.rigid_contact_count.assign(np.array([3], dtype=np.int32))
+                big_plain.soft_contact_count.assign(np.array([2], dtype=np.int32))
+                shrink_history.begin_frame(0.0)
+                shrink_history.contacts(big_plain, state, None)
+                shrink_history.end_frame()
+                shrink_history.begin_frame(1.0)
+                shrink_history.contacts(tiny_contacts, state, None)
+                shrink_history.end_frame()
+                shrink_history.begin_frame(2.0)
+                shrink_history.contacts(tiny_contacts, state, None)
+                shrink_history.end_frame()
+                # Scrub to frame 1 first (allocates 1x1), then scrub to frame 0 (must grow to >= 3x2).
+                shrink_history.select(1)
+                shrink_history.begin_frame(2.0)
+                shrink_history.contacts(tiny_contacts, state, None)
+                shrink_history.end_frame()
+                shrink_history.select(0)
+                shrink_history.begin_frame(2.0)
+                grown_contacts, _, _ = shrink_history.contacts(tiny_contacts, state, None)
+                shrink_history.end_frame()
+                self.assertGreaterEqual(grown_contacts.rigid_contact_max, 3)
+                self.assertGreaterEqual(grown_contacts.soft_contact_max, 2)
+                self.assertEqual(int(grown_contacts.rigid_contact_count.numpy()[0]), 3)
+                self.assertEqual(int(grown_contacts.soft_contact_count.numpy()[0]), 2)
+
+                # Each layer's calls are filtered by that layer's own Model, not
+                # the Model active when history was created.
+                layered_builder = newton.ModelBuilder()
+                layered_builder.add_body()
+                layered_builder.add_shape_sphere(0, radius=0.1)
+                layered_builder.add_custom_attribute(
+                    newton.ModelBuilder.CustomAttribute(
+                        name="sample",
+                        namespace="probe",
+                        assignment=Assignment.STATE,
+                        frequency=Frequency.ONCE,
+                        dtype=float,
+                        default=3.0,
+                    )
+                )
+                layered_model = layered_builder.finalize(device=device)
+                layered = ViewerNull()
+                layered.activate("first")
+                layered.set_model(model)
+                layered.activate("second")
+                layered.set_model(layered_model)
+                layered.activate("first")
+                layered_history = FrameHistory(layered)
+                layered_state = layered_model.state()
+                layered_contacts = newton.Contacts(4, 0, device=device)
+                layered_observables = newton.solvers.SolverXPBD(layered_model).observables(
+                    contacts=layered_contacts, kinds={newton.solvers.SolverBase.ObservableKind.CONTACT_F}
+                )
+                layered_history.begin_frame(0.0)
+                layered_history.state(state)
+                layered.activate("second")
+                layered_history.state(layered_state)
+                layered_history.contacts(layered_contacts, layered_model.state(), layered_observables)
+                layered.activate("first")
+                layered_history.end_frame()
+                layered_frame = layered_history.frames[0]
+                self.assertNotIn("probe:sample", layered_frame.states["state", "first", 0])
+                self.assertIn("probe:sample", layered_frame.states["state", "second", 0])
+                record = layered_frame.contact_records["contacts", "second", 0]
+                self.assertTrue(record.observables)
+                self.assertIn("probe:sample", record.state)
 
                 # Replay reproduces cleared and populated batches regardless of the live arguments.
                 markers = FrameHistory(viewer)
@@ -1624,6 +2499,444 @@ class TestViewerProperties(unittest.TestCase):
         inspector._contexts()
         self.assertEqual(inspector._observables(), [])
 
+    def test_deformable_objects_and_visual_meshes(self) -> None:
+        """Expose authored surfaces, volumes, curves, edges, and skinned meshes in tree, search, and inspector."""
+        from newton._src.viewer.viewer_attributes import attribute_summary  # noqa: PLC0415
+
+        builder = newton.ModelBuilder()
+        builder.add_cloth_grid(
+            pos=wp.vec3(0.0, 0.0, 2.0),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0),
+            dim_x=1,
+            dim_y=1,
+            cell_x=1.0,
+            cell_y=1.0,
+            mass=1.0,
+            label="cloth_a",
+        )
+        builder.add_soft_grid(
+            pos=wp.vec3(3.0, 0.0, 2.0),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0),
+            dim_x=1,
+            dim_y=1,
+            dim_z=1,
+            cell_x=0.5,
+            cell_y=0.5,
+            cell_z=0.5,
+            density=100.0,
+            k_mu=1000.0,
+            k_lambda=1000.0,
+            k_damp=1.0,
+            label="soft_b",
+        )
+        rod_bodies, rod_joints = builder.add_rod(
+            rod=newton.Rod([(0.0, 2.0, 1.0), (0.2, 2.0, 1.0), (0.4, 2.0, 1.0)], radius=0.02),
+            label="rod_c",
+        )
+        builder.add_deformable_visual_mesh(
+            vertices=[(0.1, 0.1, 2.0), (0.4, 0.1, 2.0), (0.1, 0.4, 2.0)],
+            indices=[0, 1, 2],
+            kind="triangle",
+            surface=0,
+            label="skin_d",
+        )
+        model = builder.finalize(device="cpu")
+        tree = ModelTree(model)
+        ws = ViewerWorkspace.__new__(ViewerWorkspace)
+        ws.model, ws.tree = model, tree
+        ws.viewer = SimpleNamespace(_last_state=model.state(), _inspection_components={})
+        ws._bindings = ws._bindings_components = None
+        ws.history = None
+        ws._cache, ws._live_cache = {}, {}
+        inspector = PropertyInspector(ws)
+
+        surface_key = tree.deformables.object_key_for_model("surface", 0, tree)
+        volume_key = tree.deformables.object_key_for_model("volume", 0, tree)
+        self.assertIsNotNone(surface_key)
+        self.assertIsNotNone(volume_key)
+        self.assertEqual(tree.labels[surface_key], "cloth_a")
+        self.assertEqual(tree.labels[volume_key], "soft_b")
+        self.assertEqual(tree.labels[("curve", 0)], "rod_c")
+        self.assertEqual(tree.labels[("deformable_visual_mesh", 0)], "skin_d")
+        self.assertEqual(
+            tree.shape_descendants(("curve", 0)), sorted({s for b in rod_bodies for s in model.body_shapes.get(b, ())})
+        )
+        self.assertEqual(
+            tree.joint_descendants(("curve", 0)),
+            list(range(int(model.curve_joint_start.numpy()[0]), int(model.curve_joint_end.numpy()[0]))),
+        )
+        self.assertTrue(set(rod_joints) <= set(tree.joint_descendants(("curve", 0))))
+
+        # Surface selection exposes SURFACE, PARTICLE, TRIANGLE, and EDGE domains.
+        ws.selected, ws.selection = surface_key, {surface_key}
+        inspector._contexts()
+        surface_freqs = {d.frequency for d in inspector.domains}
+        self.assertTrue({Frequency.SURFACE, Frequency.PARTICLE, Frequency.TRIANGLE, Frequency.EDGE} <= surface_freqs)
+
+        # Volume selection exposes VOLUME, PARTICLE, and TETRAHEDRON domains.
+        ws.selected, ws.selection = volume_key, {volume_key}
+        inspector._contexts()
+        volume_freqs = {d.frequency for d in inspector.domains}
+        self.assertTrue({Frequency.VOLUME, Frequency.PARTICLE, Frequency.TETRAHEDRON} <= volume_freqs)
+
+        # Curve selection exposes CURVE, BODY, JOINT, JOINT_COORD, and JOINT_DOF domains.
+        ws.selected, ws.selection = ("curve", 0), {("curve", 0)}
+        inspector._contexts()
+        curve_freqs = {d.frequency for d in inspector.domains}
+        self.assertTrue(
+            {Frequency.CURVE, Frequency.BODY, Frequency.JOINT, Frequency.JOINT_COORD, Frequency.JOINT_DOF}
+            <= curve_freqs
+        )
+
+        # Reference navigation resolves authored deformables directly.
+        self.assertEqual(inspector.reference_target(model, Frequency.SURFACE, 0), surface_key)
+        self.assertEqual(inspector.reference_target(model, Frequency.VOLUME, 0), volume_key)
+        self.assertEqual(inspector.reference_target(model, Frequency.CURVE, 0), ("curve", 0))
+        self.assertEqual(inspector.reference_target(model, Frequency.EDGE, 0), ("edge", 0))
+
+        # Search finds surfaces, volumes, curves, and skinned meshes by label.
+        for query, expected_key in (
+            ("cloth_a", surface_key),
+            ("soft_b", volume_key),
+            ("rod_c", ("curve", 0)),
+            ("skin_d", ("deformable_visual_mesh", 0)),
+        ):
+            tree.query = query
+            tree.rebuild()
+            self.assertIn((expected_key, 1), tree.rows)
+
+        # Model attribute tooltips include update_flags metadata.
+        spec = model.attribute_specs["shape_material_mu"]
+        summary = attribute_summary("shape_material_mu", spec, model.shape_material_mu, Assignment.MODEL)
+        self.assertIn("Update flags:", summary)
+        self.assertIn("SHAPE_PROPERTIES", summary)
+
+    def test_tendons_attachments_mimics_and_actuators(self) -> None:
+        """Expose tendons, particle-body attachments, mimic constraints, and actuators in tree and inspector."""
+        from newton.actuators import DrivePD  # noqa: PLC0415
+
+        builder = newton.ModelBuilder()
+        b0 = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        b1 = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.add_shape_box(b0, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_shape_box(b1, hx=0.1, hy=0.1, hz=0.1)
+        j0 = builder.add_joint_revolute(-1, b0, axis=newton.Axis.Z)
+        j1 = builder.add_joint_revolute(b0, b1, axis=newton.Axis.Z)
+        builder.add_articulation([j0, j1])
+        p0 = builder.add_particle(wp.vec3(0.0, 0.0, 1.0), wp.vec3(0.0), 0.1)
+        builder.add_attachment_particle_body(p0, b0, body_point=wp.vec3(0.0, 0.0, 0.0))
+        builder.add_tendon(
+            [
+                newton.TendonGuide(body=b0, offset=wp.vec3(0.0, 0.0, 0.1), guide_type=newton.TendonGuideType.ANCHOR),
+                newton.TendonGuide(
+                    body=b1, offset=wp.vec3(0.0, 0.0, 0.1), guide_type=newton.TendonGuideType.ANCHOR, rest_length=0.5
+                ),
+            ],
+            label="cable_tendon",
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            builder.add_constraint_mimic(j1, j0, coef0=0.0, coef1=0.5, label="linked_mimic")
+        builder.add_actuator(DrivePD, index=0, kp=50.0, kd=5.0)
+        model = builder.finalize(device="cpu")
+
+        tree = ModelTree(model)
+        self.assertIn(("tendon_group", -1), tree.labels)
+        self.assertIn(("tendon", 0), tree.labels)
+        self.assertEqual(tree.labels[("tendon", 0)], "cable_tendon")
+        self.assertIn(("attachment_group", -1), tree.labels)
+        self.assertIn(("mimic_group", -1), tree.labels)
+        self.assertEqual(tree.labels[("constraint_mimic", 0)], "linked_mimic")
+        self.assertIn(("actuator_collection", 0), tree.roots)
+
+        # Guides, segments, attachments, and actuators expand lazily.
+        self.assertFalse(tree.children.get(("tendon", 0)))
+        tree.toggle(("tendon", 0))
+        self.assertIn(("tendon_guide", 0), tree.children[("tendon", 0)])
+        self.assertIn(("tendon_segment", 0), tree.children[("tendon", 0)])
+
+        self.assertFalse(tree.children.get(("attachment_group", -1)))
+        tree.toggle(("attachment_group", -1))
+        self.assertIn(("attachment_particle_body", 0), tree.children[("attachment_group", -1)])
+
+        self.assertFalse(tree.children.get(("actuator_collection", 0)))
+        tree.toggle(("actuator_collection", 0))
+        self.assertIn(("actuator_group", 0), tree.children[("actuator_collection", 0)])
+
+        ws = ViewerWorkspace.__new__(ViewerWorkspace)
+        ws.model, ws.tree = model, tree
+        ws.viewer = SimpleNamespace(_last_state=model.state(), _inspection_components={"control": model.control()})
+        ws._bindings = ws._bindings_components = None
+        ws.history = None
+        ws._cache, ws._live_cache = {}, {}
+        inspector = PropertyInspector(ws)
+
+        ws.selected, ws.selection = ("tendon", 0), {("tendon", 0)}
+        inspector._contexts()
+        self.assertEqual(
+            {d.frequency for d in inspector.domains},
+            {Frequency.TENDON, Frequency.TENDON_GUIDE, Frequency.TENDON_SEGMENT},
+        )
+        ws.selected, ws.selection = ("attachment_particle_body", 0), {("attachment_particle_body", 0)}
+        inspector._contexts()
+        self.assertEqual([d.frequency for d in inspector.domains], [Frequency.ATTACHMENT_PARTICLE_BODY])
+        ws.selected, ws.selection = ("constraint_mimic", 0), {("constraint_mimic", 0)}
+        inspector._contexts()
+        self.assertEqual([d.frequency for d in inspector.domains], [Frequency.CONSTRAINT_MIMIC])
+
+        for query, expected_key in (("cable_tendon", ("tendon", 0)), ("linked_mimic", ("constraint_mimic", 0))):
+            tree.query = query
+            tree.rebuild()
+            self.assertIn((expected_key, 1), tree.rows)
+
+    def test_global_world_slot_and_body_variants(self) -> None:
+        """Map global world -1 to the trailing WORLD slot and switch body variants with rollback."""
+        # 1) Global world -1 alongside two local worlds
+        world_template = newton.ModelBuilder()
+        body = world_template.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        variant_a = newton.ModelBuilder()
+        variant_a.add_shape_box(
+            variant_a.add_body(),
+            hx=0.1,
+            hy=0.1,
+            hz=0.1,
+            cfg=newton.ModelBuilder.ShapeConfig(mu=0.2, restitution=0.8),
+        )
+        variant_b = newton.ModelBuilder()
+        variant_b.add_shape_sphere(
+            variant_b.add_body(),
+            radius=0.15,
+            cfg=newton.ModelBuilder.ShapeConfig(mu=0.9, restitution=0.0),
+        )
+        world_template.add_body_variants(body, [variant_a, variant_b], initial=0, labels=["cube", "sphere"])
+
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        builder.replicate(world_template, copy_count=2)
+        model = builder.finalize(device="cpu")
+        tree = ModelTree(model)
+
+        viewer = ViewerNull()
+        viewer.set_model(model)
+        paused = False
+        viewer.is_paused = lambda: paused
+        ws = ViewerWorkspace.__new__(ViewerWorkspace)
+        ws.model, ws.tree, ws.viewer = model, tree, viewer
+        ws._bindings = ws._bindings_components = None
+        ws.history = None
+        ws._cache, ws._live_cache = {}, {}
+        ws.message = ""
+        inspector = PropertyInspector(ws)
+
+        # Shared root maps to the trailing global-world slot (world_count), not local worlds.
+        ws.selected, ws.selection = ("root", -1), {("root", -1)}
+        inspector._contexts()
+        world_domain = next(d for d in inspector.domains if d.frequency == Frequency.WORLD)
+        self.assertEqual(list(world_domain.indices), [model.world_count])
+
+        # Scene selection spans all local worlds plus the global-world slot.
+        ws.selected, ws.selection = ("scene", 0), {("scene", 0)}
+        inspector._contexts()
+        scene_world = next(d for d in inspector.domains if d.frequency == Frequency.WORLD)
+        self.assertEqual(list(scene_world.indices), list(range(model.world_count + 1)))
+
+        # World references -1 and world_count both resolve to Shared root (-1).
+        self.assertEqual(inspector.reference_target(model, Frequency.WORLD, -1), ("root", -1))
+        self.assertEqual(inspector.reference_target(model, Frequency.WORLD, model.world_count), ("root", -1))
+        self.assertEqual(inspector.reference_label(model, Frequency.WORLD, -1, ("root", -1)), "Shared (-1)")
+
+        # 2) Interactive body variant switching requires a bound solver and pause, and preserves
+        # both solver caches and pre-existing live runtime edits when a switch is rejected.
+        class _VariantTestSolver(newton.solvers.SolverBase):
+            def __init__(self, m: newton.Model, callback) -> None:
+                super().__init__(m)
+                self._callback = callback
+
+            def step(self, state_in, state_out, control, contacts, dt: float) -> None:
+                pass
+
+            def notify_model_changed(self, flags: int) -> None:
+                self._callback(int(flags))
+
+            def _non_graphable_model_flags(self) -> int:
+                return 0
+
+        paused = True
+        self.assertEqual(int(model.body_variant.numpy()[0]), 0)
+        self.assertFalse(ws.select_body_variant(0, 1))
+        self.assertEqual(int(model.body_variant.numpy()[0]), 0)
+        self.assertIn("set_solver", ws.message)
+
+        notified: list[int] = []
+        viewer._inspection_components["solver"] = _VariantTestSolver(model, notified.append)
+        ws._bindings = ws._bindings_components = None
+        paused = False
+        self.assertFalse(ws.select_body_variant(0, 1))
+        self.assertEqual(int(model.body_variant.numpy()[0]), 0)
+
+        paused = True
+        self.assertTrue(ws.select_body_variant(0, 1))
+        self.assertTrue(ws.select_body_variant(1, 1))
+        self.assertEqual(int(model.body_variant.numpy()[0]), 1)
+        self.assertTrue(notified)
+
+        # Apply pre-existing live runtime edits to shape_material_mu (0.9 -> 0.55) and body_mass (2.5)
+        # on body 0 after variant 1 is active.
+        body0_row = int(model._body_variant_rows.numpy()[0, 0])
+        live_mu = model.shape_material_mu.numpy().copy()
+        live_mu[body0_row] = 0.55
+        model.shape_material_mu.assign(live_mu)
+        live_mass = model.body_mass.numpy().copy()
+        live_mass[0] = 2.5
+        model.body_mass.assign(live_mass)
+
+        cached_mu: list[np.ndarray] = [model.shape_material_mu.numpy().copy()]
+        cached_mass: list[np.ndarray] = [model.body_mass.numpy().copy()]
+        expected_mu = cached_mu[0].copy()
+        expected_mass = cached_mass[0].copy()
+
+        def track_and_validate(_flags: int) -> None:
+            cached_mu[0] = model.shape_material_mu.numpy().copy()
+            cached_mass[0] = model.body_mass.numpy().copy()
+            if float(model.shape_material_restitution.numpy().max()) > 0.0:
+                raise ValueError("unsupported positive restitution")
+
+        viewer._inspection_components["solver"] = _VariantTestSolver(model, track_and_validate)
+        ws._bindings = ws._bindings_components = None
+
+        # Switching body 0 back to variant 0 (restitution=0.8) mutates solver caches before
+        # rejecting; rollback must restore live pre-switch values (0.55 mu, 2.5 mass) and refresh
+        # the solver from them rather than reverting to variant 1's authored defaults.
+        self.assertFalse(ws.select_body_variant(0, 0))
+        self.assertEqual(int(model.body_variant.numpy()[0]), 1)
+        np.testing.assert_allclose(model.shape_material_mu.numpy(), expected_mu)
+        np.testing.assert_allclose(model.body_mass.numpy(), expected_mass)
+        np.testing.assert_allclose(cached_mu[0], expected_mu)
+        np.testing.assert_allclose(cached_mass[0], expected_mass)
+        self.assertIn("unsupported positive restitution", ws.message)
+
+        # Explicit handling when solver recovery itself fails during rollback.
+        def always_fail(_flags: int) -> None:
+            raise RuntimeError("unrecoverable notify failure")
+
+        viewer._inspection_components["solver"] = _VariantTestSolver(model, always_fail)
+        ws._bindings = ws._bindings_components = None
+        self.assertFalse(ws.select_body_variant(0, 0))
+        self.assertEqual(int(model.body_variant.numpy()[0]), 1)
+        np.testing.assert_allclose(model.shape_material_mu.numpy(), expected_mu)
+        np.testing.assert_allclose(model.body_mass.numpy(), expected_mass)
+        self.assertIn("rollback failed", ws.message)
+
+        # 3) Body-motion edits stay read-only when CUDA step graphs cannot absorb BODY_PROPERTIES.
+        viewer._inspection_components["solver"] = newton.solvers.SolverFeatherstone(model)
+        ws._bindings = ws._bindings_components = None
+        self.assertTrue(ws._body_flag_support()[0])
+        ws.set_flag("body", 0, int(newton.BodyFlags.KINEMATIC))
+        self.assertEqual(int(model.body_flags.numpy()[0]), int(newton.BodyFlags.KINEMATIC))
+        ws.set_flag("body", 0, int(newton.BodyFlags.DYNAMIC))
+        self.assertEqual(int(model.body_flags.numpy()[0]), int(newton.BodyFlags.DYNAMIC))
+
+        if wp.is_cuda_available():
+            cuda_builder = newton.ModelBuilder()
+            cuda_body = cuda_builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+            j = cuda_builder.add_joint_revolute(-1, cuda_body, axis=newton.Axis.Z)
+            cuda_builder.add_articulation([j])
+            cuda_model = cuda_builder.finalize(device="cuda:0")
+            cuda_viewer = ViewerNull()
+            cuda_viewer.set_model(cuda_model)
+            cuda_viewer.is_paused = lambda: True
+            cuda_ws = ViewerWorkspace.__new__(ViewerWorkspace)
+            cuda_ws.model, cuda_ws.tree, cuda_ws.viewer = cuda_model, ModelTree(cuda_model), cuda_viewer
+            cuda_ws._bindings = cuda_ws._bindings_components = None
+            cuda_ws.history = None
+            cuda_ws._cache, cuda_ws._live_cache = {}, {}
+            cuda_ws.message = ""
+
+            cuda_viewer._inspection_components["solver"] = newton.solvers.SolverFeatherstone(cuda_model)
+            cuda_ws._bindings = cuda_ws._bindings_components = None
+            supported, reason = cuda_ws._body_flag_support()
+            self.assertFalse(supported)
+            self.assertIn("recapturing", reason)
+            cuda_ws.set_flag("body", 0, int(newton.BodyFlags.KINEMATIC))
+            self.assertEqual(int(cuda_model.body_flags.numpy()[0]), int(newton.BodyFlags.DYNAMIC))
+
+            cuda_viewer._inspection_components["solver"] = newton.solvers.SolverXPBD(cuda_model)
+            cuda_ws._bindings = cuda_ws._bindings_components = None
+            self.assertTrue(cuda_ws._body_flag_support()[0])
+            cuda_ws.set_flag("body", 0, int(newton.BodyFlags.KINEMATIC))
+            self.assertEqual(int(cuda_model.body_flags.numpy()[0]), int(newton.BodyFlags.KINEMATIC))
+
+    def test_contacts_history_and_solver_classification(self) -> None:
+        """Preserve new contact fields in history, filter non-row fields, and classify maximal solvers."""
+        builder = newton.ModelBuilder()
+        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+        model = builder.finalize(device="cpu")
+        state = model.state()
+        contacts = newton.Contacts(
+            rigid_contact_max=2,
+            soft_contact_max=2,
+            device="cpu",
+            contact_matching=True,
+            contact_report=True,
+            rigid_contact_surface_velocity=True,
+        )
+        contacts.rigid_contact_count.assign(np.array([1], dtype=np.int32))
+        contacts.rigid_contact_shape0.assign(np.array([0, -1], dtype=np.int32))
+        contacts.rigid_contact_shape1.assign(np.array([0, -1], dtype=np.int32))
+        contacts.rigid_contact_match_index.assign(np.array([7, -1], dtype=np.int32))
+        contacts.rigid_contact_surface_velocity.assign(np.array([[1.0, 2.0, 3.0], [0.0, 0.0, 0.0]], dtype=np.float32))
+        contacts.soft_contact_count.assign(np.array([1], dtype=np.int32))
+        contacts.soft_contact_rigid_indices.assign(np.array([[1, 2, 3], [-1, -1, -1]], dtype=np.int32))
+
+        # CollisionInspector must not leak non-per-contact counters or index lists onto contact 0.
+        ws = ViewerWorkspace.__new__(ViewerWorkspace)
+        ws.model = model
+        ws.history = None
+        ws.viewer = SimpleNamespace(_last_contact_observables=None)
+        ci = CollisionInspector(ws)
+        ci.contacts = contacts
+        field_names = {field[1] for field in ci.contact_fields(("contact", 0))}
+        self.assertIn("rigid_contact_surface_velocity", field_names)
+        self.assertIn("rigid_contact_match_index", field_names)
+        for excluded in (
+            "rigid_contact_new_count",
+            "rigid_contact_broken_count",
+            "rigid_contact_new_indices",
+            "rigid_contact_broken_indices",
+            "rigid_contact_match_generation",
+        ):
+            self.assertNotIn(excluded, field_names)
+
+        # FrameHistory records and replays surface_velocity, match_index, and soft_contact_rigid_indices.
+        viewer = ViewerNull()
+        viewer.set_model(model)
+        history = FrameHistory(viewer)
+        history.begin_frame(0.0)
+        history.contacts(contacts, state, None)
+        history.end_frame()
+        contacts.rigid_contact_match_index.fill_(-1)
+        contacts.rigid_contact_surface_velocity.zero_()
+        contacts.soft_contact_rigid_indices.view(wp.int32).fill_(-1)
+        history.begin_frame(1.0)
+        history.contacts(contacts, state, None)
+        history.end_frame()
+        history.select(0)
+        history.begin_frame(1.0)
+        replayed, _, _ = history.contacts(contacts, state, None)
+        history.end_frame()
+        self.assertEqual(int(replayed.rigid_contact_match_index.numpy()[0]), 7)
+        np.testing.assert_allclose(replayed.rigid_contact_surface_velocity.numpy()[0], [1.0, 2.0, 3.0])
+        np.testing.assert_array_equal(replayed.soft_contact_rigid_indices.numpy()[0], [1, 2, 3])
+
+        # Maximal-coordinate solver detection distinguishes maximal vs reduced-coordinate solvers.
+        self.assertTrue(ViewerWorkspace._uses_maximal_coordinates(newton.solvers.SolverXPBD(model)))
+        self.assertTrue(ViewerWorkspace._uses_maximal_coordinates(newton.solvers.SolverSemiImplicit(model)))
+        self.assertFalse(ViewerWorkspace._uses_maximal_coordinates(newton.solvers.SolverFeatherstone(model)))
+        self.assertTrue(ViewerWorkspace._uses_maximal_coordinates(type("SolverKamino", (), {})()))
+
     def test_frequency_discovery_and_live_joint_edits(self) -> None:
         builder = newton.ModelBuilder()
         joints = []
@@ -1742,6 +3055,73 @@ class TestViewerProperties(unittest.TestCase):
         replacement.joint_target_q.fill_(0.9)
         self.assertTrue(ws.reset_control())
         np.testing.assert_allclose(replacement.joint_target_q.numpy(), 0.4)
+
+        steel_devices = ["cpu", *(["cuda:0"] if wp.is_cuda_available() else [])]
+        for dev in steel_devices:
+            sb = newton.ModelBuilder()
+            b0 = sb.add_link(mass=1.0, com=wp.vec3(0.5, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
+            b1 = sb.add_link(mass=1.0, com=wp.vec3(0.5, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
+            j0 = sb.add_joint_revolute(-1, b0, axis=newton.Axis.Y)
+            j1 = sb.add_joint_revolute(b0, b1, parent_xform=wp.transform((1.0, 0.0, 0.0)), axis=newton.Axis.Y)
+            sb.add_articulation([j0, j1])
+            steel_model = sb.finalize(device=dev)
+            solver = newton.solvers.SolverSteel(steel_model, reuse_kinematics=True)
+            ref_solver = newton.solvers.SolverSteel(steel_model, reuse_kinematics=False)
+            s0, s1 = steel_model.state(), steel_model.state()
+            ref_s0, ref_s1 = steel_model.state(), steel_model.state()
+            dt = 1.0 / 60.0
+            if dev.startswith("cuda"):
+                with wp.ScopedCapture(device=dev) as step_ab_cap:
+                    solver.step(s0, s1, None, None, dt)
+                with wp.ScopedCapture(device=dev) as step_ba_cap:
+                    solver.step(s1, s0, None, None, dt)
+                wp.capture_launch(step_ab_cap.graph)
+            else:
+                solver.step(s0, s1, None, None, dt)
+            s0, s1 = s1, s0
+            steel_viewer = ViewerNull()
+            steel_viewer.set_model(steel_model)
+            steel_viewer.set_solver(solver)
+            steel_viewer._last_state = s0
+            steel_viewer.is_paused = lambda: True
+            steel_ws = ViewerWorkspace.__new__(ViewerWorkspace)
+            steel_ws.model, steel_ws.selected, steel_ws.world = steel_model, ("articulation", 0), 0
+            steel_ws.viewer = steel_viewer
+            steel_ws._bindings = steel_ws._bindings_components = None
+            steel_ws._cache, steel_ws._live_cache, steel_ws._drafts = {}, {}, {}
+            steel_ws._undo = steel_ws.history = None
+            steel_ws.message = ""
+            self.assertTrue(steel_ws.apply_edit(s0, "joint_q", 0, [1.1], joint_index=0))
+            self.assertTrue(steel_ws.apply_edit(s0, "joint_qd", 0, [-1.7], joint_index=0))
+            ref_s0.assign(s0)
+            if dev.startswith("cuda"):
+                wp.capture_launch(step_ba_cap.graph)
+            else:
+                solver.step(s0, s1, None, None, dt)
+            ref_solver.step(ref_s0, ref_s1, None, None, dt)
+            np.testing.assert_allclose(s1.joint_q.numpy(), ref_s1.joint_q.numpy(), atol=1e-6)
+            np.testing.assert_allclose(s1.joint_qd.numpy(), ref_s1.joint_qd.numpy(), atol=1e-5)
+
+        class _RejectingStateSolver(newton.solvers.SolverBase):
+            def step(self, state_in, state_out, control, contacts, dt, **kwargs):
+                pass
+
+            def notify_state_changed(self, state):
+                raise RuntimeError("cannot sync state")
+
+        reject_solver = _RejectingStateSolver(model)
+        ws.viewer = SimpleNamespace(
+            is_paused=lambda: True,
+            _last_state=state,
+            _inspection_components={"control": replacement, "solver": reject_solver},
+        )
+        ws._bindings = ws._bindings_components = None
+        q_before = state.joint_q.numpy().copy()
+        body_q_before = state.body_q.numpy().copy()
+        self.assertFalse(ws.apply_edit(state, "joint_q", 1, [1.25], joint_index=1))
+        self.assertIn("cannot sync state", ws.message)
+        np.testing.assert_allclose(state.joint_q.numpy(), q_before)
+        np.testing.assert_allclose(state.body_q.numpy(), body_q_before)
 
 
 class TestCollisionInspector(unittest.TestCase):
@@ -1938,6 +3318,16 @@ class TestCollisionInspector(unittest.TestCase):
                 with patch.object(inspector, "read", wraps=inspector.read) as read:
                     inspector.shape_contacts(0)
                     read.assert_not_called()
+                saved_shape0 = contacts.rigid_contact_shape0.numpy().copy()
+                contacts.rigid_contact_shape0.assign(np.where(np.arange(len(saved_shape0)) == 0, -1, saved_shape0))
+                try:
+                    for k in [k for k in inspector.cache if k[0] == "label_points"]:
+                        inspector.cache.pop(k)
+                    self.assertTrue(np.isnan(inspector.label_points((("contact", 0),))[("contact", 0)]).all())
+                finally:
+                    contacts.rigid_contact_shape0.assign(saved_shape0)
+                    for k in [k for k in inspector.cache if k[0] == "label_points"]:
+                        inspector.cache.pop(k)
                 fields = {
                     name: (spec, start, count)
                     for _, name, _, spec, start, count in inspector.contact_fields(("contact", 0))
@@ -2027,6 +3417,36 @@ class TestCollisionInspector(unittest.TestCase):
                 self.assertTrue(np.any(high <= low))
 
 
+@requires("pyglet")
+class TestViewerRTXShortcuts(unittest.TestCase):
+    def test_repeated_frame_key_through_window_events(self) -> None:
+        """Frame the scene on every F press routed through ViewerRTX's window events."""
+        import_pyglet_window(shadow_window=False)
+        from pyglet.window import key
+
+        handlers = {}
+        window = SimpleNamespace(
+            event=lambda handler: handlers.setdefault(handler.__name__, handler), close=mock.Mock()
+        )
+        viewer = ViewerRTX.__new__(ViewerRTX)
+        viewer._window = window
+        viewer._keys_down = set()
+        gui = ViewerGui.__new__(ViewerGui)
+        gui._viewer, gui.ui, gui.workspace = viewer, None, None
+        gui._loading_splash_active = gui._frame_key_down = gui._follow_held = False
+        gui.frame_camera_on_model = mock.Mock()
+        viewer.gui = gui
+        viewer._register_input_events()
+
+        handlers["on_key_press"](key.F, 0)
+        handlers["on_key_press"](key.F, 0)  # OS key repeat frames once.
+        self.assertEqual(gui.frame_camera_on_model.call_count, 1)
+        handlers["on_key_release"](key.F, 0)
+        self.assertNotIn(key.F, viewer._keys_down)
+        handlers["on_key_press"](key.F, 0)
+        self.assertEqual(gui.frame_camera_on_model.call_count, 2)
+
+
 @requires("imgui_bundle", "pyglet")
 class TestViewerGizmos(unittest.TestCase):
     def setUp(self) -> None:
@@ -2056,6 +3476,7 @@ class TestViewerGizmos(unittest.TestCase):
         self.gui.workspace_enabled = False
         self.gui._frame_key_down = self.gui._follow_held = self.gui._follow_latched = False
         self.gui._follow_center = None
+        self.gui._selection_press = None
         self.gui.ui = ImGuiBackend.__new__(ImGuiBackend)
         self.gui.ui._context = context
         self.gui.ui.is_available = True

@@ -777,6 +777,7 @@ class ViewerBase(ABC):
         layer._last_contacts = None
         layer._last_contact_state = None
         layer._last_contact_observables = None
+        layer._last_observables = None
 
         # Contact disks (for contact mode color-coding)
         layer._contact_disk_mesh: str | None = None
@@ -923,8 +924,9 @@ class ViewerBase(ABC):
     def set_solver(self, solver: SolverBase | None) -> None:
         """Set the solver inspected in the active viewer layer.
 
-        Call after :meth:`set_model`. Retains a reference for ViewerGL settings
-        and resource inspection; the application still owns and steps the solver.
+        Call after :meth:`set_model`. Retains a reference for ViewerGL settings,
+        resource inspection, and solver-synchronized runtime edits; the
+        application still owns and steps the solver.
         Other components are unchanged. Clearing or replacing the Model clears
         this reference. Other backends retain it without adding a GUI.
 
@@ -1939,6 +1941,43 @@ class ViewerBase(ABC):
                 self.log_arrows(self._qualify("/contacts/forces"), None, None, None)
         else:
             self.log_arrows(self._qualify("/contacts/forces"), None, None, None)
+
+    def log_observables(self, observables: newton.solvers.SolverBase.Observables | None) -> None:
+        """Log solver observables for inspection in the active viewer layer.
+
+        Call after :meth:`set_model` (typically between :meth:`begin_frame` and
+        :meth:`end_frame`) to expose requested solver observables in the
+        :class:`ViewerGL` inspector without requiring :meth:`log_contacts`.
+        Retains a reference without copying device buffers unless frame history
+        recording is enabled. Passing ``None`` clears previously logged
+        observables for this layer; clearing or replacing the Model also clears
+        this reference. Other viewer backends retain the reference without
+        adding a GUI.
+
+        Args:
+            observables: Solver observables belonging to the active Model, or
+                ``None`` to clear them. See :ref:`solver_observables`.
+
+        Raises:
+            RuntimeError: If no model has been set on the active layer.
+            TypeError: If ``observables`` is neither ``None`` nor a
+                :class:`~newton.solvers.SolverBase.Observables` instance.
+            ValueError: If ``observables`` belongs to another Model.
+
+        .. experimental::
+            ``ViewerBase.log_observables`` and the solver observable API may
+            change without the normal deprecation period.
+        """
+        if self.model is None:
+            raise RuntimeError("Call set_model() before logging solver observables.")
+        if observables is not None:
+            from ..solvers.solver import SolverBase  # noqa: PLC0415
+
+            if not isinstance(observables, SolverBase.Observables):
+                raise TypeError("observables must be a SolverBase.Observables instance or None.")
+            if observables.model is not self.model:
+                raise ValueError("Solver observables must belong to the viewer's model.")
+        self._last_observables = observables
 
     def log_hydro_contact_surface(
         self,

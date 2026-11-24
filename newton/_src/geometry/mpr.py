@@ -587,6 +587,8 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None, depth_certif
             translation = wp.dot(support.BtoA, direction) + 1e-5 * tolerance
             gradient = direction
             accepted = bool(False)
+            ray_plane_valid = bool(False)
+            ray_plane_depth = float(0.0)
             for _ray_step in range(30):
                 separated, pa, pb, separating_normal, gap = solve_gjk(
                     geom_a,
@@ -632,10 +634,14 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None, depth_certif
                 # agree tangentially within float32 roundoff.
                 ray_depth = wp.dot(physical_delta, direction)
                 tangent_error = physical_delta - ray_depth * direction
-                ray_certificate = certificate_support(
-                    geom_a, geom_b, direction, orientation_b, position_b, 0.0, data_provider
-                )
-                ray_gap = wp.dot(ray_certificate.BtoA, direction) - ray_depth
+                # The direction and physical shapes stay fixed along this ray.
+                if not ray_plane_valid:
+                    ray_certificate = certificate_support(
+                        geom_a, geom_b, direction, orientation_b, position_b, 0.0, data_provider
+                    )
+                    ray_plane_depth = wp.dot(ray_certificate.BtoA, direction)
+                    ray_plane_valid = True
+                ray_gap = ray_plane_depth - ray_depth
                 roundoff = 2.0e-7 * tolerance
                 if wp.length(tangent_error) <= roundoff and wp.abs(ray_gap) <= COLLIDE_EPSILON + roundoff:
                     candidate = direction

@@ -11,9 +11,10 @@ if TYPE_CHECKING:
 
 import math
 import unittest
+from contextlib import nullcontext
 from itertools import product
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 import warp as wp
@@ -545,6 +546,26 @@ class TestViewerCameraOrbit(unittest.TestCase):
                         points = np.vstack(points)
                         np.testing.assert_allclose(bounds, (points.min(0), points.max(0)), atol=2e-5)
                         self._frame(viewer, points)
+
+    def test_clear_model_keeps_camera_unless_switching_examples(self) -> None:
+        """Frame a replacement Model only when the example browser switches examples."""
+        viewer = _make_headless_viewer_gl_or_skip(self)
+        self.addCleanup(viewer.close)
+        gui = Mock(_frame_camera_pending=False)
+        viewer.gui = gui
+        self.addCleanup(setattr, viewer, "gui", None)
+        model = _build_viewer_model(1.0)
+        viewer.set_model(model)
+        # A custom loop and the browser's Reset keep the navigated view.
+        for reset in (False, True):
+            with viewer._preserve_display_options() if reset else nullcontext():
+                viewer.clear_model()
+                viewer.set_model(model)
+            self.assertFalse(gui._frame_camera_pending)
+        with viewer._preserve_display_options(switching=True):
+            viewer.clear_model()
+            viewer.set_model(model)
+        self.assertTrue(gui._frame_camera_pending)
 
     def test_frame_gl_geometry_in_display_units(self) -> None:
         """Framing follows rendered geometry when display and simulation units differ."""

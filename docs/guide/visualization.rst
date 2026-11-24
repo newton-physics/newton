@@ -430,7 +430,7 @@ All viewer backends inherit from :class:`~newton.viewer.ViewerBase` and share a 
 
 - :meth:`~newton.viewer.ViewerBase.set_model` — assign a :class:`~newton.Model` (use :meth:`~newton.viewer.ViewerBase.set_visible_worlds` afterwards to limit the number of rendered worlds)
 - :meth:`~newton.viewer.ViewerBase.set_control` — optionally expose Control inputs to the inspector
-- :meth:`~newton.viewer.ViewerBase.set_solver` — optionally expose solver settings and resources
+- :meth:`~newton.viewer.ViewerBase.set_solver` — optionally expose :class:`~newton.solvers.SolverBase` capabilities, resources, and solver-synchronized runtime edits
 - :meth:`~newton.viewer.ViewerBase.set_collision_pipeline` — optionally expose broadphase and narrowphase diagnostics
 - :meth:`~newton.viewer.ViewerBase.begin_frame` — start a new frame with the current simulation time
 - :meth:`~newton.viewer.ViewerBase.log_state` — update the viewer with the current :class:`~newton.State` (body transforms, particle positions, etc.)
@@ -506,6 +506,7 @@ outstanding async render.
 - :meth:`~newton.viewer.ViewerBase.log_lines` — draw line segments (e.g. rays, normals, force vectors)
 - :meth:`~newton.viewer.ViewerBase.log_points` — draw a point cloud (e.g. contact locations, particle positions)
 - :meth:`~newton.viewer.ViewerBase.log_contacts` — visualize :class:`~newton.Contacts` as normal lines at contact points
+- :meth:`~newton.viewer.ViewerBase.log_observables` — expose :ref:`solver observables <solver_observables>` to the inspection workspace without requiring :meth:`~newton.viewer.ViewerBase.log_contacts`
 - :meth:`~newton.viewer.ViewerBase.log_gizmo` — display a transform gizmo (position + orientation axes)
 - :meth:`~newton.viewer.ViewerBase.log_scalar` / :meth:`~newton.viewer.ViewerBase.log_array` — display numeric diagnostics as scalar plots or array visualizations; see :ref:`viewer-live-plots`
 - :meth:`~newton.viewer.ViewerBase.log_image` — display a single or batched image in a
@@ -572,10 +573,16 @@ Interactive inspection in ViewerGL
 ViewerGL presents an explorer, a central viewport, State / Control / Model
 properties, and a timeline of recorded frames.
 The explorer includes worlds, articulations, joints, bodies, shapes, deformable
-objects, custom attribute frequencies, and available geometry resources.
+objects (surfaces, volumes, curves, and skinned visual meshes), tendons,
+particle-body attachments, mimic constraints, actuators and batteries, custom
+attribute frequencies, and available geometry and acceleration resources.
 Empty property categories are hidden. Custom attributes use their registered
 frequency, dtype, namespace, and reference metadata rather than solver-specific
-field-name rules.
+field-name rules. :ref:`Solver observables <solver_observables>` logged via
+:meth:`~newton.viewer.ViewerBase.log_observables` or
+:meth:`~newton.viewer.ViewerBase.log_contacts` appear read-only in the
+**Solver** tab (alongside unrequested supported kinds when a solver is bound)
+as well as on matching selections in **State** and **Contacts**.
 
 Select items in the explorer or viewport; Ctrl-click adds or removes selections.
 Press **F** to frame the selection, hold **F** to follow it, or pin following
@@ -615,19 +622,20 @@ Inspecting a custom simulation loop
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The existing ``set_model`` / ``log_state`` / ``log_contacts`` loop remains
-valid. To expose inputs, solver settings, and collision metadata to the
+valid. To expose inputs, solver capabilities, and collision metadata to the
 inspector, call :meth:`~newton.viewer.ViewerBase.set_control`,
 :meth:`~newton.viewer.ViewerBase.set_solver`, and
 :meth:`~newton.viewer.ViewerBase.set_collision_pipeline` after ``set_model``.
-Each setter is optional and changes only its component. State and Contacts
-inspection uses the objects supplied through ``log_state`` and ``log_contacts``:
+Each setter is optional and changes only its component. State, Contacts, and
+solver observable inspection uses the objects supplied through ``log_state``,
+``log_contacts``, and :meth:`~newton.viewer.ViewerBase.log_observables`:
 
 .. experimental::
-   ``ViewerBase.set_control``, ``ViewerBase.set_solver``, and
-   ``ViewerBase.set_collision_pipeline`` are experimental inspection methods
-   and may change without the normal deprecation period. The property editor
-   currently uses them in ViewerGL. They do not enable the GUI in ViewerRTX,
-   Viser, or other backends.
+   ``ViewerBase.set_control``, ``ViewerBase.set_solver``,
+   ``ViewerBase.set_collision_pipeline``, and ``ViewerBase.log_observables``
+   are experimental inspection methods and may change without the normal
+   deprecation period. The property editor currently uses them in ViewerGL.
+   They do not enable the GUI in ViewerRTX, Viser, or other backends.
 
 .. code-block:: python
 
@@ -689,9 +697,13 @@ Editing, history, and rebuilding
 * Control inputs can be changed while running or paused at the live frame.
   Edits update existing arrays so captured simulation graphs retain their
   bindings. Reset Control restores the values first seen by the inspector.
-* Joint State coordinates and velocities can be edited only while paused at
-  the latest frame. A joint mask limits forward kinematics to the edited
-  branch. Unsupported or read-only properties remain visibly locked.
+* Joint State coordinates and velocities and authored body shape variants can
+  be edited only while paused at the latest frame; body motion flags and body
+  shape variants also require a compatible solver bound via ``set_solver``. A
+  joint mask limits forward kinematics to the edited branch, bound solver
+  state caches are invalidated on joint edits, and rejected variant switches
+  roll back cleanly while preserving pre-existing live edits. Unsupported or
+  read-only properties remain visibly locked.
 * Recorded historical frames are display snapshots. They are read-only;
   playback reaches the latest frame before live simulation resumes. They
   are not solver checkpoints and cannot restart simulation from an arbitrary
@@ -699,12 +711,14 @@ Editing, history, and rebuilding
 * Recording is opt-in: enable **Record history** in the timeline to retain
   display snapshots. Between ``begin_frame`` and ``end_frame``, the viewer
   copies the arrays the application passes to ``log_state``, ``log_contacts``
-  (including solver observables), ``log_points``, and ``log_lines`` to the host,
+  (including solver observables), ``log_observables``, ``log_points``, and
+  ``log_lines`` to the host,
   together with the Control from ``set_control``. Frames are keyed by the time
   passed to ``begin_frame``, so a paused loop that renders the same time again
   records nothing new. Recording is bounded to 128 MiB and 60,000 display
   frames; a frame above 64 MiB stops recording before its arrays are
-  transferred. With recording off, no snapshots are taken.
+  transferred. With recording off, no snapshots are taken and the timeline
+  collapses to a compact transport bar with live frame and time readouts.
 * While the timeline shows a recorded frame, the same logging calls display
   that frame's data instead of their arguments, matched by call order within
   the frame and by name for points and lines; the application's arrays are not
@@ -788,7 +802,12 @@ Use an image library to save the captured pixels, for example:
 
 UI overlays are excluded by default. ``ViewerGL`` supports
 ``get_frame(render_ui=True)`` to include them; ``ViewerRTX`` does not support
-that option. RTX also does not support capturing fullscreen images displayed
+that option. In a visible ``ViewerGL`` window with the default inspection
+workspace, the scene is rendered into the docked viewport, so ``get_frame()``
+keeps the window size but the scene covers only the viewport rectangle and the
+rest is panel background. To record the full window, set
+``viewer.show_ui = False`` or create the viewer with ``legacy_gui=True``.
+Headless rendering is unaffected. RTX also does not support capturing fullscreen images displayed
 with ``log_image(..., fullscreen=True)``: ``get_frame()`` raises
 ``NotImplementedError`` for those frames. Capture resumes after the next scene
 render. RTX capture uses the fixed render resolution and reads through CPU

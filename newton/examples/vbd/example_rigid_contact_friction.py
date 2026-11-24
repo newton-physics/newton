@@ -128,9 +128,15 @@ class Example:
         self.model = builder.finalize()
         self.solver = newton.solvers.SolverVBD(self.model, iterations=10)
         self.state_0, self.state_1 = self.model.state(), self.model.state()
+        self.contact_state = newton.State()
+        self.contact_state.body_q = wp.clone(self.state_0.body_q)
+        self.contact_state.body_qd = wp.clone(self.state_0.body_qd)
         self.control = self.model.control()
         self.collision_pipeline = newton.CollisionPipeline(self.model)
         self.contacts = self.collision_pipeline.contacts()
+        self.solver_observables = self.solver.observables(
+            contacts=self.contacts, kinds={self.solver.ObservableKind.CONTACT_F}
+        )
         self.push = wp.zeros(self.model.body_count, dtype=wp.spatial_vector)
         self.viewer.set_model(self.model)
         self.viewer.set_camera(wp.vec3(1.4, -3.3, 2.5), -34.0, 120.0)
@@ -165,12 +171,23 @@ class Example:
         self.max_hold_displacement = np.zeros(2)
 
     def simulate(self):
-        for _ in range(self.sim_substeps):
+        for substep in range(self.sim_substeps):
             self.state_0.clear_forces()
             wp.copy(self.state_0.body_f, self.push)
             self.viewer.apply_forces(self.state_0)
             self.collision_pipeline.collide(self.state_0, self.contacts)
-            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
+            last_substep = substep == self.sim_substeps - 1
+            if last_substep:
+                wp.copy(self.contact_state.body_q, self.state_0.body_q)
+                wp.copy(self.contact_state.body_qd, self.state_0.body_qd)
+            self.solver.step(
+                self.state_0,
+                self.state_1,
+                self.control,
+                self.contacts,
+                self.sim_dt,
+                observables=self.solver_observables if last_substep else None,
+            )
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
@@ -197,6 +214,7 @@ class Example:
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
+        self.viewer.log_contacts(self.contacts, self.contact_state, observables=self.solver_observables)
         self.viewer.log_lines("test_groups", self.lane_starts, self.lane_ends, (0.35, 0.4, 0.45), width=0.003)
         body_q = self.state_0.body_q.numpy()
         _, travel = self._reference()

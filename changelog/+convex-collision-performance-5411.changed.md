@@ -1,0 +1,1 @@
+Reduce convex collision overhead on CUDA by packing dense GJK/MPR batches, resetting narrow-phase counters in the shape-bounds launch, caching MPR support planes, and simplifying GJK simplex bookkeeping. Large scenes of tetrahedral convex hulls also use tighter bounds and skip clearly separated pairs. No API or configuration changes are required.

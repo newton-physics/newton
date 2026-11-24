@@ -282,6 +282,7 @@ class BvhResources:
         if not (
             self.model.bvh_shapes
             or self.model.bvh_particles
+            or self.model.optix_shapes
             or self.model._mesh_keep_alive
             or self.model.heightfield_meshes
         ):
@@ -297,6 +298,8 @@ class BvhResources:
                 key = ("bvh", name)
                 self.entries[key] = BvhResource(self.model, attr, "Raycast and sensor queries")
                 self._node(tree, key, label, self.root)
+        if self.model.optix_shapes is not None:
+            self._node(tree, ("bvh_optix", 0), "OptiX shape queries", self.root)
         count = len(self.model._mesh_keep_alive) + len(self.model.heightfield_meshes)
         if count:
             self._node(tree, self.meshes, f"Mesh BVHs · {count:,}", self.root)
@@ -502,6 +505,25 @@ class BvhResources:
             ui.text_wrapped(
                 "Existing query and collision acceleration structures. Select a BVH to inspect its primitive bounds."
             )
+            return
+        if key[0] == "bvh_optix":
+            optix = self.model.optix_shapes
+            if optix is None:
+                w.text_value("Status", "Unavailable")
+                return
+            with w.group("OptiX acceleration") as opened:
+                if opened:
+                    w.text_value("Use", "Raycast and sensor queries")
+                    w.text_value("Backend", "OptiX")
+                    w.number("World count", optix.world_count, integer=True)
+                    w.number("World grid", optix.grid, integer=True)
+                    w.number("Cell half-extent", optix.extent, unit="m")
+                    w.number("Instances", len(optix.instance_shapes), integer=True)
+                    w.number("Geometry accels", len(optix.geometry), integer=True)
+                    w.number("Global planes", len(optix.planes), integer=True)
+                    w.boolean("Has global instances", optix.has_global_instances)
+                    if optix.out_of_cell is not None:
+                        w.boolean("Out of cell", bool(int(ws.read(optix, "out_of_cell", 0, live=True)[0])))
             return
         entry = self.entries[key]
         resource = entry.get()

@@ -709,7 +709,7 @@ class ViewerGui:
         from pyglet.window import mouse
 
         if button == mouse.LEFT:
-            press = getattr(self, "_selection_press", None)
+            press = self._selection_press
             self._selection_press = None
             if press is not None and not self.should_ignore_mouse_input():
                 px, py, convert, shape, toggle = press
@@ -753,7 +753,7 @@ class ViewerGui:
         """Handle mouse drag: middle-click orbit/pan/dolly, left-click look, right-click pick."""
         from pyglet.window import key, mouse
 
-        press = getattr(self, "_selection_press", None)
+        press = self._selection_press
         if press is not None:
             if buttons & mouse.LEFT and (x - press[0]) ** 2 + (y - press[1]) ** 2 <= 16:
                 return

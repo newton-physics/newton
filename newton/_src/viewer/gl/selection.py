@@ -127,7 +127,7 @@ class SelectionSurfaceShader(ShaderGL):
             gl.glUniform2f(loc["viewport_size"], *renderer._get_scene_viewport()[2:])
             gl.glUniform1i(loc["oit_enabled"], oit)
             gl.glUniform1f(loc["inv_reference"], 1.0 / max(renderer.camera.pivot_distance, 1e-6))
-            gl.glUniform1f(loc["pixel_scale"], getattr(renderer, "_selection_scale", 1.0))
+            gl.glUniform1f(loc["pixel_scale"], renderer._selection_scale)
             gl.glEnable(gl.GL_POLYGON_OFFSET_FILL)
             gl.glPolygonOffset(-1.0, -1.0)
             for mesh in meshes:
@@ -349,7 +349,7 @@ class SelectionOutline:
         gl.glBlendEquation(gl.GL_FUNC_ADD)
         gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
         gl.glUseProgram(self.outline_shader.id)
-        gl.glUniform1f(self.radius, 2.0 * getattr(renderer, "_selection_scale", 1.0))
+        gl.glUniform1f(self.radius, 2.0 * renderer._selection_scale)
         gl.glActiveTexture(gl.GL_TEXTURE0)
         gl.glBindTexture(gl.GL_TEXTURE_2D, self.texture)
         gl.glBindVertexArray(renderer._frame_vao)

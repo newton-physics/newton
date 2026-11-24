@@ -434,8 +434,9 @@ The bit layout is:
      - Newton generated more rigid contacts than ``contacts.rigid_contact_max``.
    * - 17
      - :attr:`~newton.solvers.SolverMuJoCo.OverflowBits.SOLVER_NCONMAX`
-     - Newton generated more rigid contacts than the solver's shared
-       ``naconmax`` buffer can consume.
+     - Newton contacts exceeded the solver's shared ``naconmax`` capacity.
+       When the solver packs eligible rows, expired thin-wall recovery
+       contacts do not count toward this limit.
 
 The Newton flags describe shared contact buffers and are repeated in every
 world's mask when the global count exceeds capacity. They do not identify which
@@ -500,11 +501,16 @@ container, and pass it through the step:
    imu.update(state_out, observables=observables)
    contact_sensor.update(state_in, contacts, observables=observables)
 
-The viewer follows the same pattern:
+The viewer follows the same pattern—pass ``observables`` to
+:meth:`~newton.viewer.ViewerBase.log_contacts` for contact rendering and
+inspection, or to :meth:`~newton.viewer.ViewerBase.log_observables` to expose
+requested observables in the inspection workspace without logging contacts:
 
 .. code-block:: python
 
    viewer.log_contacts(contacts, state_in, observables=observables)
+   # Or, when not logging contacts:
+   viewer.log_observables(observables)
 
 Substep scheduling
 ------------------

@@ -5,6 +5,12 @@ import warp as wp
 
 from ...geometry import ParticleFlags
 from ...geometry.kernels import triangle_closest_point_barycentric
+from ...geometry.sdf_planar_recovery import (
+    MeshRecoveryData,
+    active_recovery_contact,
+    empty_mesh_recovery,
+    recovery_step_depth,
+)
 from ...sim import Contacts, Model, State
 
 
@@ -284,6 +290,8 @@ def _eval_body_contact(
     rigid_contact_stiffness: wp.array[float],
     rigid_contact_damping: wp.array[float],
     rigid_contact_friction_scale: wp.array[float],
+    recovery: MeshRecoveryData,
+    contact_generation: wp.array[int],
     force_in_world_frame: bool,
     body_f: wp.array[wp.spatial_vector],
     tid: int,
@@ -347,6 +355,8 @@ def _eval_body_contact(
     bx_b = contact_point1[tid]
     r_a = wp.vec3(0.0)
     r_b = wp.vec3(0.0)
+    X_wb_a = wp.transform_identity()
+    X_wb_b = wp.transform_identity()
     if body_a >= 0:
         X_wb_a = body_q[body_a]
         X_com_a = body_com[body_a]
@@ -363,6 +373,13 @@ def _eval_body_contact(
 
     if d >= ka:
         return
+
+    if recovery.keys.shape[0] > 0:
+        slot = active_recovery_contact(recovery, contact_generation[0], shape_a, shape_b, X_wb_a, X_wb_b, -n)
+        if slot < -1:
+            return
+        if slot >= 0:
+            d = -recovery_step_depth(recovery.contacts[slot].thickness, -d)
 
     # compute contact point velocity
     bv_a = wp.vec3(0.0)
@@ -454,6 +471,8 @@ def eval_body_contact(
     rigid_contact_stiffness: wp.array[float],
     rigid_contact_damping: wp.array[float],
     rigid_contact_friction_scale: wp.array[float],
+    recovery: MeshRecoveryData,
+    contact_generation: wp.array[int],
     force_in_world_frame: bool,
     body_f: wp.array[wp.spatial_vector],
 ):
@@ -483,6 +502,8 @@ def eval_body_contact(
         rigid_contact_stiffness,
         rigid_contact_damping,
         rigid_contact_friction_scale,
+        recovery,
+        contact_generation,
         force_in_world_frame,
         body_f,
         tid,
@@ -572,6 +593,8 @@ def eval_body_contact_forces(
                 contacts.rigid_contact_stiffness,
                 contacts.rigid_contact_damping,
                 contacts.rigid_contact_friction,
+                contacts._mesh_recovery_contacts or empty_mesh_recovery(model.device.alias),
+                contacts.contact_generation,
                 force_in_world_frame,
             ],
             outputs=[body_f_out],

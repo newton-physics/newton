@@ -6,8 +6,10 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import fields as dataclass_fields
+from dataclasses import is_dataclass
 from enum import Enum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 import numpy as np
 import warp as wp
@@ -48,8 +50,11 @@ def _rigid_label_points(
     i, side = wp.tid()
     row = rows[i]
     a, b = shape0[row], shape1[row]
+    if a == b or a < 0 or b < 0:
+        output[i, side] = wp.vec3(wp.nan)
+        return
     world = shape_world[a] if shape_world[a] >= 0 else shape_world[b]
-    if a == b or (world >= 0 and visible_worlds and visible_worlds[world] == 0):
+    if world >= 0 and visible_worlds and visible_worlds[world] == 0:
         output[i, side] = wp.vec3(wp.nan)
         return
     shape = a if side == 0 else b
@@ -453,6 +458,19 @@ class CollisionInspector:
                 )
         ui.pop_id()
 
+    NON_PER_CONTACT_SUFFIXES: ClassVar[frozenset[str]] = frozenset(
+        {
+            "count",
+            "tids",
+            "new_indices",
+            "broken_indices",
+            "new_count",
+            "broken_count",
+            "match_generation",
+            "max",
+        }
+    )
+
     def contact_fields(self, key: TreeKey) -> Iterator[tuple[str | None, str, Any, Model.AttributeSpec, int, int]]:
         """Yield exact row slices, honoring registered frequencies and row widths."""
         kind, index = key
@@ -473,18 +491,33 @@ class CollisionInspector:
                     if timeline is None or name not in timeline.frames[timeline.index].contacts:
                         continue
                 suffix = name[len(prefix) :]
-                if suffix in ("count", "tids") or suffix.startswith("diff_"):
+                if suffix in self.NON_PER_CONTACT_SUFFIXES or suffix.startswith("diff_"):
                     continue
                 yield None, name, value, Model.AttributeSpec(frequency, references=references.get(suffix)), index, 1
-        observables = getattr(self.workspace.viewer, "_last_contact_observables", None)
+        logged_obs = getattr(self.workspace, "logged_observables", None)
+        observables = (
+            logged_obs()
+            if callable(logged_obs)
+            else (
+                getattr(self.workspace.viewer, "_last_observables", None)
+                or getattr(self.workspace.viewer, "_last_contact_observables", None)
+            )
+        )
         if observables is not None:
-            for name, field in observables._observable_fields().values():
+            live = self.workspace._at_live_frame()
+            for kind, (name, field) in observables._observable_fields().items():
+                if kind not in observables.kinds:
+                    continue
+                obs_contacts = observables.contacts_for_kind(kind)
+                if live and obs_contacts not in (None, self.contacts):
+                    continue
                 value = getattr(observables, name, None)
                 if value is None or field.frequency not in (frequency, Frequency.CONTACT):
                     continue
-                row = index + (
-                    self.contacts.rigid_contact_max if not rigid and field.frequency == Frequency.CONTACT else 0
-                )
+                stride = (obs_contacts or self.contacts).rigid_contact_max
+                row = index + (stride if not rigid and field.frequency == Frequency.CONTACT else 0)
+                if row >= len(value):
+                    continue
                 yield "Solver observables", name, value, Model.AttributeSpec(field.frequency), row, 1
         if not self.workspace._at_live_frame():
             return
@@ -548,15 +581,28 @@ class CollisionInspector:
             ui.text_wrapped(
                 "Buffers describe the last collision pass; inspecting them does not run collision detection."
             )
-            if getattr(ws.bindings.solver, "use_mujoco_contacts", False):
-                ui.text_wrapped("The solver uses internal contacts. This Newton pipeline may not have been executed.")
             bvhs = ws.tree.resources.bvhs
             if bvhs.root in ws.tree.labels and w.button("Inspect BVHs", small=True):
                 ws.navigate(bvhs.root)
                 return
             for name, value in vars(owner).items():
-                if not name.startswith("_") and isinstance(value, (str, int, float, bool, Enum, np.generic)):
+                if name.startswith("_"):
+                    continue
+                if isinstance(value, (str, int, float, bool, Enum, np.generic)):
                     self._field(inspector, name, value.value if isinstance(value, Enum) else value)
+                elif is_dataclass(value) and not isinstance(value, type):
+                    with w.group(name.replace("_", " ").capitalize(), default_open=False) as show_cfg:
+                        if show_cfg:
+                            for dc_field in dataclass_fields(value):
+                                dc_val = getattr(value, dc_field.name)
+                                if isinstance(dc_val, (str, int, float, bool, Enum, np.generic)):
+                                    self._field(
+                                        inspector,
+                                        dc_field.name,
+                                        dc_val.value if isinstance(dc_val, Enum) else dc_val,
+                                    )
+                                elif isinstance(dc_val, (tuple, list)) and all(isinstance(v, str) for v in dc_val):
+                                    w.text_value(dc_field.name, ", ".join(dc_val) if dc_val else "None")
             if not ws.viewer.is_paused() or not ws._at_live_frame():
                 return
             with w.group("Last collision pass") as opened:
@@ -597,6 +643,31 @@ class CollisionInspector:
             w.text_value(label, f"{count:,} / {cap:,}")
             if raw > cap:
                 ui.text_wrapped(f"{label}: buffer overflow ({raw:,} requested).")
+        if self.contacts.contact_matching_mode != "disabled":
+            w.text_value("Contact matching", self.contacts.contact_matching_mode)
+        if self.contacts.rigid_contact_body_pair_reduced:
+            w.boolean("Body-pair reduced", True)
+        if self.contacts._reduction_overflow is not None and ws._at_live_frame():
+            overflow = int(self.read(self.contacts, "_reduction_overflow", 0)[0])
+            if overflow > 0:
+                ui.text_wrapped(f"Body-pair reduction overflow ({overflow:,}).")
+        if self.contacts.contact_report and ws._at_live_frame():
+            if self.contacts.rigid_contact_new_count is not None:
+                w.number("New contacts", int(self.read(self.contacts, "rigid_contact_new_count", 0)[0]), integer=True)
+            if self.contacts.rigid_contact_broken_count is not None:
+                w.number(
+                    "Broken contacts", int(self.read(self.contacts, "rigid_contact_broken_count", 0)[0]), integer=True
+                )
+        if self.contacts.soft_self_contact_data is not None and ws._at_live_frame():
+            data = self.contacts.soft_self_contact_data
+            if getattr(data, "vertex_triangle_contact_count", None) is not None:
+                vt_count = int(data.vertex_triangle_contact_count.numpy().sum())
+                ee_count = (
+                    int(data.edge_edge_contact_count.numpy().sum())
+                    if getattr(data, "edge_edge_contact_count", None) is not None
+                    else 0
+                )
+                w.text_value("Soft self-contacts", f"{vt_count + ee_count:,} ({vt_count:,} VT, {ee_count:,} EE)")
         if not self.pipelines:
             ui.text_wrapped("No Newton CollisionPipeline found on this example, model, or solver.")
 

@@ -838,6 +838,16 @@ def _locate_cell(sdf: TextureSDFData, f: wp.vec3) -> _CellLookup:
 
 
 @wp.func
+def _texture_sdf_cell_radius(sdf: TextureSDFData, point: wp.vec3) -> float:
+    """Return half the diagonal of the interpolation cell containing the point."""
+    f = wp.cw_mul(point - sdf.sdf_box_lower, sdf.inv_sdf_dx)
+    cell = _locate_cell(sdf, f)
+    if cell.start_slot >= SLOT_LINEAR:
+        return sdf.voxel_radius * sdf.subgrid_size_f
+    return sdf.voxel_radius
+
+
+@wp.func
 def _locate_cell_pair(sdf: TextureSDFData, f0: wp.vec3, f1: wp.vec3) -> tuple[_CellLookup, _CellLookup]:
     """Resolve two cells while sharing a common subgrid-slot lookup."""
     loc0 = _locate_cell_coords(sdf, f0)
@@ -1561,26 +1571,6 @@ def _texture_sample_sdf_hw_pair(
 
 
 @wp.func
-def _texture_sample_sdf_hw_pair_paired(
-    sdf: TextureSDFData,
-    local_pos0: wp.vec3,
-    local_pos1: wp.vec3,
-) -> wp.vec2f:
-    """Sample two positions from an X-paired SDF texture."""
-    return _texture_sample_sdf_hw_pair_variant(sdf, local_pos0, local_pos1, True)
-
-
-@wp.func
-def _texture_sample_sdf_hw_pair_scalar(
-    sdf: TextureSDFData,
-    local_pos0: wp.vec3,
-    local_pos1: wp.vec3,
-) -> wp.vec2f:
-    """Sample two positions from a scalar SDF texture."""
-    return _texture_sample_sdf_hw_pair_variant(sdf, local_pos0, local_pos1, False)
-
-
-@wp.func
 def _texture_sample_sdf_hw_clamped_variant(
     sdf: TextureSDFData,
     clamped: wp.vec3,
@@ -1641,26 +1631,6 @@ def _texture_sample_sdf_hw_clamped(
 
 
 @wp.func
-def _texture_sample_sdf_hw_clamped_paired(
-    sdf: TextureSDFData,
-    clamped: wp.vec3,
-    diff_mag: float,
-) -> float:
-    """Sample a clamped position from an X-paired SDF texture."""
-    return _texture_sample_sdf_hw_clamped_variant(sdf, clamped, diff_mag, True)
-
-
-@wp.func
-def _texture_sample_sdf_hw_clamped_scalar(
-    sdf: TextureSDFData,
-    clamped: wp.vec3,
-    diff_mag: float,
-) -> float:
-    """Sample a clamped position from a scalar SDF texture."""
-    return _texture_sample_sdf_hw_clamped_variant(sdf, clamped, diff_mag, False)
-
-
-@wp.func
 def _texture_sample_sdf_hw_variant(
     sdf: TextureSDFData,
     local_pos: wp.vec3,
@@ -1705,24 +1675,6 @@ def texture_sample_sdf_hw(
 ) -> float:
     """Sample an SDF using its stored texture layout."""
     return _texture_sample_sdf_hw_variant(sdf, local_pos, sdf.paired_samples)
-
-
-@wp.func
-def _texture_sample_sdf_hw_paired(
-    sdf: TextureSDFData,
-    local_pos: wp.vec3,
-) -> float:
-    """Sample an X-paired SDF with hardware interpolation."""
-    return _texture_sample_sdf_hw_variant(sdf, local_pos, True)
-
-
-@wp.func
-def _texture_sample_sdf_hw_scalar(
-    sdf: TextureSDFData,
-    local_pos: wp.vec3,
-) -> float:
-    """Sample a scalar SDF with hardware interpolation."""
-    return _texture_sample_sdf_hw_variant(sdf, local_pos, False)
 
 
 @wp.func
@@ -1936,24 +1888,6 @@ def texture_sample_sdf_grad_only_hw(
     return _texture_sample_sdf_grad_hw_impl(sdf, local_pos)
 
 
-@wp.func
-def _texture_sample_sdf_grad_only_hw_paired(
-    sdf: TextureSDFData,
-    local_pos: wp.vec3,
-) -> wp.vec3:
-    """Sample an X-paired SDF hardware gradient."""
-    return _texture_sample_sdf_grad_hw_impl_variant(sdf, local_pos, True)
-
-
-@wp.func
-def _texture_sample_sdf_grad_only_hw_scalar(
-    sdf: TextureSDFData,
-    local_pos: wp.vec3,
-) -> wp.vec3:
-    """Sample a scalar SDF hardware gradient."""
-    return _texture_sample_sdf_grad_hw_impl_variant(sdf, local_pos, False)
-
-
 # ============================================================================
 # Host-side Construction Functions
 # ============================================================================
@@ -2151,7 +2085,7 @@ def _build_sparse_sdf(
     # but .numpy() on the full array is fine — the sync is unavoidable because
     # we need num_required on the host to size the texture allocation.
     subgrid_addresses = wp.zeros(total_subgrids, dtype=wp.int32, device=device)
-    wp._src.utils.array_scan(subgrid_required, subgrid_addresses, inclusive=False)
+    wp.utils.array_scan(subgrid_required, subgrid_addresses, inclusive=False)
 
     required_np = subgrid_required.numpy()
     num_required = int(np.sum(required_np))
