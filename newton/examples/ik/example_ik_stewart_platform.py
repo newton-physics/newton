@@ -201,7 +201,6 @@ class Example:
 
         self.viewer.set_model(self.model)
         self.viewer.set_world_offsets((PLATFORM_SPACING, PLATFORM_SPACING, 0.0))
-        self.world_offsets = self.viewer.world_offsets
         side = PLATFORM_SPACING * math.ceil(math.sqrt(self.world_count))
         self.viewer.set_camera(
             pos=wp.vec3(0.3 * side + 0.4, -0.25 * side - 0.3, 0.1 * side + 0.4), pitch=-17.0, yaw=128.0
@@ -239,7 +238,7 @@ class Example:
 
         # The wave rolls diagonally across the field; its phase at each platform.
         self.wave_direction = np.array([math.cos(0.5), math.sin(0.5)])
-        self.wave_phase = 2.0 * math.pi * (self.world_offsets.numpy()[:, :2] @ self.wave_direction) / WAVE_LENGTH
+        self.wave_phase = 2.0 * math.pi * (self.viewer.world_offsets.numpy()[:, :2] @ self.wave_direction) / WAVE_LENGTH
         # The crest's axis: platforms tilt about it, toward the trough ahead.
         self.tilt_axis = np.array([-self.wave_direction[1], self.wave_direction[0]])
 
@@ -405,7 +404,7 @@ class Example:
                 self.loop_rod_anchors,
                 self.platform,
                 self.loop_platform_anchors,
-                self.world_offsets,
+                self.viewer.world_offsets,  # current: set_world_offsets() may replace it
             ],
             outputs=[self.loop_points, self.loop_gap],
         )
@@ -418,7 +417,7 @@ class Example:
                 self.platform,
                 self.target_positions,
                 self.target_rotations,
-                self.world_offsets,
+                self.viewer.world_offsets,
             ],
             outputs=[self.ghost_xforms, self.ghost_opacities, self.ghost_ring_starts, self.ghost_ring_ends],
         )

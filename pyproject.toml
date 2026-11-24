@@ -48,7 +48,7 @@ sim = [
 # Optional cuNLS backend for inverse kinematics (IKOptimizer.CUNLS): closed loops, mimic joints and
 # hard joint limits. Its Python package is built with CUDA 13 (R580 or newer driver).
 cunls = [
-    "pycunls-cu13>=0.4.3; sys_platform == 'linux' and (platform_machine == 'x86_64' or platform_machine == 'aarch64')",
+    "pycunls-cu13>=0.4.5; sys_platform == 'linux' and (platform_machine == 'x86_64' or platform_machine == 'aarch64')",
 ]
 
 # Optional ONNX policy inference for neural actuators and RL policy examples.
@@ -172,6 +172,11 @@ conflicts = [
     [
         { extra = "torch-cu12" },
         { extra = "torch-cu13" },
+    ],
+    # pycunls-cu13 needs the CUDA 13 toolkit wheels; PyTorch's CUDA 12 build pins CUDA 12 ones.
+    [
+        { extra = "cunls" },
+        { extra = "torch-cu12" },
     ],
 ]
 

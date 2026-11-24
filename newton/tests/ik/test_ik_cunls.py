@@ -129,6 +129,118 @@ def test_cunls_enforces_mimic_joints_with_seeds(test, device):
     np.testing.assert_allclose(q[:, 0], q1, atol=1e-3)
 
 
+def _build_arm(device, base_pose=None) -> newton.Model:
+    """Two-link planar arm (links 0.5 m about z). With ``base_pose``, its root joint's parent is a
+    body without an incoming joint at that pose (an external root parent), and an unrelated
+    unarticulated body follows the arm."""
+    builder = newton.ModelBuilder()
+    parent = -1 if base_pose is None else builder.add_link(xform=base_pose)
+    link1, link2 = builder.add_link(), builder.add_link()
+    z_axis = (0.0, 0.0, 1.0)
+    joints = [
+        builder.add_joint_revolute(parent, link1, axis=z_axis),
+        builder.add_joint_revolute(
+            link1, link2, parent_xform=wp.transform((0.5, 0.0, 0.0), wp.quat_identity()), axis=z_axis
+        ),
+    ]
+    builder.add_articulation(joints)
+    if base_pose is not None:
+        builder.add_link(xform=wp.transform((2.0, 0.0, 0.0), wp.quat_identity()))
+    return builder.finalize(device=device)
+
+
+def _tip_positions(model: newton.Model, joint_q: np.ndarray, link: int) -> np.ndarray:
+    """World position of the point 0.5 m along x of ``link`` for each row of ``joint_q``."""
+    return np.array(
+        [wp.transform_point(wp.transform(*b[link]), wp.vec3(0.5, 0.0, 0.0)) for b in _body_q_rows(model, joint_q)]
+    )
+
+
+def test_cunls_holds_external_root_parent(test, device):
+    """Solve an arm whose root joint hangs from a body outside the articulation at its body_q pose."""
+    base_pose = wp.transform((0.1, -0.2, 0.15), wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.4))
+    model = _build_arm(device, base_pose)
+    tip = 2  # bodies: base 0, link1 1, link2 2, unrelated 3
+    q_goal = np.tile(model.joint_q.numpy(), (2, 1))
+    q_goal[:, :2] = [[0.3, 0.8], [-0.5, 1.2]]
+    targets = _tip_positions(model, q_goal, tip).astype(np.float32)
+    objectives = [ik.IKObjectivePosition(tip, wp.vec3(0.5, 0.0, 0.0), wp.array(targets, dtype=wp.vec3, device=device))]
+    solver = ik.IKSolver(model, 2, objectives, optimizer=ik.IKOptimizer.CUNLS)
+    joint_q = wp.array(np.tile(model.joint_q.numpy(), (2, 1)) + 0.1, dtype=wp.float32, device=device)
+    solver.step(joint_q, joint_q, iterations=30)
+    np.testing.assert_allclose(_tip_positions(model, joint_q.numpy(), tip), targets, atol=1e-4)
+
+    unrelated = [ik.IKObjectivePosition(3, wp.vec3(), wp.zeros(1, dtype=wp.vec3, device=device))]
+    with test.assertRaisesRegex(ValueError, "objective link 3"):
+        ik.IKSolver(model, 1, unrelated, optimizer=ik.IKOptimizer.CUNLS)
+
+
+def test_cunls_costs_use_current_targets(test, device):
+    """Evaluate costs against the objectives' current targets, before any step and after a change."""
+    model = _build_arm(device)
+    objective = ik.IKObjectivePosition(
+        1, wp.vec3(0.5, 0.0, 0.0), wp.array([[1.0, 0.0, 0.0]], dtype=wp.vec3, device=device)
+    )
+    optimizer = ik.IKOptimizerCuNLS(model, 1, [objective])
+    joint_q = wp.array([[0.0, 0.5 * math.pi]], dtype=wp.float32, device=device)  # tip at (0.5, 0.5, 0)
+    np.testing.assert_allclose(optimizer.compute_costs(joint_q).numpy(), [0.5**2 + 0.5**2], rtol=1e-5)
+    objective.set_target_positions(wp.array([[0.5, 0.5, 0.0]], dtype=wp.vec3, device=device))
+    np.testing.assert_allclose(optimizer.compute_costs(joint_q).numpy(), [0.0], atol=1e-10)
+
+
+def test_cunls_step_captured_right_after_construction(test, device):
+    """Capture step() in a CUDA graph right after construction (the examples' idiom) and replay it
+    for a new target."""
+    model = _build_arm(device)
+    targets = np.array([[0.6, 0.5, 0.0]], dtype=np.float32)
+    objective = ik.IKObjectivePosition(1, wp.vec3(0.5, 0.0, 0.0), wp.array(targets, dtype=wp.vec3, device=device))
+    solver = ik.IKSolver(model, 1, [objective], optimizer=ik.IKOptimizer.CUNLS)
+    joint_q = wp.array([[0.2, 0.4]], dtype=wp.float32, device=device)
+    with wp.ScopedCapture(device=device) as capture:
+        solver.step(joint_q, joint_q, iterations=20)
+    wp.capture_launch(capture.graph)
+    np.testing.assert_allclose(_tip_positions(model, joint_q.numpy(), 1), targets, atol=1e-4)
+    targets = np.array([[-0.3, 0.7, 0.0]], dtype=np.float32)
+    objective.set_target_positions(wp.array(targets, dtype=wp.vec3, device=device))
+    wp.capture_launch(capture.graph)
+    np.testing.assert_allclose(_tip_positions(model, joint_q.numpy(), 1), targets, atol=1e-4)
+
+
+def test_cunls_rejects_bounded_loop_joint(test, device):
+    """Reject joint limits on a loop-closing joint, which cuNLS cannot bound."""
+    model, loop = _build_four_bar(device)
+    lower, upper = model.joint_limit_lower.numpy(), model.joint_limit_upper.numpy()
+    dof = model.joint_qd_start.numpy()[loop]
+    lower[dof], upper[dof] = -0.5, 0.5
+    limit = ik.IKObjectiveJointLimit(wp.array(lower, device=device), wp.array(upper, device=device))
+    position = ik.IKObjectivePosition(1, wp.vec3(), wp.zeros(1, dtype=wp.vec3, device=device))
+    with test.assertRaisesRegex(ValueError, f"loop-closing joint {loop}"):
+        ik.IKSolver(model, 1, [position, limit], optimizer=ik.IKOptimizer.CUNLS)
+
+
+def test_cunls_raises_on_infeasible_constraints(test, device):
+    """Raise instead of returning a configuration that violates its mimic constraint."""
+    builder = newton.ModelBuilder()
+    link1, link2 = builder.add_link(), builder.add_link()
+    z_axis = (0.0, 0.0, 1.0)
+    joint1 = builder.add_joint_revolute(-1, link1, axis=z_axis)
+    joint2 = builder.add_joint_revolute(
+        link1, link2, parent_xform=wp.transform((0.5, 0.0, 0.0), wp.quat_identity()), axis=z_axis
+    )
+    builder.add_articulation([joint1, joint2])
+    builder.set_joint_mimic(joint2, joint1, coeffs=(0.1, 2.0))  # q2 = 0.1 + 2 q1
+    model = builder.finalize(device=device)
+    zeros = wp.zeros(model.joint_dof_count, dtype=wp.float32, device=device)  # bounds q1 = q2 = 0
+    objectives = [
+        ik.IKObjectivePosition(link2, wp.vec3(0.5, 0.0, 0.0), wp.zeros(1, dtype=wp.vec3, device=device)),
+        ik.IKObjectiveJointLimit(zeros, zeros),
+    ]
+    solver = ik.IKSolver(model, 1, objectives, optimizer=ik.IKOptimizer.CUNLS)
+    joint_q = wp.zeros((1, model.joint_coord_count), dtype=wp.float32, device=device)
+    with test.assertRaisesRegex(RuntimeError, "constraints are not satisfied"):
+        solver.step(joint_q, joint_q, iterations=20)
+
+
 def test_cunls_rejects_unsupported_objective(test, device):
     """Reject objectives the cuNLS backend cannot translate."""
     model, _ = _build_four_bar(device)
@@ -149,18 +261,17 @@ class TestIKCuNLS(unittest.TestCase):
     """Verify the cuNLS inverse-kinematics backend: loop closures, mimic joints and hard joint limits."""
 
 
-add_function_test(
-    TestIKCuNLS, "test_cunls_closes_loop_within_limits", test_cunls_closes_loop_within_limits, cuda_devices
-)
-add_function_test(
-    TestIKCuNLS,
-    "test_cunls_enforces_mimic_joints_with_seeds",
+for test_fn in (
+    test_cunls_closes_loop_within_limits,
     test_cunls_enforces_mimic_joints_with_seeds,
-    cuda_devices,
-)
-add_function_test(
-    TestIKCuNLS, "test_cunls_rejects_unsupported_objective", test_cunls_rejects_unsupported_objective, cuda_devices
-)
+    test_cunls_holds_external_root_parent,
+    test_cunls_costs_use_current_targets,
+    test_cunls_step_captured_right_after_construction,
+    test_cunls_rejects_bounded_loop_joint,
+    test_cunls_raises_on_infeasible_constraints,
+    test_cunls_rejects_unsupported_objective,
+):
+    add_function_test(TestIKCuNLS, test_fn.__name__, test_fn, cuda_devices)
 
 
 if __name__ == "__main__":
