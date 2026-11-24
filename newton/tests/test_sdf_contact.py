@@ -172,8 +172,9 @@ def test_mesh_mesh_sdf_surface_witnesses(test, device, box_sdf, *, probe_sdf=Fal
         box = newton.Mesh.create_box(1.0, 1.0, 0.5)
         if box_sdf:
             box.build_sdf(max_resolution=32, device=device)
-        # Allow texture quantization error, well below the original 0.05 m shift.
-        sdf_tolerance = 1.0e-3 if box_sdf else 2.0e-5
+        # A planar patch should retain float32/uint16 precision even between
+        # texture-filter interpolation steps. Closed probes also sample corners.
+        sdf_tolerance = 1.0e-3 if probe_sdf else 2.0e-5
         for probe_first in (True, False):
             builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
             body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))

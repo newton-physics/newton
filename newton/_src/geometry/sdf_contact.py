@@ -12,6 +12,7 @@ from ..geometry.sdf_texture import (
     _texture_sample_sdf_hw_clamped,
     _texture_sample_sdf_hw_pair,
     _texture_sdf_cell_radius,
+    texture_sample_sdf,
     texture_sample_sdf_grad_only_hw,
     texture_sample_sdf_hw,
 )
@@ -1381,6 +1382,9 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                 sdf_boundary_start,
             )
         else:
+            # Resolve accepted distances without the hardware filter's
+            # quantized interpolation weights. Keep the normal-recovery path.
+            dist_unscaled = texture_sample_sdf(texture_sdf, point_unscaled)
             direction_unscaled = wp.static(sample_grad)(texture_sdf, point_unscaled)
         if wp.static(use_identity_sdf_scale):
             dist = dist_unscaled
