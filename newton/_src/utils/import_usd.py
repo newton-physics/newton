@@ -567,7 +567,7 @@ def parse_usd(
 
     def _units_scene_prim() -> Usd.Prim | None:
         nonlocal units_scene_prim, units_scene_pending
-        if units_scene_pending:
+        if units_scene_pending and (mjc_resolver is not None or builder_custom_attr_joint):
             units_scene_pending = False
             prim_iter = iter(Usd.PrimRange.Stage(stage, Usd.TraverseInstanceProxies(Usd.PrimDefaultPredicate)))
             for prim in prim_iter:

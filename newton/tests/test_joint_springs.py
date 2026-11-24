@@ -204,6 +204,10 @@ class TestJointSprings(unittest.TestCase):
         instanced = f"""class Xform "Prototype" {{\n{scene("radian")}\n}}
         def Xform "Instance" (\ninstanceable = true\nprepend references = </Prototype>\n) {{\n}}"""
         cases.append(("instanced", instanced, [], "radian", True))
+        instanced_degree = f"""class Xform "Prototype" {{\n{scene("degree")}\n}}
+        def Xform "Instance" (\ninstanceable = true\nprepend references = </Prototype>\n) {{\n}}
+        def Xform "Later" {{\n{scene("radian")}\n}}"""
+        cases.append(("instanced-first", instanced_degree, [], "degree", True))
         for name, scene_layer, ignore_paths, angle, register in cases:
             ref, springref, rest = (0.4, 0.7, 0.3) if angle == "radian" else (30, 45, np.pi / 12)
             with self.subTest(case=name):
