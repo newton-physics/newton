@@ -5354,11 +5354,14 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
         # default of 64 rows for this scene.
         solver = SolverMuJoCo(model, use_mujoco_contacts=True)
         state_0, state_1, control = model.state(), model.state(), model.control()
+        # Each step clears the overflow flag, so collect it after every step.
+        overflow = 0
         for _ in range(60):
             solver.step(state_0, state_1, control, None, 0.002)
             state_0, state_1 = state_1, state_0
+            overflow |= int(solver.mjw_data.overflow.numpy()[0])
 
-        self.assertEqual(int(solver.mjw_data.overflow.numpy()[0]), 0)
+        self.assertEqual(overflow, 0)
         self.assertGreater(int(np.max(solver.mjw_data.nefc.numpy())), 64)
 
     def test_sphere_rolls_without_slip_with_newton_contacts(self):
