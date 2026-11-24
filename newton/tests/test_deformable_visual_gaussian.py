@@ -272,7 +272,7 @@ class TestDeformableVisualGaussianUSDImport(unittest.TestCase):
     @staticmethod
     def _add_surface(stage, path):
         """Add a single-triangle surface body."""
-        from pxr import UsdGeom
+        from pxr import Sdf, UsdGeom
 
         UsdGeom.Xform.Define(stage, path).GetPrim().AddAppliedSchema("PhysicsDeformableBodyAPI")
         mesh = UsdGeom.Mesh.Define(stage, f"{path}/Sim")
@@ -281,6 +281,8 @@ class TestDeformableVisualGaussianUSDImport(unittest.TestCase):
         mesh.CreateFaceVertexIndicesAttr([0, 1, 2])
         mesh.GetPrim().AddAppliedSchema("PhysicsSurfaceDeformableSimAPI")
         mesh.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
+        mesh.GetPrim().CreateAttribute("physics:thicknesses", Sdf.ValueTypeNames.FloatArray).Set([0.001])
+        mesh.GetPrim().CreateAttribute("physics:thicknesses:elementType", Sdf.ValueTypeNames.Token).Set("constant")
         return mesh
 
     @staticmethod
