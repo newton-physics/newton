@@ -72,6 +72,8 @@ class OptixShapes:
     variant_traversables: wp.array[wp.uint64] | None
     """Acceleration structure of each variant shape, or ``None`` without variant rows; see
     :meth:`Model.select_body_variants`."""
+    variant_radii: wp.array[wp.float32] | None
+    """Bounding sphere radius of each variant shape about its origin [m], or ``None`` without variant rows."""
     flags_mask: int
     """Shape flags the shapes were built for; variant rows without them are hidden."""
     instance_shapes: wp.array[wp.int32]
@@ -92,7 +94,7 @@ class OptixShapes:
     """Whether the global world's cell holds any instances."""
     out_of_cell: wp.array[wp.int32]
     """Set to 1 on the device when a refit hides a shape that left its cell, or when a camera's particle or
-    deformable point leaves its cell (those stay visible and may show in a neighboring world); cleared by a
+    deformable point leaves its cell (those are not hidden, so they may be clipped or show in a neighboring world); cleared by a
     rebuild, shape ``[1]``."""
     pipelines: dict = field(default_factory=dict)
     """Camera and raycast pipelines compiled for these shapes."""
@@ -234,12 +236,13 @@ def build_shape_geometry(
         variant_types = model._variant_shape_geometry["shape_type"].numpy()
         variant_types = np.where(variant_types == GeoType.CONVEX_MESH, GeoType.MESH, variant_types)
         variant_sources = model._variant_shape_geometry["shape_source_ptr"].numpy()
-    geometry = []
-    mesh_ids = {}
-    splat_ids = {}
+    # Built for compaction, then compacted in one batch: compacting each structure synchronizes once.
+    flags = wo.BuildFlags.PREFER_FAST_TRACE | wo.BuildFlags.ALLOW_COMPACTION
+    splats = {}
+    meshes = {}
     for si in shapes[shape_types[shapes] == GeoType.GAUSSIAN]:
         asset = int(sources[si])
-        if asset not in splat_ids:
+        if asset not in splats:
             from ..render.gaussians import compute_asset_splat_bounds  # noqa: PLC0415
 
             # The asset's splat bounds, in the shape's space before its scale.
@@ -253,30 +256,30 @@ def build_shape_geometry(
                 outputs=[lowers, uppers],
                 device=model.device,
             )
-            geometry.append(wo.Accel([wo.aabbs(lowers, uppers)], compact=True))
-            splat_ids[asset] = geometry[-1].id
+            splats[asset] = wo.Accel([wo.aabbs(lowers, uppers)], flags=flags)
     used_meshes = set(sources[shapes[shape_types[shapes] == GeoType.MESH]].tolist())
     if variant_types is not None:
         used_meshes |= set(variant_sources[variant_types == GeoType.MESH].tolist())
     for mesh in [*model._mesh_keep_alive, *model.heightfield_meshes]:
-        if mesh.id in used_meshes and mesh.id not in mesh_ids:
-            geometry.append(wo.Accel([wo.triangles(mesh.points, mesh.indices)], compact=True))
-            mesh_ids[mesh.id] = geometry[-1].id
+        if mesh.id in used_meshes and mesh.id not in meshes:
+            meshes[mesh.id] = wo.Accel([wo.triangles(mesh.points, mesh.indices)], flags=flags)
     # Boxes are traced as hardware triangles: the unit cube, wound outward.
     corners = wp.array(
         [[x, y, z] for x in (-1, 1) for y in (-1, 1) for z in (-1, 1)], dtype=wp.vec3, device=model.device
     )
     faces = [0, 1, 3, 0, 3, 2, 4, 6, 7, 4, 7, 5, 0, 4, 5, 0, 5, 1, 2, 3, 7, 2, 7, 6, 0, 2, 6, 0, 6, 4, 1, 5, 7, 1, 7, 3]
-    box = wo.Accel([wo.triangles(corners, wp.array(faces, dtype=wp.int32, device=model.device))], compact=True)
+    box = wo.Accel([wo.triangles(corners, wp.array(faces, dtype=wp.int32, device=model.device))], flags=flags)
     bounds = wp.array([[-1.001] * 3 + [1.001] * 3], dtype=float, device=model.device)
-    primitive = wo.Accel([wo.aabbs(bounds=bounds)], compact=True)
-    geometry += [box, primitive]
+    primitive = wo.Accel([wo.aabbs(bounds=bounds)], flags=flags)
+    geometry = [*splats.values(), *meshes.values(), box, primitive]
+    # Compaction changes the handles, so read them after it.
+    wo.compact(geometry)
 
     def traversable(kind: int, source: int) -> int:
         if kind == GeoType.MESH:
-            return mesh_ids[source]
+            return meshes[source].id
         if kind == GeoType.GAUSSIAN:
-            return splat_ids[source]
+            return splats[source].id
         return box.id if kind == GeoType.BOX else primitive.id
 
     traversables = np.zeros(model.shape_count, dtype=np.uint64)
@@ -337,11 +340,13 @@ def update_variant_rows(
     shape_opacity: wp.array[wp.float32],
     flags_mask: wp.int32,
     variant_traversables: wp.array[wp.uint64],
+    variant_radii: wp.array[wp.float32],
     out_shape_types: wp.array[wp.int32],
     out_shape_traversables: wp.array[wp.uint64],
+    out_shape_radii: wp.array[wp.float32],
 ):
-    """Point each variant row at the structure of the variant shape it holds; empty and hidden rows,
-    like :func:`~newton._src.geometry.bvh.mark_inactive_bvh_shapes` skips, get none."""
+    """Point each variant row at the structure and radius of the variant shape it holds; empty and
+    hidden rows, like :func:`~newton._src.geometry.bvh.mark_inactive_bvh_shapes` skips, get none."""
     row = rows[wp.tid()]
     held = shape_variant_shape[row]
     flags = shape_flags[row]
@@ -352,6 +357,7 @@ def update_variant_rows(
     out_shape_traversables[row] = wp.uint64(0)
     if held >= 0 and (flags & flags_mask) != 0:
         out_shape_traversables[row] = variant_traversables[held]
+        out_shape_radii[row] = variant_radii[held]
 
 
 def compute_optix_shape_instances_launch(model: Model, shapes: OptixShapes) -> None:
@@ -371,8 +377,9 @@ def compute_optix_shape_instances_launch(model: Model, shapes: OptixShapes) -> N
                 else wp.empty(0, dtype=wp.float32, device=model.device),
                 shapes.flags_mask,
                 shapes.variant_traversables,
+                shapes.variant_radii,
             ],
-            outputs=[shapes.shape_types, shapes.shape_traversables],
+            outputs=[shapes.shape_types, shapes.shape_traversables, shapes.shape_radii],
             device=model.device,
         )
     wp.launch(

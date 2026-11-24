@@ -2289,8 +2289,9 @@ class Model:
                 :attr:`optix_shapes` (experimental).
             optix_extent: Half-width [m] of the region each world's shapes may occupy with
                 ``backend="optix"``. Defaults to twice the farthest reach of any non-plane shape or
-                particle from the origin at build time, and at least 1 m. Larger values leave room for
-                motion but lower precision, since worlds are packed further apart in float32.
+                particle from the origin at build time, and at least 1 m. It ignores skinned deformable
+                visual meshes, so pass an extent covering them if they reach farther. Larger values leave
+                room for motion but lower precision, since worlds are packed further apart in float32.
 
         Raises:
             ValueError: If ``backend`` is unknown, ``bvh_constructor`` is given with ``backend="optix"``,
@@ -2581,6 +2582,7 @@ class Model:
             np.maximum(np.abs(lowers.numpy() - origins), np.abs(uppers.numpy() - origins)), axis=1
         )
         row_reach = np.zeros(shape_count, dtype=np.float32)
+        variant_radii = None
         if self._has_variant_rows:
             # A variant row covers every variant shape it can hold, which may sit elsewhere on its body.
             geometry = self._variant_shape_geometry
@@ -2620,13 +2622,12 @@ class Model:
             shift = np.linalg.norm(
                 geometry["shape_transform"].numpy()[options, :3] - self.shape_transform.numpy()[rows, :3], axis=1
             )
-            np.maximum.at(radii, rows, variant_radii[options])
             np.maximum.at(row_reach, rows, shift + variant_radii[options])
         # Planes are intersected analytically, outside the cells.
         bounded = types[enabled] != GeoType.PLANE
         reach = np.abs(origins).max(axis=1, initial=0.0) + np.maximum(radii[enabled], row_reach[enabled])
         reach = reach[bounded]
-        if state.particle_q is not None and state.particle_count:
+        if extent is None and state.particle_q is not None and state.particle_count:
             # Cameras trace particles and deformable surfaces in the same cells.
             particle_reach = np.abs(state.particle_q.numpy()).max(axis=1)
             if self.particle_radius is not None:
@@ -2658,6 +2659,7 @@ class Model:
             shape_instance_ids=wp.array(instance_ids, dtype=wp.uint32, device=device),
             slot_gaussians=wp.array(slot_gaussians, dtype=wp.int32, device=device),
             variant_traversables=variant_traversables,
+            variant_radii=None if variant_radii is None else wp.array(variant_radii, dtype=wp.float32, device=device),
             flags_mask=int(shape_flags),
             instance_shapes=wp.array(instance_shapes, dtype=wp.int32, device=device),
             instances=wp.empty(len(instance_shapes), dtype=optix.wo.Instance, device=device),

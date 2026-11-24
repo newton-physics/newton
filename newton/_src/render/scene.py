@@ -128,6 +128,8 @@ class WarpScene:
         self.world_roots = wp.empty(model.world_count + 1, dtype=wp.int32, device=model.device)
         self._shape_bvh: wp.Bvh | None = None
         self._lowers = self._uppers = self._groups = None
+        self.particle_q: wp.array[wp.vec3f] | None = None
+        """Particle positions of the last refit, which the bounds were computed from."""
 
     def _shape_items(self) -> tuple[int, wp.array, wp.array, wp.array]:
         model = self.model
@@ -143,6 +145,7 @@ class WarpScene:
         Builds the BVH on first use and again after the model's shape BVH was rebuilt.
         """
         model, items = self.model, self.items
+        self.particle_q = state.particle_q
         shape_count, shape_lowers, shape_uppers, shape_groups = self._shape_items()
         count = shape_count + items.particle_count + items.triangle_count
         rebuild = self.bvh is None or self._shape_bvh is not model.bvh_shapes
@@ -187,7 +190,7 @@ class WarpScene:
         else:
             self.bvh.refit()
 
-    def scene_data(self, state: State) -> SceneData:
+    def scene_data(self) -> SceneData:
         model, items = self.model, self.items
         scene = empty_scene_data(model.device)
         scene.id = wp.uint64(self.bvh.id)
@@ -195,16 +198,16 @@ class WarpScene:
         scene.shape_item_count = self._shape_items()[0]
         if scene.shape_item_count:
             scene.item_shapes = model._bvh_shape_active_leaves
-        fill_item_data(scene, model, items, state)
+        fill_item_data(scene, model, items, self.particle_q)
         return scene
 
 
-def fill_item_data(scene: SceneData, model: Model, items: SceneItems, state: State) -> None:
-    """Fill the particle and triangle fields of *scene*."""
+def fill_item_data(scene: SceneData, model: Model, items: SceneItems, particle_q: wp.array[wp.vec3f] | None) -> None:
+    """Fill the particle and triangle fields of *scene*, with the particle positions its structure was fit to."""
     if items.particle_count:
         scene.particle_item_count = items.particle_count
         scene.item_particles = items.item_particles
-        scene.particle_positions = state.particle_q
+        scene.particle_positions = particle_q
         scene.particle_radii = model.particle_radius
     if items.triangle_count:
         scene.triangle_points = items.triangle_points

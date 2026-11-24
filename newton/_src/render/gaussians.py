@@ -97,37 +97,60 @@ def canonical_ray_max_kernel_response(ray_origin: wp.vec3f, ray_direction: wp.ve
 
 
 @wp.func
+def shape_camera_forward(
+    sorting_mode: wp.int32, shape_transform: wp.transformf, shape_scale: wp.vec3f, camera_forward: wp.vec3f
+) -> wp.vec3f:
+    """The camera's forward axis as a depth-plane normal in a Gaussian shape's space before its scale,
+    so that depth planes, like ray distances, match those in world space. Only ``Z_DEPTH`` uses it."""
+    if sorting_mode != wp.static(int(Gaussian.SortingMode.Z_DEPTH)):
+        return camera_forward
+    return wp.cw_mul(wp.quat_rotate_inv(wp.transform_get_rotation(shape_transform), camera_forward), shape_scale)
+
+
+@wp.func
+def splat_alpha(
+    opacity: wp.float32, min_response: wp.float32, ray_origin_local: wp.vec3f, ray_direction_local: wp.vec3f
+) -> wp.float32:
+    """Alpha of a splat along a ray in its canonical frame, or 0 below the response and alpha thresholds."""
+    max_response = canonical_ray_max_kernel_response(ray_origin_local, wp.normalize(ray_direction_local))
+    alpha = wp.min(wp.float32(1.0), max_response * opacity)
+    if max_response > min_response and alpha > wp.static(1.0 / 255.0):
+        return alpha
+    return 0.0
+
+
+@wp.func
 def ray_gsplat_hit_response(
     transform: wp.transformf,
     scale: wp.vec3f,
     opacity: wp.float32,
     min_response: wp.float32,
     sorting_mode: wp.int32,
-    ray_origin_world: wp.vec3f,
-    ray_direction_world: wp.vec3f,
+    ray_origin: wp.vec3f,
+    ray_direction: wp.vec3f,
     camera_forward: wp.vec3f,
     max_distance: wp.float32,
 ) -> tuple[wp.float32, wp.float32]:
-    ray_origin_local, ray_direction_local = map_ray_to_local(transform, ray_origin_world, ray_direction_world, scale)
-
+    """Alpha and sorting distance of a splat hit. The ray and ``camera_forward`` (see
+    :func:`shape_camera_forward`) are in the splat's parent space: the Gaussian shape's space
+    before its scale, where ray distances are those in world space."""
+    # The sorting distances in the parent space come first, so its ray is dead in the splat's frame.
     hit_distance = 0.0
-    if sorting_mode == wp.static(Gaussian.SortingMode.CAMERA_DISTANCE):
-        gaussian_center = wp.transform_get_translation(transform)
-        hit_distance = sorting_mode_camera_distance(gaussian_center, ray_origin_local, ray_direction_local)
-    elif sorting_mode == wp.static(Gaussian.SortingMode.Z_DEPTH):
-        gaussian_center = wp.transform_get_translation(transform)
-        gaussian_center_world = wp.transform_point(transform, wp.cw_mul(gaussian_center, scale))
+    from_center = sorting_mode == wp.static(Gaussian.SortingMode.CAMERA_DISTANCE)
+    from_depth = sorting_mode == wp.static(Gaussian.SortingMode.Z_DEPTH)
+    if from_center:
+        hit_distance = sorting_mode_camera_distance(wp.transform_get_translation(transform), ray_origin, ray_direction)
+    elif from_depth:
         hit_distance = sorting_mode_z_depth(
-            gaussian_center_world, camera_forward, ray_origin_world, ray_direction_world
+            wp.transform_get_translation(transform), camera_forward, ray_origin, ray_direction
         )
-    else:
+    ray_origin_local, ray_direction_local = map_ray_to_local(transform, ray_origin, ray_direction, scale)
+    if not (from_center or from_depth):
         hit_distance = sorting_mode_ray_hit_distance(ray_origin_local, ray_direction_local)
 
     if hit_distance > 0.0 and hit_distance < max_distance:
-        max_response = canonical_ray_max_kernel_response(ray_origin_local, wp.normalize(ray_direction_local))
-
-        alpha = wp.min(wp.float32(1.0), max_response * opacity)
-        if max_response > min_response and alpha > wp.static(1.0 / 255.0):
+        alpha = splat_alpha(opacity, min_response, ray_origin_local, ray_direction_local)
+        if alpha > 0.0:
             return alpha, hit_distance
     return 0.0, -1.0
 
@@ -231,7 +254,6 @@ def create_blend_function(config: RenderConfig) -> wp.Function:
         gaussians_data: wp.array[Gaussian.Data],
         ray_origin: wp.vec3f,
         ray_direction: wp.vec3f,
-        camera_forward: wp.vec3f,
     ) -> tuple[SplatBlend, wp.int32]:
         """Blend a round's hits behind the splats already blended; ``slot_shapes`` holds the Gaussian
         shape of each slot of the hit ids. Returns the blend and the number of hits blended."""
@@ -244,17 +266,9 @@ def create_blend_function(config: RenderConfig) -> wp.Function:
             splat = int(hit.id & wp.uint32(MAX_SPLATS - 1))
             data = gaussians_data[int(shape_source_ptr[si])]
             origin, direction = map_ray_to_local(shape_transforms[si], ray_origin, ray_direction, shape_sizes[si])
-            alpha, _t = ray_gsplat_hit_response(
-                data.transforms[splat],
-                data.scales[splat],
-                data.opacities[splat],
-                data.min_response,
-                data.sorting_mode,
-                origin,
-                direction,
-                camera_forward,
-                MAXVAL,
-            )
+            # Gathering kept only hits in front of the ray's limit, so only their alpha is needed.
+            origin, direction = map_ray_to_local(data.transforms[splat], origin, direction, data.scales[splat])
+            alpha = splat_alpha(data.opacities[splat], data.min_response, origin, direction)
             color = wp.max(
                 SH_C0 * wp.vec3f(data.sh_coeffs[splat][0], data.sh_coeffs[splat][1], data.sh_coeffs[splat][2])
                 + wp.vec3f(0.5),
@@ -316,12 +330,14 @@ def create_shade_function(config: RenderConfig) -> wp.Function:
     ) -> tuple[wp.float32, wp.vec3f, wp.int32]:
         hits = wp.zeros(shape=(wp.static(config.gaussians_max_num_hits),), dtype=SplatHit)
         blend = start_blend()
-        while blend.transmittance > 0.003:
+        # Gather until the color converges, and at least until the configured threshold is crossed.
+        while blend.transmittance > wp.static(min(0.003, config.gaussians_min_transmittance)):
             clear_hits(hits)
             for slot in range(shape_count):
                 si = slot_shapes[slot]
                 data = gaussians_data[int(shape_source_ptr[si])]
                 origin, direction = map_ray_to_local(shape_transforms[si], ray_origin, ray_direction, shape_sizes[si])
+                forward = shape_camera_forward(data.sorting_mode, shape_transforms[si], shape_sizes[si], camera_forward)
                 query = wp.bvh_query_ray(data.bvh_id, origin, direction)
                 splat = wp.int32(0)
                 while wp.bvh_query_next(query, splat, wp.min(hits[hits.shape[0] - 1].t, max_distance)):
@@ -333,7 +349,7 @@ def create_shade_function(config: RenderConfig) -> wp.Function:
                         data.sorting_mode,
                         origin,
                         direction,
-                        camera_forward,
+                        forward,
                         wp.min(hits[hits.shape[0] - 1].t, max_distance),
                     )
                     id = splat_hit_id(slot, splat)
@@ -349,7 +365,6 @@ def create_shade_function(config: RenderConfig) -> wp.Function:
                 gaussians_data,
                 ray_origin,
                 ray_direction,
-                camera_forward,
             )
             if count == 0 or wp.static(config.gaussians_mode == GaussianRenderMode.FAST):
                 break

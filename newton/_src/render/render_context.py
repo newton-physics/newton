@@ -774,7 +774,7 @@ class RenderContext:
             stale = stale or self._scene._shape_bvh is not self.model.bvh_shapes
         if stale:
             self._refit_scene(state)
-        return self._scene.scene_data(state)
+        return self._scene.scene_data()
 
     def _load_texture_and_mesh_data(
         self, model: Model, load_textures: bool, deformable_visual_meshes: Sequence[DeformableVisualMesh]

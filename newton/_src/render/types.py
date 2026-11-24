@@ -238,11 +238,13 @@ class ClearData:
 class SceneData:
     """What a camera ray traverses: one acceleration structure over *scene items*.
 
-    Items are numbered shapes first, then standalone particles, then deformable triangles, so the
-    range of a hit item tells what was hit and its offset in the range which one. With the Warp
-    backend, :attr:`id` is a ``wp.Bvh`` whose leaves are the items, grouped by world. With OptiX it
-    is an instance structure: shape instances report their shape as instance ID, and one instance
-    each holds every world's particles and deformable triangles, packed into world cells.
+    The backends identify a hit differently. With Warp, :attr:`id` is a ``wp.Bvh`` whose leaves are
+    the items, grouped by world, numbered shapes first, then standalone particles, then deformable
+    triangles, so the range of a hit item tells what was hit and its offset in the range which one.
+    With OptiX, :attr:`id` is an instance structure and the instance ID tells what was hit: shape
+    instances report their shape, and one instance each holds every world's particles and deformable
+    triangles, packed into world cells, whose primitive index (cluster-local with clusters) names the
+    particle or face. :attr:`shape_item_count` is Warp-only and stays 0 with OptiX.
     """
 
     id: wp.uint64
@@ -251,11 +253,11 @@ class SceneData:
     """Warp: BVH group root of each world, then of the global world. OptiX: the planes of each world,
     flattened ``[world_count, planes per world]``."""
     shape_item_count: wp.int32
-    """Items ``[0, shape_item_count)`` are shapes."""
+    """Warp: items ``[0, shape_item_count)`` are shapes."""
     item_shapes: wp.array[wp.uint32]
     """Warp: shape of each shape item, or ``BVH_SHAPE_INACTIVE`` to skip it."""
     particle_item_count: wp.int32
-    """The next ``particle_item_count`` items are standalone particles."""
+    """Warp: the next ``particle_item_count`` items are standalone particles."""
     item_particles: wp.array[wp.int32]
     """Particle of each particle item; with OptiX, of each particle primitive."""
     particle_positions: wp.array[wp.vec3f]

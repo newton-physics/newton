@@ -1036,6 +1036,9 @@ class SensorCamera:
         :attr:`~newton.Model.optix_shapes` once with ``bvh_build_shapes(state, backend="optix")``
         and refit them with ``bvh_refit_shapes(state, backend="optix")`` instead. Particles and
         deformable triangle-mesh points are synced from *state* automatically (see ``sync_deformables``).
+        A camera with particles or deformable surfaces traces its own scene, which takes the shape
+        bounds and particle positions of its last sync, so after moving shapes or particles it must
+        sync again: keep ``sync_deformables=True`` or call :meth:`sync_deformable_meshes`.
 
         The camera looks along its local ``-Z`` axis with ``+Y`` up and ``+X``
         right (the USD/OpenGL convention); ``camera_transforms`` place that frame
@@ -1072,9 +1075,11 @@ class SensorCamera:
                 :attr:`default_clear_data`.
             render_config: Render settings for this call. Defaults to
                 :attr:`default_render_config`.
-            sync_deformables: Sync simulation surfaces and visual mesh points
-                from *state* before rendering. Set ``False`` if you already
-                called :meth:`sync_deformable_meshes` this frame.
+            sync_deformables: Sync particles, simulation surfaces and visual mesh
+                points from *state*, and the camera's scene to the last shape
+                refit, before rendering. Set ``False`` only if you already called
+                :meth:`sync_deformable_meshes` after this frame's shape refit; the
+                camera then renders the particles of that sync, not *state*'s.
             deformable_visuals: Experimental precomputed visual buffers for this
                 model. If omitted, skin directly into the camera's point buffer.
                 Requires ``sync_deformables=True``; otherwise pass the buffers

@@ -454,16 +454,18 @@ above one are kept as HDR.
 .. note::
 
    The Gaussian color space is a property of the whole :class:`newton.Gaussian`
-   asset, not of individual splats. :class:`~newton.sensors.SensorCamera` shades
-   each Gaussian asset on its own and keeps the nearest one along a ray, so
-   splats from different assets, including different ``ParticleField`` prims
-   of one USD stage, are never blended with each other or with other geometry.
+   asset, not of individual splats. :class:`~newton.sensors.SensorCamera` blends
+   the splats of every Gaussian shape a ray crosses together, nearest first,
+   whether the shapes belong to the ray's world or the global world, so a splat
+   scene partitioned into several ``ParticleField`` prims or
+   :class:`~newton.Gaussian` assets renders as one continuous scene. Splats are
+   not blended with other geometry: the nearest opaque surface ends the ray.
 
-   A splat scene that has been partitioned into several ``ParticleField`` prims
-   or :class:`~newton.Gaussian` assets is therefore not rendered as one
-   continuous scene: where partitions overlap along a ray, only the nearest one
-   contributes, which can produce visible seams. Keep a scene in a single
-   asset, with a single color space, when overlapping splats must blend.
+   When the blended assets differ in color space, splats authored in sRGB are
+   blended in sRGB and decoded to linear light once per ray, splats authored in
+   linear light are blended in linear light, and the two results are summed by
+   their blend weights. Keep overlapping splats in one color space for results
+   matching a single-asset render.
 
 Packed color and albedo outputs from :class:`newton.sensors.SensorCamera`
 use display/sRGB encoding by default. Set

@@ -25,6 +25,7 @@ from ..geometry.optix import (
     GAUSSIAN_ASSET_BITS,
     GAUSSIAN_MASK,
     OPAQUE_RAY_MASK,
+    UnsupportedError,
     create_pipeline,
     ray_interval,
     wo,
@@ -215,6 +216,12 @@ def create_splat_intersection(capacity: int) -> wp.Kernel:
         instance = wp.optix_get_instance_id()
         splat = int(wp.optix_get_primitive_index())
         data = gaussians_data[int(instance & wp.uint32(wp.static((1 << GAUSSIAN_ASSET_BITS) - 1)))]
+        forward = trace.camera_forward
+        if data.sorting_mode == wp.static(int(Gaussian.SortingMode.Z_DEPTH)):
+            # The depth-plane normal in object space: the transpose of the instance's linear map, as
+            # gaussians.shape_camera_forward() computes it.
+            m = wp.transpose(wp.optix_get_object_to_world_matrix()) @ wp.vec4f(forward[0], forward[1], forward[2], 0.0)
+            forward = wp.vec3f(m[0], m[1], m[2])
         # The instance maps object space to the shape's space before its scale, like map_ray_to_local().
         alpha, t = gaussians.ray_gsplat_hit_response(
             data.transforms[splat],
@@ -224,7 +231,7 @@ def create_splat_intersection(capacity: int) -> wp.Kernel:
             data.sorting_mode,
             wp.optix_get_object_ray_origin(),
             wp.optix_get_object_ray_direction(),
-            trace.camera_forward,
+            forward,
             wp.min(hits[wp.static(capacity - 1)].t, wp.optix_get_ray_tmax()),
         )
         id = gaussians.splat_hit_id(int(instance >> wp.uint32(GAUSSIAN_ASSET_BITS)), splat)
@@ -261,6 +268,8 @@ class OptixScene:
         self.accel: wo.Accel | None = None
         self.triangle_accel = None
         self.particle_accel: wo.Accel | None = None
+        self.particle_q = state.particle_q
+        """Particle positions of the last refit, which the structure was fit to."""
         if not (self.has_particles or self.has_triangles):
             return
 
@@ -268,6 +277,10 @@ class OptixScene:
         extra = []
         if self.has_triangles:
             triangle_worlds = items.triangle_worlds.numpy()
+            # Each point moves into its own world's cell, so a face spanning worlds would stretch across cells.
+            corner_worlds = items.triangle_point_worlds.numpy()[items.triangle_indices.numpy()].reshape(-1, 3)
+            if np.any(corner_worlds != triangle_worlds[:, None]):
+                raise UnsupportedError("The OptiX backend does not support triangles whose points span worlds")
             self.has_global_items |= bool(np.any(triangle_worlds < 0))
             if self.clustered:
                 clusters, local, sources, faces = cluster_triangles(
@@ -371,6 +384,7 @@ class OptixScene:
         """Update the particles and triangles from *state* and the camera's triangle points, and refit."""
         if self.accel is None:
             return
+        self.particle_q = state.particle_q
         shape_instances = self.shapes.instance_shapes.shape[0]
         if shape_instances:
             wp.copy(self.records, self.shapes.instances, count=shape_instances)
@@ -381,7 +395,7 @@ class OptixScene:
             else:
                 self.triangle_accel.refit()
         if self.has_particles:
-            self._pack_particles(state.particle_q)
+            self._pack_particles(self.particle_q)
             self.particle_accel.refit()
         if self.shapes.has_variant_rows:
             # Variant rows change the structures they instance, which a refit cannot follow.
@@ -389,11 +403,11 @@ class OptixScene:
         else:
             self.accel.refit()
 
-    def scene_data(self, state: State) -> SceneData:
+    def scene_data(self) -> SceneData:
         scene = empty_scene_data(self.model.device)
         scene.id = wp.uint64(self.id if self.has_instances else 0)
         scene.world_roots = self.shapes.world_planes.flatten()
-        fill_item_data(scene, self.model, self.items, state)
+        fill_item_data(scene, self.model, self.items, self.particle_q)
         if self.clustered:
             scene.cluster_triangle_start = self.cluster_triangle_start
             scene.cluster_triangles = self.cluster_triangles
@@ -449,7 +463,7 @@ class OptixScene:
             trace = SplatTrace()
             trace.hits = wp.uint64(hits.ptr)
             trace.camera_forward = camera_forward
-            while blend.transmittance > 0.003:
+            while blend.transmittance > wp.static(min(0.003, config.gaussians_min_transmittance)):
                 gaussians.clear_hits(hits)
                 trace.last_t = blend.last_t
                 trace.last_id = blend.last_id
@@ -478,7 +492,6 @@ class OptixScene:
                     gaussians_data,
                     origin,
                     direction,
-                    camera_forward,
                 )
                 if count == 0 or wp.static(fast):
                     break
