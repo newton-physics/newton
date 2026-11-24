@@ -53,7 +53,6 @@ def _gather_pose_targets(
     rows: wp.array[wp.int32],
     poses: wp.array[wp.transform],
 ):
-    # The target pose of each batch row: its problem's position and rotation targets (x, y, z, w).
     i = wp.tid()
     r = rotations[rows[i]]
     poses[i] = wp.transform(positions[rows[i]], wp.quat(r[0], r[1], r[2], r[3]))
@@ -73,7 +72,6 @@ def _scatter_coords(q: wp.array2d[wp.float32], coord_map: wp.array[wp.int32], jo
 
 @wp.kernel
 def _add_squared_residuals(residuals: wp.array2d[wp.float32], costs: wp.array[wp.float32]):
-    # costs[row] += |r_row|^2 for one objective batch (one factor per batch row).
     row = wp.tid()
     total = float(0.0)
     for k in range(residuals.shape[1]):
@@ -357,9 +355,16 @@ class IKOptimizerCuNLS:
                     f"IKOptimizer.CUNLS does not support {type(obj).__name__}; supported objectives are "
                     "IKObjectivePosition, IKObjectiveRotation and IKObjectiveJointLimit."
                 )
-        paired = set()
+            if isinstance(obj, IKObjectiveRotation) and not obj.canonicalize_quat_err:
+                raise ValueError(
+                    "IKOptimizer.CUNLS does not support IKObjectiveRotation(canonicalize_quat_err=False): its "
+                    "orientation residual is a rotation angle, the same for q and -q. Fix: keep the default "
+                    "canonicalize_quat_err=True."
+                )
+        paired = set()  # indices into rotations
         for p in positions:
-            r = next((r for r in rotations if r.link_index == p.link_index and id(r) not in paired), None)
+            k = next((k for k, r in enumerate(rotations) if r.link_index == p.link_index and k not in paired), None)
+            r = None if k is None else rotations[k]
             link = self._links(p.link_index)
             if r is None:
                 factor = pycunls.LinkPositionFactorBatch(
@@ -373,7 +378,7 @@ class IKOptimizerCuNLS:
                 self._add_objective(factor, 3)
                 continue
             # One pose target for both: one factor batch, one pass over the link's cache.
-            paired.add(id(r))
+            paired.add(k)
             poses = wp.zeros(n, dtype=wp.transform, device=self.device)
             self._target_gathers.append(
                 (_gather_pose_targets, [p.target_positions, r.target_rotations, self.problem_idx], poses)
@@ -388,8 +393,8 @@ class IKOptimizerCuNLS:
                 n,
             )
             self._add_objective(factor, 6)
-        for r in rotations:
-            if id(r) in paired:
+        for k, r in enumerate(rotations):
+            if k in paired:
                 continue
             factor = pycunls.LinkOrientationFactorBatch(
                 self._topology,
@@ -507,7 +512,7 @@ class IKOptimizerCuNLS:
         current targets into the factors' per-row targets."""
         for kernel, inputs, output in self._target_gathers:
             wp.launch(kernel, dim=self.n_batch, inputs=inputs, outputs=[output], device=self.device)
-        if self._coord_start is not None:
+        if self._coord_start is not None and joint_q.is_contiguous:
             self._states.set_joint_q(joint_q.flatten()[self._coord_start :], self.n_batch, stream, stride=self.n_coords)
             return
         wp.launch(
@@ -526,7 +531,8 @@ class IKOptimizerCuNLS:
         Args:
             joint_q_in: Input joint coordinates, shape [n_batch, joint_coord_count].
             joint_q_out: Output buffer for the optimized coordinates, shape
-                [n_batch, joint_coord_count]. It may alias ``joint_q_in``.
+                [n_batch, joint_coord_count]. It may be ``joint_q_in`` itself; either may be a
+                non-contiguous view.
                 Coordinates of loop-closing joints are copied from ``joint_q_in``.
             iterations: Levenberg-Marquardt iterations of each row. With loop or mimic
                 constraints, the limit of each augmented-Lagrangian inner solve; rows stop
@@ -541,6 +547,12 @@ class IKOptimizerCuNLS:
             raise ValueError("joint_q_in has incompatible shape")
         if joint_q_out.shape != (self.n_batch, self.n_coords):
             raise ValueError("joint_q_out has incompatible shape")
+        if joint_q_in.ptr == joint_q_out.ptr and joint_q_in.strides != joint_q_out.strides:
+            raise ValueError(
+                f"IKOptimizer.CUNLS: joint_q_out aliases joint_q_in with different strides (got "
+                f"{joint_q_out.strides} and {joint_q_in.strides}, expected equal). Fix: pass the same array "
+                "for both, or non-overlapping arrays."
+            )
 
         stream = wp.get_stream(self.device)  # Warp work and the solve stay in order on one stream
         self._set_states(joint_q_in, stream)
@@ -556,7 +568,7 @@ class IKOptimizerCuNLS:
                 )
         if joint_q_in.ptr != joint_q_out.ptr:
             wp.copy(joint_q_out, joint_q_in)
-        if self._coord_start is not None:
+        if self._coord_start is not None and joint_q_out.is_contiguous:
             self._states.get_joint_q(
                 joint_q_out.flatten()[self._coord_start :], self.n_batch, stream, stride=self.n_coords
             )

@@ -433,11 +433,11 @@ class Example:
         self.sim_time += self.frame_dt
 
     def test_post_step(self):
-        gap = float(self.loop_gap.numpy().max())
-        if gap > 1e-3:
-            raise ValueError(f"A loop-closing joint opened by {gap * 1e3:.2f} mm")
+        gaps = self.loop_gap.numpy()
+        if not np.all(np.isfinite(gaps)) or gaps.max() > 1e-3:
+            raise ValueError(f"A loop-closing joint opened by {gaps.max() * 1e3:.2f} mm")
         stroke = self.joint_q.numpy()[:, self.stroke_coords.numpy()]
-        if np.any(np.abs(stroke) > STROKE + 1e-5):
+        if not np.all(np.isfinite(stroke)) or np.any(np.abs(stroke) > STROKE + 1e-5):
             raise ValueError(f"An actuator left its stroke: [{stroke.min():.4f}, {stroke.max():.4f}] m")
         self.limit_hits += int(np.sum(np.abs(stroke) > STROKE - 1e-4))
         self.ghost_frames += int(np.any(self.ghost_opacities.numpy() > 0.0))

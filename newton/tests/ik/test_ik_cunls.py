@@ -91,9 +91,12 @@ def test_cunls_closes_loop_within_limits(test, device):
     solver.step(joint_q, joint_q, iterations=50)
 
     q = joint_q.numpy()
-    for row, body_q in enumerate(_body_q_rows(model, q)):
-        test.assertLess(_joint_gap(model, body_q, loop), 1e-4, f"loop open in problem {row}")
-    np.testing.assert_allclose(q[0, 0], angles[0], atol=1e-3)
+    body_q = _body_q_rows(model, q)
+    for row in range(len(angles)):
+        test.assertLess(_joint_gap(model, body_q[row], loop), 1e-4, f"loop open in problem {row}")
+    # Problem 0 reaches its target (on the assembly branch that holds it); problem 1 stops at the limit.
+    coupler_mid = wp.transform_point(wp.transform(*body_q[0][1]), wp.vec3(0.5 * COUPLER, 0.0, 0.0))
+    np.testing.assert_allclose(np.array(coupler_mid), targets[0], atol=1e-4)
     test.assertAlmostEqual(float(q[1, 0]), CRANK_LIMIT, places=5)
 
 
@@ -188,6 +191,42 @@ def test_cunls_costs_use_current_targets(test, device):
     np.testing.assert_allclose(optimizer.compute_costs(joint_q).numpy(), [0.0], atol=1e-10)
 
 
+def test_cunls_counts_every_rotation_entry(test, device):
+    """Give a rotation objective listed twice for one link two orientation terms, as IKOptimizerLM does,
+    whether or not a position objective on that link pairs with one of them."""
+    model = _build_arm(device)
+    angle = 0.3
+    target = wp.array([wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), angle)], dtype=wp.vec4, device=device)
+    rotation = ik.IKObjectiveRotation(1, wp.quat_identity(), target)
+    position = ik.IKObjectivePosition(
+        1, wp.vec3(0.5, 0.0, 0.0), wp.array([[1.0, 0.0, 0.0]], dtype=wp.vec3, device=device)
+    )
+    joint_q = wp.zeros((1, 2), dtype=wp.float32, device=device)  # tip at (1, 0, 0): only the rotation errs
+    for objectives in ([rotation, rotation], [position, rotation, rotation]):
+        costs = ik.IKOptimizerCuNLS(model, 1, objectives).compute_costs(joint_q).numpy()
+        np.testing.assert_allclose(costs, [2.0 * angle**2], rtol=1e-4)
+
+
+def test_cunls_steps_on_strided_views(test, device):
+    """Read and write joint coordinates through non-contiguous views, and reject an output that
+    aliases the input with other strides."""
+    model = _build_arm(device)
+    targets = np.array([[0.6, 0.5, 0.0]], dtype=np.float32)
+    objective = ik.IKObjectivePosition(1, wp.vec3(0.5, 0.0, 0.0), wp.array(targets, dtype=wp.vec3, device=device))
+    optimizer = ik.IKOptimizerCuNLS(model, 1, [objective])
+    buffer = wp.array([[0.2, 0.4, 7.0]], dtype=wp.float32, device=device)
+    joint_q = buffer[:, :2]  # padded rows
+    test.assertFalse(joint_q.is_contiguous)
+    optimizer.step(joint_q, joint_q, iterations=30)
+    np.testing.assert_allclose(_tip_positions(model, joint_q.numpy(), 1), targets, atol=1e-4)
+    test.assertEqual(float(buffer.numpy()[0, 2]), 7.0)
+
+    np.testing.assert_allclose(optimizer.compute_costs(joint_q).numpy(), [0.0], atol=1e-8)
+    shared = wp.zeros((1, 4), dtype=wp.float32, device=device)
+    with test.assertRaisesRegex(ValueError, "different strides"):
+        optimizer.step(shared[:, :2], shared[:, ::2], iterations=1)
+
+
 def test_cunls_step_captured_right_after_construction(test, device):
     """Capture step() in a CUDA graph right after construction (the examples' idiom) and replay it
     for a new target."""
@@ -251,6 +290,11 @@ def test_cunls_rejects_unsupported_objective(test, device):
 
     with test.assertRaisesRegex(ValueError, "IKObjectiveCustom"):
         ik.IKSolver(model, 1, [IKObjectiveCustom()], optimizer=ik.IKOptimizer.CUNLS)
+    rotation = ik.IKObjectiveRotation(
+        1, wp.quat_identity(), wp.zeros(1, dtype=wp.vec4, device=device), canonicalize_quat_err=False
+    )
+    with test.assertRaisesRegex(ValueError, "canonicalize_quat_err=False"):
+        ik.IKSolver(model, 1, [rotation], optimizer=ik.IKOptimizer.CUNLS)
 
 
 cuda_devices = get_selected_cuda_test_devices()
@@ -266,6 +310,8 @@ for test_fn in (
     test_cunls_enforces_mimic_joints_with_seeds,
     test_cunls_holds_external_root_parent,
     test_cunls_costs_use_current_targets,
+    test_cunls_counts_every_rotation_entry,
+    test_cunls_steps_on_strided_views,
     test_cunls_step_captured_right_after_construction,
     test_cunls_rejects_bounded_loop_joint,
     test_cunls_raises_on_infeasible_constraints,
