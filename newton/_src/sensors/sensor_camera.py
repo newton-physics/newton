@@ -904,7 +904,9 @@ class SensorCamera:
         """
         self._render_context.create_default_light(enable_shadows=enable_shadows, direction=direction, color=color)
 
-    def set_dome_light(self, image: Any, *, intensity: float = 1.0, rotation: float = 0.0) -> None:
+    def set_dome_light(
+        self, image: str | os.PathLike[str] | np.ndarray | wp.array, *, intensity: float = 1.0, rotation: float = 0.0
+    ) -> None:
         """Set an HDRI dome light for diffuse image-based lighting.
 
         The equirectangular environment supplies the scene's diffuse ambient
@@ -927,12 +929,22 @@ class SensorCamera:
         :attr:`~newton.sensors.SensorCamera.RenderConfig.enable_dome_lighting`
         on it as well.
 
+        Local HDR files must use Radiance RGBE with Y-major scanlines, either
+        flat or adaptive RLE. XYZE and old-style RLE files are unsupported.
+
         Args:
-            image: Equirectangular environment. A linear-radiance array
-                ``(H, W, C>=3)``, a Warp array, or a path to a ``.hdr`` image or
-                an LDR image.
-            intensity: Scalar multiplier applied to the dome contribution.
-            rotation: Azimuth offset [rad] about the scene up axis (yaw).
+            image: Equirectangular environment, shape ``(H, W, C>=3)``.
+                Floating NumPy or Warp arrays contain linear radiance; integer
+                arrays contain sRGB. A local ``.hdr`` path or an LDR image path
+                or URL is also accepted.
+            intensity: Finite, non-negative multiplier applied to the dome contribution.
+            rotation: Finite azimuth offset [rad] about the scene up axis (yaw).
+
+        Raises:
+            ValueError: If the image is empty, malformed, has fewer than three
+                channels, or contains negative or non-finite radiance, or if
+                intensity or rotation is invalid.
+            OSError: If a local HDR image cannot be read.
         """
         self._render_context.set_dome_light(image, intensity=intensity, rotation=rotation)
         self.default_render_config.enable_dome_lighting = True
@@ -961,7 +973,9 @@ class SensorCamera:
         Surfaces facing the model's up axis receive *sky_color*, surfaces facing
         away receive *ground_color*, and other orientations blend between the
         two. The defaults are ``(0.2, 0.2, 0.225)`` and ``(0.05, 0.05, 0.06)``.
-        Changing the colors does not recompile the render kernel.
+        Changing the colors does not recompile the render kernel. This disables
+        dome lighting on :attr:`default_render_config`; a previously loaded
+        environment remains available for per-call render configs.
 
         Args:
             sky_color: Linear RGB ambient radiance from above.
@@ -975,6 +989,8 @@ class SensorCamera:
             cycle.
         """
         self._render_context.set_ambient_light(sky_color, ground_color)
+        if self._render_context._dome_light_set:
+            self.default_render_config.enable_dome_lighting = False
 
     def assign_checkerboard_material(
         self,

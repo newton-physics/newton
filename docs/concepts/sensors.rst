@@ -129,12 +129,14 @@ equirectangular environment, supplied as a linear RGB array or a Radiance ``.hdr
 file. :meth:`~newton.sensors.SensorCamera.set_dome_light_color` supplies a uniform
 color. The environment replaces hemispheric ambient lighting; directional lights
 continue to contribute. Calling :meth:`~newton.sensors.SensorCamera.set_ambient_light`
-switches back to hemispheric lighting.
+switches the default render config back to hemispheric lighting.
 
 The default dome response uses spherical harmonics. Set
 ``camera.default_render_config.dome_shadow_samples`` above zero for stochastic soft
 shadows, and ``enable_dome_background`` to display the environment behind geometry.
-Both options require an environment. Dome lighting is configured at runtime on the
+Both options require an environment. Dome samples advance during CUDA graph replay
+as well as ordinary updates. Environment arrays must be nonempty, finite, and
+non-negative; integer arrays and LDR files are interpreted as sRGB. Dome lighting is configured at runtime on the
 camera; importing USD dome lights is not supported.
 
 Camera Rays from USD and Calibration Data

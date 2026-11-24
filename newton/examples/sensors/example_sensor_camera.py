@@ -116,6 +116,8 @@ def fill_body_camera_transforms(
 
 class Example:
     def __init__(self, viewer: ViewerGL, args):
+        if not args.dome_hdri and (args.dome_background or args.dome_shadow_samples != 0 or args.dome_intensity != 1.0):
+            raise ValueError("--dome-hdri is required for dome background, intensity, and shadow options")
         self.worlds_per_row = 6
         self.worlds_per_col = 4
         self.world_count_total = self.worlds_per_row * self.worlds_per_col
@@ -629,7 +631,7 @@ class Example:
             "--dome-intensity",
             type=float,
             default=1.0,
-            help="HDRI dome brightness multiplier (lower it so the key light's shadow is not washed out).",
+            help="HDRI dome brightness multiplier (requires --dome-hdri).",
         )
         parser.add_argument(
             "--dome-shadow-samples",

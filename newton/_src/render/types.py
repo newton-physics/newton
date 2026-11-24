@@ -146,7 +146,7 @@ class RenderConfig:
     """
 
     dome_shadow_samples: int = 0
-    """Shadow-ray samples for HDRI dome lighting (soft shadows / directional occlusion).
+    """Non-negative integer shadow-ray count for HDRI dome lighting.
 
     ``0`` uses the fast unshadowed spherical-harmonic irradiance. A value ``N > 0``
     casts ``N`` shadow rays per pixel, importance-sampled toward the bright parts
@@ -160,7 +160,7 @@ class RenderConfig:
     """
 
     dome_shadow_max_distance: float = 0.0
-    """Maximum length [m] of dome shadow rays; ``0`` uses :attr:`max_distance`.
+    """Finite, non-negative length [m] of dome shadow rays; ``0`` uses :attr:`max_distance`.
 
     Dome occlusion is usually local (contact/ambient shadows), so capping the
     shadow-ray length lets the BVH traversal terminate early and skips distant

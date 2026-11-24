@@ -288,7 +288,7 @@ def create_kernel(
         light_colors: wp.array[wp.vec3f],
         ambient_lighting: wp.array[wp.vec3f],
         dome: DomeLight,
-        dome_shadow_seed: wp.int32,
+        dome_shadow_seed: wp.array[wp.int32],
         dome_shadow_sample_count: wp.int32,
         dome_is_set: wp.bool,
         seed: wp.int32,
@@ -357,33 +357,18 @@ def create_kernel(
         if not is_gaussian:
             if wp.static(config.enable_dome_lighting):
                 if dome_is_set:
-                    up = wp.vec3f(0.0, 0.0, 1.0)
+                    up = dome.up
                     len_n = wp.length(closest_hit.normal)
                     n = wp.normalize(closest_hit.normal if len_n > 0.0 else up)
                     if wp.static(config.dome_shadow_samples > 0):
-                        # Shadowed dome by Monte-Carlo integration of the *visible*
-                        # environment, importance-sampled by radiance x solid angle: rays
-                        # are aimed at bright directions (e.g. the sun) via the precomputed
-                        # CDFs, then weighted by 1/pdf. This both lets an occluder cast a
-                        # shadow from a high-frequency source and avoids the fireflies /
-                        # darkening that uniform sampling produces for concentrated light.
-                        # Sampling is stochastic with a per-pixel, per-frame seed: unbiased
-                        # and convergent under temporal accumulation, with per-frame noise
-                        # that drops as dome_shadow_samples grows.
+                        # Importance sampling targets bright regions of the environment.
                         shadow_origin = hit_point + n * 1.0e-4
-                        rng = wp.rand_init(dome_shadow_seed, wp.int32(seed))
+                        rng = wp.rand_init(dome_shadow_seed[0], seed)
                         inv_count = 1.0 / float(dome_shadow_sample_count)
                         radiance_sum = wp.vec3f(0.0)
-                        # A runtime (non-compile-time-constant) loop bound: keeps the Warp
-                        # compiler from unrolling this loop, which for certain sample
-                        # counts produced a corrupted kernel (illegal memory access at
-                        # launch). See
-                        # :func:`~newton._src.render.dome.create_sample_dome_shadow_function`.
+                        # Keep the bound dynamic so Warp does not unroll the ray loop.
                         for s in range(dome_shadow_sample_count):
-                            # Stratify the marginal (row) dimension so the samples spread
-                            # evenly across the environment's brightness distribution
-                            # instead of clustering, lowering variance for the same ray
-                            # count (fewer rays needed for equal quality).
+                            # Stratify rows to reduce variance at a fixed ray count.
                             radiance_sum = radiance_sum + sample_dome_shadow(
                                 dome,
                                 bvh_shapes_size,
@@ -503,7 +488,7 @@ def create_kernel(
         light_colors: wp.array[wp.vec3f],
         ambient_lighting: wp.array[wp.vec3f],
         dome: DomeLight,
-        dome_shadow_seed: wp.int32,
+        dome_shadow_seed: wp.array[wp.int32],
         dome_shadow_sample_count: wp.int32,
         dome_is_set: wp.bool,
         seed: wp.int32,
@@ -662,7 +647,7 @@ def create_kernel(
         light_colors: wp.array[wp.vec3f],
         ambient_lighting: wp.array[wp.vec3f],
         dome: DomeLight,
-        dome_shadow_seed: wp.int32,
+        dome_shadow_seed: wp.array[wp.int32],
         dome_shadow_sample_count: wp.int32,
         dome_is_set: wp.bool,
         # Outputs

@@ -9,7 +9,7 @@ from pathlib import Path
 
 import numpy as np
 
-from newton._src.utils.texture import linear_texture_to_srgb, load_texture
+from newton._src.utils.texture import _decode_hdr_rgbe, linear_texture_to_srgb, load_equirect_image, load_texture
 from newton.tests.unittest_utils import requires
 
 
@@ -39,6 +39,67 @@ class TestLinearTextureToSrgb(unittest.TestCase):
         self.assertTrue(converted.flags.c_contiguous)
         # The shared LUT is read-only; the result must not inherit that. "W" is NumPy's short key for the write flag.
         self.assertTrue(converted.flags["W"])
+
+
+class TestEnvironmentImageLoading(unittest.TestCase):
+    def test_reject_invalid_environment_arrays(self):
+        """Reject invalid environment dimensions, radiance, and numeric types."""
+        for image in (
+            np.ones(3),
+            np.ones((2, 2)),
+            np.ones((2, 2, 2)),
+            np.ones((0, 2, 3)),
+            np.full((1, 1, 3), np.nan),
+            np.full((1, 1, 3), np.inf),
+            np.full((1, 1, 3), -1.0),
+            np.ones((1, 1, 3), dtype=complex),
+        ):
+            with self.subTest(shape=image.shape, dtype=image.dtype), self.assertRaises(ValueError):
+                load_equirect_image(image)
+        rgb = load_equirect_image(np.full((1, 2, 4), 128, dtype=np.uint8))
+        np.testing.assert_allclose(rgb, 0.2158605, atol=1.0e-6)
+        self.assertEqual(rgb.shape, (1, 2, 3))
+        self.assertTrue(rgb.flags.c_contiguous)
+
+    def test_decode_hdr_scanlines_and_orientation(self):
+        """Decode flat and adaptive RGBE streams with both scanline orientations."""
+        pixels = np.array([[[128, 64, 32, 129]] * 8, [[64, 128, 32, 129]] * 8], dtype=np.uint8)
+        header = b"#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n"
+        for resolution in (b"-Y 2 +X 8\n", b"+Y 2 -X 8\n"):
+            for encoding in ("flat", "runs", "literals"):
+                body = bytearray()
+                for row in pixels:
+                    if encoding == "flat":
+                        body.extend(row.tobytes())
+                    else:
+                        body.extend((2, 2, 0, 8))
+                        for channel in range(4):
+                            if encoding == "runs":
+                                body.extend((136, int(row[0, channel])))
+                            else:
+                                body.append(8)
+                                body.extend(row[:, channel].tobytes())
+                expected = pixels[..., :3].astype(np.float32) / 128.0
+                if resolution.startswith(b"+Y"):
+                    expected = expected[::-1, ::-1]
+                with self.subTest(resolution=resolution, encoding=encoding):
+                    np.testing.assert_array_equal(_decode_hdr_rgbe(header + resolution + body), expected)
+
+    def test_reject_malformed_hdr(self):
+        """Reject unsupported formats, invalid dimensions, and overflowing RLE packets."""
+        header = b"#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y 1 +X 8\n"
+        valid_runs = bytes((136, 128, 136, 64, 136, 32, 136, 129))
+        valid = header + bytes((2, 2, 0, 8)) + valid_runs
+        for data in (
+            valid.replace(b"rgbe", b"xyze"),
+            valid.replace(b"+X", b"+Y"),
+            valid.replace(b"-Y 1", b"-Y 0"),
+            header + bytes((2, 2, 0, 8, 137, 128)) + valid_runs[2:],
+            header + bytes((2, 2, 0, 8, 0)) + valid_runs,
+            valid[:-1],
+        ):
+            with self.subTest(data=data), self.assertRaises(ValueError):
+                _decode_hdr_rgbe(data)
 
 
 def _write_png(path: Path, color: tuple[int, int, int]) -> None:

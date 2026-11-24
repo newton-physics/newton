@@ -3,9 +3,11 @@
 
 from __future__ import annotations
 
+import math
+import os
 from collections.abc import Sequence
 from dataclasses import replace
-from typing import Any, Literal
+from typing import Literal
 
 import numpy as np
 import warp as wp
@@ -16,7 +18,7 @@ from ..geometry.deformable_visual import DeformableVisualMesh, DeformableVisuals
 from ..sim import Model, State
 from ..utils import load_texture, normalize_texture
 from ..utils.texture import load_equirect_image
-from .dome import compute_dome_sh9, default_ambient_sh, equirect_frame
+from .dome import advance_dome_seed, compute_dome_sh9, equirect_frame
 from .render import create_kernel
 from .types import (
     AntiAliasing,
@@ -140,9 +142,9 @@ class RenderContext:
         self._lights_orientation: wp.array[wp.vec3f] | None = None
         self._lights_color: wp.array[wp.vec3f] | None = None
 
-        self._dome_light = self._create_default_dome_light()
+        self._dome_light = DomeLight()
         self._dome_light_set = False
-        self._frame_index = 0
+        self._dome_shadow_seed: wp.array[wp.int32] | None = None
 
         self._ambient_sky_color = wp.vec3f(*DEFAULT_AMBIENT_SKY_COLOR)
         self._ambient_ground_color = wp.vec3f(*DEFAULT_AMBIENT_GROUND_COLOR)
@@ -331,27 +333,9 @@ class RenderContext:
         up[int(self.up_axis)] = 1.0
         return wp.vec3f(*up)
 
-    def _create_default_dome_light(self) -> DomeLight:
-        """Build the built-in two-tone sky/ground ambient dome light.
-
-        Active whenever :attr:`RenderConfig.enable_dome_lighting` is set and no
-        HDRI has been provided via :meth:`set_dome_light`. Only the SH term is
-        populated; the environment map / CDFs needed for shadowed sampling are
-        left empty (see the ``RuntimeError`` in :meth:`render`).
-        """
-        forward, bitangent, up = equirect_frame(self.up_axis)
-        dome_light = DomeLight()
-        dome_light.spherical_harmonics = wp.array(default_ambient_sh(self.up_axis), dtype=wp.vec3f, device=self.device)
-        dome_light.intensity = 1.0
-        dome_light.forward = wp.vec3f(float(forward[0]), float(forward[1]), float(forward[2]))
-        dome_light.bitangent = wp.vec3f(float(bitangent[0]), float(bitangent[1]), float(bitangent[2]))
-        dome_light.up = wp.vec3f(float(up[0]), float(up[1]), float(up[2]))
-        dome_light.probability_density_scale = 1.0
-        return dome_light
-
     def set_dome_light(
         self,
-        image: Any,
+        image: str | os.PathLike[str] | np.ndarray | wp.array,
         *,
         intensity: float = 1.0,
         rotation: float = 0.0,
@@ -372,17 +356,20 @@ class RenderContext:
             intensity: Scalar multiplier applied to the dome contribution.
             rotation: Azimuth offset [rad] about the scene up axis (yaw).
         """
+        if not math.isfinite(intensity) or intensity < 0.0:
+            raise ValueError("Dome intensity must be finite and non-negative")
+        if not math.isfinite(rotation):
+            raise ValueError("Dome rotation must be finite")
         equirect = load_equirect_image(image)
-        if equirect is None:
-            raise ValueError(f"Failed to load dome light image: {image!r}")
+        dome_light = DomeLight()
         spherical_harmonics = compute_dome_sh9(equirect, self.up_axis, rotation)
         forward, bitangent, up = equirect_frame(self.up_axis, rotation)
-        self._dome_light.spherical_harmonics = wp.array(spherical_harmonics, dtype=wp.vec3f, device=self.device)
-        self._dome_light.intensity = float(intensity)
-        self._dome_light.environment_map = wp.array(equirect, dtype=wp.vec3f, device=self.device)
-        self._dome_light.forward = wp.vec3f(float(forward[0]), float(forward[1]), float(forward[2]))
-        self._dome_light.bitangent = wp.vec3f(float(bitangent[0]), float(bitangent[1]), float(bitangent[2]))
-        self._dome_light.up = wp.vec3f(float(up[0]), float(up[1]), float(up[2]))
+        dome_light.spherical_harmonics = wp.array(spherical_harmonics, dtype=wp.vec3f, device=self.device)
+        dome_light.intensity = float(intensity)
+        dome_light.environment_map = wp.array(equirect, dtype=wp.vec3f, device=self.device)
+        dome_light.forward = wp.vec3f(float(forward[0]), float(forward[1]), float(forward[2]))
+        dome_light.bitangent = wp.vec3f(float(bitangent[0]), float(bitangent[1]), float(bitangent[2]))
+        dome_light.up = wp.vec3f(float(up[0]), float(up[1]), float(up[2]))
 
         # Build the importance-sampling distribution over the environment, weighted
         # by luminance and solid angle (``sin(theta)``): a marginal cumulative
@@ -401,13 +388,14 @@ class RenderContext:
         row_cumulative_distribution[-1] = 1.0
         column_cumulative_distribution = np.cumsum(weight, axis=1) / row_weight[:, None]
         column_cumulative_distribution[:, -1] = 1.0
-        self._dome_light.row_cumulative_distribution = wp.array(
+        dome_light.row_cumulative_distribution = wp.array(
             row_cumulative_distribution, dtype=wp.float32, device=self.device
         )
-        self._dome_light.column_cumulative_distribution = wp.array(
+        dome_light.column_cumulative_distribution = wp.array(
             column_cumulative_distribution, dtype=wp.float32, device=self.device
         )
-        self._dome_light.probability_density_scale = env_width / (total_weight * 2.0 * np.pi)
+        dome_light.probability_density_scale = env_width / (total_weight * 2.0 * np.pi)
+        self._dome_light = dome_light
         self._dome_light_set = True
 
     def _get_ambient_lighting(self) -> wp.array[wp.vec3f]:
@@ -438,7 +426,6 @@ class RenderContext:
         """
         sky = wp.vec3f(*(float(c) for c in sky_color))
         ground = sky if ground_color is None else wp.vec3f(*(float(c) for c in ground_color))
-        self._dome_light_set = False
         self._ambient_sky_color = sky
         self._ambient_ground_color = ground
         if self._ambient_lighting is not None:
@@ -621,7 +608,10 @@ class RenderContext:
                 raise RuntimeError("dome_shadow_samples > 0 requires an environment map; call set_dome_light() first.")
             if config.enable_dome_background:
                 raise RuntimeError("enable_dome_background requires an environment map; call set_dome_light() first.")
-        self._frame_index += 1
+        if not isinstance(config.dome_shadow_samples, (int, np.integer)) or config.dome_shadow_samples < 0:
+            raise ValueError("dome_shadow_samples must be a non-negative integer")
+        if not math.isfinite(config.dome_shadow_max_distance) or config.dome_shadow_max_distance < 0.0:
+            raise ValueError("dome_shadow_max_distance must be finite and non-negative")
 
         if optix is not None:
             has_shapes = optix.has_instances or bool(optix.planes)
@@ -648,7 +638,13 @@ class RenderContext:
                 "call model.bvh_build_particles(state) for manually populated models."
             )
 
-        if has_shapes or has_particles or self._has_triangle_mesh or self._has_gaussians:
+        if (
+            has_shapes
+            or has_particles
+            or self._has_triangle_mesh
+            or self._has_gaussians
+            or (config.enable_dome_lighting and config.enable_dome_background)
+        ):
             height = camera_rays.shape[0]
             width = camera_rays.shape[1]
 
@@ -757,6 +753,10 @@ class RenderContext:
                 from ..geometry.optix import wo  # noqa: PLC0415
 
                 launch, launch_options = wo.launch, {}
+            if config.enable_dome_lighting and config.dome_shadow_samples > 0:
+                if self._dome_shadow_seed is None:
+                    self._dome_shadow_seed = wp.zeros(1, dtype=wp.int32, device=self.device)
+                wp.launch(advance_dome_seed, dim=1, inputs=[self._dome_shadow_seed], device=self.device)
             launch(
                 render_kernel,
                 dim=(view_count * pixels_per_view),
@@ -813,7 +813,7 @@ class RenderContext:
                     self._lights_color,
                     self._get_ambient_lighting(),
                     self._dome_light,
-                    self._frame_index,
+                    self._dome_shadow_seed,
                     config.dome_shadow_samples,
                     self._dome_light_set,
                     # Outputs

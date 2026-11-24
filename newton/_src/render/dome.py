@@ -51,13 +51,6 @@ _A_OVER_PI = np.array(
     dtype=np.float64,
 )
 
-# Built-in two-tone ambient used when no HDRI dome has been set (see
-# `default_ambient_sh`), matching a bright "sky" above fading to a dim
-# "ground" below.
-_DEFAULT_SKY_COLOR = (0.4, 0.4, 0.45)
-_DEFAULT_GROUND_COLOR = (0.1, 0.1, 0.12)
-_DEFAULT_AMBIENT_INTENSITY = 0.5
-
 
 def equirect_frame(up_axis: AxisType, rotation: float = 0.0) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Orthonormal world-space basis for the equirectangular mapping.
@@ -87,38 +80,6 @@ def equirect_frame(up_axis: AxisType, rotation: float = 0.0) -> tuple[np.ndarray
     return forward, bitangent, up
 
 
-def _sh9_basis(dx: np.ndarray, dy: np.ndarray, dz: np.ndarray) -> np.ndarray:
-    """Evaluate the 9 real SH basis functions for unit directions.
-
-    Args:
-        dx: X components of the directions.
-        dy: Y components of the directions.
-        dz: Z components of the directions.
-
-    Returns:
-        Basis values stacked along a leading axis, shape ``(9, *dx.shape)``.
-
-    The exact sign/ordering convention is internal but must match
-    :func:`eval_dome_irradiance` and :func:`eval_dome_irradiance_np`; consistent
-    signs cancel in the projection-then-reconstruction, so only agreement
-    between projection and evaluation matters.
-    """
-    ones = np.ones_like(dx)
-    return np.stack(
-        [
-            _K0 * ones,
-            _K1 * dy,
-            _K1 * dz,
-            _K1 * dx,
-            _K2 * dx * dy,
-            _K2 * dy * dz,
-            _K3 * (3.0 * dz * dz - 1.0),
-            _K2 * dx * dz,
-            _K4 * (dx * dx - dy * dy),
-        ]
-    )
-
-
 def compute_dome_sh9(
     equirect_rgb: np.ndarray,
     up_axis: AxisType,
@@ -140,90 +101,73 @@ def compute_dome_sh9(
         these with the SH basis at a normal yields the diffuse reflectance
         factor for that normal (see module docstring).
     """
-    img = np.ascontiguousarray(np.asarray(equirect_rgb, dtype=np.float32))
-    if img.ndim != 3 or img.shape[2] < 3:
-        raise ValueError(f"equirect image must have shape (H, W, C>=3), got {tuple(img.shape)}")
-    rgb = img[:, :, :3].astype(np.float64, copy=False)
-    height, width = rgb.shape[0], rgb.shape[1]
-    if height == 1 and width == 1:
-        # A single texel covers the whole sphere; only the constant SH band survives.
-        coefficients = np.zeros((9, 3), dtype=np.float32)
-        coefficients[0] = rgb[0, 0] / _K0
-        return coefficients
+    rgb = np.asarray(equirect_rgb, dtype=np.float32)
+    if rgb.ndim != 3 or rgb.shape[2] < 3 or min(rgb.shape[:2]) == 0:
+        raise ValueError(f"equirect image must have nonempty shape (H, W, C>=3), got {rgb.shape}")
+    rgb = rgb[:, :, :3]
+    height, width = rgb.shape[:2]
+    theta = np.linspace(0.0, np.pi, height + 1)
+    phi = np.linspace(0.0, 2.0 * np.pi, width + 1)
+    cos_theta = np.cos(theta)
+    sin_theta = np.sin(theta)
+    dtheta = np.diff(theta)
+    dphi = np.diff(phi)
+
+    # Integrate each texel's constant radiance over its full solid angle.
+    # The SH basis needs only the constant, first, and second direction moments.
+    # Separable row/column integrals avoid a (9, H, W) basis allocation.
+    theta_0 = -np.diff(cos_theta)
+    theta_z = -np.diff(cos_theta**2) / 2.0
+    theta_xy = dtheta / 2.0 - np.diff(np.sin(2.0 * theta)) / 4.0
+    theta_zz = -np.diff(cos_theta**3) / 3.0
+    theta_zxy = np.diff(sin_theta**3) / 3.0
+    theta_xyxy = theta_0 - theta_zz
+    phi_x = np.diff(np.sin(phi))
+    phi_y = -np.diff(np.cos(phi))
+    phi_xx = dphi / 2.0 + np.diff(np.sin(2.0 * phi)) / 4.0
+    phi_xy = np.diff(np.sin(phi) ** 2) / 2.0
+    phi_yy = dphi - phi_xx
+
+    column_integrals = np.einsum(
+        "hwc,kw->hkc", rgb, np.stack((dphi, phi_x, phi_y, phi_xx, phi_xy, phi_yy)), optimize=True
+    )
+
+    def integrate(rows, column):
+        return rows @ column_integrals[:, column]
+
+    integral = integrate(theta_0, 0)
+    first = np.stack((integrate(theta_z, 0), integrate(theta_xy, 1), integrate(theta_xy, 2)))
+    second = np.empty((3, 3, 3), dtype=np.float64)
+    second[0, 0] = integrate(theta_zz, 0)
+    second[0, 1] = second[1, 0] = integrate(theta_zxy, 1)
+    second[0, 2] = second[2, 0] = integrate(theta_zxy, 2)
+    second[1, 1] = integrate(theta_xyxy, 3)
+    second[1, 2] = second[2, 1] = integrate(theta_xyxy, 4)
+    second[2, 2] = integrate(theta_xyxy, 5)
 
     forward, bitangent, up = equirect_frame(up_axis, rotation)
-
-    thetas = (np.arange(height) + 0.5) / height * np.pi  # polar angle from +up
-    phis = (np.arange(width) + 0.5) / width * (2.0 * np.pi)
-    sin_t = np.sin(thetas)[:, None]
-    cos_t = np.cos(thetas)[:, None]
-    cos_p = np.cos(phis)[None, :]
-    sin_p = np.sin(phis)[None, :]
-
-    # World-space direction per texel: up*cos(theta) + tangent-plane term.
-    dx = up[0] * cos_t + sin_t * (forward[0] * cos_p + bitangent[0] * sin_p)
-    dy = up[1] * cos_t + sin_t * (forward[1] * cos_p + bitangent[1] * sin_p)
-    dz = up[2] * cos_t + sin_t * (forward[2] * cos_p + bitangent[2] * sin_p)
-
-    # Solid angle per texel (sin(theta) * dtheta * dphi), broadcast to (H, W).
-    domega = sin_t * (np.pi / height) * (2.0 * np.pi / width)
-
-    basis = _sh9_basis(dx, dy, dz) * domega  # (9, H, W)
-    # Project each color channel: L_lm = sum(radiance * Y_lm * dOmega).
-    coeffs = np.tensordot(basis, rgb, axes=([1, 2], [0, 1]))  # (9, 3)
-    coeffs *= _A_OVER_PI[:, None]
-    return coeffs.astype(np.float32)
+    frame = np.column_stack((up, forward, bitangent))
+    first = frame @ first
+    second = np.einsum("ia,abc,jb->ijc", frame, second, frame)
+    coefficients = np.stack(
+        (
+            _K0 * integral,
+            _K1 * first[1],
+            _K1 * first[2],
+            _K1 * first[0],
+            _K2 * second[0, 1],
+            _K2 * second[1, 2],
+            _K3 * (3.0 * second[2, 2] - integral),
+            _K2 * second[0, 2],
+            _K4 * (second[0, 0] - second[1, 1]),
+        )
+    )
+    return (coefficients * _A_OVER_PI[:, None]).astype(np.float32)
 
 
-def default_ambient_sh(up_axis: AxisType) -> np.ndarray:
-    """SH coefficients for the built-in two-tone sky/ground ambient.
-
-    A fixed hemispheric gradient (bright "sky" above, dim "ground" below,
-    blended by ``dot(normal, up)``) is an affine function of the normal, so it
-    is captured exactly by the DC (band 0) and linear (band 1) SH terms; bands
-    2 are zero. This lets the built-in ambient reuse
-    :func:`eval_dome_irradiance` instead of a separate shading path, and used
-    as the :class:`~.types.DomeLight` default before
-    :meth:`~newton._src.render.render_context.RenderContext.set_dome_light`
-    is called.
-
-    Args:
-        up_axis: Scene up axis.
-
-    Returns:
-        SH coefficients, shape ``(9, 3)`` float32 (only bands 0 and 1 are non-zero).
-    """
-    up = np.asarray(Axis.from_any(up_axis).to_vector(), dtype=np.float64)
-    sky = np.array(_DEFAULT_SKY_COLOR, dtype=np.float64)
-    ground = np.array(_DEFAULT_GROUND_COLOR, dtype=np.float64)
-    dc = 0.5 * (sky + ground) * _DEFAULT_AMBIENT_INTENSITY
-    linear = 0.5 * (sky - ground) * _DEFAULT_AMBIENT_INTENSITY
-
-    coeffs = np.zeros((9, 3), dtype=np.float64)
-    coeffs[0] = dc / _K0
-    coeffs[1] = linear * up[1] / _K1
-    coeffs[2] = linear * up[2] / _K1
-    coeffs[3] = linear * up[0] / _K1
-    return coeffs.astype(np.float32)
-
-
-def eval_dome_irradiance_np(sh: np.ndarray, normal: np.ndarray) -> np.ndarray:
-    """Evaluate the diffuse dome reflectance factor in numpy (for tests).
-
-    Mirrors the :func:`eval_dome_irradiance` Warp function.
-
-    Args:
-        sh: SH coefficients from :func:`compute_dome_sh9`, shape ``(9, 3)``.
-        normal: Unit surface normal, shape ``(3,)``.
-
-    Returns:
-        Diffuse reflectance factor per channel, shape ``(3,)``, clamped to
-        non-negative.
-    """
-    n = np.asarray(normal, dtype=np.float64)
-    n = n / np.linalg.norm(n)
-    basis = _sh9_basis(n[0], n[1], n[2])  # (9,)
-    return np.maximum(basis @ np.asarray(sh, dtype=np.float64), 0.0)
+@wp.kernel(enable_backward=False)
+def advance_dome_seed(seed: wp.array[wp.int32]):
+    seed[0] = seed[0] + 1
 
 
 @wp.func
@@ -309,7 +253,7 @@ def sample_env(
     """Importance-sample the environment proportionally to radiance x solid angle.
 
     Draws a texel from the precomputed marginal/conditional CDFs (built weighted
-    by luminance and ``sin(theta)``), jitters within the texel, and returns the
+    by luminance and texel solid angle), jitters within the texel, and returns the
     world-space direction, that texel's radiance, and the sampling pdf in
     solid-angle measure. Aiming rays at bright directions (e.g. the sun) is what
     keeps a concentrated source from producing fireflies / undersampling.
