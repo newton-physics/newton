@@ -13,7 +13,7 @@ import warnings
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
-from ..exceptions import NewtonDeprecationWarning, NewtonWarning
+from ..exceptions import NewtonWarning
 
 if TYPE_CHECKING:
     from pxr import Usd
@@ -804,26 +804,22 @@ def parse_usd(
         """Load and cache TetMesh data to avoid repeated USD extraction."""
         prim_path = str(prim.GetPath())
         if prim_path not in tetmesh_cache:
-            # Pass the resolver-declared namespaces explicitly (never None), so the importer keeps the
-            # canonical physics: default and does not trip get_tetmesh()'s legacy-default deprecation.
-            compat_ns = deformable_compat_ns
-            if not compat_ns and usd._material_authors_legacy_deformable_attrs(prim):
-                # Without this deprecation window, a vendor-only material would silently
-                # import with default stiffness/density instead of its authored values.
+            # Vendor attributes used to lift the material API gate for the canonical ones too.
+            if (
+                not deformable_compat_ns
+                and usd._material_authors_legacy_deformable_attrs(prim)
+                and (ignored := usd._ignored_tetmesh_material_attrs(prim))
+            ):
                 warnings.warn(
-                    f"{prim_path}: the bound material authors legacy vendor-namespaced deformable "
-                    f"material attributes (omniphysics: / physxDeformableBody:) without "
-                    f"PhysicsVolumeDeformableMaterialAPI. add_usd() still reads them, but this is "
-                    f"deprecated: author the canonical physics: attributes with the material API, or "
-                    f"pass schema_resolvers=[..., SchemaResolverPhysx()] to keep vendor namespaces "
-                    f"explicitly.",
-                    NewtonDeprecationWarning,
-                    stacklevel=2,
+                    f"{prim_path}: ignoring {', '.join(ignored)} on the bound material. Author "
+                    "canonical physics: attributes with PhysicsVolumeDeformableMaterialAPI, or pass "
+                    "schema_resolvers=[..., SchemaResolverPhysx()] to read them.",
+                    NewtonWarning,
+                    stacklevel=_external_warning_stacklevel(),
                 )
-                compat_ns = usd.DEFORMABLE_LEGACY_NAMESPACES
             tetmesh_cache[prim_path] = usd._get_tetmesh(
                 prim,
-                compat_namespaces=compat_ns,
+                compat_namespaces=deformable_compat_ns,
                 load_custom_attributes=False,
                 # The marked-volume pass owns current proposal material lowering. Avoid
                 # reading it here too, which would duplicate validation warnings. Keep
@@ -833,6 +829,7 @@ def parse_usd(
         return tetmesh_cache[prim_path]
 
     bodies_with_visual_shapes: set[int] = set()
+    body_site_frame_cache = {}
 
     def _get_prim_world_mat(prim, articulation_root_xform, incoming_world_xform):
         prim_world_mat = usd.get_transform_matrix(prim, local=False, xform_cache=xform_cache)
@@ -936,6 +933,28 @@ def parse_usd(
             rel_mat = prim_world_mat
 
         xform_pos, xform_rot, scale = wp.transform_decompose(rel_mat)
+        if is_site and body_xform is not None:
+            # Subtracting the float32 world positions above loses small site offsets
+            # far from the origin. Redo the subtraction in USD double precision and
+            # rotate it into the builder's body frame, with the incoming/rebase
+            # rotation applied to body_xform undone so both are in USD world axes.
+            cached_frame = body_site_frame_cache.get(parent_body_id)
+            if cached_frame is None:
+                body_rot = body_xform.q
+                if incoming_world_xform is not None:
+                    body_rot = wp.quat_inverse(incoming_world_xform.q) * body_rot
+                if articulation_root_xform is not None:
+                    body_rot = articulation_root_xform.q * body_rot
+                body_quat = Gf.Quatd(float(body_rot[3]), float(body_rot[0]), float(body_rot[1]), float(body_rot[2]))
+                body_prim = stage.GetPrimAtPath(_get_rigid_body_ancestor_path(prim))
+                cached_frame = (
+                    body_quat.GetNormalized().GetInverse(),
+                    xform_cache.GetLocalToWorldTransform(body_prim).ExtractTranslation(),
+                )
+                body_site_frame_cache[parent_body_id] = cached_frame
+            body_quat_inv, body_world_pos = cached_frame
+            offset = xform_cache.GetLocalToWorldTransform(prim).ExtractTranslation() - body_world_pos
+            xform_pos = wp.vec3(*body_quat_inv.Transform(offset))
         xform = wp.transform(xform_pos, xform_rot)
 
         shape_id = -1
@@ -2008,7 +2027,7 @@ def parse_usd(
             inertia_tensor_val = (
                 usd.get_attribute(prim, "newton:inertia") if usd.has_applied_api_schema(prim, "NewtonMassAPI") else None
             )
-            has_inertia_tensor = inertia_tensor_val is not None
+            has_inertia_tensor = inertia_tensor_val is not None and len(inertia_tensor_val) > 0
             if has_inertia_tensor:
                 if len(inertia_tensor_val) != 6:
                     warnings.warn(

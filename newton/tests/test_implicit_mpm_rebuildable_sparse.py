@@ -10,7 +10,7 @@ import warp as wp
 import warp.fem as fem
 
 import newton
-from newton._src.solvers.implicit_mpm.solver_implicit_mpm import ImplicitMPMScratchpad
+from newton._src.solvers.implicit_mpm.solver_implicit_mpm import _WARP_AT_LEAST_1_19, ImplicitMPMScratchpad
 from newton.solvers import SolverImplicitMPM
 from newton.tests.unittest_utils import add_function_test, get_selected_cuda_test_devices, get_test_devices
 
@@ -529,9 +529,11 @@ def test_rebuildable_sparse_warmstarts_collider_impulses(test, device):
 
     reference = settle(-1)
     test.assertGreater(reference[:, 2].min(), -0.5 * spacing)
-    np.testing.assert_allclose(settle(8192), reference, atol=1.0e-6)
+    # Before Warp 1.19, nearby-cell lookups search the wrong cells at negative coordinates (NVIDIA/warp GH-2017).
+    atol = 1.0e-6 if _WARP_AT_LEAST_1_19 else 1.0e-5
+    np.testing.assert_allclose(settle(8192), reference, atol=atol)
     # Graphs captured before the first step keep the warm start across replays.
-    np.testing.assert_allclose(settle(8192, capture=True), reference, atol=1.0e-6)
+    np.testing.assert_allclose(settle(8192, capture=True), reference, atol=atol)
 
 
 class TestImplicitMPMRebuildableSparse(unittest.TestCase):
