@@ -14,6 +14,7 @@ newton.viewer
    :nosignatures:
 
    Layer
+   Picking
    ViewerBase
    ViewerFile
    ViewerGL

@@ -16,6 +16,7 @@ wp.config.enable_backward = False
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(parent_dir)
 
+from benchmark_config import pr_gate_repeat
 from benchmark_ik import build_ik_solver, create_franka_model, eval_success, fk_targets, random_solutions
 
 
@@ -63,6 +64,9 @@ class _IKBenchmark:
         with wp.ScopedCapture() as cap:
             self.solver.step(self.seeds_d, self.winners_d, iterations=self.ITERATIONS, step_size=self.STEP_SIZE)
         self.solve_graph = cap.graph
+        # Keep one-time device work out of the samples.
+        wp.capture_launch(self.solve_graph)
+        wp.synchronize_device()
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_solve(self, batch_size):
@@ -89,7 +93,7 @@ class _IKBenchmark:
 
 class FastIKSolve(_IKBenchmark):
     params = ([512],)
-    repeat = 6
+    repeat = pr_gate_repeat(6)
 
 
 if __name__ == "__main__":

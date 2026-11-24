@@ -18,6 +18,7 @@ wp.config.enable_backward = False
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(parent_dir)
 
+from benchmark_config import pr_gate_repeat
 from benchmark_inverse_dynamics import create_franka_model, set_default_pose
 
 
@@ -94,6 +95,9 @@ class _InverseDynamicsBenchmark:
                 joint_f=self.joint_f,
             )
         self.force_graph = cap_force.graph
+        # Keep one-time device work out of the samples.
+        wp.capture_launch(self.force_graph)
+        wp.synchronize_device()
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_eval_inverse_dynamics_passive(self):
@@ -127,7 +131,7 @@ class FastInverseDynamics(_InverseDynamicsBenchmark):
     ``eval_inverse_dynamics_force`` on a model replicating the Franka arm
     across ``WORLD_COUNT`` worlds (default 1024)."""
 
-    repeat = 6
+    repeat = pr_gate_repeat(6)
 
 
 if __name__ == "__main__":

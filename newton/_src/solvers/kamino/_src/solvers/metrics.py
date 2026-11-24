@@ -18,24 +18,25 @@ Usage
 A typical example for using this module is:
 
     # Import all relevant types from Kamino
-    from newton._src.solvers.kamino.core import ModelBuilderKamino
+    import newton
+    from newton._src.solvers.kamino._src.core import ModelKamino
     from newton._src.solvers.kamino._src.geometry import ContactsKamino
     from newton._src.solvers.kamino._src.kinematics import LimitsKamino
     from newton._src.solvers.kamino._src.kinematics import DenseSystemJacobians
     from newton._src.solvers.kamino._src.dynamics import DualProblem
     from newton._src.solvers.kamino.solvers import PADMMSolver
 
-    # Create a model builder and add bodies, joints, geoms, etc.
-    builder = ModelBuilderKamino()
+    # Create a model builder and add bodies, joints, shapes, etc.
+    builder = newton.ModelBuilder()
     ...
 
     # Create a model from the builder and construct additional
     # containers to hold joint-limits, contacts, Jacobians
-    model = builder.finalize()
+    model = ModelKamino.from_newton(builder.finalize())
     state_p = model.state()
     data = model.data()
     limits = LimitsKamino(model)
-    contacts = ContactsKamino(builder)
+    contacts = ContactsKamino(model)
     jacobians = DenseSystemJacobians(model, limits, contacts)
 
     # Build the Jacobians for the model and active limits and contacts
@@ -47,7 +48,7 @@ A typical example for using this module is:
     dual.build(model, data, limits, contacts, jacobians)
 
     # Create a forward-dynamics PADMM solver
-    solver = PADMMSolver(model, limits, contacts)
+    solver = PADMMSolver(model, dual)
 
     # Solve the dual forward dynamics problem
     solver.coldstart()
@@ -75,6 +76,7 @@ A typical example for using this module is:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 import warp as wp
 
@@ -244,6 +246,8 @@ class SolutionMetricsData:
     margin-shifted signed distance stored in the ``w`` component of the contact
     `gapfunc`. Negative `d_k` denotes penetration.
 
+    A NaN contact gap produces a NaN metric and an argmax of `-1`.
+
     Shape of ``(num_worlds,)``.
     """
 
@@ -283,14 +287,14 @@ class SolutionMetricsData:
     """
     The NCP primal residual representing the violation of set-valued constraint reactions.
 
-    Measures the feasibility of constraint reactions w.r.t the feasible-set cone `K`
-    defined as the Cartesian product over all positive-orthants for joint-limits and
-    Coulomb friction cones for contacts:
-    `K = R^{n_l}_{+} x Π_{k=1}^{n_c} K_{mu_k}`,
+    Measures the feasibility of constraint reactions w.r.t the feasible set `C`
+    defined as the Cartesian product over all boxes for bounded multipliers,
+    positive-orthants for joint-limits, and Coulomb friction cones for contacts:
+    `C = Π_{b=1}^{n_b} [lower_b, upper_b] x R^{n_l}_{+} x Π_{k=1}^{n_c} K_{mu_k}`,
 
     Computed as the maximum absolute value (i.e. infinity-norm) over the residual:
-    `r_ncp_primal(lambda) = || lambda - P_K(lambda) ||_inf`, where `P_K()` is the
-    Euclidean projection, i.e. proximal operator, onto K, and `lambda` is the
+    `r_ncp_primal(lambda) = || lambda - P_C(lambda) ||_inf`, where `P_C()` is the
+    Euclidean projection, i.e. proximal operator, onto C, and `lambda` is the
     vector of all constraint reactions (i.e. Lagrange multipliers).
 
     Shape of ``(num_worlds,)``.
@@ -308,6 +312,8 @@ class SolutionMetricsData:
 
     Measures the feasibility of augmented constraint-space velocities w.r.t
     the dual cone `K*`, the Lagrange dual of the feasible-set cone `K`.
+    Bounded-multiplier rows are absent from `K` here: a two-sided box admits any
+    velocity, so it constrains `r_ncp_primal` and `r_ncp_compl` but not this residual.
 
     Computed as the maximum absolute value (i.e. infinity-norm) over the residual:
     `r_ncp_dual(v_hat^+) = || v_hat^+ - P_K*(v_hat^+) ||_inf`, where `P_K*()` is
@@ -330,14 +336,14 @@ class SolutionMetricsData:
     """
     The NCP complementarity residual representing the violation of complementarity conditions.
 
-    Measures the complementarity between constraint reactions and the augmented constraint-space
-    velocities, as defined by the velocity-level Signorini (i.e. complementarity) conditions
-    and positive orthants for joint-limits and Coulomb friction cones for contacts.
+    Measures directional face complementarity for box-constrained multipliers and
+    the complementarity between constraint reactions and augmented constraint-space
+    velocities for joint limits and contacts.
 
-    Computed as the maximum absolute value (i.e. infinity-norm) over the residual:
-    `r_ncp_compl(lambda) = || lambda.T @ v_hat^+ ||_inf`,
-    where `lambda` is the vector of all constraint reactions (i.e. Lagrange multipliers),
-    and `v_hat^+` is the augmented constraint-space velocity defined above.
+    For a box row with bounds `[lower, upper]`, reaction `lambda`, and augmented
+    velocity `v`, its contribution is
+    `(lambda - lower) * max(v, 0) + (upper - lambda) * max(-v, 0)`.
+    Limit and contact contributions use their per-entity inner products.
 
     Shape of ``(num_worlds,)``.
     """
@@ -460,7 +466,6 @@ class SolutionMetricsData:
 def compute_v_plus(
     dim: wp.int32,
     vio: wp.int32,
-    mio: wp.int32,
     sigma: wp.float32,
     P: wp.array[wp.float32],
     D_p: wp.array[wp.float32],
@@ -479,19 +484,15 @@ def compute_v_plus(
     of constraint reactions (i.e. Lagrange multipliers), and `I_n`
     is the identity matrix of size `n x n`.
 
-    The preconditioned Delassus matrix `D_p` is stored using row-major order in a
-    flat array with allocation size `maxdim x maxdim`, starting from the matrix
-    index offset `mio`. The active dimensions of the `D_p` are `dim x dim`, where
-    `dim` is the number of active rows and columns.
+    `D_p` is one world's matrix row, containing the active `dim x dim` matrix
+    in row-major order.
 
     The vectors `v_f_p, lambdas, v_plus` are stored in flat arrays
     with dimensions `dim`, starting from the vector index offset `vio`.
 
     Args:
-        maxdim: The maximum dimension of the matrix `A`.
         dim: The active dimension of the matrix `A` and the vectors `x, b, c`.
         vio: The vector index offset (i.e. start index) for the vectors `x, b, c`.
-        mio: The matrix index offset (i.e. start index) for the matrix `A`.
         D_p: Input preconditioned Delassus matrix stored in row-major order.
         v_f_p: Input preconditioned unconstrained constraint-space velocity vector.
         lambdas: Input constraint reactions (i.e. Lagrange multipliers) vector.
@@ -501,7 +502,7 @@ def compute_v_plus(
     lambdas_j = float(0.0)
     for i in range(dim):
         v_i = vio + i
-        m_i = mio + dim * i
+        m_i = dim * i
         v_f_p_i = v_f_p[v_i]
         inv_P_i = 1.0 / P[v_i]
         lambdas_i = lambdas[v_i]
@@ -551,6 +552,131 @@ def compute_v_plus_sparse(
 
 
 @wp.func
+def _vector_has_nan(dim: wp.int32, vio: wp.int32, vector: wp.array[wp.float32]) -> wp.bool:
+    """Checks whether an active vector segment contains NaN.
+
+    Returns ``True`` if any element in ``vector[vio: vio + dim]`` is NaN.
+    """
+    for i in range(dim):
+        if wp.isnan(vector[vio + i]):
+            return True
+    return False
+
+
+@wp.func
+def _spatial_vector_abs_infnorm(v: wp.spatial_vectorf, dim: wp.int32) -> tuple[wp.float32, wp.int32]:
+    """Returns the infinity norm of the first ``dim`` absolute components and the argmax index.
+
+    Scans the first ``dim`` components once. If any active component is NaN,
+    returns ``(nan, -1)``; otherwise on equal values the earliest index is kept
+    as argmax.
+    """
+    max_val = wp.abs(v[0])
+    argmax = wp.int32(0)
+    has_nan = wp.isnan(v[0])
+    for i in range(1, dim):
+        raw = v[i]
+        if wp.isnan(raw):
+            has_nan = True
+        else:
+            val = wp.abs(raw)
+            if val > max_val:
+                max_val = val
+                argmax = wp.int32(i)
+    if has_nan:
+        return wp.nan, wp.int32(-1)
+    return max_val, argmax
+
+
+@wp.func
+def _vector_segment_abs_infnorm(
+    dim: wp.int32,
+    offset: wp.int32,
+    vector: wp.array[wp.float32],
+) -> tuple[wp.float32, wp.int32]:
+    """Returns the infinity norm of ``abs(vector[offset:offset+dim])`` and the argmax index.
+
+    Scans the segment once. If any active component is NaN, returns ``(nan, -1)``;
+    otherwise on equal values the earliest index is kept as argmax.
+    """
+    max_val = wp.abs(vector[offset])
+    argmax = wp.int32(0)
+    has_nan = wp.isnan(vector[offset])
+    for i in range(1, dim):
+        raw = vector[offset + i]
+        if wp.isnan(raw):
+            has_nan = True
+        else:
+            v = wp.abs(raw)
+            if v > max_val:
+                max_val = v
+                argmax = wp.int32(i)
+    if has_nan:
+        return wp.nan, wp.int32(-1)
+    return max_val, argmax
+
+
+@wp.func
+def _atomic_mark_nan(metric: wp.array[wp.float32], index: wp.int32):
+    """Atomically marks a metric as NaN.
+
+    Once ``metric[index]`` is NaN, it is left unchanged by later calls. Concurrent
+    finite updates from other threads may still race until this write succeeds.
+    """
+    while True:
+        current = metric[index]
+        if wp.isnan(current):
+            return
+        if wp.atomic_cas(metric, index, current, wp.nan) == current:
+            return
+
+
+@wp.func
+def _atomic_max_if_finite(metric: wp.array[wp.float32], index: wp.int32, value: wp.float32) -> wp.float32:
+    """Atomically updates a finite maximum.
+
+    If ``metric[index]`` is already NaN, returns it unchanged and performs no
+    update. Otherwise atomically stores ``max(metric[index], value)``. ``value``
+    is assumed finite; NaN inputs are not propagated here—callers should use
+    :func:`_atomic_mark_nan` instead.
+    """
+    while True:
+        current = metric[index]
+        if wp.isnan(current):
+            return current
+        candidate = wp.max(current, value)
+        previous = wp.atomic_cas(metric, index, current, candidate)
+        if previous == current:
+            return previous
+
+
+@wp.func
+def _atomic_update_metric_max(
+    metric: wp.array[wp.float32],
+    metric_argmax: wp.array[Any],
+    wid: wp.int32,
+    value: wp.float32,
+    argmax_key: Any,
+):
+    """Atomically updates a per-world metric maximum and its argmax key.
+
+    Generic over ``wp.int32`` and ``wp.int64`` argmax keys: ``metric_argmax`` and
+    ``argmax_key`` must use the same concrete type at each call site.
+
+    If ``value`` is NaN, marks ``metric[wid]`` as NaN and sets ``metric_argmax[wid]``
+    to ``-1``. Otherwise atomically stores the finite maximum and, when ``value`` is
+    at least the previous maximum, stores ``argmax_key``.
+    """
+    if wp.isnan(value):
+        _atomic_mark_nan(metric, wid)
+        wp.atomic_exch(metric_argmax, wid, type(argmax_key)(-1))
+    else:
+        previous_max = _atomic_max_if_finite(metric, wid, value)
+        if value >= previous_max:
+            wp.atomic_exch(metric_argmax, wid, argmax_key)
+
+
+@wp.func
 def compute_vector_difference_infnorm(
     dim: wp.int32,
     vio: wp.int32,
@@ -568,17 +694,24 @@ def compute_vector_difference_infnorm(
         y: The second vector.
 
     Returns:
-        Maximum absolute difference and index of the largest component.
+        Maximum absolute difference and index of the largest component. If either
+        input segment contains NaN, returns ``(nan, -1)``.
     """
-    max = float(0.0)
+    max_val = float(0.0)
     argmax = wp.int32(-1)
+    has_nan = wp.bool(False)
     for i in range(dim):
         v_i = vio + i
-        err = wp.abs(x[v_i] - y[v_i])
-        max = wp.max(max, err)
-        if err == max:
-            argmax = i
-    return max, argmax
+        if wp.isnan(x[v_i]) or wp.isnan(y[v_i]):
+            has_nan = True
+        else:
+            err = wp.abs(x[v_i] - y[v_i])
+            max_val = wp.max(max_val, err)
+            if err == max_val:
+                argmax = i
+    if has_nan:
+        return wp.nan, wp.int32(-1)
+    return max_val, argmax
 
 
 ###
@@ -626,19 +759,16 @@ def _compute_eom_residual(
     S_i = wp.skew(omega_i_p)
 
     # Compute the per-body EoM residual over linear and angular parts
-    r_linear_i = wp.abs(m_i * (v_i - v_i_p) - dt * (m_i * g + f_i))
-    r_angular_i = wp.abs(I_i @ (omega_i - omega_i_p) - dt * (tau_i - S_i @ (I_i @ omega_i_p)))
+    r_linear_i = m_i * (v_i - v_i_p) - dt * (m_i * g + f_i)
+    r_angular_i = I_i @ (omega_i - omega_i_p) - dt * (tau_i - S_i @ (I_i @ omega_i_p))
     r_i = wp.spatial_vectorf(*r_linear_i, *r_angular_i)
 
-    # Compute the per-body maximum residual and argmax index
-    r_eom_i = wp.max(r_i)
-    r_eom_argmax_i = wp.int32(wp.argmax(r_i))
+    # Compute the per-body maximum residual and argmax index.
+    r_eom_i, r_eom_argmax_i = _spatial_vector_abs_infnorm(r_i, wp.int32(6))
 
     # Update the per-world maximum residual and argmax index
-    previous_max = wp.atomic_max(metric_r_eom, wid, r_eom_i)
-    if r_eom_i >= previous_max:
-        argmax_key = wp.int64(build_pair_key2(wp.uint32(bid), wp.uint32(r_eom_argmax_i)))
-        wp.atomic_exch(metric_r_eom_argmax, wp.int32(wid), argmax_key)
+    argmax_key = wp.int64(build_pair_key2(wp.uint32(bid), wp.uint32(r_eom_argmax_i)))
+    _atomic_update_metric_max(metric_r_eom, metric_r_eom_argmax, wid, r_eom_i, argmax_key)
 
 
 @wp.kernel
@@ -653,8 +783,7 @@ def _compute_joint_kinematics_residual_dense(
     model_joint_bid_B: wp.array[wp.int32],
     model_joint_bid_F: wp.array[wp.int32],
     data_bodies_u_i: wp.array[wp.spatial_vectorf],
-    jacobian_cts_offset: wp.array[wp.int32],
-    jacobian_cts_data: wp.array[wp.float32],
+    jacobian_cts_data_storage: wp.array2d[wp.float32],
     # Outputs:
     metric_r_kinematics: wp.array[wp.float32],
     metric_r_kinematics_argmax: wp.array[wp.int64],
@@ -664,6 +793,7 @@ def _compute_joint_kinematics_residual_dense(
 
     # Retrieve the world index of the joint
     wid = model_joint_wid[jid]
+    jacobian_cts_data = jacobian_cts_data_storage[wid]
 
     # Retrieve the body indices of the joint
     # NOTE: these indices are w.r.t the model
@@ -672,40 +802,37 @@ def _compute_joint_kinematics_residual_dense(
 
     # Retrieve the size and index offset of the joint constraint
     num_cts_j = model_joint_num_kinematic_cts[jid]
+    if num_cts_j == 0:
+        return
     cts_offset_j = model_joint_kinematic_cts_offset_total_cts[jid] - model_info_total_cts_offset[wid]
 
     # Retrieve the world-specific info
     bio = model_info_bodies_offset[wid]
     nbd = 6 * (model_info_bodies_offset[wid + 1] - bio)
     kgo = model_info_joint_kinematic_cts_group_offset[wid]
-    mio = jacobian_cts_offset[wid]
 
     # Compute the per-joint constraint Jacobian matrix-vector product
     j_v_j = wp.spatial_vectorf(0.0)
     u_i_F = data_bodies_u_i[bid_F_j]
     dio_F = 6 * (bid_F_j - bio)
     for j in range(num_cts_j):
-        mio_j = mio + nbd * (cts_offset_j + j) + dio_F
+        mio_j = nbd * (cts_offset_j + j) + dio_F
         for i in range(6):
             j_v_j[j] += jacobian_cts_data[mio_j + i] * u_i_F[i]
     if bid_B_j >= 0:
         u_i_B = data_bodies_u_i[bid_B_j]
         dio_B = 6 * (bid_B_j - bio)
         for j in range(num_cts_j):
-            mio_j = mio + nbd * (cts_offset_j + j) + dio_B
+            mio_j = nbd * (cts_offset_j + j) + dio_B
             for i in range(6):
                 j_v_j[j] += jacobian_cts_data[mio_j + i] * u_i_B[i]
 
-    # Compute the per-joint kinematics residual and local argmax
-    j_v_j_abs = wp.abs(j_v_j)
-    kin_argmax_local = wp.argmax(j_v_j_abs)
-    r_kinematics_j = j_v_j_abs[kin_argmax_local]
+    # Compute the per-joint kinematics residual and local argmax.
+    r_kinematics_j, kin_argmax_local = _spatial_vector_abs_infnorm(j_v_j, num_cts_j)
 
     # Update the per-world maximum residual and argmax index
-    previous_max = wp.atomic_max(metric_r_kinematics, wid, r_kinematics_j)
-    if r_kinematics_j >= previous_max:
-        argmax_key = wp.int64(build_pair_key2(wp.uint32(jid), wp.uint32(cts_offset_j - kgo) + kin_argmax_local))
-        wp.atomic_exch(metric_r_kinematics_argmax, wid, argmax_key)
+    argmax_key = wp.int64(build_pair_key2(wp.uint32(jid), wp.uint32(cts_offset_j - kgo) + wp.uint32(kin_argmax_local)))
+    _atomic_update_metric_max(metric_r_kinematics, metric_r_kinematics_argmax, wid, r_kinematics_j, argmax_key)
 
 
 @wp.kernel
@@ -739,6 +866,8 @@ def _compute_joint_kinematics_residual_sparse(
     # Retrieve the size and index offset of the joint constraint
     num_dyn_cts_j = model_joint_num_dynamic_cts[jid]
     num_kin_cts_j = model_joint_num_kinematic_cts[jid]
+    if num_kin_cts_j == 0:
+        return
     kin_cts_offset_j = model_joint_kinematic_cts_offset[jid] - model_info_joint_kinematic_cts_offset[wid]
 
     # Retrieve the starting index for the non-zero blocks for the current joint
@@ -756,16 +885,12 @@ def _compute_joint_kinematics_residual_sparse(
             jac_block = jac_nzb_values[jac_j_nzb_start + num_kin_cts_j + j]
             j_v_j[j] += wp.dot(jac_block, u_i_B)
 
-    # Compute the per-joint kinematics residual and local argmax
-    j_v_j_abs = wp.abs(j_v_j)
-    kin_argmax_local = wp.argmax(j_v_j_abs)
-    r_kinematics_j = j_v_j_abs[kin_argmax_local]
+    # Compute the per-joint kinematics residual and local argmax.
+    r_kinematics_j, kin_argmax_local = _spatial_vector_abs_infnorm(j_v_j, num_kin_cts_j)
 
     # Update the per-world maximum residual and argmax index
-    previous_max = wp.atomic_max(metric_r_kinematics, wid, r_kinematics_j)
-    if r_kinematics_j >= previous_max:
-        argmax_key = wp.int64(build_pair_key2(wp.uint32(jid), wp.uint32(kin_cts_offset_j) + kin_argmax_local))
-        wp.atomic_exch(metric_r_kinematics_argmax, wid, argmax_key)
+    argmax_key = wp.int64(build_pair_key2(wp.uint32(jid), wp.uint32(kin_cts_offset_j) + wp.uint32(kin_argmax_local)))
+    _atomic_update_metric_max(metric_r_kinematics, metric_r_kinematics_argmax, wid, r_kinematics_j, argmax_key)
 
 
 @wp.kernel
@@ -787,24 +912,18 @@ def _compute_cts_joints_residual(
     wid = model_joint_wid[jid]
     num_cts_j = model_joint_num_kinematic_cts[jid]
     cio_j = model_joint_kinematic_cts_offset[jid]
+    # Early return for free joints
+    if num_cts_j == 0:
+        return
 
     # Compute the per-joint constraint residual (infinity-norm) and local argmax row
-    r_cts_joints_j = wp.float32(0.0)
-    argmax_j = wp.int32(0)
-    if num_cts_j > 0:
-        r_cts_joints_j = wp.abs(data_joints_r_j[cio_j])
-        for j in range(1, num_cts_j):
-            v = wp.abs(data_joints_r_j[cio_j + j])
-            if v > r_cts_joints_j:
-                r_cts_joints_j = v
-                argmax_j = wp.int32(j)
+    r_cts_joints_j, argmax_j = _vector_segment_abs_infnorm(num_cts_j, cio_j, data_joints_r_j)
+
+    cio_j_loc = cio_j - model_info_joint_kinematic_cts_offset[wid]
 
     # Update the per-world maximum residual and argmax index
-    previous_max = wp.atomic_max(metric_r_cts_joints, wid, r_cts_joints_j)
-    if r_cts_joints_j >= previous_max:
-        cio_j_loc = cio_j - model_info_joint_kinematic_cts_offset[wid]
-        argmax_key = wp.int64(build_pair_key2(wp.uint32(jid), wp.uint32(cio_j_loc + argmax_j)))
-        wp.atomic_exch(metric_r_cts_joints_argmax, wid, argmax_key)
+    argmax_key = wp.int64(build_pair_key2(wp.uint32(jid), wp.uint32(cio_j_loc + argmax_j)))
+    _atomic_update_metric_max(metric_r_cts_joints, metric_r_cts_joints_argmax, wid, r_cts_joints_j, argmax_key)
 
 
 @wp.kernel
@@ -838,10 +957,8 @@ def _compute_cts_limits_residual(
     r_cts_limits_l = wp.abs(limit_r_q[lid])
 
     # Update the per-world maximum residual
-    previous_max = wp.atomic_max(metric_r_cts_limits, wid, r_cts_limits_l)
-    if r_cts_limits_l >= previous_max:
-        argmax_key = wp.int64(build_pair_key2(wp.uint32(wlid), wp.uint32(dof)))
-        wp.atomic_exch(metric_r_cts_limits_argmax, wid, argmax_key)
+    argmax_key = wp.int64(build_pair_key2(wp.uint32(wlid), wp.uint32(dof)))
+    _atomic_update_metric_max(metric_r_cts_limits, metric_r_cts_limits_argmax, wid, r_cts_limits_l, argmax_key)
 
 
 @wp.kernel
@@ -871,32 +988,40 @@ def _compute_cts_contacts_residual(
     gapfunc = contact_gapfunc[cid]
 
     # Compute unilateral penetration depth from the margin-shifted signed distance.
-    r_cts_contacts_k = wp.max(0.0, -gapfunc[3])
+    r_cts_contacts_k = wp.where(wp.isnan(gapfunc[3]), wp.nan, wp.max(0.0, -gapfunc[3]))
 
-    # Update the per-world maximum residual and argmax index
-    previous_max = wp.atomic_max(metric_r_cts_contacts, wid, r_cts_contacts_k)
-    if r_cts_contacts_k > 0.0 and r_cts_contacts_k >= previous_max:
-        wp.atomic_exch(metric_r_cts_contacts_argmax, wid, wcid)
+    # Both NaN and positive penetration need to be stored as metrics.
+    if wp.isnan(r_cts_contacts_k) or r_cts_contacts_k > 0.0:
+        # Update the per-world maximum residual and argmax index
+        argmax_key = wcid
+        _atomic_update_metric_max(
+            metric_r_cts_contacts, metric_r_cts_contacts_argmax, wid, r_cts_contacts_k, argmax_key
+        )
 
 
 @wp.kernel
 def _compute_dual_problem_metrics(
     # Inputs:
+    problem_nbc: wp.array[wp.int32],
     problem_nl: wp.array[wp.int32],
     problem_nc: wp.array[wp.int32],
+    problem_bcio: wp.array[wp.int32],
     problem_cio: wp.array[wp.int32],
+    problem_bcgo: wp.array[wp.int32],
     problem_lcgo: wp.array[wp.int32],
     problem_ccgo: wp.array[wp.int32],
     problem_dim: wp.array[wp.int32],
     problem_vio: wp.array[wp.int32],
-    problem_mio: wp.array[wp.int32],
     problem_mu: wp.array[wp.float32],
     problem_v_f: wp.array[wp.float32],
-    problem_D: wp.array[wp.float32],
+    problem_D_storage: wp.array2d[wp.float32],
     problem_P: wp.array[wp.float32],
+    problem_bound_lower: wp.array[wp.float32],
+    problem_bound_upper: wp.array[wp.float32],
     solution_sigma: wp.array[wp.vec2f],
     solution_lambdas: wp.array[wp.float32],
     solution_v_plus: wp.array[wp.float32],
+    use_solution_velocity: wp.bool,
     # Buffers:
     buffer_s: wp.array[wp.float32],
     buffer_v: wp.array[wp.float32],
@@ -916,27 +1041,35 @@ def _compute_dual_problem_metrics(
 ):
     # Retrieve the thread index as the world index
     wid = wp.tid()
+    problem_D = problem_D_storage[wid]
 
     # Retrieve the world-specific data
+    nbc = problem_nbc[wid]
     nl = problem_nl[wid]
     nc = problem_nc[wid]
     ncts = problem_dim[wid]
+    bcio = problem_bcio[wid]
     cio = problem_cio[wid]
+    bcgo = problem_bcgo[wid]
     lcgo = problem_lcgo[wid]
     ccgo = problem_ccgo[wid]
     vio = problem_vio[wid]
-    mio = problem_mio[wid]
     sigma = solution_sigma[wid]
 
     # Compute additional info
-    njc = ncts - (nl + 3 * nc)
+    njc = ncts - (nbc + nl + 3 * nc)
 
     # Compute the post-event constraint-space velocity from the current solution: v_plus = v_f + D @ lambda
     # NOTE: We assume the dual problem linear terms `D` and `v_f` have already been preconditioned in-place using `P`
-    compute_v_plus(ncts, vio, mio, sigma[0], problem_P, problem_D, problem_v_f, solution_lambdas, buffer_v)
+    compute_v_plus(ncts, vio, sigma[0], problem_P, problem_D, problem_v_f, solution_lambdas, buffer_v)
 
     # Compute the post-event constraint-space velocity error as: r_v_plus = || v_plus_est - v_plus_true ||_inf
     r_v_plus, r_v_plus_argmax = compute_vector_difference_infnorm(ncts, vio, solution_v_plus, buffer_v)
+
+    # If requested, test the NCP against the actually accepted output state rather than reconstructed velocity.
+    if use_solution_velocity:
+        for row in range(ncts):
+            buffer_v[vio + row] = solution_v_plus[vio + row]
 
     # Compute the De Saxce correction for each contact as: s = G(v_plus)
     compute_desaxce_corrections(nc, cio, vio, ccgo, problem_mu, buffer_v, buffer_s)
@@ -951,19 +1084,78 @@ def _compute_dual_problem_metrics(
     # Compute the augmented post-event constraint-space velocity as: v_aug = v_plus + s
     compute_vector_sum(ncts, vio, buffer_v, buffer_s, buffer_v)
 
-    # Compute the NCP primal residual as: r_p := || lambda - proj_K(lambda) ||_inf
-    r_ncp_p, r_ncp_p_argmax = compute_ncp_primal_residual(nl, nc, vio, lcgo, ccgo, cio, problem_mu, solution_lambdas)
+    # Compute the NCP primal residual as: r_p := || lambda - proj_C(lambda) ||_inf
+    r_ncp_p, r_ncp_p_argmax = compute_ncp_primal_residual(
+        nbc,
+        nl,
+        nc,
+        vio,
+        bcio,
+        bcgo,
+        lcgo,
+        ccgo,
+        cio,
+        problem_mu,
+        problem_bound_lower,
+        problem_bound_upper,
+        problem_P,
+        solution_lambdas,
+    )
 
     # Compute the NCP dual residual as: r_d := || v_plus + s - proj_dual_K(v_plus + s)  ||_inf
     r_ncp_d, r_ncp_d_argmax = compute_ncp_dual_residual(njc, nl, nc, vio, lcgo, ccgo, cio, problem_mu, buffer_v)
 
-    # Compute the NCP complementarity (lambda _|_ (v_plus + s)) residual as r_c := || lambda.dot(v_plus + s) ||_inf
-    r_ncp_c, r_ncp_c_argmax = compute_ncp_complementarity_residual(nl, nc, vio, lcgo, ccgo, buffer_v, solution_lambdas)
-
-    # Compute the natural-map residuals as: r_natmap = || lambda - proj_K(lambda - (v + s)) ||_inf
-    r_ncp_natmap, r_ncp_natmap_argmax = compute_ncp_natural_map_residual(
-        njc, nl, nc, vio, lcgo, ccgo, cio, problem_mu, buffer_v, solution_lambdas
+    # Compute generalized complementarity for boxes, limits, and contacts.
+    r_ncp_c, r_ncp_c_argmax = compute_ncp_complementarity_residual(
+        nbc,
+        nl,
+        nc,
+        vio,
+        bcio,
+        bcgo,
+        lcgo,
+        ccgo,
+        problem_bound_lower,
+        problem_bound_upper,
+        problem_P,
+        buffer_v,
+        solution_lambdas,
     )
+
+    # Compute the natural-map residual as: r_natmap = || lambda - proj_C(lambda - (v + s)) ||_inf
+    r_ncp_natmap, r_ncp_natmap_argmax = compute_ncp_natural_map_residual(
+        njc,
+        nbc,
+        nl,
+        nc,
+        vio,
+        bcio,
+        bcgo,
+        lcgo,
+        ccgo,
+        cio,
+        problem_mu,
+        problem_bound_lower,
+        problem_bound_upper,
+        problem_P,
+        buffer_v,
+        solution_lambdas,
+    )
+
+    lambdas_has_nan = _vector_has_nan(ncts, vio, solution_lambdas)
+    if lambdas_has_nan or _vector_has_nan(ncts, vio, buffer_v) or _vector_has_nan(nc, cio, problem_mu):
+        r_ncp_p = wp.nan
+        r_ncp_p_argmax = wp.int32(-1)
+        r_ncp_d = wp.nan
+        r_ncp_d_argmax = wp.int32(-1)
+        r_ncp_c = wp.nan
+        r_ncp_c_argmax = wp.int32(-1)
+        r_ncp_natmap = wp.nan
+        r_ncp_natmap_argmax = wp.int32(-1)
+
+    if lambdas_has_nan or _vector_has_nan(ncts, vio, problem_v_f):
+        f_ncp = wp.nan
+        f_ccp = wp.nan
 
     # Store the computed metrics in the output arrays
     metric_r_v_plus[wid] = r_v_plus
@@ -983,9 +1175,12 @@ def _compute_dual_problem_metrics(
 @wp.kernel
 def _compute_dual_problem_metrics_sparse(
     # Inputs:
+    problem_nbc: wp.array[wp.int32],
     problem_nl: wp.array[wp.int32],
     problem_nc: wp.array[wp.int32],
+    problem_bcio: wp.array[wp.int32],
     problem_cio: wp.array[wp.int32],
+    problem_bcgo: wp.array[wp.int32],
     problem_lcgo: wp.array[wp.int32],
     problem_ccgo: wp.array[wp.int32],
     problem_dim: wp.array[wp.int32],
@@ -993,8 +1188,11 @@ def _compute_dual_problem_metrics_sparse(
     problem_mu: wp.array[wp.float32],
     problem_v_f: wp.array[wp.float32],
     problem_P: wp.array[wp.float32],
+    problem_bound_lower: wp.array[wp.float32],
+    problem_bound_upper: wp.array[wp.float32],
     solution_lambdas: wp.array[wp.float32],
     solution_v_plus: wp.array[wp.float32],
+    use_solution_velocity: wp.bool,
     # Buffers:
     buffer_s: wp.array[wp.float32],
     buffer_v: wp.array[wp.float32],
@@ -1016,16 +1214,19 @@ def _compute_dual_problem_metrics_sparse(
     wid = wp.tid()
 
     # Retrieve the world-specific data
+    nbc = problem_nbc[wid]
     nl = problem_nl[wid]
     nc = problem_nc[wid]
     ncts = problem_dim[wid]
+    bcio = problem_bcio[wid]
     cio = problem_cio[wid]
+    bcgo = problem_bcgo[wid]
     lcgo = problem_lcgo[wid]
     ccgo = problem_ccgo[wid]
     vio = problem_vio[wid]
 
     # Compute additional info
-    njc = ncts - (nl + 3 * nc)
+    njc = ncts - (nbc + nl + 3 * nc)
 
     # Compute the post-event constraint-space velocity from the current solution: v_plus = v_f + D @ lambda
     # NOTE: We assume the dual problem term `v_f` has already been preconditioned in-place using `P`, and
@@ -1034,6 +1235,11 @@ def _compute_dual_problem_metrics_sparse(
 
     # Compute the post-event constraint-space velocity error as: r_v_plus = || v_plus_est - v_plus_true ||_inf
     r_v_plus, r_v_plus_argmax = compute_vector_difference_infnorm(ncts, vio, solution_v_plus, buffer_v)
+
+    # If requested, test the NCP against the actually accepted output state rather than reconstructed velocity.
+    if use_solution_velocity:
+        for row in range(ncts):
+            buffer_v[vio + row] = solution_v_plus[vio + row]
 
     # Compute the De Saxce correction for each contact as: s = G(v_plus)
     compute_desaxce_corrections(nc, cio, vio, ccgo, problem_mu, buffer_v, buffer_s)
@@ -1048,19 +1254,78 @@ def _compute_dual_problem_metrics_sparse(
     # Compute the augmented post-event constraint-space velocity as: v_aug = v_plus + s
     compute_vector_sum(ncts, vio, buffer_v, buffer_s, buffer_v)
 
-    # Compute the NCP primal residual as: r_p := || lambda - proj_K(lambda) ||_inf
-    r_ncp_p, r_ncp_p_argmax = compute_ncp_primal_residual(nl, nc, vio, lcgo, ccgo, cio, problem_mu, solution_lambdas)
+    # Compute the NCP primal residual as: r_p := || lambda - proj_C(lambda) ||_inf
+    r_ncp_p, r_ncp_p_argmax = compute_ncp_primal_residual(
+        nbc,
+        nl,
+        nc,
+        vio,
+        bcio,
+        bcgo,
+        lcgo,
+        ccgo,
+        cio,
+        problem_mu,
+        problem_bound_lower,
+        problem_bound_upper,
+        problem_P,
+        solution_lambdas,
+    )
 
     # Compute the NCP dual residual as: r_d := || v_plus + s - proj_dual_K(v_plus + s)  ||_inf
     r_ncp_d, r_ncp_d_argmax = compute_ncp_dual_residual(njc, nl, nc, vio, lcgo, ccgo, cio, problem_mu, buffer_v)
 
-    # Compute the NCP complementarity (lambda _|_ (v_plus + s)) residual as r_c := || lambda.dot(v_plus + s) ||_inf
-    r_ncp_c, r_ncp_c_argmax = compute_ncp_complementarity_residual(nl, nc, vio, lcgo, ccgo, buffer_v, solution_lambdas)
-
-    # Compute the natural-map residuals as: r_natmap = || lambda - proj_K(lambda - (v + s)) ||_inf
-    r_ncp_natmap, r_ncp_natmap_argmax = compute_ncp_natural_map_residual(
-        njc, nl, nc, vio, lcgo, ccgo, cio, problem_mu, buffer_v, solution_lambdas
+    # Compute generalized complementarity for boxes, limits, and contacts.
+    r_ncp_c, r_ncp_c_argmax = compute_ncp_complementarity_residual(
+        nbc,
+        nl,
+        nc,
+        vio,
+        bcio,
+        bcgo,
+        lcgo,
+        ccgo,
+        problem_bound_lower,
+        problem_bound_upper,
+        problem_P,
+        buffer_v,
+        solution_lambdas,
     )
+
+    # Compute the natural-map residual as: r_natmap = || lambda - proj_C(lambda - (v + s)) ||_inf
+    r_ncp_natmap, r_ncp_natmap_argmax = compute_ncp_natural_map_residual(
+        njc,
+        nbc,
+        nl,
+        nc,
+        vio,
+        bcio,
+        bcgo,
+        lcgo,
+        ccgo,
+        cio,
+        problem_mu,
+        problem_bound_lower,
+        problem_bound_upper,
+        problem_P,
+        buffer_v,
+        solution_lambdas,
+    )
+
+    lambdas_has_nan = _vector_has_nan(ncts, vio, solution_lambdas)
+    if lambdas_has_nan or _vector_has_nan(ncts, vio, buffer_v) or _vector_has_nan(nc, cio, problem_mu):
+        r_ncp_p = wp.nan
+        r_ncp_p_argmax = wp.int32(-1)
+        r_ncp_d = wp.nan
+        r_ncp_d_argmax = wp.int32(-1)
+        r_ncp_c = wp.nan
+        r_ncp_c_argmax = wp.int32(-1)
+        r_ncp_natmap = wp.nan
+        r_ncp_natmap_argmax = wp.int32(-1)
+
+    if lambdas_has_nan or _vector_has_nan(ncts, vio, problem_v_f):
+        f_ncp = wp.nan
+        f_ccp = wp.nan
 
     # Store the computed metrics in the output arrays
     metric_r_v_plus[wid] = r_v_plus
@@ -1203,6 +1468,7 @@ class SolutionMetrics:
         jacobians: DenseSystemJacobians | SparseSystemJacobians,
         limits: LimitsKamino | None = None,
         contacts: ContactsKamino | None = None,
+        use_solution_velocity: bool = False,
     ):
         """
         Evaluates all solution performance metrics.
@@ -1218,11 +1484,36 @@ class SolutionMetrics:
             sigma: The array diagonal regularization applied to the Delassus matrix of the current dual problem.
             lambdas: The array of constraint reactions (i.e. Lagrange multipliers) of the current dual problem solution.
             v_plus: The array of post-event constraint-space velocities of the current dual problem solution.
+            use_solution_velocity: Whether velocity-dependent NCP and VI residuals and objectives
+                use ``v_plus`` instead of the velocity implied by the dual problem.
+                ``r_v_plus`` compares both velocities in either case.
+        """
+        self._assert_has_data()
+        self.evaluate_primal(model, data, state_p, jacobians, limits, contacts)
+        self._evaluate_dual_problem_perf(sigma, lambdas, v_plus, problem, use_solution_velocity)
+
+    def evaluate_primal(
+        self,
+        model: ModelKamino,
+        data: DataKamino,
+        state_p: StateKamino,
+        jacobians: DenseSystemJacobians | SparseSystemJacobians,
+        limits: LimitsKamino | None = None,
+        contacts: ContactsKamino | None = None,
+    ) -> None:
+        """Evaluate backend-neutral EOM and constraint metrics.
+
+        Args:
+            model: The model containing time-invariant simulation data.
+            data: The model data containing the final simulation state.
+            state_p: The state at the beginning of the time step.
+            jacobians: The system Jacobians used by the dynamics solve.
+            limits: Active joint-limit constraints.
+            contacts: Active contact constraints.
         """
         self._assert_has_data()
         self._evaluate_constraint_violations_perf(model, data, limits, contacts)
         self._evaluate_primal_problem_perf(model, data, state_p, jacobians)
-        self._evaluate_dual_problem_perf(sigma, lambdas, v_plus, problem)
 
     ###
     # Internals
@@ -1339,7 +1630,7 @@ class SolutionMetrics:
             inputs=[
                 # Inputs:
                 model.time.dt,
-                model.gravity.vector,
+                model.gravity,
                 model.bodies.wid,
                 model.bodies.m_i,
                 data.bodies.I_i,
@@ -1371,7 +1662,6 @@ class SolutionMetrics:
                         model.joints.bid_B,
                         model.joints.bid_F,
                         data.bodies.u_i,
-                        jacobians.data.J_cts_offsets,
                         jacobians.data.J_cts_data,
                         # Outputs:
                         self._data.r_kinematics,
@@ -1409,6 +1699,7 @@ class SolutionMetrics:
         lambdas: wp.array[wp.float32],
         v_plus: wp.array[wp.float32],
         problem: DualProblem,
+        use_solution_velocity: bool = False,
     ):
         """
         Evaluates the dual problem performance metrics.
@@ -1418,6 +1709,9 @@ class SolutionMetrics:
             sigma: The array of sigma values for the dual problem.
             lambdas: The array of lambda values for the dual problem.
             v_plus: The array of v_plus values for the dual problem.
+            use_solution_velocity: Whether velocity-dependent NCP and
+                VI residuals and objectives use ``v_plus`` instead of the
+                velocity implied by the dual problem.
         """
         # Ensure metrics data is available
         self._assert_has_data()
@@ -1442,9 +1736,12 @@ class SolutionMetrics:
                 dim=problem.size.num_worlds,
                 inputs=[
                     # Inputs:
+                    problem.data.nbc,
                     problem.data.nl,
                     problem.data.nc,
+                    problem.data.bcio,
                     problem.data.cio,
+                    problem.data.bcgo,
                     problem.data.lcgo,
                     problem.data.ccgo,
                     problem.data.dim,
@@ -1452,8 +1749,11 @@ class SolutionMetrics:
                     problem.data.mu,
                     problem.data.v_f,
                     problem.data.P,
+                    problem.data.bound_lower,
+                    problem.data.bound_upper,
                     lambdas,
                     v_plus,
+                    use_solution_velocity,
                     # Buffers:
                     self._buffer_s,
                     self._buffer_v,
@@ -1479,21 +1779,26 @@ class SolutionMetrics:
                 dim=problem.size.num_worlds,
                 inputs=[
                     # Inputs:
+                    problem.data.nbc,
                     problem.data.nl,
                     problem.data.nc,
+                    problem.data.bcio,
                     problem.data.cio,
+                    problem.data.bcgo,
                     problem.data.lcgo,
                     problem.data.ccgo,
                     problem.data.dim,
                     problem.data.vio,
-                    problem.data.mio,
                     problem.data.mu,
                     problem.data.v_f,
                     problem.data.D,
                     problem.data.P,
+                    problem.data.bound_lower,
+                    problem.data.bound_upper,
                     sigma,
                     lambdas,
                     v_plus,
+                    use_solution_velocity,
                     # Buffers:
                     self._buffer_s,
                     self._buffer_v,

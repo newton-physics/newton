@@ -7,13 +7,21 @@ from asv_runner.benchmarks.mark import skip_benchmark_if
 wp.config.enable_backward = False
 wp.config.log_level = wp.LOG_WARNING
 
+import os
+import sys
+
+parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+sys.path.append(parent_dir)
+
+from benchmark_config import pr_gate_repeat
+
 import newton
 import newton.examples
 from newton.examples.selection.example_selection_cartpole import Example
 
 
 class FastExampleSelectionCartpoleMuJoCo:
-    repeat = 10
+    repeat = pr_gate_repeat(10)
     number = 1
 
     def setup(self):
@@ -25,6 +33,9 @@ class FastExampleSelectionCartpoleMuJoCo:
             self.example = Example(
                 viewer=newton.viewer.ViewerNull(num_frames=self.num_frames), world_count=16, verbose=False
             )
+        # Keep one-time device work out of the samples.
+        self.example.step()
+        wp.synchronize_device()
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_simulate(self):

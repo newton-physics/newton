@@ -1,18 +1,24 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example VBD Soft Contact
-#
-# Each supported rigid shape type gets its own cloth bag so that
-# particle-rigid (soft) contacts can be inspected in isolation.
-# The bags are laid out in a row; bodies settle under gravity and are
-# then lifted, making it easy to spot which shape type causes
-# instability.
-#
-# Command: python -m newton.examples vbd_soft_rigid_contact
-#
-###########################################################################
+"""Example VBD Soft Contact
+
+Each supported rigid shape type gets its own cloth bag so that
+particle-rigid (soft) contacts can be inspected in isolation.
+The bags are laid out in a row; bodies settle under gravity and are
+then lifted, making it easy to spot which shape type causes
+instability.
+
+Success criteria:
+- Six cloth bags each contain a different rigid shape: mesh, cone, sphere, box, capsule, or
+  cylinder.
+- The shapes fall, bounce against the bags, and approach rest without passing through the fabric.
+- After 120 simulation frames of settling, the bags lift and carry their contents; inspect for
+  renewed contact jitter.
+
+Runs:
+- `python -m newton.examples vbd_soft_rigid_contact`
+"""
 
 import os
 
@@ -28,7 +34,7 @@ PARAMS = {
     "shape_names": ["mesh", "cone", "sphere", "box", "capsule", "cylinder"],
     "shape_size": 0.012,
     "shape_margin": 0.005,
-    "soft_contact_creation_margin": 0.01,
+    "soft_contact_gap": 0.01,
     "bag_width": 0.06,
     "bag_depth": 0.06,
     "bag_height": 0.10,
@@ -56,11 +62,10 @@ PARAMS = {
     "soft_contact_kd": 1e2,
     "soft_contact_mu": 0.8,
     "gravity": (0.0, 0.0, -9.8),
-    "initial_paused": False,
     "body_drop_offset": 0.04,
     "rigid_body_particle_contact_buffer_size": 1024,
-    "particle_self_contact_radius_scale": 1.0,
-    "particle_self_contact_margin_scale": 2.0,
+    "particle_self_contact_margin_scale": 1.0,
+    "particle_self_contact_gap_scale": 1.0,
     "particle_topological_contact_filter_threshold": 3,
 }
 
@@ -285,17 +290,14 @@ def setup_sim(builder, info, params):
     solver = newton.solvers.SolverVBD(
         model=model,
         iterations=params["solver_iterations"],
-        rigid_compliant_alm=True,
         rigid_body_particle_contact_buffer_size=params["rigid_body_particle_contact_buffer_size"],
         particle_enable_self_contact=False,
-        particle_self_contact_radius=pr * params["particle_self_contact_radius_scale"],
         particle_self_contact_margin=pr * params["particle_self_contact_margin_scale"],
+        particle_self_contact_gap=pr * params["particle_self_contact_gap_scale"],
         particle_topological_contact_filter_threshold=params["particle_topological_contact_filter_threshold"],
     )
 
-    pipeline = newton.CollisionPipeline(
-        model, broad_phase="nxn", soft_contact_margin=params["soft_contact_creation_margin"]
-    )
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_gap=params["soft_contact_gap"])
 
     return model, solver, pipeline, pinned_indices, pinned_original
 
@@ -327,10 +329,7 @@ class Example:
         self.viewer.set_model(self.model)
         if hasattr(self.viewer, "renderer"):
             self.viewer.renderer.draw_wireframe = True
-        if hasattr(self.viewer, "_paused"):
-            self.viewer._paused = self.params["initial_paused"]
-        if hasattr(self.viewer, "set_camera"):
-            self.viewer.set_camera(wp.vec3(0.0, -0.8, 0.6), -20.0, 90.0)
+        self.viewer.set_camera(wp.vec3(0.0, -0.8, 0.6), -20.0, 90.0)
 
     def simulate(self):
         dz = 0.0

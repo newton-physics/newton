@@ -4,9 +4,16 @@
 Development
 ===========
 
-This document is a guide for developers who want to contribute to the project or understand its internal workings in more detail.
+This document covers environment setup and operational workflows for developers
+who want to contribute to Newton or understand its internal workings.
 
-Please refer to `CONTRIBUTING.md <https://github.com/newton-physics/governance/blob/main/CONTRIBUTING.md>`_ for how to best contribute to Newton and relevant legal information (CLA).
+See the repository's
+`CONTRIBUTING.md <https://github.com/newton-physics/newton/blob/main/CONTRIBUTING.md>`_
+for contribution and pull-request workflows. The
+`governance contribution guidelines <https://github.com/newton-physics/newton-governance/blob/main/CONTRIBUTING.md>`_
+cover legal requirements, project roles, and approval authority. Code and
+public API changes must follow the :doc:`source_code_guidelines`. Reviewers may
+use the suggested :doc:`review_guidelines`.
 
 Installation
 ------------
@@ -214,10 +221,41 @@ To generate a coverage report:
 
         .. code-block:: console
 
-            # append the coverage flags and make sure `coverage[toml]` is installed (it comes in `[dev]`)
+            # append the coverage flags and make sure `coverage` is installed (it comes in `[dev]`)
             python -m newton.tests --coverage --coverage-html htmlcov
 
 The file ``htmlcov/index.html`` can be opened with a web browser to view the coverage report.
+
+Optional dependencies in tests
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The test suite must pass when optional dependencies are not installed, for
+example on platforms without wheels for them; tests that need one skip
+instead. CI runs the suite with only the required dependencies installed. To
+run it without optional dependencies locally:
+
+.. code-block:: console
+
+    uv run --isolated --no-dev -m newton.tests
+
+In new tests, declare a requirement with the helpers in
+``newton.tests.unittest_utils``. Lint rejects ``importlib.util.find_spec``, and
+``except ImportError`` fallbacks, which some older tests still use, skip a
+broken install as if it were missing; the helpers fail the tests that need it
+instead:
+
+- ``@requires("scipy")`` on a test method, test function, or test class.
+  Decorate a class only when every test in it needs the module. Use
+  ``"pxr.Usd"`` for USD and ``*MUJOCO_MODULES`` for ``SolverMuJoCo``.
+- ``requires(*MUJOCO_MODULES)(lambda model: newton.solvers.SolverMuJoCo(...))``
+  for solver factories passed to ``add_function_test``, which skips only the
+  tests generated for that solver.
+- ``"requires": (...)`` in the ``test_options`` of an example test.
+- ``has_module(...)`` for other conditional logic.
+
+List every optional module a test needs, not only the first one it imports;
+a test with only one of two requirements declared fails on a platform that
+has the other.
 
 Code formatting and linting
 ---------------------------
@@ -492,9 +530,14 @@ docs with Sphinx, and deploy to the corresponding directory on ``gh-pages``. Upd
 API documentation
 -----------------
 
-Newton's API reference is auto-generated from the ``__all__`` lists of its public modules.
-The script ``docs/generate_api.py`` produces reStructuredText files under ``docs/api/``
-that Sphinx processes via ``autosummary`` to create individual pages for every public symbol.
+The :ref:`source-code-guidelines` define the canonical-export and ``__all__``
+requirements. The following procedure publishes that API in Newton's reference
+documentation.
+
+The API reference is auto-generated from the ``__all__`` lists of Newton's
+public modules. The script ``docs/generate_api.py`` produces reStructuredText
+files under ``docs/api/`` that Sphinx processes via ``autosummary`` to create
+individual pages for every public symbol.
 
 Whenever you add, remove, or rename a public symbol in one of the public modules
 (``newton``, ``newton.geometry``, ``newton.solvers``, ``newton.sensors``, etc.),
@@ -522,19 +565,20 @@ After running the script, rebuild the documentation to verify the result (see
 
 .. note::
 
-    Only symbols listed in a module's ``__all__`` (or, as a fallback, its public
-    attributes) are included. If a new class or function in ``newton/_src/`` should
-    be visible to users, re-export it through the appropriate public module first.
+    Only symbols listed in a Newton public module's ``__all__`` are supported
+    public API. ``docs/generate_api.py`` rejects modules that do not define
+    ``__all__`` as a list or tuple so undeclared attributes cannot be published
+    accidentally. Export a user-facing symbol from ``newton/_src/`` through
+    its canonical public module before generating the API pages.
 
 .. _experimental-features:
 
 Experimental features
 ^^^^^^^^^^^^^^^^^^^^^
 
-Mark user-facing experimental API with the ``.. experimental::`` directive in
-the public docstring or concept page where users encounter it. The directive is
-the user-facing compatibility marker; do not add a separate policy page or
-inline prose block for the same status.
+The :ref:`source-code-guidelines` define the experimental public API contract.
+Use the ``.. experimental::`` directive in the public docstring or concept page
+selected by that policy.
 
 With no body, the directive renders Newton's standard notice:
 
@@ -559,20 +603,11 @@ names the exact scope:
 
                 The ``"sticky"`` mode may change without prior notice.
 
-When adding or changing experimental public API:
+When documenting experimental public API:
 
-- keep the marker in the public docs or docstring, not just in comments;
 - keep status tables and summaries concise; use plain text such as
   ``experimental`` instead of linking every status label to the marker;
-- describe any relevant limitations in the concept docs;
 - run ``uv run python docs/generate_api.py`` when public API symbols change.
-
-Use a domain-local experimental namespace only for a cohesive new subsystem
-that can reasonably live behind an opt-in import path, for example
-``newton.solvers.experimental.<feature>``. Do not move existing public classes
-such as solver backends into an experimental namespace just to communicate
-implementation maturity. Mark the specific class, behavior, option, or concept
-instead.
 
 Testing documentation code snippets
 -----------------------------------
@@ -632,15 +667,6 @@ creation commands, and Towncrier's non-mutating ``--draft`` preview are
 documented in the `changelog fragment guide
 <https://github.com/newton-physics/newton/blob/main/changelog/README.md>`__.
 
-Style Guide
------------
-
-- Follow PEP 8 for Python code.
-- Use Google-style docstrings (compatible with Napoleon extension).
-- Write clear, concise commit messages.
-- Keep pull requests focused on a single feature or bug fix.
-- Use kebab-case instead of snake_case for command line arguments, e.g. ``--use-cuda-graph`` instead of ``--use_cuda_graph``.
-
 Writing examples
 ----------------
 
@@ -664,17 +690,46 @@ class with the following interface:
             ...
 
         def test_final(self):
-            """Validate the final simulation state. Required for CI."""
+            """Optionally validate the simulation state after the example completes."""
             ...
 
         def test_post_step(self):
             """Optional per-step validation, called after every step() in test mode."""
             ...
 
-Every example **must** implement ``test_final()`` (or ``test_post_step()``, or both).
-The test harness runs examples with ``--viewer null --test`` and calls these methods to
-verify simulation correctness. An example that implements neither will raise
-``NotImplementedError`` in CI.
+Every example must implement ``test_final()``; it may additionally implement
+``test_post_step()`` for per-step validation. In test mode,
+``test_post_step()`` runs after each simulation step and ``test_final()`` runs
+after the example completes. An example without a callable ``test_final()``
+raises ``NotImplementedError`` in CI.
+
+Embedded success criteria
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Keep each example's teaching description, success criteria, and run commands
+in its module docstring. Common criteria apply to every listed run; indent
+additional observations below the command they apply to:
+
+.. code-block:: python
+
+    """Demonstrate an example behavior.
+
+    Success criteria:
+    - The mechanism remains upright.
+
+    Runs:
+    - `python -m newton.examples my_example`
+    - `python -m newton.examples my_example --solver xpbd`
+      - The XPBD solver completes the same motion.
+    """
+
+``python -m newton.examples --describe <example_name>`` prints the docstring
+without importing or executing the example. Validate descriptions, commands,
+and declared option names with
+``uv run --extra dev -m newton.tests -k test_example_spec``.
+
+Shared visual QA procedures live in ``.agents/skills/example-testing/``;
+these human criteria do not imply equivalent automated assertions.
 
 Discovery and registration
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -683,6 +738,10 @@ Examples are discovered automatically: any file matching
 ``newton/examples/<category>/example_*.py`` is picked up by ``newton.examples.get_examples()``.
 The short name used on the command line is the filename without the ``example_`` prefix and
 ``.py`` extension (e.g. ``basic_pendulum``).
+
+The example test suite gives every discovered example a baseline CUDA test automatically.
+Add an explicit registration in ``newton/tests/test_examples.py`` only when an example needs
+tailored arguments, devices, dependencies, or additional variants.
 
 New examples must also be registered in the examples ``README.md`` with a                                                        
 ``python -m newton.examples <example_name>`` command and a 320x320 jpg screenshot.  
@@ -816,10 +875,9 @@ Simulation benchmark metrics
 
 The nightly robot and policy simulation benchmarks publish several metrics from one cached benchmark run. This
 includes the batched MuJoCo and Kamino KPI workloads, the non-policy DR Legs workload, the pretrained Anymal
-workload, and the XPBD quadruped workload. Companion ``FastMetrics*`` classes reuse the exact factories, scenes,
-solvers, and frame counts of existing aggregate benchmarks. Rendering, IK, inverse dynamics, CPU-backend
-regression, material/contact microbenchmarks, and startup benchmarks are not experience-collection workloads and
-are outside this metric set.
+workload, and the XPBD quadruped workload. Rendering, IK, inverse dynamics, CPU-backend regression,
+material/contact microbenchmarks, and startup benchmarks are not experience-collection workloads and are outside
+this metric set.
 
 Let ``F`` be the number of measured frames across all samples, ``S`` the number of physics substeps per frame,
 ``W`` the world count, ``dt`` the physics timestep in seconds, ``T`` the synchronized complete-step wall time in
@@ -833,12 +891,11 @@ seconds, and ``T_physics`` the workload's synchronized internal physics time. Th
 * steady-state GPU memory in ``MiB``; and
 * mean and maximum MuJoCo solver iteration counts across worlds at the final frame of each measured sample.
 
-The existing KPI mean world-step series keeps its ``track_simulate`` name and definition, and existing
-``time_simulate`` aggregate series remain unchanged. ``world_count`` remains an ASV parameter where applicable,
-while ``sim_dt`` and ``sim_substeps`` are also recorded as tracked values so dashboard results retain the
-configuration needed to interpret throughput and real-time factor. The existing KPI mean series continues to use
-each workload's internal physics timer. Throughput, real-time factor, and p95 metrics time and synchronize the
-complete ``step()`` operation, including any policy or control work it performs.
+The existing KPI mean world-step series keeps its ``track_simulate`` name and definition. ``world_count`` remains
+an ASV parameter where applicable, while ``sim_dt`` and ``sim_substeps`` are also recorded as tracked values so
+dashboard results retain the configuration needed to interpret throughput and real-time factor. The existing KPI
+mean series continues to use each workload's internal physics timer. Throughput, real-time factor, and p95 metrics
+time and synchronize the complete ``step()`` operation, including any policy or control work it performs.
 
 GPU memory is the decrease in ``Device.free_memory`` between a baseline immediately before the first finalized
 workload is created and a measurement after initialization, CUDA graph capture, and the first complete measured

@@ -513,16 +513,45 @@ def test_lbfgs_convergence_descendant_free_distance(test, device, joint_type):
             test.assertLess(rot_err_1, 3e-2, f"[{joint_type}] problem {prob} final rotation error too high")
 
 
+def test_lbfgs_line_search_costs(test, device):
+    """Reject a cost-increasing line-search step with autodiff Jacobians."""
+    with wp.ScopedDevice(device):
+        builder = newton.ModelBuilder()
+        link = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        joint = builder.add_joint_revolute(-1, link, axis=newton.Axis.Z)
+        builder.add_articulation([joint])
+        model = builder.finalize(requires_grad=True)
+
+        objective = ik.IKObjectivePosition(link, wp.vec3(1.0, 0.0, 0.0), wp.array([[1.0, 0.0, 0.0]], dtype=wp.vec3))
+        solver = ik.IKSolver(
+            model,
+            1,
+            [objective],
+            optimizer=ik.IKOptimizer.LBFGS,
+            jacobian_mode=ik.IKJacobianType.AUTODIFF,
+            line_search_alphas=[1.0, 4.0],
+        )
+        q0 = np.pi / 4
+        joint_q = wp.array([[q0]], dtype=float)
+        # The first iteration seeds the history; the second runs the line search.
+        solver.step(joint_q, joint_q, iterations=2)
+
+        # The tip is at (cos q, sin q, 0), so the cost is 2 * (1 - cos q).
+        q = joint_q.numpy()[0, 0]
+        test.assertLess(1.0 - np.cos(q), 1.0 - np.cos(q0))
+
+
 # Test registration
 devices = get_test_devices()
 cuda_devices = get_selected_cuda_test_devices()
 
 
 class TestLBFGSIK(unittest.TestCase):
-    pass
+    """Verify L-BFGS inverse kinematics and compare convergence with LM."""
 
 
 # Register L-BFGS convergence tests
+add_function_test(TestLBFGSIK, "test_lbfgs_line_search_costs", test_lbfgs_line_search_costs, devices)
 add_function_test(TestLBFGSIK, "test_lbfgs_convergence_autodiff", test_lbfgs_convergence_autodiff, devices)
 add_function_test(TestLBFGSIK, "test_lbfgs_convergence_analytic", test_lbfgs_convergence_analytic, devices)
 add_function_test(TestLBFGSIK, "test_lbfgs_convergence_mixed", test_lbfgs_convergence_mixed, devices)

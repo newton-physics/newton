@@ -47,6 +47,19 @@ range and still yield an unreliable normal after division.  A threshold of
 triangles contribute near-zero area anyway)."""
 
 
+def _get_marching_cubes_class():
+    """Find Warp's marching-cubes class without using its deprecated alias.
+
+    Remove the fallback once Newton's minimum Warp version provides
+    ``warp.geometry.IsoSurfaceMarchingCubes``.
+    """
+    try:
+        from warp.geometry import IsoSurfaceMarchingCubes  # noqa: PLC0415 - Warp 1.17 lacks this module
+    except ImportError:
+        return wp.MarchingCubes
+    return IsoSurfaceMarchingCubes
+
+
 def get_mc_tables(device):
     """Create marching cubes lookup tables on the specified device.
 
@@ -76,10 +89,11 @@ def get_mc_tables(device):
         ]
     )
 
-    tri_local_inds = np.asarray(wp.MarchingCubes.TRI_LOCAL_INDICES, dtype=np.int32)
-    tri_range_table = wp.array(wp.MarchingCubes.CASE_TO_TRI_RANGE, dtype=wp.int32, device=device)
+    marching_cubes = _get_marching_cubes_class()
+    tri_local_inds = np.asarray(marching_cubes.TRI_LOCAL_INDICES, dtype=np.int32)
+    tri_range_table = wp.array(marching_cubes.CASE_TO_TRI_RANGE, dtype=wp.int32, device=device)
     tri_local_inds_table = wp.array(tri_local_inds, dtype=wp.int32, device=device)
-    corner_offsets_table = wp.array(wp.MarchingCubes.CUBE_CORNER_OFFSETS, dtype=wp.vec3ub, device=device)
+    corner_offsets_table = wp.array(marching_cubes.CUBE_CORNER_OFFSETS, dtype=wp.vec3ub, device=device)
     edge_to_verts_table = wp.array(edge_to_verts, dtype=wp.vec2ub, device=device)
 
     # Create flattened table:
@@ -148,15 +162,10 @@ def get_triangle_fraction(vert_depths: wp.vec3f, num_inside: wp.int32) -> wp.flo
             d1 = vert_depths[0]
             d2 = vert_depths[1]
 
-    denom = (d0 - d1) * (d0 - d2)
-    eps = wp.float32(1e-8)
-    if wp.abs(denom) < eps:
-        if num_inside == 1:
-            return 0.0
-        else:
-            return 1.0
-
-    fraction = wp.clamp((d0 * d0) / denom, 0.0, 1.0)
+    # The distinct vertex has the opposite sign from the other two, so
+    # both denominators are nonzero. Form the edge ratios separately to
+    # preserve coverage at small scales without squaring the depths.
+    fraction = wp.clamp((d0 / (d0 - d1)) * (d0 / (d0 - d2)), 0.0, 1.0)
     if num_inside == 2:
         return 1.0 - fraction
     else:

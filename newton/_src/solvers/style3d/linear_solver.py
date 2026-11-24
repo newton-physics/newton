@@ -210,29 +210,6 @@ def generate_test_data_kernel(
         A_non_diag.nz_ell[1, tid].column_index = tid - 1
 
 
-def array_inner(
-    a: wp.array[wp.vec3],
-    b: wp.array[wp.vec3],
-    out_ptr: wp.uint64,
-):
-    from warp._src.context import runtime  # noqa: PLC0415
-
-    if a.device.is_cpu:
-        func = runtime.core.wp_array_inner_float_host
-    else:
-        func = runtime.core.wp_array_inner_float_device
-
-    func(
-        a.ptr,
-        b.ptr,
-        out_ptr,
-        len(a),
-        wp.types.type_size_in_bytes(a.dtype),
-        wp.types.type_size_in_bytes(b.dtype),
-        wp.types.type_size(a.dtype),
-    )
-
-
 class PcgSolver:
     """A Customized PCG implementation for efficient cloth simulation
 
@@ -291,7 +268,7 @@ class PcgSolver:
         wp.launch(array_mul_kernel, dim=self.dim, inputs=[inv_M, self.r], outputs=[self.z], device=self.device)
 
     def step3_update_rTz(self, iter: int):
-        array_inner(self.r, self.z, self.rTz.ptr + iter * self.rTz.strides[0])
+        wp.utils.array_inner(self.r, self.z, out=self.rTz[iter : iter + 1])
 
     def step4_update_p(self, iter: int):
         wp.launch(
@@ -326,7 +303,7 @@ class PcgSolver:
             )
 
     def step6_update_pTAp(self, iter: int):
-        array_inner(self.p, self.Ap, self.pTAp.ptr + iter * self.pTAp.strides[0])
+        wp.utils.array_inner(self.p, self.Ap, out=self.pTAp[iter : iter + 1])
 
     def step7_update_x_r(self, x: wp.array[wp.vec3], iter: int):
         wp.launch(
@@ -397,5 +374,5 @@ if __name__ == "__main__":
     solver.solve(A_non_diag, A_diag, x0, b, inv_M, x1, iterations=30)
 
     rTr = wp.zeros(1, dtype=float)
-    array_inner(solver.r, solver.r, rTr.ptr)
-    print(rTr.numpy()[0])
+    wp.utils.array_inner(solver.r, solver.r, out=rTr)
+    print(rTr.numpy()[0])  # noqa: T201

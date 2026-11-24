@@ -1,0 +1,1 @@
+Add a VBD rigid-body contact example demonstrating sliding, torsional and rolling friction, with independent motion references and controls with angular friction disabled. Include a same-color ramp stack and an axle-inertia sphere to exercise sliding convergence and directional contact response.

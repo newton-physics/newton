@@ -1,19 +1,44 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for texture loading, including assets packaged inside USD (.usdz) archives."""
+"""Tests for texture loading, assets packaged inside USD (.usdz) archives, and linear-to-sRGB conversion."""
 
-import importlib.util
 import tempfile
 import unittest
 from pathlib import Path
 
 import numpy as np
 
-from newton._src.utils.texture import load_texture
-from newton.tests.unittest_utils import USD_AVAILABLE
+from newton._src.utils.texture import linear_texture_to_srgb, load_texture
+from newton.tests.unittest_utils import requires
 
-_PIL_AVAILABLE = importlib.util.find_spec("PIL") is not None
+
+class TestLinearTextureToSrgb(unittest.TestCase):
+    def test_uint8_lut_matches_reference_bit_exactly(self):
+        """Match the reference conversion bit-for-bit for every uint8 value."""
+        values = np.arange(256, dtype=np.uint8)
+        image = np.empty((1, 256, 4), dtype=np.uint8)
+        # Offset each channel so a wrong-channel LUT index is detectable; each still spans all 256 values.
+        for channel in range(3):
+            image[0, :, channel] = np.roll(values, channel * 64)
+        image[..., 3] = values[::-1]
+        original = image.copy()
+
+        converted = linear_texture_to_srgb(image)
+
+        expected = original.copy()
+        linear_rgb = np.clip(original[..., :3].astype(np.float32) / 255.0, 0.0, 1.0)
+        expected_rgb = np.where(
+            linear_rgb <= 0.0031308,
+            linear_rgb * 12.92,
+            1.055 * np.power(linear_rgb, 1.0 / 2.4) - 0.055,
+        )
+        expected[..., :3] = np.clip(np.round(expected_rgb * 255.0), 0.0, 255.0).astype(np.uint8)
+        np.testing.assert_array_equal(converted, expected)
+        np.testing.assert_array_equal(image, original)
+        self.assertTrue(converted.flags.c_contiguous)
+        # The shared LUT is read-only; the result must not inherit that. "W" is NumPy's short key for the write flag.
+        self.assertTrue(converted.flags["W"])
 
 
 def _write_png(path: Path, color: tuple[int, int, int]) -> None:
@@ -42,8 +67,7 @@ def _build_usdz_with_texture(tmpdir: str, color: tuple[int, int, int]) -> Path:
     return usdz_path
 
 
-@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-@unittest.skipUnless(_PIL_AVAILABLE, "Requires Pillow")
+@requires("pxr.Usd", "PIL")
 class TestPackagedTextureLoading(unittest.TestCase):
     def test_load_texture_from_usdz_package(self):
         """Load a texture addressed with USD package-relative syntax (``scene.usdz[tex.png]``).

@@ -863,6 +863,12 @@ def contact_u_update_kernel(
     n = normal[i]
     mu = wp.max(0.0, friction[i])
     shifted = p - u_min_i * n
+    if wp.dot(shifted, n) >= 0.0:
+        # The separating projection is the identity. Subtracting and adding a
+        # large speculative gap/dt offset would lose small velocity components
+        # and create an artificial ADMM residual and contact force.
+        u_out[i] = p
+        return
     u_out[i] = solve_coulomb_isotropic(mu, n, shifted) + u_min_i * n
 
 
@@ -1555,7 +1561,7 @@ def contact_rr_fill_from_rigid_contacts_kernel(
     mb = body_mass_b[bb]
     weight = _interface_weight(ma, mb)
     W[dst] = weight
-    # Geometric-mean combining of shape material friction (matches AVBD).
+    # Geometric-mean combining of shape material friction (matches SolverVBD).
     friction[dst] = wp.sqrt(shape_material_mu[sa] * shape_material_mu[sb])
 
     lambda_out = wp.vec3(0.0, 0.0, 0.0)

@@ -10,8 +10,9 @@ from dataclasses import dataclass, field
 
 import warp as wp
 
+import newton
+
 from ....solver_kamino import SolverKamino
-from ...core.builder import ModelBuilderKamino
 from ...core.control import ControlKamino
 from ...core.model import ModelKamino
 from ...core.state import StateKamino
@@ -80,22 +81,25 @@ class Simulator:
     The Simulator class encapsulates the entire simulation pipeline, including model definition,
     state management, collision detection, constraint handling, and time integration.
 
-    A Simulator is typically instantiated from a :class:`ModelBuilderKamino` that defines the model
+    A Simulator is typically instantiated from a :class:`newton.Model` that defines the model
     to be simulated. The simulator manages the time-stepping loop, invoking callbacks at various
     stages of the simulation step, and provides access to the current state and control inputs.
 
     Example:
     ```python
         # Create a model builder and define the model
-        builder = ModelBuilderKamino()
+        builder = newton.ModelBuilder()
 
         # Define the model components (e.g., bodies, joints, collision geometries etc.)
         builder.add_rigid_body(...)
         builder.add_joint(...)
         builder.add_geometry(...)
 
-        # Create the simulator from the builder
-        simulator = Simulator(builder)
+        # Create model from the builder
+        model = builder.finalize()
+
+        # Create the simulator from the model
+        simulator = Simulator(model)
 
         # Run the simulation for a specified number of steps
         for _i in range(num_steps):
@@ -166,17 +170,15 @@ class Simulator:
 
     def __init__(
         self,
-        builder: ModelBuilderKamino,
+        model: newton.Model,
         config: Simulator.Config = None,
-        device: wp.DeviceLike = None,
     ):
         """
         Initializes the simulator with the given model builder, time-step, and device.
 
         Args:
-            builder: The model builder defining the model to be simulated.
+            model: The model to be simulated.
             config: The simulator config to use. If None, the default config are used.
-            device: The device to run the simulation on. If None, the default device is used.
         """
         # Cache simulator config: If no config is provided, use default configs
         if config is None:
@@ -184,29 +186,22 @@ class Simulator:
         config.validate()
         self._config: Simulator.Config = config
 
-        # Cache the target device use for the simulation
-        self._device: wp.DeviceLike = device
-
-        # Pass collision detector config to builder before finalization
-        if self._config.collision_detector.max_contacts_per_pair is not None:
-            builder.max_contacts_per_pair = self._config.collision_detector.max_contacts_per_pair
-
-        # Finalize the model from the builder on the specified
-        # device, allocating all necessary model data structures
-        self._model = builder.finalize(device=self._device)
+        # Cache the target model for the simulation
+        self._model_newton = model
+        self._model = ModelKamino.from_newton(self._model_newton)
 
         # Configure model time-steps across all worlds
         if isinstance(self._config.dt, float):
-            self._model.time.set_uniform_timestep(self._config.dt)
+            self.model.time.set_uniform_timestep(self._config.dt)
         elif isinstance(self._config.dt, FloatArrayLike):
-            self._model.time.set_timesteps(self._config.dt)
+            self.model.time.set_timesteps(self._config.dt)
 
         # Allocate time-varying simulation data
-        self._data = SimulatorData(model=self._model)
+        self._data = SimulatorData(model=self.model)
 
         # Allocate collision detection and contacts interface
         self._collision_detector = CollisionDetector(
-            model=self._model,
+            model=self.model,
             config=self._config.collision_detector,
         )
 
@@ -215,8 +210,8 @@ class Simulator:
 
         # Define a physics solver for time-stepping
         self._solver = SolverKaminoImpl(
-            model=self._model,
-            contacts=self._contacts,
+            model=self.model,
+            contacts=self.contacts,
             config=self._config.solver,
         )
 
@@ -226,8 +221,7 @@ class Simulator:
         self._control_cb: Simulator.SimCallbackType = None
 
         # Initialize the simulation state
-        with wp.ScopedDevice(self._device):
-            self.reset()
+        self.reset()
 
     ###
     # Properties
@@ -243,9 +237,16 @@ class Simulator:
     @property
     def model(self) -> ModelKamino:
         """
-        Returns the time-invariant simulation model data.
+        Returns the Kamino simulation model.
         """
         return self._model
+
+    @property
+    def model_newton(self) -> newton.Model:
+        """
+        Returns the Newton simulation model.
+        """
+        return self._model_newton
 
     @property
     def data(self) -> SimulatorData:
@@ -309,6 +310,13 @@ class Simulator:
         Returns the physics step solver.
         """
         return self._solver
+
+    @property
+    def device(self) -> wp.DeviceLike:
+        """
+        Returns the device on which the simulation data is allocated.
+        """
+        return self._model.device
 
     ###
     # Configurations - Callbacks

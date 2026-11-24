@@ -1,0 +1,1 @@
+Fix integer overflow in NXN broad-phase pair indexing and candidate counts for large worlds, and correct deterministic hydroelastic quantization scales on CUDA. CUDA hydroelastic contact values may differ slightly from previous versions.

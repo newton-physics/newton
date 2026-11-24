@@ -1,16 +1,31 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Panda Hydro
-#
-# Shows how to set up a pick-and-place manipulation simulation using a
-# Franka Panda arm with SDF hydroelastic contacts and inverse kinematics.
-# Supports different scene configurations: pen or cube.
-#
-# Command: python -m newton.examples panda_hydro --scene pen --world-count 1
-#
-###########################################################################
+"""Example Panda Hydro
+
+Shows how to set up a pick-and-place manipulation simulation using a
+Franka Panda arm with SDF hydroelastic contacts and inverse kinematics.
+Supports different scene configurations: pen or cube.
+
+Success criteria:
+- Each world shows a Franka arm, a support box, a cup, and the selected grasp object.
+- The arm lifts and transports the object while the cup remains upright.
+- The pen stays within 20 degrees of horizontal during the first lift and transport,
+  until the grip starts loosening above the cup.
+
+Runs:
+- `python -m newton.examples robot_panda_hydro --world-count 2 --scene cube`
+  - The arm grasps the cube and releases it on top of the cup.
+  - Two worlds appear.
+- `python -m newton.examples robot_panda_hydro --world-count 2 --scene pen`
+  - The arm grasps the pen, brings it above the cup, loosens its grip to let the pen rotate
+    downward, then drops it inside the cup.
+  - Two worlds appear.
+- `python -m newton.examples robot_panda_hydro --scene pen --world-count 1`
+  - One world appears.
+  - The arm grasps the pen, brings it above the cup, loosens its grip to let the pen rotate
+    downward, then drops it inside the cup.
+"""
 
 import argparse
 import copy
@@ -34,6 +49,10 @@ class SceneType(Enum):
     CUBE = "cube"
 
 
+GRIPPER_PAD_OPACITY = 0.6
+CUP_OPACITY = 0.5
+
+
 def quat_to_vec4(q: wp.quat) -> wp.vec4:
     """Convert a quaternion to a vec4."""
     return wp.vec4(q[0], q[1], q[2], q[3])
@@ -54,7 +73,6 @@ def broadcast_ik_solution_kernel(
 
 class Example:
     def __init__(self, viewer, args):
-        newton.use_coord_layout_targets = True
         self.scene = SceneType(args.scene)
         self.test_mode = args.test
         self.deterministic = args.deterministic
@@ -68,6 +86,7 @@ class Example:
         self.sim_dt = self.frame_dt / self.sim_substeps
         self.world_count = args.world_count
         self.viewer = viewer
+        self.viewer.picking_enabled = False
 
         sdf_max_resolution = 64
         sdf_narrow_band_range = (-0.01, 0.01)
@@ -97,6 +116,7 @@ class Example:
             xform=wp.transform((-0.5, -0.5, 0.05), wp.quat_identity()),
             enable_self_collisions=False,
             parse_visuals_as_colliders=True,
+            joint_damping_mode="passive",
         )
 
         def find_body(name):
@@ -142,13 +162,16 @@ class Example:
             2.3922248e00,
             7.8549200e-01,
         ]
-        builder.joint_q[:9] = [*init_q, 0.05, 0.05]
-        builder.joint_target_q[:9] = [*init_q, 1.0, 1.0]
+        builder.joint_q[:9] = [*init_q, 0.04, 0.04]
+        builder.joint_target_q[:9] = builder.joint_q[:9]
 
-        builder.joint_target_ke[:9] = [650.0] * 9
-        builder.joint_target_kd[:9] = [100.0] * 9
+        # Compliant finger drives avoid releasing stored squeeze energy into lightweight objects.
+        builder.joint_target_ke[:7] = [650.0] * 7
+        builder.joint_target_ke[7:9] = [400.0] * 2
+        builder.joint_target_kd[:7] = [100.0] * 7
+        builder.joint_target_kd[7:9] = [20.0] * 2
         builder.joint_effort_limit[:7] = [80.0] * 7
-        builder.joint_effort_limit[7:9] = [20.0] * 2
+        builder.joint_effort_limit[7:9] = [10.0] * 2
         builder.joint_armature[:7] = [0.1] * 7
         builder.joint_armature[7:9] = [0.5] * 2
 
@@ -176,8 +199,20 @@ class Example:
             wp.vec3(0.0, 0.005, 0.045),
             wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -np.pi),
         )
-        builder.add_shape_mesh(body=left_finger_idx, mesh=pad_mesh, xform=pad_xform, cfg=shape_cfg_meshes)
-        builder.add_shape_mesh(body=right_finger_idx, mesh=pad_mesh, xform=pad_xform, cfg=shape_cfg_meshes)
+        builder.add_shape_mesh(
+            body=left_finger_idx,
+            mesh=pad_mesh,
+            xform=pad_xform,
+            cfg=shape_cfg_meshes,
+            opacity=GRIPPER_PAD_OPACITY,
+        )
+        builder.add_shape_mesh(
+            body=right_finger_idx,
+            mesh=pad_mesh,
+            xform=pad_xform,
+            cfg=shape_cfg_meshes,
+            opacity=GRIPPER_PAD_OPACITY,
+        )
 
         # Table
         box_size = 0.05
@@ -205,6 +240,7 @@ class Example:
 
         # Object to manipulate
         self.put_in_cup = True
+        self.cup_body_local = None
 
         if self.scene == SceneType.PEN:
             radius = 0.005
@@ -252,8 +288,8 @@ class Example:
                 wp.vec3(self.cup_pos),
                 wp.quat_identity(),
             )
-            cup_body = builder.add_body(label="cup", xform=cup_xform)
-            builder.add_shape_mesh(body=cup_body, mesh=cup_mesh, cfg=shape_cfg_meshes)
+            self.cup_body_local = builder.add_body(label="cup", xform=cup_xform)
+            builder.add_shape_mesh(body=self.cup_body_local, mesh=cup_mesh, cfg=shape_cfg_meshes, opacity=CUP_OPACITY)
 
         # build model for IK
         self.model_single = copy.deepcopy(builder).finalize()
@@ -307,11 +343,11 @@ class Example:
         )
 
         self.viewer.set_model(self.model)
-        self.viewer.picking_enabled = False  # Disable interactive picking for this example
         if hasattr(self.viewer, "renderer"):
             self.viewer.set_camera(wp.vec3(0.5, 0.0, 0.5), -15, -140)
             self.viewer.set_world_offsets(wp.vec3(1.0, 1.0, 0.0))
             self.viewer.show_hydro_contact_surface = self.show_isosurface
+        if hasattr(self.viewer, "register_ui_callback"):
             self.viewer.register_ui_callback(self.render_ui, position="side")
 
         # Initialize state for IK setup
@@ -322,7 +358,6 @@ class Example:
         self.control = self.model.control()
         self.joint_target_shape = self.control.joint_target_q.reshape((self.world_count, -1)).shape
         self.joint_targets_2d = wp.zeros(self.joint_target_shape, dtype=wp.float32)
-        wp.copy(self.control.joint_target_q[:9], self.model.joint_q[:9])
 
         # Track maximum object height for testing (only in test mode)
         self.object_max_z = [self.object_pos[2]] * self.world_count if self.test_mode else None
@@ -352,7 +387,7 @@ class Example:
 
         # Broadcast single IK solution to all worlds
         t_gripper = self.waypoints[self.current_waypoint][2] * (1 - t) + self.waypoints[next_waypoint][2] * t
-        gripper_value = 0.06 * (1 - t_gripper)
+        gripper_value = wp.clamp(0.06 * (1 - t_gripper), 0.0, 0.04)
         wp.launch(
             broadcast_ik_solution_kernel,
             dim=self.world_count,
@@ -395,13 +430,28 @@ class Example:
 
         self.sim_time += self.frame_dt
 
+    def test_post_step(self):
+        """Check pen orientation before release and track lift height."""
         # Track maximum object height for testing (only in test mode)
-        if self.test_mode:
-            body_q = self.state_0.body_q.numpy()
-            for world_idx in range(self.world_count):
-                object_body_idx = world_idx * self.bodies_per_world + self.object_body_local
-                z_pos = float(body_q[object_body_idx][2])
-                self.object_max_z[world_idx] = max(self.object_max_z[world_idx], z_pos)
+        body_q = self.state_0.body_q.numpy()
+        check_pen_grip = (
+            self.scene == SceneType.PEN and self.first_lift_start <= self.sim_time < self.first_release_start
+        )
+        max_axis_z = np.sin(np.deg2rad(20.0))
+
+        for world_idx in range(self.world_count):
+            object_body_idx = world_idx * self.bodies_per_world + self.object_body_local
+            object_pose = body_q[object_body_idx]
+            self.object_max_z[world_idx] = max(self.object_max_z[world_idx], float(object_pose[2]))
+
+            if check_pen_grip:
+                qx, qy = object_pose[3:5]
+                pen_axis_z = abs(1.0 - 2.0 * (qx**2 + qy**2))
+                assert pen_axis_z < max_axis_z, (
+                    f"World {world_idx}: Pen rotated before the grip loosened above the cup. "
+                    f"Time={self.sim_time:.3f}, vertical axis component={pen_axis_z:.3f} "
+                    f"(expected < {max_axis_z:.3f}, within 20 degrees of horizontal)"
+                )
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)
@@ -425,6 +475,7 @@ class Example:
             self.viewer.show_hydro_contact_surface = self.show_isosurface
 
     def test_final(self):
+        """Verify that the object is lifted and placed in the upright cup."""
         # Verify that the object was picked up by checking the maximum height reached
         initial_z = self.object_pos[2]
         min_lift_height = 0.15  # Object should be lifted at least 15cm above initial position
@@ -439,27 +490,32 @@ class Example:
                 f"max lift={max_lift:.3f} (expected > {min_lift_height})"
             )
 
-        # In-cup placement check remains disabled pending newton-physics/newton#1337.
-        # With --deterministic the placement does succeed (measured 19mm from the
-        # cup center against a 50mm tolerance), but wp.DeterministicMode.RUN_TO_RUN
-        # only guarantees repeatability within one GPU architecture, so that margin
-        # is not established across the CI fleet. Re-enable once determinism is
-        # verified on every target architecture.
-        # # Verify that the object ended up in the cup
-        # if self.put_in_cup:
-        #     body_q = self.state_0.body_q.numpy()
-        #     cup_x, cup_y, cup_z = self.cup_pos
-        #     tolerance_xy = 0.05
-        #     min_z = cup_z - 0.05
-        #
-        #     for world_idx in range(self.world_count):
-        #         object_body_idx = world_idx * self.bodies_per_world + self.object_body_local
-        #         x, y, z = body_q[object_body_idx][:3]
-        #         assert abs(x - cup_x) < tolerance_xy and abs(y - cup_y) < tolerance_xy and z > min_z, (
-        #             f"World {world_idx}: Object is not in the cup. "
-        #             f"Object pos=({x:.3f}, {y:.3f}, {z:.3f}), "
-        #             f"cup pos=({cup_x:.3f}, {cup_y:.3f}, {cup_z:.3f})"
-        #         )
+        if self.cup_body_local is None:
+            return
+
+        body_q = self.state_0.body_q.numpy()
+        tolerance_xy = 0.02
+        min_cup_up_z = 0.95
+
+        for world_idx in range(self.world_count):
+            body_offset = world_idx * self.bodies_per_world
+            object_position = body_q[body_offset + self.object_body_local][:3]
+            cup_pose = body_q[body_offset + self.cup_body_local]
+            cup_position = cup_pose[:3]
+            cup_rotation = cup_pose[3:]
+            cup_up_z = 1.0 - 2.0 * (cup_rotation[0] ** 2 + cup_rotation[1] ** 2)
+            horizontal_offset = float(np.linalg.norm(object_position[:2] - cup_position[:2]))
+
+            assert cup_up_z > min_cup_up_z, (
+                f"World {world_idx}: Cup fell over. "
+                f"Cup pose={cup_pose.tolist()}, up_z={cup_up_z:.3f} "
+                f"(expected > {min_cup_up_z})"
+            )
+            assert horizontal_offset < tolerance_xy and object_position[2] > cup_position[2] - 0.05, (
+                f"World {world_idx}: Object is not in the cup. "
+                f"Object pos={object_position.tolist()}, cup pos={cup_position.tolist()}, "
+                f"horizontal offset={horizontal_offset:.3f} (expected < {tolerance_xy})"
+            )
 
     def setup_ik(self):
         self.ee_index = 10
@@ -508,9 +564,15 @@ class Example:
         self.waypoints = [
             [resting_pos, 1.0, no_grasp_pos, rot_hand],
             [grasping_pos, 1.0, no_grasp_pos, rot_hand],
-            [grasping_pos, 1.0, grasp_pos, rot_hand],
-            [resting_pos, 1.0, grasp_pos, rot_hand],
         ]
+        self.first_lift_start = sum(waypoint[1] for waypoint in self.waypoints)
+        self.waypoints.extend(
+            [
+                [grasping_pos, 1.0, grasp_pos, rot_hand],
+                [resting_pos, 1.0, grasp_pos, rot_hand],
+            ]
+        )
+        self.first_release_start = sum(waypoint[1] for waypoint in self.waypoints)
 
         if self.put_in_cup:
             loose_pos = 0.69
@@ -537,10 +599,10 @@ class Example:
         parser.add_argument(
             "--deterministic",
             action=argparse.BooleanOptionalAction,
-            default=False,
+            default=True,
             help=(
                 "Make contact generation and ordering reproducible across runs on the same GPU. "
-                "Costs a few percent of step time."
+                "Enabled by default to keep the pick-and-place sequence stable; costs a few percent of step time."
             ),
         )
         parser.add_argument(

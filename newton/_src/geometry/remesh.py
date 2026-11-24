@@ -65,14 +65,18 @@ Example:
         new_indices = clean_mesh.indices  # (M,) int32, flattened
 """
 
+import logging
 import math
 import warnings
 
 import numpy as np
 import warp as wp
 
+from ..exceptions import NewtonWarning
 from ..geometry.hashtable import HashTable, hashtable_find_or_insert
 from ..geometry.types import Mesh
+
+logger = logging.getLogger(__name__)
 
 # -----------------------------------------------------------------------------
 # Morton encoding for sparse voxel grid (21 bits per axis = 63 bits total)
@@ -147,65 +151,15 @@ def rand_init(seed: wp.uint32, thread_id: wp.uint32) -> wp.uint32:
 
 
 @wp.func
-def rand_next(state: wp.uint32) -> wp.uint32:
-    """Advance the random state and return the new state."""
-    return state * _LCG_A + _LCG_C
-
-
-@wp.func
 def rand_float(state: wp.uint32) -> float:
     """Convert random state to a float in [0, 1]."""
     # Use upper 31 bits (better quality in LCG)
     return wp.float32(state & wp.uint32(0x7FFFFFFF)) / wp.float32(0x7FFFFFFF)
 
 
-@wp.func
-def rand_next_float(state: wp.uint32) -> tuple[wp.uint32, float]:
-    """Advance state and return (new_state, random_float).
-
-    Use this when you need multiple random numbers in sequence.
-    """
-    new_state = state * _LCG_A + _LCG_C
-    rand_val = wp.float32(new_state & wp.uint32(0x7FFFFFFF)) / wp.float32(0x7FFFFFFF)
-    return new_state, rand_val
-
-
 # -----------------------------------------------------------------------------
 # VoxelHashGrid - sparse voxel grid with online accumulation
 # -----------------------------------------------------------------------------
-
-
-@wp.kernel
-def _accumulate_point_kernel(
-    point: wp.vec3,
-    normal: wp.vec3,
-    inv_voxel_size: wp.float32,
-    # Hash table arrays
-    keys: wp.array[wp.uint64],
-    active_slots: wp.array[wp.int32],
-    # Accumulator arrays
-    sum_positions_x: wp.array[wp.float32],
-    sum_positions_y: wp.array[wp.float32],
-    sum_positions_z: wp.array[wp.float32],
-    sum_normals_x: wp.array[wp.float32],
-    sum_normals_y: wp.array[wp.float32],
-    sum_normals_z: wp.array[wp.float32],
-    counts: wp.array[wp.int32],
-):
-    """Accumulate a single point into the voxel grid (for testing)."""
-    key = compute_voxel_key(point, inv_voxel_size)
-    idx = hashtable_find_or_insert(key, keys, active_slots)
-    if idx >= 0:
-        old_count = wp.atomic_add(counts, idx, 1)
-        # Only store position on first hit
-        if old_count == 0:
-            sum_positions_x[idx] = point[0]
-            sum_positions_y[idx] = point[1]
-            sum_positions_z[idx] = point[2]
-        # Always accumulate normals
-        wp.atomic_add(sum_normals_x, idx, normal[0])
-        wp.atomic_add(sum_normals_y, idx, normal[1])
-        wp.atomic_add(sum_normals_z, idx, normal[2])
 
 
 @wp.kernel
@@ -1217,6 +1171,7 @@ class PointCloudExtractor:
             warnings.warn(
                 f"Voxel hash table is {load_factor:.0%} full ({num_voxels_after_primary}/{voxel_grid.capacity}). "
                 f"This may cause slowdowns. Consider increasing max_voxels or using a larger voxel_size.",
+                NewtonWarning,
                 stacklevel=2,
             )
 
@@ -1232,12 +1187,13 @@ class PointCloudExtractor:
             # Report buffer status
             if total_attempts > max_cavity_candidates:
                 overflow_count = total_attempts - max_cavity_candidates
-                print(
-                    f"Cavity candidates: {num_candidates:,} collected, "
-                    f"{overflow_count:,} dropped (buffer overflow, not critical)"
+                logger.info(
+                    "Cavity candidates: %s collected, %s dropped (buffer overflow, not critical)",
+                    f"{num_candidates:,}",
+                    f"{overflow_count:,}",
                 )
             elif num_candidates > 0:
-                print(f"Cavity candidates: {num_candidates:,} collected")
+                logger.info("Cavity candidates: %s collected", f"{num_candidates:,}")
 
             if num_candidates > 0:
                 # Prepare hemisphere directions on GPU
@@ -1327,10 +1283,12 @@ class PointCloudExtractor:
         wp.synchronize()
         final_num_voxels = voxel_grid.get_num_voxels()
         final_load_factor = final_num_voxels / voxel_grid.capacity
-        print(
-            f"Voxel grid: {final_num_voxels:,} voxels, "
-            f"{final_load_factor:.1%} load factor "
-            f"({final_num_voxels:,}/{voxel_grid.capacity:,})"
+        logger.info(
+            "Voxel grid: %s voxels, %s load factor (%s/%s)",
+            f"{final_num_voxels:,}",
+            f"{final_load_factor:.1%}",
+            f"{final_num_voxels:,}",
+            f"{voxel_grid.capacity:,}",
         )
 
         points_np, normals_np, _num_points = voxel_grid.finalize()
@@ -1437,7 +1395,7 @@ class SurfaceReconstructor:
         Args:
             points: (N, 3) array of point positions.
             normals: (N, 3) array of surface normals (should be unit length).
-            verbose: Print progress information.
+            verbose: Log progress information.
 
         Returns:
             Mesh containing vertices and triangle indices.
@@ -1458,7 +1416,7 @@ class SurfaceReconstructor:
 
         # Run Poisson reconstruction
         if verbose:
-            print(f"Running Poisson reconstruction (depth={self.depth})...")
+            logger.info("Running Poisson reconstruction (depth=%s)...", self.depth)
 
         mesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
             pcd,
@@ -1478,7 +1436,7 @@ class SurfaceReconstructor:
         num_triangles_before = len(mesh.triangles)
 
         if verbose:
-            print(f"Reconstructed mesh: {len(mesh.vertices)} vertices, {num_triangles_before} triangles")
+            logger.info("Reconstructed mesh: %s vertices, %s triangles", len(mesh.vertices), num_triangles_before)
 
         # Simplify mesh if requested
         needs_simplification = (
@@ -1503,11 +1461,14 @@ class SurfaceReconstructor:
             num_triangles_after = len(faces)
             if num_triangles_before > 0:
                 reduction = 100 * (1 - num_triangles_after / num_triangles_before)
-                print(
-                    f"Simplified mesh: {len(vertices)} vertices, {num_triangles_after} triangles ({reduction:.1f}% reduction)"
+                logger.info(
+                    "Simplified mesh: %s vertices, %s triangles (%.1f%% reduction)",
+                    len(vertices),
+                    num_triangles_after,
+                    reduction,
                 )
             else:
-                print(f"Simplified mesh: {len(vertices)} vertices, {num_triangles_after} triangles")
+                logger.info("Simplified mesh: %s vertices, %s triangles", len(vertices), num_triangles_after)
 
         return Mesh(vertices=vertices, indices=indices, compute_inertia=False)
 
@@ -1529,19 +1490,24 @@ class SurfaceReconstructor:
             diagonal = np.linalg.norm(max_coords - min_coords)
             absolute_tolerance = self.simplify_tolerance * diagonal
             if verbose:
-                print(
-                    f"Simplifying mesh with pyfqmr (tolerance={self.simplify_tolerance} = {absolute_tolerance:.6f} absolute, diagonal={diagonal:.4f})..."
+                logger.info(
+                    "Simplifying mesh with pyfqmr (tolerance=%s = %.6f absolute, diagonal=%.4f)...",
+                    self.simplify_tolerance,
+                    absolute_tolerance,
+                    diagonal,
                 )
             mesh_simplifier.simplify_mesh_lossless(epsilon=absolute_tolerance, verbose=False)
         elif self.target_triangles is not None:
             target = self.target_triangles
             if verbose:
-                print(f"Simplifying mesh with pyfqmr to {target} triangles...")
+                logger.info("Simplifying mesh with pyfqmr to %s triangles...", target)
             mesh_simplifier.simplify_mesh(target_count=target, verbose=False)
         elif self.simplify_ratio is not None:
             target = int(num_triangles_before * self.simplify_ratio)
             if verbose:
-                print(f"Simplifying mesh with pyfqmr to {self.simplify_ratio:.1%} ({target} triangles)...")
+                logger.info(
+                    "Simplifying mesh with pyfqmr to %s (%s triangles)...", f"{self.simplify_ratio:.1%}", target
+                )
             mesh_simplifier.simplify_mesh(target_count=target, verbose=False)
 
         vertices, faces, _ = mesh_simplifier.getMesh()
@@ -1556,8 +1522,11 @@ class SurfaceReconstructor:
             # Open3D QEM uses squared distances, so square the tolerance
             absolute_tolerance = (self.simplify_tolerance * diagonal) ** 2
             if verbose:
-                print(
-                    f"Simplifying mesh with Open3D (tolerance={self.simplify_tolerance} = {self.simplify_tolerance * diagonal:.6f} absolute, diagonal={diagonal:.4f})..."
+                logger.info(
+                    "Simplifying mesh with Open3D (tolerance=%s = %.6f absolute, diagonal=%.4f)...",
+                    self.simplify_tolerance,
+                    self.simplify_tolerance * diagonal,
+                    diagonal,
                 )
             mesh = mesh.simplify_quadric_decimation(
                 target_number_of_triangles=1,
@@ -1566,12 +1535,14 @@ class SurfaceReconstructor:
         elif self.target_triangles is not None:
             target = self.target_triangles
             if verbose:
-                print(f"Simplifying mesh with Open3D to {target} triangles...")
+                logger.info("Simplifying mesh with Open3D to %s triangles...", target)
             mesh = mesh.simplify_quadric_decimation(target_number_of_triangles=target)
         elif self.simplify_ratio is not None:
             target = int(num_triangles_before * self.simplify_ratio)
             if verbose:
-                print(f"Simplifying mesh with Open3D to {self.simplify_ratio:.1%} ({target} triangles)...")
+                logger.info(
+                    "Simplifying mesh with Open3D to %s (%s triangles)...", f"{self.simplify_ratio:.1%}", target
+                )
             mesh = mesh.simplify_quadric_decimation(target_number_of_triangles=target)
 
         vertices = np.asarray(mesh.vertices, dtype=np.float32)
@@ -1595,7 +1566,7 @@ def extract_largest_island(
     Args:
         vertices: Vertex positions, shape (N, 3).
         indices: Triangle indices, shape (M*3,) or (M, 3).
-        verbose: Print progress information. Default is False.
+        verbose: Log progress information. Default is False.
 
     Returns:
         Tuple of (new_vertices, new_indices) containing only the largest island.
@@ -1666,7 +1637,7 @@ def extract_largest_island(
     # If only one component, return as-is
     if num_components == 1:
         if verbose:
-            print("Island filtering: 1 component (mesh is fully connected)")
+            logger.info("Island filtering: 1 component (mesh is fully connected)")
         return vertices, indices
 
     # Count triangles per component
@@ -1690,9 +1661,16 @@ def extract_largest_island(
     new_vertices = vertices[used_vertices]
 
     if verbose:
-        print(f"Island filtering: {num_components} components found")
-        print(f"  Kept largest: {largest_size} triangles ({largest_size * 100.0 / num_triangles:.1f}%)")
-        print(f"  Removed: {num_triangles - largest_size} triangles from {num_components - 1} smaller islands")
+        logger.info(
+            "Island filtering: %s components found\n"
+            "  Kept largest: %s triangles (%.1f%%)\n"
+            "  Removed: %s triangles from %s smaller islands",
+            num_components,
+            largest_size,
+            largest_size * 100.0 / num_triangles,
+            num_triangles - largest_size,
+            num_components - 1,
+        )
 
     return new_vertices, new_indices
 
@@ -1765,7 +1743,7 @@ def remesh_poisson(
             in areas with sparse point coverage.
         device: Warp device for GPU computation. Default uses the default Warp device.
         seed: Random seed for reproducibility. Default is 42.
-        verbose: Print progress information. Default is False.
+        verbose: Log progress information. Default is False.
 
     Returns:
         A tuple (vertices, faces) containing the remeshed mesh:
@@ -1792,7 +1770,7 @@ def remesh_poisson(
     points, normals = extractor.extract(vertices, faces.flatten())
 
     if verbose:
-        print(f"Extracted {len(points)} points")
+        logger.info("Extracted %s points", len(points))
 
     # Reconstruct mesh
     reconstructor = SurfaceReconstructor(

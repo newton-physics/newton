@@ -17,8 +17,10 @@ These validations ensure the NarrowPhase follows the same contact conventions as
 primitive collision functions.
 """
 
+import sys
 import typing
 import unittest
+from unittest import mock
 
 import numpy as np
 import warp as wp
@@ -26,10 +28,125 @@ from warp.tests.unittest_utils import StdOutCapture
 
 import newton
 from newton._src.geometry.flags import ShapeFlags
-from newton._src.geometry.narrow_phase import NarrowPhase
+from newton._src.geometry.narrow_phase import (
+    _SPARSE_GJK_PAIR_CAPACITY_THRESHOLD,
+    NarrowPhase,
+    _append_pair_compacted,
+    _append_work_index_compacted,
+    verify_narrow_phase_buffers,
+)
 from newton._src.geometry.types import GeoType
 
 _cuda_available = wp.is_cuda_available()
+
+
+@wp.kernel(enable_backward=False)
+def append_compacted_test_kernel(
+    work_items: wp.array[int],
+    work_count: wp.array[int],
+    pair_items: wp.array[wp.vec2i],
+    pair_count: wp.array[int],
+):
+    """Append matching scalar and pair values from a partially active launch."""
+    tid = wp.tid()
+    predicate = tid % 3 != 1
+    _append_work_index_compacted(predicate, tid, work_items, work_count)
+    _append_pair_compacted(predicate, wp.vec2i(tid, -tid), pair_items, pair_count)
+
+
+class TestCompactedAppend(unittest.TestCase):
+    """Test compacted work-queue appends across supported devices."""
+
+    def test_compacted_append_matches_cpu_and_cuda(self):
+        """Preserve all selected values through CPU and CUDA compacted queues."""
+        launch_size = 257
+        expected = np.array([i for i in range(launch_size) if i % 3 != 1], dtype=np.int32)
+        devices = ["cpu"]
+        if _cuda_available:
+            devices.append("cuda:0")
+
+        for device in devices:
+            with self.subTest(device=device):
+                work_items = wp.zeros(launch_size, dtype=int, device=device)
+                work_count = wp.zeros(1, dtype=int, device=device)
+                pair_items = wp.zeros(launch_size, dtype=wp.vec2i, device=device)
+                pair_count = wp.zeros(1, dtype=int, device=device)
+
+                wp.launch(
+                    append_compacted_test_kernel,
+                    dim=launch_size,
+                    inputs=[work_items, work_count, pair_items, pair_count],
+                    device=device,
+                )
+
+                self.assertEqual(int(work_count.numpy()[0]), expected.size)
+                self.assertEqual(int(pair_count.numpy()[0]), expected.size)
+                np.testing.assert_array_equal(np.sort(work_items.numpy()[: expected.size]), expected)
+
+                pairs = pair_items.numpy()[: expected.size]
+                pairs = pairs[np.argsort(pairs[:, 0])]
+                np.testing.assert_array_equal(pairs[:, 0], expected)
+                np.testing.assert_array_equal(pairs[:, 1], -expected)
+
+
+class TestNarrowPhaseBufferWarnings(unittest.TestCase):
+    @unittest.skipIf(sys.platform == "win32", "Warp CPU printf capture is unreliable on Windows")
+    def test_reduction_hashtable_load_warning(self):
+        """Report the load threshold correctly when either percentage product exceeds int32."""
+        # Capture CPU printf to avoid CUDA printf buffering differences across drivers.
+        device = "cpu"
+        zero = wp.zeros(1, dtype=int, device=device)
+        cases = [
+            (4_887_460, 33_554_432, False),  # Capacity * 80 exceeds int32.
+            (22_000_000, 24_000_000, True),  # Active count * 100 exceeds int32.
+            (26_843_545, 33_554_432, False),  # Just below 80%; both products exceed int32.
+            (26_843_546, 33_554_432, True),  # Just above 80%.
+            (79, 100, False),
+            (80, 100, True),  # Preserve the inclusive threshold.
+            (0, 0, False),  # Disabled reduction table.
+        ]
+        for active, capacity, expected_warning in cases:
+            with self.subTest(active=active, capacity=capacity):
+                counter = wp.array([active], dtype=int, device=device)
+                # The verifier only reads active_slots[capacity]. A broadcast view
+                # exercises realistic capacities without allocating a large table.
+                active_slots = wp.array(ptr=counter.ptr, dtype=int, shape=(capacity + 1,), strides=(0,), device=device)
+                capture = StdOutCapture()
+                capture.begin()
+                try:
+                    wp.launch(
+                        verify_narrow_phase_buffers,
+                        dim=1,
+                        inputs=[zero, 0] * 11 + [active_slots, capacity, zero, zero, 80],
+                        device=device,
+                    )
+                finally:
+                    output = capture.end()
+                self.assertEqual("Contact reduction hashtable fill ratio" in output, expected_warning, output)
+
+    @unittest.skipIf(sys.platform == "win32", "Warp CPU printf capture is unreliable on Windows")
+    def test_reduction_buffer_overflow_warning(self):
+        """Report contact candidates dropped because the reduction buffer was full."""
+        device = "cpu"
+        zero = wp.zeros(1, dtype=int, device=device)
+        active_slots = wp.zeros(101, dtype=int, device=device)
+        for overflows, expected_warning in ((0, False), (3, True)):
+            with self.subTest(overflows=overflows):
+                buffer_overflows = wp.array([overflows], dtype=int, device=device)
+                capture = StdOutCapture()
+                capture.begin()
+                try:
+                    wp.launch(
+                        verify_narrow_phase_buffers,
+                        dim=1,
+                        inputs=[zero, 0] * 11 + [active_slots, 100, zero, buffer_overflows, 80],
+                        device=device,
+                    )
+                finally:
+                    output = capture.end()
+                self.assertEqual("Contact reduction buffer overflowed" in output, expected_warning, output)
+                if expected_warning:
+                    self.assertIn("3 contact candidates", output)
 
 
 def check_normal_direction(pos_a, pos_b, normal, tolerance=1e-5):
@@ -259,6 +376,10 @@ class _NarrowPhaseSetupMixin:
             else:
                 geom_collision_radius[i] = np.linalg.norm(scale_array) if len(scale_array) >= 3 else 10.0
 
+        bounds_count = (
+            n if any(g["type"] in (GeoType.MESH, GeoType.HFIELD, GeoType.CONVEX_MESH) for g in geom_list) else 0
+        )
+
         return (
             wp.array(geom_types, dtype=wp.int32),
             wp.array(geom_data, dtype=wp.vec4),
@@ -268,17 +389,18 @@ class _NarrowPhaseSetupMixin:
             wp.array(geom_collision_radius, dtype=wp.float32),
             wp.full(len(geom_list), -1, dtype=wp.int32),  # shape_sdf_index
             wp.full(len(geom_list), ShapeFlags.COLLIDE_SHAPES, dtype=wp.int32),  # shape_flags
-            wp.zeros(len(geom_list), dtype=wp.vec3),  # shape_collision_aabb_lower
-            wp.ones(len(geom_list), dtype=wp.vec3),  # shape_collision_aabb_upper
+            wp.zeros(bounds_count, dtype=wp.vec3),  # shape_collision_aabb_lower
+            wp.ones(bounds_count, dtype=wp.vec3),  # shape_collision_aabb_upper
             wp.full(len(geom_list), wp.vec3i(4, 4, 4), dtype=wp.vec3i),  # shape_voxel_resolution
         )
 
-    def _run_narrow_phase(self, geom_list, pairs):
+    def _run_narrow_phase(self, geom_list, pairs, *, max_contacts=None, **launch_kwargs):
         """Run narrow phase on given geometry and pairs.
 
         Args:
             geom_list: List of geometry descriptions
             pairs: List of (i, j) tuples indicating which geometries to test
+            max_contacts: Output capacity, defaulting to ten contacts per pair.
 
         Returns:
             Tuple of (contact_count, contact_pairs, positions, normals, penetrations, tangents)
@@ -300,7 +422,8 @@ class _NarrowPhaseSetupMixin:
         candidate_pair = wp.array(np.array(pairs, dtype=np.int32).reshape(-1, 2), dtype=wp.vec2i)
         candidate_pair_count = wp.array([len(pairs)], dtype=wp.int32)
 
-        max_contacts = len(pairs) * 10
+        if max_contacts is None:
+            max_contacts = len(pairs) * 10
         contact_pair = wp.zeros(max_contacts, dtype=wp.vec2i)
         contact_position = wp.zeros(max_contacts, dtype=wp.vec3)
         contact_normal = wp.zeros(max_contacts, dtype=wp.vec3)
@@ -328,6 +451,7 @@ class _NarrowPhaseSetupMixin:
             contact_penetration=contact_penetration,
             contact_count=contact_count,
             contact_tangent=contact_tangent,
+            **launch_kwargs,
         )
 
         count = contact_count.numpy()[0]
@@ -343,6 +467,219 @@ class _NarrowPhaseSetupMixin:
 
 class TestNarrowPhase(_NarrowPhaseSetupMixin, unittest.TestCase):
     """Test NarrowPhase collision detection API with various primitive pairs."""
+
+    def test_primitive_pairs_without_local_bounds(self):
+        """Allow primitive custom callers to omit optional local bounds."""
+        devices = ["cpu"]
+        if _cuda_available:
+            devices.append("cuda:0")
+        geoms = [
+            {"type": GeoType.BOX, "data": ([1.0, 1.0, 1.0], 0.0)},
+            {
+                "type": GeoType.CYLINDER,
+                "data": ([0.5, 0.5, 0.0], 0.0),
+                "transform": ([0.0, 0.0, 1.25], [0.0, 0.0, 0.0, 1.0]),
+            },
+        ]
+        for device in devices:
+            for split in (False, True) if device != "cpu" else (False,):
+                with self.subTest(device=device, split=split), wp.ScopedDevice(device):
+                    self.narrow_phase = NarrowPhase(max_candidate_pairs=1, device=device, split_gjk_mpr=split)
+                    arrays = self._create_geometry_arrays(geoms)
+                    self.assertEqual(arrays[8].shape[0], 0)
+                    self.assertEqual(arrays[9].shape[0], 0)
+                    count, pairs, _points, normals, depths, _tangents = self._run_narrow_phase(geoms, [(0, 1)])
+                    self.assertGreater(count, 0)
+                    signs = np.where(pairs[:, 0] == 0, 1.0, -1.0)
+                    np.testing.assert_allclose(normals, signs[:, None] * np.array([0.0, 0.0, 1.0]), atol=1.0e-3)
+                    np.testing.assert_allclose(depths, -0.25, atol=1.0e-3)
+
+    def test_launch_forwards_convex_support_metadata(self):
+        """Forward cooked convex support metadata through the standard launch path."""
+        self.narrow_phase = NarrowPhase(
+            max_candidate_pairs=1,
+            max_triangle_pairs=1,
+            reduce_contacts=False,
+            has_meshes=False,
+        )
+        shape_support_data = wp.full(2, (-1, -1, -1, 0), dtype=wp.vec4i)
+        support_lut = wp.zeros(1, dtype=wp.int32)
+        support_vertex_offsets = wp.zeros(1, dtype=wp.int32)
+        support_neighbors = wp.zeros(1, dtype=wp.int32)
+
+        with mock.patch.object(
+            self.narrow_phase,
+            "launch_custom_write",
+            wraps=self.narrow_phase.launch_custom_write,
+        ) as launch_custom_write:
+            self._run_narrow_phase(
+                [
+                    {"type": GeoType.SPHERE, "transform": ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0])},
+                    {"type": GeoType.SPHERE, "transform": ([0.5, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0])},
+                ],
+                [(0, 1)],
+                shape_support_data=shape_support_data,
+                support_lut=support_lut,
+                support_vertex_offsets=support_vertex_offsets,
+                support_neighbors=support_neighbors,
+            )
+
+        forwarded = launch_custom_write.call_args.kwargs
+        self.assertIs(forwarded["shape_support_data"], shape_support_data)
+        self.assertIs(forwarded["support_lut"], support_lut)
+        self.assertIs(forwarded["support_vertex_offsets"], support_vertex_offsets)
+        self.assertIs(forwarded["support_neighbors"], support_neighbors)
+
+    def test_deterministic_compact_contact_sort(self):
+        """Sort deterministic primitive contacts with compact keys."""
+        self.narrow_phase = NarrowPhase(
+            max_candidate_pairs=2,
+            max_triangle_pairs=8,
+            reduce_contacts=False,
+            has_meshes=False,
+            deterministic=True,
+            contact_max=20,
+            verify_buffers=False,
+            shape_aabb_lower=wp.zeros(4, dtype=wp.vec3),
+            shape_aabb_upper=wp.ones(4, dtype=wp.vec3),
+        )
+        geom_list = [
+            {"type": GeoType.SPHERE, "transform": ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0])},
+            {"type": GeoType.SPHERE, "transform": ([0.5, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0])},
+            {"type": GeoType.SPHERE, "transform": ([10.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0])},
+            {"type": GeoType.SPHERE, "transform": ([10.5, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0])},
+        ]
+
+        count, pairs, *_ = self._run_narrow_phase(geom_list, [(2, 3), (0, 1)])
+
+        self.assertEqual(self.narrow_phase._contact_sorter._key_bit_count, 7)
+        self.assertEqual(count, 2)
+        self.assertTrue(np.array_equal(pairs, np.array(((0, 1), (2, 3)), dtype=np.int32)))
+
+    def test_deterministic_complex_contact_sort_keeps_full_sub_key(self):
+        """Retain full deterministic sub-keys for complex contacts."""
+        narrow_phase = NarrowPhase(
+            max_candidate_pairs=2,
+            max_triangle_pairs=8,
+            reduce_contacts=False,
+            has_meshes=True,
+            deterministic=True,
+            contact_max=20,
+            verify_buffers=False,
+            shape_aabb_lower=wp.zeros(4, dtype=wp.vec3),
+            shape_aabb_upper=wp.ones(4, dtype=wp.vec3),
+        )
+
+        self.assertEqual(narrow_phase._contact_sort_sub_key_bits, 23)
+        self.assertEqual(narrow_phase._contact_sorter._key_bit_count, 27)
+
+    def _launch_spheres_past_2_20(self):
+        """Collide the sphere pairs ``(2**20, 2**20 + 1)`` and ``(2, 3)`` among ``2**20 + 2`` shapes."""
+        shape_count = (1 << 20) + 2
+        far = 1 << 20
+        geom_data = np.zeros((shape_count, 4), dtype=np.float32)
+        geom_data[:, :3] = 1.0
+        transforms = np.zeros((shape_count, 7), dtype=np.float32)
+        transforms[:, 0] = 100.0 * np.arange(shape_count)
+        transforms[:, 6] = 1.0
+        transforms[[2, 3, far, far + 1], 0] = (0.0, 0.5, 10.0, 10.5)
+        contact_count = wp.zeros(1, dtype=int)
+        contact_pair = wp.zeros(20, dtype=wp.vec2i)
+        self.narrow_phase.launch(
+            candidate_pair=wp.array([(far, far + 1), (2, 3)], dtype=wp.vec2i),
+            candidate_pair_count=wp.array([2], dtype=wp.int32),
+            shape_types=wp.full(shape_count, int(GeoType.SPHERE), dtype=wp.int32),
+            shape_data=wp.array(geom_data, dtype=wp.vec4),
+            shape_transform=wp.array(transforms, dtype=wp.transform),
+            shape_source=wp.zeros(shape_count, dtype=wp.uint64),
+            shape_sdf_index=wp.full(shape_count, -1, dtype=wp.int32),
+            shape_gap=wp.zeros(shape_count, dtype=wp.float32),
+            shape_collision_radius=wp.ones(shape_count, dtype=wp.float32),
+            shape_flags=wp.full(shape_count, ShapeFlags.COLLIDE_SHAPES, dtype=wp.int32),
+            shape_collision_aabb_lower=wp.zeros(0, dtype=wp.vec3),
+            shape_collision_aabb_upper=wp.zeros(0, dtype=wp.vec3),
+            shape_voxel_resolution=wp.full(shape_count, wp.vec3i(4, 4, 4), dtype=wp.vec3i),
+            contact_pair=contact_pair,
+            contact_position=wp.zeros(20, dtype=wp.vec3),
+            contact_normal=wp.zeros(20, dtype=wp.vec3),
+            contact_penetration=wp.zeros(20, dtype=float),
+            contact_count=contact_count,
+            contact_tangent=wp.zeros(20, dtype=wp.vec3),
+        )
+        count = int(contact_count.numpy()[0])
+        return contact_pair.numpy()[:count]
+
+    def test_deterministic_sort_keys_cover_more_than_2_20_shapes(self):
+        """Keep shape indices above 2**20 distinct in compact deterministic sort keys."""
+        shape_count = (1 << 20) + 2
+        self.narrow_phase = NarrowPhase(
+            max_candidate_pairs=2,
+            max_triangle_pairs=8,
+            reduce_contacts=False,
+            has_meshes=False,
+            deterministic=True,
+            contact_max=20,
+            verify_buffers=False,
+            shape_aabb_lower=wp.zeros(shape_count, dtype=wp.vec3),
+            shape_aabb_upper=wp.ones(shape_count, dtype=wp.vec3),
+        )
+
+        pairs = self._launch_spheres_past_2_20()
+
+        np.testing.assert_array_equal(pairs, [(2, 3), (1 << 20, (1 << 20) + 1)])
+        self.assertEqual(self.narrow_phase._contact_sorter._key_bit_count, 3 + 2 * 21)
+
+    def test_deterministic_sort_keys_split_past_2_20_mesh_shapes(self):
+        """Sort by a separate pair key when shape indices and the 23-bit sub-key don't fit in one key."""
+        shape_count = (1 << 20) + 2
+        kwargs = {
+            "max_candidate_pairs": 2,
+            "max_triangle_pairs": 8,
+            "reduce_contacts": False,
+            "has_meshes": True,
+            "contact_max": 20,
+            "verify_buffers": False,
+        }
+        self.narrow_phase = NarrowPhase(
+            deterministic=True,
+            **kwargs,
+            shape_aabb_lower=wp.zeros(shape_count, dtype=wp.vec3),
+            shape_aabb_upper=wp.ones(shape_count, dtype=wp.vec3),
+        )
+        sorter = self.narrow_phase._contact_sorter
+        self.assertEqual(sorter.pair_shape_index_bits, 21)
+        self.assertEqual(sorter._key_bit_count, 23)
+
+        pairs = self._launch_spheres_past_2_20()
+
+        np.testing.assert_array_equal(pairs, [(2, 3), (1 << 20, (1 << 20) + 1)])
+        np.testing.assert_array_equal(
+            sorter.sorted_keys_view.numpy()[:2], [(2 << 21) | 3, ((1 << 20) << 21) | ((1 << 20) + 1)]
+        )
+
+    def test_deterministic_sort_keys_check_launch_shape_count(self):
+        """Reject a launch with more shapes than the sort key was sized for."""
+        kwargs = {
+            "max_candidate_pairs": 2,
+            "max_triangle_pairs": 8,
+            "reduce_contacts": False,
+            "has_meshes": True,
+            "contact_max": 20,
+            "verify_buffers": False,
+        }
+        # Without AABBs the shape count is known only at launch.
+        self.narrow_phase = NarrowPhase(deterministic=True, **kwargs)
+        with self.assertRaisesRegex(ValueError, "20-bit shape indices.*pass shape_aabb_lower"):
+            self._launch_spheres_past_2_20()
+
+        self.narrow_phase = NarrowPhase(
+            deterministic=True,
+            **kwargs,
+            shape_aabb_lower=wp.zeros(2, dtype=wp.vec3),
+            shape_aabb_upper=wp.ones(2, dtype=wp.vec3),
+        )
+        with self.assertRaisesRegex(ValueError, "AABBs passed at construction cover 2 shapes"):
+            self._launch_spheres_past_2_20()
 
     def test_launch_without_shape_edge_range(self):
         geom_list = [
@@ -370,28 +707,27 @@ class TestNarrowPhase(_NarrowPhaseSetupMixin, unittest.TestCase):
                 "type": GeoType.SPHERE,
                 "transform": ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
                 "data": ([1.0, 1.0, 1.0], 0.0),
+                "cutoff": 1.0,
             },
             {
                 "type": GeoType.SPHERE,
                 "transform": ([3.5, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
                 "data": ([1.0, 1.0, 1.0], 0.0),
+                "cutoff": 1.0,
             },
         ]
 
         count, _pairs, _positions, normals, penetrations, _tangents = self._run_narrow_phase(geom_list, [(0, 1)])
 
-        # Separated spheres should produce no contacts (or contacts with positive separation)
-        if count > 0:
-            # If contact is generated, penetration should be positive (separation)
-            # Distance between centers = 3.5, sum of radii = 2.0, expected separation = 1.5
-            self.assertGreater(penetrations[0], 0.0, "Separated spheres should have positive penetration (separation)")
-            self.assertAlmostEqual(
-                penetrations[0], 1.5, places=1, msg=f"Expected separation ~1.5, got {penetrations[0]}"
-            )
+        # The contact gap exceeds the separation, so the pair reports a speculative contact
+        self.assertGreater(count, 0)
+        # A separated pair reports a positive distance
+        # Distance between centers = 3.5, sum of radii = 2.0, expected separation = 1.5
+        self.assertGreater(penetrations[0], 0.0, "Separated spheres should have positive penetration (separation)")
+        self.assertAlmostEqual(penetrations[0], 1.5, places=1, msg=f"Expected separation ~1.5, got {penetrations[0]}")
 
-            # Normal should be unit length
-            normal_length = np.linalg.norm(normals[0])
-            self.assertAlmostEqual(normal_length, 1.0, places=5, msg="Normal should be unit length")
+        normal_length = np.linalg.norm(normals[0])
+        self.assertAlmostEqual(normal_length, 1.0, places=5, msg="Normal should be unit length")
 
     def test_sphere_sphere_touching(self):
         """Test sphere-sphere collision with small overlap."""
@@ -608,47 +944,47 @@ class TestNarrowPhase(_NarrowPhaseSetupMixin, unittest.TestCase):
 
     def test_sphere_box_corner_collision(self):
         """Test sphere-box collision at box corner."""
-        # Sphere approaching box corner
-        offset = 1.5  # Distance to corner
-        corner_dir = np.array([1.0, 1.0, 1.0]) / np.sqrt(3.0)  # Unit vector toward corner
-        sphere_pos = corner_dir * offset
+        sphere_radius = 0.5
+        box_size = np.array([1.0, 1.0, 1.0])
+        corner_dir = np.array([1.0, 1.0, 1.0]) / np.sqrt(3.0)
+        # Outside all three faces, so the corner is the closest box feature
+        corner_dist = 0.3
+        sphere_pos = box_size + corner_dir * corner_dist
 
         geom_list = [
             {
                 "type": GeoType.SPHERE,
                 "transform": (sphere_pos.tolist(), [0.0, 0.0, 0.0, 1.0]),
-                "data": ([0.5, 0.5, 0.5], 0.0),
+                "data": ([sphere_radius, sphere_radius, sphere_radius], 0.0),
             },
-            {"type": GeoType.BOX, "transform": ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]), "data": ([1.0, 1.0, 1.0], 0.0)},
+            {
+                "type": GeoType.BOX,
+                "transform": ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
+                "data": (box_size.tolist(), 0.0),
+            },
         ]
 
         count, _pairs, positions, normals, penetrations, _tangents = self._run_narrow_phase(geom_list, [(0, 1)])
 
-        # May or may not have contact depending on exact distance
-        if count > 0:
-            # Normal should point approximately along corner direction
-            normal_length = np.linalg.norm(normals[0])
-            self.assertAlmostEqual(normal_length, 1.0, places=2, msg="Normal should be unit length")
+        self.assertGreater(count, 0)
+        np.testing.assert_allclose(
+            normals[0], -corner_dir, atol=1e-2, err_msg="Normal should point from sphere toward box corner"
+        )
+        self.assertAlmostEqual(penetrations[0], corner_dist - sphere_radius, places=2)
 
-            # Verify surface reconstruction if penetrating
-            if penetrations[0] < 0:
-                sphere_radius = 0.5
-                box_pos = np.array([0.0, 0.0, 0.0])
-                box_size = np.array([1.0, 1.0, 1.0])
-                box_rot = np.eye(3)
+        box_pos = np.array([0.0, 0.0, 0.0])
+        box_rot = np.eye(3)
 
-                def dist_to_sphere(p):
-                    return abs(np.linalg.norm(p - sphere_pos) - sphere_radius)
+        def dist_to_sphere(p):
+            return abs(np.linalg.norm(p - sphere_pos) - sphere_radius)
 
-                def dist_to_box(p):
-                    return distance_point_to_box(p, box_pos, box_rot, box_size)
+        def dist_to_box(p):
+            return distance_point_to_box(p, box_pos, box_rot, box_size)
 
-                self.assertTrue(
-                    check_surface_reconstruction(
-                        positions[0], normals[0], penetrations[0], dist_to_sphere, dist_to_box
-                    ),
-                    msg="Contact position should be at midpoint between surfaces",
-                )
+        self.assertTrue(
+            check_surface_reconstruction(positions[0], normals[0], penetrations[0], dist_to_sphere, dist_to_box),
+            msg="Contact position should be at midpoint between surfaces",
+        )
 
     def test_box_box_face_collision(self):
         """Test box-box collision with face contact."""
@@ -755,30 +1091,29 @@ class TestNarrowPhase(_NarrowPhaseSetupMixin, unittest.TestCase):
                 "type": GeoType.SPHERE,
                 "transform": ([0.0, 1.5, 0.0], [0.0, 0.0, 0.0, 1.0]),
                 "data": ([0.5, 0.5, 0.5], 0.0),
+                "cutoff": 1.0,
             },
             {
                 "type": GeoType.CAPSULE,
                 "transform": ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
                 "data": ([0.5, 1.0, 0.0], 0.0),
+                "cutoff": 1.0,
             },
         ]
 
         count, _pairs, _positions, normals, penetrations, _tangents = self._run_narrow_phase(geom_list, [(0, 1)])
 
-        # May not generate contact if separated beyond margin
-        if count > 0:
-            # Normal should be unit length
-            normal_length = np.linalg.norm(normals[0])
-            self.assertAlmostEqual(normal_length, 1.0, places=5, msg="Normal should be unit length")
+        # The contact gap exceeds the separation, so the pair reports a speculative contact
+        self.assertGreater(count, 0)
+        normal_length = np.linalg.norm(normals[0])
+        self.assertAlmostEqual(normal_length, 1.0, places=5, msg="Normal should be unit length")
 
-            # Normal should point primarily along Y axis
-            self.assertGreater(abs(normals[0][1]), 0.9, msg="Normal should be along Y axis for cylinder side collision")
+        # Normal should point primarily along Y axis
+        self.assertGreater(abs(normals[0][1]), 0.9, msg="Normal should be along Y axis for cylinder side collision")
 
-            # Check separation: distance = 1.5 - (0.5 + 0.5) = 0.5
-            self.assertGreater(penetrations[0], 0.0, "Separated shapes should have positive penetration")
-            self.assertAlmostEqual(
-                penetrations[0], 0.5, delta=0.1, msg=f"Expected separation ~0.5, got {penetrations[0]}"
-            )
+        # Check separation: distance = 1.5 - (0.5 + 0.5) = 0.5
+        self.assertGreater(penetrations[0], 0.0, "Separated shapes should have positive penetration")
+        self.assertAlmostEqual(penetrations[0], 0.5, delta=0.1, msg=f"Expected separation ~0.5, got {penetrations[0]}")
 
     def test_sphere_capsule_cap(self):
         """Test sphere collision with capsule hemispherical cap."""
@@ -792,29 +1127,28 @@ class TestNarrowPhase(_NarrowPhaseSetupMixin, unittest.TestCase):
                 "type": GeoType.SPHERE,
                 "transform": ([0.0, 0.0, 2.2], [0.0, 0.0, 0.0, 1.0]),
                 "data": ([0.5, 0.5, 0.5], 0.0),
+                "cutoff": 1.0,
             },
             {
                 "type": GeoType.CAPSULE,
                 "transform": ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
                 "data": ([0.5, 1.0, 0.0], 0.0),
+                "cutoff": 1.0,
             },
         ]
 
         count, _pairs, _positions, normals, penetrations, _tangents = self._run_narrow_phase(geom_list, [(0, 1)])
 
-        if count > 0:
-            # Normal should be unit length
-            normal_length = np.linalg.norm(normals[0])
-            self.assertAlmostEqual(normal_length, 1.0, places=5, msg="Normal should be unit length")
+        self.assertGreater(count, 0)
+        normal_length = np.linalg.norm(normals[0])
+        self.assertAlmostEqual(normal_length, 1.0, places=5, msg="Normal should be unit length")
 
-            # Normal should point primarily along Z axis
-            self.assertGreater(abs(normals[0][2]), 0.9, msg="Normal should be along Z axis for cap collision")
+        # Normal should point primarily along Z axis
+        self.assertGreater(abs(normals[0][2]), 0.9, msg="Normal should be along Z axis for cap collision")
 
-            # Check separation: distance = 2.2 - 1.0 = 1.2, combined radii = 1.0, separation = 0.2
-            self.assertGreater(penetrations[0], 0.0, "Separated shapes should have positive penetration")
-            self.assertAlmostEqual(
-                penetrations[0], 0.2, delta=0.05, msg=f"Expected separation ~0.2, got {penetrations[0]}"
-            )
+        # Check separation: distance = 2.2 - 1.0 = 1.2, combined radii = 1.0, separation = 0.2
+        self.assertGreater(penetrations[0], 0.0, "Separated shapes should have positive penetration")
+        self.assertAlmostEqual(penetrations[0], 0.2, delta=0.05, msg=f"Expected separation ~0.2, got {penetrations[0]}")
 
     def test_capsule_capsule_parallel(self):
         """Test capsule-capsule collision when parallel."""
@@ -824,19 +1158,21 @@ class TestNarrowPhase(_NarrowPhaseSetupMixin, unittest.TestCase):
                 "type": GeoType.CAPSULE,
                 "transform": ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
                 "data": ([0.5, 1.0, 0.0], 0.0),
+                "cutoff": 1.0,
             },
             {
                 "type": GeoType.CAPSULE,
                 "transform": ([0.0, 1.5, 0.0], [0.0, 0.0, 0.0, 1.0]),
                 "data": ([0.5, 1.0, 0.0], 0.0),
+                "cutoff": 1.0,
             },
         ]
 
         count, _pairs, _positions, _normals, penetrations, _tangents = self._run_narrow_phase(geom_list, [(0, 1)])
 
         # Capsules with combined radius 1.0 and separation 1.5 should be separated
-        if count > 0:
-            self.assertGreater(penetrations[0], 0.0, "Separated capsules should have positive penetration")
+        self.assertGreater(count, 0)
+        self.assertGreater(penetrations[0], 0.0, "Separated capsules should have positive penetration")
 
     def test_capsule_capsule_crossed(self):
         """Test capsule-capsule collision when crossed (perpendicular)."""
@@ -921,19 +1257,21 @@ class TestNarrowPhase(_NarrowPhaseSetupMixin, unittest.TestCase):
                 "type": GeoType.PLANE,
                 "transform": ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
                 "data": ([0.0, 0.0, 0.0], 0.0),
+                "cutoff": 1.0,
             },
             {
                 "type": GeoType.SPHERE,
                 "transform": ([0.0, 0.0, 2.0], [0.0, 0.0, 0.0, 1.0]),
                 "data": ([1.0, 1.0, 1.0], 0.0),
+                "cutoff": 1.0,
             },
         ]
 
         count, _pairs, _positions, _normals, penetrations, _tangents = self._run_narrow_phase(geom_list, [(0, 1)])
 
-        # Separated - may not generate contact
-        if count > 0:
-            self.assertGreater(penetrations[0], 0.0, "Sphere above plane should have positive penetration")
+        # The contact gap exceeds the separation, so the pair reports a speculative contact
+        self.assertGreater(count, 0)
+        self.assertGreater(penetrations[0], 0.0, "Sphere above plane should have positive penetration")
 
     def test_plane_sphere_touching(self):
         """Test plane-sphere collision with small overlap."""
@@ -1196,20 +1534,22 @@ class TestNarrowPhase(_NarrowPhaseSetupMixin, unittest.TestCase):
                 "type": GeoType.CYLINDER,
                 "transform": ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
                 "data": ([0.5, 1.0, 0.0], 0.0),
+                "cutoff": 1.0,
             },
             {
                 "type": GeoType.SPHERE,
                 "transform": ([1.5, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
                 "data": ([0.5, 0.5, 0.5], 0.0),
+                "cutoff": 1.0,
             },
         ]
 
         count, _pairs, _positions, _normals, penetrations, _tangents = self._run_narrow_phase(geom_list, [(0, 1)])
 
         # Cylinder radius 0.5 + sphere radius 0.5 = 1.0, distance = 1.5, so separation = 0.5
-        if count > 0:
-            # If contact generated, should have positive penetration (separation)
-            self.assertGreater(penetrations[0], 0.0, "Separated should have positive penetration")
+        self.assertGreater(count, 0)
+        # A separated pair reports a positive distance
+        self.assertGreater(penetrations[0], 0.0, "Separated should have positive penetration")
 
     def test_barrel_cylinder_sphere(self):
         """Verify a sphere contacts the curved barrel through GJK/MPR."""
@@ -1605,6 +1945,51 @@ class TestNarrowPhase(_NarrowPhaseSetupMixin, unittest.TestCase):
         """Scaled mesh-mesh contacts should stay positive when truly separated."""
         self._assert_mesh_mesh_scaled_separated_positive_penetration(self.narrow_phase)
 
+    def test_mesh_mesh_at_gap_with_sub_ulp_margins(self):
+        """Both mesh-SDF routes admit equality after adding the two margins."""
+        device = wp.get_device()
+        half_size = 2.0**-10
+        gap = 0.125
+        # Each margin is half an ulp of the pair gap, so adding either one
+        # to the gap first rounds it away. Their sum is exactly one ulp.
+        margin = 2.0**-27
+        mesh = newton.Mesh.create_box(half_size, half_size, half_size, duplicate_vertices=False)
+        mesh_id = mesh.finalize()
+        edges = wp.array(mesh.edges, dtype=wp.vec2i, device=device)
+        ranges = wp.array([(0, len(mesh.edges))] * 2, dtype=wp.vec2i, device=device)
+        shape = {"type": GeoType.MESH, "source": mesh_id, "cutoff": 0.5 * gap, "data": ([1.0] * 3, margin)}
+        for reduce_contacts in (False, True):
+            self.narrow_phase = NarrowPhase(
+                max_candidate_pairs=1, max_triangle_pairs=64, reduce_contacts=reduce_contacts, device=device
+            )
+            for extra, expected in ((0.0, True), (2.0 * margin, False)):
+                with self.subTest(reduce_contacts=reduce_contacts, extra=extra):
+                    x = 2.0 * half_size + gap + 2.0 * margin + extra
+                    shifted = {**shape, "transform": ([x, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0])}
+                    count, *_ = self._run_narrow_phase(
+                        [shape, shifted], [(0, 1)], max_contacts=64, mesh_edge_indices=edges, shape_edge_range=ranges
+                    )
+                    self.assertEqual(count > 0, expected)
+
+        # The rounded pair gap can exceed the two independently expanded
+        # AABBs, even when one shape has zero margin.
+        builder = newton.ModelBuilder()
+        builder.add_shape_mesh(
+            -1,
+            mesh=mesh,
+            xform=wp.transform(wp.vec3(-gap - half_size, 0, 0)),
+            cfg=builder.ShapeConfig(gap=gap, margin=0.0),
+        )
+        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.add_shape_mesh(body, mesh=mesh, cfg=builder.ShapeConfig(density=0.0, gap=3 * 2.0**-28, margin=2.0**-30))
+        model = builder.finalize(device=device)
+        pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
+        state, contacts = model.state(), pipeline.contacts()
+        for separation, expected in ((2.0**-26, True), (2.0**-25, False)):
+            state.body_q.assign([wp.transform(wp.vec3(half_size + separation, 0, 0))])
+            pipeline.collide(state, contacts)
+            self.assertEqual(int(contacts.rigid_contact_count.numpy()[0]) > 0, expected)
+
     def test_mesh_mesh_scaled_separated_positive_penetration_no_reduction(self):
         """Scaled mesh-mesh separation should stay positive when reduction is disabled."""
         device = self.narrow_phase.device if self.narrow_phase.device is not None else wp.get_device()
@@ -1628,26 +2013,25 @@ class TestNarrowPhase(_NarrowPhaseSetupMixin, unittest.TestCase):
                 "type": GeoType.ELLIPSOID,
                 "transform": ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
                 "data": ([1.0, 0.5, 0.3], 0.0),  # semi-axes a=1.0, b=0.5, c=0.3
+                "cutoff": 1.0,
             },
             {
                 "type": GeoType.ELLIPSOID,
                 "transform": ([3.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
                 "data": ([1.0, 0.5, 0.3], 0.0),
+                "cutoff": 1.0,
             },
         ]
 
         count, _pairs, _positions, normals, penetrations, _tangents = self._run_narrow_phase(geom_list, [(0, 1)])
 
-        # Separated ellipsoids should produce no contacts (or contacts with positive separation)
-        if count > 0:
-            # If contact is generated, penetration should be positive (separation)
-            self.assertGreater(
-                penetrations[0], 0.0, "Separated ellipsoids should have positive penetration (separation)"
-            )
+        # The contact gap exceeds the separation, so the pair reports a speculative contact
+        self.assertGreater(count, 0)
+        # A separated pair reports a positive distance
+        self.assertGreater(penetrations[0], 0.0, "Separated ellipsoids should have positive penetration (separation)")
 
-            # Normal should be unit length
-            normal_length = np.linalg.norm(normals[0])
-            self.assertAlmostEqual(normal_length, 1.0, places=5, msg="Normal should be unit length")
+        normal_length = np.linalg.norm(normals[0])
+        self.assertAlmostEqual(normal_length, 1.0, places=5, msg="Normal should be unit length")
 
     def test_ellipsoid_ellipsoid_penetrating(self):
         """Test ellipsoid-ellipsoid collision with penetration."""
@@ -2025,6 +2409,234 @@ class TestBufferOverflowWarnings(unittest.TestCase):
         # Verify some contacts were still produced (from the pairs that fit)
         count = contact_count.numpy()[0]
         self.assertGreater(count, 0, "Should still produce contacts for pairs that fit in the buffer")
+
+    @unittest.skipUnless(_cuda_available, "Sparse GJK routing is enabled only on CUDA")
+    def test_sparse_gjk_routing_preserves_filtered_slots(self):
+        """Preserve source slots while filtering analytic pairs from sparse GJK routing."""
+        geom_list = [
+            {"type": GeoType.PLANE, "data": ([0.0, 0.0, 0.0], 0.0)},
+            {
+                "type": GeoType.BOX,
+                "data": ([0.5, 0.5, 0.5], 0.0),
+                "transform": ([0.0, 0.0, 5.0], [0.0, 0.0, 0.0, 1.0]),
+            },
+            {
+                "type": GeoType.BOX,
+                "data": ([0.5, 0.5, 0.5], 0.0),
+                "transform": ([0.0, 0.0, 5.49], [0.0, 0.0, 0.0, 1.0]),
+            },
+        ]
+        arrays = self._create_geometry_arrays(geom_list)
+        candidate_pair = wp.array([[0, 1], [1, 2]], dtype=wp.vec2i)
+        candidate_pair_count = wp.array([2], dtype=int)
+
+        narrow_phase = NarrowPhase(
+            max_candidate_pairs=2,
+            has_meshes=False,
+            verify_buffers=False,
+            shape_aabb_lower=arrays[7],
+            shape_aabb_upper=arrays[8],
+            sparse_gjk_pairs=True,
+        )
+
+        contact_count = wp.zeros(1, dtype=int)
+        contact_pair = wp.zeros(8, dtype=wp.vec2i)
+        contact_position = wp.zeros(8, dtype=wp.vec3)
+        contact_normal = wp.zeros(8, dtype=wp.vec3)
+        contact_penetration = wp.zeros(8, dtype=float)
+        narrow_phase.launch(
+            candidate_pair=candidate_pair,
+            candidate_pair_count=candidate_pair_count,
+            shape_types=arrays[0],
+            shape_data=arrays[1],
+            shape_transform=arrays[2],
+            shape_source=arrays[3],
+            shape_gap=arrays[4],
+            shape_collision_radius=arrays[5],
+            shape_flags=arrays[6],
+            shape_local_aabb_lower=arrays[7],
+            shape_local_aabb_upper=arrays[8],
+            shape_voxel_resolution=arrays[9],
+            contact_pair=contact_pair,
+            contact_position=contact_position,
+            contact_normal=contact_normal,
+            contact_penetration=contact_penetration,
+            contact_count=contact_count,
+        )
+
+        self.assertEqual(int(narrow_phase.gjk_candidate_pairs_count.numpy()[0]), 1)
+        np.testing.assert_array_equal(narrow_phase.gjk_candidate_pairs.numpy(), [[-1, -1], [1, 2]])
+        self.assertGreater(int(contact_count.numpy()[0]), 0)
+        np.testing.assert_array_equal(contact_pair.numpy()[0], [1, 2])
+
+    @unittest.skipUnless(_cuda_available, "Sparse GJK routing is enabled only on CUDA")
+    def test_sparse_gjk_routing_matches_compact_contacts(self):
+        """Match compact and sparse GJK contact results after primitive filtering."""
+        geom_list = [
+            {"type": GeoType.PLANE, "data": ([0.0, 0.0, 0.0], 0.0)},
+            {
+                "type": GeoType.BOX,
+                "data": ([0.5, 0.5, 0.5], 0.0),
+                "transform": ([0.0, 0.0, 5.0], [0.0, 0.0, 0.0, 1.0]),
+            },
+            {
+                "type": GeoType.BOX,
+                "data": ([0.5, 0.5, 0.5], 0.0),
+                "transform": ([0.0, 0.0, 5.49], [0.0, 0.0, 0.0, 1.0]),
+            },
+        ]
+        arrays = self._create_geometry_arrays(geom_list)
+        candidate_pair = wp.array([[0, 1], [1, 2]], dtype=wp.vec2i)
+        candidate_pair_count = wp.array([2], dtype=int)
+
+        def run(sparse_gjk_pairs):
+            narrow_phase = NarrowPhase(
+                max_candidate_pairs=2,
+                has_meshes=False,
+                verify_buffers=False,
+                shape_aabb_lower=arrays[7],
+                shape_aabb_upper=arrays[8],
+                sparse_gjk_pairs=sparse_gjk_pairs,
+            )
+            contact_count = wp.zeros(1, dtype=int)
+            contact_pair = wp.zeros(8, dtype=wp.vec2i)
+            contact_position = wp.zeros(8, dtype=wp.vec3)
+            contact_normal = wp.zeros(8, dtype=wp.vec3)
+            contact_penetration = wp.zeros(8, dtype=float)
+            narrow_phase.launch(
+                candidate_pair=candidate_pair,
+                candidate_pair_count=candidate_pair_count,
+                shape_types=arrays[0],
+                shape_data=arrays[1],
+                shape_transform=arrays[2],
+                shape_source=arrays[3],
+                shape_gap=arrays[4],
+                shape_collision_radius=arrays[5],
+                shape_flags=arrays[6],
+                shape_local_aabb_lower=arrays[7],
+                shape_local_aabb_upper=arrays[8],
+                shape_voxel_resolution=arrays[9],
+                contact_pair=contact_pair,
+                contact_position=contact_position,
+                contact_normal=contact_normal,
+                contact_penetration=contact_penetration,
+                contact_count=contact_count,
+            )
+            count = int(contact_count.numpy()[0])
+            return (
+                contact_pair.numpy()[:count],
+                contact_position.numpy()[:count],
+                contact_normal.numpy()[:count],
+                contact_penetration.numpy()[:count],
+            )
+
+        compact = run(False)
+        sparse = run(True)
+        self.assertEqual(compact[0].shape[0], sparse[0].shape[0])
+
+        def sorted_contacts(result):
+            rows = np.concatenate(
+                (result[0].astype(np.float32), result[1], result[2], result[3][:, None]),
+                axis=1,
+            )
+            order = np.lexsort(tuple(rows[:, column] for column in reversed(range(rows.shape[1]))))
+            return rows[order]
+
+        compact_rows = sorted_contacts(compact)
+        sparse_rows = sorted_contacts(sparse)
+        np.testing.assert_array_equal(compact_rows[:, :2], sparse_rows[:, :2])
+        np.testing.assert_allclose(compact_rows[:, 2:], sparse_rows[:, 2:], rtol=1.0e-5, atol=1.0e-5)
+
+    @unittest.skipUnless(_cuda_available, "Sparse GJK routing is enabled only on CUDA")
+    def test_sparse_gjk_routing_auto_selection_threshold(self):
+        """Enable automatic sparse routing at the one-million-pair threshold."""
+        self.assertEqual(_SPARSE_GJK_PAIR_CAPACITY_THRESHOLD, 1_000_000)
+        below_threshold = NarrowPhase(
+            max_candidate_pairs=1,
+            has_meshes=False,
+            has_generic_convex_pairs=False,
+            candidate_pair_work_estimate=0,
+            device="cuda:0",
+        )
+        at_threshold = NarrowPhase(
+            max_candidate_pairs=_SPARSE_GJK_PAIR_CAPACITY_THRESHOLD,
+            has_meshes=False,
+            has_generic_convex_pairs=False,
+            candidate_pair_work_estimate=0,
+            device="cuda:0",
+        )
+
+        self.assertFalse(below_threshold.sparse_gjk_pairs)
+        self.assertTrue(at_threshold.sparse_gjk_pairs)
+
+    @unittest.skipUnless(_cuda_available, "Split GJK/MPR is enabled only on CUDA")
+    def test_split_buffers_use_candidate_work_estimate(self):
+        """Allocate split buffers to the candidate bound for both support variants."""
+        lean_support = NarrowPhase(
+            max_candidate_pairs=5000,
+            candidate_pair_work_estimate=4096,
+            has_meshes=False,
+            use_lean_gjk_mpr=True,
+            split_gjk_mpr=True,
+            device="cuda:0",
+        )
+        full_support = NarrowPhase(
+            max_candidate_pairs=5000,
+            candidate_pair_work_estimate=4096,
+            has_meshes=False,
+            use_lean_gjk_mpr=False,
+            split_gjk_mpr=True,
+            device="cuda:0",
+        )
+        disabled = NarrowPhase(
+            max_candidate_pairs=5000,
+            candidate_pair_work_estimate=4096,
+            has_meshes=False,
+            device="cuda:0",
+        )
+
+        self.assertTrue(lean_support.split_gjk_mpr)
+        self.assertTrue(full_support.split_gjk_mpr)
+        self.assertFalse(disabled.split_gjk_mpr)
+        self.assertEqual(lean_support.split_query_results.shape[0], 4096)
+        self.assertEqual(lean_support.split_gjk_work_items.shape[0], 4096)
+        self.assertEqual(lean_support.split_manifold_work_items.shape[0], 4096)
+
+    @unittest.skipUnless(_cuda_available, "Split GJK/MPR is enabled only on CUDA")
+    def test_split_convex_launch_uses_one_warp_blocks(self):
+        """Launch each split-convex work block with exactly one CUDA warp."""
+        narrow_phase = NarrowPhase(
+            max_candidate_pairs=5000,
+            candidate_pair_work_estimate=4096,
+            has_meshes=False,
+            split_gjk_mpr=True,
+            device="cuda:0",
+        )
+
+        self.assertEqual(narrow_phase.split_convex_block_dim, 32)
+        self.assertEqual(
+            narrow_phase.split_convex_total_num_threads,
+            narrow_phase.split_convex_block_dim * narrow_phase.num_tile_blocks,
+        )
+
+    @unittest.skipUnless(_cuda_available, "Split GJK/MPR is enabled only on CUDA")
+    def test_split_convex_launch_uses_full_blocks_without_support_acceleration(self):
+        """Launch split-convex work with the full block when support acceleration is off."""
+        narrow_phase = NarrowPhase(
+            max_candidate_pairs=5000,
+            candidate_pair_work_estimate=4096,
+            has_meshes=False,
+            split_gjk_mpr=True,
+            convex_support_acceleration=False,
+            device="cuda:0",
+        )
+
+        self.assertEqual(narrow_phase.split_convex_block_dim, 128)
+        self.assertEqual(narrow_phase.split_convex_block_dim, narrow_phase.block_dim)
+        self.assertEqual(
+            narrow_phase.split_convex_total_num_threads,
+            narrow_phase.split_convex_block_dim * narrow_phase.num_tile_blocks,
+        )
 
     def test_broad_phase_buffer_overflow(self):
         """Test that broad phase buffer overflow produces a warning and no crash."""
@@ -2449,6 +3061,18 @@ class TestMeshNonUniformScaling(_NarrowPhaseSetupMixin, unittest.TestCase):
         """Sanity: uniform mesh scale (1, 1, 1) must produce contacts (regression baseline)."""
         self._assert_sphere_above_quad_contacts((1.0, 1.0, 1.0), (0.0, 0.0), "uniform 1x1x1")
 
+    def test_sphere_on_coplanar_triangle_seam_has_single_contact(self):
+        """Merge duplicate triangle contacts for a sphere on a coplanar seam."""
+        count, normals, penetrations = self._run_mesh_vs_sphere(
+            (1.0, 1.0, 1.0),
+            (0.0, 0.0, 0.25),
+            sphere_radius=0.3,
+        )
+
+        self.assertEqual(count, 1)
+        np.testing.assert_allclose(normals[0], [0.0, 0.0, 1.0], atol=1.0e-6)
+        self.assertAlmostEqual(float(penetrations[0]), -0.05, delta=1.0e-6)
+
     def test_uniform_large_scale(self):
         """Uniform scale (10, 10, 10) - sphere over the (now 10x10) quad."""
         self._assert_sphere_above_quad_contacts((10.0, 10.0, 10.0), (3.0, 3.0), "uniform 10x10x10")
@@ -2469,6 +3093,10 @@ class TestMeshNonUniformScaling(_NarrowPhaseSetupMixin, unittest.TestCase):
     def test_nonuniform_scale_z_thin(self):
         """Non-uniform scale (1, 1, 0.1): a thin pancake along Z."""
         self._assert_sphere_above_quad_contacts((1.0, 1.0, 0.1), (0.0, 0.0), "non-uniform 1x1x0.1")
+
+    def test_mirrored_scale_x_preserves_front_face(self):
+        """Preserve the front face when mesh scale mirrors one in-plane axis."""
+        self._assert_sphere_above_quad_contacts((-1.0, 1.0, 1.0), (0.2, 0.0), "mirrored x")
 
     def test_nonuniform_scale_extreme(self):
         """Extreme non-uniform scale (50, 0.5, 1): a long thin strip in X."""

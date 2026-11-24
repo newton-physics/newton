@@ -42,6 +42,8 @@ class KpiViewerGL:
         # Setting up the renderer
         self.renderer = ViewerGL(headless=True)
         self.renderer.set_model(self._model)
+        # Render once so the timed frame is a steady one.
+        self.time_rendering_frame(robot, world_count)
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_rendering_frame(self, robot, world_count):
@@ -78,6 +80,8 @@ class FastViewerGL:
         # Setting up the renderer
         self.renderer = ViewerGL(headless=True)
         self.renderer.set_model(self._model)
+        # Render once so the timed frame is a steady one.
+        self.time_rendering_frame(robot, world_count)
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_rendering_frame(self, robot, world_count):

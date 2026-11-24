@@ -1,6 +1,15 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+"""Drape a shirt around a mannequin using the Style3D cloth solver.
+
+Success criteria:
+- A mannequin wearing a shirt appears.
+
+Runs:
+- `python -m newton.examples cloth_style3d`
+"""
+
 import warp as wp
 from pxr import Usd
 
@@ -14,7 +23,7 @@ from newton.solvers import style3d
 
 class Example:
     def __init__(self, viewer, args):
-        newton.use_coord_layout_targets = True
+        """Build the cloth scene and configure the Style3D solver."""
         # setup simulation parameters first
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
@@ -113,9 +122,7 @@ class Example:
             flags[fixed_vertex_id] = flags[fixed_vertex_id] & ~ParticleFlags.ACTIVE
         self.model.particle_flags = wp.array(flags)
 
-        # set up contact query and contact detection distances
-        self.model.soft_contact_radius = 0.2e-2
-        self.model.soft_contact_margin = 0.35e-2
+        # set up contact material parameters
         self.model.soft_contact_ke = 1.0e1
         self.model.soft_contact_kd = 1.0e-5
         self.model.soft_contact_mu = 0.2
@@ -123,7 +130,7 @@ class Example:
 
         self.solver = newton.solvers.SolverStyle3D(
             model=self.model,
-            iterations=self.iterations,
+            config=newton.solvers.SolverStyle3D.Config(iterations=self.iterations),
         )
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()

@@ -1,18 +1,23 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Recording
-#
-# Shows how to record a simulation using ViewerFile for automatic recording
-# of model structure and state data during simulation.
-#
-# Recording happens automatically - ViewerFile captures all logged states
-# and saves them when the viewer is closed.
-#
-# Command: python -m newton.examples recording
-#
-###########################################################################
+"""Example Recording
+
+Shows how to record a simulation using ViewerFile for automatic recording
+of model structure and state data during simulation.
+
+Recording happens automatically - ViewerFile captures all logged states
+and saves them when the viewer is closed.
+
+Success criteria:
+- The command finishes after its configured simulation frames and writes humanoid_recording.bin by
+  default.
+- The default recording contains 1000 frames of 100 humanoid worlds and can be loaded by
+  replay_viewer.
+
+Runs:
+- `python -m newton.examples recording`
+"""
 
 import numpy as np
 import warp as wp
@@ -23,7 +28,6 @@ import newton.examples
 
 class Example:
     def __init__(self, viewer, args):
-        newton.use_coord_layout_targets = True
         # Setup simulation parameters
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
@@ -72,7 +76,6 @@ class Example:
             solver="newton",
             integrator="euler",
             iterations=10,
-            ls_iterations=5,
             njmax=100,
         )
 

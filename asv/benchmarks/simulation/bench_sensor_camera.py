@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
 """Rendering benchmarks for the site-backed camera sensor.
@@ -30,10 +30,12 @@ wp.config.enable_backward = False
 wp.config.log_level = wp.LOG_WARNING
 
 import math
+import os
 import random
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 
@@ -155,11 +157,13 @@ def _build_franka_cabinet() -> newton.ModelBuilder:
         cabinet_folder / "urdf" / "sektion_cabinet_2.urdf",
         xform=wp.transform(wp.vec3(0.0, 0.0, 0.4), wp.quat_identity()),
         floating=False,
+        joint_damping_mode="passive",
     )
     builder.add_urdf(
         newton.utils.download_asset("franka_emika_panda") / "urdf/fr3_franka_hand.urdf",
         xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), math.pi)),
         floating=False,
+        joint_damping_mode="passive",
     )
     _set_joint_positions(builder, _FRANKA_CABINET_ARM_POSE)
     return builder
@@ -254,6 +258,8 @@ class _SensorCameraSceneRig:
         resolution: int,
         render_order: SensorCamera.RenderOrder,
         camera_fov_deg: float = 45.0,
+        *,
+        backend: Literal["warp", "optix"] = "warp",
     ):
         world = preset.build()
         _disable_collision_handling(world)
@@ -270,7 +276,7 @@ class _SensorCameraSceneRig:
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state)
 
         light_direction = wp.vec3f(*preset.light_direction) if preset.light_direction is not None else None
-        self.sensor = SensorCamera(self.model)
+        self.sensor = SensorCamera(self.model, backend=backend)
         self.sensor.create_default_light(enable_shadows=True, direction=light_direction)
         self.sensor.assign_checkerboard_material(shape_indices=np.arange(self.model.shape_count, dtype=np.int32))
         self.sensor.default_render_config.render_order = render_order
@@ -278,6 +284,7 @@ class _SensorCameraSceneRig:
         self.sensor.default_render_config.tile_height = RENDER_TILE_HEIGHT
         self.sensor.default_render_config.enable_shadows = True
         self.sensor.default_render_config.enable_textures = True
+        self.sensor.default_render_config.block_dim = KERNEL_BLOCK_DIM
 
         # The caller owns the rays and the per-view transforms passed to update().
         self.rays = SensorCamera.compute_camera_rays_pinhole(
@@ -289,13 +296,16 @@ class _SensorCameraSceneRig:
             np.tile(camera_row, (world_count, 1)), dtype=wp.transformf, device=self.model.device
         )
 
-        self.color_image = self.sensor.create_color_image_output(world_count, resolution, resolution)
-        self.depth_image = self.sensor.create_depth_image_output(world_count, resolution, resolution)
+        self.color_image = self.sensor.allocate_image_color(world_count, resolution, resolution)
+        self.depth_image = self.sensor.allocate_image_depth(world_count, resolution, resolution)
 
         self.model.bvh_build_shapes(self.state, bvh_constructor=BVH_CONSTRUCTOR)
+        if backend == "optix":
+            self.model.bvh_build_shapes(self.state, backend="optix")
         self.model.bvh_build_particles(self.state, bvh_constructor=BVH_CONSTRUCTOR)
-        # Static benchmark scene: synchronize render-only state once up front.
-        self.sensor.sync_transforms(self.state)
+        # Static benchmark scene: synchronize render-only state once up front and
+        # let render() skip the per-frame sync so it measures rendering only.
+        self.sensor.sync_deformable_meshes(self.state)
 
     def render(self, color: bool = True, depth: bool = True):
         self.sensor.update(
@@ -304,8 +314,12 @@ class _SensorCameraSceneRig:
             self.rays,
             color_image=self.color_image if color else None,
             depth_image=self.depth_image if depth else None,
-            kernel_block_dim=KERNEL_BLOCK_DIM,
+            sync_deformables=False,
         )
+
+
+def _pr_gate_skips_output(color: bool, depth: bool, selected_modes: tuple[tuple[bool, bool], ...]) -> bool:
+    return bool(os.environ.get("NEWTON_ASV_PR_GATE")) and (color, depth) not in selected_modes
 
 
 class _SceneBenchmark:
@@ -314,11 +328,18 @@ class _SceneBenchmark:
     param_names = ["resolution", "world_count", "iterations"]
     scene: str
     render_order = RENDER_ORDER
+    backend = "warp"
+    pr_gate_output_modes: tuple[tuple[bool, bool], ...] | None = None
 
     def setup(self, resolution: int, world_count: int, iterations: int):
-        self.rig = _SensorCameraSceneRig(SCENES[self.scene], world_count, resolution, self.render_order)
-        # Compile and warm the render kernels for every output combination measured below.
-        for color, depth in ((True, True), (True, False), (False, True)):
+        self.rig = _SensorCameraSceneRig(
+            SCENES[self.scene], world_count, resolution, self.render_order, backend=self.backend
+        )
+        output_modes = ((True, True), (True, False), (False, True))
+        if os.environ.get("NEWTON_ASV_PR_GATE") and self.pr_gate_output_modes is not None:
+            output_modes = self.pr_gate_output_modes
+        # Compile and warm each output combination selected by this ASV run.
+        for color, depth in output_modes:
             self.rig.render(color=color, depth=depth)
         wp.synchronize()
 
@@ -348,13 +369,33 @@ class SensorCameraQuadruped(_SceneBenchmark):
 
 class FastSensorCamera(_SceneBenchmark):
     scene = "franka_cabinet"
+    if os.environ.get("NEWTON_ASV_PR_GATE"):
+        repeat = 1
+        rounds = 2
+    pr_gate_output_modes = ((True, True), (False, True))
     params = ([64], [4096], [50])
+
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0 or _pr_gate_skips_output(True, False, pr_gate_output_modes))
+    def time_render_color_only(self, resolution: int, world_count: int, iterations: int):
+        super().time_render_color_only(resolution, world_count, iterations)
 
 
 class FastSensorCameraPixel(_SceneBenchmark):
     scene = "franka_cabinet"
+    if os.environ.get("NEWTON_ASV_PR_GATE"):
+        repeat = 1
+        rounds = 2
     render_order = SensorCamera.RenderOrder.PIXEL_PRIORITY
+    pr_gate_output_modes = ((True, True),)
     params = ([64], [4096], [50])
+
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0 or _pr_gate_skips_output(True, False, pr_gate_output_modes))
+    def time_render_color_only(self, resolution: int, world_count: int, iterations: int):
+        super().time_render_color_only(resolution, world_count, iterations)
+
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0 or _pr_gate_skips_output(False, True, pr_gate_output_modes))
+    def time_render_depth_only(self, resolution: int, world_count: int, iterations: int):
+        super().time_render_depth_only(resolution, world_count, iterations)
 
 
 class SensorCameraShapes256(_SceneBenchmark):
@@ -365,7 +406,9 @@ class SensorCameraShapes256(_SceneBenchmark):
 PREVIEW_WORLD_COUNTS = (1, 16)
 
 
-def write_preview_images(scene_names: list[str], output_dir: Path, image_size: int = 1024) -> list[Path]:
+def write_preview_images(
+    scene_names: list[str], output_dir: Path, image_size: int = 1024, backend: Literal["warp", "optix"] = "warp"
+) -> list[Path]:
     """Write a PNG preview of each scene for every entry in :data:`PREVIEW_WORLD_COUNTS`.
 
     Single-world previews render at ``image_size``; multi-world previews tile a
@@ -379,12 +422,12 @@ def write_preview_images(scene_names: list[str], output_dir: Path, image_size: i
     written = []
     for name in scene_names:
         for world_count in PREVIEW_WORLD_COUNTS:
-            worlds_per_row = math.isqrt(world_count)
-            rig = _SensorCameraSceneRig(SCENES[name], world_count, image_size // worlds_per_row, RENDER_ORDER)
-            rig.render(color=True, depth=False)
-            rgba = rig.sensor.utils(world_count).flatten_color_image_to_rgba(
-                rig.color_image, worlds_per_row=worlds_per_row
+            views_per_row = math.isqrt(world_count)
+            rig = _SensorCameraSceneRig(
+                SCENES[name], world_count, image_size // views_per_row, RENDER_ORDER, backend=backend
             )
+            rig.render(color=True, depth=False)
+            rgba = SensorCamera.Utils.flatten_color_image_to_rgba(rig.color_image, views_per_row=views_per_row)
             path = output_dir / f"{name}_{world_count}_world{'s' if world_count > 1 else ''}.png"
             # Drop alpha: background pixels have alpha 0 and would turn transparent.
             Image.fromarray(rgba.numpy()[..., :3]).save(path)
@@ -449,12 +492,21 @@ if __name__ == "__main__":
         default=1024,
         help="Preview image width and height [px].",
     )
+    parser.add_argument(
+        "--backend",
+        choices=["warp", "optix"],
+        default="warp",
+        help="Camera shape-traversal backend.",
+    )
     args = parser.parse_known_args()[0]
 
     if args.preview:
-        for path in write_preview_images(sorted(SCENES), args.preview_dir, image_size=args.preview_size):
+        for path in write_preview_images(
+            sorted(SCENES), args.preview_dir, image_size=args.preview_size, backend=args.backend
+        ):
             print(f"Wrote {path}")
     else:
         for key in args.bench or benchmark_list.keys():
+            benchmark_list[key].backend = args.backend
             result = run_benchmark(benchmark_list[key])
             print_fps_results(result)

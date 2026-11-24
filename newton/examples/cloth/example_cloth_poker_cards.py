@@ -1,22 +1,27 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Cloth Poker Cards
-#
-# This simulation demonstrates 52 poker cards (13 ranks x 4 suits) dropping
-# and stacking on a cube, then being knocked off by a sphere. The cards use
-# high bending stiffness to maintain their rigid shape while still being
-# flexible enough to interact naturally.
-#
-# Standard poker card dimensions:
-# - Width: 6.35 cm (2.5 inches) = 0.0635 m
-# - Height: 8.89 cm (3.5 inches) = 0.0889 m
-# - Resolution: 4x6 cells per card
-#
-# Command: uv run -m newton.examples cloth_poker_cards
-#
-###########################################################################
+"""Cloth Poker Cards
+
+This simulation demonstrates 52 poker cards (13 ranks x 4 suits) dropping
+and stacking on a cube, then being knocked off by a sphere. The cards use
+high bending stiffness to maintain their rigid shape while still being
+flexible enough to interact naturally.
+
+Standard poker card dimensions:
+- Width: 6.35 cm (2.5 inches) = 0.0635 m
+- Height: 8.89 cm (3.5 inches) = 0.0889 m
+- Resolution: 4x6 cells per card
+
+Success criteria:
+- Cards initially stack on top of a large cube.
+- A moving sphere strikes the stack and knocks cards off; cards retain their overall shape while
+  flexing on contact.
+- After the impact, cards settle without explosive motion or excessive ground penetration.
+
+Runs:
+- `python -m newton.examples cloth_poker_cards`
+"""
 
 import numpy as np
 import warp as wp
@@ -24,10 +29,21 @@ import warp as wp
 import newton
 import newton.examples
 
+CARD_COLOR_PALETTE = (
+    (68 / 255, 119 / 255, 170 / 255),
+    (102 / 255, 204 / 255, 238 / 255),
+    (34 / 255, 136 / 255, 51 / 255),
+    (204 / 255, 187 / 255, 68 / 255),
+    (238 / 255, 102 / 255, 119 / 255),
+    (170 / 255, 51 / 255, 119 / 255),
+    (238 / 255, 153 / 255, 51 / 255),
+    (0 / 255, 153 / 255, 136 / 255),
+)
+"""Paul Tol bright palette, matching the ModelBuilder shape palette."""
+
 
 class Example:
     def __init__(self, viewer, args):
-        newton.use_coord_layout_targets = True
         self.viewer = viewer
         self.sim_time = 0.0
 
@@ -169,6 +185,7 @@ class Example:
                 edge_ke=edge_ke,
                 edge_kd=edge_kd,
                 particle_radius=particle_radius,
+                color=CARD_COLOR_PALETTE[i % len(CARD_COLOR_PALETTE)],
             )
 
         # Add ground plane
@@ -193,10 +210,9 @@ class Example:
         self.solver = newton.solvers.SolverVBD(
             model=self.model,
             iterations=self.iterations,
-            rigid_compliant_alm=True,
             particle_enable_self_contact=True,
-            particle_self_contact_radius=0.001,  # m (0.1 cm)
-            particle_self_contact_margin=0.0015,  # m (0.15 cm)
+            particle_self_contact_margin=0.001,  # m (0.1 cm)
+            particle_self_contact_gap=0.0005,  # m (0.05 cm)
             particle_topological_contact_filter_threshold=2,
             particle_rest_shape_contact_exclusion_radius=0.0,  # m (0.5 cm)
             rigid_body_particle_contact_buffer_size=1024,
@@ -214,7 +230,7 @@ class Example:
         self.collision_pipeline = newton.CollisionPipeline(
             self.model,
             broad_phase="nxn",
-            soft_contact_margin=0.005,  # m (0.5 cm)
+            soft_contact_gap=0.005,  # m (0.5 cm)
         )
         self.contacts = self.collision_pipeline.contacts()
 
@@ -226,7 +242,7 @@ class Example:
             pitch=-15.0,
             yaw=140.0,
         )
-        if hasattr(self.viewer, "camera") and hasattr(self.viewer.camera, "fov"):
+        if hasattr(self.viewer, "camera"):
             self.viewer.camera.fov = 70.0
 
         self.capture()
