@@ -3203,18 +3203,17 @@ class NarrowPhase:
             else None
         )
         # Split-convex blocks distribute independent serial pair queries across
-        # lanes. Use one warp while preserving the block distribution; lanes
-        # grid-stride over larger block queues. That suits the accelerated
-        # hill-climb support map, whose per-pair cost is long and uneven. The
-        # exhaustive support scan is shorter and far more uniform, and does
-        # better with the full block: num_blocks is sized against self.block_dim,
-        # so the narrower block also launches a quarter of the threads used by
-        # the rest of the narrow phase, which throttles large replicated scenes.
+        # lanes. One-warp blocks suit the accelerated hill-climb support map,
+        # whose per-pair cost is long and uneven; the exhaustive support scan is
+        # shorter and far more uniform, and does better with the full block.
+        # Either way the launch keeps the narrow phase's thread count: the
+        # latency-bound GJK queries need every resident warp (a factory with
+        # 215k bottle pairs ran 1.2 ms per pass on a quarter of the threads).
         if device_obj.is_cuda:
             self.split_convex_block_dim = 32 if convex_support_acceleration else self.block_dim
         else:
             self.split_convex_block_dim = self.block_dim
-        self.split_convex_total_num_threads = self.split_convex_block_dim * num_blocks
+        self.split_convex_total_num_threads = self.total_num_threads
         # One-warp blocks spread sparse, serial-per-lane triangle solves across
         # more SMs without reducing the total number of launched threads.
         self.mesh_triangle_block_dim = 32 if device_obj.is_cuda else self.block_dim
