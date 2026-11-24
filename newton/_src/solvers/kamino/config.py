@@ -616,7 +616,11 @@ class PADMMSolverConfig:
     compl_tolerance: float = 1e-6
     """
     The target tolerance on the complementarity residual `r_compl`.\n
-    Must be greater than zero. Defaults to `1e-6`.
+    Must be non-negative. Defaults to `1e-6`.
+
+    Set to `float("inf")` to ignore `r_compl` in the convergence test. The projection makes the slack and dual
+    variables exactly complementary, so `r_compl = (x - y) . z` vanishes with the primal residual, while its
+    rounding floor grows with the square of the dual variable, e.g. on separated speculative contacts.
     """
 
     restart_tolerance: float = 0.999
@@ -744,6 +748,16 @@ class PADMMSolverConfig:
     Method to be used for warm-starting contacts.\n
     See :class:`WarmstarterContacts.Method` for available options.\n
     Defaults to `key_and_position`.
+    """
+
+    contact_primal_relative_tolerance: float = field(default=0.0, kw_only=True)
+    """
+    Relative primal tolerance of the contact constraints. The primal residual of each contact is tested
+    against ``primal_tolerance + contact_primal_relative_tolerance * |z|``, where ``|z|`` is the largest
+    component of its dual variable, i.e. of its augmented velocity in preconditioned units.
+
+    The rounding of the dual variable bounds the primal residual from below, which matters for separated
+    speculative contacts at small time steps. Only applies to the accelerated solver. Defaults to `0.0`.
     """
 
     detect_redundant_kinematics: bool = field(default=True, kw_only=True)
@@ -928,6 +942,11 @@ class PADMMSolverConfig:
             raise ValueError(f"Invalid dual tolerance: {self.dual_tolerance}. Must be non-negative.")
         if self.compl_tolerance < 0.0:
             raise ValueError(f"Invalid complementarity tolerance: {self.compl_tolerance}. Must be non-negative.")
+        if self.contact_primal_relative_tolerance < 0.0:
+            raise ValueError(
+                f"Invalid contact primal relative tolerance: {self.contact_primal_relative_tolerance}. "
+                "Must be non-negative."
+            )
         if not (0.0 <= self.restart_tolerance < 1.0):
             raise ValueError(f"Invalid restart tolerance: {self.restart_tolerance}. Must be in the range [0.0, 1.0).")
         if self.eta <= 0.0:

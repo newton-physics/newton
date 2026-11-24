@@ -370,7 +370,7 @@ class PADMMSolver:
         tile_size = get_tile_size(self._size.max_of_max_total_cts)
         block_dim = get_block_dim(tile_size, ratio=2, min_size=1)
         self._project_dual_convergence_accel_kernel = _make_project_dual_convergence_accel_kernel(
-            block_dim, delassus_dual_residual
+            block_dim, delassus_dual_residual, self._config[0].contact_primal_relative_tolerance
         )
 
         # Allocate the detection of redundant kinematic joint constraints if enabled and the model has loops

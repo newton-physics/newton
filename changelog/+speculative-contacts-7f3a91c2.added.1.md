@@ -1,0 +1,1 @@
+Add `PADMMSolverConfig.contact_primal_relative_tolerance` to `SolverKamino`, which relaxes the primal tolerance of each contact by a multiple of its dual variable, and document that setting `compl_tolerance` to infinity ignores the complementarity residual.

@@ -633,6 +633,40 @@ class TestPADMMSolver(NewtonTestCase):
         # Check solution
         check_padmm_solution(self, test.model, test.problem, solver)
 
+    def test_03b_padmm_solve_with_contact_primal_relative_tolerance(self):
+        """
+        Tests the APADMM solver with a relative primal tolerance on the contact constraints.
+        """
+        # Create the test problem
+        test = TestSetup(builder_fn=basics.build_box_on_plane, max_world_contacts=8, device=self.default_device)
+
+        # Define solver config, ignoring the complementarity residual
+        config = PADMMSolver.Config()
+        config.primal_tolerance = 1e-6
+        config.dual_tolerance = 1e-6
+        config.compl_tolerance = float("inf")
+        config.contact_primal_relative_tolerance = 1e-6
+        config.rho_0 = 1.0
+        config.max_iterations = 200
+
+        # Create the PADMM solver
+        solver = PADMMSolver(
+            model=test.model,
+            problem=test.problem,
+            config=config,
+            warmstart=PADMMWarmStartMode.NONE,
+            use_acceleration=True,
+        )
+
+        # Solve the test problem
+        test.build()
+        solver.reset()
+        solver.coldstart()
+        solver.solve(problem=test.problem)
+
+        # Check that the relaxed primal residual meets the absolute tolerance
+        check_padmm_solution(self, test.model, test.problem, solver)
+
     def test_04_padmm_solve_with_internal_warmstart(self):
         """
         Tests the Proximal-ADMM (PADMM) solver on the reference problem with internal warmstarting.

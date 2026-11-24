@@ -975,14 +975,18 @@ def make_update_dual_variables_and_compute_primal_dual_residuals(
 
 
 @functools.cache
-def _make_project_dual_convergence_accel_kernel(reduction_size: int, delassus_dual_residual: bool = False):
+def _make_project_dual_convergence_accel_kernel(
+    reduction_size: int, delassus_dual_residual: bool = False, contact_primal_relative_tolerance: float = 0.0
+):
     """Create one accelerated PADMM projection/update kernel per world.
 
     Each block owns one world. Threads sweep the world's constraints, write the
     slack and dual variables, reduce residual metrics, update convergence and
     acceleration state, then cache the current iterates for the next iteration.
     If ``delassus_dual_residual`` is set, the dual residual is weighted by the
-    Delassus matrix instead of the proximal parameters.
+    Delassus matrix instead of the proximal parameters. A positive
+    ``contact_primal_relative_tolerance`` adds that multiple of the largest dual
+    variable component of each contact to its primal tolerance.
     """
 
     @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
@@ -1104,6 +1108,7 @@ def _make_project_dual_convergence_accel_kernel(reduction_size: int, delassus_du
                             solver_state_x[ccio_j + 2],
                         )
                         z_c = wp.vec3f(0.0, 0.0, 0.0)
+                        r_p_c = wp.float32(0.0)
 
                         for comp in range(3):
                             idx = ccio_j + comp
@@ -1129,12 +1134,19 @@ def _make_project_dual_convergence_accel_kernel(reduction_size: int, delassus_du
                             r_dy = p_i * (y - y_p)
                             r_dz = (1.0 / p_i) * (z - z_p)
 
-                            r_p_local = wp.max(r_p_local, wp.abs(r_p))
+                            r_p_c = wp.max(r_p_c, wp.abs(r_p))
                             r_d_local = wp.max(r_d_local, wp.abs(r_d))
                             r_dx_local += r_dx * r_dx
                             r_dy_local += r_dy * r_dy
                             r_dz_local += r_dz * r_dz
 
+                        # Relax the primal tolerance by the contact velocity, whose rounding bounds it from below,
+                        # i.e. test `r_p_c <= tol + rel * |z_c|` against the absolute tolerance `tol`
+                        if wp.static(contact_primal_relative_tolerance > 0.0):
+                            z_max = wp.max(wp.abs(z_c[0]), wp.max(wp.abs(z_c[1]), wp.abs(z_c[2])))
+                            tol_p = config.primal_tolerance
+                            r_p_c *= tol_p / (tol_p + wp.static(contact_primal_relative_tolerance) * z_max)
+                        r_p_local = wp.max(r_p_local, r_p_c)
                         r_c_local = wp.max(r_c_local, wp.abs(wp.dot(x_c, z_c)))
                 else:
                     rho_i = rho * solver_state_rho_scale[thread_offset]
