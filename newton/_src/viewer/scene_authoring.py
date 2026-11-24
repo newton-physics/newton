@@ -31,8 +31,7 @@ from ..geometry.bvh import (
     compute_shape_bounds,
     compute_sphere_bounds,
 )
-from ..sim import BodyFlags, CollisionPipeline, JointType, Model, ModelBuilder, ModelFlags, eval_ik
-from ..sim.collide import compute_shape_aabbs
+from ..sim import BodyFlags, CollisionPipeline, Contacts, JointType, Model, ModelBuilder, ModelFlags, eval_ik
 from ..solvers.xpbd import SolverXPBD
 from .authoring_deformables import DEFORMABLE_KINDS, MAX_PARTICLES, MPM_VOXEL_SIZE, build_deformable
 from .authoring_usd import (
@@ -45,15 +44,19 @@ from .authoring_usd import (
     prepare_usd,
     save_scene,
     scene_solver,
+    scene_vbd_self_contact,
     template_bounds,
 )
 
 if TYPE_CHECKING:
-    from ..sim import Contacts, Control, State
+    from ..sim import Control, State
     from ..solvers.solver import SolverBase
     from .viewer import ViewerBase
 
 logger = logging.getLogger(__name__)
+_CPU_MPM_PARTICLE_LIMIT = 1024
+_SURFACE_MAX_GRID_CELLS = 200_000
+_VOLUME_PREVIEW_RADIUS = 0.1  # Native volume import uses ModelBuilder.default_particle_radius.
 _MPM_STATE_FIELDS = (
     "particle_qd_grad",
     "particle_elastic_strain",
@@ -338,7 +341,7 @@ class _Runtime:
     state_1: State
     control: Control
     solver: SolverBase | None
-    pipeline: CollisionPipeline
+    pipeline: CollisionPipeline | None
     contacts: Contacts
     bindings: dict[str, _Binding]
     objects: dict[str, Any]
@@ -356,7 +359,8 @@ class SceneEditor:
 
     This entire class is **experimental**. The editor owns its solver and
     states. VBD supports cloth, rods and tetrahedral volumes. The MPM preset
-    supports painted particles and stationary rigid colliders on CUDA.
+    supports painted particles and stationary rigid colliders on CUDA and in
+    smaller CPU preview scenes.
     MuJoCo uses its native CPU backend on CPU and MuJoCo Warp on CUDA.
     Positions and dimensions use metres, rotations use XYZW quaternions, and
     masses use kilograms. Pose, color, visibility, and friction edits retain
@@ -428,6 +432,8 @@ class SceneEditor:
         """Cloth thickness, cable diameter, or particle sampling spacing and diameter [m]."""
         points: tuple[tuple[float, float, float], ...] = ()
         """Authored MPM sample positions in object-local coordinates [m]."""
+        anchor: str = "none"
+        """World anchor preset for generated cloth or cable."""
         overrides: tuple[str, ...] = ()
         """Explicit USD mass, friction, or dynamic overrides; otherwise retain native values."""
 
@@ -449,15 +455,19 @@ class SceneEditor:
         self.viewer = viewer
         self.device = wp.get_device(device)
         self._solver_type = self.Solver(solver)
-        if self._solver_type == self.Solver.MPM and not self.device.is_cuda:
-            raise ValueError("The scene editor's MPM preset requires a CUDA device")
         if self._solver_type == self.Solver.MPM:
             viewer.show_particles = True
+        self._vbd_self_contact = False
+        self._particle_display = "particles"
+        self._particle_surface = None
+        self._particle_surface_mesh = None
+        self._particle_surface_frame = None
+        self._particle_surface_flags = None
         self._mujoco_cpu = self._solver_type == self.Solver.MUJOCO and self.device.is_cpu
         self.scene_editor = self
         self.frame_dt = 1.0 / 60.0
         self.sim_time = 0.0
-        self.sim_substeps = 4
+        self.sim_substeps = 2 if self._solver_type == self.Solver.MPM and self.device.is_cpu else 4
         self.model = self.state_0 = self.state_1 = self.control = self.solver = self.contacts = None
         self.collision_pipeline = None
         self.selected_id: str | None = None
@@ -479,6 +489,7 @@ class SceneEditor:
         self._requested_commit = False
         self._failed_attempt: tuple[tuple, str, int] | None = None
         self._templates: dict[tuple[Any, ...], _AssetTemplate] = {}
+        self._generated_templates: dict[str, tuple[SceneEditor.Object, ModelBuilder]] = {}
         self._preparing: dict[tuple[Any, ...], Future] = {}
         self._executor: ProcessPoolExecutor | None = None
         self._closed = False
@@ -497,6 +508,46 @@ class SceneEditor:
     def solver_type(self) -> Solver:
         """Return the fixed physics backend selected when the editor was created."""
         return self._solver_type
+
+    @property
+    def particle_limit(self) -> int:
+        """Maximum authored samples for this device's MPM preset."""
+        return _CPU_MPM_PARTICLE_LIMIT if self.solver_type == self.Solver.MPM and self.device.is_cpu else MAX_PARTICLES
+
+    @property
+    def vbd_self_contact(self) -> bool:
+        """Whether VBD uses the quality preset's deformable self-contact."""
+        return self._vbd_self_contact
+
+    def set_vbd_self_contact(self, enabled: bool) -> None:
+        """Choose VBD self-contact and recreate its solver on the next step."""
+        if self.solver_type != self.Solver.VBD:
+            raise ValueError("Deformable self-contact requires a VBD scene")
+        if not isinstance(enabled, bool):
+            raise TypeError("VBD self-contact must be a boolean")
+        if enabled == self._vbd_self_contact:
+            return
+        runtime = self._runtime
+        if runtime is not None:
+            self.viewer.set_solver(None)
+            runtime.solver = runtime.observables = self.solver = None
+        self._vbd_self_contact = enabled
+        self._changed()
+        self.status = "VBD quality contacts enabled" if enabled else "VBD preview contacts enabled"
+
+    @property
+    def particle_display(self) -> str:
+        """Return the current MPM particle visualization."""
+        return self._particle_display
+
+    def set_particle_display(self, mode: str) -> None:
+        """Switch between particle points and an extracted surface without rebuilding."""
+        if self.solver_type != self.Solver.MPM or mode not in ("particles", "surface"):
+            raise ValueError("Choose particles or surface in an MPM scene")
+        if mode != self._particle_display:
+            self._particle_surface_frame = None
+        self._particle_display = mode
+        self.viewer.show_particles = mode == "particles"
 
     @property
     def objects(self) -> tuple[Object, ...]:
@@ -573,10 +624,9 @@ class SceneEditor:
             },
         )
 
-    @staticmethod
-    def _check_point_budget(objects: tuple[Object, ...]) -> None:
-        if sum(len(obj.points) for obj in objects) > MAX_PARTICLES:
-            raise ValueError(f"A scene can contain at most {MAX_PARTICLES:,} authored MPM particles")
+    def _check_point_budget(self, objects: tuple[Object, ...]) -> None:
+        if sum(len(obj.points) for obj in objects) > self.particle_limit:
+            raise ValueError(f"This scene preset supports at most {self.particle_limit:,} authored MPM particles")
 
     @staticmethod
     def _vector(values, count: int, name: str) -> tuple:
@@ -654,6 +704,7 @@ class SceneEditor:
         thickness: float = 0.02,
         friction: float = 0.6,
         points: tuple[tuple[float, float, float], ...] = (),
+        anchor: str = "none",
         name: str | None = None,
     ) -> str:
         """Stage generated deformable geometry in a compatible scene preset.
@@ -668,6 +719,7 @@ class SceneEditor:
             thickness: Cloth thickness, cable diameter, or particle spacing and diameter [m].
             friction: Contact friction for cables, or internal friction for MPM particles.
             points: Local MPM sample positions [m].
+            anchor: Cloth corners or edge, cable start or both, or none.
             name: Display name.
 
         Returns:
@@ -690,6 +742,7 @@ class SceneEditor:
                 thickness=thickness,
                 friction=friction,
                 points=points,
+                anchor=anchor,
             )
         )
         objects = (*self._objects, obj)
@@ -783,8 +836,8 @@ class SceneEditor:
             object_id: Stable ID of an added object that has not yet been committed.
         """
         obj = self.get_object(object_id)
-        if obj.kind.value in DEFORMABLE_KINDS:
-            raise ValueError("Set the initial position of deformables explicitly")
+        if obj.kind == self.Shape.PARTICLES:
+            raise ValueError("Set the initial position of particle strokes explicitly")
         if self._runtime is not None and object_id in self._runtime.bindings:
             raise ValueError("Automatic placement requires a newly added object")
         if object_id not in self._placement_requests:
@@ -882,6 +935,7 @@ class SceneEditor:
                 obj.thickness,
                 obj.points,
                 obj.friction,
+                obj.anchor,
             )
         if self.solver_type == self.Solver.MPM or (self.solver_type == self.Solver.VBD and obj.kind == self.Shape.USD):
             return (*result, obj.position, obj.rotation, obj.friction)
@@ -1237,13 +1291,25 @@ class SceneEditor:
         builder.add_ground_plane(cfg=ModelBuilder.ShapeConfig(mu=_GROUND_FRICTION), color=(0.28, 0.31, 0.34))
         bindings = {}
         objects = {}
+        generated_templates = {}
         for authored in self._objects:
             obj = authored
             b, s, j, p = builder.body_count, builder.shape_count, builder.joint_count, builder.particle_count
             if obj.kind == self.Shape.USD:
                 obj = self._add_asset(builder, obj)
             elif obj.kind.value in DEFORMABLE_KINDS:
-                build_deformable(builder, dict(vars(obj), kind=obj.kind.value), label_prefix=f"objects/{obj.id}")
+                cached = self._generated_templates.get(obj.id)
+                if cached is None or cached[0] != obj:
+                    template = ModelBuilder()
+                    if self.solver_type == self.Solver.MPM:
+                        SolverImplicitMPM.register_custom_attributes(template)
+                    build_deformable(template, dict(vars(obj), kind=obj.kind.value), label_prefix=f"objects/{obj.id}")
+                else:
+                    template = cached[1]
+                generated_templates[obj.id] = obj, template
+                # The native source already contains its authored pose, labels
+                # and world anchors. Compose it without another transform.
+                builder.add_builder(template)
             else:
                 self._add_primitive(builder, obj)
             objects[obj.id] = obj
@@ -1282,10 +1348,17 @@ class SceneEditor:
             wp.clone(model.shape_opacity),
             wp.clone(model.shape_material_mu),
         )
-        runtime.pipeline = CollisionPipeline(model, soft_contact_max=0 if self.solver_type == self.Solver.MPM else None)
-        runtime.contacts = runtime.pipeline.contacts()
+        if self.solver_type == self.Solver.MPM and not self._placement_requests:
+            runtime.contacts = Contacts(0, 0, device=model.device)
+        else:
+            runtime.pipeline = CollisionPipeline(
+                model, soft_contact_max=0 if self.solver_type == self.Solver.MPM else None
+            )
+            runtime.contacts = runtime.pipeline.contacts()
         for obj in objects.values():
             self._apply_appearance(runtime, obj)
+        # Keep only the active document, with one parsed version per object.
+        self._generated_templates = generated_templates
         return runtime
 
     def _create_solver(self, model: Model, contact_max: int) -> tuple[SolverBase | None, SolverBase.Observables | None]:
@@ -1294,13 +1367,26 @@ class SceneEditor:
         if self.solver_type == self.Solver.VBD:
             from ..solvers.vbd import SolverVBD  # noqa: PLC0415
 
-            return SolverVBD(model, iterations=8), None
+            return (
+                SolverVBD(
+                    model,
+                    iterations=8,
+                    particle_enable_self_contact=self.vbd_self_contact and bool(model.tri_count),
+                    particle_self_contact_margin=0.01,
+                    particle_self_contact_gap=0.015,
+                ),
+                None,
+            )
         if self.solver_type == self.Solver.MPM:
             from ..solvers.implicit_mpm import SolverImplicitMPM  # noqa: PLC0415
 
             if not model.particle_count:
                 return None, None
-            return SolverImplicitMPM(model, config=SolverImplicitMPM.Config(voxel_size=MPM_VOXEL_SIZE)), None
+            config = SolverImplicitMPM.Config(voxel_size=MPM_VOXEL_SIZE)
+            if self.device.is_cpu:
+                config.solver = "jacobi"
+                config.max_iterations = 10
+            return SolverImplicitMPM(model, config=config), None
         # MuJoCo requires a joint; static-only scenes need no solver.
         if not model.joint_count:
             return None, None
@@ -1464,10 +1550,11 @@ class SceneEditor:
         if not requested:
             return
         model, pipeline, contacts = runtime.model, runtime.pipeline, runtime.contacts
+        assert pipeline is not None  # The candidate allocates it when placement is requested.
         snapshots = []
         for poses in (runtime.state_0.body_q, model.body_q):
             wp.launch(
-                compute_shape_aabbs,
+                pipeline._compute_shape_aabbs,
                 model.shape_count,
                 inputs=[
                     poses,
@@ -1487,12 +1574,14 @@ class SceneEditor:
                     contacts.contact_generation,
                     pipeline.broad_phase_pair_count,
                     contacts.contact_counters.shape[0],
+                    pipeline._empty_mesh_recovery,
                 ],
                 outputs=[
                     pipeline.narrow_phase.shape_aabb_lower,
                     pipeline.narrow_phase.shape_aabb_upper,
                     pipeline.geom_data,
                     pipeline.geom_transform,
+                    getattr(pipeline.narrow_phase, "_counter_array", None),
                 ],
                 device=self.device,
                 record_tape=False,
@@ -1910,6 +1999,7 @@ class SceneEditor:
         """Detect complete contacts before solving, growing owned buffers if needed."""
         runtime.contacts_dirty = False
         pipeline, contacts = runtime.pipeline, runtime.contacts
+        assert pipeline is not None
         try:
             for attempt in range(4):
                 pipeline.collide(runtime.state_0, contacts)
@@ -2045,6 +2135,7 @@ class SceneEditor:
     def reset_scene(self) -> None:
         """Restore the authored reset poses without rebuilding model or solver."""
         self._placement_cache = None
+        self._particle_surface_frame = None
         if self._runtime is not None:
             runtime = self._runtime
             for state in (runtime.state_0, runtime.state_1):
@@ -2166,8 +2257,66 @@ class SceneEditor:
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
         self.viewer.log_contacts(self.contacts, self.state_0)
+        if self.solver_type == self.Solver.MPM:
+            self._draw_particle_surface()
         self._draw_preview()
         self.viewer.end_frame()
+
+    def _draw_particle_surface(self) -> None:
+        """Extract and publish bounded display geometry for the visible MPM state."""
+        name = "__scene_authoring/particle_surface"
+        if self.particle_display != "surface" or not self.model.particle_count:
+            if self._particle_surface_mesh is not None:
+                self.viewer.log_mesh(name, *self._particle_surface_mesh, hidden=True, dynamic=True)
+                self._particle_surface_mesh = self._particle_surface_frame = None
+            return
+        history = getattr(self.viewer, "_history", None)
+        replaying = history is not None and history.replaying
+        state = self.viewer._last_state if replaying else self.state_0
+        frame = history.index if replaying else int(self.sim_time * 30 + 1.0e-6)
+        workspace = getattr(getattr(self.viewer, "gui", None), "workspace", None)
+        tree = getattr(workspace, "tree", None)
+        catalog = tree.deformables if tree is not None and tree.model is self.model else None
+        hidden = tuple(sorted(catalog.hidden)) if catalog is not None else ()
+        key = id(self.model), hidden, id(history) if replaying else None, frame
+        previous = self._particle_surface_frame
+        if key == previous:
+            return
+        if previous is None or key[:2] != previous[:2]:
+            self._particle_surface_flags = self.model.particle_flags
+            if hidden:
+                flags = self.model.particle_flags.numpy().copy()
+                for item in hidden:
+                    indices = np.asarray(catalog.elements(item)[0], dtype=np.intp)
+                    flags[indices[indices < len(flags)]] = 0
+                self._particle_surface_flags = wp.array(flags, dtype=wp.int32, device=self.device)
+        try:
+            if self._particle_surface is None:
+                from ..geometry.particle_surface import ParticleSurface  # noqa: PLC0415
+
+                self._particle_surface = ParticleSurface(
+                    voxel_size=MPM_VOXEL_SIZE * 0.5,
+                    max_grid_cells=_SURFACE_MAX_GRID_CELLS,
+                    device=self.device,
+                )
+            mesh = self._particle_surface.extract(
+                state.particle_q,
+                self.model.particle_radius,
+                particle_flags=self._particle_surface_flags,
+            ).to_arrays()
+        except (MemoryError, RuntimeError, ValueError) as error:
+            self.set_particle_display("particles")
+            if self._particle_surface_mesh is not None:
+                self.viewer.log_mesh(name, *self._particle_surface_mesh, hidden=True, dynamic=True)
+                self._particle_surface_mesh = None
+            self.status = f"Surface preview unavailable: {error}"
+            return
+        if mesh[0] is not None:
+            self.viewer.log_mesh(name, *mesh, dynamic=True, color=(0.16, 0.49, 0.76), roughness=0.33)
+        elif self._particle_surface_mesh is not None:
+            self.viewer.log_mesh(name, *self._particle_surface_mesh, hidden=True, dynamic=True)
+        self._particle_surface_mesh = mesh if mesh[0] is not None else None
+        self._particle_surface_frame = key
 
     def preview_primitive(
         self,
@@ -2190,6 +2339,32 @@ class SceneEditor:
         self._preview = None
         half = np.asarray(self._vector(size, 3, "size")) * 0.5
         return self._preview_bounds(position, (-half, half), color, placement=placement)
+
+    def preview_deformable(
+        self,
+        kind: Shape | str,
+        *,
+        position,
+        size,
+        thickness: float = 0.02,
+        placement: bool = True,
+    ) -> tuple[float, float, float]:
+        """Preview a generated VBD object's conservative collision envelope."""
+        kind = self.Shape(kind)
+        dimensions = self._vector(size, 3, "size")
+        radius = float(thickness) * 0.5
+        if min(dimensions) <= 0 or not math.isfinite(radius) or radius <= 0:
+            raise ValueError("Preview dimensions and thickness must be finite and positive")
+        if kind == self.Shape.CLOTH:
+            half = np.array((dimensions[0] * 0.5 + radius, dimensions[1] * 0.5 + radius, radius))
+        elif kind == self.Shape.CABLE:
+            half = np.array((dimensions[0] * 0.5 + radius, radius, radius))
+        elif kind == self.Shape.SOFT:
+            half = np.asarray(dimensions) * 0.5 + _VOLUME_PREVIEW_RADIUS
+        else:
+            raise ValueError("Choose cloth, cable or soft for a deformable placement preview")
+        self._preview_source = None
+        return self._preview_bounds(position, (-half, half), (0.3, 0.85, 1.0), placement=placement)
 
     def preview_usd(
         self,
@@ -2319,7 +2494,7 @@ class SceneEditor:
 
     def save_usd(self, path: str | Path) -> None:
         """Export the authored document using standard USD geometry/physics schemas."""
-        save_scene(path, self._objects, solver=self.solver_type.value)
+        save_scene(path, self._objects, solver=self.solver_type.value, vbd_self_contact=self.vbd_self_contact)
         self.status = f"Saved {Path(path).name}"
 
     def load_usd(self, path: str | Path) -> None:
@@ -2335,6 +2510,8 @@ class SceneEditor:
         if len({obj.id for obj in objects}) != len(objects):
             raise ValueError("Scene document contains duplicate object IDs")
         self._check_point_budget(objects)
+        if self.solver_type == self.Solver.VBD:
+            self.set_vbd_self_contact(scene_vbd_self_contact(path))
         self._remember()
         self._restore_document(objects)
         # Explicit Open refreshes dependencies even when authored records match.
@@ -2356,6 +2533,8 @@ class SceneEditor:
         if self._closed:
             return
         self._closed = True
+        self._particle_surface = self._particle_surface_mesh = self._particle_surface_flags = None
+        self._generated_templates.clear()
         workspace = getattr(getattr(self.viewer, "gui", None), "workspace", None)
         if workspace is not None and workspace.example is self:
             workspace.set_scene_editor(None)

@@ -672,12 +672,12 @@ class TestSceneAuthoringUI(unittest.TestCase):
 
                 # A finished transfer must not mutate a historical scene.
                 viewer._paused = True
-                queue_download()
                 history = workspace.history
                 history.set_recording(True)
                 render()
                 editor.step()
                 render()
+                queue_download()
                 history.select(0)
                 self.assertTrue(history.replaying)
                 document = editor.objects
@@ -773,6 +773,8 @@ class TestSceneAuthoringUI(unittest.TestCase):
         """Edit separate deformables picked in the viewport and publish a paused particle stroke."""
         from imgui_bundle import imgui
 
+        from newton._src.viewer.gui.authoring import AuthoringPanel  # noqa: PLC0415
+
         previous_context = imgui.get_current_context()
         context = imgui.create_context()
         imgui.set_current_context(context)
@@ -831,26 +833,92 @@ class TestSceneAuthoringUI(unittest.TestCase):
                 return x + (ndc[0] + 1) * width / 2, y + (1 - ndc[1]) * height / 2
 
             def track(original):
-                def draw(owner, label, *args, **kwargs):
-                    result = original(owner, label, *args, **kwargs)
+                def draw(owner, identifier, *args, **kwargs):
+                    result = original(owner, identifier, *args, **kwargs)
                     lo, hi = owner.ui.get_item_rect_min(), owner.ui.get_item_rect_max()
+                    targets[identifier] = ((lo.x + hi.x) / 2, (lo.y + hi.y) / 2)
+                    return result
+
+                return draw
+
+            def track_ui(original):
+                def draw(label, *args, **kwargs):
+                    result = original(label, *args, **kwargs)
+                    lo, hi = imgui.get_item_rect_min(), imgui.get_item_rect_max()
                     targets[label] = ((lo.x + hi.x) / 2, (lo.y + hi.y) / 2)
                     return result
 
                 return draw
 
+            def choose(label, index):
+                click(targets[label])
+                popup = imgui.internal.find_window_by_name("##Combo_00")
+                self.assertTrue(popup.active)
+                click(
+                    (
+                        popup.pos.x + popup.window_padding.x + 20,
+                        popup.pos.y
+                        + popup.window_padding.y
+                        + (index + 0.5) * imgui.get_text_line_height_with_spacing(),
+                    )
+                )
+
+            card = AuthoringPanel._card
+
+            def track_card(panel, title, icon, width, height, payload, **kwargs):
+                pos = panel.ui.get_cursor_screen_pos()
+                targets[title] = (pos.x + width / 2, pos.y + height / 2)
+                return card(panel, title, icon, width, height, payload, **kwargs)
+
             with (
                 mock.patch.object(PhysicsWidgets, "button", track(PhysicsWidgets.button)),
                 mock.patch.object(PhysicsWidgets, "number", track(PhysicsWidgets.number)),
                 mock.patch.object(PhysicsWidgets, "tab_item", track(PhysicsWidgets.tab_item)),
+                mock.patch.object(PhysicsWidgets, "icon_button", track(PhysicsWidgets.icon_button)),
+                mock.patch.object(AuthoringPanel, "_card", track_card),
+                mock.patch.object(imgui, "checkbox", track_ui(imgui.checkbox)),
+                mock.patch.object(imgui, "combo", track_ui(imgui.combo)),
             ):
                 render(4)
-                click(targets["Cloth sheet"])
+                editor.add_primitive("box", position=(0, 0, 0.2), size=(0.4, 0.4, 0.4), dynamic=False)
+                render(2)
+                model, builds = editor.model, editor.rebuild_count
+                native_mouse(targets["Cloth sheet"])
+                native_mouse(targets["Cloth sheet"], True)
+                native_mouse((targets["Cloth sheet"][0] + 10, targets["Cloth sheet"][1]))
+                native_mouse(scene_pixel((0, 0, 0.4)))
+                render(3)
+                self.assertIs(editor.model, model)
                 self.assertEqual(len(editor.objects), 1)
-                cloth = editor.objects[0]
+                self.assertEqual(editor.rebuild_count, builds)
+                self.assertIsNotNone(editor._preview)
+                native_mouse(scene_pixel((0, 0, 0.4)), False)
+                render(2)
+                self.assertEqual(len(editor.objects), 2)
+                self.assertEqual(editor.rebuild_count, builds + 1)
+                cloth = editor.objects[-1]
                 self.assertEqual(cloth.kind.value, "cloth")
                 self.assertGreater(editor.model.tri_count, 0)
                 self.assertEqual(editor.selected_id, cloth.id)
+                start, end = editor._runtime.bindings[cloth.id].particles
+                self.assertGreater(float(editor.state_0.particle_q.numpy()[start:end, 2].min()), 0.4)
+                # Escape cancels a real held placement without closing the viewer.
+                from pyglet.window import key
+
+                native_mouse(targets["Cable"])
+                native_mouse(targets["Cable"], True)
+                native_mouse((targets["Cable"][0] + 10, targets["Cable"][1]))
+                native_mouse(scene_pixel((1, 0, 0)))
+                self.assertTrue(viewer.gui.workspace.authoring._drag_preview)
+                viewer.renderer.window.dispatch_event("on_key_press", key.ESCAPE, 0)
+                viewer.renderer.window.dispatch_events()
+                render()
+                viewer.renderer.window.dispatch_event("on_key_release", key.ESCAPE, 0)
+                native_mouse(scene_pixel((1, 0, 0)), False)
+                render(2)
+                self.assertEqual(len(editor.objects), 2)
+                self.assertFalse(viewer.renderer.has_exit())
+                self.assertTrue(viewer.gui.is_available)
                 soft_id = editor.add_deformable(
                     "soft",
                     position=(cloth.position[0] + 1.5, cloth.position[1], cloth.position[2] + 0.55),
@@ -860,8 +928,14 @@ class TestSceneAuthoringUI(unittest.TestCase):
                 render(2)
                 soft = editor.get_object(soft_id)
                 for obj, neighbor, kind in ((cloth, soft, "surface"), (soft, cloth, "volume")):
-                    click(scene_pixel(obj.position))
-                    self.assertEqual(editor.selected_id, obj.id)
+                    point = obj.position
+                    if obj.kind.value == "cloth":
+                        start, end = editor._runtime.bindings[obj.id].particles
+                        triangles = editor.model.tri_indices.numpy()
+                        face = next(row for row in triangles if np.all((row >= start) & (row < end)))
+                        point = editor.state_0.particle_q.numpy()[face].mean(axis=0)
+                    click(scene_pixel(point))
+                    self.assertEqual(editor.selected_id, obj.id, (obj.kind.value, viewer.gui.workspace.selected))
                     self.assertEqual(viewer.gui.workspace.selected[0], kind)
                     original_neighbor = editor.get_object(neighbor.id)
                     model, builds = editor.model, editor.rebuild_count
@@ -874,6 +948,31 @@ class TestSceneAuthoringUI(unittest.TestCase):
                     render(2)
                     self.assertEqual(editor.rebuild_count, builds + 1)
                     self.assertEqual(editor.get_object(neighbor.id), original_neighbor)
+                panel, workspace = viewer.gui.workspace.authoring, viewer.gui.workspace
+                panel.select(cloth.id)
+                render(2)
+                builds = editor.rebuild_count
+                choose("Anchor", 1)
+                self.assertEqual(editor.get_object(cloth.id).anchor, "corners")
+                self.assertEqual(editor.rebuild_count, builds + 1)
+                self.assertEqual(workspace.selected[0], "surface")
+                model = editor.model
+                click(targets["Self-contact"])
+                self.assertTrue(editor.vbd_self_contact)
+                self.assertIs(editor.model, model)
+                panel.scene_query = cloth.name
+                click(targets["Scene"])
+                cloth_key, soft_key = panel._object_keys(cloth.id)[0], panel._object_keys(soft.id)[0]
+                click(targets["##visible_object"])
+                self.assertFalse(workspace.object_visible(cloth_key))
+                self.assertTrue(workspace.object_visible(soft_key))
+                click(targets["##visible_object"])
+                self.assertTrue(workspace.object_visible(cloth_key))
+                camera = tuple(viewer.camera.pos)
+                click(targets["##frame_object"])
+                self.assertEqual(editor.selected_id, cloth.id)
+                self.assertNotEqual(tuple(viewer.camera.pos), camera)
+                self.assertIs(editor.model, model)
                 editor.close()
 
                 devices = get_cuda_test_devices()[:1]
@@ -893,19 +992,10 @@ class TestSceneAuthoringUI(unittest.TestCase):
                     render(4)
                     click(targets["Paint"])
                     panel = viewer.gui.workspace.authoring
-                    # Enable the actual checkbox through its native item rectangle.
-                    checkbox = imgui.checkbox
-
-                    def track_checkbox(label, *args):
-                        result = checkbox(label, *args)
-                        if label == "Paint particles":
-                            lo, hi = imgui.get_item_rect_min(), imgui.get_item_rect_max()
-                            targets[label] = ((lo.x + hi.x) / 2, (lo.y + hi.y) / 2)
-                        return result
-
-                    with mock.patch.object(imgui, "checkbox", track_checkbox):
-                        render()
-                        click(targets["Paint particles"])
+                    viewer._paused = False
+                    click(targets["##author_paint"])
+                    self.assertFalse(panel.brush_enabled)
+                    click(targets["Pause to paint"])
                     self.assertTrue(panel.brush_enabled)
                     point = scene_pixel((0, 0, 0.4))
                     model, builds = editor.model, editor.rebuild_count
@@ -940,6 +1030,17 @@ class TestSceneAuthoringUI(unittest.TestCase):
                     editor.redo()
                     render(2)
                     self.assertEqual(editor.objects[-1], stroke)
+                    model = editor.model
+                    choose("Display", 1)
+                    self.assertEqual(editor.particle_display, "surface")
+                    self.assertFalse(viewer.show_particles)
+                    surface = viewer.objects["__scene_authoring/particle_surface"]
+                    self.assertFalse(surface.hidden)
+                    self.assertGreater(surface.num_indices, 0)
+                    choose("Display", 0)
+                    self.assertTrue(viewer.show_particles)
+                    self.assertTrue(surface.hidden)
+                    self.assertIs(editor.model, model)
                     panel._brush_radius, panel._brush_spacing, panel._brush_layers = 2.0, 0.005, 8
                     model = editor.model
                     native_mouse(point, True)
@@ -951,6 +1052,17 @@ class TestSceneAuthoringUI(unittest.TestCase):
                     self.assertIn("budget", panel.message)
                     self.assertIsNone(editor._edit_before)
                     panel._brush_radius, panel._brush_spacing, panel._brush_layers = 0.15, 0.04, 2
+                    native_mouse(point, True)
+                    self.assertTrue(panel._brush_active)
+                    viewer.renderer.window.dispatch_event("on_key_press", key.ESCAPE, 0)
+                    viewer.renderer.window.dispatch_events()
+                    render(2)
+                    self.assertFalse(panel._brush_active)
+                    self.assertFalse(panel.brush_enabled)
+                    self.assertIsNone(editor._edit_before)
+                    self.assertIs(editor.model, model)
+                    self.assertFalse(viewer.renderer.has_exit())
+                    click(targets["##author_paint"])
                     native_mouse(point, True)
                     self.assertTrue(panel._brush_active)
                     viewer.renderer.window.dispatch_event("on_deactivate")

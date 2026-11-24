@@ -1310,6 +1310,7 @@ class ViewerWorkspace:
                 engines.append(("MuJoCo Warp (GPU)", "mujoco", device.alias))
             engines.append(("XPBD (CPU)", "xpbd", "cpu"))
             engines.append(("VBD deformables (CPU)", "vbd", "cpu"))
+            engines.append(("MPM particles (CPU Preview)", "mpm", "cpu"))
             if wp.is_cuda_available():
                 engines.append(("VBD deformables (GPU)", "vbd", device.alias))
                 engines.append(("MPM particles (GPU)", "mpm", device.alias))
@@ -1322,7 +1323,11 @@ class ViewerWorkspace:
             elif solver == "vbd":
                 ui.text_unformatted("Cloth, cables, soft bodies, and rigid props with Newton VBD.")
             elif solver == "mpm":
-                ui.text_unformatted("Paint particles while paused; rigid props remain stationary. Requires CUDA.")
+                ui.text_unformatted(
+                    "Bounded CPU preview for up to 1,024 particles."
+                    if device == "cpu"
+                    else "Paint particles while paused; rigid props remain stationary."
+                )
             else:
                 ui.text_unformatted("Newton XPBD solver on CPU.")
             if self.authoring is not None and self.authoring.editor.objects:
@@ -1960,6 +1965,8 @@ class ViewerWorkspace:
             return self.viewer._should_render_world(world)
         if world >= 0 and not self.viewer._should_render_world(world):
             return False
+        if key[0] in ("surface", "volume", "particle_set"):
+            return self.tree.deformables.visible(self.tree, key)
         if key not in self._visibility_cache:
             self._visibility_cache[key] = any(
                 i not in self._hidden_shapes and self.tree.meta.get(("shape", i), {}).get("opacity", 1) > 0
@@ -1992,7 +1999,9 @@ class ViewerWorkspace:
             return
         shapes = self.tree.shape_descendants(key)
         hide = self.object_visible(key)
-        deformables = self.tree.deformable_descendants(key)
+        deformables = (
+            [key] if key[0] in ("surface", "volume", "particle_set") else self.tree.deformable_descendants(key)
+        )
         if hide:
             self.tree.deformables.hidden.update(deformables)
         else:

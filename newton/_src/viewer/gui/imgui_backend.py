@@ -220,12 +220,15 @@ class ImGuiBackend:
             io.add_mouse_pos_event(x, io.display_size.y - y)
 
         def on_key_press(symbol: int, modifiers: int) -> bool | None:
-            if self.key_press_filter is None or not self.key_press_filter(symbol, modifiers):
+            filtered = self.key_press_filter is not None and self.key_press_filter(symbol, modifiers)
+            if not filtered:
                 on_key(symbol, True)
             # Pyglet's default Escape handler closes the window even when the
             # viewer callback defers to an editor or popup. Stop propagation
             # after forwarding the cancellation key to ImGui.
-            if symbol == key.ESCAPE and (io.want_text_input or imgui.is_popup_open("", imgui.PopupFlags_.any_popup)):
+            if symbol == key.ESCAPE and (
+                filtered or io.want_text_input or imgui.is_popup_open("", imgui.PopupFlags_.any_popup)
+            ):
                 return EVENT_HANDLED
             return None
 

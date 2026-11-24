@@ -400,11 +400,13 @@ class TestSceneAuthoringMCP(unittest.TestCase):
                         {
                             "operation": "add_deformable",
                             "kind": "cloth",
+                            "place": True,
                             "properties": {
                                 "name": "Cloth",
-                                "position": [2, 0, 2],
+                                "position": [2, 0, -0.01],
                                 "size": [1, 1, 1],
                                 "resolution": 3,
+                                "anchor": "edge",
                                 "density": 500,
                                 "stiffness": 40000,
                                 "thickness": 0.02,
@@ -428,7 +430,11 @@ class TestSceneAuthoringMCP(unittest.TestCase):
             self.assertEqual(end, scene.editor.model.particle_count)
             positions = scene.editor.state_0.particle_q.numpy()[start:end]
             self.assertTrue(np.isfinite(positions).all())
-            np.testing.assert_allclose(positions.mean(axis=0), [2, 0, 2], atol=1e-6)
+            np.testing.assert_allclose(positions.mean(axis=0), scene.editor.get_object(object_id).position, atol=1e-6)
+            self.assertGreater(
+                float((positions[:, 2] - scene.editor.model.particle_radius.numpy()[start:end]).min()), 0
+            )
+            self.assertEqual(scene.editor.model.attachment_particle_body_count, 4)
             document, revision, model = scene.editor.objects, scene.editor.revision, scene.editor.model
             rejected = scene.call(
                 "apply_edits",

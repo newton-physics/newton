@@ -60,7 +60,8 @@ class TestAssetLibrary(unittest.TestCase):
                     self.send_error(404)
                     return
                 if name == ".metadata/LICENSE.txt" and owner.hold.is_set():
-                    owner.release.wait(3)
+                    # The test and its cleanup own release, even if kernels compile meanwhile.
+                    owner.release.wait()
                 self.send_response(200)
                 self.send_header("Content-Length", str(len(owner.files[name])))
                 self.end_headers()

@@ -23,6 +23,11 @@ def validate_deformable(definition: dict, *, check_points: bool = True) -> dict:
     kind = definition["kind"]
     if kind not in DEFORMABLE_KINDS:
         raise ValueError(f"Unsupported deformable kind: {kind}")
+    anchor = definition.get("anchor", "none")
+    anchors = {"cloth": {"none", "corners", "edge"}, "cable": {"none", "start", "both"}}.get(kind, {"none"})
+    if not isinstance(anchor, str) or anchor not in anchors:
+        raise ValueError(f"Unsupported {kind} anchor mode: {anchor}")
+    definition["anchor"] = anchor
     resolution = definition.get("resolution", _DEFAULTS["resolution"])
     maximum = 16 if kind == "soft" else 32
     if isinstance(resolution, bool) or not isinstance(resolution, int) or not 2 <= resolution <= maximum:
@@ -98,6 +103,49 @@ def _geometry(definition: dict):
     return points, tets
 
 
+def _write_anchors(stage, object_path: str, geometry_path: str, definition: dict, points) -> None:
+    """Pin native simulation points to authored targets in the object's local frame."""
+    from pxr import Sdf, UsdGeom, UsdPhysics
+
+    for child in ("Anchors", "Pins"):
+        stage.RemovePrim(f"{object_path}/{child}")
+    mode = definition.get("anchor", "none")
+    if mode == "none":
+        return
+    target = UsdGeom.Xform.Define(stage, f"{object_path}/Anchors")
+    if definition["kind"] == "cloth" or mode == "both":
+        # Cloth requires a rigid target; paired cable pins also use one to avoid
+        # a parallel free/ball world joint. It has no visible or contact geometry.
+        UsdPhysics.RigidBodyAPI.Apply(target.GetPrim()).CreateKinematicEnabledAttr(True)
+        mass = UsdPhysics.MassAPI.Apply(target.GetPrim())
+        mass.CreateMassAttr(1.0)
+        mass.CreateDiagonalInertiaAttr((1.0, 1.0, 1.0))
+    if definition["kind"] == "cloth":
+        count = definition["resolution"]
+        stride = count + 1
+        indices = [0, count, count * stride, stride * stride - 1]
+        if mode == "edge":
+            indices = list(range(count * stride, stride * stride))
+        groups = [("Cloth", indices)]
+    else:
+        # Separate endpoint prims let the native importer use one as the cable's
+        # articulation root and the other as a loop-closing world ball joint.
+        groups = [("Start", [0])]
+        if mode == "both":
+            groups.append(("End", [len(points) - 1]))
+    UsdGeom.Scope.Define(stage, f"{object_path}/Pins")
+    for name, indices in groups:
+        attachment = stage.DefinePrim(f"{object_path}/Pins/{name}", "PhysicsAttachment")
+        attachment.CreateRelationship("physics:src0").SetTargets([geometry_path])
+        attachment.CreateRelationship("physics:src1").SetTargets([target.GetPath()])
+        attachment.CreateAttribute("physics:type0", Sdf.ValueTypeNames.Token).Set("point")
+        attachment.CreateAttribute("physics:type1", Sdf.ValueTypeNames.Token).Set("xform")
+        attachment.CreateAttribute("physics:indices0", Sdf.ValueTypeNames.IntArray).Set(indices)
+        attachment.CreateAttribute("physics:coords1", Sdf.ValueTypeNames.Vector3fArray).Set(
+            [points[index] for index in indices]
+        )
+
+
 def write_deformable(stage, object_path: str, definition: dict, *, physics_scene_path="/World/PhysicsScene") -> None:
     """Author validated geometry and physical material beneath an existing object Xform."""
     from pxr import Sdf, UsdGeom, UsdPhysics, UsdShade
@@ -164,6 +212,7 @@ def write_deformable(stage, object_path: str, definition: dict, *, physics_scene
             definition["friction"]
         )
     UsdShade.MaterialBindingAPI.Apply(geometry.GetPrim()).Bind(material, materialPurpose="physics")
+    _write_anchors(stage, object_path, path, definition, points)
 
 
 def build_deformable(builder, definition: dict, *, label_prefix: str) -> dict:

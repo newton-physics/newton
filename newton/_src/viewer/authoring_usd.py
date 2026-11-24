@@ -39,6 +39,7 @@ from .authoring_deformables import DEFORMABLE_KINDS, validate_deformable, write_
 
 _MARKER = "newtonSceneAuthoring"
 _SOLVER_MARKER = "newtonSceneAuthoringSolver"
+_VBD_SELF_CONTACT_MARKER = "newtonSceneAuthoringVbdSelfContact"
 _SOLVERS = frozenset({"xpbd", "mujoco", "vbd", "mpm"})
 _GROUND_FRICTION = 0.8
 _SPHERE_ROLLING_FRICTION = 0.005
@@ -409,7 +410,7 @@ def _definition(obj) -> dict[str, Any]:
         "overrides": getattr(obj, "overrides", ("mass", "friction", "dynamic")),
     }
     if definition["kind"] in DEFORMABLE_KINDS:
-        for name in ("resolution", "density", "stiffness", "thickness", "points"):
+        for name in ("resolution", "density", "stiffness", "thickness", "points", "anchor"):
             if hasattr(obj, name):
                 definition[name] = getattr(obj, name)
     _validate_definition(definition)
@@ -499,6 +500,8 @@ def _validate_definition(
     definition["overrides"] = tuple(sorted(set(overrides)))
     if kind in DEFORMABLE_KINDS:
         validate_deformable(definition, check_points=check_points)
+    elif definition.get("anchor", "none") != "none":
+        raise ValueError(f"Unsupported {kind} anchor mode: {definition['anchor']}")
     elif definition.get("points"):
         raise ValueError("Only MPM particle strokes accept explicit points")
     return definition
@@ -650,7 +653,9 @@ def _tint_reference(root, tint):
         attribute.SetColorSpace("lin_rec709_scene")
 
 
-def save_scene(path: str | os.PathLike, objects: Iterable, *, solver: str | None = None) -> None:
+def save_scene(
+    path: str | os.PathLike, objects: Iterable, *, solver: str | None = None, vbd_self_contact: bool = False
+) -> None:
     """Atomically write authored objects using standard USD geometry and physics.
 
     Custom data stores editor definitions and stable IDs, never a private
@@ -663,6 +668,10 @@ def save_scene(path: str | os.PathLike, objects: Iterable, *, solver: str | None
     destination = Path(path).expanduser().resolve()
     if solver is not None and solver not in _SOLVERS:
         raise ValueError(f"Unsupported authoring solver profile: {solver}")
+    if not isinstance(vbd_self_contact, bool):
+        raise ValueError("VBD self-contact must be a boolean")
+    if vbd_self_contact and solver != "vbd":
+        raise ValueError("VBD self-contact requires the VBD solver profile")
     if destination.suffix.lower() not in {".usd", ".usda", ".usdc"}:
         raise ValueError("Scene destination must end in .usd, .usda, or .usdc")
     definitions = [_definition(obj) for obj in objects]
@@ -682,9 +691,12 @@ def save_scene(path: str | os.PathLike, objects: Iterable, *, solver: str | None
     UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
     UsdGeom.SetStageMetersPerUnit(stage, 1.0)
     UsdPhysics.SetStageKilogramsPerUnit(stage, 1.0)
-    stage.GetRootLayer().customLayerData = {_MARKER: 1}
+    metadata = {_MARKER: 1}
     if solver is not None:
-        stage.GetRootLayer().customLayerData = {_MARKER: 1, _SOLVER_MARKER: solver}
+        metadata[_SOLVER_MARKER] = solver
+    if vbd_self_contact:
+        metadata[_VBD_SELF_CONTACT_MARKER] = True
+    stage.GetRootLayer().customLayerData = metadata
     world = UsdGeom.Xform.Define(stage, "/World")
     stage.SetDefaultPrim(world.GetPrim())
     UsdPhysics.Scene.Define(stage, "/World/PhysicsScene")
@@ -770,6 +782,19 @@ def scene_solver(path: str | os.PathLike) -> str | None:
     if solver is not None and solver not in _SOLVERS:
         raise ValueError(f"Unsupported authoring solver profile: {solver}")
     return solver
+
+
+def scene_vbd_self_contact(path: str | os.PathLike) -> bool:
+    """Read the editor's optional VBD particle self-contact setting."""
+    from pxr import Sdf
+
+    layer = Sdf.Layer.FindOrOpen(str(Path(path).expanduser().resolve()))
+    if layer is None:
+        raise ValueError(f"Cannot open USD scene: {path}")
+    enabled = layer.customLayerData.get(_VBD_SELF_CONTACT_MARKER, False)
+    if not isinstance(enabled, bool):
+        raise ValueError("Saved VBD self-contact setting must be a boolean")
+    return enabled
 
 
 def load_scene(path: str | os.PathLike) -> list[dict[str, Any]]:

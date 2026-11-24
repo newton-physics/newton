@@ -6,10 +6,14 @@
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
 import numpy as np
 
 from newton import ModelBuilder
+from newton._src.viewer import scene_authoring
+from newton._src.viewer.viewer_model_tree import ModelTree
 from newton.tests.unittest_utils import get_cuda_test_devices, requires
 from newton.viewer import SceneEditor, ViewerNull
 
@@ -41,7 +45,9 @@ class TestSceneAuthoringDeformables(unittest.TestCase):
         editor.update_object(cloth, density=600.0, stiffness=25_000.0)
         editor.update_object(cloth, size=(1.25, 0.8, 1.0), thickness=0.01)
         editor.end_edit()
-        editor.commit()
+        with mock.patch.object(scene_authoring, "build_deformable", wraps=scene_authoring.build_deformable) as prepare:
+            editor.commit()
+            self.assertEqual(prepare.call_count, 1, "Unchanged cable and soft-body source must remain parsed")
         # The geometry change reseeds the edited cloth while its neighbors keep moving state.
         np.testing.assert_array_equal(editor.state_0.particle_q.numpy()[9:], live[9:])
         self.assertAlmostEqual(float(editor.model.particle_mass.numpy()[:9].sum()), 6.0, places=4)
@@ -110,7 +116,7 @@ class TestSceneAuthoringDeformables(unittest.TestCase):
 
         devices = get_cuda_test_devices()
         if not devices:
-            self.skipTest("MPM requires CUDA")
+            self.skipTest("This test exercises CUDA MPM")
         editor = self.make_editor("mpm", devices[0])
         editor.add_primitive("box", dynamic=False, position=(0, 0, 0.05), size=(0.8, 0.8, 0.1))
         editor.commit()
@@ -148,3 +154,100 @@ class TestSceneAuthoringDeformables(unittest.TestCase):
             reopened.commit()
             np.testing.assert_allclose(reopened.get_object(first).points, points)
             np.testing.assert_array_equal(reopened.model.particle_q.numpy(), editor.model.particle_q.numpy())
+
+    def test_cpu_mpm_preview_and_surface(self):
+        editor = self.make_editor("mpm")
+        box = editor.add_primitive("box", position=(2, 0, 0), size=(0.6, 0.6, 0.6), dynamic=False)
+        editor.place_object(box)
+        editor.commit()
+        self.assertGreater(editor.get_object(box).position[2], 0.3)
+        points = tuple((x * 0.04, y * 0.04, z * 0.04) for x in range(3) for y in range(3) for z in range(3))
+        with self.assertRaisesRegex(ValueError, f"at most {editor.particle_limit:,}"):
+            editor.add_deformable("particles", points=(points[0],) * (editor.particle_limit + 1))
+        editor.add_deformable("particles", position=(0, 0, 0.25), points=points, thickness=0.04)
+        editor.commit()
+        self.assertIsNone(editor.collision_pipeline)
+        model = editor.model
+        with mock.patch.object(editor.viewer, "log_mesh", wraps=editor.viewer.log_mesh) as log_mesh:
+            editor.set_particle_display("surface")
+            editor.render()
+            editor.render()
+            self.assertEqual(editor.particle_display, "surface", editor.status)
+            log_mesh.assert_called_once()
+            self.assertGreater(len(log_mesh.call_args.args[2]), 0)
+            self.assertFalse(editor.viewer.show_particles)
+            self.assertIsNone(editor.solver)
+            self.assertIs(editor.model, model)
+            tree = ModelTree(model)
+            owner = tree.deformables.owner(tree, 0)
+            with mock.patch.object(
+                editor.viewer, "gui", SimpleNamespace(workspace=SimpleNamespace(tree=tree)), create=True
+            ):
+                tree.deformables.hidden.add(owner)
+                editor.render()
+                self.assertTrue(log_mesh.call_args.kwargs["hidden"])
+                tree.deformables.hidden.clear()
+                editor.render()
+                self.assertFalse(log_mesh.call_args.kwargs.get("hidden", False))
+            editor.set_particle_display("particles")
+            editor.render()
+            self.assertTrue(log_mesh.call_args.kwargs["hidden"])
+            self.assertTrue(editor.viewer.show_particles)
+
+        initial = editor.state_0.particle_q.numpy().copy()
+        editor.step()
+        current = editor.state_0.particle_q.numpy()
+        self.assertIsNotNone(editor.solver, editor.error)
+        self.assertTrue(np.isfinite(current).all())
+        self.assertLess(float(current[:, 2].mean()), float(initial[:, 2].mean()))
+
+    def test_anchored_deformables_and_quality_round_trip(self):
+        editor = self.make_editor("vbd")
+        editor.add_primitive("box", position=(-1, 0, 0.2), size=(0.8, 0.8, 0.4), dynamic=False)
+        editor.commit()
+        dimensions = (0.55, 0.55, 0.02)
+        position = editor.preview_deformable("cloth", position=(-1, 0, 0), size=dimensions)
+        self.assertGreater(position[2], 0.4)
+        cloth = editor.add_deformable(
+            "cloth",
+            size=dimensions,
+            position=(position[0], position[1], position[2] + 0.25),
+            resolution=4,
+            anchor="edge",
+        )
+        editor.update_object(cloth, rotation=(0.0, 0.0, 0.3826834324, 0.9238795325))
+        editor.place_object(cloth)
+        cable = editor.add_deformable("cable", position=(1, 0, 0.8), resolution=4, anchor="both")
+        editor.commit()
+        model = editor.model
+        particles = model.attachment_particle_body_particle.numpy()
+        self.assertEqual(len(particles), 5)
+        initial = editor.state_0.particle_q.numpy().copy()
+        editor.set_vbd_self_contact(True)
+        self.assertIs(editor.model, model)
+        self.assertIsNone(editor.solver)
+        for _ in range(3):
+            editor.step()
+        self.assertTrue(editor.solver.particle_enable_self_contact)
+        final = editor.state_0.particle_q.numpy().copy()
+        np.testing.assert_allclose(final[particles], initial[particles], atol=1.0e-5)
+        self.assertLess(final[0, 2], initial[0, 2])
+        self.assertTrue(np.isfinite(editor.state_0.body_q.numpy()).all())
+        editor.add_primitive("sphere", position=(0, 2, 0.5), dynamic=False)
+        editor.commit()
+        np.testing.assert_array_equal(editor.state_0.particle_q.numpy(), final)
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "anchored.usda"
+            editor.save_usd(path)
+            from pxr import Usd
+
+            stage = Usd.Stage.Open(str(path))
+            self.assertEqual(sum(prim.GetTypeName() == "PhysicsAttachment" for prim in stage.Traverse()), 3)
+            reopened = self.make_editor(SceneEditor.saved_solver(path))
+            reopened.load_usd(path)
+            reopened.commit()
+            self.assertTrue(reopened.vbd_self_contact)
+            self.assertEqual(reopened.get_object(cloth).anchor, "edge")
+            self.assertEqual(reopened.get_object(cable).anchor, "both")
+            self.assertEqual(reopened.model.attachment_particle_body_count, 5)

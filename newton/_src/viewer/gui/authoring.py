@@ -21,7 +21,6 @@ import warp as wp
 
 from ...core.host_transform import transform_assign
 from ...geometry.raycast import intersect_ray
-from ..authoring_deformables import MAX_PARTICLES
 from . import theme
 from .widgets import PropertyEdit
 
@@ -50,6 +49,11 @@ class AuthoringPanel:
         ("capsule", "Capsule", (0.5, 0.5, 1.4)),
         ("cylinder", "Cylinder", (0.8, 0.8, 1.0)),
     )
+    deformables = (
+        ("cloth", "Cloth sheet", "mesh", (1.0, 1.0, 0.02)),
+        ("cable", "Cable", "capsule", (1.0, 0.02, 0.02)),
+        ("soft", "Soft block", "body", (0.5, 0.5, 0.5)),
+    )
 
     def __init__(self, workspace: ViewerWorkspace, editor: SceneEditor) -> None:
         self.workspace, self.editor = workspace, editor
@@ -71,6 +75,9 @@ class AuthoringPanel:
         self._payloads: dict[int, tuple[str, Any]] = {
             i + 1: ("primitive", kind) for i, (kind, _, _) in enumerate(self.primitives)
         }
+        self._payloads.update(
+            {len(self.primitives) + i + 1: ("deformable", kind) for i, (kind, _, _, _) in enumerate(self.deformables)}
+        )
         self._asset_payloads: dict[str, int] = {}
         self._double_click_payload: int | None = None
         self._card_double_clicked = False
@@ -87,6 +94,7 @@ class AuthoringPanel:
         self._gizmo_pause = False
         self._field_edit = False
         self._drag_preview = False
+        self._cancelled_drag = False
         self._drag_asset_id: str | None = None
         self._pose_frame = -1
         self._pose_cache = {}
@@ -224,19 +232,7 @@ class AuthoringPanel:
             ]
             self._body_map_key = key
         if rebuilt or self.editor.selected_id != self._last_editor_selection:
-            indices = self.editor.body_indices(self.editor.selected_id) if self.editor.selected_id else ()
-            keys = [("body", index) for index in indices]
-            if not keys and self.editor.selected_id in bindings:
-                keys = [("shape", index) for index in range(*bindings[self.editor.selected_id].shapes)]
-                if not keys:
-                    start, end = bindings[self.editor.selected_id].particles
-                    if end > start:
-                        self.workspace._ensure_tree()
-                        tree = self.workspace.tree
-                        owner = tree.deformables.owner(tree, start) if tree is not None else None
-                        keys = [
-                            owner if owner is not None and owner[0] in ("surface", "volume") else ("particle", start)
-                        ]
+            keys = self._object_keys(self.editor.selected_id)
             self.workspace.select(keys[0] if keys else None)
             for selected in keys[1:]:
                 self.workspace.select(selected, toggle=True)
@@ -247,7 +243,15 @@ class AuthoringPanel:
             object_id = None
             if selected is not None:
                 tree = self.workspace.tree
-                if tree is not None and selected[0] in ("particle", "surface", "volume", "tri", "tet", "particle_set"):
+                if tree is not None and selected[0] in (
+                    "particle",
+                    "surface",
+                    "volume",
+                    "tri",
+                    "edge",
+                    "tet",
+                    "particle_set",
+                ):
                     particles = tree.deformables.elements(selected)[0]
                     if len(particles):
                         first, last = particles[0], particles[-1]
@@ -259,6 +263,10 @@ class AuthoringPanel:
                             ),
                             None,
                         )
+                if tree is not None and selected[0] == "curve":
+                    bodies, _ = tree.deformables.curve_elements(selected[1])
+                    owners = {self._body_objects.get(index) for index in bodies}
+                    object_id = owners.pop() if len(owners) == 1 else None
                 if selected[0] == "shape":
                     object_id = self._shape_objects.get(selected[1])
                     if object_id is None and self.workspace.tree is not None:
@@ -270,6 +278,30 @@ class AuthoringPanel:
             self._last_selection = self.workspace.selected
             if object_id is not None:
                 self._selected_asset = None
+
+    def _object_keys(self, object_id: str | None) -> list[tuple[str, int]]:
+        """Resolve complete native groups; use a particle marker only for an ambiguous loose set."""
+        runtime = self.editor._runtime
+        binding = runtime.bindings.get(object_id) if runtime is not None else None
+        if binding is None:
+            return []
+        keys = []
+        start, end = binding.particles
+        if end > start:
+            self.workspace._ensure_tree()
+            tree = self.workspace.tree
+            tree.deformables.owner(tree, start)
+            keys = [
+                (obj.kind, index)
+                for index, obj in enumerate(tree.deformables.objects)
+                if len(obj.particles) and start <= obj.particles[0] <= obj.particles[-1] < end
+            ]
+        authored = self.editor.get_object(object_id)
+        if not keys or authored.kind.value not in ("cloth", "soft"):
+            keys.extend(("body", index) for index in range(*binding.bodies))
+        if not keys:
+            keys = [("shape", index) for index in range(*binding.shapes)]
+        return keys or ([("particle", start)] if end > start else [])
 
     def select(self, object_id: str | None) -> None:
         self.editor.select(object_id)
@@ -403,6 +435,26 @@ class AuthoringPanel:
         elif self.editor.solver_type.value in ("vbd", "mpm"):
             engine = self.editor.solver_type.value.upper()
         ui.text_disabled(f"Solver: {engine}")
+        if self.editor.solver_type.value == "vbd":
+            changed, enabled = ui.checkbox("Self-contact", self.editor.vbd_self_contact)
+            if changed:
+                self._run(self.editor.set_vbd_self_contact, enabled)
+            if ui.is_item_hovered():
+                ui.set_tooltip("Enable cloth and soft-body self-contact on the next Play. Adds collision work.")
+        elif self.editor.solver_type.value == "mpm":
+            if w.icon_button(
+                "##author_select", "deselect", "Select objects", label="Select", active=not self._brush_enabled, size=24
+            ):
+                self.cancel_tool()
+            ui.same_line()
+            if w.icon_button(
+                "##author_paint", "particles", "Paint particles", label="Paint", active=self._brush_enabled, size=24
+            ):
+                self._brush_enabled = True
+            if self._brush_enabled and not self.workspace.viewer.is_paused():
+                if w.button("Pause to paint", ui.ImVec2(-1, 0)):
+                    self.workspace.viewer._paused = True
+                    self.workspace.viewer._step_requested = False
         ui.spacing()
         if w.icon_button("##author_open", "folder", "Open authored scene", size=24):
             self._open_dialog("open")
@@ -455,8 +507,10 @@ class AuthoringPanel:
             with w.group("Deformables") as opened:
                 if opened:
                     ui.begin_disabled(not self.editable)
-                    for kind, title in (("cloth", "Cloth sheet"), ("cable", "Cable"), ("soft", "Soft block")):
-                        if w.button(title, ui.ImVec2(-1, 28 * s)):
+                    for index, (kind, title, icon, _) in enumerate(self.deformables):
+                        if index % columns:
+                            ui.same_line(spacing=8 * s)
+                        if self._card(title, icon, width, 84 * s, len(self.primitives) + index + 1):
                             self._add_deformable(kind)
                     ui.end_disabled()
         ui.spacing()
@@ -479,16 +533,22 @@ class AuthoringPanel:
         ui.text_wrapped("Drop a local USD file anywhere in the window to import it.")
         self._draw_status()
 
-    def _add_deformable(self, kind: str) -> None:
-        sizes = {"cloth": (1.0, 1.0, 0.02), "cable": (1.0, 0.02, 0.02), "soft": (0.5, 0.5, 0.5)}
-        position = self.world_position(lift=0.25 if kind != "soft" else 0.5)
-        object_id = self._run(self.editor.add_deformable, kind, position=position, size=sizes[kind])
+    def _deformable_size(self, kind: str) -> tuple[float, float, float]:
+        return next(tuple(value * self._scale for value in size) for key, _, _, size in self.deformables if key == kind)
+
+    def _add_deformable(self, kind: str, position=None) -> None:
+        position = position or self.world_position()
+        object_id = self._run(self.editor.add_deformable, kind, position=position, size=self._deformable_size(kind))
         if object_id is not None:
+            self._run(self.editor.place_object, object_id)
             self.select(object_id)
 
     def _draw_brush_controls(self) -> None:
         ui, w = self.ui, self.widgets
-        _, self._brush_enabled = ui.checkbox("Paint particles", self._brush_enabled)
+        display = ("particles", "surface")
+        changed, selected = ui.combo("Display", display.index(self.editor.particle_display), ["Particles", "Surface"])
+        if changed:
+            self._run(self.editor.set_particle_display, display[selected])
         for label, field, bounds, integer, unit in (
             ("Radius", "_brush_radius", (0.01, 2.0), False, "m"),
             ("Spacing", "_brush_spacing", (0.005, 0.2), False, "m"),
@@ -504,7 +564,10 @@ class AuthoringPanel:
         ui.text_disabled(
             f"Depth {self._brush_layers * self._brush_spacing:.3g} m · {len(self._brush_points):,} samples"
         )
-        ui.text_wrapped("At most 10,000 samples per stroke and 50,000 per scene. Oversized strokes are rejected.")
+        ui.text_wrapped(
+            f"At most {min(self.brush_point_limit, self.editor.particle_limit):,} samples per stroke and "
+            f"{self.editor.particle_limit:,} per scene. Oversized strokes are rejected."
+        )
         self._draw_status()
 
     def _sample_brush(self, point: np.ndarray) -> None:
@@ -524,7 +587,7 @@ class AuthoringPanel:
             return
         lo = np.ceil((point[lateral] - radius) / spacing).astype(int)
         hi = np.floor((point[lateral] + radius) / spacing).astype(int)
-        if int(np.prod(hi - lo + 1)) * self._brush_layers > 4 * self.brush_point_limit:
+        if int(np.prod(hi - lo + 1)) * self._brush_layers > 4 * min(self.brush_point_limit, self.editor.particle_limit):
             self._brush_failed = True
         else:
             xy = np.stack(
@@ -537,7 +600,7 @@ class AuthoringPanel:
             samples[:, :, axis] = bottom + np.arange(self._brush_layers)
             additions = {tuple(int(value) for value in sample) for sample in samples.reshape(-1, 3)}
             used = sum(len(obj.points) for obj in self.editor.objects if obj.kind.value == "particles")
-            limit = min(self.brush_point_limit, MAX_PARTICLES - used)
+            limit = min(self.brush_point_limit, self.editor.particle_limit - used)
             if len(self._brush_points | additions) > limit:
                 self._brush_failed = True
             else:
@@ -599,6 +662,7 @@ class AuthoringPanel:
             return
         hovered = ui.is_item_hovered(ui.HoveredFlags_.allow_when_blocked_by_active_item)
         if hovered:
+            self._draw_tool_hint("Paint · Drag to add · Esc returns to Select", valid=not self._brush_failed)
             mouse = ui.get_io().mouse_pos
             point = self._brush_surface(np.asarray(self.world_position((mouse.x, mouse.y))))
             if point is None:
@@ -719,7 +783,7 @@ class AuthoringPanel:
         """Share one pinned asset identity between its card and inspector preview."""
         payload = self._asset_payloads.get(record.id)
         if payload is None:
-            payload = len(self._asset_payloads) + len(self.primitives) + 1
+            payload = len(self._asset_payloads) + len(self.primitives) + len(self.deformables) + 1
             self._asset_payloads[record.id] = payload
         self._payloads[payload] = ("asset", record)
         return payload
@@ -839,20 +903,56 @@ class AuthoringPanel:
         for obj in objects:
             ui.push_id(obj.id)
             selected = obj.id == self.editor.selected_id
-            if ui.selectable(obj.name, selected)[0]:
+            keys = [key for key in self._object_keys(obj.id) if key[0] != "particle"]
+            visible = any(self.workspace.object_visible(key) for key in keys)
+            if ui.selectable(
+                obj.name,
+                selected,
+                size=ui.ImVec2(max(30, ui.get_content_region_avail().x - 52 * self.widgets.scale), 0),
+            )[0]:
                 self.select(obj.id)
             if ui.begin_popup_context_item("##object_menu"):
+                if ui.menu_item("Frame", "F", False, bool(keys))[0]:
+                    self._frame_object(obj.id)
+                if ui.menu_item("Hide in viewport" if visible else "Show in viewport", "", False, bool(keys))[0]:
+                    self._toggle_object_visibility(keys, visible)
+                ui.separator()
                 if ui.menu_item("Duplicate", "", False, self.editable)[0]:
                     self._duplicate(obj.id)
                 if ui.menu_item("Delete", "", False, self.editable)[0]:
                     self._run(self.editor.remove_object, obj.id)
                 ui.end_popup()
+            ui.same_line()
+            if self.widgets.icon_button(
+                "##frame_object", "focus", "Frame object", size=18, enabled=bool(keys), show_lock=False
+            ):
+                self._frame_object(obj.id)
+            ui.same_line()
+            if self.widgets.icon_button(
+                "##visible_object",
+                "eye" if visible else "eye_off",
+                "Hide in viewport" if visible else "Show in viewport",
+                size=18,
+                enabled=bool(keys),
+                show_lock=False,
+            ):
+                self._toggle_object_visibility(keys, visible)
             ui.pop_id()
         if not objects:
             ui.text_wrapped("Your scene is empty. Add a shape or drag in a SimReady asset.")
         ui.spacing()
         ui.text_disabled(f"{len(self.editor.objects)} objects")
         self._draw_status()
+
+    def _frame_object(self, object_id: str) -> None:
+        self.select(object_id)
+        self.workspace.gui.frame_camera_on_model()
+
+    def _toggle_object_visibility(self, keys, visible: bool) -> None:
+        # Mixed-visibility cables and USD assemblies toggle as one authored object.
+        for key in keys:
+            if self.workspace.object_visible(key) == visible:
+                self.workspace.toggle_visibility(key)
 
     def _draw_status(self) -> None:
         ui = self.ui
@@ -1030,6 +1130,16 @@ class AuthoringPanel:
                             bounds=(2, 16 if obj.kind.value == "soft" else 32),
                         ),
                     )
+                if obj.kind.value in ("cloth", "cable"):
+                    anchors = ("none", "corners", "edge") if obj.kind.value == "cloth" else ("none", "start", "both")
+                    labels = (
+                        ["Free", "Four corners", "+Y edge"]
+                        if obj.kind.value == "cloth"
+                        else ["Free", "Start (-X)", "Both ends"]
+                    )
+                    changed, selected = ui.combo("Anchor", anchors.index(obj.anchor), labels)
+                    if changed:
+                        self._run(self.editor.update_object, object_id, anchor=anchors[selected])
                 if obj.kind.value != "soft":
                     title = "Thickness" if obj.kind.value == "cloth" else "Diameter"
                     self._apply_edit(
@@ -1095,11 +1205,15 @@ class AuthoringPanel:
         self._draw_brush()
         payload = ui.get_drag_drop_payload_py_id()
         if payload is None or payload.type != self.payload_type or payload.data_id not in self._payloads:
+            self._cancelled_drag = False
             self._drag_asset_id = None
             if self._drag_preview:
                 self.editor.clear_preview()
                 self._drag_preview = False
             self._draw_asset_activity()
+            return
+        if self._cancelled_drag:
+            self._draw_tool_hint("Placement cancelled · Release the mouse", valid=False)
             return
         kind, value = self._payloads[payload.data_id]
         mouse = ui.get_io().mouse_pos
@@ -1112,6 +1226,14 @@ class AuthoringPanel:
                 size = self._primitive_size(value)
                 point = self._run(
                     self.editor.preview_primitive, value, position=aim, size=size, color=self._color, placement=True
+                )
+            elif kind == "deformable":
+                point = self._run(
+                    self.editor.preview_deformable,
+                    value,
+                    position=aim,
+                    size=self._deformable_size(value),
+                    placement=True,
                 )
             else:
                 self._asset_activity = value, None, self.editor._document_epoch
@@ -1138,6 +1260,14 @@ class AuthoringPanel:
                         if error := self.assets.download_error(value):
                             self.message = error
                     ui.set_tooltip(self.message or "Downloading geometry for the collision preview…")
+            self._draw_tool_hint(
+                "Release to place · Esc cancels"
+                if point is not None
+                else "Cannot place here · Esc cancels"
+                if self.message
+                else "Preparing preview… · Esc cancels",
+                valid=not bool(self.message),
+            )
         else:
             self.editor.clear_preview()
             self._drag_preview = False
@@ -1149,6 +1279,9 @@ class AuthoringPanel:
                     if kind == "primitive":
                         if point is not None:
                             self._add_primitive(value, point)
+                    elif kind == "deformable":
+                        if point is not None:
+                            self._add_deformable(value, point)
                     else:
                         if point is not None or not self.message:
                             self._place_asset(value, point or self.world_position(mouse_position))
@@ -1157,6 +1290,40 @@ class AuthoringPanel:
             finally:
                 ui.end_drag_drop_target()
         self._draw_asset_activity()
+
+    def _draw_tool_hint(self, text: str, *, valid: bool = True) -> None:
+        """Keep tool ownership and placement validity visible without capturing input."""
+        ui, s = self.ui, self.widgets.scale
+        x, y, width, _ = self.workspace.rect
+        size = ui.calc_text_size(text)
+        if size.x + 24 * s > width:
+            return
+        draw = ui.get_window_draw_list()
+        start = ui.ImVec2(x + 12 * s, y + 12 * s)
+        draw.add_rect_filled(
+            start,
+            ui.ImVec2(start.x + size.x + 16 * s, start.y + size.y + 12 * s),
+            self.widgets.color(theme.GROUP_BACKGROUND),
+            4 * s,
+        )
+        draw.add_text(
+            ui.ImVec2(start.x + 8 * s, start.y + 6 * s),
+            self.widgets.color(theme.ACCENT if valid else theme.CONSOLE_WARNING),
+            text,
+        )
+
+    def cancel_tool(self) -> bool:
+        """Cancel an owned stroke or placement before the viewer handles Escape."""
+        payload = self.ui.get_drag_drop_payload_py_id()
+        placing = payload is not None and payload.type == self.payload_type and payload.data_id in self._payloads
+        owned = self._brush_enabled or self._brush_active or self._drag_preview or placing
+        if owned:
+            self._finish_brush()
+            self._brush_enabled = False
+            self._cancelled_drag |= placing
+            self._drag_preview = False
+            self.editor.clear_preview()
+        return owned
 
     def _draw_asset_activity(self) -> None:
         """Show asynchronous asset work without capturing input or interrupting a drag."""

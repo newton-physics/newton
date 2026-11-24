@@ -199,6 +199,7 @@ class SceneEditorMCP:
             density: float | None = Field(default=None, gt=0)
             stiffness: float | None = Field(default=None, gt=0)
             thickness: float | None = Field(default=None, gt=0)
+            anchor: Literal["none", "corners", "edge", "start", "both"] | None = None
 
         class AddPrimitive(BaseModel):
             model_config = ConfigDict(extra="forbid")
@@ -223,9 +224,9 @@ class SceneEditorMCP:
             kind: Literal["cloth", "cable", "soft", "particles"]
             properties: DeformableProperties
             points: tuple[tuple[float, float, float], ...] = Field(default=(), max_length=1024)
-            place: Literal[False] = Field(
+            place: bool = Field(
                 default=False,
-                description="Deformables require an explicit position; automatic placement is unsupported.",
+                description="Raise a new VBD object above overlapping rigid colliders.",
             )
 
         class Update(BaseModel):
@@ -371,6 +372,8 @@ class SceneEditorMCP:
                     editor.Object(id=uuid.uuid4().hex, name=name, kind=kind, source=source, **fields)
                 )
                 if edit.place:
+                    if obj.kind == editor.Shape.PARTICLES:
+                        raise ValueError("Set the initial position of particle strokes explicitly")
                     placed.add(obj.id)
             objects[obj.id] = obj
             changed.append(obj.id)

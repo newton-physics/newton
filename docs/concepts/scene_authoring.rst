@@ -23,7 +23,8 @@ Launch and edit
 
 Choose **New scene** in the header of a native Newton example viewer to open an
 empty, paused editor without launching another process. The dialog offers
-**MuJoCo (CPU)**, **MuJoCo Warp (GPU)** when CUDA is available, and **XPBD (CPU)**.
+**MuJoCo (CPU)**, **MuJoCo Warp (GPU)**, **XPBD (CPU)**, **VBD deformables**, and
+**MPM particles**. GPU options appear when CUDA is available.
 Choose Cancel to retain the current scene. Creating a scene replaces the
 current example; save an existing authored document as USD first to keep it.
 The action uses the example runner's scene lifecycle. Embedded viewers without
@@ -40,6 +41,7 @@ The ``examples`` extra includes the native viewer and USD import dependencies:
    uv run --extra examples -m newton.examples scene_editor --solver xpbd --device cpu
    uv run --extra examples -m newton.examples scene_editor --solver vbd --device cpu --empty
    uv run --extra examples -m newton.examples scene_editor --solver mpm --device cuda:0 --empty
+   uv run --extra examples -m newton.examples scene_editor --solver mpm --device cpu --empty
 
 ``--solver mujoco`` selects native MuJoCo on a CPU device and MuJoCo Warp on
 a CUDA device. The solver and device are fixed for the editor session. The
@@ -47,7 +49,9 @@ window title and authoring header identify the active solver. When constructing 
 directly, pass ``solver="mujoco", device="cpu"`` for native MuJoCo or select a
 CUDA device for MuJoCo Warp; the class retains XPBD as its default.
 Use VBD on CPU or CUDA for an authoring scene with rigid bodies, cloth, cables,
-and soft bodies. MPM requires CUDA and accepts static rigid colliders. The
+and soft bodies. MPM accepts static rigid colliders. CUDA handles larger
+particle scenes. The CPU Preview limits the scene to 1,024 particles and uses
+two substeps and ten Jacobi iterations for small scenes. The
 workspace's **New scene** menu exposes both presets. With ``--scene``, the example
 selects a saved scene's preset unless you pass ``--solver``.
 An empty or static world with no joints needs
@@ -104,19 +108,25 @@ The left panel provides the following tools.
   an object near the viewport center, or drag it onto the scene. A
   collision-bounds outline follows the pointer. Scale, color, and Dynamic
   configure new primitives. **Import USD** and local file drops add USD assets.
-  In a VBD scene, this panel also adds cloth sheets, segmented cables, and
-  tetrahedral soft blocks.
+  In a VBD scene, drag cloth sheets, segmented cables, and tetrahedral soft
+  blocks from the same palette. Their outlines clear rigid colliders under
+  the drop footprint.
 * **Assets** searches the SimReady catalog. Select a card to inspect its source
   and available license information. Drag a card or its large inspector preview
   into the viewport, double-click it, or choose **Place in scene** to download
   and import it.
 * **Scene** lists authored objects and filters them by name. Select an object
-  here or in the viewport. Its context menu offers Duplicate and Delete.
-* **Paint** is available in MPM scenes. Pause playback and enable the brush.
+  here or in the viewport. Frame and Hide/Show actions use the native viewer
+  selection where the object has its own display geometry.
+* **Paint** is available in MPM scenes. Choose **Paint** instead of **Select**
+  and pause playback, or use **Pause to paint**.
   Adjust brush radius, sample spacing, layers, and density, then drag over
   the scene to deposit particles. The stamp clears the highest rigid collider
   under its footprint. The preview stays responsive during the gesture. Release
-  to add the stroke as one object and one undo action.
+  to add the stroke as one object and one undo action. Escape cancels a held
+  stroke. The display control switches between particles and an optional
+  reconstructed surface. Surface extraction is bounded and reuses the
+  current mesh while paused. Select separate strokes in the Scene list.
 
 The right panel edits the selected object's name, position, rotation, dimensions,
 color, visibility, friction, mass, and Dynamic setting. Move and Rotate handles
@@ -129,6 +139,9 @@ where the native schema supports it. Cables expose contact friction, and MPM
 particles expose internal friction.
 These settings affect the simulation and are written to the exported USD geometry
 and bound physics materials.
+The cloth Anchor field pins its corners or its local positive-Y edge.
+The cable Anchor field fixes its start or both endpoints. Anchors use native
+USD attachments and retain their authored rest positions when reopened.
 
 The authoring toolbar provides Open, Save, Undo, Redo, and Reset. Undo and Redo
 operate on authored edits; they do not rewind unrelated simulation motion.
@@ -200,6 +213,8 @@ resolved again after a commit. Matching bodies retain live state. Joint controls
 are preserved only when the source, joint type, and coordinate layout remain
 compatible; changed joints retain their imported defaults.
 Generated deformable parameter edits build one replacement runtime on release.
+Unchanged generated physics templates are reused. Particle-only MPM edits
+skip the full rigid placement pipeline.
 Unchanged particle ranges retain live positions and velocities. Geometry changes
 involving a particle range reseed that range from its authored geometry. VBD and
 MPM solver setup waits for the first step. The MPM model retains compatible
@@ -268,9 +283,9 @@ XPBD continues to use its native contact model.
 
 The editor owns a standalone Model, State, and solver for each scene. The VBD
 preset supports two-way contacts between dynamic rigid bodies and deformables
-with compatible collision shapes. Cloth and soft-body self-contact is disabled
-in this preset. The MPM preset supports particle strokes against stationary
-rigid colliders.
+with compatible collision shapes. Select the VBD quality option to enable
+deformable self-contact. The editor saves that scene setting in its USD metadata.
+The MPM preset supports particle strokes against stationary rigid colliders.
 
 The design follows the distinction between inexpensive live edits and explicit
 recompilation found in
@@ -405,9 +420,10 @@ quaternions. Read the observed scene revision before submitting mutations:
      - A typed batch of ``add_primitive``, ``add_usd``, ``add_deformable``,
        ``update``, and ``remove`` with the observed ``expected_revision``.
        Primitives and USD assets use safe placement by default. Generated
-       deformables accept an explicit XYZ position, and MPM strokes accept up
-       to 1,024 local XYZ samples per operation. Inspect sample counts and
-       material parameters with ``get_scene``.
+       deformables accept an explicit XYZ position. VBD objects also support
+       safe placement with ``place=True``. MPM strokes accept up to 1,024 local
+       XYZ samples per operation. Inspect sample counts and material parameters
+       with ``get_scene``.
    * - ``undo_redo``
      - Undo or redo one authored batch, including recovery from failed imports.
    * - ``set_camera``

@@ -351,9 +351,20 @@ class ViewerGui:
         return io.want_text_input and not self._numeric_text_input_active()
 
     def _filter_gui_key_press(self, symbol: int, modifiers: int) -> bool:
-        """Prevent Space from both toggling playback and activating a focused widget."""
+        """Keep playback keys and owned tool cancellation out of ImGui widgets."""
         from pyglet.window import key
 
+        authoring = getattr(self.workspace, "authoring", None)
+        if (
+            symbol == key.ESCAPE
+            and authoring is not None
+            and not self.should_ignore_keyboard_input()
+            and not self._numeric_text_input_active()
+            and not self.ui.imgui.is_popup_open("", self.ui.imgui.PopupFlags_.any_popup)
+            and authoring.cancel_tool()
+        ):
+            self._cancel_mouse_interaction()
+            return True
         return symbol == key.SPACE and not self.should_ignore_keyboard_input()
 
     def is_pick_active(self) -> bool:
