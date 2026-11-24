@@ -267,7 +267,7 @@ class Example:
         self.sensor_camera = SensorCamera(self.model)
         if args.dome_hdri:
             self.sensor_camera.set_dome_light(args.dome_hdri, intensity=args.dome_intensity)
-        else:
+        if args.dome_shadow_samples == 0:
             self.sensor_camera.create_default_light(enable_shadows=True)
         self.sensor_camera.default_render_config.dome_shadow_samples = args.dome_shadow_samples
         self.sensor_camera.default_render_config.enable_dome_background = args.dome_background
@@ -637,7 +637,7 @@ class Example:
             "--dome-shadow-samples",
             type=int,
             default=0,
-            help="Number of dome shadow rays per shaded sample (default 0, unshadowed).",
+            help="Dome shadow rays per shaded sample. Positive counts replace the default directional light (default 0).",
         )
         parser.add_argument("--dome-background", action="store_true", help="Display the HDRI or sky/ground background.")
         parser.add_argument(
