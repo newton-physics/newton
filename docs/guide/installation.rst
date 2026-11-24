@@ -67,11 +67,12 @@ Platform-Specific Requirements
 
 **Linux**
 
-On Linux, the ``remesh`` and ``dev`` extras require GLIBC 2.35 or newer, e.g.
-Ubuntu 22.04+. On Linux ARM64, ``importers`` and the extras that include it,
-such as ``examples``, require it too. RHEL 9 and Amazon Linux 2023 ship GLIBC
-2.34, so on x86-64 they can install ``importers`` and ``examples`` but not
-``remesh`` or ``dev``.
+On Linux, the ``remesh``, ``dev`` and ``cunls`` extras require GLIBC 2.35 or
+newer, e.g. Ubuntu 22.04+. On Linux ARM64, ``importers`` and the extras that
+include it, such as ``examples``, require it too. RHEL 9 and Amazon Linux 2023
+ship GLIBC 2.34, so on x86-64 they can install ``importers`` and ``examples``
+but not ``remesh``, ``dev`` or ``cunls``. The ``cunls`` extra installs only on
+Linux x86-64.
 
 **Python 3.14**
 
@@ -278,6 +279,9 @@ Additional optional dependency sets are defined in ``pyproject.toml``:
        does not select Warp 1.17 by itself.
    * - ``torch-cu13``
      - PyTorch (CUDA 13) for workflows that explicitly need PyTorch, such as training or running deprecated Torch ``.pt2`` / ``.pt`` / ``.pth`` policies (includes ``examples``)
+   * - ``cunls``
+     - cuNLS for the :attr:`~newton.ik.IKOptimizer.CUNLS` inverse-kinematics backend (Linux
+       x86-64, CUDA 13 with an R580 or newer driver); cannot be combined with ``torch-cu12``
    * - ``notebook``
      - Jupyter notebook support with Rerun visualization (includes ``examples``)
    * - ``dev``

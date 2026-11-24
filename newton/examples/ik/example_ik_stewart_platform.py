@@ -433,6 +433,9 @@ class Example:
         self.sim_time += self.frame_dt
 
     def test_post_step(self):
+        """Check that every loop-closing joint stays closed (gap finite and at most 1 mm) and every
+        actuator stays within its stroke limits; count the actuators at a limit and the frames with
+        a target out of reach (a ghost shown)."""
         gaps = self.loop_gap.numpy()
         if not np.all(np.isfinite(gaps)) or gaps.max() > 1e-3:
             raise ValueError(f"A loop-closing joint opened by {gaps.max() * 1e3:.2f} mm")
@@ -443,8 +446,12 @@ class Example:
         self.ghost_frames += int(np.any(self.ghost_opacities.numpy() > 0.0))
 
     def test_final(self):
-        if self.limit_hits == 0 or self.ghost_frames == 0:
+        """Check that the run exercised the hard limits: some actuator reached its stroke limit and
+        some target went out of reach."""
+        if self.limit_hits == 0:
             raise ValueError("No actuator reached its stroke limit: the waves should outgrow the legs")
+        if self.ghost_frames == 0:
+            raise ValueError("No target went out of reach: the waves should outgrow the legs")
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)

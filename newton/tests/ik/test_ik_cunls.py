@@ -208,8 +208,7 @@ def test_cunls_counts_every_rotation_entry(test, device):
 
 
 def test_cunls_steps_on_strided_views(test, device):
-    """Read and write joint coordinates through non-contiguous views, and reject an output that
-    aliases the input with other strides."""
+    """Read and write joint coordinates through non-contiguous views."""
     model = _build_arm(device)
     targets = np.array([[0.6, 0.5, 0.0]], dtype=np.float32)
     objective = ik.IKObjectivePosition(1, wp.vec3(0.5, 0.0, 0.0), wp.array(targets, dtype=wp.vec3, device=device))
@@ -220,11 +219,78 @@ def test_cunls_steps_on_strided_views(test, device):
     optimizer.step(joint_q, joint_q, iterations=30)
     np.testing.assert_allclose(_tip_positions(model, joint_q.numpy(), 1), targets, atol=1e-4)
     test.assertEqual(float(buffer.numpy()[0, 2]), 7.0)
-
     np.testing.assert_allclose(optimizer.compute_costs(joint_q).numpy(), [0.0], atol=1e-8)
-    shared = wp.zeros((1, 4), dtype=wp.float32, device=device)
-    with test.assertRaisesRegex(ValueError, "different strides"):
-        optimizer.step(shared[:, :2], shared[:, ::2], iterations=1)
+
+
+def test_cunls_steps_on_overlapping_views(test, device):
+    """Give an output that overlaps the input (shifted rows, other strides) the result of a separate
+    output array, with the loop-closing coordinates copied from the input."""
+    model, loop = _build_four_bar(device)
+    n_coords = model.joint_coord_count
+    loop_coord = model.joint_q_start.numpy()[loop]
+    targets = np.array([_coupler_point(a) for a in (0.6, 0.3)], dtype=np.float32)
+    objective = ik.IKObjectivePosition(
+        1, wp.vec3(0.5 * COUPLER, 0.0, 0.0), wp.array(targets, dtype=wp.vec3, device=device)
+    )
+    optimizer = ik.IKOptimizerCuNLS(model, 2, [objective])
+    q_in = np.tile(model.joint_q.numpy(), (2, 1))
+    q_in[:, loop_coord] = 0.123  # not solved: copied to the output
+
+    expected = wp.zeros((2, n_coords), dtype=wp.float32, device=device)
+    optimizer.step(wp.array(q_in, dtype=wp.float32, device=device), expected, iterations=50)
+    expected = expected.numpy()
+    np.testing.assert_allclose(expected[:, loop_coord], q_in[:, loop_coord])
+
+    buffer = wp.zeros((4, n_coords), dtype=wp.float32, device=device)
+    for rows_out in (slice(2, 4), slice(1, 3)):  # disjoint, then shifted by one row
+        rows = np.zeros((4, n_coords), dtype=np.float32)
+        rows[:2] = q_in
+        buffer.assign(rows)
+        optimizer.step(buffer[0:2], buffer[rows_out], iterations=50)
+        np.testing.assert_allclose(buffer.numpy()[rows_out], expected, atol=1e-5)
+    np.testing.assert_allclose(buffer.numpy()[:1], q_in[:1])  # input rows outside the output
+
+    shared = wp.array(np.concatenate([q_in, np.zeros_like(q_in)], axis=1), dtype=wp.float32, device=device)
+    optimizer.step(shared[:, :n_coords], shared[:, ::2], iterations=50)  # same base, other strides
+    np.testing.assert_allclose(shared.numpy()[:, ::2], expected, atol=1e-5)
+
+
+def test_cunls_pose_replay_matches_eager_on_stream(test, device):
+    """Replay a captured step for a position and a rotation objective on one link (one pose target with
+    non-identity offsets and unequal weights) on a non-default stream, and match the eager step before
+    and after a target update."""
+    model = _build_arm(device)
+    link = 1
+    position_offset = wp.vec3(0.4, 0.1, 0.0)
+    rotation_offset = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.3)
+
+    def pose_targets(q_goal: np.ndarray) -> tuple[wp.array, wp.array]:
+        offset = wp.transform(position_offset, rotation_offset)
+        frames = [wp.transform(*b[link]) * offset for b in _body_q_rows(model, q_goal)]
+        positions = np.array([wp.transform_get_translation(f) for f in frames], dtype=np.float32)
+        rotations = np.array([wp.transform_get_rotation(f) for f in frames], dtype=np.float32)
+        return wp.array(positions, dtype=wp.vec3, device=device), wp.array(rotations, dtype=wp.vec4, device=device)
+
+    goals = [np.array([[0.3, 0.8], [-0.5, 1.2]]), np.array([[-0.4, 0.6], [0.7, -1.1]])]
+    positions, rotations = pose_targets(goals[0])
+    position = ik.IKObjectivePosition(link, position_offset, positions, weight=2.0)
+    rotation = ik.IKObjectiveRotation(link, rotation_offset, rotations, weight=0.5)
+    solver = ik.IKSolver(model, 2, [position, rotation], optimizer=ik.IKOptimizer.CUNLS)
+    joint_q = wp.array([[0.1, 0.4], [-0.2, 0.9]], dtype=wp.float32, device=device)
+    eager, replay = wp.zeros_like(joint_q), wp.zeros_like(joint_q)
+
+    stream = wp.Stream(device)
+    with wp.ScopedStream(stream):
+        with wp.ScopedCapture(stream=stream) as capture:
+            solver.step(joint_q, replay, iterations=30)
+        for q_goal in goals:
+            positions, rotations = pose_targets(q_goal)
+            position.set_target_positions(positions)
+            rotation.set_target_rotations(rotations)
+            solver.step(joint_q, eager, iterations=30)
+            wp.capture_launch(capture.graph, stream=stream)
+            np.testing.assert_allclose(eager.numpy(), q_goal, atol=1e-3)
+            np.testing.assert_allclose(replay.numpy(), eager.numpy(), atol=1e-5)
 
 
 def test_cunls_step_captured_right_after_construction(test, device):
@@ -255,6 +321,19 @@ def test_cunls_rejects_bounded_loop_joint(test, device):
     position = ik.IKObjectivePosition(1, wp.vec3(), wp.zeros(1, dtype=wp.vec3, device=device))
     with test.assertRaisesRegex(ValueError, f"loop-closing joint {loop}"):
         ik.IKSolver(model, 1, [position, limit], optimizer=ik.IKOptimizer.CUNLS)
+
+
+def test_cunls_rejects_bounded_ball_joint(test, device):
+    """Reject joint limits on a ball joint, whose rotation has no box bounds."""
+    builder = newton.ModelBuilder()
+    link = builder.add_link()
+    builder.add_articulation([builder.add_joint_ball(-1, link)])
+    model = builder.finalize(device=device)
+    lower = wp.full(model.joint_dof_count, -0.5, dtype=wp.float32, device=device)
+    upper = wp.full(model.joint_dof_count, 0.5, dtype=wp.float32, device=device)
+    position = ik.IKObjectivePosition(link, wp.vec3(0.5, 0.0, 0.0), wp.zeros(1, dtype=wp.vec3, device=device))
+    with test.assertRaisesRegex(ValueError, "BALL joint 0"):
+        ik.IKSolver(model, 1, [position, ik.IKObjectiveJointLimit(lower, upper)], optimizer=ik.IKOptimizer.CUNLS)
 
 
 def test_cunls_raises_on_infeasible_constraints(test, device):
@@ -312,8 +391,11 @@ for test_fn in (
     test_cunls_costs_use_current_targets,
     test_cunls_counts_every_rotation_entry,
     test_cunls_steps_on_strided_views,
+    test_cunls_steps_on_overlapping_views,
+    test_cunls_pose_replay_matches_eager_on_stream,
     test_cunls_step_captured_right_after_construction,
     test_cunls_rejects_bounded_loop_joint,
+    test_cunls_rejects_bounded_ball_joint,
     test_cunls_raises_on_infeasible_constraints,
     test_cunls_rejects_unsupported_objective,
 ):

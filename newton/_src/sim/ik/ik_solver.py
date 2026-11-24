@@ -380,8 +380,10 @@ class IKSolver:
                 solution of each base problem, shape [n_problems, joint_coord_count].
                 It may alias ``joint_q_in``.
             iterations: Number of optimizer iterations to run for each sampled
-                seed. The cuNLS backend treats it as the limit of each inner solve
-                and stops each seed once it has converged.
+                seed. Without loop or mimic constraints, the cuNLS backend runs exactly
+                this many Levenberg-Marquardt iterations (a fixed budget that can be
+                captured in a CUDA graph, as with LM); with them, it is the limit of each
+                augmented-Lagrangian inner solve, and each seed stops once it has converged.
             step_size: Unitless LM step scale. Ignored by the L-BFGS and cuNLS backends.
         """
         if joint_q_in.shape != (self.n_problems, self.n_coords):

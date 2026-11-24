@@ -35,7 +35,7 @@ def _import_pycunls():
     except ImportError as e:
         raise ImportError(
             "IKOptimizer.CUNLS requires cuNLS. Install it with `pip install newton[cunls]` "
-            "(CUDA 13: an R580 or newer driver)."
+            "(Linux x86-64 with GLIBC 2.35 or newer, CUDA 13: an R580 or newer driver)."
         ) from e
     return pycunls
 
@@ -106,6 +106,20 @@ def _build_kinematics(model: Model, limit: IKObjectiveJointLimit | None):
     tree = in_articulation & (child >= 0)
     tree[in_articulation] &= joint_ids[in_articulation] < articulation_end[articulation[in_articulation]]
 
+    qd_start = model.joint_qd_start.numpy()
+    if limit is not None:
+        lower, upper = limit.joint_limit_lower.numpy(), limit.joint_limit_upper.numpy()
+
+    def check_unbounded(j: int, kind: str) -> None:
+        """Raise if ``limit`` bounds a DOF of joint ``j``, which cuNLS cannot bound."""
+        dofs = slice(qd_start[j], qd_start[j + 1])
+        if limit is not None and (np.any(lower[dofs] > -_UNBOUNDED) or np.any(upper[dofs] < _UNBOUNDED)):
+            raise ValueError(
+                f"IKOptimizer.CUNLS cannot bound the coordinates of {kind} {j} (got limits {lower[dofs]} to "
+                f"{upper[dofs]} in IKObjectiveJointLimit, expected |limit| >= {_UNBOUNDED:g}: unbounded). Fix: pass "
+                "IKObjectiveJointLimit limit arrays without bounds on that joint's DOFs."
+            )
+
     tree_joint_of_body = np.full(model.body_count, -1, dtype=np.int64)
     for j in np.flatnonzero(tree):
         if tree_joint_of_body[child[j]] >= 0:
@@ -115,6 +129,8 @@ def _build_kinematics(model: Model, limit: IKObjectiveJointLimit | None):
     for j in tree_joint_of_body[is_link]:
         if joint_type[j] not in _TREE_JOINT_TYPES:
             raise ValueError(f"IKOptimizer.CUNLS does not support {JointType(joint_type[j]).name} joints.")
+        if joint_type[j] in (JointType.BALL, JointType.FREE):  # rotations have no box bounds
+            check_unbounded(j, f"{JointType(joint_type[j]).name} joint")
 
     body_q = model.body_q.numpy()
     for j in np.flatnonzero(parent >= 0):
@@ -125,9 +141,6 @@ def _build_kinematics(model: Model, limit: IKObjectiveJointLimit | None):
     # Loop-closing joints with a link as child; those between fixed frames do not move a link.
     loop_joints = np.flatnonzero(~tree & (child >= 0))
     loop_joints = loop_joints[is_link[child[loop_joints]] | (parent[loop_joints] >= 0)]
-    qd_start = model.joint_qd_start.numpy()
-    if limit is not None:
-        lower, upper = limit.joint_limit_lower.numpy(), limit.joint_limit_upper.numpy()
     for j in loop_joints:
         if joint_type[j] not in _LOOP_JOINT_TYPES:
             raise ValueError(
@@ -139,13 +152,7 @@ def _build_kinematics(model: Model, limit: IKObjectiveJointLimit | None):
                 f"IKOptimizer.CUNLS: loop-closing joint {j} has a link as parent but body {child[j]}, which is "
                 "outside the articulation trees, as child. Fix: swap its parent and child."
             )
-        dofs = slice(qd_start[j], qd_start[j + 1])
-        if limit is not None and (np.any(lower[dofs] > -_UNBOUNDED) or np.any(upper[dofs] < _UNBOUNDED)):
-            raise ValueError(
-                f"IKOptimizer.CUNLS cannot bound the coordinates of loop-closing joint {j} (got limits "
-                f"{lower[dofs]} to {upper[dofs]} in IKObjectiveJointLimit, expected |limit| >= {_UNBOUNDED:g}: "
-                "unbounded). Fix: pass IKObjectiveJointLimit limit arrays without bounds on that joint's DOFs."
-            )
+        check_unbounded(j, "loop-closing joint")
 
     # Ordered by child body, so that topology links follow the body order.
     scene = topology_from_joint_arrays(
@@ -176,8 +183,9 @@ class IKOptimizerCuNLS:
 
     - Loop-closing joints (joints outside the articulation trees) are equality constraints.
     - Mimic joints (:attr:`Model.joint_mimic_joint`) are equality constraints.
-    - :class:`~newton.ik.IKObjectiveJointLimit` makes its limits hard bounds: the coordinates
-      never leave them, and its ``weight`` is unused. It must not bound loop-closing joints.
+    - :class:`~newton.ik.IKObjectiveJointLimit` makes its limits on the revolute, prismatic and
+      D6 joints of the articulation trees hard bounds: the coordinates never leave them, and its
+      ``weight`` is unused. Ball, free and loop-closing joints must be unbounded.
 
     Bodies outside the articulation trees, such as external root parents, keep their
     :attr:`Model.body_q` pose from construction.
@@ -194,7 +202,8 @@ class IKOptimizerCuNLS:
     A position and a rotation objective on the same link are solved as one pose target.
     :meth:`compute_costs` returns the squared residuals cuNLS minimizes (orientation errors as
     rotation angles, independent of the quaternion sign; hard limits add nothing).
-    Requires the optional ``pycunls`` package (``newton[cunls]``, CUDA 13).
+    Requires the optional ``pycunls`` package (``newton[cunls]``: Linux x86-64 with GLIBC 2.35
+    or newer, CUDA 13 with an R580 or newer driver).
 
     Args:
         model: Shared articulation model.
@@ -208,7 +217,7 @@ class IKOptimizerCuNLS:
     Raises:
         ImportError: If ``pycunls`` is not installed.
         ValueError: If an objective, a joint type, the articulation layout, or limits on a
-            loop-closing joint are not supported.
+            ball, free or loop-closing joint are not supported.
 
     Note:
         The objectives' targets are read at every :meth:`step` and :meth:`compute_costs`; other
@@ -257,12 +266,14 @@ class IKOptimizerCuNLS:
             obj.init_buffers(model=model, jacobian_mode=IKJacobianType.ANALYTIC)
             offset += obj.residual_dim()
 
+        # Every step copies its input here and its output from here, so any overlap of the two
+        # is well defined.
+        self._joint_q = wp.array(np.tile(model.joint_q.numpy(), (n_batch, 1)), dtype=wp.float32, device=self.device)
         # cuNLS's structure setup synchronizes: done here, so that the first step() is not slower
         # and, without constraints, can be captured in a CUDA graph. The setup assembles the
         # system once, at Model.joint_q (its values are not used by the Cholesky analysis).
         stream = wp.get_stream(self.device)
-        joint_q = wp.array(np.tile(model.joint_q.numpy(), (n_batch, 1)), dtype=wp.float32, device=self.device)
-        self._set_states(joint_q, stream)
+        self._load_states(stream)
         self._solver.initialize(stream, self._problem)
 
     # ------------------------------------------------------------------
@@ -275,11 +286,15 @@ class IKOptimizerCuNLS:
         self._topology = scene.topology
         self._link_of_body = scene.link_of_body
         # The tree's coordinates are usually a contiguous block of joint_q: then the states read
-        # and write it in place (strided); otherwise through a gather / scatter.
+        # and write the staging buffer in place (strided); otherwise through a gather / scatter.
         self._coord_start = scene.coord_start
         self._coord_map = wp.array(scene.coord_index, dtype=wp.int32, device=self.device)
         self._dof_index = scene.dof_index
-        self._q = wp.zeros((n_batch, len(scene.coord_index)), dtype=wp.float32, device=self.device)
+        self._q = (
+            None
+            if self._coord_start is not None
+            else wp.zeros((n_batch, len(scene.coord_index)), dtype=wp.float32, device=self.device)
+        )
 
         self._states = pycunls.ArticulationStateBatch(self._topology, n_batch, apply_joint_limits=limit is not None)
         self._states.set_num_active_states(n_batch)
@@ -507,18 +522,38 @@ class IKOptimizerCuNLS:
     # ------------------------------------------------------------------
     # Optimizer interface
     # ------------------------------------------------------------------
-    def _set_states(self, joint_q: wp.array2d[wp.float32], stream) -> None:
-        """Copy ``joint_q`` into the cuNLS states (forward kinematics included) and the objectives'
-        current targets into the factors' per-row targets."""
+    def _load_states(self, stream) -> None:
+        """Copy the staging buffer's tree coordinates into the cuNLS states (forward kinematics
+        included) and the objectives' current targets into the factors' per-row targets."""
         for kernel, inputs, output in self._target_gathers:
             wp.launch(kernel, dim=self.n_batch, inputs=inputs, outputs=[output], device=self.device)
-        if self._coord_start is not None and joint_q.is_contiguous:
-            self._states.set_joint_q(joint_q.flatten()[self._coord_start :], self.n_batch, stream, stride=self.n_coords)
+        if self._coord_start is not None:
+            tree_q = self._joint_q.flatten()[self._coord_start :]
+            self._states.set_joint_q(tree_q, self.n_batch, stream, stride=self.n_coords)
             return
         wp.launch(
-            _gather_coords, dim=self._q.shape, inputs=[joint_q, self._coord_map], outputs=[self._q], device=self.device
+            _gather_coords,
+            dim=self._q.shape,
+            inputs=[self._joint_q, self._coord_map],
+            outputs=[self._q],
+            device=self.device,
         )
         self._states.set_joint_q(self._q, self.n_batch, stream)
+
+    def _store_states(self, stream) -> None:
+        """Copy the cuNLS states' coordinates into the staging buffer's tree coordinates."""
+        if self._coord_start is not None:
+            tree_q = self._joint_q.flatten()[self._coord_start :]
+            self._states.get_joint_q(tree_q, self.n_batch, stream, stride=self.n_coords)
+            return
+        self._states.get_joint_q(self._q, self.n_batch, stream)
+        wp.launch(
+            _scatter_coords,
+            dim=self._q.shape,
+            inputs=[self._q, self._coord_map],
+            outputs=[self._joint_q],
+            device=self.device,
+        )
 
     def step(
         self,
@@ -531,9 +566,10 @@ class IKOptimizerCuNLS:
         Args:
             joint_q_in: Input joint coordinates, shape [n_batch, joint_coord_count].
             joint_q_out: Output buffer for the optimized coordinates, shape
-                [n_batch, joint_coord_count]. It may be ``joint_q_in`` itself; either may be a
-                non-contiguous view.
-                Coordinates of loop-closing joints are copied from ``joint_q_in``.
+                [n_batch, joint_coord_count]. It may be ``joint_q_in`` itself, a separate array,
+                or a view that overlaps it, and either may be non-contiguous: :meth:`step` reads
+                all of ``joint_q_in`` before it writes ``joint_q_out``. Coordinates of
+                loop-closing joints are copied from ``joint_q_in``.
             iterations: Levenberg-Marquardt iterations of each row. With loop or mimic
                 constraints, the limit of each augmented-Lagrangian inner solve; rows stop
                 earlier once converged.
@@ -547,15 +583,10 @@ class IKOptimizerCuNLS:
             raise ValueError("joint_q_in has incompatible shape")
         if joint_q_out.shape != (self.n_batch, self.n_coords):
             raise ValueError("joint_q_out has incompatible shape")
-        if joint_q_in.ptr == joint_q_out.ptr and joint_q_in.strides != joint_q_out.strides:
-            raise ValueError(
-                f"IKOptimizer.CUNLS: joint_q_out aliases joint_q_in with different strides (got "
-                f"{joint_q_out.strides} and {joint_q_in.strides}, expected equal). Fix: pass the same array "
-                "for both, or non-overlapping arrays."
-            )
 
         stream = wp.get_stream(self.device)  # Warp work and the solve stay in order on one stream
-        self._set_states(joint_q_in, stream)
+        wp.copy(self._joint_q, joint_q_in)
+        self._load_states(stream)
         self._set_iterations(iterations)
         summary = self._solver.minimize(stream, self._problem)
         if self._has_constraints:  # converging solve: its summary is read back anyway
@@ -566,21 +597,8 @@ class IKOptimizerCuNLS:
                     f"violation {summary.max_violation:.3g}, expected at most constraint_tolerance "
                     f"{self.constraint_tolerance:.3g}). cuNLS: {summary.message}"
                 )
-        if joint_q_in.ptr != joint_q_out.ptr:
-            wp.copy(joint_q_out, joint_q_in)
-        if self._coord_start is not None and joint_q_out.is_contiguous:
-            self._states.get_joint_q(
-                joint_q_out.flatten()[self._coord_start :], self.n_batch, stream, stride=self.n_coords
-            )
-            return
-        self._states.get_joint_q(self._q, self.n_batch, stream)
-        wp.launch(
-            _scatter_coords,
-            dim=self._q.shape,
-            inputs=[self._q, self._coord_map],
-            outputs=[joint_q_out],
-            device=self.device,
-        )
+        self._store_states(stream)
+        wp.copy(joint_q_out, self._joint_q)
 
     def reset(self) -> None:
         """Reset optimizer state before a new solve; every :meth:`step` starts afresh, so this is a no-op."""
@@ -600,7 +618,8 @@ class IKOptimizerCuNLS:
             Costs for each batch row, shape [n_batch].
         """
         stream = wp.get_stream(self.device)
-        self._set_states(joint_q, stream)
+        wp.copy(self._joint_q, joint_q)
+        self._load_states(stream)
         self.costs.zero_()
         for factor, residuals in self._objective_factors:
             factor.evaluate_batch(residuals, None, self._state_table, stream)
