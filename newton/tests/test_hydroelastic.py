@@ -146,7 +146,7 @@ def _test_hydro_voxel_record_roundtrip(
 
 
 def test_triangle_fraction_rotations(test, device):
-    """Verify triangle coverage is invariant to the distinct vertex rotation."""
+    """Preserve triangle coverage under vertex rotation and changes of scale."""
     depths_np = np.array(
         [
             [1.0, 2.0, 3.0],
@@ -157,10 +157,16 @@ def test_triangle_fraction_rotations(test, device):
             [1.0, -2.0, -3.0],
             [-2.0, 1.0, -3.0],
             [-2.0, -3.0, 1.0],
+            [0.0, -2.0, -3.0],
+            [-2.0, 0.0, -3.0],
+            [-2.0, -3.0, 0.0],
+            [-1.0, 0.0, 0.0],
+            [0.0, -1.0, 0.0],
+            [0.0, 0.0, -1.0],
         ],
         dtype=np.float32,
     )
-    num_inside_np = np.array([0, 3, 1, 1, 1, 2, 2, 2], dtype=np.int32)
+    num_inside_np = np.sum(depths_np < 0.0, axis=1, dtype=np.int32)
     expected = np.array(
         [
             0.0,
@@ -171,9 +177,20 @@ def test_triangle_fraction_rotations(test, device):
             11.0 / 12.0,
             11.0 / 12.0,
             11.0 / 12.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
         ]
     )
 
+    # Submillimeter contact depths must cover the same fraction as meter-scale depths.
+    scales = np.array([1.0, 1.0e-5, 1.0e-20, 1.0e20], dtype=np.float32)
+    depths_np = (scales[:, None, None] * depths_np).reshape(-1, 3)
+    num_inside_np = np.tile(num_inside_np, len(scales))
+    expected = np.tile(expected, len(scales))
     fractions = wp.empty(len(depths_np), dtype=wp.float32, device=device)
     wp.launch(
         _test_triangle_fraction_rotations,
