@@ -1497,6 +1497,9 @@ class ViewerViser(ViewerBase):
         host = self._server.get_host()
         if host == "0.0.0.0":
             host = "localhost"
+        elif ":" in host:
+            # IPv6 literals need brackets in an HTTP URL authority.
+            host = f"[{host}]"
         if self.is_jupyter_notebook:
             return self._build_browser_url(self._port, local_host=host)
         return f"http://{host}:{self._port}"
