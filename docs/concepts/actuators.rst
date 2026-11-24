@@ -169,9 +169,6 @@ pluggable: implement the :class:`DriveBase`, :class:`ClampingBase`,
    deprecated.  Pass the delay in ``input_processors`` and read its state
    from :attr:`Actuator.State.input_processor_states`.
 
-   Passing 1-D ``indices``, ``pos_indices`` or ``effort_indices`` to
-   :class:`Actuator` is deprecated; pass 2-D arrays of shape ``(1, N)``.
-
 .. note::
 
    **Current limitations:** transmissions are constant gear ratios only (no

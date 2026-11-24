@@ -39,9 +39,6 @@ _DELAY_UPDATE_STATE_OVERRIDE_DEPRECATION_MSG = (
     "vel_indices, current_state, next_state) signature is deprecated in Newton 1.9; override "
     "update_state(inputs, current_state, next_state) instead."
 )
-_INDICES_1D_DEPRECATION_MSG = (
-    "Passing a 1-D {name} to Actuator is deprecated in Newton 1.9; pass a 2-D array of shape (1, N) instead."
-)
 _DELAY_STATE_DEPRECATION_MSG = (
     "Actuator.State.delay_state is deprecated in Newton 1.9; use input_processor_states instead."
 )
@@ -57,7 +54,8 @@ _ACTUATOR_CONTROL_ATTRS = {
 def _as_rows(indices: Any, name: str) -> Any:
     """Return an index array as ``(joints, N)``; a 1-D array is the single-joint case."""
     if indices.ndim == 1:
-        warnings.warn(_INDICES_1D_DEPRECATION_MSG.format(name=name), NewtonDeprecationWarning, stacklevel=3)
+        if not indices.is_contiguous:
+            indices = wp.clone(indices)
         return indices.reshape((1, indices.shape[0]))
     if indices.ndim != 2:
         raise ValueError(f"{name} must be 1-D or 2-D, got {indices.ndim} dimensions")
@@ -384,8 +382,8 @@ class Actuator:
                 velocity-shaped arrays, shape ``(joints, N)``: entry
                 ``[j, i]`` is the DOF of the ``j``-th joint of actuator ``i``.
                 The *transmission* reads the joint velocities through them.
-                A 1-D array, the single-joint case ``(1, N)``, is deprecated
-                in Newton 1.9. With more than one row, a *transmission* other
+                A 1-D array of shape ``(N,)`` is the single-joint case
+                ``(1, N)``. With more than one row, a *transmission* other
                 than :class:`~newton.actuators.TransmissionDirect` must map
                 them onto one actuator coordinate.
             drive: Drive that computes effort without a motor, or duty with a motor.
@@ -397,8 +395,8 @@ class Actuator:
                 arrays (positions = ``state.joint_q``), same shape as *indices*.
                 Defaults to *indices*. Differs from *indices* when position
                 and velocity arrays have different layouts (e.g.
-                floating-base or ball-joint articulations). A 1-D array, the
-                single-joint case, is deprecated in Newton 1.9.
+                floating-base or ball-joint articulations). A 1-D array is
+                the single-joint case.
             target_pos_indices: Indices into ``control.joint_target_q``, shape
                 ``(N,)``. Defaults to row 0 of *pos_indices*, or to
                 *actuator_indices* with a *transmission* other than
@@ -406,8 +404,8 @@ class Actuator:
                 custom target buffers with a different index mapping.
             effort_indices: DOF indices into effort output arrays, same shape
                 as *indices*; the *transmission* writes the effort through
-                them. A 1-D array, the single-joint case, is deprecated in
-                Newton 1.9. Defaults to *indices*.
+                them. A 1-D array is the single-joint case. Defaults to
+                *indices*.
             state_pos_attr: Attribute on sim_state for positions.
             state_vel_attr: Attribute on sim_state for velocities.
             control_target_pos_attr: Attribute on sim_control for target positions.
