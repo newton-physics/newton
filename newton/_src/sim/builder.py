@@ -5718,6 +5718,9 @@ class ModelBuilder:
         mesh-file appearance and primitive palette colors are retained for compatibility.
         Other PBR texture layers are not imported.
 
+        A body's hinge and slide joints are merged into one Newton joint. See the
+        :ref:`limitations of merged MJCF joints <mjcf-merged-joints>` for anchor selection, warnings, and deprecations.
+
         Args:
             source: The filename of the MuJoCo file to parse, or the MJCF XML string content.
             xform: The transform to apply to the imported mechanism.
@@ -10991,6 +10994,11 @@ class ModelBuilder:
             is decomposed separately and may produce one or more convex shapes,
             each limited to the source mesh's ``maxhullvert`` vertices.
             CoACD decompositions repeat across runs; pass CoACD's ``seed`` through ``remeshing_kwargs`` to change it.
+            CoACD searches cuts with ``mcts_nodes=20``, ``mcts_iterations=20``, ``mcts_max_depth=2``, and
+            ``merge=False`` unless overridden through ``remeshing_kwargs``. This search produces few, large parts,
+            so on dense, smooth meshes the ``maxhullvert`` cap can trim noticeable surface detail; raise the
+            source mesh's ``maxhullvert`` to keep it, or pass ``mcts_iterations=5`` and ``mcts_max_depth=1``
+            for more, smaller parts.
 
         The ``raise_on_failure`` parameter controls the behavior when the remeshing fails:
             - If `True`, an exception is raised when the remeshing fails.
@@ -11167,9 +11175,11 @@ class ModelBuilder:
                         settings = (
                             {
                                 "threshold": self.default_mesh_approximation_cfg.coacd_threshold,
+                                # A two-level cut search finds cuts that need about a third as many
+                                # parts as a greedy one-level search at similar accuracy.
                                 "mcts_nodes": 20,
-                                "mcts_iterations": 5,
-                                "mcts_max_depth": 1,
+                                "mcts_iterations": 20,
+                                "mcts_max_depth": 2,
                                 "merge": False,
                             }
                             if method == "coacd"
