@@ -15,7 +15,7 @@ class InputProcessorBase:
     An input processor transforms the inputs of an actuator before they
     reach the drive. The inputs are the actuator position and velocity from
     the transmission, which equal the joint state with the default
-    :class:`~newton.actuators.TransmissionDirect`, and the commands (target
+    :class:`~newton.actuators.TransmissionDirect` and no sensor, and the commands (target
     positions, target velocities, feedforward). An :class:`~newton.actuators.Actuator` runs its
     processors in list order; each processor receives the inputs returned by
     the previous one.
@@ -70,26 +70,8 @@ class InputProcessorBase:
         """Index of each slot into :attr:`target_pos`."""
         target_vel_indices: wp.array[wp.uint32]
         """Index of each slot into :attr:`target_vel` and :attr:`feedforward`."""
-        sim_positions: wp.array[float]
-        """Unprocessed ``joint_q``-shaped simulation positions [m or rad].
-        Index with ``joint_q`` indices to read another joint."""
-        sim_velocities: wp.array[float]
-        """Unprocessed ``joint_qd``-shaped simulation velocities [m/s or rad/s].
-        Index with ``joint_qd`` indices to read another joint."""
 
     SHARED_PARAMS: ClassVar[set[str]] = set()
-
-    JOINT_PARAMS: ClassVar[set[str]] = set()
-    """Names of parameters that reference a joint.
-
-    :meth:`~newton.ModelBuilder.add_actuator` accepts a joint index or a joint
-    label for each of these parameters, or ``None`` for the first joint of
-    *index*. The joint must be a single-DOF joint of the same type as that
-    first joint.
-    It passes the joint to the constructor as two index arrays:
-    ``<name>_indices`` into ``joint_qd``-shaped arrays and
-    ``<name>_pos_indices`` into ``joint_q``-shaped arrays.
-    """
 
     @classmethod
     def resolve_arguments(cls, args: dict[str, Any]) -> dict[str, Any]:
@@ -121,10 +103,7 @@ class InputProcessorBase:
         """Return the transformed actuator inputs.
 
         Return a copy of *inputs* made with :func:`dataclasses.replace`; do
-        not modify *inputs* in place. To read a joint other than the
-        actuated one, index :attr:`Inputs.sim_positions` and
-        :attr:`Inputs.sim_velocities`: earlier processors may have replaced
-        :attr:`Inputs.positions` and :attr:`Inputs.velocities`.
+        not modify *inputs* in place.
 
         Args:
             inputs: Actuator inputs.

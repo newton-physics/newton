@@ -11,9 +11,11 @@ import warp as wp
 class TransmissionBase:
     """Maps between the joints an actuator drives and its one actuator coordinate.
 
-    A transmission starts and concludes :meth:`Actuator.step()
-    <newton.actuators.Actuator.step>`. First, :meth:`compute_state` maps the
-    joint positions and velocities of the actuator
+    A transmission maps the state at the start of :meth:`Actuator.step()
+    <newton.actuators.Actuator.step>`, after the optional sensor, and the
+    effort at its end. First, :meth:`compute_state` maps the
+    joint positions, measured by the sensor if the actuator has one, and the
+    joint velocities of the actuator
     (:attr:`Actuator.pos_indices <newton.actuators.Actuator.pos_indices>` and
     :attr:`Actuator.indices <newton.actuators.Actuator.indices>`) onto one
     actuator position and velocity, e.g. the motor angle behind a gearbox or

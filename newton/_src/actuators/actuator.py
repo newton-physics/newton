@@ -20,8 +20,8 @@ from .effort_mode_explicit import _EffortModeExplicit
 from .effort_mode_implicit import ImplicitOptions, JointSpaceResponse, _EffortModeImplicit
 from .input_processors.base import InputProcessorBase
 from .input_processors.input_processor_delay import InputProcessorDelay
-from .input_processors.input_processor_encoder import InputProcessorEncoder
 from .motor_dc import MotorDC
+from .sensors.base import SensorBase
 from .space import _validate_spaces
 from .transmissions.base import TransmissionBase
 from .transmissions.transmission_direct import TransmissionDirect
@@ -212,12 +212,13 @@ def _input_container_class(name: str, frequencies: tuple[tuple[str, Model.Attrib
 
 
 class Actuator:
-    """Composed actuator: transmission → input processors → drive → clamping → motor → transmission.
+    """Composed actuator: sensor → transmission → input processors → drive → clamping → motor → transmission.
 
-    An actuator reads from simulation state/control arrays, maps its joints
-    onto one actuator coordinate through a transmission (the joint itself by
-    default), transforms the inputs with input processors (e.g. a command
-    delay or an encoder),
+    An actuator reads from simulation state/control arrays, optionally
+    measures its joint positions through a sensor (e.g. behind a backlash
+    joint), maps its joints onto one actuator coordinate through a
+    transmission (the joint itself by default), transforms the inputs with
+    input processors (e.g. a command delay),
     computes effort via a drive, applies clamping (effort limits, saturation,
     etc.), optionally turns it into the effort of a motor, and
     **accumulates** the result into the output array (scatter-add) through
@@ -370,6 +371,7 @@ class Actuator:
         *,
         input_processors: list[InputProcessorBase] | None = None,
         motor: MotorDC | None = None,
+        sensor: SensorBase | None = None,
         transmission: TransmissionBase | None = None,
         actuator_indices: wp.array[wp.uint32] | None = None,
         control_supply_voltage_attr: str = "actuator_supply_voltage",
@@ -434,6 +436,10 @@ class Actuator:
                 :class:`~newton.actuators.MotorDC`). With a motor, the drive
                 computes signed duty. The actuator converts duty to motor
                 voltage using the actual supply voltage.
+            sensor: Optional sensor that measures the joint positions the
+                *transmission* maps, e.g. behind a backlash joint
+                (:class:`~newton.actuators.SensorEncoder`). ``None``
+                reads the joint positions directly.
             transmission: Optional transmission that maps the joints in
                 *indices* onto one actuator position and velocity, which the
                 input processors, drive, clamps and motor read, and maps the
@@ -463,6 +469,8 @@ class Actuator:
         num_actuators = self.indices.shape[1]
         self.pos_indices = _as_rows(pos_indices, "pos_indices") if pos_indices is not None else self.indices
         """Indices of the driven joints into coordinate-shaped arrays, shape ``(joints, N)``."""
+        self.sensor = sensor
+        """Sensor measuring the joint positions before the transmission, or ``None``."""
         self.transmission = transmission if transmission is not None else TransmissionDirect()
         """Transmission mapping the joints in :attr:`indices` onto the actuator coordinate."""
         # With a transmission other than TransmissionDirect, the drive compares
@@ -572,6 +580,8 @@ class Actuator:
             clamp.finalize(self.device, self.num_actuators)
         if motor is not None:
             motor.finalize(self.device, self.num_actuators, requires_grad=requires_grad)
+        if sensor is not None:
+            sensor.finalize(self.device, self.num_actuators, self.pos_indices.shape[0], requires_grad=requires_grad)
         self.transmission.finalize(
             self.device, self.num_actuators, self.effort_indices.shape[0], requires_grad=requires_grad
         )
@@ -586,8 +596,9 @@ class Actuator:
         states. Re-pointing has no effect on an already-captured CUDA graph,
         which holds the pointers bound at capture time.
 
-        Assigned arrays must be long enough for :attr:`pos_indices` and
-        :attr:`indices`; their lengths are not checked.
+        Assigned arrays must be long enough for :attr:`pos_indices`,
+        :attr:`indices` and the joints the :attr:`sensor` reads; their
+        lengths are not checked.
 
         Returns:
             Container whose slots are the required ``sim_state`` attributes,
@@ -711,9 +722,11 @@ class Actuator:
                 implicit solve does not model.
 
         Warns:
-            NewtonWarning: The actuator has an :class:`~newton.actuators.InputProcessorEncoder`.
-                The solve uses the motor-side response only, so it is inaccurate
-                while the output joint is not at its limit.
+            NewtonWarning: The actuator has a :attr:`sensor`. The drive
+                reads the measured position, while the solve uses the response
+                of the actuated joint only, so the result is approximate.
+                With :class:`~newton.actuators.SensorEncoder`, it is
+                inaccurate while the output joint is not at its limit.
         """
         if self.requires_grad:
             raise NotImplementedError(
@@ -732,10 +745,10 @@ class Actuator:
                 f"{type(self.drive).__name__} declares custom inputs but does not override prepare_implicit, "
                 "so the implicit solve would ignore them."
             )
-        if any(isinstance(p, InputProcessorEncoder) for p in self.input_processors):
+        if self.sensor is not None:
             warnings.warn(
-                "Implicit actuation with InputProcessorEncoder predicts the link-side state from the "
-                "motor-side response only, so it is inaccurate while the output joint is not at its limit.",
+                f"Implicit actuation with {type(self.sensor).__name__} predicts the measured position from the "
+                "response of the actuated joint only, so the result is approximate.",
                 NewtonWarning,
                 stacklevel=2,
             )
@@ -766,7 +779,11 @@ class Actuator:
 
     def is_graphable(self) -> bool:
         """Return True if all components can be captured in a CUDA graph."""
-        return all(p.is_graphable() for p in self.input_processors) and self._effort_mode.is_graphable()
+        return (
+            (self.sensor is None or self.sensor.is_graphable())
+            and all(p.is_graphable() for p in self.input_processors)
+            and self._effort_mode.is_graphable()
+        )
 
     def state(self) -> Actuator.State | None:
         """Return a new composed state, or None if fully stateless."""
@@ -827,9 +844,10 @@ class Actuator:
     ) -> None:
         """Execute one control step.
 
-        0. **Transmission state** — map the joint positions and velocities
-           onto the actuator position and velocity, which the input
-           processors, drive, clamps and motor read.
+        0. **Sensor and transmission state** — the optional sensor
+           measures the joint positions, and the transmission maps them and
+           the joint velocities onto the actuator position and velocity,
+           which the input processors, drive, clamps and motor read.
         1. **Input processors** — transform the state and command inputs
            in list order (e.g. read delayed targets from ``current_state``),
            and write each processor's ``next_state`` (e.g. push the current
@@ -894,9 +912,14 @@ class Actuator:
         current_states = (current_act_state and current_act_state.input_processor_states) or no_states
         next_states = (next_act_state and next_act_state.input_processor_states) or no_states
 
-        # --- 0. Transmission state: actuator position and velocity ---
+        # --- 0. Sensor and transmission state: actuator position and velocity ---
+        measured_positions, measured_pos_indices = positions, self.pos_indices
+        if self.sensor is not None:
+            measured_positions, measured_pos_indices = self.sensor.compute(
+                positions, self.pos_indices, device=self.device
+            )
         actuator_positions, actuator_pos_indices, motor_velocities, motor_vel_indices = self.transmission.compute_state(
-            positions, velocities, self.pos_indices, self.indices, device=self.device
+            measured_positions, velocities, measured_pos_indices, self.indices, device=self.device
         )
 
         # --- 1. Input processors (read current_state, write next_state) ---
@@ -910,8 +933,6 @@ class Actuator:
             vel_indices=motor_vel_indices,
             target_pos_indices=self.target_pos_indices,
             target_vel_indices=self._target_vel_indices,
-            sim_positions=positions,
-            sim_velocities=velocities,
         )
         for processor, current, nxt in zip(self.input_processors, current_states, next_states, strict=True):
             processed = processor.process(inputs, current, dt)

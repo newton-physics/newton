@@ -30,9 +30,10 @@ from .drives import (
     DrivePD,
     DrivePID,
 )
-from .input_processors import InputProcessorBase, InputProcessorEncoder
+from .input_processors import InputProcessorBase
 from .input_processors.input_processor_delay import InputProcessorDelay
 from .motor_dc import MotorDC
+from .sensors import SensorBase, SensorEncoder
 from .utils import _ALLOW_UNSAFE_TORCH_CHECKPOINTS_DEPRECATION_MSG, _looks_like_torch_checkpoint, load_metadata
 
 _COMPONENT_KIND_DELAY_DEPRECATION_MSG = (
@@ -63,6 +64,7 @@ class ComponentKind(enum.Enum, metaclass=_ComponentKindMeta):
     CLAMPING = "clamping"
     INPUT_PROCESSOR = "input_processor"
     MOTOR = "motor"
+    SENSOR = "sensor"
 
     @classmethod
     def _missing_(cls, value: object):
@@ -78,13 +80,13 @@ class ActuatorParsed:
 
     Each detected API schema produces a (class, kwargs) entry.
     The drive is separated out; everything else goes into
-    component_specs (input processors, clamping, motor, etc.).
+    component_specs (sensor, input processors, clamping, motor, etc.).
     """
 
     drive_class: type[DriveBase]
     drive_kwargs: dict[str, Any] = field(default_factory=dict)
-    component_specs: list[tuple[type[ClampingBase | InputProcessorBase | MotorDC], dict[str, Any]]] = field(
-        default_factory=list
+    component_specs: list[tuple[type[ClampingBase | SensorBase | InputProcessorBase | MotorDC], dict[str, Any]]] = (
+        field(default_factory=list)
     )
     target_path: str = ""
     """Joint target path (USD prim path of the driven joint)."""
@@ -245,7 +247,7 @@ _SCHEMA_REGISTRY: dict[str, _SchemaEntry] = {
     SchemaNames.CURRENT_DUTY_CLAMPING: _SchemaEntry(ClampingCurrentDuty, ComponentKind.CLAMPING),
     SchemaNames.DC_MOTOR: _SchemaEntry(MotorDC, ComponentKind.MOTOR),
     SchemaNames.DELAY: _SchemaEntry(InputProcessorDelay, ComponentKind.INPUT_PROCESSOR),
-    SchemaNames.ENCODER: _SchemaEntry(InputProcessorEncoder, ComponentKind.INPUT_PROCESSOR),
+    SchemaNames.ENCODER: _SchemaEntry(SensorEncoder, ComponentKind.SENSOR),
 }
 
 _BASE_SCHEMAS = {
@@ -270,7 +272,7 @@ def register_actuator_component(
             the parsed kwargs dict and returns the concrete class.
             A callable may also validate kwargs and raise
             :class:`ValueError`.
-        kind: Whether this schema is a drive, clamping, input processor, etc.
+        kind: Whether this schema is a drive, clamping, input processor, sensor, etc.
 
     If *schema_name* is already registered, a warning is emitted and the
     existing entry is overwritten.
@@ -334,8 +336,8 @@ def parse_actuator_prim(prim, *, allow_unsafe_torch_checkpoints: bool = False) -
     """Parse a USD Actuator prim into a composed actuator specification.
 
     Each detected schema directly maps to a component class with its
-    extracted params. A joint parameter of an input processor (see
-    :attr:`~newton.actuators.InputProcessorBase.JOINT_PARAMS`) is read from
+    extracted params. A joint parameter of a sensor (see
+    :attr:`~newton.actuators.SensorBase.JOINT_PARAMS`) is read from
     the relationship of the same name, e.g. ``newton:outputJoint``.
     Returns ``None`` if the prim is not a ``NewtonActuator``.
 
@@ -354,7 +356,7 @@ def parse_actuator_prim(prim, *, allow_unsafe_torch_checkpoints: bool = False) -
             - has no authored ``newton:targets`` relationship,
             - the target prim does not exist or is not a
               ``PhysicsRevoluteJoint`` / ``PhysicsPrismaticJoint``,
-            - has multiple drive or motor schemas applied,
+            - has multiple drive, motor or sensor schemas applied,
             - has no drive schema, or
             - has a ``NewtonNeuralControlAPI`` with an unsupported model or an
               unapproved Torch checkpoint.
@@ -404,6 +406,7 @@ def _parse_actuator_prim(prim, allow_unsafe_torch_checkpoints: bool) -> Actuator
     drive_schema_registered = True
     component_specs: list[tuple[type, dict[str, Any]]] = []
     motor_class: type | None = None
+    sensor_class: type | None = None
     detected: list[str] = []
 
     for schema_name in get_applied_api_schemas(prim):
@@ -467,6 +470,13 @@ def _parse_actuator_prim(prim, allow_unsafe_torch_checkpoints: bool) -> Actuator
                         f"Actuator prim '{prim.GetPath()}' has multiple motors: {motor_class.__name__} and {cls.__name__}"
                     )
                 motor_class = cls
+            if entry.kind is ComponentKind.SENSOR:
+                if sensor_class is not None:
+                    raise ValueError(
+                        f"Actuator prim '{prim.GetPath()}' has multiple sensors: "
+                        f"{sensor_class.__name__} and {cls.__name__}"
+                    )
+                sensor_class = cls
             component_specs.append((cls, kwargs))
 
     if drive_class is None:

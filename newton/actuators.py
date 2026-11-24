@@ -4,8 +4,8 @@
 """GPU-accelerated actuator models for physics simulations.
 
 This module provides a modular library of actuator components — drives,
-clamping, motors, and input processors such as delay — that compute joint effort from simulation state and
-control targets. Components are composed into an :class:`Actuator` instance
+clamping, motors, input processors such as delay, sensors and transmissions — that compute joint effort from
+simulation state and control targets. Components are composed into an :class:`Actuator` instance
 and registered with :meth:`~newton.ModelBuilder.add_actuator` during model
 construction.
 
@@ -39,10 +39,11 @@ from ._src.actuators import (
     DrivePID,
     InputProcessorBase,
     InputProcessorDelay,
-    InputProcessorEncoder,
     JointSpaceResponse,
     MotorDC,
     SchemaNames,
+    SensorBase,
+    SensorEncoder,
     TransmissionBase,
     TransmissionDirect,
     TransmissionFixed,
@@ -73,10 +74,11 @@ __all__ = [
     "DrivePID",
     "InputProcessorBase",
     "InputProcessorDelay",
-    "InputProcessorEncoder",
     "JointSpaceResponse",
     "MotorDC",
     "SchemaNames",
+    "SensorBase",
+    "SensorEncoder",
     "TransmissionBase",
     "TransmissionDirect",
     "TransmissionFixed",

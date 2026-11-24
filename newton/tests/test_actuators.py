@@ -46,9 +46,9 @@ from newton.actuators import (
     DrivePID,
     InputProcessorBase,
     InputProcessorDelay,
-    InputProcessorEncoder,
     JointSpaceResponse,
     MotorDC,
+    SensorEncoder,
     TransmissionFixed,
     parse_actuator_prim,
     parse_battery_prim,
@@ -342,8 +342,6 @@ def _delay_inputs(target_pos, target_vel, indices, feedforward=None):
         vel_indices=indices,
         target_pos_indices=indices,
         target_vel_indices=indices,
-        sim_positions=zeros,
-        sim_velocities=zeros,
     )
 
 
@@ -2790,7 +2788,7 @@ class TestMotorDC(unittest.TestCase):
     def test_battery_supply(self):
         """Each servo reads the voltage its battery dropped to under the previous step's current.
 
-        Per world, the knee servo, which has an encoder, and an
+        Per world, the knee servo, which has a sensor, and an
         ankle servo share battery 0, and a second ankle servo draws from
         battery 1. The knee is its own actuator group and the ankle servos
         share one, so a battery spans groups and two servos of one group act
@@ -2829,7 +2827,7 @@ class TestMotorDC(unittest.TestCase):
         knee_servo = template.add_actuator(
             DrivePD,
             index=knee,
-            input_processors=[(InputProcessorEncoder, {"output_joint": "backlash"})],
+            sensor=(SensorEncoder, {"output_joint": "backlash"}),
             **servo,
         )
         ankle_servos = [template.add_actuator(DrivePD, index=ankle, **servo) for _ in range(2)]
@@ -3046,19 +3044,15 @@ class TestInputProcessors(unittest.TestCase):
         builder.add_world(template)
         builder.begin_world()
         builder.add_builder(template)
-        builder.add_actuator(DrivePD, index=1, kp=1.0, input_processors=[(InputProcessorEncoder, {"output_joint": 1})])
+        builder.add_actuator(DrivePD, index=1, kp=1.0, sensor=(SensorEncoder, {"output_joint": 1}))
 
         with self.assertRaisesRegex(ValueError, "DOF index 0 belongs to world 0"):
             builder.add_actuator(DrivePD, index=0, kp=1.0)
         with self.assertRaisesRegex(ValueError, "joint index 0 belongs to world 0"):
-            builder.add_actuator(
-                DrivePD, index=1, kp=1.0, input_processors=[(InputProcessorEncoder, {"output_joint": 0})]
-            )
+            builder.add_actuator(DrivePD, index=1, kp=1.0, sensor=(SensorEncoder, {"output_joint": 0}))
         slider = builder.add_joint_prismatic(parent=-1, child=builder.add_link(), axis=newton.Axis.Z)
         with self.assertRaisesRegex(ValueError, "must have the type of the actuated joint"):
-            builder.add_actuator(
-                DrivePD, index=1, kp=1.0, input_processors=[(InputProcessorEncoder, {"output_joint": slider})]
-            )
+            builder.add_actuator(DrivePD, index=1, kp=1.0, sensor=(SensorEncoder, {"output_joint": slider}))
         with self.assertRaisesRegex(ValueError, "add a transmission"):
             builder.add_actuator(DrivePD, index=[1, builder.joint_qd_start[slider]], kp=1.0)
 
@@ -3080,30 +3074,35 @@ class TestInputProcessors(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "_RemapVelocityIndices.process"):
             actuator.step(state, control, dt=0.01)
 
+
+class TestSensors(unittest.TestCase):
+    """Sensors measuring the joint positions before the transmission."""
+
     def test_backlash_drive_reads_link_side_joint(self):
         """The drive sees actuated + backlash joint position and the actuated velocity, in every replicated world.
 
-        A processor that replaces ``positions`` runs first, so the backlash
-        joint must be read from the unprocessed simulation arrays.
+        The sensor runs before the input processors, so a processor that
+        scales the positions scales the measured position. A free base makes
+        the ``joint_q`` and ``joint_qd`` offsets of each world differ. Implicit
+        mode accepts the sensor with a warning.
         """
         kp, kd, target, scale = 10.0, 2.0, 1.0, 2.0
         template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-        motor = template.add_link(mass=1.0, inertia=_POINT_MASS_INERTIA)
-        output = template.add_link(mass=1.0, inertia=_POINT_MASS_INERTIA)
-        j_motor = template.add_joint_revolute(parent=-1, child=motor, axis=newton.Axis.Z)
+        base, motor, output = (template.add_link(mass=1.0, inertia=_POINT_MASS_INERTIA) for _ in range(3))
+        j_base = template.add_joint_free(base)
+        j_motor = template.add_joint_revolute(parent=base, child=motor, axis=newton.Axis.Z)
         j_backlash = template.add_joint_revolute(
             parent=motor, child=output, axis=newton.Axis.Z, limit_lower=-0.05, limit_upper=0.05, label="backlash"
         )
-        template.add_articulation([j_motor, j_backlash])
+        template.add_articulation([j_base, j_motor, j_backlash])
         template.add_actuator(
             DrivePD,
             index=template.joint_qd_start[j_motor],
+            pos_index=template.joint_q_start[j_motor],
             kp=kp,
             kd=kd,
-            input_processors=[
-                (_ScalePositions, {"scale": scale}),
-                (InputProcessorEncoder, {"output_joint": "backlash"}),
-            ],
+            sensor=(SensorEncoder, {"output_joint": "backlash"}),
+            input_processors=[(_ScalePositions, {"scale": scale})],
         )
 
         builder = newton.ModelBuilder()
@@ -3111,8 +3110,15 @@ class TestInputProcessors(unittest.TestCase):
         model = builder.finalize()
         state = model.state()
         control = model.control()
-        q = np.array([0.3, 0.04, -0.2, -0.05], dtype=np.float32)
-        qd = np.array([0.5, 0.1, -1.0, 0.2], dtype=np.float32)
+        worlds = np.arange(2)
+        motor_q = worlds * template.joint_coord_count + template.joint_q_start[j_motor]
+        backlash_q = worlds * template.joint_coord_count + template.joint_q_start[j_backlash]
+        motor_qd = worlds * template.joint_dof_count + template.joint_qd_start[j_motor]
+        backlash_qd = worlds * template.joint_dof_count + template.joint_qd_start[j_backlash]
+        q = state.joint_q.numpy()
+        q[motor_q], q[backlash_q] = [0.3, -0.2], [0.04, -0.05]
+        qd = np.zeros(model.joint_dof_count, dtype=np.float32)
+        qd[motor_qd], qd[backlash_qd] = [0.5, -1.0], [0.1, 0.2]
         state.joint_q.assign(q)
         state.joint_qd.assign(qd)
         control.joint_target_q.fill_(target)
@@ -3120,9 +3126,62 @@ class TestInputProcessors(unittest.TestCase):
         actuator = model.actuators[0]
         actuator.step(state, control, dt=0.01)
 
-        expected = [kp * (target - (scale * q[w] + q[w + 1])) - kd * qd[w] for w in (0, 2)]
-        np.testing.assert_allclose(control.joint_f.numpy()[[0, 2]], expected, rtol=1e-5)
-        np.testing.assert_array_equal(control.joint_f.numpy()[[1, 3]], [0.0, 0.0])
+        expected = np.zeros(model.joint_dof_count)
+        expected[motor_qd] = kp * (target - scale * (q[motor_q] + q[backlash_q])) - kd * qd[motor_qd]
+        np.testing.assert_allclose(control.joint_f.numpy(), expected, rtol=1e-5, atol=1e-6)
+        with self.assertWarnsRegex(NewtonWarning, "SensorEncoder"):
+            actuator.set_effort_mode_implicit(JointSpaceResponse(model))
+
+    def test_gear_reads_measured_position_in_actuator_units(self):
+        """With gears, the drive reads the measured joint positions in actuator units, in every replicated world.
+
+        The actuator drives the motor joint with gear 3 and a second joint
+        with gear -2, and the sensor adds the backlash joint to the motor
+        joint: ``s = 3 (q_motor + q_backlash) - 2 q_other`` and
+        ``ṡ = 3 q̇_motor - 2 q̇_other``. In world 0, the motor joint at 0.1 rad,
+        the backlash joint at 0.02 rad and the motor joint velocity 0.5 rad/s
+        give ``s = 0.36`` and ``ṡ = 1.5``; the PD effort
+        10 · (1 - 0.36) - 2 · 1.5 = 3.4 reaches the motor joint as 10.2 N·m
+        and the second joint as -6.8 N·m.
+        """
+        kp, kd = 10.0, 2.0
+        gear = np.array([3.0, -2.0])
+        template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        motor, output, other = (template.add_link(mass=1.0, inertia=_POINT_MASS_INERTIA) for _ in range(3))
+        j_motor = template.add_joint_revolute(parent=-1, child=motor, axis=newton.Axis.Z)
+        j_backlash = template.add_joint_revolute(
+            parent=motor, child=output, axis=newton.Axis.Z, limit_lower=-0.05, limit_upper=0.05, label="backlash"
+        )
+        j_other = template.add_joint_revolute(parent=motor, child=other, axis=newton.Axis.Z)
+        template.add_articulation([j_motor, j_backlash, j_other])
+        template.add_actuator(
+            DrivePD,
+            index=[template.joint_qd_start[j_motor], template.joint_qd_start[j_other]],
+            kp=kp,
+            kd=kd,
+            sensor=(SensorEncoder, {"output_joint": "backlash"}),
+            transmission=(TransmissionFixed, {"gear": gear.tolist()}),
+        )
+
+        builder = newton.ModelBuilder()
+        builder.replicate(template, 2)
+        model = builder.finalize()
+        state, control = model.state(), model.control()
+        q = np.array([[0.1, 0.02, 0.0], [-0.2, -0.03, 0.1]], dtype=np.float32)
+        qd = np.array([[0.5, 0.1, 0.0], [-1.0, 0.3, 0.4]], dtype=np.float32)
+        target = np.array([1.0, 0.5], dtype=np.float32)
+        state.joint_q.assign(q.ravel())
+        state.joint_qd.assign(qd.ravel())
+        control.actuator_target_pos.assign(target)
+
+        model.actuators[0].step(state, control, dt=0.01)
+
+        s = gear[0] * (q[:, 0] + q[:, 1]) + gear[1] * q[:, 2]
+        s_dot = gear[0] * qd[:, 0] + gear[1] * qd[:, 2]
+        tau = kp * (target - s) - kd * s_dot
+        expected = np.stack([gear[0] * tau, np.zeros(2), gear[1] * tau], axis=1)
+        np.testing.assert_allclose(tau[0], 3.4, rtol=1e-5)
+        np.testing.assert_allclose(control.joint_f.numpy(), expected.ravel(), rtol=1e-5, atol=1e-6)
 
 
 class TestTransmission(unittest.TestCase):
@@ -5671,7 +5730,7 @@ class TestActuatorBuilder(unittest.TestCase):
           toe_actuator: fixed supply vin = 5 V, max duty 0.5
         The motor, processor and battery tokens may have no registered USD
         schema, so they must be found next to the registered schemas. The
-        knee is its own actuator group because of its encoder and
+        knee is its own actuator group because of its sensor and
         reads ``q_knee + q_backlash``. Battery has no ``newton:minVoltage``,
         and SpareBattery has no actuators, so it is not imported.
         """
@@ -5686,9 +5745,7 @@ class TestActuatorBuilder(unittest.TestCase):
         builder.replicate(template, 2)
         model = builder.finalize()
 
-        ankle_and_toe = next(
-            a for a in model.actuators if not any(isinstance(p, InputProcessorEncoder) for p in a.input_processors)
-        )
+        ankle_and_toe = next(a for a in model.actuators if a.sensor is None)
         limiter = next(c for c in ankle_and_toe.clamping if isinstance(c, ClampingCurrentDuty))
         np.testing.assert_allclose(limiter.kt_estimate.numpy(), [0.0, 0.8, 0.0, 0.8])
         np.testing.assert_allclose(limiter.resistance_estimate.numpy(), [0.0, 3.0, 0.0, 3.0])

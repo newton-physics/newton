@@ -21,10 +21,10 @@ from .drives import (
 from .input_processors import (
     InputProcessorBase,
     InputProcessorDelay,
-    InputProcessorEncoder,
 )
 from .joint_space_response import JointSpaceResponse
 from .motor_dc import MotorDC
+from .sensors import SensorBase, SensorEncoder
 from .space import DriveOutputSpace
 from .transmissions import TransmissionBase, TransmissionDirect, TransmissionFixed
 from .usd_parser import (
@@ -58,10 +58,11 @@ __all__ = [
     "DrivePID",
     "InputProcessorBase",
     "InputProcessorDelay",
-    "InputProcessorEncoder",
     "JointSpaceResponse",
     "MotorDC",
     "SchemaNames",
+    "SensorBase",
+    "SensorEncoder",
     "TransmissionBase",
     "TransmissionDirect",
     "TransmissionFixed",

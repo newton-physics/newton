@@ -2842,6 +2842,7 @@ def parse_usd(
     # Parse Newton actuator prims from the USD stage.
     from ..actuators.input_processors.base import InputProcessorBase  # noqa: PLC0415
     from ..actuators.motor_dc import MotorDC  # noqa: PLC0415
+    from ..actuators.sensors.base import SensorBase  # noqa: PLC0415
     from ..actuators.usd_parser import BatteryParsed, _parse_actuator_prim, parse_battery_prim  # noqa: PLC0415
 
     batteries: dict[str, BatteryParsed] = {}
@@ -2893,19 +2894,23 @@ def parse_usd(
         input_processor_specs = []
         clamping_specs = []
         motor_spec = None
+        sensor_spec = None
         for comp_class, comp_kwargs in parsed.component_specs:
-            if issubclass(comp_class, InputProcessorBase):
-                proc_kwargs = dict(comp_kwargs)
+            if issubclass(comp_class, SensorBase):
+                sensor_kwargs = dict(comp_kwargs)
                 for name in comp_class.JOINT_PARAMS:
-                    path = proc_kwargs.get(name)
+                    path = sensor_kwargs.get(name)
                     if isinstance(path, str):
                         if path not in path_joint_map:
                             raise ValueError(
                                 f"Actuator prim {prim.GetPath()}: '{name}' references '{path}', "
                                 "which is not a known joint"
                             )
-                        proc_kwargs[name] = path_joint_map[path]
-                input_processor_specs.append((comp_class, proc_kwargs))
+                        sensor_kwargs[name] = path_joint_map[path]
+                resolved_sensor = comp_class.resolve_arguments(sensor_kwargs)
+                sensor_spec = (comp_class, {k: v for k, v in sensor_kwargs.items() if k in resolved_sensor})
+            elif issubclass(comp_class, InputProcessorBase):
+                input_processor_specs.append((comp_class, dict(comp_kwargs)))
             elif issubclass(comp_class, MotorDC):
                 motor_spec = (comp_class, dict(comp_kwargs))
             else:
@@ -2931,6 +2936,7 @@ def parse_usd(
             pos_index=pos_index,
             input_processors=input_processor_specs,
             motor=motor_spec,
+            sensor=sensor_spec,
             **drive_kwargs,
         )
         if battery_path is not None:
