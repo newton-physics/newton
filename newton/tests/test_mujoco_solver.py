@@ -7111,6 +7111,34 @@ class TestMuJoCoConversion(unittest.TestCase):
         self.assertEqual(solver.mj_model.geom_type[0], mujoco.mjtGeom.mjGEOM_MESH)
         self.assertEqual(solver.mjw_model.geom_type.numpy()[0], mujoco.mjtGeom.mjGEOM_MESH)
 
+    def test_inertia_rounded_past_triangle_inequality_compiles(self):
+        """Export principal moments that miss A + B >= C by float32 rounding, which Newton accepts."""
+        a, b = np.float32(12.814079), np.float32(32.290901)
+        eps = np.finfo(np.float32).eps
+        # A plate, C = A + B, where float32 rounds C one step up.
+        plate = np.diag([a, b, np.nextafter(a + b, np.float32(np.inf))])
+        # Off-diagonal terms that differ by one float32 step. Newton checks their average and keeps the tensor.
+        # MuJoCo reads only the upper term, so its moments miss A + B >= C.
+        skewed = np.array([[2.0, 1.0 + eps, 0.0], [1.0, 2.0, 0.0], [0.0, 0.0, 2.0]], dtype=np.float32)
+        # The plate in random axes, so it exports as fullinertia. A fixed seed keeps the test repeatable.
+        rotation = np.linalg.qr(np.random.default_rng(3).normal(size=(3, 3)))[0]
+        rotated = (rotation @ plate.astype(np.float64) @ rotation.T).astype(np.float32)
+        # A plate tilted about x with exact moments 150 + 196 = 346. numpy finds no excess, but mju_eig3 does.
+        tilted = np.array([[150.0, 0.0, 0.0], [0.0, 292.0, -72.0], [0.0, -72.0, 250.0]], dtype=np.float32)
+        for inertia in (plate, skewed, rotated, tilted):
+            with self.subTest(inertia=inertia.tolist()):
+                builder = newton.ModelBuilder()
+                body = builder.add_link(mass=1.0, inertia=wp.mat33(inertia))
+                builder.add_articulation([builder.add_joint_free(body)])
+
+                solver = SolverMuJoCo(builder.finalize(device="cpu"))
+
+                np.testing.assert_allclose(
+                    np.sort(solver.mj_model.body_inertia[1]),
+                    np.linalg.eigvalsh(inertia.astype(np.float64), UPLO="U"),
+                    rtol=1.0e-6,
+                )
+
     def test_cone_runtime_resize_is_rejected(self):
         """Reject cone resizing because its MuJoCo mesh is compiled during construction."""
         for use_mujoco_cpu in (False, True):
