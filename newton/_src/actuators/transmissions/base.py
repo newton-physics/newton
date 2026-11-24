@@ -26,8 +26,9 @@ class TransmissionBase:
     by default the same DOFs.
 
     Both maps must be consistent, so that the actuator effort times the
-    actuator velocity equals the summed joint effort times joint velocity.
-    For example, with a gear ratio of 3, a joint at 0.1 rad is a motor at
+    actuator velocity equals the summed joint effort times joint velocity,
+    unless the transmission models losses, which only reduce the joint
+    effort. For example, with a gear ratio of 3, a joint at 0.1 rad is a motor at
     0.3 rad, and a clamp limit of 2 N·m allows 6 N·m at the joint.
 
     Subclasses must override :meth:`resolve_arguments`, :meth:`compute_state`

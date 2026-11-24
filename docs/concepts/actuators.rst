@@ -40,7 +40,7 @@ effort at its end; the others are applied in this order:
    │   └── SensorEncoder           (position encoder behind a passive output joint)
    ├── Transmission  (maps the joints onto one actuator coordinate, and the effort back)
    │   ├── TransmissionDirect      (default: the actuator is its single joint)
-   │   └── TransmissionFixed       (constant gear ratio per joint)
+   │   └── TransmissionFixed       (constant gear ratio and efficiency per joint)
    ├── InputProcessor[]  (optional: transforms state and command inputs)
    │   └── InputProcessorDelay       (delays command inputs by N actuator timesteps)
    ├── Drive      (control law that computes raw effort, or the motor command)
@@ -64,7 +64,8 @@ effort at its end; the others are applied in this order:
    (:attr:`Actuator.indices`) onto one **actuator coordinate**, e.g. the motor
    angle behind a gearbox or the mean finger position of a gripper, and maps
    the actuator effort onto the joints in :attr:`Actuator.effort_indices`, by
-   default the same DOFs, with the same ratios, so that power is conserved.
+   default the same DOFs, with the same ratios, so that power is conserved
+   unless the transmission models losses.
    The default, :class:`TransmissionDirect`, makes the actuator its single
    joint.
 
@@ -107,7 +108,8 @@ effort at its end; the others are applied in this order:
 An actuator drives one or more joints (:attr:`Actuator.indices`, shape
 ``(joints, N)``) and works with one **actuator coordinate** ``s`` per
 actuator.  With :class:`TransmissionFixed`, ``s = Σ gear·q`` and joint ``j``
-receives ``gear_j · τ``.  The drive, its targets and gains, the clamps and the
+receives ``efficiency_j · gear_j · τ``, with ``efficiency`` 1 by default; the
+efficiency scales only the effort.  The drive, its targets and gains, the clamps and the
 motor all work in actuator units, as in MuJoCo.  For example, with
 ``gear=3``, a joint at 0.1 rad is an actuator at 0.3; a PD drive with
 ``kp=10`` and target 0.6 computes ``10 · (0.6 - 0.3) = 3`` at rest and the joint
@@ -841,9 +843,13 @@ Transmissions
 ^^^^^^^^^^^^^
 
 * :class:`TransmissionDirect` — default: the actuator is its single joint.
-* :class:`TransmissionFixed` — constant gear ratio per joint, e.g.
+* :class:`TransmissionFixed` — constant gear ratio and efficiency per joint,
+  e.g.
   ``add_actuator(DrivePD, index=[left, right], transmission=(TransmissionFixed, {"gear": [0.5, 0.5]}))``
-  for a gripper.  Not supported in implicit mode.
+  for a gripper, or ``{"gear": 3.0, "efficiency": 0.8}`` for a gearbox that
+  loses 20 % of the power.  The efficiency is constant and does not depend
+  on the direction of the power flow, so back-driving losses are not
+  modeled.  Not supported in implicit mode.
 
 Motors
 ^^^^^^

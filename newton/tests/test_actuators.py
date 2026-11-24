@@ -3188,16 +3188,23 @@ class TestTransmission(unittest.TestCase):
     """Transmissions mapping actuator effort onto several DOFs."""
 
     def test_fixed_transmission_fans_effort_out(self):
-        """Fan applied and raw effort out to every driven DOF by its gear, and refuse implicit mode."""
+        """Fan applied and raw effort out to every driven DOF by its gear and efficiency, and refuse implicit mode.
+
+        The joints at 0.1 and 0.2 give ``s = 3 · 0.1 - 0.5 · 0.2 = 0.2``, unscaled
+        by the efficiency, so the raw effort is 2 · (1 - 0.2) = 1.6 and the
+        applied effort is clamped to 1.
+        """
         actuator = Actuator(
             indices=wp.array([[0], [2]], dtype=wp.uint32),
             drive=DrivePD(kp=wp.full(1, 2.0, dtype=float), kd=wp.zeros(1, dtype=float)),
             clamping=[ClampingMaxEffort(max_effort=wp.full(1, 1.0, dtype=float))],
-            transmission=TransmissionFixed(gear=wp.array([[3.0], [-0.5]], dtype=float)),
+            transmission=TransmissionFixed(
+                gear=wp.array([[3.0], [-0.5]], dtype=float), efficiency=wp.array([[0.5], [0.8]], dtype=float)
+            ),
             actuator_indices=wp.array([0], dtype=wp.uint32),
             control_computed_output_attr="raw_effort",
         )
-        state = types.SimpleNamespace(joint_q=wp.zeros(3, dtype=float), joint_qd=wp.zeros(3, dtype=float))
+        state = types.SimpleNamespace(joint_q=wp.array([0.1, 0.0, 0.2], dtype=float), joint_qd=wp.zeros(3, dtype=float))
         control = types.SimpleNamespace(
             actuator_target_pos=wp.full(1, 1.0, dtype=float),
             actuator_target_vel=wp.zeros(1, dtype=float),
@@ -3207,8 +3214,8 @@ class TestTransmission(unittest.TestCase):
         )
         actuator.step(state, control, dt=0.01)
 
-        np.testing.assert_allclose(control.joint_f.numpy(), [3.0, 0.0, -0.5], rtol=1e-6)
-        np.testing.assert_allclose(control.raw_effort.numpy(), [6.0, 0.0, -1.0], rtol=1e-6)
+        np.testing.assert_allclose(control.joint_f.numpy(), [1.5, 0.0, -0.4], rtol=1e-6)
+        np.testing.assert_allclose(control.raw_effort.numpy(), [2.4, 0.0, -0.64], rtol=1e-5)
         with self.assertRaisesRegex(NotImplementedError, "TransmissionFixed"):
             actuator.set_effort_mode_implicit(None)
 
@@ -3247,7 +3254,7 @@ class TestTransmission(unittest.TestCase):
         np.testing.assert_allclose(control.joint_f.numpy()[dofs], [2.0, 6.0], rtol=1e-6)
 
     def test_add_actuator_builds_transmission_in_every_world(self):
-        """Offset transmission DOFs per world, and group actuators with and without a transmission separately."""
+        """Offset transmission DOFs per world, group by transmission, and apply one efficiency to all joints."""
         template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         joints = []
         for _ in range(3):
@@ -3258,9 +3265,11 @@ class TestTransmission(unittest.TestCase):
             DrivePD,
             index=[1, 2],
             kp=2.0,
-            transmission=(TransmissionFixed, {"gear": [0.5, -1.0]}),
+            transmission=(TransmissionFixed, {"gear": [0.5, -1.0], "efficiency": 0.5}),
         )
         template.add_actuator(DrivePD, index=0, kp=1.0)
+        with self.assertRaisesRegex(ValueError, "efficiency must be in"):
+            template.add_actuator(DrivePD, index=0, transmission=(TransmissionFixed, {"efficiency": 1.5}))
 
         builder = newton.ModelBuilder()
         builder.replicate(template, 2)
@@ -3273,7 +3282,7 @@ class TestTransmission(unittest.TestCase):
             actuator.step(state, control, dt=0.01)
 
         self.assertEqual(len(model.actuators), 2)
-        np.testing.assert_allclose(control.joint_f.numpy(), [1.0, 1.0, -2.0] * 2, rtol=1e-6)
+        np.testing.assert_allclose(control.joint_f.numpy(), [1.0, 0.5, -1.0] * 2, rtol=1e-6)
 
 
 # ---------------------------------------------------------------------------
