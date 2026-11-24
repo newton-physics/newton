@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import gc
+import inspect
 import logging
 import math
 from collections.abc import Sequence
@@ -1601,6 +1602,9 @@ _ITERATIVE_LINEAR_SOLVERS = {
     "generalized-minimal-residual": gmres,
 }
 
+# Warp 1.20 renamed `use_cuda_graph` to `use_graph`; remove once Newton requires Warp 1.20.
+_USE_GRAPH_KWARG = "use_graph" if "use_graph" in inspect.signature(cg).parameters else "use_cuda_graph"
+
 _RHEOLOGY_SOLVERS = {
     "gauss-seidel": _GaussSeidelSolver,
     "gauss-seidel-soa": _ReorderedGaussSeidelSolver,
@@ -1761,13 +1765,13 @@ class _LinearSolver:
                     tol=tol,
                     maxiter=max_iterations,
                     check_every=0 if use_graph else 10,
-                    use_cuda_graph=use_graph,
+                    **{_USE_GRAPH_KWARG: use_graph},
                 )
         finally:
             if is_batched:
                 self._scale_batched_system(tolerance_scale, inverse=False)
 
-        # With use_cuda_graph=True the solver returns end_iter and residual as
+        # With graph capture the solver returns end_iter and residual as
         # device arrays so the caller need not synchronize. Read them back only
         # for the verbose report, and never while an outer capture is recording:
         # a device-to-host copy there serializes the capturing stream (CUDA
