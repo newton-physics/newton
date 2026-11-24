@@ -126,7 +126,7 @@ def _step(model, solver, steps=1, dt=1.0 / 240.0):
     state_0, state_1 = model.state(), model.state()
     newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
     # Sorted contacts, so solvers compared on separate pipelines see the same rows in the same order.
-    pipeline = newton.CollisionPipeline(model, deterministic=True)
+    pipeline = newton.CollisionPipeline(model, deterministic=wp.DeterministicMode.RUN_TO_RUN)
     contacts = pipeline.contacts()
     control = model.control()
     for _ in range(steps):
@@ -246,7 +246,7 @@ def test_captured_steps_match_eager(test, device):
     for response in RESPONSES:
         with test.subTest(response=response):
             model = _scene(device, "floating")
-            pipeline = newton.CollisionPipeline(model, deterministic=True)
+            pipeline = newton.CollisionPipeline(model, deterministic=wp.DeterministicMode.RUN_TO_RUN)
             contacts = pipeline.contacts()
             control = model.control()
 
@@ -790,7 +790,7 @@ def _run_lockstep(model, response, n_steps, *, cache_max_bodies: int = 8, **solv
     control = model.control()
     state_in.joint_qd.assign(_seed_joint_qd(model))
     newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
-    collision_pipeline = newton.CollisionPipeline(model, deterministic=True)
+    collision_pipeline = newton.CollisionPipeline(model, deterministic=wp.DeterministicMode.RUN_TO_RUN)
     contacts = collision_pipeline.contacts()
 
     stats = _LockstepStats()
@@ -849,7 +849,7 @@ def _step_cached(model, steps):
     control = model.control()
     state_in.joint_qd.assign(_seed_joint_qd(model))
     newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
-    collision_pipeline = newton.CollisionPipeline(model, deterministic=True)
+    collision_pipeline = newton.CollisionPipeline(model, deterministic=wp.DeterministicMode.RUN_TO_RUN)
     contacts = collision_pipeline.contacts()
     for _ in range(steps):
         state_in.clear_forces()
@@ -1023,7 +1023,7 @@ def test_captured_cached_response_matches_eager(test, device):
             state_0, state_1 = model.state(), model.state()
             state_0.joint_qd.assign(_seed_joint_qd(model))
             newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
-            pipeline = newton.CollisionPipeline(model, deterministic=True)
+            pipeline = newton.CollisionPipeline(model, deterministic=wp.DeterministicMode.RUN_TO_RUN)
             contacts = pipeline.contacts()
             control = model.control()
 
@@ -1123,7 +1123,9 @@ def _combination_solver(model, **kwargs):
 
 
 def _pipeline(model, warmstart=False):
-    return newton.CollisionPipeline(model, deterministic=True, contact_matching="latest" if warmstart else "disabled")
+    return newton.CollisionPipeline(
+        model, deterministic=wp.DeterministicMode.RUN_TO_RUN, contact_matching="latest" if warmstart else "disabled"
+    )
 
 
 def _settled_state(model, steps):
@@ -1438,7 +1440,7 @@ def _rollout(model, solver, joint_qd, steps):
     control = model.control()
     state_0.joint_qd.assign(joint_qd)
     newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
-    pipeline = newton.CollisionPipeline(model, deterministic=True)
+    pipeline = newton.CollisionPipeline(model, deterministic=wp.DeterministicMode.RUN_TO_RUN)
     contacts = pipeline.contacts()
     for _ in range(steps):
         pipeline.collide(state_0, contacts)
@@ -1520,7 +1522,7 @@ def test_graph_replay_matches_eager_steps(test, device):
             control = model.control()
             state.joint_qd.assign(np.array([-1.0], dtype=np.float32))
             newton.eval_fk(model, state.joint_q, state.joint_qd, state)
-            pipeline = newton.CollisionPipeline(model, deterministic=True)
+            pipeline = newton.CollisionPipeline(model, deterministic=wp.DeterministicMode.RUN_TO_RUN)
             contacts = pipeline.contacts()
             pipeline.collide(state, contacts)
             solver.step(state, output, control, contacts, DT)
@@ -1967,7 +1969,9 @@ def _colored_variant_solver(model, regularization, **overrides):
 def _settled_heap(device, regularization):
     """A heap settled into resting contact with patch history, and its contacts."""
     model = _heap(device)
-    pipeline = newton.CollisionPipeline(model, rigid_contact_max=CONTACT_MAX, deterministic=True)
+    pipeline = newton.CollisionPipeline(
+        model, rigid_contact_max=CONTACT_MAX, deterministic=wp.DeterministicMode.RUN_TO_RUN
+    )
     contacts = pipeline.contacts()
     control = model.control()
     state_0, state_1 = model.state(), model.state()
@@ -2082,7 +2086,9 @@ def _colored_solver(model, **kwargs):
 
 
 def _settle(model, solver, steps=12):
-    pipeline = newton.CollisionPipeline(model, rigid_contact_max=CONTACT_MAX, deterministic=True)
+    pipeline = newton.CollisionPipeline(
+        model, rigid_contact_max=CONTACT_MAX, deterministic=wp.DeterministicMode.RUN_TO_RUN
+    )
     contacts = pipeline.contacts()
     state_0, state_1 = model.state(), model.state()
     control = model.control()
@@ -2518,7 +2524,7 @@ def test_mixed_units_match_serial_propagation(test, device):
         solver = _unit_capacity_solver(model, response)
         state_in, state_out = model.state(), model.state()
         _seed(model, state_in)
-        pipeline = newton.CollisionPipeline(model, broad_phase="nxn", deterministic=True)
+        pipeline = newton.CollisionPipeline(model, broad_phase="nxn", deterministic=wp.DeterministicMode.RUN_TO_RUN)
         runs[response] = (solver, state_in, state_out, pipeline, pipeline.contacts())
     control = model.control()
     for step in range(4):
@@ -2549,7 +2555,7 @@ def test_mixed_units_graph_matches_eager(test, device):
         solver = _unit_capacity_solver(model, "colored")
         state, output = model.state(), model.state()
         _seed(model, state)
-        pipeline = newton.CollisionPipeline(model, broad_phase="nxn", deterministic=True)
+        pipeline = newton.CollisionPipeline(model, broad_phase="nxn", deterministic=wp.DeterministicMode.RUN_TO_RUN)
         contacts = pipeline.contacts()
         control = model.control()
 
@@ -3218,7 +3224,7 @@ def _schedule_solver(model, **kwargs):
 def _schedule_step(model, solver, steps=1):
     state_0, state_1 = model.state(), model.state()
     newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
-    pipeline = newton.CollisionPipeline(model, deterministic=True)
+    pipeline = newton.CollisionPipeline(model, deterministic=wp.DeterministicMode.RUN_TO_RUN)
     contacts = pipeline.contacts()
     control = model.control()
     for _ in range(steps):
@@ -3348,7 +3354,7 @@ def test_captured_schedules_match_eager(test, device):
                 solver = _schedule_solver(model, iterations=4, row_schedule=schedule)
                 state_0, state_1 = model.state(), model.state()
                 newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
-                pipeline = newton.CollisionPipeline(model, deterministic=True)
+                pipeline = newton.CollisionPipeline(model, deterministic=wp.DeterministicMode.RUN_TO_RUN)
                 contacts = pipeline.contacts()
                 control = model.control()
 

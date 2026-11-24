@@ -34,6 +34,7 @@ from ..geometry.contact_reduction_body_pairs import (
 )
 from ..geometry.contact_reduction_global import CONTACT_ID_BITS, MAX_GROUP_ID
 from ..geometry.contact_sort import ContactSorter
+from ..geometry.deterministic_mode import resolve_deterministic_mode
 from ..geometry.flags import MeshProperties, ShapeFlags
 from ..geometry.kernels import create_soft_contacts
 from ..geometry.narrow_phase import NarrowPhase, _PipelineNarrowPhase
@@ -1280,7 +1281,7 @@ def _resolve_auto_triangle_pairs(
     if has_reducer and deterministic and capacity > packing_limit:
         warnings.warn(
             f"CollisionPipeline estimated max_triangle_pairs={capacity:,} but deterministic contact reduction "
-            f"(deterministic=True or contact matching) supports at most {packing_limit:,}, so mesh contacts may "
+            f"(deterministic=RUN_TO_RUN or contact matching) supports at most {packing_limit:,}, so mesh contacts may "
             "be dropped. Split the worlds across pipelines, or disable determinism and contact matching if "
             "acceptable.",
             NewtonWarning,
@@ -1830,7 +1831,7 @@ class CollisionPipeline:
         narrow_phase: NarrowPhase | None = None,
         sdf_hydroelastic_config: HydroelasticSDF.Config | None = None,
         shape_pairs_max: int | None = None,
-        deterministic: bool = False,
+        deterministic: wp.DeterministicMode | None = None,
         contact_matching: Literal["disabled", "latest", "sticky"] = "disabled",
         contact_matching_pos_threshold: float = 0.0005,
         contact_matching_normal_dot_threshold: float = 0.995,
@@ -1879,7 +1880,7 @@ class CollisionPipeline:
                 even when ``model.shape_contact_pairs`` has already been built.
                 The estimate never falls below 1,000,000 and warns when its
                 buffers require at least 256 MiB. With deterministic contact
-                reduction (``deterministic=True`` or contact matching) it is
+                reduction (``deterministic=RUN_TO_RUN`` or contact matching) it is
                 limited to ``2**20 - 1`` and warns when that drops part of the
                 estimate. It is a heuristic that assumes small contact patches,
                 so dense meshes under convex shapes may still need an explicit
@@ -1953,14 +1954,27 @@ class CollisionPipeline:
                 ``"explicit"`` mode (which uses the filtered pair list
                 length directly) and for expert paths that pass a
                 pre-built ``narrow_phase``.
-            deterministic: Sort contacts after the narrow phase so that results
-                are independent of GPU thread scheduling. This also enables
-                deterministic hydroelastic accumulation and contact allocation.
-                Adds a radix sort + gather pass. Limits the shape count; see
-                :ref:`Deterministic Contacts`.
+            deterministic: Run-to-run determinism of contact generation and
+                ordering. Pass a :class:`warp.DeterministicMode`, or ``None``
+                (default) to inherit ``wp.config.deterministic``, which defaults
+                to ``NOT_GUARANTEED``. With ``RUN_TO_RUN`` contacts are sorted
+                after the narrow phase so that results are independent of GPU
+                thread scheduling, and hydroelastic accumulation and contact
+                allocation become deterministic. Adds a radix sort + gather
+                pass. Limits the shape count; see :ref:`Deterministic Contacts`.
+                ``GPU_TO_GPU`` is not supported: passing it raises
+                :class:`ValueError`, and an inherited one emits a
+                :class:`~newton.NewtonWarning` and runs ``RUN_TO_RUN``.
+                :attr:`deterministic` reports the mode that runs.
+
+                .. deprecated:: 1.9
+                    Passing a ``bool`` is deprecated; pass
+                    ``wp.DeterministicMode.RUN_TO_RUN`` for ``True`` and
+                    ``wp.DeterministicMode.NOT_GUARANTEED`` for ``False``.
             contact_matching: Frame-to-frame contact matching mode.  One of
                 ``"disabled"``, ``"latest"``, or ``"sticky"``.  Any
-                non-disabled mode implies ``deterministic=True``, including
+                non-disabled mode implies
+                ``deterministic=wp.DeterministicMode.RUN_TO_RUN``, including
                 its shape-count limit, and populates
                 :attr:`Contacts.rigid_contact_match_index`.
                 Defaults to ``"disabled"``.
@@ -2057,9 +2071,11 @@ class CollisionPipeline:
                 f"got {speculative_contact_gap_max!r}"
             )
 
+        deterministic_mode = resolve_deterministic_mode(deterministic, "CollisionPipeline")
         # Any non-disabled matching mode implies deterministic sorting.
         if matching_enabled:
-            deterministic = True
+            deterministic_mode = wp.DeterministicMode.RUN_TO_RUN
+        deterministic = deterministic_mode != wp.DeterministicMode.NOT_GUARANTEED
 
         mode_from_broad_phase: str | None = None
         broad_phase_instance: BroadPhaseAllPairs | BroadPhaseSAP | BroadPhaseExplicit | None = None
@@ -2166,9 +2182,9 @@ class CollisionPipeline:
 
             if deterministic and not narrow_phase.deterministic:
                 raise ValueError(
-                    "CollisionPipeline(deterministic=True) requires a deterministic "
+                    "CollisionPipeline(deterministic=RUN_TO_RUN) requires a deterministic "
                     "NarrowPhase. Either omit narrow_phase or construct it with "
-                    "deterministic=True."
+                    "deterministic=wp.DeterministicMode.RUN_TO_RUN."
                 )
             if bool(getattr(narrow_phase, "speculative", False)) != self._speculative_enabled:
                 raise ValueError(
@@ -2240,7 +2256,7 @@ class CollisionPipeline:
                 model,
                 config=sdf_hydroelastic_config,
                 writer_func=contact_writer,
-                deterministic=deterministic,
+                deterministic=deterministic_mode,
                 shape_pairs_filtered=self.shape_pairs_filtered,
             )
 
@@ -2547,7 +2563,7 @@ class CollisionPipeline:
                 mesh_sdf_identity_scale_only=mesh_sdf_identity_scale_only,
                 mesh_sdf_texture_only=mesh_sdf_texture_only,
                 sdf_texture_paired_samples=model._sdf_texture_paired_samples,
-                deterministic=deterministic,
+                deterministic=deterministic_mode,
                 contact_max=rigid_contact_max,
                 verify_buffers=verify_buffers,
                 contact_reduction_hashtable_size_factor=contact_reduction_hashtable_size_factor,
@@ -2735,7 +2751,7 @@ class CollisionPipeline:
                 "Soft contacts with requires_grad=True or enable_rigid_soft_full_surface_contact=True "
                 "do not support body variants."
             )
-        self.deterministic = deterministic
+        self._deterministic = deterministic_mode
         per_contact_props = self.narrow_phase.hydroelastic_sdf is not None
         if deterministic:
             with wp.ScopedDevice(device):
@@ -2840,6 +2856,16 @@ class CollisionPipeline:
         if group_count > MAX_GROUP_ID + 1:
             raise ValueError(f"body_pair_reduction supports at most {MAX_GROUP_ID + 1} groups, got {group_count}")
         self._body_pair_reducer.refresh_groups(shape_group, self.model)
+
+    @property
+    def deterministic(self) -> wp.DeterministicMode:
+        """Determinism mode this pipeline runs, fixed at construction.
+
+        ``RUN_TO_RUN`` or ``NOT_GUARANTEED``, after inheriting
+        ``wp.config.deterministic`` and applying the ``contact_matching``
+        implication and the ``GPU_TO_GPU`` fallback.
+        """
+        return self._deterministic
 
     @property
     def rigid_contact_max(self) -> int:
@@ -3148,9 +3174,9 @@ class CollisionPipeline:
                 pair_max = min(pair_max, contacts.rigid_contact_max)
             capacity = 2 * pair_max
             storage = contacts._mesh_recovery_contacts
-            if storage is None or storage.keys.shape[0] < capacity or storage.deterministic != self.deterministic:
+            if storage is None or storage.keys.shape[0] < capacity or storage.deterministic != bool(self.deterministic):
                 contacts._mesh_recovery_contacts = allocate_mesh_recovery(
-                    capacity, self.device, deterministic=self.deterministic
+                    capacity, self.device, deterministic=bool(self.deterministic)
                 )
             return contacts._mesh_recovery_contacts
         return None

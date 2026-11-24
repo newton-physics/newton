@@ -574,6 +574,9 @@ class CollisionPipelineUnifiedKamino:
             has_heightfields=_has_heightfields,
             # Kamino passes no support acceleration data, so skip compiling that path.
             convex_support_acceleration=False,
+            # Kamino's contact writer does not emit deterministic sort keys; keep the
+            # scheduling-order path regardless of wp.config.deterministic (see #5046).
+            deterministic=wp.DeterministicMode.NOT_GUARANTEED,
         )
 
         # Convert geometry data from Kamino to Newton format

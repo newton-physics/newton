@@ -188,7 +188,7 @@ def _run_star(model, solver, steps, *, contacts=False):
     state_0.joint_qd.assign(np.tile(np.linspace(0.1, -0.1, size, dtype=np.float32), model.world_count))
     newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
     control = model.control()
-    pipeline = newton.CollisionPipeline(model, deterministic=True) if contacts else None
+    pipeline = newton.CollisionPipeline(model, deterministic=wp.DeterministicMode.RUN_TO_RUN) if contacts else None
     collision = pipeline.contacts() if contacts else None
     history = []
     for _ in range(steps):

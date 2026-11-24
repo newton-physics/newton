@@ -491,7 +491,9 @@ class TestSolverObservables(unittest.TestCase):
         contacts = pipeline.contacts()
         with patch("newton._src.sim.collide.ContactSorter", side_effect=RuntimeError("sorter allocation failed")):
             with self.assertRaisesRegex(RuntimeError, "sorter allocation failed"):
-                newton.CollisionPipeline(self.model, rigid_contact_max=6, soft_contact_max=4, deterministic=True)
+                newton.CollisionPipeline(
+                    self.model, rigid_contact_max=6, soft_contact_max=4, deterministic=wp.DeterministicMode.RUN_TO_RUN
+                )
         self.assertEqual((self.model.rigid_contact_max, self.model.soft_contact_max), (5, 3))
         self.assertEqual(self.solver.observables(contacts=contacts, kinds=self.kinds).contact_f.shape, (8,))
 

@@ -1120,7 +1120,7 @@ Broad contact patches, ambiguous exits, and nearby features that intrude on the
 footprint use the ordinary manifold. The same fallback applies when the probe
 has more than 4,096 vertices or the swept query visits more than 128 wall
 triangles. The default recovery table can also fall back after 32 hash probes.
-With ``deterministic=True``, the table reserves space for all eligible pairs
+With ``deterministic=wp.DeterministicMode.RUN_TO_RUN``, the table reserves space for all eligible pairs
 and probes until it finds a slot. This keeps recovery contact selection
 repeatable within the collision buffer capacities. A complete crossing can
 leave the shapes separated, so no discrete overlap remains to recover.
@@ -2613,13 +2613,14 @@ Deterministic Contact Ordering
 ------------------------------
 
 GPU thread scheduling is non-deterministic, so the order in which contacts are
-written to the output buffer can vary between runs.  Pass ``deterministic=True``
-to :class:`~newton.CollisionPipeline` (or :class:`~newton.geometry.NarrowPhase`) to guarantee
-a reproducible contact order:
+written to the output buffer can vary between runs.  Pass
+``deterministic=wp.DeterministicMode.RUN_TO_RUN`` to :class:`~newton.CollisionPipeline`
+(or :class:`~newton.geometry.NarrowPhase`) to guarantee a reproducible contact order. Omitting
+``deterministic`` inherits ``wp.config.deterministic``, and passing a ``bool`` is deprecated:
 
 .. code-block:: python
 
-    pipeline = newton.CollisionPipeline(model, deterministic=True)
+    pipeline = newton.CollisionPipeline(model, deterministic=wp.DeterministicMode.RUN_TO_RUN)
 
 This enables two mechanisms:
 
@@ -2671,7 +2672,7 @@ in contact-buffer order when constructed with
 
 .. code-block:: python
 
-    pipeline = newton.CollisionPipeline(model, deterministic=True)
+    pipeline = newton.CollisionPipeline(model, deterministic=wp.DeterministicMode.RUN_TO_RUN)
     solver = newton.solvers.SolverSteel(model, deterministic=wp.DeterministicMode.RUN_TO_RUN)
 
 See :doc:`determinism` for which solvers support deterministic mode and
@@ -2715,7 +2716,7 @@ argument on :class:`~CollisionPipeline` selects one of three modes:
      The way sticky contacts are updated across frames may change without prior
      notice.
 
-Any non-disabled mode implies ``deterministic=True``.
+Any non-disabled mode implies ``deterministic=wp.DeterministicMode.RUN_TO_RUN``.
 
 .. testsetup:: contact-matching
 

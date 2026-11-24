@@ -902,11 +902,11 @@ def test_stationary_contacts_match_non_speculative_pipeline(test, device):
     state = model.state()
 
     pipelines = (
-        newton.CollisionPipeline(model, broad_phase="nxn", deterministic=True),
+        newton.CollisionPipeline(model, broad_phase="nxn", deterministic=wp.DeterministicMode.RUN_TO_RUN),
         newton.CollisionPipeline(
             model,
             broad_phase="nxn",
-            deterministic=True,
+            deterministic=wp.DeterministicMode.RUN_TO_RUN,
             speculative_contact_gap_max=0.25,
         ),
     )

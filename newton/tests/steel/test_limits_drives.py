@@ -2384,7 +2384,9 @@ class TestSteelJointFrictionLoad(unittest.TestCase):
             solver = _friction_solver(model, deterministic=wp.DeterministicMode.RUN_TO_RUN)
             self.assertFalse(solver._joint_friction_load_active)
             observables = solver.observables({SolverBase.ObservableKind.BODY_PARENT_F})
-            pipeline = newton.CollisionPipeline(model, deterministic=True, rigid_contact_max=64)
+            pipeline = newton.CollisionPipeline(
+                model, deterministic=wp.DeterministicMode.RUN_TO_RUN, rigid_contact_max=64
+            )
             runs.append(
                 (*_advance_hinge(solver, model, 0.2, 30, observables, pipeline), observables.body_parent_f.numpy())
             )
@@ -2399,7 +2401,9 @@ class TestSteelJointFrictionLoad(unittest.TestCase):
             solver = _friction_solver(
                 model, deterministic=wp.DeterministicMode.RUN_TO_RUN, articulation_constraint_max=64
             )
-            pipeline = newton.CollisionPipeline(model, deterministic=True, rigid_contact_max=256)
+            pipeline = newton.CollisionPipeline(
+                model, deterministic=wp.DeterministicMode.RUN_TO_RUN, rigid_contact_max=256
+            )
             q, qd = _advance_hinge(solver, model, 0.5, 40, None, pipeline)
             runs.append((q, qd, solver._joint_friction_total.numpy()))
         self.assertGreater(float(runs[0][2][0]), 0.0)

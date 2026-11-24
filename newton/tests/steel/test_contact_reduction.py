@@ -657,7 +657,7 @@ class TestSteelBodyPairReductionSettling(unittest.TestCase):
             newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
             control = model.control()
             pipe_red = _make_pipeline(model, True, body_pair_verify=True)
-            pipe_raw = newton.CollisionPipeline(model, broad_phase="nxn", deterministic=True)
+            pipe_raw = newton.CollisionPipeline(model, broad_phase="nxn", deterministic=wp.DeterministicMode.RUN_TO_RUN)
             c_red, c_raw = pipe_red.contacts(), pipe_raw.contacts()
             # Seven colliders per body generate thousands of speculative rows.
             # Both consumers must retain them for this to test reduction stability.
@@ -686,7 +686,9 @@ class TestSteelBodyPairReductionSettling(unittest.TestCase):
             raw_state_0, raw_state_1 = model.state(), model.state()
             newton.eval_fk(model, raw_state_0.joint_q, raw_state_0.joint_qd, raw_state_0)
             raw_control = model.control()
-            raw_dynamics_pipeline = newton.CollisionPipeline(model, broad_phase="nxn", deterministic=True)
+            raw_dynamics_pipeline = newton.CollisionPipeline(
+                model, broad_phase="nxn", deterministic=wp.DeterministicMode.RUN_TO_RUN
+            )
             raw_dynamics_contacts = raw_dynamics_pipeline.contacts()
             raw_solver = newton.solvers.SolverSteel(
                 model, friction_anchor_beta=0.0, free_body_constraint_max=mf_capacity, deterministic=RUN_TO_RUN

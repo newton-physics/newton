@@ -2418,7 +2418,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 identical inputs,
                 including identically ordered contacts, repeated runs are then bitwise identical on the
                 same GPU model, driver and Warp build, eagerly and under CUDA graph replay; combine it with
-                ``CollisionPipeline(deterministic=True)`` for a reproducible contact order (see
+                ``CollisionPipeline(deterministic=wp.DeterministicMode.RUN_TO_RUN)`` for a reproducible contact order (see
                 :ref:`Deterministic Contacts`). A world that overflows a row capacity keeps the rows of its
                 earliest contacts and drops the rest, so unchanged inputs drop the same contacts every step;
                 overflowed steps remain flagged in :attr:`constraint_overflow`. The mode adds a per-step

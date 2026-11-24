@@ -235,7 +235,9 @@ class Example:
             rigid_contact_max=self.rigid_contact_max,
             broad_phase=self.broad_phase_mode,
             sdf_hydroelastic_config=sdf_hydroelastic_config,
-            deterministic=self.deterministic,
+            deterministic=wp.DeterministicMode.RUN_TO_RUN
+            if self.deterministic
+            else wp.DeterministicMode.NOT_GUARANTEED,
         )
 
         # Create solver based on user choice

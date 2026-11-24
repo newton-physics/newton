@@ -69,6 +69,7 @@ from ..geometry.contact_reduction_global import (
     write_contact_to_reducer,
 )
 from ..geometry.contact_sort import ContactSorter
+from ..geometry.deterministic_mode import resolve_deterministic_mode
 from ..geometry.flags import ShapeFlags
 from ..geometry.mpr import create_solve_mpr, create_support_map_function
 from ..geometry.sdf_contact import (
@@ -2674,7 +2675,7 @@ class NarrowPhase:
         mesh_sdf_texture_only: bool = False,
         mesh_sdf_identity_scale_only: bool = False,
         sdf_texture_paired_samples: bool = True,
-        deterministic: bool = False,
+        deterministic: wp.DeterministicMode | None = None,
         contact_max: int | None = None,
         verify_buffers: bool = True,
         contact_reduction_hashtable_size_factor: float = 0.25,
@@ -2729,10 +2730,21 @@ class NarrowPhase:
                 has no baked scale must then keep unit ``shape_scale``.
             sdf_texture_paired_samples: Whether texture SDFs store adjacent x samples together.
                 This is model-wide so mesh-SDF kernels require only two bounded static variants.
-            deterministic: Make contact generation and ordering independent of
-                GPU thread scheduling. Adds deterministic hydroelastic atomics
-                and a radix sort + gather pass. Limits the shape count; see
-                :ref:`Deterministic Contacts`.
+            deterministic: Run-to-run determinism of contact generation and
+                ordering. Pass a :class:`warp.DeterministicMode`, or ``None``
+                (default) to inherit ``wp.config.deterministic``. ``RUN_TO_RUN``
+                makes contacts independent of GPU thread scheduling: it adds
+                deterministic hydroelastic atomics and a radix sort + gather
+                pass, and limits the shape count; see
+                :ref:`Deterministic Contacts`. ``GPU_TO_GPU`` is not supported:
+                passing it raises :class:`ValueError`, and an inherited one
+                emits a :class:`~newton.NewtonWarning` and runs ``RUN_TO_RUN``.
+                The ``deterministic`` attribute holds the mode that runs.
+
+                .. deprecated:: 1.9
+                    Passing a ``bool`` is deprecated; pass
+                    ``wp.DeterministicMode.RUN_TO_RUN`` for ``True`` and
+                    ``wp.DeterministicMode.NOT_GUARANTEED`` for ``False``.
             contact_max: Maximum number of contacts for the deterministic sort buffer.
                 Must match the ``contact_pair`` array size passed to :meth:`launch`.
                 Defaults to ``max_candidate_pairs``.  Set this to a larger value when
@@ -2790,7 +2802,8 @@ class NarrowPhase:
         self.has_generic_convex_pairs = has_generic_convex_pairs
         self.sdf_texture_paired_samples = sdf_texture_paired_samples
         self.mesh_sdf_identity_scale_only = mesh_sdf_identity_scale_only
-        self.deterministic = deterministic
+        self.deterministic = resolve_deterministic_mode(deterministic, "NarrowPhase")
+        deterministic = self.deterministic != wp.DeterministicMode.NOT_GUARANTEED
         self.verify_buffers = verify_buffers
         self.speculative = speculative
         if speculative and contact_writer_warp_func is not None and not contact_writer_supports_speculative:
@@ -3033,7 +3046,7 @@ class NarrowPhase:
 
         self.hydroelastic_sdf = hydroelastic_sdf
         if self.hydroelastic_sdf is not None:
-            self.hydroelastic_sdf._validate_deterministic(deterministic)
+            self.hydroelastic_sdf._validate_deterministic(self.deterministic)
 
         # Pre-allocate all intermediate buffers.
         # Counters live in one consolidated array for efficient zeroing.

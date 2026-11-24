@@ -537,7 +537,7 @@ class TestNarrowPhase(_NarrowPhaseSetupMixin, unittest.TestCase):
             max_triangle_pairs=8,
             reduce_contacts=False,
             has_meshes=False,
-            deterministic=True,
+            deterministic=wp.DeterministicMode.RUN_TO_RUN,
             contact_max=20,
             verify_buffers=False,
             shape_aabb_lower=wp.zeros(4, dtype=wp.vec3),
@@ -563,7 +563,7 @@ class TestNarrowPhase(_NarrowPhaseSetupMixin, unittest.TestCase):
             max_triangle_pairs=8,
             reduce_contacts=False,
             has_meshes=True,
-            deterministic=True,
+            deterministic=wp.DeterministicMode.RUN_TO_RUN,
             contact_max=20,
             verify_buffers=False,
             shape_aabb_lower=wp.zeros(4, dtype=wp.vec3),
@@ -617,7 +617,7 @@ class TestNarrowPhase(_NarrowPhaseSetupMixin, unittest.TestCase):
             max_triangle_pairs=8,
             reduce_contacts=False,
             has_meshes=False,
-            deterministic=True,
+            deterministic=wp.DeterministicMode.RUN_TO_RUN,
             contact_max=20,
             verify_buffers=False,
             shape_aabb_lower=wp.zeros(shape_count, dtype=wp.vec3),
@@ -641,7 +641,7 @@ class TestNarrowPhase(_NarrowPhaseSetupMixin, unittest.TestCase):
             "verify_buffers": False,
         }
         self.narrow_phase = NarrowPhase(
-            deterministic=True,
+            deterministic=wp.DeterministicMode.RUN_TO_RUN,
             **kwargs,
             shape_aabb_lower=wp.zeros(shape_count, dtype=wp.vec3),
             shape_aabb_upper=wp.ones(shape_count, dtype=wp.vec3),
@@ -668,12 +668,12 @@ class TestNarrowPhase(_NarrowPhaseSetupMixin, unittest.TestCase):
             "verify_buffers": False,
         }
         # Without AABBs the shape count is known only at launch.
-        self.narrow_phase = NarrowPhase(deterministic=True, **kwargs)
+        self.narrow_phase = NarrowPhase(deterministic=wp.DeterministicMode.RUN_TO_RUN, **kwargs)
         with self.assertRaisesRegex(ValueError, "20-bit shape indices.*pass shape_aabb_lower"):
             self._launch_spheres_past_2_20()
 
         self.narrow_phase = NarrowPhase(
-            deterministic=True,
+            deterministic=wp.DeterministicMode.RUN_TO_RUN,
             **kwargs,
             shape_aabb_lower=wp.zeros(2, dtype=wp.vec3),
             shape_aabb_upper=wp.ones(2, dtype=wp.vec3),

@@ -60,6 +60,7 @@ from .contact_reduction_hydroelastic import (
     HydroelasticReductionConfig,
     export_hydroelastic_contact_to_buffer,
 )
+from .deterministic_mode import resolve_deterministic_mode
 from .hashtable import hashtable_find_or_insert
 from .sdf_mc import (
     MC_DEGENERATE_N_SQ_EPS,
@@ -388,9 +389,13 @@ class HydroelasticSDF:
             and other behavior. Defaults to :class:`HydroelasticSDF.Config`.
         device: Warp device for GPU computation.
         writer_func: Callback for writing decoded contact data.
-        deterministic: Whether to make hydroelastic accumulation and contact
-            allocation reproducible across runs on the same GPU architecture.
-            Must be chosen at construction because it changes code generation.
+        deterministic: Run-to-run determinism of hydroelastic accumulation and
+            contact allocation. Pass a :class:`warp.DeterministicMode`, or
+            ``None`` (default) to inherit ``wp.config.deterministic``.
+            ``RUN_TO_RUN`` makes them reproducible across runs on the same GPU
+            architecture; ``GPU_TO_GPU`` is not supported. Must be chosen at
+            construction because it changes code generation. Passing a
+            ``bool`` is deprecated.
 
     Note:
         Instances are typically created internally when constructing a
@@ -558,11 +563,13 @@ class HydroelasticSDF:
         config: HydroelasticSDF.Config | None = None,
         device: Devicelike | None = None,
         writer_func: Any = None,
-        deterministic: bool = False,
+        deterministic: wp.DeterministicMode | None = None,
         paired_samples: bool = True,
     ) -> None:
         if config is None:
             config = HydroelasticSDF.Config()
+        self.deterministic = resolve_deterministic_mode(deterministic, "HydroelasticSDF")
+        deterministic = self.deterministic != wp.DeterministicMode.NOT_GUARANTEED
         if deterministic and config.pre_prune_contacts:
             # Pre-pruning keeps a per-thread top-K of faces, so which faces reach
             # the contact buffer depends on how voxels are distributed over threads.
@@ -575,7 +582,6 @@ class HydroelasticSDF:
             config.pre_prune_contacts = False
 
         self.config = config
-        self.deterministic = deterministic
         if device is None:
             device = wp.get_device()
         self.device = device
@@ -708,7 +714,7 @@ class HydroelasticSDF:
                 output_vertices=self.config.output_contact_surface,
                 pre_prune=self.config.reduce_contacts and self.config.pre_prune_contacts,
                 reduce_contacts=self.config.reduce_contacts,
-                deterministic_reduction=self.deterministic and self.config.reduce_contacts,
+                deterministic_reduction=bool(self.deterministic) and self.config.reduce_contacts,
                 pressure_func=self.pressure_func,
                 mc_edge_clamp_min=self.config.mc_edge_clamp_min,
                 paired_samples=self.paired_samples,
@@ -728,7 +734,7 @@ class HydroelasticSDF:
                     device=device,
                     writer_func=writer_func,
                     config=reduction_config,
-                    deterministic=self.deterministic,
+                    deterministic=bool(self.deterministic),
                 )
                 self.decode_contacts_kernel = None
             else:
@@ -740,7 +746,7 @@ class HydroelasticSDF:
                     config=HydroelasticReductionConfig(
                         hashtable_size_factor=self.config.contact_reduction_hashtable_size_factor,
                     ),
-                    deterministic=self.deterministic,
+                    deterministic=bool(self.deterministic),
                     enable_reduction=False,
                 )
                 self.decode_contacts_kernel = get_decode_contacts_kernel(writer_func)
@@ -761,7 +767,7 @@ class HydroelasticSDF:
             record_tape=False,
         )
 
-    def _validate_deterministic(self, deterministic: bool) -> None:
+    def _validate_deterministic(self, deterministic: wp.DeterministicMode) -> None:
         """Raise if ``deterministic`` disagrees with the mode chosen at construction.
 
         Lets :class:`~newton.geometry.NarrowPhase` reject a pre-built instance
@@ -779,7 +785,7 @@ class HydroelasticSDF:
         model: Model,
         config: HydroelasticSDF.Config | None = None,
         writer_func: Any = None,
-        deterministic: bool = False,
+        deterministic: wp.DeterministicMode | None = None,
         *,
         shape_pairs_filtered: wp.array[wp.vec2i] | None = None,
     ) -> HydroelasticSDF | None:
@@ -789,7 +795,7 @@ class HydroelasticSDF:
             model: The simulation model.
             config: Optional configuration for hydroelastic collision handling.
             writer_func: Optional writer function for decoding contacts.
-            deterministic: Whether to enable deterministic hydroelastic kernels.
+            deterministic: Determinism mode; ``None`` inherits ``wp.config.deterministic``.
             shape_pairs_filtered: Explicit candidate pairs, when provided by the pipeline.
 
         Returns:

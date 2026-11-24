@@ -140,7 +140,11 @@ def _check_native_rollout(device_name, use_mujoco_contacts):
             control = model.control()
             newton.eval_fk(model, state0.joint_q, state0.joint_qd, state0)
 
-            pipeline = None if use_mujoco_contacts else newton.CollisionPipeline(model, deterministic=True)
+            pipeline = (
+                None
+                if use_mujoco_contacts
+                else newton.CollisionPipeline(model, deterministic=wp.DeterministicMode.RUN_TO_RUN)
+            )
             contacts = None if pipeline is None else pipeline.contacts()
 
             def step_pair():

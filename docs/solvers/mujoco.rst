@@ -91,7 +91,7 @@ backend sorts nor broadens native atomic coverage with global compilation.
 Downstream callers must account for the following boundaries:
 
 * With ``use_mujoco_contacts=False``, also construct
-  ``newton.CollisionPipeline(model, deterministic=True)`` and pass its contacts
+  ``newton.CollisionPipeline(model, deterministic=wp.DeterministicMode.RUN_TO_RUN)`` and pass its contacts
   to the solver. The solver flag does not configure collision generation;
   deterministic input contacts and conversion alone do not fix missing
   backend constraint ordering.

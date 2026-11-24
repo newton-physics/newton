@@ -473,7 +473,7 @@ def test_planar_mesh_recovery_under_load(test, device, *, reduce_contacts=True, 
             model,
             broad_phase="nxn" if pairs is None else "explicit",
             shape_pairs_filtered=pairs,
-            deterministic=True,
+            deterministic=wp.DeterministicMode.RUN_TO_RUN,
             contact_matching="sticky" if vbd_stale else "disabled",
             reduce_contacts=reduce_contacts,
             rigid_contact_max=128,
@@ -710,7 +710,7 @@ def test_mujoco_stale_contact_at_capacity(test, device, *, body_actuator):
             model,
             broad_phase="explicit",
             shape_pairs_filtered=wp.array([(0, 1), (plane, sphere)], dtype=wp.vec2i),
-            deterministic=True,
+            deterministic=wp.DeterministicMode.RUN_TO_RUN,
             rigid_contact_max=8,
         )
         solver = newton.solvers.SolverMuJoCo(model, use_mujoco_contacts=False, nconmax=1)
@@ -800,7 +800,7 @@ def test_planar_recovery_deterministic_hash_contention(test, device):
             model,
             broad_phase="explicit",
             shape_pairs_filtered=wp.array(pairs, dtype=wp.vec2i),
-            deterministic=True,
+            deterministic=wp.DeterministicMode.RUN_TO_RUN,
             rigid_contact_max=128,
         )
         contacts = pipeline.contacts()

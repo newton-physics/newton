@@ -7,8 +7,8 @@ Two fixed-base Franka arms follow the same scripted sweep through six
 boxes. The scene is simulated four times in one process from the same
 initial state and with the same joint targets: two copies with Steel's
 default settings (left) and two with
-deterministic=wp.DeterministicMode.RUN_TO_RUN and
-CollisionPipeline(deterministic=True) (right). Each side overlays its two
+deterministic=wp.DeterministicMode.RUN_TO_RUN for both the solver and
+the CollisionPipeline (right). Each side overlays its two
 copies at one place, one magenta and one green, both half transparent.
 The default copies push the boxes to different places; in the GL
 viewer they come apart into two ghosts, while the deterministic copies

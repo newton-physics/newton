@@ -320,7 +320,9 @@ class Example:
             reduce_contacts=True,
             broad_phase="explicit",
             sdf_hydroelastic_config=sdf_hydroelastic_config,
-            deterministic=self.deterministic,
+            deterministic=wp.DeterministicMode.RUN_TO_RUN
+            if self.deterministic
+            else wp.DeterministicMode.NOT_GUARANTEED,
         )
         self.contacts = self.collision_pipeline.contacts()
 

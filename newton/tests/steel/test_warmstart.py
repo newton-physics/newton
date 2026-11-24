@@ -680,7 +680,7 @@ def _resting_box_rows(device, articulated: bool):
         body = builder.add_body(xform=xform)
     builder.add_shape_box(body, hx=0.05, hy=0.05, hz=0.05, cfg=cfg)
     model = builder.finalize(device=device)
-    pipeline = newton.CollisionPipeline(model, contact_matching="latest", deterministic=True)
+    pipeline = newton.CollisionPipeline(model, contact_matching="latest", deterministic=wp.DeterministicMode.RUN_TO_RUN)
     contacts = pipeline.contacts()
     solver = newton.solvers.SolverSteel(model, contact_warmstart=True, iterations=12)
     state_0, state_1 = model.state(), model.state()
@@ -773,7 +773,7 @@ def _stack(device, restitution=0.0, drop=False):
         reduce_contacts=True,
         rigid_contact_max=128,
         broad_phase="nxn",
-        deterministic=True,
+        deterministic=wp.DeterministicMode.RUN_TO_RUN,
         contact_matching="latest",
     )
     solver = newton.solvers.SolverSteel(model, iterations=8, velocity_iterations=2, contact_warmstart=True)
@@ -947,7 +947,7 @@ def test_warm_carry_no_kick_after_dt_change_on_impact(test: unittest.TestCase, d
                 reduce_contacts=True,
                 rigid_contact_max=32,
                 broad_phase="nxn",
-                deterministic=True,
+                deterministic=wp.DeterministicMode.RUN_TO_RUN,
                 contact_matching="latest",
             )
             contacts = pipeline.contacts()
