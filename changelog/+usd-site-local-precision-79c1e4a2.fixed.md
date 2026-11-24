@@ -1,0 +1,1 @@
+Preserve small body-local USD site offsets on translated bodies by subtracting world translations in USD double precision before converting to Warp float32, while retaining the existing builder-pose path for site rotation and scale and leaving visual geometry unchanged.
