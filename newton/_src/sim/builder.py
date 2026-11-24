@@ -16760,19 +16760,22 @@ class ModelBuilder:
                             float(scale_clean[s_idx, 2]),
                         )
                         sc_np = np.array(sc_tuple)
-                        if st == GeoType.MESH:
-                            vertices = shape_src.vertices
-                            lo64 = vertices.min(axis=0) * sc_np
-                            hi64 = vertices.max(axis=0) * sc_np
+                        if st == GeoType.MESH or st == GeoType.CONVEX_MESH:
+                            # A mesh caches its vertex bounds, so scanning its vertices again is
+                            # only needed for a source that isn't one.
+                            get_local_bounds = getattr(shape_src, "_get_local_bounds", None)
+                            if get_local_bounds is not None:
+                                vertex_lo, vertex_hi = get_local_bounds()
+                            else:
+                                vertex_lo = shape_src.vertices.min(axis=0)
+                                vertex_hi = shape_src.vertices.max(axis=0)
+                            lo64 = vertex_lo * sc_np
+                            hi64 = vertex_hi * sc_np
                             aabb_lo = np.minimum(lo64, hi64)
                             aabb_hi = np.maximum(lo64, hi64)
-                        elif st == GeoType.CONVEX_MESH:
-                            lo64 = shape_src.vertices.min(axis=0) * sc_np
-                            hi64 = shape_src.vertices.max(axis=0) * sc_np
-                            centroid = _convex_hull_interior_point(shape_src.vertices, shape_src.indices)
-                            group_interior_point[group] = centroid * sc_np
-                            aabb_lo = np.minimum(lo64, hi64)
-                            aabb_hi = np.maximum(lo64, hi64)
+                            if st == GeoType.CONVEX_MESH:
+                                centroid = _convex_hull_interior_point(shape_src.vertices, shape_src.indices)
+                                group_interior_point[group] = centroid * sc_np
                         else:
                             hx = abs(shape_src.hx * sc_tuple[0])
                             hy = abs(shape_src.hy * sc_tuple[1])

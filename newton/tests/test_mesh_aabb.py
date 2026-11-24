@@ -432,6 +432,47 @@ class TestSourceShapeLocalBounds(unittest.TestCase):
         np.testing.assert_allclose(upper[after], [1.0, 0.1, 2.7], rtol=1e-6)
         np.testing.assert_array_equal(voxel[after], [6, 1, 13])
 
+    def test_bounds_follow_vertices_replaced_after_adding_shapes(self):
+        """Verify that assigning new vertices to a mesh after its shapes were added gives them the new bounds."""
+        mesh = _make_box_mesh((0.1, -0.2, 0.3), (0.5, 0.2, 0.9))
+        builder = newton.ModelBuilder()
+        mesh_shape = builder.add_shape_mesh(body=-1, mesh=mesh)
+        hull_shape = builder.add_shape_convex_hull(body=-1, mesh=mesh)
+        mesh.vertices = mesh.vertices * np.array([2.0, 0.5, 3.0], dtype=np.float32)
+        model = builder.finalize(device="cpu")
+        lower = model.shape_collision_aabb_lower.numpy()
+        upper = model.shape_collision_aabb_upper.numpy()
+        interior = model._shape_interior_point.numpy()
+        voxel = model._shape_voxel_resolution.numpy()
+        np.testing.assert_allclose(lower[mesh_shape], [0.2, -0.1, 0.9], rtol=1e-6)
+        np.testing.assert_allclose(upper[mesh_shape], [1.0, 0.1, 2.7], rtol=1e-6)
+        np.testing.assert_array_equal(voxel[mesh_shape], [6, 1, 13])
+        np.testing.assert_allclose(lower[hull_shape], [0.2, -0.1, 0.9], rtol=1e-6)
+        np.testing.assert_allclose(upper[hull_shape], [1.0, 0.1, 2.7], rtol=1e-6)
+        np.testing.assert_allclose(interior[hull_shape], [0.6, 0.0, 1.8], rtol=1e-6, atol=1e-7)
+        np.testing.assert_array_equal(voxel[hull_shape], [6, 1, 13])
+
+    def test_bounds_follow_vertices_edited_in_place_after_adding_shapes(self):
+        """Verify that editing a mesh's vertices in place, then invalidating its cache, updates its shapes' bounds."""
+        mesh = _make_box_mesh((0.1, -0.2, 0.3), (0.5, 0.2, 0.9))
+        builder = newton.ModelBuilder()
+        mesh_shape = builder.add_shape_mesh(body=-1, mesh=mesh)
+        hull_shape = builder.add_shape_convex_hull(body=-1, mesh=mesh)
+        mesh.vertices[:] *= np.array([2.0, 0.5, 3.0], dtype=np.float32)
+        mesh.invalidate_cache()
+        model = builder.finalize(device="cpu")
+        lower = model.shape_collision_aabb_lower.numpy()
+        upper = model.shape_collision_aabb_upper.numpy()
+        interior = model._shape_interior_point.numpy()
+        voxel = model._shape_voxel_resolution.numpy()
+        np.testing.assert_allclose(lower[mesh_shape], [0.2, -0.1, 0.9], rtol=1e-6)
+        np.testing.assert_allclose(upper[mesh_shape], [1.0, 0.1, 2.7], rtol=1e-6)
+        np.testing.assert_array_equal(voxel[mesh_shape], [6, 1, 13])
+        np.testing.assert_allclose(lower[hull_shape], [0.2, -0.1, 0.9], rtol=1e-6)
+        np.testing.assert_allclose(upper[hull_shape], [1.0, 0.1, 2.7], rtol=1e-6)
+        np.testing.assert_allclose(interior[hull_shape], [0.6, 0.0, 1.8], rtol=1e-6, atol=1e-7)
+        np.testing.assert_array_equal(voxel[hull_shape], [6, 1, 13])
+
 
 class TestCylinderLocalAABB(unittest.TestCase):
     """Verify local cylinder bounds include an optional barrel profile."""
