@@ -527,8 +527,9 @@ response. See the implementation in
 :github:`newton/_src/solvers/mujoco/kernels.py` and its force-space contact tests
 in :github:`newton/tests/test_mujoco_solver.py`.
 
-With MuJoCo's default ``refsafe`` guard enabled, MuJoCo-Warp evaluates positive
-``solref`` using ``max(timeconst, 2 * dt)`` for the active constraint without
+With MuJoCo's default ``refsafe`` guard enabled and Euler, implicit, or
+implicitfast integration, MuJoCo-Warp evaluates positive ``solref`` using
+``max(timeconst, 2 * dt)`` for the active constraint without
 rewriting the stored value. Direct-format negative ``solref`` bypasses this
 clamp. Once a requested positive ``timeconst`` falls below that floor, raising
 the gains at a fixed damping ratio no longer hardens the effective response;

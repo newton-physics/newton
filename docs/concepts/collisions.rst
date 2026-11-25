@@ -2298,6 +2298,12 @@ for stiffness and ``kd / ke`` for damping. Custom pressure laws and reduced
 contacts use their exported stiffness; this does not establish their solver
 convergence or preserve all damping moments after reduction.
 
+With MuJoCo's Euler, implicit, or implicitfast integration, the ``refsafe``
+guard limits the contact time constant to at least twice the timestep.
+Once this limit is active, increasing ``kh`` at fixed ``kd / ke`` can soften
+contacts and increase penetration. Use a smaller solver timestep to resolve
+the requested gains; see :ref:`mujoco-contact-solref-conversion`.
+
 Previously, hydroelastic contacts used automatically selected damping in
 Newton's MuJoCo adapter, regardless of shape ``kd``. Positive ``kd`` now controls
 the generated damping through ``kd / ke``. Set ``kd=0`` on both shapes to retain
