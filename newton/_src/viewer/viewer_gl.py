@@ -229,22 +229,30 @@ def _recorded(kind: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
 
 class ViewerGL(ViewerBase):
     """
-    OpenGL-based interactive viewer for Newton physics models.
+    OpenGL-based interactive viewer and inspection workspace for Newton simulations.
 
-    This class provides a graphical interface for visualizing and interacting with
-    Newton models using OpenGL rendering. It supports real-time simulation control,
-    camera navigation, object picking, wind effects, and a rich ImGui-based UI for
-    model introspection and visualization options.
+    By default, ``ViewerGL`` presents a docked Dear ImGui workspace around an
+    OpenGL 3D viewport for real-time visualization, camera navigation, object
+    picking, and interactive model/state/contact inspection (see
+    :ref:`viewer-inspection`). Pass ``legacy_gui=True`` for the minimal
+    sidebar and overlay layout.
 
     Key Features:
-        - Real-time 3D rendering of Newton models and simulation states.
-        - Camera navigation with WASD/QE and mouse controls.
-        - Object picking and manipulation via mouse.
-        - Visualization toggles for joints, contacts, particles, springs, etc.
-        - Wind force controls and visualization.
-        - Performance statistics overlay (FPS, object counts, etc.).
-        - Selection panel for introspecting and filtering model attributes.
-        - Extensible logging of meshes, lines, points, and arrays for custom visualization.
+        - Real-time 3D rendering with **Visual**, **Collision**, **X-ray**, and
+          **Wireframe** viewport modes and an interactive orientation gizmo.
+        - Hierarchical **Scene** explorer with search filtering and per-object
+          visibility and flag controls.
+        - **Properties**, **Environment**, **Solver**, and custom **Controls**
+          inspector tabs for viewing and editing ``State`` and ``Control``
+          fields, body flags/variants, collision pipelines, contacts, and
+          solver observables.
+        - Opt-in bounded frame history recording and timeline scrubbing.
+        - Dockable scalar plots, logged images, and optional log/warning console
+          (``capture_logs=True``).
+        - Camera navigation with WASD/QE, orbit/pan/dolly mouse controls,
+          selection framing/following, right-click object picking, and wind.
+        - Extensible logging of meshes, lines, points, scalars, images, and
+          arrays for custom visualization.
     """
 
     _supports_deformable_visual_meshes = True
@@ -305,16 +313,16 @@ class ViewerGL(ViewerBase):
             enable_cuda_interop: Render-geometry categories that use CUDA-OpenGL
                 interoperability. Combine :class:`CudaInterop` flags with ``|``.
                 Defaults to :attr:`CudaInterop.DYNAMIC_MESH`.
-            legacy_gui: Use the legacy sidebar, statistics overlay, and floating
-                image/plot windows instead of the docked inspection workspace.
-                Defaults to False. Has no effect in headless mode.
+            legacy_gui: Use the minimal sidebar, statistics overlay, and
+                floating image/plot windows instead of the docked inspection
+                workspace. Defaults to False. Has no effect in headless mode.
 
                 .. experimental::
             capture_logs: Mirror ``newton`` log records and Newton warnings into
-                the workspace console until :meth:`close`. This adds a handler
+                the workspace console until :meth:`close`. Attaches a handler
                 to the ``newton`` logger and routes :class:`~newton.NewtonWarning`
-                through it; existing terminal output and application handlers
-                are unchanged. Defaults to False, leaving logging configuration
+                through it without altering terminal output or application
+                handlers. Defaults to False, leaving logging configuration
                 to the application. Has no effect in headless mode or with
                 ``legacy_gui``.
 
