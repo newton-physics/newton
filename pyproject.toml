@@ -45,6 +45,13 @@ sim = [
     "mujoco-core~=4.0.1; (sys_platform != 'win32' or platform_machine != 'ARM64')",  # MuJoCo physics engine
 ]
 
+# Optional cuNLS backend for inverse kinematics (IKOptimizer.CUNLS): closed loops, mimic joints and
+# hard joint limits. Its wheels are Linux x86-64 only, built with CUDA 13 (R580 or newer driver) for
+# GLIBC 2.35 or newer (manylinux_2_35, e.g. Ubuntu 22.04+).
+cunls = [
+    "pycunls-cu13>=0.4.5; sys_platform == 'linux' and platform_machine == 'x86_64'",
+]
+
 # Optional ONNX policy inference for neural actuators and RL policy examples.
 onnx = [
     "warp-nn[onnx]~=0.4.0",
@@ -166,6 +173,11 @@ conflicts = [
     [
         { extra = "torch-cu12" },
         { extra = "torch-cu13" },
+    ],
+    # pycunls-cu13 needs the CUDA 13 toolkit wheels; PyTorch's CUDA 12 build pins CUDA 12 ones.
+    [
+        { extra = "cunls" },
+        { extra = "torch-cu12" },
     ],
 ]
 

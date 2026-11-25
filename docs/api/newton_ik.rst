@@ -21,6 +21,7 @@ Public inverse-kinematics API for defining objectives and solving IK problems.
    IKObjectivePosition
    IKObjectiveRotation
    IKOptimizer
+   IKOptimizerCuNLS
    IKOptimizerLBFGS
    IKOptimizerLM
    IKSampler
