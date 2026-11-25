@@ -2512,6 +2512,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         if model.requires_grad:
             raise NotImplementedError("SolverSteel does not support gradients (model.requires_grad=True).")
         _validate_supported_model(model)
+        self._warn_unsupported_acceleration_drives()
 
         self._update_mass_matrix_interval = int(update_mass_matrix_interval)
         if self._update_mass_matrix_interval < 1:
@@ -3310,6 +3311,7 @@ class SolverSteel(SolverBase, CouplingInterface):
             self._mass_update_requested.fill_(1)
         dof_force = ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_FORCE_PROPERTIES
         if flags & dof_force:
+            self._warn_unsupported_acceleration_drives()
             self._refresh_passive_joint_damping()
             self._refresh_passive_spring_stiffness()
             # Augmented drive gains and passive damping enter the factored mass diagonal.

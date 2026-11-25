@@ -2082,6 +2082,109 @@ def Xform "Articulation" (
         self.assertTrue(found_joint1, f"Expected solimpfriction {expected_joint1} not found in model")
         self.assertTrue(found_joint2, f"Expected default solimpfriction {expected_joint2} not found in model")
 
+    @requires("pxr.Usd")
+    def test_drive_type_preserved_across_joint_types(self):
+        """Preserve authored USD force and acceleration drive types on prismatic, revolute, D6, and merged joints."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        root = UsdGeom.Xform.Define(stage, "/Rig").GetPrim()
+        UsdPhysics.ArticulationRootAPI.Apply(root)
+
+        for name in ("Base", "Slide", "Hinge", "D6Link", "MergedLink"):
+            link = UsdGeom.Xform.Define(stage, f"/Rig/{name}").GetPrim()
+            UsdPhysics.RigidBodyAPI.Apply(link)
+
+        # Prismatic joint with acceleration drive.
+        j_prismatic = UsdPhysics.PrismaticJoint.Define(stage, "/Rig/PrismaticAccel")
+        j_prismatic.CreateBody0Rel().SetTargets(["/Rig/Base"])
+        j_prismatic.CreateBody1Rel().SetTargets(["/Rig/Slide"])
+        j_prismatic.CreateAxisAttr("X")
+        d_prismatic = UsdPhysics.DriveAPI.Apply(j_prismatic.GetPrim(), "linear")
+        d_prismatic.CreateTypeAttr("acceleration")
+        d_prismatic.CreateStiffnessAttr(10.0)
+
+        # Revolute joint with default (unauthored -> force) drive.
+        j_rev = UsdPhysics.RevoluteJoint.Define(stage, "/Rig/RevoluteForce")
+        j_rev.CreateBody0Rel().SetTargets(["/Rig/Base"])
+        j_rev.CreateBody1Rel().SetTargets(["/Rig/Hinge"])
+        j_rev.CreateAxisAttr("Z")
+        d_rev = UsdPhysics.DriveAPI.Apply(j_rev.GetPrim(), "angular")
+        d_rev.CreateStiffnessAttr(5.0)
+
+        # D6 joint with mixed acceleration (transX, rotZ) and force (transY, rotX) drives.
+        j_d6 = UsdPhysics.Joint.Define(stage, "/Rig/D6Mixed")
+        j_d6.CreateBody0Rel().SetTargets(["/Rig/Base"])
+        j_d6.CreateBody1Rel().SetTargets(["/Rig/D6Link"])
+        for locked in ("transZ", "rotY"):
+            lim = UsdPhysics.LimitAPI.Apply(j_d6.GetPrim(), locked)
+            lim.CreateLowAttr(1.0)
+            lim.CreateHighAttr(-1.0)
+        for free_axis, lo, hi in (
+            ("transX", -100.0, 100.0),
+            ("transY", -100.0, 100.0),
+            ("rotX", -180.0, 180.0),
+            ("rotZ", -180.0, 180.0),
+        ):
+            lim = UsdPhysics.LimitAPI.Apply(j_d6.GetPrim(), free_axis)
+            lim.CreateLowAttr(lo)
+            lim.CreateHighAttr(hi)
+        for axis_name, mode in (
+            ("transX", "acceleration"),
+            ("transY", "force"),
+            ("rotX", "force"),
+            ("rotZ", "acceleration"),
+        ):
+            drv = UsdPhysics.DriveAPI.Apply(j_d6.GetPrim(), axis_name)
+            drv.CreateTypeAttr(mode)
+            drv.CreateStiffnessAttr(8.0)
+
+        # Two sibling joints between the same bodies merged into one D6 joint.
+        j_merge_lin = UsdPhysics.PrismaticJoint.Define(stage, "/Rig/MergedLinear")
+        j_merge_lin.CreateBody0Rel().SetTargets(["/Rig/Base"])
+        j_merge_lin.CreateBody1Rel().SetTargets(["/Rig/MergedLink"])
+        j_merge_lin.CreateAxisAttr("X")
+        d_mlin = UsdPhysics.DriveAPI.Apply(j_merge_lin.GetPrim(), "linear")
+        d_mlin.CreateTypeAttr("acceleration")
+        d_mlin.CreateStiffnessAttr(12.0)
+
+        j_merge_ang = UsdPhysics.RevoluteJoint.Define(stage, "/Rig/MergedAngular")
+        j_merge_ang.CreateBody0Rel().SetTargets(["/Rig/Base"])
+        j_merge_ang.CreateBody1Rel().SetTargets(["/Rig/MergedLink"])
+        j_merge_ang.CreateAxisAttr("Z")
+        d_mang = UsdPhysics.DriveAPI.Apply(j_merge_ang.GetPrim(), "angular")
+        d_mang.CreateTypeAttr("force")
+        d_mang.CreateStiffnessAttr(3.0)
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage, floating=False)
+        model = builder.finalize(device="cpu")
+        drive_types = model.joint_drive_type.numpy()
+
+        def dof_types(label: str) -> list[int]:
+            j_idx = model.joint_label.index(label)
+            start = int(model.joint_qd_start.numpy()[j_idx])
+            end = int(model.joint_qd_start.numpy()[j_idx + 1])
+            return drive_types[start:end].tolist()
+
+        self.assertEqual(dof_types("/Rig/PrismaticAccel"), [int(newton.JointDriveType.ACCELERATION)])
+        self.assertEqual(dof_types("/Rig/RevoluteForce"), [int(newton.JointDriveType.FORCE)])
+        self.assertEqual(
+            dof_types("/Rig/D6Mixed"),
+            [
+                int(newton.JointDriveType.ACCELERATION),
+                int(newton.JointDriveType.FORCE),
+                int(newton.JointDriveType.FORCE),
+                int(newton.JointDriveType.ACCELERATION),
+            ],
+        )
+        merged_label = "/Rig/MergedLinear" if "/Rig/MergedLinear" in model.joint_label else "/Rig/MergedAngular"
+        self.assertEqual(
+            dof_types(merged_label),
+            [int(newton.JointDriveType.ACCELERATION), int(newton.JointDriveType.FORCE)],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

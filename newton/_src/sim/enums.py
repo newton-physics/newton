@@ -26,7 +26,7 @@ class ModelFlags(IntEnum):
     """Indicates joint property updates: joint_q, joint_X_p, joint_X_c, joint_axis, joint_enabled."""
 
     JOINT_DOF_PROPERTIES = 1 << 1
-    """Indicates all joint DOF updates, including force, armature, and reference-pose properties: joint_target_ke, joint_target_kd, joint_stiffness, joint_rest_q, joint_damping, joint_effort_limit, joint_armature, joint_friction, joint_limit_ke, joint_limit_kd, joint_limit_lower, joint_limit_upper."""
+    """Indicates all joint DOF updates, including force, armature, and reference-pose properties: joint_target_ke, joint_target_kd, joint_target_mode, joint_drive_type, joint_stiffness, joint_rest_q, joint_damping, joint_effort_limit, joint_armature, joint_friction, joint_limit_ke, joint_limit_kd, joint_limit_lower, joint_limit_upper."""
 
     BODY_PROPERTIES = 1 << 2
     """Indicates body property updates: body_q (together with :attr:`JOINT_REFERENCE_POSE_PROPERTIES`), body_qd, body_flags."""
@@ -50,7 +50,7 @@ class ModelFlags(IntEnum):
     """Indicates actuator property updates: gains, biases, limits, etc."""
 
     JOINT_DOF_FORCE_PROPERTIES = 1 << 9
-    """Indicates joint force updates: friction, damping, target gains/modes, effort limits, passive stiffness, and limit coefficients/bounds. Excludes armature and reference poses."""
+    """Indicates joint force updates: friction, damping, target gains/modes/drive types, effort limits, passive stiffness, and limit coefficients/bounds. Excludes armature and reference poses."""
 
     JOINT_DOF_INERTIAL_PROPERTIES = 1 << 10
     """Indicates joint_armature updates. MuJoCo recomputes constants; use at reset or for domain randomization rather than every step."""
@@ -333,8 +333,22 @@ class JointTargetMode(IntEnum):
             return JointTargetMode.EFFORT
 
 
+class JointDriveType(IntEnum):
+    """Interpretation of joint drive gains (:attr:`Model.joint_target_ke`, :attr:`Model.joint_target_kd`).
+
+    Corresponds to ``drive:<name>:physics:type`` in OpenUSD ``UsdPhysicsDriveAPI``.
+    """
+
+    FORCE = 0
+    """Drive gains produce generalized force or torque [N or N·m]."""
+
+    ACCELERATION = 1
+    """Drive gains command joint acceleration [m/s² or rad/s²], independent of body mass and inertia."""
+
+
 __all__ = [
     "BodyFlags",
+    "JointDriveType",
     "JointTargetMode",
     "JointType",
     "ModelFlags",

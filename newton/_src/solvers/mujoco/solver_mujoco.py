@@ -29,6 +29,7 @@ from ...sim import (
     BodyFlags,
     Contacts,
     Control,
+    JointDriveType,
     JointTargetMode,
     JointType,
     Model,
@@ -530,7 +531,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         - :attr:`~newton.Model.joint_armature`, :attr:`~newton.Model.joint_friction`,
           :attr:`~newton.Model.joint_effort_limit`, :attr:`~newton.Model.joint_limit_ke`/:attr:`~newton.Model.joint_limit_kd`,
           :attr:`~newton.Model.joint_target_ke`/:attr:`~newton.Model.joint_target_kd`,
-          :attr:`~newton.Model.joint_target_mode`, and :attr:`~newton.Control.joint_f` are supported.
+          :attr:`~newton.Model.joint_target_mode`, :attr:`~newton.Model.joint_drive_type`, and
+          :attr:`~newton.Control.joint_f` are supported.
         - Equality constraints (CONNECT, WELD, JOINT) and mimic relationships
           between REVOLUTE, PRISMATIC, or D6 joints are supported.
         - :attr:`~newton.Model.joint_velocity_limit` and :attr:`~newton.Model.joint_enabled`
@@ -4926,6 +4928,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         For CTRL_DIRECT: MJCF-order index into control.mujoco.ctrl array
 
         Shape [nu], dtype int32."""
+        self.mjc_actuator_to_mjc_dof: wp.array[wp.int32] | None = None
+        """MuJoCo DOF index for each JOINT_TARGET actuator, ``-1`` otherwise. Shape ``[nu]``, dtype int32."""
+        self._mjc_accel_dof_invweight_cpu: wp.array2d[float] | None = None
         self.mjc_actuator_to_newton_target_q_idx: wp.array[wp.int32] | None = None
         """Per-actuator coordinate lookup for target conversion.
 
@@ -6264,6 +6269,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self._set_const_0()
             if need_solref_update:
                 self._update_solref_from_invweight0()
+                self._update_acceleration_drive_gains()
             if need_const_0:
                 self._update_tendon_limit_gains()
             # MuJoCo constant recomputation overwrites per-world CONNECT anchors, so restore them last.
@@ -6303,6 +6309,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         self._set_const_0()
                     if need_solref_update:
                         self._update_solref_from_invweight0()
+                        self._update_acceleration_drive_gains()
                     if need_const_0:
                         self._update_tendon_limit_gains()
                     # MuJoCo constant recomputation overwrites per-world CONNECT anchors, so restore them last.
@@ -9919,6 +9926,23 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             mjc_dof_to_newton_dof_np = self._tile_world_mapping(dof_to_newton_dof_template, nworld, dofs_per_world)
             self.mjc_dof_to_newton_dof = wp.array(mjc_dof_to_newton_dof_np, dtype=wp.int32)
 
+            if self.mjc_actuator_ctrl_source is not None and self.mjc_actuator_to_newton_idx is not None:
+                newton_template_dof_to_mjc_dof = np.full(dofs_per_world, -1, dtype=np.int32)
+                for mjc_dof, template_newton_dof in enumerate(dof_to_newton_dof_template):
+                    if template_newton_dof >= 0:
+                        newton_template_dof_to_mjc_dof[template_newton_dof] = mjc_dof
+                act_to_mjc_dof = np.full(len(mjc_actuator_ctrl_source_list), -1, dtype=np.int32)
+                for act_idx, (src, nidx) in enumerate(
+                    zip(mjc_actuator_ctrl_source_list, mjc_actuator_to_newton_idx_list, strict=True)
+                ):
+                    if src == SolverMuJoCo.CtrlSource.JOINT_TARGET and nidx != -1:
+                        template_dof = nidx if nidx >= 0 else -(nidx + 2)
+                        if 0 <= template_dof < dofs_per_world:
+                            act_to_mjc_dof[act_idx] = newton_template_dof_to_mjc_dof[template_dof]
+                self.mjc_actuator_to_mjc_dof = wp.array(act_to_mjc_dof, dtype=wp.int32, device=model.device)
+            else:
+                self.mjc_actuator_to_mjc_dof = None
+
             # Create mjc_eq_to_newton_eq: MuJoCo[world, eq] -> Newton equality constraint
             # selected_constraints[idx] is the Newton template constraint index
             neq = self.mj_model.neq
@@ -10181,6 +10205,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 # Keep the host template coherent after construction. Runtime
                 # GPU notifications intentionally update only device arrays.
                 self.mj_model.jnt_solref[:] = self.mjw_model.jnt_solref.numpy()[0]
+                if self.mjc_actuator_ctrl_source is not None:
+                    joint_target = self.mjc_actuator_ctrl_source.numpy() == 0
+                    self.mj_model.actuator_gainprm[joint_target] = self.mjw_model.actuator_gainprm.numpy()[
+                        0, joint_target
+                    ]
+                    self.mj_model.actuator_biasprm[joint_target] = self.mjw_model.actuator_biasprm.numpy()[
+                        0, joint_target
+                    ]
 
             if target_filename:
                 # Only persist ``solreflimit`` for ``SOLREF_MODE_RAW`` joints
@@ -10939,6 +10971,107 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             device=self.model.device,
         )
 
+    def _compute_cpu_accel_dof_invweight(self) -> wp.array2d[float] | None:
+        """Compute exact per-DOF ``(M(qpos0)^-1)_ii`` on CPU for acceleration-drive DOFs.
+
+        MuJoCo's ``dof_invweight0`` omits ``dof_armature`` on single-DOF root slide joints and
+        averages across the 3 DOFs of a ball joint. Solving ``M x = e_i`` at ``qpos0`` matches
+        the true reflected inertia for every DOF type (including slide+armature and ball joints).
+        Returns ``None`` when no DOF uses :attr:`JointDriveType.ACCELERATION`.
+        """
+        if self.model.joint_drive_type is None or self.mjc_actuator_to_mjc_dof is None:
+            return None
+        drive_types = self.model.joint_drive_type.numpy()
+        if not np.any(drive_types == int(JointDriveType.ACCELERATION)):
+            return None
+
+        src = self.mjc_actuator_ctrl_source.numpy()
+        nidx = self.mjc_actuator_to_newton_idx.numpy()
+        act_dofs = self.mjc_actuator_to_mjc_dof.numpy()
+        accel_mjc_dofs: set[int] = set()
+        for act_i in range(len(src)):
+            if src[act_i] != SolverMuJoCo.CtrlSource.JOINT_TARGET or nidx[act_i] == -1:
+                continue
+            newton_dof = int(nidx[act_i]) if nidx[act_i] >= 0 else int(-(nidx[act_i] + 2))
+            if drive_types[newton_dof] == int(JointDriveType.ACCELERATION) and act_dofs[act_i] >= 0:
+                accel_mjc_dofs.add(int(act_dofs[act_i]))
+        if not accel_mjc_dofs:
+            return None
+
+        mujoco = self._mujoco
+        m, d = self.mj_model, self.mj_data
+        qpos_saved = d.qpos.copy()
+        d.qpos[:] = m.qpos0
+        mujoco.mj_kinematics(m, d)
+        mujoco.mj_comPos(m, d)
+        mujoco.mj_tendon(m, d)
+        mujoco.mj_makeM(m, d)
+        mujoco.mj_factorM(m, d)
+        invw = np.array(m.dof_invweight0, dtype=np.float32, copy=True)
+        rhs = np.zeros((1, m.nv), dtype=np.float64)
+        sol = np.zeros((1, m.nv), dtype=np.float64)
+        for dof in accel_mjc_dofs:
+            rhs[0, :] = 0.0
+            rhs[0, dof] = 1.0
+            mujoco.mj_solveM(m, d, sol, rhs)
+            invw[dof] = float(sol[0, dof])
+        d.qpos[:] = qpos_saved
+
+        if self._mjc_accel_dof_invweight_cpu is None or self._mjc_accel_dof_invweight_cpu.shape != (1, m.nv):
+            self._mjc_accel_dof_invweight_cpu = wp.array(
+                invw.reshape(1, m.nv), dtype=wp.float32, device=self.model.device
+            )
+        else:
+            self._mjc_accel_dof_invweight_cpu.assign(invw.reshape(1, m.nv))
+        return self._mjc_accel_dof_invweight_cpu
+
+    def _update_acceleration_drive_gains(self) -> None:
+        """Rescale acceleration-drive actuator gains using refreshed inverse inertia."""
+        if (
+            self.model.joint_dof_count == 0
+            or self.newton_dof_to_body is None
+            or self.mjc_actuator_ctrl_source is None
+            or self.mjc_actuator_to_newton_idx is None
+            or self.mjc_actuator_to_mjc_dof is None
+        ):
+            return
+
+        if self.use_mujoco_cpu:
+            dof_invweight = self._compute_cpu_accel_dof_invweight()
+            if dof_invweight is None:
+                return
+        else:
+            dof_invweight = self.mjw_model.dof_invweight0
+
+        nu = self.mjc_actuator_ctrl_source.shape[0]
+        nworld = self.mjw_model.actuator_biasprm.shape[0]
+        dofs_per_world = self.model.joint_dof_count // nworld if nworld > 0 else self.model.joint_dof_count
+        wp.launch(
+            update_axis_properties_kernel,
+            dim=(nworld, nu),
+            inputs=[
+                self.mjc_actuator_ctrl_source,
+                self.mjc_actuator_to_newton_idx,
+                self.mjc_actuator_to_mjc_dof,
+                self.model.joint_target_ke,
+                self.model.joint_target_kd,
+                self.model.joint_target_mode,
+                self.model.joint_drive_type,
+                dof_invweight,
+                dofs_per_world,
+                1,
+            ],
+            outputs=[
+                self.mjw_model.actuator_biasprm,
+                self.mjw_model.actuator_gainprm,
+            ],
+            device=self.model.device,
+        )
+        if self.use_mujoco_cpu:
+            joint_target = self.mjc_actuator_ctrl_source.numpy() == 0
+            self.mj_model.actuator_gainprm[joint_target] = self.mjw_model.actuator_gainprm.numpy()[0, joint_target]
+            self.mj_model.actuator_biasprm[joint_target] = self.mjw_model.actuator_biasprm.numpy()[0, joint_target]
+
     def _update_joint_dof_force_properties(self):
         """Publish joint gains, stiffness, and limits without refreshing inertia or reference poses."""
         if self.model.joint_dof_count == 0:
@@ -10947,7 +11080,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             return
 
         # Update actuator gains for JOINT_TARGET mode actuators
-        if self.mjc_actuator_ctrl_source is not None and self.mjc_actuator_to_newton_idx is not None:
+        if (
+            self.mjc_actuator_ctrl_source is not None
+            and self.mjc_actuator_to_newton_idx is not None
+            and self.mjc_actuator_to_mjc_dof is not None
+        ):
             nu = self.mjc_actuator_ctrl_source.shape[0]
             nworld = self.mjw_model.actuator_biasprm.shape[0]
             dofs_per_world = self.model.joint_dof_count // nworld if nworld > 0 else self.model.joint_dof_count
@@ -10958,10 +11095,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 inputs=[
                     self.mjc_actuator_ctrl_source,
                     self.mjc_actuator_to_newton_idx,
+                    self.mjc_actuator_to_mjc_dof,
                     self.model.joint_target_ke,
                     self.model.joint_target_kd,
                     self.model.joint_target_mode,
+                    self.model.joint_drive_type,
+                    self.mjw_model.dof_invweight0,
                     dofs_per_world,
+                    0,
                 ],
                 outputs=[
                     self.mjw_model.actuator_biasprm,

@@ -37,6 +37,7 @@ newton
    Gaussian
    GeoType
    Heightfield
+   JointDriveType
    JointTargetMode
    JointType
    Mesh

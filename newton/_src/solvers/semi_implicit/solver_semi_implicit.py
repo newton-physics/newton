@@ -6,7 +6,7 @@ import math
 import warp as wp
 
 from ...core.types import override
-from ...sim import Contacts, Control, JointType, Model, State
+from ...sim import Contacts, Control, JointType, Model, ModelFlags, State
 from ...sim.joint_mimic import has_supported_joint_mimics
 from ..coupled.interface import CouplingInterface
 from ..solver import SolverBase
@@ -136,6 +136,7 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
         self.enable_tri_contact = enable_tri_contact
 
         has_supported_joint_mimics(model, "SolverSemiImplicit")
+        self._warn_unsupported_acceleration_drives()
 
         if model.particle_count > 1 and model.particle_grid is not None:
             with wp.ScopedDevice(model.device):
@@ -144,6 +145,15 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
         # State.body_f and State.particle_f are read-only step inputs; internal forces accumulate in
         # these solver-owned work buffers instead. Differentiable steps allocate their own buffers.
         self._body_f_work, self._particle_f_work = self._allocate_force_work(requires_grad=False)
+
+    @override
+    def notify_model_changed(self, flags: ModelFlags | int) -> None:
+        if flags & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_FORCE_PROPERTIES):
+            self._warn_unsupported_acceleration_drives()
+
+    @override
+    def _non_graphable_model_flags(self) -> int:
+        return 0
 
     def _allocate_force_work(self, requires_grad: bool) -> tuple[wp.array | None, wp.array | None]:
         model = self.model

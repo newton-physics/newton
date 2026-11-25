@@ -449,6 +449,14 @@ motion; see :ref:`passive-joint-springs` for details.
      - |yes|
      - |no|
      - |yes|
+   * - :attr:`~newton.Model.joint_drive_type`
+     - |yes|
+     - |no|
+     - |no|
+     - |no|
+     - |yes|
+     - |no|
+     - |no|
    * - :attr:`~newton.Control.joint_f` (feedforward forces)
      - |yes|
      - |yes|

@@ -99,6 +99,7 @@ from .body_variants import (
 )
 from .enums import (
     BodyFlags,
+    JointDriveType,
     JointTargetMode,
     JointType,
 )
@@ -1494,6 +1495,7 @@ class ModelBuilder:
             velocity_limit: float = 1e6,
             friction: float = 0.0,
             actuator_mode: JointTargetMode | None = None,
+            drive_type: JointDriveType = JointDriveType.FORCE,
             target_pos: float | None = None,
             target_vel: float | None = None,
         ):
@@ -1540,6 +1542,8 @@ class ModelBuilder:
             self.actuator_mode = actuator_mode
             """Actuator mode for this DOF. Determines which actuators are installed (see :class:`JointTargetMode`).
             If None, the mode is inferred from gains and targets."""
+            self.drive_type = drive_type
+            """Drive type for this DOF (see :class:`JointDriveType`). Defaults to :attr:`JointDriveType.FORCE`."""
 
             if self.target_q > self.limit_upper or self.target_q < self.limit_lower:
                 self.target_q = 0.5 * (self.limit_lower + self.limit_upper)
@@ -2536,6 +2540,8 @@ class ModelBuilder:
         """Joint armature values accumulated for :attr:`Model.joint_armature`."""
         self.joint_target_mode: list[int] = []
         """Joint target modes accumulated for :attr:`Model.joint_target_mode`."""
+        self.joint_drive_type: list[int] = []
+        """Joint drive types accumulated for :attr:`Model.joint_drive_type`."""
         self.joint_target_ke: list[float] = []
         """Joint target stiffness values accumulated for :attr:`Model.joint_target_ke`."""
         self.joint_target_kd: list[float] = []
@@ -7188,6 +7194,10 @@ class ModelBuilder:
                     raise ValueError(
                         f"JointType.ROD requires actuator_mode=JointTargetMode.NONE; got {configured.actuator_mode!r}."
                     )
+                if configured.drive_type != JointDriveType.FORCE:
+                    raise ValueError(
+                        f"JointType.ROD requires drive_type=JointDriveType.FORCE; got {configured.drive_type!r}."
+                    )
             if any(configured.rest_q not in (None, 0.0) for configured in linear_axes):
                 raise ValueError(
                     "JointType.ROD requires zero linear rest_q values because its structural-rest anchors coincide."
@@ -7296,6 +7306,8 @@ class ModelBuilder:
 
             # Store per-DOF actuator properties
             self.joint_target_mode.append(mode)
+            drive_type = int(JointDriveType.FORCE) if joint_type == JointType.ROD else int(dim.drive_type)
+            self.joint_drive_type.append(drive_type)
             self.joint_target_ke.append(dim.target_ke)
             self.joint_target_kd.append(dim.target_kd)
             self.joint_stiffness.append(dim.stiffness)
@@ -7433,6 +7445,7 @@ class ModelBuilder:
         velocity_limit: float | None = None,
         friction: float | None = None,
         actuator_mode: JointTargetMode | None = None,
+        drive_type: JointDriveType | None = None,
         target_pos: float | None = None,
         target_vel: float | None = None,
         label: str | None = None,
@@ -7467,6 +7480,7 @@ class ModelBuilder:
             velocity_limit: Maximum velocity the joint axis can achieve. If None, the default value from ``ModelBuilder.default_joint_cfg.velocity_limit`` is used.
             friction: Friction coefficient for the joint axis. If None, the default value from ``ModelBuilder.default_joint_cfg.friction`` is used.
             actuator_mode: The actuator mode for the joint axis. If None, the default value from ``ModelBuilder.default_joint_cfg.actuator_mode`` is used.
+            drive_type: The drive type for the joint axis (:class:`JointDriveType`). If None, the default value from ``ModelBuilder.default_joint_cfg.drive_type`` is used.
             target_pos: Deprecated since 1.8; use ``target_q``.
             target_vel: Deprecated since 1.8; use ``target_qd``.
             label: The label of the joint.
@@ -7504,6 +7518,7 @@ class ModelBuilder:
                 velocity_limit=velocity_limit if velocity_limit is not None else self.default_joint_cfg.velocity_limit,
                 friction=friction if friction is not None else self.default_joint_cfg.friction,
                 actuator_mode=actuator_mode if actuator_mode is not None else self.default_joint_cfg.actuator_mode,
+                drive_type=drive_type if drive_type is not None else self.default_joint_cfg.drive_type,
             )
         return self.add_joint(
             JointType.REVOLUTE,
@@ -7543,6 +7558,7 @@ class ModelBuilder:
         velocity_limit: float | None = None,
         friction: float | None = None,
         actuator_mode: JointTargetMode | None = None,
+        drive_type: JointDriveType | None = None,
         target_pos: float | None = None,
         target_vel: float | None = None,
         label: str | None = None,
@@ -7576,6 +7592,7 @@ class ModelBuilder:
             velocity_limit: Maximum velocity the joint axis can achieve. If None, the default value from ``ModelBuilder.default_joint_cfg.velocity_limit`` is used.
             friction: Friction coefficient for the joint axis. If None, the default value from ``ModelBuilder.default_joint_cfg.friction`` is used.
             actuator_mode: The actuator mode for the joint axis. If None, the default value from ``ModelBuilder.default_joint_cfg.actuator_mode`` is used.
+            drive_type: The drive type for the joint axis (:class:`JointDriveType`). If None, the default value from ``ModelBuilder.default_joint_cfg.drive_type`` is used.
             target_pos: Deprecated since 1.8; use ``target_q``.
             target_vel: Deprecated since 1.8; use ``target_qd``.
             label: The label of the joint.
@@ -7613,6 +7630,7 @@ class ModelBuilder:
                 velocity_limit=velocity_limit if velocity_limit is not None else self.default_joint_cfg.velocity_limit,
                 friction=friction if friction is not None else self.default_joint_cfg.friction,
                 actuator_mode=actuator_mode if actuator_mode is not None else self.default_joint_cfg.actuator_mode,
+                drive_type=drive_type if drive_type is not None else self.default_joint_cfg.drive_type,
             )
         return self.add_joint(
             JointType.PRISMATIC,
@@ -7639,6 +7657,7 @@ class ModelBuilder:
         damping: float | None = None,
         stiffness: float | None = None,
         actuator_mode: JointTargetMode | None = None,
+        drive_type: JointDriveType | None = None,
         label: str | None = None,
         collision_filter_parent: bool | None = None,
         enabled: bool = True,
@@ -7656,6 +7675,7 @@ class ModelBuilder:
             damping: Passive angular velocity damping [N·s/m or N·m·s/rad, depending on joint type] always active on all three BALL joint angular DOFs. If None, the default value from ``ModelBuilder.default_joint_cfg.damping`` is used.
             stiffness: Isotropic passive angular spring stiffness [N·m/rad], supported by SolverMuJoCo. If None, the default value from ``ModelBuilder.default_joint_cfg.stiffness`` is used.
             actuator_mode: The actuator mode for this joint's DOFs. If None, defaults to NONE.
+            drive_type: The drive type for this joint's DOFs (:class:`JointDriveType`). If None, the default value from ``ModelBuilder.default_joint_cfg.drive_type`` is used.
             label: The label of the joint.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies. Defaults to ``False`` for joints to world, ``True`` otherwise.
             enabled: Whether the joint is enabled.
@@ -7684,6 +7704,8 @@ class ModelBuilder:
             stiffness = self.default_joint_cfg.stiffness
         if damping is None:
             damping = self.default_joint_cfg.damping
+        if drive_type is None:
+            drive_type = self.default_joint_cfg.drive_type
 
         x = ModelBuilder.JointDofConfig(
             axis=Axis.X,
@@ -7692,6 +7714,7 @@ class ModelBuilder:
             damping=damping,
             stiffness=stiffness,
             actuator_mode=actuator_mode,
+            drive_type=drive_type,
         )
         y = ModelBuilder.JointDofConfig(
             axis=Axis.Y,
@@ -7700,6 +7723,7 @@ class ModelBuilder:
             damping=damping,
             stiffness=stiffness,
             actuator_mode=actuator_mode,
+            drive_type=drive_type,
         )
         z = ModelBuilder.JointDofConfig(
             axis=Axis.Z,
@@ -7708,6 +7732,7 @@ class ModelBuilder:
             damping=damping,
             stiffness=stiffness,
             actuator_mode=actuator_mode,
+            drive_type=drive_type,
         )
 
         return self.add_joint(
@@ -8888,6 +8913,7 @@ class ModelBuilder:
                     {
                         "axis": self.joint_axis[j],
                         "actuator_mode": self.joint_target_mode[j],
+                        "drive_type": self.joint_drive_type[j],
                         "target_ke": self.joint_target_ke[j],
                         "target_kd": self.joint_target_kd[j],
                         "stiffness": self.joint_stiffness[j],
@@ -9436,6 +9462,7 @@ class ModelBuilder:
         self.joint_X_c.clear()
         self.joint_axis.clear()
         self.joint_target_mode.clear()
+        self.joint_drive_type.clear()
         self.joint_target_ke.clear()
         self.joint_target_kd.clear()
         self.joint_stiffness.clear()
@@ -9493,6 +9520,7 @@ class ModelBuilder:
             for axis in joint["axes"]:
                 self.joint_axis.append(axis["axis"])
                 self.joint_target_mode.append(axis["actuator_mode"])
+                self.joint_drive_type.append(axis["drive_type"])
                 self.joint_target_ke.append(axis["target_ke"])
                 self.joint_target_kd.append(axis["target_kd"])
                 self.joint_stiffness.append(axis["stiffness"])
@@ -15040,6 +15068,7 @@ class ModelBuilder:
                     ("joint_velocity_limit", self.joint_velocity_limit),
                     ("joint_friction", self.joint_friction),
                     ("joint_target_mode", self.joint_target_mode),
+                    ("joint_drive_type", self.joint_drive_type),
                 ]
             for name, arr in dof_arrays:
                 if len(arr) != self.joint_dof_count:
@@ -17302,6 +17331,7 @@ class ModelBuilder:
             # dynamics properties
             m.joint_armature = wp.array(self.joint_armature, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_target_mode = wp.array(self.joint_target_mode, dtype=wp.int32)
+            m.joint_drive_type = wp.array(self.joint_drive_type, dtype=wp.int32)
             m.joint_target_ke = wp.array(self.joint_target_ke, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_target_kd = wp.array(self.joint_target_kd, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_stiffness = wp.array(self.joint_stiffness, dtype=wp.float32, requires_grad=requires_grad)
@@ -17987,6 +18017,7 @@ _ARRAY_BACKED_ATTRIBUTE_DTYPES: dict[str, Any] = {
     "joint_axis": wp.vec3,
     "joint_armature": wp.float32,
     "joint_target_mode": wp.int32,
+    "joint_drive_type": wp.int32,
     "joint_target_ke": wp.float32,
     "joint_target_kd": wp.float32,
     "joint_stiffness": wp.float32,

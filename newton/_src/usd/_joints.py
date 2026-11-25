@@ -16,7 +16,7 @@ import warp as wp
 from ..core._warnings import _external_warning_stacklevel
 from ..exceptions import NewtonWarning
 from ..sim.builder import ModelBuilder
-from ..sim.enums import JointTargetMode
+from ..sim.enums import JointDriveType, JointTargetMode
 from ..sim.model import Model
 from . import utils as usd
 from ._resolution_policy import (
@@ -299,6 +299,7 @@ def parse_joint(
             joint_params["target_q"] = dof.target_pos
             joint_params["target_ke"] = dof.target_ke
             joint_params["target_kd"] = dof.target_kd
+            joint_params["drive_type"] = dof.drive_type
         joint_params["actuator_mode"] = dof.actuator_mode
 
         # Initial joint state, applied after creation (already in Newton units)
@@ -403,6 +404,7 @@ def parse_joint(
                 target_kd = 0.0
                 effort_limit = np.inf
                 has_drive = False
+                drive_type = JointDriveType.FORCE
                 for drive in joint_desc.jointDrives:
                     if drive.first != dof:
                         continue
@@ -413,13 +415,14 @@ def parse_joint(
                         target_ke = drive.second.stiffness
                         target_kd = drive.second.damping
                         effort_limit = drive.second.forceLimit
+                        drive_type = JointDriveType.ACCELERATION if drive.second.acceleration else JointDriveType.FORCE
                 actuator_mode = JointTargetMode.from_gains(
                     target_ke, target_kd, force_position_velocity_actuation, has_drive=has_drive
                 )
-                return target_pos, target_vel, target_ke, target_kd, effort_limit, actuator_mode
+                return target_pos, target_vel, target_ke, target_kd, effort_limit, actuator_mode, drive_type
 
-            target_pos, target_vel, target_ke, target_kd, effort_limit, actuator_mode = define_joint_targets(
-                dof, joint_desc
+            target_pos, target_vel, target_ke, target_kd, effort_limit, actuator_mode, drive_type = (
+                define_joint_targets(dof, joint_desc)
             )
 
             _trans_axes = {
@@ -495,6 +498,7 @@ def parse_joint(
                         else default_joint_velocity_limit,
                         friction=joint_friction,
                         actuator_mode=actuator_mode,
+                        drive_type=drive_type,
                     )
                 )
                 linear_solref_modes.append(
@@ -564,6 +568,7 @@ def parse_joint(
                         else default_joint_velocity_limit,
                         friction=joint_friction,
                         actuator_mode=actuator_mode,
+                        drive_type=drive_type,
                     )
                 )
                 angular_solref_modes.append(
@@ -880,6 +885,7 @@ def parse_merged_joints(
             effort_limit=dof.effort_limit if dof.effort_limit is not None else np.inf,
             velocity_limit=dof.velocity_limit if dof.velocity_limit is not None else default_joint_velocity_limit,
             actuator_mode=dof.actuator_mode,
+            drive_type=dof.drive_type,
         )
         if _endpoints_swapped(jd, path_body_map):
             swapped_axes.append(ax)

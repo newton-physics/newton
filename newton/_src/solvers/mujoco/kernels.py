@@ -17,7 +17,7 @@ from ...geometry.sdf_planar_recovery import (
     has_recovery_contacts,
     recovery_step_depth,
 )
-from ...sim import BodyFlags, JointTargetMode, JointType
+from ...sim import BodyFlags, JointDriveType, JointTargetMode, JointType
 from ...sim.articulation import eval_joint_motion
 from ...sim.contacts import contact_surface_point, contact_surface_separation
 from .constants import (
@@ -2137,10 +2137,14 @@ def update_solver_options_kernel(
 def update_axis_properties_kernel(
     mjc_actuator_ctrl_source: wp.array[wp.int32],
     mjc_actuator_to_newton_idx: wp.array[wp.int32],
+    mjc_actuator_to_mjc_dof: wp.array[wp.int32],
     joint_target_ke: wp.array[float],
     joint_target_kd: wp.array[float],
     joint_target_mode: wp.array[wp.int32],
+    joint_drive_type: wp.array[wp.int32],
+    dof_invweight: wp.array2d[float],
     dofs_per_world: wp.int32,
+    only_acceleration: wp.int32,
     # outputs
     actuator_bias: wp.array2d[vec10],
     actuator_gain: wp.array2d[vec10],
@@ -2160,13 +2164,21 @@ def update_axis_properties_kernel(
     POSITION_VELOCITY mode, only kp is synced to the position actuator (kd goes
     to the separate velocity actuator).
 
+    For acceleration drives (joint_drive_type == JointDriveType.ACCELERATION), gains
+    are scaled by the reflected inertia ``1 / dof_invweight`` so the actuator commands
+    mass-independent joint acceleration.
+
     Args:
         mjc_actuator_ctrl_source: 0=JOINT_TARGET, 1=CTRL_DIRECT
         mjc_actuator_to_newton_idx: Index into Newton array (sign-encoded for JOINT_TARGET)
+        mjc_actuator_to_mjc_dof: MuJoCo DOF index for each JOINT_TARGET actuator (-1 otherwise)
         joint_target_ke: Per-DOF position gains (kp)
         joint_target_kd: Per-DOF velocity/damping gains (kd)
         joint_target_mode: Per-DOF target mode from Model.joint_target_mode
+        joint_drive_type: Per-DOF drive type from Model.joint_drive_type
+        dof_invweight: Per-world inverse reflected inertia ``(M^-1)_ii`` per MuJoCo DOF
         dofs_per_world: Number of DOFs per world
+        only_acceleration: If non-zero, update only ACCELERATION drive actuators
     """
     world, actuator = wp.tid()
     source = mjc_actuator_ctrl_source[actuator]
@@ -2176,10 +2188,29 @@ def update_axis_properties_kernel(
         return
 
     idx = mjc_actuator_to_newton_idx[actuator]
+    if idx == -1:
+        # Unmapped/skip
+        return
+
+    newton_axis = idx if idx >= 0 else -(idx + 2)
+    world_dof = world * dofs_per_world + newton_axis
+    is_accel = joint_drive_type[world_dof] == JointDriveType.ACCELERATION
+    if only_acceleration != 0 and not is_accel:
+        return
+
+    scale = float(1.0)
+    if is_accel:
+        mjc_dof = mjc_actuator_to_mjc_dof[actuator]
+        if mjc_dof >= 0:
+            invw = dof_invweight[world % dof_invweight.shape[0], mjc_dof]
+            if invw > FLOAT64_EPS:
+                scale = 1.0 / invw
+            else:
+                scale = 0.0
+
     if idx >= 0:
         # Position actuator - get kp from per-DOF array
-        world_dof = world * dofs_per_world + idx
-        kp = joint_target_ke[world_dof]
+        kp = joint_target_ke[world_dof] * scale
         actuator_bias[world, actuator][1] = -kp
         actuator_gain[world, actuator][0] = kp
 
@@ -2187,16 +2218,11 @@ def update_axis_properties_kernel(
         # For POSITION_VELOCITY mode, kd is handled by the separate velocity actuator
         mode = joint_target_mode[idx]  # Use template DOF index (idx) not world_dof
         if mode == JointTargetMode.POSITION:
-            kd = joint_target_kd[world_dof]
+            kd = joint_target_kd[world_dof] * scale
             actuator_bias[world, actuator][2] = -kd
-    elif idx == -1:
-        # Unmapped/skip
-        return
     else:
         # Velocity actuator - get kd from per-DOF array
-        newton_axis = -(idx + 2)
-        world_dof = world * dofs_per_world + newton_axis
-        kd = joint_target_kd[world_dof]
+        kd = joint_target_kd[world_dof] * scale
         actuator_bias[world, actuator][2] = -kd
         actuator_gain[world, actuator][0] = kd
 

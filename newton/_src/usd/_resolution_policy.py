@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
 from ..exceptions import NewtonWarning
-from ..sim.enums import JointTargetMode
+from ..sim.enums import JointDriveType, JointTargetMode
 from ..solvers.mujoco.constants import SOLREF_MODE_FORCE_SPACE, SOLREF_MODE_MJCF_DEFAULT, SOLREF_MODE_RAW
 from . import utils as usd
 from .schema_resolver import PrimType, SchemaResolver, SchemaResolverManager
@@ -108,6 +108,7 @@ class _DofParams:
     target_kd: float
     effort_limit: float | None
     actuator_mode: JointTargetMode
+    drive_type: JointDriveType
     initial_position: float | None
     initial_velocity: float | None
     limit_solref_mode: int
@@ -277,8 +278,10 @@ class _UsdJointProperties:
             actuator_mode = JointTargetMode.from_gains(
                 target_ke, target_kd, force_position_velocity_actuation, has_drive=True
             )
+            drive_type = JointDriveType.ACCELERATION if jd.drive.acceleration else JointDriveType.FORCE
         else:
             actuator_mode = JointTargetMode.NONE
+            drive_type = JointDriveType.FORCE
 
         state_prefix = "angular" if is_revolute else "linear"
         initial_position = self.resolver.get_value(
@@ -321,6 +324,7 @@ class _UsdJointProperties:
             target_kd=target_kd,
             effort_limit=effort_limit,
             actuator_mode=actuator_mode,
+            drive_type=drive_type,
             initial_position=initial_position,
             initial_velocity=initial_velocity,
             limit_solref_mode=self.joint_limit_solref_mode(jp_prim, limit_ke_source, limit_kd_source),

@@ -606,6 +606,15 @@ Newton's per-DOF :attr:`~newton.Model.joint_target_mode` creates MuJoCo general 
 :attr:`~newton.Model.joint_effort_limit` is forwarded as ``actfrcrange`` on the joint
 (prismatic, revolute, and D6) or as ``forcerange`` on the actuator (ball).
 
+For DOFs with :attr:`~newton.Model.joint_drive_type` set to
+:attr:`~newton.JointDriveType.ACCELERATION` (imported from USD ``drive:*:physics:type = "acceleration"``),
+the joint-target actuator gains ``kp`` and ``kd`` are scaled by the DOF's reflected
+inertia at the reference configuration so that the drive commands mass-independent
+joint acceleration while still clamping the resulting force/torque to
+:attr:`~newton.Model.joint_effort_limit`. The scaling refreshes automatically on
+:meth:`~newton.solvers.SolverMuJoCo.notify_model_changed` when body inertia,
+joint armature, reference poses, or joint drive parameters change.
+
 For MJCF position-only drives with ``dampratio`` and the default joint-target
 control mapping, solver construction resolves damping using each world's
 initial physical inertia, authored armature, and position gain. It replaces the imported

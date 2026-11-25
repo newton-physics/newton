@@ -231,6 +231,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
         self._refresh_rigid_restitution_enabled()
 
         self._has_joint_mimics = has_supported_joint_mimics(model, "SolverXPBD")
+        self._warn_unsupported_acceleration_drives()
         if self._has_joint_mimics:
             self._set_module_options(module_options, module=solve_joint_mimics.module)
 
@@ -282,6 +283,8 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
         """
         self._ensure_restitution_module_options()
         self._apply_module_options()
+        if flags & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_FORCE_PROPERTIES):
+            self._warn_unsupported_acceleration_drives()
         if flags & ModelFlags.TENDON_PROPERTIES:
             self._refresh_tendon_properties()
         if flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):

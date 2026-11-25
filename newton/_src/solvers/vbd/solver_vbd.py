@@ -1527,6 +1527,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 "model.body_color_groups is empty but rigid bodies are present! When using the SolverVBD you must call ModelBuilder.color() "
                 "or ModelBuilder.set_coloring() before calling ModelBuilder.finalize()."
             )
+        if self._integrates_rigid_bodies:
+            self._warn_unsupported_acceleration_drives()
 
     @override
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
@@ -1545,6 +1547,10 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 indicating which model properties changed.
         """
         self._apply_module_options()
+        if self._integrates_rigid_bodies and flags & (
+            ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+        ):
+            self._warn_unsupported_acceleration_drives()
         if flags & ModelFlags.SHAPE_PROPERTIES:
             self._validate_contact_materials()
         if flags & ModelFlags.TENDON_PROPERTIES:
