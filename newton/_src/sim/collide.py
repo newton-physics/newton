@@ -1037,7 +1037,9 @@ def _warn_large_rigid_contact_estimate(estimate: _RigidContactCountEstimate) -> 
     )
 
 
-def _estimate_rigid_contact_max_per_world(model: Model | ModelView, rigid_contact_max: int) -> int:
+def _estimate_rigid_contact_max_per_world(
+    model: Model | ModelView, rigid_contact_max: int, *, shape_mask: np.ndarray | None = None
+) -> int:
     """Estimate the busiest world's share of a global rigid-contact capacity.
 
     The collision pipeline stores contacts in one heterogeneous global buffer,
@@ -1048,6 +1050,8 @@ def _estimate_rigid_contact_max_per_world(model: Model | ModelView, rigid_contac
     Args:
         model: The simulation model.
         rigid_contact_max: Global rigid-contact capacity.
+        shape_mask: Boolean array of length ``shape_count``; when given, only pairs with at
+            least one selected shape count.
 
     Returns:
         Maximum estimated contacts that one world can contribute, capped by the
@@ -1059,6 +1063,11 @@ def _estimate_rigid_contact_max_per_world(model: Model | ModelView, rigid_contac
     counts = _shape_contact_pair_counts(model)
     is_mesh = _shape_may_be_mesh(model, model.shape_type.numpy(), _variant_options(model))
     primitive_counts = _shape_contact_pair_counts(model, shape_mask=~is_mesh) if is_mesh.any() else counts
+    if shape_mask is not None:
+        # Pairs with at least one selected shape: all pairs minus those with neither shape selected.
+        unselected = ~np.asarray(shape_mask, dtype=bool)
+        counts = counts - _shape_contact_pair_counts(model, shape_mask=unselected)
+        primitive_counts = primitive_counts - _shape_contact_pair_counts(model, shape_mask=unselected & ~is_mesh)
     contacts = (
         primitive_counts * _RIGID_CONTACTS_PER_PRIMITIVE_PAIR
         + (counts - primitive_counts) * _RIGID_CONTACTS_PER_MESH_PAIR

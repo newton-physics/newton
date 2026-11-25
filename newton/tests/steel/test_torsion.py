@@ -1853,6 +1853,7 @@ def _pad_rollout(pairs_per_world, capacity, *, device, preparation="device", ste
         deterministic=wp.DeterministicMode.RUN_TO_RUN,
         contact_torsion_device=preparation != "host",
         warn_constraint_overflow=warn,
+        raise_constraint_overflow=False,
         row_watermark=True,
     )
     pipeline = newton.CollisionPipeline(model, broad_phase="nxn", rigid_contact_max=256, deterministic=True)

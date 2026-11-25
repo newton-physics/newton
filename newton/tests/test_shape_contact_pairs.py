@@ -409,6 +409,28 @@ class TestShapeContactPairs(unittest.TestCase):
                     self.assertEqual(compute_required_contact_capacity(model), (2, counts[1:]))
                     self.assertEqual(model.shape_contact_pair_count, 2)
 
+    def test_per_world_estimate_counts_pairs_touching_mask(self):
+        """Count only the pairs with at least one masked shape in the per-world estimate."""
+        builder = newton.ModelBuilder()
+        builder.begin_world()
+        for _ in range(3):
+            builder.add_shape_sphere(builder.add_body())
+        builder.end_world()
+        builder.add_ground_plane()
+        model = builder.finalize(device="cpu")
+        # Three sphere pairs and three sphere-ground pairs.
+        self.assertEqual(_estimate_rigid_contact_max_per_world(model, 100), 30)
+        for mask, estimate in (
+            ([True, False, False, False], 15),
+            ([False, False, False, True], 15),
+            ([False, False, False, False], 0),
+            ([True, True, True, True], 30),
+        ):
+            with self.subTest(mask=mask):
+                shape_mask = np.array(mask)
+                self.assertEqual(_estimate_rigid_contact_max_per_world(model, 100, shape_mask=shape_mask), estimate)
+        self.assertEqual(_estimate_rigid_contact_max_per_world(model, 12, shape_mask=np.ones(4, dtype=bool)), 12)
+
     def test_empty_models_and_filtered_scenes(self):
         """Return empty arrays for empty and fully excluded scenes."""
         empty = newton.ModelBuilder().finalize(device="cpu")

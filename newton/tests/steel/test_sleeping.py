@@ -2389,7 +2389,9 @@ def test_colored_propagation_overflow_vetoes_sleep(test, device):
     asleep = {}
     for ignore_overflow in (False, True):
         # The settled arm and heap need more rows than this; once they sleep they need fewer.
-        scene = _Heap(device, propagation_constraint_max=300, warn_constraint_overflow=False)
+        scene = _Heap(
+            device, propagation_constraint_max=300, warn_constraint_overflow=False, raise_constraint_overflow=False
+        )
         clean = wp.zeros_like(scene.solver.constraint_overflow)
 
         def veto_without_overflow(kernel, dim, inputs=None, *args, scene=scene, clean=clean, **kwargs):

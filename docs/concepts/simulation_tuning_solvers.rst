@@ -236,7 +236,8 @@ repository examples spend tuning effort, not a shared solver API.
        ``joint_limit_activation_gap``, ``enable_joint_friction``,
        ``enable_joint_velocity_limits``, ``velocity_limit_activation_fraction``,
        ``articulation_constraint_max``, ``free_body_constraint_max``,
-       ``propagation_constraint_max``, ``warn_constraint_overflow``, ``drive_mode``,
+       ``propagation_constraint_max``, ``warn_constraint_overflow``,
+       ``raise_constraint_overflow``, ``drive_mode``,
        ``fuse_joint_velocity_limits``, ``enable_bilateral_preelimination``,
        ``bilateral_preelimination_include_mimics``, ``friction_anchor_beta``,
        ``reuse_kinematics``,
@@ -319,11 +320,18 @@ repository examples spend tuning effort, not a shared solver API.
        Joint drives are integrated implicitly by default, which keeps large
        drive gains stable at ordinary ``dt``; ``drive_mode="rows"`` solves
        them as PGS rows together with contacts and limits instead, and each
-       driven DOF then uses one row of ``articulation_constraint_max``. Rows beyond ``articulation_constraint_max``
+       driven DOF then uses one row of ``articulation_constraint_max``. By default
+       ``articulation_constraint_max`` is sized from the model: the joint rows of the
+       busiest world plus three rows per contact of the collision pipeline's per-world
+       estimate for the shapes of articulated bodies, between 32 and 256 rows unless
+       the joint rows alone need more. Rows beyond ``articulation_constraint_max``
        (articulated bodies), ``free_body_constraint_max`` (free bodies) or
        ``propagation_constraint_max`` (propagation rows, see below) per world
        are dropped and flagged in ``constraint_overflow`` (one entry per world
-       and a final entry for global articulations); call
+       and a final entry for global articulations). An eager ``step()`` then
+       raises, naming the capacity to raise, once the device has finished the
+       step that dropped them; ``raise_constraint_overflow=False`` keeps stepping
+       instead. Captured steps do not raise: call
        ``check_constraint_capacity()`` at an observation boundary, and raise the
        capacity and reset the world when it reports a world. To check a step
        without waiting for the steps queued after it, call

@@ -3616,7 +3616,7 @@ def test_reset_validates_mask_length(test, device, solve_mode="serial"):
 def test_reset_isolates_global_slot(test, device, solve_mode="serial"):
     """Select local worlds and global entities independently through the final mask entry."""
     model = _build_two_worlds_with_global_body(device)
-    solver = SolverSteel(model, solve_mode=solve_mode, update_mass_matrix_interval=100)
+    solver = SolverSteel(model, solve_mode=solve_mode, update_mass_matrix_interval=100, raise_constraint_overflow=False)
     state, output = model.state(), model.state()
     control = model.control()
     solver.step(state, output, control, None, 0.01)

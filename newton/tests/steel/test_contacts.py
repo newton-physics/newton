@@ -839,7 +839,13 @@ def test_overflow_warning_enabled_after_construction_latches(test, device):
     newton.eval_fk(model, state.joint_q, state.joint_qd, state)
     contacts = pipeline.contacts()
     pipeline.collide(state, contacts)
-    solver = SolverSteel(model, friction_anchor_beta=0.0, articulation_constraint_max=1, warn_constraint_overflow=False)
+    solver = SolverSteel(
+        model,
+        friction_anchor_beta=0.0,
+        articulation_constraint_max=1,
+        warn_constraint_overflow=False,
+        raise_constraint_overflow=False,
+    )
     solver.step(state, output, model.control(), contacts, 1.0 / 240.0)
     test.assertTrue(solver.constraint_overflow.numpy().any())
     test.assertEqual(solver._row_overflow_warning_emitted.numpy().tolist(), [0, 0, 0, 0, 0])
@@ -1540,7 +1546,7 @@ def test_overflowing_contact_count_stays_in_the_rigid_rows(test, device, capture
     builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
     model = builder.finalize(device=device)
     # Built before the pipeline, the solver's contact scratch is larger than the contact buffer.
-    solver = SolverSteel(model, warn_constraint_overflow=False)
+    solver = SolverSteel(model, warn_constraint_overflow=False, raise_constraint_overflow=False)
     rigid_capacity, soft_capacity = 4, 2
     pipeline = newton.CollisionPipeline(model, rigid_contact_max=rigid_capacity, soft_contact_max=soft_capacity)
     contacts = pipeline.contacts()
@@ -1638,7 +1644,10 @@ for _suffix, _options in (
     ("torsion", {"torsion_radius": 0.01}),
     ("device_torsion", {"torsion_radius": 0.01, "contact_torsion_device": True}),
     ("double_buffer", {"double_buffer": True}),
-    ("row_overflow", {"free_body_constraint_max": 6, "warn_constraint_overflow": False}),
+    (
+        "row_overflow",
+        {"free_body_constraint_max": 6, "warn_constraint_overflow": False, "raise_constraint_overflow": False},
+    ),
 ):
     add_function_test(
         TestSteelContactObservable,
