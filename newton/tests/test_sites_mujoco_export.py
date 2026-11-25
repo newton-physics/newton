@@ -90,6 +90,33 @@ class TestMuJoCoSiteExport(unittest.TestCase):
         solver.step(output, state, model.control(), None, 0.001)
         np.testing.assert_allclose(solver.mj_data.qpos, qpos + 0.001 * qvel, atol=1e-7)
 
+    def test_site_edit_preserves_unnotified_connect_anchor(self):
+        builder = newton.ModelBuilder()
+        body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        joint = builder.add_joint_revolute(-1, body, parent_xform=wp.transform((1.0, 2.0, 3.0), wp.quat_identity()))
+        builder.add_articulation([joint])
+        moving = builder.add_site(body)
+        fixed = builder.add_site(-1)
+        mujoco.add_tendon_spatial(builder, [mujoco.TendonWrapSite(moving), mujoco.TendonWrapSite(fixed)])
+        mujoco.add_equality_connect(builder, body, anchor=wp.vec3(0.1, 0.2, 0.3), enabled=False)
+
+        for cpu in (False, True):
+            with self.subTest(cpu=cpu):
+                model = builder.finalize()
+                solver = SolverMuJoCo(model, use_mujoco_cpu=cpu, disable_contacts=True)
+                published = solver.mjw_model.eq_data.numpy()[0, 0, :6].copy()
+                anchor = np.array([0.4, 0.5, 0.6])
+                model.mujoco.equality_constraint_anchor.assign(anchor[None, :])
+                poses = model.shape_transform.numpy().copy()
+                poses[moving, 0] += 0.1
+                model.shape_transform.assign(poses)
+                solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+                actual = solver.mj_model.eq_data if cpu else solver.mjw_model.eq_data.numpy()[0]
+                np.testing.assert_allclose(actual[0, :6], published, atol=1e-7)
+                solver.notify_model_changed(newton.ModelFlags.CONSTRAINT_PROPERTIES)
+                actual = solver.mj_model.eq_data if cpu else solver.mjw_model.eq_data.numpy()[0]
+                np.testing.assert_allclose(actual[0, :6], [0.4, 0.5, 0.6, 1.4, 2.5, 3.6], atol=1e-7)
+
     def test_worldbody_site_poses_across_worlds(self):
         """Keep batched worldbody site poses synchronized with Newton."""
         world = newton.ModelBuilder()
