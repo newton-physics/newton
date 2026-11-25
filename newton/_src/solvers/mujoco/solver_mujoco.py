@@ -54,7 +54,7 @@ from .collision_masks import (
     compile_newton_collision_graph,
     mujoco_mask_to_signed,
 )
-from .condim import finalize_condim, resolve_shape_condim, skip_imported_condim
+from .condim import finalize_condim, resolve_shape_condim, shapes_rolling_without_torsion, skip_imported_condim
 from .constants import (
     DEFAULT_LIMIT_SOLREF,
     FLOAT64_EPS,
@@ -7683,7 +7683,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         shape_mjc_contype = get_custom_attribute("contype")
         shape_mjc_conaffinity = get_custom_attribute("conaffinity")
         shape_mjc_collision_mask_domain = get_custom_attribute("collision_mask_domain")
-        shape_condim, shape_rolling_without_torsion = resolve_shape_condim(model)
+        shape_condim = resolve_shape_condim(model)
+        shape_rolling_without_torsion = shapes_rolling_without_torsion(model)
         shape_geom_group = get_custom_attribute("geom_group")
         shape_hfield_base = get_custom_attribute("hfield_base")
         shape_priority = get_custom_attribute("geom_priority")
