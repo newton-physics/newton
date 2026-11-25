@@ -551,13 +551,13 @@ def _finalize_constraint_status(
     global_slot = overflow.shape[0] - 1
     lost = False
     if contact_count[0] > contact_capacity:
-        overflow_causes[_OVERFLOW_CAUSE_CONTACTS] = 1
+        wp.atomic_max(overflow_causes, _OVERFLOW_CAUSE_CONTACTS, 1)
         lost = True
     if reduction_overflow[0] != 0:
-        overflow_causes[_OVERFLOW_CAUSE_REDUCTION] = 1
+        wp.atomic_max(overflow_causes, _OVERFLOW_CAUSE_REDUCTION, 1)
         lost = True
     if cross_world_contacts[slot] > 0:
-        overflow_causes[_OVERFLOW_CAUSE_CROSS_WORLD] = 1
+        wp.atomic_max(overflow_causes, _OVERFLOW_CAUSE_CROSS_WORLD, 1)
         lost = True
     world = slot
     if slot == global_slot:
@@ -566,13 +566,13 @@ def _finalize_constraint_status(
             world = 0
     if world >= 0:
         if dense_count[world] > dense_capacity or dropped[0, world] > 0:
-            overflow_causes[_OVERFLOW_CAUSE_DENSE] = 1
+            wp.atomic_max(overflow_causes, _OVERFLOW_CAUSE_DENSE, 1)
             lost = True
         if mf_count[world] > mf_capacity or dropped[1, world] > 0:
-            overflow_causes[_OVERFLOW_CAUSE_FREE_BODY] = 1
+            wp.atomic_max(overflow_causes, _OVERFLOW_CAUSE_FREE_BODY, 1)
             lost = True
         if propagation_count[world] > propagation_capacity or dropped[2, world] > 0:
-            overflow_causes[_OVERFLOW_CAUSE_PROPAGATION] = 1
+            wp.atomic_max(overflow_causes, _OVERFLOW_CAUSE_PROPAGATION, 1)
             lost = True
     if lost:
         overflow[slot] = True
@@ -2054,12 +2054,17 @@ class SolverSteel(SolverBase, CouplingInterface):
                 emits its overflow warning as a :class:`~newton.NewtonWarning`
                 through :mod:`warnings` instead.
             raise_constraint_overflow: Raise :class:`RuntimeError` from :meth:`step`, before it
-                launches any work, once an earlier eager step has flagged a world in
-                :attr:`constraint_overflow`; the error names the capacity to raise. Each eager step
-                copies the status on the device, and a later step reads the copy only after the
-                device has finished that step, so the check never waits for the device and the
-                raising step can come a few steps after the loss. Steps keep raising until a
-                :meth:`reset` of the flagged worlds. Captured steps do not check: call
+                launches any work, once an eager step has flagged a world in
+                :attr:`constraint_overflow`; the error names the capacity to raise. An eager step
+                with no unread sample counts the flagged entries on the device after its work. A
+                later eager step polls whether that step has finished on the device; if so it reads
+                the count back on a side stream, which waits only for that copy, not for the work
+                queued after the sample. A nonzero count is confirmed on the live status, which
+                synchronizes the device. The raise therefore comes at the first eager step after
+                the device finishes a sampled step at or after the loss; how many steps later
+                depends on how far the host runs ahead of the device. After a raise, each eager step
+                re-checks the live status, synchronizing, and raises until a :meth:`reset` clears
+                the flagged worlds. Captured steps do not check: call
                 :meth:`check_constraint_capacity` after replays. ``False`` keeps stepping with the
                 rows dropped, which :attr:`constraint_overflow` and
                 :meth:`check_constraint_capacity` still report.
@@ -3085,7 +3090,9 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._overflow_report = wp.zeros(1, dtype=wp.int32, device=model.device)
         self._overflow_report_host = wp.zeros(1, dtype=wp.int32, device="cpu")
         self._overflow_report_event = wp.Event(model.device) if model.device.is_cuda else None
+        # A recorded count not yet read, and a loss already raised that later steps re-check on the live status.
         self._overflow_report_pending = False
+        self._overflow_raised = False
         # Allocated by the first snapshot_constraint_status(): device copies, host copies and the snapshot's event.
         self._status_snapshot = None
         self._status_snapshot_host = None
@@ -3658,6 +3665,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         # The kinds of loss are solver-wide; a loss that persists latches again on the next step.
         self._overflow_causes.zero_()
         self._overflow_report_pending = False
+        self._overflow_raised = False
         if self._friction_anchors_enabled:
             self._friction_patches.reset(world_mask, int(self.model.world_count))
         self._clear_warmstart_history(world_mask)
@@ -7184,7 +7192,9 @@ class SolverSteel(SolverBase, CouplingInterface):
         return state_out
 
     def _record_overflow_report(self) -> None:
-        """Copy the capacity status after an eager step, for a later step to read without waiting."""
+        """Count the flagged status entries after an eager step, unless an earlier count is still unread."""
+        if self._overflow_report_pending or self._overflow_raised:
+            return
         device = self.model.device
         self._overflow_report.zero_()
         wp.launch(
@@ -7199,24 +7209,27 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._overflow_report_pending = True
 
     def _raise_reported_overflow(self) -> None:
-        """Raise if an earlier eager step whose work has finished reported a capacity loss."""
-        event = self._overflow_report_event
-        if not self._overflow_report_pending or (event is not None and not event.is_complete):
-            return
-        if event is None:
-            flagged = int(self._overflow_report.numpy()[0])
-        else:
-            # Only eager steps write the count, and they have finished, so a side stream copies it without waiting.
-            if self._status_readback_stream is None:
-                self._status_readback_stream = wp.Stream(self.model.device)
-            stream = self._status_readback_stream
-            wp.copy(self._overflow_report_host, self._overflow_report, stream=stream)
-            wp.synchronize_stream(stream)
-            flagged = int(self._overflow_report_host.numpy()[0])
-        if not flagged:
-            return
+        """Raise if the recorded count, once its step has finished on the device, or an earlier raise reports a loss."""
+        if not self._overflow_raised:
+            event = self._overflow_report_event
+            if not self._overflow_report_pending or (event is not None and not event.is_complete):
+                return
+            self._overflow_report_pending = False
+            if event is None:
+                flagged = int(self._overflow_report.numpy()[0])
+            else:
+                # Only eager steps write the count and its step has finished; a side stream reads it back.
+                if self._status_readback_stream is None:
+                    self._status_readback_stream = wp.Stream(self.model.device)
+                stream = self._status_readback_stream
+                wp.copy(self._overflow_report_host, self._overflow_report, stream=stream)
+                wp.synchronize_stream(stream)
+                flagged = int(self._overflow_report_host.numpy()[0])
+            if not flagged:
+                return
         # A reset replayed in a graph since can have cleared the flags; confirm on the live status.
         flagged = int(np.count_nonzero(self.constraint_overflow.numpy()))
+        self._overflow_raised = flagged > 0
         if not flagged:
             return
         causes = self._overflow_causes.numpy()

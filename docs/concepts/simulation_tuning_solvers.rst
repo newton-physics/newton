@@ -328,10 +328,11 @@ repository examples spend tuning effort, not a shared solver API.
        (articulated bodies), ``free_body_constraint_max`` (free bodies) or
        ``propagation_constraint_max`` (propagation rows, see below) per world
        are dropped and flagged in ``constraint_overflow`` (one entry per world
-       and a final entry for global articulations). An eager ``step()`` then
-       raises, naming the capacity to raise, once the device has finished the
-       step that dropped them; ``raise_constraint_overflow=False`` keeps stepping
-       instead. Captured steps do not raise: call
+       and a final entry for global articulations). A later eager ``step()``
+       then raises, naming the capacity to raise: the first one after the device
+       has finished a sampled step at or after the loss, so how much later
+       depends on how far the host runs ahead. ``raise_constraint_overflow=False``
+       keeps stepping instead. Captured steps do not raise: call
        ``check_constraint_capacity()`` at an observation boundary, and raise the
        capacity and reset the world when it reports a world. To check a step
        without waiting for the steps queued after it, call

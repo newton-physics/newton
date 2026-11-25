@@ -5,6 +5,7 @@
 
 import gc
 import unittest
+import unittest.mock
 import weakref
 
 import numpy as np
@@ -374,6 +375,46 @@ def test_overflow_raise_keeps_graph_capture(test, device):
             _step(solver, model, pipeline, contacts, states)
 
 
+class _LaggingEvent:
+    """Complete two eager steps after being recorded, like a device that runs behind the host."""
+
+    def __init__(self):
+        self.clock = 0
+        self.recorded = None
+
+    @property
+    def is_complete(self):
+        return self.recorded is not None and self.clock - self.recorded >= 2
+
+
+def test_overflow_raise_reads_every_sample_while_the_host_runs_ahead(test, device):
+    """Keep the recorded sample until its step finishes, so a lagging device still raises a few steps later."""
+    model, pipeline, contacts = _pad_slider(device)
+    solver = SolverSteel(model, articulation_constraint_max=32, warn_constraint_overflow=False)
+    event = _LaggingEvent()
+    solver._overflow_report_event = event
+    record_event = wp.Stream.record_event
+
+    def record(stream, target=None):
+        if target is event:
+            event.recorded = event.clock
+            return event
+        return record_event(stream, target)
+
+    states = (model.state(), model.state())
+    raised_at = None
+    with unittest.mock.patch.object(wp.Stream, "record_event", record):
+        for step in range(10):
+            try:
+                _step(solver, model, pipeline, contacts, states)
+            except RuntimeError as error:
+                test.assertIn("articulation_constraint_max", str(error))
+                raised_at = step
+                break
+            event.clock += 1
+    test.assertEqual(raised_at, 2)
+
+
 def test_auto_capacity_counts_joint_rows(test, device):
     """Size the automatic capacity for every row the joints can take, beyond the cap when they need it."""
 
@@ -422,6 +463,14 @@ add_function_test(
     TestSteelCapacityStatus,
     "test_overflow_raise_keeps_graph_capture",
     test_overflow_raise_keeps_graph_capture,
+    devices=devices,
+)
+
+
+add_function_test(
+    TestSteelCapacityStatus,
+    "test_overflow_raise_reads_every_sample_while_the_host_runs_ahead",
+    test_overflow_raise_reads_every_sample_while_the_host_runs_ahead,
     devices=devices,
 )
 
