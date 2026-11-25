@@ -157,6 +157,8 @@ class TestSceneAuthoringDeformables(unittest.TestCase):
             np.testing.assert_array_equal(reopened.model.particle_q.numpy(), editor.model.particle_q.numpy())
 
     def test_cpu_mpm_preview_and_surface(self):
+        from pxr import Usd, UsdGeom, UsdPhysics
+
         editor = self.make_editor("mpm")
         box = editor.add_primitive("box", position=(2, 0, 0), size=(0.6, 0.6, 0.6), dynamic=False)
         editor.place_object(box)
@@ -201,6 +203,49 @@ class TestSceneAuthoringDeformables(unittest.TestCase):
         self.assertIsNotNone(editor.solver, editor.error)
         self.assertTrue(np.isfinite(current).all())
         self.assertLess(float(current[:, 2].mean()), float(initial[:, 2].mean()))
+
+        solver, builds = editor.solver, editor.rebuild_count
+        live = current.copy()
+        velocity = editor.state_0.particle_qd.numpy().copy()
+        history = {
+            name: getattr(editor.state_0.mpm, name).numpy().copy() for name in ("particle_transform", "particle_Jp")
+        }
+        editor.update_object(box, position=(0.04, 0.04, -0.06))
+        editor.before_frame()
+        self.assertIs(editor.model, model)
+        self.assertIs(editor.solver, solver)
+        self.assertEqual(editor.rebuild_count, builds)
+        np.testing.assert_array_equal(editor.state_0.particle_q.numpy(), live)
+        np.testing.assert_array_equal(editor.state_0.particle_qd.numpy(), velocity)
+        for name, values in history.items():
+            np.testing.assert_array_equal(getattr(editor.state_0.mpm, name).numpy(), values)
+        for _ in range(6):
+            editor.step()
+        # The box now supports the falling samples; at its old pose they would fall below this height.
+        self.assertGreater(float(editor.state_0.particle_q.numpy()[:, 2].min()), 0.22)
+
+        editor.update_object(box, friction=0.8)
+        editor.before_frame()
+        self.assertEqual(editor.rebuild_count, builds + 1, "MPM caches collider friction at construction")
+        self.assertIsNot(editor.model, model)
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "world-collider.usda"
+            stage = Usd.Stage.CreateNew(str(source))
+            UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+            UsdPhysics.SetStageKilogramsPerUnit(stage, 1.0)
+            shape = UsdGeom.Cube.Define(stage, "/Collider")
+            shape.CreateSizeAttr(0.1)
+            UsdPhysics.CollisionAPI.Apply(shape.GetPrim())
+            stage.SetDefaultPrim(shape.GetPrim())
+            stage.GetRootLayer().Save()
+            asset = editor.add_usd(source, position=(2, 0, 0.5))
+            editor.commit()
+            self.assertFalse(editor.body_indices(asset))
+            model, builds = editor.model, editor.rebuild_count
+            editor.update_object(asset, position=(3, 0, 0.5))
+            editor.before_frame()
+            self.assertEqual(editor.rebuild_count, builds + 1, "World-only MPM colliders cache their transform")
+            self.assertIsNot(editor.model, model)
 
     def test_anchored_deformables_and_quality_round_trip(self):
         editor = self.make_editor("vbd")
@@ -279,15 +324,35 @@ class TestSceneAuthoringDeformables(unittest.TestCase):
                     sphere_height, sphere_diameter = 1.04, 0.16
                     deformable_entry = "vbd"
                 sphere = editor.add_primitive(
-                    "sphere", position=(0, 0, sphere_height), size=(sphere_diameter,) * 3, mass=0.1
+                    "sphere",
+                    position=(2 if deformable_entry == "mpm" else 0, 0, sphere_height),
+                    size=(sphere_diameter,) * 3,
+                    mass=0.1,
                 )
                 editor.commit()
                 self.assertIsNone(editor.solver, "Browsing must defer coupled solver setup")
                 editor.model.set_gravity((0, 0, 0))
                 if deformable_entry == "mpm":
                     editor.state_0.particle_qd.fill_(wp.vec3(0, 0, 1))
+                    editor.step()
+                    model, solver, builds = editor.model, editor.solver, editor.rebuild_count
+                    live = editor.state_0.particle_q.numpy().copy()
+                    velocity = editor.state_0.particle_qd.numpy().copy()
+                    history = {
+                        name: getattr(solver.entry_state("mpm").mpm, name).numpy().copy()
+                        for name in ("particle_transform", "particle_Jp")
+                    }
+                    editor.update_object(sphere, position=(0, 0, sphere_height))
+                    editor.before_frame()
+                    self.assertIs(editor.model, model)
+                    self.assertIs(editor.solver, solver)
+                    self.assertEqual(editor.rebuild_count, builds)
+                    np.testing.assert_array_equal(editor.state_0.particle_q.numpy(), live)
+                    np.testing.assert_array_equal(editor.state_0.particle_qd.numpy(), velocity)
+                    for name, values in history.items():
+                        np.testing.assert_array_equal(getattr(solver.entry_state("mpm").mpm, name).numpy(), values)
                 initial_bodies = editor.state_0.body_q.numpy().copy()
-                initial_particles = editor.state_0.particle_q.numpy().copy()
+                initial_particles = editor.model.particle_q.numpy().copy()
                 for _ in range(3):
                     editor.step()
                 self.assertIsInstance(editor.solver, solvers.experimental.coupled.SolverCoupledProxy, editor.error)
@@ -321,3 +386,44 @@ class TestSceneAuthoringDeformables(unittest.TestCase):
                 self.assertEqual(reopened.vbd_self_contact, editor.vbd_self_contact)
                 np.testing.assert_allclose(reopened.state_0.body_q.numpy(), initial_bodies, atol=1.0e-6)
                 np.testing.assert_allclose(reopened.state_0.particle_q.numpy(), initial_particles, atol=1.0e-6)
+
+    @requires(*MUJOCO_MODULES)
+    def test_coupled_presets_use_native_fallbacks(self):
+        devices = get_cuda_test_devices()
+        if not devices:
+            self.skipTest("Coupled authoring requires CUDA")
+        for profile in ("mujoco-mpm", "mujoco-vbd"):
+            with self.subTest(profile=profile):
+                editor = self.make_editor(profile, devices[0])
+                sphere = editor.add_primitive("sphere", position=(0, 0, 1.5), size=(0.2, 0.2, 0.2))
+                editor.commit()
+                model, builds = editor.model, editor.rebuild_count
+                editor.step()
+                self.assertIsInstance(editor.solver, solvers.SolverMuJoCo)
+                self.assertEqual(len(editor._runtime.solver_graphs), 2)
+                self.assertLess(editor.get_pose(sphere)[0][2], 1.5)
+                solver = editor.solver
+                graphs = {id(entry[0]) for entry in editor._runtime.solver_graphs.values()}
+                editor.update_object(sphere, position=(0.2, 0, 1.5))
+                editor.before_frame()
+                editor.step()
+                self.assertIs(editor.model, model)
+                self.assertIs(editor.solver, solver)
+                self.assertEqual(editor.rebuild_count, builds)
+                self.assertEqual({id(entry[0]) for entry in editor._runtime.solver_graphs.values()}, graphs)
+                self.assertLess(editor.get_pose(sphere)[0][2], 1.5)
+
+                if profile == "mujoco-mpm":
+                    editor.update_object(sphere, dynamic=False)
+                    points = tuple((x * 0.04, y * 0.04, z * 0.04) for x in range(3) for y in range(3) for z in range(3))
+                    editor.add_deformable("particles", position=(0, 0, 0.5), points=points, thickness=0.04)
+                    editor.commit()
+                    initial = editor.state_0.particle_q.numpy().copy()
+                    with mock.patch.object(editor, "_collide", wraps=editor._collide) as collide:
+                        editor.step()
+                        editor.step()
+                    self.assertIsInstance(editor.solver, solvers.SolverImplicitMPM)
+                    self.assertEqual(collide.call_count, 0, "Native MPM owns collisions, including first Play")
+                    current = editor.state_0.particle_q.numpy()
+                    self.assertTrue(np.isfinite(current).all())
+                    self.assertLess(float(current[:, 2].mean()), float(initial[:, 2].mean()))

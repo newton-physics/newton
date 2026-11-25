@@ -7,7 +7,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from ..sim import BodyFlags
 from .authoring_deformables import MPM_VOXEL_SIZE
 
 if TYPE_CHECKING:
@@ -68,9 +67,8 @@ def create_coupled_solver(
     The returned coupled observables retain MuJoCo's capacity status in
     ``entry_observables["rigid"].overflow``.
     """
-    from newton.solvers.experimental.coupled import SolverCoupledProxy  # noqa: PLC0415
-
     model = runtime.model
+    contact_max = runtime.contacts.rigid_contact_max
     rigid_bodies, rigid_joints = [], []
     deformable_bodies, deformable_joints = [], []
     for binding in runtime.bindings.values():
@@ -82,7 +80,7 @@ def create_coupled_solver(
             rigid_joints.extend(range(*binding.joints))
 
     def rigid_solver(view: Model | ModelView) -> SolverMuJoCo:
-        return create_mujoco_solver(view, runtime.contacts.rigid_contact_max)
+        return create_mujoco_solver(view, contact_max)
 
     def deformable_solver(view: Model | ModelView) -> SolverImplicitMPM | SolverVBD:
         return create_deformable_solver(view, mpm=mpm, vbd_self_contact=vbd_self_contact)
@@ -94,13 +92,11 @@ def create_coupled_solver(
         solver = rigid_solver(model)
         return solver, solver.observables({solver.ObservableKind.OVERFLOW})
 
-    flags = model.body_flags.numpy() if rigid_bodies else ()
-    if not any(
-        int(flags[body]) & int(BodyFlags.DYNAMIC) and not int(flags[body]) & int(BodyFlags.KINEMATIC)
-        for body in rigid_bodies
-    ):
+    if not runtime.has_dynamic_rigid:
         # Stationary rigid colliders need no rigid integrator or proxy feedback.
         return deformable_solver(model), None
+
+    from newton.solvers.experimental.coupled import SolverCoupledProxy  # noqa: PLC0415
 
     destination = "mpm" if mpm else "vbd"
     solver = SolverCoupledProxy(

@@ -334,6 +334,7 @@ class _Binding:
     follows_body: bool
     particles: tuple[int, int]
     vbd: bool
+    has_world_shapes: bool
 
 
 @dataclasses.dataclass
@@ -350,6 +351,7 @@ class _Runtime:
     base_colors: wp.array[wp.vec3]
     base_opacity: wp.array[float]
     base_friction: wp.array[float]
+    has_dynamic_rigid: bool
     observables: SolverBase.Observables | None = None
     solver_graphs: dict[tuple, tuple[Any, tuple]] = dataclasses.field(default_factory=dict)
     solver_warm_binding: tuple | None = None
@@ -958,7 +960,15 @@ class SceneEditor:
                 obj.friction,
                 obj.anchor,
             )
-        if self.uses_mpm or (self.uses_vbd and obj.kind == self.Shape.USD):
+        if self.uses_mpm:
+            # MPM bakes shape-local transforms and materials into its colliders.
+            # A body-backed collider reads the current body pose on every step.
+            result = (*result, obj.friction, "friction" in obj.overrides)
+            if obj.kind == self.Shape.USD:
+                binding = self._runtime.bindings.get(obj.id) if self._runtime is not None else None
+                if binding is None or binding.has_world_shapes:
+                    return (*result, obj.position, obj.rotation)
+        elif self.uses_vbd and obj.kind == self.Shape.USD:
             return (*result, obj.position, obj.rotation, obj.friction)
         return result
 
@@ -1335,6 +1345,7 @@ class SceneEditor:
             else:
                 self._add_primitive(builder, obj)
             objects[obj.id] = obj
+            shape_bodies = builder.shape_body[s:]
             reference = None
             follows = False
             if builder.body_count > b:
@@ -1344,7 +1355,7 @@ class SceneEditor:
                 follows = (
                     builder.particle_count == p and len(roots) == 1 and builder.joint_type[roots[0]] == JointType.FREE
                 )
-                follows &= all(body >= b for body in builder.shape_body[s:])
+                follows &= all(body >= b for body in shape_bodies)
             bindings[obj.id] = _Binding(
                 (b, builder.body_count),
                 (s, builder.shape_count),
@@ -1353,6 +1364,7 @@ class SceneEditor:
                 follows,
                 (p, builder.particle_count),
                 self.uses_vbd and (builder.particle_count > p or len(builder.curve_label) > curve_count),
+                -1 in shape_bodies,
             )
         if self.uses_vbd:
             builder.color()
@@ -1370,6 +1382,13 @@ class SceneEditor:
             wp.clone(model.shape_color),
             wp.clone(model.shape_opacity),
             wp.clone(model.shape_material_mu),
+            has_dynamic_rigid=self._coupled
+            and any(
+                flag == BodyFlags.DYNAMIC
+                for binding in bindings.values()
+                if not binding.vbd
+                for flag in builder.body_flags[slice(*binding.bodies)]
+            ),
         )
         if self.solver_type == self.Solver.MPM and not self._placement_requests:
             runtime.contacts = Contacts(0, 0, device=model.device)
@@ -2085,7 +2104,12 @@ class SceneEditor:
                 observables=runtime.observables,
             )
 
-        if self.solver_type != self.Solver.MUJOCO or self._mujoco_cpu:
+        if not self._uses_mujoco or self._mujoco_cpu:
+            solve()
+            return
+        from ..solvers.mujoco.solver_mujoco import SolverMuJoCo  # noqa: PLC0415
+
+        if not isinstance(solver, SolverMuJoCo):
             solve()
             return
         arrays = tuple(
@@ -2180,11 +2204,18 @@ class SceneEditor:
             self._step_impl(runtime)
 
     def _step_impl(self, runtime: _Runtime) -> None:
+        standalone_mpm = False
+        if self.uses_mpm:
+            from ..solvers.implicit_mpm import SolverImplicitMPM  # noqa: PLC0415
+
+            standalone_mpm = isinstance(runtime.solver, SolverImplicitMPM) or (
+                runtime.solver is None and runtime.model.particle_count > 0 and not runtime.has_dynamic_rigid
+            )
         dt = self.frame_dt / self.sim_substeps
         for substep in range(self.sim_substeps):
             runtime.state_0.clear_forces()
             self.viewer.apply_forces(runtime.state_0)
-            if not self._mujoco_cpu and self.solver_type != self.Solver.MPM and not self._collide(runtime):
+            if not self._mujoco_cpu and not standalone_mpm and not self._collide(runtime):
                 self._sync_coordinates(runtime)
                 self._publish(runtime)
                 self.sim_time += substep * dt

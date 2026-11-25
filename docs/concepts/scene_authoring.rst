@@ -271,8 +271,10 @@ invalidates the solver, which is recreated at the larger capacity on the next
 physics substep. Solver overflow pauses physics
 before publishing the failed step. These checks read collision counters and,
 for MuJoCo Warp, its overflow mask from the device on each substep. Pose edits
-and Reset clear solver warm-start history; friction edits notify the solver
-without rebuilding the model.
+and Reset clear solver warm-start history. Most rigid friction edits notify
+the solver without rebuilding the model. MPM collider friction and world-space
+collider transforms are rebuilt to refresh their cached data. Moving a
+body-backed MPM collider updates its pose in place and preserves live particle state.
 Native CPU MuJoCo solves its own contacts without a Newton collision pass or
 CUDA overflow readback. It exports native contact geometry after each simulated
 frame. Its contact export capacity limits inspection, rather than CPU physics;
@@ -281,10 +283,13 @@ after authored edits uses Newton collision detection until the next CPU step.
 MuJoCo collision detection also waits for a simulation step while browsing.
 Paused pose edits invalidate the previous contacts. Opening contact inspection
 or enabling contact display refreshes them once, without compiling the solver.
-Every physics substep still checks complete collision data before solving.
+Solvers that use Newton's collision pipeline check for complete collision data
+before each substep. Standalone MPM handles its own collisions, including when
+a paired preset only needs MPM.
 
-Standalone MuJoCo Warp captures solver work into two CUDA graphs during playback,
-after one real warm-up substep. Collision detection and overflow checks
+Standalone MuJoCo Warp captures solver work into two CUDA graphs during playback
+after one real warm-up substep. This includes a paired preset that only needs
+MuJoCo Warp. Collision detection and overflow checks
 remain outside those graphs. Subsequent frames reuse the graphs; pose,
 appearance, friction and Reset edits retain them. Replacing a model, solver,
 contact buffer, control or state storage, or changing the timestep invalidates
