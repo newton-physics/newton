@@ -10,11 +10,12 @@ from types import SimpleNamespace
 from unittest import mock
 
 import numpy as np
+import warp as wp
 
-from newton import ModelBuilder
+from newton import ModelBuilder, solvers
 from newton._src.viewer import scene_authoring
 from newton._src.viewer.viewer_model_tree import ModelTree
-from newton.tests.unittest_utils import get_cuda_test_devices, requires
+from newton.tests.unittest_utils import MUJOCO_MODULES, get_cuda_test_devices, requires
 from newton.viewer import SceneEditor, ViewerNull
 
 
@@ -251,3 +252,72 @@ class TestSceneAuthoringDeformables(unittest.TestCase):
             self.assertEqual(reopened.get_object(cloth).anchor, "edge")
             self.assertEqual(reopened.get_object(cable).anchor, "both")
             self.assertEqual(reopened.model.attachment_particle_body_count, 5)
+
+    @requires(*MUJOCO_MODULES)
+    def test_coupled_feedback_and_round_trip(self):
+        devices = get_cuda_test_devices()
+        if not devices:
+            self.skipTest("Coupled authoring requires CUDA")
+        for profile, deformable_solver in (
+            ("mujoco-mpm", solvers.SolverImplicitMPM),
+            ("mujoco-vbd", solvers.SolverVBD),
+        ):
+            with self.subTest(profile=profile), tempfile.TemporaryDirectory() as directory:
+                editor = self.make_editor(profile, devices[0])
+                if profile == "mujoco-mpm":
+                    points = tuple(
+                        (x * 0.04, y * 0.04, z * 0.04) for x in range(-1, 2) for y in range(-1, 2) for z in range(3)
+                    )
+                    editor.add_deformable("particles", position=(0, 0, 1), points=points, thickness=0.04)
+                    sphere_height, sphere_diameter = 1.16, 0.32
+                    deformable_entry = "mpm"
+                else:
+                    editor.add_deformable(
+                        "cloth", position=(0, 0, 1), size=(0.4, 0.4, 0.02), resolution=4, anchor="corners"
+                    )
+                    editor.set_vbd_self_contact(True)
+                    sphere_height, sphere_diameter = 1.04, 0.16
+                    deformable_entry = "vbd"
+                sphere = editor.add_primitive(
+                    "sphere", position=(0, 0, sphere_height), size=(sphere_diameter,) * 3, mass=0.1
+                )
+                editor.commit()
+                self.assertIsNone(editor.solver, "Browsing must defer coupled solver setup")
+                editor.model.set_gravity((0, 0, 0))
+                if deformable_entry == "mpm":
+                    editor.state_0.particle_qd.fill_(wp.vec3(0, 0, 1))
+                initial_bodies = editor.state_0.body_q.numpy().copy()
+                initial_particles = editor.state_0.particle_q.numpy().copy()
+                for _ in range(3):
+                    editor.step()
+                self.assertIsInstance(editor.solver, solvers.experimental.coupled.SolverCoupledProxy, editor.error)
+                self.assertEqual(set(editor.solver.entry_names()), {"rigid", deformable_entry})
+                self.assertIsInstance(editor.solver.solver("rigid"), solvers.SolverMuJoCo)
+                self.assertIsInstance(editor.solver.solver(deformable_entry), deformable_solver)
+                for field in ("body_q", "body_qd", "particle_q", "particle_qd"):
+                    self.assertTrue(np.isfinite(getattr(editor.state_0, field).numpy()).all(), field)
+                body = editor.body_indices(sphere)[0]
+                displacement = editor.state_0.body_q.numpy()[body, :3] - initial_bodies[body, :3]
+                # The rigid body starts at rest with zero gravity. Only deformable feedback can move it.
+                self.assertGreater(float(np.linalg.norm(displacement)), 1.0e-5)
+                if deformable_entry == "vbd":
+                    pins = editor.model.attachment_particle_body_particle.numpy()
+                    self.assertEqual(len(pins), 4)
+                    self.assertEqual(editor.solver.view("vbd").attachment_particle_body_count, len(pins))
+                    np.testing.assert_allclose(
+                        editor.state_0.particle_q.numpy()[pins], initial_particles[pins], atol=1.0e-5
+                    )
+                editor.reset_scene()
+                np.testing.assert_array_equal(editor.state_0.body_q.numpy(), initial_bodies)
+                np.testing.assert_array_equal(editor.state_0.particle_q.numpy(), initial_particles)
+
+                path = Path(directory) / "coupled.usda"
+                editor.save_usd(path)
+                self.assertEqual(SceneEditor.saved_solver(path), editor.solver_type)
+                reopened = self.make_editor(SceneEditor.saved_solver(path), devices[0])
+                reopened.load_usd(path)
+                reopened.commit()
+                self.assertEqual(reopened.solver_type, editor.solver_type)
+                self.assertEqual(reopened.vbd_self_contact, editor.vbd_self_contact)
+                np.testing.assert_allclose(reopened.state_0.body_q.numpy(), initial_bodies, atol=1.0e-6)
+                np.testing.assert_allclose(reopened.state_0.particle_q.numpy(), initial_particles, atol=1.0e-6)

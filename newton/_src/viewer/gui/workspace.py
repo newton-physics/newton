@@ -1314,6 +1314,8 @@ class ViewerWorkspace:
             if wp.is_cuda_available():
                 engines.append(("VBD deformables (GPU)", "vbd", device.alias))
                 engines.append(("MPM particles (GPU)", "mpm", device.alias))
+                engines.append(("MuJoCo Warp + MPM", "mujoco-mpm", device.alias))
+                engines.append(("MuJoCo Warp + VBD", "mujoco-vbd", device.alias))
             _, self._new_scene_engine = ui.combo("Physics", self._new_scene_engine, [item[0] for item in engines])
             _, solver, device = engines[self._new_scene_engine]
             if solver == "mujoco" and device == "cpu":
@@ -1328,6 +1330,10 @@ class ViewerWorkspace:
                     if device == "cpu"
                     else "Paint particles while paused; rigid props remain stationary."
                 )
+            elif solver == "mujoco-mpm":
+                ui.text_unformatted("MuJoCo Warp rigid bodies coupled to MPM particles. Requires CUDA.")
+            elif solver == "mujoco-vbd":
+                ui.text_unformatted("MuJoCo Warp rigid bodies coupled to VBD deformables. Requires CUDA.")
             else:
                 ui.text_unformatted("Newton XPBD solver on CPU.")
             if self.authoring is not None and self.authoring.editor.objects:

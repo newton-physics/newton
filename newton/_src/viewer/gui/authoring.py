@@ -149,7 +149,7 @@ class AuthoringPanel:
         """Reserve left viewport input for the explicitly selected, paused paint tool."""
         return (
             self._brush_enabled
-            and self.editor.solver_type.value == "mpm"
+            and self.editor.uses_mpm
             and self.editor.model is not None
             and self.workspace.viewer.is_paused()
             and self.editable
@@ -429,19 +429,20 @@ class AuthoringPanel:
         """Draw the asset palette in the existing left workspace panel."""
         ui, w, s = self.ui, self.widgets, self.widgets.scale
         ui.text_colored(ui.ImVec4(*theme.ACCENT), "SCENE AUTHORING")
-        engine = "XPBD"
+        engine = {
+            "mujoco-mpm": "MuJoCo Warp + MPM",
+            "mujoco-vbd": "MuJoCo Warp + VBD",
+        }.get(self.editor.solver_type.value, self.editor.solver_type.value.upper())
         if self.editor.solver_type.value == "mujoco":
             engine = "MuJoCo CPU" if self.editor.device.is_cpu else "MuJoCo Warp"
-        elif self.editor.solver_type.value in ("vbd", "mpm"):
-            engine = self.editor.solver_type.value.upper()
         ui.text_disabled(f"Solver: {engine}")
-        if self.editor.solver_type.value == "vbd":
+        if self.editor.uses_vbd:
             changed, enabled = ui.checkbox("Self-contact", self.editor.vbd_self_contact)
             if changed:
                 self._run(self.editor.set_vbd_self_contact, enabled)
             if ui.is_item_hovered():
                 ui.set_tooltip("Enable cloth and soft-body self-contact on the next Play. Adds collision work.")
-        elif self.editor.solver_type.value == "mpm":
+        elif self.editor.uses_mpm:
             if w.icon_button(
                 "##author_select", "deselect", "Select objects", label="Select", active=not self._brush_enabled, size=24
             ):
@@ -477,7 +478,7 @@ class AuthoringPanel:
                 ("Assets", self._draw_assets),
                 ("Scene", self._draw_scene),
             )
-            if self.editor.solver_type.value == "mpm":
+            if self.editor.uses_mpm:
                 tabs += (("Paint", self._draw_brush_controls),)
             for title, content in tabs:
                 if w.tab_item(title)[0]:
@@ -502,7 +503,7 @@ class AuthoringPanel:
             if self._card(title, kind, width, 102 * s, index + 1):
                 self._add_primitive(kind)
         ui.end_disabled()
-        if self.editor.solver_type.value == "vbd":
+        if self.editor.uses_vbd:
             ui.spacing()
             with w.group("Deformables") as opened:
                 if opened:

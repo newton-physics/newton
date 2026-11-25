@@ -40,7 +40,7 @@ from .authoring_deformables import DEFORMABLE_KINDS, validate_deformable, write_
 _MARKER = "newtonSceneAuthoring"
 _SOLVER_MARKER = "newtonSceneAuthoringSolver"
 _VBD_SELF_CONTACT_MARKER = "newtonSceneAuthoringVbdSelfContact"
-_SOLVERS = frozenset({"xpbd", "mujoco", "vbd", "mpm"})
+_SOLVERS = frozenset({"xpbd", "mujoco", "vbd", "mpm", "mujoco-mpm", "mujoco-vbd"})
 _GROUND_FRICTION = 0.8
 _SPHERE_ROLLING_FRICTION = 0.005
 
@@ -660,6 +660,8 @@ def save_scene(
 
     Custom data stores editor definitions and stable IDs, never a private
     simulation schema. Referenced assets remain referenced rather than flattened.
+    Coupled solver profiles record the editor's runtime recipe. Component
+    geometry, materials, and attachments use the native USD physics schemas.
     Nonwhite asset tint supports displayColor and scalar UsdPreviewSurface;
     connected textures and other shader graphs require white tint.
     """
@@ -670,7 +672,7 @@ def save_scene(
         raise ValueError(f"Unsupported authoring solver profile: {solver}")
     if not isinstance(vbd_self_contact, bool):
         raise ValueError("VBD self-contact must be a boolean")
-    if vbd_self_contact and solver != "vbd":
+    if vbd_self_contact and solver not in {"vbd", "mujoco-vbd"}:
         raise ValueError("VBD self-contact requires the VBD solver profile")
     if destination.suffix.lower() not in {".usd", ".usda", ".usdc"}:
         raise ValueError("Scene destination must end in .usd, .usda, or .usdc")
@@ -726,7 +728,7 @@ def save_scene(
             write_deformable(stage, object_path, definition)
             continue
         if kind == "usd":
-            _write_references(stage, object_path, definition, allow_deformables=solver == "vbd")
+            _write_references(stage, object_path, definition, allow_deformables=solver in {"vbd", "mujoco-vbd"})
             continue
         geometry_path = f"{object_path}/Geometry"
         if kind == "box":

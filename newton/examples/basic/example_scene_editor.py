@@ -80,7 +80,10 @@ class Example(SceneEditor):
                     ).strip()
                 except (OSError, subprocess.SubprocessError):
                     pass
-            engine = self.solver_type.value.upper()
+            engine = {
+                "mujoco-mpm": "MuJoCo Warp + MPM",
+                "mujoco-vbd": "MuJoCo Warp + VBD",
+            }.get(self.solver_type.value, self.solver_type.value.upper())
             if self.solver_type is self.Solver.MUJOCO:
                 engine = "MuJoCo CPU" if self.device.is_cpu else "MuJoCo Warp"
             window.set_caption(f"Newton Scene Editor · {engine} [{revision}]")

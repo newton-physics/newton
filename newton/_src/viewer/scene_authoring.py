@@ -33,6 +33,7 @@ from ..geometry.bvh import (
 )
 from ..sim import BodyFlags, CollisionPipeline, Contacts, JointType, Model, ModelBuilder, ModelFlags, eval_ik
 from ..solvers.xpbd import SolverXPBD
+from .authoring_coupling import create_coupled_solver, create_deformable_solver, create_mujoco_solver
 from .authoring_deformables import DEFORMABLE_KINDS, MAX_PARTICLES, MPM_VOXEL_SIZE, build_deformable
 from .authoring_usd import (
     _GROUND_FRICTION,
@@ -332,6 +333,7 @@ class _Binding:
     reference: tuple[float, ...] | None
     follows_body: bool
     particles: tuple[int, int]
+    vbd: bool
 
 
 @dataclasses.dataclass
@@ -380,6 +382,8 @@ class SceneEditor:
         MUJOCO = "mujoco"
         VBD = "vbd"
         MPM = "mpm"
+        MUJOCO_MPM = "mujoco-mpm"
+        MUJOCO_VBD = "mujoco-vbd"
 
     class Shape(enum.Enum):
         """Geometry categories supported by the experimental authoring scene."""
@@ -455,7 +459,10 @@ class SceneEditor:
         self.viewer = viewer
         self.device = wp.get_device(device)
         self._solver_type = self.Solver(solver)
-        if self._solver_type == self.Solver.MPM:
+        self._coupled = self.solver_type in (self.Solver.MUJOCO_MPM, self.Solver.MUJOCO_VBD)
+        if self._coupled and not self.device.is_cuda:
+            raise ValueError("Coupled MuJoCo Warp scenes require a CUDA device")
+        if self.uses_mpm:
             viewer.show_particles = True
         self._vbd_self_contact = False
         self._particle_display = "particles"
@@ -510,6 +517,20 @@ class SceneEditor:
         return self._solver_type
 
     @property
+    def uses_mpm(self) -> bool:
+        """Whether this preset simulates authored MPM particles."""
+        return self.solver_type in (self.Solver.MPM, self.Solver.MUJOCO_MPM)
+
+    @property
+    def uses_vbd(self) -> bool:
+        """Whether this preset simulates authored VBD deformables."""
+        return self.solver_type in (self.Solver.VBD, self.Solver.MUJOCO_VBD)
+
+    @property
+    def _uses_mujoco(self) -> bool:
+        return self.solver_type == self.Solver.MUJOCO or self._coupled
+
+    @property
     def particle_limit(self) -> int:
         """Maximum authored samples for this device's MPM preset."""
         return _CPU_MPM_PARTICLE_LIMIT if self.solver_type == self.Solver.MPM and self.device.is_cpu else MAX_PARTICLES
@@ -521,7 +542,7 @@ class SceneEditor:
 
     def set_vbd_self_contact(self, enabled: bool) -> None:
         """Choose VBD self-contact and recreate its solver on the next step."""
-        if self.solver_type != self.Solver.VBD:
+        if not self.uses_vbd:
             raise ValueError("Deformable self-contact requires a VBD scene")
         if not isinstance(enabled, bool):
             raise TypeError("VBD self-contact must be a boolean")
@@ -542,7 +563,7 @@ class SceneEditor:
 
     def set_particle_display(self, mode: str) -> None:
         """Switch between particle points and an extracted surface without rebuilding."""
-        if self.solver_type != self.Solver.MPM or mode not in ("particles", "surface"):
+        if not self.uses_mpm or mode not in ("particles", "surface"):
             raise ValueError("Choose particles or surface in an MPM scene")
         if mode != self._particle_display:
             self._particle_surface_frame = None
@@ -598,10 +619,10 @@ class SceneEditor:
             check_points=previous is None or obj.points is not previous.points,
         )
         if obj.kind == self.Shape.PARTICLES:
-            if self.solver_type != self.Solver.MPM:
+            if not self.uses_mpm:
                 raise ValueError("Particle strokes require an MPM scene")
         elif obj.kind.value in DEFORMABLE_KINDS:
-            if self.solver_type != self.Solver.VBD:
+            if not self.uses_vbd:
                 raise ValueError("Cloth, cables and soft bodies require a VBD scene")
         elif self.solver_type == self.Solver.MPM and obj.dynamic:
             raise ValueError("An MPM scene accepts rigid objects as stationary colliders")
@@ -937,7 +958,7 @@ class SceneEditor:
                 obj.friction,
                 obj.anchor,
             )
-        if self.solver_type == self.Solver.MPM or (self.solver_type == self.Solver.VBD and obj.kind == self.Shape.USD):
+        if self.uses_mpm or (self.uses_vbd and obj.kind == self.Shape.USD):
             return (*result, obj.position, obj.rotation, obj.friction)
         return result
 
@@ -1000,7 +1021,7 @@ class SceneEditor:
             return key
         if self._executor is None:
             self._executor = self._create_preparation_executor()
-        arguments = (obj.source, obj.size, self.solver_type == self.Solver.MUJOCO, self.solver_type == self.Solver.VBD)
+        arguments = (obj.source, obj.size, self._uses_mujoco, self.uses_vbd)
         try:
             self._preparing[key] = self._executor.submit(_prepare_asset_payload, *arguments)
         except BrokenProcessPool:
@@ -1192,7 +1213,7 @@ class SceneEditor:
             builder.add_shape_box(body, hx=x * 0.5, hy=y * 0.5, hz=z * 0.5, **common)
         elif obj.kind == self.Shape.SPHERE:
             cfg.mu_rolling = _SPHERE_ROLLING_FRICTION
-            if self.solver_type == self.Solver.MUJOCO:
+            if self._uses_mujoco:
                 common["custom_attributes"] = {"mujoco:condim": 6}
             builder.add_shape_sphere(body, radius=radius, **common)
         elif obj.kind == self.Shape.CYLINDER:
@@ -1204,7 +1225,7 @@ class SceneEditor:
         template = self._template(obj)
         obj = self._resolved_defaults((obj,))[0]
         if template.particle_count or template.curve_label:
-            if self.solver_type != self.Solver.VBD:
+            if not self.uses_vbd:
                 raise ValueError("USD cloth, cables and soft bodies require a VBD scene")
             if obj.overrides:
                 raise ValueError("Edit the USD material or mass schema for a referenced deformable asset")
@@ -1216,7 +1237,7 @@ class SceneEditor:
         if not template.body_count:
             if not template.shape_count:
                 raise ValueError("The USD asset contains no supported rigid geometry")
-            if self.solver_type in (self.Solver.MUJOCO, self.Solver.MPM) and not obj.dynamic:
+            if (self._uses_mujoco or self.uses_mpm) and not obj.dynamic:
                 start_shape = builder.shape_count
                 builder.add_builder(
                     template, xform=wp.transform(obj.position, obj.rotation), label_prefix=f"objects/{obj.id}/"
@@ -1280,11 +1301,11 @@ class SceneEditor:
 
     def _build(self) -> _Runtime:
         builder = ModelBuilder()
-        if self.solver_type == self.Solver.MUJOCO:
+        if self._uses_mujoco:
             from ..solvers.mujoco.solver_mujoco import SolverMuJoCo  # noqa: PLC0415
 
             SolverMuJoCo.register_custom_attributes(builder)
-        elif self.solver_type == self.Solver.MPM:
+        if self.uses_mpm:
             from ..solvers.implicit_mpm import SolverImplicitMPM  # noqa: PLC0415
 
             SolverImplicitMPM.register_custom_attributes(builder)
@@ -1295,13 +1316,14 @@ class SceneEditor:
         for authored in self._objects:
             obj = authored
             b, s, j, p = builder.body_count, builder.shape_count, builder.joint_count, builder.particle_count
+            curve_count = len(builder.curve_label)
             if obj.kind == self.Shape.USD:
                 obj = self._add_asset(builder, obj)
             elif obj.kind.value in DEFORMABLE_KINDS:
                 cached = self._generated_templates.get(obj.id)
                 if cached is None or cached[0] != obj:
                     template = ModelBuilder()
-                    if self.solver_type == self.Solver.MPM:
+                    if self.uses_mpm:
                         SolverImplicitMPM.register_custom_attributes(template)
                     build_deformable(template, dict(vars(obj), kind=obj.kind.value), label_prefix=f"objects/{obj.id}")
                 else:
@@ -1330,8 +1352,9 @@ class SceneEditor:
                 reference,
                 follows,
                 (p, builder.particle_count),
+                self.uses_vbd and (builder.particle_count > p or len(builder.curve_label) > curve_count),
             )
-        if self.solver_type == self.Solver.VBD:
+        if self.uses_vbd:
             builder.color()
         model = builder.finalize(device=self.device)
         runtime = _Runtime(
@@ -1351,9 +1374,7 @@ class SceneEditor:
         if self.solver_type == self.Solver.MPM and not self._placement_requests:
             runtime.contacts = Contacts(0, 0, device=model.device)
         else:
-            runtime.pipeline = CollisionPipeline(
-                model, soft_contact_max=0 if self.solver_type == self.Solver.MPM else None
-            )
+            runtime.pipeline = CollisionPipeline(model, soft_contact_max=0 if self.uses_mpm else None)
             runtime.contacts = runtime.pipeline.contacts()
         for obj in objects.values():
             self._apply_appearance(runtime, obj)
@@ -1362,45 +1383,19 @@ class SceneEditor:
         return runtime
 
     def _create_solver(self, model: Model, contact_max: int) -> tuple[SolverBase | None, SolverBase.Observables | None]:
+        if self._coupled:
+            assert self._runtime is not None and self._runtime.model is model
+            return create_coupled_solver(self._runtime, mpm=self.uses_mpm, vbd_self_contact=self.vbd_self_contact)
         if self.solver_type == self.Solver.XPBD:
             return SolverXPBD(model, iterations=8), None
-        if self.solver_type == self.Solver.VBD:
-            from ..solvers.vbd import SolverVBD  # noqa: PLC0415
-
-            return (
-                SolverVBD(
-                    model,
-                    iterations=8,
-                    particle_enable_self_contact=self.vbd_self_contact and bool(model.tri_count),
-                    particle_self_contact_margin=0.01,
-                    particle_self_contact_gap=0.015,
-                ),
-                None,
-            )
-        if self.solver_type == self.Solver.MPM:
-            from ..solvers.implicit_mpm import SolverImplicitMPM  # noqa: PLC0415
-
-            if not model.particle_count:
+        if self.uses_mpm or self.uses_vbd:
+            if self.uses_mpm and not model.particle_count:
                 return None, None
-            config = SolverImplicitMPM.Config(voxel_size=MPM_VOXEL_SIZE)
-            if self.device.is_cpu:
-                config.solver = "jacobi"
-                config.max_iterations = 10
-            return SolverImplicitMPM(model, config=config), None
+            return create_deformable_solver(model, mpm=self.uses_mpm, vbd_self_contact=self.vbd_self_contact), None
         # MuJoCo requires a joint; static-only scenes need no solver.
         if not model.joint_count:
             return None, None
-        from ..solvers.mujoco.solver_mujoco import SolverMuJoCo  # noqa: PLC0415
-
-        solver = SolverMuJoCo(
-            model,
-            use_mujoco_cpu=self._mujoco_cpu,
-            use_mujoco_contacts=self._mujoco_cpu,
-            integrator="implicitfast",
-            nconmax=contact_max,
-            strict_capacity=not self._mujoco_cpu,
-            kinematic_switchable_roots=False,
-        )
+        solver = create_mujoco_solver(model, contact_max, cpu=self._mujoco_cpu)
         return solver, None if self._mujoco_cpu else solver.observables({solver.ObservableKind.OVERFLOW})
 
     def _preserve_state(self, old: _Runtime, new: _Runtime) -> None:
@@ -1507,7 +1502,7 @@ class SceneEditor:
             return
         if (obj.size, obj.resolution, obj.points) != (previous.size, previous.resolution, previous.points):
             return
-        copy_history = self.solver_type == self.Solver.MPM and (
+        copy_history = self.uses_mpm and (
             obj.density,
             obj.thickness,
             obj.stiffness,
@@ -1813,7 +1808,7 @@ class SceneEditor:
         show_particles = getattr(self.viewer, "show_particles", True)
         try:
             self.viewer.set_model(candidate.model)
-            if self.solver_type == self.Solver.MPM:
+            if self.uses_mpm:
                 self.viewer.show_particles = show_particles
             self.viewer.set_control(candidate.control)
             self.viewer.set_solver(candidate.solver)
@@ -1977,7 +1972,7 @@ class SceneEditor:
         if moved:
             self._sync_coordinates(runtime)
             eval_ik(runtime.model, runtime.model, runtime.model.joint_q, runtime.model.joint_qd)
-        if self.solver_type in (self.Solver.MUJOCO, self.Solver.VBD) and runtime.solver is not None and changed:
+        if (self._uses_mujoco or self.uses_vbd) and runtime.solver is not None and changed:
             runtime.solver.notify_model_changed(changed)
         if moved:
             if self.solver_type != self.Solver.XPBD:
@@ -2013,11 +2008,11 @@ class SceneEditor:
                     if pipeline is not runtime.pipeline:
                         if runtime is self._runtime:
                             self.viewer.set_collision_pipeline(pipeline)
-                            if self.solver_type == self.Solver.MUJOCO and not self._mujoco_cpu:
+                            if self._uses_mujoco and not self._mujoco_cpu:
                                 self.viewer.set_solver(None)
                         previous = runtime.contacts.rigid_contact_max, runtime.contacts.soft_contact_max
                         runtime.pipeline, runtime.contacts = pipeline, contacts
-                        if self.solver_type == self.Solver.MUJOCO and not self._mujoco_cpu:
+                        if self._uses_mujoco and not self._mujoco_cpu:
                             runtime.solver = runtime.observables = None
                             runtime.solver_graphs.clear()
                             runtime.solver_warm_binding = None
@@ -2148,7 +2143,7 @@ class SceneEditor:
                     wp.copy(state.particle_qd, runtime.model.particle_qd)
                     state.particle_f.zero_()
             self._sync_coordinates(runtime)
-            if self.solver_type == self.Solver.MPM:
+            if self.uses_mpm:
                 if runtime.solver is not None:
                     for state in (runtime.state_0, runtime.state_1):
                         runtime.solver.reset(state)
@@ -2208,14 +2203,17 @@ class SceneEditor:
             try:
                 self._step_solver(runtime, dt)
             except (MemoryError, RuntimeError, ValueError) as error:
-                if self.solver_type != self.Solver.MPM:
+                if not (self.uses_mpm or self._coupled):
                     raise
                 self._publish(runtime)
                 self.sim_time += substep * dt
-                self._pause_physics(runtime, f"MPM could not complete the step: {error}")
+                self._pause_physics(runtime, f"{self.solver_type.value} could not complete the step: {error}")
                 return
-            if runtime.observables is not None:
-                overflow = runtime.observables.overflow.numpy()
+            observables = runtime.observables
+            if self._coupled and hasattr(observables, "entry_observables"):
+                observables = observables.entry_observables.get("rigid")
+            if observables is not None:
+                overflow = observables.overflow.numpy()
                 if overflow.any():
                     runtime.solver.reset(runtime.state_0, flags=0)
                     self._sync_coordinates(runtime)
@@ -2224,7 +2222,7 @@ class SceneEditor:
                     self._pause_physics(runtime, f"MuJoCo Warp capacity overflow: {overflow.tolist()}")
                     return
             runtime.state_0, runtime.state_1 = runtime.state_1, runtime.state_0
-        if self.solver_type in (self.Solver.XPBD, self.Solver.VBD):
+        if self.solver_type == self.Solver.XPBD or self.uses_vbd:
             self._sync_coordinates(runtime)
         if self._mujoco_cpu:
             self._update_cpu_contacts(runtime)
@@ -2257,7 +2255,7 @@ class SceneEditor:
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
         self.viewer.log_contacts(self.contacts, self.state_0)
-        if self.solver_type == self.Solver.MPM:
+        if self.uses_mpm:
             self._draw_particle_surface()
         self._draw_preview()
         self.viewer.end_frame()
@@ -2510,7 +2508,7 @@ class SceneEditor:
         if len({obj.id for obj in objects}) != len(objects):
             raise ValueError("Scene document contains duplicate object IDs")
         self._check_point_budget(objects)
-        if self.solver_type == self.Solver.VBD:
+        if self.uses_vbd:
             self.set_vbd_self_contact(scene_vbd_self_contact(path))
         self._remember()
         self._restore_document(objects)

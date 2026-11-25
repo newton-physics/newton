@@ -24,7 +24,8 @@ Launch and edit
 Choose **New scene** in the header of a native Newton example viewer to open an
 empty, paused editor without launching another process. The dialog offers
 **MuJoCo (CPU)**, **MuJoCo Warp (GPU)**, **XPBD (CPU)**, **VBD deformables**, and
-**MPM particles**. GPU options appear when CUDA is available.
+**MPM particles**. The paired **MuJoCo Warp + MPM** and **MuJoCo Warp + VBD**
+presets appear on CUDA.
 Choose Cancel to retain the current scene. Creating a scene replaces the
 current example; save an existing authored document as USD first to keep it.
 The action uses the example runner's scene lifecycle. Embedded viewers without
@@ -42,6 +43,8 @@ The ``examples`` extra includes the native viewer and USD import dependencies:
    uv run --extra examples -m newton.examples scene_editor --solver vbd --device cpu --empty
    uv run --extra examples -m newton.examples scene_editor --solver mpm --device cuda:0 --empty
    uv run --extra examples -m newton.examples scene_editor --solver mpm --device cpu --empty
+   uv run --extra examples -m newton.examples scene_editor --solver mujoco-mpm --device cuda:0
+   uv run --extra examples -m newton.examples scene_editor --solver mujoco-vbd --device cuda:0
 
 ``--solver mujoco`` selects native MuJoCo on a CPU device and MuJoCo Warp on
 a CUDA device. The solver and device are fixed for the editor session. The
@@ -49,11 +52,21 @@ window title and authoring header identify the active solver. When constructing 
 directly, pass ``solver="mujoco", device="cpu"`` for native MuJoCo or select a
 CUDA device for MuJoCo Warp; the class retains XPBD as its default.
 Use VBD on CPU or CUDA for an authoring scene with rigid bodies, cloth, cables,
-and soft bodies. MPM accepts static rigid colliders. CUDA handles larger
+and soft bodies. Standalone MPM accepts static rigid colliders. CUDA handles larger
 particle scenes. The CPU Preview limits the scene to 1,024 particles and uses
 two substeps and ten Jacobi iterations for small scenes. The
 workspace's **New scene** menu exposes both presets. With ``--scene``, the example
 selects a saved scene's preset unless you pass ``--solver``.
+
+In a paired preset, add dynamic rigid objects from **Create** and paint MPM
+particles or add VBD deformables in the same scene. MuJoCo Warp owns the rigid
+objects, and the deformable solver owns its particles, rods, joints, and
+anchor bodies. Imported VBD assemblies stay together. Newton's native proxy
+coupler sends rigid motion to the deformable contacts and returns contact
+forces to MuJoCo Warp. Either side can run by itself while the scene is being
+built. The USD document stores native component physics and the editor preset
+needed to restore the pairing.
+
 An empty or static world with no joints needs
 no solver. The example opens paused. MuJoCo Warp is constructed on the first
 Play or single-step after a topology commit; browsing and placement do not
@@ -270,7 +283,7 @@ Paused pose edits invalidate the previous contacts. Opening contact inspection
 or enabling contact display refreshes them once, without compiling the solver.
 Every physics substep still checks complete collision data before solving.
 
-MuJoCo Warp captures solver work into two CUDA graphs during playback,
+Standalone MuJoCo Warp captures solver work into two CUDA graphs during playback,
 after one real warm-up substep. Collision detection and overflow checks
 remain outside those graphs. Subsequent frames reuse the graphs; pose,
 appearance, friction and Reset edits retain them. Replacing a model, solver,
@@ -281,8 +294,8 @@ rolling-friction length of 0.005 m; MuJoCo's six-dimensional sphere contacts
 apply this resistance without adding rolling constraints to every mesh contact.
 XPBD continues to use its native contact model.
 
-The editor owns a standalone Model, State, and solver for each scene. The VBD
-preset supports two-way contacts between dynamic rigid bodies and deformables
+The editor owns one Model and the playback States for each scene. The
+standalone VBD preset supports two-way contacts between rigid bodies and deformables
 with compatible collision shapes. Select the VBD quality option to enable
 deformable self-contact. The editor saves that scene setting in its USD metadata.
 The MPM preset supports particle strokes against stationary rigid colliders.

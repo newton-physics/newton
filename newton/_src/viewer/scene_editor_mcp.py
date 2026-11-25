@@ -93,8 +93,9 @@ class SceneEditorMCP:
             instructions=(
                 "Inspect get_scene and get_viewport before editing. Object IDs are stable; body/particle indices are not. "
                 "get_scene identifies the solver and device: mujoco uses native MuJoCo on CPU and MuJoCo Warp on CUDA; "
-                "xpbd is XPBD, vbd supports cloth/cables/soft bodies, and mpm supports particle strokes on CUDA. "
-                "MPM rigid objects must be stationary (dynamic=false). Native MuJoCo convex-hulls collision meshes. "
+                "VBD supports cloth/cables/soft bodies. MPM supports particle strokes. "
+                "Use mujoco-vbd or mujoco-mpm to couple MuJoCo Warp and the deformable solver on CUDA. "
+                "Plain mpm uses stationary rigid objects. Native CPU MuJoCo convex-hulls collision meshes. "
                 "physics_ready distinguishes a published scene from physics initialized by Play or an explicit step. "
                 "Positions and sizes are world Z-up metres, rotations are XYZW quaternions, mass is kilograms. "
                 "Use the observed revision for apply_edits and undo_redo. Batch edits into one request. "
