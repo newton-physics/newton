@@ -69,11 +69,13 @@ See Warp's `debugging guide
 <https://nvidia.github.io/warp/stable/user_guide/debugging.html>`__.
 
 Enable ``ModelBuilder.finalize(requires_grad=True)`` when differentiating
-through the simulation. It allocates gradient arrays and enables additional
-differentiable contact data. For custom kernels that never need gradients,
-set ``enable_backward=False`` per kernel or module. Leave the global
-``warp.config.enable_backward`` enabled because some Newton features use
-gradients during forward simulation. See Warp's `module settings
+through the simulation. By default, :class:`CollisionPipeline` inherits this
+setting for its soft contacts. For rigid-contact gradients, call
+:func:`eval_rigid_contact_kinematics` explicitly and include that work in the
+benchmark. See :ref:`Differentiable Contacts`. For custom kernels that never
+need gradients, set ``enable_backward=False`` per kernel or module. Leave
+the global ``warp.config.enable_backward`` enabled because some Newton
+features use gradients during forward simulation. See Warp's `module settings
 <https://nvidia.github.io/warp/stable/user_guide/configuration.html#module-settings>`__.
 
 .. _performance-profiling:
@@ -155,10 +157,12 @@ Python decisions recorded during capture.
   repeating cycle of updates.
 - Recapture after changing a recorded value such as ``dt``, a launch dimension,
   a buffer address, or a Python-side collision schedule.
-- After a supported in-place model edit, call
-  :meth:`~solvers.SolverBase.notify_model_changed` outside the graph with the
-  narrowest applicable :class:`ModelFlags`. Recapture unless the solver
-  documents that the update is safe for the existing graph.
+- For in-place model edits, use :meth:`Model.get_attribute_update_flags` to
+  find the flags for :meth:`~solvers.SolverBase.notify_model_changed`. The
+  experimental :meth:`~solvers.SolverBase.is_notify_model_changed_graphable`
+  query checks whether the notification can run inside capture. If you update
+  the model separately from stepping, recapture the stepping graph
+  unless the solver documents that reuse is safe. See :ref:`Runtime model updates`.
 
 See the capture requirements for :ref:`solver_observables`,
 :ref:`actuators <stateful-actuators>`, :ref:`deformable-selection`, and
@@ -313,9 +317,11 @@ capacities. It checks rigid narrow-phase overflow, including intermediate
 buffers. Check ``soft_contact_count`` against ``soft_contact_max`` separately:
 ordinary particle soft contacts can overflow without a warning even with
 verification enabled. Check solver constraints separately using the solver's
-diagnostics. Confirm how each capacity is defined. For example,
-:class:`CollisionPipeline` capacities are totals across worlds, while
-:class:`~solvers.SolverMuJoCo` has per-world capacities.
+diagnostics. :class:`CollisionPipeline` contact capacities are totals across
+worlds. With :class:`~solvers.SolverMuJoCo` on the Warp backend, ``njmax``
+limits constraints per world and ``naconmax`` is the shared runtime contact
+capacity. Size shared buffers for the combined peak across worlds and per-world
+limits for the busiest world. See :ref:`mujoco_overflow_observable`.
 
 To measure the memory cost of different capacities, see Warp's guide to
 `measuring memory usage
@@ -344,6 +350,9 @@ Use the baseline accuracy target to evaluate changes to the physics.
      - Recheck missed contacts, tunneling, and penetration, especially for
        fast bodies and thin geometry. See
        :ref:`collision-frequency-in-the-simulation-loop`.
+       :ref:`Adaptive collision detection <tuning-adaptive-collision-detection>`
+       can skip collision checks when motion allows while keeping the solver
+       timestep fixed.
    * - Simplify geometry or contact models
      - Check contact location and force distribution. Use
        :meth:`ModelBuilder.approximate_meshes` or adjust SDF resolution where
@@ -351,8 +360,11 @@ Use the baseline accuracy target to evaluate changes to the physics.
        :ref:`Collision Pipeline Details` and :ref:`Hydroelastic Contacts`.
    * - Reduce solver effort
      - Check convergence or task error after changing iterations or
-       tolerances. If you reduce substeps, also recheck stability and
-       contacts at the larger timestep. See :ref:`Tuning Solver Reference`.
+       tolerances. Kamino and VBD can report a
+       :ref:`per-world solver residual <solver_residual_observable>` on the
+       device, including during graph replay. If you reduce substeps, also
+       recheck stability and contacts at the larger timestep. See
+       :ref:`Tuning Solver Reference`.
        For early exit in a captured custom loop, see Warp's `conditional execution
        <https://nvidia.github.io/warp/stable/user_guide/runtime.html#conditional-execution>`__.
    * - Enable sleeping
