@@ -8073,8 +8073,7 @@ class TestMuJoCoAttributes(unittest.TestCase):
         newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
         builder.add_usd(stage)
         model = builder.finalize()
-        with self.assertWarnsRegex(UserWarning, "standalone world roots"):
-            solver = SolverMuJoCo(model)
+        solver = SolverMuJoCo(model)
         assert hasattr(model, "mujoco")
         assert hasattr(model.mujoco, "condim")
         assert np.allclose(model.mujoco.condim.numpy(), [6])
@@ -9136,8 +9135,8 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
             SolverMuJoCo(model, disable_contacts=True)
 
     @requires(*MUJOCO_MODULES)
-    def test_orphan_world_fixed_body_is_exported_static(self):
-        """A world-fixed body outside an articulation remains a static MuJoCo body."""
+    def test_articulated_world_fixed_body_is_exported_as_mocap(self):
+        """A world-fixed root wrapped in an articulation converts as a mocap body."""
         builder = newton.ModelBuilder()
         body_xform = wp.transform(wp.vec3(1.0, 2.0, 3.0), wp.quat_identity())
         body = builder.add_link(xform=body_xform, mass=0.0, label="world_link")
@@ -9147,38 +9146,32 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
             parent_xform=body_xform,
             label="world_link_fixed_joint",
         )
-
-        self.assertEqual(builder.articulation_count, 0)
-        self.assertEqual(builder.joint_articulation[joint], -1)
+        builder.add_articulation([joint])
 
         model = builder.finalize()
-        with self.assertWarnsRegex(UserWarning, "standalone world roots"):
-            solver = SolverMuJoCo(model, disable_contacts=True)
+        solver = SolverMuJoCo(model, disable_contacts=True)
 
-        self.assertEqual(model.articulation_count, 0)
+        self.assertEqual(model.articulation_count, 1)
         self.assertEqual(solver.mj_model.nbody, 2)
         self.assertEqual(solver.mj_model.njnt, 0)
         self.assertEqual(solver.mj_model.nq, 0)
         self.assertEqual(solver.mj_model.nv, 0)
-        self.assertEqual(solver.mj_model.nmocap, 0)
+        self.assertEqual(solver.mj_model.nmocap, 1)
         self.assertEqual(int(solver.mj_model.body_parentid[1]), 0)
-        self.assertEqual(int(solver.mj_model.body_mocapid[1]), -1)
+        self.assertEqual(int(solver.mj_model.body_mocapid[1]), 0)
         self.assertEqual(int(solver.mj_model.body_jntnum[1]), 0)
         np.testing.assert_allclose(solver.mj_model.body_pos[1], [1.0, 2.0, 3.0], atol=1e-7)
 
     @requires(*MUJOCO_MODULES)
-    def test_orphan_world_fixed_kinematic_body_is_exported_as_mocap(self):
-        """A kinematic world-fixed orphan preserves MuJoCo mocap semantics."""
+    def test_articulated_world_fixed_kinematic_body_is_exported_as_mocap(self):
+        """A kinematic world-fixed root in an articulation preserves MuJoCo mocap semantics."""
         builder = newton.ModelBuilder()
         body = builder.add_link(is_kinematic=True, mass=0.0, label="mocap_link")
         joint = builder.add_joint_fixed(parent=-1, child=body, label="mocap_link_fixed_joint")
-
-        self.assertEqual(builder.articulation_count, 0)
-        self.assertEqual(builder.joint_articulation[joint], -1)
+        builder.add_articulation([joint])
 
         model = builder.finalize()
-        with self.assertWarnsRegex(UserWarning, "standalone world roots"):
-            solver = SolverMuJoCo(model, disable_contacts=True)
+        solver = SolverMuJoCo(model, disable_contacts=True)
 
         self.assertEqual(solver.mj_model.nbody, 2)
         self.assertEqual(solver.mj_model.njnt, 0)
@@ -9186,8 +9179,8 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         self.assertEqual(int(solver.mj_model.body_mocapid[1]), 0)
 
     @requires(*MUJOCO_MODULES)
-    def test_orphan_world_dynamic_joint_types_are_exported(self):
-        """Standalone world joints retain their MuJoCo coordinates and DOFs."""
+    def test_articulated_world_dynamic_joint_types_are_exported(self):
+        """Articulated world roots retain their MuJoCo coordinates and DOFs."""
         cases = {
             "revolute": (1, 1, 1),
             "prismatic": (1, 1, 1),
@@ -9212,13 +9205,12 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
                         linear_axes=[axis],
                         angular_axes=[axis],
                     )
+                builder.add_articulation([joint])
 
-                self.assertEqual(builder.joint_articulation[joint], -1)
                 model = builder.finalize()
-                with self.assertWarnsRegex(UserWarning, "standalone world roots"):
-                    solver = SolverMuJoCo(model, disable_contacts=True, kinematic_switchable_roots=False)
+                solver = SolverMuJoCo(model, disable_contacts=True, kinematic_switchable_roots=False)
 
-                self.assertEqual(model.articulation_count, 0)
+                self.assertEqual(model.articulation_count, 1)
                 self.assertEqual(solver.mj_model.nbody, 2)
                 self.assertEqual(solver.mj_model.njnt, expected_njnt)
                 self.assertEqual(solver.mj_model.nq, expected_nq)
@@ -9226,20 +9218,21 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
                 self.assertEqual(solver.mj_model.neq, 0)
 
     @requires(*MUJOCO_MODULES)
-    def test_orphan_world_joints_support_separate_worlds(self):
-        """Standalone roots retain body mappings when worlds are replicated."""
+    def test_articulated_world_roots_support_separate_worlds(self):
+        """Articulated world roots retain body mappings when worlds are replicated."""
         template = newton.ModelBuilder()
         static_body = template.add_link(mass=0.0, label="static_body")
-        template.add_joint_fixed(parent=-1, child=static_body, label="static_root")
+        static_root = template.add_joint_fixed(parent=-1, child=static_body, label="static_root")
+        template.add_articulation([static_root])
         dynamic_body = template.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)), label="dynamic_body")
-        template.add_joint_revolute(parent=-1, child=dynamic_body, label="dynamic_root")
+        dynamic_root = template.add_joint_revolute(parent=-1, child=dynamic_body, label="dynamic_root")
+        template.add_articulation([dynamic_root])
 
         world_count = 3
         builder = newton.ModelBuilder()
         builder.replicate(template, world_count)
         model = builder.finalize()
-        with self.assertWarnsRegex(UserWarning, "standalone world roots"):
-            solver = SolverMuJoCo(model, disable_contacts=True, kinematic_switchable_roots=False)
+        solver = SolverMuJoCo(model, disable_contacts=True, kinematic_switchable_roots=False)
 
         self.assertEqual(model.world_count, world_count)
         self.assertEqual(solver.mj_model.nbody, 3)
@@ -9248,22 +9241,21 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         np.testing.assert_array_equal(solver.mjc_body_to_newton.numpy(), expected_mapping)
 
     @requires(*MUJOCO_MODULES)
-    def test_orphan_world_fixed_body_can_participate_in_loop_joint(self):
-        """A standalone static body remains available to loop constraints."""
+    def test_articulated_world_fixed_body_can_participate_in_loop_joint(self):
+        """An articulated world-fixed body remains available to loop constraints."""
         builder = newton.ModelBuilder()
         static_body = builder.add_link(mass=0.0, label="static_body")
         static_root = builder.add_joint_fixed(parent=-1, child=static_body, label="static_root")
+        builder.add_articulation([static_root])
         dynamic_body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)), label="dynamic_body")
         dynamic_root = builder.add_joint_free(dynamic_body, label="dynamic_root")
         builder.add_articulation([dynamic_root])
         loop_joint = builder.add_joint_fixed(parent=static_body, child=dynamic_body, label="weld")
 
-        self.assertEqual(builder.joint_articulation[static_root], -1)
         self.assertEqual(builder.joint_articulation[loop_joint], -1)
 
         model = builder.finalize()
-        with self.assertWarnsRegex(UserWarning, "standalone world roots"):
-            solver = SolverMuJoCo(model, disable_contacts=True, kinematic_switchable_roots=False)
+        solver = SolverMuJoCo(model, disable_contacts=True, kinematic_switchable_roots=False)
 
         self.assertEqual(solver.mj_model.nbody, 3)
         self.assertEqual(solver.mj_model.njnt, 1)

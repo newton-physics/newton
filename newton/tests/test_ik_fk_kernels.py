@@ -388,7 +388,7 @@ class TestIKFKKernels(unittest.TestCase):
         builder = newton.ModelBuilder()
         body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
         builder.add_joint_free(body)
-        model = builder.finalize(device="cpu")
+        model = builder.finalize(device="cpu", skip_validation_joints=True)
         objectives = [
             ik.IKObjectivePosition(body, wp.vec3(0.0), wp.zeros(1, dtype=wp.vec3, device="cpu")),
             ik.IKObjectiveRotation(body, wp.quat_identity(), wp.zeros(1, dtype=wp.vec4, device="cpu")),

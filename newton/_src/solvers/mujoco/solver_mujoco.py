@@ -41,7 +41,7 @@ from ...sim.articulation import eval_fk
 from ...sim.collide import _estimate_rigid_contact_max, _estimate_rigid_contact_max_per_world
 from ...sim.contacts import GENERATION_SENTINEL as _GENERATION_SENTINEL
 from ...sim.graph_coloring import color_graph, plot_graph
-from ...utils import topological_sort, tree_joint_mask
+from ...utils import topological_sort
 from ...utils.benchmark import event_scope
 from ...utils.import_utils import string_to_warp
 from ..coupled.interface import CouplingEndpointKind, CouplingInterface
@@ -69,7 +69,6 @@ from .equality import (
     MjcEqualityTargetKind,
     _register_equality_constraint_attributes,
     _register_equality_tendon_attributes,
-    equality_loop_joint_mask,
 )
 from .geometry import build_shape_layout, compile_layout_collision_masks
 from .joint_springs import finalize_springref, finalize_stiffness
@@ -7838,35 +7837,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             dtype=np.int32,
         )
 
-        # Classify joints outside articulations as standalone roots or loop closures. Imported MJCF
-        # equalities also appear as unassigned joints; they stay constraints.
+        # Joints outside articulations close loops; every other joint belongs to an articulation.
         unassigned = joint_articulation[selected_joints] == -1
         joints_unassigned = selected_joints[unassigned]
         joints_articulated = selected_joints[~unassigned]
-        if eq_constraint_target_kind is not None and eq_constraint_target is not None:
-            equality_loop_joints = equality_loop_joint_mask(
-                eq_constraint_target_kind[selected_constraints],
-                eq_constraint_target[selected_constraints],
-                model.joint_count,
-            )
-        else:
-            equality_loop_joints = np.zeros(model.joint_count, dtype=bool)
-
-        # The first eligible world joint of a body creates the standalone body. The builder forms
-        # the weld groups of its parent-child filter from the same tree joints.
-        is_tree = tree_joint_mask(
-            joint_parent[selected_joints],
-            joint_child[selected_joints],
-            joint_articulation[selected_joints],
-            model.body_count,
-            equality_loop_joints[selected_joints],
-        )
-        joints_roots = selected_joints[is_tree & unassigned]
-        # Keep fixed and dynamic roots separate because they use different MuJoCo body creation paths.
-        joints_static_roots = joints_roots[joint_type[joints_roots] == JointType.FIXED].astype(np.int32)
-        joints_dynamic_roots = joints_roots[joint_type[joints_roots] != JointType.FIXED].astype(np.int32)
-        # Every other unassigned joint closes a loop.
-        joints_loop = selected_joints[~is_tree & unassigned].astype(np.int32)
+        joints_loop = joints_unassigned.astype(np.int32)
 
         # MuJoCo reads a zero force range as unset and rejects a limited one, so an actuated ball
         # joint cannot express a zero effort limit. Only position and velocity targets create MuJoCo
@@ -7891,10 +7866,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     )
 
         # Every selected body needs exactly one creation path before its shapes and state can be
-        # converted: a tree joint places its child, and an articulation may also start from a parent
-        # that no joint places.
+        # converted: an articulation joint places its child, and an articulation may also start
+        # from a parent that no joint places.
         articulated_parents = joint_parent[joints_articulated]
-        instantiated_bodies = set(joint_child[selected_joints[is_tree]].tolist())
+        instantiated_bodies = set(joint_child[joints_articulated].tolist())
         instantiated_bodies.update(articulated_parents[articulated_parents >= 0].tolist())
         missing_bodies = [int(body) for body in selected_bodies if int(body) not in instantiated_bodies]
         if missing_bodies:
@@ -7911,18 +7886,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             if len(related_joints) > 5:
                 related_joints = [*related_joints[:5], "..."]
             raise ValueError(
-                "SolverMuJoCo cannot convert bodies that are outside articulations and have no standalone "
-                f"joint to world. Bodies: {missing_labels}. Related joints: {related_joints}."
-            )
-
-        if joints_roots.shape[0]:
-            root_labels = [model.joint_label[int(joint)] for joint in np.sort(joints_roots)]
-            displayed_root_labels = root_labels if len(root_labels) <= 5 else [*root_labels[:5], "..."]
-            warnings.warn(
-                f"SolverMuJoCo is converting {len(root_labels)} joint(s) outside articulations as standalone "
-                f"world roots: {displayed_root_labels}. This fallback is specific to SolverMuJoCo.",
-                NewtonWarning,
-                stacklevel=2,
+                "SolverMuJoCo cannot convert bodies that are outside articulations. "
+                f"Bodies: {missing_labels}. Related joints: {related_joints}."
             )
 
         # sort joints topologically depth-first since this is the order that will also be used
@@ -8668,14 +8633,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             mj_bodies.append(body)
             return body, parent, child, child_is_kinematic, j_type, child_xform
 
-        # Standalone world-fixed bodies are static (or mocap when kinematic)
-        # MuJoCo bodies, not loop constraints or synthetic Newton articulations.
-        for j in joints_static_roots:
-            _, _, child, _, _, _ = add_body_from_joint(int(j), mocap=None)
-            add_geoms(child)
-
-        # Add articulation joints and standalone dynamic roots.
-        joints_with_bodies = np.concatenate((joint_order, joints_dynamic_roots))
+        # Add articulation joints.
+        joints_with_bodies = joint_order
         # MuJoCo cannot add constraints to a compiled model, so roots that may turn
         # kinematic later need their (inactive) weld now.
         kinematic_weld_roots = []
@@ -9448,7 +9407,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         if len(spec.bodies) != len(selected_bodies) + 1:  # +1 for the world body
             raise ValueError(
                 "The number of bodies in the MuJoCo model does not match the number of selected bodies in the Newton model. "
-                "Make sure each body belongs to an articulation or has a standalone joint to world."
+                "Make sure each body belongs to an articulation."
             )
 
         # Newton's filter pairs decide which bodies may touch: MuJoCo's own parent-child rule (a

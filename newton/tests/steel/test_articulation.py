@@ -198,7 +198,7 @@ def test_connect_ownership_survives_interleaved_articulation(test, device):
 def check_standalone_world_root_is_not_loop_joint(test, device, **solver_kwargs):
     """An unrelated unowned world-root joint is not a closure."""
     b, standalone_joint = _build_standalone_world_root()
-    model = b.finalize(device=device)
+    model = b.finalize(device=device, skip_validation_joints=True)
     test.assertEqual(model.joint_articulation.numpy().tolist(), [0, -1])
     test.assertEqual(standalone_joint, 1)
     solver = SolverSteel(model, **solver_kwargs)
@@ -2291,7 +2291,7 @@ def test_springs_skip_unsupported_joint_types(test, device, solve_mode="serial")
     )
     builder.add_joint_revolute(parent=-1, child=unowned_link, axis=newton.Axis.Z)
     builder.joint_stiffness = [5.0] * builder.joint_dof_count
-    model = builder.finalize(device=device)
+    model = builder.finalize(device=device, skip_validation_joints=True)
     # The square's four tree hinges and the finger hinge carry springs; the loop, FREE, BALL and unowned joints do not.
     qd_start = model.joint_qd_start.numpy()
     sprung = np.zeros(model.joint_dof_count, dtype=bool)
@@ -2961,7 +2961,8 @@ def test_compact_root_metadata_includes_standalone_joint(test, device, solve_mod
     nested = builder.add_joint_free(child, parent=root_a)
     joint_b = builder.add_joint_free(root_b)
     builder.add_articulation([joint_a, nested])
-    solver = SolverSteel(builder.finalize(device=device), solve_mode=solve_mode)
+    # joint_b is deliberately outside every articulation.
+    solver = SolverSteel(builder.finalize(device=device, skip_validation_joints=True), solve_mode=solve_mode)
     np.testing.assert_array_equal(solver._free_root_joint_indices.numpy(), (joint_a, joint_b))
 
 

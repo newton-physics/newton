@@ -14484,9 +14484,7 @@ class ModelBuilder:
         different articulation. Connected joints must use the same articulation.
 
         Loop-closing joints are allowed when their child is already reachable through
-        an articulation. Standalone world-root joints (``parent == -1``) are also
-        allowed without articulation metadata because supported solvers can consume
-        them directly or provide a topology-specific fallback.
+        an articulation. Every other joint must belong to an articulation.
 
         Raises:
             ValueError: If any validation check fails.
@@ -14524,7 +14522,7 @@ class ModelBuilder:
             return
 
         articulated_bodies = np.concatenate((joint_parent[articulated], joint_child[articulated]))
-        orphan_joints = np.flatnonzero(~articulated & (joint_parent != -1) & ~np.isin(joint_child, articulated_bodies))
+        orphan_joints = np.flatnonzero(~articulated & ~np.isin(joint_child, articulated_bodies))
 
         if len(orphan_joints) > 0:
             joint_labels = [self.joint_label[i] for i in orphan_joints[:5]]  # Show first 5
@@ -15937,8 +15935,8 @@ class ModelBuilder:
                 and balancing. Use individual skip flags to retain these corrections. Default is False.
             skip_validation_worlds: If True, skips validation of world ordering and contiguity. Default is False.
             skip_validation_joints: If True, skips articulation-topology and membership validation. By default,
-                joints cannot connect separate articulations, and non-root joints must belong to an articulation or
-                close a loop; standalone world-root joints are allowed.
+                joints cannot connect separate articulations, and every joint must belong to an articulation or
+                close a loop on an articulated body.
             skip_validation_shapes: If True, skips validation of finite contact materials, contact gaps, and
                 hydroelastic SDF padding on colliding shapes. Default is False.
             skip_validation_inertia: If True, skips all rigid body mass/inertia validation and correction,

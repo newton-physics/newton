@@ -42,8 +42,7 @@ def equality_loop_joint_mask(target_kind: Any, target: Any, joint_count: int) ->
 
     These are the loop joints that converted CONNECT and WELD equalities created
     (:attr:`MjcEqualityTargetKind.JOINT`); they never place a body, so
-    :class:`~newton.ModelBuilder` keeps them out of its weld groups and
-    :class:`~newton.solvers.SolverMuJoCo` out of its standalone world roots, both through
+    :class:`~newton.ModelBuilder` keeps them out of its weld groups through
     :func:`~newton._src.utils.topology.tree_joint_mask`.
 
     Args:
