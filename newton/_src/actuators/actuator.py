@@ -9,6 +9,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, fields, make_dataclass
 from typing import TYPE_CHECKING, Any
 
+import numpy as np
 import warp as wp
 
 from ..exceptions import NewtonDeprecationWarning, NewtonWarning
@@ -34,11 +35,6 @@ _DELAY_KEYWORD_DEPRECATION_MSG = (
     "Actuator(delay=...) is deprecated in Newton 1.9; use Actuator(interface=delay) instead."
 )
 _DELAY_ATTRIBUTE_DEPRECATION_MSG = "Actuator.delay is deprecated in Newton 1.9; use Actuator.interface instead."
-_DELAY_UPDATE_STATE_OVERRIDE_DEPRECATION_MSG = (
-    "Overriding InterfaceDelay.update_state with the (target_pos, target_vel, feedforward, pos_indices, "
-    "vel_indices, current_state, next_state) signature is deprecated in Newton 1.9; override "
-    "update_state(targets, current_state, next_state) instead."
-)
 _DELAY_STATE_DEPRECATION_MSG = "Actuator.State.delay_state is deprecated in Newton 1.9; use interface_state instead."
 
 
@@ -143,14 +139,6 @@ def _assign_component_state(dst: Any, src: Any, name: str) -> None:
 
     for field in state_fields:
         _assign_state_value(getattr(dst, field.name), getattr(src, field.name), f"{name}.{field.name}")
-
-
-def _legacy_delay_update(interface: InterfaceBase | None) -> bool:
-    """Return True if *interface* is a delay whose ``update_state`` override takes the deprecated 7-argument form."""
-    legacy = isinstance(interface, InterfaceDelay) and interface._overrides_legacy_update_state()
-    if legacy:
-        warnings.warn(_DELAY_UPDATE_STATE_OVERRIDE_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=3)
-    return legacy
 
 
 _MISSING = object()
@@ -508,7 +496,6 @@ class Actuator:
         self.drive = drive
         self.interface = interface
         """Interface transforming the commands before the drive, or ``None``."""
-        self._legacy_delay_update = _legacy_delay_update(interface)
         self.clamping = clamping or []
         _validate_spaces(drive.output_space, (c.input_space for c in self.clamping), motor is not None)
         self.num_actuators = num_actuators
@@ -566,6 +553,7 @@ class Actuator:
             )
 
         drive.finalize(self.device, self.num_actuators)
+        self._sequential_indices = wp.array(np.arange(self.num_actuators, dtype=np.uint32), device=self.device)
         if interface is not None:
             interface.finalize(self.device, self.num_actuators, requires_grad=requires_grad)
         for clamp in self.clamping:
@@ -722,7 +710,6 @@ class Actuator:
         if value is not None:
             value.finalize(self.device, self.num_actuators, requires_grad=self.requires_grad)
         self.interface = value
-        self._legacy_delay_update = _legacy_delay_update(value)
 
     # To achieve public API Actuator.ImplicitOptions.
     # Defining ImplicitOptions inside Actuator would create a circular import issue.
@@ -890,10 +877,8 @@ class Actuator:
            transmission maps them onto the actuator position and velocity,
            which the drive reads. The clamps and motor read the actuator
            velocity of the simulated joints.
-        1. **Interface** — transforms the commands (targets and
-           feedforward), e.g. reads delayed targets from ``current_state``,
-           and writes its ``next_state`` (e.g. pushes the current targets
-           into the delay buffer).
+        1. **Interface** — transforms the targets and feedforward, e.g.
+           reads delayed targets from ``current_state``.
         2. **Supply voltage** — the motor selects fixed or battery voltage
            for duty clamping and conversion to motor voltage.
         3. **Drive** — raw effort into ``_computed_forces`` (explicit control
@@ -908,7 +893,9 @@ class Actuator:
            actuator effort onto the DOFs in :attr:`effort_indices` and
            *accumulate* it into the output arrays.  The caller must zero the output
            (e.g. ``control.joint_f.zero_()``) before looping over actuators.
-        7. **Drive state update** — write the drive's ``next_state``.
+        7. **State updates** — write the drive's ``next_state``, then the
+           interface's (e.g. push the current targets into the delay
+           buffer).
 
         Args:
             sim_state: Object or mapping carrying the arrays named by
@@ -961,6 +948,12 @@ class Actuator:
                 supply_voltage = wp.empty_like(supply_voltage)
 
         # --- 0. Sensor and transmission state: actuator position and velocity ---
+        # Two velocities exist. The drive models the firmware, so it reads the
+        # measured velocity: the sensor's, mapped by the transmission. The
+        # clamps and the motor model physics (e.g. back-EMF), so they read the
+        # velocity of the simulated joints, mapped by the transmission. Without
+        # a sensor both are the same; with one, the transmission maps the
+        # measured state for the drive and the simulated state for the motor.
         if self.sensor is None:
             actuator_positions, actuator_pos_indices, actuator_velocities, actuator_vel_indices = (
                 self.transmission.compute_state(
@@ -985,31 +978,20 @@ class Actuator:
                 positions, velocities, self._pos_indices, self._indices, device=self.device
             )
 
-        # --- 1. Interface (read current_state, write next_state) ---
-        targets = InterfaceBase.Targets(
-            target_pos=target_pos,
-            target_vel=target_vel,
-            feedforward=feedforward,
-            target_pos_indices=self.target_pos_indices,
-            target_vel_indices=self._target_vel_indices,
-        )
+        # --- 1. Interface (read from current_state) ---
+        orig_target_pos, orig_target_vel, orig_feedforward = target_pos, target_vel, feedforward
+        target_pos_indices, target_vel_indices = self.target_pos_indices, self._target_vel_indices
         if self.interface is not None:
-            current = current_act_state.interface_state if current_act_state else None
-            nxt = next_act_state.interface_state if next_act_state else None
-            processed = self.interface.process(targets, current, dt)
-            if self._legacy_delay_update:
-                self.interface.update_state(
-                    targets.target_pos,
-                    targets.target_vel,
-                    targets.feedforward,
-                    targets.target_pos_indices,
-                    targets.target_vel_indices,
-                    current,
-                    nxt,
-                )
-            else:
-                self.interface.update_state(targets, current, nxt)
-            targets = processed
+            target_pos, target_vel, feedforward = self.interface.compute(
+                orig_target_pos,
+                orig_target_vel,
+                orig_feedforward,
+                self.target_pos_indices,
+                self._target_vel_indices,
+                current_act_state.interface_state if current_act_state else None,
+                dt,
+            )
+            target_pos_indices = target_vel_indices = self._sequential_indices
 
         # --- 2. Supply voltage from the motor ---
         battery_voltage = supply_current = None
@@ -1028,13 +1010,13 @@ class Actuator:
             sim_state,
             actuator_positions,
             actuator_velocities,
-            targets.target_pos,
-            targets.target_vel,
-            targets.feedforward,
+            target_pos,
+            target_vel,
+            feedforward,
             actuator_pos_indices,
             actuator_vel_indices,
-            targets.target_pos_indices,
-            targets.target_vel_indices,
+            target_pos_indices,
+            target_vel_indices,
             computed_forces,
             applied_forces,
             drive_state,
@@ -1074,4 +1056,14 @@ class Actuator:
             self.drive.update_state(
                 current_act_state.drive_state,
                 next_act_state.drive_state,
+            )
+        if self.interface is not None:
+            self.interface.update_state(
+                orig_target_pos,
+                orig_target_vel,
+                orig_feedforward,
+                self.target_pos_indices,
+                self._target_vel_indices,
+                current_act_state.interface_state if current_act_state else None,
+                next_act_state.interface_state if next_act_state else None,
             )

@@ -184,11 +184,9 @@ pluggable: implement the :class:`DriveBase`, :class:`ClampingBase`,
    ``Delay`` is renamed :class:`InterfaceDelay`.  The ``delay``
    argument of :class:`Actuator`, the ``delay_steps`` argument of
    :meth:`~newton.ModelBuilder.add_actuator`, :attr:`Actuator.delay`,
-   :attr:`Actuator.State.delay_state`, ``ModelBuilder.ActuatorEntry.delay_args``,
-   ``ComponentKind.DELAY``, and the
-   ``update_state(target_pos, target_vel, feedforward, pos_indices,
-   vel_indices, current_state, next_state)`` form of the delay are
-   deprecated.  Pass the delay as ``interface`` and read its state from
+   :attr:`Actuator.State.delay_state`, ``ModelBuilder.ActuatorEntry.delay_args``
+   and ``ComponentKind.DELAY`` are deprecated.  Pass the delay as
+   ``interface`` and read its state from
    :attr:`Actuator.State.interface_state`.
 
 .. note::

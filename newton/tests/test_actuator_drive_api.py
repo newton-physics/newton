@@ -293,13 +293,6 @@ class TestActuatorDriveAPI(unittest.TestCase):
             with deprecated:
                 self.assertIs(legacy(), ComponentKind.INTERFACE)
 
-        targets = wp.array([1.0], dtype=wp.float32)
-        indices = wp.array([0], dtype=wp.uint32)
-        delay_state, next_state = replacement.state(1, actuator.device), replacement.state(1, actuator.device)
-        with deprecated:
-            replacement.update_state(targets, targets, None, indices, indices, delay_state, next_state)
-        np.testing.assert_array_equal(next_state.num_pushes.numpy(), [1])
-
 
 if __name__ == "__main__":
     unittest.main()

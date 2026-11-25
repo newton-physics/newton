@@ -3,21 +3,13 @@
 
 from __future__ import annotations
 
-import inspect
-import warnings
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
 import warp as wp
 
-from ...exceptions import NewtonDeprecationWarning
 from .base import InterfaceBase
-
-_UPDATE_STATE_LEGACY_DEPRECATION_MSG = (
-    "InterfaceDelay.update_state(target_pos, target_vel, feedforward, pos_indices, vel_indices, current_state, "
-    "next_state) is deprecated in Newton 1.9; use update_state(targets, current_state, next_state) instead."
-)
 
 
 @wp.kernel
@@ -229,7 +221,6 @@ class InterfaceDelay(InterfaceBase):
         self._out_pos: wp.array[float] | None = None
         self._out_vel: wp.array[float] | None = None
         self._out_act: wp.array[float] | None = None
-        self._sequential_indices: wp.array[wp.uint32] | None = None
 
     def finalize(self, device: wp.Device, num_actuators: int, requires_grad: bool = False) -> None:
         """Called by :class:`Actuator` after construction.
@@ -245,7 +236,6 @@ class InterfaceDelay(InterfaceBase):
         self._out_pos = wp.zeros(num_actuators, dtype=wp.float32, device=self._device, requires_grad=requires_grad)
         self._out_vel = wp.zeros(num_actuators, dtype=wp.float32, device=self._device, requires_grad=requires_grad)
         self._out_act = wp.zeros(num_actuators, dtype=wp.float32, device=self._device, requires_grad=requires_grad)
-        self._sequential_indices = wp.array(np.arange(num_actuators, dtype=np.uint32), device=self._device)
 
     def is_stateful(self) -> bool:
         return True
@@ -323,83 +313,22 @@ class InterfaceDelay(InterfaceBase):
         )
         return tuple(outputs)
 
-    def process(
-        self, targets: InterfaceBase.Targets, state: InterfaceDelay.State, dt: float | None
-    ) -> InterfaceBase.Targets:
-        """Replace the commands with their delayed values.
-
-        Args:
-            targets: Commands of the actuators.
-            state: InterfaceDelay state to read from.
-            dt: Timestep [s] (unused).
-
-        Returns:
-            *targets* with delayed ``target_pos``, ``target_vel`` and
-            ``feedforward``.
-        """
-        target_pos, target_vel, feedforward = self.get_delayed_targets(
-            targets.target_pos,
-            targets.target_vel,
-            targets.feedforward,
-            targets.target_pos_indices,
-            targets.target_vel_indices,
-            state,
-        )
-        return replace(
-            targets,
-            target_pos=target_pos,
-            target_vel=target_vel,
-            feedforward=feedforward,
-            target_pos_indices=self._sequential_indices,
-            target_vel_indices=self._sequential_indices,
-        )
-
-    def update_state(self, *args: Any, **kwargs: Any) -> None:
-        """Push the current command inputs into the buffer.
-
-        Call as ``update_state(targets, current_state, next_state)``:
-
-        * *targets*: the commands this delay received in :meth:`process`.
-        * *current_state*: delay state to read from.
-        * *next_state*: delay state to write into.
-
-        .. deprecated:: 1.9
-            The form ``update_state(target_pos, target_vel, feedforward,
-            pos_indices, vel_indices, current_state, next_state)``.
-        """
-        targets = args[0] if args else kwargs.get("targets")
-        if not isinstance(targets, InterfaceBase.Targets):
-            warnings.warn(_UPDATE_STATE_LEGACY_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-            self._push_targets(*args, **kwargs)
-            return
-        self._update_from_targets(*args, **kwargs)
-
-    def _overrides_legacy_update_state(self) -> bool:
-        """Return True if a subclass overrides :meth:`update_state` with the deprecated 7-argument form."""
-        method = type(self).update_state
-        if method is InterfaceDelay.update_state:
-            return False
-        positional = (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
-        params = [p for p in inspect.signature(method).parameters.values() if p.kind in positional]
-        return len(params) == 8
-
-    def _update_from_targets(
+    def compute(
         self,
-        targets: InterfaceBase.Targets,
-        current_state: InterfaceDelay.State,
-        next_state: InterfaceDelay.State,
-    ) -> None:
-        self._push_targets(
-            targets.target_pos,
-            targets.target_vel,
-            targets.feedforward,
-            targets.target_pos_indices,
-            targets.target_vel_indices,
-            current_state,
-            next_state,
+        target_pos: wp.array[float],
+        target_vel: wp.array[float],
+        feedforward: wp.array[float] | None,
+        target_pos_indices: wp.array[wp.uint32],
+        target_vel_indices: wp.array[wp.uint32],
+        state: InterfaceDelay.State,
+        dt: float | None = None,
+    ) -> tuple[wp.array[float], wp.array[float], wp.array[float]]:
+        """Return the delayed targets; see :meth:`get_delayed_targets`."""
+        return self.get_delayed_targets(
+            target_pos, target_vel, feedforward, target_pos_indices, target_vel_indices, state
         )
 
-    def _push_targets(
+    def update_state(
         self,
         target_pos: wp.array[float],
         target_vel: wp.array[float],
@@ -409,7 +338,7 @@ class InterfaceDelay(InterfaceBase):
         current_state: InterfaceDelay.State,
         next_state: InterfaceDelay.State,
     ) -> None:
-        """Write command inputs into the buffer and advance the write pointer.
+        """Push the current command inputs into the buffer and advance the write pointer.
 
         Args:
             target_pos: Current target positions [m or rad].

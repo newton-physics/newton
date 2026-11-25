@@ -42,7 +42,6 @@ from newton.actuators import (
     DriveOutputSpace,
     DrivePD,
     DrivePID,
-    InterfaceBase,
     InterfaceDelay,
     JointSpaceResponse,
     MotorDC,
@@ -316,17 +315,6 @@ def _build_gru_onnx(
 
 # Regularize the fixtures' idealized point masses without changing their
 # effective dynamics from the inertia that validation previously synthesized.
-
-
-def _delay_targets(target_pos, target_vel, indices, feedforward=None):
-    """Minimal :class:`InterfaceBase.Targets` for driving a delay directly."""
-    return InterfaceBase.Targets(
-        target_pos=target_pos,
-        target_vel=target_vel,
-        feedforward=feedforward,
-        target_pos_indices=indices,
-        target_vel_indices=indices,
-    )
 
 
 _POINT_MASS_INERTIA = wp.mat33(1.0e-6, 0.0, 0.0, 0.0, 1.0e-6, 0.0, 0.0, 0.0, 1.0e-6)
@@ -3014,7 +3002,7 @@ class TestDelay(unittest.TestCase):
 
             out_pos, _out_vel, _out_act = delay.get_delayed_targets(tgt_pos, tgt_vel, None, indices, indices, state_0)
             read_history.append(out_pos.numpy()[0])
-            delay.update_state(_delay_targets(tgt_pos, tgt_vel, indices), state_0, state_1)
+            delay.update_state(tgt_pos, tgt_vel, None, indices, indices, state_0, state_1)
             state_0, state_1 = state_1, state_0
 
         self.assertAlmostEqual(read_history[0], 10.0, places=4, msg="step 0: empty buffer -> current target")
@@ -3046,7 +3034,7 @@ class TestDelay(unittest.TestCase):
             result = out_pos.numpy()
             history_dof0.append(result[0])
             history_dof1.append(result[1])
-            delay.update_state(_delay_targets(tgt_pos, tgt_vel, indices), state_0, state_1)
+            delay.update_state(tgt_pos, tgt_vel, None, indices, indices, state_0, state_1)
             state_0, state_1 = state_1, state_0
 
         # DOF 0 (delay=0): always sees current target
@@ -6243,7 +6231,7 @@ class TestStateReset(unittest.TestCase):
         for step in range(3):
             tgt = wp.array([float(step + 1) * 10] * n, dtype=wp.float32, device=device)
             vel = wp.zeros(n, dtype=wp.float32, device=device)
-            delay.update_state(_delay_targets(tgt, vel, indices), state_0, state_1)
+            delay.update_state(tgt, vel, None, indices, indices, state_0, state_1)
             state_0, state_1 = state_1, state_0
 
         pushes_before = state_0.num_pushes.numpy().copy()
@@ -6279,7 +6267,7 @@ class TestStateReset(unittest.TestCase):
         for step in range(4):
             tgt = wp.array([float(step + 1)] * n, dtype=wp.float32, device=device)
             vel = wp.zeros(n, dtype=wp.float32, device=device)
-            delay.update_state(_delay_targets(tgt, vel, indices), state, state_tmp)
+            delay.update_state(tgt, vel, None, indices, indices, state, state_tmp)
             state, state_tmp = state_tmp, state
 
         self.assertTrue(any(p > 0 for p in state.num_pushes.numpy()))

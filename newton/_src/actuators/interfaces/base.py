@@ -18,7 +18,7 @@ class InterfaceBase:
     actuator position and velocity from the sensor and the transmission. An
     :class:`~newton.actuators.Actuator` has at most one interface.
 
-    Subclasses must override :meth:`resolve_arguments` and :meth:`process`.
+    Subclasses must override :meth:`resolve_arguments` and :meth:`compute`.
     Stateful subclasses also override :meth:`is_stateful`, :meth:`state` and
     :meth:`update_state`.
     """
@@ -34,27 +34,6 @@ class InterfaceBase:
                 mask: Boolean mask of length N. ``True`` entries are reset.
                     ``None`` resets all.
             """
-
-    @dataclass
-    class Targets:
-        """Commands passed through the interface.
-
-        Each actuator slot ``i`` reads ``target_pos[target_pos_indices[i]]``,
-        ``target_vel[target_vel_indices[i]]`` and
-        ``feedforward[target_vel_indices[i]]``. An interface that replaces a
-        target array with one entry per slot also replaces its index array.
-        """
-
-        target_pos: wp.array[float]
-        """Target positions [m or rad]."""
-        target_vel: wp.array[float]
-        """Target velocities [m/s or rad/s]."""
-        feedforward: wp.array[float] | None
-        """Feedforward effort [N or N·m], or ``None``."""
-        target_pos_indices: wp.array[wp.uint32]
-        """Index of each slot into :attr:`target_pos`."""
-        target_vel_indices: wp.array[wp.uint32]
-        """Index of each slot into :attr:`target_vel` and :attr:`feedforward`."""
 
     SHARED_PARAMS: ClassVar[set[str]] = set()
 
@@ -82,30 +61,45 @@ class InterfaceBase:
             requires_grad: Allocate output arrays with gradient support.
         """
 
-    def process(
-        self, targets: InterfaceBase.Targets, state: InterfaceBase.State | None, dt: float | None
-    ) -> InterfaceBase.Targets:
-        """Return the transformed commands.
+    def compute(
+        self,
+        target_pos: wp.array[float],
+        target_vel: wp.array[float],
+        feedforward: wp.array[float] | None,
+        target_pos_indices: wp.array[wp.uint32],
+        target_vel_indices: wp.array[wp.uint32],
+        state: InterfaceBase.State | None,
+        dt: float | None = None,
+    ) -> tuple[wp.array[float], wp.array[float], wp.array[float]]:
+        """Return the transformed targets of each actuator.
 
-        Return a copy of *targets* made with :func:`dataclasses.replace`; do
-        not modify *targets* in place.
+        Actuator ``i`` reads ``target_pos[target_pos_indices[i]]``,
+        ``target_vel[target_vel_indices[i]]`` and
+        ``feedforward[target_vel_indices[i]]``.
 
         Args:
-            targets: Commands of the actuators.
+            target_pos: Target positions [m or rad].
+            target_vel: Target velocities [m/s or rad/s].
+            feedforward: Feedforward effort [N or N·m], or ``None``.
+            target_pos_indices: Index of each actuator into *target_pos*.
+            target_vel_indices: Index of each actuator into *target_vel* and
+                *feedforward*.
             state: Interface state (``None`` if stateless).
             dt: Timestep [s].
 
         Returns:
-            Transformed commands.
+            Target positions, target velocities and feedforward, one entry
+            per actuator, shape ``(N,)``; the feedforward is zero when
+            *feedforward* is ``None``.
         """
-        raise NotImplementedError(f"{type(self).__name__} must implement process")
+        raise NotImplementedError(f"{type(self).__name__} must implement compute")
 
     def is_stateful(self) -> bool:
         """Return True if this interface maintains internal state."""
         return False
 
     def is_graphable(self) -> bool:
-        """Return True if :meth:`process` and :meth:`update_state` can be captured in a CUDA graph."""
+        """Return True if :meth:`compute` and :meth:`update_state` can be captured in a CUDA graph."""
         return True
 
     def state(self, num_actuators: int, device: wp.Device) -> InterfaceBase.State | None:
@@ -114,14 +108,25 @@ class InterfaceBase:
 
     def update_state(
         self,
-        targets: InterfaceBase.Targets,
+        target_pos: wp.array[float],
+        target_vel: wp.array[float],
+        feedforward: wp.array[float] | None,
+        target_pos_indices: wp.array[wp.uint32],
+        target_vel_indices: wp.array[wp.uint32],
         current_state: InterfaceBase.State | None,
         next_state: InterfaceBase.State | None,
     ) -> None:
         """Advance internal state after the actuator step.
 
+        Receives the same targets as :meth:`compute`.
+
         Args:
-            targets: The commands this interface received in :meth:`process`.
+            target_pos: Target positions [m or rad].
+            target_vel: Target velocities [m/s or rad/s].
+            feedforward: Feedforward effort [N or N·m], or ``None``.
+            target_pos_indices: Index of each actuator into *target_pos*.
+            target_vel_indices: Index of each actuator into *target_vel* and
+                *feedforward*.
             current_state: Current interface state.
             next_state: Next interface state to write.
         """
