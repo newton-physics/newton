@@ -64,7 +64,7 @@ effort at its end; the others are applied in this order:
    ├── Interface     (optional: transforms the targets and feedforward)
    │   └── InterfaceDelay          (delays the commands by N actuator timesteps)
    ├── Drive      (control law that computes raw effort, or the motor command)
-   ├── Clamping[]  (bounds the drive output in its declared space)
+   ├── Clamping[]  (optional: bounds the drive output in its declared space)
    │   ├── ClampingMaxEffort       (±max_effort symmetric clamp; EFFORT only)
    │   ├── ClampingCurrentDuty     (current estimate and duty limits; DUTY only)
    │   ├── ClampingDCMotor         (velocity-dependent saturation; EFFORT only)
@@ -172,7 +172,7 @@ The per-step pipeline is:
 
 .. code-block:: text
 
-   Sensor (optional) → Transmission state → Interface (optional) → Supply voltage → Drive → Clamping → Motor (optional) → Transmission effort → Drive state update
+   Sensor (optional) → Transmission state → Interface (optional) → Supply voltage → Drive → Clamping (optional) → Motor (optional) → Transmission effort → State updates
 
 Drives, clamping objects, interfaces, sensors and transmissions are
 pluggable: implement the :class:`DriveBase`, :class:`ClampingBase`,

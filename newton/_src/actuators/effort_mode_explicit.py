@@ -80,9 +80,10 @@ class _EffortModeExplicit:
         *motor_velocities* at *motor_vel_indices*, the velocity of the
         simulated joints, unchanged by a sensor; the motor reads the same
         velocity. Both default to the drive's *velocities* and
-        *vel_indices*. *bias_force* is ignored.
+        *vel_indices*.
 
         Returns the buffer holding the final (clamped) effort.
+        *bias_force* is ignored.
         """
         if motor_velocities is None:
             motor_velocities, motor_vel_indices = velocities, vel_indices

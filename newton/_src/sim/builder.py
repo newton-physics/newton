@@ -219,8 +219,6 @@ _ACTUATOR_DELAY_STEPS_DEPRECATION_MSG = (
     "use interface=(InterfaceDelay, {'delay_steps': ...}) instead."
 )
 _ACTUATOR_ENTRY_DELAY_ARGS_UNSET = object()
-
-
 _ACTUATOR_ENTRY_DELAY_ARGS_DEPRECATION_MSG = (
     "ModelBuilder.ActuatorEntry.delay_args is deprecated in Newton 1.9; use interface_args instead."
 )
@@ -3658,8 +3656,8 @@ class ModelBuilder:
         """Add an external actuator.
 
         External actuators apply forces computed outside the physics engine.
-        Multiple calls with the same *drive_class*, *clamping*, input
-        processor, *motor*, *sensor* and *transmission* types, the same number of driven
+        Multiple calls with the same *drive_class*, *clamping*, *interface*,
+        *motor*, *sensor* and *transmission* types, the same number of driven
         joints, and identical shared parameters are
         accumulated into one
         :class:`~newton.actuators.Actuator` instance during
@@ -3739,20 +3737,14 @@ class ModelBuilder:
 
         if index is None:
             raise TypeError("add_actuator() missing required argument: 'index'")
-        input_dofs = (int(index),) if np.ndim(index) == 0 else tuple(int(i) for i in index)
+        input_dofs = _joint_tuple(index)
         if not input_dofs:
             raise ValueError("add_actuator: index needs at least one DOF")
-        output_dofs = (
-            input_dofs
-            if effort_index is None
-            else (int(effort_index),)
-            if np.ndim(effort_index) == 0
-            else tuple(int(i) for i in effort_index)
-        )
+        output_dofs = input_dofs if effort_index is None else _joint_tuple(effort_index)
         if pos_index is None:
             input_pos = input_dofs
         else:
-            input_pos = (int(pos_index),) if np.ndim(pos_index) == 0 else tuple(int(i) for i in pos_index)
+            input_pos = _joint_tuple(pos_index)
             if len(input_pos) != len(input_dofs):
                 raise ValueError(
                     f"add_actuator: pos_index has {len(input_pos)} indices for {len(input_dofs)} joint(s) of index"
