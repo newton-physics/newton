@@ -6134,8 +6134,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self._update_site_properties()
             self._update_pair_properties()
             self._invalidate_contact_fast_path()
-            # Site geometry affects tendon reference lengths and transmission inertia.
-            if self.mj_model.nsite:
+            if not self.use_mujoco_cpu:
+                self._sync_worldbody_geom_xposes()
+                self._sync_site_xposes()
+            if self._has_site_dependent_constants:
                 need_const_0 = True
         if flags & ModelFlags.MODEL_PROPERTIES:
             self._update_model_properties()
@@ -6211,7 +6213,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 ):
                     getattr(self.mj_model, name)[ctrl_direct] = getattr(self.mjw_model, name).numpy()[0, ctrl_direct]
             if need_const_fixed or need_const_0:
+                # mj_setConst leaves qpos at the spring reference pose.
+                qpos = self.mj_data.qpos.copy()
                 self._set_const_0()
+                self.mj_data.qpos[:] = qpos
+                self._mujoco.mj_kinematics(self.mj_model, self.mj_data)
             if need_solref_update:
                 self._update_solref_from_invweight0()
             if need_const_0:
@@ -6263,10 +6269,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                             update_connect_constraint_anchor_rel_xform_at_ref_pose,
                             update_connect_constraint_anchors,
                         )
-
-            if flags & ModelFlags.SHAPE_PROPERTIES:
-                self._sync_worldbody_geom_xposes()
-                self._sync_site_xposes()
 
             if flags and getattr(self, "enable_sleeping", False) and not getattr(self, "_initial_model_sync", False):
                 # MuJoCo Warp cannot infer that Newton-side property updates
@@ -9549,6 +9551,15 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 "ignore", message=r".*is not rigid and has no equality constraints or passive forces"
             )
             self.mj_model = spec.compile()
+        self._has_site_dependent_constants = bool(
+            np.any(self.mj_model.wrap_type == mujoco.mjtWrap.mjWRAP_SITE)
+            or np.any(
+                np.isin(
+                    self.mj_model.actuator_trntype,
+                    (mujoco.mjtTrn.mjTRN_SITE, mujoco.mjtTrn.mjTRN_SLIDERCRANK),
+                )
+            )
+        )
         self._canonical_bvh_aabb = self.mj_model.bvh_aabb.copy()
         self._canonical_body_ipos = self.mj_model.body_ipos.copy()
         self._canonical_body_iquat = self.mj_model.body_iquat.copy()

@@ -19,22 +19,32 @@ class TestMuJoCoSiteExport(unittest.TestCase):
     """Test exporting sites to MuJoCo models."""
 
     def test_site_edit_refreshes_tendon_constants(self):
-        """Keep a tendon equality at rest after changing its site geometry."""
-        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-        body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
-        joint = builder.add_joint_revolute(-1, body, axis=newton.Axis.Z)
-        builder.add_articulation([joint])
-        moving = builder.add_site(body, xform=wp.transform((1.0, 0.0, 0.0), wp.quat_identity()))
-        fixed = builder.add_site(-1, xform=wp.transform((1.0, -1.0, 0.0), wp.quat_identity()))
-        tendon = mujoco.add_tendon_spatial(builder, [mujoco.TendonWrapSite(moving), mujoco.TendonWrapSite(fixed)])
-        mujoco.add_equality_tendon(builder, tendon)
-
-        for cpu in (False, True):
-            with self.subTest(cpu=cpu):
+        """Keep a tendon equality at rest after changing its site and wrapping geometry."""
+        for cpu, wrapping in ((False, False), (True, False), (False, True)):
+            with self.subTest(cpu=cpu, wrapping=wrapping):
+                builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+                body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+                joint = builder.add_joint_revolute(-1, body, axis=newton.Axis.Z)
+                builder.add_articulation([joint])
+                moving = builder.add_site(body, xform=wp.transform((1.0, 0.0, 0.0), wp.quat_identity()))
+                fixed = builder.add_site(
+                    -1, xform=wp.transform((-1.0, 0.0, 0.0) if wrapping else (1.0, -1.0, 0.0), wp.quat_identity())
+                )
+                wraps = [mujoco.TendonWrapSite(moving)]
+                if wrapping:
+                    sphere = builder.add_shape_sphere(
+                        -1, radius=0.4, xform=wp.transform((0.0, 1.0, 0.0), wp.quat_identity())
+                    )
+                    wraps.append(mujoco.TendonWrapGeom(sphere))
+                wraps.append(mujoco.TendonWrapSite(fixed))
+                tendon = mujoco.add_tendon_spatial(builder, wraps)
+                mujoco.add_equality_tendon(builder, tendon)
                 model = builder.finalize()
                 solver = SolverMuJoCo(model, use_mujoco_cpu=cpu, disable_contacts=True)
                 poses = model.shape_transform.numpy().copy()
-                poses[moving, 0] = 2.0
+                poses[moving, 0] = 1.1 if wrapping else 2.0
+                if wrapping:
+                    poses[sphere, 1] = 0.15
                 model.shape_transform.assign(poses)
                 solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
                 reference = SolverMuJoCo(model, use_mujoco_cpu=cpu, disable_contacts=True)
@@ -48,6 +58,37 @@ class TestMuJoCoSiteExport(unittest.TestCase):
                     actual = getattr(solver.mj_model if cpu else solver.mjw_model, field)
                     fresh = getattr(reference.mj_model if cpu else reference.mjw_model, field)
                     np.testing.assert_allclose(actual if cpu else actual.numpy(), fresh if cpu else fresh.numpy())
+
+    def test_site_edit_preserves_live_cpu_state(self):
+        """Continue from the live pose after a site edit without input synchronization."""
+        import mujoco as mj
+
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        builder.add_mjcf("""<mujoco><option gravity="0 0 0"/><worldbody>
+            <site name="fixed" pos="1 -1 0"/><body><joint name="hinge" springref=".2"/>
+            <geom size=".1"/><site name="moving" pos="1 0 0"/></body></worldbody>
+            <tendon><spatial><site site="fixed"/><site site="moving"/></spatial></tendon></mujoco>""")
+        builder.joint_qd[0] = 0.5
+        model = builder.finalize()
+        with self.assertWarns(newton.NewtonDeprecationWarning):
+            solver = SolverMuJoCo(model, use_mujoco_cpu=True, update_data_interval=0, disable_contacts=True)
+        solver.mj_data.qpos[:] = 0.4
+        state, output = model.state(), model.state()
+        solver.step(state, output, model.control(), None, 0.001)
+        qpos, qvel = solver.mj_data.qpos.copy(), solver.mj_data.qvel.copy()
+        sites = np.flatnonzero(model.shape_flags.numpy() & int(newton.ShapeFlags.SITE))
+        poses = model.shape_transform.numpy().copy()
+        poses[sites, 0] += 0.1
+        model.shape_transform.assign(poses)
+        solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+        np.testing.assert_array_equal(solver.mj_data.qpos, qpos)
+        np.testing.assert_array_equal(solver.mj_data.qvel, qvel)
+        reference = mj.MjData(solver.mj_model)
+        reference.qpos[:] = qpos
+        mj.mj_kinematics(solver.mj_model, reference)
+        np.testing.assert_allclose(solver.mj_data.site_xpos, reference.site_xpos, atol=1e-7)
+        solver.step(output, state, model.control(), None, 0.001)
+        np.testing.assert_allclose(solver.mj_data.qpos, qpos + 0.001 * qvel, atol=1e-7)
 
     def test_worldbody_site_poses_across_worlds(self):
         """Keep batched worldbody site poses synchronized with Newton."""
