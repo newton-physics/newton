@@ -19,7 +19,7 @@ class TransmissionBase:
     :attr:`Actuator.indices <newton.actuators.Actuator.indices>`), measured
     by the sensor if the actuator has one, onto one actuator position and
     velocity, e.g. the motor angle behind a gearbox or the mean finger
-    position of a gripper. The input processors, drive, clamps and motor all
+    position of a gripper. The drive, clamps and motor all
     work with these actuator coordinates. With a sensor,
     :meth:`compute_velocity` also maps the simulated joint state onto the
     actuator velocity that the clamps and the motor read, e.g. the motor

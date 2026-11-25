@@ -4,7 +4,7 @@
 """GPU-accelerated actuator models for physics simulations.
 
 This module provides a modular library of actuator components — drives,
-clamping, motors, input processors such as delay, sensors and transmissions — that compute joint effort from
+clamping, motors, interfaces such as delay, sensors and transmissions — that compute joint effort from
 simulation state and control targets. Components are composed into an :class:`Actuator` instance
 and registered with :meth:`~newton.ModelBuilder.add_actuator` during model
 construction.
@@ -37,8 +37,8 @@ from ._src.actuators import (
     DriveOutputSpace,
     DrivePD,
     DrivePID,
-    InputProcessorBase,
-    InputProcessorDelay,
+    InterfaceBase,
+    InterfaceDelay,
     JointSpaceResponse,
     MotorDC,
     SchemaNames,
@@ -72,8 +72,8 @@ __all__ = [
     "DriveOutputSpace",
     "DrivePD",
     "DrivePID",
-    "InputProcessorBase",
-    "InputProcessorDelay",
+    "InterfaceBase",
+    "InterfaceDelay",
     "JointSpaceResponse",
     "MotorDC",
     "SchemaNames",
@@ -88,14 +88,14 @@ __all__ = [
 ]
 
 if TYPE_CHECKING:
-    Delay = InputProcessorDelay
+    Delay = InterfaceDelay
 
 _DEPRECATED_SYMBOLS = {
-    "Delay": InputProcessorDelay,
+    "Delay": InterfaceDelay,
 }
 
 __deprecated_symbols__ = {
-    "Delay": "Deprecated in 1.9; use InputProcessorDelay instead.",
+    "Delay": "Deprecated in 1.9; use InterfaceDelay instead.",
 }
 
 

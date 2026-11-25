@@ -18,9 +18,9 @@ from .drives import (
     DrivePD,
     DrivePID,
 )
-from .input_processors import (
-    InputProcessorBase,
-    InputProcessorDelay,
+from .interfaces import (
+    InterfaceBase,
+    InterfaceDelay,
 )
 from .joint_space_response import JointSpaceResponse
 from .motor_dc import MotorDC
@@ -56,8 +56,8 @@ __all__ = [
     "DriveOutputSpace",
     "DrivePD",
     "DrivePID",
-    "InputProcessorBase",
-    "InputProcessorDelay",
+    "InterfaceBase",
+    "InterfaceDelay",
     "JointSpaceResponse",
     "MotorDC",
     "SchemaNames",

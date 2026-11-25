@@ -2576,7 +2576,7 @@ class ArticulationView:
                 :class:`~newton.actuators.DriveBase`,
                 :class:`~newton.actuators.ClampingBase`,
                 :class:`~newton.actuators.MotorDC`, or
-                :class:`~newton.actuators.InputProcessorDelay` instance.
+                :class:`~newton.actuators.InterfaceDelay` instance.
             name: Attribute name on *component* (e.g. ``"kp"``, ``"max_effort"``,
                 ``"delay_steps"``).
 
@@ -2632,7 +2632,7 @@ class ArticulationView:
                 :class:`~newton.actuators.DriveBase`,
                 :class:`~newton.actuators.ClampingBase`,
                 :class:`~newton.actuators.MotorDC`, or
-                :class:`~newton.actuators.InputProcessorDelay` instance.
+                :class:`~newton.actuators.InterfaceDelay` instance.
             name: Attribute name on *component* (e.g. ``"kp"``, ``"max_effort"``,
                 ``"delay_steps"``).
             values: New parameter values shaped ``(world_count, dofs_per_world)``

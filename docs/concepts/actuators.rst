@@ -61,8 +61,8 @@ effort at its end; the others are applied in this order:
    ├── Transmission  (maps the joints onto one actuator coordinate, and the effort back)
    │   ├── TransmissionDirect      (default: the actuator is its single joint)
    │   └── TransmissionFixed       (constant gear ratio and efficiency per joint)
-   ├── InputProcessor[]  (optional: transforms state and command inputs)
-   │   └── InputProcessorDelay       (delays command inputs by N actuator timesteps)
+   ├── Interface     (optional: transforms the targets and feedforward)
+   │   └── InterfaceDelay          (delays the commands by N actuator timesteps)
    ├── Drive      (control law that computes raw effort, or the motor command)
    ├── Clamping[]  (bounds the drive output in its declared space)
    │   ├── ClampingMaxEffort       (±max_effort symmetric clamp; EFFORT only)
@@ -90,12 +90,12 @@ effort at its end; the others are applied in this order:
    The default, :class:`TransmissionDirect`, makes the actuator its single
    joint.
 
-**Input processor**
-   Transforms the inputs to the drive: the actuator position and velocity
-   and the control targets (positions, velocities, feedforward effort).
-   Examples include a command delay.  Multiple input processors can be combined on a single
-   actuator.  See the individual input processor class
-   documentation for details.
+**Interface**
+   Models how the commands reach the actuator: it transforms the control
+   targets (positions, velocities, feedforward effort) before the drive,
+   e.g. a command delay.  It does not see the actuator position and
+   velocity; those come from the sensor and the transmission.  At most one
+   interface per actuator.
 
 **Drive**
    Computes raw actuator effort [N or N·m] or dimensionless duty from the
@@ -138,18 +138,17 @@ receives 9 N·m; a ``ClampingMaxEffort`` limit of 2 N·m allows 6 N·m at the
 joint.  With the default :class:`TransmissionDirect`, actuator units are joint
 units.
 
-The input processors and the drive read the actuator position and velocity,
-measured by the sensor if the actuator has one.  The clamps read the position
-after the input processors, and the clamps and the motor read the actuator
-velocity of the simulated joints, unchanged by the sensor and the input
-processors, e.g. the motor velocity for back-EMF.  With a transmission
+The drive reads the actuator position and velocity, measured by the sensor if
+the actuator has one.  The clamps read the same position, and the clamps and
+the motor read the actuator velocity of the simulated joints, unchanged by
+the sensor, e.g. the motor velocity for back-EMF.  With a transmission
 other than :class:`TransmissionDirect`, the targets and feedforward are per
 actuator: :class:`~newton.ModelBuilder` registers
 ``control.actuator_target_pos``, ``actuator_target_vel`` and
 ``actuator_feedforward``, one entry per actuator of the model.  With the
 default :class:`TransmissionDirect`, the actuator reads ``joint_target_q``,
 ``joint_target_qd`` and ``joint_act`` at its joint.  Drives with custom inputs
-require :class:`TransmissionDirect`.
+require :class:`TransmissionDirect` and no sensor.
 
 Typical transmissions:
 
@@ -173,24 +172,24 @@ The per-step pipeline is:
 
 .. code-block:: text
 
-   Sensor (optional) → Transmission state → Input processors → Supply voltage → Drive → Clamping → Motor (optional) → Transmission effort → Drive state update
+   Sensor (optional) → Transmission state → Interface (optional) → Supply voltage → Drive → Clamping → Motor (optional) → Transmission effort → Drive state update
 
-Drives, clamping objects, input processors, sensors and transmissions are
+Drives, clamping objects, interfaces, sensors and transmissions are
 pluggable: implement the :class:`DriveBase`, :class:`ClampingBase`,
-:class:`InputProcessorBase`, :class:`SensorBase` or
+:class:`InterfaceBase`, :class:`SensorBase` or
 :class:`TransmissionBase` class to add new models.
 
 .. deprecated:: 1.9
 
-   ``Delay`` is renamed :class:`InputProcessorDelay`.  The ``delay``
+   ``Delay`` is renamed :class:`InterfaceDelay`.  The ``delay``
    argument of :class:`Actuator`, the ``delay_steps`` argument of
    :meth:`~newton.ModelBuilder.add_actuator`, :attr:`Actuator.delay`,
    :attr:`Actuator.State.delay_state`, ``ModelBuilder.ActuatorEntry.delay_args``,
    ``ComponentKind.DELAY``, and the
    ``update_state(target_pos, target_vel, feedforward, pos_indices,
    vel_indices, current_state, next_state)`` form of the delay are
-   deprecated.  Pass the delay in ``input_processors`` and read its state
-   from :attr:`Actuator.State.input_processor_states`.
+   deprecated.  Pass the delay as ``interface`` and read its state from
+   :attr:`Actuator.State.interface_state`.
 
 .. note::
 
@@ -211,7 +210,7 @@ when the model is finalized:
    import warp as wp
    import newton
    from newton.actuators import (
-       Actuator, ClampingMaxEffort, DrivePD, InputProcessorDelay,
+       Actuator, ClampingMaxEffort, DrivePD, InterfaceDelay,
    )
 
    builder = newton.ModelBuilder()
@@ -227,7 +226,7 @@ when the model is finalized:
        index=dof_index,
        kp=100.0,
        kd=10.0,
-       input_processors=[(InputProcessorDelay, {"delay_steps": 5})],
+       interface=(InterfaceDelay, {"delay_steps": 5}),
        clamping=[(ClampingMaxEffort, {"max_effort": 50.0})],
    )
 
@@ -340,11 +339,11 @@ simulator or test harness:
 Stateful Actuators
 ------------------
 
-An actuator whose drive or input processors keep internal state requires
+An actuator whose drive or interface keeps internal state requires
 explicit double-buffered state management.  Stateful drives are, e.g.,
 :class:`DrivePID` with an integral accumulator, :class:`DriveNeuralGRU` with
 hidden state, and :class:`DriveNeuralLSTM` with hidden/cell state; a stateful
-input processor is, e.g., :class:`InputProcessorDelay`.  Create two state
+interface is, e.g., :class:`InterfaceDelay`.  Create two state
 objects with :meth:`Actuator.state` and swap them after each step:
 
 .. testcode:: actuator-usage
@@ -818,8 +817,9 @@ Limitations of the implicit mode.  In the cases marked *error*,
   solve, or the solve would ignore them.
 * **Sensors** (warning): an actuator with a sensor is accepted with a
   :class:`~newton.NewtonWarning`, because the result is only approximate: the
-  drive reads the measured position and velocity, while the solve predicts the end-of-step
-  state from the response of the actuated joint alone.  With
+  drive reads the measured position and velocity, while the solve predicts
+  the end-of-step state from the response of the actuated joint alone.
+  Unlike in explicit mode, the clamps also read the measured velocity.  With
   :class:`~newton.actuators.SensorEncoder`, the drive reads the encoder
   behind the output joint.  While the output joint is not at its limit, the
   motor's effort does not reach the link, yet the solve assumes it does, so it
@@ -829,7 +829,7 @@ Differentiability and Graph Capture
 -----------------------------------
 
 Whether an actuator supports differentiability and CUDA graph capture depends on
-its components.  All built-in sensors, input processors, clamps, motors,
+its components.  All built-in sensors, interfaces, clamps, motors,
 transmissions and drives are graphable, except neural-network drives with a Torch checkpoint, due to
 framework interop overhead; with an ONNX checkpoint they are graphable.
 Implicit mode is not differentiable.  :meth:`Actuator.is_graphable` returns
@@ -877,13 +877,10 @@ Sensors
   first joint of the actuator, e.g. a backlash joint; measures position and
   velocity (stateless).
 
-Input processors
-^^^^^^^^^^^^^^^^
+Interfaces
+^^^^^^^^^^
 
-* :class:`InputProcessorDelay` — circular-buffer delay for control targets (stateful).
-
-Multiple input processors can be stacked on a single actuator; they are applied
-in sequence.
+* :class:`InterfaceDelay` — circular-buffer delay for control targets (stateful).
 
 Drives
 ^^^^^^
@@ -951,7 +948,7 @@ A voltage-controlled servo identified with BAM maps onto these components:
 * :class:`MotorDC` with the fit's ``kt`` and ``R`` as ``kt`` and
   ``resistance``, and the supply voltage of the servo as ``vin``;
 * the fit's armature as :attr:`~newton.Model.joint_armature`, and its command
-  delay as :class:`InputProcessorDelay`.
+  delay as :class:`InterfaceDelay`.
 
 BAM also identifies friction models of a servo, which the actuator does not
 model.  Model Coulomb friction with the joint's
@@ -1076,7 +1073,7 @@ Each applied API schema becomes one component:
    * - ``NewtonDCMotorAPI``
      - :class:`MotorDC`
    * - ``NewtonActuatorDelayAPI``
-     - :class:`InputProcessorDelay`
+     - :class:`InterfaceDelay`
    * - ``NewtonActuatorEncoderAPI`` with ``newton:outputJoint``
      - :class:`SensorEncoder`
    * - A ``NewtonConstantResistanceBattery`` prim, targeted by the actuator's
@@ -1096,10 +1093,10 @@ Customization
 -------------
 
 Any actuator can be assembled from the existing building blocks — mix and
-match drives, clamping stages, input processors, motors, sensors and
+match drives, clamping stages, interfaces, motors, sensors and
 transmissions to fit a specific use case.  When the built-in components are
 not sufficient, implement new ones by subclassing :class:`DriveBase`,
-:class:`ClampingBase`, :class:`InputProcessorBase`, :class:`SensorBase` or
+:class:`ClampingBase`, :class:`InterfaceBase`, :class:`SensorBase` or
 :class:`TransmissionBase`.
 
 For example, a custom drive needs to implement

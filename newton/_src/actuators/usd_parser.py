@@ -30,14 +30,14 @@ from .drives import (
     DrivePD,
     DrivePID,
 )
-from .input_processors import InputProcessorBase
-from .input_processors.input_processor_delay import InputProcessorDelay
+from .interfaces import InterfaceBase
+from .interfaces.interface_delay import InterfaceDelay
 from .motor_dc import MotorDC
 from .sensors import SensorBase, SensorEncoder
 from .utils import _ALLOW_UNSAFE_TORCH_CHECKPOINTS_DEPRECATION_MSG, _looks_like_torch_checkpoint, load_metadata
 
 _COMPONENT_KIND_DELAY_DEPRECATION_MSG = (
-    "ComponentKind.DELAY is deprecated in Newton 1.9; use ComponentKind.INPUT_PROCESSOR instead."
+    "ComponentKind.DELAY is deprecated in Newton 1.9; use ComponentKind.INTERFACE instead."
 )
 
 
@@ -47,13 +47,13 @@ class _ComponentKindMeta(enum.EnumMeta):
     def __getattr__(cls, name: str):
         if name == "DELAY":
             warnings.warn(_COMPONENT_KIND_DELAY_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-            return cls.INPUT_PROCESSOR
+            return cls.INTERFACE
         return super().__getattr__(name)
 
     def __getitem__(cls, name: str):
         if name == "DELAY":
             warnings.warn(_COMPONENT_KIND_DELAY_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-            return cls.INPUT_PROCESSOR
+            return cls.INTERFACE
         return super().__getitem__(name)
 
 
@@ -62,7 +62,7 @@ class ComponentKind(enum.Enum, metaclass=_ComponentKindMeta):
 
     DRIVE = "drive"
     CLAMPING = "clamping"
-    INPUT_PROCESSOR = "input_processor"
+    INTERFACE = "interface"
     MOTOR = "motor"
     SENSOR = "sensor"
 
@@ -70,7 +70,7 @@ class ComponentKind(enum.Enum, metaclass=_ComponentKindMeta):
     def _missing_(cls, value: object):
         if value == "delay":
             warnings.warn(_COMPONENT_KIND_DELAY_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-            return cls.INPUT_PROCESSOR
+            return cls.INTERFACE
         return None
 
 
@@ -80,13 +80,13 @@ class ActuatorParsed:
 
     Each detected API schema produces a (class, kwargs) entry.
     The drive is separated out; everything else goes into
-    component_specs (sensor, input processors, clamping, motor, etc.).
+    component_specs (sensor, interface, clamping, motor, etc.).
     """
 
     drive_class: type[DriveBase]
     drive_kwargs: dict[str, Any] = field(default_factory=dict)
-    component_specs: list[tuple[type[ClampingBase | SensorBase | InputProcessorBase | MotorDC], dict[str, Any]]] = (
-        field(default_factory=list)
+    component_specs: list[tuple[type[ClampingBase | SensorBase | InterfaceBase | MotorDC], dict[str, Any]]] = field(
+        default_factory=list
     )
     target_path: str = ""
     """Joint target path (USD prim path of the driven joint)."""
@@ -243,7 +243,7 @@ _SCHEMA_REGISTRY: dict[str, _SchemaEntry] = {
     SchemaNames.POSITION_BASED_CLAMPING: _SchemaEntry(ClampingPositionBased, ComponentKind.CLAMPING),
     SchemaNames.CURRENT_DUTY_CLAMPING: _SchemaEntry(ClampingCurrentDuty, ComponentKind.CLAMPING),
     SchemaNames.DC_MOTOR: _SchemaEntry(MotorDC, ComponentKind.MOTOR),
-    SchemaNames.DELAY: _SchemaEntry(InputProcessorDelay, ComponentKind.INPUT_PROCESSOR),
+    SchemaNames.DELAY: _SchemaEntry(InterfaceDelay, ComponentKind.INTERFACE),
     SchemaNames.ENCODER: _SchemaEntry(SensorEncoder, ComponentKind.SENSOR),
 }
 
@@ -269,7 +269,7 @@ def register_actuator_component(
             the parsed kwargs dict and returns the concrete class.
             A callable may also validate kwargs and raise
             :class:`ValueError`.
-        kind: Whether this schema is a drive, clamping, input processor, sensor, etc.
+        kind: Whether this schema is a drive, clamping, interface, sensor, etc.
 
     If *schema_name* is already registered, a warning is emitted and the
     existing entry is overwritten.

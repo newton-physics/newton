@@ -2859,7 +2859,7 @@ def parse_usd(
         builder.set_joint_mimic(joint=joint_idx, reference_joint=leader_idx, coeffs=(coef0, coef1))
 
     # Parse Newton actuator prims from the USD stage.
-    from ..actuators.input_processors.base import InputProcessorBase  # noqa: PLC0415
+    from ..actuators.interfaces.base import InterfaceBase  # noqa: PLC0415
     from ..actuators.motor_dc import MotorDC  # noqa: PLC0415
     from ..actuators.sensors.base import SensorBase  # noqa: PLC0415
     from ..actuators.usd_parser import BatteryParsed, _parse_actuator_prim, parse_battery_prim  # noqa: PLC0415
@@ -2910,7 +2910,7 @@ def parse_usd(
         coord_index = path_to_coord.get(target_path)
         pos_index = coord_index if coord_index is not None and coord_index != dof_index else None
 
-        input_processor_specs = []
+        interface_spec = None
         clamping_specs = []
         motor_spec = None
         sensor_spec = None
@@ -2928,8 +2928,13 @@ def parse_usd(
                         sensor_kwargs[name] = path_joint_map[path]
                 resolved_sensor = comp_class.resolve_arguments(sensor_kwargs)
                 sensor_spec = (comp_class, {k: v for k, v in sensor_kwargs.items() if k in resolved_sensor})
-            elif issubclass(comp_class, InputProcessorBase):
-                input_processor_specs.append((comp_class, dict(comp_kwargs)))
+            elif issubclass(comp_class, InterfaceBase):
+                if interface_spec is not None:
+                    raise ValueError(
+                        f"Actuator prim {prim.GetPath()} applies more than one interface schema "
+                        f"({interface_spec[0].__name__} and {comp_class.__name__}); an actuator has at most one"
+                    )
+                interface_spec = (comp_class, dict(comp_kwargs))
             elif issubclass(comp_class, MotorDC):
                 motor_spec = (comp_class, dict(comp_kwargs))
             else:
@@ -2953,7 +2958,7 @@ def parse_usd(
             index=dof_index,
             clamping=clamping_specs if clamping_specs else None,
             pos_index=pos_index,
-            input_processors=input_processor_specs,
+            interface=interface_spec,
             motor=motor_spec,
             sensor=sensor_spec,
             **drive_kwargs,

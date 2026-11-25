@@ -9,16 +9,14 @@ from typing import Any, ClassVar
 import warp as wp
 
 
-class InputProcessorBase:
-    """Base class for actuator input processors.
+class InterfaceBase:
+    """Base class for actuator interfaces.
 
-    An input processor transforms the inputs of an actuator before they
-    reach the drive. The inputs are the actuator position and velocity from
-    the transmission, which equal the joint state with the default
-    :class:`~newton.actuators.TransmissionDirect` and no sensor, and the commands (target
-    positions, target velocities, feedforward). An :class:`~newton.actuators.Actuator` runs its
-    processors in list order; each processor receives the inputs returned by
-    the previous one.
+    An interface models how the commands reach the actuator, e.g. a
+    communication delay. It transforms only the commands (target positions,
+    target velocities, feedforward) before the drive; the drive reads the
+    actuator position and velocity from the sensor and the transmission. An
+    :class:`~newton.actuators.Actuator` has at most one interface.
 
     Subclasses must override :meth:`resolve_arguments` and :meth:`process`.
     Stateful subclasses also override :meth:`is_stateful`, :meth:`state` and
@@ -27,7 +25,7 @@ class InputProcessorBase:
 
     @dataclass
     class State:
-        """Base state for input processors."""
+        """Base state for interfaces."""
 
         def reset(self, mask: wp.array[wp.bool] | None = None) -> None:
             """Reset state to initial values.
@@ -38,34 +36,21 @@ class InputProcessorBase:
             """
 
     @dataclass
-    class Inputs:
-        """Actuator inputs passed through the processor chain.
+    class Targets:
+        """Commands passed through the interface.
 
-        Each actuator slot ``i`` reads ``positions[pos_indices[i]]``,
-        ``velocities[vel_indices[i]]``, ``target_pos[target_pos_indices[i]]``,
+        Each actuator slot ``i`` reads ``target_pos[target_pos_indices[i]]``,
         ``target_vel[target_vel_indices[i]]`` and
-        ``feedforward[target_vel_indices[i]]``. A processor that replaces a
+        ``feedforward[target_vel_indices[i]]``. An interface that replaces a
         target array with one entry per slot also replaces its index array.
-        A processor keeps :attr:`vel_indices` and the shape of
-        :attr:`velocities`: drives also use those indices for
-        ``joint_qd``-shaped custom inputs. :meth:`Actuator.step
-        <newton.actuators.Actuator.step>` raises :class:`ValueError` otherwise.
         """
 
-        positions: wp.array[float]
-        """Positions read by the drive [m or rad]."""
-        velocities: wp.array[float]
-        """Velocities read by the drive [m/s or rad/s]."""
         target_pos: wp.array[float]
         """Target positions [m or rad]."""
         target_vel: wp.array[float]
         """Target velocities [m/s or rad/s]."""
         feedforward: wp.array[float] | None
         """Feedforward effort [N or N·m], or ``None``."""
-        pos_indices: wp.array[wp.uint32]
-        """Index of each slot into :attr:`positions`."""
-        vel_indices: wp.array[wp.uint32]
-        """Index of each slot into :attr:`velocities`."""
         target_pos_indices: wp.array[wp.uint32]
         """Index of each slot into :attr:`target_pos`."""
         target_vel_indices: wp.array[wp.uint32]
@@ -98,45 +83,45 @@ class InputProcessorBase:
         """
 
     def process(
-        self, inputs: InputProcessorBase.Inputs, state: InputProcessorBase.State | None, dt: float | None
-    ) -> InputProcessorBase.Inputs:
-        """Return the transformed actuator inputs.
+        self, targets: InterfaceBase.Targets, state: InterfaceBase.State | None, dt: float | None
+    ) -> InterfaceBase.Targets:
+        """Return the transformed commands.
 
-        Return a copy of *inputs* made with :func:`dataclasses.replace`; do
-        not modify *inputs* in place.
+        Return a copy of *targets* made with :func:`dataclasses.replace`; do
+        not modify *targets* in place.
 
         Args:
-            inputs: Actuator inputs.
-            state: Processor state (``None`` if stateless).
+            targets: Commands of the actuators.
+            state: Interface state (``None`` if stateless).
             dt: Timestep [s].
 
         Returns:
-            Transformed actuator inputs.
+            Transformed commands.
         """
         raise NotImplementedError(f"{type(self).__name__} must implement process")
 
     def is_stateful(self) -> bool:
-        """Return True if this processor maintains internal state."""
+        """Return True if this interface maintains internal state."""
         return False
 
     def is_graphable(self) -> bool:
         """Return True if :meth:`process` and :meth:`update_state` can be captured in a CUDA graph."""
         return True
 
-    def state(self, num_actuators: int, device: wp.Device) -> InputProcessorBase.State | None:
+    def state(self, num_actuators: int, device: wp.Device) -> InterfaceBase.State | None:
         """Create and return a new state object, or None if stateless."""
         return None
 
     def update_state(
         self,
-        inputs: InputProcessorBase.Inputs,
-        current_state: InputProcessorBase.State | None,
-        next_state: InputProcessorBase.State | None,
+        targets: InterfaceBase.Targets,
+        current_state: InterfaceBase.State | None,
+        next_state: InterfaceBase.State | None,
     ) -> None:
         """Advance internal state after the actuator step.
 
         Args:
-            inputs: The inputs this processor received in :meth:`process`.
-            current_state: Current processor state.
-            next_state: Next processor state to write.
+            targets: The commands this interface received in :meth:`process`.
+            current_state: Current interface state.
+            next_state: Next interface state to write.
         """

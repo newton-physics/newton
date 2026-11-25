@@ -76,10 +76,11 @@ class _EffortModeExplicit:
         motor writes its effort into *computed_forces* and its current into
         *supply_current*.
 
-        Clamps read the processed *positions* and the actuator velocity
-        *motor_velocities* at *motor_vel_indices*, unchanged by the input
-        processors; the motor reads the same velocity. Both default to the
-        drive's *velocities* and *vel_indices*. *bias_force* is ignored.
+        Clamps read the drive's *positions* and the actuator velocity
+        *motor_velocities* at *motor_vel_indices*, the velocity of the
+        simulated joints, unchanged by a sensor; the motor reads the same
+        velocity. Both default to the drive's *velocities* and
+        *vel_indices*. *bias_force* is ignored.
 
         Returns the buffer holding the final (clamped) effort.
         """

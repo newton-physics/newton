@@ -18,8 +18,8 @@ from .clamping.clamping_current_duty import ClampingCurrentDuty
 from .drives.base import DriveBase
 from .effort_mode_explicit import _EffortModeExplicit
 from .effort_mode_implicit import ImplicitOptions, JointSpaceResponse, _EffortModeImplicit
-from .input_processors.base import InputProcessorBase
-from .input_processors.input_processor_delay import InputProcessorDelay
+from .interfaces.base import InterfaceBase
+from .interfaces.interface_delay import InterfaceDelay
 from .motor_dc import MotorDC
 from .sensors.base import SensorBase
 from .space import _validate_spaces
@@ -31,17 +31,15 @@ if TYPE_CHECKING:
     from ..sim.model import Model
 
 _DELAY_KEYWORD_DEPRECATION_MSG = (
-    "Actuator(delay=...) is deprecated in Newton 1.9; use Actuator(input_processors=[delay]) instead."
+    "Actuator(delay=...) is deprecated in Newton 1.9; use Actuator(interface=delay) instead."
 )
-_DELAY_ATTRIBUTE_DEPRECATION_MSG = "Actuator.delay is deprecated in Newton 1.9; use Actuator.input_processors instead."
+_DELAY_ATTRIBUTE_DEPRECATION_MSG = "Actuator.delay is deprecated in Newton 1.9; use Actuator.interface instead."
 _DELAY_UPDATE_STATE_OVERRIDE_DEPRECATION_MSG = (
-    "Overriding InputProcessorDelay.update_state with the (target_pos, target_vel, feedforward, pos_indices, "
+    "Overriding InterfaceDelay.update_state with the (target_pos, target_vel, feedforward, pos_indices, "
     "vel_indices, current_state, next_state) signature is deprecated in Newton 1.9; override "
-    "update_state(inputs, current_state, next_state) instead."
+    "update_state(targets, current_state, next_state) instead."
 )
-_DELAY_STATE_DEPRECATION_MSG = (
-    "Actuator.State.delay_state is deprecated in Newton 1.9; use input_processor_states instead."
-)
+_DELAY_STATE_DEPRECATION_MSG = "Actuator.State.delay_state is deprecated in Newton 1.9; use interface_state instead."
 
 
 _ACTUATOR_CONTROL_ATTRS = {
@@ -147,9 +145,9 @@ def _assign_component_state(dst: Any, src: Any, name: str) -> None:
         _assign_state_value(getattr(dst, field.name), getattr(src, field.name), f"{name}.{field.name}")
 
 
-def _legacy_delay_updates(processors: list[InputProcessorBase]) -> list[InputProcessorDelay]:
-    """Return the delays whose ``update_state`` override still takes the deprecated 7-argument form."""
-    legacy = [p for p in processors if isinstance(p, InputProcessorDelay) and p._overrides_legacy_update_state()]
+def _legacy_delay_update(interface: InterfaceBase | None) -> bool:
+    """Return True if *interface* is a delay whose ``update_state`` override takes the deprecated 7-argument form."""
+    legacy = isinstance(interface, InterfaceDelay) and interface._overrides_legacy_update_state()
     if legacy:
         warnings.warn(_DELAY_UPDATE_STATE_OVERRIDE_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=3)
     return legacy
@@ -223,13 +221,13 @@ def _input_container_class(name: str, frequencies: tuple[tuple[str, Model.Attrib
 
 
 class Actuator:
-    """Composed actuator: sensor → transmission → input processors → drive → clamping → motor → transmission.
+    """Composed actuator: sensor → transmission → interface → drive → clamping → motor → transmission.
 
     An actuator reads from simulation state/control arrays, optionally
     measures its joint positions and velocities through a sensor (e.g.
     behind a backlash joint), maps its joints onto one actuator coordinate through a
-    transmission (the joint itself by default), transforms the inputs with
-    input processors (e.g. a command delay),
+    transmission (the joint itself by default), transforms the commands with
+    an interface (e.g. a command delay),
     computes effort via a drive, applies clamping (effort limits, saturation,
     etc.), optionally turns it into the effort of a motor, and
     **accumulates** the result into the output array (scatter-add) through
@@ -241,7 +239,7 @@ class Actuator:
         actuator = Actuator(
             indices=indices,
             drive=DrivePD(kp=kp, kd=kd),
-            input_processors=[InputProcessorDelay(delay_steps=wp.array([5, 5], dtype=wp.int32), max_delay=5)],
+            interface=InterfaceDelay(delay_steps=wp.array([5, 5], dtype=wp.int32), max_delay=5),
             clamping=[ClampingMaxEffort(max_effort=max_effort)],
         )
 
@@ -256,62 +254,52 @@ class Actuator:
     class State:
         """Composed state for an :class:`Actuator`.
 
-        Holds one state per input processor and the drive state.
+        Holds the interface state and the drive state.
         Clamping objects are stateless.
         """
 
-        input_processor_states: list[InputProcessorBase.State | None] | None = None
-        """One state per input processor, in processor order (``None`` for
-        stateless processors), or ``None`` if there are no input processors."""
+        interface_state: InterfaceBase.State | None = None
+        """Interface state, or ``None`` if there is no interface or it is stateless."""
         drive_state: DriveBase.State | None = None
         """Drive-specific state, or ``None`` if stateless."""
 
         def __init__(
             self,
-            delay_state: InputProcessorDelay.State | None = None,
+            delay_state: InterfaceDelay.State | None = None,
             drive_state: DriveBase.State | None = None,
             *,
-            input_processor_states: list[InputProcessorBase.State | None] | None = None,
+            interface_state: InterfaceBase.State | None = None,
         ) -> None:
             """Initialize composed actuator state.
 
             Args:
-                delay_state: Deprecated in Newton 1.9; use ``input_processor_states``.
+                delay_state: Deprecated in Newton 1.9; use ``interface_state``.
                 drive_state: Drive-specific state, or ``None`` if stateless.
-                input_processor_states: One state per input processor, in
-                    processor order (``None`` for stateless processors).
+                interface_state: Interface state, or ``None``.
             """
             if delay_state is not None:
-                if input_processor_states is not None:
-                    raise TypeError("Specify only one of 'input_processor_states' and deprecated 'delay_state'.")
+                if interface_state is not None:
+                    raise TypeError("Specify only one of 'interface_state' and deprecated 'delay_state'.")
                 warnings.warn(_DELAY_STATE_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-                input_processor_states = [delay_state]
+                interface_state = delay_state
 
-            self.input_processor_states = input_processor_states
+            self.interface_state = interface_state
             self.drive_state = drive_state
 
         @property
-        def delay_state(self) -> InputProcessorDelay.State | None:
-            """Deprecated alias for the first :class:`InputProcessorDelay` state in :attr:`input_processor_states`.
+        def delay_state(self) -> InterfaceDelay.State | None:
+            """Deprecated alias for :attr:`interface_state` when it is an :class:`InterfaceDelay` state.
 
             .. deprecated:: 1.9
-                Use :attr:`input_processor_states` instead.
+                Use :attr:`interface_state` instead.
             """
             warnings.warn(_DELAY_STATE_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-            return next(
-                (s for s in self.input_processor_states or () if isinstance(s, InputProcessorDelay.State)), None
-            )
+            return self.interface_state if isinstance(self.interface_state, InterfaceDelay.State) else None
 
         @delay_state.setter
-        def delay_state(self, value: InputProcessorDelay.State | None) -> None:
+        def delay_state(self, value: InterfaceDelay.State | None) -> None:
             warnings.warn(_DELAY_STATE_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-            states = self.input_processor_states or []
-            for i, s in enumerate(states):
-                if isinstance(s, InputProcessorDelay.State):
-                    states[i] = value
-                    return
-            if value is not None:
-                self.input_processor_states = [value, *states]
+            self.interface_state = value
 
         def reset(self, mask: wp.array[wp.bool] | None = None) -> None:
             """Reset composed state.
@@ -320,9 +308,8 @@ class Actuator:
                 mask: Boolean mask of length N. ``True`` entries are reset.
                     ``None`` resets all.
             """
-            for state in self.input_processor_states or ():
-                if state is not None:
-                    state.reset(mask)
+            if self.interface_state is not None:
+                self.interface_state.reset(mask)
             if self.drive_state is not None:
                 self.drive_state.reset(mask)
 
@@ -350,21 +337,14 @@ class Actuator:
                 NotImplementedError: A custom state does not implement
                     assignment.
             """
-            own_states = self.input_processor_states or []
-            other_states = other.input_processor_states or []
-            if len(own_states) != len(other_states):
-                raise ValueError(
-                    f"Cannot assign 'input_processor_states': {len(own_states)} and {len(other_states)} entries."
-                )
-            for i, (dst, src) in enumerate(zip(own_states, other_states, strict=True)):
-                _assign_component_state(dst, src, f"input_processor_states[{i}]")
+            _assign_component_state(self.interface_state, other.interface_state, "interface_state")
             _assign_component_state(self.drive_state, other.drive_state, "drive_state")
 
     def __init__(
         self,
         indices: wp.array[wp.uint32] | wp.array2d[wp.uint32],
         drive: DriveBase | None = None,
-        delay: InputProcessorDelay | None = None,
+        delay: InterfaceDelay | None = None,
         clamping: list[ClampingBase] | None = None,
         pos_indices: wp.array[wp.uint32] | wp.array2d[wp.uint32] | None = None,
         target_pos_indices: wp.array[wp.uint32] | None = None,
@@ -378,7 +358,7 @@ class Actuator:
         control_computed_output_attr: str | None = None,
         requires_grad: bool = False,
         *,
-        input_processors: list[InputProcessorBase] | None = None,
+        interface: InterfaceBase | None = None,
         motor: MotorDC | None = None,
         sensor: SensorBase | None = None,
         transmission: TransmissionBase | None = None,
@@ -398,8 +378,8 @@ class Actuator:
                 :class:`~newton.actuators.TransmissionDirect` must map them
                 onto one actuator coordinate.
             drive: Drive that computes effort without a motor, or duty with a motor.
-            delay: Deprecated in Newton 1.9; pass the delay in
-                ``input_processors`` instead.
+            delay: Deprecated in Newton 1.9; pass the delay as
+                ``interface`` instead.
             clamping: Clamps applied in list order. Their input_space must match
                 the drive output: EFFORT without a motor, DUTY with one.
             pos_indices: Indices of the same joints into coordinate-shaped
@@ -438,9 +418,9 @@ class Actuator:
                 limiting and voltage conversion. None to skip writing it.
             requires_grad: Allocate intermediate arrays with gradient support
                 for differentiable simulation.
-            input_processors: Input processors applied in list order to the
-                state and command inputs before the drive (e.g.
-                :class:`InputProcessorDelay`).
+            interface: Optional interface that transforms the commands
+                (targets and feedforward) before the drive (e.g.
+                :class:`InterfaceDelay`).
             motor: Optional motor, applied after the clamping (e.g.
                 :class:`~newton.actuators.MotorDC`). With a motor, the drive
                 computes signed duty. The actuator converts duty to motor
@@ -451,7 +431,7 @@ class Actuator:
                 ``None`` reads the joint positions and velocities directly.
             transmission: Optional transmission that maps the joints in
                 *indices* onto one actuator position and velocity, which the
-                input processors, drive, clamps and motor read, and maps the
+                drive, clamps and motor read, and maps the
                 actuator effort onto the DOFs in *effort_indices* (e.g.
                 :class:`~newton.actuators.TransmissionFixed`). ``None`` uses
                 :class:`~newton.actuators.TransmissionDirect`: the actuator is
@@ -468,10 +448,11 @@ class Actuator:
         """
         if drive is None:
             raise TypeError("Actuator() missing required argument: 'drive'")
-        input_processors = list(input_processors or [])
         if delay is not None:
+            if interface is not None:
+                raise TypeError("Specify only one of 'interface' and deprecated 'delay'.")
             warnings.warn(_DELAY_KEYWORD_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-            input_processors.insert(0, delay)
+            interface = delay
 
         self.indices = indices
         num_actuators = self._indices.shape[1]
@@ -519,10 +500,15 @@ class Actuator:
                 f"{type(drive).__name__} declares custom inputs, which are indexed by DOF; "
                 "a transmission works in actuator space, so they cannot be combined"
             )
+        if sensor is not None and drive.custom_inputs:
+            raise NotImplementedError(
+                f"{type(drive).__name__} declares custom inputs, which are indexed by DOF; "
+                f"{type(sensor).__name__} gives the drive a measured buffer, so they cannot be combined"
+            )
         self.drive = drive
-        self.input_processors = input_processors
-        """Input processors, applied in list order before the drive."""
-        self._legacy_delay_updates = _legacy_delay_updates(input_processors)
+        self.interface = interface
+        """Interface transforming the commands before the drive, or ``None``."""
+        self._legacy_delay_update = _legacy_delay_update(interface)
         self.clamping = clamping or []
         _validate_spaces(drive.output_space, (c.input_space for c in self.clamping), motor is not None)
         self.num_actuators = num_actuators
@@ -580,8 +566,8 @@ class Actuator:
             )
 
         drive.finalize(self.device, self.num_actuators)
-        for processor in self.input_processors:
-            processor.finalize(self.device, self.num_actuators, requires_grad=requires_grad)
+        if interface is not None:
+            interface.finalize(self.device, self.num_actuators, requires_grad=requires_grad)
         for clamp in self.clamping:
             clamp.finalize(self.device, self.num_actuators)
         if motor is not None:
@@ -721,24 +707,22 @@ class Actuator:
             )
 
     @property
-    def delay(self) -> InputProcessorDelay | None:
-        """Deprecated alias for the first :class:`InputProcessorDelay` in :attr:`input_processors`.
+    def delay(self) -> InterfaceDelay | None:
+        """Deprecated alias for :attr:`interface` when it is an :class:`InterfaceDelay`.
 
         .. deprecated:: 1.9
-            Use :attr:`input_processors` instead.
+            Use :attr:`interface` instead.
         """
         warnings.warn(_DELAY_ATTRIBUTE_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-        return next((p for p in self.input_processors if isinstance(p, InputProcessorDelay)), None)
+        return self.interface if isinstance(self.interface, InterfaceDelay) else None
 
     @delay.setter
-    def delay(self, value: InputProcessorDelay | None) -> None:
+    def delay(self, value: InterfaceDelay | None) -> None:
         warnings.warn(_DELAY_ATTRIBUTE_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-        processors = [p for p in self.input_processors if not isinstance(p, InputProcessorDelay)]
         if value is not None:
             value.finalize(self.device, self.num_actuators, requires_grad=self.requires_grad)
-            processors.insert(0, value)
-        self.input_processors = processors
-        self._legacy_delay_updates = _legacy_delay_updates(processors)
+        self.interface = value
+        self._legacy_delay_update = _legacy_delay_update(value)
 
     # To achieve public API Actuator.ImplicitOptions.
     # Defining ImplicitOptions inside Actuator would create a circular import issue.
@@ -772,7 +756,8 @@ class Actuator:
             NewtonWarning: The actuator has a :attr:`sensor`. The drive
                 reads the measured state, while the solve uses the response
                 of the actuated joint only, so the result is approximate.
-                With :class:`~newton.actuators.SensorEncoder`, it is
+                Unlike in explicit mode, the clamps read the measured
+                velocity. With :class:`~newton.actuators.SensorEncoder`, it is
                 inaccurate while the output joint is not at its limit.
         """
         if self.requires_grad:
@@ -795,7 +780,8 @@ class Actuator:
         if self.sensor is not None:
             warnings.warn(
                 f"Implicit actuation with {type(self.sensor).__name__} predicts the measured state from the "
-                "response of the actuated joint only, so the result is approximate.",
+                "response of the actuated joint only, and its clamps read the measured velocity, so the result "
+                "is approximate.",
                 NewtonWarning,
                 stacklevel=2,
             )
@@ -822,8 +808,8 @@ class Actuator:
         )
 
     def is_stateful(self) -> bool:
-        """Return True if an input processor or the drive maintains internal state."""
-        return any(p.is_stateful() for p in self.input_processors) or self.drive.is_stateful()
+        """Return True if the interface or the drive maintains internal state."""
+        return (self.interface is not None and self.interface.is_stateful()) or self.drive.is_stateful()
 
     def is_graphable(self) -> bool:
         """Return True if all components can be captured in a CUDA graph.
@@ -835,7 +821,7 @@ class Actuator:
             return False
         return (
             (self.sensor is None or self.sensor.is_graphable())
-            and all(p.is_graphable() for p in self.input_processors)
+            and (self.interface is None or self.interface.is_graphable())
             and self._effort_mode.is_graphable()
         )
 
@@ -844,9 +830,10 @@ class Actuator:
         if not self.is_stateful():
             return None
         return Actuator.State(
-            input_processor_states=(
-                [p.state(self.num_actuators, self.device) if p.is_stateful() else None for p in self.input_processors]
-                or None
+            interface_state=(
+                self.interface.state(self.num_actuators, self.device)
+                if self.interface is not None and self.interface.is_stateful()
+                else None
             ),
             drive_state=(self.drive.state(self.num_actuators, self.device) if self.drive.is_stateful() else None),
         )
@@ -901,12 +888,12 @@ class Actuator:
         0. **Sensor and transmission state** — the optional sensor
            measures the joint positions and velocities, and the
            transmission maps them onto the actuator position and velocity,
-           which the input processors and drive read. The clamps and motor
-           read the actuator velocity of the simulated joints.
-        1. **Input processors** — transform the state and command inputs
-           in list order (e.g. read delayed targets from ``current_state``),
-           and write each processor's ``next_state`` (e.g. push the current
-           targets into the delay buffer).
+           which the drive reads. The clamps and motor read the actuator
+           velocity of the simulated joints.
+        1. **Interface** — transforms the commands (targets and
+           feedforward), e.g. reads delayed targets from ``current_state``,
+           and writes its ``next_state`` (e.g. pushes the current targets
+           into the delay buffer).
         2. **Supply voltage** — the motor selects fixed or battery voltage
            for duty clamping and conversion to motor voltage.
         3. **Drive** — raw effort into ``_computed_forces`` (explicit control
@@ -963,10 +950,6 @@ class Actuator:
         if self.control_feedforward_attr is not None:
             feedforward = _get_attribute(sim_control, self.control_feedforward_attr, None)
 
-        no_states = [None] * len(self.input_processors)
-        current_states = (current_act_state and current_act_state.input_processor_states) or no_states
-        next_states = (next_act_state and next_act_state.input_processor_states) or no_states
-
         computed_forces, applied_forces, supply_voltage = (
             self._computed_forces,
             self._applied_forces,
@@ -1002,35 +985,31 @@ class Actuator:
                 positions, velocities, self._pos_indices, self._indices, device=self.device
             )
 
-        # --- 1. Input processors (read current_state, write next_state) ---
-        inputs = InputProcessorBase.Inputs(
-            positions=actuator_positions,
-            velocities=actuator_velocities,
+        # --- 1. Interface (read current_state, write next_state) ---
+        targets = InterfaceBase.Targets(
             target_pos=target_pos,
             target_vel=target_vel,
             feedforward=feedforward,
-            pos_indices=actuator_pos_indices,
-            vel_indices=actuator_vel_indices,
             target_pos_indices=self.target_pos_indices,
             target_vel_indices=self._target_vel_indices,
         )
-        for processor, current, nxt in zip(self.input_processors, current_states, next_states, strict=True):
-            processed = processor.process(inputs, current, dt)
-            if processed.vel_indices is not inputs.vel_indices or processed.velocities.shape != inputs.velocities.shape:
-                raise ValueError(f"{type(processor).__name__}.process() must keep vel_indices and the velocities shape")
-            if any(processor is legacy for legacy in self._legacy_delay_updates):
-                processor.update_state(
-                    inputs.target_pos,
-                    inputs.target_vel,
-                    inputs.feedforward,
-                    inputs.target_pos_indices,
-                    inputs.target_vel_indices,
+        if self.interface is not None:
+            current = current_act_state.interface_state if current_act_state else None
+            nxt = next_act_state.interface_state if next_act_state else None
+            processed = self.interface.process(targets, current, dt)
+            if self._legacy_delay_update:
+                self.interface.update_state(
+                    targets.target_pos,
+                    targets.target_vel,
+                    targets.feedforward,
+                    targets.target_pos_indices,
+                    targets.target_vel_indices,
                     current,
                     nxt,
                 )
             else:
-                processor.update_state(inputs, current, nxt)
-            inputs = processed
+                self.interface.update_state(targets, current, nxt)
+            targets = processed
 
         # --- 2. Supply voltage from the motor ---
         battery_voltage = supply_current = None
@@ -1047,15 +1026,15 @@ class Actuator:
         custom_inputs = _collect_custom_inputs(sim_control, self.drive.custom_inputs)
         output_forces = self._effort_mode.compute_force(
             sim_state,
-            inputs.positions,
-            inputs.velocities,
-            inputs.target_pos,
-            inputs.target_vel,
-            inputs.feedforward,
-            inputs.pos_indices,
-            inputs.vel_indices,
-            inputs.target_pos_indices,
-            inputs.target_vel_indices,
+            actuator_positions,
+            actuator_velocities,
+            targets.target_pos,
+            targets.target_vel,
+            targets.feedforward,
+            actuator_pos_indices,
+            actuator_vel_indices,
+            targets.target_pos_indices,
+            targets.target_vel_indices,
             computed_forces,
             applied_forces,
             drive_state,

@@ -3,7 +3,6 @@
 
 """Tests for Newton actuators."""
 
-import dataclasses
 import json
 import math
 import os
@@ -43,8 +42,8 @@ from newton.actuators import (
     DriveOutputSpace,
     DrivePD,
     DrivePID,
-    InputProcessorBase,
-    InputProcessorDelay,
+    InterfaceBase,
+    InterfaceDelay,
     JointSpaceResponse,
     MotorDC,
     SensorEncoder,
@@ -319,17 +318,12 @@ def _build_gru_onnx(
 # effective dynamics from the inertia that validation previously synthesized.
 
 
-def _delay_inputs(target_pos, target_vel, indices, feedforward=None):
-    """Minimal :class:`InputProcessorBase.Inputs` for driving a delay directly."""
-    zeros = wp.zeros(len(indices), dtype=wp.float32, device=target_pos.device)
-    return InputProcessorBase.Inputs(
-        positions=zeros,
-        velocities=zeros,
+def _delay_targets(target_pos, target_vel, indices, feedforward=None):
+    """Minimal :class:`InterfaceBase.Targets` for driving a delay directly."""
+    return InterfaceBase.Targets(
         target_pos=target_pos,
         target_vel=target_vel,
         feedforward=feedforward,
-        pos_indices=indices,
-        vel_indices=indices,
         target_pos_indices=indices,
         target_vel_indices=indices,
     )
@@ -732,15 +726,14 @@ def _actuator_dofs(model):
 
 
 def _delay_of(actuator):
-    """Return the actuator's InputProcessorDelay, or None."""
-    return next((p for p in actuator.input_processors if isinstance(p, InputProcessorDelay)), None)
+    """Return the actuator's InterfaceDelay, or None."""
+    return actuator.interface if isinstance(actuator.interface, InterfaceDelay) else None
 
 
 def _delay_state_of(actuator_state):
-    """Return the actuator state's InputProcessorDelay.State, or None."""
-    return next(
-        (s for s in actuator_state.input_processor_states or () if isinstance(s, InputProcessorDelay.State)), None
-    )
+    """Return the actuator state's InterfaceDelay.State, or None."""
+    state = actuator_state.interface_state
+    return state if isinstance(state, InterfaceDelay.State) else None
 
 
 @requires("onnx", "warp_nn")
@@ -1090,12 +1083,10 @@ class TestDriveNeuralGRU(unittest.TestCase):
             pos_indices=case.actuator.pos_indices,
             target_pos_indices=case.actuator.target_pos_indices,
             drive=DriveNeuralGRU(path),
-            input_processors=[
-                InputProcessorDelay(
-                    delay_steps=wp.full(3, 1, dtype=wp.int32, device=self.device),
-                    max_delay=1,
-                )
-            ],
+            interface=InterfaceDelay(
+                delay_steps=wp.full(3, 1, dtype=wp.int32, device=self.device),
+                max_delay=1,
+            ),
         )
         case.state_a = case.actuator.state()
         case.state_b = case.actuator.state()
@@ -2993,7 +2984,7 @@ class TestDelay(unittest.TestCase):
         n, max_delay = 2, 5
         device = wp.get_device()
         delays = wp.array([max_delay] * n, dtype=wp.int32, device=device)
-        delay = InputProcessorDelay(delay_steps=delays, max_delay=max_delay)
+        delay = InterfaceDelay(delay_steps=delays, max_delay=max_delay)
         delay.finalize(device, n)
 
         ds = delay.state(n, device)
@@ -3008,7 +2999,7 @@ class TestDelay(unittest.TestCase):
         n, delay_val = 1, 2
         device = wp.get_device()
         delays = wp.array([delay_val], dtype=wp.int32, device=device)
-        delay = InputProcessorDelay(delay_steps=delays, max_delay=delay_val)
+        delay = InterfaceDelay(delay_steps=delays, max_delay=delay_val)
         delay.finalize(device, n)
 
         indices = wp.array([0], dtype=wp.uint32, device=device)
@@ -3023,7 +3014,7 @@ class TestDelay(unittest.TestCase):
 
             out_pos, _out_vel, _out_act = delay.get_delayed_targets(tgt_pos, tgt_vel, None, indices, indices, state_0)
             read_history.append(out_pos.numpy()[0])
-            delay.update_state(_delay_inputs(tgt_pos, tgt_vel, indices), state_0, state_1)
+            delay.update_state(_delay_targets(tgt_pos, tgt_vel, indices), state_0, state_1)
             state_0, state_1 = state_1, state_0
 
         self.assertAlmostEqual(read_history[0], 10.0, places=4, msg="step 0: empty buffer -> current target")
@@ -3037,7 +3028,7 @@ class TestDelay(unittest.TestCase):
         n = 2
         device = wp.get_device()
         delays = wp.array([0, 1], dtype=wp.int32, device=device)
-        delay = InputProcessorDelay(delay_steps=delays, max_delay=1)
+        delay = InterfaceDelay(delay_steps=delays, max_delay=1)
         delay.finalize(device, n)
 
         indices = wp.array([0, 1], dtype=wp.uint32, device=device)
@@ -3055,7 +3046,7 @@ class TestDelay(unittest.TestCase):
             result = out_pos.numpy()
             history_dof0.append(result[0])
             history_dof1.append(result[1])
-            delay.update_state(_delay_inputs(tgt_pos, tgt_vel, indices), state_0, state_1)
+            delay.update_state(_delay_targets(tgt_pos, tgt_vel, indices), state_0, state_1)
             state_0, state_1 = state_1, state_0
 
         # DOF 0 (delay=0): always sees current target
@@ -3071,54 +3062,8 @@ class TestDelay(unittest.TestCase):
         self.assertAlmostEqual(history_dof1[3], 30.0, places=4, msg="dof1 step 3: reads step 2 (30)")
 
 
-@wp.kernel
-def _scale_positions_kernel(
-    positions: wp.array[float],
-    pos_indices: wp.array[wp.uint32],
-    scale: wp.array[float],
-    out: wp.array[float],
-):
-    i = wp.tid()
-    out[i] = positions[pos_indices[i]] * scale[i]
-
-
-class _ScalePositions(InputProcessorBase):
-    """Test processor that replaces ``positions`` with one scaled entry per slot."""
-
-    @classmethod
-    def resolve_arguments(cls, args):
-        return {"scale": float(args["scale"])}
-
-    def __init__(self, scale):
-        self.scale = scale
-
-    def finalize(self, device, num_actuators, requires_grad=False):
-        self._out = wp.zeros(num_actuators, dtype=float, device=device)
-        self._slots = wp.array(np.arange(num_actuators, dtype=np.uint32), device=device)
-
-    def process(self, inputs, state, dt):
-        wp.launch(
-            _scale_positions_kernel,
-            dim=len(self._out),
-            inputs=[inputs.positions, inputs.pos_indices, self.scale],
-            outputs=[self._out],
-            device=self._out.device,
-        )
-        return dataclasses.replace(inputs, positions=self._out, pos_indices=self._slots)
-
-
-class _RemapVelocityIndices(InputProcessorBase):
-    """Test processor that breaks the contract by replacing ``vel_indices``."""
-
-    def finalize(self, device, num_actuators, requires_grad=False):
-        self._slots = wp.array(np.arange(num_actuators, dtype=np.uint32), device=device)
-
-    def process(self, inputs, state, dt):
-        return dataclasses.replace(inputs, vel_indices=self._slots)
-
-
-class TestInputProcessors(unittest.TestCase):
-    """Input processors composed through ModelBuilder.add_actuator."""
+class TestAddActuatorChecks(unittest.TestCase):
+    """Input checks of ModelBuilder.add_actuator."""
 
     def test_add_actuator_rejects_invalid_targets(self):
         """Reject actuator DOFs and joints of another world, mismatched joint types and untransmitted joints.
@@ -3146,37 +3091,17 @@ class TestInputProcessors(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "add a transmission"):
             builder.add_actuator(DrivePD, index=[1, builder.joint_qd_start[slider]], kp=1.0)
 
-    def test_processor_must_keep_vel_indices(self):
-        """Actuator.step rejects a processor that replaces ``vel_indices``."""
-        n = 2
-        actuator = Actuator(
-            indices=wp.array([1, 3], dtype=wp.uint32),
-            drive=DrivePD(kp=wp.ones(n, dtype=float), kd=wp.zeros(n, dtype=float)),
-            input_processors=[_RemapVelocityIndices()],
-        )
-        state = types.SimpleNamespace(joint_q=wp.zeros(4, dtype=float), joint_qd=wp.zeros(4, dtype=float))
-        control = types.SimpleNamespace(
-            joint_target_q=wp.zeros(4, dtype=float),
-            joint_target_qd=wp.zeros(4, dtype=float),
-            joint_act=None,
-            joint_f=wp.zeros(4, dtype=float),
-        )
-        with self.assertRaisesRegex(ValueError, "_RemapVelocityIndices.process"):
-            actuator.step(state, control, dt=0.01)
-
 
 class TestSensors(unittest.TestCase):
-    """Sensors measuring the joint positions before the transmission."""
+    """Sensors measuring the joint positions and velocities before the transmission."""
 
     def test_backlash_drive_reads_link_side_joint(self):
         """The drive sees actuated + backlash joint position and velocity, in every replicated world.
 
-        The sensor runs before the input processors, so a processor that
-        scales the positions scales the measured position. A free base makes
-        the ``joint_q`` and ``joint_qd`` offsets of each world differ. Implicit
-        mode accepts the sensor with a warning.
+        A free base makes the ``joint_q`` and ``joint_qd`` offsets of each
+        world differ. Implicit mode accepts the sensor with a warning.
         """
-        kp, kd, target, scale = 10.0, 2.0, 1.0, 2.0
+        kp, kd, target = 10.0, 2.0, 1.0
         template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         base, motor, output = (template.add_link(mass=1.0, inertia=_POINT_MASS_INERTIA) for _ in range(3))
         j_base = template.add_joint_free(base)
@@ -3192,7 +3117,6 @@ class TestSensors(unittest.TestCase):
             kp=kp,
             kd=kd,
             sensor=(SensorEncoder, {"output_joint": "backlash"}),
-            input_processors=[(_ScalePositions, {"scale": scale})],
         )
 
         builder = newton.ModelBuilder()
@@ -3217,9 +3141,7 @@ class TestSensors(unittest.TestCase):
         actuator.step(state, control, dt=0.01)
 
         expected = np.zeros(model.joint_dof_count)
-        expected[motor_qd] = kp * (target - scale * (q[motor_q] + q[backlash_q])) - kd * (
-            qd[motor_qd] + qd[backlash_qd]
-        )
+        expected[motor_qd] = kp * (target - (q[motor_q] + q[backlash_q])) - kd * (qd[motor_qd] + qd[backlash_qd])
         np.testing.assert_allclose(control.joint_f.numpy(), expected, rtol=1e-5, atol=1e-6)
         with self.assertWarnsRegex(NewtonWarning, "SensorEncoder"):
             actuator.set_effort_mode_implicit(JointSpaceResponse(model))
@@ -4450,7 +4372,7 @@ class TestActuatorStep(unittest.TestCase):
             index=dof_a,
             kp=kp,
             kd=kd,
-            input_processors=[(InputProcessorDelay, {"delay_steps": delay_a})],
+            interface=(InterfaceDelay, {"delay_steps": delay_a}),
             clamping=[(ClampingDCMotor, dc_args)],
         )
         template.add_actuator(
@@ -4458,7 +4380,7 @@ class TestActuatorStep(unittest.TestCase):
             index=dof_b,
             kp=kp,
             kd=kd,
-            input_processors=[(InputProcessorDelay, {"delay_steps": delay_b})],
+            interface=(InterfaceDelay, {"delay_steps": delay_b}),
             clamping=[(ClampingDCMotor, dc_args)],
         )
 
@@ -4582,7 +4504,7 @@ class TestActuatorStep(unittest.TestCase):
         """
         cases = (
             (
-                (DrivePD, {"input_processors": [(InputProcessorDelay, {"delay_steps": 3})]}),
+                (DrivePD, {"interface": (InterfaceDelay, {"delay_steps": 3})}),
                 [20, 20, 20, 20, 40],
                 [8, 2, 0, 0, 0],
                 -10,
@@ -5683,9 +5605,7 @@ class TestActuatorBuilder(unittest.TestCase):
                 (ClampingDCMotor, {"saturation_effort": 80.0, "velocity_limit": 15.0, "max_motor_effort": 200.0})
             ],
         )
-        builder.add_actuator(
-            DrivePD, index=dofs[2], kp=150.0, input_processors=[(InputProcessorDelay, {"delay_steps": 4})]
-        )
+        builder.add_actuator(DrivePD, index=dofs[2], kp=150.0, interface=(InterfaceDelay, {"delay_steps": 4}))
 
         model = builder.finalize()
         self.assertEqual(len(model.actuators), 3)
@@ -5748,7 +5668,7 @@ class TestActuatorBuilder(unittest.TestCase):
             kp=100.0,
             kd=10.0,
             pos_index=template.joint_q_start[j1],
-            input_processors=[(InputProcessorDelay, {"delay_steps": 2})],
+            interface=(InterfaceDelay, {"delay_steps": 2}),
         )
         template.add_actuator(
             DrivePD,
@@ -5756,7 +5676,7 @@ class TestActuatorBuilder(unittest.TestCase):
             kp=200.0,
             kd=20.0,
             pos_index=template.joint_q_start[j2],
-            input_processors=[(InputProcessorDelay, {"delay_steps": 3})],
+            interface=(InterfaceDelay, {"delay_steps": 3}),
         )
 
         builder = newton.ModelBuilder()
@@ -6313,7 +6233,7 @@ class TestStateReset(unittest.TestCase):
         n, max_delay = 4, 2
         device = wp.get_device()
         delays = wp.array([max_delay] * n, dtype=wp.int32, device=device)
-        delay = InputProcessorDelay(delay_steps=delays, max_delay=max_delay)
+        delay = InterfaceDelay(delay_steps=delays, max_delay=max_delay)
         delay.finalize(device, n)
 
         state_0 = delay.state(n, device)
@@ -6323,7 +6243,7 @@ class TestStateReset(unittest.TestCase):
         for step in range(3):
             tgt = wp.array([float(step + 1) * 10] * n, dtype=wp.float32, device=device)
             vel = wp.zeros(n, dtype=wp.float32, device=device)
-            delay.update_state(_delay_inputs(tgt, vel, indices), state_0, state_1)
+            delay.update_state(_delay_targets(tgt, vel, indices), state_0, state_1)
             state_0, state_1 = state_1, state_0
 
         pushes_before = state_0.num_pushes.numpy().copy()
@@ -6349,7 +6269,7 @@ class TestStateReset(unittest.TestCase):
         n, max_delay = 2, 3
         device = wp.get_device()
         delays = wp.array([max_delay] * n, dtype=wp.int32, device=device)
-        delay = InputProcessorDelay(delay_steps=delays, max_delay=max_delay)
+        delay = InterfaceDelay(delay_steps=delays, max_delay=max_delay)
         delay.finalize(device, n)
 
         state = delay.state(n, device)
@@ -6359,7 +6279,7 @@ class TestStateReset(unittest.TestCase):
         for step in range(4):
             tgt = wp.array([float(step + 1)] * n, dtype=wp.float32, device=device)
             vel = wp.zeros(n, dtype=wp.float32, device=device)
-            delay.update_state(_delay_inputs(tgt, vel, indices), state, state_tmp)
+            delay.update_state(_delay_targets(tgt, vel, indices), state, state_tmp)
             state, state_tmp = state_tmp, state
 
         self.assertTrue(any(p > 0 for p in state.num_pushes.numpy()))
@@ -6457,7 +6377,7 @@ class TestStateReset(unittest.TestCase):
         template.add_articulation([joint])
         dof = template.joint_qd_start[joint]
         template.add_actuator(
-            DrivePID, index=dof, kp=50.0, ki=10.0, kd=5.0, input_processors=[(InputProcessorDelay, {"delay_steps": 2})]
+            DrivePID, index=dof, kp=50.0, ki=10.0, kd=5.0, interface=(InterfaceDelay, {"delay_steps": 2})
         )
 
         builder = newton.ModelBuilder()
@@ -6541,7 +6461,7 @@ class TestDelayGraphCapture(unittest.TestCase):
             index=dof,
             kp=200.0,
             kd=10.0,
-            input_processors=[(InputProcessorDelay, {"delay_steps": max_delay})],
+            interface=(InterfaceDelay, {"delay_steps": max_delay}),
             clamping=[(ClampingMaxEffort, {"max_effort": 500.0})],
         )
         model = builder.finalize()
@@ -6636,7 +6556,7 @@ class TestActuatorStateAssign(unittest.TestCase):
             kp=0.0,
             ki=1.0,
             kd=0.0,
-            input_processors=[(InputProcessorDelay, {"delay_steps": 2})],
+            interface=(InterfaceDelay, {"delay_steps": 2}),
         )
         actuator = builder.finalize(device=device).actuators[0]
         current, advanced = actuator.state(), actuator.state()

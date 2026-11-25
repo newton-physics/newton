@@ -165,14 +165,14 @@ class TestActuatorDriveAPI(unittest.TestCase):
             kd=wp.array([0.0], dtype=wp.float32),
         )
         drive.custom_inputs = ("drive_input",)
-        delay = actuators.InputProcessorDelay(delay_steps=wp.array([0], dtype=wp.int32), max_delay=1)
+        delay = actuators.InterfaceDelay(delay_steps=wp.array([0], dtype=wp.int32), max_delay=1)
         delay.custom_inputs = ("delay_input",)
         clamping = actuators.ClampingMaxEffort(max_effort=wp.array([1.0], dtype=wp.float32))
         clamping.custom_inputs = ("clamping_input",)
         actuator = actuators.Actuator(
             indices=wp.array([0], dtype=wp.uint32),
             drive=drive,
-            input_processors=[delay],
+            interface=delay,
             clamping=[clamping],
         )
         builder = newton.ModelBuilder()
@@ -213,8 +213,8 @@ class TestActuatorDriveAPI(unittest.TestCase):
         self.assertTrue(hasattr(model.control(), "estimated_load"))
         self.assertFalse(hasattr(model.state(), "estimated_load"))
 
-    def test_deprecated_delay_arguments_match_input_processor(self):
-        """Deprecated delay arguments warn and delay targets exactly like the Delay input processor."""
+    def test_deprecated_delay_arguments_match_interface(self):
+        """Deprecated delay arguments warn and delay targets exactly like the delay interface."""
 
         def build(**actuator_kwargs) -> newton.Model:
             builder = newton.ModelBuilder()
@@ -236,7 +236,7 @@ class TestActuatorDriveAPI(unittest.TestCase):
                 efforts.append(float(control.joint_f.numpy()[0]))
             return efforts
 
-        model = build(input_processors=[(actuators.InputProcessorDelay, {"delay_steps": 2})])
+        model = build(interface=(actuators.InterfaceDelay, {"delay_steps": 2}))
         expected = run(model.actuators[0], model)
         np.testing.assert_allclose(expected, [10.0, 10.0, 10.0, 20.0])
 
@@ -245,10 +245,10 @@ class TestActuatorDriveAPI(unittest.TestCase):
         np.testing.assert_allclose(run(legacy_model.actuators[0], legacy_model), expected)
 
         with self.assertWarnsRegex(NewtonDeprecationWarning, "1.9"):
-            self.assertIs(newton.actuators.Delay, actuators.InputProcessorDelay)
+            self.assertIs(newton.actuators.Delay, actuators.InterfaceDelay)
 
         legacy_drive = actuators.DrivePD(kp=wp.array([10.0], dtype=wp.float32), kd=wp.array([0.0], dtype=wp.float32))
-        legacy_delay = actuators.InputProcessorDelay(delay_steps=wp.array([2], dtype=wp.int32))
+        legacy_delay = actuators.InterfaceDelay(delay_steps=wp.array([2], dtype=wp.int32))
         with self.assertWarnsRegex(NewtonDeprecationWarning, "1.9"):
             legacy_actuator = actuators.Actuator(
                 indices=wp.array([0], dtype=wp.uint32), drive=legacy_drive, delay=legacy_delay
@@ -256,42 +256,42 @@ class TestActuatorDriveAPI(unittest.TestCase):
         np.testing.assert_allclose(run(legacy_actuator, model), expected)
 
     def test_deprecated_delay_aliases_warn_and_forward(self):
-        """Every deprecated delay alias warns with the 1.9 deprecation and reaches the input processor."""
+        """Every deprecated delay alias warns with the 1.9 deprecation and reaches the interface."""
         from newton.actuators import ComponentKind  # noqa: PLC0415
 
         drive = actuators.DrivePD(kp=wp.array([10.0], dtype=wp.float32), kd=wp.array([0.0], dtype=wp.float32))
-        delay = actuators.InputProcessorDelay(delay_steps=wp.array([2], dtype=wp.int32))
-        actuator = actuators.Actuator(indices=wp.array([0], dtype=wp.uint32), drive=drive, input_processors=[delay])
+        delay = actuators.InterfaceDelay(delay_steps=wp.array([2], dtype=wp.int32))
+        actuator = actuators.Actuator(indices=wp.array([0], dtype=wp.uint32), drive=drive, interface=delay)
         deprecated = self.assertWarnsRegex(NewtonDeprecationWarning, "1.9")
 
         with deprecated:
             self.assertIs(actuator.delay, delay)
-        replacement = actuators.InputProcessorDelay(delay_steps=wp.array([1], dtype=wp.int32))
+        replacement = actuators.InterfaceDelay(delay_steps=wp.array([1], dtype=wp.int32))
         with deprecated:
             actuator.delay = replacement
-        self.assertEqual(actuator.input_processors, [replacement])
+        self.assertIs(actuator.interface, replacement)
 
         state = actuator.state()
         with deprecated:
-            self.assertIs(state.delay_state, state.input_processor_states[0])
+            self.assertIs(state.delay_state, state.interface_state)
         with deprecated:
-            legacy_state = actuators.Actuator.State(delay_state=state.input_processor_states[0])
-        self.assertIs(legacy_state.input_processor_states[0], state.input_processor_states[0])
+            legacy_state = actuators.Actuator.State(delay_state=state.interface_state)
+        self.assertIs(legacy_state.interface_state, state.interface_state)
 
         with deprecated:
             entry = newton.ModelBuilder.ActuatorEntry(
                 actuators.DrivePD, (), (), {}, [0], [0], [{"kp": 1.0, "kd": 0.0}], [{"delay_steps": 2}], [[]]
             )
-        self.assertEqual(entry.input_processor_classes, (actuators.InputProcessorDelay,))
+        self.assertIs(entry.interface_class, actuators.InterfaceDelay)
         with deprecated:
             self.assertEqual(entry.delay_args, [{"delay_steps": 2}])
         with deprecated:
             entry.delay_args = [{"delay_steps": 3}]
-        self.assertEqual(entry.input_processor_args, [[{"delay_steps": 3}]])
+        self.assertEqual(entry.interface_args, [{"delay_steps": 3}])
 
         for legacy in (lambda: ComponentKind.DELAY, lambda: ComponentKind["DELAY"], lambda: ComponentKind("delay")):
             with deprecated:
-                self.assertIs(legacy(), ComponentKind.INPUT_PROCESSOR)
+                self.assertIs(legacy(), ComponentKind.INTERFACE)
 
         targets = wp.array([1.0], dtype=wp.float32)
         indices = wp.array([0], dtype=wp.uint32)
