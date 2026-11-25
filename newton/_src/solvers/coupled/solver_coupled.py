@@ -3567,7 +3567,9 @@ class SolverCoupled(SolverBase, CouplingInterface):
         substep_dt = dt / float(entry.substeps)
         if entry.state_tmp is None:
             raise RuntimeError(f"SolverCoupled.Entry {entry.name!r} is missing a substep scratch state")
+        # Solvers write only the rows they own, so both ping-pong states start from the step input.
         _copy_same_view_state(entry.state_0, entry.state_1)
+        _copy_same_view_state(entry.state_0, entry.state_tmp)
         state_in = entry.state_1
         state_out = entry.state_tmp
         for substep in range(entry.substeps):

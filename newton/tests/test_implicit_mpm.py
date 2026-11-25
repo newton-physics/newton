@@ -53,7 +53,7 @@ from newton._src.solvers.implicit_mpm.solve_rheology import (
     update_batched_condition,
 )
 from newton.examples.mpm.example_mpm_viscous import Example as MPMViscousExample
-from newton.solvers import SolverImplicitMPM, SolverXPBD
+from newton.solvers import SolverImplicitMPM, SolverSemiImplicit, SolverXPBD
 from newton.solvers.experimental.coupled import SolverCoupled, SolverCoupledProxy
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
@@ -2872,6 +2872,126 @@ def test_proxy_particle_gravity_is_not_coupling_feedback(test, device):
         state_0, state_1 = state_1, state_0
 
 
+def test_proxy_rewind_leaves_rigid_colliders_alone(test, device):
+    """Rewind lagged feedback and gravity only from proxy bodies the solve treats as compliant."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0))
+    SolverImplicitMPM.register_custom_attributes(builder)
+    kinematic = builder.add_body(mass=1.0, is_kinematic=True)
+    builder.add_shape_box(kinematic, hx=0.1, hy=0.1, hz=0.1)
+    dynamic = builder.add_body(mass=1.0)
+    builder.add_shape_box(dynamic, hx=0.1, hy=0.1, hz=0.1)
+    builder.add_particle(pos=(0.0, 0.0, 1.0), vel=(0.0, 0.0, 0.0), mass=1.0, radius=0.01)
+    model = builder.finalize(device=device)
+
+    config = SolverImplicitMPM.Config()
+    config.voxel_size = 0.1
+    config.grid_type = "fixed"
+    config.grid_padding = 2
+    solver = SolverImplicitMPM(model, config)
+
+    state = model.state()
+    state.body_qd.fill_(wp.spatial_vector(0.0, 0.0, 1.0, 0.0, 0.0, 0.0))
+    forces = wp.array([wp.spatial_vector(0.0, 0.0, 5.0, 0.0, 0.0, 0.0)] * 2, dtype=wp.spatial_vector, device=device)
+    gravity = wp.array([wp.vec3(0.0, 0.0, -10.0)] * 2, dtype=wp.vec3, device=device)
+    solver.coupling_rewind_proxy_body(wp.array([0, 1], dtype=int, device=device), state, forces, gravity, 0.1)
+
+    np.testing.assert_allclose(state.body_qd.numpy()[kinematic][:3], [0.0, 0.0, 1.0], atol=1.0e-6)
+    inv_mass = float(model.body_inv_mass.numpy()[dynamic])
+    np.testing.assert_allclose(
+        state.body_qd.numpy()[dynamic][:3], [0.0, 0.0, 1.0 - 0.1 * (5.0 * inv_mass - 10.0)], atol=1.0e-5
+    )
+
+
+def _settle_proxy_box_on_sand(device, mpm_substeps, in_place=True, step_count=60, dt=0.01):
+    """Drop a dynamic box on MPM sand through a lagged body proxy and return the box height per step."""
+    voxel_size = 0.05
+    box_half = 0.075
+    bed_half, bed_depth = 0.2, 0.15
+
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0))
+    SolverImplicitMPM.register_custom_attributes(builder)
+    box = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, bed_depth + box_half + 0.01), wp.quat_identity()))
+    builder.add_shape_box(
+        box, hx=box_half, hy=box_half, hz=box_half, cfg=newton.ModelBuilder.ShapeConfig(density=2000.0)
+    )
+    builder.add_ground_plane()
+    res = int(round(2.0 * bed_half / voxel_size)) * 2
+    cell = 2.0 * bed_half / res
+    depth_res = int(round(bed_depth / cell))
+    builder.add_particle_grid(
+        pos=wp.vec3(-bed_half, -bed_half, 0.0),
+        rot=wp.quat_identity(),
+        vel=wp.vec3(0.0),
+        dim_x=res + 1,
+        dim_y=res + 1,
+        dim_z=depth_res + 1,
+        cell_x=cell,
+        cell_y=cell,
+        cell_z=cell,
+        mass=cell**3 * 2500.0,
+        jitter=0.0,
+        radius_mean=0.5 * cell,
+        custom_attributes={"mpm:friction": 0.75},
+    )
+    model = builder.finalize(device=device)
+
+    config = SolverImplicitMPM.Config()
+    config.voxel_size = voxel_size
+    config.grid_type = "fixed"
+    config.grid_padding = 4
+    config.max_active_cell_count = 1 << 12
+    config.strain_basis = "P0"
+    config.max_iterations = 30
+    config.critical_fraction = 0.0
+
+    solver = SolverCoupledProxy(
+        model=model,
+        entries=[
+            SolverCoupled.Entry(name="rigid", solver=SolverSemiImplicit, bodies=[box]),
+            SolverCoupled.Entry(
+                name="mpm",
+                solver=lambda view: SolverImplicitMPM(model=view, config=config),
+                particles=range(model.particle_count),
+                substeps=mpm_substeps,
+                in_place=in_place,
+            ),
+        ],
+        coupling=SolverCoupledProxy.Config(
+            proxies=[
+                SolverCoupledProxy.Proxy(
+                    source="rigid", destination="mpm", bodies=[box], collision_pipeline=lambda _view: None
+                )
+            ],
+            # One lagged pass chatters with a sub-stepped MPM destination.
+            iterations=2,
+        ),
+    )
+
+    state = model.state()
+    heights = []
+    for _ in range(step_count):
+        state.clear_forces()
+        solver.step(state, state, control=None, contacts=None, dt=dt)
+        heights.append(float(state.body_q.numpy()[box][2]))
+    return np.array(heights)
+
+
+def test_proxy_box_rests_on_sand_independent_of_mpm_substeps(test, device):
+    """Rest a proxy box on MPM sand at the same depth whether MPM takes one or four substeps per coupled step."""
+    rest_heights = {}
+    for substeps in (1, 4):
+        heights = _settle_proxy_box_on_sand(device, substeps)
+        tail = heights[-10:]
+        test.assertLess(tail.max() - tail.min(), 1.0e-3, msg=f"substeps={substeps}: box still moving, heights {tail}")
+        rest_heights[substeps] = tail.mean()
+    test.assertAlmostEqual(
+        rest_heights[4],
+        rest_heights[1],
+        delta=6.0e-3,
+        msg=f"box rests at {rest_heights[4]:.4f} m with 4 MPM substeps vs {rest_heights[1]:.4f} m with 1",
+    )
+
+
 devices = get_test_devices()
 basic_devices = get_test_devices(mode="basic")
 basic_cuda_devices = get_cuda_test_devices(mode="basic")
@@ -3671,6 +3791,22 @@ add_function_test(
     "test_proxy_particle_gravity_is_not_coupling_feedback",
     test_proxy_particle_gravity_is_not_coupling_feedback,
     devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestImplicitMPM,
+    "test_proxy_rewind_leaves_rigid_colliders_alone",
+    test_proxy_rewind_leaves_rigid_colliders_alone,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestImplicitMPM,
+    "test_proxy_box_rests_on_sand_independent_of_mpm_substeps",
+    test_proxy_box_rests_on_sand_independent_of_mpm_substeps,
+    devices=basic_cuda_devices,
     check_output=False,
 )
 
