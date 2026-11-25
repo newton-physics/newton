@@ -46,11 +46,7 @@ class SensorEncoder(SensorBase):
 
     for that joint, as a servo that derives its velocity from the same
     encoder; further joints of the actuator read their own position and
-    velocity. This captures gearbox backlash when the output joint has a
-    small motion range: the solver handles the dead zone, where the actuator
-    effort does not reach the link. With a
-    :class:`~newton.actuators.TransmissionFixed` of gear :math:`g`, the drive
-    reads :math:`g \\, (q_{\\text{actuated}} + q_{\\text{output}})`.
+    velocity.
 
     The measured positions and velocities are written into buffers allocated
     in :meth:`finalize`, so the encoder can be captured in a CUDA graph.

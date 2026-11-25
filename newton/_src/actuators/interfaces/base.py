@@ -13,10 +13,8 @@ class InterfaceBase:
     """Base class for actuator interfaces.
 
     An interface models how the commands reach the actuator, e.g. a
-    communication delay. It transforms only the commands (target positions,
-    target velocities, feedforward) before the drive; the drive reads the
-    actuator position and velocity from the sensor and the transmission. An
-    :class:`~newton.actuators.Actuator` has at most one interface.
+    communication delay. An :class:`~newton.actuators.Actuator` has at most
+    one interface.
 
     Subclasses must override :meth:`resolve_arguments` and :meth:`compute`.
     Stateful subclasses also override :meth:`is_stateful`, :meth:`state` and

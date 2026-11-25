@@ -26,12 +26,11 @@ def _scatter_add_kernel(
 
 
 class TransmissionDirect(TransmissionBase):
-    """Direct drive: the actuator coordinate is its single joint.
+    """Default transmission: the actuator acts on its single joint, without a ratio.
 
     The actuator position and velocity are the joint's, and the effort goes
-    unscaled to it. This is the default transmission of
-    :class:`~newton.actuators.Actuator`; :meth:`finalize` raises
-    :class:`ValueError` for an actuator with more than one joint.
+    unscaled to it. :meth:`finalize` raises :class:`ValueError` for an
+    actuator with more than one joint.
     """
 
     @classmethod
@@ -40,7 +39,7 @@ class TransmissionDirect(TransmissionBase):
 
     def finalize(self, device: wp.Device, num_actuators: int, num_joints: int, requires_grad: bool = False) -> None:
         if num_joints != 1:
-            raise ValueError(f"TransmissionDirect drives one joint per actuator, got {num_joints}")
+            raise ValueError(f"TransmissionDirect takes one joint per actuator, got {num_joints}")
 
     def compute(
         self,

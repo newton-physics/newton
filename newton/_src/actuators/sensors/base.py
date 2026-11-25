@@ -11,14 +11,8 @@ import warp as wp
 class SensorBase:
     """Maps the joint positions and velocities of each actuator onto the ones its sensor measures.
 
-    A sensor is the first stage of :meth:`Actuator.step()
-    <newton.actuators.Actuator.step>`. It models where the sensor sits,
-    e.g. behind a passive backlash joint, and works in joint space: the
-    :class:`~newton.actuators.TransmissionBase` then maps the measured joint
-    positions and velocities onto the actuator position and velocity, so the
-    drive reads the measurement in actuator units. The clamps and the motor
-    read the actuator velocity of the simulated joints, e.g. the motor
-    velocity for back-EMF.
+    A sensor models what the actuator measures, e.g. an encoder behind a
+    passive backlash joint. It works in joint space.
 
     Subclasses must override :meth:`resolve_arguments` and :meth:`compute`.
     """
