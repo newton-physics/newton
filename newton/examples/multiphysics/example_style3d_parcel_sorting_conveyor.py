@@ -1,10 +1,10 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Sort parcels on a two-level conveyor with Style3D.
+"""Sort rigid and soft parcels on a two-level conveyor with Style3D.
 
-Build a two-level conveyor with a 0.5 m wide belt. Five parcels
-of different proportions travel around the lower bend, up the ramp and around
+Build a two-level conveyor with a 0.5 m wide belt. Five rigid parcels
+and one tetrahedral soft parcel travel around the lower bend, up the ramp and around
 the upper bend. Each arrival is assigned a random return belt. The selected
 gate pivots across the upper deck to guide the parcel onto that belt below.
 The belt tread scrolls at the prescribed surface speed.
@@ -35,6 +35,8 @@ import newton.examples
 from newton.solvers import SolverStyle3D, style3d
 
 BELT_SPEED = 1.5  # centerline speed [m/s]
+SOFT_PARCEL_YOUNGS_MODULUS = 7.5e3  # [Pa]
+SOFT_PARCEL_POISSON_RATIO = 0.48
 TREAD_REPEAT = 0.48  # distance between successive chevrons [m]
 # Dimensions are in meters. The two turns have different centerline radii.
 HALF_WIDTH = 0.25
@@ -59,28 +61,45 @@ WRAPPER_COLORS = {"flat": (0.22, 0.55, 0.78), "long": (0.24, 0.65, 0.48), "carto
 
 
 @wp.kernel
-def _assign_routes(
+def _parcel_positions(
     body_q: wp.array[wp.transform],
+    particle_q: wp.array[wp.vec3],
     parcels: wp.array[int],
+    soft_ranges: wp.array[wp.vec2i],
+    positions: wp.array[wp.vec3],
+):
+    i = wp.tid()
+    if i < parcels.shape[0]:
+        positions[i] = wp.transform_get_translation(body_q[parcels[i]])
+    else:
+        bounds = soft_ranges[i - parcels.shape[0]]
+        center = wp.vec3(0.0)
+        for j in range(bounds[0], bounds[1]):
+            center += particle_q[j]
+        positions[i] = center / float(bounds[1] - bounds[0])
+
+
+@wp.kernel
+def _assign_routes(
+    positions: wp.array[wp.vec3],
     gate_count: int,
     seed: int,
     visits: wp.array[int],
     routes: wp.array[int],
 ):
     i = wp.tid()
-    pos = wp.transform_get_translation(body_q[parcels[i]])
+    pos = positions[i]
     if pos[2] < LOW_Z + 0.4:
         routes[i] = -1
     elif routes[i] < 0 and pos[2] > HIGH_Z and pos[1] < UPPER_LANE_Y + 0.4:
-        rng = wp.rand_init(seed, visits[i] * parcels.shape[0] + i)
+        rng = wp.rand_init(seed, visits[i] * positions.shape[0] + i)
         routes[i] = wp.randi(rng, 0, gate_count)
         visits[i] += 1
 
 
 @wp.kernel
 def _drive_gates(
-    body_q: wp.array[wp.transform],
-    parcels: wp.array[int],
+    positions: wp.array[wp.vec3],
     routes: wp.array[int],
     hinges: wp.array[int],
     joint_X_p: wp.array[wp.transform],
@@ -98,8 +117,8 @@ def _drive_gates(
     front_x = pivot_x - GATE_LENGTH - lead
     target = float(0.0)
     # The leading parcel has right of way until it clears the arm or drops.
-    for i in range(parcels.shape[0]):
-        pos = wp.transform_get_translation(body_q[parcels[i]])
+    for i in range(positions.shape[0]):
+        pos = positions[i]
         if routes[i] >= gate and pos[2] > HIGH_Z - 0.22 and front_x < pos[0] and pos[0] < pivot_x + 0.25:
             front_x = pos[0]
             target = wp.where(routes[i] == gate, GATE_ANGLE, 0.0)
@@ -404,7 +423,7 @@ class Example:
         ramp_z = LOW_Z + (LOW_TURN_X + 1.0) * math.tan(ramp_angle)
         # Full parcel dimensions (length, width, height) in meters.
         parcels = (
-            ("flat", (0.30, 0.22, 0.07), -1.6, -LOW_RADIUS, LOW_Z, 0.0, 0.0),
+            ("flat", (0.30, 0.22, 0.07), -0.8, -LOW_RADIUS, LOW_Z, 0.0, 0.0),
             ("cube", (0.20, 0.20, 0.20), LOW_TURN_X + LOW_RADIUS, 0.0, LOW_Z, 0.0, math.pi / 2),
             ("long", (0.34, 0.13, 0.12), -1.0, LOW_RADIUS, ramp_z, ramp_angle, 0.0),
             (
@@ -433,6 +452,7 @@ class Example:
                 vertices, indices, pattern, pattern_indices = _make_wrapper(
                     half_extents + 0.005, spacing=0.02, face_ease=0.10 if name in ("long", "carton") else 0.08
                 )
+                wrapper_tri_start = builder.tri_count
                 style3d.add_cloth_mesh(
                     builder,
                     pos=wp.vec3(x, y, z),
@@ -448,7 +468,38 @@ class Example:
                     edge_aniso_ke=wp.vec3(2.0e-7),
                     label=f"wrapper_{name}",
                 )
-                triangle_colors.extend([WRAPPER_COLORS[name]] * (len(indices) // 3))
+                triangle_colors.extend([WRAPPER_COLORS[name]] * (builder.tri_count - wrapper_tri_start))
+
+        # The tetrahedra provide elasticity without extra cloth surface stiffness.
+        soft_mu = SOFT_PARCEL_YOUNGS_MODULUS / (2.0 * (1.0 + SOFT_PARCEL_POISSON_RATIO))
+        soft_lambda = (
+            SOFT_PARCEL_YOUNGS_MODULUS
+            * SOFT_PARCEL_POISSON_RATIO
+            / ((1.0 + SOFT_PARCEL_POISSON_RATIO) * (1.0 - 2.0 * SOFT_PARCEL_POISSON_RATIO))
+        )
+        self.soft_start = builder.particle_count
+        soft_tri_start = builder.tri_count
+        builder.add_soft_grid(
+            pos=wp.vec3(-2.90, -LOW_RADIUS - 0.10, LOW_Z + 0.025),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(),
+            dim_x=6,
+            dim_y=5,
+            dim_z=4,
+            cell_x=0.04,
+            cell_y=0.04,
+            cell_z=0.04,
+            density=250.0,
+            k_mu=soft_mu,
+            k_lambda=soft_lambda,
+            k_damp=0.0,
+            particle_radius=0.008,
+            label="soft_parcel",
+        )
+        self.soft_end = builder.particle_count
+        triangle_colors.extend([(0.9, 0.12, 0.12)] * (builder.tri_count - soft_tri_start))
+
+        soft_ranges = [(self.soft_start, self.soft_end)]
 
         self.model = builder.finalize()
         device = self.model.device
@@ -463,10 +514,13 @@ class Example:
         seed = getattr(args, "seed", None)
         self.route_seed = int(np.random.default_rng().integers(2**31)) if seed is None else seed
         self.parcels = wp.array(self.box_bodies, dtype=int, device=device)
+        self.soft_ranges = wp.array(soft_ranges, dtype=wp.vec2i, device=device)
+        parcel_count = len(self.box_bodies) + len(soft_ranges)
+        self.parcel_positions = wp.empty(parcel_count, dtype=wp.vec3, device=device)
         self.hinges = wp.array(hinges, dtype=int, device=device)
         self.gate_angles = wp.zeros(len(hinges), dtype=float, device=device)
-        self.routes = wp.full(len(parcels), -1, dtype=int, device=device)
-        self.visits = wp.zeros(len(parcels), dtype=int, device=device)
+        self.routes = wp.full(parcel_count, -1, dtype=int, device=device)
+        self.visits = wp.zeros(parcel_count, dtype=int, device=device)
         self.model.tri_color = wp.array(triangle_colors, dtype=wp.vec3, device=self.model.device)
         self.model.soft_contact_ke = 1.0e4
         self.model.soft_contact_kd = 0.5
@@ -494,22 +548,45 @@ class Example:
 
     def simulate(self):
         dt = self.frame_dt / self.sim_substeps
+        wp.launch(
+            _parcel_positions,
+            dim=len(self.parcel_positions),
+            inputs=[
+                self.state_0.body_q,
+                self.state_0.particle_q,
+                self.parcels,
+                self.soft_ranges,
+            ],
+            outputs=[self.parcel_positions],
+            device=self.model.device,
+        )
         if self.belt_speed > 0:
             wp.launch(
                 _assign_routes,
-                dim=len(self.box_bodies),
-                inputs=[self.state_0.body_q, self.parcels, len(self.hinges), self.route_seed, self.visits, self.routes],
+                dim=len(self.parcel_positions),
+                inputs=[self.parcel_positions, len(self.hinges), self.route_seed, self.visits, self.routes],
                 device=self.model.device,
             )
         for _ in range(self.sim_substeps):
+            wp.launch(
+                _parcel_positions,
+                dim=len(self.parcel_positions),
+                inputs=[
+                    self.state_0.body_q,
+                    self.state_0.particle_q,
+                    self.parcels,
+                    self.soft_ranges,
+                ],
+                outputs=[self.parcel_positions],
+                device=self.model.device,
+            )
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
             wp.launch(
                 _drive_gates,
                 dim=len(self.hinges),
                 inputs=[
-                    self.state_0.body_q,
-                    self.parcels,
+                    self.parcel_positions,
                     self.routes,
                     self.hinges,
                     self.model.joint_X_p,
@@ -572,10 +649,12 @@ class Example:
         self.viewer.end_frame()
 
     def test_post_step(self):
-        """Check that the flat parcel starts moving in the belt direction."""
+        """Check that rigid and soft parcels start moving with the belt."""
         if round(self.sim_time / self.frame_dt) == 8 and abs(self.belt_speed) > 0.05:
             vx = self.state_0.body_qd.numpy()[self.box_bodies[0], 0]
             assert np.sign(self.belt_speed) * vx > 0.01, "The lower belt did not set the flat parcel in motion."
+            soft_vx = self.state_0.particle_qd.numpy()[self.soft_start : self.soft_end, 0].mean()
+            assert np.sign(self.belt_speed) * soft_vx > 0.01, "The lower belt did not set the soft parcel in motion."
 
     def test_final(self):
         """Check that box poses and wrapper positions remain finite."""
