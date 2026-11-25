@@ -1,0 +1,70 @@
+{
+  "name": "cached_jacket_native",
+  "generator_revision": "cached-jacket-native-v2",
+  "geometry_sha256": "5aaf165379f3b3bfab613c05719ea98da3e73dc16252873a852db5d33294b8e8",
+  "source": "https://github.com/newton-physics/newton-assets",
+  "source_revision": "26c7f5ccaadd9a163f4d6c8f867c789b3ac57d83",
+  "source_tree_sha256": "c8b51388a8d8f5629450f7e1e7f3b5d4f91baf693c457e22dd1cfb17e9178dfc",
+  "source_entrypoint": {
+    "path": "style3d/garments/h1_jacket.usd",
+    "sha256": "9ac8e3ed749aef81b580d7c17056dbfd80c5ab54aeba0becbf8403ee05e8bc27",
+    "bytes": 1769621
+  },
+  "license": "BSD-3-Clause",
+  "license_notice": "This product bundles the Style3D Description, which is available under\na BSD 3-Clause license with the following terms:\n\nCopyright (c) 2025 Style3D. All rights reserved.\n\nRedistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:\n\n1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.\n\n2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.\n\n3. Neither the name of the copyright holder nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission.\n\nTHIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS \u201cAS IS\u201d AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.",
+  "preparation": "Native authored vertices and triangles; local-to-world transform, Y-up to Z-up, bottom translated to zero. No decimation, welding, hole filling, or smoothing.",
+  "units": "metres",
+  "statistics": {
+    "vertex_count": 33703,
+    "triangle_count": 66930,
+    "quantile_probabilities": [
+      0,
+      0.01,
+      0.5,
+      0.95,
+      0.99,
+      1
+    ],
+    "edge_length_m_quantiles": [
+      0.0018522977674124681,
+      0.00455934322935977,
+      0.006191971910560342,
+      0.008823108535899833,
+      0.009768040314095278,
+      0.014004217055065292
+    ],
+    "triangle_area_m2_quantiles": [
+      6.636243891677115e-06,
+      9.999129157795311e-06,
+      1.6186901090159605e-05,
+      2.4947476833161728e-05,
+      2.6492048983989092e-05,
+      5.728822676499271e-05
+    ],
+    "surface_area_m2": 1.1334295932780176,
+    "dimensions_m": [
+      0.5598361194133759,
+      0.44351905584335327,
+      0.7234607934951782
+    ]
+  },
+  "color_rgb": [
+    0.68,
+    0.27,
+    0.18
+  ],
+  "material_mapping": "Synthetic Newton coefficients; Style3D material data are not transferred.",
+  "validation": {
+    "finite": true,
+    "min_triangle_area_m2": 6.636243891677115e-06,
+    "surface_area_m2": 1.1334295932780176,
+    "min_triangle_angle_degrees": 11.141235853669393,
+    "triangles_with_angle_below_10_degrees": 0,
+    "nonmanifold_edges": 0,
+    "boundary_edges": 478,
+    "inconsistent_winding_edges": 0,
+    "connected_components": 1,
+    "valid": true
+  },
+  "npz_sha256": "e03aef1d114cfc9e5beadaa295635fdf2df6f7ad019f157dfd21bb8d93bba4e7"
+}

@@ -1,0 +1,376 @@
+{
+  "schema_version": 1,
+  "case_id": "r7_h1_towel",
+  "source_input_npz_sha256": "9ded25629b1790bc60aff058dba188b9280a7d7da44cd3bcb3b155f072ebf778",
+  "source_input_metadata_sha256": "71808f4677bee602a690647f32f373bf66bc250a675cb0345fde19dfe4cc92d5",
+  "source_state_sha256": "4e8c7b106a5ce8b94d893bf22818499f0416bd08a407f48564b1eff7811446ef",
+  "source_command_sha256": "d7579b928e8cfaf382cb80d44c882c57022ae1a21983a3c88d13954ba0bad416",
+  "source_archive_relative_path": "contact-stiffness-20261029/common-starts-cap10/r7_h1_towel--cd05c1f09baf832b/common-start",
+  "scope": "Explicit public State and Control initialization and prescribed hand keyframes. No solver histories or scoring reference trajectory.",
+  "license": "Apache-2.0 generated state/commands; BSD-3-Clause source geometry",
+  "duration_s": 15.53436829769565,
+  "hold_window": [
+    6.442184148847824,
+    7.942184148847824
+  ],
+  "initial_hold_prepared": false,
+  "cloth_transform": {
+    "scale": 1.0,
+    "position": [
+      0,
+      0,
+      0
+    ],
+    "jacket_rotation": false
+  },
+  "table": {
+    "center": [
+      0,
+      0.39,
+      0.2375
+    ],
+    "half": [
+      0.65,
+      0.31,
+      0.0125
+    ],
+    "margin": 0.001,
+    "friction": 1.0
+  },
+  "material": {
+    "radius": 0.003,
+    "friction": 1.0,
+    "hand_friction": 1.0,
+    "sdf_resolution": 128
+  },
+  "hands": [
+    {
+      "side": "left",
+      "root_pos": [
+        -0.31818991899490356,
+        -0.4,
+        0.45
+      ],
+      "rotation": [
+        0.9930249466525313,
+        -0.04451669895438087,
+        0.017717946110308844,
+        -0.10773018716021458
+      ],
+      "controls": [
+        1.25,
+        0.008686668469377504,
+        1.0,
+        0,
+        0,
+        0
+      ],
+      "label": "original_h1_left"
+    },
+    {
+      "side": "right",
+      "root_pos": [
+        0.31721867620944977,
+        -0.4,
+        0.45
+      ],
+      "rotation": [
+        -0.05337212020859754,
+        0.9982015008565991,
+        -0.02613958116903868,
+        0.007867831237327764
+      ],
+      "controls": [
+        1.25,
+        0.009059418357859632,
+        1.0,
+        0,
+        0,
+        0
+      ],
+      "label": "original_h1_right"
+    }
+  ],
+  "camera": {
+    "position": [
+      1.35,
+      -1.7,
+      1.45
+    ],
+    "target": [
+      0.1,
+      0.25,
+      0.52
+    ],
+    "fov": 48.0
+  },
+  "command_adjustment": {
+    "recipe": "cap10-towel-closed-thumbs-v1",
+    "rows": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+    ],
+    "columns": [
+      1,
+      2,
+      3
+    ],
+    "pitches_rad": [
+      0.16051281243702709,
+      0.1629728749436688
+    ],
+    "physical_closed_mesh_gaps_m": [
+      0.007444442715495825,
+      0.007444439455866814
+    ],
+    "scope": "Only closed thumb and coupled joints. All other command bits, initial state, wrist paths and release are unchanged."
+  },
+  "arrays": {
+    "state0.particle_q": {
+      "shape": [
+        3438,
+        3
+      ],
+      "dtype": "float32",
+      "sha256": "4471acd2ce121d3019757a4e74da14acf04c9d1345aac910dfe7e828a0f0659e"
+    },
+    "state0.particle_qd": {
+      "shape": [
+        3438,
+        3
+      ],
+      "dtype": "float32",
+      "sha256": "f4bbc084f894339cc1975cfd71dabe9514ff85177efcad7652217e1b39ddaef8"
+    },
+    "state0.particle_f": {
+      "shape": [
+        3438,
+        3
+      ],
+      "dtype": "float32",
+      "sha256": "fb4fdd4b0aabe9575419a0f496859d1e667c1d9a00972bbcfba30bd6da8b2d4f"
+    },
+    "state0.body_q": {
+      "shape": [
+        26,
+        7
+      ],
+      "dtype": "float32",
+      "sha256": "9a626b38ddd0d2b531a0e24ed059875c29878c1864624154a334132372d553f0"
+    },
+    "state0.body_qd": {
+      "shape": [
+        26,
+        6
+      ],
+      "dtype": "float32",
+      "sha256": "afc249b32e5549092c980b1995ea5401e73af3fcda168c1da9ae1bdbfce0d447"
+    },
+    "state0.body_f": {
+      "shape": [
+        26,
+        6
+      ],
+      "dtype": "float32",
+      "sha256": "afc249b32e5549092c980b1995ea5401e73af3fcda168c1da9ae1bdbfce0d447"
+    },
+    "state0.joint_q": {
+      "shape": [
+        38
+      ],
+      "dtype": "float32",
+      "sha256": "fe693acee7cf7dcdf72eeb31ad6ed0a4396e623c80a8de393bc4f6296be53b5e"
+    },
+    "state0.joint_qd": {
+      "shape": [
+        36
+      ],
+      "dtype": "float32",
+      "sha256": "81c611f35bff79491538b2f7cf201c7597a661a5c549633541c62bdc8af1613f"
+    },
+    "state1.particle_q": {
+      "shape": [
+        3438,
+        3
+      ],
+      "dtype": "float32",
+      "sha256": "4471acd2ce121d3019757a4e74da14acf04c9d1345aac910dfe7e828a0f0659e"
+    },
+    "state1.particle_qd": {
+      "shape": [
+        3438,
+        3
+      ],
+      "dtype": "float32",
+      "sha256": "da78d618f5de4a65cde52b5735d62692a16d855ecd4504e4a6e2f42f374778c9"
+    },
+    "state1.particle_f": {
+      "shape": [
+        3438,
+        3
+      ],
+      "dtype": "float32",
+      "sha256": "fb4fdd4b0aabe9575419a0f496859d1e667c1d9a00972bbcfba30bd6da8b2d4f"
+    },
+    "state1.body_q": {
+      "shape": [
+        26,
+        7
+      ],
+      "dtype": "float32",
+      "sha256": "9a626b38ddd0d2b531a0e24ed059875c29878c1864624154a334132372d553f0"
+    },
+    "state1.body_qd": {
+      "shape": [
+        26,
+        6
+      ],
+      "dtype": "float32",
+      "sha256": "afc249b32e5549092c980b1995ea5401e73af3fcda168c1da9ae1bdbfce0d447"
+    },
+    "state1.body_f": {
+      "shape": [
+        26,
+        6
+      ],
+      "dtype": "float32",
+      "sha256": "afc249b32e5549092c980b1995ea5401e73af3fcda168c1da9ae1bdbfce0d447"
+    },
+    "state1.joint_q": {
+      "shape": [
+        38
+      ],
+      "dtype": "float32",
+      "sha256": "fe693acee7cf7dcdf72eeb31ad6ed0a4396e623c80a8de393bc4f6296be53b5e"
+    },
+    "state1.joint_qd": {
+      "shape": [
+        36
+      ],
+      "dtype": "float32",
+      "sha256": "81c611f35bff79491538b2f7cf201c7597a661a5c549633541c62bdc8af1613f"
+    },
+    "control.joint_f": {
+      "shape": [
+        36
+      ],
+      "dtype": "float32",
+      "sha256": "81c611f35bff79491538b2f7cf201c7597a661a5c549633541c62bdc8af1613f"
+    },
+    "control.joint_target_q": {
+      "shape": [
+        38
+      ],
+      "dtype": "float32",
+      "sha256": "5109f89d6d435f3ddc77d579cd3e68db9f4f60a340fa882d8b9faf04e760c1aa"
+    },
+    "control.joint_target_qd": {
+      "shape": [
+        36
+      ],
+      "dtype": "float32",
+      "sha256": "81c611f35bff79491538b2f7cf201c7597a661a5c549633541c62bdc8af1613f"
+    },
+    "control.joint_act": {
+      "shape": [
+        36
+      ],
+      "dtype": "float32",
+      "sha256": "81c611f35bff79491538b2f7cf201c7597a661a5c549633541c62bdc8af1613f"
+    },
+    "control.tri_activations": {
+      "shape": [
+        6690
+      ],
+      "dtype": "float32",
+      "sha256": "124b2b8111b12cc532af95a9fd1dcfde15f0e8b3a0b8f3dcc68e912101241a71"
+    },
+    "driver0.times": {
+      "shape": [
+        12
+      ],
+      "dtype": "float32",
+      "sha256": "396f31731ea05ead406206b587be06adf260d748ea02a8b0496f23fc0aa4313e"
+    },
+    "driver0.positions": {
+      "shape": [
+        12,
+        3
+      ],
+      "dtype": "float32",
+      "sha256": "7ef24dc99941a7da62e7cfac3820323bfe04f203760965d2357ef83fa08e752b"
+    },
+    "driver0.rotations": {
+      "shape": [
+        12,
+        4
+      ],
+      "dtype": "float32",
+      "sha256": "fb30c78206bf04567054bfed4737af8d8ae6a94e1d08b44826c4545e70053544"
+    },
+    "driver0.fingers": {
+      "shape": [
+        12,
+        12
+      ],
+      "dtype": "float32",
+      "sha256": "f1f60fe2286b4516bbe93767be1b093af517a15a0ffd2c9091a16deef5fd60ac"
+    },
+    "driver1.times": {
+      "shape": [
+        12
+      ],
+      "dtype": "float32",
+      "sha256": "396f31731ea05ead406206b587be06adf260d748ea02a8b0496f23fc0aa4313e"
+    },
+    "driver1.positions": {
+      "shape": [
+        12,
+        3
+      ],
+      "dtype": "float32",
+      "sha256": "9c1ce26a5078a6dfa9fbd3721471f74b72cd9c8fc966f566ea7e068e6ecc677c"
+    },
+    "driver1.rotations": {
+      "shape": [
+        12,
+        4
+      ],
+      "dtype": "float32",
+      "sha256": "e1f1f9a8b699c9b10f725cc8a8c2505467288de72705d433572db21e403e6255"
+    },
+    "driver1.fingers": {
+      "shape": [
+        12,
+        12
+      ],
+      "dtype": "float32",
+      "sha256": "2982045a38b963a3dfdfd3c614e017edc9568ce53d9b53e99cefb68aa5a244b1"
+    },
+    "rest.vertices": {
+      "shape": [
+        3438,
+        3
+      ],
+      "dtype": "float32",
+      "sha256": "913cdaf9c5b883697fb97b90b2a944bcf00b8ab1a47cb775e18ee269d53e807e"
+    },
+    "rest.triangles": {
+      "shape": [
+        6690,
+        3
+      ],
+      "dtype": "int32",
+      "sha256": "cf2add389653a335fc04fa63bd8336a4796e86b89a60ca372df8b72b2356f9b1"
+    }
+  },
+  "npz_sha256": "a34373c5c7b37b5121501a5f2c3bc7b144034074cdf2a4427a66251a1286cbe2",
+  "license_notices": [
+    "Pinned unitree_h1/LICENSE"
+  ]
+}
