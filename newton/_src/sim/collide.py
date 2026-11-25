@@ -34,7 +34,6 @@ from ..geometry.contact_reduction_body_pairs import (
 )
 from ..geometry.contact_reduction_global import CONTACT_ID_BITS, MAX_GROUP_ID
 from ..geometry.contact_sort import ContactSorter
-from ..geometry.deterministic_mode import resolve_deterministic_mode
 from ..geometry.flags import MeshProperties, ShapeFlags
 from ..geometry.kernels import create_soft_contacts
 from ..geometry.narrow_phase import NarrowPhase, _PipelineNarrowPhase
@@ -59,6 +58,7 @@ from ..geometry.support_function import (
 )
 from ..geometry.tri_mesh_collision import TriMeshCollisionDetector
 from ..geometry.types import GeoType
+from ..geometry.utils import resolve_deterministic_mode
 from ..sim.contacts import GENERATION_SENTINEL, Contacts
 from ..sim.model import Model
 from ..sim.shape_contact_pairs import (
@@ -1965,7 +1965,7 @@ class CollisionPipeline:
                 ``GPU_TO_GPU`` is not supported: passing it raises
                 :class:`ValueError`, and an inherited one emits a
                 :class:`~newton.NewtonWarning` and runs ``RUN_TO_RUN``.
-                :attr:`deterministic` reports the mode that runs.
+                The ``deterministic`` attribute holds the mode that runs.
 
                 .. deprecated:: 1.9
                     Passing a ``bool`` is deprecated; pass
@@ -2751,7 +2751,7 @@ class CollisionPipeline:
                 "Soft contacts with requires_grad=True or enable_rigid_soft_full_surface_contact=True "
                 "do not support body variants."
             )
-        self._deterministic = deterministic_mode
+        self.deterministic = deterministic_mode
         per_contact_props = self.narrow_phase.hydroelastic_sdf is not None
         if deterministic:
             with wp.ScopedDevice(device):
@@ -2856,16 +2856,6 @@ class CollisionPipeline:
         if group_count > MAX_GROUP_ID + 1:
             raise ValueError(f"body_pair_reduction supports at most {MAX_GROUP_ID + 1} groups, got {group_count}")
         self._body_pair_reducer.refresh_groups(shape_group, self.model)
-
-    @property
-    def deterministic(self) -> wp.DeterministicMode:
-        """Determinism mode this pipeline runs, fixed at construction.
-
-        ``RUN_TO_RUN`` or ``NOT_GUARANTEED``, after inheriting
-        ``wp.config.deterministic`` and applying the ``contact_matching``
-        implication and the ``GPU_TO_GPU`` fallback.
-        """
-        return self._deterministic
 
     @property
     def rigid_contact_max(self) -> int:

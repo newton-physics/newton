@@ -14,6 +14,7 @@ import warp as wp
 
 from ..core.types import Vec3
 from ..exceptions import NewtonWarning
+from ..utils.deprecation import warn_deprecation
 from .inertia import compute_inertia_mesh
 from .types import (
     GeoType,
@@ -1279,3 +1280,34 @@ def scan_with_total(
 
 
 __all__ = ["compute_shape_radius", "load_mesh", "visualize_meshes"]
+
+
+def resolve_deterministic_mode(deterministic: wp.DeterministicMode | bool | None, owner: str) -> wp.DeterministicMode:
+    """Resolve a collision ``deterministic`` argument to ``RUN_TO_RUN`` or ``NOT_GUARANTEED``.
+
+    ``None`` inherits ``wp.config.deterministic``; a ``bool`` is deprecated. Collision
+    detection supports at most ``RUN_TO_RUN``: an explicit ``GPU_TO_GPU`` raises and an
+    inherited one warns and runs ``RUN_TO_RUN``.
+    """
+    # DeterministicMode is an IntEnum, so check bool first: RUN_TO_RUN == True.
+    if isinstance(deterministic, bool):
+        mode = wp.DeterministicMode.RUN_TO_RUN if deterministic else wp.DeterministicMode.NOT_GUARANTEED
+        warn_deprecation(
+            f"{owner}(deterministic={deterministic}) is deprecated in Newton 1.9; "
+            f"pass deterministic=wp.DeterministicMode.{mode.name} instead."
+        )
+        return mode
+    if deterministic is None:
+        if wp.config.deterministic == wp.DeterministicMode.GPU_TO_GPU:
+            warnings.warn(
+                f"wp.config.deterministic is GPU_TO_GPU; {owner} supports at most RUN_TO_RUN and runs that mode.",
+                NewtonWarning,
+                stacklevel=3,
+            )
+            return wp.DeterministicMode.RUN_TO_RUN
+        return wp.config.deterministic
+    if not isinstance(deterministic, wp.DeterministicMode):
+        raise TypeError(f"deterministic must be a warp.DeterministicMode or None, got {deterministic!r}")
+    if deterministic == wp.DeterministicMode.GPU_TO_GPU:
+        raise ValueError(f"{owner} supports deterministic=RUN_TO_RUN or NOT_GUARANTEED, not GPU_TO_GPU")
+    return deterministic

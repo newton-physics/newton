@@ -2615,7 +2615,8 @@ Deterministic Contact Ordering
 GPU thread scheduling is non-deterministic, so the order in which contacts are
 written to the output buffer can vary between runs.  Pass
 ``deterministic=wp.DeterministicMode.RUN_TO_RUN`` to :class:`~newton.CollisionPipeline`
-(or :class:`~newton.geometry.NarrowPhase`) to guarantee a reproducible contact order. Omitting
+(or :class:`~newton.geometry.NarrowPhase`) to guarantee a reproducible order of rigid contacts.
+Soft (particle-shape) contacts are not sorted, so their order can still vary. Omitting
 ``deterministic`` inherits ``wp.config.deterministic``, and passing a ``bool`` is deprecated:
 
 .. code-block:: python

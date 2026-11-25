@@ -60,7 +60,6 @@ from .contact_reduction_hydroelastic import (
     HydroelasticReductionConfig,
     export_hydroelastic_contact_to_buffer,
 )
-from .deterministic_mode import resolve_deterministic_mode
 from .hashtable import hashtable_find_or_insert
 from .sdf_mc import (
     MC_DEGENERATE_N_SQ_EPS,
@@ -78,7 +77,7 @@ from .sdf_texture import (
     _texture_sample_sdf_scalar,
     _texture_sample_sdf_zfiltered,
 )
-from .utils import _scan_scratch_size, scan_with_total
+from .utils import _scan_scratch_size, resolve_deterministic_mode, scan_with_total
 
 vec8f = wp.types.vector(length=8, dtype=wp.float32)
 PRE_PRUNE_MAX_PENETRATING = 2

@@ -69,7 +69,6 @@ from ..geometry.contact_reduction_global import (
     write_contact_to_reducer,
 )
 from ..geometry.contact_sort import ContactSorter
-from ..geometry.deterministic_mode import resolve_deterministic_mode
 from ..geometry.flags import ShapeFlags
 from ..geometry.mpr import create_solve_mpr, create_support_map_function
 from ..geometry.sdf_contact import (
@@ -98,6 +97,7 @@ from ..geometry.support_function import (
     support_map_lean_accelerated,
 )
 from ..geometry.types import GeoType
+from ..geometry.utils import resolve_deterministic_mode
 from ..utils.heightfield import (
     HeightfieldData,
     get_triangle_shape_from_heightfield,

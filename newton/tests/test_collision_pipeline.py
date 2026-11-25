@@ -540,13 +540,15 @@ class TestCollisionPipeline(unittest.TestCase):
             with self.assertWarnsRegex(newton.NewtonWarning, "is GPU_TO_GPU; CollisionPipeline supports at most"):
                 self.assertEqual(pipeline_mode(), mode.RUN_TO_RUN)
             with self.assertWarnsRegex(newton.NewtonWarning, "is GPU_TO_GPU; NarrowPhase supports at most"):
-                self.assertEqual(NarrowPhase(max_candidate_pairs=1, device="cpu").deterministic, mode.RUN_TO_RUN)
+                self.assertEqual(
+                    NarrowPhase(max_candidate_pairs=1, device="cpu", has_meshes=False).deterministic, mode.RUN_TO_RUN
+                )
         finally:
             wp.config.deterministic = saved
         with self.assertRaisesRegex(ValueError, "GPU_TO_GPU"):
             newton.CollisionPipeline(model, deterministic=mode.GPU_TO_GPU)
         with self.assertRaisesRegex(ValueError, "GPU_TO_GPU"):
-            NarrowPhase(max_candidate_pairs=1, device="cpu", deterministic=mode.GPU_TO_GPU)
+            NarrowPhase(max_candidate_pairs=1, device="cpu", has_meshes=False, deterministic=mode.GPU_TO_GPU)
         with self.assertRaises(TypeError):
             newton.CollisionPipeline(model, deterministic=1)
 
@@ -569,7 +571,9 @@ class TestCollisionPipeline(unittest.TestCase):
                 self.assertEqual(pipeline.deterministic, expected)
                 self.assertEqual(pipeline.narrow_phase.deterministic, expected)
                 with self.assertWarnsRegex(newton.NewtonDeprecationWarning, r"NarrowPhase\(deterministic="):
-                    narrow_phase = NarrowPhase(max_candidate_pairs=1, device="cpu", deterministic=value)
+                    narrow_phase = NarrowPhase(
+                        max_candidate_pairs=1, device="cpu", has_meshes=False, deterministic=value
+                    )
                 self.assertEqual(narrow_phase.deterministic, expected)
 
 
