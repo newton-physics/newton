@@ -348,7 +348,7 @@ class _VariantShapeRows:
                 continue
             owner = getattr(m, attribute.namespace, None) if attribute.namespace else m
             values = getattr(owner, attribute.name, None)
-            if not isinstance(values, wp.array) or values.ndim != 1:
+            if not isinstance(values, (wp.array, list)) or (isinstance(values, wp.array) and values.ndim != 1):
                 continue
             variant_values = {
                 q: attribute.values[self.start + q]

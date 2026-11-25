@@ -1515,9 +1515,9 @@ class Model:
         """Number of variant shapes over all variant sets."""
         self._variant_shape_geometry: dict[str, wp.array] = {}
         """Arrays of :data:`_SHAPE_VARIANT_ATTRIBUTES` of every variant shape, by attribute name."""
-        self._variant_shape_custom: dict[str, tuple[wp.array, wp.array]] = {}
+        self._variant_shape_custom: dict[str, tuple[wp.array | list, wp.array | list]] = {}
         """Model-assigned shape custom attributes by full key: the value of each variant shape and the
-        per-shape array variant rows copy them into."""
+        per-shape storage. String metadata stays on the host; only device arrays follow selection."""
         self._variant_shape_source: list[Any] = []
         """Geometry source of each variant shape."""
         self._variant_mass: wp.array[wp.float32] | None = None
@@ -1541,7 +1541,7 @@ class Model:
         """Variant shape each variant row holds, or ``-1`` for an empty row, shape [shape_count], int."""
         self._bvh_variant_bounds: wp.array2d[wp.vec3f] | None = None
         """Local BVH bounds of each variant shape, built with :attr:`bvh_shape_bounds`."""
-        self._variant_copy_cache: tuple[tuple[int, ...], list[wp.Launch]] | None = None
+        self._variant_copy_cache: tuple[tuple[int, ...], dict[str, wp.Launch]] | None = None
         """Recorded variant shape copies, keyed by their arrays."""
 
         self.joint_q: wp.array[wp.float32] | None = None
@@ -3007,7 +3007,9 @@ class Model:
         sensors and ray casts skip them after the next :meth:`bvh_refit_shapes`. The body's mass,
         center of mass, and inertia, including their inverses, become those of the body as built
         plus the variant. Edits to the copied arrays, such as :attr:`shape_scale` or materials,
-        last until the next selection, so apply randomization after selecting.
+        last until the next selection, so apply randomization after selecting. Use
+        :meth:`apply_body_variant_shape_attributes` after editing source attributes to update
+        selected shapes without overwriting unrelated properties.
 
         Each body may appear at most once per call. Entries whose variant is out of range, such as
         ``-1``, leave their body unchanged. The selection runs without host synchronization, so it
@@ -3073,9 +3075,8 @@ class Model:
         )
         if not self._has_variant_rows:
             return flags
-        # One copy per attribute keeps the copied set in one list. The launches are recorded once and
-        # replayed, since resolving the generic kernel costs more than the copy itself.
-        for launch in self._variant_copy_launches():
+        # Replay recorded attribute copies; resolving a generic kernel costs more than the copy itself.
+        for launch in self._variant_copy_launches().values():
             launch.set_dim(dim)
             launch.set_param_at_index(0, variants)
             launch.set_param_at_index(1, bodies)
@@ -3090,6 +3091,60 @@ class Model:
             )
         return flags
 
+    def get_body_variant_shape_attribute(self, name: str) -> wp.array | list | None:
+        """Return a source attribute in finalized variant-shape order, or ``None`` if absent.
+
+        All returned attributes share the same row ordering, including model-assigned custom
+        attributes addressed by their full key, such as ``"render:material_path"``. String
+        attributes are host lists; numeric attributes are device arrays. Cloned bodies share
+        their variant sources. Host metadata is not copied during device-side selection.
+
+        After editing a device array, use :meth:`apply_body_variant_shape_attributes` to update
+        selected shapes immediately. Later selections also copy the edited source values.
+
+        .. experimental::
+
+            Body variants may change without a deprecation period.
+
+        Args:
+            name: Core shape attribute name or full custom-attribute key.
+        """
+        if name in self._variant_shape_geometry:
+            return self._variant_shape_geometry[name]
+        custom = self._variant_shape_custom.get(name)
+        return None if custom is None else custom[0]
+
+    def apply_body_variant_shape_attributes(self, names: Iterable[str]) -> None:
+        """Copy named source attributes to currently selected shapes using the selection copy path.
+
+        Edit source arrays returned by :meth:`get_body_variant_shape_attribute` first. This
+        operation applies only the named device attributes, leaving all other active properties,
+        nonvariant shapes, and empty rows unchanged. It does not change the selected variants or
+        rederive geometry and mass properties. Notify solvers and viewers as required for the
+        edited properties, just as after editing ordinary shape arrays.
+
+        The copy uses the same cached kernels as :meth:`select_body_variants`, performs no host
+        synchronization, and supports CUDA graphs. Bodies sharing variant sources share edits.
+
+        .. experimental::
+
+            Body variants may change without a deprecation period.
+
+        Args:
+            names: Core shape attributes or full custom-attribute keys of device arrays to copy.
+                Host string metadata cannot be applied during device-side selection.
+        """
+        if not self._has_variant_rows:
+            return
+        launches = self._variant_copy_launches()
+        empty = wp.empty(0, dtype=wp.int32, device=self.device)
+        for name in names:
+            launch = launches[name]
+            launch.set_dim((self.body_count, self._variant_row_max))
+            launch.set_param_at_index(0, self.body_variant)
+            launch.set_param_at_index(1, empty)
+            launch.launch()
+
     @property
     def _has_body_variants(self) -> bool:
         """Whether any body has variants, including variants without shapes."""
@@ -3100,17 +3155,19 @@ class Model:
         """Whether any body has variant rows, that is, some variant has a shape."""
         return self._variant_row_max > 0
 
-    def _variant_copy_launches(self) -> list[wp.Launch]:
+    def _variant_copy_launches(self) -> dict[str, wp.Launch]:
         """Recorded copies of every variant shape attribute into the variant rows, rebuilt when an
-        array is replaced; :meth:`select_body_variants` sets the selection and dimension."""
-        copies = [(self._variant_shape_geometry[name], getattr(self, name)) for name in _SHAPE_VARIANT_ATTRIBUTES]
-        copies.extend(self._variant_shape_custom.values())
-        key = tuple(id(array) for pair in copies for array in pair)
+        array is replaced; callers set the selection and dimension."""
+        copies = {name: (self._variant_shape_geometry[name], getattr(self, name)) for name in _SHAPE_VARIANT_ATTRIBUTES}
+        copies.update(
+            (name, pair) for name, pair in self._variant_shape_custom.items() if isinstance(pair[0], wp.array)
+        )
+        key = tuple(id(array) for pair in copies.values() for array in pair)
         if self._variant_copy_cache is not None and self._variant_copy_cache[0] == key:
             return self._variant_copy_cache[1]
         empty = wp.empty(0, dtype=wp.int32, device=self.device)
-        launches = [
-            wp.launch(
+        launches = {
+            name: wp.launch(
                 _copy_variant_shape_kernel,
                 dim=(1, 1),
                 inputs=[
@@ -3125,8 +3182,8 @@ class Model:
                 device=self.device,
                 record_cmd=True,
             )
-            for variant_values, values in copies
-        ]
+            for name, (variant_values, values) in copies.items()
+        }
         # The key holds ids only; the launches keep the arrays alive, so the ids stay unique.
         self._variant_copy_cache = (key, launches)
         return launches
