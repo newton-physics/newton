@@ -30,13 +30,14 @@ from .drives import (
     DrivePD,
     DrivePID,
 )
-from .input_processors import InputProcessorBase, InputProcessorEncoder
-from .input_processors.input_processor_delay import InputProcessorDelay
+from .interfaces import InterfaceBase
+from .interfaces.interface_delay import InterfaceDelay
 from .motor_dc import MotorDC
+from .sensors import SensorBase, SensorEncoder
 from .utils import _ALLOW_UNSAFE_TORCH_CHECKPOINTS_DEPRECATION_MSG, _looks_like_torch_checkpoint, load_metadata
 
 _COMPONENT_KIND_DELAY_DEPRECATION_MSG = (
-    "ComponentKind.DELAY is deprecated in Newton 1.9; use ComponentKind.INPUT_PROCESSOR instead."
+    "ComponentKind.DELAY is deprecated in Newton 1.9; use ComponentKind.INTERFACE instead."
 )
 
 
@@ -46,13 +47,13 @@ class _ComponentKindMeta(enum.EnumMeta):
     def __getattr__(cls, name: str):
         if name == "DELAY":
             warnings.warn(_COMPONENT_KIND_DELAY_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-            return cls.INPUT_PROCESSOR
+            return cls.INTERFACE
         return super().__getattr__(name)
 
     def __getitem__(cls, name: str):
         if name == "DELAY":
             warnings.warn(_COMPONENT_KIND_DELAY_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-            return cls.INPUT_PROCESSOR
+            return cls.INTERFACE
         return super().__getitem__(name)
 
 
@@ -61,14 +62,15 @@ class ComponentKind(enum.Enum, metaclass=_ComponentKindMeta):
 
     DRIVE = "drive"
     CLAMPING = "clamping"
-    INPUT_PROCESSOR = "input_processor"
+    INTERFACE = "interface"
     MOTOR = "motor"
+    SENSOR = "sensor"
 
     @classmethod
     def _missing_(cls, value: object):
         if value == "delay":
             warnings.warn(_COMPONENT_KIND_DELAY_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-            return cls.INPUT_PROCESSOR
+            return cls.INTERFACE
         return None
 
 
@@ -78,12 +80,12 @@ class ActuatorParsed:
 
     Each detected API schema produces a (class, kwargs) entry.
     The drive is separated out; everything else goes into
-    component_specs (input processors, clamping, motor, etc.).
+    component_specs (sensor, interface, clamping, motor, etc.).
     """
 
     drive_class: type[DriveBase]
     drive_kwargs: dict[str, Any] = field(default_factory=dict)
-    component_specs: list[tuple[type[ClampingBase | InputProcessorBase | MotorDC], dict[str, Any]]] = field(
+    component_specs: list[tuple[type[ClampingBase | SensorBase | InterfaceBase | MotorDC], dict[str, Any]]] = field(
         default_factory=list
     )
     target_path: str = ""
@@ -241,8 +243,8 @@ _SCHEMA_REGISTRY: dict[str, _SchemaEntry] = {
     SchemaNames.POSITION_BASED_CLAMPING: _SchemaEntry(ClampingPositionBased, ComponentKind.CLAMPING),
     SchemaNames.CURRENT_DUTY_CLAMPING: _SchemaEntry(ClampingCurrentDuty, ComponentKind.CLAMPING),
     SchemaNames.DC_MOTOR: _SchemaEntry(MotorDC, ComponentKind.MOTOR),
-    SchemaNames.DELAY: _SchemaEntry(InputProcessorDelay, ComponentKind.INPUT_PROCESSOR),
-    SchemaNames.ENCODER: _SchemaEntry(InputProcessorEncoder, ComponentKind.INPUT_PROCESSOR),
+    SchemaNames.DELAY: _SchemaEntry(InterfaceDelay, ComponentKind.INTERFACE),
+    SchemaNames.ENCODER: _SchemaEntry(SensorEncoder, ComponentKind.SENSOR),
 }
 
 _BASE_SCHEMAS = {
@@ -267,7 +269,7 @@ def register_actuator_component(
             the parsed kwargs dict and returns the concrete class.
             A callable may also validate kwargs and raise
             :class:`ValueError`.
-        kind: Whether this schema is a drive, clamping, input processor, etc.
+        kind: Whether this schema is a drive, clamping, interface, sensor, etc.
 
     If *schema_name* is already registered, a warning is emitted and the
     existing entry is overwritten.
@@ -331,8 +333,8 @@ def parse_actuator_prim(prim, *, allow_unsafe_torch_checkpoints: bool = False) -
     """Parse a USD Actuator prim into a composed actuator specification.
 
     Each detected schema directly maps to a component class with its
-    extracted params. A joint parameter of an input processor (see
-    :attr:`~newton.actuators.InputProcessorBase.JOINT_PARAMS`) is read from
+    extracted params. A joint parameter of a sensor (see
+    :attr:`~newton.actuators.SensorBase.JOINT_PARAMS`) is read from
     the relationship of the same name, e.g. ``newton:outputJoint``.
     Returns ``None`` if the prim is not a ``NewtonActuator``.
 
@@ -351,7 +353,9 @@ def parse_actuator_prim(prim, *, allow_unsafe_torch_checkpoints: bool = False) -
             - has no authored ``newton:targets`` relationship,
             - the target prim does not exist or is not a
               ``PhysicsRevoluteJoint`` / ``PhysicsPrismaticJoint``,
-            - has multiple drive or motor schemas applied,
+            - has multiple drive, motor or sensor schemas applied,
+            - has several targets in a joint relationship of a component,
+              e.g. ``newton:outputJoint``,
             - has no drive schema, or
             - has a ``NewtonNeuralControlAPI`` with an unsupported model or an
               unapproved Torch checkpoint.
@@ -401,6 +405,7 @@ def _parse_actuator_prim(prim, allow_unsafe_torch_checkpoints: bool) -> Actuator
     drive_schema_registered = True
     component_specs: list[tuple[type, dict[str, Any]]] = []
     motor_class: type | None = None
+    sensor_class: type | None = None
     detected: list[str] = []
 
     for schema_name in get_applied_api_schemas(prim):
@@ -437,7 +442,12 @@ def _parse_actuator_prim(prim, allow_unsafe_torch_checkpoints: bool) -> Actuator
 
         for name in getattr(cls, "JOINT_PARAMS", ()):
             head, *rest = name.split("_")
-            targets = _get_relationship_targets(prim, "newton:" + head + "".join(part.title() for part in rest))
+            relationship = "newton:" + head + "".join(part.title() for part in rest)
+            targets = _get_relationship_targets(prim, relationship)
+            if len(targets) > 1:
+                raise ValueError(
+                    f"Actuator prim '{prim.GetPath()}': '{relationship}' must have one target, got {len(targets)}"
+                )
             if targets:
                 kwargs[name] = targets[0]
 
@@ -464,6 +474,13 @@ def _parse_actuator_prim(prim, allow_unsafe_torch_checkpoints: bool) -> Actuator
                         f"Actuator prim '{prim.GetPath()}' has multiple motors: {motor_class.__name__} and {cls.__name__}"
                     )
                 motor_class = cls
+            if entry.kind is ComponentKind.SENSOR:
+                if sensor_class is not None:
+                    raise ValueError(
+                        f"Actuator prim '{prim.GetPath()}' has multiple sensors: "
+                        f"{sensor_class.__name__} and {cls.__name__}"
+                    )
+                sensor_class = cls
             component_specs.append((cls, kwargs))
 
     if drive_class is None:
@@ -477,7 +494,13 @@ def _parse_actuator_prim(prim, allow_unsafe_torch_checkpoints: bool) -> Actuator
                 claimed.update(cls.resolve_arguments({"supply_from_battery": bool(batteries), **kwargs}))
             except ValueError as exc:
                 raise ValueError(f"Actuator prim '{prim.GetPath()}': {exc}") from None
-        drive_kwargs = {name: value for name, value in drive_kwargs.items() if name not in claimed}
+        try:
+            drive_params = set(drive_class.resolve_arguments({}))
+        except (ValueError, KeyError, TypeError):
+            drive_params = set()
+        drive_kwargs = {
+            name: value for name, value in drive_kwargs.items() if name not in claimed or name in drive_params
+        }
 
     if len(batteries) > 1:
         warnings.warn(

@@ -3,21 +3,13 @@
 
 from __future__ import annotations
 
-import inspect
-import warnings
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
 import warp as wp
 
-from ...exceptions import NewtonDeprecationWarning
-from .base import InputProcessorBase
-
-_UPDATE_STATE_LEGACY_DEPRECATION_MSG = (
-    "InputProcessorDelay.update_state(target_pos, target_vel, feedforward, pos_indices, vel_indices, current_state, "
-    "next_state) is deprecated in Newton 1.9; use update_state(inputs, current_state, next_state) instead."
-)
+from .base import InterfaceBase
 
 
 @wp.kernel
@@ -131,7 +123,7 @@ def _delay_masked_reset_kernel(
         num_pushes[i] = 0
 
 
-class InputProcessorDelay(InputProcessorBase):
+class InterfaceDelay(InterfaceBase):
     """Per-DOF command input delay for actuators.
 
     Delays command inputs (control targets and feedforward terms) using a
@@ -148,7 +140,7 @@ class InputProcessorDelay(InputProcessorBase):
     """
 
     @dataclass
-    class State(InputProcessorBase.State):
+    class State(InterfaceBase.State):
         """Circular buffer state for delayed targets."""
 
         buffer_pos: wp.array2d[float] | None = None
@@ -197,7 +189,7 @@ class InputProcessorDelay(InputProcessorBase):
             Complete arguments with defaults filled in.
         """
         if "delay_steps" not in args:
-            raise ValueError("InputProcessorDelay requires 'delay_steps' argument")
+            raise ValueError("InterfaceDelay requires 'delay_steps' argument")
         delay_steps = args["delay_steps"]
         if delay_steps < 0:
             raise ValueError(f"delay_steps must be >= 0, got {delay_steps}")
@@ -229,7 +221,6 @@ class InputProcessorDelay(InputProcessorBase):
         self._out_pos: wp.array[float] | None = None
         self._out_vel: wp.array[float] | None = None
         self._out_act: wp.array[float] | None = None
-        self._sequential_indices: wp.array[wp.uint32] | None = None
 
     def finalize(self, device: wp.Device, num_actuators: int, requires_grad: bool = False) -> None:
         """Called by :class:`Actuator` after construction.
@@ -245,12 +236,11 @@ class InputProcessorDelay(InputProcessorBase):
         self._out_pos = wp.zeros(num_actuators, dtype=wp.float32, device=self._device, requires_grad=requires_grad)
         self._out_vel = wp.zeros(num_actuators, dtype=wp.float32, device=self._device, requires_grad=requires_grad)
         self._out_act = wp.zeros(num_actuators, dtype=wp.float32, device=self._device, requires_grad=requires_grad)
-        self._sequential_indices = wp.array(np.arange(num_actuators, dtype=np.uint32), device=self._device)
 
     def is_stateful(self) -> bool:
         return True
 
-    def state(self, num_actuators: int, device: wp.Device) -> InputProcessorDelay.State:
+    def state(self, num_actuators: int, device: wp.Device) -> InterfaceDelay.State:
         """Create a new delay state with zeroed circular buffers.
 
         Args:
@@ -258,11 +248,11 @@ class InputProcessorDelay(InputProcessorBase):
             device: Warp device for buffer allocation.
 
         Returns:
-            Freshly allocated :class:`InputProcessorDelay.State`.
+            Freshly allocated :class:`InterfaceDelay.State`.
         """
         rg = self._requires_grad
         write_idx_arr = wp.full(1, self.buf_depth - 1, dtype=int, device=device)
-        return InputProcessorDelay.State(
+        return InterfaceDelay.State(
             buffer_pos=wp.zeros((self.buf_depth, num_actuators), dtype=wp.float32, device=device, requires_grad=rg),
             buffer_vel=wp.zeros((self.buf_depth, num_actuators), dtype=wp.float32, device=device, requires_grad=rg),
             buffer_act=wp.zeros((self.buf_depth, num_actuators), dtype=wp.float32, device=device, requires_grad=rg),
@@ -277,7 +267,7 @@ class InputProcessorDelay(InputProcessorBase):
         feedforward: wp.array[float] | None,
         pos_indices: wp.array[wp.uint32],
         vel_indices: wp.array[wp.uint32],
-        current_state: InputProcessorDelay.State,
+        current_state: InterfaceDelay.State,
     ) -> tuple[wp.array[float], wp.array[float], wp.array[float]]:
         """Read per-DOF delayed command inputs from the circular buffer.
 
@@ -292,7 +282,7 @@ class InputProcessorDelay(InputProcessorBase):
             feedforward: Feedforward control input [N or N·m] (may be ``None``).
             pos_indices: Indices into *target_pos* for each DOF.
             vel_indices: Indices into *target_vel* and *feedforward* for each DOF.
-            current_state: InputProcessorDelay state to read from.
+            current_state: InterfaceDelay state to read from.
 
         Returns:
             ``(delayed_pos, delayed_vel, delayed_feedforward)``.  When
@@ -323,93 +313,32 @@ class InputProcessorDelay(InputProcessorBase):
         )
         return tuple(outputs)
 
-    def process(
-        self, inputs: InputProcessorBase.Inputs, state: InputProcessorDelay.State, dt: float | None
-    ) -> InputProcessorBase.Inputs:
-        """Replace the command inputs with their delayed values.
-
-        Args:
-            inputs: Actuator inputs.
-            state: InputProcessorDelay state to read from.
-            dt: Timestep [s] (unused).
-
-        Returns:
-            *inputs* with delayed ``target_pos``, ``target_vel`` and
-            ``feedforward``.
-        """
-        target_pos, target_vel, feedforward = self.get_delayed_targets(
-            inputs.target_pos,
-            inputs.target_vel,
-            inputs.feedforward,
-            inputs.target_pos_indices,
-            inputs.target_vel_indices,
-            state,
-        )
-        return replace(
-            inputs,
-            target_pos=target_pos,
-            target_vel=target_vel,
-            feedforward=feedforward,
-            target_pos_indices=self._sequential_indices,
-            target_vel_indices=self._sequential_indices,
-        )
-
-    def update_state(self, *args: Any, **kwargs: Any) -> None:
-        """Push the current command inputs into the buffer.
-
-        Call as ``update_state(inputs, current_state, next_state)``:
-
-        * *inputs*: the inputs this delay received in :meth:`process`.
-        * *current_state*: delay state to read from.
-        * *next_state*: delay state to write into.
-
-        .. deprecated:: 1.9
-            The form ``update_state(target_pos, target_vel, feedforward,
-            pos_indices, vel_indices, current_state, next_state)``.
-        """
-        inputs = args[0] if args else kwargs.get("inputs")
-        if not isinstance(inputs, InputProcessorBase.Inputs):
-            warnings.warn(_UPDATE_STATE_LEGACY_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-            self._push_targets(*args, **kwargs)
-            return
-        self._update_from_inputs(*args, **kwargs)
-
-    def _overrides_legacy_update_state(self) -> bool:
-        """Return True if a subclass overrides :meth:`update_state` with the deprecated 7-argument form."""
-        method = type(self).update_state
-        if method is InputProcessorDelay.update_state:
-            return False
-        positional = (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
-        params = [p for p in inspect.signature(method).parameters.values() if p.kind in positional]
-        return len(params) == 8
-
-    def _update_from_inputs(
+    def compute(
         self,
-        inputs: InputProcessorBase.Inputs,
-        current_state: InputProcessorDelay.State,
-        next_state: InputProcessorDelay.State,
-    ) -> None:
-        self._push_targets(
-            inputs.target_pos,
-            inputs.target_vel,
-            inputs.feedforward,
-            inputs.target_pos_indices,
-            inputs.target_vel_indices,
-            current_state,
-            next_state,
+        target_pos: wp.array[float],
+        target_vel: wp.array[float],
+        feedforward: wp.array[float] | None,
+        target_pos_indices: wp.array[wp.uint32],
+        target_vel_indices: wp.array[wp.uint32],
+        state: InterfaceDelay.State,
+        dt: float | None = None,
+    ) -> tuple[wp.array[float], wp.array[float], wp.array[float]]:
+        """Return the delayed targets; see :meth:`get_delayed_targets`."""
+        return self.get_delayed_targets(
+            target_pos, target_vel, feedforward, target_pos_indices, target_vel_indices, state
         )
 
-    def _push_targets(
+    def update_state(
         self,
         target_pos: wp.array[float],
         target_vel: wp.array[float],
         feedforward: wp.array[float] | None,
         pos_indices: wp.array[wp.uint32],
         vel_indices: wp.array[wp.uint32],
-        current_state: InputProcessorDelay.State,
-        next_state: InputProcessorDelay.State,
+        current_state: InterfaceDelay.State,
+        next_state: InterfaceDelay.State,
     ) -> None:
-        """Write command inputs into the buffer and advance the write pointer.
+        """Push the current command inputs into the buffer and advance the write pointer.
 
         Args:
             target_pos: Current target positions [m or rad].
@@ -417,8 +346,8 @@ class InputProcessorDelay(InputProcessorBase):
             feedforward: Current feedforward input [N or N·m] (may be ``None``).
             pos_indices: Indices into *target_pos* for each DOF.
             vel_indices: Indices into *target_vel* and *feedforward* for each DOF.
-            current_state: InputProcessorDelay state to read from.
-            next_state: InputProcessorDelay state to write into.
+            current_state: InterfaceDelay state to read from.
+            next_state: InterfaceDelay state to write into.
         """
         if next_state is None:
             return

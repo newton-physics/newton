@@ -18,14 +18,15 @@ from .drives import (
     DrivePD,
     DrivePID,
 )
-from .input_processors import (
-    InputProcessorBase,
-    InputProcessorDelay,
-    InputProcessorEncoder,
+from .interfaces import (
+    InterfaceBase,
+    InterfaceDelay,
 )
 from .joint_space_response import JointSpaceResponse
 from .motor_dc import MotorDC
+from .sensors import SensorBase, SensorEncoder
 from .space import DriveOutputSpace
+from .transmissions import TransmissionBase, TransmissionDirect, TransmissionFixed
 from .usd_parser import (
     ActuatorParsed,
     BatteryParsed,
@@ -55,12 +56,16 @@ __all__ = [
     "DriveOutputSpace",
     "DrivePD",
     "DrivePID",
-    "InputProcessorBase",
-    "InputProcessorDelay",
-    "InputProcessorEncoder",
+    "InterfaceBase",
+    "InterfaceDelay",
     "JointSpaceResponse",
     "MotorDC",
     "SchemaNames",
+    "SensorBase",
+    "SensorEncoder",
+    "TransmissionBase",
+    "TransmissionDirect",
+    "TransmissionFixed",
     "parse_actuator_prim",
     "parse_battery_prim",
     "register_actuator_component",

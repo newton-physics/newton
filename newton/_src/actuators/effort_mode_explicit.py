@@ -65,6 +65,8 @@ class _EffortModeExplicit:
         supply_voltage: wp.array[float] | None = None,
         supply_current: wp.array[float] | None = None,
         actuator_indices: wp.array[wp.uint32] | None = None,
+        motor_velocities: wp.array[float] | None = None,
+        motor_vel_indices: wp.array[wp.uint32] | None = None,
     ) -> wp.array[float]:
         """Compute raw effort into *computed_forces*, clamp into *applied_forces*.
 
@@ -74,9 +76,17 @@ class _EffortModeExplicit:
         motor writes its effort into *computed_forces* and its current into
         *supply_current*.
 
+        Clamps read the drive's *positions* and the actuator velocity
+        *motor_velocities* at *motor_vel_indices*, the velocity of the
+        simulated joints, unchanged by a sensor; the motor reads the same
+        velocity. Both default to the drive's *velocities* and
+        *vel_indices*.
+
         Returns the buffer holding the final (clamped) effort.
         *bias_force* is ignored.
         """
+        if motor_velocities is None:
+            motor_velocities, motor_vel_indices = velocities, vel_indices
         drive_output, motor_voltage = self._drive_output, self._motor_voltage
         if self._requires_grad and self._motor is not None:
             drive_output, motor_voltage = wp.empty_like(drive_output), wp.empty_like(motor_voltage)
@@ -105,9 +115,9 @@ class _EffortModeExplicit:
                 forces,
                 applied_forces,
                 positions,
-                velocities,
+                motor_velocities,
                 pos_indices,
-                vel_indices,
+                motor_vel_indices,
                 self._device,
                 **clamp_kwargs,
             )
@@ -124,8 +134,8 @@ class _EffortModeExplicit:
             self._motor.compute(
                 motor_voltage,
                 computed_forces,
-                velocities,
-                vel_indices,
+                motor_velocities,
+                motor_vel_indices,
                 supply_voltage,
                 actuator_indices,
                 supply_current,

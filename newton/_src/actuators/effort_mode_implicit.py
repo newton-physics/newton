@@ -948,6 +948,8 @@ class _EffortModeImplicit:
         supply_voltage: wp.array[float] | None = None,
         supply_current: wp.array[float] | None = None,
         actuator_indices: wp.array[wp.uint32] | None = None,
+        motor_velocities: wp.array[float] | None = None,
+        motor_vel_indices: wp.array[wp.uint32] | None = None,
     ) -> wp.array[float]:
         """Solve implicit effort and return the applied-effort buffer.
 
@@ -965,8 +967,10 @@ class _EffortModeImplicit:
         predicted end-of-step velocity is ``qd + A (p - h bias_force)`` instead
         of ``qd + A p``.
 
-        *supply_voltage*, *supply_current* and *actuator_indices* are ignored,
-        since implicit actuation does not support motors.
+        *supply_voltage*, *supply_current*, *actuator_indices*,
+        *motor_velocities* and *motor_vel_indices* are ignored, since implicit
+        actuation does not support motors or transmissions other than
+        :class:`~newton.actuators.TransmissionDirect`.
         """
         if dt is None:
             raise ValueError("Implicit actuation requires dt")
