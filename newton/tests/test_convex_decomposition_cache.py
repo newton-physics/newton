@@ -168,8 +168,8 @@ class TestConvexDecompositionCache(unittest.TestCase):
 
     def test_cache_canonicalizes_settings(self):
         """Reuse entries for reordered options and explicitly supplied Newton defaults."""
-        self._build(cache_dir=self.cache_dir, seed=7, merge=False)
-        self._build(cache_dir=self.cache_dir, merge=False, seed=7)
+        self._build(cache_dir=self.cache_dir, seed=7, merge=False, mcts_iterations=20, mcts_max_depth=2)
+        self._build(cache_dir=self.cache_dir, mcts_max_depth=2, merge=False, seed=7)
         self._build(cache_dir=self.cache_dir, seed=7)
         self._build(cache_dir=self.cache_dir, seed=7, coacd_threshold=0.5, threshold=0.05)
         self.assertEqual(self.coacd.call_count, 1)

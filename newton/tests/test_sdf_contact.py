@@ -172,8 +172,9 @@ def test_mesh_mesh_sdf_surface_witnesses(test, device, box_sdf, *, probe_sdf=Fal
         box = newton.Mesh.create_box(1.0, 1.0, 0.5)
         if box_sdf:
             box.build_sdf(max_resolution=32, device=device)
-        # Allow texture quantization error, well below the original 0.05 m shift.
-        sdf_tolerance = 1.0e-3 if box_sdf else 2.0e-5
+        # A planar patch should retain float32/uint16 precision even between
+        # texture-filter interpolation steps. Closed probes also sample corners.
+        sdf_tolerance = 1.0e-3 if probe_sdf else 2.0e-5
         for probe_first in (True, False):
             builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
             body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
@@ -251,6 +252,46 @@ def test_mesh_mesh_contact_at_pair_gap(test, device):
                         count = int(contacts.rigid_contact_count.numpy()[0])
                         surface_distance = np.float32(separation) - np.float32(2.0 * cfg.margin)
                         test.assertEqual(count > 0, surface_distance <= (0.1875 if speculative else 0.125))
+
+
+def test_mesh_sdf_gap_preserves_penetrating_contacts(test, device):
+    """Keep true penetrations when the hardware sample rounds outside."""
+    with wp.ScopedDevice(device):
+        box = newton.Mesh.create_box(1.0, 1.0, 0.523)
+        box.build_sdf(max_resolution=32, device=device)
+        # Hardware filtering rounds this point outside the face. The
+        # software-interpolated distance is about -370 micrometers.
+        size = 2.0e-5
+        probe = newton.Mesh(
+            np.array([[-size, -size, 0.0], [size, -size, 0.0], [0.0, size, 0.0]], dtype=np.float32),
+            np.array([0, 2, 1], dtype=np.int32),
+            compute_inertia=False,
+        )
+        penetrating_counts = {False: [], True: []}
+        for gap in (0.0, 0.001):
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+            pose = wp.transform(wp.vec3(0.0, 0.0, 0.52263))
+            body = builder.add_body(xform=pose, mass=1.0, inertia=wp.mat33(np.eye(3)))
+            builder.add_shape_mesh(body, mesh=probe, cfg=builder.ShapeConfig(gap=gap, margin=0.0, density=0.0))
+            builder.add_shape_mesh(-1, mesh=box, cfg=builder.ShapeConfig(gap=0.0, margin=0.0, density=0.0))
+            model = builder.finalize(device=device)
+            state = model.state()
+            for reduce_contacts, counts in penetrating_counts.items():
+                pipeline = newton.CollisionPipeline(model, reduce_contacts=reduce_contacts)
+                contacts = pipeline.contacts()
+                pipeline.collide(state, contacts)
+                count = int(contacts.rigid_contact_count.numpy()[0])
+                p0 = contacts.rigid_contact_point0.numpy()[:count] + np.asarray(pose.p)
+                p1 = contacts.rigid_contact_point1.numpy()[:count]
+                normals = contacts.rigid_contact_normal.numpy()[:count]
+                distances = np.sum((p1 - p0) * normals, axis=1)
+                penetrating = distances[distances < 0.0]
+                np.testing.assert_allclose(penetrating, 0.52263 - 0.523, atol=1.0e-5)
+                counts.append(len(penetrating))
+        for reduce_contacts, (inner, with_gap) in penetrating_counts.items():
+            with test.subTest(reduce_contacts=reduce_contacts):
+                test.assertGreater(inner, 0)
+                test.assertEqual(inner, with_gap)
 
 
 def test_mesh_sdf_normal_at_slab_midplane(test, device, *, reverse_winding=False, probe_sdf=False, coarse=False):
@@ -1023,6 +1064,12 @@ add_function_test(
     "test_mesh_mesh_contact_at_pair_gap",
     test_mesh_mesh_contact_at_pair_gap,
     devices=get_test_devices(),
+)
+add_function_test(
+    TestSDFContact,
+    "test_mesh_sdf_gap_preserves_penetrating_contacts",
+    test_mesh_sdf_gap_preserves_penetrating_contacts,
+    devices=get_cuda_test_devices(),
 )
 add_function_test(
     TestSDFContact,
