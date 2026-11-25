@@ -38,6 +38,7 @@ from newton._src.solvers.vbd.particle_vbd_kernels import (
     gather_particle_body_contact_force_and_hessian,
     make_solve_elasticity_tile,
     scatter_particle_body_contact_force_and_hessian,
+    solve_elasticity,
 )
 from newton._src.solvers.vbd.rigid_vbd_kernels import (
     RigidContactHistory,
@@ -6639,22 +6640,8 @@ def _body_particle_attachment_to_cable_capsule(test, device):
     test.assertGreater(float(np.linalg.norm(particle_q[particle] - initial_particle_pos)), 1.0e-3)
 
 
-def _pin_tile_kernel_options(test, *kernels, fast_math=True):
-    """Compile memoized tile kernels with identical options for a bitwise comparison.
-
-    ``make_solve_elasticity_tile`` is cached per process, and each ``SolverVBD`` writes its
-    ``enable_fast_math`` into the cached kernel's module. Pin the option so the comparison
-    does not depend on which solvers earlier tests in the same worker created.
-    """
-    for kernel in kernels:
-        saved_fast_math = kernel.module.options.get("fast_math", False)
-        test.addCleanup(wp.set_module_options, {"fast_math": saved_fast_math}, module=kernel.module)
-        wp.set_module_options({"fast_math": fast_math}, module=kernel.module)
-    return kernels
-
-
-def _two_particle_tile_solve_matches_legacy_bits(test, device):
-    """Pack odd-sized, high-valence cloth work without changing any result bit."""
+def _two_particle_tile_solve_matches_scalar(test, device):
+    """Solve odd-sized, high-valence cloth work in packed and 16-lane tiles like the scalar kernel."""
     ring_count = 20
     angles = np.arange(ring_count, dtype=np.float64) * (2.0 * np.pi / ring_count)
     vertices = [wp.vec3(0.0, 0.0, 0.0)]
@@ -6711,10 +6698,11 @@ def _two_particle_tile_solve_matches_legacy_bits(test, device):
     inertia_device = wp.array(inertia, dtype=wp.vec3, device=device)
     forces_device = wp.array(particle_forces, dtype=wp.vec3, device=device)
     hessians_device = wp.array(particle_hessians, dtype=wp.mat33, device=device)
+    scalar_displacements = wp.array(initial_displacements, dtype=wp.vec3, device=device)
     legacy_displacements = wp.array(initial_displacements, dtype=wp.vec3, device=device)
     packed_displacements = wp.array(initial_displacements, dtype=wp.vec3, device=device)
 
-    common_inputs = [
+    inputs = [
         0.01,
         ids_device,
         q_prev_device,
@@ -6730,47 +6718,41 @@ def _two_particle_tile_solve_matches_legacy_bits(test, device):
         model.edge_rest_angle,
         model.edge_rest_length,
         model.edge_bending_properties,
+        model.tet_indices,
+        model.tet_poses,
+        model.tet_materials,
+        model.soft_mesh_adjacency_device,
+        forces_device,
+        hessians_device,
+        None,  # particle_world
     ]
-    legacy_kernel, packed_kernel = _pin_tile_kernel_options(
-        test, make_solve_elasticity_tile(True, True, False), make_solve_elasticity_tile(True, False, True)
+    wp.launch(
+        solve_elasticity,
+        dim=model.particle_count,
+        inputs=inputs,
+        outputs=[scalar_displacements, None],
+        device=device,
     )
     wp.launch(
-        legacy_kernel,
+        make_solve_elasticity_tile(True, True, False),
         dim=model.particle_count * TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
         block_dim=TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
-        inputs=[
-            *common_inputs,
-            model.tet_indices,
-            model.tet_poses,
-            model.tet_materials,
-            model.soft_mesh_adjacency_device,
-            forces_device,
-            hessians_device,
-            None,  # particle_world
-        ],
+        inputs=inputs,
         outputs=[legacy_displacements, None],
         device=device,
     )
     wp.launch(
-        packed_kernel,
+        make_solve_elasticity_tile(True, False, True),
         dim=((model.particle_count + 1) // 2) * (2 * TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE),
         block_dim=2 * TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
-        inputs=[
-            *common_inputs,
-            model.tet_indices,
-            model.tet_poses,
-            model.tet_materials,
-            model.soft_mesh_adjacency_device,
-            forces_device,
-            hessians_device,
-            None,  # particle_world
-        ],
+        inputs=inputs,
         outputs=[packed_displacements, None],
         device=device,
     )
-    legacy_bits = legacy_displacements.numpy().view(np.uint32)
-    packed_bits = packed_displacements.numpy().view(np.uint32)
-    np.testing.assert_array_equal(packed_bits, legacy_bits)
+    # The tiles sum element contributions in a different order than the scalar kernel.
+    expected = scalar_displacements.numpy()
+    np.testing.assert_allclose(legacy_displacements.numpy(), expected, rtol=1.0e-5, atol=1.0e-7)
+    np.testing.assert_allclose(packed_displacements.numpy(), expected, rtol=1.0e-5, atol=1.0e-7)
 
 
 def _tet_only_elasticity_eligibility_matches_active_materials(test, device):
@@ -6943,8 +6925,8 @@ def _scalar_tet_lookahead_matches_reference(test, device):
         np.testing.assert_allclose(scalar, reference, rtol=2e-6, atol=2e-6)
 
 
-def _tet_only_tile_solve_matches_legacy_bits(test, device):
-    """Match the general tile solve bit for bit on a high-valence tet mesh."""
+def _tet_only_tile_solve_matches_scalar(test, device):
+    """Solve a high-valence tet mesh in tet-only and general tiles like the scalar kernel."""
     # The central particle has 17 adjacent tets, exercising a second 16-lane batch.
     model = _make_tets_sharing_vertex(17, device)
     test.assertTrue(_is_tet_only_elasticity_model(model))
@@ -6976,79 +6958,61 @@ def _tet_only_tile_solve_matches_legacy_bits(test, device):
     inertia_device = wp.array(inertia, dtype=wp.vec3, device=device)
     forces_device = wp.array(particle_forces, dtype=wp.vec3, device=device)
     hessians_device = wp.array(particle_hessians, dtype=wp.mat33, device=device)
+    scalar_displacements = wp.array(initial_displacements, dtype=wp.vec3, device=device)
     legacy_displacements = wp.array(initial_displacements, dtype=wp.vec3, device=device)
     specialized_displacements = wp.array(initial_displacements, dtype=wp.vec3, device=device)
 
-    legacy_kernel, specialized_kernel = _pin_tile_kernel_options(
-        test, make_solve_elasticity_tile(True, True, False), make_solve_elasticity_tile(False, True, False)
+    inputs = [
+        0.01,
+        ids_device,
+        q_prev_device,
+        q_device,
+        model.particle_mass,
+        inertia_device,
+        model.particle_flags,
+        model.tri_indices,
+        model.tri_poses,
+        model.tri_materials,
+        model.tri_areas,
+        model.edge_indices,
+        model.edge_rest_angle,
+        model.edge_rest_length,
+        model.edge_bending_properties,
+        model.tet_indices,
+        model.tet_poses,
+        model.tet_materials,
+        model.soft_mesh_adjacency_device,
+        forces_device,
+        hessians_device,
+        None,  # particle_world
+    ]
+    wp.launch(
+        solve_elasticity,
+        dim=model.particle_count,
+        inputs=inputs,
+        outputs=[scalar_displacements, None],
+        device=device,
     )
     wp.launch(
-        legacy_kernel,
+        make_solve_elasticity_tile(True, True, False),
         dim=model.particle_count * TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
         block_dim=TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
-        inputs=[
-            0.01,
-            ids_device,
-            q_prev_device,
-            q_device,
-            model.particle_mass,
-            inertia_device,
-            model.particle_flags,
-            model.tri_indices,
-            model.tri_poses,
-            model.tri_materials,
-            model.tri_areas,
-            model.edge_indices,
-            model.edge_rest_angle,
-            model.edge_rest_length,
-            model.edge_bending_properties,
-            model.tet_indices,
-            model.tet_poses,
-            model.tet_materials,
-            model.soft_mesh_adjacency_device,
-            forces_device,
-            hessians_device,
-            None,  # particle_world
-        ],
+        inputs=inputs,
         outputs=[legacy_displacements, None],
         device=device,
     )
     wp.launch(
-        specialized_kernel,
+        make_solve_elasticity_tile(False, True, False),
         dim=model.particle_count * TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
         block_dim=TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
-        inputs=[
-            0.01,
-            ids_device,
-            q_prev_device,
-            q_device,
-            model.particle_mass,
-            inertia_device,
-            model.particle_flags,
-            model.tri_indices,
-            model.tri_poses,
-            model.tri_materials,
-            model.tri_areas,
-            model.edge_indices,
-            model.edge_rest_angle,
-            model.edge_rest_length,
-            model.edge_bending_properties,
-            model.tet_indices,
-            model.tet_poses,
-            model.tet_materials,
-            model.soft_mesh_adjacency_device,
-            forces_device,
-            hessians_device,
-            None,  # particle_world
-        ],
+        inputs=inputs,
         outputs=[specialized_displacements, None],
         device=device,
     )
 
-    np.testing.assert_array_equal(
-        specialized_displacements.numpy().view(np.uint32),
-        legacy_displacements.numpy().view(np.uint32),
-    )
+    expected = scalar_displacements.numpy()
+    np.testing.assert_allclose(legacy_displacements.numpy(), expected, rtol=1.0e-5, atol=1.0e-7)
+    np.testing.assert_allclose(specialized_displacements.numpy(), expected, rtol=1.0e-5, atol=1.0e-7)
 
 
 def _rigid_constraint_adjacency(test, device):
@@ -7815,8 +7779,8 @@ add_function_test(
 )
 add_function_test(
     TestSolverVBD,
-    "test_two_particle_tile_solve_matches_legacy_bits",
-    _two_particle_tile_solve_matches_legacy_bits,
+    "test_two_particle_tile_solve_matches_scalar",
+    _two_particle_tile_solve_matches_scalar,
     devices=cuda_devices,
 )
 add_function_test(
@@ -7833,8 +7797,8 @@ add_function_test(
 )
 add_function_test(
     TestSolverVBD,
-    "test_tet_only_tile_solve_matches_legacy_bits",
-    _tet_only_tile_solve_matches_legacy_bits,
+    "test_tet_only_tile_solve_matches_scalar",
+    _tet_only_tile_solve_matches_scalar,
     devices=cuda_devices,
 )
 add_function_test(

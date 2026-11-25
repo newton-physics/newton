@@ -448,9 +448,6 @@ def _evaluate_membrane_from_vertices(
         f1_dot_f1 = wp.dot(f1, f1)
         f0_dot_f1 = wp.dot(f0, f1)
 
-        # Keep the anchor gather next to its only use. Hoisting it lets the CUDA
-        # backend contract these terms differently per tiled kernel variant (seen
-        # on sm_89), breaking the packed tile's bit-for-bit match with the legacy tile.
         x0_prev = pos_anchor[v0]
         x01_prev = pos_anchor[v1] - x0_prev
         x02_prev = pos_anchor[v2] - x0_prev
