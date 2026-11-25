@@ -806,6 +806,24 @@ def test_bilateral_rows_follow_element_order(test, device):
             np.testing.assert_array_equal(solver._connect_slot.numpy(), [mimic_slot[0] + mimic_count])
 
 
+def test_loop_closure_rows_follow_element_order(test, device):
+    """Give the loop-closure rows of one world their slots in element order in every mode."""
+    closure_count = 512
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+    builder.replicate(_build_four_bar(), closure_count, spacing=(1.0, 0.0, 0.0), separate_worlds=False)
+    model = builder.finalize(device=device)
+    for mode in (RUN_TO_RUN, wp.DeterministicMode.NOT_GUARANTEED):
+        with test.subTest(deterministic=mode):
+            solver = SolverSteel(model, deterministic=mode, articulation_constraint_max=4 * closure_count)
+            state = model.state()
+            newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+            solver.step(state, model.state(), model.control(), None, 0.005)
+
+            # Each BALL closure takes three rows.
+            connect_slot = solver._connect_slot.numpy()
+            np.testing.assert_array_equal(connect_slot, connect_slot[0] + 3 * np.arange(closure_count))
+
+
 @contextlib.contextmanager
 def _warp_lowering_off():
     saved = wp.config.deterministic
@@ -928,6 +946,7 @@ for _fn in (
     test_deterministic_joint_rows_follow_articulation_order,
     test_deterministic_joint_friction_rows_follow_dof_order,
     test_bilateral_rows_follow_element_order,
+    test_loop_closure_rows_follow_element_order,
     test_inherited_global_mode_keeps_steel_ordering,
 ):
     add_function_test(TestSteelDeterminism, _fn.__name__, _fn, devices=cuda_devices)
