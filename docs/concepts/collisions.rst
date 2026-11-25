@@ -2465,8 +2465,8 @@ when both shapes are ``NONE``. Particles have no mode and count as ``NONE``,
 so particle contacts follow the shape's mode, and torsional and rolling
 friction do not act on them because particles do not rotate
 (:class:`~newton.solvers.SolverMuJoCo` flexes keep sliding friction, see
-:ref:`mujoco-flexes`). Solvers and the collision pipeline read the modes when
-they are constructed; later changes are not applied. See :ref:`Contact material support` for the modes each solver
+:ref:`mujoco-flexes`). Solvers and the collision pipeline may read the modes
+only when they are constructed, so changing a mode afterwards is not supported. See :ref:`Contact material support` for the modes each solver
 supports.
 
 Torsional friction matters most for contacts that touch at a single point,

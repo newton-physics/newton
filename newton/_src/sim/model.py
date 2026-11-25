@@ -1108,7 +1108,8 @@ class Model:
         """Shape friction mode, shape [shape_count], int.
 
         Values are :class:`~newton.ShapeFrictionMode`. Solvers and the collision
-        pipeline read the mode when they are constructed; later changes are not applied."""
+        pipeline may read the mode only when they are constructed: set it before
+        constructing them; changing it afterwards is not supported."""
         self.shape_material_kh: wp.array[wp.float32] | None = None
         """Shape hydroelastic stiffness coefficient [N/m^3], shape [shape_count], float.
         Under the default linear pressure law, contact force scales with
