@@ -629,6 +629,37 @@ def test_underflowing_compliance_keeps_friction_weight(test, device):
             np.testing.assert_allclose(friction, 0.5 * 0.25)
 
 
+def test_weighted_friction_overflow_rejected(test, device):
+    """Reject a friction weight whose product with a finite pair coefficient overflows float32 on every route.
+
+    The ground and sphere coefficients scale to 3e37, so a weight of 1 keeps that and a weight of 20 overflows.
+    """
+    for response in ("immediate", "colored"):
+        for articulated in (True, False):
+            options = {**_response(response), "contact_friction_scale": 6.0e37}
+            with test.subTest(response=response, articulated=articulated):
+                _, _, solver, _ = run_fixture(
+                    device=device, articulated=articulated, enabled=True, steps=1, solver_options=options
+                )
+                row_type, row_mu = (
+                    (solver._row_type, solver._row_mu) if articulated else (solver._mf_row_type, solver._mf_row_mu)
+                )
+                if solver._propagation_active and articulated:
+                    row_type, row_mu = solver._propagation_row_type, solver._propagation_row_mu
+                friction = row_mu.numpy()[0][row_type.numpy()[0] == PGS_CONSTRAINT_TYPE_FRICTION]
+                test.assertGreater(friction.size, 0)
+                np.testing.assert_array_equal(friction, np.float32(3.0e37))
+                with test.assertRaisesRegex(ValueError, "Weighted contact friction coefficient exceeds float32 range"):
+                    run_fixture(
+                        device=device,
+                        articulated=articulated,
+                        enabled=True,
+                        steps=1,
+                        friction_scale=20.0,
+                        solver_options=options,
+                    )
+
+
 def test_reset_and_open_gap_release(test, device):
     """Clear only step-local compliance data and exert no force across an open gap."""
     _, _, solver, _ = run_fixture(device=device, articulated=True, enabled=True, steps=5)
@@ -687,6 +718,7 @@ for _fn in (
     test_rolled_back_capacity_fails_without_warnings,
     test_solver_overflow_and_dropped_contact_rejected,
     test_underflowing_compliance_keeps_friction_weight,
+    test_weighted_friction_overflow_rejected,
     test_reset_and_open_gap_release,
     test_actual_timestep_and_iterations,
     test_public_defaults_remain_hard,
@@ -847,6 +879,32 @@ def test_captured_errors_are_deferred_until_reset(test, device):
     test.assertTrue(np.isfinite(scene.pose()).all())
 
 
+def test_captured_friction_overflow_is_deferred_until_reset(test, device):
+    """Report a replay's overflowing friction weight through check_constraint_capacity until reset, then recover."""
+    scene = _CompliantScene(device, articulated=True, solver_options={"contact_friction_scale": 6.0e37})
+    graph = scene.capture()
+    wp.capture_launch(graph)
+    scene.solver.check_constraint_capacity()
+    scene.friction.fill_(20.0)
+    wp.capture_launch(graph)
+    friction = scene.solver._row_mu.numpy()[0][scene.solver._row_type.numpy()[0] == PGS_CONSTRAINT_TYPE_FRICTION]
+    test.assertGreater(friction.size, 0)
+    np.testing.assert_array_equal(friction, np.float32(3.0e37))
+    for _ in range(2):
+        with test.assertRaisesRegex(RuntimeError, "contact compliance.*Weighted contact friction coefficient"):
+            scene.solver.check_constraint_capacity()
+    scene.solver.reset(scene.states[0])
+    scene.solver.check_constraint_capacity()
+    wp.capture_launch(graph)
+    with test.assertRaisesRegex(RuntimeError, "contact compliance.*Weighted contact friction coefficient"):
+        scene.solver.check_constraint_capacity()
+    scene.friction.fill_(1.0)
+    scene.solver.reset(scene.states[0])
+    wp.capture_launch(graph)
+    scene.solver.check_constraint_capacity()
+    test.assertTrue(np.isfinite(scene.pose()).all())
+
+
 def test_status_snapshot_reports_a_replay_error(test, device):
     """Report a replay's invalid contact input from a snapshot taken after it, not before it or after a reset."""
     scene = _CompliantScene(device, articulated=True)
@@ -1001,6 +1059,7 @@ for _fn in (
     test_capture_interleaves_with_eager_steps_and_reset,
     test_replay_reads_edited_contact_material,
     test_captured_errors_are_deferred_until_reset,
+    test_captured_friction_overflow_is_deferred_until_reset,
     test_status_snapshot_reports_a_replay_error,
 ):
     add_function_test(TestContactComplianceCapture, _fn.__name__, _fn, devices=devices)

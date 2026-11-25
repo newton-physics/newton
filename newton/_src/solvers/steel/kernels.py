@@ -5339,17 +5339,17 @@ def surface_contact_target(contact_surface_velocity: wp.array[wp.vec3], c: int, 
 def _contact_mu(
     shape_a: int, shape_b: int, shape_material_mu: wp.array[float], shape_material_friction_mode: wp.array[wp.int32]
 ):
-    """Return the arithmetic-mean friction coefficient of one shape pair, zero for frictionless pairs."""
+    """Return the arithmetic-mean friction coefficient of one shape pair, zero for frictionless pairs.
+
+    The mean of two finite coefficients is finite: halving each before the sum keeps it in float32 range.
+    """
     mu = float(0.0)
-    material_count = int(0)
-    if shape_a >= 0:
-        mu += shape_material_mu[shape_a]
-        material_count += 1
-    if shape_b >= 0:
-        mu += shape_material_mu[shape_b]
-        material_count += 1
-    if material_count > 0:
-        mu /= float(material_count)
+    if shape_a >= 0 and shape_b >= 0:
+        mu = 0.5 * shape_material_mu[shape_a] + 0.5 * shape_material_mu[shape_b]
+    elif shape_a >= 0:
+        mu = shape_material_mu[shape_a]
+    elif shape_b >= 0:
+        mu = shape_material_mu[shape_b]
     if contact_friction_mode(shape_material_friction_mode, shape_a, shape_b) == int(ShapeFrictionMode.NONE):
         mu = 0.0
     return mu
@@ -8151,10 +8151,20 @@ def build_joint_limit_rows(
 
 
 @wp.kernel
-def scale_array_inplace(values: wp.array[float], scale: float):
-    """Multiply every entry of ``values`` by ``scale``."""
-    i = wp.tid()
-    values[i] = values[i] * scale
+def scale_shape_friction(
+    shape_material_mu: wp.array[float],
+    scale: float,
+    # outputs
+    shape_mu: wp.array[float],
+    shape_mu_invalid: wp.array[wp.int32],
+):
+    """Write ``scale * shape_material_mu``, flagging shapes whose scaled coefficient is not finite and zeroing them."""
+    shape = wp.tid()
+    mu = shape_material_mu[shape] * scale
+    if not wp.isfinite(mu):
+        wp.atomic_min(shape_mu_invalid, 0, shape)
+        mu = 0.0
+    shape_mu[shape] = mu
 
 
 # ---------------------------------------------------------------------------

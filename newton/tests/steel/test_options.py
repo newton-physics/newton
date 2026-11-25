@@ -15,6 +15,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.solvers.steel.kernels import PGS_CONSTRAINT_TYPE_FRICTION
 from newton._src.solvers.steel.solver_steel import _ConstructionOption, _StepOption
 from newton.solvers import SolverSteel
 from newton.tests.steel._fixtures import (
@@ -363,6 +364,108 @@ def test_friction_switches_validate_their_values(test, device):
             SolverSteel(model, contact_friction_scale=value)
 
 
+def _friction_row_mu(solver):
+    """Return the friction coefficient of every active friction row of each row family."""
+    families = [
+        (solver._constraint_count, solver._row_type, solver._row_mu),
+        (solver._mf_constraint_count, solver._mf_row_type, solver._mf_row_mu),
+    ]
+    if solver._propagation_active:
+        families.append(
+            (solver._propagation_constraint_count, solver._propagation_row_type, solver._propagation_row_mu)
+        )
+    values = []
+    for count_array, type_array, mu_array in families:
+        row_type, mu = type_array.numpy(), mu_array.numpy()
+        for world, rows in enumerate(count_array.numpy()):
+            values.append(mu[world, :rows][row_type[world, :rows] == PGS_CONSTRAINT_TYPE_FRICTION])
+    return np.concatenate(values)
+
+
+def _build_hovering_box(device, mu):
+    """Build a free box sliding 2 mm above the ground without gravity, so its contacts carry no normal load."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    builder.default_shape_cfg.mu = mu
+    builder.default_shape_cfg.gap = 0.01
+    builder.add_ground_plane()
+    body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.102), wp.quat_identity()))
+    builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+    return builder.finalize(device=device)
+
+
+def test_pair_friction_mean_stays_finite(test, device):
+    """Average two coefficients whose float32 sum overflows into a finite pair coefficient on every route.
+
+    Loaded contacts brake the sliding boxes, and unloaded contacts carry no friction impulse.
+    """
+    mu = 3.0e38
+    for label, options in _solves(device):
+        with test.subTest(solve=label):
+            solver, _, joint_qd, friction = _run(
+                _build_contact_scene(device, mu=mu), init=_set_box_velocities, steps=4, **options
+            )
+            row_mu = _friction_row_mu(solver)
+            test.assertGreater(row_mu.size, 0)
+            test.assertTrue(np.isfinite(row_mu).all(), label)
+            # Friction anchors split a contact's coefficient between their rows.
+            test.assertEqual(row_mu.max(), np.float32(mu), label)
+            test.assertTrue(all(np.isfinite(f).all() for f in friction), label)
+            starts = solver.model.joint_qd_start.numpy()
+            sliding = [starts[j] for j, t in enumerate(solver.model.joint_type.numpy()) if t == newton.JointType.FREE]
+            # Sliding at mu = 0.6 keeps more than 1.3 m/s over these steps.
+            test.assertLess(float(np.abs(joint_qd[sliding]).max()), 1.0, label)
+            solver, _, joint_qd, friction = _run(
+                _build_hovering_box(device, mu), init=_set_box_velocities, steps=4, **options
+            )
+            test.assertGreater(_friction_row_mu(solver).size, 0, label)
+            test.assertTrue(all(np.all(f == 0.0) for f in friction), label)
+            test.assertEqual(joint_qd[0], np.float32(1.5), label)
+
+
+def test_scaled_friction_overflow_is_rejected(test, device):
+    """Reject a shape coefficient that is not finite after the friction scale, at construction and on notify."""
+    pattern = r"shape_material_mu \* contact_friction_scale is not finite for shape 0"
+    with test.assertRaisesRegex(ValueError, pattern):
+        SolverSteel(_build_contact_scene(device, mu=3.0e38), contact_friction_scale=2.0)
+    model = _build_contact_scene(device)
+    solver = SolverSteel(model, contact_friction_scale=2.0)
+    for mu in (3.0e38, float("inf")):
+        model.shape_material_mu.fill_(mu)
+        with test.subTest(mu=mu):
+            with test.assertRaisesRegex(ValueError, pattern):
+                solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+            np.testing.assert_array_equal(solver._shape_mu.numpy()[: model.shape_count], 0.0)
+            with test.assertRaisesRegex(RuntimeError, pattern):
+                solver.check_constraint_capacity()
+    model.shape_material_mu.fill_(0.6)
+    solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+    solver.check_constraint_capacity()
+    np.testing.assert_allclose(solver._shape_mu.numpy()[: model.shape_count], 1.2, rtol=1.0e-7)
+
+
+def test_captured_scaled_friction_overflow_is_reported(test, device):
+    """Report a captured notification's overflowing coefficient through check_constraint_capacity until a valid one."""
+    model = _build_contact_scene(device)
+    solver = SolverSteel(model, contact_friction_scale=2.0)
+    with wp.ScopedCapture(device) as capture:
+        solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+    model.shape_material_mu.fill_(3.0e38)
+    wp.capture_launch(capture.graph)
+    pattern = r"shape_material_mu \* contact_friction_scale is not finite for shape 0"
+    for _ in range(2):
+        with test.assertRaisesRegex(RuntimeError, pattern):
+            solver.check_constraint_capacity()
+    np.testing.assert_array_equal(solver._shape_mu.numpy()[: model.shape_count], 0.0)
+    # A reset leaves the materials as they are, so the error stays.
+    solver.reset(model.state())
+    with test.assertRaisesRegex(RuntimeError, pattern):
+        solver.check_constraint_capacity()
+    model.shape_material_mu.fill_(0.6)
+    wp.capture_launch(capture.graph)
+    solver.check_constraint_capacity()
+    np.testing.assert_allclose(solver._shape_mu.numpy()[: model.shape_count], 1.2, rtol=1.0e-7)
+
+
 def _friction_start_runs(device):
     """Yield (label, model factory, options, required path flag) covering every position-solve path."""
     for label, options in _solves(device):
@@ -563,6 +666,9 @@ for _cls, _fn, _devices in (
     (TestSteelFrictionOptions, test_contact_friction_scale_matches_scaled_materials, get_test_devices()),
     (TestSteelFrictionOptions, test_contact_friction_scale_applies_to_notified_materials, get_test_devices()),
     (TestSteelFrictionOptions, test_friction_switches_validate_their_values, get_test_devices()),
+    (TestSteelFrictionOptions, test_pair_friction_mean_stays_finite, get_test_devices()),
+    (TestSteelFrictionOptions, test_scaled_friction_overflow_is_rejected, get_test_devices()),
+    (TestSteelFrictionOptions, test_captured_scaled_friction_overflow_is_reported, get_cuda_test_devices()),
     (TestSteelFrictionOptions, test_friction_position_iterations_gate_every_solve_path, get_test_devices()),
     (TestSteelFrictionOptions, test_friction_position_iterations_validate_their_value, get_test_devices()),
     (TestSteelFrictionOptions, test_velocity_iterations_always_solve_friction, get_cuda_test_devices()),
