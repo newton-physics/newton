@@ -124,15 +124,16 @@ class TestSolverKaminoLOXContacts(NewtonTestCase):
 
     def test_proximal_contacts_preserve_hard_contact_solution(self):
         """Damp finite contact updates while retaining the converged hard-contact velocity."""
-        for spatial in (False, True):
-            with self.subTest(spatial=spatial):
+        for friction_mode in (newton.ShapeFrictionMode.SLIDING, SLIDING_TORSIONAL_ROLLING):
+            with self.subTest(friction_mode=friction_mode):
                 first_velocities = []
                 for regularization in (0.0, 1.0):
                     for iterations in (1, 100):
-                        model = self._sphere(velocity=(0.0, 0.0, -1.0, 0.0, 0.0, 0.0), rolling=0.01)
+                        model = self._sphere(
+                            velocity=(0.0, 0.0, -1.0, 0.0, 0.0, 0.0), rolling=0.01, friction_mode=friction_mode
+                        )
                         solver = self._solver(
                             model,
-                            contact_spatial_friction=spatial,
                             contact_proximal_regularization=regularization,
                             contact_proximal_warmstart_scale=1.0,
                             projected_twist_fraction=1.0,
@@ -189,7 +190,7 @@ class TestSolverKaminoLOXContacts(NewtonTestCase):
 
     def test_proximal_restitution_keeps_speculative_boundary(self):
         """Select restitution from the mechanical trial even with a nonzero warm-start impulse."""
-        for spatial in (False, True):
+        for friction_mode in (newton.ShapeFrictionMode.SLIDING, SLIDING_TORSIONAL_ROLLING):
             for regularization in (0.0, 0.01):
                 model = self._sphere(
                     gap=0.01,
@@ -197,11 +198,11 @@ class TestSolverKaminoLOXContacts(NewtonTestCase):
                     velocity=(0.0, 0.0, -2.0, 0.0, 0.0, 0.0),
                     restitution=0.5,
                     rolling=0.01,
+                    friction_mode=friction_mode,
                 )
                 solver = self._solver(
                     model,
                     contact_implicit_restitution=True,
-                    contact_spatial_friction=spatial,
                     contact_proximal_regularization=regularization,
                 )
                 self._step(model, solver)
@@ -217,7 +218,7 @@ class TestSolverKaminoLOXContacts(NewtonTestCase):
                     projection._by_world = by_world
                     for free_velocity in (-0.995, -1.005):
                         with self.subTest(
-                            spatial=spatial,
+                            friction_mode=friction_mode,
                             regularization=regularization,
                             by_world=by_world,
                             free_velocity=free_velocity,
