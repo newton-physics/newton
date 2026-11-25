@@ -25,7 +25,6 @@ supporting both a Z-up and X-up convention.
 
 from __future__ import annotations
 
-import functools
 import logging
 from dataclasses import dataclass, field
 from enum import IntEnum
@@ -984,62 +983,6 @@ class ContactsKamino:
 ###
 
 
-@wp.kernel(enable_backward=False)
-def _apply_contact_material_pairs(
-    table: MaterialPairTable,
-    shape_material_id: wp.array[wp.int32],
-    active_count: wp.array[wp.int32],
-    worlds: wp.array[wp.int32],
-    shapes: wp.array[wp.vec2i],
-    preserve_angular_friction: bool,
-    material: wp.array[wp.vec2f],
-    angular_friction: wp.array[wp.vec2f],
-):
-    cid = wp.tid()
-    if cid >= active_count[0]:
-        return
-    ids = shapes[cid]
-    pair = resolve_material_pair(table, shape_material_id, ids[0], ids[1], worlds[cid])
-    fallback = material[cid]
-    material[cid] = wp.vec2f(
-        material_pair_value(pair.mu, fallback[0]), material_pair_value(pair.restitution, fallback[1])
-    )
-    if angular_friction:
-        angular = wp.vec2f(0.0)
-        if preserve_angular_friction:
-            angular = angular_friction[cid]
-        angular_friction[cid] = wp.vec2f(
-            material_pair_value(pair.mu_torsional, angular[0]), material_pair_value(pair.mu_rolling, angular[1])
-        )
-
-
-def apply_contact_material_pairs(
-    table: MaterialPairTable,
-    shape_material_id: wp.array[wp.int32] | None,
-    contacts: ContactsKaminoData,
-    *,
-    preserve_angular_friction: bool = True,
-) -> None:
-    """Apply authored overrides after a native collision pipeline writes its fallback coefficients."""
-    if table.keys is None or shape_material_id is None:
-        return
-    wp.launch(
-        _apply_contact_material_pairs,
-        dim=len(contacts.gid_AB),
-        inputs=[
-            table,
-            shape_material_id,
-            contacts.model_active_contacts,
-            contacts.wid,
-            contacts.gid_AB,
-            preserve_angular_friction,
-        ],
-        outputs=[contacts.material, contacts.angular_friction],
-        device=contacts.material.device,
-    )
-
-
-@functools.cache
 def make_convert_contacts_newton_to_kamino(
     friction_mix_mode: MaterialMixMode = MaterialMixMode.AVERAGE,
     restitution_mix_mode: MaterialMixMode = MaterialMixMode.MIN,

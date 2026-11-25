@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 import operator
 import warnings
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field, replace
 from enum import IntEnum
@@ -25,7 +25,6 @@ from ..geometry.inertia import _inverse_inertia_wp
 from ..geometry.materials import (
     MaterialPairProperties,
     MaterialPairTable,
-    _randomize_material_pair_values,
     material_pair_key,
 )
 from ..utils.deprecation import warn_deprecation
@@ -199,7 +198,8 @@ def _copy_variant_material_kernel(
     body_variant_rows: wp.array[wp.vec2i],
     shape_variant_shape: wp.array[wp.int32],
     variant_values: wp.array[wp.int32],
-    material_offset: wp.array[wp.int32],
+    material_start: wp.array[wp.int32],
+    material_ids: wp.array[wp.int32],
     values: wp.array[wp.int32],
 ):
     i, row = wp.tid()
@@ -209,7 +209,7 @@ def _copy_variant_material_kernel(
     variant_shape = shape_variant_shape[shape]
     if variant_shape >= 0:
         material = variant_values[variant_shape]
-        values[shape] = material + material_offset[body] if material >= 0 else -1
+        values[shape] = material_ids[material_start[body] + material] if material >= 0 else -1
 
 
 @wp.kernel(enable_backward=False)
@@ -606,7 +606,8 @@ class Model:
         "_body_variant_first": AttributeSpec(AttributeFrequency.BODY),
         "_body_variant_rows": AttributeSpec(AttributeFrequency.BODY),
         "_body_variant_inertia_start": AttributeSpec(AttributeFrequency.BODY),
-        "_body_variant_material_offset": AttributeSpec(AttributeFrequency.BODY),
+        "_body_variant_material_start": AttributeSpec(AttributeFrequency.BODY),
+        "_variant_material_ids": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
         "_shape_variant_row": AttributeSpec(AttributeFrequency.SHAPE),
         "_shape_variant_shape": AttributeSpec(AttributeFrequency.SHAPE),
         # shapes
@@ -1543,8 +1544,10 @@ class Model:
         """First variant row and row count of each body, shape [body_count, 2], int."""
         self._body_variant_inertia_start: wp.array[wp.int32] | None = None
         """Start of each body's validated mass properties in ``_variant_mass/com/inertia``, shape [body_count], int."""
-        self._body_variant_material_offset: wp.array[wp.int32] | None = None
-        """Material registry offset for each body's shared variant shapes, shape [body_count], int."""
+        self._body_variant_material_start: wp.array[wp.int32] | None = None
+        """Start of each body's material remapping in ``_variant_material_ids``, shape [body_count], int."""
+        self._variant_material_ids: wp.array[wp.int32] | None = None
+        """Deduplicated mappings from shared variant materials to this model's material IDs."""
         self._variant_set_labels: list[list[str]] = []
         """Variant labels of each variant set."""
         self._variant_row_shape_start: wp.array[wp.int32] | None = None
@@ -2040,11 +2043,17 @@ class Model:
             return None
         return self._material_pair_table.values
 
-    def get_material_pair_index(self, material_a: int, material_b: int) -> int:
+    def get_material_pair_index(self, material_a: int | str, material_b: int | str) -> int:
         """Return the column of an unordered pair in :attr:`material_pair_values`.
 
-        This experimental method returns -1 for an invalid ID or unregistered pair.
+        Accept material names or model-local IDs. This experimental method returns
+        -1 for an invalid material or unregistered pair.
         """
+        try:
+            material_a = self.material_names.index(material_a) if isinstance(material_a, str) else material_a
+            material_b = self.material_names.index(material_b) if isinstance(material_b, str) else material_b
+        except ValueError:
+            return -1
         if not all(
             isinstance(value, (int, np.integer)) or wp.types.type_is_int(type(value))
             for value in (material_a, material_b)
@@ -2056,90 +2065,6 @@ class Model:
         if not (0 <= material_a < material_count and 0 <= material_b < material_count):
             return -1
         return self._material_pair_columns.get(material_pair_key(material_a, material_b), -1)
-
-    def randomize_material_pairs(
-        self,
-        ranges: Mapping[tuple[int, int], Mapping[str, tuple[float, float]]],
-        *,
-        seed: int,
-        distribution: Literal["uniform", "gaussian"] = "uniform",
-    ) -> None:
-        """Sample selected rigid contact material pair coefficients once, in place.
-
-        This experimental method works with pairs configured before finalization.
-        In a multi-world model, finalize with ``material_pairs_per_world=True``.
-        Each draw is keyed by the seed, unordered pair, coefficient, and world
-        index. Use the same seed and IDs to repeat a sample on the same device.
-        Solvers read the resulting values until they are changed again.
-
-        Args:
-            ranges: Mapping from unordered material ID pairs to coefficient names
-                and inclusive ``(minimum, maximum)`` bounds. Supported names are
-                ``mu``, ``mu_static``, ``mu_torsional``, ``mu_rolling``, and
-                ``restitution``, with the same units as :meth:`ModelBuilder.set_material_pair`.
-                Omitted coefficients keep their current values.
-            seed: Nonnegative integer seed for all draws in this call.
-            distribution: Uniform, or a Gaussian truncated to the bounds with
-                mean at their midpoint and standard deviation one sixth of their
-                width. Equal bounds set a constant.
-
-        Raises:
-            ValueError: If the seed, distribution, pair, name, or bounds are
-                invalid, or the model lacks independent per-world storage.
-        """
-        try:
-            seed = operator.index(seed)
-        except TypeError as exc:
-            raise ValueError("Material pair randomization seed must be a nonnegative integer.") from exc
-        if seed < 0:
-            raise ValueError("Material pair randomization seed must be a nonnegative integer.")
-        if distribution not in ("uniform", "gaussian"):
-            raise ValueError(f"Invalid material pair randomization distribution {distribution!r}.")
-        if not ranges:
-            return
-        values = self.material_pair_values
-        if values is None or values.shape[0] != self.world_count:
-            raise ValueError("Configure material pairs and finalize with material_pairs_per_world=True.")
-
-        bounds_min = np.empty(len(ranges), dtype=MaterialPairProperties.numpy_dtype())
-        names = bounds_min.dtype.names
-        for name in names:
-            bounds_min[name].fill(-1.0)
-        bounds_max = bounds_min.copy()
-        seeds = np.empty((len(ranges), len(names)), dtype=np.int32)
-        columns = []
-        seen = set()
-        for row, ((material_a, material_b), coefficients) in enumerate(ranges.items()):
-            column = self.get_material_pair_index(material_a, material_b)
-            if column < 0:
-                raise ValueError(f"Material pair {(material_a, material_b)} is not configured.")
-            if column in seen:
-                raise ValueError(f"Material pair {(material_a, material_b)} was specified more than once.")
-            seen.add(column)
-            columns.append(column)
-            pair = tuple(sorted((int(material_a), int(material_b))))
-            seeds[row] = np.random.SeedSequence(seed, spawn_key=pair).generate_state(len(names)).view(np.int32)
-            for name, (lower, upper) in coefficients.items():
-                if name not in names:
-                    raise ValueError(f"Unknown material pair coefficient {name!r}.")
-                if not 0.0 <= lower <= upper <= np.finfo(np.float32).max:
-                    raise ValueError(f"Invalid bounds for material pair {name}: {(lower, upper)}.")
-                bounds_min[name][row] = lower
-                bounds_max[name][row] = upper
-
-        wp.launch(
-            _randomize_material_pair_values,
-            dim=(self.world_count, len(columns)),
-            inputs=[
-                wp.array(columns, dtype=wp.int32, device=self.device),
-                wp.array(bounds_min, dtype=MaterialPairProperties, device=self.device),
-                wp.array(bounds_max, dtype=MaterialPairProperties, device=self.device),
-                wp.array(seeds, dtype=wp.int32, device=self.device),
-                distribution == "gaussian",
-            ],
-            outputs=[values],
-            device=self.device,
-        )
 
     def _set_material_pair_table(self, keys: list[int] | np.ndarray, values: np.ndarray | None) -> None:
         table = MaterialPairTable()
@@ -3276,7 +3201,11 @@ class Model:
             if name != "shape_material_id" or self.shape_material_id is not None
         ]
         copies.extend(self._variant_shape_custom.values())
-        key = (id(self._body_variant_material_offset), *(id(array) for pair in copies for array in pair))
+        key = (
+            id(self._body_variant_material_start),
+            id(self._variant_material_ids),
+            *(id(array) for pair in copies for array in pair),
+        )
         if self._variant_copy_cache is not None and self._variant_copy_cache[0] == key:
             return self._variant_copy_cache[1]
         empty = wp.empty(0, dtype=wp.int32, device=self.device)
@@ -3291,7 +3220,11 @@ class Model:
                     self._body_variant_rows,
                     self._shape_variant_shape,
                     variant_values,
-                    *([self._body_variant_material_offset] if values is self.shape_material_id else []),
+                    *(
+                        [self._body_variant_material_start, self._variant_material_ids]
+                        if values is self.shape_material_id
+                        else []
+                    ),
                 ],
                 outputs=[values],
                 device=self.device,

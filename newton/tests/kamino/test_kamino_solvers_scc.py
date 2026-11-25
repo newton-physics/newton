@@ -3323,15 +3323,17 @@ class TestSCCSolver(NewtonTestCase):
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         SolverKamino.register_custom_attributes(builder)
         expected_friction = np.array([0.0, 0.125, 0.25, 0.75, 0.625], dtype=np.float32)
-        for mu, self_pair, unassigned, copies in (
-            (0.0, False, False, 2),
-            (0.25, True, False, 1),
-            (None, False, False, 1),
-            (0.0, False, True, 1),
+        for case, (mu, self_pair, unassigned, copies) in enumerate(
+            (
+                (0.0, False, False, 2),
+                (0.25, True, False, 1),
+                (None, True, False, 1),
+                (0.0, False, True, 1),
+            )
         ):
             world = newton.ModelBuilder(up_axis=newton.Axis.Z)
-            box_material = world.add_material("box")
-            ground_material = box_material if self_pair else world.add_material("ground")
+            box_material = world.add_material(f"box_{case}")
+            ground_material = box_material if self_pair else world.add_material(f"ground_{case}")
             if mu is not None:
                 world.set_material_pair(box_material, ground_material, mu=0.125)
                 world.set_material_pair(
@@ -3373,6 +3375,7 @@ class TestSCCSolver(NewtonTestCase):
                 solver = SolverKamino(model, config=config)
                 model.material_pair_values.assign(updated_pairs)
                 updated = np.full(model.shape_count, 0.625, dtype=np.float32)
+                # Shapes sharing a named material can still have distinct fallback values.
                 updated[model.body_shapes[3][0]] = 0.875
                 model.shape_material_mu.assign(updated)
                 model.shape_material_mu_static.assign(updated)

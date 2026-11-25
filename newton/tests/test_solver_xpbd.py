@@ -2717,7 +2717,7 @@ def test_xpbd_material_pair_friction(test, device):
 
 
 def test_xpbd_material_pairs_per_world(test, device):
-    """Reproduce seeded restitution across worlds and apply it to a shared floor."""
+    """Apply independently assigned per-world restitution to a shared floor."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     floor = builder.add_material("floor")
     sphere = builder.add_material("sphere")
@@ -2740,36 +2740,12 @@ def test_xpbd_material_pairs_per_world(test, device):
     column = model.get_material_pair_index(sphere, floor)
     floor_column = model.get_material_pair_index(floor, floor)
     solver = newton.solvers.SolverXPBD(model, enable_restitution=True)
-    ranges = {"restitution": (0.2, 0.8)}
-    model.randomize_material_pairs({(sphere, floor): ranges}, seed=123)
-    initial = model.material_pair_values.numpy().copy()
-    test.assertNotEqual(initial["restitution"][0, column], initial["restitution"][1, column])
-    np.testing.assert_array_equal(initial["restitution"][:, floor_column], 0.25)
-    np.testing.assert_array_equal(initial["mu"][:, column], 0.0)
-    test.assertTrue(np.all((initial["restitution"][:, column] >= 0.2) & (initial["restitution"][:, column] <= 0.8)))
-
-    model.randomize_material_pairs({(floor, sphere): ranges}, seed=321)
-    test.assertFalse(np.array_equal(initial, model.material_pair_values.numpy()))
-    model.randomize_material_pairs({(floor, floor): ranges, (floor, sphere): ranges}, seed=123)
-    values = model.material_pair_values.numpy().copy()
-    np.testing.assert_array_equal(values["restitution"][:, column], initial["restitution"][:, column])
-    test.assertFalse(np.array_equal(values["restitution"][:, column], values["restitution"][:, floor_column]))
-    with test.assertRaisesRegex(ValueError, "Invalid bounds"):
-        model.randomize_material_pairs({(sphere, floor): ranges, (floor, floor): {"restitution": (1.0, 0.0)}}, seed=1)
-    np.testing.assert_array_equal(model.material_pair_values.numpy(), values)
-    coefficients = {"mu": 0.5, "mu_static": 0.75, "mu_torsional": 0.125, "mu_rolling": 0.25}
-    model.randomize_material_pairs(
-        {(floor, floor): {name: (value, value) for name, value in coefficients.items()}},
-        seed=123,
-    )
-    randomized = model.material_pair_values.numpy()
-    for name, value in coefficients.items():
-        np.testing.assert_array_equal(randomized[name][:, floor_column], value)
-
-    model.randomize_material_pairs({(floor, sphere): ranges}, seed=123, distribution="gaussian")
-    sampled_restitution = model.material_pair_values.numpy()["restitution"][:, column]
-    test.assertTrue(np.all((sampled_restitution >= 0.2) & (sampled_restitution <= 0.8)))
-    test.assertNotEqual(float(sampled_restitution[0]), float(sampled_restitution[1]))
+    values = model.material_pair_values.numpy()
+    sampled_restitution = np.array([0.3, 0.7], dtype=np.float32)
+    values["restitution"][:, column] = sampled_restitution
+    model.material_pair_values.assign(values)
+    np.testing.assert_array_equal(model.material_pair_values.numpy()["restitution"][:, floor_column], 0.25)
+    np.testing.assert_array_equal(model.material_pair_values.numpy()["mu"][:, column], 0.0)
 
     state_in, state_out = model.state(), model.state()
     forces = np.zeros((2, 6), dtype=np.float32)

@@ -33,8 +33,6 @@ def debug_print_model_size(model: ModelKamino):
     logger.debug("model.size.max_of_num_bodies: %s", model.size.max_of_num_bodies)
     logger.debug("model.size.sum_of_num_joints: %s", model.size.sum_of_num_joints)
     logger.debug("model.size.max_of_num_joints: %s", model.size.max_of_num_joints)
-    logger.debug("model.size.sum_of_num_material_pairs: %s", model.size.sum_of_num_material_pairs)
-    logger.debug("model.size.max_of_num_material_pairs: %s", model.size.max_of_num_material_pairs)
     logger.debug("model.size.sum_of_num_body_dofs: %s", model.size.sum_of_num_body_dofs)
     logger.debug("model.size.max_of_num_body_dofs: %s", model.size.max_of_num_body_dofs)
     logger.debug("model.size.sum_of_num_joint_dofs: %s", model.size.sum_of_num_joint_dofs)

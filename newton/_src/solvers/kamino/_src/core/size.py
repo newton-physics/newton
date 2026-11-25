@@ -81,30 +81,6 @@ class SizeKamino:
     max_of_num_geoms: int = 0
     """The maximum number of geometries in any world."""
 
-    sum_of_num_materials: int = 0
-    """
-    The total number of materials in the model across all worlds.
-
-    In the present implementation, this will be equal to `max_of_num_materials`,
-    since model materials are defined globally for all worlds. We plan to also
-    introduce per-world materials in the future.
-    """
-
-    max_of_num_materials: int = 0
-    """
-    The maximum number of materials in any world.
-
-    In the present implementation, this will be equal to `sum_of_num_materials`,
-    since model materials are defined globally for all worlds. We plan to also
-    introduce per-world materials in the future.
-    """
-
-    sum_of_num_material_pairs: int = 0
-    """The total number of material pairs in the model across all worlds."""
-
-    max_of_num_material_pairs: int = 0
-    """The maximum number of material pairs in any world."""
-
     sum_of_num_body_dofs: int = 0
     """The total number of body DoFs in the model across all worlds."""
 
@@ -229,7 +205,6 @@ class SizeKamino:
             ("num_actuated_joints", "sum_of_num_actuated_joints", "max_of_num_actuated_joints"),
             ("num_dynamic_joints", "sum_of_num_dynamic_joints", "max_of_num_dynamic_joints"),
             ("num_geoms", "sum_of_num_geoms", "max_of_num_geoms"),
-            ("num_material_pairs", "sum_of_num_material_pairs", "max_of_num_material_pairs"),
             ("num_body_dofs", "sum_of_num_body_dofs", "max_of_num_body_dofs"),
             ("num_joint_coords", "sum_of_num_joint_coords", "max_of_num_joint_coords"),
             ("num_joint_dofs", "sum_of_num_joint_dofs", "max_of_num_joint_dofs"),

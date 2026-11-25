@@ -464,43 +464,6 @@ def _assert_model_geoms_conversion_consistency(
             err_msg="GeometriesModel.offset rotation does not match Model.shape_transform.",
         )
 
-    # Inverse transform: `material` indexes into `ModelKamino.materials`,
-    # deduplicated by (dynamic friction, static friction, restitution); every collidable shape's
-    # material properties must match the Newton shape properties it was
-    # registered from.
-    if "material" not in excluded:
-        geom_material = geoms.material.numpy()
-        has_material = geom_material >= 0
-        material_idx = geom_material[has_material]
-        shape_mu = model_newton.shape_material_mu.numpy()[has_material]
-        shape_mu_static = model_newton.shape_material_mu_static.numpy()[has_material]
-        shape_restitution = model_newton.shape_material_restitution.numpy()[has_material]
-
-        static_friction = model_kamino.materials.static_friction.numpy()
-        dynamic_friction = model_kamino.materials.dynamic_friction.numpy()
-        restitution = model_kamino.materials.restitution.numpy()
-        np.testing.assert_allclose(
-            static_friction[material_idx],
-            shape_mu_static,
-            rtol=rtol.get("material", 1e-6),
-            atol=atol.get("material", 1e-6),
-            err_msg="MaterialsModel.static_friction does not match Model.shape_material_mu_static.",
-        )
-        np.testing.assert_allclose(
-            dynamic_friction[material_idx],
-            shape_mu,
-            rtol=rtol.get("material", 1e-6),
-            atol=atol.get("material", 1e-6),
-            err_msg="MaterialsModel.dynamic_friction does not match Model.shape_material_mu.",
-        )
-        np.testing.assert_allclose(
-            restitution[material_idx],
-            shape_restitution,
-            rtol=rtol.get("material", 1e-6),
-            atol=atol.get("material", 1e-6),
-            err_msg="MaterialsModel.restitution does not match Model.shape_material_restitution.",
-        )
-
 
 def assert_model_conversion_consistency(
     test: unittest.TestCase,

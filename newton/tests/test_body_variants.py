@@ -74,16 +74,17 @@ class TestBodyVariants(unittest.TestCase):
         env.add_material("env")
         env.add_body_variants(env.add_body(), [cube, spheres])
         scene = newton.ModelBuilder()
+        scene.add_material("spheres")
         scene.add_material("scene")
         scene.replicate(env, 2)
         model = scene.finalize(device="cpu")
 
-        self.assertEqual(model.material_names, ("scene", "env", "cube", "spheres"))
+        self.assertEqual(model.material_names, ("spheres", "scene", "env", "cube"))
         _select(model, [1, 0])
-        np.testing.assert_array_equal(model.shape_material_id.numpy()[[0, 1, 2]], [3, 3, 2])
-        self.assertEqual(model.get_material_pair_index(2, 2), 0)
+        np.testing.assert_array_equal(model.shape_material_id.numpy()[[0, 1, 2]], [0, 0, 3])
+        self.assertEqual(model.get_material_pair_index(0, 0), 0)
         self.assertEqual(model.get_material_pair_index(3, 3), 1)
-        np.testing.assert_array_equal(model.material_pair_values.numpy()["mu"], [[0.25, 0.5]])
+        np.testing.assert_array_equal(model.material_pair_values.numpy()["mu"], [[0.5, 0.25]])
 
         # Repeated merges share the registry, geometry, and variant rows.
         # The shared IDs still get translated through another merge.
@@ -107,6 +108,16 @@ class TestBodyVariants(unittest.TestCase):
             wp.capture_launch(capture.graph)
             np.testing.assert_array_equal(model.shape_material_id.numpy()[:3], [4, 4, 3])
 
+        # Independently declared bodies share the named material and its self-pair.
+        shared = newton.ModelBuilder()
+        for _ in range(2):
+            shared.add_body_variants(shared.add_body(), [cube, spheres])
+        model = shared.finalize(device="cpu")
+        _select(model, [0, 0])
+        ids = model.shape_material_id.numpy()[[0, 2]]
+        np.testing.assert_array_equal(ids, [0, 0])
+        self.assertGreaterEqual(model.get_material_pair_index(*ids), 0)
+
         # A registered material does not require duplicating sets whose
         # shapes all use the default material sentinel.
         plain = newton.ModelBuilder()
@@ -118,7 +129,7 @@ class TestBodyVariants(unittest.TestCase):
         model = repeated.finalize(device="cpu")
         self.assertEqual(model._variant_shape_count, 1)
         self.assertIsNone(model.shape_material_id)
-        self.assertIsNone(model._body_variant_material_offset)
+        self.assertIsNone(model._body_variant_material_start)
 
     def test_finalize_tables_and_initial_selection(self):
         cube, spheres = _variant("cube"), _variant("spheres")

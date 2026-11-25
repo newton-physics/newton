@@ -2465,7 +2465,7 @@ Material pair friction
    :meth:`~ModelBuilder.add_material`, :attr:`~ModelBuilder.ShapeConfig.material_id`,
    :attr:`~Model.shape_material_id`, :attr:`~Model.material_names`, :meth:`~ModelBuilder.set_material_pair`,
    :attr:`~Model.material_pair_values`, :meth:`~Model.get_material_pair_index`,
-   :meth:`~Model.randomize_material_pairs`, and the corresponding
+   and the corresponding
    ``NewtonMaterialPairAPI`` USD authoring schema are experimental.
 
 Assign a material ID to each participating shape and set one or more coefficients
@@ -2492,36 +2492,40 @@ overrides, and consumes torsional and rolling friction in its spatial friction m
 
 Pairs are unordered and can refer to the same material twice. A coefficient
 of zero explicitly sets the pair coefficient. Pair coefficients take precedence
-over individual shape coefficients. Repeated copies of the same unchanged
-material registry share remapped IDs and overrides across
-:meth:`~ModelBuilder.add_builder`, :meth:`~ModelBuilder.add_world`, and
-:meth:`~ModelBuilder.replicate`. Changes to the source registry or its pair
-settings give subsequent copies a new set of IDs. To register a pair across
-copies of different builders, read the copied shapes' IDs from
-:attr:`~ModelBuilder.shape_material_id` on the destination builder.
+over individual shape coefficients. Materials are identified by name across
+:meth:`~ModelBuilder.add_builder`, :meth:`~ModelBuilder.add_world`,
+:meth:`~ModelBuilder.replicate`, and :meth:`~ModelBuilder.add_body_variants`.
+Registering an existing name returns its existing ID. This also shares identities
+when each world is constructed from a fresh builder, keeping the pair count
+independent of the number of copies. Use distinct names for distinct materials.
+Incoming configured pairs replace existing settings for the same named pair;
+unmentioned pairs keep their settings. Configure scene-wide overrides after merging.
 
-All worlds share one row of pair coefficients by default. To randomize
-independently across worlds, finalize with ``material_pairs_per_world=True``.
-This allocates five float32 coefficients for each configured pair in each
-world. Call :meth:`~Model.randomize_material_pairs` at startup to sample the
-selected coefficients once. The same seed, material IDs, and world indices
-reproduce the samples on the same device. Change the seed for a new draw.
-Sampling is uniform by default. With ``distribution="gaussian"``, the midpoint
-is the mean, one sixth of the range is the standard deviation, and samples
-outside the bounds are rejected. Run separate calls for pairs or coefficients
-that need different distributions.
+Integer IDs are local to their builder or finalized model and may change on merge.
+Use names to configure pairs across builders or to look up a finalized pair:
 
 .. code-block:: python
 
-    model = builder.finalize(material_pairs_per_world=True)
-    model.randomize_material_pairs(
-        {(rubber, steel): {"mu": (0.5, 1.0), "restitution": (0.0, 0.2)}},
-        seed=123,
-    )
+    builder.set_material_pair("rubber", "steel", mu=0.9)
 
-For custom sampling or manually specified values, look up the pair's column
-with :meth:`~Model.get_material_pair_index` and write the desired world rows
-in :attr:`~Model.material_pair_values`.
+All worlds share one row of pair coefficients by default. To assign values
+independently across worlds, finalize with ``material_pairs_per_world=True``.
+This allocates five float32 coefficients for each configured pair in each
+world. Look up the pair's column with :meth:`~Model.get_material_pair_index`
+and update :attr:`~Model.material_pair_values` in place. Applications choose
+the sampling distribution and correlations between worlds and coefficients:
+
+.. code-block:: python
+
+    import numpy as np
+
+    model = builder.finalize(material_pairs_per_world=True)
+    column = model.get_material_pair_index("rubber", "steel")
+    rng = np.random.default_rng(123)
+    values = model.material_pair_values.numpy()
+    values["mu"][:, column] = rng.uniform(0.5, 1.0, model.world_count)
+    values["restitution"][:, column] = rng.uniform(0.0, 0.2, model.world_count)
+    model.material_pair_values.assign(values)
 
 
 .. _Contact friction gain and adhesion:

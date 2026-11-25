@@ -247,10 +247,6 @@ not show up in builder-state comparisons or survive past either builder's lifeti
 """
 
 
-_MERGED_MATERIAL_REGISTRIES: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
-"""Map destination and template to the latest merged material registry snapshot and offset."""
-
-
 def _deduplicate_convex_collision_mesh(source: Mesh) -> Mesh:
     """Build a collision-only mesh containing each exact vertex position once."""
     vertices = source.vertices
@@ -2299,6 +2295,7 @@ class ModelBuilder:
         self.shape_material_ka: list[float] = []
         """Adhesion distances [m] accumulated for :attr:`Model.shape_material_ka`."""
         self._material_names: dict[int, str] = {}
+        self._material_ids: dict[str, int] = {}
         self._material_pairs: dict[int, dict[str, float]] = {}
         self._shape_material_id: list[int] | None = None
         self.shape_material_mu: list[float] = []
@@ -4479,7 +4476,7 @@ class ModelBuilder:
         shape_starts = starts("shape")
         body_starts = starts("body")
 
-        material_offset = self._merge_material_registry(builder) if copy_count and builder._material_names else 0
+        material_ids = self._merge_material_registry(builder) if copy_count else ()
         if (
             counts["shape"]
             and copy_count
@@ -4488,9 +4485,9 @@ class ModelBuilder:
             shape_material_ids = builder._shape_material_id
             if shape_material_ids is None:
                 shape_material_ids = [-1] * counts["shape"]
-            elif material_offset:
+            elif material_ids:
                 shape_material_ids = [
-                    material_offset + material if material >= 0 else -1 for material in shape_material_ids
+                    material_ids[material] if material >= 0 else -1 for material in shape_material_ids
                 ]
             self.shape_material_id.extend(shape_material_ids * copy_count)
 
@@ -4539,8 +4536,8 @@ class ModelBuilder:
             # Copies share the variant sets by identity.
             for body, body_variants in builder._body_variants.items():
                 shifted = body_variants.shifted(int(shape_start))
-                if material_offset:
-                    shifted = replace(shifted, material_offset=shifted.material_offset + material_offset)
+                if material_ids:
+                    shifted = replace(shifted, material_ids=tuple(material_ids[i] for i in shifted.material_ids))
                 self._body_variants[body + int(body_start)] = shifted
 
         joint_starts = starts("joint")
@@ -6724,7 +6721,7 @@ class ModelBuilder:
         """Register a contact material identity for use in shape and pair configuration.
 
         Args:
-            name: Descriptive material name. Each registration creates a distinct ID.
+            name: Material identity shared by name across builders and merges.
 
         Returns:
             Builder-local material ID, usable as :attr:`ShapeConfig.material_id`.
@@ -6732,58 +6729,32 @@ class ModelBuilder:
         See Also:
             :meth:`set_material_pair` for pair properties and solver support.
         """
+        if name in self._material_ids:
+            return self._material_ids[name]
         material_id = len(self._material_names)
         if material_id > np.iinfo(np.int32).max:
             raise ValueError("Contact material IDs must fit in a signed 32-bit integer.")
         self._material_names[material_id] = name
+        self._material_ids[name] = material_id
         return material_id
 
     def _validate_material_id(self, material_id: int) -> None:
         if not self._is_integer_scalar(material_id) or int(material_id) not in self._material_names:
             raise ValueError(f"Invalid contact material ID {material_id!r}. Use an ID returned by add_material().")
 
-    def _merge_material_registry(self, source: ModelBuilder) -> int:
-        """Reuse the destination ID range for repeated merges of an unchanged registry."""
-        material_count = len(source._material_names)
-        if not material_count:
-            return 0
-        if source is self:
-            return self._copy_materials(source)
-
-        registries = _MERGED_MATERIAL_REGISTRIES.setdefault(self, weakref.WeakKeyDictionary())
-        previous = registries.get(source)
-        if previous is not None:
-            count, pairs, offset = previous
-            if count == material_count and pairs == source._material_pairs:
-                return offset
-
-        # Names only grow by appending and pair edits replace the entire entry.
-        # Snapshot the pair mapping so later source edits don't change earlier copies.
-        pairs = source._material_pairs.copy()
-        offset = self._copy_materials(source)
-        registries[source] = (material_count, pairs, offset)
-        return offset
-
-    def _copy_materials(self, source: ModelBuilder) -> int:
-        """Copy a registry into a new range and return the ID offset."""
-        if not source._material_names:
-            return 0
-        offset = len(self._material_names)
-        if offset + len(source._material_names) - 1 > np.iinfo(np.int32).max:
-            raise ValueError("Contact material IDs must fit in a signed 32-bit integer.")
-        self._material_names.update({offset + material: name for material, name in source._material_names.items()})
-        self._material_pairs.update(
-            {
-                material_pair_key(offset + (key >> 32), offset + (key & 0xFFFFFFFF)): properties.copy()
-                for key, properties in source._material_pairs.items()
-            }
-        )
-        return offset
+    def _merge_material_registry(self, source: ModelBuilder) -> tuple[int, ...]:
+        """Merge identities by name; the incoming builder replaces configured pairs."""
+        materials = tuple(self.add_material(name) for name in tuple(source._material_names.values()))
+        for key, properties in tuple(source._material_pairs.items()):
+            self._material_pairs[material_pair_key(materials[key >> 32], materials[key & 0xFFFFFFFF])] = (
+                properties.copy()
+            )
+        return materials
 
     def set_material_pair(
         self,
-        material_a: int,
-        material_b: int,
+        material_a: int | str,
+        material_b: int | str,
         *,
         mu: float | None = None,
         mu_static: float | None = None,
@@ -6798,8 +6769,9 @@ class ModelBuilder:
         contact behavior. See :attr:`Model.material_pair_values` for runtime updates.
 
         Args:
-            material_a: First material ID returned by :meth:`add_material`.
-            material_b: Second material ID, which may equal the first.
+            material_a: Registered material name or ID returned by :meth:`add_material`
+                on this builder. Use names across builder merges.
+            material_b: Second material name or ID, which may equal the first.
             mu: Coulomb friction coefficient [dimensionless].
             mu_static: Static friction coefficient [dimensionless]. Used by XPBD.
                 If ``mu`` is supplied, this coefficient must be at least ``mu``.
@@ -6812,6 +6784,8 @@ class ModelBuilder:
                 coefficient is negative or cannot be stored as a finite float32,
                 or both friction coefficients are supplied and ``mu_static < mu``.
         """
+        material_a = self._material_ids.get(material_a, -1) if isinstance(material_a, str) else material_a
+        material_b = self._material_ids.get(material_b, -1) if isinstance(material_b, str) else material_b
         self._validate_material_id(material_a)
         self._validate_material_id(material_b)
         properties = {}
@@ -6858,9 +6832,8 @@ class ModelBuilder:
         :meth:`replicate` with ``separate_worlds=False`` instead of calling this method in
         a loop; it merges all copies in one batched pass.
 
-        Repeated copies of the same source builder reuse the translated material IDs
-        while its material registry and pair settings are unchanged. Changes in the
-        source registry apply to subsequent copies behind a new set of material IDs.
+        Material names identify the same material across builders. Incoming pair
+        settings replace existing settings for the same named pair.
 
         The source builder acts as a template: merged entries may share objects
         with it (and across copies when replicating). Mutating such entries in
@@ -7181,18 +7154,26 @@ class ModelBuilder:
         for declaration in declarations.values():
             self.add_custom_attribute(declaration)
 
+        variant_materials = {}
         for variant, snapshot in zip(variants, variant_set.variants, strict=True):
-            offset = self._copy_materials(variant)
+            material_ids = self._merge_material_registry(variant)
             for shape in snapshot.shapes:
                 material_id = shape.values.get("shape_material_id", -1)
                 if material_id >= 0:
-                    shape.values["shape_material_id"] = material_id + offset
+                    material_id = material_ids[material_id]
+                    shape.values["shape_material_id"] = variant_materials.setdefault(
+                        material_id, len(variant_materials)
+                    )
 
         # A row's builder flags are the union over the shapes it can hold, which all have the row's
         # role, so contact pairs and joint filters include every one of them.
+        material_ids = tuple(variant_materials)
         row_start = self.shape_count
         for row in rows:
             shape = self._append_shape_row(row.seed, body, world, row.label)
+            material_id = row.seed.values.get("shape_material_id", -1)
+            if material_id >= 0:
+                self.shape_material_id[shape] = material_ids[material_id]
             flags = 0
             for candidate in row.candidates:
                 flags |= int(candidate.values["shape_flags"])
@@ -7200,7 +7181,7 @@ class ModelBuilder:
             self.body_shapes[body].append(shape)
             if flags & ShapeFlags.COLLIDE_SHAPES:
                 self._add_joint_collision_filter_pairs(shape, body)
-        self._body_variants[body] = _BodyVariants(variant_set, row_start, initial)
+        self._body_variants[body] = _BodyVariants(variant_set, row_start, initial, material_ids)
 
     def _shape_row_attributes(self) -> list[str]:
         """Builder SHAPE attributes copied verbatim between shapes."""

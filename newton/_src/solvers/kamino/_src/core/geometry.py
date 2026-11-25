@@ -136,12 +136,6 @@ class GeometriesModel:
     # Collisions
     ###
 
-    material: wp.array[wp.int32] | None = None
-    """
-    Material index assigned to each collision geometry.
-    Shape of ``(num_geoms,)``.
-    """
-
     stiffness: wp.array[wp.float32] | None = None
     """Normal contact stiffness [N/m] for each geometry."""
 
