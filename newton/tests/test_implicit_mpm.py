@@ -2964,6 +2964,30 @@ def test_proxy_rewind_gravity_follows_collider_mass_updates(test, device):
     np.testing.assert_allclose(state_1.body_qd.numpy()[body][:3], [0.0, 0.0, 0.0], atol=1.0e-5)
 
 
+def test_backward_collider_motion_after_mode_switch_uses_proxy_velocity(test, device):
+    """Use integrated proxy velocities for collider motion after switching to backward mode post-construction."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0))
+    SolverImplicitMPM.register_custom_attributes(builder)
+    body = builder.add_body(mass=1.0)
+    builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+    builder.add_particle(pos=(0.0, 0.0, 1.0), vel=(0.0, 0.0, 0.0), mass=1.0, radius=0.01)
+    model = builder.finalize(device=device)
+    model.body_flags.assign(model.body_flags.numpy() | int(newton.BodyFlags.PROXY))
+
+    config = SolverImplicitMPM.Config()
+    config.voxel_size = 0.1
+    config.grid_type = "fixed"
+    config.grid_padding = 2
+    solver = SolverImplicitMPM(model, config)
+    solver.collider_velocity_mode = "backward"
+
+    proxy_qd = wp.array([wp.spatial_vector(0.0, 0.0, -2.0, 0.0, 0.0, 0.0)], dtype=wp.spatial_vector, device=device)
+    body_qd, _body_q_prev = solver._collider_body_motion(model.state(), solver._last_step_data, proxy_qd)
+
+    test.assertIsNotNone(body_qd)
+    np.testing.assert_allclose(body_qd.numpy()[body][:3], [0.0, 0.0, -2.0], atol=1.0e-6)
+
+
 def _settle_proxy_box_on_sand(
     device, mpm_substeps, in_place=True, step_count=60, dt=0.01, collider_velocity_mode="forward"
 ):
@@ -3883,6 +3907,14 @@ add_function_test(
     TestImplicitMPM,
     "test_proxy_rewind_gravity_follows_collider_mass_updates",
     test_proxy_rewind_gravity_follows_collider_mass_updates,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestImplicitMPM,
+    "test_backward_collider_motion_after_mode_switch_uses_proxy_velocity",
+    test_backward_collider_motion_after_mode_switch_uses_proxy_velocity,
     devices=devices,
     check_output=False,
 )

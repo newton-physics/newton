@@ -1904,11 +1904,9 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             self._proxy_body_impulse = wp.zeros(model.body_count, dtype=wp.spatial_vector, device=model.device)
             self._proxy_body_step_impulse = wp.zeros_like(self._proxy_body_impulse)
             self._proxy_collider_body_qd = wp.zeros_like(self._proxy_body_impulse)
-            if self.collider_velocity_mode == "backward":
-                self._backward_collider_body_qd = wp.zeros_like(self._proxy_body_impulse)
-                self._backward_collider_body_q_prev = wp.zeros(
-                    model.body_count, dtype=wp.transform, device=model.device
-                )
+            # Allocated in either mode, since collider_velocity_mode may change after construction.
+            self._backward_collider_body_qd = wp.zeros_like(self._proxy_body_impulse)
+            self._backward_collider_body_q_prev = wp.zeros(model.body_count, dtype=wp.transform, device=model.device)
         with wp.ScopedDevice(model.device):
             self._scratchpad = ImplicitMPMScratchpad()
             pic = self._particles_to_cells(model.particle_q)
