@@ -79,8 +79,8 @@ Set ``sparse_jacobian=False`` for fully dense SCC, or set
 ``sparse_dynamics=True`` to use sparse dynamics with the Conjugate Residual
 solver.
 
-SCC defaults to ``"LLTBRCM"`` for its bilateral joint solve. Select ``"LDL"``
-explicitly to use the block-sparse backend, which factors the reordered matrix
+Python SCC configurations default to ``"LLTBRCM"`` for the bilateral joint
+solve. Select ``"LDL"`` explicitly to use the block-sparse factorization of the reordered matrix
 as :math:`L D L^T`, storing unit-lower :math:`L` separately from the scalar
 diagonal :math:`D`. It stores only joint
 blocks and symbolic fill, supports CPU and CUDA execution, and reuses its
@@ -219,7 +219,15 @@ the ``NewtonKaminoSceneAPI`` and ``NewtonKaminoSccSceneAPI`` settings from a USD
 ``PhysicsScene``. ``SolverKamino(model)`` and ``SolverKamino.Config.from_model()``
 apply them: an authored value takes precedence over the keyword fallbacks passed
 to ``from_model()``, and a config passed to the solver is used unchanged. SCC
-tuning is read only when SCC is selected, and SCC always disables preconditioning.
+tuning is read only when SCC is selected. SCC ignores the scene's
+preconditioning setting.
+
+Applying ``NewtonKaminoSccSceneAPI`` alone selects SCC and supplies the
+``"lltb"`` bilateral factorization fallback. An authored bilateral solver
+token takes precedence, followed by the factorization in any Python ``scc``
+configuration passed to ``from_model()``. Author
+``newton:kamino:scc:bilateral:numericalSolver = "lltbrcm"`` to select the
+same factorization as the Python default.
 
 Constraint recovery and material compliance
 -------------------------------------------

@@ -123,15 +123,15 @@ def _register_dynamics_solver_settings(builder: ModelBuilder) -> None:
     _register_scene_setting(builder, "dynamics_solver_fallback", str, _DYNAMICS_SOLVER_USD, fallback=True)
 
 
-def _dynamics_solver_from_model(model: Model, python_fallback: str | None) -> str | None:
+def _scene_dynamics_solver(model: Model, *, use_schema_fallback: bool) -> str | None:
     authored = _model_scene_setting(model, "dynamics_solver")
     if authored is not None and authored not in {"padmm", "scc"}:
         raise ValueError(f'{_DYNAMICS_SOLVER_USD} must be "padmm" or "scc", got {authored!r}.')
     if authored is not None:
         return authored
-    if python_fallback is not None:
-        return python_fallback
-    return _model_scene_setting(model, "dynamics_solver_fallback")
+    if use_schema_fallback:
+        return _model_scene_setting(model, "dynamics_solver_fallback")
+    return None
 
 
 def _apply_scc_scene_settings(model: Model, values: dict[str, Any]) -> None:

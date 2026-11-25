@@ -424,6 +424,8 @@ class SolverKamino(SolverBase, CouplingInterface):
             take precedence over the corresponding keyword values. For solver selection
             and the SCC bilateral solver, a keyword value takes precedence over an
             unauthored USD schema fallback. Other unspecified fields use runtime defaults.
+            When the scene selects SCC, preconditioning is disabled in the dynamics
+            fallback. An explicit Python selection of SCC requires a compatible config.
 
             Args:
                 model: The Newton model from which to parse configurations.
@@ -433,11 +435,13 @@ class SolverKamino(SolverBase, CouplingInterface):
             from . import config  # noqa: PLC0415
 
             # Select the solver before constructing Config so its solver-specific defaults apply.
-            solver = config._dynamics_solver_from_model(model, kwargs.get("dynamics_solver"))
-            if solver is not None:
-                kwargs["dynamics_solver"] = solver
+            scene_solver = config._scene_dynamics_solver(
+                model, use_schema_fallback=kwargs.get("dynamics_solver") is None
+            )
+            if scene_solver is not None:
+                kwargs["dynamics_solver"] = scene_solver
             dynamics = kwargs.get("dynamics")
-            if solver in {"scc", "dvi"} and dynamics is not None and dynamics.preconditioning:
+            if scene_solver == "scc" and dynamics is not None and dynamics.preconditioning:
                 kwargs["dynamics"] = replace(dynamics, preconditioning=False)
             cfg = SolverKamino.Config(**kwargs)
 
