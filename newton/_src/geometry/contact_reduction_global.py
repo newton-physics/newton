@@ -2850,8 +2850,9 @@ def create_export_reduced_contacts_kernel(writer_func: Any):
     One thread block processes each active hashtable entry. Its first 21 lanes
     compare the seven possible winner pairs in parallel, preserving the
     lower-fingerprint representative for roundoff-equivalent geometry. CUDA
-    lanes export the seven surviving slots concurrently in fast mode; CPU and
-    deterministic paths stream them serially from lane zero.
+    lanes export the seven surviving slots concurrently in fast mode and the
+    CPU streams them serially from lane zero. Deterministic mode only marks them
+    in ``exported_flags`` for :func:`create_export_marked_contacts_kernel`.
     """
     _module = f"export_reduced_contacts_{writer_func.__name__}"
 
@@ -2980,6 +2981,11 @@ def create_export_reduced_contacts_kernel(writer_func: Any):
                     contact_id = unpack_contact_id(value, deterministic)
                     if contact_id == 0:
                         continue
+                    if deterministic != 0:
+                        # Which slot reaches a contact first is a race, and the inlined writers
+                        # may round differently, so export_marked_contacts_kernel writes it.
+                        exported_flags[contact_id] = 1
+                        continue
                     # The global flag also suppresses repeated winners within
                     # this entry, so no per-entry ID list is needed.
                     export_contact_id(
@@ -3000,6 +3006,29 @@ def create_export_reduced_contacts_kernel(writer_func: Any):
             wp.tile_scatter_masked(duplicate_bits, lane, int(0), True)
 
     return export_reduced_contacts_kernel
+
+
+def create_export_marked_contacts_kernel(writer_func: Any):
+    """Create the kernel that writes every contact the deterministic reduced export marked."""
+
+    @wp.kernel(enable_backward=False, module=f"export_marked_contacts_{writer_func.__name__}")
+    def export_marked_contacts_kernel(
+        reducer_data: GlobalContactReducerData,
+        shape_types: wp.array[int],
+        shape_data: wp.array[wp.vec4],
+        shape_gap: wp.array[float],
+        writer_data: Any,
+        total_num_threads: int,
+    ):
+        tid = wp.tid()
+        num_contacts = wp.min(reducer_data.contact_count[0], reducer_data.capacity)
+        for i in range(tid, num_contacts, total_num_threads):
+            contact_id = i + 1
+            if reducer_data.exported_flags[contact_id] != 0:
+                contact_data = _staged_contact_data(contact_id, reducer_data, shape_types, shape_data, shape_gap)
+                writer_func(contact_data, writer_data, -1)
+
+    return export_marked_contacts_kernel
 
 
 @wp.kernel(enable_backward=False, module="unique")
