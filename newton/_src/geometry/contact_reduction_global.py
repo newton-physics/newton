@@ -2982,8 +2982,7 @@ def create_export_reduced_contacts_kernel(writer_func: Any):
                     if contact_id == 0:
                         continue
                     if deterministic != 0:
-                        # Which slot reaches a contact first is a race, and the inlined writers
-                        # may round differently, so export_marked_contacts_kernel writes it.
+                        # Slots race for a contact and their inlined writers may round differently.
                         exported_flags[contact_id] = 1
                         continue
                     # The global flag also suppresses repeated winners within
