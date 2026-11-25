@@ -120,12 +120,18 @@ class _PipelineDetector:
         self._solver = solver
         self._state = solver.model.state()
         self._horizon = 0.0
+        self._detect = True
 
-    def prepare(self, state_in: State, horizon: float):
-        """Capture the velocities and speculative horizon for the next :meth:`collide` call."""
+    def prepare(self, state_in: State, horizon: float, detect: bool = True):
+        """Capture the velocities, speculative horizon, and detection toggle for the next :meth:`collide` call.
+
+        Without detection, the existing contacts in :attr:`SolverKamino.contacts` are evaluated at the intermediate
+        poses, since their points are body-local.
+        """
         if self._state.body_qd is not None:
             wp.copy(self._state.body_qd, state_in.body_qd)
         self._horizon = horizon
+        self._detect = detect
 
     def collide(self, data, contacts):
         solver = self._solver
@@ -139,7 +145,8 @@ class _PipelineDetector:
         )
 
         # Detect with Newton and convert to Kamino contacts
-        solver._run_rigid_collision(self._state, self._horizon)
+        if self._detect:
+            solver._run_rigid_collision(self._state, self._horizon)
         solver._convert_newton_contacts(self._state, solver.contacts, contacts)
 
 
@@ -1364,18 +1371,15 @@ class SolverKamino(SolverBase, CouplingInterface):
             rigid_mode = self._resolved_collision_frequency_type(SolverBase.CollisionSlot.RIGID)
             if rigid_mode not in (SolverBase.CollisionFrequencyType.NONE, SolverBase.CollisionFrequencyType.PRE_INIT):
                 raise NotImplementedError(f"SolverKamino does not support collision_frequency_type {rigid_mode.name}.")
-        midpoint_detection = (
-            self._pipeline_detector is not None and rigid_mode == SolverBase.CollisionFrequencyType.PRE_INIT
-        )
-
         # Internal detection is authoritative when enabled for this solver.
         midpoint_detector = None
         if self._config.use_collision_detector:
             self._detector = self._collision_detector_kamino
-        elif midpoint_detection:
+        elif self._pipeline_detector is not None:
             self._detector = None
             midpoint_detector = self._pipeline_detector
-            midpoint_detector.prepare(state_in, 0.5 * dt)
+            # NOTE: A full-step horizon from the midpoint also covers the first half of the next step.
+            midpoint_detector.prepare(state_in, dt, detect=rigid_mode == SolverBase.CollisionFrequencyType.PRE_INIT)
         elif contacts is not None:
             self._detector = None
             if rigid_mode == SolverBase.CollisionFrequencyType.PRE_INIT:
