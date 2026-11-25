@@ -1151,9 +1151,21 @@ def forward_step(
     inv_mass: wp.array[float],
     external_force: wp.array[wp.vec3],
     particle_flags: wp.array[wp.int32],
+    vel_prev_step: wp.array[wp.vec3],
     inertia_out: wp.array[wp.vec3],
     displacements_out: wp.array[wp.vec3],
 ):
+    """Compute the inertial target and the initial guess of one VBD step.
+
+    The initial guess is ``pos + displacements_out``. Without ``vel_prev_step`` it is the
+    inertial target ``pos + (vel + a dt) dt``. With ``vel_prev_step`` (the particle velocities
+    at the start of the previous step, updated here) it is the adaptive guess
+    ``pos + (vel + s a dt) dt``: the external acceleration ``a`` is scaled by
+    ``s = clamp(dot(a_obs, a) / |a|^2, 0, 1)``, where ``a_obs`` is the acceleration the
+    particle actually had over the previous step. A particle held by contact or elasticity
+    (``s`` near 0) starts at ``pos + vel dt``; a free particle (``s`` near 1) starts at the
+    inertial target.
+    """
     particle = wp.tid()
 
     flags = particle_flags[particle]
@@ -1161,14 +1173,27 @@ def forward_step(
         inertia_out[particle] = pos[particle]
         if displacements_out:
             displacements_out[particle] = wp.vec3(0.0, 0.0, 0.0)
+        if vel_prev_step:
+            vel_prev_step[particle] = vel[particle]
         return
     world_idx = particle_world[particle]
     world_g = gravity[world_idx]
-    vel_new = vel[particle] + (world_g + external_force[particle] * inv_mass[particle]) * dt
+    acceleration = world_g + external_force[particle] * inv_mass[particle]
+    vel_new = vel[particle] + acceleration * dt
     inertia = pos[particle] + vel_new * dt
     inertia_out[particle] = inertia
     if displacements_out:
-        displacements_out[particle] = vel_new * dt
+        if vel_prev_step:
+            scale = float(1.0)
+            acceleration_sq = wp.dot(acceleration, acceleration)
+            if acceleration_sq > 0.0:
+                observed = (vel[particle] - vel_prev_step[particle]) / dt
+                scale = wp.clamp(wp.dot(observed, acceleration) / acceleration_sq, 0.0, 1.0)
+            displacements_out[particle] = (vel[particle] + acceleration * (scale * dt)) * dt
+        else:
+            displacements_out[particle] = vel_new * dt
+    if vel_prev_step:
+        vel_prev_step[particle] = vel[particle]
 
 
 @wp.kernel

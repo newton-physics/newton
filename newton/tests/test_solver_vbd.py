@@ -10620,5 +10620,71 @@ add_function_test(
     devices=devices,
 )
 
+def _damped_tet_column(device, *, fix_bottom: bool, height: float):
+    """A 0.1 x ``height`` x 0.1 m tet column (2.5 cm cells), E = 10 kPa, Poisson 0, k_damp 25 Pa s."""
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=(0.0, -9.81, 0.0))
+    builder.add_soft_grid(
+        pos=wp.vec3(0.0, 0.0, 0.0),
+        rot=wp.quat_identity(),
+        vel=wp.vec3(0.0, 0.0, 0.0),
+        dim_x=4,
+        dim_y=round(height / 0.025),
+        dim_z=4,
+        cell_x=0.025,
+        cell_y=0.025,
+        cell_z=0.025,
+        density=50.0,
+        k_mu=5.0e3,
+        k_lambda=0.0,
+        k_damp=25.0,
+        fix_bottom=fix_bottom,
+    )
+    builder.color()
+    return builder.finalize(device=device)
+
+
+def _run_particles(model, solver, steps: int, dt: float) -> np.ndarray:
+    state, following, control = model.state(), model.state(), model.control()
+    for _ in range(steps):
+        state.clear_forces()
+        solver.step(state, following, control, None, dt)
+        state, following = following, state
+    return state.particle_q.numpy()
+
+
+def _particle_initial_guess(test, device):
+    """``particle_initial_guess="adaptive"`` removes the resting bias of the inertial guess and keeps free fall.
+
+    A damped soft column fixed at its base sags under gravity. Starting each step at the inertial target,
+    ten iterations leave it resting with more shortening than the converged equilibrium (the truncated
+    solve cannot return from a guess a gravity step away, and damping slows every iteration). The adaptive
+    guess starts a held particle at ``x + v dt``, so ten iterations rest at the converged shape. A free
+    body still falls as with the inertial guess.
+    """
+    height = 0.2
+    dt = 1.0 / 600.0
+    column = _damped_tet_column(device, fix_bottom=True, height=height)
+    with test.assertRaisesRegex(ValueError, "particle_initial_guess"):
+        newton.solvers.SolverVBD(column, particle_initial_guess="previous")
+    top = np.isclose(column.particle_q.numpy()[:, 1], height)
+
+    def shortening(initial_guess: str, iterations: int) -> float:
+        solver = newton.solvers.SolverVBD(column, iterations=iterations, particle_initial_guess=initial_guess)
+        return float(height - _run_particles(column, solver, steps=150, dt=dt)[top, 1].mean())
+
+    converged = shortening("inertia", 50)
+    test.assertAlmostEqual(shortening("adaptive", 10), converged, delta=0.02 * converged)
+    test.assertGreater(shortening("inertia", 10), 1.1 * converged)  # the bias the option removes
+
+    block = _damped_tet_column(device, fix_bottom=False, height=0.05)
+    start = block.particle_q.numpy()[:, 1].mean()
+    solver = newton.solvers.SolverVBD(block, iterations=10, particle_initial_guess="adaptive")
+    fallen = start - _run_particles(block, solver, steps=120, dt=dt)[:, 1].mean()
+    expected = 0.5 * 9.81 * (120 * dt) ** 2
+    test.assertAlmostEqual(fallen, expected, delta=0.02 * expected)
+
+
+add_function_test(TestSolverVBD, "test_particle_initial_guess", _particle_initial_guess, devices=devices)
+
 if __name__ == "__main__":
     unittest.main(verbosity=2, failfast=True)
