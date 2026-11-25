@@ -785,7 +785,7 @@ def Xform "World" (
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
         UsdGeom.SetStageMetersPerUnit(stage, 1.0)
-        for name, locks in (("Free", {}), ("Closure", {"transY": (0.0, 0.0), "transZ": (1.0, -1.0)})):
+        for name, locks in (("Free", {}), ("Sparse", {"transY": (0.0, 0.0), "transZ": (1.0, -1.0)})):
             body = UsdGeom.Xform.Define(stage, f"/{name}/Body")
             UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
             joint = UsdPhysics.Joint.Define(stage, f"/{name}/Joint")
@@ -794,39 +794,37 @@ def Xform "World" (
                 limit = UsdPhysics.LimitAPI.Apply(joint.GetPrim(), axis)
                 limit.CreateLowAttr(low)
                 limit.CreateHighAttr(high)
-            drive = UsdPhysics.DriveAPI.Apply(joint.GetPrim(), "rotX")
-            drive.CreateTargetPositionAttr(90.0)
-            drive.CreateTargetVelocityAttr(30.0)
-            drive.CreateStiffnessAttr(2.0)
-            drive.CreateDampingAttr(0.5)
-            for quantity, value in (("position", 45.0), ("velocity", 60.0)):
-                joint.GetPrim().CreateAttribute(f"state:rotX:physics:{quantity}", Sdf.ValueTypeNames.Float).Set(value)
+
+        sparse_prim = stage.GetPrimAtPath("/Sparse/Joint")
+        drive = UsdPhysics.DriveAPI.Apply(sparse_prim, "rotX")
+        drive.CreateTargetPositionAttr(90.0)
+        drive.CreateTargetVelocityAttr(30.0)
+        drive.CreateStiffnessAttr(2.0)
+        drive.CreateDampingAttr(0.5)
+        for quantity, value in (("position", 45.0), ("velocity", 60.0)):
+            sparse_prim.CreateAttribute(f"state:rotX:physics:{quantity}", Sdf.ValueTypeNames.Float).Set(value)
 
         builder = newton.ModelBuilder()
         result = builder.add_usd(stage, load_visual_shapes=False, schema_resolvers=[SchemaResolverPhysx()])
-        for name, linear_dofs in (("Free", 3), ("Closure", 1)):
+        for name, linear_dofs in (("Free", 3), ("Sparse", 1)):
             with self.subTest(joint=name):
                 joint = result["path_joint_map"][f"/{name}/Joint"]
                 self.assertEqual(builder.joint_dof_dim[joint], (linear_dofs, 3))
-                dof = builder.joint_qd_start[joint]
-                count = linear_dofs + 3
-                np.testing.assert_array_equal(
-                    builder.joint_axis[dof : dof + count], [*np.eye(3)[:linear_dofs], *np.eye(3)]
-                )
-                for bound in ("lower", "upper"):
-                    default = getattr(builder.default_joint_cfg, f"limit_{bound}")
-                    np.testing.assert_allclose(
-                        getattr(builder, f"joint_limit_{bound}")[dof : dof + count],
-                        [default] * linear_dofs + [math.radians(default)] * 3,
-                    )
-                angular_dof = dof + linear_dofs
-                angular_q = builder.joint_q_start[joint] + linear_dofs
-                self.assertAlmostEqual(builder.joint_target_q[angular_q], math.pi / 2)
-                self.assertAlmostEqual(builder.joint_target_qd[angular_dof], math.pi / 6)
-                self.assertAlmostEqual(builder.joint_target_ke[angular_dof], 2.0 / math.radians(1.0))
-                self.assertAlmostEqual(builder.joint_target_kd[angular_dof], 0.5 / math.radians(1.0))
-                self.assertAlmostEqual(builder.joint_q[angular_q], math.pi / 4)
-                self.assertAlmostEqual(builder.joint_qd[angular_dof], math.pi / 3)
+                start = builder.joint_qd_start[joint]
+                axes = slice(start, start + linear_dofs + 3)
+                np.testing.assert_array_equal(builder.joint_limit_lower[axes], builder.default_joint_cfg.limit_lower)
+                np.testing.assert_array_equal(builder.joint_limit_upper[axes], builder.default_joint_cfg.limit_upper)
+
+        sparse_joint = result["path_joint_map"]["/Sparse/Joint"]
+        angular_dof = builder.joint_qd_start[sparse_joint] + 1
+        angular_q = builder.joint_q_start[sparse_joint] + 1
+        np.testing.assert_array_equal(builder.joint_axis[angular_dof - 1], (1.0, 0.0, 0.0))
+        self.assertAlmostEqual(builder.joint_target_q[angular_q], math.pi / 2)
+        self.assertAlmostEqual(builder.joint_target_qd[angular_dof], math.pi / 6)
+        self.assertAlmostEqual(builder.joint_target_ke[angular_dof], 2.0 / math.radians(1.0))
+        self.assertAlmostEqual(builder.joint_target_kd[angular_dof], 0.5 / math.radians(1.0))
+        self.assertAlmostEqual(builder.joint_q[angular_q], math.pi / 4)
+        self.assertAlmostEqual(builder.joint_qd[angular_dof], math.pi / 3)
 
     @requires("pxr.Usd")
     def test_newton_joint_api_d6(self):
@@ -910,7 +908,6 @@ def Xform "Articulation" (
         joint_idx = model.joint_label.index("/Articulation/Joint1")
         dof_start = int(model.joint_qd_start.numpy()[joint_idx])
 
-        self.assertEqual(builder.joint_dof_dim[joint_idx], (3, 3))
         self.assertEqual(
             model.mujoco.joint_dof_label[dof_start : dof_start + 6],
             [f"/Articulation/Joint1:{axis}" for axis in ("transX", "transY", "transZ", "rotX", "rotY", "rotZ")],

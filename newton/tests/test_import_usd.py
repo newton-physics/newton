@@ -13190,6 +13190,31 @@ class TestOverrideRootXform(unittest.TestCase):
         )
 
     @requires("pxr.Usd")
+    def test_world_d6_articulation_root(self):
+        """Keep an unauthored D6 articulation root fixed and preserve authored motion."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        root = UsdGeom.Xform.Define(stage, "/Robot")
+        UsdPhysics.ArticulationRootAPI.Apply(root.GetPrim())
+        body = UsdGeom.Xform.Define(stage, "/Robot/Base")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+        mass = UsdPhysics.MassAPI.Apply(body.GetPrim())
+        mass.CreateMassAttr(1.0)
+        mass.CreateDiagonalInertiaAttr(Gf.Vec3f(0.1))
+        joint = UsdPhysics.Joint.Define(stage, "/Robot/RootJoint")
+        joint.CreateBody1Rel().SetTargets([body.GetPath()])
+
+        for driven, expected in ((False, (0, 0)), (True, (3, 3))):
+            with self.subTest(driven=driven):
+                if driven:
+                    UsdPhysics.DriveAPI.Apply(joint.GetPrim(), "transX").CreateStiffnessAttr(10.0)
+                builder = newton.ModelBuilder()
+                result = builder.add_usd(stage)
+                index = result["path_joint_map"][str(joint.GetPath())]
+                self.assertEqual(builder.joint_dof_dim[index], expected)
+
+    @requires("pxr.Usd")
     def test_world_joint_override_root_xform(self):
         """Root joint from non-body prim: override_root_xform places root at xform."""
         stage = self._make_stage_with_world_joint()
