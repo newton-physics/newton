@@ -3169,7 +3169,7 @@ class TestSensors(unittest.TestCase):
     """Sensors measuring the joint positions before the transmission."""
 
     def test_backlash_drive_reads_link_side_joint(self):
-        """The drive sees actuated + backlash joint position and the actuated velocity, in every replicated world.
+        """The drive sees actuated + backlash joint position and velocity, in every replicated world.
 
         The sensor runs before the input processors, so a processor that
         scales the positions scales the measured position. A free base makes
@@ -3217,7 +3217,9 @@ class TestSensors(unittest.TestCase):
         actuator.step(state, control, dt=0.01)
 
         expected = np.zeros(model.joint_dof_count)
-        expected[motor_qd] = kp * (target - scale * (q[motor_q] + q[backlash_q])) - kd * qd[motor_qd]
+        expected[motor_qd] = kp * (target - scale * (q[motor_q] + q[backlash_q])) - kd * (
+            qd[motor_qd] + qd[backlash_qd]
+        )
         np.testing.assert_allclose(control.joint_f.numpy(), expected, rtol=1e-5, atol=1e-6)
         with self.assertWarnsRegex(NewtonWarning, "SensorEncoder"):
             actuator.set_effort_mode_implicit(JointSpaceResponse(model))
@@ -3228,11 +3230,11 @@ class TestSensors(unittest.TestCase):
         The actuator drives the motor joint with gear 3 and a second joint
         with gear -2, and the sensor adds the backlash joint to the motor
         joint: ``s = 3 (q_motor + q_backlash) - 2 q_other`` and
-        ``ṡ = 3 q̇_motor - 2 q̇_other``. In world 0, the motor joint at 0.1 rad,
-        the backlash joint at 0.02 rad and the motor joint velocity 0.5 rad/s
-        give ``s = 0.36`` and ``ṡ = 1.5``; the PD effort
-        10 · (1 - 0.36) - 2 · 1.5 = 3.4 reaches the motor joint as 10.2 N·m
-        and the second joint as -6.8 N·m.
+        ``ṡ = 3 (q̇_motor + q̇_backlash) - 2 q̇_other``. In world 0, the motor
+        joint at 0.1 rad and 0.5 rad/s and the backlash joint at 0.02 rad and
+        0.1 rad/s give ``s = 0.36`` and ``ṡ = 1.8``; the PD effort
+        10 · (1 - 0.36) - 2 · 1.8 = 2.8 reaches the motor joint as 8.4 N·m
+        and the second joint as -5.6 N·m.
         """
         kp, kd = 10.0, 2.0
         gear = np.array([3.0, -2.0])
@@ -3267,10 +3269,10 @@ class TestSensors(unittest.TestCase):
         model.actuators[0].step(state, control, dt=0.01)
 
         s = gear[0] * (q[:, 0] + q[:, 1]) + gear[1] * q[:, 2]
-        s_dot = gear[0] * qd[:, 0] + gear[1] * qd[:, 2]
+        s_dot = gear[0] * (qd[:, 0] + qd[:, 1]) + gear[1] * qd[:, 2]
         tau = kp * (target - s) - kd * s_dot
         expected = np.stack([gear[0] * tau, np.zeros(2), gear[1] * tau], axis=1)
-        np.testing.assert_allclose(tau[0], 3.4, rtol=1e-5)
+        np.testing.assert_allclose(tau[0], 2.8, rtol=1e-5)
         np.testing.assert_allclose(control.joint_f.numpy(), expected.ravel(), rtol=1e-5, atol=1e-6)
 
 

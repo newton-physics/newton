@@ -14,36 +14,46 @@ from .base import SensorBase
 @wp.kernel
 def _sensor_encoder_kernel(
     positions: wp.array[float],
+    velocities: wp.array[float],
     pos_indices: wp.array2d[wp.uint32],
+    dof_indices: wp.array2d[wp.uint32],
     output_joint_pos_indices: wp.array[wp.uint32],
+    output_joint_indices: wp.array[wp.uint32],
     out_pos: wp.array[float],
+    out_vel: wp.array[float],
 ):
     j, i = wp.tid()
     q = positions[pos_indices[j, i]]
+    qd = velocities[dof_indices[j, i]]
     if j == 0:
         q += positions[output_joint_pos_indices[i]]
-    out_pos[j * pos_indices.shape[1] + i] = q
+        qd += velocities[output_joint_indices[i]]
+    slot = j * pos_indices.shape[1] + i
+    out_pos[slot] = q
+    out_vel[slot] = qd
 
 
 class SensorEncoder(SensorBase):
-    """Position encoder behind a passive output joint.
+    """Encoder behind a passive output joint.
 
     The encoder measures after a passive joint between the first joint of
     the actuator and the link, e.g. to model gearbox backlash, so it reads
 
     .. math::
 
-        q = q_{\\text{actuated}} + q_{\\text{output}}
+        q = q_{\\text{actuated}} + q_{\\text{output}}, \\qquad
+        \\dot q = \\dot q_{\\text{actuated}} + \\dot q_{\\text{output}}
 
-    for that joint; further joints of the actuator read their own position.
-    This captures gearbox backlash when the output joint has a small motion
-    range: the solver handles the dead zone, where the actuator effort does
-    not reach the link. With a :class:`~newton.actuators.TransmissionFixed`
-    of gear :math:`g`, the drive reads :math:`g \\, (q_{\\text{actuated}} +
-    q_{\\text{output}})`.
+    for that joint, as a servo that derives its velocity from the same
+    encoder; further joints of the actuator read their own position and
+    velocity. This captures gearbox backlash when the output joint has a
+    small motion range: the solver handles the dead zone, where the actuator
+    effort does not reach the link. With a
+    :class:`~newton.actuators.TransmissionFixed` of gear :math:`g`, the drive
+    reads :math:`g \\, (q_{\\text{actuated}} + q_{\\text{output}})`.
 
-    The measured positions are written into one buffer, allocated in
-    :meth:`finalize`, so the encoder can be captured in a CUDA graph.
+    The measured positions and velocities are written into buffers allocated
+    in :meth:`finalize`, so the encoder can be captured in a CUDA graph.
     """
 
     JOINT_PARAMS: ClassVar[set[str]] = {"output_joint"}
@@ -98,6 +108,9 @@ class SensorEncoder(SensorBase):
         self._out_pos = wp.zeros(
             num_joints * num_actuators, dtype=wp.float32, device=device, requires_grad=requires_grad
         )
+        self._out_vel = wp.zeros(
+            num_joints * num_actuators, dtype=wp.float32, device=device, requires_grad=requires_grad
+        )
         self._indices = wp.array(
             np.arange(num_joints * num_actuators, dtype=np.uint32).reshape(num_joints, num_actuators), device=device
         )
@@ -105,15 +118,26 @@ class SensorEncoder(SensorBase):
     def compute(
         self,
         positions: wp.array[float],
+        velocities: wp.array[float],
         pos_indices: wp.array2d[wp.uint32],
+        dof_indices: wp.array2d[wp.uint32],
         device: wp.Device | None = None,
-    ) -> tuple[wp.array[float], wp.array2d[wp.uint32]]:
-        out_pos = wp.empty_like(self._out_pos) if self._out_pos.requires_grad else self._out_pos
+    ) -> tuple[wp.array[float], wp.array2d[wp.uint32], wp.array[float], wp.array2d[wp.uint32]]:
+        out_pos, out_vel = self._out_pos, self._out_vel
+        if out_pos.requires_grad:
+            out_pos, out_vel = wp.empty_like(out_pos), wp.empty_like(out_vel)
         wp.launch(
             kernel=_sensor_encoder_kernel,
             dim=pos_indices.shape,
-            inputs=[positions, pos_indices, self.output_joint_pos_indices],
-            outputs=[out_pos],
+            inputs=[
+                positions,
+                velocities,
+                pos_indices,
+                dof_indices,
+                self.output_joint_pos_indices,
+                self.output_joint_indices,
+            ],
+            outputs=[out_pos, out_vel],
             device=device,
         )
-        return out_pos, self._indices
+        return out_pos, self._indices, out_vel, self._indices

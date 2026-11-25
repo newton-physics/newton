@@ -56,8 +56,8 @@ effort at its end; the others are applied in this order:
 .. code-block:: text
 
    Actuator
-   ├── Sensor        (optional: measures the joint positions, e.g. behind a backlash joint)
-   │   └── SensorEncoder           (position encoder behind a passive output joint)
+   ├── Sensor        (optional: measures the joint positions and velocities, e.g. behind a backlash joint)
+   │   └── SensorEncoder           (encoder behind a passive output joint)
    ├── Transmission  (maps the joints onto one actuator coordinate, and the effort back)
    │   ├── TransmissionDirect      (default: the actuator is its single joint)
    │   └── TransmissionFixed       (constant gear ratio and efficiency per joint)
@@ -73,10 +73,11 @@ effort at its end; the others are applied in this order:
        └── MotorDC                 (DC motor, optionally on a battery)
 
 **Sensor**
-   Measures the joint positions before the transmission maps them, e.g. an
-   encoder behind a passive backlash joint.  It works in joint space, so the
-   transmission turns the measurement into actuator units.  It does not
-   change the velocities.  At most one sensor per actuator.
+   Measures the joint positions and velocities before the transmission maps
+   them, e.g. an encoder behind a passive backlash joint.  It works in joint
+   space, so the transmission turns the measurement into actuator units.  The
+   drive reads the measurement; the clamps and the motor read the actuator
+   velocity of the simulated joints.  At most one sensor per actuator.
 
 **Transmission**
    Maps the state at the start of each step, after the sensor, and the
@@ -137,10 +138,11 @@ receives 9 N·m; a ``ClampingMaxEffort`` limit of 2 N·m allows 6 N·m at the
 joint.  With the default :class:`TransmissionDirect`, actuator units are joint
 units.
 
-The input processors and the drive read the actuator position and velocity.
-The clamps read the position after the input processors, and the clamps and
-the motor read the actuator velocity from the transmission, unchanged by the
-input processors, e.g. the motor velocity for back-EMF.  With a transmission
+The input processors and the drive read the actuator position and velocity,
+measured by the sensor if the actuator has one.  The clamps read the position
+after the input processors, and the clamps and the motor read the actuator
+velocity of the simulated joints, unchanged by the sensor and the input
+processors, e.g. the motor velocity for back-EMF.  With a transmission
 other than :class:`TransmissionDirect`, the targets and feedforward are per
 actuator: :class:`~newton.ModelBuilder` registers
 ``control.actuator_target_pos``, ``actuator_target_vel`` and
@@ -162,9 +164,10 @@ Typical transmissions:
 
 Backlash is not a transmission: the actuator drives the actuated joint, and
 a :class:`SensorEncoder` adds the passive backlash joint to the
-measured position, ``q_actuated + q_backlash``.  The sensor runs before the
-transmission, so with a gear the drive reads
-``gear · (q_actuated + q_backlash)``, in actuator units.
+measured position and velocity, ``q_actuated + q_backlash`` and
+``q̇_actuated + q̇_backlash``.  The sensor runs before the transmission, so
+with a gear the drive reads ``gear · (q_actuated + q_backlash)``, in actuator
+units.  The motor still reads ``gear · q̇_actuated``.
 
 The per-step pipeline is:
 
@@ -815,7 +818,7 @@ Limitations of the implicit mode.  In the cases marked *error*,
   solve, or the solve would ignore them.
 * **Sensors** (warning): an actuator with a sensor is accepted with a
   :class:`~newton.NewtonWarning`, because the result is only approximate: the
-  drive reads the measured position, while the solve predicts the end-of-step
+  drive reads the measured position and velocity, while the solve predicts the end-of-step
   state from the response of the actuated joint alone.  With
   :class:`~newton.actuators.SensorEncoder`, the drive reads the encoder
   behind the output joint.  While the output joint is not at its limit, the
@@ -870,9 +873,9 @@ Available Components
 Sensors
 ^^^^^^^
 
-* :class:`SensorEncoder` — position encoder behind a passive output
-  joint of the first joint of the actuator, e.g. a backlash joint
-  (stateless).
+* :class:`SensorEncoder` — encoder behind a passive output joint of the
+  first joint of the actuator, e.g. a backlash joint; measures position and
+  velocity (stateless).
 
 Input processors
 ^^^^^^^^^^^^^^^^

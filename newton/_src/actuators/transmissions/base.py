@@ -13,28 +13,29 @@ class TransmissionBase:
 
     A transmission maps the state at the start of :meth:`Actuator.step()
     <newton.actuators.Actuator.step>`, after the optional sensor, and the
-    effort at its end. First, :meth:`compute_state` maps the
-    joint positions, measured by the sensor if the actuator has one, and the
-    joint velocities of the actuator
+    effort at its end. First, :meth:`compute_state` maps the joint positions
+    and velocities of the actuator
     (:attr:`Actuator.pos_indices <newton.actuators.Actuator.pos_indices>` and
-    :attr:`Actuator.indices <newton.actuators.Actuator.indices>`) onto one
-    actuator position and velocity, e.g. the motor angle behind a gearbox or
-    the mean finger position of a gripper. The input processors, drive,
-    clamps and motor all work with these actuator coordinates. Last,
-    :meth:`compute` maps the actuator effort onto the joints in
+    :attr:`Actuator.indices <newton.actuators.Actuator.indices>`), measured
+    by the sensor if the actuator has one, onto one actuator position and
+    velocity, e.g. the motor angle behind a gearbox or the mean finger
+    position of a gripper. The input processors, drive, clamps and motor all
+    work with these actuator coordinates. With a sensor,
+    :meth:`compute_velocity` also maps the simulated joint state onto the
+    actuator velocity that the clamps and the motor read, e.g. the motor
+    velocity for back-EMF. Last, :meth:`compute` maps the actuator effort
+    onto the joints in
     :attr:`Actuator.effort_indices <newton.actuators.Actuator.effort_indices>`,
     by default the same DOFs.
 
-    Both maps must be consistent, so that the actuator effort times the
+    The maps must be consistent, so that the actuator effort times the
     actuator velocity equals the summed joint effort times joint velocity,
     unless the transmission models losses, which only reduce the joint
-    effort. With a sensor, :meth:`compute_state` receives the measured
-    positions, so a transmission whose ratios depend on the pose evaluates
-    its velocity map at the measured pose. For example, with a gear ratio of 3, a joint at 0.1 rad is a motor at
-    0.3 rad, and a clamp limit of 2 N·m allows 6 N·m at the joint.
+    effort. For example, with a gear ratio of 3, a joint at 0.1 rad is a
+    motor at 0.3 rad, and a clamp limit of 2 N·m allows 6 N·m at the joint.
 
-    Subclasses must override :meth:`resolve_arguments`, :meth:`compute_state`
-    and :meth:`compute`.
+    Subclasses must override :meth:`resolve_arguments`, :meth:`compute_state`,
+    :meth:`compute_velocity` and :meth:`compute`.
     """
 
     SHARED_PARAMS: ClassVar[set[str]] = set()
@@ -130,3 +131,32 @@ class TransmissionBase:
             has shape ``(N,)``.
         """
         raise NotImplementedError(f"{type(self).__name__} must implement compute_state")
+
+    def compute_velocity(
+        self,
+        positions: wp.array[float],
+        velocities: wp.array[float],
+        pos_indices: wp.array2d[wp.uint32],
+        dof_indices: wp.array2d[wp.uint32],
+        device: wp.Device | None = None,
+    ) -> tuple[wp.array[float], wp.array[wp.uint32]]:
+        """Return the actuator velocity of each actuator for the simulated joint state.
+
+        Called only for actuators with a sensor, in the same step as
+        :meth:`compute_state`, which then receives the measured joint state.
+        The returned array must not be overwritten by :meth:`compute_state`.
+
+        Args:
+            positions: Joint positions [m or rad].
+            velocities: Joint velocities [m/s or rad/s].
+            pos_indices: Index of each joint of each actuator into
+                *positions*, shape ``(joints, N)``.
+            dof_indices: DOF of each joint of each actuator, shape
+                ``(joints, N)``.
+            device: Warp device for kernel launches.
+
+        Returns:
+            An array of actuator velocities [m/s or rad/s] and the index of
+            each actuator into it, shape ``(N,)``.
+        """
+        raise NotImplementedError(f"{type(self).__name__} must implement compute_velocity")

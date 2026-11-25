@@ -226,8 +226,8 @@ class Actuator:
     """Composed actuator: sensor → transmission → input processors → drive → clamping → motor → transmission.
 
     An actuator reads from simulation state/control arrays, optionally
-    measures its joint positions through a sensor (e.g. behind a backlash
-    joint), maps its joints onto one actuator coordinate through a
+    measures its joint positions and velocities through a sensor (e.g.
+    behind a backlash joint), maps its joints onto one actuator coordinate through a
     transmission (the joint itself by default), transforms the inputs with
     input processors (e.g. a command delay),
     computes effort via a drive, applies clamping (effort limits, saturation,
@@ -445,10 +445,10 @@ class Actuator:
                 :class:`~newton.actuators.MotorDC`). With a motor, the drive
                 computes signed duty. The actuator converts duty to motor
                 voltage using the actual supply voltage.
-            sensor: Optional sensor that measures the joint positions the
-                *transmission* maps, e.g. behind a backlash joint
-                (:class:`~newton.actuators.SensorEncoder`). ``None``
-                reads the joint positions directly.
+            sensor: Optional sensor that measures the joint positions and
+                velocities the *transmission* maps for the drive, e.g. behind
+                a backlash joint (:class:`~newton.actuators.SensorEncoder`).
+                ``None`` reads the joint positions and velocities directly.
             transmission: Optional transmission that maps the joints in
                 *indices* onto one actuator position and velocity, which the
                 input processors, drive, clamps and motor read, and maps the
@@ -477,7 +477,7 @@ class Actuator:
         num_actuators = self._indices.shape[1]
         self.pos_indices = pos_indices if pos_indices is not None else self._indices
         self.sensor = sensor
-        """Sensor measuring the joint positions before the transmission, or ``None``."""
+        """Sensor measuring the joint positions and velocities before the transmission, or ``None``."""
         self.transmission = transmission if transmission is not None else TransmissionDirect()
         """Transmission mapping the joints in :attr:`indices` onto the actuator coordinate."""
         # With a transmission other than TransmissionDirect, the drive compares
@@ -770,7 +770,7 @@ class Actuator:
 
         Warns:
             NewtonWarning: The actuator has a :attr:`sensor`. The drive
-                reads the measured position, while the solve uses the response
+                reads the measured state, while the solve uses the response
                 of the actuated joint only, so the result is approximate.
                 With :class:`~newton.actuators.SensorEncoder`, it is
                 inaccurate while the output joint is not at its limit.
@@ -794,7 +794,7 @@ class Actuator:
             )
         if self.sensor is not None:
             warnings.warn(
-                f"Implicit actuation with {type(self.sensor).__name__} predicts the measured position from the "
+                f"Implicit actuation with {type(self.sensor).__name__} predicts the measured state from the "
                 "response of the actuated joint only, so the result is approximate.",
                 NewtonWarning,
                 stacklevel=2,
@@ -899,9 +899,10 @@ class Actuator:
         """Execute one control step.
 
         0. **Sensor and transmission state** — the optional sensor
-           measures the joint positions, and the transmission maps them and
-           the joint velocities onto the actuator position and velocity,
-           which the input processors, drive, clamps and motor read.
+           measures the joint positions and velocities, and the
+           transmission maps them onto the actuator position and velocity,
+           which the input processors and drive read. The clamps and motor
+           read the actuator velocity of the simulated joints.
         1. **Input processors** — transform the state and command inputs
            in list order (e.g. read delayed targets from ``current_state``),
            and write each processor's ``next_state`` (e.g. push the current
@@ -977,24 +978,39 @@ class Actuator:
                 supply_voltage = wp.empty_like(supply_voltage)
 
         # --- 0. Sensor and transmission state: actuator position and velocity ---
-        measured_positions, measured_pos_indices = positions, self._pos_indices
-        if self.sensor is not None:
-            measured_positions, measured_pos_indices = self.sensor.compute(
-                positions, self._pos_indices, device=self.device
+        if self.sensor is None:
+            actuator_positions, actuator_pos_indices, actuator_velocities, actuator_vel_indices = (
+                self.transmission.compute_state(
+                    positions, velocities, self._pos_indices, self._indices, device=self.device
+                )
             )
-        actuator_positions, actuator_pos_indices, motor_velocities, motor_vel_indices = self.transmission.compute_state(
-            measured_positions, velocities, measured_pos_indices, self._indices, device=self.device
-        )
+            motor_velocities, motor_vel_indices = actuator_velocities, actuator_vel_indices
+        else:
+            measured_positions, measured_pos_indices, measured_velocities, measured_vel_indices = self.sensor.compute(
+                positions, velocities, self._pos_indices, self._indices, device=self.device
+            )
+            actuator_positions, actuator_pos_indices, actuator_velocities, actuator_vel_indices = (
+                self.transmission.compute_state(
+                    measured_positions,
+                    measured_velocities,
+                    measured_pos_indices,
+                    measured_vel_indices,
+                    device=self.device,
+                )
+            )
+            motor_velocities, motor_vel_indices = self.transmission.compute_velocity(
+                positions, velocities, self._pos_indices, self._indices, device=self.device
+            )
 
         # --- 1. Input processors (read current_state, write next_state) ---
         inputs = InputProcessorBase.Inputs(
             positions=actuator_positions,
-            velocities=motor_velocities,
+            velocities=actuator_velocities,
             target_pos=target_pos,
             target_vel=target_vel,
             feedforward=feedforward,
             pos_indices=actuator_pos_indices,
-            vel_indices=motor_vel_indices,
+            vel_indices=actuator_vel_indices,
             target_pos_indices=self.target_pos_indices,
             target_vel_indices=self._target_vel_indices,
         )

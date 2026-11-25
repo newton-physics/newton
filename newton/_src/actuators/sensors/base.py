@@ -9,15 +9,16 @@ import warp as wp
 
 
 class SensorBase:
-    """Maps the joint positions of each actuator onto the positions its sensor measures.
+    """Maps the joint positions and velocities of each actuator onto the ones its sensor measures.
 
     A sensor is the first stage of :meth:`Actuator.step()
-    <newton.actuators.Actuator.step>`. It models where the position sensor
-    sits, e.g. behind a passive backlash joint, and works in joint space:
-    the :class:`~newton.actuators.TransmissionBase` then maps the measured
-    joint positions onto the actuator position, so the drive and clamps read
-    the measurement in actuator units. The sensor does not change the
-    velocities: the transmission maps the true joint velocities.
+    <newton.actuators.Actuator.step>`. It models where the sensor sits,
+    e.g. behind a passive backlash joint, and works in joint space: the
+    :class:`~newton.actuators.TransmissionBase` then maps the measured joint
+    positions and velocities onto the actuator position and velocity, so the
+    drive reads the measurement in actuator units. The clamps and the motor
+    read the actuator velocity of the simulated joints, e.g. the motor
+    velocity for back-EMF.
 
     Subclasses must override :meth:`resolve_arguments` and :meth:`compute`.
     """
@@ -64,20 +65,27 @@ class SensorBase:
     def compute(
         self,
         positions: wp.array[float],
+        velocities: wp.array[float],
         pos_indices: wp.array2d[wp.uint32],
+        dof_indices: wp.array2d[wp.uint32],
         device: wp.Device | None = None,
-    ) -> tuple[wp.array[float], wp.array2d[wp.uint32]]:
-        """Return the measured joint positions of each actuator.
+    ) -> tuple[wp.array[float], wp.array2d[wp.uint32], wp.array[float], wp.array2d[wp.uint32]]:
+        """Return the measured joint positions and velocities of each actuator.
 
         Args:
             positions: Joint positions [m or rad].
+            velocities: Joint velocities [m/s or rad/s].
             pos_indices: Index of each joint of each actuator into
                 *positions*, shape ``(joints, N)``.
+            dof_indices: DOF of each joint of each actuator, the index into
+                *velocities*, shape ``(joints, N)``.
             device: Warp device for kernel launches.
 
         Returns:
-            An array of measured joint positions [m or rad] and the index of
-            each joint of each actuator into it, shape ``(joints, N)``.
+            An array of measured joint positions [m or rad], the index of
+            each joint of each actuator into it, an array of measured joint
+            velocities [m/s or rad/s] and the index of each joint of each
+            actuator into it; each index array has shape ``(joints, N)``.
         """
         raise NotImplementedError(f"{type(self).__name__} must implement compute")
 

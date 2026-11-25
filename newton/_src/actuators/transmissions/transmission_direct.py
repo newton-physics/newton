@@ -72,3 +72,13 @@ class TransmissionDirect(TransmissionBase):
         device: wp.Device | None = None,
     ) -> tuple[wp.array[float], wp.array[wp.uint32], wp.array[float], wp.array[wp.uint32]]:
         return positions, pos_indices[0], velocities, dof_indices[0]
+
+    def compute_velocity(
+        self,
+        positions: wp.array[float],
+        velocities: wp.array[float],
+        pos_indices: wp.array2d[wp.uint32],
+        dof_indices: wp.array2d[wp.uint32],
+        device: wp.Device | None = None,
+    ) -> tuple[wp.array[float], wp.array[wp.uint32]]:
+        return velocities, dof_indices[0]

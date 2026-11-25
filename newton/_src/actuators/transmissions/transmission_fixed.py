@@ -49,6 +49,20 @@ def _transmission_fixed_state_kernel(
     output_velocities[i] = qd
 
 
+@wp.kernel
+def _transmission_fixed_velocity_kernel(
+    velocities: wp.array[float],
+    dof_indices: wp.array2d[wp.uint32],
+    gear: wp.array2d[float],
+    output_velocities: wp.array[float],
+):
+    i = wp.tid()
+    qd = float(0.0)
+    for j in range(dof_indices.shape[0]):
+        qd += gear[j, i] * velocities[dof_indices[j, i]]
+    output_velocities[i] = qd
+
+
 class TransmissionFixed(TransmissionBase):
     """Transmission with constant gear ratios.
 
@@ -122,6 +136,7 @@ class TransmissionFixed(TransmissionBase):
                 raise ValueError(f"{name} shape {tuple(array.shape)} must be ({num_joints}, {num_actuators})")
         self._positions = wp.zeros(num_actuators, dtype=wp.float32, device=device, requires_grad=requires_grad)
         self._velocities = wp.zeros(num_actuators, dtype=wp.float32, device=device, requires_grad=requires_grad)
+        self._motor_velocities = wp.zeros(num_actuators, dtype=wp.float32, device=device, requires_grad=requires_grad)
         self._indices = wp.array(np.arange(num_actuators, dtype=np.uint32), device=device)
 
     def compute(
@@ -164,3 +179,23 @@ class TransmissionFixed(TransmissionBase):
             device=device,
         )
         return out_positions, self._indices, out_velocities, self._indices
+
+    def compute_velocity(
+        self,
+        positions: wp.array[float],
+        velocities: wp.array[float],
+        pos_indices: wp.array2d[wp.uint32],
+        dof_indices: wp.array2d[wp.uint32],
+        device: wp.Device | None = None,
+    ) -> tuple[wp.array[float], wp.array[wp.uint32]]:
+        out_velocities = self._motor_velocities
+        if out_velocities.requires_grad:
+            out_velocities = wp.empty_like(out_velocities)
+        wp.launch(
+            kernel=_transmission_fixed_velocity_kernel,
+            dim=out_velocities.shape[0],
+            inputs=[velocities, dof_indices, self.gear],
+            outputs=[out_velocities],
+            device=device,
+        )
+        return out_velocities, self._indices
