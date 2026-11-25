@@ -1934,7 +1934,7 @@ def parse_usd(
             continue
         if loose_touch_count[child] > 1:
             continue
-        builder.add_articulation([joint_id], label=builder.joint_label[joint_id])
+        builder.add_articulation([joint_id], label=builder.body_label[child])
 
     # parse shapes attached to the rigid bodies
     # Canonicalized (sorted) USD path pairs from physics:filteredPairs. Collected from native

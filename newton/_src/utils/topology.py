@@ -232,8 +232,7 @@ def tree_joint_mask(
     joints of a body, joints between bodies outside articulations, and the joints marked in
     ``loop_joints`` (imported MuJoCo equality constraints, which never place a body).
     :class:`~newton.ModelBuilder` forms the weld groups of its parent-child collision filter
-    from this mask and :class:`~newton.solvers.SolverMuJoCo` picks its standalone world roots
-    from it, so both see one tree.
+    from this mask.
 
     Args:
         joint_parent: Parent body of each joint, -1 for the world.
