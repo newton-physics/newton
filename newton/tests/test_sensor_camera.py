@@ -3,12 +3,18 @@
 
 import inspect
 import math
+import tempfile
+import threading
 import unittest
+import warnings
+from pathlib import Path
+from unittest import mock
 
 import numpy as np
 import warp as wp
 
 import newton
+import newton._src.utils.texture as texture_utils
 from newton._src.geometry.types import SH_C0
 from newton._src.render.types import LightType
 from newton._src.render.utils import Utils
@@ -1386,6 +1392,106 @@ class TestSensorCamera(unittest.TestCase):
         self.assertEqual(len(context._mesh_data_source), 2)
         np.testing.assert_array_equal(context._mesh_data_source[0].uvs.numpy(), uvs * 0.5)
         np.testing.assert_array_equal(context._mesh_data_source[1].uvs.numpy(), uvs)
+
+    @requires("PIL")
+    def test_file_textures_keep_first_use_order(self) -> None:
+        """Verify textures loaded from image files number in the order shapes first use them.
+
+        The larger files come first: they take the longest to decode, so numbering the textures
+        in the order their decoding finishes would put the small ones ahead.
+        """
+        from PIL import Image
+
+        box = newton.Mesh.create_box(0.2, 0.2, 0.1, compute_inertia=False)
+        uvs = np.asarray(box.uvs, dtype=np.float32)
+        with tempfile.TemporaryDirectory() as directory:
+            pixels = {}
+            meshes = {}
+            for width in (512, 4, 256, 8, 16):
+                pixels[width] = np.random.default_rng(width).integers(0, 256, (width + 1, width, 4), dtype=np.uint8)
+                path = str(Path(directory) / f"texture_{width}.png")
+                Image.fromarray(pixels[width]).save(path)
+                meshes[width] = newton.Mesh(box.vertices, box.indices, uvs=uvs, texture=path, compute_inertia=False)
+            # A distinct mesh with the path of an earlier one shares its texture.
+            twin = newton.Mesh(box.vertices, box.indices, uvs=uvs, texture=meshes[4].texture, compute_inertia=False)
+
+            builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+            builder.add_shape_mesh(-1, mesh=meshes[512])
+            builder.add_shape_mesh(-1, mesh=meshes[4])
+            builder.add_shape_mesh(-1, mesh=meshes[512])
+            builder.add_shape_mesh(-1, mesh=meshes[256])
+            builder.add_shape_mesh(-1, mesh=twin)
+            builder.add_shape_mesh(-1, mesh=meshes[8])
+            builder.add_shape_mesh(-1, mesh=meshes[16])
+            for device in get_test_devices():
+                with self.subTest(device=str(device)):
+                    model = builder.finalize(device=device)
+                    # Decode on workers, whatever the number of CPUs of the machine.
+                    with mock.patch.object(texture_utils, "_count_usable_cpus", return_value=4):
+                        context = SensorCamera(model)._render_context
+                    np.testing.assert_array_equal(context._shape_texture_ids.numpy(), [0, 1, 0, 2, 1, 3, 4])
+                    textures = [data.texture for data in context._texture_data_source]
+                    self.assertEqual(len(textures), 5)
+
+                    def read(texture: wp.Texture2D) -> np.ndarray:
+                        texels = np.zeros((texture.height, texture.width, 4), dtype=np.uint8)
+                        texture.copy_to(texels)
+                        return texels
+
+                    np.testing.assert_array_equal(read(textures[0]), pixels[512])
+                    np.testing.assert_array_equal(read(textures[1]), pixels[4])
+                    np.testing.assert_array_equal(read(textures[2]), pixels[256])
+                    np.testing.assert_array_equal(read(textures[3]), pixels[8])
+                    np.testing.assert_array_equal(read(textures[4]), pixels[16])
+
+    @requires("PIL")
+    def test_failed_file_texture_raises_for_first_failure(self) -> None:
+        """Verify a texture file that fails to load raises for the first such file, and warns only about it.
+
+        The file after the failing one is truncated: it opens, and fails once decoded. Loading it
+        ahead of the failing one must not report it, and the thread that decodes it must not outlive
+        the load.
+        """
+        from PIL import Image
+
+        box = newton.Mesh.create_box(0.2, 0.2, 0.1, compute_inertia=False)
+        uvs = np.asarray(box.uvs, dtype=np.float32)
+        with tempfile.TemporaryDirectory() as directory:
+            texels = np.random.default_rng(0).integers(0, 256, (64, 64, 4), dtype=np.uint8)
+            good = Path(directory) / "good.png"
+            Image.fromarray(texels).save(good)
+            missing = Path(directory) / "missing.png"
+            truncated = Path(directory) / "truncated.png"
+            truncated.write_bytes(good.read_bytes()[: good.stat().st_size // 2])
+
+            builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+            for path in (good, missing, truncated):
+                mesh = newton.Mesh(box.vertices, box.indices, uvs=uvs, texture=str(path), compute_inertia=False)
+                builder.add_shape_mesh(-1, mesh=mesh)
+            for device in get_test_devices():
+                with self.subTest(device=str(device)):
+                    model = builder.finalize(device=device)
+                    error_message = None
+                    texture_thread_count = None
+                    with (
+                        # Decode on workers, whatever the number of CPUs of the machine.
+                        mock.patch.object(texture_utils, "_count_usable_cpus", return_value=4),
+                        warnings.catch_warnings(record=True) as caught,
+                    ):
+                        warnings.simplefilter("always")
+                        try:
+                            SensorCamera(model)
+                        except ValueError as error:
+                            error_message = str(error)
+                            # Counted while the exception still holds the frames of the load.
+                            texture_thread_count = sum(
+                                thread.name.startswith("newton-texture") for thread in threading.enumerate()
+                            )
+                    self.assertEqual(error_message, f"Failed to load texture: {missing}")
+                    self.assertEqual(texture_thread_count, 0)
+                    messages = [str(w.message) for w in caught if issubclass(w.category, newton.NewtonWarning)]
+                    self.assertEqual(len(messages), 1)
+                    self.assertIn(f"Failed to load texture image: {missing}", messages[0])
 
     def test_update_uses_default_render_settings(self) -> None:
         """Verify update falls back to the default clear data and render config."""

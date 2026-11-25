@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Sequence
 from dataclasses import replace
 from typing import Literal
@@ -14,7 +15,8 @@ from ..core import Axis
 from ..geometry import GeoType, Mesh
 from ..geometry.deformable_visual import DeformableVisualMesh, DeformableVisuals, _DeformableVisualSkinBatches
 from ..sim import Model, State
-from ..utils import load_texture, normalize_texture
+from ..utils import normalize_texture
+from ..utils.texture import _load_textures
 from .render import create_kernel
 from .types import (
     AntiAliasing,
@@ -803,26 +805,63 @@ class RenderContext:
         """
         self._mesh_data_source = []
         self._texture_data_source = []
-        texture_hashes = {}
         mesh_hashes = {}
-        # Holding the last image stops glibc from returning the decode buffers to the OS after every texture.
-        last_pixels = None
 
-        def texture_id(texture, texture_hash):
-            nonlocal last_pixels
-            if texture is None or not load_textures:
-                return -1
-            if texture_hash not in texture_hashes:
-                pixels = load_texture(texture)
-                if pixels is None:
+        def group_by_source(sources: Sequence, shape_types: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+            """Group the shapes that share a source: each group's first shape, each shape's group, the hull shapes."""
+            # Shapes that share a source object, such as the copies of a replicated world, share
+            # their ids, so look them up once per source. A convex hull takes no mesh data: it
+            # groups apart from the mesh shapes of its source, under the complement of the key.
+            source_keys = np.fromiter(map(id, sources), dtype=np.int64, count=len(sources))
+            is_hull = shape_types == int(GeoType.CONVEX_MESH)
+            _, first_shapes, groups = np.unique(
+                np.where(is_hull, ~source_keys, source_keys), return_index=True, return_inverse=True
+            )
+            return first_shapes, groups, is_hull
+
+        shape_types = model.shape_type.numpy() if model.shape_type is not None else np.empty(0, dtype=np.int32)
+        groupings = [(model.shape_source, *group_by_source(model.shape_source, shape_types))]
+        if self._variant_rows is not None:
+            variant_types = model._variant_shape_geometry["shape_type"].numpy()
+            groupings.append(
+                (model._variant_shape_source, *group_by_source(model._variant_shape_source, variant_types))
+            )
+
+        # Sampled image hashes can miss changed channels. Keep skin keys separate
+        # from rigid-mesh hashes and share uploads only for the same source.
+        skin_texture_keys = tuple(
+            ("skin", mesh.texture if isinstance(mesh.texture, str) else id(mesh.texture))
+            if mesh.uvs is not None and mesh.texture is not None
+            else None
+            for mesh in deformable_visual_meshes
+        )
+
+        # The textures to load, by the key that shares them, in the order shapes first use
+        # them: that order numbers them. Knowing them up front lets their files decode ahead.
+        textures = {}
+        if load_textures:
+            for sources, first_shapes, _, _ in groupings:
+                for shape_index in np.sort(first_shapes).tolist():
+                    shape = sources[shape_index]
+                    if isinstance(shape, Mesh) and shape.texture is not None:
+                        textures.setdefault(shape.texture_hash, shape.texture)
+            for mesh, key in zip(deformable_visual_meshes, skin_texture_keys, strict=True):
+                if key is not None:
+                    textures.setdefault(key, mesh.texture)
+
+        texture_ids = {}
+        with contextlib.closing(_load_textures(tuple(textures.values()))) as loaded_textures:
+            # `loaded` holds each image until the next one is loaded, which stops glibc from returning
+            # the decode buffers to the OS after every texture.
+            for (texture_key, texture), loaded in zip(textures.items(), loaded_textures, strict=True):
+                if loaded is None:
                     raise ValueError(f"Failed to load texture: {texture}")
-                last_pixels = pixels
-                pixels = normalize_texture(pixels, require_channels=True)
+                pixels = normalize_texture(loaded, require_channels=True)
                 if pixels.shape[2] == 3:
                     # RGB and grayscale sources need an opaque alpha channel.
                     alpha = np.full((*pixels.shape[:2], 1), 255, dtype=np.uint8)
                     pixels = np.concatenate((pixels, alpha), axis=2)
-                texture_hashes[texture_hash] = len(self._texture_data_source)
+                texture_ids[texture_key] = len(self._texture_data_source)
                 data = TextureData()
                 data.texture = wp.Texture2D(
                     pixels,
@@ -835,18 +874,11 @@ class RenderContext:
                 )
                 data.repeat = wp.vec2f(1.0, 1.0)
                 self._texture_data_source.append(data)
-            return texture_hashes[texture_hash]
 
-        def ids(sources: Sequence, shape_types: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-            """Texture and mesh-data ids of each source, loading data that is not loaded yet."""
-            # Shapes that share a source object, such as the copies of a replicated world, share
-            # their ids, so look them up once per source. A convex hull takes no mesh data: it
-            # groups apart from the mesh shapes of its source, under the complement of the key.
-            source_keys = np.fromiter(map(id, sources), dtype=np.int64, count=len(sources))
-            is_hull = shape_types == int(GeoType.CONVEX_MESH)
-            _, first_shapes, groups = np.unique(
-                np.where(is_hull, ~source_keys, source_keys), return_index=True, return_inverse=True
-            )
+        def ids(
+            sources: Sequence, first_shapes: np.ndarray, groups: np.ndarray, is_hull: np.ndarray
+        ) -> tuple[np.ndarray, np.ndarray]:
+            """Texture and mesh-data ids of each source, loading mesh data that is not loaded yet."""
             group_texture_ids = np.full(first_shapes.shape[0], -1, dtype=np.int32)
             group_mesh_data_ids = np.full(first_shapes.shape[0], -1, dtype=np.int32)
             # Visit the groups in shape order: ids number the data in the order shapes first use it.
@@ -854,7 +886,8 @@ class RenderContext:
                 shape = sources[first_shapes[group]]
                 if not isinstance(shape, Mesh):
                     continue
-                group_texture_ids[group] = texture_id(shape.texture, shape.texture_hash)
+                if shape.texture is not None:
+                    group_texture_ids[group] = texture_ids.get(shape.texture_hash, -1)
                 # A convex hull renders its collision mesh, whose vertices may be deduplicated, so
                 # the per-vertex UVs and normals of its source mesh do not match the hit faces.
                 if not is_hull[first_shapes[group]] and (shape.uvs is not None or shape.normals is not None):
@@ -874,23 +907,14 @@ class RenderContext:
                     group_mesh_data_ids[group] = mesh_hashes[shape]
             return group_texture_ids[groups], group_mesh_data_ids[groups]
 
-        shape_types = model.shape_type.numpy() if model.shape_type is not None else np.empty(0, dtype=np.int32)
-        texture_data_ids, mesh_data_ids = ids(model.shape_source, shape_types)
+        texture_data_ids, mesh_data_ids = ids(*groupings[0])
         if self._variant_rows is not None:
-            variant_types = model._variant_shape_geometry["shape_type"].numpy()
-            variant_texture_ids, variant_mesh_data_ids = ids(model._variant_shape_source, variant_types)
+            variant_texture_ids, variant_mesh_data_ids = ids(*groupings[1])
             self._variant_render_type = wp.array(_render_types(variant_types), dtype=wp.int32, device=self.device)
             self._variant_texture_ids = wp.array(variant_texture_ids, dtype=wp.int32, device=self.device)
             self._variant_mesh_data_ids = wp.array(variant_mesh_data_ids, dtype=wp.int32, device=self.device)
 
-        # Sampled image hashes can miss changed channels. Keep skin keys separate
-        # from rigid-mesh hashes and share uploads only for the same source.
-        skin_texture_ids = [
-            texture_id(mesh.texture, ("skin", mesh.texture if isinstance(mesh.texture, str) else id(mesh.texture)))
-            if mesh.uvs is not None
-            else -1
-            for mesh in deformable_visual_meshes
-        ]
+        skin_texture_ids = [-1 if key is None else texture_ids.get(key, -1) for key in skin_texture_keys]
         self._render_state.has_triangle_mesh_textures = any(i >= 0 for i in skin_texture_ids)
 
         self._texture_data = wp.array(self._texture_data_source, dtype=TextureData, device=self.device)
