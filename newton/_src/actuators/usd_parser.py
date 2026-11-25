@@ -354,6 +354,8 @@ def parse_actuator_prim(prim, *, allow_unsafe_torch_checkpoints: bool = False) -
             - the target prim does not exist or is not a
               ``PhysicsRevoluteJoint`` / ``PhysicsPrismaticJoint``,
             - has multiple drive, motor or sensor schemas applied,
+            - has several targets in a joint relationship of a component,
+              e.g. ``newton:outputJoint``,
             - has no drive schema, or
             - has a ``NewtonNeuralControlAPI`` with an unsupported model or an
               unapproved Torch checkpoint.
@@ -440,7 +442,12 @@ def _parse_actuator_prim(prim, allow_unsafe_torch_checkpoints: bool) -> Actuator
 
         for name in getattr(cls, "JOINT_PARAMS", ()):
             head, *rest = name.split("_")
-            targets = _get_relationship_targets(prim, "newton:" + head + "".join(part.title() for part in rest))
+            relationship = "newton:" + head + "".join(part.title() for part in rest)
+            targets = _get_relationship_targets(prim, relationship)
+            if len(targets) > 1:
+                raise ValueError(
+                    f"Actuator prim '{prim.GetPath()}': '{relationship}' must have one target, got {len(targets)}"
+                )
             if targets:
                 kwargs[name] = targets[0]
 

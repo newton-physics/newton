@@ -727,7 +727,7 @@ def _actuator_dofs(model):
     """Return the DOF of each actuator of *model*, indexed like per-actuator arrays."""
     dofs = np.full(model.actuator_count, -1)
     for actuator in model.actuators:
-        dofs[actuator.actuator_indices.numpy()] = actuator.indices.numpy()[0]
+        dofs[actuator.actuator_indices.numpy()] = np.atleast_2d(actuator.indices.numpy())[0]
     return dofs
 
 
@@ -945,7 +945,7 @@ class TestDriveNeuralGRU(unittest.TestCase):
         forces = wp.zeros(len(case.indices), dtype=wp.float32, device=self.device)
         custom_inputs = {"bias_force": feedforward} if feedforward is not None else None
         if target_vel_indices is None:
-            target_vel_indices = case.actuator.indices[0]
+            target_vel_indices = case.actuator.indices
         elif not isinstance(target_vel_indices, wp.array):
             target_vel_indices = wp.array(target_vel_indices, dtype=wp.uint32, device=self.device)
         case.actuator.drive.compute(
@@ -954,8 +954,8 @@ class TestDriveNeuralGRU(unittest.TestCase):
             case.control.joint_target_q,
             case.control.joint_target_qd,
             feedforward,
-            case.actuator.pos_indices[0],
-            case.actuator.indices[0],
+            case.actuator.pos_indices,
+            case.actuator.indices,
             case.actuator.target_pos_indices,
             target_vel_indices,
             forces,
@@ -4478,7 +4478,7 @@ class TestActuatorStep(unittest.TestCase):
         state_1 = actuator.state()
 
         qd_val = 2.0
-        dofs = actuator.indices.numpy()[0].tolist()
+        dofs = actuator.indices.numpy().tolist()
         _write_dof_values(model, state.joint_qd, dofs, [qd_val] * n)
 
         target_schedule = [10.0, 20.0, 30.0, 40.0, 50.0]
@@ -5766,8 +5766,8 @@ class TestActuatorBuilder(unittest.TestCase):
         n = 2 * num_envs
         self.assertEqual(act.num_actuators, n)
 
-        pos_idx = act.pos_indices.numpy()[0]
-        vel_idx = act.indices.numpy()[0]
+        pos_idx = act.pos_indices.numpy()
+        vel_idx = act.indices.numpy()
         self.assertFalse(
             np.array_equal(pos_idx, vel_idx),
             "pos_indices should differ from indices for free-joint articulations",
@@ -6469,7 +6469,7 @@ class TestStateReset(unittest.TestCase):
         state = model.state()
         state_0 = actuator.state()
         state_1 = actuator.state()
-        dofs = actuator.indices.numpy()[0].tolist()
+        dofs = actuator.indices.numpy().tolist()
 
         control = model.control()
         for _step in range(3):

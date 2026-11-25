@@ -51,6 +51,19 @@ _ACTUATOR_CONTROL_ATTRS = {
 }
 
 
+def _as_view(rows: Any) -> Any:
+    """Return ``(joints, N)`` index rows as the public shape: ``(N,)`` for a single joint."""
+    return rows[0] if rows.shape[0] == 1 else rows
+
+
+def _check_reassigned_shape(name: str, rows: Any, previous: Any) -> None:
+    """Reject reassigning an index array with a different number of joints or actuators."""
+    if previous is not None and rows.shape != previous.shape:
+        raise ValueError(
+            f"Cannot assign {name} of shape {rows.shape} (as rows) to an actuator with shape {previous.shape}"
+        )
+
+
 def _as_rows(indices: Any, name: str) -> Any:
     """Return an index array as ``(joints, N)``; a 1-D array is the single-joint case."""
     if indices.ndim == 1:
@@ -377,13 +390,13 @@ class Actuator:
 
         Args:
             indices: DOF indices of the joints each actuator drives into
-                velocity-shaped arrays, shape ``(joints, N)``: entry
-                ``[j, i]`` is the DOF of the ``j``-th joint of actuator ``i``.
-                The *transmission* reads the joint velocities through them.
-                A 1-D array of shape ``(N,)`` is the single-joint case
-                ``(1, N)``. With more than one row, a *transmission* other
-                than :class:`~newton.actuators.TransmissionDirect` must map
-                them onto one actuator coordinate.
+                velocity-shaped arrays, shape ``(N,)`` with one joint per
+                actuator, or ``(joints, N)``: entry ``[j, i]`` is the DOF of
+                the ``j``-th joint of actuator ``i``. The *transmission* reads
+                the joint velocities through them. With more than one joint,
+                a *transmission* other than
+                :class:`~newton.actuators.TransmissionDirect` must map them
+                onto one actuator coordinate.
             drive: Drive that computes effort without a motor, or duty with a motor.
             delay: Deprecated in Newton 1.9; pass the delay in
                 ``input_processors`` instead.
@@ -460,11 +473,9 @@ class Actuator:
             warnings.warn(_DELAY_KEYWORD_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
             input_processors.insert(0, delay)
 
-        self.indices = _as_rows(indices, "indices")
-        """DOF indices of the driven joints into velocity-shaped arrays, shape ``(joints, N)``."""
-        num_actuators = self.indices.shape[1]
-        self.pos_indices = _as_rows(pos_indices, "pos_indices") if pos_indices is not None else self.indices
-        """Indices of the driven joints into coordinate-shaped arrays, shape ``(joints, N)``."""
+        self.indices = indices
+        num_actuators = self._indices.shape[1]
+        self.pos_indices = pos_indices if pos_indices is not None else self._indices
         self.sensor = sensor
         """Sensor measuring the joint positions before the transmission, or ``None``."""
         self.transmission = transmission if transmission is not None else TransmissionDirect()
@@ -479,29 +490,28 @@ class Actuator:
                 f"{type(self.transmission).__name__} reads per-actuator targets, which requires actuator_indices"
             )
         if target_pos_indices is None:
-            target_pos_indices = actuator_indices if self._actuator_space_targets else self.pos_indices[0]
+            target_pos_indices = actuator_indices if self._actuator_space_targets else self._pos_indices[0]
         self.target_pos_indices = target_pos_indices
         """Indices into the target position array, shape ``(N,)``."""
-        self._target_vel_indices = actuator_indices if self._actuator_space_targets else self.indices[0]
-        self.effort_indices = _as_rows(effort_indices, "effort_indices") if effort_indices is not None else self.indices
-        """DOF indices of the driven joints into effort output arrays, shape ``(joints, N)``."""
+        self._target_vel_indices = actuator_indices if self._actuator_space_targets else self._indices[0]
+        self.effort_indices = effort_indices if effort_indices is not None else self._indices
         self.actuator_indices = actuator_indices
         """Index of each actuator into per-actuator arrays, or ``None``."""
         if actuator_indices is not None and actuator_indices.shape != (num_actuators,):
             raise ValueError(f"actuator_indices shape {actuator_indices.shape} must be ({num_actuators},)")
-        if self.pos_indices.shape != self.indices.shape:
+        if self._pos_indices.shape != self._indices.shape:
             raise ValueError(
                 f"pos_indices shape {self.pos_indices.shape} must match indices shape {self.indices.shape}"
             )
         if self.target_pos_indices.shape != (num_actuators,):
             raise ValueError(f"target_pos_indices shape {self.target_pos_indices.shape} must be ({num_actuators},)")
-        if self.effort_indices.shape != self.indices.shape:
+        if self._effort_indices.shape != self._indices.shape:
             raise ValueError(
                 f"effort_indices shape {self.effort_indices.shape} must match indices shape {self.indices.shape}"
             )
-        if self.indices.shape[0] > 1 and not self._actuator_space_targets:
+        if self._indices.shape[0] > 1 and not self._actuator_space_targets:
             raise ValueError(
-                f"indices has {self.indices.shape[0]} joints per actuator; add a transmission that maps them "
+                f"indices has {self._indices.shape[0]} joints per actuator; add a transmission that maps them "
                 "onto one actuator coordinate, e.g. TransmissionFixed"
             )
         if self._actuator_space_targets and drive.custom_inputs:
@@ -549,7 +559,7 @@ class Actuator:
         if self._uses_battery and actuator_indices is None:
             raise ValueError(f"{type(motor).__name__} draws from a battery, which requires actuator_indices")
 
-        self.device = self.indices.device
+        self.device = self._indices.device
         self.requires_grad = requires_grad
         self._computed_forces = wp.zeros(
             self.num_actuators, dtype=wp.float32, device=self.device, requires_grad=requires_grad
@@ -577,12 +587,55 @@ class Actuator:
         if motor is not None:
             motor.finalize(self.device, self.num_actuators, requires_grad=requires_grad)
         if sensor is not None:
-            sensor.finalize(self.device, self.num_actuators, self.pos_indices.shape[0], requires_grad=requires_grad)
+            sensor.finalize(self.device, self.num_actuators, self._pos_indices.shape[0], requires_grad=requires_grad)
         self.transmission.finalize(
-            self.device, self.num_actuators, self.effort_indices.shape[0], requires_grad=requires_grad
+            self.device, self.num_actuators, self._effort_indices.shape[0], requires_grad=requires_grad
         )
 
         self.set_effort_mode_explicit()
+
+    @property
+    def indices(self) -> wp.array[wp.uint32] | wp.array2d[wp.uint32]:
+        """DOF indices of the driven joints into velocity-shaped arrays.
+
+        Shape ``(N,)`` when each actuator drives one joint, otherwise
+        ``(joints, N)``. A reassigned array must have the same shape.
+        """
+        return self._indices_view
+
+    @indices.setter
+    def indices(self, value: wp.array[wp.uint32] | wp.array2d[wp.uint32]) -> None:
+        rows = _as_rows(value, "indices")
+        previous = getattr(self, "_indices", None)
+        _check_reassigned_shape("indices", rows, previous)
+        self._indices = rows
+        self._indices_view = _as_view(rows)
+        if previous is not None and not self._actuator_space_targets:
+            self._target_vel_indices = rows[0]
+
+    @property
+    def pos_indices(self) -> wp.array[wp.uint32] | wp.array2d[wp.uint32]:
+        """Indices of the driven joints into coordinate-shaped arrays, shaped like :attr:`indices`."""
+        return self._pos_indices_view
+
+    @pos_indices.setter
+    def pos_indices(self, value: wp.array[wp.uint32] | wp.array2d[wp.uint32]) -> None:
+        rows = _as_rows(value, "pos_indices")
+        _check_reassigned_shape("pos_indices", rows, getattr(self, "_pos_indices", None))
+        self._pos_indices = rows
+        self._pos_indices_view = _as_view(self._pos_indices)
+
+    @property
+    def effort_indices(self) -> wp.array[wp.uint32] | wp.array2d[wp.uint32]:
+        """DOF indices of the driven joints into effort output arrays, shaped like :attr:`indices`."""
+        return self._effort_indices_view
+
+    @effort_indices.setter
+    def effort_indices(self, value: wp.array[wp.uint32] | wp.array2d[wp.uint32]) -> None:
+        rows = _as_rows(value, "effort_indices")
+        _check_reassigned_shape("effort_indices", rows, getattr(self, "_effort_indices", None))
+        self._effort_indices = rows
+        self._effort_indices_view = _as_view(self._effort_indices)
 
     def sim_state(self) -> Any:
         """Return an empty container with the fields this actuator reads from ``sim_state``.
@@ -753,7 +806,7 @@ class Actuator:
             options,
             self.num_actuators,
             self.device,
-            self.indices[0],
+            self._indices[0],
         )
 
     def set_effort_mode_explicit(self) -> None:
@@ -924,13 +977,13 @@ class Actuator:
                 supply_voltage = wp.empty_like(supply_voltage)
 
         # --- 0. Sensor and transmission state: actuator position and velocity ---
-        measured_positions, measured_pos_indices = positions, self.pos_indices
+        measured_positions, measured_pos_indices = positions, self._pos_indices
         if self.sensor is not None:
             measured_positions, measured_pos_indices = self.sensor.compute(
-                positions, self.pos_indices, device=self.device
+                positions, self._pos_indices, device=self.device
             )
         actuator_positions, actuator_pos_indices, motor_velocities, motor_vel_indices = self.transmission.compute_state(
-            measured_positions, velocities, measured_pos_indices, self.indices, device=self.device
+            measured_positions, velocities, measured_pos_indices, self._indices, device=self.device
         )
 
         # --- 1. Input processors (read current_state, write next_state) ---
@@ -1011,11 +1064,11 @@ class Actuator:
         self.transmission.compute(
             positions,
             velocities,
-            self.pos_indices,
-            self.indices,
+            self._pos_indices,
+            self._indices,
             output_forces,
             computed_forces,
-            self.effort_indices,
+            self._effort_indices,
             applied_output,
             computed_output,
             device=self.device,

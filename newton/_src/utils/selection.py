@@ -2483,7 +2483,7 @@ class ArticulationView:
         during CUDA graph capture when the device's memory pool is enabled.
 
         Note:
-            Maps each actuator to its first DOF, ``actuator.indices[0]``.
+            Maps each actuator to the DOF of its first joint.
 
         Returns array of shape (world_count * dofs_per_world,) where each element is:
         - actuator parameter index if that DOF is actuated
@@ -2517,7 +2517,7 @@ class ArticulationView:
             wp.launch(
                 _build_actuator_dof_lookup_kernel,
                 dim=actuator.num_actuators,
-                inputs=[actuator.indices[0]],
+                inputs=[actuator._indices[0]],
                 outputs=[lookup],
                 device=device,
             )
@@ -2556,8 +2556,8 @@ class ArticulationView:
 
         The returned array covers all DOFs selected by the view (one column
         per DOF, one row per world).  Each actuator maps to the first DOF of
-        its joints (``actuator.indices[0]``), which contains the
-        corresponding value gathered from ``component.<name>``; all other
+        its joints, which contains the corresponding value gathered from
+        ``component.<name>``; all other
         DOFs, including further joints of an actuator with a transmission,
         are left at zero.  If several actuators of *actuator* share that
         first DOF, the one with the highest index wins.
@@ -2616,7 +2616,7 @@ class ArticulationView:
         per world).  Only entries whose DOFs are actually driven by *actuator*
         are written back to ``component.<name>``; the rest are ignored.
         As in :meth:`get_actuator_parameter`, each actuator maps to the first
-        DOF of its joints, ``actuator.indices[0]``, and the actuator with the
+        DOF of its joints, and the actuator with the
         highest index wins if several share it.
 
         The first eager :meth:`get_actuator_parameter` or :meth:`set_actuator_parameter` call for

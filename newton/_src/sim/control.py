@@ -91,6 +91,10 @@ class Control:
     def clear(self, model: Model | None = None) -> None:
         """Reset all control inputs to zero.
 
+        This includes the per-actuator targets and feedforward
+        (``actuator_target_pos``, ``actuator_target_vel`` and
+        ``actuator_feedforward``) of actuators with a transmission.
+
         ``joint_target_q`` is special: zeroing it corrupts
         FREE/BALL/DISTANCE quaternion slots (``(0,0,0,0)`` is not a valid
         rotation). Pass ``model`` to restore it from ``model.joint_target_q``
@@ -119,6 +123,10 @@ class Control:
             self.joint_target_qd.zero_()
         if self.joint_act is not None:
             self.joint_act.zero_()
+        for name in ("actuator_target_pos", "actuator_target_vel", "actuator_feedforward"):
+            array = getattr(self, name, None)
+            if isinstance(array, wp.array):
+                array.zero_()
         self._clear_namespaced_arrays()
 
     def _clear_namespaced_arrays(self) -> None:

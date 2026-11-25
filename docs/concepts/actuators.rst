@@ -126,8 +126,8 @@ effort at its end; the others are applied in this order:
    a clamp, then multiplies it by the actual fixed or battery supply voltage.
 
 An actuator drives one or more joints (:attr:`Actuator.indices`, shape
-``(joints, N)``) and works with one **actuator coordinate** ``s`` per
-actuator.  With :class:`TransmissionFixed`, ``s = Σ gear·q`` and joint ``j``
+``(N,)`` with one joint per actuator, ``(joints, N)`` otherwise) and works
+with one **actuator coordinate** ``s`` per actuator.  With :class:`TransmissionFixed`, ``s = Σ gear·q`` and joint ``j``
 receives ``efficiency_j · gear_j · τ``, with ``efficiency`` 1 by default; the
 efficiency scales only the effort.  The drive, its targets and gains, the clamps and the
 motor all work in actuator units, as in MuJoCo.  For example, with
@@ -277,7 +277,7 @@ components directly:
 
 .. testcode:: actuator-usage
 
-   indices = wp.array([[0]], dtype=wp.uint32)
+   indices = wp.array([0], dtype=wp.uint32)
    kp = wp.array([100.0], dtype=wp.float32)
    kd = wp.array([10.0], dtype=wp.float32)
    max_e = wp.array([50.0], dtype=wp.float32)
