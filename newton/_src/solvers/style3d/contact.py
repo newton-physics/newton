@@ -389,15 +389,16 @@ def soft_contact_off_diag_multiply_kernel(
 class Contact:
     """Assemble contact forces and retain per-iteration matrix-free tangents.
 
-    Handle rigid-rigid and particle-rigid contacts in [particles, affine bodies].
+    Handle rigid-rigid and particle-shape contacts in [particles, affine bodies].
     Bodies outside the active solve contribute prescribed motion through their
-    inertial targets. Particle-only solves retain the cloth collision path.
+    inertial targets. World-attached shapes need no affine coordinates.
     """
 
     def __init__(self, model: Model, particle_count: int) -> None:
         self.model = model
         self.particle_count = particle_count
-        self._tangents = wp.zeros(model.rigid_contact_max or 0, dtype=ContactTangent, device=model.device)
+        rigid_contact_max = (model.rigid_contact_max or 0) if model.body_count else 0
+        self._tangents = wp.zeros(rigid_contact_max, dtype=ContactTangent, device=model.device)
         self._soft_tangents = wp.zeros(0, dtype=SoftContactTangent, device=model.device)
 
     def eval_contacts(
@@ -417,43 +418,51 @@ class Contact:
             self._soft_tangents.zero_()
             return
 
-        if contacts.rigid_contact_max > len(self._tangents):
-            self._tangents = wp.zeros(contacts.rigid_contact_max, dtype=ContactTangent, device=self.model.device)
-
         offset = self.particle_count
-        wp.launch(
-            eval_contact_kernel,
-            dim=len(self._tangents),
-            inputs=[
-                x[offset:],
-                x_prev[offset:],
-                x_inertia[offset:],
-                solver_flags[offset:],
-                self.model.body_com,
-                self.model.shape_body,
-                self.model.shape_material_ke,
-                self.model.shape_material_kd,
-                self.model.shape_material_kf,
-                self.model.shape_material_mu,
-                contacts.rigid_contact_count,
-                contacts.rigid_contact_shape0,
-                contacts.rigid_contact_shape1,
-                contacts.rigid_contact_point0,
-                contacts.rigid_contact_point1,
-                contacts.rigid_contact_offset0,
-                contacts.rigid_contact_offset1,
-                contacts.rigid_contact_normal,
-                contacts.rigid_contact_margin0,
-                contacts.rigid_contact_margin1,
-                contacts.rigid_contact_stiffness,
-                contacts.rigid_contact_damping,
-                contacts.rigid_contact_friction,
-                contacts.rigid_contact_surface_velocity,
-                dt,
-            ],
-            outputs=[rhs[offset:], diag[offset:], self._tangents],
-            device=self.model.device,
-        )
+        has_bodies = self.model.body_count > 0
+        affine_x = x[offset:] if has_bodies else None
+        affine_prev = x_prev[offset:] if has_bodies else None
+        affine_inertia = x_inertia[offset:] if has_bodies else None
+        affine_flags = solver_flags[offset:] if has_bodies else None
+
+        if has_bodies:
+            if contacts.rigid_contact_max > len(self._tangents):
+                self._tangents = wp.zeros(contacts.rigid_contact_max, dtype=ContactTangent, device=self.model.device)
+
+            wp.launch(
+                eval_contact_kernel,
+                dim=len(self._tangents),
+                inputs=[
+                    affine_x,
+                    affine_prev,
+                    affine_inertia,
+                    affine_flags,
+                    self.model.body_com,
+                    self.model.shape_body,
+                    self.model.shape_material_ke,
+                    self.model.shape_material_kd,
+                    self.model.shape_material_kf,
+                    self.model.shape_material_mu,
+                    contacts.rigid_contact_count,
+                    contacts.rigid_contact_shape0,
+                    contacts.rigid_contact_shape1,
+                    contacts.rigid_contact_point0,
+                    contacts.rigid_contact_point1,
+                    contacts.rigid_contact_offset0,
+                    contacts.rigid_contact_offset1,
+                    contacts.rigid_contact_normal,
+                    contacts.rigid_contact_margin0,
+                    contacts.rigid_contact_margin1,
+                    contacts.rigid_contact_stiffness,
+                    contacts.rigid_contact_damping,
+                    contacts.rigid_contact_friction,
+                    contacts.rigid_contact_surface_velocity,
+                    dt,
+                ],
+                outputs=[rhs[offset:], diag[offset:], self._tangents],
+                device=self.model.device,
+            )
+
         if self.particle_count:
             contacts._assert_particle_only_soft_contacts("SolverStyle3D")
             if contacts.soft_contact_max > len(self._soft_tangents):
@@ -466,10 +475,10 @@ class Contact:
                 inputs=[
                     x,
                     x_prev,
-                    x[offset:],
-                    x_prev[offset:],
-                    x_inertia[offset:],
-                    solver_flags[offset:],
+                    affine_x,
+                    affine_prev,
+                    affine_inertia,
+                    affine_flags,
                     self.model.body_com,
                     self.model.particle_radius,
                     self.model.shape_body,
@@ -494,6 +503,9 @@ class Contact:
 
     def off_diag_multiply(self, x: wp.array[wp.vec3], Ax: wp.array[wp.vec3]) -> None:
         """Add the cached contact off-diagonal product to caller-owned storage."""
+        if not self.model.body_count:
+            return
+
         wp.launch(
             contact_off_diag_multiply_kernel,
             dim=len(self._tangents),

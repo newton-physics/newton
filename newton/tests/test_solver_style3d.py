@@ -1097,9 +1097,10 @@ def test_rigid_contact_linear_system(test, device):
 
 
 def test_soft_contact_linear_system(test, device):
-    """Couple particle and affine contact forces, diagonals, and PCG products."""
+    """Verify soft contact forces and the linear solve with and without affine bodies."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     newton.solvers.SolverStyle3D.register_custom_attributes(builder)
+    particle_radius = 0.1
     newton.solvers.style3d.add_cloth_grid(
         builder,
         pos=(0.2, -0.1, 0.08),
@@ -1110,15 +1111,16 @@ def test_soft_contact_linear_system(test, device):
         cell_x=0.5,
         cell_y=0.5,
         mass=0.5,
-        particle_radius=0.1,
+        particle_radius=particle_radius,
         tri_aniso_ke=wp.vec3(0.0),
         edge_aniso_ke=wp.vec3(0.0),
     )
+    cfg = newton.ModelBuilder.ShapeConfig(density=0.0, margin=0.02, mu=0.8)
+    ground = builder.add_ground_plane(cfg=cfg)
+    body_free_model = builder.finalize(device=device)
     pose = wp.transform(wp.vec3(0.1, 0.05, -0.1), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.4))
     body = builder.add_link(xform=pose, com=(0.03, -0.02, 0.01), mass=2.0, inertia=wp.mat33(np.eye(3) * 0.4))
-    cfg = newton.ModelBuilder.ShapeConfig(density=0.0, margin=0.02, mu=0.8)
-    builder.add_shape_box(body, hx=0.3, hy=0.3, hz=0.1, cfg=cfg)
-    builder.add_ground_plane(cfg=cfg)
+    box = builder.add_shape_box(body, hx=0.3, hy=0.3, hz=0.1, cfg=cfg)
     model = builder.finalize(device=device)
     model.soft_contact_ke = 400.0
     model.soft_contact_kd = 3.0
@@ -1130,7 +1132,7 @@ def test_soft_contact_linear_system(test, device):
     contacts = newton.Contacts(0, 2, device=device)
     contacts.soft_contact_count.fill_(1)
     contacts.soft_contact_particle.fill_(0)
-    contacts.soft_contact_shape.fill_(0)
+    contacts.soft_contact_shape.fill_(box)
     contacts.soft_contact_normal.fill_(wp.vec3(0.0, 0.0, 1.0))
     point_world = wp.vec3(0.2, -0.1, 0.0)
     local_point = np.array(wp.transform_point(wp.transform_inverse(pose), point_world))
@@ -1154,7 +1156,7 @@ def test_soft_contact_linear_system(test, device):
             state_in.body_qd.fill_(wp.spatial_vector(0.0, 0.0, 0.2 if kinematic else 0.0, 0.0, 0.0, 0.0))
             state_out.body_q.fill_(wp.transform_identity())
             state_out.body_qd.fill_(wp.spatial_vector(17.0))
-            contacts.soft_contact_shape.fill_(1 if mode == "static" else 0)
+            contacts.soft_contact_shape.fill_(ground if mode == "static" else box)
             contacts.soft_contact_body_pos.fill_(point_world if mode == "static" else wp.vec3(local_point))
             surface = wp.vec3(5.0 if mode == "slip" else 0.01, 0.0, -0.03 if mode == "separating" else 0.03)
             contacts.soft_contact_body_vel.fill_(surface)
@@ -1176,7 +1178,7 @@ def test_soft_contact_linear_system(test, device):
             else:
                 relative = w @ current
                 surface_world = current[5:].T @ np.array(surface)
-            gap = relative[2] - 0.12
+            gap = relative[2] - particle_radius - cfg.margin
             velocity = w @ (current - initial) / dt - surface_world
             gn = 400.0 * gap + 3.0 * min(velocity[2], 0.0)
             ht = np.diag([1.0, 1.0, 0.0])
@@ -1222,7 +1224,7 @@ def test_soft_contact_linear_system(test, device):
             if mode == "pinned":
                 np.testing.assert_array_equal(state_out.particle_q.numpy(), state_in.particle_q.numpy())
 
-    contacts.soft_contact_shape.fill_(0)
+    contacts.soft_contact_shape.fill_(box)
     contacts.soft_contact_body_pos.fill_(wp.vec3(local_point))
     config.linear_iterations = 0
     graph = None
@@ -1247,6 +1249,33 @@ def test_soft_contact_linear_system(test, device):
     np.testing.assert_allclose(
         solver._A_diag.numpy(), solver._A_diag_base.numpy()[:, None, None] * np.eye(3), atol=1e-5
     )
+
+    body_free_model.soft_contact_ke = model.soft_contact_ke
+    body_free_model.soft_contact_kd = model.soft_contact_kd
+    body_free_model.soft_contact_mu = model.soft_contact_mu
+    config.linear_iterations = 4
+    body_free_solver = newton.solvers.SolverStyle3D(
+        body_free_model, config=config, dynamics=newton.solvers.SolverStyle3D.Dynamics.ALL
+    )
+    cloth_in, cloth_out = body_free_model.state(), body_free_model.state()
+    surface_speed = 0.1
+    contacts.soft_contact_count.fill_(1)
+    contacts.soft_contact_shape.fill_(ground)
+    contacts.soft_contact_body_pos.fill_(point_world)
+    contacts.soft_contact_body_vel.fill_(wp.vec3(surface_speed, 0.0, 0.0))
+    initial = cloth_in.particle_q.numpy()
+    mass_diag = body_free_model.particle_mass.numpy()[0] / dt**2
+    penetration = particle_radius + cfg.margin - initial[0, 2]
+    ke = body_free_model.soft_contact_ke
+    for kf in (0.0, model.soft_contact_kf):
+        with test.subTest(mode="body_free_static", kf=kf):
+            body_free_model.soft_contact_kf = kf
+            body_free_solver.step(cloth_in, cloth_out, None, contacts, dt)
+            expected = initial.copy()
+            # The prescribed surface speed keeps friction below the Coulomb limit.
+            expected[0, 0] += kf * surface_speed / (mass_diag + kf / dt)
+            expected[0, 2] += ke * penetration / (mass_diag + ke)
+            np.testing.assert_allclose(cloth_out.particle_q.numpy(), expected, atol=3e-6)
 
 
 def test_rigid_contact_stacking(test, device):

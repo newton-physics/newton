@@ -513,7 +513,8 @@ class SolverStyle3D(SolverBase):
         self._particle_count = model.particle_count if enable_deformable else 0
         self._affine_body_count = model.body_count if enable_affine_body else 0
         self._dof_block_count = self._particle_count + self._affine_body_count * 4
-        self._contact = Contact(model, self._particle_count) if self._affine_body_count else None
+        # The affine contact law also applies to world-attached shapes in a body-free model.
+        self._contact = Contact(model, self._particle_count) if enable_affine_body and self._dof_block_count else None
         self._affine_body = AffineBody(model) if self._affine_body_count else None
         self._linear_solver = PcgSolver(self._dof_block_count, self.device)
         self.collision = Collision(model) if self._particle_count else None
