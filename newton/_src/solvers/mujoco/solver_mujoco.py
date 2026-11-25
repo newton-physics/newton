@@ -6276,7 +6276,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             ):
                 self._notify_connect_constraints_changed(
                     update_connect_constraint_anchor_rel_xform_at_ref_pose,
-                    update_connect_constraint_anchors,
+                    bool(flags & ModelFlags.JOINT_PROPERTIES),
                 )
             if flags & ModelFlags.CONSTRAINT_PROPERTIES:
                 self._sync_equality_properties_to_mujoco_cpu()
@@ -6313,7 +6313,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     ):
                         self._notify_connect_constraints_changed(
                             update_connect_constraint_anchor_rel_xform_at_ref_pose,
-                            update_connect_constraint_anchors,
+                            bool(flags & ModelFlags.JOINT_PROPERTIES),
                         )
 
             if flags and getattr(self, "enable_sleeping", False) and not getattr(self, "_initial_model_sync", False):
@@ -11163,7 +11163,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
     def _notify_connect_constraints_changed(
         self,
         update_anchor_rel_xform_at_ref_pose: bool,
-        update_anchors: bool,
+        update_joint_anchors: bool,
     ):
         """Rewrite the anchors of all CONNECT rows (Newton constraints and loop joints) into ``eq_data``.
 
@@ -11172,7 +11172,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         Args:
             update_anchor_rel_xform_at_ref_pose: Recompute the relative body
                 poses at the reference pose (joint properties changed).
-            update_anchors: Only the Newton constraint anchors changed.
+            update_joint_anchors: Publish edited loop-joint frames and axes.
         """
         if not (self.has_connect_constraints or self.has_jnt_connect_constraints):
             return
@@ -11219,6 +11219,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 model.joint_axis,
                 model.joint_qd_start,
                 self.connect_constraint_X_rel,
+                update_joint_anchors,
             ],
             outputs=[self.mjw_model.eq_data],
             **launch_args,

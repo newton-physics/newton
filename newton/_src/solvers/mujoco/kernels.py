@@ -1481,6 +1481,7 @@ def update_connect_constraint_anchors_kernel(
     joint_axis: wp.array[wp.vec3],
     joint_qd_start: wp.array[wp.int32],
     connect_X_rel: wp.array2d[wp.transform],
+    update_joint_anchors: bool,
     # output
     eq_data_out: wp.array2d[vec12],
 ):
@@ -1503,19 +1504,18 @@ def update_connect_constraint_anchors_kernel(
     newton_jnt = src[1]
 
     data = eq_data_out[world, mjc_eq]
-    anchor = wp.vec3(0.0)
-    if newton_jnt >= 0:
+    if newton_eq < 0 and newton_jnt < 0:
+        return
+
+    # Constant refreshes must not publish pending constraint or joint edits.
+    anchor = wp.vec3(data[0], data[1], data[2])
+    if newton_jnt >= 0 and update_joint_anchors:
         X_p = joint_X_p[newton_jnt]
         anchor = wp.transform_get_translation(X_p)
         side = jnt_connect_hinge_side[world, mjc_eq]
         if side != 0:
             axis = wp.quat_rotate(wp.transform_get_rotation(X_p), joint_axis[joint_qd_start[newton_jnt]])
             anchor = hinge_connect_anchor(anchor, side, axis)
-    elif newton_eq >= 0:
-        # Constant refreshes must not publish pending constraint edits.
-        anchor = wp.vec3(data[0], data[1], data[2])
-    else:
-        return
 
     anchor2 = wp.transform_point(connect_X_rel[world, mjc_eq], anchor)
 
