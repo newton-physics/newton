@@ -22,9 +22,10 @@ import warp as wp
 import newton
 from newton import BodyFlags, JointType, Mesh, ModelFlags, NewtonDeprecationWarning, NewtonWarning
 from newton._src.core.types import vec5
+from newton._src.solvers.mujoco.collision_masks import MUJOCO_COLLISION_MASK_UNSET
 from newton._src.solvers.mujoco.constants import (
     DEFAULT_LIMIT_SOLREF,
-    MJ_MINVAL,
+    FLOAT64_EPS,
     SOLREF_MODE_FORCE_SPACE,
     SOLREF_MODE_MJCF_DEFAULT,
     SOLREF_MODE_RAW,
@@ -89,8 +90,8 @@ def _add_deprecated_mimic_constraint(
 
 
 def _expected_positive_limit_solref(ke: float, kd: float, factor: float) -> np.ndarray:
-    direct_stiffness = max(float(ke) * float(factor), MJ_MINVAL)
-    direct_damping = max(float(kd) * float(factor), MJ_MINVAL)
+    direct_stiffness = max(float(ke) * float(factor), FLOAT64_EPS)
+    direct_damping = max(float(kd) * float(factor), FLOAT64_EPS)
     return np.array(
         [2.0 / direct_damping, direct_damping / (2.0 * math.sqrt(direct_stiffness))],
         dtype=np.float64,
@@ -5790,13 +5791,17 @@ class TestMuJoCoSolverContactKf(unittest.TestCase):
     def test_kf_sets_contact_solreffriction(self):
         """Verify positive kf sets the mixed contact solreffriction."""
         model, solver = self._make_sphere_scene(kf_sphere=800.0, kf_plane=200.0)
-        nacon, _, _ = self._step_and_read_solreffriction(model, solver)
-        solreffriction = solver.mjw_data.contact.solreffriction.numpy()[:nacon]
-        # equal solmix/priority -> mix = 0.5
-        expected = self._expected_solreffriction(solver, nacon, kf_pair=500.0)
-        for i in range(nacon):
-            self.assertAlmostEqual(float(solreffriction[i][0]) / expected[i], 1.0, places=5)
-            self.assertEqual(float(solreffriction[i][1]), 1.0)
+        contact_owners = []
+        for solmix in ((1.0, 1.0), (5e-16, 0.0)):
+            with self.subTest(solmix=solmix):
+                solver.mjw_model.geom_solmix.assign(np.array([solmix], dtype=np.float32))
+                nacon, contact_owner, _ = self._step_and_read_solreffriction(model, solver)
+                contact_owners.append(contact_owner)
+                solreffriction = solver.mjw_data.contact.solreffriction.numpy()[:nacon]
+                expected = self._expected_solreffriction(solver, nacon, kf_pair=500.0)
+                for i in range(nacon):
+                    self.assertAlmostEqual(float(solreffriction[i][0]) / expected[i], 1.0, places=5)
+                    self.assertEqual(float(solreffriction[i][1]), 1.0)
 
     def test_kf_zero_mixes_with_positive_value(self):
         """Verify zero kf participates in the usual contact-material mixing."""
@@ -8074,6 +8079,34 @@ class TestMuJoCoAttributes(unittest.TestCase):
         assert hasattr(model.mujoco, "condim")
         assert np.allclose(model.mujoco.condim.numpy(), [6])
         assert np.allclose(solver.mjw_model.geom_condim.numpy(), [6])
+
+    @requires("pxr.Usd")
+    def test_collision_masks_ignore_mjc_usd_attributes(self):
+        """Warn about and ignore ``mjc:contype`` and ``mjc:conaffinity``, which MjcPhysics does not define."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        prim = UsdGeom.Cube.Define(stage, "/body").GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(prim)
+        UsdPhysics.CollisionAPI.Apply(prim)
+        prim.CreateAttribute("mjc:contype", Sdf.ValueTypeNames.Int, True).Set(2)
+        prim.CreateAttribute("mjc:conaffinity", Sdf.ValueTypeNames.Int, True).Set(4)
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            builder.add_usd(stage)
+        model = builder.finalize()
+
+        messages = [str(w.message) for w in caught if issubclass(w.category, NewtonWarning)]
+        for name in ("mjc:contype", "mjc:conaffinity"):
+            self.assertEqual(
+                sum(f"Ignoring '{name}' on /body" in message for message in messages), 1, msg=f"{name}: {messages}"
+            )
+        self.assertEqual(model.mujoco.contype.numpy().tolist(), [MUJOCO_COLLISION_MASK_UNSET])
+        self.assertEqual(model.mujoco.conaffinity.numpy().tolist(), [MUJOCO_COLLISION_MASK_UNSET])
 
     def test_invalid_tendon_joint_range_remains_unowned(self):
         """Keep a tendon unowned when its joint range exceeds the available rows."""
@@ -10526,6 +10559,213 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
         np.testing.assert_allclose(solver.mj_model.pair_solref, [[0.05, 0.7]], rtol=1e-6)
         np.testing.assert_allclose(solver.mj_model.pair_solimp, [[0.8, 0.9, 0.002, 0.4, 3.0]], rtol=1e-6)
         np.testing.assert_allclose(solver.mj_model.pair_friction, [[0.3, 0.3, 0.004, 0.0002, 0.0002]], rtol=1e-6)
+
+    @requires(*MUJOCO_MODULES)
+    def test_pair_properties_world_zero_only_rows_rejected(self):
+        """Verify that pair rows authored for a single world are rejected.
+
+        ``_init_pairs`` compiles only template-world and global rows, so rows owned
+        by world 0 alone would silently give every other world MuJoCo's defaults.
+        Rows meant for every world use ``pair_world = -1``, so the homogeneity check
+        rejects the single-world layout instead of reading out of bounds for it.
+        """
+        model = self._build_pair_worlds(2, [(0, 0.002), (0, 0.003)])
+
+        with self.assertRaisesRegex(ValueError, "homogeneous worlds.*contact pairs"):
+            SolverMuJoCo(model, iterations=1, disable_sensors=True)
+
+    def _build_pair_worlds(self, world_count, pair_rows):
+        """Build a replicated model whose pair rows are authored by ``pair_rows``.
+
+        Args:
+            world_count: Number of replicated worlds.
+            pair_rows: One ``(pair_world, gap)`` tuple per authored row.
+
+        Returns:
+            The finalized Newton model.
+        """
+        template_builder = newton.ModelBuilder()
+        body_idx = template_builder.add_body()
+        shape1_idx = template_builder.add_shape_box(body=body_idx, hx=0.1, hy=0.1, hz=0.1)
+        shape2_idx = template_builder.add_shape_sphere(body=body_idx, radius=0.1)
+
+        builder = newton.ModelBuilder()
+        builder.add_shape_plane()
+        SolverMuJoCo.register_custom_attributes(builder)
+        for i in range(world_count):
+            builder.add_world(template_builder, xform=wp.transform((i * 2.0, 0.0, 0.0), wp.quat_identity()))
+
+        shapes_per_world = template_builder.shape_count
+        for pair_world, gap in pair_rows:
+            world_shape_offset = 1  # +1 for ground plane
+            if pair_world >= 0:
+                world_shape_offset += pair_world * shapes_per_world
+            builder.add_custom_values(
+                **{
+                    "mujoco:pair_world": pair_world,
+                    "mujoco:pair_geom1": shape1_idx + world_shape_offset,
+                    "mujoco:pair_geom2": shape2_idx + world_shape_offset,
+                    "mujoco:pair_condim": 3,
+                    "mujoco:pair_gap": gap,
+                }
+            )
+        return builder.finalize()
+
+    def _solved_pair_gaps(self, model):
+        """Build a solver for ``model`` and return its per-world pair gaps."""
+        solver = SolverMuJoCo(model, iterations=1, disable_sensors=True)
+        solver.notify_model_changed(ModelFlags.SHAPE_PROPERTIES)
+        return solver.mjw_model.pair_gap.numpy()
+
+    @requires(*MUJOCO_MODULES)
+    def test_pair_properties_global_rows_reach_every_world(self):
+        """Verify that global pair rows reach every world.
+
+        A global row (``pair_world = -1``) belongs to no world, so every world reads
+        it at the absolute index it was authored at. The row count alone cannot
+        express this: it matches the per-world layout exactly, and the arithmetic
+        that inferred the row gave world 1 the wrong row and then read past the end
+        of the arrays for its last pair.
+        """
+        world_count = 2
+        pair_rows = [(-1, 0.002), (-1, 0.003)]
+        model = self._build_pair_worlds(world_count, pair_rows)
+        self.assertEqual(model.custom_frequency_counts.get("mujoco:pair", 0), len(pair_rows))
+
+        expected = np.array(pair_rows, dtype=np.float32)[:, 1]
+        np.testing.assert_allclose(
+            self._solved_pair_gaps(model),
+            np.broadcast_to(expected, (world_count, len(pair_rows))),
+        )
+
+    @requires(*MUJOCO_MODULES)
+    def test_pair_properties_mixed_per_world_and_global_rows(self):
+        """Verify per-world and global pair rows resolving independently.
+
+        Two global rows surround one per-world row per world. A row-count stride
+        misassigns world 1's per-world row to a global row, so the distinct
+        per-world gaps expose it.
+        """
+        world_count = 2
+        pair_rows = [(-1, 0.05), (0, 0.01), (1, 0.02), (-1, 0.06)]
+        model = self._build_pair_worlds(world_count, pair_rows)
+        self.assertEqual(model.custom_frequency_counts.get("mujoco:pair", 0), len(pair_rows))
+
+        np.testing.assert_allclose(
+            self._solved_pair_gaps(model),
+            np.array([[0.05, 0.01, 0.06], [0.05, 0.02, 0.06]], dtype=np.float32),
+        )
+
+    @requires(*MUJOCO_MODULES)
+    def test_pair_properties_skipped_row_does_not_shift_later_rows(self):
+        """Verify that a row ``_init_pairs`` skips does not shift the rows after it.
+
+        Each world authors two rows, the first naming geoms outside the mapping so
+        ``_init_pairs`` skips it. Only world 0's second row compiles, so one MuJoCo
+        pair exists, and the mapping resolves it to row 1 for world 0 and row 3 for
+        world 1. Inferring the row from counts read rows 0 and 2 instead, which are
+        the skipped rows, so the surviving pair took the discarded row's gap.
+        """
+        world_count = 2
+        template_builder = newton.ModelBuilder()
+        body_idx = template_builder.add_body()
+        shape1_idx = template_builder.add_shape_box(body=body_idx, hx=0.1, hy=0.1, hz=0.1)
+        shape2_idx = template_builder.add_shape_sphere(body=body_idx, radius=0.1)
+
+        builder = newton.ModelBuilder()
+        builder.add_shape_plane()
+        SolverMuJoCo.register_custom_attributes(builder)
+        for i in range(world_count):
+            builder.add_world(template_builder, xform=wp.transform((i * 2.0, 0.0, 0.0), wp.quat_identity()))
+
+        shapes_per_world = template_builder.shape_count
+        for w in range(world_count):
+            offset = 1 + w * shapes_per_world
+            # A row whose geoms are unmapped, ahead of the row that must still
+            # resolve, authored once per world so the worlds stay homogeneous.
+            builder.add_custom_values(
+                **{
+                    "mujoco:pair_world": w,
+                    "mujoco:pair_geom1": -1,
+                    "mujoco:pair_geom2": -1,
+                    "mujoco:pair_condim": 3,
+                    "mujoco:pair_gap": 0.5,
+                }
+            )
+            builder.add_custom_values(
+                **{
+                    "mujoco:pair_world": w,
+                    "mujoco:pair_geom1": shape1_idx + offset,
+                    "mujoco:pair_geom2": shape2_idx + offset,
+                    "mujoco:pair_condim": 3,
+                    "mujoco:pair_gap": 0.01 + w * 0.02,
+                }
+            )
+        model = builder.finalize()
+
+        gaps = self._solved_pair_gaps(model)
+
+        # Only world 0's second row compiles, and each world reads the row
+        # it authored for it rather than the skipped row in front of it.
+        self.assertEqual(gaps.shape, (world_count, 1))
+        np.testing.assert_allclose(gaps, np.array([[0.01], [0.03]], dtype=np.float32))
+
+    @requires(*MUJOCO_MODULES)
+    def test_pair_properties_use_compiled_pair_ids(self):
+        """Verify pair property updates use MuJoCo's compiled pair IDs.
+
+        Pairs that span different bodies get distinct pair signatures, so MuJoCo
+        reorders them during compilation. The mapping must therefore read each
+        pair's ID after compilation instead of assuming insertion order.
+        """
+        world_count = 2
+
+        template_builder = newton.ModelBuilder()
+        body1 = template_builder.add_body()
+        shape1 = template_builder.add_shape_box(body=body1, hx=0.1, hy=0.1, hz=0.1)
+        body2 = template_builder.add_body()
+        shape2 = template_builder.add_shape_sphere(body=body2, radius=0.1)
+
+        builder = newton.ModelBuilder()
+        builder.add_shape_plane()
+        SolverMuJoCo.register_custom_attributes(builder)
+        for i in range(world_count):
+            builder.add_world(template_builder, xform=wp.transform((i * 2.0, 0.0, 0.0), wp.quat_identity()))
+
+        shapes_per_world = template_builder.shape_count
+        # Add (body1, body2) first, then (ground, body1): MuJoCo reorders these
+        # by signature, so the compiled IDs differ from insertion order.
+        for w in range(world_count):
+            offset = 1 + w * shapes_per_world
+            s1 = offset + shape1
+            s2 = offset + shape2
+            builder.add_custom_values(
+                **{
+                    "mujoco:pair_world": w,
+                    "mujoco:pair_geom1": s1,
+                    "mujoco:pair_geom2": s2,
+                    "mujoco:pair_condim": 3,
+                    "mujoco:pair_gap": 0.02 + w * 0.10,
+                }
+            )
+            builder.add_custom_values(
+                **{
+                    "mujoco:pair_world": w,
+                    "mujoco:pair_geom1": 0,
+                    "mujoco:pair_geom2": s1,
+                    "mujoco:pair_condim": 3,
+                    "mujoco:pair_gap": 0.01 + w * 0.10,
+                }
+            )
+
+        model = builder.finalize()
+        self.assertEqual(model.custom_frequency_counts.get("mujoco:pair", 0), world_count * 2)
+
+        gaps = self._solved_pair_gaps(model)
+        np.testing.assert_allclose(
+            gaps,
+            np.array([[0.01, 0.02], [0.11, 0.12]], dtype=np.float32),
+        )
 
     @requires(*MUJOCO_MODULES)
     def test_global_pair_exported_to_spec(self):
@@ -14741,7 +14981,7 @@ class TestMuJoCoSolverForceSpaceContactSolref(unittest.TestCase):
         invw_b = float(body_invweight0[0, body_b, 0]) if body_b >= 0 else 0.0
         dmax = float(solver.mjw_data.contact.solimp.numpy()[contact_idx, 1])
         factor = (invw_a + invw_b) * (1.0 - dmax)
-        solref = convert_solref(max(ke * factor, MJ_MINVAL), max(kd * factor, MJ_MINVAL), 1.0, 1.0)
+        solref = convert_solref(max(ke * factor, FLOAT64_EPS), max(kd * factor, FLOAT64_EPS), 1.0, 1.0)
         return float(solref[0]), float(solref[1])
 
     def test_force_space_contact_solref_uses_invweight0_and_dmax(self):
@@ -15026,7 +15266,7 @@ class TestMuJoCoSolverForceSpaceContactSolref(unittest.TestCase):
         self._run_to_first_contact(model, solver)
         actual_solref = solver.mjw_data.contact.solref.numpy()[0]
         # dmax=1 zeroes the factor → override skipped; solref[0] stays sub-1.0
-        # instead of the ~2/MJ_MINVAL a fired override would produce.
+        # instead of the ~2/FLOAT64_EPS a fired override would produce.
         self.assertLess(float(actual_solref[0]), 1.0)
 
     def test_force_space_contact_stiff_contact_stays_finite(self):

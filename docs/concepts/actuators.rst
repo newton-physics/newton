@@ -989,7 +989,7 @@ Each applied API schema becomes one component:
    * - ``NewtonActuatorDelayAPI``, ``NewtonActuatorEncoderAPI`` with ``newton:outputJoint``
      - :class:`InputProcessorDelay`, :class:`InputProcessorEncoder`
    * - A ``NewtonConstantResistanceBattery`` prim, targeted by the actuator's
-       ``newton:battery`` relationship
+       ``newton:supply`` relationship
      - :class:`BatteryConstantResistance`, added with
        :meth:`~newton.ModelBuilder.add_battery`
 

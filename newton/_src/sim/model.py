@@ -521,6 +521,7 @@ class Model:
         "particle_q": AttributeSpec(AttributeFrequency.PARTICLE),
         "particle_qd": AttributeSpec(AttributeFrequency.PARTICLE),
         "particle_f": AttributeSpec(AttributeFrequency.PARTICLE),
+        "particle_target_q": AttributeSpec(AttributeFrequency.PARTICLE),
         "particle_mass": AttributeSpec(AttributeFrequency.PARTICLE, update_flags=ModelFlags.MODEL_PROPERTIES),
         "particle_inv_mass": AttributeSpec(AttributeFrequency.PARTICLE),
         "particle_radius": AttributeSpec(AttributeFrequency.PARTICLE, update_flags=ModelFlags.MODEL_PROPERTIES),
@@ -958,7 +959,6 @@ class Model:
             """
             object.__setattr__(self, "_name", name)
             object.__setattr__(self, "_deprecated_aliases", {})
-            object.__setattr__(self, "_removed_attributes", {})
 
         def add_deprecated_alias(self, name: str, getter: Callable[[], Any], message: str) -> None:
             """Add a deprecated attribute alias.
@@ -986,9 +986,6 @@ class Model:
             self._deprecated_aliases[name] = (getter, message)
 
         def __getattr__(self, name: str) -> Any:
-            removed = self.__dict__.get("_removed_attributes", {}).get(name)
-            if removed is not None:
-                return removed.__get__(self)
             aliases = self.__dict__.get("_deprecated_aliases", {})
             if name in aliases:
                 getter, message = aliases[name]
@@ -998,9 +995,6 @@ class Model:
 
         def __setattr__(self, name: str, value: Any) -> None:
             if not name.startswith("_"):
-                removed = self.__dict__.get("_removed_attributes", {}).get(name)
-                if removed is not None:
-                    removed.__set__(self, value)
                 aliases = object.__getattribute__(self, "__dict__").get("_deprecated_aliases", {})
                 if name in aliases:
                     getter, message = aliases[name]
@@ -1011,12 +1005,6 @@ class Model:
                         return
                     raise AttributeError(f"Deprecated alias '{self._name}.{name}' does not support assignment")
             object.__setattr__(self, name, value)
-
-        def __delattr__(self, name: str) -> None:
-            removed = self.__dict__.get("_removed_attributes", {}).get(name)
-            if removed is not None:
-                removed.__delete__(self)
-            object.__delattr__(self, name)
 
         def __repr__(self):
             """Return a string representation showing the namespace and its attributes."""
@@ -1064,7 +1052,7 @@ class Model:
         self.particle_grid: wp.HashGrid | None = None
         """HashGrid instance for accelerated simulation of particle interactions."""
         self.particle_flags: wp.array[wp.int32] | None = None
-        """Particle enabled state, shape [particle_count], int."""
+        """Particle flags (:class:`~newton.ParticleFlags`), shape [particle_count], int."""
         self.particle_max_velocity: float = 1e5
         """Maximum particle velocity [m/s] (to prevent instability)."""
         self.particle_world: wp.array[wp.int32] | None = None
@@ -2922,6 +2910,7 @@ class Model:
             requires_grad: Whether the control variables should have `requires_grad` enabled.
                 If None, uses the model's :attr:`requires_grad` setting.
             clone_variables: If True, clone the control input arrays; if False, use references.
+                With ``False``, :attr:`Control.particle_target_q` is ``None``.
 
         Returns:
             The initialized control object.
@@ -2943,6 +2932,8 @@ class Model:
                 c.tet_activations = wp.clone(self.tet_activations, requires_grad=requires_grad)
             if self.muscle_count:
                 c.muscle_activations = wp.clone(self.muscle_activations, requires_grad=requires_grad)
+            if self.particle_count:
+                c.particle_target_q = wp.clone(self.particle_q, requires_grad=requires_grad)
         else:
             c.joint_target_q = self.joint_target_q
             c.joint_target_qd = self.joint_target_qd

@@ -187,7 +187,7 @@ class TestJointSprings(unittest.TestCase):
                     np.testing.assert_allclose(model.joint_limit_upper.numpy()[-1], np.pi / 6 - offset, atol=1e-6)
 
     def test_legacy_spring_runtime_compatibility(self):
-        """Keep stiffness edits live through the warning alias and reject removed rest-reference access."""
+        """Keep stiffness edits live through the warning alias."""
         model = _slider_builder(register=True).finalize(device="cpu")
         view = ModelView(model, "spring")
         view.joint_stiffness = wp.clone(model.joint_stiffness)
@@ -202,12 +202,6 @@ class TestJointSprings(unittest.TestCase):
                 with self.assertWarns(DeprecationWarning):
                     owner.mujoco.dof_passive_stiffness = [5.0]
                 np.testing.assert_array_equal(owner.joint_stiffness.numpy(), [5.0])
-                with self.assertRaisesRegex(AttributeError, "deprecated.*nonzero mujoco:dof_ref.*springref - ref"):
-                    _ = owner.mujoco.dof_springref
-                with self.assertRaisesRegex(AttributeError, "joint_rest_q.*springref - ref"):
-                    owner.mujoco.dof_springref = [0.5]
-                with self.assertRaisesRegex(AttributeError, "joint_rest_q.*springref - ref"):
-                    del owner.mujoco.dof_springref
         view.joint_stiffness.assign([7.0])
         np.testing.assert_array_equal(model.joint_stiffness.numpy(), [5.0])
         self.assertTrue(model._attribute_spec("mujoco:dof_passive_stiffness").deprecated)
@@ -229,10 +223,7 @@ class TestJointSprings(unittest.TestCase):
                 builder.add_articulation(joints, label="arm")
                 model = builder.finalize(device="cpu")
                 if ball:
-                    with self.assertRaisesRegex(
-                        AttributeError, "deprecated.*more coordinates than DOFs.*joint_rest_q.*springref - ref"
-                    ):
-                        _ = model.mujoco.dof_springref
+                    self.assertFalse(hasattr(model.mujoco, "dof_springref"))
                     continue
                 view = ModelView(model, "spring")
                 for owner in (model, view):
@@ -510,8 +501,6 @@ class TestJointSpringDynamics(unittest.TestCase):
                     with self.assertWarns(DeprecationWarning):
                         compact_view.mujoco.dof_passive_stiffness = [3.0]
                     np.testing.assert_allclose(model.joint_stiffness.numpy()[-1], 4.0)
-                    with self.assertRaisesRegex(AttributeError, "joint_rest_q"):
-                        compact_view.mujoco.dof_springref = [0.5]
                 rest = model.joint_rest_q.numpy()
                 rest[-1] = 0.5
                 model.joint_rest_q.assign(rest)

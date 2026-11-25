@@ -387,23 +387,163 @@ def _make_sliding_root_solver(
     return solve_sliding_root
 
 
-@wp.func
-def _shifted_solve_mat22(schur: wp.vec3f, rhs: wp.vec2f, alpha: wp.float32):
-    """Solve ``(S + alpha I) s = rhs`` and ``(S + alpha I) t = s`` for ``S = [[x, y], [y, z]]``."""
-    a00 = schur[0] + alpha
-    a01 = schur[1]
-    a11 = schur[2] + alpha
-    inverse_determinant = 1.0 / (a00 * a11 - a01 * a01)
-    s = wp.vec2f(
-        (a11 * rhs[0] - a01 * rhs[1]) * inverse_determinant, (a00 * rhs[1] - a01 * rhs[0]) * inverse_determinant
-    )
-    t = wp.vec2f((a11 * s[0] - a01 * s[1]) * inverse_determinant, (a00 * s[1] - a01 * s[0]) * inverse_determinant)
-    return s, t
+def _make_sliding_root_quartic(*, iterations: int, tolerance: float):
+    """Build the bracketed Newton solve of the 3D sliding condition on its quartic.
+
+    For the ``2 x 2`` friction Schur complement ``S``, the shifted solution is
+    ``s(alpha) = a(alpha) / det(alpha)`` with the adjugate product
+    ``a(alpha) = adj(S + alpha I) rhs``, linear in ``alpha``, and
+    ``det(alpha) = det(S + alpha I)``, quadratic. With the friction budget
+    ``m(alpha) = c . a - offset det``, also quadratic, the sliding condition
+    ``|s| = c . s - offset`` reads ``|a| = m`` and squares to the quartic
+    ``P(alpha) = m^2 - |a|^2 = 0`` of Bonnefon and Daviet. The solve works in the
+    shift ``x = alpha / alpha_scale`` and divides ``rhs`` and ``offset`` by the
+    larger of ``|offset|`` and ``max(|rhs_0|, |rhs_1|)``: the root is unchanged and the coefficients
+    of ``P`` stay of order one, including under a vanishing normal load, where the
+    root grows like ``|rhs| / |offset|``.
+
+    The coefficients are formed once; each step evaluates ``P``, ``P'`` and ``m``
+    by Horner's rule, without a linear solve or a division. The root is
+    bracketed by doubling ``x`` and refined from the Newton step of the sticking
+    solution, with bisection whenever a Newton step leaves the bracket. When that
+    start lies outside a first bracket ``[0, 1]``, halving from the closed-form
+    bound ``|rhs| (1 + |c|) / -offset`` narrows the bracket to a factor of two
+    first, so that Newton converges within the step budget on roots far below one. An
+    unbracketed root, which a vanishing normal load produces, returns a zero friction
+    impulse. The bracket sign uses ``phi > 0  <=>  m <= 0 or P < 0``. The stopping test
+    ``|P| <= tolerance (|a| + m) max(|a|, |offset| det)`` is the relative test
+    ``|phi| <= tolerance max(|s|, |offset|)`` on the unsquared condition
+    ``phi = |s| - c . s + offset``, since ``phi = (|a| - m) / det``. A bracket that
+    has shrunk to adjacent floats resolves the root to working precision.
+
+    Args:
+        iterations: Maximum number of Newton or bisection steps.
+        tolerance: Relative root tolerance of the unsquared sliding condition.
+    """
+
+    @wp.func
+    def evaluate(
+        a0: wp.vec2f,
+        rhs: wp.vec2f,
+        trace: wp.float32,
+        det0: wp.float32,
+        p3: wp.float32,
+        p2: wp.float32,
+        p1: wp.float32,
+        p0: wp.float32,
+        m2: wp.float32,
+        m1: wp.float32,
+        m0: wp.float32,
+        x: wp.float32,
+    ):
+        """Return ``P``, ``P'``, ``m``, ``a`` and ``det`` at the normalized shift ``x``."""
+        value = (((m2 * m2 * x + p3) * x + p2) * x + p1) * x + p0
+        slope = ((4.0 * m2 * m2 * x + 3.0 * p3) * x + 2.0 * p2) * x + p1
+        budget = (m2 * x + m1) * x + m0
+        return value, slope, budget, a0 + x * rhs, (x + trace) * x + det0
+
+    @wp.func
+    def solve_sliding_root(
+        schur: wp.vec3f,
+        rhs_raw: wp.vec2f,
+        coupling: wp.vec2f,
+        offset: wp.float32,
+        alpha_scale: wp.float32,
+    ):
+        # Normalized system: S + alpha I = alpha_scale (S_hat + x I), with rhs and offset divided by their magnitude
+        inverse_scale = 1.0 / alpha_scale
+        s00 = schur[0] * inverse_scale
+        s01 = schur[1] * inverse_scale
+        s11 = schur[2] * inverse_scale
+        rhs = rhs_raw * inverse_scale
+        # The infinity norm of rhs cannot overflow, unlike its Euclidean length
+        magnitude = wp.max(wp.max(-offset, wp.max(wp.abs(rhs[0]), wp.abs(rhs[1]))), 1.0e-30)
+        inverse_magnitude = 1.0 / magnitude
+        rhs = rhs * inverse_magnitude
+        normalized_offset = offset * inverse_magnitude
+        a0 = wp.vec2f(s11 * rhs[0] - s01 * rhs[1], s00 * rhs[1] - s01 * rhs[0])
+        trace = s00 + s11
+        det0 = s00 * s11 - s01 * s01
+        m2 = -normalized_offset
+        m1 = wp.dot(coupling, rhs) - normalized_offset * trace
+        m0 = wp.dot(coupling, a0) - normalized_offset * det0
+
+        # Sticking test phi(0) <= tolerance max(|s|, |offset|), multiplied through by det(S_hat) > 0
+        a0_norm = wp.length(a0)
+        if a0_norm - m0 <= tolerance * wp.max(a0_norm, m2 * det0):
+            return (magnitude / det0) * a0, _SlidingRootStatus.SOLVED
+
+        p3 = 2.0 * m1 * m2
+        p2 = m1 * m1 + 2.0 * m0 * m2 - wp.dot(rhs, rhs)
+        p1 = 2.0 * m0 * m1 - 2.0 * wp.dot(a0, rhs)
+        p0 = m0 * m0 - a0_norm * a0_norm
+        # Newton step from the sticking solution, the first iterate when it lands inside the bracket
+        start = wp.float32(-1.0)
+        if m0 > 0.0 and p1 != 0.0:
+            start = -p0 / p1
+
+        lower = wp.float32(0.0)
+        upper = wp.float32(1.0)
+        bracketed = bool(False)
+        for _ in range(_ROOT_EXPANSION_STEPS):
+            value, _slope, budget, _a, _det = evaluate(a0, rhs, trace, det0, p3, p2, p1, p0, m2, m1, m0, upper)
+            if wp.isfinite(value) and budget > 0.0 and value >= 0.0:
+                bracketed = True
+                break
+            if wp.isfinite(value):
+                lower = upper
+            upper *= 2.0
+        if not bracketed:
+            # A root beyond the expansion comes from a vanishing normal load, which carries no friction
+            return wp.vec2f(0.0), _SlidingRootStatus.NOT_BRACKETED
+        if lower == 0.0 and not (start > 0.0 and start < upper):
+            # Newton from the bracket midpoint creeps down a root far below it: halve to a factor-2 bracket,
+            # from the closed-form bound |rhs| (1 + |c|) / -offset, past which phi <= 0
+            probe = wp.min(0.5 * upper, wp.length(rhs) * (1.0 + wp.length(coupling)) / -normalized_offset)
+            for _ in range(_ROOT_EXPANSION_STEPS):
+                value, _slope, budget, a, det = evaluate(a0, rhs, trace, det0, p3, p2, p1, p0, m2, m1, m0, probe)
+                if wp.isfinite(value) and budget > 0.0 and value >= 0.0:
+                    upper = probe
+                    probe *= 0.5
+                else:
+                    # As in the expansion, only a finite value bounds the root from below
+                    if wp.isfinite(value):
+                        lower = probe
+                    break
+
+        # The finite bracket rejects a non-finite Newton start or step
+        x = 0.5 * (lower + upper)
+        if start > lower and start < upper:
+            x = start
+        status = wp.int32(_SlidingRootStatus.NOT_CONVERGED)
+        a = a0
+        det = det0
+        for _ in range(iterations):
+            value, slope, budget, a, det = evaluate(a0, rhs, trace, det0, p3, p2, p1, p0, m2, m1, m0, x)
+            a_norm = wp.length(a)
+            if budget > 0.0 and wp.abs(value) <= tolerance * (a_norm + budget) * wp.max(a_norm, m2 * det):
+                status = wp.int32(_SlidingRootStatus.SOLVED)
+                break
+            if budget <= 0.0 or value < 0.0:
+                lower = x
+            else:
+                upper = x
+            candidate = 0.5 * (lower + upper)
+            if candidate <= lower or candidate >= upper:
+                # No float lies strictly inside the bracket, so further steps cannot move x.
+                status = wp.int32(_SlidingRootStatus.SOLVED)
+                break
+            if slope != 0.0:
+                newton = x - value / slope
+                if newton > lower and newton < upper:
+                    candidate = newton
+            x = candidate
+        return (magnitude / det) * a, status
+
+    return solve_sliding_root
 
 
-_solve_sliding_root_mat22 = _make_sliding_root_solver(
-    _shifted_solve_mat22, wp.vec3f, wp.vec2f, iterations=12, tolerance=1.0e-7, newton_margin=0.0
-)
+_solve_sliding_root_quartic = _make_sliding_root_quartic(iterations=12, tolerance=1.0e-7)
 
 
 @wp.func
@@ -434,11 +574,11 @@ def _solve_contact_coulomb_newton_components(
     tangent_rhs = tangent_rhs_raw - (normal_rhs * inverse_normal_delassus) * normal_tangent
     friction_over_normal = friction * inverse_normal_delassus
     alpha_scale = wp.max(wp.max(wp.abs(schur[0]), wp.abs(schur[1])), wp.max(wp.abs(schur[2]), 1.0e-20))
-    # The status is ignored: with a negative normal right-hand side, only non-finite
-    # inputs leave the root unbracketed, and their impulse fails the world through the
-    # body twists; a root left unconverged by the iteration budget is still bracketed,
-    # and the following projection sweeps refine it.
-    s, _status = _solve_sliding_root_mat22(
+    # The status is ignored: an unbracketed root, from a vanishing normal load, returns no
+    # friction, and non-finite inputs fail the world through the body twists; a root left
+    # unconverged by the iteration budget is still bracketed, and the following projection
+    # sweeps refine it.
+    s, _status = _solve_sliding_root_quartic(
         schur,
         tangent_rhs,
         friction_over_normal * normal_tangent,
@@ -460,8 +600,9 @@ def solve_contact_coulomb_newton(
 
     The returned impulse ``reaction`` satisfies the contact law for
     ``velocity = delassus @ reaction + free_velocity``. Sliding contacts are
-    reduced to a scalar root and solved by bracketed Newton. Every rejected or
-    unusable Newton step falls back to bisection of the current bracket.
+    reduced to a scalar quartic in the sliding shift and solved by bracketed
+    Newton. Every rejected or unusable Newton step falls back to bisection of the
+    current bracket.
 
     Args:
         delassus: Symmetric positive-definite local Delassus block.

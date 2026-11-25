@@ -15,6 +15,7 @@ from ...sim import BodyFlags, JointType, Model
 from ...sim.articulation import eval_angular_coordinates
 from ...sim.contacts import contact_surface_point, contact_surface_separation
 from ...sim.joint_mimic import eval_joint_mimic_coordinate
+from ..solver import particle_is_kinematic
 
 
 @wp.kernel
@@ -70,7 +71,7 @@ def apply_particle_shape_restitution(
     body_index = shape_body[shape_index]
     particle_index = contact_particle[tid]
 
-    if (particle_flags[particle_index] & ParticleFlags.ACTIVE) == 0:
+    if (particle_flags[particle_index] & (ParticleFlags.ACTIVE | ParticleFlags.KINEMATIC)) != ParticleFlags.ACTIVE:
         return
 
     v_new = particle_v_new[particle_index]
@@ -702,6 +703,19 @@ def solve_tetrahedra(
 
 
 @wp.kernel
+def update_particle_inv_mass_effective(
+    particle_flags: wp.array[wp.int32],
+    particle_inv_mass: wp.array[float],
+    particle_inv_mass_effective: wp.array[float],
+):
+    tid = wp.tid()
+    if particle_is_kinematic(particle_flags[tid]):
+        particle_inv_mass_effective[tid] = 0.0
+    else:
+        particle_inv_mass_effective[tid] = particle_inv_mass[tid]
+
+
+@wp.kernel
 def apply_particle_deltas(
     x_orig: wp.array[wp.vec3],
     x_pred: wp.array[wp.vec3],
@@ -713,11 +727,17 @@ def apply_particle_deltas(
     v_out: wp.array[wp.vec3],
 ):
     tid = wp.tid()
-    if (particle_flags[tid] & ParticleFlags.ACTIVE) == 0:
+    flags = particle_flags[tid]
+    if (flags & ParticleFlags.ACTIVE) == 0:
         return
 
     x0 = x_orig[tid]
     xp = x_pred[tid]
+
+    if flags & ParticleFlags.KINEMATIC:
+        x_out[tid] = xp
+        v_out[tid] = (xp - x0) / dt
+        return
 
     # constraint deltas
     d = delta[tid]
@@ -797,12 +817,6 @@ def apply_body_deltas(
     # update linear and angular velocity
     v1 = v0 + dp
     w1 = w0 + dw1
-
-    # XXX this improves gradient stability
-    if wp.length(v1) < 1e-4:
-        v1 = wp.vec3(0.0)
-    if wp.length(w1) < 1e-4:
-        w1 = wp.vec3(0.0)
 
     qd_out[tid] = wp.spatial_vector(v1, w1)
 
