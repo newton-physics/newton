@@ -21,7 +21,7 @@ from newton._src.solvers.steel.kernels import (
 )
 from newton.solvers import SolverBase, SolverSteel
 from newton.tests.steel._fixtures import set_torsion_radius
-from newton.tests.unittest_utils import add_function_test, get_test_devices
+from newton.tests.unittest_utils import add_function_test, get_test_devices, requires
 
 _DT = 1.0 / 480.0
 _RUN_TO_RUN = wp.DeterministicMode.RUN_TO_RUN
@@ -960,14 +960,31 @@ add_function_test(
 )
 
 
+# Slots per contact of a free sphere on a sliding ground, by the sphere's MuJoCo condim.
+_CONDIM_SLOTS = {1: 3, 3: 3, 4: 4, 6: 6}
+
+
+def _first_contact_slots(builder: newton.ModelBuilder) -> tuple[int, bool]:
+    """Step an imported scene once; return the first contact's row slots and whether the rows are on."""
+    model = builder.finalize()
+    solver = SolverSteel(model)
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    state_0, state_1 = model.state(), model.state()
+    pipeline.collide(state_0, contacts)
+    solver.step(state_0, state_1, model.control(), contacts, _DT)
+    return int(solver._contact_slots_needed.numpy()[0]), solver._free_rigid_angular_rows
+
+
 @unittest.skipUnless(wp.is_cuda_available(), "Steel matrix-free requires CUDA")
 class TestFreeRigidAngularFrictionImport(unittest.TestCase):
-    def test_mjcf_condim_enables_the_rows(self):
-        """Give an MJCF sphere with condim 6, direct or inherited, the rolling pair and spin row."""
-        for inherited in (False, True):
-            with self.subTest(inherited=inherited):
-                default = '<default><geom condim="6"/></default>' if inherited else ""
-                geom = "" if inherited else ' condim="6"'
+    def test_mjcf_condim_selects_the_rows(self):
+        """Give an MJCF sphere the rows its condim selects, direct or inherited from a default."""
+        cases = [(condim, False) for condim in _CONDIM_SLOTS] + [(6, True)]
+        for condim, inherited in cases:
+            with self.subTest(condim=condim, inherited=inherited):
+                default = f'<default><geom condim="{condim}"/></default>' if inherited else ""
+                geom = "" if inherited else f' condim="{condim}"'
                 mjcf = (
                     f"<mujoco>{default}<worldbody>"
                     '<geom type="plane" size="1 1 0.1" condim="3"/>'
@@ -975,16 +992,39 @@ class TestFreeRigidAngularFrictionImport(unittest.TestCase):
                     "</worldbody></mujoco>"
                 )
                 builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
-                SolverSteel.register_custom_attributes(builder)
                 builder.add_mjcf(mjcf)
-                model = builder.finalize()
-                solver = SolverSteel(model)
-                pipeline = newton.CollisionPipeline(model)
-                contacts = pipeline.contacts()
-                state_0, state_1 = model.state(), model.state()
-                pipeline.collide(state_0, contacts)
-                solver.step(state_0, state_1, model.control(), contacts, _DT)
-                self.assertEqual(int(solver._contact_slots_needed.numpy()[0]), 6)
+                slots, rows = _first_contact_slots(builder)
+                self.assertEqual(slots, _CONDIM_SLOTS[condim])
+                self.assertEqual(rows, condim > 3)
+
+    @requires("pxr.Usd")
+    def test_usd_mjc_condim_selects_the_rows(self):
+        """Give a USD sphere the rows its ``mjc:condim`` selects."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+
+        from newton._src.usd.schemas import SchemaResolverMjc, SchemaResolverNewton  # noqa: PLC0415
+
+        for condim, expected in _CONDIM_SLOTS.items():
+            with self.subTest(condim=condim):
+                stage = Usd.Stage.CreateInMemory()
+                UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+                UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+                UsdPhysics.Scene.Define(stage, "/physicsScene")
+                ground = UsdGeom.Cube.Define(stage, "/World/Ground")
+                ground.AddTranslateOp().Set((0.0, 0.0, -1.0))
+                UsdPhysics.CollisionAPI.Apply(ground.GetPrim())
+                body = UsdGeom.Xform.Define(stage, "/World/Ball")
+                body.AddTranslateOp().Set((0.0, 0.0, 0.0299))
+                UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+                sphere = UsdGeom.Sphere.Define(stage, "/World/Ball/Collider")
+                sphere.GetRadiusAttr().Set(0.03)
+                UsdPhysics.CollisionAPI.Apply(sphere.GetPrim())
+                sphere.GetPrim().CreateAttribute("mjc:condim", Sdf.ValueTypeNames.Int).Set(condim)
+                builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+                builder.add_usd(stage, schema_resolvers=[SchemaResolverNewton(), SchemaResolverMjc()])
+                slots, rows = _first_contact_slots(builder)
+                self.assertEqual(slots, expected)
+                self.assertEqual(rows, condim > 3)
 
 
 if __name__ == "__main__":
