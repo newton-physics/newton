@@ -15,6 +15,7 @@ from ..sim.enums import JointTargetMode
 from ..solvers.mujoco.constants import SOLREF_MODE_FORCE_SPACE, SOLREF_MODE_MJCF_DEFAULT, SOLREF_MODE_RAW
 from . import utils as usd
 from .schema_resolver import PrimType, SchemaResolver, SchemaResolverManager
+from .schemas import SchemaResolverMjc
 
 if TYPE_CHECKING:
     from pxr import Usd, UsdPhysics
@@ -714,3 +715,33 @@ def _resolve_shape_shell(
         inertia_margin = margin_val
 
     return shape_is_solid, inertia_margin, shell_thickness_val
+
+
+def _resolve_mesh_inertia(prim: Usd.Prim, resolver: SchemaResolverManager, *, verbose: bool) -> tuple[str | None, int]:
+    """Resolve MuJoCo mesh inertia mode and authored hull vertex limit in resolver priority order."""
+    from ..utils.import_mjcf import _MESH_INERTIA_MODES  # noqa: PLC0415
+
+    for r in resolver.resolvers:
+        mode = r.get_value(prim, PrimType.SHAPE, "mesh_inertia")
+        if mode is not None:
+            resolver._collect_on_first_use(r, prim)
+            if mode not in _MESH_INERTIA_MODES:
+                raise ValueError(
+                    f"USD mesh {prim.GetPath()} has unsupported mjc:inertia {mode!r}; "
+                    f"expected one of {sorted(_MESH_INERTIA_MODES)}."
+                )
+            hullvert = int(resolver.get_value(prim, PrimType.SHAPE, "max_hull_vertices", default=-1, verbose=verbose))
+            return mode, max(hullvert, 0)
+        if r.get_value(prim, PrimType.SHAPE, "mass_model") is not None:
+            resolver._collect_on_first_use(r, prim)
+            return None, 0
+
+    if prim and prim.IsValid() and usd.has_applied_api_schema(prim, "MjcMeshCollisionAPI"):
+        for r in resolver.resolvers:
+            if isinstance(r, SchemaResolverMjc):
+                resolver._collect_on_first_use(r, prim)
+                hullvert = int(
+                    resolver.get_value(prim, PrimType.SHAPE, "max_hull_vertices", default=-1, verbose=verbose)
+                )
+                return "legacy", max(hullvert, 0)
+    return None, 0

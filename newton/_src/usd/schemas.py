@@ -533,6 +533,7 @@ class SchemaResolverMjc(SchemaResolver):
         PrimType.SHAPE: {
             # Mesh
             "max_hull_vertices": SchemaAttribute("mjc:maxhullvert", -1),
+            "mesh_inertia": SchemaAttribute("mjc:inertia", None, str),
             # Collision margin/gap: identity mapping to shape_margin/shape_gap
             # under MuJoCo 3.9 (parse_usd handles legacy_margin_gap).
             "margin": SchemaAttribute("mjc:margin", 0.0),
