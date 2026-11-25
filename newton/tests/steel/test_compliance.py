@@ -641,12 +641,12 @@ def test_weighted_friction_overflow_rejected(test, device):
                 _, _, solver, _ = run_fixture(
                     device=device, articulated=articulated, enabled=True, steps=1, solver_options=options
                 )
-                row_type, row_mu = (
-                    (solver._row_type, solver._row_mu) if articulated else (solver._mf_row_type, solver._mf_row_mu)
+                families = [(solver._row_type, solver._row_mu), (solver._mf_row_type, solver._mf_row_mu)]
+                if solver._propagation_active:
+                    families.append((solver._propagation_row_type, solver._propagation_row_mu))
+                friction = np.concatenate(
+                    [mu.numpy()[0][kind.numpy()[0] == PGS_CONSTRAINT_TYPE_FRICTION] for kind, mu in families]
                 )
-                if solver._propagation_active and articulated:
-                    row_type, row_mu = solver._propagation_row_type, solver._propagation_row_mu
-                friction = row_mu.numpy()[0][row_type.numpy()[0] == PGS_CONSTRAINT_TYPE_FRICTION]
                 test.assertGreater(friction.size, 0)
                 np.testing.assert_array_equal(friction, np.float32(3.0e37))
                 with test.assertRaisesRegex(ValueError, "Weighted contact friction coefficient exceeds float32 range"):
