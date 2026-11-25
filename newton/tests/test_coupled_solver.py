@@ -4680,6 +4680,28 @@ class TestSolverCoupledVBDColoring(unittest.TestCase):
         self.assertEqual(view.vbd.dahl_eps_max.shape[0], view.joint_count)
         np.testing.assert_array_equal(view.vbd.dahl_eps_max.numpy(), parent_dahl_eps_max[vbd_joint_order])
 
+    @requires(*MUJOCO_MODULES)
+    def test_deprecated_condim_edits_reach_compact_entries(self):
+        """Apply edits of the deprecated ``mujoco:condim`` copy before the entry views are built."""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        for i in range(4):
+            body = builder.add_body(xform=wp.transform((float(i), 0.0, 1.0), wp.quat_identity()))
+            builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+        model = builder.finalize(device="cpu")
+        with self.assertWarns(newton.NewtonDeprecationWarning):
+            model.mujoco.condim.fill_(4)
+
+        coupled = SolverCoupled(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(name="src", solver=SolverXPBD, bodies=[0, 1]),
+                SolverCoupled.Entry(name="dst", solver=SolverMuJoCo, bodies=[2, 3]),
+            ],
+        )
+
+        np.testing.assert_array_equal(coupled.solver("dst").mjw_model.geom_condim.numpy(), [4, 4])
+
     def test_compacted_custom_frequency_namespace_metadata_is_generic(self):
         builder = newton.ModelBuilder()
         for _ in range(4):
