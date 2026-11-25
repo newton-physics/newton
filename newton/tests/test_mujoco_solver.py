@@ -47,7 +47,7 @@ from newton._src.solvers.mujoco.kernels import (
 )
 from newton._src.solvers.mujoco.utils import MJC_OBJ_BODY, MJC_OBJ_JOINT, MjcEqualityTargetKind
 from newton.examples import get_asset
-from newton.solvers import SolverMuJoCo
+from newton.solvers import SolverMuJoCo, mujoco
 from newton.tests.unittest_utils import (
     MUJOCO_MODULES,
     assert_np_equal,
@@ -1110,6 +1110,9 @@ class TestMuJoCoSolverGraphCapture(unittest.TestCase):
             ]
             template.add_articulation(joints)
             loop_joint = template.add_joint_revolute(bodies[2], bodies[0], axis=(0.0, 0.0, 1.0))
+            moving = template.add_site(bodies[0], xform=wp.transform((1.0, 0.0, 0.0), wp.quat_identity()))
+            fixed = template.add_site(-1, xform=wp.transform((0.0, 1.0, 0.0), wp.quat_identity()))
+            mujoco.add_tendon_spatial(template, [mujoco.TendonWrapSite(moving), mujoco.TendonWrapSite(fixed)])
             builder = newton.ModelBuilder()
             builder.replicate(template, 2)
             model = builder.finalize(device=device)
@@ -1125,12 +1128,16 @@ class TestMuJoCoSolverGraphCapture(unittest.TestCase):
             loop_indices = loop_joint + np.arange(2) * template.joint_count
             axis_indices = model.joint_qd_start.numpy()[loop_indices]
             for factor in (1.0, 2.0):
+                published = solver.mjw_model.eq_data.numpy().copy()
                 xforms = model.joint_X_p.numpy()
                 xforms[loop_indices, :3] = factor * np.array([[0.1, 0.2, 0.3], [-0.2, 0.4, 0.1]])
                 model.joint_X_p.assign(xforms)
                 axes = model.joint_axis.numpy()
                 axes[axis_indices] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
                 model.joint_axis.assign(axes)
+                for unrelated in (ModelFlags.SHAPE_PROPERTIES, ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES):
+                    solver.notify_model_changed(unrelated)
+                    np.testing.assert_array_equal(solver.mjw_model.eq_data.numpy(), published)
                 wp.capture_launch(capture.graph)
                 eager_solver.notify_model_changed(flags)
                 eq_data = solver.mjw_model.eq_data.numpy()
@@ -12796,6 +12803,28 @@ class TestActuatorDampratio(unittest.TestCase):
                         actual = solver.mjw_model.actuator_biasprm.numpy()[0, :, 2]
                     np.testing.assert_allclose(actual, expected, rtol=1.0e-4)
                     solver.notify_model_changed(ModelFlags.ACTUATOR_PROPERTIES)
+
+    def test_dampratio_follows_moved_fixed_root(self):
+        """Resolve native damping at the published pose of a fixed root."""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(
+            """<mujoco><worldbody><site name="anchor" pos="1 -1 0"/>
+            <body><geom size=".1"/><body><joint axis="0 0 1"/><geom size=".1" pos="1 0 0"/>
+            <site name="tip" pos="1 0 0"/></body></body></worldbody>
+            <tendon><spatial name="t"><site site="anchor"/><site site="tip"/></spatial></tendon>
+            <actuator><position tendon="t" kp="100" dampratio="1"/></actuator></mujoco>""",
+            ctrl_direct=True,
+        )
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
+        initial = solver.mj_model.actuator_biasprm[0, 2]
+        frames = model.joint_X_p.numpy()
+        frames[0, 0] += 1.0
+        model.joint_X_p.assign(frames)
+        solver.notify_model_changed(ModelFlags.JOINT_PROPERTIES | ModelFlags.ACTUATOR_PROPERTIES)
+        expected = SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True).mj_model.actuator_biasprm[0, 2]
+        self.assertAlmostEqual(expected, np.sqrt(2.0) * initial, delta=1e-5 * abs(expected))
+        self.assertAlmostEqual(solver.mj_model.actuator_biasprm[0, 2], expected, delta=1e-5 * abs(expected))
 
 
 @requires(*MUJOCO_MODULES)

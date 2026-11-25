@@ -1439,6 +1439,7 @@ def update_connect_constraint_rel_xform_at_qref_kernel(
     joint_X_p: wp.array[wp.transform],
     joint_X_c: wp.array[wp.transform],
     ref_body_q: wp.array[wp.transform],
+    update_joint_anchors: bool,
     # output
     X_rel_out: wp.array2d[wp.transform],
 ):
@@ -1461,7 +1462,9 @@ def update_connect_constraint_rel_xform_at_qref_kernel(
     body2 = int(-1)
     if newton_jnt >= 0:
         if joint_type[newton_jnt] == JointType.BALL:
-            X_rel_out[world, mjc_eq] = joint_X_c[newton_jnt] * wp.transform_inverse(joint_X_p[newton_jnt])
+            # Depends on the joint frames only, which are published with the first anchor.
+            if update_joint_anchors:
+                X_rel_out[world, mjc_eq] = joint_X_c[newton_jnt] * wp.transform_inverse(joint_X_p[newton_jnt])
             return
         body1 = joint_parent[newton_jnt]
         body2 = joint_child[newton_jnt]
@@ -1484,12 +1487,12 @@ def update_connect_constraint_anchors_kernel(
     mjc_eq_to_newton_eq: wp.array2d[wp.int32],
     mjc_eq_to_newton_jnt: wp.array2d[wp.int32],
     eq_constraint_type: wp.array[wp.int32],
-    eq_constraint_anchor: wp.array[wp.vec3],
     jnt_connect_hinge_side: wp.array2d[wp.int32],
     joint_X_p: wp.array[wp.transform],
     joint_axis: wp.array[wp.vec3],
     joint_qd_start: wp.array[wp.int32],
     connect_X_rel: wp.array2d[wp.transform],
+    update_joint_anchors: bool,
     # output
     eq_data_out: wp.array2d[vec12],
 ):
@@ -1511,22 +1514,22 @@ def update_connect_constraint_anchors_kernel(
     newton_eq = src[0]
     newton_jnt = src[1]
 
-    anchor = wp.vec3(0.0)
-    if newton_jnt >= 0:
+    data = eq_data_out[world, mjc_eq]
+    if newton_eq < 0 and newton_jnt < 0:
+        return
+
+    # Constant refreshes must not publish pending constraint or joint edits.
+    anchor = wp.vec3(data[0], data[1], data[2])
+    if newton_jnt >= 0 and update_joint_anchors:
         X_p = joint_X_p[newton_jnt]
         anchor = wp.transform_get_translation(X_p)
         side = jnt_connect_hinge_side[world, mjc_eq]
         if side != 0:
             axis = wp.quat_rotate(wp.transform_get_rotation(X_p), joint_axis[joint_qd_start[newton_jnt]])
             anchor = hinge_connect_anchor(anchor, side, axis)
-    elif newton_eq >= 0:
-        anchor = eq_constraint_anchor[newton_eq]
-    else:
-        return
 
     anchor2 = wp.transform_point(connect_X_rel[world, mjc_eq], anchor)
 
-    data = eq_data_out[world, mjc_eq]
     data[0] = anchor[0]
     data[1] = anchor[1]
     data[2] = anchor[2]
@@ -2768,21 +2771,26 @@ def update_site_properties_kernel(
 
 
 @wp.kernel
-def sync_worldbody_geom_xposes_kernel(
+def sync_static_geom_xposes_kernel(
     geom_bodyid: wp.array[int],
+    body_weldid: wp.array[int],
     geom_pos: wp.array2d[wp.vec3],
     geom_quat: wp.array2d[wp.quat],
+    body_xpos: wp.array2d[wp.vec3],
+    body_xquat: wp.array2d[wp.quat],
     geom_xpos: wp.array2d[wp.vec3],
     geom_xmat: wp.array2d[wp.mat33],
 ):
-    """Refresh per-world poses for geoms attached directly to the world body."""
+    """Refresh per-world poses for geoms on bodies welded to the world."""
     world, geom = wp.tid()
-    if geom_bodyid[geom] != 0:
+    body = geom_bodyid[geom]
+    if body_weldid[body] != 0:
         return
 
+    body_q = quat_wxyz_to_xyzw(body_xquat[world, body])
     geom_q = quat_wxyz_to_xyzw(geom_quat[world, geom])
-    geom_xpos[world, geom] = geom_pos[world, geom]
-    geom_xmat[world, geom] = wp.quat_to_matrix(geom_q)
+    geom_xpos[world, geom] = body_xpos[world, body] + wp.quat_rotate(body_q, geom_pos[world, geom])
+    geom_xmat[world, geom] = wp.quat_to_matrix(body_q * geom_q)
 
 
 @wp.kernel

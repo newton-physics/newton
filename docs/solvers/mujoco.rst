@@ -1751,7 +1751,10 @@ tendon limits using the current ``model.mujoco`` limit modes, gains, raw
 ``solref`` values, and ranges. Those pending edits are therefore published even
 without :attr:`~newton.ModelFlags.TENDON_PROPERTIES`. This includes joint
 inertial/reference updates and the broad joint-DOF, body, body-inertial, and
-actuator notifications. Publish tendon edits explicitly with
+actuator notifications. :attr:`~newton.ModelFlags.SHAPE_PROPERTIES` recomputes
+constants, at the same cost, only for models with a spatial tendon or a
+site-based actuator transmission, whose reference constants depend on site and
+wrapping-geometry poses. Publish tendon edits explicitly with
 :attr:`~newton.ModelFlags.TENDON_PROPERTIES` before these updates rather than
 relying on them to preserve pending tendon-limit changes. Force-only joint
 notifications do not recompute constants and leave tendon limits unchanged.
