@@ -112,7 +112,7 @@ from .kernels import (
     sync_ball_qpos_spring_kernel,
     sync_qpos0_kernel,
     sync_site_xposes_kernel,
-    sync_worldbody_geom_xposes_kernel,
+    sync_static_geom_xposes_kernel,
     update_actuator_properties_kernel,
     update_axis_properties_kernel,
     update_body_inertia_kernel,
@@ -6182,7 +6182,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self._update_pair_properties()
             self._invalidate_contact_fast_path()
             if not self.use_mujoco_cpu:
-                self._sync_worldbody_geom_xposes()
+                self._sync_static_geom_xposes()
                 self._sync_site_xposes()
             if self._has_site_dependent_constants:
                 need_const_0 = True
@@ -6353,23 +6353,26 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self.mj_model.eq_solimp[:] = self.mjw_model.eq_solimp.numpy()[0]
         self.mj_data.eq_active[:] = self.mjw_data.eq_active.numpy()[0]
 
-    def _sync_worldbody_geom_xposes(self) -> None:
+    def _sync_static_geom_xposes(self) -> None:
         """Refresh derived poses that MJWarp leaves fixed after data creation.
 
-        MJWarp initializes direct worldbody geoms from the single CPU template
-        and skips them during forward kinematics. Newton's batched model can
-        carry distinct per-world geometry transforms, so copy them to the
-        corresponding derived data after shape properties change.
+        MJWarp initializes geoms on bodies welded to the world from the single
+        CPU template and skips them during forward kinematics. Newton's batched
+        model can carry distinct per-world geometry transforms, so copy them to
+        the corresponding derived data after shape properties change.
         """
         if self.mj_model.ngeom == 0:
             return
         wp.launch(
-            sync_worldbody_geom_xposes_kernel,
+            sync_static_geom_xposes_kernel,
             dim=(self.mjw_data.nworld, self.mj_model.ngeom),
             inputs=[
                 self.mjw_model.geom_bodyid,
+                self.mjw_model.body_weldid,
                 self.mjw_model.geom_pos,
                 self.mjw_model.geom_quat,
+                self.mjw_data.xpos,
+                self.mjw_data.xquat,
             ],
             outputs=[
                 self.mjw_data.geom_xpos,

@@ -4,6 +4,7 @@
 """Tests for site export to MuJoCo."""
 
 import unittest
+import warnings
 
 import numpy as np
 import warp as wp
@@ -20,7 +21,7 @@ class TestMuJoCoSiteExport(unittest.TestCase):
 
     def test_site_edit_refreshes_tendon_constants(self):
         """Keep a tendon equality at rest after changing its site and wrapping geometry."""
-        for cpu, wrapping in ((False, False), (True, False), (False, True), (True, True)):
+        for cpu, wrapping in ((False, ""), (True, ""), (False, "world"), (True, "world"), (False, "bracket")):
             with self.subTest(cpu=cpu, wrapping=wrapping):
                 builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
                 body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
@@ -33,22 +34,33 @@ class TestMuJoCoSiteExport(unittest.TestCase):
                 builder.add_ground_plane()
                 wraps = [mujoco.TendonWrapSite(moving)]
                 if wrapping:
+                    parent = -1
+                    if wrapping == "bracket":
+                        parent = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+                        builder.add_joint_fixed(-1, parent)
                     sphere = builder.add_shape_sphere(
-                        -1, radius=0.4, xform=wp.transform((0.0, 1.0, 0.0), wp.quat_identity())
+                        parent, radius=0.4, xform=wp.transform((0.0, 1.0, 0.0), wp.quat_identity())
                     )
                     wraps.append(mujoco.TendonWrapGeom(sphere))
                 wraps.append(mujoco.TendonWrapSite(fixed))
                 tendon = mujoco.add_tendon_spatial(builder, wraps)
                 mujoco.add_equality_tendon(builder, tendon)
                 model = builder.finalize()
-                solver = SolverMuJoCo(model, use_mujoco_cpu=cpu, disable_contacts=True)
+
+                def make_solver(model=model, cpu=cpu):
+                    with warnings.catch_warnings():
+                        # The bracket is a static body, which only a joint outside articulations creates.
+                        warnings.filterwarnings("ignore", message=".*standalone world roots")
+                        return SolverMuJoCo(model, use_mujoco_cpu=cpu, disable_contacts=True)
+
+                solver = make_solver()
                 poses = model.shape_transform.numpy().copy()
                 poses[moving, 0] = 1.1 if wrapping else 2.0
                 if wrapping:
                     poses[sphere, 1] = 0.15
                 model.shape_transform.assign(poses)
                 solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
-                reference = SolverMuJoCo(model, use_mujoco_cpu=cpu, disable_contacts=True)
+                reference = make_solver()
                 if cpu:
                     plane = solver.mj_model.geom_type == solver._mujoco.mjtGeom.mjGEOM_PLANE
                     self.assertTrue(np.all(solver.mj_model.geom_size[plane] > 0.0))
