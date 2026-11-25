@@ -28,13 +28,13 @@ from ...sim import (
     Model,
     ModelBuilder,
     ModelFlags,
-    ShapeFrictionMode,
     State,
     StateFlags,
 )
 from ...sim.articulation import eval_fk, eval_jacobian, eval_mass_matrix
+from ...sim.enums import FRICTION_ROLLING_BIT, FRICTION_TORSIONAL_BIT
 from ..coupled.interface import CouplingInterface
-from ..solver import SolverBase, warn_unsupported_friction_modes
+from ..solver import SolverBase
 from . import contact_compliance as _contact_compliance
 from ._testing import current_kernel_overrides
 from .contact_angular_friction import (
@@ -1762,9 +1762,10 @@ class SolverSteel(SolverBase, CouplingInterface):
         - ``steel:min_torsional_patch_radius`` [m] is the effective spin radius of the
           shape's contacts (``physxCollision:minTorsionalPatchRadius``, default 0, no
           torsion). A positive radius needs a :attr:`~newton.ModelBuilder.ShapeConfig.friction_mode`
-          of ``TORSIONAL`` or ``TORSIONAL_ROLLING``, which the USD importer selects with it. PhysX also scales a
-          radius with the penetration depth through ``physxCollision:torsionalPatchRadius``; this solver does
-          not. Set it before constructing the solver, which enables torsion only when a radius is positive.
+          with torsional friction, which the USD importer selects with it. PhysX also
+          scales a radius with the penetration depth through
+          ``physxCollision:torsionalPatchRadius``; this solver does not. Set it before
+          constructing the solver, which enables torsion only when a radius is positive.
 
         One per-DOF attribute makes joint friction grow with the load the joint transmits, see
         ``enable_joint_friction``:
@@ -2285,8 +2286,9 @@ class SolverSteel(SolverBase, CouplingInterface):
                 normal. It has no effect on friction patch rows, which act at their anchors.
             contact_torsion_device: Experimental contact torsion is enabled at construction
                 when any shape has a positive ``steel:min_torsional_patch_radius`` (see
-                :meth:`register_custom_attributes`), which needs a torsional or rolling
-                :attr:`~newton.ModelBuilder.ShapeConfig.friction_mode`. It adds one angular row per contact group
+                :meth:`register_custom_attributes`), which needs a
+                :attr:`~newton.ModelBuilder.ShapeConfig.friction_mode` with torsional friction. It adds one
+                angular row per contact group
                 of an articulated body, about the group's normal, bounded by
                 ``r * (mu * N - sliding)``: sliding and spin share one Coulomb budget, ``N`` is
                 the final solved load of the group's normal rows, and ``r`` is the largest

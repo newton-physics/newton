@@ -148,7 +148,7 @@ class TestUSDDeformableCable(unittest.TestCase):
                     # Authored rolling friction selects the rolling friction mode on both.
                     modes = builder.shape_material_friction_mode
                     expected_mode = (
-                        newton.ShapeFrictionMode.TORSIONAL_ROLLING if mode == "authored" else modes[rigid_shape]
+                        newton.ShapeFrictionMode.SLIDING_TORSIONAL_ROLLING if mode == "authored" else modes[rigid_shape]
                     )
                     self.assertEqual({modes[shape] for shape in (rigid_shape, *cable_shapes)}, {expected_mode})
 

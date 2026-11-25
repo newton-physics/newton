@@ -14,8 +14,9 @@ from ...math import (
 from ...sim import BodyFlags, JointType, Model, ShapeFrictionMode
 from ...sim.articulation import eval_angular_coordinates
 from ...sim.contacts import contact_surface_point, contact_surface_separation
+from ...sim.enums import FRICTION_ROLLING_BIT, FRICTION_SLIDING_BIT, FRICTION_TORSIONAL_BIT
 from ...sim.joint_mimic import eval_joint_mimic_coordinate
-from ..solver import contact_friction_mode
+from ..solver import contact_friction_mode, particle_is_kinematic
 
 
 @wp.kernel
@@ -71,7 +72,7 @@ def apply_particle_shape_restitution(
     body_index = shape_body[shape_index]
     particle_index = contact_particle[tid]
 
-    if (particle_flags[particle_index] & ParticleFlags.ACTIVE) == 0:
+    if (particle_flags[particle_index] & (ParticleFlags.ACTIVE | ParticleFlags.KINEMATIC)) != ParticleFlags.ACTIVE:
         return
 
     v_new = particle_v_new[particle_index]
@@ -706,6 +707,19 @@ def solve_tetrahedra(
 
 
 @wp.kernel
+def update_particle_inv_mass_effective(
+    particle_flags: wp.array[wp.int32],
+    particle_inv_mass: wp.array[float],
+    particle_inv_mass_effective: wp.array[float],
+):
+    tid = wp.tid()
+    if particle_is_kinematic(particle_flags[tid]):
+        particle_inv_mass_effective[tid] = 0.0
+    else:
+        particle_inv_mass_effective[tid] = particle_inv_mass[tid]
+
+
+@wp.kernel
 def apply_particle_deltas(
     x_orig: wp.array[wp.vec3],
     x_pred: wp.array[wp.vec3],
@@ -717,11 +731,17 @@ def apply_particle_deltas(
     v_out: wp.array[wp.vec3],
 ):
     tid = wp.tid()
-    if (particle_flags[tid] & ParticleFlags.ACTIVE) == 0:
+    flags = particle_flags[tid]
+    if (flags & ParticleFlags.ACTIVE) == 0:
         return
 
     x0 = x_orig[tid]
     xp = x_pred[tid]
+
+    if flags & ParticleFlags.KINEMATIC:
+        x_out[tid] = xp
+        v_out[tid] = (xp - x0) / dt
+        return
 
     # constraint deltas
     d = delta[tid]
@@ -2077,11 +2097,11 @@ def _solve_body_contact_positions(
         mu_torsional /= float(mat_nonzero)
         mu_rolling /= float(mat_nonzero)
     friction_mode = contact_friction_mode(shape_material_friction_mode, shape_a, shape_b)
-    if friction_mode < int(ShapeFrictionMode.SLIDING):
+    if (friction_mode & FRICTION_SLIDING_BIT) == 0:
         mu = 0.0
-    if friction_mode < int(ShapeFrictionMode.TORSIONAL):
+    if (friction_mode & FRICTION_TORSIONAL_BIT) == 0:
         mu_torsional = 0.0
-    if friction_mode < int(ShapeFrictionMode.TORSIONAL_ROLLING):
+    if (friction_mode & FRICTION_ROLLING_BIT) == 0:
         mu_rolling = 0.0
 
     r_a = bx_a - wp.transform_point(X_wb_a, com_a)

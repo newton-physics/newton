@@ -431,6 +431,7 @@ class SolverEntry:
     body_gravity_acceleration: wp.array[wp.vec3] | None = None
     particle_gravity_acceleration: wp.array[wp.vec3] | None = None
     free_root_joints: _FreeRootJoints | None = None
+    particle_target_q: wp.array[wp.vec3] | None = None
 
 
 _CORE_RESET_STATE_FLAGS = {
@@ -780,6 +781,11 @@ class SolverCoupled(SolverBase, CouplingInterface):
     def _build_entries(self) -> None:
         model = self.model
         device = model.device
+        # A deprecated alias may hold edits that reading it applies to the model, as mujoco:condim does.
+        for namespace in vars(model).values():
+            if isinstance(namespace, Model.AttributeNamespace):
+                for getter, _message in namespace._deprecated_aliases.values():
+                    getter()
         any_body_owner = any(owner >= 0 for owner in self._body_owner)
         any_particle_owner = any(owner >= 0 for owner in self._particle_owner)
         any_joint_owner = any(owner >= 0 for owner in self._joint_owner)
@@ -953,6 +959,13 @@ class SolverCoupled(SolverBase, CouplingInterface):
             entry.state_0 = entry.view.state()
             entry.state_1 = entry.state_0 if entry.in_place else entry.view.state()
             entry.control = _entry_control(entry.view)
+            if entry.substeps > 1 and _entry_has_kinematic_particles(entry):
+                raise NotImplementedError(
+                    f"Entry '{entry.name}' uses substeps={entry.substeps} with ParticleFlags.KINEMATIC particles; "
+                    "kinematic particle targets are not interpolated across coupled substeps."
+                )
+            if int(entry.view.particle_count):
+                entry.particle_target_q = wp.clone(entry.view.particle_q)
             entry.has_body_force_input = entry.state_0.body_f is not None
             entry.has_particle_force_input = entry.state_0.particle_f is not None
             if entry.substeps > 1 and not entry.in_place:
@@ -3923,6 +3936,16 @@ class SolverCoupled(SolverBase, CouplingInterface):
         return ~0
 
 
+def _entry_has_kinematic_particles(entry: SolverEntry) -> bool:
+    view = entry.view
+    if not int(view.particle_count) or view.particle_flags is None:
+        return False
+    flags = view.particle_flags.numpy()
+    owned = np.ones(flags.shape[0], dtype=bool)
+    owned[entry.particle_dynamics_disabled_local_indices.numpy()] = False
+    return bool(np.any(flags[owned] & int(ParticleFlags.KINEMATIC)))
+
+
 def _entry_control(view: ModelView) -> Control:
     """Allocate standard entry-local control arrays for a model view."""
     from ...sim import Control  # noqa: PLC0415
@@ -3983,6 +4006,16 @@ def _copy_control_to_entry(src: Control | None, entry: SolverEntry) -> Control |
         _copy_control_float_array(src, dst, name, local_to_global, device, allow_direct_copy=not has_free_root_joints)
     for name in ("tri_activations", "tet_activations", "muscle_activations"):
         _copy_control_prefix_float_array(src, dst, name)
+    if src.particle_target_q is None or entry.particle_target_q is None:
+        dst.particle_target_q = None
+    else:
+        dst.particle_target_q = entry.particle_target_q
+        wp.launch(
+            _copy_mapped_vec3,
+            dim=entry.particle_local_to_global.shape[0],
+            inputs=[entry.particle_local_to_global, src.particle_target_q, dst.particle_target_q],
+            device=device,
+        )
     model = entry.view.parent
     for full_name, spec in model._iter_attribute_specs():
         if spec.assignment != model.AttributeAssignment.CONTROL:

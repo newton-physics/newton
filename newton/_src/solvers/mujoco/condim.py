@@ -110,3 +110,10 @@ def resolve_shape_condim(model: Model) -> np.ndarray:
     if alias is not None:
         alias[0].apply_edits()
     return _FRICTION_MODE_CONDIM[model.shape_material_friction_mode.numpy()]
+
+
+def shapes_rolling_without_torsion(model: Model) -> np.ndarray:
+    """Return which shapes are ``SLIDING_ROLLING``, MuJoCo ``condim`` 6 without torsional friction."""
+    if model.shape_material_friction_mode is None:
+        return np.zeros(model.shape_count, dtype=bool)
+    return model.shape_material_friction_mode.numpy() == int(ShapeFrictionMode.SLIDING_ROLLING)

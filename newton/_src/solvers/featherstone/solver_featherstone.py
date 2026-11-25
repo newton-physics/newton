@@ -5,7 +5,7 @@ import numpy as np
 import warp as wp
 
 from ...core.types import override
-from ...sim import BodyFlags, Contacts, Control, JointType, Model, ModelFlags, ShapeFrictionMode, State
+from ...sim import BodyFlags, Contacts, Control, JointType, Model, ModelFlags, State
 from ...sim.joint_mimic import eval_joint_mimic, has_supported_joint_mimics
 from ..coupled.interface import CouplingInterface
 from ..semi_implicit import kernels_contact, kernels_muscle, kernels_particle
@@ -184,7 +184,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
             raise ValueError("SolverFeatherstone does not support JointType.ROD joints.")
 
         super().__init__(model)
-        warn_unsupported_friction_modes(model, ShapeFrictionMode.SLIDING, "SolverFeatherstone")
+        warn_unsupported_friction_modes(model, "SolverFeatherstone")
         self._has_joint_mimics = has_supported_joint_mimics(model, "SolverFeatherstone")
         if self._has_joint_mimics:
             mimic_joints = model.joint_mimic_joint.numpy()
@@ -1264,6 +1264,6 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                     device=model.device,
                 )
 
-            self.integrate_particles(model, state_in, state_out, dt, particle_f=particle_f)
+            self.integrate_particles(model, state_in, state_out, dt, control=control, particle_f=particle_f)
 
             self._step += 1

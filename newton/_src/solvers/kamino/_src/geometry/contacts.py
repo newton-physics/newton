@@ -35,7 +35,7 @@ import warp as wp
 
 from .....math import safe_div
 from .....sim.contacts import Contacts, contact_surface_point, contact_surface_separation
-from .....sim.enums import ShapeFrictionMode
+from .....sim.enums import FRICTION_ROLLING_BIT, FRICTION_SLIDING_BIT, FRICTION_TORSIONAL_BIT
 from .....sim.model import Model
 from .....sim.state import State
 from ..core.bodies import is_immovable_for_kamino
@@ -1654,13 +1654,13 @@ def _apply_contact_friction_modes(
     if cid >= model_active_contacts[0]:
         return
     gids = gid_AB[cid]
-    mode = wp.max(geom_friction_mode[gids[0]], geom_friction_mode[gids[1]])
-    if mode == int(ShapeFrictionMode.NONE):
+    mode = geom_friction_mode[gids[0]] | geom_friction_mode[gids[1]]
+    if (mode & FRICTION_SLIDING_BIT) == 0:
         material[cid] = wp.vec2f(0.0, material[cid][1])
     angular = angular_friction[cid]
-    if mode < int(ShapeFrictionMode.TORSIONAL):
+    if (mode & FRICTION_TORSIONAL_BIT) == 0:
         angular[0] = 0.0
-    if mode < int(ShapeFrictionMode.TORSIONAL_ROLLING):
+    if (mode & FRICTION_ROLLING_BIT) == 0:
         angular[1] = 0.0
     angular_friction[cid] = angular
 

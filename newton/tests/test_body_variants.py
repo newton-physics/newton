@@ -97,7 +97,7 @@ class TestBodyVariants(unittest.TestCase):
     def test_select_body_variants(self):
         env = newton.ModelBuilder()
         body = env.add_body(xform=wp.transform((0.0, 0.0, 0.2), wp.quat_identity()), label="object")
-        rolling = newton.ShapeFrictionMode.TORSIONAL_ROLLING
+        rolling = newton.ShapeFrictionMode.SLIDING_TORSIONAL_ROLLING
         cube = _variant("cube", mu=0.9, tag=1, friction_mode=rolling)
         spheres = _variant("spheres", mu=0.2, mu_static=0.6, tag=2, friction_mode=rolling)
         spheres.shape_opacity[:] = [0.5, 0.5]
@@ -551,7 +551,7 @@ def test_steel_torsion_covers_variants(test, device):
             builder.add_shape_box(body, hx=0.25, hy=0.25, hz=0.25, cfg=cfg, custom_attributes=attributes)
         return builder
 
-    def model(mesh_radius, cube_radius, initial, friction_mode=newton.ShapeFrictionMode.TORSIONAL):
+    def model(mesh_radius, cube_radius, initial, friction_mode=newton.ShapeFrictionMode.SLIDING_TORSIONAL):
         env = newton.ModelBuilder()
         steel.register_custom_attributes(env)
         body = env.add_body(label="object")
@@ -561,7 +561,7 @@ def test_steel_torsion_covers_variants(test, device):
 
     options = {"contact_warmstart": False, "contact_torsion_device": True}
     # A torsion radius needs a torsional friction mode, even on a variant that is not selected at construction.
-    with test.assertRaisesRegex(ValueError, r"friction_mode of shapes \[0\]"):
+    with test.assertRaisesRegex(ValueError, r"SLIDING_TORSIONAL_ROLLING on shapes \[0\]"):
         steel(model(0.0, 0.01, initial=0, friction_mode=newton.ShapeFrictionMode.SLIDING), **options)
     # Torsion does not support meshes, even ones that are not selected at construction.
     with test.assertRaisesRegex(ValueError, r"geometry of shapes \[0\]"):

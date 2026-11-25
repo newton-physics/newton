@@ -153,7 +153,9 @@ def test_physx_attributes_import_from_usd_and_are_read_every_step(test, device):
     np.testing.assert_allclose(model.steel.rigid_body_max_depenetration_velocity.numpy(), [1.5])
     np.testing.assert_allclose(model.steel.min_torsional_patch_radius.numpy(), [0.004])
     # The radius selects torsional friction of strength mu * r in every solver
-    np.testing.assert_array_equal(model.shape_material_friction_mode.numpy(), [newton.ShapeFrictionMode.TORSIONAL])
+    np.testing.assert_array_equal(
+        model.shape_material_friction_mode.numpy(), [newton.ShapeFrictionMode.SLIDING_TORSIONAL]
+    )
     np.testing.assert_allclose(
         model.shape_material_mu_torsional.numpy(), model.shape_material_mu.numpy() * 0.004, rtol=1.0e-6
     )

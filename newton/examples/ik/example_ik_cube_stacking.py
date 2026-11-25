@@ -416,7 +416,7 @@ class Example:
             # Enable torsional friction on the finger shapes
             for shape_idx in range(builder.shape_count):
                 if builder.shape_body[shape_idx] in (12, 13):  # left/right finger bodies
-                    builder.shape_material_friction_mode[shape_idx] = newton.ShapeFrictionMode.TORSIONAL
+                    builder.shape_material_friction_mode[shape_idx] = newton.ShapeFrictionMode.SLIDING_TORSIONAL
 
         return builder
 
@@ -464,7 +464,7 @@ class Example:
         shape_cfg = newton.ModelBuilder.ShapeConfig(density=density, margin=0.0)
         if self.use_mujoco_contacts:
             # Enable torsional friction on the cube shapes
-            shape_cfg.friction_mode = newton.ShapeFrictionMode.TORSIONAL
+            shape_cfg.friction_mode = newton.ShapeFrictionMode.SLIDING_TORSIONAL
 
         def get_random_pos():
             random_x = rng.uniform(x_range[0], x_range[1])

@@ -6080,22 +6080,29 @@ def Xform "Articulation" (
         materials = {
             "torsional": define_material("Torsional", {"newton:torsionalFriction": 0.02}),
             "rolling": define_material("Rolling", {"newton:rollingFriction": 0.01}),
+            "both": define_material("Both", {"newton:torsionalFriction": 0.02, "newton:rollingFriction": 0.01}),
         }
         mode = newton.ShapeFrictionMode
         cases = {
             "Default": ({}, None, mode.SLIDING),
             "MjcFrictionless": ({"mjc:condim": 1}, None, mode.NONE),
-            "MjcRolling": ({"mjc:condim": 6}, None, mode.TORSIONAL_ROLLING),
-            "PhysxPatchRadius": ({"physxCollision:minTorsionalPatchRadius": 0.01}, None, mode.TORSIONAL),
-            "NewtonTorsional": ({}, "torsional", mode.TORSIONAL),
-            "NewtonRolling": ({}, "rolling", mode.TORSIONAL_ROLLING),
-            "MjcColliderKeepsCondim": ({"mjc:condim": 4}, "rolling", mode.TORSIONAL),
+            "MjcRolling": ({"mjc:condim": 6}, None, mode.SLIDING_TORSIONAL_ROLLING),
+            "PhysxPatchRadius": ({"physxCollision:minTorsionalPatchRadius": 0.01}, None, mode.SLIDING_TORSIONAL),
+            "NewtonTorsional": ({}, "torsional", mode.SLIDING_TORSIONAL),
+            "NewtonRolling": ({}, "rolling", mode.SLIDING_ROLLING),
+            "NewtonBoth": ({}, "both", mode.SLIDING_TORSIONAL_ROLLING),
+            "PhysxPatchRadiusRolling": (
+                {"physxCollision:minTorsionalPatchRadius": 0.01},
+                "rolling",
+                mode.SLIDING_TORSIONAL_ROLLING,
+            ),
+            "MjcColliderKeepsCondim": ({"mjc:condim": 4}, "rolling", mode.SLIDING_TORSIONAL),
             "MjcColliderIgnoresPhysxRadius": (
                 {"mjc:condim": 3, "physxCollision:minTorsionalPatchRadius": 0.01},
                 None,
                 mode.SLIDING,
             ),
-            "MaterialRaisesMode": ({"mjc:condim": 1}, "torsional", mode.TORSIONAL),
+            "MaterialRaisesMode": ({"mjc:condim": 1}, "torsional", mode.SLIDING_TORSIONAL),
         }
         for i, (name, (attributes, material, _expected)) in enumerate(cases.items()):
             body = UsdGeom.Xform.Define(stage, f"/World/{name}")
@@ -6123,13 +6130,14 @@ def Xform "Articulation" (
                 shape = result["path_shape_map"][f"/World/{name}/Collider"]
                 self.assertEqual(friction_mode[shape], expected)
 
-        # The PhysX patch radius r sets the torsional coefficient to mu * r
-        shape = result["path_shape_map"]["/World/PhysxPatchRadius/Collider"]
-        self.assertAlmostEqual(
-            float(model.shape_material_mu_torsional.numpy()[shape]),
-            0.01 * float(model.shape_material_mu.numpy()[shape]),
-            places=6,
-        )
+        # The PhysX patch radius r sets the torsional coefficient to mu * r, also next to an authored rolling one
+        for name in ("PhysxPatchRadius", "PhysxPatchRadiusRolling"):
+            shape = result["path_shape_map"][f"/World/{name}/Collider"]
+            self.assertAlmostEqual(
+                float(model.shape_material_mu_torsional.numpy()[shape]),
+                0.01 * float(model.shape_material_mu.numpy()[shape]),
+                places=6,
+            )
 
     @requires("pxr.Usd")
     def test_bound_material_supplies_the_friction_pair(self):

@@ -7957,7 +7957,9 @@ class TestMuJoCoAttributes(unittest.TestCase):
             newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
             joints = []
             parent = -1
-            for i, friction_mode in enumerate((mode.NONE, mode.SLIDING, mode.TORSIONAL, mode.TORSIONAL_ROLLING)):
+            for i, friction_mode in enumerate(
+                (mode.NONE, mode.SLIDING, mode.SLIDING_TORSIONAL, mode.SLIDING_TORSIONAL_ROLLING)
+            ):
                 body = builder.add_link()
                 joints.append(builder.add_joint_revolute(parent, body, axis=(0.0, 0.0, 1.0)))
                 cfg = newton.ModelBuilder.ShapeConfig(friction_mode=friction_mode)
@@ -7974,7 +7976,7 @@ class TestMuJoCoAttributes(unittest.TestCase):
         # Deprecated values override the mode, including MuJoCo's default of 3
         with self.assertWarnsRegex(NewtonDeprecationWarning, "mujoco:condim custom attribute is deprecated"):
             model = build({1: 6, 2: 4, 3: 3}).finalize()
-        np.testing.assert_array_equal(model.shape_material_friction_mode.numpy(), [0, 3, 2, 1])
+        np.testing.assert_array_equal(model.shape_material_friction_mode.numpy(), [0, 7, 3, 1])
         solver = SolverMuJoCo(model)
         np.testing.assert_array_equal(solver.mjw_model.geom_condim.numpy(), [1, 6, 4, 3])
         # A changed default applies to the shapes left at the sliding mode
@@ -7988,7 +7990,7 @@ class TestMuJoCoAttributes(unittest.TestCase):
         )
         with self.assertWarns(NewtonDeprecationWarning):
             modes = builder.finalize().shape_material_friction_mode.numpy()
-        np.testing.assert_array_equal(modes, [mode.TORSIONAL, mode.NONE])
+        np.testing.assert_array_equal(modes, [mode.SLIDING_TORSIONAL, mode.NONE])
 
         # The deprecated model attribute reads the modes, and values written to it reach the next solver
         with self.assertWarnsRegex(NewtonDeprecationWarning, "mujoco:condim custom attribute is deprecated"):
@@ -8008,7 +8010,57 @@ class TestMuJoCoAttributes(unittest.TestCase):
         with self.assertWarns(NewtonDeprecationWarning):
             model.mujoco.condim = wp.array([1, 3, 4, 6], dtype=wp.int32)
             np.testing.assert_array_equal(model.mujoco.condim.numpy(), [1, 3, 4, 6])
-        np.testing.assert_array_equal(model.shape_material_friction_mode.numpy(), [0, 1, 2, 3])
+        np.testing.assert_array_equal(model.shape_material_friction_mode.numpy(), [0, 1, 3, 7])
+
+    @requires(*MUJOCO_MODULES)
+    def test_sliding_rolling_friction_mode(self):
+        """Map SLIDING_ROLLING to condim 6 without torsional friction."""
+        mode = newton.ShapeFrictionMode
+        builder = newton.ModelBuilder()
+        newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_ground_plane(cfg=newton.ModelBuilder.ShapeConfig(mu_torsional=0.03))
+        for i, friction_mode in enumerate((mode.SLIDING_ROLLING, mode.SLIDING_TORSIONAL_ROLLING)):
+            body = builder.add_body(xform=wp.transform((0.5 * i, 0.0, 0.0995), wp.quat_identity()))
+            cfg = newton.ModelBuilder.ShapeConfig(friction_mode=friction_mode, mu_torsional=0.02)
+            builder.add_shape_sphere(body, radius=0.1, cfg=cfg)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, use_mujoco_contacts=False)
+        geoms = np.argsort(solver.mjc_geom_to_newton_shape.numpy()[0])
+        np.testing.assert_array_equal(solver.mjw_model.geom_condim.numpy()[geoms], [3, 6, 6])
+        np.testing.assert_allclose(solver.mjw_model.geom_friction.numpy()[0, geoms, 1], [0.03, 1.0e-5, 0.02])
+        np.testing.assert_allclose(solver.mj_model.geom_friction[geoms, 1], [0.03, 1.0e-5, 0.02])
+
+        # Runtime coefficient updates keep the torsional coefficient out
+        model.shape_material_mu_torsional.fill_(0.04)
+        solver.notify_model_changed(ModelFlags.SHAPE_PROPERTIES)
+        np.testing.assert_allclose(solver.mjw_model.geom_friction.numpy()[0, geoms, 1], [0.04, 1.0e-5, 0.04])
+
+        # A converted contact has torsional friction only if one of its shapes enables it
+        state = model.state()
+        pipeline = newton.CollisionPipeline(model)
+        contacts = pipeline.contacts()
+        pipeline.collide(state, contacts)
+        solver._convert_contacts_to_mjwarp(model, state, contacts)
+        self.assertEqual(int(solver.mjw_data.nacon.numpy()[0]), 2)
+        torsional = {}
+        for geom, friction in zip(
+            solver.mjw_data.contact.geom.numpy()[:2], solver.mjw_data.contact.friction.numpy()[:2], strict=True
+        ):
+            torsional[int(geom.max())] = friction[2]
+        self.assertAlmostEqual(torsional[int(geoms[1])], 1.0e-5, places=8)
+        self.assertAlmostEqual(torsional[int(geoms[2])], 0.04, places=6)
+
+        # The deprecated condim copy reads 6 and leaves the mode of unedited shapes
+        with self.assertWarns(NewtonDeprecationWarning):
+            condim = model.mujoco.condim
+        np.testing.assert_array_equal(condim.numpy(), [3, 6, 6])
+        condim.assign([4, 6, 6])
+        with self.assertWarns(NewtonDeprecationWarning):
+            model.mujoco.condim  # noqa: B018
+        np.testing.assert_array_equal(
+            model.shape_material_friction_mode.numpy(),
+            [mode.SLIDING_TORSIONAL, mode.SLIDING_ROLLING, mode.SLIDING_TORSIONAL_ROLLING],
+        )
 
     @requires(*MUJOCO_MODULES)
     def test_custom_attributes_from_mjcf(self):
@@ -8036,7 +8088,8 @@ class TestMuJoCoAttributes(unittest.TestCase):
         solver = SolverMuJoCo(model)
         mode = newton.ShapeFrictionMode
         np.testing.assert_array_equal(
-            model.shape_material_friction_mode.numpy(), [mode.TORSIONAL_ROLLING, mode.TORSIONAL, mode.SLIDING]
+            model.shape_material_friction_mode.numpy(),
+            [mode.SLIDING_TORSIONAL_ROLLING, mode.SLIDING_TORSIONAL, mode.SLIDING],
         )
         np.testing.assert_array_equal(solver.mjw_model.geom_condim.numpy(), [6, 4, 3])
 
@@ -8091,7 +8144,8 @@ class TestMuJoCoAttributes(unittest.TestCase):
         solver = SolverMuJoCo(model)
         mode = newton.ShapeFrictionMode
         np.testing.assert_array_equal(
-            model.shape_material_friction_mode.numpy(), [mode.TORSIONAL_ROLLING, mode.TORSIONAL, mode.SLIDING]
+            model.shape_material_friction_mode.numpy(),
+            [mode.SLIDING_TORSIONAL_ROLLING, mode.SLIDING_TORSIONAL, mode.SLIDING],
         )
         np.testing.assert_array_equal(solver.mjw_model.geom_condim.numpy(), [6, 4, 3])
 
@@ -8124,7 +8178,7 @@ class TestMuJoCoAttributes(unittest.TestCase):
         with self.assertWarnsRegex(UserWarning, "standalone world roots"):
             solver = SolverMuJoCo(model)
         np.testing.assert_array_equal(
-            model.shape_material_friction_mode.numpy(), [newton.ShapeFrictionMode.TORSIONAL_ROLLING]
+            model.shape_material_friction_mode.numpy(), [newton.ShapeFrictionMode.SLIDING_TORSIONAL_ROLLING]
         )
         np.testing.assert_array_equal(solver.mjw_model.geom_condim.numpy(), [6])
 

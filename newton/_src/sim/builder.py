@@ -1197,8 +1197,9 @@ class ModelBuilder:
         """The friction components the shape enables in rigid contacts, see :class:`~newton.ShapeFrictionMode`.
 
         :attr:`mu_torsional` and :attr:`mu_rolling` only act in contacts whose
-        mode includes them. Solvers may cache the mode when they are constructed,
-        so changing it in a finalized model is not supported."""
+        mode includes them. Solvers and the collision pipeline may read the mode
+        only when they are constructed: in a finalized model, set it before
+        constructing them; changing it afterwards is not supported."""
         margin: float = 0.0
         """Outward offset from the shape's surface [m] for collision detection.
         Extends the effective collision surface outward by this amount. When two shapes collide,
@@ -9984,6 +9985,12 @@ class ModelBuilder:
             resolved_opacity = 1.0
         resolved_opacity = _validate_opacity(resolved_opacity, "Shape opacity")
 
+        # Compute mass properties before mutating the builder so that an invalid shell
+        # thickness raises without leaving a partially added shape behind.
+        shape_mass_props = None
+        if not is_static and cfg.density > 0.0 and body >= 0 and not self.body_lock_inertia[body]:
+            shape_mass_props = compute_inertia_shape(type, scale, src, cfg.density, cfg.is_solid, cfg.margin)
+
         self.shape_body.append(body)
         shape = self.shape_count
         self.body_shapes[body].append(shape)
@@ -10036,8 +10043,8 @@ class ModelBuilder:
         if cfg.has_shape_collision and cfg.collision_filter_parent:
             self._add_joint_collision_filter_pairs(shape, body)
 
-        if not is_static and cfg.density > 0.0 and body >= 0 and not self.body_lock_inertia[body]:
-            (m, c, inertia) = compute_inertia_shape(type, scale, src, cfg.density, cfg.is_solid, cfg.margin)
+        if shape_mass_props is not None:
+            m, c, inertia = shape_mass_props
             com_body = wp.transform_point(xform, c)
             self._update_body_mass(body, m, inertia, com_body, xform.q)
 
@@ -12286,7 +12293,9 @@ class ModelBuilder:
             custom_attributes: Dictionary of custom attribute names to values.
 
         Note:
-            Set the mass equal to zero to create a 'kinematic' particle that is not subject to dynamics.
+            Set the mass equal to zero to create a fixed particle that is not subject to dynamics.
+            To drive a particle to prescribed positions, set :attr:`~newton.ParticleFlags.KINEMATIC`
+            in ``flags`` and write :attr:`~newton.Control.particle_target_q`.
 
         Returns:
             The index of the particle in the system.
@@ -12332,7 +12341,9 @@ class ModelBuilder:
             custom_attributes: Dictionary of custom attribute names to lists of values (one value for each particle).
 
         Note:
-            Set the mass equal to zero to create a 'kinematic' particle that is not subject to dynamics.
+            Set the mass equal to zero to create a fixed particle that is not subject to dynamics.
+            To drive a particle to prescribed positions, set :attr:`~newton.ParticleFlags.KINEMATIC`
+            in ``flags`` and write :attr:`~newton.Control.particle_target_q`.
 
         Raises:
             ValueError: If a particle input or custom attribute list has a mismatched length.
@@ -13042,10 +13053,10 @@ class ModelBuilder:
             cell_y: The width of each cell in the y-direction
             mass: The mass of each particle
             reverse_winding: Flip the winding of the mesh
-            fix_left: Make the left-most edge of particles kinematic (fixed in place)
-            fix_right: Make the right-most edge of particles kinematic
-            fix_top: Make the top-most edge of particles kinematic
-            fix_bottom: Make the bottom-most edge of particles kinematic
+            fix_left: Fix the left-most edge of particles in place (zero mass)
+            fix_right: Fix the right-most edge of particles in place (zero mass)
+            fix_top: Fix the top-most edge of particles in place (zero mass)
+            fix_bottom: Fix the bottom-most edge of particles in place (zero mass)
             label: Optional name forwarded to :func:`newton.utils.validate_triangle_mesh`
                 via :meth:`add_cloth_mesh` so a mesh-quality warning can identify this cloth.
                 The same name is appended to :attr:`surface_label` for this cloth; if None,
@@ -13453,10 +13464,10 @@ class ModelBuilder:
             k_mu: The first elastic Lame parameter
             k_lambda: The second elastic Lame parameter
             k_damp: The viscous damping coefficient [Pa·s].
-            fix_left: Make the left-most edge of particles kinematic (fixed in place)
-            fix_right: Make the right-most edge of particles kinematic
-            fix_top: Make the top-most edge of particles kinematic
-            fix_bottom: Make the bottom-most edge of particles kinematic
+            fix_left: Fix the left-most edge of particles in place (zero mass)
+            fix_right: Fix the right-most edge of particles in place (zero mass)
+            fix_top: Fix the top-most edge of particles in place (zero mass)
+            fix_bottom: Fix the bottom-most edge of particles in place (zero mass)
             tri_ke: Stiffness for surface mesh triangles. Defaults to 0.0.
             tri_ka: Area stiffness for surface mesh triangles. Defaults to 0.0.
             tri_kd: Damping for surface mesh triangles. Defaults to 0.0.

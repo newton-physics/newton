@@ -336,7 +336,9 @@ def set_torsion_radius(model, radius, shapes=None):
     radii = np.zeros(model.shape_count, dtype=np.float32)
     radii[slice(None) if shapes is None else list(shapes)] = radius
     mode = newton.ShapeFrictionMode
-    model.shape_material_friction_mode.assign(np.where(radii > 0.0, mode.TORSIONAL, mode.SLIDING).astype(np.int32))
+    model.shape_material_friction_mode.assign(
+        np.where(radii > 0.0, mode.SLIDING_TORSIONAL, mode.SLIDING).astype(np.int32)
+    )
     namespace = getattr(model, "steel", None)
     if namespace is not None and getattr(namespace, "min_torsional_patch_radius", None) is not None:
         namespace.min_torsional_patch_radius.assign(radii)

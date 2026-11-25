@@ -207,7 +207,7 @@ class TestModelAttributeSpecs(unittest.TestCase):
             ("joint_target_q", flags.NONE),
             # Read only at construction: no flag refreshes them.
             ("shape_type", None),
-            ("mujoco:condim", None),
+            ("shape_material_friction_mode", None),
             ("user:label_id", None),
         ):
             with self.subTest(attribute=name):
@@ -2692,7 +2692,7 @@ class TestModelMesh(unittest.TestCase):
 class TestShapeConfigValidation(unittest.TestCase):
     def test_shape_config_rejects_invalid_friction_mode(self):
         """Reject friction modes outside ShapeFrictionMode."""
-        for friction_mode in (-1, 4):
+        for friction_mode in (-1, 2, 4):
             with self.subTest(friction_mode=friction_mode):
                 cfg = newton.ModelBuilder.ShapeConfig(friction_mode=friction_mode)
 
@@ -2708,14 +2708,16 @@ class TestShapeConfigValidation(unittest.TestCase):
         body = source.add_body()
         source.add_shape_sphere(body, radius=0.1, cfg=newton.ModelBuilder.ShapeConfig(friction_mode=mode.NONE))
         source.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
-        source.add_shape_capsule(body, cfg=newton.ModelBuilder.ShapeConfig(friction_mode=mode.TORSIONAL_ROLLING))
+        source.add_shape_capsule(
+            body, cfg=newton.ModelBuilder.ShapeConfig(friction_mode=mode.SLIDING_TORSIONAL_ROLLING)
+        )
 
         builder = newton.ModelBuilder()
         builder.add_builder(source)
         builder.replicate(source, 2)
         model = builder.finalize(device="cpu")
 
-        np.testing.assert_array_equal(model.shape_material_friction_mode.numpy(), [0, 1, 3] * 3)
+        np.testing.assert_array_equal(model.shape_material_friction_mode.numpy(), [0, 1, 7] * 3)
 
     def test_shape_config_rejects_invalid_density(self):
         """Reject negative and non-finite density values."""

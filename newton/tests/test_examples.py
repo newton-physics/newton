@@ -858,7 +858,7 @@ add_example_test(
     name="tendon.example_tendon_3d_routing",
     devices=test_devices,
     use_viewer=True,
-    test_options={"num-frames": 60},
+    test_options={"num-frames": 120},
 )
 
 
