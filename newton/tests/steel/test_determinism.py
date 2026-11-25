@@ -784,8 +784,8 @@ def test_deterministic_joint_friction_rows_follow_dof_order(test, device):
         np.testing.assert_allclose(row_mu[world, friction_rows], expected, rtol=1.0e-6)
 
 
-def test_deterministic_bilateral_rows_follow_element_order(test, device):
-    """Give a world's mimic rows, then its loop-closure rows, their slots in element order."""
+def test_bilateral_rows_follow_element_order(test, device):
+    """Give a world's mimic rows, then its loop-closure rows, their slots in element order in every mode."""
     mimic_count = 512
     builder = _build_four_bar()
     # Many rows on one follower need the deprecated API; joint-owned mimics allow one per joint.
@@ -794,14 +794,16 @@ def test_deterministic_bilateral_rows_follow_element_order(test, device):
         for _ in range(mimic_count):
             builder.add_constraint_mimic(joint0=1, joint1=0, coef0=0.0, coef1=1.0)
     model = builder.finalize(device=device)
-    solver = SolverSteel(model, deterministic=RUN_TO_RUN, articulation_constraint_max=mimic_count + 64)
-    state = model.state()
-    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
-    solver.step(state, model.state(), model.control(), None, 0.005)
+    for mode in (RUN_TO_RUN, wp.DeterministicMode.NOT_GUARANTEED):
+        with test.subTest(deterministic=mode):
+            solver = SolverSteel(model, deterministic=mode, articulation_constraint_max=mimic_count + 64)
+            state = model.state()
+            newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+            solver.step(state, model.state(), model.control(), None, 0.005)
 
-    mimic_slot = solver._mimic_slot.numpy()
-    np.testing.assert_array_equal(mimic_slot, mimic_slot[0] + np.arange(mimic_count))
-    np.testing.assert_array_equal(solver._connect_slot.numpy(), [mimic_slot[0] + mimic_count])
+            mimic_slot = solver._mimic_slot.numpy()
+            np.testing.assert_array_equal(mimic_slot, mimic_slot[0] + np.arange(mimic_count))
+            np.testing.assert_array_equal(solver._connect_slot.numpy(), [mimic_slot[0] + mimic_count])
 
 
 @contextlib.contextmanager
@@ -925,7 +927,7 @@ for _fn in (
     test_deterministic_launches_replay_identically,
     test_deterministic_joint_rows_follow_articulation_order,
     test_deterministic_joint_friction_rows_follow_dof_order,
-    test_deterministic_bilateral_rows_follow_element_order,
+    test_bilateral_rows_follow_element_order,
     test_inherited_global_mode_keeps_steel_ordering,
 ):
     add_function_test(TestSteelDeterminism, _fn.__name__, _fn, devices=cuda_devices)

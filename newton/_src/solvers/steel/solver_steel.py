@@ -2414,8 +2414,9 @@ class SolverSteel(SolverBase, CouplingInterface):
                 ``None`` (default) to inherit ``wp.config.deterministic``, which defaults to
                 ``NOT_GUARANTEED``. With ``RUN_TO_RUN`` the solver reserves its constraint rows in a fixed
                 order instead of the order in which GPU threads reach the per-world row counters: joint
-                rows in articulation order, contact rows in contact-buffer order within each world. Given
-                identical inputs,
+                rows in articulation order, contact rows in contact-buffer order within each world. Mimic and
+                loop-closure rows take element order in either mode, since they couple the DOFs of one
+                articulation and a serial sweep visits rows in slot order. Given identical inputs,
                 including identically ordered contacts, repeated runs are then bitwise identical on the
                 same GPU model, driver and Warp build, eagerly and under CUDA graph replay; combine it with
                 ``CollisionPipeline(deterministic=True)`` for a reproducible contact order (see
@@ -4450,7 +4451,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                     device=model.device,
                 )
 
-            self._reserve_rows(self._mimic_world_index, self._slot_counter, launch_mimic)
+            self._reserve_rows(self._mimic_world_index, self._slot_counter, launch_mimic, ordered=True)
             for size in self._size_groups:
                 if size not in self._mimic_sizes:
                     continue
@@ -4509,7 +4510,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                     device=model.device,
                 )
 
-            self._reserve_rows(self._connect_world_index, self._slot_counter, launch_connect)
+            self._reserve_rows(self._connect_world_index, self._slot_counter, launch_connect, ordered=True)
             for size in self._connect_sizes:
                 wp.launch(
                     populate_connect_J_for_size,
@@ -9454,14 +9455,18 @@ class SolverSteel(SolverBase, CouplingInterface):
         )
 
     def _init_ordered_rows(self, model: Model) -> None:
-        """Build the per-world element lists that order row reservations with ``deterministic=RUN_TO_RUN``."""
+        """Build the per-world element lists that order row reservations.
+
+        Mimic and loop-closure rows are always reserved in element order; the other families only with
+        ``deterministic=RUN_TO_RUN``.
+        """
         device = model.device
         self._row_cursor = wp.zeros(1, dtype=wp.int32, device=device)
         self._articulation_world_index = None
         self._mimic_world_index = None
         self._connect_world_index = None
         self._rigid_velocity_limit_world_index = None
-        if not self._ordered_rows or self._art_to_world is None:
+        if self._art_to_world is None:
             return
 
         def world_index(element_world):
@@ -9484,13 +9489,19 @@ class SolverSteel(SolverBase, CouplingInterface):
                 launches,
             )
 
-        art_world = self._art_to_world.numpy()
-        self._articulation_world_index = world_index(art_world)
-        cursor_size = max(len(art_world), self._mimic_count, self._connect_count, 1)
+        # A serial sweep visits a world's rows in slot order, and the mimic and closure rows of one
+        # articulation are coupled, so an atomic reservation would reorder their sweep every step.
+        cursor_size = max(self._mimic_count, self._connect_count, 1)
         if self._mimic_count:
             self._mimic_world_index = world_index(self._mimic_world.numpy())
         if self._connect_count:
             self._connect_world_index = world_index(self._connect_world.numpy())
+        if not self._ordered_rows:
+            self._row_cursor = wp.zeros(cursor_size, dtype=wp.int32, device=device)
+            return
+        art_world = self._art_to_world.numpy()
+        self._articulation_world_index = world_index(art_world)
+        cursor_size = max(len(art_world), cursor_size)
         if self._free_rigid_body_count:
             body_art = self._body_to_articulation.numpy()[self._free_rigid_body_indices.numpy()]
             self._rigid_velocity_limit_world_index = world_index(
@@ -9514,9 +9525,9 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._ordered_scan_total = wp.zeros(1, dtype=wp.int32, device=device)
         self._contact_slot_scan_length = wp.ones(1, dtype=wp.int32, device=device)
 
-    def _reserve_rows(self, world_index, world_slot_counter: wp.array, launch) -> None:
+    def _reserve_rows(self, world_index, world_slot_counter: wp.array, launch, ordered: bool = False) -> None:
         """Run one row family's reservation launches; ``launch(mode)`` issues them with a row-slot mode."""
-        if not self._ordered_rows:
+        if not (self._ordered_rows or ordered):
             launch(ROW_SLOTS_ATOMIC)
             return
         device = self.model.device
