@@ -1508,6 +1508,9 @@ class SolverSteel(SolverBase, CouplingInterface):
       when its ``target_kind`` / ``target`` link names a loop joint or mimic constraint
       between the row's own bodies or joints. Particles are not simulated.
     - Gradients are not supported.
+    - Bias (Coriolis and centrifugal) forces are explicit, so articulated chains with high joint
+      speeds can gain energy; a smaller ``dt`` reduces it and more ``iterations`` do not. See
+      :ref:`Tuning Solver Reference`.
 
     On CUDA, branched articulations use sparse mass factors when
     every articulated (non-free-body) response group shares one joint topology with at most
@@ -1549,6 +1552,12 @@ class SolverSteel(SolverBase, CouplingInterface):
     :attr:`constraint_overflow`. The constructor warns once if the model's shape flags and
     collision groups allow such contacts. Use world geometry or a kinematic free body for
     scenery shared by all worlds, or add the body to every world.
+
+    Treat row and contact-buffer overflow as a sizing error and raise those capacities until no world is flagged.
+    The unsolvable cross-world contacts above set the same flag, and no capacity clears them. Which
+    contacts keep their rows is described under ``deterministic``. As that set changes, a contact that penetrated
+    while it had no rows is pushed out by the position correction when it regains them, which can add energy and
+    make the state diverge.
 
     Solver observables:
         :attr:`~newton.solvers.SolverBase.Observables.body_parent_f` is populated when
@@ -1945,10 +1954,13 @@ class SolverSteel(SolverBase, CouplingInterface):
             iterations: Number of projected Gauss-Seidel iterations per step.
             baumgarte: Baumgarte position-correction factor of contact and joint-limit rows,
                 as a fraction of the position error removed per step.
-            cfm: Constraint force mixing added to every row's effective-mass diagonal,
-                which regularizes redundant rows. Drive rows of ``drive_mode="rows"`` use
-                their exact unit response instead, and the coupled contact solves of a
-                ``friction_mode`` other than ``"fixed_normal"`` leave it off their contact blocks.
+            cfm: Shift added to the step denominator ``J H^-1 J^T`` of the scalar PGS rows. Drive
+                rows of ``drive_mode="rows"`` use their exact unit response instead, the coupled contact
+                solves of a ``friction_mode`` other than ``"fixed_normal"`` leave it off their contact
+                blocks, and compliant normal rows replace it with their compliance term. It damps
+                unconverged sweeps, leaves the converged solution of unregularized rows unchanged and
+                scales the penetration of rows regularized by ``contact_regularization``; to soften
+                contacts use ``contact_regularization`` or ``contact_compliance``.
             relaxation: Successive over-relaxation factor of the PGS sweep.
             update_mass_matrix_interval: Rebuild and refactor the mass matrix every this many
                 calls to :meth:`step`; ``1`` rebuilds it every step. Larger values reuse a
@@ -2188,7 +2200,12 @@ class SolverSteel(SolverBase, CouplingInterface):
                 the free-body contact rows, then the velocity limits. ``"contact_then_internal"``
                 runs every iteration of the contact rows first, then every iteration of the
                 internal rows (drive, mimic, connect, joint-limit and joint-friction rows) and
-                the velocity limits. ``"phased"`` approximates the order PhysX uses for grasping: each
+                the velocity limits. In the position solve, internal-row corrections never reach the
+                contacts, so a contact load carried by an internal row (e.g. a body on a link at its
+                joint limit) sinks, and a heavy one falls through at any iteration count; use
+                ``"interleaved"`` or ``"phased"`` there. ``velocity_iterations`` start from the
+                corrected velocities, so they change the output velocity but not the integrated
+                positions. ``"phased"`` approximates the order PhysX uses for grasping: each
                 iteration solves the internal rows, then the contact rows, then the velocity
                 limits, each in a launch of its own; the propagation responses use this order
                 with ``"interleaved"`` as well. Contact torsion and contact compliance require
@@ -2350,7 +2367,8 @@ class SolverSteel(SolverBase, CouplingInterface):
                 shapes (other notifications and changes to static or kinematic owners wake
                 every island). Driven articulations (nonzero drive gains) and articulations with
                 passive springs (nonzero :attr:`~newton.Model.joint_stiffness` on a PRISMATIC,
-                REVOLUTE or D6 tree joint) stay awake.
+                REVOLUTE or D6 tree joint) stay awake. For resting stacks that stay awake with the
+                default contact order, see :ref:`Tuning Solver Reference`.
                 Sleeping is configured at construction; rebuild captured graphs to change it. Construction raises :class:`ValueError` with ``contact_warmstart``
                 or ``velocity_iterations``, or for a model without articulations, and
                 :class:`NotImplementedError` with ``articulated_contact_response="propagation"`` and

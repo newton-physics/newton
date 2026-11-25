@@ -7437,7 +7437,7 @@ def compute_mf_effective_mass_and_rhs(
 ):
     """Compute the response ``H^-1 J^T``, inverse effective mass and bias of each free-body row.
 
-    The effective mass is ``J_a H_a^-1 J_a^T + J_b H_b^-1 J_b^T + cfm`` with the full
+    The step denominator is ``J_a H_a^-1 J_a^T + J_b H_b^-1 J_b^T + cfm`` with the full
     6x6 inverse spatial inertia of each free body. The right-hand side holds only the
     bias; the solve recomputes ``J v`` every iteration. Penetrating contacts get the
     Baumgarte term, bounded by the bodies' maximum depenetration velocity; separated
