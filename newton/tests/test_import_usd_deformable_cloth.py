@@ -16,8 +16,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton import ShapeFlags
-from newton.exceptions import NewtonWarning
+from newton import NewtonWarning, ShapeFlags
 from newton.tests._usd_deformable_test_utils import (
     _add_cable_curve,
     _add_cloth_mesh,
@@ -29,11 +28,11 @@ from newton.tests._usd_deformable_test_utils import (
     group_labels,
     group_range,
 )
-from newton.tests.unittest_utils import USD_AVAILABLE
+from newton.tests.unittest_utils import requires
 from newton.usd import SchemaResolverPhysx
 
 
-@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+@requires("pxr.Usd")
 class TestUSDDeformableCloth(unittest.TestCase):
     """Surface-deformable (cloth) parsing into particles, triangle elements, and bending edges."""
 
@@ -80,6 +79,57 @@ class TestUSDDeformableCloth(unittest.TestCase):
         self.assertEqual(builder.tri_count, 2)
         np.testing.assert_allclose(builder.tri_color, np.tile(expected_color, (2, 1)), atol=1e-6, rtol=1e-6)
         np.testing.assert_allclose(builder.tri_opacity, np.full(2, 0.44), atol=1e-6, rtol=1e-6)
+
+    def test_cloth_uniform_display_primvars_map_to_face_triangles(self):
+        """Give each face's uniform display color and opacity to that face's triangles."""
+        from pxr import Sdf, UsdGeom, Vt
+
+        red, blue, nan = (0.8, 0.1, 0.1), (0.1, 0.2, 0.9), float("nan")
+        srgb = newton.utils.color_linear_to_srgb
+        # A quad (fan-split into triangles 0 and 1) and a triangle (triangle 2).
+        cases = (
+            # Indexed, so the values must be flattened: the quad is blue and the triangle red.
+            ("indexed", [red, blue], [1, 0], [0.25, 0.75], [srgb(blue), srgb(blue), srgb(red)], [0.25, 0.25, 0.75]),
+            # Only the faces with a non-finite value fall back to the builder defaults.
+            ("non_finite_face", [red, (nan, 0.0, 0.0)], None, [nan, 0.75], [srgb(red), srgb(red), (0.7, 0.5, 0.3)],
+             [1.0, 1.0, 0.75]),
+        )  # fmt: skip
+        for name, colors, indices, opacities, expected_color, expected_opacity in cases:
+            with self.subTest(name=name):
+                stage = _deformable_stage()
+                mesh = UsdGeom.Mesh.Define(stage, "/World/Cloth")
+                mesh.CreatePointsAttr(
+                    [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0), (0.0, 1.0, 0.0), (2.0, 0.0, 0.0)]
+                )
+                mesh.CreateFaceVertexCountsAttr([4, 3])
+                mesh.CreateFaceVertexIndicesAttr([0, 1, 2, 3, 1, 4, 2])
+                mesh.GetPrim().AddAppliedSchema("PhysicsSurfaceDeformableSimAPI")
+                mesh.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
+                _author_deformable_element_array(mesh.GetPrim(), "thicknesses", [0.001], "constant")
+                primvars = UsdGeom.PrimvarsAPI(mesh)
+                color = primvars.CreatePrimvar("displayColor", Sdf.ValueTypeNames.Color3fArray, UsdGeom.Tokens.uniform)
+                color.Set(colors)
+                if indices is not None:
+                    color.SetIndices(Vt.IntArray(indices))
+                primvars.CreatePrimvar("displayOpacity", Sdf.ValueTypeNames.FloatArray, UsdGeom.Tokens.uniform).Set(
+                    opacities
+                )
+
+                builder = newton.ModelBuilder()
+                if name == "indexed":
+                    with self.assertNoLogs("newton", level="WARNING"):
+                        builder.add_usd(stage)
+                else:
+                    with self.assertLogs("newton", level="WARNING") as caught:
+                        builder.add_usd(stage)
+                    self.assertEqual(len(caught.output), 2, caught.output)
+                    output = "\n".join(caught.output)
+                    self.assertIn("displayColor: ignoring imported face colors: 1 of 2", output)
+                    self.assertIn("displayOpacity: ignoring imported face opacities: 1 of 2", output)
+
+                self.assertEqual(builder.tri_count, 3)
+                np.testing.assert_allclose(builder.tri_color, expected_color, atol=1e-6, rtol=1e-6)
+                np.testing.assert_allclose(builder.tri_opacity, expected_opacity, atol=1e-6, rtol=1e-6)
 
     def test_cloth_material_appearance_imports_to_triangles(self):
         """Import bound material color and opacity onto every generated triangle."""
@@ -664,7 +714,7 @@ class TestUSDDeformableCloth(unittest.TestCase):
         messages = [str(warning.message) for warning in caught]
         self.assertTrue(
             any(
-                warning.category is newton.exceptions.NewtonDeprecationWarning
+                warning.category is newton.NewtonDeprecationWarning
                 and "thicknesses" in str(warning.message)
                 and "thicknesses:elementType" in str(warning.message)
                 for warning in caught

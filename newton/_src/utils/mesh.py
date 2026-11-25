@@ -13,6 +13,7 @@ import warp as wp
 
 from ..exceptions import NewtonWarning
 from ..geometry.types import Mesh
+from ..geometry.utils import _load_trimesh
 
 
 @wp.kernel
@@ -586,10 +587,10 @@ class MeshAdjacency:
     def compute_vertex_adjacency(
         particle_count: int,
         *,
-        edge_indices: "wp.array[wp.int32] | np.ndarray | None" = None,
-        tri_indices: "wp.array[wp.int32] | np.ndarray | None" = None,
-        spring_indices: "wp.array[wp.int32] | np.ndarray | None" = None,
-        tet_indices: "wp.array[wp.int32] | np.ndarray | None" = None,
+        edge_indices: wp.array[wp.int32] | np.ndarray | None = None,
+        tri_indices: wp.array[wp.int32] | np.ndarray | None = None,
+        spring_indices: wp.array[wp.int32] | np.ndarray | None = None,
+        tet_indices: wp.array[wp.int32] | np.ndarray | None = None,
     ) -> "MeshAdjacency":
         """Build a temporary adjacency over the given elements and its vertex-to-element CSR."""
         return MeshAdjacency(
@@ -1154,6 +1155,7 @@ def load_meshes_from_file(
     maxhullvert: int,
     override_color: np.ndarray | list[float] | tuple[float, float, float] | None = None,
     override_texture: np.ndarray | str | None = None,
+    compute_inertia: bool = True,
 ) -> list[Mesh]:
     """Load meshes from a file using trimesh and capture texture data if present.
 
@@ -1163,12 +1165,11 @@ def load_meshes_from_file(
         maxhullvert: Maximum vertices for convex hull approximation.
         override_color: Optional base color override (RGB).
         override_texture: Optional texture path/URL or image override.
+        compute_inertia: If True, compute each mesh's unit-density mass properties.
 
     Returns:
         List of Mesh objects.
     """
-    import trimesh
-
     filename = os.fspath(filename)
     scale = np.asarray(scale, dtype=np.float32)
     base_dir = os.path.dirname(filename)
@@ -1369,9 +1370,9 @@ def load_meshes_from_file(
                 category=DeprecationWarning,
                 module=r"^collada\.",
             )
-            tri = trimesh.load(filename, force="mesh")
+            tri = _load_trimesh(filename, force="mesh")
     else:
-        tri = trimesh.load(filename, force="mesh")
+        tri = _load_trimesh(filename, force="mesh")
     tri_meshes = tri.geometry.values() if hasattr(tri, "geometry") else [tri]
 
     meshes = []
@@ -1427,6 +1428,7 @@ def load_meshes_from_file(
                     remapped_faces.flatten(),
                     normals=sub_normals,
                     uvs=sub_uvs,
+                    compute_inertia=compute_inertia,
                     maxhullvert=maxhullvert,
                     color=mat_color,
                     texture=mesh_texture,
@@ -1559,6 +1561,7 @@ def load_meshes_from_file(
                 faces.flatten(),
                 normals=normals,
                 uvs=uvs,
+                compute_inertia=compute_inertia,
                 maxhullvert=maxhullvert,
                 color=color,
                 texture=texture,

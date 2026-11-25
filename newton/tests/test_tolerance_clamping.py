@@ -5,8 +5,10 @@ import unittest
 
 import newton
 from newton.solvers import SolverMuJoCo
+from newton.tests.unittest_utils import MUJOCO_MODULES, requires
 
 
+@requires(*MUJOCO_MODULES)
 class TestToleranceClamping(unittest.TestCase):
     def test_tolerance_clamped_to_1e6(self):
         """Test that tolerance is clamped to 1e-6 to match mujoco_warp behavior.
@@ -42,7 +44,7 @@ class TestToleranceClamping(unittest.TestCase):
         self.assertTrue(hasattr(model.mujoco, "tolerance"), "Tolerance attribute not found")
 
         tolerance_values = model.mujoco.tolerance.numpy()
-        self.assertEqual(len(tolerance_values), 2, "Expected 2 worlds")
+        self.assertEqual(len(tolerance_values), 3, "Expected 2 worlds and the global world")
 
         # Newton model should have the parsed value (1e-8 from MJCF)
         for i in range(2):
@@ -88,7 +90,8 @@ class TestToleranceClamping(unittest.TestCase):
 
         # Verify Newton model has 1e-5
         tolerance_values = model.mujoco.tolerance.numpy()
-        self.assertAlmostEqual(tolerance_values[0], 1e-5, places=9, msg="Newton model tolerance should be 1e-5")
+        # Options imported outside a world context belong to global world -1.
+        self.assertAlmostEqual(tolerance_values[-1], 1e-5, places=9, msg="Newton model tolerance should be 1e-5")
 
         # Create solver
         solver = SolverMuJoCo(model)

@@ -22,7 +22,7 @@ from pathlib import Path
 import warp as wp
 
 import newton
-from newton.tests.unittest_utils import add_function_test, get_selected_cuda_test_devices
+from newton.tests.unittest_utils import add_function_test, get_selected_cuda_test_devices, requires
 
 CUBE_POINTS = [
     (-0.5, -0.5, -0.5),
@@ -88,6 +88,7 @@ def _add_collision_mesh(stage, path):
     return mesh
 
 
+@requires("pxr.Usd")
 class TestSDFUSDParsing(unittest.TestCase):
     """Tests for SDF attribute parsing from USD."""
 

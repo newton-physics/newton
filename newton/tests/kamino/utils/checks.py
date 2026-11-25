@@ -162,8 +162,8 @@ def _expected_wid(model_newton: Model, newton_attr: str) -> np.ndarray:
     raw = getattr(model_newton, newton_attr).numpy()
     if model_newton.world_count != 1 or not np.any(raw < 0):
         return raw
-    has_dedicated_global_gravity = model_newton.gravity.shape[0] > model_newton.world_count
-    if newton_attr == "body_world" and has_dedicated_global_gravity:
+    # Body -1 is preserved when world 0 owns bodies; otherwise world 0 simulates the global world.
+    if newton_attr == "body_world" and np.any(raw == 0):
         return raw
     expected = raw.copy()
     expected[expected < 0] = 0
@@ -465,7 +465,7 @@ def _assert_model_geoms_conversion_consistency(
         )
 
     # Inverse transform: `material` indexes into `ModelKamino.materials`,
-    # deduplicated by (static friction, restitution); every collidable shape's
+    # deduplicated by (dynamic friction, static friction, restitution); every collidable shape's
     # material properties must match the Newton shape properties it was
     # registered from.
     if "material" not in excluded:
@@ -473,6 +473,7 @@ def _assert_model_geoms_conversion_consistency(
         has_material = geom_material >= 0
         material_idx = geom_material[has_material]
         shape_mu = model_newton.shape_material_mu.numpy()[has_material]
+        shape_mu_static = model_newton.shape_material_mu_static.numpy()[has_material]
         shape_restitution = model_newton.shape_material_restitution.numpy()[has_material]
 
         static_friction = model_kamino.materials.static_friction.numpy()
@@ -480,10 +481,10 @@ def _assert_model_geoms_conversion_consistency(
         restitution = model_kamino.materials.restitution.numpy()
         np.testing.assert_allclose(
             static_friction[material_idx],
-            shape_mu,
+            shape_mu_static,
             rtol=rtol.get("material", 1e-6),
             atol=atol.get("material", 1e-6),
-            err_msg="MaterialsModel.static_friction does not match Model.shape_material_mu.",
+            err_msg="MaterialsModel.static_friction does not match Model.shape_material_mu_static.",
         )
         np.testing.assert_allclose(
             dynamic_friction[material_idx],

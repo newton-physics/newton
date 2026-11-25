@@ -10,17 +10,16 @@ from pathlib import Path
 from unittest import mock
 
 from newton.examples.basic.example_basic_plotting import Example
+from newton.tests.unittest_utils import requires
 
 
 class TestExamplePlotting(unittest.TestCase):
+    @requires("matplotlib")
     def test_save_plot_without_gui(self):
         """Save a diagnostic PNG without creating a pyplot figure manager."""
-        try:
-            import matplotlib
-            import matplotlib.image as image
-            import matplotlib.pyplot as plt
-        except ImportError:
-            self.skipTest("Requires matplotlib")
+        import matplotlib
+        import matplotlib.image as image
+        import matplotlib.pyplot as plt
 
         # Plot recorded data without building a solver or running a simulation.
         example = Example.__new__(Example)

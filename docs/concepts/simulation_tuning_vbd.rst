@@ -102,12 +102,12 @@ can inherit ``model.vbd`` settings.
        last resort, see :ref:`vbd-jitter-pipeline`.
      - Runtime grows linearly. Does not fix a stiffness-ratio problem.
    * - ``friction_epsilon`` (1e-2)
-     - Threshold for small sliding speeds [m/s]. Sets particle friction
-       smoothing length to ``friction_epsilon`` x ``dt``; also regularizes
-       the compliant-ALM body-body friction solve.
-     - Particle friction chatters at rest.
-     - Slow particle creep under tangential load when large; affects
-       finite-iteration convergence for compliant-ALM body-body contacts.
+     - Threshold for small sliding speeds [m/s]. Sets the friction smoothing
+       length to ``friction_epsilon`` x ``dt``
+       for particle and rigid-soft contacts.
+     - Particle or rigid-soft friction chatters at rest.
+     - Larger values permit slow creep under tangential load. Does not affect
+       compliant-ALM rigid-rigid contacts.
    * - ``dat_conservative_bound_relaxation`` (0.85)
      - Scale of both truncations: how close to its division plane a vertex may
        go, and the radius cap of 0.5 x this x query radius.
@@ -202,19 +202,16 @@ can inherit ``model.vbd`` settings.
        solver after changes.
 
 Deprecated aliases remain for one release cycle: ``particle_self_contact_radius``
-(legacy radius and margin pair), ``particle_collision_detection_interval``
-(now the self-contact slot of the collision schedule) and
-``particle_conservative_bound_relaxation`` (now
-``dat_conservative_bound_relaxation``). New code should not use them. Passing a
+(legacy radius and margin pair) and ``particle_collision_detection_interval``
+(now the self-contact slot of the collision schedule). New code should not use them. Passing a
 margin without a gap also triggers the legacy meaning of the margin and a
 deprecation warning, so always pass both.
 
 .. _vbd-rigid-compliance:
 
-Compliant ALM is the default for rigid constraints. Initially keep
-``rigid_avbd_alpha`` and ``rigid_avbd_gamma`` at their defaults. Legacy AVBD
-is deprecated and will be removed in a future release. Revalidate scenes
-when migrating; the same settings can produce different behavior.
+Rigid constraints use compliant ALM. Initially keep ``rigid_avbd_alpha`` and
+``rigid_avbd_gamma`` at their defaults. Scenes tuned for the removed legacy
+AVBD path need revalidation; the same settings can produce different behavior.
 
 Finite stiffness permits some stretch, joint displacement, or contact
 penetration even after convergence. If deformation is larger than expected,
@@ -293,7 +290,7 @@ formulas they enter are in :ref:`vbd-energy-terms`.
      - Keep within about 10x the elastic stiffness; see
        :ref:`vbd-fail-contact-stiffness`.
    * - :attr:`~newton.Model.soft_contact_kd`
-     - Contact damping on the gap rate, active only while approaching.
+     - Contact damping on the gap rate.
      - Contact jitter; second knob of the jitter pipeline.
      - Shrinks each correction by enlarging the local matrix; too much slows
        settling.
@@ -401,9 +398,9 @@ and rest geometry (``rest_points``, ``rest_quaternions``) are distinct; rest
 defaults to the initial shape. For an ordered chain, ``rest_straight=True``
 sets zero intrinsic bend and twist without changing the initial geometry
 or segment lengths. Do not supply explicit rest inputs with it. With nonzero
-bending stiffness, the cable then tends toward straight. The default
-``body_frame_origin="com"`` places the body origin at the segment midpoint;
-use the corresponding local offset for an endpoint attachment.
+bending stiffness, the cable then tends toward straight. Each segment's body
+origin is at the segment midpoint; use the corresponding local offset for an
+endpoint attachment.
 
 **Attachments and fitting.** Before tuning stiffness, check the initial and
 rest orientations and how the cable ends are attached. Fixing only an
@@ -638,10 +635,11 @@ buffers. Keep the gap at about half to one margin unless speed asks for more.
 **Stiffness, damping and friction together.** The contact stiffness sets how
 far a contact penetrates under load and how stiff the local system becomes.
 Keep it within about 10x the elastic stiffness of the material it presses on.
-Contact damping only acts while the gap closes and mostly shrinks the per
-iteration correction, so it is a second-order knob. Friction scales with the
-normal force; a contact that is too soft also has too little friction, which
-shows as slipping in grasps.
+Contact damping mostly shrinks the per iteration correction, so for jitter it
+is a second-order knob; for a bouncing stack see step 2 of
+:ref:`vbd-jitter-pipeline`. Friction scales with the normal force; a contact
+that is too soft also has too little friction, which shows as slipping in
+grasps.
 
 .. _vbd-rigid-contacts:
 
@@ -676,12 +674,27 @@ before increasing ``mu``. VBD mixes body-body ``ke`` and ``kd`` with an
 arithmetic mean and ``mu`` with a geometric mean, so one stiff shape can
 dominate normal stiffness while a shape with ``mu=0`` makes its pairs
 frictionless. Unexpected slip can also come from missing contacts or an
-incomplete solve. Leave ``friction_epsilon`` at its default initially;
-it does not change the Coulomb limit set by ``mu``.
+incomplete solve.
+
+**Torsional and rolling friction.** Body-body contacts resist spin about the
+contact normal and rolling in the contact plane.
+:attr:`~newton.ModelBuilder.ShapeConfig.mu_torsional` and
+:attr:`~newton.ModelBuilder.ShapeConfig.mu_rolling` are lengths [m]: each
+torque limit is the coefficient times the normal force. Both defaults are
+nonzero. Pair coefficients use the geometric mean, so zero on either shape
+disables that channel. For small parts and thin cables, reduce the
+coefficients or set them to zero if angular resistance is too strong.
 
 **Body coloring.** VBD updates bodies in the same color group in parallel.
 Automatic coloring uses joint and tendon connections, but does not include
 contacts. Contacting bodies may share a color, which can slow convergence.
+Compliant-ALM contacts between two dynamic bodies of the same color use a
+doubled solve metric to bound their simultaneous corrections. This can improve
+stability in dense contact networks, but those pairs may need more iterations.
+Bodies in different color groups are updated sequentially, so their contact
+solve metrics are not doubled.
+Damped grasps with same-color contacts can still fail at higher iteration
+counts.
 For small scenes with predictable contacts, consider splitting
 existing groups in ``builder.body_color_groups`` to separate frequently
 contacting bodies. Make these edits after ``builder.color()`` and before
@@ -734,6 +747,9 @@ behave as follows:
      - Replay eligible contact geometry. Restore normal multipliers;
        tangential memory comes from the replayed material anchor.
        This matching mode is experimental.
+
+Both matching modes also restore torsional and rolling multipliers, projected
+to the current contact frame and torque limits.
 
 For a baseline, set ``rigid_contact_history=False`` explicitly. Use
 ``contact_matching="disabled"`` unless rigid detection uses ``ITERATIONS``,
@@ -862,7 +878,20 @@ Work through these steps in order and stop at the first one that fixes it.
    elasticity stiffness: :attr:`~newton.Model.soft_contact_ke` against :attr:`tri_ke <newton.Model.tri_materials>` for cloth or
    :attr:`k_mu <newton.Model.tet_materials>` for soft bodies. This is the stiffness ratio
    (:ref:`vbd-stiffness-ratio`).
-2. If not fixed, tune the self-contact damping, :attr:`~newton.Model.soft_contact_kd`.
+2. If not fixed, tune the self-contact damping, :attr:`~newton.Model.soft_contact_kd`,
+   and keep ``soft_contact_damping_bidirectional`` at its default ``True``.
+   This damper acts on the rate at which the distance of a contact pair
+   changes. With ``True`` it acts while the pair closes and while it opens, so the rebound
+   is damped too. With ``False`` it acts only while the pair closes and
+   leaves the rebound undamped. With that
+   closing-only damper a stack of thin layers, such as the cards in
+   ``example_cloth_poker_cards``, kept bouncing, and raising
+   :attr:`~newton.Model.soft_contact_kd` made it worse instead of better.
+   Potential artifact of ``True``: the damper also resists separation, so
+   contacts can look viscous. It can delay release, and a large damping
+   coefficient can hold a separating pair for a moment. The effect grows with
+   :attr:`~newton.Model.soft_contact_kd` relative to
+   :attr:`~newton.Model.soft_contact_ke`.
 3. If it is still not fixed, or there is no contact, increase the elasticity
    damping: bending damping :attr:`edge_kd <newton.Model.edge_bending_properties>` for cloth, tet damping :attr:`k_damp <newton.Model.tet_materials>` for
    soft bodies.

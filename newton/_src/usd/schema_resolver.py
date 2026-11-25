@@ -305,6 +305,18 @@ class SchemaResolverManager:
             if prim_path not in self._schema_attrs[resolver.name]:
                 self._schema_attrs[resolver.name][prim_path] = resolver.collect_prim_attrs(prim)
 
+    def share_collected_attrs(self, source_path: str, target_path: str) -> None:
+        """Record the attributes collected for one prim path under another path.
+
+        Args:
+            source_path: Path whose attributes were already collected.
+            target_path: Path of a prim authoring the same attributes, such as another
+                instance proxy of one USD prototype prim.
+        """
+        for attrs in self._schema_attrs.values():
+            if source_path in attrs and target_path not in attrs:
+                attrs[target_path] = dict(attrs[source_path])
+
     @property
     def schema_attrs(self) -> dict[str, dict[str, dict[str, Any]]]:
         """

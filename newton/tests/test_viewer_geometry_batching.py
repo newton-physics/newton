@@ -268,7 +268,7 @@ class TestViewerGeometryBatching(unittest.TestCase):
         builder = newton.ModelBuilder()
         newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
         body = builder.add_body()
-        with self.assertWarnsRegex(newton.exceptions.NewtonDeprecationWarning, "site_size_is_display"):
+        with self.assertWarnsRegex(newton.NewtonDeprecationWarning, "site_size_is_display"):
             site = builder.add_site(
                 body,
                 type=newton.GeoType.CYLINDER,

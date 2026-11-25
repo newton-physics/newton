@@ -20,7 +20,12 @@ from newton import GeoType
 from newton._src.solvers.steel import contact_torsion, solver_steel
 from newton._src.solvers.steel import contact_torsion as host
 from newton._src.solvers.steel._testing import kernel_overrides
-from newton._src.solvers.steel.contact_torsion import _TORSION_SPIN_RETIRED, _contact_groups, _group_budget
+from newton._src.solvers.steel.contact_torsion import (
+    _TORSION_SPIN_RETIRED,
+    _TORSION_WARNING,
+    _contact_groups,
+    _group_budget,
+)
 from newton._src.solvers.steel.contact_torsion_device import (
     DeviceTorsionPreparation,
     _host_dot3,
@@ -49,7 +54,9 @@ from newton.tests.steel._fixtures import (
     _loop_anchor_gap,
     _patch_fixture,
     fixture,
+    printf_capture_is_reliable,
     set_torsion_radius,
+    synthetic_fixture,
 )
 from newton.tests.steel.test_propagation import _add_fixed_chain
 from newton.tests.unittest_utils import StdOutCapture, add_function_test, get_cuda_test_devices, get_test_devices
@@ -1084,135 +1091,6 @@ def _rounding_samples(
     dotted[i] = _host_dot3(points[i], directions[i])
 
 
-def synthetic_fixture(*, worlds=3, witnesses=5, patches=True, seed=4, device="cpu", padding=7):
-    """Create ordered/reordered contact worlds with unequal articulation DOFs."""
-    rng = np.random.default_rng(seed)
-    n = worlds * witnesses
-    capacity = n + padding
-    dense = witnesses * 3 + 8
-    records = [(world, local) for world in range(worlds) for local in range(witnesses)]
-    rng.shuffle(records)
-
-    def arr(value, dtype=None):
-        return wp.array(np.asarray(value), dtype=dtype, device=device)
-
-    def zero(shape, dtype=float):
-        return wp.zeros(shape, dtype=dtype, device=device)
-
-    def full(shape, value, dtype=int):
-        return wp.full(shape, value, dtype=dtype, device=device)
-
-    count = np.full(worlds, witnesses * 3, np.int32)
-    row_types = np.zeros((worlds, dense), np.int32)
-    parents = np.full((worlds, dense), -1, np.int32)
-    mu = np.zeros((worlds, dense), np.float32)
-    world_ids = np.zeros(capacity, np.int32)
-    slots = np.full(capacity, -1, np.int32)
-    anchors = np.zeros(capacity, np.int32)
-    sa = np.zeros(capacity, np.int32)
-    sb = np.zeros(capacity, np.int32)
-    owner = np.full(capacity, -1, np.int32)
-    normals = np.zeros((capacity, 3), np.float32)
-    points = np.zeros((capacity, 3), np.float32)
-    region_seeds = {}
-    for c, (world, local) in enumerate(records):
-        slot = local * 3
-        region = local % 2
-        region_seeds.setdefault((world, region), c)
-        world_ids[c], slots[c], anchors[c] = world, slot, 3
-        sa[c], sb[c] = world * 4 + region, world * 4 + 2 + region
-        owner[c] = region_seeds[world, region]
-        normals[c] = (0.0, 0.0, -1.0)
-        points[c] = (rng.uniform(-0.1, 0.1), rng.uniform(-0.1, 0.1), 0.0)
-        row_types[world, slot : slot + 3] = (
-            PGS_CONSTRAINT_TYPE_CONTACT,
-            PGS_CONSTRAINT_TYPE_FRICTION,
-            PGS_CONSTRAINT_TYPE_FRICTION,
-        )
-        parents[world, slot : slot + 3] = (slot, slot, slot)
-        mu[world, slot + 1 : slot + 3] = 0.7
-    if patches:
-        for world in range(worlds):
-            for region in range(2):
-                members = [c for c, (w, local) in enumerate(records) if w == world and local % 2 == region]
-                for i, c in enumerate(members):
-                    parents[world, slots[c]] = slots[members[(i + 1) % len(members)]]
-                    mu[world, slots[c] + 1 : slots[c] + 3] /= len(members)
-    shape_body = np.repeat(np.arange(worlds * 2, dtype=np.int32), 2)
-    response_sizes = np.tile([6, 3], worlds).astype(np.int32)
-    starts = np.concatenate(([0], np.cumsum(response_sizes))).astype(np.int32)
-    total_dofs = int(starts[-1])
-    motion = rng.normal(size=(total_dofs, 6)).astype(np.float32)
-    body_velocity = rng.normal(size=(worlds * 2, 6)).astype(np.float32)
-    prescribed = np.zeros(worlds * 2, np.int32)
-    if worlds > 1:
-        prescribed[-1] = 1
-    model = SimpleNamespace(
-        device=wp.get_device(device),
-        shape_count=worlds * 4,
-        shape_body=arr(shape_body, int),
-        shape_type=full(worlds * 4, int(GeoType.BOX)),
-        joint_ancestor=full(worlds * 2, -1),
-        joint_qd_start=arr(starts, int),
-    )
-    state = SimpleNamespace(
-        body_q=arr(np.tile([0, 0, 0, 0, 0, 0, 1], (worlds * 2, 1)).astype(np.float32), wp.transform)
-    )
-    augmented = SimpleNamespace(
-        _joint_S_s=arr(motion, wp.spatial_vector), _body_v_s=arr(body_velocity, wp.spatial_vector)
-    )
-    contacts = SimpleNamespace(
-        rigid_contact_count=arr([n], int),
-        rigid_contact_max=capacity,
-        rigid_contact_stiffness=None,
-        rigid_contact_shape0=arr(sa, int),
-        rigid_contact_shape1=arr(sb, int),
-        rigid_contact_normal=arr(normals, wp.vec3),
-        rigid_contact_point0=arr(points, wp.vec3),
-        rigid_contact_point1=arr(points, wp.vec3),
-        rigid_contact_margin0=zero(capacity),
-        rigid_contact_margin1=zero(capacity),
-    )
-    solver = SimpleNamespace(
-        model=model,
-        _world_count=worlds,
-        _articulation_constraint_max=dense,
-        _max_contacts_alloc=capacity,
-        _contact_torsion_shape_radius=full(worlds * 4, 0.01, float),
-        _friction_anchors_enabled=patches,
-        _friction_patches=SimpleNamespace(current=SimpleNamespace(owner=arr(owner, int))),
-        _contact_path=zero(capacity, int),
-        _contact_slot=arr(slots, int),
-        _contact_world=arr(world_ids, int),
-        _contact_slots_needed=arr(anchors, int),
-        _constraint_count=arr(count, int),
-        _slot_counter=arr(count, int),
-        _row_type=arr(row_types, int),
-        _row_parent=arr(parents, int),
-        _row_mu=arr(mu, float),
-        _row_dropped_dense=zero(worlds, int),
-        constraint_overflow=zero(worlds + 1, wp.bool),
-        _has_responding_global=False,
-        _warn_constraint_overflow=False,
-        _row_overflow_warning_emitted=zero(5, wp.int32),
-        _contact_torsion_group=full((worlds, dense), -1),
-        _torsion_row_radius=zero((worlds, dense)),
-        _body_to_joint=arr(np.arange(worlds * 2, dtype=np.int32), int),
-        _body_to_articulation=arr(np.arange(worlds * 2, dtype=np.int32), int),
-        _articulation_dof_start=arr(starts[:-1], int),
-        _articulation_response_dof_count=arr(response_sizes, int),
-        _art_group_idx=arr(np.repeat(np.arange(worlds, dtype=np.int32), 2), int),
-        _art_to_world=arr(np.repeat(np.arange(worlds, dtype=np.int32), 2), int),
-        _prescribed_articulation=arr(prescribed, int),
-        _group_to_art={size: arr(np.flatnonzero(response_sizes == size).astype(np.int32), int) for size in (3, 6)},
-        _J_by_size={size: zero((worlds, dense, size)) for size in (3, 6)},
-        _propagation_torsion_rows=False,
-    )
-    for name in ("_phi", "_target_velocity", "_row_rebound_velocity"):
-        setattr(solver, name, zero((worlds, dense)))
-    return solver, state, augmented, contacts
-
-
 def run_oracle(solver, state, augmented, contacts):
     """Invoke only the host preparation oracle, not a CPU solver backend."""
     with patch.object(host, "validate_torsion_step", return_value=None):
@@ -2056,24 +1934,29 @@ def test_torsion_overflow_warns_once(test, device):
     """Warn once, naming the world, from the device and the host preparation."""
     capacity = _pad_capacity(test, device)
     wp.synchronize_device(device)
+    check_output = printf_capture_is_reliable()
     capture = StdOutCapture()
-    capture.begin()
+    if check_output:
+        capture.begin()
     try:
-        _pad_rollout([1, 1, 2], capacity, device=device, warn=True)
+        _, overflow, solver = _pad_rollout([1, 1, 2], capacity, device=device, warn=True)
     finally:
         try:
             wp.synchronize_device(device)
         finally:
-            output = capture.end()
-    test.assertEqual(output.count("contact torsion row overflow"), 1, output)
-    test.assertIn("in world 2: requested", output)
+            output = capture.end() if check_output else ""
+    np.testing.assert_array_equal(overflow, [False, False, True, False])
+    test.assertEqual(int(solver._row_overflow_warning_emitted.numpy()[_TORSION_WARNING]), 1)
+    if check_output:
+        test.assertEqual(output.count("contact torsion row overflow"), 1, output)
+        test.assertIn("in world 2: requested", output)
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         _pad_rollout([1, 1, 2], capacity, device=device, preparation="host", warn=True)
     matches = [w for w in caught if "contact torsion row overflow" in str(w.message)]
     test.assertEqual(len(matches), 1, [str(w.message) for w in caught])
     test.assertIn("in world 2: requested", str(matches[0].message))
-    test.assertTrue(issubclass(matches[0].category, newton.exceptions.NewtonWarning))
+    test.assertTrue(issubclass(matches[0].category, newton.NewtonWarning))
     test.assertEqual(matches[0].filename, __file__)
 
 
@@ -2772,22 +2655,25 @@ def test_propagation_dropped_members_leave_the_highest_kept_host(test, device):
         **_PROPAGATION_TORSION,
     )
     wp.synchronize_device(model.device)
+    check_output = printf_capture_is_reliable()
     capture = StdOutCapture()
-    capture.begin()
+    if check_output:
+        capture.begin()
     try:
         solver.step(state, model.state(), model.control(), contacts, 0.0025)
     finally:
         try:
             wp.synchronize_device(model.device)
         finally:
-            output = capture.end()
-    lines = [line for line in output.splitlines() if line.strip() and not line.startswith("Module")]
-    test.assertEqual(len(lines), 1, output)
-    test.assertRegex(
-        lines[0],
-        r"Warning: Steel propagation constraint-row overflow in world 0: requested 16 rows, limit 10; "
-        r"dropped 8 contact, friction or torsion rows\.",
-    )
+            output = capture.end() if check_output else ""
+    if check_output:
+        lines = [line for line in output.splitlines() if line.strip() and not line.startswith("Module")]
+        test.assertEqual(len(lines), 1, output)
+        test.assertRegex(
+            lines[0],
+            r"Warning: Steel propagation constraint-row overflow in world 0: requested 16 rows, limit 10; "
+            r"dropped 8 contact, friction or torsion rows\.",
+        )
     count = int(contacts.rigid_contact_count.numpy()[0])
     slots = solver._contact_slot.numpy()[:count]
     kept = [c for c in range(count) if slots[c] >= 0]
@@ -4096,6 +3982,25 @@ class TestTorsionSweepLinks(unittest.TestCase):
         self.assertFalse(solver._mfgs_torsion_links)
         self.assertNotIn("_links", solver._pgs_solve_mf_gs_kernel.key)
 
+    def test_links_take_precedence_over_pair_cache(self):
+        """Keep the lists and drop the pair cache when the two do not fit the static limit together."""
+        device = wp.get_device("cuda:0")
+        shape = {"shared_metadata": False, "has_drive_rows": False, "fuse_vel_limits": False}
+        residency = {"world_count": 1, "sm_count": device.sm_count}
+        limit = device.max_shared_memory_per_block
+        # At 3072 rows the cache fits alone but not beside the lists; at 1024 both fit.
+        self.assertTrue(_use_mfgs_pair_cache(3072, 16, 12, limit, **shape, **residency))
+        self.assertFalse(_use_mfgs_pair_cache(3072, 16, 12, limit, **shape, **residency, torsion_links=True))
+        for rows, pair_cache in ((1024, True), (3072, False)):
+            with self.subTest(rows=rows):
+                _, solver, *_ = fixture(
+                    0.0075, articulation_constraint_max=rows, free_body_constraint_max=16, step=False
+                )
+                self.assertTrue(solver._mfgs_torsion_links)
+                self.assertEqual(solver._mfgs_pair_cache, pair_cache)
+                self.assertIn("_torsion_links", solver._pgs_solve_mf_gs_kernel.key)
+                self.assertEqual("_paircache" in solver._pgs_solve_mf_gs_kernel.key, pair_cache)
+
 
 def _link_layouts():
     """Return per-world (row types, parents, torsion groups, active rows, loaded torsion rows)."""
@@ -4225,6 +4130,8 @@ def _link_launch(kernel, inputs, friction_start, row_phase):
             arr(np.full(dense, _LINK_RADIUS, np.float32)),
             zeros(dense),
             zeros((worlds, 1)),
+            # Nesterov momentum history: off.
+            zeros((1, 1)),
             6,
             1.0,
             0,

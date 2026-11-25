@@ -17,7 +17,8 @@ from newton._src.solvers.kamino._src.integrators.euler import _integrate_semi_im
 from newton._src.solvers.kamino._src.integrators.moreau import _integrate_moreau_jean_second_inplace
 from newton._src.solvers.kamino._src.solver_kamino_impl import SolverKaminoImpl
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
-from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino import setup_test_output, setup_tests, test_context
+from newton.tests.unittest_utils import NewtonTestCase
 from newton.tests.utils.basics import (
     build_box_on_plane,
     build_boxes_fourbar,
@@ -430,8 +431,9 @@ def _joint_angular_error(
     return float(np.linalg.norm(np.cross(np.asarray((1.0, 0.0, 0.0)), follower_axis)))
 
 
-class _LOXTestCase(unittest.TestCase):
+class _LOXTestCase(NewtonTestCase):
     def setUp(self):
+        setup_test_output(self)
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
@@ -448,6 +450,29 @@ class _LOXTestCase(unittest.TestCase):
 
 
 class TestSolverKaminoLOX(_LOXTestCase):
+    def test_solver_residual_requires_adaptive_iterations(self):
+        """Support the residual observable only when LOX runs its convergence check."""
+        builder = newton.ModelBuilder()
+        SolverKamino.register_custom_attributes(builder)
+        builder.begin_world()
+        inertia = wp.mat33f(0.2, 0.0, 0.0, 0.0, 0.2, 0.0, 0.0, 0.0, 0.2)
+        body = builder.add_link(mass=1.0, inertia=inertia, lock_inertia=True)
+        builder.add_articulation([builder.add_joint_free(parent=-1, child=body)])
+        builder.end_world()
+        model = builder.finalize(device=self.default_device)
+
+        kind = SolverKamino.ObservableKind.SOLVER_RESIDUAL
+        for fixed_iterations in (False, True):
+            with self.subTest(fixed_iterations=fixed_iterations):
+                config = self.make_config()
+                config.lox.fixed_iterations = fixed_iterations
+                solver = SolverKamino(model, config=config)
+                self.assertEqual(kind in solver.supported_observables, not fixed_iterations)
+                if fixed_iterations:
+                    # Fixed iterations skip the convergence check that the observable reports.
+                    with self.assertRaisesRegex(ValueError, "solver_residual"):
+                        solver.observables({kind})
+
     def test_integrators_keep_prescribed_twist_of_rotated_singular_body(self):
         """Keep the LOX twist of a rotated body with mass and a rank-deficient inverse inertia."""
         rotation = np.array(wp.quat_to_matrix(wp.quat_rpy(0.3, -0.7, 1.1)), dtype=np.float32).reshape(3, 3)
@@ -1296,7 +1321,7 @@ class TestSolverKaminoLOXConstraints(_LOXTestCase):
 
     def test_box_on_plane_projects_detected_contact(self):
         """Project detected contacts to keep a box above the plane with every projection schedule."""
-        schedules = ((1, "none"), (4, "none"), (1, "apgd"), (1, "anderson"), (4, "anderson"))
+        schedules = ((1, "none"), (4, "none"), (1, "nesterov"), (4, "nesterov"), (1, "anderson"), (4, "anderson"))
         for max_colors, acceleration in schedules:
             with self.subTest(gauss_seidel_max_colors=max_colors, projection_acceleration=acceleration):
                 model = ModelKamino.from_newton(build_box_on_plane(ground=True).finalize(device=self.default_device))
@@ -1337,6 +1362,35 @@ class TestSolverKaminoLOXConstraints(_LOXTestCase):
                     self.assertTrue(np.isfinite(getattr(metrics, name).numpy()).all(), name)
                 self.assertLess(float(metrics.r_eom.numpy()[0]), 1.0e-3)
                 self.assertLess(float(metrics.r_ncp_primal.numpy()[0]), 1.0e-5)
+                if (max_colors, acceleration) == (1, "nesterov") and self.default_device.is_cuda:
+                    self._check_projection_paths_agree(solver)
+
+    def _check_projection_paths_agree(self, solver):
+        """Project the contacts of the last step through the per-world and the row-parallel kernels, over two
+        splitting iterations of a solve, and match their twists and reactions."""
+        native = solver.solver_fd
+        projection = native._projection
+        state = native._data.state
+        rows = native._problem.data.contact_rows
+        # A falling, spinning box from rest: the Jacobi sweeps of its four contacts keep correcting each other
+        reaction = np.zeros_like(rows.reaction.numpy())
+        twist = state.projected_twist.numpy() + np.array([0.1, 0.0, -0.5, 0.3, 0.2, 0.0], dtype=np.float32)
+        results = []
+        for by_world in (True, False):
+            projection._by_world = by_world
+            projection.nesterov.reset()
+            rows.reaction.assign(reaction)
+            for _iteration in range(2):
+                state.world_active.fill_(True)
+                state.world_failed.zero_()
+                state.projected_twist.assign(twist)
+                projection.project(
+                    5, True, state.world_active, state.world_failed, native._model.bodies.wid, state.projected_twist
+                )
+            results.append((state.projected_twist.numpy().copy(), rows.reaction.numpy().copy()))
+        np.testing.assert_allclose(results[1][0], results[0][0], rtol=1.0e-4, atol=1.0e-6)
+        np.testing.assert_allclose(results[1][1], results[0][1], rtol=1.0e-4, atol=1.0e-6)
+        self.assertGreater(float(np.abs(results[0][0] - twist).max()), 1.0e-3)
 
     def test_cartpole_projects_detected_joint_limit(self):
         """Project detected joint limits for a cartpole."""
@@ -1457,6 +1511,7 @@ class TestSolverKaminoLOXConstraints(_LOXTestCase):
 
 if __name__ == "__main__":
     # Test setup
+    newton.utils.setup_console_logging()
     setup_tests()
 
     # Run all tests

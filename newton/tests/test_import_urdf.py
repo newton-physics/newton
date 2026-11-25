@@ -3,7 +3,6 @@
 
 import base64
 import os
-import sys
 import tempfile
 import unittest
 import warnings
@@ -20,7 +19,7 @@ from newton._src.geometry.types import GeoType
 from newton._src.utils.import_urdf import _resolve_urdf_uri
 from newton._src.utils.import_urdf import parse_urdf as direct_parse_urdf
 from newton._src.utils.mesh import load_meshes_from_file
-from newton.tests.unittest_utils import assert_np_equal
+from newton.tests.unittest_utils import assert_np_equal, requires
 
 try:
     from resolve_robotics_uri_py import resolve_robotics_uri
@@ -465,6 +464,7 @@ class TestImportUrdfBasic(unittest.TestCase):
         self.assertEqual(builder.shape_count, 1)
         self.assertAlmostEqual(builder.shape_opacity[0], 1.0, places=6)
 
+    @requires("trimesh")
     def test_mesh_urdf(self):
         # load a urdf containing a cube mesh with 8 verts and 12 faces
         for mesh_src in ("file", "http"):
@@ -487,25 +487,52 @@ class TestImportUrdfBasic(unittest.TestCase):
                 assert builder.shape_source[0].vertices.shape[0] == 8
                 assert builder.shape_source[0].indices.shape[0] == 3 * 12
 
-    @unittest.skipIf(sys.platform == "win32", "trimesh's meshio loader reopens an open NamedTemporaryFile")
+    @requires("meshio", "trimesh")
     def test_gmsh_mesh_urdf(self):
-        """Keep Gmsh .msh files on the shared mesh loader's existing path."""
+        """Read meshio-only formats with meshio, not through trimesh's deprecated wrapper."""
         import meshio
 
         vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float64)
         faces = np.array([[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]])
-        mesh = meshio.Mesh(vertices, [("triangle", faces)])
+        # A leading non-triangle block and a node that only it uses must not reach the surface mesh.
+        mesh = meshio.Mesh(
+            np.vstack([vertices, [[100.0, 0.0, 0.0]]]),
+            [("tetra", np.array([[0, 1, 2, 4]])), ("triangle", faces[:2]), ("triangle", faces[2:])],
+        )
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "tetra.msh"
-            for binary in (False, True):
-                with self.subTest(binary=binary):
-                    meshio.write(path, mesh, file_format="gmsh22", binary=binary)
+            for file_format, binary in (("gmsh22", False), ("gmsh22", True), ("ansys", True), ("vtk", True)):
+                path = Path(directory) / ("tetra.vtk" if file_format == "vtk" else "tetra.msh")
+                with self.subTest(file_format=file_format, binary=binary):
+                    meshio.write(path, mesh, file_format=file_format, binary=binary)
                     builder = newton.ModelBuilder()
-                    parse_urdf(MESH_URDF.format(filename=path), builder)
-                    source = builder.shape_source[0]
-                    np.testing.assert_array_equal(source.vertices, vertices)
-                    np.testing.assert_array_equal(source.indices.reshape(-1, 3), faces)
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("error", DeprecationWarning)
+                        parse_urdf(MESH_URDF.format(filename=path), builder)
+                        loaded = [newton.Mesh.create_from_file(path, method=method) for method in (None, "meshio")]
+                    for source in (builder.shape_source[0], *loaded):
+                        np.testing.assert_array_equal(source.vertices, vertices)
+                        np.testing.assert_array_equal(source.indices.reshape(-1, 3), faces)
+            path.write_text("not a mesh")
+            for load in (
+                lambda: load_meshes_from_file(str(path), maxhullvert=64),
+                lambda: newton.Mesh.create_from_file(path),
+                lambda: newton.TetMesh.create_from_file(path),
+            ):
+                with self.assertRaises(ValueError):
+                    load()
 
+    @requires("trimesh")
+    def test_obj_material_outside_mesh_directory(self):
+        """Follow an MTL reference that leaves the mesh directory, which trimesh 5 ignores by default."""
+        with tempfile.TemporaryDirectory() as directory:
+            mesh_path = Path(directory) / "meshes" / "triangle.obj"
+            mesh_path.parent.mkdir()
+            mesh_path.write_text("mtllib ../paint.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nusemtl paint\nf 1 2 3\n")
+            (Path(directory) / "paint.mtl").write_text("newmtl paint\nKd 0.2 0.4 0.6\n")
+            (mesh,) = load_meshes_from_file(str(mesh_path), maxhullvert=64)
+        np.testing.assert_allclose(mesh.color, (0.2, 0.4, 0.6), atol=1e-3)
+
+    @requires("trimesh", "collada")
     def test_empty_mesh_reports_filename(self):
         """Reject empty geometry before processing colors or material overrides."""
         files = {
@@ -524,6 +551,7 @@ class TestImportUrdfBasic(unittest.TestCase):
                             load_meshes_from_file(str(path), maxhullvert=0, override_color=color)
                         self.assertIn(str(path), str(error.exception))
 
+    @requires("trimesh", "collada", "PIL")
     def test_dae_visual_texture_urdf(self):
         """Verify URDF visual meshes preserve Collada texture bindings."""
         urdf = """
@@ -554,6 +582,7 @@ class TestImportUrdfBasic(unittest.TestCase):
             self.assertIsNotNone(texture)
             np.testing.assert_array_equal(texture[0, 0, :3], np.array([255, 0, 0], dtype=np.uint8))
 
+    @requires("trimesh", "collada")
     def test_dae_visual_texture_uri_preserved(self):
         """Verify URI-style Collada textures are not path-joined against the mesh directory."""
         urdf = """
@@ -584,11 +613,12 @@ class TestImportUrdfBasic(unittest.TestCase):
             self.assertIsNotNone(mesh.texture)
             self.assertEqual(mesh.texture, texture_uri)
 
+    @requires("trimesh")
     def test_dae_pycollada_shape_deprecation_filtered(self):
         """Verify known pycollada NumPy deprecations do not fail strict warning runs."""
 
         def make_loader(message: str, module_name: str):
-            def fake_load(filename, force=None):
+            def fake_load(filename, **kwargs):
                 warnings.warn_explicit(
                     message=message,
                     category=DeprecationWarning,
@@ -2069,10 +2099,11 @@ f 1/1 2/2 3/3
         with self.assertRaises(FileNotFoundError):
             newton.ModelBuilder().add_urdf(uri)
         builder = newton.ModelBuilder()
-        with self.assertWarnsRegex(newton.exceptions.NewtonWarning, "Could not resolve URI"):
+        with self.assertWarnsRegex(newton.NewtonWarning, "Could not resolve URI"):
             builder.add_urdf(self.SIMPLE_URDF.format(geo=self.MESH_GEO.format(filename=uri)))
         self.assertEqual(builder.shape_count, 0)
 
+    @requires("trimesh")
     def test_package_uri_mesh_resolution(self):
         """Test package:// URI in mesh filename works with library and fallback."""
         pkg = self._create_package("my_robot")
@@ -2085,6 +2116,7 @@ f 1/1 2/2 3/3
             self.assertEqual(builder.shape_count, 1)
             self.assertEqual(builder.shape_type[0], GeoType.MESH)
 
+    @requires("trimesh")
     def test_package_uri_fallback_without_library(self):
         """Test package:// URI fallback when library is not available."""
         pkg = self._create_package("my_robot")
@@ -2720,6 +2752,34 @@ class TestUrdfJointFriction(unittest.TestCase):
         np.testing.assert_allclose(model.joint_damping.numpy()[dof_start : dof_start + 2], [4.0, 4.0])
         np.testing.assert_allclose(model.joint_target_kd.numpy()[dof_start : dof_start + 2], [3.0, 3.0])
 
+    def test_planar_joint_in_plane_axes_for_every_normal(self):
+        """Build an orthonormal in-plane basis for every planar normal, including +-Y."""
+        for normal in ("0 1 0", "0 -1 0", "0 -2 0", "1 0 0", "0 0 -1"):
+            with self.subTest(normal=normal):
+                urdf = f"""
+<robot name="planar_axis_test">
+    <link name="base_link"/>
+    <link name="child_link"/>
+    <joint name="planar_joint" type="planar">
+        <parent link="base_link"/>
+        <child link="child_link"/>
+        <axis xyz="{normal}"/>
+        <limit lower="-1.0" upper="1.0"/>
+    </joint>
+</robot>
+"""
+                builder = newton.ModelBuilder()
+                parse_urdf(urdf, builder)
+                joint_idx = builder.joint_label.index("planar_axis_test/planar_joint")
+                dof_start = builder.joint_qd_start[joint_idx]
+                u = np.array(builder.joint_axis[dof_start])
+                v = np.array(builder.joint_axis[dof_start + 1])
+                n = np.array([float(x) for x in normal.split()])
+                n /= np.linalg.norm(n)
+
+                np.testing.assert_allclose([np.linalg.norm(u), np.linalg.norm(v)], [1.0, 1.0], atol=1e-6)
+                np.testing.assert_allclose([u @ v, u @ n, v @ n], [0.0, 0.0, 0.0], atol=1e-6)
+
     def test_joint_friction_parsed_from_urdf(self):
         """Joint friction values from <dynamics friction='...'> should be forwarded to the model."""
         builder = newton.ModelBuilder()
@@ -2837,6 +2897,7 @@ class TestUrdfJointFriction(unittest.TestCase):
         self.assertEqual(builder.shape_count, 1)
         self.assertEqual(tuple(builder.shape_color[0]), (0.0, 1.0, 0.0))
 
+    @requires("trimesh")
     def test_named_material_color_on_mesh(self):
         """Robot-level named materials should resolve to colors on mesh shapes."""
         urdf = """

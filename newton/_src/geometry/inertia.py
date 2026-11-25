@@ -12,6 +12,7 @@ from numbers import Real
 import numpy as np
 import warp as wp
 
+from ..core._warnings import _external_warning_stacklevel
 from ..exceptions import NewtonWarning
 from .types import (
     GeoType,
@@ -115,7 +116,7 @@ def _validate_hollow_thickness(
         warnings.warn(
             f"A hollow {shape_name} geom with zero thickness has zero mass and inertia.",
             NewtonWarning,
-            stacklevel=2,
+            stacklevel=_external_warning_stacklevel(),
         )
         return thickness
 
@@ -127,6 +128,42 @@ def _validate_hollow_thickness(
             )
 
     return thickness
+
+
+def _validate_hollow_mesh_thickness(
+    thickness: list[float] | np.ndarray | float, num_vertices: int
+) -> float | np.ndarray:
+    """Validate a hollow mesh shell thickness given as a scalar or as one value per vertex."""
+    if np.isscalar(thickness):
+        return _validate_hollow_thickness("mesh", thickness, ())
+
+    try:
+        values = np.asarray(thickness, dtype=np.float64)
+    except (TypeError, ValueError) as e:
+        raise TypeError("thickness must be a real scalar or one real value per vertex for a hollow mesh geom") from e
+    if values.ndim == 0:
+        return _validate_hollow_thickness("mesh", values.item(), ())
+    if values.shape != (num_vertices,):
+        raise ValueError(
+            f"per-vertex thickness for a hollow mesh geom must have one value per vertex "
+            f"(shape ({num_vertices},)); got shape {values.shape}"
+        )
+
+    invalid = ~np.isfinite(values)
+    if invalid.any():
+        i = int(np.flatnonzero(invalid)[0])
+        raise ValueError(f"thickness must be finite for a hollow mesh geom; got {values[i]} at vertex {i}")
+    negative = values < 0.0
+    if negative.any():
+        i = int(np.flatnonzero(negative)[0])
+        raise ValueError(f"thickness must be >= 0 for a hollow mesh geom; got {values[i]} at vertex {i}")
+    if not values.any():
+        warnings.warn(
+            "A hollow mesh geom with zero thickness has zero mass and inertia.",
+            NewtonWarning,
+            stacklevel=_external_warning_stacklevel(),
+        )
+    return values
 
 
 def compute_inertia_sphere(density: float, radius: float) -> tuple[float, wp.vec3, wp.mat33]:
@@ -777,7 +814,9 @@ def compute_inertia_shape(
         return 0.0, wp.vec3(), wp.mat33()
     elif type == GeoType.MESH or type == GeoType.CONVEX_MESH:
         assert src is not None, "src must be provided for mesh or convex hull shapes"
-        if src.has_inertia and src.mass > 0.0 and src.is_solid == is_solid:
+        # Only reuse cached solid mass properties: a hollow shell depends on the requested
+        # thickness and does not scale with the mesh volume.
+        if src.has_inertia and src.mass > 0.0 and src.is_solid and is_solid:
             m, c, I = src.mass, src.com, src.inertia
             scale = wp.vec3(scale)
             sx, sy, sz = scale
@@ -814,6 +853,10 @@ def compute_inertia_shape(
         elif type == GeoType.MESH or type == GeoType.CONVEX_MESH:
             assert isinstance(src, Mesh), "src must be a Mesh for mesh or convex hull shapes"
             # fall back to computing inertia from mesh geometry
+            if not is_solid:
+                thickness = _validate_hollow_mesh_thickness(thickness, len(src.vertices))
+                if not np.any(thickness):
+                    return 0.0, wp.vec3(), wp.mat33()
             vertices = np.array(src.vertices) * np.array(scale)
             m, c, I, _vol = compute_inertia_mesh(density, vertices, src.indices, is_solid, thickness)
             return m, c, I

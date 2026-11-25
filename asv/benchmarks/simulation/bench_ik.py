@@ -64,6 +64,9 @@ class _IKBenchmark:
         with wp.ScopedCapture() as cap:
             self.solver.step(self.seeds_d, self.winners_d, iterations=self.ITERATIONS, step_size=self.STEP_SIZE)
         self.solve_graph = cap.graph
+        # Keep one-time device work out of the samples.
+        wp.capture_launch(self.solve_graph)
+        wp.synchronize_device()
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_solve(self, batch_size):

@@ -73,12 +73,15 @@ def _expected_soft_contact_wrenches(
     body_qd,
     dt,
     friction_epsilon,
+    damping_bidirectional=True,
 ):
     """Evaluate the documented body-particle contact law in NumPy for every active soft contact.
 
     Reproduces the law from model data alone: the mixed contact material (arithmetic-mean ke/kd,
-    geometric-mean mu of the global soft material and the shape material) at full stiffness, absolute
-    damping while the contact point approaches the surface, and regularized isotropic Coulomb friction
+    geometric-mean mu of the global soft material and the shape material) at full stiffness, damping
+    on the normal relative motion (while the contact point approaches the surface and, with
+    ``damping_bidirectional``, the ``SolverVBD`` default, also while it separates), and regularized
+    isotropic Coulomb friction
     on the slip between the barycentric soft point and the shape surface over the step. Returns the
     force on the shape's body and its torque about the body COM (world origin for static shapes) as an
     array of shape ``(count, 6)``.
@@ -142,7 +145,7 @@ def _expected_soft_contact_wrenches(
         force = n * f_n
         u = (x - x_prev) - bv * dt
         u_n = float(np.dot(n, u))
-        if u_n < 0.0:
+        if damping_bidirectional or u_n < 0.0:
             force = force - (kd / dt) * n * u_n
         u_t = u - n * u_n
         slip = float(np.linalg.norm(u_t))
@@ -371,7 +374,6 @@ def _check_moving_box_contact(test, device, *, external_rigid, tangential_speed)
         model,
         iterations=10,
         friction_epsilon=friction_epsilon,
-        rigid_compliant_alm=True,
         integrate_with_external_rigid_solver=external_rigid,
     )
     observables = solver.observables(contacts=contacts, kinds={SolverBase.ObservableKind.CONTACT_F})
@@ -512,7 +514,7 @@ def test_vbd_soft_contact_force_face_records_support_body(test, device):
         model, broad_phase="nxn", soft_contact_gap=0.1, enable_rigid_soft_full_surface_contact=True
     )
     contacts = pipeline.contacts()
-    solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=True)
+    solver = newton.solvers.SolverVBD(model, iterations=10)
     observables = solver.observables(contacts=contacts, kinds={SolverBase.ObservableKind.CONTACT_F})
     state_in, state_out = model.state(), model.state()
 
@@ -580,7 +582,21 @@ def test_vbd_soft_contact_force_edge_records_match_law(test, device):
         friction_epsilon=friction_epsilon,
     )
     count, rows = _active_soft_rows(contacts, observables)
-    scale = float(np.max(np.abs(expected)))
+    # The records separate, so the two-sided damper cancels most of the penalty. Take the tolerance
+    # scale from the law without that damping, not from the small remainder.
+    undamped = _expected_soft_contact_wrenches(
+        model,
+        contacts,
+        particle_q=state_out.particle_q.numpy(),
+        particle_q_prev=particle_q_prev,
+        body_q=None,
+        body_q_prev=None,
+        body_qd=None,
+        dt=dt,
+        friction_epsilon=friction_epsilon,
+        damping_bidirectional=False,
+    )
+    scale = float(np.max(np.abs(undamped)))
     test.assertGreater(scale, 1.0)
     np.testing.assert_allclose(rows, expected, rtol=2.0e-4, atol=2.0e-4 * scale)
 
@@ -599,7 +615,7 @@ def _settle_sphere_on_ground(device, *, with_particle, sensor=False, steps=300):
         contact_sensor = SensorContact(model, sensing_bodies=[body], verbose=False, request_contact_attributes=False)
     pipeline = newton.CollisionPipeline(model)
     contacts = pipeline.contacts()
-    solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=True)
+    solver = newton.solvers.SolverVBD(model, iterations=10)
     observables = solver.observables(contacts=contacts, kinds={SolverBase.ObservableKind.CONTACT_F})
     state_in, state_out = model.state(), model.state()
 
@@ -680,9 +696,7 @@ def test_vbd_contact_force_external_rigid_zeros_rigid_rows(test, device):
     model, _body, _shape = _build_sphere_on_ground(device, with_particle=True)
     pipeline = newton.CollisionPipeline(model)
     contacts = pipeline.contacts()
-    solver = newton.solvers.SolverVBD(
-        model, iterations=4, rigid_compliant_alm=True, integrate_with_external_rigid_solver=True
-    )
+    solver = newton.solvers.SolverVBD(model, iterations=4, integrate_with_external_rigid_solver=True)
     observables = solver.observables(contacts=contacts, kinds={SolverBase.ObservableKind.CONTACT_F})
     state_in, state_out = model.state(), model.state()
     # The external solver stands still: the body keeps its pose through the step.
@@ -712,8 +726,7 @@ def test_vbd_soft_contact_force_export_leaves_simulation_unchanged(test, device)
         pipeline = newton.CollisionPipeline(model, **pipeline_kwargs)
         contacts = pipeline.contacts()
         test.assertIsNone(contacts.force)
-        solver_kwargs = {"rigid_compliant_alm": True} if model.body_count > 0 else {}
-        solver = newton.solvers.SolverVBD(model, iterations=4, **solver_kwargs)
+        solver = newton.solvers.SolverVBD(model, iterations=4)
         observables = (
             solver.observables(contacts=contacts, kinds={SolverBase.ObservableKind.CONTACT_F})
             if request_force
@@ -766,7 +779,7 @@ def test_vbd_contact_force_layout(test, device):
     contacts = pipeline.contacts()
     test.assertGreater(contacts.rigid_contact_max, 0)
     test.assertEqual(contacts.soft_contact_max, 4)
-    solver = newton.solvers.SolverVBD(model, iterations=4, rigid_compliant_alm=True)
+    solver = newton.solvers.SolverVBD(model, iterations=4)
     observables = solver.observables(contacts=contacts, kinds={SolverBase.ObservableKind.CONTACT_F})
     state_in, state_out = model.state(), model.state()
 
@@ -869,7 +882,7 @@ def test_vbd_contact_force_empty_segments(test, device):
             model, _body, _shape = _build_sphere_on_ground(device, with_particle=with_particle)
             pipeline = newton.CollisionPipeline(model, rigid_contact_max=0, soft_contact_max=soft_max)
             contacts = pipeline.contacts()
-            solver = newton.solvers.SolverVBD(model, iterations=2, rigid_compliant_alm=True)
+            solver = newton.solvers.SolverVBD(model, iterations=2)
             observables = solver.observables(contacts=contacts, kinds={SolverBase.ObservableKind.CONTACT_F})
             test.assertEqual(observables.contact_f.shape, (soft_max,))
             observables.contact_f.fill_(wp.spatial_vector(7.0, 7.0, 7.0, 7.0, 7.0, 7.0))
@@ -888,31 +901,28 @@ def test_vbd_contact_force_graph_capture(test, device):
         "particle_on_ground": (
             lambda d: (_build_particle_on_ground(d, pos=(0.3, -0.2, 0.046), radius=0.05), None),
             {"soft_contact_gap": 0.01},
-            {},
             None,
             False,
         ),
         "box_under_particles": (
             lambda d: _build_box_under_particles(d, penetration=0.004),
             {"soft_contact_gap": 0.01},
-            {"rigid_compliant_alm": True},
             box_twist,
             False,
         ),
         "sphere_on_ground_with_particle": (
             lambda d: _build_sphere_on_ground(d, with_particle=True)[:2],
             {},
-            {"rigid_compliant_alm": True},
             None,
             True,
         ),
     }
 
-    def make(build, pipeline_kwargs, solver_kwargs, twist):
+    def make(build, pipeline_kwargs, twist):
         model, _body = build(device)
         pipeline = newton.CollisionPipeline(model, **pipeline_kwargs)
         contacts = pipeline.contacts()
-        solver = newton.solvers.SolverVBD(model, iterations=4, **solver_kwargs)
+        solver = newton.solvers.SolverVBD(model, iterations=4)
         observables = solver.observables(contacts=contacts, kinds={SolverBase.ObservableKind.CONTACT_F})
         state_in, state_out = model.state(), model.state()
         if twist is not None:
@@ -927,10 +937,10 @@ def test_vbd_contact_force_graph_capture(test, device):
         )
 
     with wp.ScopedDevice(device):
-        for name, (build, pipeline_kwargs, solver_kwargs, twist, expect_rigid) in scenes.items():
+        for name, (build, pipeline_kwargs, twist, expect_rigid) in scenes.items():
             with test.subTest(scene=name):
-                captured = make(build, pipeline_kwargs, solver_kwargs, twist)
-                reference = make(build, pipeline_kwargs, solver_kwargs, twist)
+                captured = make(build, pipeline_kwargs, twist)
+                reference = make(build, pipeline_kwargs, twist)
 
                 # One uncaptured step warms up the solver contact state before capture.
                 _advance(*captured, dt)

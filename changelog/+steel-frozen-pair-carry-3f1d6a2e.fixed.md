@@ -1,1 +1,0 @@
-Fix `SolverSteel` with sleeping spending time quadratic in the contact count of a sleeping body pair on one GPU thread every step, which made a flat object built from many convex pieces stall every world.

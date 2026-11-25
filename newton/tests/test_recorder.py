@@ -237,7 +237,7 @@ def test_recorder_ringbuffer_save_load(test: TestRecorder, device):
                         new_recorder.deserialized_model[name] = new_recorder.deserialized_model.pop(f"_{name}")
                 restored_model = newton.Model(device=device)
                 with warnings.catch_warnings():
-                    warnings.simplefilter("error", newton.exceptions.NewtonDeprecationWarning)
+                    warnings.simplefilter("error", newton.NewtonDeprecationWarning)
                     new_recorder.playback_model(restored_model)
 
                 test.assertEqual(restored_model.body_count, model.body_count)

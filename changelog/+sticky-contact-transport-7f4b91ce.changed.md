@@ -1,0 +1,1 @@
+Break sticky contact matches when either transported witness drifts beyond `contact_matching_pos_threshold`, including on spinning surfaces, instead of only refreshing their geometry. These contacts now appear in the new and broken contact reports and lose their solver contact history. Use `contact_matching="latest"` to retain world-space midpoint matching with fresh geometry.

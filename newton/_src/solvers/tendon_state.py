@@ -10,6 +10,9 @@ mapping before applying their own numerical solve.
 
 from __future__ import annotations
 
+import math
+import operator
+
 import numpy as np
 import warp as wp
 
@@ -133,6 +136,28 @@ def _segment_attachment_points_np(
     rolling = int(TendonGuideType.ROLLER)
 
     if type_l == rolling and type_r == rolling and radius_l > 0.0 and radius_r > 0.0:
+        # Match _parallel_circle_tangents, including its tilted-axis seed.
+        delta = new_r - new_l
+        n_l = np.asarray(normal_l, dtype=np.float64)
+        n_r = np.asarray(normal_r, dtype=np.float64)
+        n_l = n_l / max(float(np.linalg.norm(n_l)), 1.0e-12)
+        n_r = n_r / max(float(np.linalg.norm(n_r)), 1.0e-12)
+        alignment = float(np.dot(n_l, n_r))
+        delta = delta - np.dot(delta, n_l) * n_l
+        distance = float(np.linalg.norm(delta))
+        side = 1.0 if orient_l * orient_r * alignment > 0.0 else -1.0
+        radius_delta = radius_l - side * radius_r
+        if distance > abs(radius_delta):
+            along = delta / distance
+            h = radius_delta / distance
+            radial = h * along - orient_l * np.sqrt(max(0.0, 1.0 - h * h)) * np.cross(n_l, along)
+            radial_r = radial - np.dot(radial, n_r) * n_r
+            length_r = float(np.linalg.norm(radial_r))
+            if length_r > 1.0e-8:
+                new_l = new_l + radius_l * radial
+                new_r = new_r + side * radius_r * radial_r / length_r
+                if np.dot(np.cross(n_l, n_r), np.cross(n_l, n_r)) <= 1.0e-12:
+                    return new_l, new_r
         for _iter in range(10):
             new_r = _tangent_point_circle_np(new_l, center_r, radius_r, normal_r, orient_r)
             new_l = _tangent_point_circle_np(new_r, center_l, radius_l, normal_l, -orient_l)
@@ -241,6 +266,7 @@ class TendonStateMixin:
         initial.model = model
         initial.tendon_max_sweeps = self.tendon_max_sweeps
         initial.tendon_settle_tol = self.tendon_settle_tol
+        initial.tendon_settle_atol = self.tendon_settle_atol
         initial.tendon_activation_tol = self.tendon_activation_tol
         initial._init_tendon_state(model)
         for name, array in self._tendon_initial_state.items():
@@ -266,12 +292,20 @@ class TendonStateMixin:
             self.tendon_max_sweeps = 256
         if not hasattr(self, "tendon_settle_tol"):
             self.tendon_settle_tol = 1.0e-3
+        if not hasattr(self, "tendon_settle_atol"):
+            self.tendon_settle_atol = 1.0e-6
         if not hasattr(self, "tendon_activation_tol"):
             self.tendon_activation_tol = 2.0e-3
-        if not 1 <= self.tendon_max_sweeps <= 256:
-            raise ValueError(f"tendon_max_sweeps must be between 1 and 256, got {self.tendon_max_sweeps}")
-        if self.tendon_settle_tol < 0.0:
-            raise ValueError(f"tendon_settle_tol must be non-negative, got {self.tendon_settle_tol}")
+        try:
+            self.tendon_max_sweeps = operator.index(self.tendon_max_sweeps)
+        except TypeError as error:
+            raise ValueError("tendon_max_sweeps must be a positive 32-bit integer") from error
+        if not 1 <= self.tendon_max_sweeps <= 2147483647:
+            raise ValueError("tendon_max_sweeps must be a positive 32-bit integer")
+        for name in ("tendon_settle_tol", "tendon_settle_atol"):
+            value = getattr(self, name)
+            if not math.isfinite(value) or value < 0.0:
+                raise ValueError(f"{name} must be finite and nonnegative")
         if not 0.0 <= self.tendon_activation_tol < 1.0:
             raise ValueError(
                 f"tendon_activation_tol must be between 0 (inclusive) and 1 (exclusive), "
@@ -310,6 +344,7 @@ class TendonStateMixin:
             self.tendon_guide_cone_seg_l = None
             self.tendon_guide_cone_seg_r = None
             self.tendon_guide_cap_ratio = None
+            self._tendon_guide_material_transfer = None
             self.tendon_total_cable = None
             return
 
@@ -345,6 +380,8 @@ class TendonStateMixin:
             self.tendon_guide_cone_seg_l = wp.full(model.tendon_guide_count, -1, dtype=wp.int32)
             self.tendon_guide_cone_seg_r = wp.full(model.tendon_guide_count, -1, dtype=wp.int32)
             self.tendon_guide_cap_ratio = wp.ones(model.tendon_guide_count, dtype=float)
+            # Per-call scratch, reset by solve_tendon_material; not trajectory history.
+            self._tendon_guide_material_transfer = wp.zeros(model.tendon_guide_count, dtype=float)
             self.tendon_total_cable = wp.zeros(model.tendon_count, dtype=float)
 
             tendon_start_np = model.tendon_start.numpy()
@@ -389,8 +426,17 @@ class TendonStateMixin:
                 )
             )
             if self._has_dynamic_tendon_guides and model.body_q is not None:
+                # No previous topology exists yet: an undefined bypass starts
+                # inactive. A valid initial bypass uses the full contact radius.
+                active_np = np.ones(model.tendon_guide_count, dtype=bool)
+                active_np[
+                    (guide_type_np == int(TendonGuideType.ROLLER))
+                    & ((guide_flags_np & int(TendonGuideFlags.DYNAMIC)) != 0)
+                    & (model.tendon_guide_radius.numpy() > 0.0)
+                ] = False
+                self.tendon_guide_active.assign(active_np)
                 # Resolve the initial topology before measuring its free-span rest lengths.
-                self._update_tendon_guide_active(model, model.body_q)
+                self._update_tendon_guide_active(model, model.body_q, initialize=True)
                 wp.copy(self.tendon_guide_active_step, self.tendon_guide_active)
 
             route_rest_np, route_seg_mask = self._compute_active_route_rest_lengths(model)
@@ -415,7 +461,9 @@ class TendonStateMixin:
                 device=self.tendon_guide_active.device,
             )
 
-    def _update_tendon_guide_active(self, model: Model, body_q: wp.array[wp.transform]) -> None:
+    def _update_tendon_guide_active(
+        self, model: Model, body_q: wp.array[wp.transform], *, initialize: bool = False
+    ) -> None:
         """Update solver-owned dynamic routing flags from the current body poses."""
         if not self._has_dynamic_tendon_guides:
             return
@@ -433,7 +481,7 @@ class TendonStateMixin:
                 model.tendon_guide_orientation,
                 model.tendon_guide_offset,
                 model.tendon_guide_axis,
-                self.tendon_activation_tol,
+                0.0 if initialize else self.tendon_activation_tol,
                 self.tendon_guide_active,
             ],
             device=model.device,
@@ -460,6 +508,7 @@ class TendonStateMixin:
                 model.tendon_guide_type,
                 model.tendon_guide_flags,
                 model.tendon_guide_radius,
+                model.tendon_guide_orientation,
                 model.tendon_guide_offset,
                 model.tendon_guide_axis,
                 model.tendon_segment_rest_length,
@@ -710,6 +759,7 @@ class TendonStateMixin:
                 model.tendon_guide_body,
                 model.tendon_guide_type,
                 model.tendon_guide_radius,
+                model.tendon_guide_orientation,
                 model.tendon_guide_offset,
                 model.tendon_guide_axis,
                 self.tendon_segment_rest_length,
@@ -724,7 +774,6 @@ class TendonStateMixin:
                 self.tendon_segment_active_damping,
                 self.tendon_guide_active,
                 self.tendon_guide_active_step,
-                self.tendon_guide_route_rest_length,
                 self.tendon_segment_attachment_l,
                 self.tendon_segment_attachment_r,
                 self.tendon_segment_length,
@@ -743,6 +792,9 @@ class TendonStateMixin:
                 0,
                 self.tendon_max_sweeps,
                 self.tendon_settle_tol,
+                self.tendon_settle_atol,
+                0,
+                self._tendon_guide_material_transfer,
             ],
             device=model.device,
         )
@@ -761,6 +813,8 @@ class TendonStateMixin:
         guide_offset_np = model.tendon_guide_offset.numpy()
         guide_axis_np = model.tendon_guide_axis.numpy()
         guide_active_np = self.tendon_guide_active.numpy()
+        guide_orientation_np = model.tendon_guide_orientation.numpy()
+        guide_flags_np = model.tendon_guide_flags.numpy()
         seg_active_np = self.tendon_segment_active.numpy()
         seg_active_guide_l_np = self.tendon_segment_active_guide_l.numpy()
         seg_active_guide_r_np = self.tendon_segment_active_guide_r.numpy()
@@ -802,7 +856,11 @@ class TendonStateMixin:
                     r_r = pt_right - center
                     cross_val = np.dot(np.cross(r_l, r_r), normal)
                     dot_val = np.dot(r_l, r_r)
-                    theta = abs(np.arctan2(cross_val, dot_val))
+                    theta = float(np.arctan2(cross_val, dot_val))
+                    if (guide_flags_np[i] & int(TendonGuideFlags.DYNAMIC)) != 0:
+                        theta *= float(guide_orientation_np[i])
+                    else:
+                        theta = abs(theta)
                     cable_len += theta * radius
             total_cable[t] = cable_len
             seg += num_guides - 1

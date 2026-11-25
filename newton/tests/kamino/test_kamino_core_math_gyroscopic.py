@@ -8,7 +8,10 @@ import unittest
 import numpy as np
 import warp as wp
 
+import newton
 from newton._src.solvers.kamino._src.core.math import compute_body_twist_update_with_eom
+from newton.tests.kamino import setup_test_output, setup_tests
+from newton.tests.unittest_utils import NewtonTestCase
 
 
 @wp.kernel
@@ -31,7 +34,10 @@ def _update_free_body(
     result[tid] = next_omega
 
 
-class TestKaminoGyroscopicUpdate(unittest.TestCase):
+class TestKaminoGyroscopicUpdate(NewtonTestCase):
+    def setUp(self):
+        setup_test_output(self)
+
     def test_torque_free_update_preserves_angular_momentum_magnitude(self):
         """Keep |I ω| constant where explicit Euler would lengthen it."""
         inertia = np.diag([1.0, 2.0, 4.0])
@@ -52,4 +58,6 @@ class TestKaminoGyroscopicUpdate(unittest.TestCase):
 
 
 if __name__ == "__main__":
+    newton.utils.setup_console_logging()
+    setup_tests()
     unittest.main()

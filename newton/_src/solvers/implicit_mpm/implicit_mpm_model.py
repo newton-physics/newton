@@ -85,8 +85,11 @@ def _merge_meshes(
     )
 
 
-def _get_shape_mesh(model: newton.Model, shape_id: int, geo_type: newton.GeoType, geo_scale: wp.vec3) -> newton.Mesh:
-    """Get a shape mesh from a model."""
+def _get_shape_mesh(
+    model: newton.Model, shape_id: int, geo_type: newton.GeoType, geo_scale: wp.vec3, closed_planes: bool = False
+) -> newton.Mesh:
+    """Get a shape mesh from a model. With ``closed_planes``, planes become slabs below their surface, as deep as
+    they are wide, so that winding numbers classify the half-space below them as inside."""
 
     if geo_type == newton.GeoType.MESH:
         src_mesh = model.shape_source[shape_id]
@@ -97,6 +100,14 @@ def _get_shape_mesh(model: newton.Model, shape_id: int, geo_type: newton.GeoType
         # Handle "infinite" planes encoded with non-positive scales
         width = geo_scale[0] if len(geo_scale) > 0 and geo_scale[0] > 0.0 else 1000.0
         length = geo_scale[1] if len(geo_scale) > 1 and geo_scale[1] > 0.0 else 1000.0
+        if closed_planes:
+            depth = max(width, length)
+            slab = newton.Mesh.create_box(
+                0.5 * width, 0.5 * length, 0.5 * depth, compute_normals=False, compute_uvs=False, compute_inertia=False
+            )
+            vertices = np.array(slab.vertices, copy=True)
+            vertices[:, 2] -= 0.5 * depth
+            return newton.Mesh(vertices, slab.indices, compute_inertia=False)
         mesh = newton.Mesh.create_plane(
             width,
             length,
@@ -202,16 +213,23 @@ def _refresh_particle_masks(
     model_flags: wp.array[wp.int32],
     is_collider_particle: wp.array[wp.int32],
     particle_volume: wp.array[float],
+    particle_density: wp.array[float],
+    particle_world: wp.array[wp.int32],
+    separate_worlds: int,
     young_modulus: wp.array[float],
     transfer_flags: wp.array[wp.int32],
     material_flags: wp.array[wp.int32],
     material_particle_volume: wp.array[float],
     has_compliant_particles: wp.array[wp.int32],
+    environment_max_particle_density: wp.array[float],
 ):
     """Derive the transfer and material masks from ``model.particle_flags``.
 
     Collider particles are never active for either transfer or material;
-    proxy particles transfer momentum but carry no material.
+    proxy particles transfer momentum but carry no material. Also reduces the
+    densest active material of each environment (a single one without
+    separate worlds); kinematic particles have zero density and stay out of
+    the maximum.
     """
     i = wp.tid()
     f = model_flags[i]
@@ -225,6 +243,11 @@ def _refresh_particle_masks(
         material_particle_volume[i] = particle_volume[i]
         if young_modulus[i] < _INFINITY:
             has_compliant_particles[0] = 1
+        environment = 0
+        if separate_worlds != 0:
+            environment = particle_world[i]
+        if environment >= 0 and environment < environment_max_particle_density.shape[0]:
+            wp.atomic_max(environment_max_particle_density, environment, particle_density[i])
     else:
         material_particle_volume[i] = 0.0
 
@@ -264,13 +287,17 @@ def _get_shape_collision_materials(model: newton.Model, shape_ids: list[int]):
 def _create_body_collider_mesh(
     model: newton.Model,
     shape_ids: list[int],
+    winding_number: bool = False,
 ):
-    """Create a collider mesh from a body."""
+    """Create a collider mesh from a body (closed planes and winding-number support with ``winding_number``)."""
 
     shape_scale = model.shape_scale.numpy()
     shape_type = model.shape_type.numpy()
 
-    shape_meshes = [_get_shape_mesh(model, sid, newton.GeoType(shape_type[sid]), shape_scale[sid]) for sid in shape_ids]
+    shape_meshes = [
+        _get_shape_mesh(model, sid, newton.GeoType(shape_type[sid]), shape_scale[sid], closed_planes=winding_number)
+        for sid in shape_ids
+    ]
 
     collider_points, collider_indices, vertex_shape_ids, face_shape_ids = _merge_meshes(
         points=[mesh.vertices for mesh in shape_meshes],
@@ -288,7 +315,12 @@ def _create_body_collider_mesh(
         ],
     )
 
-    return wp.Mesh(collider_points, collider_indices, wp.zeros_like(collider_points)), face_shape_ids
+    return (
+        wp.Mesh(
+            collider_points, collider_indices, wp.zeros_like(collider_points), support_winding_number=winding_number
+        ),
+        face_shape_ids,
+    )
 
 
 @wp.struct
@@ -352,6 +384,9 @@ class ImplicitMPMModel:
         self._separate_worlds = bool(options.separate_worlds and model.world_count > 1)
         """Whether colliders and particles are isolated by Newton world."""
 
+        self.collider_winding_number = bool(getattr(options, "collider_winding_number", False))
+        """Whether collider distances are signed with generalized winding numbers."""
+
         self.collider = Collider()
         """Collider struct"""
 
@@ -381,12 +416,14 @@ class ImplicitMPMModel:
 
         - ``particle_volume`` and ``particle_density``, from
           ``model.particle_radius`` and ``model.particle_mass``.
-        - The transfer and material particle masks (see :meth:`refresh_particle_flags`).
+        - The transfer and material particle masks, the compliant-particle
+          flag, and ``environment_max_particle_density`` (see
+          :meth:`refresh_particle_flags`).
 
-        The code paths do not depend on the material values: they are fixed by
-        the ``enable_*`` options at construction. After the first call, this
-        only launches kernels that write existing arrays, so it may be recorded
-        in a CUDA graph.
+        :attr:`max_particle_radius` is read back from the device lazily, on
+        its next use outside a graph capture. After the first call, this only
+        launches kernels that write existing arrays, so it may be recorded in
+        a CUDA graph.
         """
         model = self.model
 
@@ -409,6 +446,13 @@ class ImplicitMPMModel:
         with wp.ScopedDevice(model.device):
             num_particles = model.particle_q.shape[0]
             self.particle_radius = _particle_parameter(num_particles, model.particle_radius)
+            if getattr(self, "_max_particle_radius", None) is None:
+                # Read eagerly at construction so a capture right afterwards has a value.
+                self._max_particle_radius = float(np.max(self.particle_radius.numpy(), initial=0.0))
+                self._max_particle_radius_stale = False
+            else:
+                # Later notifications may be recorded in a graph: defer the readback.
+                self._max_particle_radius_stale = True
             self.particle_volume = _reuse_or_allocate(getattr(self, "particle_volume", None), num_particles)
             self.particle_density = _reuse_or_allocate(getattr(self, "particle_density", None), num_particles)
             wp.launch(
@@ -421,16 +465,30 @@ class ImplicitMPMModel:
         self._require_particle_arrays()
         self.refresh_particle_flags()
 
+    @property
+    def max_particle_radius(self) -> float:
+        """Largest particle radius [m], read back from the device after a notification.
+
+        The readback is deferred to the first use outside a graph capture;
+        during a capture, the value from the last readback is used.
+        """
+        if self._max_particle_radius_stale and not wp.get_device(self.model.device).is_capturing:
+            self._max_particle_radius = float(np.max(self.particle_radius.numpy(), initial=0.0))
+            self._max_particle_radius_stale = False
+        return self._max_particle_radius
+
     def refresh_particle_flags(self):
         """Refresh the transfer and material particle masks from ``model.particle_flags``.
 
         Runs a single kernel that writes the existing ``particle_flags``,
-        ``material_particle_flags``, ``material_particle_volume`` and
-        ``has_compliant_particles`` arrays in place: no host synchronization or
-        allocation, so it may be called every step and recorded in a CUDA graph.
+        ``material_particle_flags``, ``material_particle_volume``,
+        ``has_compliant_particles`` and ``environment_max_particle_density``
+        arrays in place: no host synchronization or allocation, so it may be
+        called every step and recorded in a CUDA graph.
         """
         model = self.model
         self.has_compliant_particles.zero_()
+        self.environment_max_particle_density.zero_()
         wp.launch(
             _refresh_particle_masks,
             dim=model.particle_count,
@@ -438,6 +496,9 @@ class ImplicitMPMModel:
                 model.particle_flags,
                 self._is_collider_particle,
                 self.particle_volume,
+                self.particle_density,
+                model.particle_world,
+                int(self._separate_worlds),
                 self.material_parameters.young_modulus,
             ],
             outputs=[
@@ -445,6 +506,7 @@ class ImplicitMPMModel:
                 self.material_particle_flags,
                 self.material_particle_volume,
                 self.has_compliant_particles,
+                self.environment_max_particle_density,
             ],
             device=model.device,
         )
@@ -468,6 +530,10 @@ class ImplicitMPMModel:
                 # Device flag, nonzero when an active material particle is compliant;
                 # selects the elasticity assembly in a conditional graph node.
                 self.has_compliant_particles = wp.zeros(1, dtype=wp.int32)
+            if getattr(self, "environment_max_particle_density", None) is None:
+                # Densest active material of each environment; sets the rheology regularization.
+                environment_count = model.world_count if self._separate_worlds else 1
+                self.environment_max_particle_density = wp.zeros(environment_count, dtype=float)
             if getattr(self, "_is_collider_particle", None) is None:
                 # Filled by setup_collider(); no particle is a collider before that.
                 self._is_collider_particle = wp.zeros(num_particles, dtype=wp.int32)
@@ -958,7 +1024,7 @@ class ImplicitMPMModel:
                 else:
                     # faces start on their shape's material, the first ones of the collider
                     collider_meshes[collider_id], mesh_face_material_ids = _create_body_collider_mesh(
-                        model, collider_shapes[collider_id]
+                        model, collider_shapes[collider_id], winding_number=self.collider_winding_number
                     )
                     packed_body_ids.append(body_index)
                     face_count = collider_meshes[collider_id].indices.shape[0] // 3
@@ -986,6 +1052,14 @@ class ImplicitMPMModel:
             self.collider.collider_particle_offsets = wp.array(collider_particle_offsets, dtype=int)
             self.collider.collider_particle_ids = wp.array(flat_collider_particle_ids, dtype=int)
             self.collider.collider_mesh = wp.array([collider.id for collider in collider_meshes], dtype=wp.uint64)
+            # Custom meshes keep the average-normal sign unless built with winding-number support
+            self.collider.collider_winding_number = wp.array(
+                [
+                    int(self.collider_winding_number and getattr(mesh, "support_winding_number", False))
+                    for mesh in collider_meshes
+                ],
+                dtype=int,
+            )
             self.collider.collider_max_thickness = wp.array(collider_max_thickness, dtype=float)
             self.collider.collider_world = wp.array(collider_world_ids, dtype=int)
             self.collider.collider_face_offset = wp.array(collider_face_offsets, dtype=int)

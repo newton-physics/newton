@@ -12,13 +12,14 @@ import warp as wp
 import newton
 import newton.examples
 from newton import JointType
+from newton._src.usd.utils import get_transform
 from newton._src.utils.import_usd import _is_uniform_scale
 from newton.tests._usd_import_test_utils import _expect_jointless_articulation_warning
-from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal
+from newton.tests.unittest_utils import assert_np_equal, requires
 
 
 class TestImportUsdArticulation(unittest.TestCase):
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_import_usd_raises_on_stage_errors(self):
         """Reject a USD stage with composition errors."""
         from pxr import Usd
@@ -39,7 +40,7 @@ def Xform "Root" (
 
         self.assertIn("composition errors", str(exc_info.exception))
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_import_articulation(self):
         """Import the ant articulation with its bodies, joints, shapes, and path maps."""
         builder = newton.ModelBuilder()
@@ -66,13 +67,14 @@ def Xform "Root" (
         ]
         self.assertEqual(len(collision_shapes), 13)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_mirrored_body_transform_warns(self):
-        """Warn when a rigid body has a negative-determinant (mirrored) transform.
+    @requires("pxr.Usd")
+    def test_mirrored_body_transform_imports_without_warning(self):
+        """Import a rigid body with a negative-determinant (mirrored) transform silently.
 
-        Improper transforms have no unique rotation decomposition, so the
-        incoming-xform rebase can inject a spurious constant rotation into
-        body and joint frames (common with mirror-scaled CAD exports).
+        The body frame takes the ``Gf.Transform`` rotation and the reflection is
+        carried by a negative shape scale, which collision (winding swap), mass
+        properties and the viewer already support (see ``test_negative_scaling``).
+        Joint frames stay consistent; see ``test_mirrored_body_joint_frames_consistent``.
         """
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
@@ -94,10 +96,137 @@ def Xform "Root" (
         joint.CreateAxisAttr().Set("Z")
 
         builder = newton.ModelBuilder()
-        with self.assertWarnsRegex(UserWarning, "mirrored"):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
             builder.add_usd(stage, load_visual_shapes=False)
+        self.assertEqual([str(w.message) for w in caught if "mirrored" in str(w.message)], [])
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
+    def test_mirrored_body_joint_frames_consistent(self):
+        """Keep joint frames on a mirrored body consistent with the imported body poses.
+
+        The UsdPhysics parser absorbs the reflection of a negative-determinant transform
+        into a negative uniform scale. ``usd.get_transform()`` must pick the same rotation,
+        otherwise the importer rebases joint frames by the difference and a child link is
+        rotated away from its authored pose by forward kinematics (issue #3653).
+        """
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        for scale in ((-1.0, -1.0, -1.0), (-1.0, 1.0, 1.0), (1.0, -2.0, 0.5)):
+            with self.subTest(scale=scale):
+                stage = Usd.Stage.CreateInMemory()
+                UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+                UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+                base = UsdGeom.Xform.Define(stage, "/World/Base")
+                base.AddTranslateOp().Set(Gf.Vec3d(0.5, 0.0, 1.0))
+                base.AddRotateXYZOp().Set(Gf.Vec3f(30.0, 20.0, 10.0))
+                base.AddScaleOp().Set(Gf.Vec3f(*scale))
+                UsdPhysics.ArticulationRootAPI.Apply(base.GetPrim())
+                link = UsdGeom.Xform.Define(stage, "/World/Base/Link")
+                link.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, 1.0))
+                for prim in (base.GetPrim(), link.GetPrim()):
+                    UsdPhysics.RigidBodyAPI.Apply(prim)
+                    mass = UsdPhysics.MassAPI.Apply(prim)
+                    mass.GetMassAttr().Set(1.0)
+                    mass.GetDiagonalInertiaAttr().Set(Gf.Vec3f(1.0, 1.0, 1.0))
+
+                root = UsdPhysics.FixedJoint.Define(stage, "/World/Root")
+                root.CreateBody1Rel().SetTargets([base.GetPath()])
+                hinge = UsdPhysics.RevoluteJoint.Define(stage, "/World/Hinge")
+                hinge.CreateBody0Rel().SetTargets([base.GetPath()])
+                hinge.CreateBody1Rel().SetTargets([link.GetPath()])
+                hinge.CreateAxisAttr().Set("Z")
+                hinge.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 1.0))
+                hinge.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+
+                builder = newton.ModelBuilder()
+                builder.add_usd(stage, load_visual_shapes=False)
+
+                base_id = builder.body_label.index("/World/Base")
+                link_id = builder.body_label.index("/World/Base/Link")
+                base_matrix = UsdGeom.XformCache().GetLocalToWorldTransform(base.GetPrim())
+                base_rot = Gf.Transform(base_matrix).GetRotation().GetQuat()
+                expected_rot = np.array([*base_rot.GetImaginary(), base_rot.GetReal()])
+                actual_rot = np.array(builder.body_q[base_id][3:])
+                self.assertAlmostEqual(abs(float(np.dot(expected_rot, actual_rot))), 1.0, places=5)
+
+                model = builder.finalize(device="cpu")
+                state = model.state()
+                authored_link = state.body_q.numpy()[link_id].copy()
+                newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+                fk_link = state.body_q.numpy()[link_id]
+                np.testing.assert_allclose(fk_link[:3], authored_link[:3], atol=1e-5)
+                self.assertAlmostEqual(abs(float(np.dot(fk_link[3:], authored_link[3:]))), 1.0, places=5)
+
+    @requires("pxr.Usd")
+    def test_get_transform_matches_gf_for_inherited_nonuniform_scale(self):
+        """Match Gf.Transform when a rotated child inherits a nonuniform scale.
+
+        A child rotation under a nonuniform parent scale yields a sheared world
+        matrix. Negating a mirrored basis and using Warp's decompose does not
+        recover the UsdPhysics rotation; ``usd.get_transform()`` must follow
+        ``Gf.Transform`` so imported body poses stay consistent with joint descs.
+        """
+        from pxr import Gf, Usd, UsdGeom
+
+        for scale in ((-1.0, 2.0, 0.5), (1.0, 2.0, 0.5)):
+            with self.subTest(scale=scale):
+                stage = Usd.Stage.CreateInMemory()
+                UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+                parent = UsdGeom.Xform.Define(stage, "/World/Parent")
+                parent.AddScaleOp().Set(Gf.Vec3f(*scale))
+                child = UsdGeom.Xform.Define(stage, "/World/Parent/Child")
+                child.AddTranslateOp().Set(Gf.Vec3d(0.5, 0.0, 1.0))
+                child.AddRotateXYZOp().Set(Gf.Vec3f(30.0, 20.0, 10.0))
+
+                cache = UsdGeom.XformCache()
+                world = cache.GetLocalToWorldTransform(child.GetPrim())
+                expected = Gf.Transform(world)
+                expected_rot = expected.GetRotation().GetQuat()
+                expected_q = np.array([*expected_rot.GetImaginary(), expected_rot.GetReal()])
+                expected_p = np.array(expected.GetTranslation(), dtype=np.float64)
+
+                actual = np.array(get_transform(child.GetPrim(), local=False, xform_cache=cache))
+                np.testing.assert_allclose(actual[:3], expected_p, atol=1e-6)
+                self.assertAlmostEqual(abs(float(np.dot(actual[3:], expected_q))), 1.0, places=6)
+
+    @requires("pxr.Usd")
+    def test_imported_body_matches_gf_under_inherited_nonuniform_scale(self):
+        """Import a rotated body under a nonuniform parent scale with Gf.Transform's rotation."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        for scale in ((-1.0, 2.0, 0.5), (1.0, 2.0, 0.5)):
+            with self.subTest(scale=scale):
+                stage = Usd.Stage.CreateInMemory()
+                UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+                UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+                parent = UsdGeom.Xform.Define(stage, "/World/Parent")
+                parent.AddScaleOp().Set(Gf.Vec3f(*scale))
+                body = UsdGeom.Xform.Define(stage, "/World/Parent/Body")
+                body.AddTranslateOp().Set(Gf.Vec3d(0.5, 0.0, 1.0))
+                body.AddRotateXYZOp().Set(Gf.Vec3f(30.0, 20.0, 10.0))
+                UsdPhysics.ArticulationRootAPI.Apply(body.GetPrim())
+                UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+                mass = UsdPhysics.MassAPI.Apply(body.GetPrim())
+                mass.GetMassAttr().Set(1.0)
+                mass.GetDiagonalInertiaAttr().Set(Gf.Vec3f(1.0, 1.0, 1.0))
+
+                root = UsdPhysics.FixedJoint.Define(stage, "/World/Root")
+                root.CreateBody1Rel().SetTargets([body.GetPath()])
+
+                builder = newton.ModelBuilder()
+                builder.add_usd(stage, load_visual_shapes=False)
+
+                body_id = builder.body_label.index("/World/Parent/Body")
+                world = UsdGeom.XformCache().GetLocalToWorldTransform(body.GetPrim())
+                expected_rot = Gf.Transform(world).GetRotation().GetQuat()
+                expected_q = np.array([*expected_rot.GetImaginary(), expected_rot.GetReal()])
+                actual_q = np.array(builder.body_q[body_id][3:])
+                self.assertAlmostEqual(abs(float(np.dot(expected_q, actual_q))), 1.0, places=5)
+
+    @requires("pxr.Usd")
     def test_import_body_newton_armature_ignored(self):
         """Ignore body-level newton:armature without warnings or changes to inertia.
 
@@ -133,7 +262,7 @@ def Xform "Root" (
         for j in range(3):
             self.assertAlmostEqual(float(inertia[j, j]), expected_diag, places=2)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_import_non_articulated_joints(self):
         """Import a rootless four-bar mechanism without creating an articulation."""
         builder = newton.ModelBuilder()
@@ -198,7 +327,7 @@ def Xform "Root" (
 
         return stage
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_body_to_world_fixed_joint_without_articulation_root_stays_orphan(self):
         """Keep a fixed joint to world rootless and finalize normally."""
         stage = self._make_rootless_fixed_stage(with_child_joint=False)
@@ -215,7 +344,7 @@ def Xform "Root" (
         self.assertEqual(model.articulation_count, 0)
         self.assertEqual(model.joint_articulation.numpy()[root_joint_idx], -1)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_rootless_mechanism_root_and_child_joints_stay_orphan(self):
         """Keep root and child joints outside articulations without ArticulationRootAPI."""
         stage = self._make_rootless_fixed_stage(with_child_joint=True)
@@ -237,7 +366,7 @@ def Xform "Root" (
         self.assertEqual(model_joint_articulation[root_joint_idx], -1)
         self.assertEqual(model_joint_articulation[child_joint_idx], -1)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_rootless_multi_joint_body_is_merged(self):
         """Retain all MJCF DOFs when merging multiple world joints on one orphan body."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
@@ -280,7 +409,7 @@ def Xform "Root" (
         self.assertEqual(model.articulation_count, 0)
         self.assertEqual(model.joint_dof_count, 2)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_import_disabled_joints_create_free_joints(self):
         """Create free joints for floating bodies when all authored joints are disabled."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
@@ -329,7 +458,7 @@ def Xform "Root" (
         self.assertEqual(model.articulation_count, 2)
         self.assertEqual(set(model.joint_articulation.numpy().tolist()), {0, 1})
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_unrelated_floating_body_gets_single_body_articulation(self):
         """Create standalone articulations for floating bodies outside authored articulations."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
@@ -385,7 +514,7 @@ def Xform "Root" (
         self.assertEqual(model.articulation_count, 2)
         self.assertEqual(model.joint_articulation.numpy().tolist()[loose_joint], 1)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_import_orphan_joints_with_articulation_present(self):
         """Import joints outside articulations alongside an authored articulation.
 
@@ -488,7 +617,7 @@ def Xform "Root" (
         model = builder.finalize(skip_validation_joints=True)
         self.assertEqual(model.body_count, 5)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_stray_joint_does_not_strip_unrelated_floating_bodies(self):
         """Preserve base joints for unrelated floating bodies when importing a stray joint.
 
@@ -536,7 +665,7 @@ def Xform "Root" (
         self.assertEqual(builder.joint_type[stray_joint], JointType.FIXED)
         self.assertEqual(builder.joint_articulation[stray_joint], -1)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_body_to_world_fixed_joint(self):
         """Import a body-to-world PhysicsFixedJoint as FIXED without creating an articulation."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
@@ -610,7 +739,7 @@ def Xform "Root" (
         model = builder.finalize()
         self.assertEqual(model.body_count, 3)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_orphan_world_fixed_joint_respects_env_offset_and_xform(self):
         """Preserve environment offsets and spawn transforms for orphan body-to-world fixed joints."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
@@ -670,7 +799,7 @@ def Xform "Root" (
                 model = builder.finalize()
                 self.assertEqual(model.articulation_count, 0)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_collapse_fixed_joints_preserves_orphan_joints(self):
         """Preserve orphan joints and their bodies when collapsing fixed joints."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
@@ -727,7 +856,7 @@ def Xform "Root" (
         self.assertIn("/World/RevJoint1", builder.joint_label)
         self.assertIn("/World/RevJoint2", builder.joint_label)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     @_expect_jointless_articulation_warning
     def test_import_articulation_parent_offset(self):
         """Combine articulation parent offsets with the import transform."""
@@ -793,7 +922,7 @@ def "World"
         np.testing.assert_allclose(pos_0, np.array([0.0, 0.0, 1.0]), atol=1e-5)
         np.testing.assert_allclose(pos_1, np.array([2.5, 0.0, 1.0]), atol=1e-5)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_import_scale_ops_units_resolve(self):
         """Combine authored and unitsResolve scale operations for collider dimensions."""
         from pxr import Usd
@@ -837,7 +966,7 @@ def Xform "World"
         shape_id = results["path_shape_map"]["/World/Body/Scaled/Collision"]
         assert_np_equal(np.array(builder.shape_scale[shape_id]), np.array([0.02, 0.02, 0.02]), tol=1e-5)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_import_scale_ops_nested_xforms(self):
         """Combine nested transform scales for collider dimensions."""
         from pxr import Usd
@@ -897,7 +1026,7 @@ def Xform "World"
         self.assertFalse(_is_uniform_scale((1.0, 1.0, 2.0)))
         self.assertFalse(_is_uniform_scale((1.0, 1.0, 1.001)))
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_import_sphere_near_uniform_scale_does_not_warn(self):
         """Import spheres whose scale is uniform to within float32 round-off without warning.
 
@@ -946,7 +1075,7 @@ def Xform "World"
         with self.assertNoLogs("newton", level="WARNING"):
             builder.add_usd(stage)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_import_sphere_non_uniform_scale_warns(self):
         """Warn, and name the prim, when a sphere really is scaled non-uniformly."""
         from pxr import Usd
@@ -986,7 +1115,7 @@ def Xform "World"
         self.assertIn("Non-uniform scaling of spheres", output)
         self.assertIn("/World/Body/SquashedCollision", output)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_import_articulation_no_visuals(self):
         """Import the ant articulation with collision shapes but no visuals or sites."""
         builder = newton.ModelBuilder()
@@ -1015,7 +1144,7 @@ def Xform "World"
         ]
         self.assertEqual(len(collision_shapes), 13)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd", "scipy")
     def test_import_articulation_with_mesh(self):
         """Import an articulation containing a mesh without errors."""
         builder = newton.ModelBuilder()
@@ -1025,7 +1154,7 @@ def Xform "World"
             collapse_fixed_joints=True,
         )
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_import_revolute_articulation(self):
         """Connect body0 to the world when a fixed joint has no body1.
 

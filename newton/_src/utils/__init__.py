@@ -9,7 +9,7 @@ import warp as wp
 from ..core.types import Axis
 from .download_assets import clear_git_cache, download_asset
 from .texture import load_texture, normalize_texture
-from .topology import topological_sort, topological_sort_undirected
+from .topology import topological_sort, topological_sort_undirected, tree_joint_mask
 
 
 def check_conditional_graph_support():
@@ -124,4 +124,5 @@ __all__ = [
     "normalize_texture",
     "topological_sort",
     "topological_sort_undirected",
+    "tree_joint_mask",
 ]

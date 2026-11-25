@@ -8,8 +8,10 @@ import warp as wp
 import newton
 from newton import ModelFlags
 from newton.solvers import SolverMuJoCo
+from newton.tests.unittest_utils import MUJOCO_MODULES, requires
 
 
+@requires(*MUJOCO_MODULES)
 class TestJointDrive(unittest.TestCase):
     def compute_expected_velocity_outcome(
         self,

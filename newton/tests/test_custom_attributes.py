@@ -2003,6 +2003,32 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         np.testing.assert_array_equal(model.test.target_index.numpy(), [-1, body, shape1, -1, body + 1, shape1 + 2])
         self.assertEqual((body, shape0, shape1), (0, 0, 1))
 
+        def prefix_reference(values, context):
+            return [f"{context['label_prefix']}/{value}" for value in values]
+
+        sub_builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="target_label",
+                frequency="test:target",
+                dtype=str,
+                default="",
+                namespace="test",
+                values=["a", "b", "c"],
+                reference_value_transformer=prefix_reference,
+            )
+        )
+        sub_builder.custom_frequencies["test:target"].label_attribute = "test:target_label"
+        replicated = ModelBuilder()
+        sequential = ModelBuilder()
+        prefixes = ["left", "right"]
+        replicated.replicate(sub_builder, 2, label_prefixes=prefixes)
+        for prefix in prefixes:
+            sequential.add_world(sub_builder, label_prefix=prefix)
+        expected = sequential.finalize(device=self.device)
+        actual = replicated.finalize(device=self.device)
+        self.assertEqual(actual.test.target_label, expected.test.target_label)
+        self.assertEqual(actual.test.target_label[:3], ["left/left/a", "left/left/b", "left/left/c"])
+
     def test_custom_frequency_reference_value_transformer_length_mismatch(self):
         """Reject a reference transformer that drops rows."""
         sub_builder = ModelBuilder()
@@ -2446,7 +2472,7 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         np.testing.assert_array_equal(scene.finalize(device=self.device).root_body.numpy(), [5])
 
     def test_world_frequency_merge_add_world(self):
-        """Copy world rows without letting a global merge overwrite their reference defaults."""
+        """Copy world rows, and write a global merge to the global-world entry instead of world 0."""
         sub = ModelBuilder()
         sub.add_body()
         sub.add_body()
@@ -2464,6 +2490,17 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
 
         ground = ModelBuilder()
         ground.add_body()
+        ground.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="world_data",
+                dtype=wp.int32,
+                frequency=AttributeFrequency.WORLD,
+                namespace="test",
+                default=-999,
+            )
+        )
+        # Ground's own world entry describes its entities, which become global.
+        ground.custom_attributes["test:world_data"].values = {0: 7}
         for builder in (sub, ground):
             builder.add_custom_attribute(
                 ModelBuilder.CustomAttribute(
@@ -2483,10 +2520,26 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
                 else:
                     main.replicate(sub, 2)
                 main.add_builder(ground)
+                # A second global merge keeps the global entry rather than its own reference default.
+                main.add_builder(ground)
                 model = main.finalize(device=self.device)
                 self.assertEqual(model.world_count, 2)
-                np.testing.assert_array_equal(model.test.world_data.numpy(), [42, 42])
-                np.testing.assert_array_equal(model.world_root_body.numpy(), [0, 2])
+                # The global merge writes only the global-world entry, which follows the local
+                # worlds; ground's root-body default references its own body 4.
+                np.testing.assert_array_equal(model.test.world_data.numpy(), [42, 42, 7])
+                np.testing.assert_array_equal(model.world_root_body.numpy(), [0, 2, 4])
+
+        # A merge places all source entities in one world: agreeing source values merge, and
+        # different ones raise before any entity is copied.
+        sub.custom_attributes["test:world_data"].values = {0: 5, 1: 5}
+        merged = ModelBuilder()
+        merged.add_builder(sub)
+        np.testing.assert_array_equal(merged.finalize(device=self.device).test.world_data.numpy(), [5, 5])
+        sub.custom_attributes["test:world_data"].values = {-1: 5, 1: 6}
+        rejected = ModelBuilder()
+        with self.assertRaisesRegex(ValueError, "different values for source worlds \\[-1, 1\\]"):
+            rejected.add_world(sub)
+        self.assertEqual((rejected.body_count, rejected.world_count), (0, 0))
 
     def test_custom_attribute_model_finalizer_rejects_conflicting_registration(self):
         builder = ModelBuilder()
@@ -2591,6 +2644,121 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         arr = model.ns.foo.numpy().tolist()
         self.assertEqual(len(arr), model.body_count)
         self.assertTrue(all(v == 7 for v in arr))
+
+    def test_build_array_half_precision_dtypes(self):
+        """Ensure bfloat16 and float16 CustomAttribute.build_array preserve numeric values."""
+        vec2bf = wp.types.vector(2, wp.bfloat16)
+        vec2h = wp.types.vector(2, wp.float16)
+
+        bf16_enum = ModelBuilder.CustomAttribute(
+            name="bf16_val",
+            dtype=wp.bfloat16,
+            frequency=AttributeFrequency.BODY,
+            default=1.0,
+            values={0: 2.0},
+        )
+        bf16_enum_arr = bf16_enum.build_array(2, device=self.device)
+        np.testing.assert_allclose([float(x) for x in bf16_enum_arr.list()], [2.0, 1.0], atol=1e-2)
+
+        bf16_cf = ModelBuilder.CustomAttribute(
+            name="bf16_cf",
+            dtype=wp.bfloat16,
+            frequency="test:bf16_freq",
+            default=1.0,
+            values=[2.0, None],
+        )
+        bf16_cf_arr = bf16_cf.build_array(2, device=self.device)
+        np.testing.assert_allclose([float(x) for x in bf16_cf_arr.list()], [2.0, 1.0], atol=1e-2)
+
+        vec2bf_attr = ModelBuilder.CustomAttribute(
+            name="vec2bf_val",
+            dtype=vec2bf,
+            frequency=AttributeFrequency.BODY,
+            default=[1.0, 3.0],
+            values={0: [2.0, 4.0]},
+        )
+        vec2bf_arr = vec2bf_attr.build_array(2, device=self.device)
+        np.testing.assert_allclose(
+            [[float(y) for y in x] for x in vec2bf_arr.list()], [[2.0, 4.0], [1.0, 3.0]], atol=1e-2
+        )
+
+        f16_attr = ModelBuilder.CustomAttribute(
+            name="f16_val",
+            dtype=wp.float16,
+            frequency=AttributeFrequency.BODY,
+            default=1.0,
+            values={0: 2.0},
+        )
+        np.testing.assert_allclose(f16_attr.build_array(2, device=self.device).numpy(), [2.0, 1.0], atol=1e-3)
+
+        vec2h_attr = ModelBuilder.CustomAttribute(
+            name="vec2h_val",
+            dtype=vec2h,
+            frequency=AttributeFrequency.BODY,
+            default=vec2h(1.0, 3.0),
+            values={0: vec2h(2.0, 4.0)},
+        )
+        np.testing.assert_allclose(
+            vec2h_attr.build_array(2, device=self.device).numpy(), [[2.0, 4.0], [1.0, 3.0]], atol=1e-3
+        )
+
+    def test_build_array_world_global_singleton_sequence(self):
+        """Ensure singleton sequence global WORLD values preserve their trailing dimension."""
+        attr = ModelBuilder.CustomAttribute(
+            name="world_seq",
+            dtype=wp.float32,
+            frequency=AttributeFrequency.WORLD,
+            default=0.0,
+            values={-1: [4.0]},
+        )
+        arr = attr.build_array(3, device=self.device)
+        self.assertEqual(arr.shape, (3, 1))
+        np.testing.assert_allclose(arr.numpy(), [[4.0], [4.0], [4.0]])
+
+        ref_attr = ModelBuilder.CustomAttribute(
+            name="world_ref_seq",
+            dtype=wp.float32,
+            frequency=AttributeFrequency.WORLD,
+            references="body",
+            default=[0.0],
+            values={-1: [4.0]},
+        )
+        ref_arr = ref_attr.build_array(3, device=self.device)
+        self.assertEqual(ref_arr.shape, (3, 1))
+        np.testing.assert_allclose(ref_arr.numpy(), [[0.0], [0.0], [4.0]])
+
+    def test_build_array_nested_vector_rows(self):
+        """Preserve the extra array dimension in nested vector defaults and overrides."""
+        row = [[4.0, 5.0, 6.0]]
+        attr = ModelBuilder.CustomAttribute(
+            name="nested_vector",
+            dtype=wp.vec3,
+            frequency=AttributeFrequency.WORLD,
+            default=row,
+            values={0: [[1.0, 2.0, 3.0]]},
+        )
+        arr = attr.build_array(2, device=self.device)
+        self.assertEqual(arr.shape, (2, 1))
+        np.testing.assert_array_equal(arr.numpy(), [[[1.0, 2.0, 3.0]], row])
+
+        attr.default = wp.vec3(0.0)
+        attr.values = {-1: row}
+        arr = attr.build_array(2, device=self.device)
+        self.assertEqual(arr.shape, (2, 1))
+        np.testing.assert_array_equal(arr.numpy(), [row, row])
+
+    def test_build_array_ignores_unmatched_override_keys(self):
+        """Keep dictionary row matching for keys that cannot be narrowed to integers."""
+        for key in (2**64, 1.5):
+            with self.subTest(key=key):
+                attr = ModelBuilder.CustomAttribute(
+                    name="sparse_override",
+                    dtype=wp.float32,
+                    frequency=AttributeFrequency.BODY,
+                    default=0.0,
+                    values={0: 4.0, key: 9.0},
+                )
+                np.testing.assert_array_equal(attr.build_array(2, device=self.device).numpy(), [4.0, 0.0])
 
 
 if __name__ == "__main__":

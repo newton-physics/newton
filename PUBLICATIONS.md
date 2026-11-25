@@ -60,9 +60,13 @@ published citation when available and retain an accessible preprint link.
 
 - **Backpropagating Through Simulation: Analytic Policy Gradients for Sample and Learning Efficient Differentiable Continuous Control**. *Y. Deng*. June 2026. [arXiv:2606.21525](https://arxiv.org/abs/2606.21525)
 
+- **Alloy: A Multi-Material Physics Engine for Robot Learning**. *P. Gupta, D. Rohilla*. November 2026. [arXiv:2611.16312](https://arxiv.org/abs/2611.16312)
+
 - **RigPI: Dynamic Parameter Identification of Rigid Body via VLM-Seeded Differentiable Simulation**. *X. He, R. Zhang, W. Jiang, W. Xu*. June 2026. [arXiv:2606.25212](https://arxiv.org/abs/2606.25212)
 
 - **RoboMMT: Learning Stable Tracking of Modulated Expressive and Interactive Robot Motion**. *T. Hielscher, K. O. Arras*. October 2026. [arXiv:2610.26414](https://arxiv.org/abs/2610.26414)
+
+- **HolidayFactory 1.0: Simulating, Generating, and Evaluating Industrial Robot Tasks**. *Holiday Robotics*. November 2026. [arXiv:2611.11789](https://arxiv.org/abs/2611.11789)
 
 - **Probabilistic Physics Digital Twin for Human-Robot Interaction**. *Y. Hu, H. Chandirasekar, A. Kushwaha, J. King, Z.-T. Chen*. October 2026. [arXiv:2610.19336](https://arxiv.org/abs/2610.19336)
 
@@ -84,13 +88,17 @@ published citation when available and retain an accessible preprint link.
 
 - **PersistGS: Differentiable Physics for Object Permanence in 4D Gaussian Splatting**. *A. Ramlal, J. S. Zelek*. CVPR Workshops, 2026. [arXiv:2606.03479](https://arxiv.org/abs/2606.03479)
 
+- **GPU-Accelerated Hydroelastic Contact via Signed Distance Fields**. *L. Röstel, Y. Liu, J. Yin, M. Zamora, M. Macklin, P. Reist, T. Widmer*. ICRA Workshop on the Path Towards Generalizable Contact-Rich Robotics: Control and Representation, June 2026. [paper](https://openreview.net/pdf/8a06fabef4b32ce3018bcf0178352b189a3ec97b.pdf)
+
 - **Informationally Decoupled Trajectory Design for Sim-to-Real System Identification**. *S. Shin, A. Anilkumar, R. Gao, J. P. Hanna*. October 2026. [arXiv:2610.10905](https://arxiv.org/abs/2610.10905)
 
 - **DefFlow: Goal-Conditioned Deformable Object Manipulation using 3D Point Flows**. *G. Singh, S. Orozco, R. Duong, M. T. Akbulut, G. Konidaris, S. Sridhar*. October 2026. [arXiv:2610.22827](https://arxiv.org/abs/2610.22827)
 
 - **A Splitting Architecture for Exact Reduced Coulomb Friction**. *H. Song, Y. Fan, U. M. Ascher, D. K. Pai*. Computer Graphics Forum 45(8), 2026. [DOI:10.1111/cgf.70576](https://doi.org/10.1111/cgf.70576), [arXiv:2607.19599](https://arxiv.org/abs/2607.19599)
 
-- **Kamino: GPU-based Massively Parallel Simulation of Multi-Body Systems with Challenging Topologies**. *V. Tsounis, G. Maloisel, C. Schumacher, R. Grandia, A. Serifi, D. Müller, C. Amevor, T. Widmer, M. Bächer*. March 2026. [arXiv:2603.16536](https://arxiv.org/abs/2603.16536)
+- **Kamino: GPU-based Simulation of Rigid Multi-Body Physics with Kinematic Loops**. *V. Tsounis, G. Maloisel, C. Schumacher, R. Grandia, A. Serifi, D. Müller, C. Amevor, T. Widmer, M. Bächer*. 10th Annual Conference on Robot Learning, 2026. [arXiv:2603.16536](https://arxiv.org/abs/2603.16536)
+
+- **WorldParticle: Unified World Simulation of Lagrangian Particle Dynamics via Transformer**. *C. Wang, M. Guo, S. Chen, H. Zhang, M. Wang, X. Ni, H. Sun, K. Wang, Z. Pan, K. Wu, L. Liu, Y. Yang, C. Jiang, T. Komura, W. Matusik, P. Y. Chen*. May 2026. [arXiv:2605.15305](https://arxiv.org/abs/2605.15305)
 
 - **GAUGE: A Measurement-Grounded Benchmark for Physical Fidelity in Simulation Engines and Video World Models**. *S. Wang, Y. Feng, X. Jiang, S. Tian, N. Yan, X. Shen, C. Lyu, H. Wang, Y. Zhou, H. Wang, J. Pang, Y. Xiang, X. Gao, C. Shen, W. Zhang*. August 2026. [arXiv:2608.05948](https://arxiv.org/abs/2608.05948)
 
@@ -103,6 +111,8 @@ published citation when available and retain an accessible preprint link.
 - **RopeFormer: Cross-Trial Adaptation from Interaction History for Dynamic Rope Manipulation**. *M. Wu, K. Yao, S. Luan, M. Tomizuka, Y. Chen*. September 2026. [arXiv:2609.23432](https://arxiv.org/abs/2609.23432)
 
 - **ContactBench 1.0: A Benchmark for Everyday Contact-Rich Robotic Manipulation**. *J. Xiang, Y. Wang, J. Bohg, W. Yuan*. October 2026. [arXiv:2610.24512](https://arxiv.org/abs/2610.24512)
+
+- **VABAR: A Variational Automation Benchmark for Agentic Robotics**. *S. Xie, K. Chen, U. Yoo, X. Zhu, M. Shen, J. Drake, E. Solowjow, L. Gulich, A. Millane, R. Cathomen, T. Stuyck, S. Subramanian, Y. Pan, B. McGowan, M. Benedict, L. Fan, Y. Zhu, S. Huang, K. Goldberg*. November 2026. [arXiv:2611.06881](https://arxiv.org/abs/2611.06881)
 
 - **PointCast: One World Model for Rigid, Articulated, and Deformable Object Manipulation**. *H. Ye, R. Worobel, Z. Xie, M. Li, H. Yu, Y. Hong, C. Choi*. September 2026. [arXiv:2609.28393](https://arxiv.org/abs/2609.28393)
 
@@ -117,8 +127,6 @@ published citation when available and retain an accessible preprint link.
 ### 2025
 
 - **Offset Geometric Contact**. *A. H. Chen, J. Hsu, Z. Liu, M. Macklin, Y. Yang, C. Yuksel*. ACM Transactions on Graphics 44(4), July 2025. [DOI:10.1145/3731205](https://doi.org/10.1145/3731205)
-
-- **Augmented Vertex Block Descent**. *C. Giles, E. Diaz, C. Yuksel*. ACM Transactions on Graphics 44(4), July 2025. [DOI:10.1145/3731195](https://doi.org/10.1145/3731195)
 
 ### 2024
 
