@@ -775,6 +775,9 @@ class Model:
         "joint_target_mode": AttributeSpec(
             AttributeFrequency.JOINT_DOF, update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES
         ),
+        "joint_drive_type": AttributeSpec(
+            AttributeFrequency.JOINT_DOF, update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+        ),
         "joint_target_ke": AttributeSpec(
             AttributeFrequency.JOINT_DOF, update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES
         ),
@@ -1600,14 +1603,16 @@ class Model:
         """Armature [kg·m² (rotational) or kg (translational)] for each joint axis (used by :class:`~newton.solvers.SolverMuJoCo` and :class:`~newton.solvers.SolverFeatherstone`), shape [joint_dof_count], float."""
         self.joint_target_mode: wp.array[wp.int32] | None = None
         """Joint target mode per DOF, see :class:`newton.JointTargetMode`. Shape [joint_dof_count], dtype int32."""
+        self.joint_drive_type: wp.array[wp.int32] | None = None
+        """Joint drive type per DOF, see :class:`newton.JointDriveType`. Shape [joint_dof_count], dtype int32."""
         self.joint_target_ke: wp.array[wp.float32] | None = None
-        """Drive proportional gain [N/m or N·m/rad, depending on joint type], shape [joint_dof_count], float.
+        """Drive proportional gain [N/m or N·m/rad for :attr:`~newton.JointDriveType.FORCE`; 1/s² for :attr:`~newton.JointDriveType.ACCELERATION`], shape [joint_dof_count], float.
 
         ROD joints use this array for material stiffness about :attr:`joint_rest_q`;
         see :ref:`Rod joints`.
         """
         self.joint_target_kd: wp.array[wp.float32] | None = None
-        """Drive derivative gain [N·s/m or N·m·s/rad, depending on joint type], shape [joint_dof_count], float.
+        """Drive derivative gain [N·s/m or N·m·s/rad for :attr:`~newton.JointDriveType.FORCE`; 1/s for :attr:`~newton.JointDriveType.ACCELERATION`], shape [joint_dof_count], float.
 
         ROD joints use this array for material damping; see :ref:`Rod joints`.
         """

@@ -8,7 +8,7 @@ from functools import cache
 import warp as wp
 
 from ...math import transform_twist, velocity_at_point
-from ...sim import BodyFlags, JointType, Model, State
+from ...sim import BodyFlags, JointDriveType, JointType, Model, State
 from ...sim.articulation import (
     com_twist_to_point_velocity,
     compute_2d_rotational_dofs,
@@ -540,6 +540,7 @@ def jcalc_tau(
     type: int,
     joint_target_ke: wp.array[float],
     joint_target_kd: wp.array[float],
+    joint_drive_type: wp.array[wp.int32],
     joint_limit_ke: wp.array[float],
     joint_limit_kd: wp.array[float],
     joint_damping: wp.array[float],
@@ -602,6 +603,10 @@ def jcalc_tau(
             limit_kd = joint_limit_kd[j]
             target_ke = joint_target_ke[j]
             target_kd = joint_target_kd[j]
+            if joint_drive_type[j] == JointDriveType.ACCELERATION:
+                # Acceleration drives are scaled by the current reflected inertia after Cholesky factorization.
+                target_ke = 0.0
+                target_kd = 0.0
             target_pos = joint_target_q[target_q_start + i]
             target_vel = joint_target_qd[j]
             damping = joint_damping[j]
@@ -1429,6 +1434,7 @@ def eval_rigid_tau(
     joint_f: wp.array[float],
     joint_target_ke: wp.array[float],
     joint_target_kd: wp.array[float],
+    joint_drive_type: wp.array[wp.int32],
     joint_limit_lower: wp.array[float],
     joint_limit_upper: wp.array[float],
     joint_limit_ke: wp.array[float],
@@ -1487,6 +1493,7 @@ def eval_rigid_tau(
             type,
             joint_target_ke,
             joint_target_kd,
+            joint_drive_type,
             joint_limit_ke,
             joint_limit_kd,
             joint_damping,
@@ -1514,6 +1521,86 @@ def eval_rigid_tau(
         # iteration of the backward pass.
         if parent >= 0:
             body_ft_s[parent] = body_ft_s[parent] + f_s
+
+
+@wp.kernel(enable_backward=False)
+def eval_rigid_acceleration_drive_tau(
+    articulation_start: wp.array[int],
+    articulation_end: wp.array[int],
+    articulation_H_start: wp.array[int],
+    articulation_H_rows: wp.array[int],
+    articulation_dof_start: wp.array[int],
+    joint_type: wp.array[int],
+    joint_q_start: wp.array[int],
+    joint_qd_start: wp.array[int],
+    joint_target_q_start: wp.array[int],
+    joint_dof_dim: wp.array2d[int],
+    joint_q: wp.array[float],
+    joint_qd: wp.array[float],
+    joint_target_q: wp.array[float],
+    joint_target_qd: wp.array[float],
+    joint_target_ke: wp.array[float],
+    joint_target_kd: wp.array[float],
+    joint_drive_type: wp.array[wp.int32],
+    L: wp.array[float],
+    # scratch / outputs
+    tmp: wp.array[float],
+    tau: wp.array[float],
+):
+    """Add acceleration-drive generalized forces scaled by ``1 / (H^-1)_ii`` to ``tau``.
+
+    Uses the lower-triangular Cholesky factor ``L`` of the articulated mass matrix ``H = L L^T``
+    to evaluate ``(H^-1)_ii = ||L^-1 e_i||_2^2`` via forward substitution.
+    """
+    art = wp.tid()
+    n = articulation_H_rows[art]
+    if n <= 0:
+        return
+
+    L_start = articulation_H_start[art]
+    art_dof_start = articulation_dof_start[art]
+    start = articulation_start[art]
+    end = articulation_end[art]
+
+    for i in range(start, end):
+        jtype = joint_type[i]
+        if jtype != JointType.PRISMATIC and jtype != JointType.REVOLUTE and jtype != JointType.D6:
+            continue
+
+        axis_count = joint_dof_dim[i, 0] + joint_dof_dim[i, 1]
+        qd_start = joint_qd_start[i]
+        q_start = joint_q_start[i]
+        tq_start = joint_target_q_start[i]
+
+        for axis in range(axis_count):
+            j = qd_start + axis
+            if joint_drive_type[j] != JointDriveType.ACCELERATION:
+                continue
+
+            ke = joint_target_ke[j]
+            kd = joint_target_kd[j]
+            if ke == 0.0 and kd == 0.0:
+                continue
+
+            a_cmd = ke * (joint_target_q[tq_start + axis] - joint_q[q_start + axis]) + kd * (
+                joint_target_qd[j] - joint_qd[j]
+            )
+            local_j = j - art_dof_start
+            diag = L[L_start + dense_index(n, local_j, local_j)]
+            if diag > 1.0e-12:
+                y0 = 1.0 / diag
+                tmp[art_dof_start + local_j] = y0
+                inv_m = y0 * y0
+                for r in range(local_j + 1, n):
+                    s = float(0.0)
+                    for c in range(local_j, r):
+                        s += L[L_start + dense_index(n, r, c)] * tmp[art_dof_start + c]
+                    diag_r = L[L_start + dense_index(n, r, r)]
+                    yr = -s / diag_r if diag_r > 1.0e-12 else 0.0
+                    tmp[art_dof_start + r] = yr
+                    inv_m += yr * yr
+                if inv_m > 1.0e-12:
+                    tau[j] = tau[j] + a_cmd / inv_m
 
 
 @wp.kernel(enable_backward=False)

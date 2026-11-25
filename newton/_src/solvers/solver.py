@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from copy import copy
@@ -12,11 +13,24 @@ from enum import IntEnum
 from types import MappingProxyType
 from typing import Any, ClassVar
 
+import numpy as np
 import warp as wp
 
 from ..core.reset import normalize_reset_world_mask
+from ..exceptions import NewtonWarning
 from ..geometry import ParticleFlags
-from ..sim import BodyFlags, CollisionPipeline, Contacts, Control, Model, ModelBuilder, ModelFlags, State, StateFlags
+from ..sim import (
+    BodyFlags,
+    CollisionPipeline,
+    Contacts,
+    Control,
+    JointDriveType,
+    Model,
+    ModelBuilder,
+    ModelFlags,
+    State,
+    StateFlags,
+)
 
 
 def _set_module_options_if_changed(options: dict[str, Any], module: Any) -> bool:
@@ -1288,7 +1302,7 @@ class SolverBase:
         * ``ModelFlags.JOINT_DOF_PROPERTIES``: Full joint DOF update, including
           force, armature, and reference-pose properties (legacy behavior).
         * ``ModelFlags.JOINT_DOF_FORCE_PROPERTIES``: Joint friction, damping,
-          target gains/modes, effort limits, passive stiffness, or limit
+          target gains/modes/drive types, effort limits, passive stiffness, or limit
           coefficients/bounds have changed.
         * ``ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES``: Joint armature has changed.
         * ``ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES``: Joint reference poses
@@ -1367,6 +1381,21 @@ class SolverBase:
             Whether ``notify_model_changed(flags)`` can be captured in a CUDA graph.
         """
         return not int(flags) & self._non_graphable_model_flags()
+
+    def _warn_unsupported_acceleration_drives(self, *, stacklevel: int = 3) -> None:
+        """Warn when the model contains acceleration drives that this solver treats as force drives."""
+        model = self.model
+        if model.joint_dof_count == 0 or model.joint_drive_type is None or model.device.is_capturing:
+            return
+        drive_types = model.joint_drive_type.numpy()
+        count = int(np.count_nonzero(drive_types == int(JointDriveType.ACCELERATION)))
+        if count > 0:
+            warnings.warn(
+                f"{type(self).__name__} does not support JointDriveType.ACCELERATION "
+                f"({count} DOF(s)); acceleration drives will be treated as force drives.",
+                NewtonWarning,
+                stacklevel=stacklevel,
+            )
 
     def _non_graphable_model_flags(self) -> int:
         """Bit-mask of the flags whose :meth:`notify_model_changed` handling cannot be captured.

@@ -974,6 +974,7 @@ class SolverKamino(SolverBase, CouplingInterface):
 
         # Initialize the internal Kamino control wrapper
         self._control_kamino = self._kamino.ControlKamino()
+        self._warn_unsupported_acceleration_drives()
 
     @property
     def supported_observables(self) -> frozenset[str]:
@@ -1373,6 +1374,8 @@ class SolverKamino(SolverBase, CouplingInterface):
             ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_FORCE_PROPERTIES | ModelFlags.ACTUATOR_PROPERTIES
         ):
             self._update_actuation_types()
+        if flags & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_FORCE_PROPERTIES):
+            self._warn_unsupported_acceleration_drives()
 
         if flags & ModelFlags.MODEL_PROPERTIES:
             # All model properties are aliased.

@@ -305,6 +305,7 @@ def _rnea_compensation_pass(
             scratch.zeros_dof,  # joint_f
             scratch.zeros_dof,  # joint_target_ke
             scratch.zeros_dof,  # joint_target_kd
+            model.joint_drive_type,
             model.joint_limit_lower,
             model.joint_limit_upper,
             scratch.zeros_dof,  # joint_limit_ke

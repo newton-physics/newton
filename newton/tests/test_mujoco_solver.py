@@ -10177,6 +10177,7 @@ class TestMuJoCoSolverUpdateFlags(unittest.TestCase):
         {
             "body_flags",
             "joint_target_mode",
+            "joint_drive_type",
             "mujoco:solref_mode",
             "mujoco:solreflimit_mode",
             "mujoco:tendon_solref_limit_mode",

@@ -1,11 +1,14 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import warnings
+
 import numpy as np
 import warp as wp
 
 from ...core.types import override
-from ...sim import BodyFlags, Contacts, Control, JointType, Model, ModelFlags, State
+from ...exceptions import NewtonWarning
+from ...sim import BodyFlags, Contacts, Control, JointDriveType, JointType, Model, ModelFlags, State
 from ...sim.joint_mimic import eval_joint_mimic, has_supported_joint_mimics
 from ..coupled.interface import CouplingInterface
 from ..semi_implicit import kernels_contact, kernels_muscle, kernels_particle
@@ -43,6 +46,7 @@ from .kernels import (
     eval_dense_solve_batched,
     eval_fk_with_velocity_conversion,
     eval_fk_with_velocity_conversion_from_joint_starts,
+    eval_rigid_acceleration_drive_tau,
     eval_rigid_fk,
     eval_rigid_id,
     eval_rigid_jacobian,
@@ -100,7 +104,8 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
         - Supported joint types: PRISMATIC, REVOLUTE, BALL, FIXED, FREE, DISTANCE (treated as FREE), D6.
           ROD joints are not supported.
         - :attr:`~newton.Model.joint_armature`, :attr:`~newton.Model.joint_limit_ke`/:attr:`~newton.Model.joint_limit_kd`,
-          :attr:`~newton.Model.joint_target_ke`/:attr:`~newton.Model.joint_target_kd`, and :attr:`~newton.Control.joint_f`
+          :attr:`~newton.Model.joint_target_ke`/:attr:`~newton.Model.joint_target_kd`,
+          :attr:`~newton.Model.joint_drive_type`, and :attr:`~newton.Control.joint_f`
           are supported.
         - Position/velocity target tracking (:attr:`~newton.Control.joint_target_q`/
           :attr:`~newton.Control.joint_target_qd`) is applied only to PRISMATIC, REVOLUTE,
@@ -236,6 +241,8 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
         self._mass_scratch_holder = self
 
         self._update_kinematic_state()
+        self._has_acceleration_drives = False
+        self._update_acceleration_drive_state()
         # armature the latest mass-matrix factorization used (see _effective_armature)
         self._mass_scratch_armature = self.joint_armature_effective
 
@@ -356,9 +363,40 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
         )
         return out
 
+    def _update_acceleration_drive_state(self) -> None:
+        """Track whether any DOF uses an acceleration drive and warn on unsupported joint types."""
+        model = self.model
+        if model.joint_dof_count == 0 or model.joint_drive_type is None:
+            self._has_acceleration_drives = False
+            return
+        if model.device.is_capturing:
+            self._has_acceleration_drives = True
+            return
+        drive_types = model.joint_drive_type.numpy()
+        accel_mask = drive_types == int(JointDriveType.ACCELERATION)
+        self._has_acceleration_drives = bool(np.any(accel_mask))
+        if not self._has_acceleration_drives:
+            return
+        joint_type = model.joint_type.numpy()
+        qd_start = model.joint_qd_start.numpy()
+        supported = {int(JointType.PRISMATIC), int(JointType.REVOLUTE), int(JointType.D6)}
+        unsupported_dofs = 0
+        for j in range(model.joint_count):
+            if int(joint_type[j]) not in supported:
+                unsupported_dofs += int(np.count_nonzero(accel_mask[qd_start[j] : qd_start[j + 1]]))
+        if unsupported_dofs > 0:
+            warnings.warn(
+                f"SolverFeatherstone does not support JointDriveType.ACCELERATION on BALL, FREE, or DISTANCE "
+                f"joints ({unsupported_dofs} DOF(s)); those drives will be ignored.",
+                NewtonWarning,
+                stacklevel=3,
+            )
+
     @override
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
         self._apply_module_options()
+        if flags & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_FORCE_PROPERTIES):
+            self._update_acceleration_drive_state()
         if flags & (
             ModelFlags.BODY_PROPERTIES | ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES
         ):
@@ -527,6 +565,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                 target.joint_solve_tmp = wp.zeros_like(model.joint_qd, requires_grad=True)
             else:
                 target.joint_solve_tmp = None
+            target.joint_accel_tmp = wp.zeros_like(model.joint_qd)
             # Public FREE/DISTANCE qd converted to Featherstone's internal anchor-velocity basis.
             target.joint_qd_internal_in = wp.empty_like(model.joint_qd, requires_grad=requires_grad)
             # Internal joint velocity result before converting FREE/DISTANCE qd back to public COM velocity.
@@ -858,6 +897,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                             state_aug.joint_f_internal,
                             model.joint_target_ke,
                             model.joint_target_kd,
+                            model.joint_drive_type,
                             model.joint_limit_lower,
                             model.joint_limit_upper,
                             model.joint_limit_ke,
@@ -1067,6 +1107,36 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                     # the armature the factorization used; the solve adjoint
                     # deposits its gradient here
                     solve_armature = self._mass_scratch_armature
+                    if self._has_acceleration_drives:
+                        wp.launch(
+                            eval_rigid_acceleration_drive_tau,
+                            dim=model.articulation_count,
+                            inputs=[
+                                model.articulation_start,
+                                model.articulation_end,
+                                self.articulation_H_start,
+                                self.articulation_H_rows,
+                                self.articulation_dof_start,
+                                model.joint_type,
+                                model.joint_q_start,
+                                model.joint_qd_start,
+                                model.joint_target_q_start,
+                                model.joint_dof_dim,
+                                state_in.joint_q,
+                                state_aug.joint_qd_internal_in,
+                                control.joint_target_q,
+                                control.joint_target_qd,
+                                model.joint_target_ke,
+                                model.joint_target_kd,
+                                model.joint_drive_type,
+                                self._mass_scratch_holder.L,
+                            ],
+                            outputs=[
+                                state_aug.joint_accel_tmp,
+                                state_aug.joint_tau,
+                            ],
+                            device=model.device,
+                        )
                     solve_tau = state_aug.joint_tau
                     if self._has_joint_mimics:
                         solve_H = self._mass_scratch_holder.H_mimic
