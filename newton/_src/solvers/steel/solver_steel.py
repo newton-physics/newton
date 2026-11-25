@@ -3444,18 +3444,11 @@ class SolverSteel(SolverBase, CouplingInterface):
         return int(flags)
 
     def _warn_unsupported_friction_modes(self, model) -> None:
-        """Warn once for friction components this configuration leaves as sliding friction."""
+        """Warn once, in one message, for the friction components this configuration leaves as sliding friction."""
         if not model.shape_count or model.shape_material_friction_mode is None:
             return
         rows = self._free_rigid_angular_rows
         modes = model.shape_material_friction_mode.numpy()
-        if not rows and np.any(modes & FRICTION_ROLLING_BIT):
-            warnings.warn(
-                "SolverSteel does not support rolling friction in this configuration; contacts of the shapes that "
-                "enable it use sliding friction only.",
-                NewtonWarning,
-                stacklevel=3,
-            )
         torsion_radius = self._contact_torsion_shape_radius
         radii = torsion_radius.numpy() if torsion_radius is not None else np.zeros(model.shape_count)
         missing = ((modes & FRICTION_TORSIONAL_BIT) != 0) & (radii <= 0.0)
@@ -3464,13 +3457,17 @@ class SolverSteel(SolverBase, CouplingInterface):
             shape_body = model.shape_body.numpy()
             route = self._free_rigid_route_body.numpy()
             missing &= (shape_body >= 0) & (route[np.maximum(shape_body, 0)] == 0)
+        limits = []
+        if not rows and np.any(modes & FRICTION_ROLLING_BIT):
+            limits.append("does not support rolling friction in this configuration")
         if np.any(missing):
-            warnings.warn(
-                "SolverSteel applies torsional friction to articulated contacts only for shapes with a positive "
-                "steel:min_torsional_patch_radius; the other shapes use sliding friction there.",
-                NewtonWarning,
-                stacklevel=3,
+            limits.append(
+                "applies torsional friction to articulated contacts only for shapes with a positive "
+                "steel:min_torsional_patch_radius"
             )
+        if limits:
+            message = f"SolverSteel {' and '.join(limits)}; the other contacts of those shapes use sliding friction."
+            warnings.warn(message, NewtonWarning, stacklevel=3)
 
     def _validate_joint_friction(self) -> None:
         """Reject joint friction the per-DOF friction rows cannot represent."""
