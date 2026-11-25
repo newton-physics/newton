@@ -11,6 +11,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton import NewtonWarning
 from newton._src.solvers.steel._testing import kernel_overrides
 from newton._src.solvers.steel.friction import friction_pair_candidate
 from newton._src.solvers.steel.friction_patches import FrictionPatches
@@ -47,7 +48,6 @@ from newton._src.solvers.steel.sparse_mass_matrix import (
     solve_sparse_mass_matrix,
 )
 from newton._src.solvers.steel.sparse_pgs import _get_pgs_solve_sparse_kernel
-from newton.exceptions import NewtonWarning
 from newton.solvers import SolverSteel
 from newton.tests.steel._fixtures import (
     _build_mixed_response_model,

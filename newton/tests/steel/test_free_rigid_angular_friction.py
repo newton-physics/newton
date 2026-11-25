@@ -10,6 +10,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton import NewtonWarning
 from newton._src.solvers.steel.friction_mode_bits import contact_friction_bits, shape_friction_bits_host
 from newton._src.solvers.steel.friction_patches import FrictionPatches
 from newton._src.solvers.steel.kernels import (
@@ -19,7 +20,6 @@ from newton._src.solvers.steel.kernels import (
     PGS_CONSTRAINT_TYPE_FRICTION,
     build_mf_contact_rows,
 )
-from newton.exceptions import NewtonWarning
 from newton.solvers import SolverBase, SolverSteel
 from newton.tests.steel._fixtures import set_torsion_radius
 from newton.tests.unittest_utils import add_function_test, get_test_devices
