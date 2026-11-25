@@ -938,10 +938,11 @@ friction come from ``particle_radius`` and ``particle_mu``. Flexes collide with
 each other and with shapes that have :attr:`~newton.ShapeFlags.COLLIDE_PARTICLES`,
 including shapes that do not collide with other shapes. A flex collides with
 itself only when ``selfcollide`` is set through ``add_flex``. Flexes have
-sliding friction (MuJoCo ``condim`` 3) and a contact uses the higher
-``condim`` of its flex and shape, so a
-:attr:`~newton.ShapeFrictionMode.NONE` shape does not make flex contacts
-frictionless. Flex
+sliding friction (MuJoCo ``condim`` 3) and priority 0. A flex contact uses the
+``condim`` of the side with the higher priority and, at equal priority, the
+higher ``condim`` of its flex and shape, so a
+:attr:`~newton.ShapeFrictionMode.NONE` shape makes flex contacts frictionless
+only if it has a positive ``mujoco:geom_priority``. Flex
 contacts require ``use_mujoco_contacts=True``; the solver rejects models with
 flexes otherwise. In exported contacts, the flex side has shape
 ``-1``; :class:`~newton.sensors.SensorContact` and the viewer skip these

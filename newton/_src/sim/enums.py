@@ -206,8 +206,8 @@ class ShapeFrictionMode(IntEnum):
     Particles have no friction mode, so they count as ``NONE`` and a contact
     between a particle and a shape follows the shape's mode. Because particles
     do not rotate, torsional and rolling friction do not act on them.
-    :class:`~newton.solvers.SolverMuJoCo` flexes keep sliding friction against
-    every shape.
+    :class:`~newton.solvers.SolverMuJoCo` flexes keep sliding friction, see
+    :ref:`mujoco-flexes`.
     """
 
     NONE = 0
