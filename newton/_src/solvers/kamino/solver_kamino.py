@@ -37,6 +37,7 @@ from ...sim.collide import (
     _RIGID_CONTACT_MIN_CAPACITY,
     _RIGID_CONTACTS_PER_MESH_PAIR,
     _RIGID_CONTACTS_PER_PRIMITIVE_PAIR,
+    CollisionPipeline,
     _estimate_rigid_contact_max,
 )
 from ...sim.enums import FRICTION_ROLLING_BIT, FRICTION_TORSIONAL_BIT
@@ -110,6 +111,36 @@ def _estimate_scc_contacts_per_world(model, newton_model: Model) -> int:
     )
 
     return min(theoretical, max_world_contacts) if theoretical > 0 else max_world_contacts
+
+
+class _PipelineDetector:
+    """Runs a solver-owned :class:`~newton.CollisionPipeline` on Kamino's intermediate body poses."""
+
+    def __init__(self, solver: SolverKamino):
+        self._solver = solver
+        self._state = solver.model.state()
+        self._horizon = 0.0
+
+    def prepare(self, state_in: State, horizon: float):
+        """Capture the velocities and speculative horizon for the next :meth:`collide` call."""
+        if self._state.body_qd is not None:
+            wp.copy(self._state.body_qd, state_in.body_qd)
+        self._horizon = horizon
+
+    def collide(self, data, contacts):
+        solver = self._solver
+        kamino = solver._kamino
+
+        # Convert the intermediate CoM-frame poses to Newton body-origin poses
+        kamino.convert_body_com_to_origin(
+            body_com=solver._model_kamino.bodies.i_r_com_i,
+            body_q_com=data.bodies.q_i,
+            body_q=self._state.body_q,
+        )
+
+        # Detect with Newton and convert to Kamino contacts
+        solver._run_rigid_collision(self._state, self._horizon)
+        solver._convert_newton_contacts(self._state, solver.contacts, contacts)
 
 
 ###
@@ -200,6 +231,8 @@ class SolverKamino(SolverBase, CouplingInterface):
                 solver.step(state_in, state_out, control, contacts, dt)
                 state_in, state_out = state_out, state_in
     """
+
+    supports_collision_pipeline = True
 
     SUPPORTED_OBSERVABLES = frozenset(
         {
@@ -331,7 +364,7 @@ class SolverKamino(SolverBase, CouplingInterface):
         integrator: Literal["euler", "moreau"] = "euler"
         """
         The time-integrator to use for state integration. The ``"moreau"`` option requires
-        ``use_collision_detector=True``.\n
+        ``use_collision_detector=True`` or a solver-owned collision pipeline.\n
 
         See available options in the `integrators` module.\n
         Defaults to `"euler"`.
@@ -857,6 +890,8 @@ class SolverKamino(SolverBase, CouplingInterface):
         self,
         model: Model,
         config: Config | None = None,
+        *,
+        collision_pipeline: CollisionPipeline | None = None,
     ):
         """
         Constructs a Kamino solver for the given model and optional configurations.
@@ -870,9 +905,14 @@ class SolverKamino(SolverBase, CouplingInterface):
                 custom attributes using :meth:`SolverKamino.Config.from_model`,
                 e.g. to be loaded from USD assets. If that also fails, then
                 default configurations will be used.
+            collision_pipeline:
+                Optional Newton collision pipeline owned and run by the solver inside
+                :meth:`step`: at the start of the step with the ``"euler"`` integrator,
+                and at the mid-point with ``"moreau"``. Incompatible with
+                :attr:`Config.use_collision_detector`.
         """
         # Initialize the base solver
-        super().__init__(model=model)
+        super().__init__(model=model, collision_pipeline=collision_pipeline)
         self._contact_observable_state: State | None = None
 
         # Import all Kamino dependencies and cache them
@@ -889,6 +929,8 @@ class SolverKamino(SolverBase, CouplingInterface):
             config.validate()
         config, legacy_spatial_friction = self._resolve_spatial_friction(model, config)
         self._config = config
+        if config.use_collision_detector and collision_pipeline is not None:
+            raise ValueError("SolverKamino cannot own a collision pipeline when use_collision_detector=True.")
         if config.use_collision_detector and model._has_body_variants:
             raise NotImplementedError(
                 "SolverKamino supports body variants only with Newton contacts; set use_collision_detector=False."
@@ -1003,11 +1045,17 @@ class SolverKamino(SolverBase, CouplingInterface):
         # TODO: Do we need this additional indirection or is there a better way to do this?
         self._detector = None
 
+        # Run the owned pipeline at the mid-point when integrating with Moreau-Jean
+        self._pipeline_detector = None
+        if collision_pipeline is not None and config.integrator == "moreau" and model.body_count > 0:
+            self._pipeline_detector = _PipelineDetector(self)
+
         # Initialize the internal Kamino solver
         self._solver_kamino = self._kamino.SolverKaminoImpl(
             model=self._model_kamino,
             contacts=self._contacts_kamino,
             config=self._config,
+            midpoint_detection=self._pipeline_detector is not None,
         )
 
         # Initialize the internal Kamino control wrapper
@@ -1270,9 +1318,11 @@ class SolverKamino(SolverBase, CouplingInterface):
 
         Contact source is selected when the solver is constructed. When
         :attr:`Config.use_collision_detector` is enabled, Kamino's internal collision pipeline
-        generates contacts on every step and ``contacts`` is not used as input. Otherwise, non-``None``
-        contacts (for example, populated by :meth:`~newton.CollisionPipeline.collide`) are
-        converted to Kamino's internal format and used directly.
+        generates contacts on every step and ``contacts`` is not used as input. When the solver owns
+        a collision pipeline, ``contacts`` must be ``None`` and the pipeline detects into
+        :attr:`contacts` during the step. Otherwise, non-``None`` contacts (for example, populated
+        by :meth:`~newton.CollisionPipeline.collide`) are converted to Kamino's internal format and
+        used directly.
 
         Args:
             state_in: The input state.
@@ -1291,6 +1341,7 @@ class SolverKamino(SolverBase, CouplingInterface):
                 detection. Consumers reconstructing world-space contact points must
                 retain these input poses.
         """
+        contacts = self._resolve_step_contacts(contacts)
         self.validate_observables(observables, contacts)
         self._require_unreduced_contacts(contacts)
         if observables is not None and observables.is_requested(SolverBase.ObservableKind.CONTACT_F):
@@ -1307,25 +1358,30 @@ class SolverKamino(SolverBase, CouplingInterface):
             control = self.model.control(clone_variables=False)
         self._control_kamino.from_newton(control)
 
+        # Resolve whether the owned collision pipeline runs during this step
+        rigid_mode = SolverBase.CollisionFrequencyType.NONE
+        if self.collision_pipeline is not None:
+            rigid_mode = self._resolved_collision_frequency_type(SolverBase.CollisionSlot.RIGID)
+            if rigid_mode not in (SolverBase.CollisionFrequencyType.NONE, SolverBase.CollisionFrequencyType.PRE_INIT):
+                raise NotImplementedError(f"SolverKamino does not support collision_frequency_type {rigid_mode.name}.")
+        midpoint_detection = (
+            self._pipeline_detector is not None and rigid_mode == SolverBase.CollisionFrequencyType.PRE_INIT
+        )
+
         # Internal detection is authoritative when enabled for this solver.
+        midpoint_detector = None
         if self._config.use_collision_detector:
             self._detector = self._collision_detector_kamino
+        elif midpoint_detection:
+            self._detector = None
+            midpoint_detector = self._pipeline_detector
+            midpoint_detector.prepare(state_in, 0.5 * dt)
         elif contacts is not None:
             self._detector = None
+            if rigid_mode == SolverBase.CollisionFrequencyType.PRE_INIT:
+                self._run_rigid_collision(state_in, dt)
             if self.model.body_count > 0 and self._contacts_kamino is not None:
-                self._kamino.convert_contacts_newton_to_kamino(
-                    model=self.model,
-                    state=state_in,
-                    contacts_in=contacts,
-                    contacts_out=self._contacts_kamino,
-                    convert_forces=False,
-                    friction_mix_mode=self._config.materials.friction_mix_mode,
-                    restitution_mix_mode=self._config.materials.restitution_mix_mode,
-                    cull_speculative_contacts=self._solver_kamino.cull_speculative_contacts,
-                    kinematic_only_immovable=self._config.dynamics_solver == "lox",
-                    contact_dead_zone=self._config.constraints.delta,
-                    geom_friction_mode=self._model_kamino.geoms.friction_mode,
-                )
+                self._convert_newton_contacts(state_in, contacts, self._contacts_kamino)
         else:
             self._detector = None
             # Clear the internal contacts container to avoid using stale contacts from previous steps.
@@ -1357,7 +1413,7 @@ class SolverKamino(SolverBase, CouplingInterface):
             state_out=state_out_kamino,
             control=self._control_kamino,
             contacts=self._contacts_kamino,
-            detector=self._detector,
+            detector=midpoint_detector or self._detector,
             dt=dt,
         )
 
@@ -1396,6 +1452,22 @@ class SolverKamino(SolverBase, CouplingInterface):
             )
             if observable_contacts.force is not None and observable_contacts.force.ptr != observables.contact_f.ptr:
                 wp.copy(observable_contacts.force, observables.contact_f, count=observable_contacts.force.shape[0])
+
+    def _convert_newton_contacts(self, state: State, contacts_in: Contacts, contacts_out) -> None:
+        """Convert Newton contacts detected at ``state`` into Kamino contacts."""
+        self._kamino.convert_contacts_newton_to_kamino(
+            model=self.model,
+            state=state,
+            contacts_in=contacts_in,
+            contacts_out=contacts_out,
+            convert_forces=False,
+            friction_mix_mode=self._config.materials.friction_mix_mode,
+            restitution_mix_mode=self._config.materials.restitution_mix_mode,
+            cull_speculative_contacts=self._solver_kamino.cull_speculative_contacts,
+            kinematic_only_immovable=self._config.dynamics_solver == "lox",
+            contact_dead_zone=self._config.constraints.delta,
+            geom_friction_mode=self._model_kamino.geoms.friction_mode,
+        )
 
     @override
     def notify_model_changed(self, flags: ModelFlags | int) -> None:

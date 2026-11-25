@@ -729,29 +729,34 @@ class TestCollisionCapacityInitialization(NewtonTestCase):
         basics.build_sphere_on_plane(builder=builder, z_offset=0.3)
         model = builder.finalize(device=self.default_device, skip_validation_joints=True)
 
-        config = SolverKamino.Config(integrator="moreau", use_collision_detector=True)
-        solver = SolverKamino(model, config=config)
+        for native in (True, False):
+            with self.subTest(native=native):
+                pipeline = None if native else newton.CollisionPipeline(model)
+                config = SolverKamino.Config(integrator="moreau", use_collision_detector=native)
+                solver = SolverKamino(model, config=config, collision_pipeline=pipeline)
+                self.assertIsInstance(solver._solver_kamino._integrator, IntegratorMoreauJean)
 
-        detector = solver._collision_detector_kamino
-        contacts = solver._contacts_kamino
-        assert detector is not None
-        assert contacts is not None
-        assert contacts.model_active_contacts is not None
+                state_in = model.state()
+                state_out = model.state()
+                assert state_in.body_qd is not None
 
-        # Establish that the step-start configuration has no contacts.
-        detector.collide(data=solver._solver_kamino._data, contacts=contacts)
-        self.assertEqual(int(contacts.model_active_contacts.numpy()[0]), 0)
+                # Establish that the step-start configuration has no contacts.
+                if native:
+                    solver._collision_detector_kamino.collide(
+                        data=solver._solver_kamino._data, contacts=solver._contacts_kamino
+                    )
+                    self.assertEqual(int(solver._contacts_kamino.model_active_contacts.numpy()[0]), 0)
+                else:
+                    pipeline.collide(state_in, solver.contacts)
+                    self.assertEqual(int(solver.contacts.rigid_contact_count.numpy()[0]), 0)
 
-        state_in = model.state()
-        state_out = model.state()
-        assert state_in.body_qd is not None
-        # Over the first half-step, the sphere moves 0.35 m down and penetrates the plane.
-        state_in.body_qd.assign(np.array([[0.0, 0.0, -7.0, 0.0, 0.0, 0.0]], dtype=np.float32))
+                # Over the first half-step, the sphere moves 0.35 m down and penetrates the plane.
+                state_in.body_qd.assign(np.array([[0.0, 0.0, -7.0, 0.0, 0.0, 0.0]], dtype=np.float32))
 
-        solver.step(state_in, state_out, control=None, contacts=None, dt=0.1)
+                solver.step(state_in, state_out, control=None, contacts=None, dt=0.1)
 
-        # This contact exists only if detection uses the midpoint rather than state_in.
-        self.assertGreater(int(contacts.model_active_contacts.numpy()[0]), 0)
+                # This contact exists only if detection uses the midpoint rather than state_in.
+                self.assertGreater(int(solver._contacts_kamino.model_active_contacts.numpy()[0]), 0)
 
     def test_contact_observables_use_input_pose(self):
         """Export wrenches and local geometry in the input frame, even for in-place steps."""
