@@ -795,11 +795,11 @@ def convert_newton_contacts_to_mjwarp_kernel(
                 kd = rigid_contact_damping[tid]
                 timeconst = 2.0 / wp.max(kd * factor, FLOAT64_EPS)
                 critical_timeconst = wp.sqrt(1.0 / contact_ke)
+                dt = world_timestep[worldid % world_timestep.shape[0]]
+                overdamped = timeconst < critical_timeconst
+                clamped = refsafe and timeconst < 2.0 * dt
                 # Replacing underdamped contacts would weaken their spring at the refsafe floor.
-                if kd > 0.0 and (
-                    not refsafe
-                    or timeconst >= wp.min(2.0 * world_timestep[worldid % world_timestep.shape[0]], critical_timeconst)
-                ):
+                if kd > 0.0 and not (overdamped and clamped):
                     dampratio = wp.sqrt(1.0 / (timeconst * timeconst * contact_ke))
                 else:
                     timeconst = critical_timeconst
