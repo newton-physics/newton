@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Callable, Sequence
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any, Literal, TypeVar
@@ -79,7 +80,11 @@ interpolation-induced floating-point errors.
 
 
 class Axis(IntEnum):
-    """Enumeration of axes in 3D space."""
+    """Enumeration of axes in 3D space.
+
+    Axis members compare and hash like their integer values. Normalize string
+    inputs with :meth:`Axis.from_any` before comparing or using them as keys.
+    """
 
     X = 0
     """X-axis."""
@@ -144,15 +149,34 @@ class Axis(IntEnum):
 
     @override
     def __eq__(self, other):
+        """Compare axes and integer values.
+
+        .. deprecated:: 1.7
+           Direct string comparisons remain supported during the deprecation
+           period. Convert strings with :meth:`Axis.from_any` before comparing.
+        """
         if isinstance(other, str):
+            warnings.warn(
+                "Comparing Axis with a string is deprecated in Newton 1.7; "
+                "convert the string with Axis.from_any() before comparing.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
             return self.name.lower() == other.lower()
         if type(other) in {int, wp.int32, wp.int64, np.int32, np.int64}:
             return self.value == int(other)
         return NotImplemented
 
     @override
+    def __ne__(self, other):
+        result = self.__eq__(other)
+        if result is NotImplemented:
+            return NotImplemented
+        return not result
+
+    @override
     def __hash__(self):
-        return hash(self.name)
+        return hash(self.value)
 
     def to_vector(self) -> tuple[float, float, float]:
         """
@@ -185,7 +209,10 @@ class Axis(IntEnum):
 
 
 AxisType = Axis | Literal["X", "Y", "Z"] | Literal[0, 1, 2] | int | str
-"""Type that can be used to represent an axis, including the enum, string, and integer representations."""
+"""Accepted axis inputs, including enum, string, and integer representations.
+
+Convert strings with :meth:`Axis.from_any` for comparisons and key lookups.
+"""
 
 
 def axis_to_vec3(axis: AxisType | Vec3) -> wp.vec3:
