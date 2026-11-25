@@ -1898,10 +1898,17 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         self._proxy_body_impulse = None
         self._proxy_body_step_impulse = None
         self._proxy_collider_body_qd = None
+        self._backward_collider_body_qd = None
+        self._backward_collider_body_q_prev = None
         if model.body_count > 0 and np.any(model.body_flags.numpy() & int(newton.BodyFlags.PROXY)):
             self._proxy_body_impulse = wp.zeros(model.body_count, dtype=wp.spatial_vector, device=model.device)
             self._proxy_body_step_impulse = wp.zeros_like(self._proxy_body_impulse)
             self._proxy_collider_body_qd = wp.zeros_like(self._proxy_body_impulse)
+            if self.collider_velocity_mode == "backward":
+                self._backward_collider_body_qd = wp.zeros_like(self._proxy_body_impulse)
+                self._backward_collider_body_q_prev = wp.zeros(
+                    model.body_count, dtype=wp.transform, device=model.device
+                )
         with wp.ScopedDevice(model.device):
             self._scratchpad = ImplicitMPMScratchpad()
             pic = self._particles_to_cells(model.particle_q)
@@ -2653,6 +2660,37 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             device=self.model.device,
         )
         return self._proxy_collider_body_qd
+
+    def _collider_body_motion(
+        self,
+        state_in: newton.State,
+        last_step_data: LastStepData,
+        collider_body_qd: wp.array[wp.spatial_vector] | None,
+    ) -> tuple[wp.array[wp.spatial_vector] | None, wp.array[wp.transform] | None]:
+        """Return the body velocities and previous poses the collider rasterization differentiates.
+
+        In backward mode, integrated proxies keep their pose across sub-steps, so they use their velocity instead.
+        """
+        if self.collider_velocity_mode == "forward":
+            return collider_body_qd, None
+        if self._backward_collider_body_qd is None or collider_body_qd is None or state_in.body_q is None:
+            return None, last_step_data.body_q_prev
+        wp.launch(
+            _select_mpm_backward_collider_motion_kernel,
+            dim=self._backward_collider_body_qd.shape[0],
+            inputs=[
+                int(newton.BodyFlags.PROXY),
+                self.model.body_flags,
+                self._mpm_model.collider_body_mass,
+                state_in.body_q,
+                last_step_data.body_q_prev,
+                collider_body_qd,
+                self._backward_collider_body_qd,
+                self._backward_collider_body_q_prev,
+            ],
+            device=self.model.device,
+        )
+        return self._backward_collider_body_qd, self._backward_collider_body_q_prev
 
     def _apply_proxy_body_impulses(
         self,
@@ -3842,11 +3880,12 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 )
 
             # rasterize sdf and properties to grid
+            body_qd, body_q_prev = self._collider_body_motion(state_in, last_step_data, collider_body_qd)
             rasterize_collider(
                 self._mpm_model.collider,
                 state_in.body_q,
-                collider_body_qd if self.collider_velocity_mode == "forward" else None,
-                last_step_data.body_q_prev if self.collider_velocity_mode == "backward" else None,
+                body_qd,
+                body_q_prev,
                 self._mpm_model.voxel_size,
                 dt,
                 scratch.collider_fraction_test.space_restriction,
@@ -5527,7 +5566,7 @@ def _mpm_proxy_body_gravity(
 ):
     if (body_flags[body] & proxy_flag) == 0 or collider_body_mass[body] <= 0.0:
         return wp.vec3(0.0)
-    return gravity[wp.max(body_world[body], 0)]
+    return gravity[body_world[body]]
 
 
 @wp.kernel(enable_backward=False)
@@ -5559,6 +5598,29 @@ def _apply_mpm_proxy_body_gravity_kernel(
     body = wp.tid()
     g = _mpm_proxy_body_gravity(body, proxy_flag, body_flags, collider_body_mass, gravity, body_world)
     body_qd_out[body] = body_qd_in[body] + wp.spatial_vector(dt * g, wp.vec3(0.0))
+
+
+@wp.kernel(enable_backward=False)
+def _select_mpm_backward_collider_motion_kernel(
+    proxy_flag: int,
+    body_flags: wp.array[wp.int32],
+    collider_body_mass: wp.array[float],
+    body_q: wp.array[wp.transform],
+    body_q_prev: wp.array[wp.transform],
+    collider_body_qd: wp.array[wp.spatial_vector],
+    out_body_qd: wp.array[wp.spatial_vector],
+    out_body_q_prev: wp.array[wp.transform],
+):
+    body = wp.tid()
+    if (body_flags[body] & proxy_flag) != 0 and collider_body_mass[body] > 0.0:
+        out_body_qd[body] = collider_body_qd[body]
+        out_body_q_prev[body] = body_q[body]
+    else:
+        out_body_qd[body] = wp.spatial_vector()
+        if body_q_prev:
+            out_body_q_prev[body] = body_q_prev[body]
+        else:
+            out_body_q_prev[body] = body_q[body]
 
 
 @wp.kernel(enable_backward=False)

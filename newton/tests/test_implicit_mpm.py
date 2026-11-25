@@ -2902,7 +2902,37 @@ def test_proxy_rewind_leaves_rigid_colliders_alone(test, device):
     )
 
 
-def _settle_proxy_box_on_sand(device, mpm_substeps, in_place=True, step_count=60, dt=0.01):
+def test_proxy_body_gravity_uses_global_world_entry(test, device):
+    """Report the global-world gravity, not world 0's, for a proxy body outside every world."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0))
+    SolverImplicitMPM.register_custom_attributes(builder)
+    body = builder.add_body(mass=1.0)
+    builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+    builder.begin_world()
+    builder.add_particle(pos=(0.0, 0.0, 1.0), vel=(0.0, 0.0, 0.0), mass=1.0, radius=0.01)
+    builder.end_world()
+    model = builder.finalize(device=device)
+    model.set_gravity((0.0, 0.0, -3.0), world=0)
+    flags = model.body_flags.numpy()
+    flags[body] |= int(newton.BodyFlags.PROXY)
+    model.body_flags.assign(flags)
+
+    config = SolverImplicitMPM.Config()
+    config.voxel_size = 0.1
+    config.grid_type = "fixed"
+    config.grid_padding = 2
+    solver = SolverImplicitMPM(model, config)
+
+    body_gravity = wp.zeros(model.body_count, dtype=wp.vec3, device=device)
+    particle_gravity = wp.zeros(model.particle_count, dtype=wp.vec3, device=device)
+    solver.coupling_eval_gravity_acceleration(body_gravity, particle_gravity)
+
+    np.testing.assert_allclose(body_gravity.numpy()[body], [0.0, 0.0, -10.0], atol=1.0e-6)
+
+
+def _settle_proxy_box_on_sand(
+    device, mpm_substeps, in_place=True, step_count=60, dt=0.01, collider_velocity_mode="forward"
+):
     """Drop a dynamic box on MPM sand through a lagged body proxy and return the box height per step."""
     voxel_size = 0.05
     box_half = 0.075
@@ -2943,6 +2973,7 @@ def _settle_proxy_box_on_sand(device, mpm_substeps, in_place=True, step_count=60
     config.strain_basis = "P0"
     config.max_iterations = 30
     config.critical_fraction = 0.0
+    config.collider_velocity_mode = collider_velocity_mode
 
     solver = SolverCoupledProxy(
         model=model,
@@ -2977,19 +3008,23 @@ def _settle_proxy_box_on_sand(device, mpm_substeps, in_place=True, step_count=60
 
 
 def test_proxy_box_rests_on_sand_independent_of_mpm_substeps(test, device):
-    """Rest a proxy box on MPM sand at the same depth whether MPM takes one or four substeps per coupled step."""
+    """Rest a proxy box on MPM sand at the same depth for one or four MPM substeps and either collider velocity mode."""
     rest_heights = {}
-    for substeps in (1, 4):
-        heights = _settle_proxy_box_on_sand(device, substeps)
-        tail = heights[-10:]
-        test.assertLess(tail.max() - tail.min(), 1.0e-3, msg=f"substeps={substeps}: box still moving, heights {tail}")
-        rest_heights[substeps] = tail.mean()
-    test.assertAlmostEqual(
-        rest_heights[4],
-        rest_heights[1],
-        delta=6.0e-3,
-        msg=f"box rests at {rest_heights[4]:.4f} m with 4 MPM substeps vs {rest_heights[1]:.4f} m with 1",
-    )
+    for mode in ("forward", "backward"):
+        for substeps in (1, 4):
+            heights = _settle_proxy_box_on_sand(device, substeps, collider_velocity_mode=mode)
+            tail = heights[-10:]
+            test.assertLess(
+                tail.max() - tail.min(), 1.0e-3, msg=f"{mode}, substeps={substeps}: box still moving, heights {tail}"
+            )
+            rest_heights[mode, substeps] = tail.mean()
+    for key, height in rest_heights.items():
+        test.assertAlmostEqual(
+            height,
+            rest_heights["forward", 1],
+            delta=6.0e-3,
+            msg=f"box rests at {height:.4f} m with {key} vs {rest_heights['forward', 1]:.4f} m with forward, 1 substep",
+        )
 
 
 devices = get_test_devices()
@@ -3798,6 +3833,14 @@ add_function_test(
     TestImplicitMPM,
     "test_proxy_rewind_leaves_rigid_colliders_alone",
     test_proxy_rewind_leaves_rigid_colliders_alone,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestImplicitMPM,
+    "test_proxy_body_gravity_uses_global_world_entry",
+    test_proxy_body_gravity_uses_global_world_entry,
     devices=devices,
     check_output=False,
 )
