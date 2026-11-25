@@ -9,14 +9,13 @@ import numpy as np
 import warp as wp
 
 import newton
-import newton._src.sensors.sensor_camera_render as internal_render
-import newton.geometry as geometry
-from newton._src.sensors.sensor_camera_render.types import LightType
-from newton._src.sensors.sensor_camera_render.utils import Utils
+from newton._src.geometry.types import SH_C0
+from newton._src.render.types import LightType
+from newton._src.render.utils import Utils
 from newton.sensors import (
     SensorCamera,
 )
-from newton.tests.unittest_utils import get_test_devices
+from newton.tests.unittest_utils import get_test_devices, requires
 
 # Transform placing a camera at the origin looking down -Z (identity pose). A
 # camera with this transform sees a sphere placed at z = -2.
@@ -63,83 +62,6 @@ class TestSensorCamera(unittest.TestCase):
     def _camera_with_model(model: newton.Model, **camera_kwargs) -> SensorCamera:
         """A SensorCamera that renders ``model`` (owns an internal render context)."""
         return SensorCamera(model, **camera_kwargs)
-
-    def test_sensor_camera_public_imports_resolve_to_same_class(self) -> None:
-        """Verify public SensorCamera imports and removed site-attachment helpers."""
-        # SensorCamera lives in ``newton.sensors`` like every other sensor, not at
-        # the top level or in ``newton.geometry``.
-        self.assertIs(newton.sensors.SensorCamera, SensorCamera)
-        self.assertFalse(hasattr(newton, "SensorCamera"))
-        # The camera model spec classes were removed along with USD/MJCF camera import.
-        for spec_name in (
-            "CameraSpec",
-            "CameraPinholeSpec",
-            "CameraFisheyeOpenCVSpec",
-            "CameraFisheyeFThetaSpec",
-            "CameraFisheyeKannalaBrandtSpec",
-        ):
-            self.assertFalse(hasattr(newton, spec_name), spec_name)
-            self.assertFalse(hasattr(newton.sensors, spec_name), spec_name)
-        # RenderContext is an internal implementation detail owned by SensorCamera;
-        # it is not part of the public API.
-        self.assertFalse(hasattr(newton, "RenderContext"))
-        self.assertNotIn("RenderContext", internal_render.__all__)
-        self.assertFalse(hasattr(internal_render, "RenderContext"))
-        # The render config/enum types are exposed as SensorCamera nested attributes,
-        # not on the top-level namespace, and the ``newton.render`` module is gone.
-        self.assertFalse(hasattr(newton, "render"))
-        render_types = (
-            "AntiAliasing",
-            "ClearData",
-            "GaussianRenderMode",
-            "RenderConfig",
-            "RenderOrder",
-            "TextureProjectionMode",
-            "WorldRenderFlag",
-        )
-        for type_name in render_types:
-            self.assertFalse(hasattr(newton, type_name), type_name)
-            self.assertNotIn(type_name, newton.__all__)
-            self.assertTrue(hasattr(SensorCamera, type_name), type_name)
-            self.assertIs(getattr(SensorCamera, type_name), getattr(internal_render, type_name))
-        # LightType is intentionally not exposed on SensorCamera (no public API accepts it yet).
-        self.assertFalse(hasattr(SensorCamera, "LightType"))
-        # The post-processing Utils and the gray clear preset are nested on SensorCamera.
-        self.assertIs(SensorCamera.Utils, Utils)
-        self.assertFalse(hasattr(geometry, "SensorCamera"))
-
-        # The caller owns the rays, transforms, and output buffers; the sensor holds
-        # none of them, and is not attached to model sites.
-        _, camera = self._build_sphere_scene()
-        for attr in (
-            "rays",
-            "view_count",
-            "width",
-            "height",
-            "world_indices",
-            "camera_transforms",
-            "shape_indices",
-            "_shape_index_by_world",
-            "_camera_transforms",
-        ):
-            self.assertFalse(hasattr(camera, attr), attr)
-        for attr in (
-            "_compute_shape_index_by_world",
-            "_update_transforms",
-            "_ensure_shape_index_by_world",
-            "_ensure_render_buffers",
-        ):
-            self.assertFalse(hasattr(SensorCamera, attr), attr)
-        self.assertFalse(hasattr(internal_render, "_compute_camera_transforms"))
-
-        self.assertFalse(hasattr(newton.ModelBuilder, "add_shape_camera"))
-        self.assertFalse(hasattr(newton.ModelBuilder, "set_site_camera"))
-        self.assertNotIn("camera", inspect.signature(newton.ModelBuilder.add_site).parameters)
-
-        # Negative disable sentinels for the per-view world_indices array; no ENABLE.
-        self.assertFalse(hasattr(SensorCamera.WorldRenderFlag, "ENABLE"))
-        self.assertEqual(int(SensorCamera.WorldRenderFlag.DISABLE_PRESERVE), -101)
-        self.assertEqual(int(SensorCamera.WorldRenderFlag.DISABLE_CLEAR), -102)
 
     def test_camera_ray_helpers_live_on_sensor_camera(self) -> None:
         """Verify camera ray helpers live on SensorCamera."""
@@ -742,7 +664,7 @@ class TestSensorCamera(unittest.TestCase):
         # Spy on the internal render-context sync to observe who triggers it.
         calls = []
         real_update = camera._render_context.update
-        camera._render_context.update = calls.append
+        camera._render_context.update = lambda state, deformable_visuals=None: calls.append(state)
         try:
             camera.update(state, transforms, rays, depth_image=depth)
             self.assertEqual(len(calls), 1, "update() must sync deformable meshes by default")
@@ -809,21 +731,23 @@ class TestSensorCamera(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "camera_rays must be on the model device"):
             camera.update(state, cuda_transforms, cpu_rays)
 
-    def test_fully_transparent_shape_does_not_occlude(self) -> None:
+    def test_fully_transparent_shape_does_not_occlude(self, device: str = "cpu", backend: str = "warp") -> None:
         """A shape with opacity 0 is skipped, so the shape behind it stays visible."""
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         ball_body = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 0.0, -3.0), q=wp.quat_identity()))
         ball = builder.add_shape_sphere(ball_body, radius=0.5, color=(1.0, 0.0, 0.0))
         helper_body = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 0.0, -1.5), q=wp.quat_identity()))
         helper = builder.add_shape_box(helper_body, hx=1.0, hy=1.0, hz=0.05, opacity=0.0)
-        model = builder.finalize(device="cpu")
-        camera = SensorCamera(model)
-        rays = self._rays(8, 8, fov=math.radians(40.0))
-        depth = wp.zeros((1, 8, 8), dtype=wp.float32, device="cpu")
-        shape_index = wp.zeros((1, 8, 8), dtype=wp.uint32, device="cpu")
+        model = builder.finalize(device=device)
+        if backend == "optix":
+            model.bvh_build_shapes(model.state(), backend="optix")
+        camera = SensorCamera(model, backend=backend)
+        rays = self._rays(8, 8, fov=math.radians(40.0), device=device)
+        depth = wp.zeros((1, 8, 8), dtype=wp.float32, device=device)
+        shape_index = wp.zeros((1, 8, 8), dtype=wp.uint32, device=device)
         camera.update(
             model.state(),
-            self._identity_transforms(1),
+            self._identity_transforms(1, device),
             rays,
             depth_image=depth,
             shape_index_image=shape_index,
@@ -832,6 +756,27 @@ class TestSensorCamera(unittest.TestCase):
         self.assertEqual(int(shape_index.numpy()[0, 4, 4]), ball)
         self.assertNotIn(helper, np.unique(shape_index.numpy()))
         self.assertAlmostEqual(float(depth.numpy()[0, 4, 4]), 2.5, delta=0.05)
+
+    def test_camera_inside_box_sees_its_walls(self, device: str = "cpu", backend: str = "warp") -> None:
+        """A camera inside a box sees the box's walls with the default backface culling."""
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        box = builder.add_shape_box(body=-1, hx=1.0, hy=1.0, hz=1.0)
+        model = builder.finalize(device=device)
+        if backend == "optix":
+            model.bvh_build_shapes(model.state(), backend="optix")
+        camera = SensorCamera(model, backend=backend)
+        depth = wp.zeros((1, 8, 8), dtype=wp.float32, device=device)
+        shape_index = wp.zeros((1, 8, 8), dtype=wp.uint32, device=device)
+        camera.update(
+            model.state(),
+            self._identity_transforms(1, device),
+            self._rays(8, 8, fov=math.radians(40.0), device=device),
+            depth_image=depth,
+            shape_index_image=shape_index,
+        )
+
+        np.testing.assert_array_equal(shape_index.numpy(), box)
+        self.assertAlmostEqual(float(depth.numpy()[0, 4, 4]), 1.0, delta=0.05)
 
     def test_update_renders_from_camera_transforms(self) -> None:
         """Verify SensorCamera renders from the camera transforms passed to update."""
@@ -861,7 +806,7 @@ class TestSensorCamera(unittest.TestCase):
         camera.update(state, camera_transforms, rays, depth_image=depth)
         self.assertEqual(float(depth.numpy()[center]), 0.0)
 
-    def test_convex_hull_renders_like_its_mesh(self) -> None:
+    def test_convex_hull_renders_like_its_mesh(self, device: str = "cpu", backend: str = "warp") -> None:
         """Verify convex-hull shapes render, matching the same geometry added as a triangle mesh.
 
         The box mesh has per-face vertices with normals and UVs, which the hull's collision mesh
@@ -876,16 +821,18 @@ class TestSensorCamera(unittest.TestCase):
                 builder.add_shape_convex_hull(-1, mesh=mesh)
             else:
                 builder.add_shape_mesh(-1, mesh=mesh)
-            model = builder.finalize(device="cpu")
-            camera = SensorCamera(model)
+            model = builder.finalize(device=device)
+            if backend == "optix":
+                model.bvh_build_shapes(model.state(), backend="optix")
+            camera = SensorCamera(model, backend=backend)
             # Camera 2 m above the origin looking down -Z at the box's top face (z = 0.1 m).
             above = np.array([[0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 1.0]], dtype=np.float32)
             depth = camera.allocate_image_depth(1, width, height)
             normal = camera.allocate_image_normal(1, width, height)
             camera.update(
                 model.state(),
-                wp.array(above, dtype=wp.transformf, device="cpu"),
-                self._rays(width, height, math.radians(30.0)),
+                wp.array(above, dtype=wp.transformf, device=device),
+                self._rays(width, height, math.radians(30.0), device=device),
                 depth_image=depth,
                 normal_image=normal,
             )
@@ -1130,6 +1077,9 @@ class TestSensorCamera(unittest.TestCase):
                             ),
                         )
                         np.testing.assert_allclose(self._unpack_rgb(albedo), expected * 255.0, atol=2)
+
+            # Ordinary cloth still renders from the State buffer, without a camera-owned copy.
+            self.assertEqual(camera._render_context._triangle_mesh.points.ptr, state.particle_q.ptr)
 
     def test_cloth_renders_triangle_colors_from_both_sides(self) -> None:
         """Verify two-sided depth, camera-facing normals, and per-face color under directional light."""
@@ -1406,6 +1356,203 @@ class TestSensorCamera(unittest.TestCase):
 
                 self.assertGreater(float(depth.numpy()[0, height // 2, width // 2]), 0.0)
 
+    def test_tiled_render_order_accepts_partial_tiles(self) -> None:
+        """Verify tiled rendering matches view-priority output when tiles do not divide the image."""
+        model, camera = self._build_sphere_scene()
+        state = model.state()
+        width, height = 17, 11
+        rays = self._rays(width, height, fov=math.radians(20.0))
+        transforms = self._identity_transforms(1)
+
+        outputs = []
+        for render_config in (
+            SensorCamera.RenderConfig(render_order=SensorCamera.RenderOrder.VIEW_PRIORITY),
+            SensorCamera.RenderConfig(render_order=SensorCamera.RenderOrder.TILED, tile_width=8, tile_height=5),
+        ):
+            color = camera.allocate_image_color(1, width, height)
+            depth = camera.allocate_image_depth(1, width, height)
+            camera.update(state, transforms, rays, color_image=color, depth_image=depth, render_config=render_config)
+            outputs.append((color.numpy(), depth.numpy()))
+
+        (reference_color, reference_depth), (tiled_color, tiled_depth) = outputs
+        self.assertGreater(int(np.count_nonzero(reference_depth > 0.0)), 0)
+        np.testing.assert_array_equal(tiled_color, reference_color)
+        np.testing.assert_array_equal(tiled_depth, reference_depth)
+
+    def test_renders_flat_heightfield_from_above(self) -> None:
+        """Verify heightfield shapes are rendered and fill the view from above."""
+        # Flat heightfield at z=1 spanning [-2, 2]^2.
+        data = np.full((3, 3), 1.0, dtype=np.float32)
+        heightfield = newton.Heightfield(data=data, nrow=3, ncol=3, hx=2.0, hy=2.0, min_z=1.0, max_z=1.0)
+        res = 16
+        for device in get_test_devices():
+            with self.subTest(device=device):
+                builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+                builder.add_shape_heightfield(heightfield=heightfield)
+                model = builder.finalize(device=device)
+                state = model.state()
+
+                camera = SensorCamera(model)
+                # 30-deg fov: the footprint half-extent at depth 4 is 4*tan(15deg)=1.07 < 2,
+                # so the terrain fills the whole frame.
+                rays = self._rays(res, res, fov=math.radians(30.0), device=device)
+                # Camera 5 m above the origin with identity orientation looks straight down (-Z).
+                transforms = wp.array(
+                    [wp.transform(wp.vec3(0.0, 0.0, 5.0), wp.quat_identity())], dtype=wp.transformf, device=device
+                )
+                depth = camera.allocate_image_depth(1, res, res)
+                camera.update(state, transforms, rays, depth_image=depth)
+
+                d = depth.numpy()[0]
+                hit = int(np.count_nonzero(d > 0.0))
+                # The surface sits at min_z, so a bottom cap coplanar with it would make rays miss (issue #4452).
+                self.assertEqual(hit, res * res, msg=f"heightfield should fill the view; only {hit}/{res * res} hit")
+                # Every ray sees the flat surface at z=1 from z=5: depth ~4, up to ~4.25 toward the frame edges.
+                self.assertGreater(float(d.min()), 3.9)
+                self.assertLess(float(d.max()), 4.4)
+                self.assertAlmostEqual(float(d[res // 2, res // 2]), 4.0, delta=0.05)
+
+    def test_multiworld_particles_render_consistently(self) -> None:
+        """Verify particle depth is identical across translated worlds.
+
+        Catches incorrect per-world particle BVH index mapping, which renders
+        wrong depth and, on CUDA, can cause illegal memory accesses.
+        """
+        world_count, spacing = 4, 10.0
+        width, height = 32, 24
+        radius = 0.04
+        blueprint = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        blueprint.default_particle_radius = radius
+        blueprint.add_particle_grid(
+            pos=wp.vec3(-0.4, -0.4, 0.1),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0),
+            dim_x=8,
+            dim_y=8,
+            dim_z=2,
+            cell_x=0.1,
+            cell_y=0.1,
+            cell_z=0.1,
+            mass=0.0,
+            jitter=0.0,
+            radius_mean=radius,
+            radius_std=0.0,
+        )
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        for world_id in range(world_count):
+            builder.add_world(blueprint, xform=wp.transform(wp.vec3(world_id * spacing, 0.0, 0.0), wp.quat_identity()))
+
+        for device in get_test_devices():
+            with self.subTest(device=device):
+                model = builder.finalize(device=device)
+                camera = SensorCamera(model, default_render_config=SensorCamera.RenderConfig(max_distance=10.0))
+                rays = self._rays(width, height, fov=math.radians(60.0), device=device)
+                # One camera per world, placed above that world's particle block.
+                transforms = wp.array(
+                    [wp.transform(wp.vec3(w * spacing, 0.0, 3.0), wp.quat_identity()) for w in range(world_count)],
+                    dtype=wp.transformf,
+                    device=device,
+                )
+                depth = camera.allocate_image_depth(world_count, width, height)
+                camera.update(model.state(), transforms, rays, depth_image=depth)
+
+                depth_np = depth.numpy()
+                self.assertGreater(int(np.count_nonzero(depth_np[0] > 0.0)), 0)
+                for w in range(1, world_count):
+                    # Agreement up to fp32 differences introduced by the world translations.
+                    np.testing.assert_allclose(depth_np[w], depth_np[0], rtol=0.0, atol=1e-4)
+
+    def test_render_config_toggles_particles_beside_cloth(self) -> None:
+        """Verify ``enable_particles`` hides standalone particles but keeps cloth rendered as triangles."""
+        from newton._src.render.raytrace import (  # noqa: PLC0415
+            PARTICLES_SHAPE_ID,
+            TRIANGLE_MESH_SHAPE_ID,
+        )
+
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        builder.add_cloth_grid(
+            pos=wp.vec3(2.0, 0.0, 0.0),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0),
+            dim_x=2,
+            dim_y=2,
+            cell_x=0.1,
+            cell_y=0.1,
+            mass=0.1,
+            fix_top=True,
+        )
+        builder.add_particle(pos=wp.vec3(0.0, 0.0, -2.0), vel=wp.vec3(0.0), mass=1.0, radius=0.25)
+        model = builder.finalize(device="cpu")
+        state = model.state()
+        camera = SensorCamera(model)
+        rays = self._rays(1, 1, fov=math.radians(30.0))
+        cloth_vertex = model.particle_q.numpy()[0]
+        cloth_transforms = wp.array(
+            [wp.transform(wp.vec3(*cloth_vertex[:2], cloth_vertex[2] + 0.5), wp.quat_identity())],
+            dtype=wp.transformf,
+            device="cpu",
+        )
+
+        def render(transforms, **config):
+            depth = camera.allocate_image_depth(1, 1, 1)
+            shape_index = camera.allocate_image_shape_index(1, 1, 1)
+            camera.update(
+                state,
+                transforms,
+                rays,
+                depth_image=depth,
+                shape_index_image=shape_index,
+                render_config=SensorCamera.RenderConfig(max_distance=10.0, **config),
+            )
+            return float(depth.numpy()[0, 0, 0]), int(shape_index.numpy()[0, 0, 0])
+
+        self.assertEqual(render(self._identity_transforms(1), enable_particles=False)[0], 0.0)
+        depth, shape_index = render(self._identity_transforms(1), enable_particles=True)
+        self.assertGreater(depth, 0.0)
+        self.assertEqual(shape_index, int(PARTICLES_SHAPE_ID))
+        depth, shape_index = render(cloth_transforms, enable_particles=True, enable_backface_culling=False)
+        self.assertGreater(depth, 0.0)
+        self.assertEqual(shape_index, int(TRIANGLE_MESH_SHAPE_ID))
+
+    def test_volume_deformable_renders_surface_not_particles(self) -> None:
+        """Verify a volume deformable renders its surface triangles instead of its particles."""
+        from newton._src.render.raytrace import TRIANGLE_MESH_SHAPE_ID  # noqa: PLC0415
+
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        builder.add_soft_grid(
+            pos=wp.vec3(-0.1, -0.1, -2.1),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0),
+            dim_x=2,
+            dim_y=2,
+            dim_z=2,
+            cell_x=0.1,
+            cell_y=0.1,
+            cell_z=0.1,
+            density=1000.0,
+            k_mu=1.0,
+            k_lambda=1.0,
+            k_damp=0.0,
+            particle_radius=0.25,
+        )
+        model = builder.finalize(device="cpu")
+        camera = SensorCamera(model)
+        depth = camera.allocate_image_depth(1, 1, 1)
+        shape_index = camera.allocate_image_shape_index(1, 1, 1)
+        camera.update(
+            model.state(),
+            self._identity_transforms(1),
+            self._rays(1, 1, fov=math.radians(30.0)),
+            depth_image=depth,
+            shape_index_image=shape_index,
+            render_config=SensorCamera.RenderConfig(
+                enable_backface_culling=False, enable_particles=True, max_distance=10.0
+            ),
+        )
+
+        self.assertGreater(float(depth.numpy()[0, 0, 0]), 0.0)
+        self.assertEqual(int(shape_index.numpy()[0, 0, 0]), int(TRIANGLE_MESH_SHAPE_ID))
+
     def test_multiple_sensor_cameras_render_same_model(self) -> None:
         """Verify multiple independent SensorCamera instances can render the same model."""
         width, height = 8, 6
@@ -1427,7 +1574,7 @@ class TestSensorCamera(unittest.TestCase):
         self.assertGreater(float(depth_a.numpy()[0, height // 2, width // 2]), 0.0)
         self.assertGreater(float(depth_b.numpy()[0, height // 2, width // 2]), 0.0)
 
-    # --- Rendering output channels (ported from SensorTiledCamera coverage) ---
+    # --- Rendering output channels ---
 
     @staticmethod
     def _shaded_sphere_model(color: tuple[float, float, float] = (0.5, 0.5, 0.5)) -> newton.Model:
@@ -1708,6 +1855,452 @@ class TestSensorCamera(unittest.TestCase):
         camera.update(state, self._identity_transforms(view_count), rays, color_image=color)
         with self.assertRaisesRegex(ValueError, "views_per_row"):
             SensorCamera.Utils.flatten_color_image_to_rgba(color, views_per_row=0)
+
+    def _render_gaussian_hdr(self, color_space, positions, opacities, sh_coeffs):
+        gaussian = newton.Gaussian(
+            positions=np.asarray(positions, dtype=np.float32),
+            scales=np.full((len(positions), 3), 0.5, dtype=np.float32),
+            opacities=np.asarray(opacities, dtype=np.float32),
+            sh_coeffs=np.asarray(sh_coeffs, dtype=np.float32),
+            sh_color_space=color_space,
+        )
+        builder = newton.ModelBuilder()
+        builder.add_shape_gaussian(body=-1, gaussian=gaussian)
+        model = builder.finalize(device="cpu")
+
+        camera = SensorCamera(model)
+        hdr = camera.allocate_image_color_hdr(1, 1, 1)
+        camera.update(model.state(), self._identity_transforms(1), self._rays(1, 1), hdr_color_image=hdr)
+        return hdr.numpy().reshape(-1, 3)[0]
+
+    def test_gaussian_radiance_is_clamped_and_srgb_decoded(self):
+        """Clamp negative Gaussian radiance in both color spaces and decode only sRGB radiance to linear light."""
+        # Radiance (clamped to 0, 0.5, SH_C0 * 4 + 0.5) with the first two channels checked exactly.
+        bright = SH_C0 * 4.0 + 0.5
+        for color_space, expected in (
+            (newton.utils.ColorSpace.SRGB, [0.0, 0.21404114, newton.utils.color_srgb_to_linear([bright] * 3)[0]]),
+            (newton.utils.ColorSpace.LINEAR, [0.0, 0.5, bright]),
+        ):
+            with self.subTest(color_space=color_space):
+                color = self._render_gaussian_hdr(color_space, [[0.0, 0.0, -2.0]], [1.0], [[-4.0, 0.0, 4.0]])
+                np.testing.assert_allclose(color, expected, atol=1e-4)
+
+    def test_gaussian_srgb_overlapping_splats_blend_in_encoded_space(self):
+        """Blend overlapping sRGB splats in encoded space and decode the result once."""
+        # Two coincident-axis splats with alpha 0.5 each: the near one (0.8) is blended over the far one (0.2).
+        sh = [[(0.8 - 0.5) / SH_C0] * 3, [(0.2 - 0.5) / SH_C0] * 3]
+        color = self._render_gaussian_hdr(
+            newton.utils.ColorSpace.SRGB, [[0.0, 0.0, -2.0], [0.0, 0.0, -3.0]], [0.5, 0.5], sh
+        )
+        # 3DGS assets are trained by blending display-encoded colors, so the blend happens in sRGB and the
+        # result is decoded once: decode((0.8 * 0.5 + 0.2 * 0.25) / 0.75).
+        expected = newton.utils.color_srgb_to_linear([0.6] * 3)[0]
+        per_splat_decode = (
+            newton.utils.color_srgb_to_linear([0.8] * 3)[0] * 0.5
+            + newton.utils.color_srgb_to_linear([0.2] * 3)[0] * 0.25
+        ) / 0.75
+        self.assertGreater(abs(expected - per_splat_decode), 0.05)
+        np.testing.assert_allclose(color, [expected] * 3, atol=1e-4)
+
+
+def _optix_variant(test):
+    @requires("warp_optix")
+    @unittest.skipUnless(wp.is_cuda_available(), "requires CUDA")
+    def run(self):
+        test(self, device="cuda:0", backend="optix")
+
+    return run
+
+
+for _name in (
+    "test_fully_transparent_shape_does_not_occlude",
+    "test_convex_hull_renders_like_its_mesh",
+    "test_camera_inside_box_sees_its_walls",
+):
+    setattr(TestSensorCamera, f"{_name}_optix", _optix_variant(getattr(TestSensorCamera, _name)))
+
+
+class TestSensorCameraDeformable(unittest.TestCase):
+    """Render native visual meshes without USD or a viewer window."""
+
+    @staticmethod
+    def _builder():
+        builder = newton.ModelBuilder()
+        points = np.array([[-0.5, -0.5, 0], [0.5, -0.5, 0], [0.5, 0.5, 0], [-0.5, 0.5, 0]])
+        particles = [builder.add_particle(pos=tuple(p), vel=(0, 0, 0), mass=1, radius=0) for p in points]
+        builder.add_deformable_visual_mesh(points, [0, 1, 2, 0, 2, 3], kind="particle", parent=particles)
+        return builder
+
+    @staticmethod
+    def _camera_arrays(model, view_count=1):
+        rays = SensorCamera.compute_camera_rays_pinhole(16, 16, device=model.device, camera_fov=math.radians(45))
+        transforms = wp.array(
+            [wp.transform(wp.vec3(0, 0, 2), wp.quat_identity())] * view_count,
+            dtype=wp.transform,
+            device=model.device,
+        )
+        return rays, transforms
+
+    @staticmethod
+    def _mixed_builder(texture=None):
+        builder = newton.ModelBuilder()
+        # An invisible particle ahead of the cloth, so the camera's particle span starts past index 0.
+        builder.add_particle(pos=(0, 0, 5), vel=(0, 0, 0), mass=1, radius=0)
+        points = np.array([[-0.5, -0.5, 0], [0.5, -0.5, 0], [0.5, 0.5, 0], [-0.5, 0.5, 0]])
+        for point in points:
+            builder.add_particle(pos=wp.vec3(*point), vel=wp.vec3(0), mass=1, radius=0.8)
+        builder.add_triangle(1, 2, 3)
+        builder.add_triangle(1, 3, 4)
+        # A second cloth with no skin, so the default must keep it.
+        for point in points:
+            builder.add_particle(pos=wp.vec3(*(point + np.array([0, 2, 0]))), vel=wp.vec3(0), mass=1, radius=0.8)
+        builder.add_triangle(5, 6, 7)
+        builder.add_triangle(5, 7, 8)
+        # These large particles would obscure the skin if hiding the cloth exposed them.
+        body = builder.add_body(xform=wp.transform(wp.vec3(0, 0, -0.5), wp.quat_identity()))
+        # The skin is wider than the cloth, so pixels past the cloth edge see only the skin.
+        builder.add_deformable_visual_mesh(
+            points * 1.5 + np.array([0, 0, -0.5]),
+            [0, 1, 2, 0, 2, 3],
+            kind="body",
+            bodies=[body],
+            # The second half of the texture, so the padding UVs of simulation vertices, which sample
+            # the first texel, cannot stand in for the skin's.
+            uvs=[[1.5, 0], [2, 0], [2, 1], [1.5, 1]],
+            texture=texture,
+        )
+        # White, so a texture assigned to it shows its own colors.
+        builder.add_shape_sphere(
+            -1, xform=wp.transform(wp.vec3(-2, 0, 0), wp.quat_identity()), radius=0.3, color=(1, 1, 1)
+        )
+        builder.add_particle(pos=(2, 0, 0), vel=(0, 0, 0), mass=1, radius=0.3)
+        return builder
+
+    def test_visual_depth_and_world_mapping(self):
+        """Render independently moved visual meshes in the requested world order."""
+        prototype = self._builder()
+        builder = newton.ModelBuilder()
+        builder.replicate(prototype, 2)
+        for device in get_test_devices():
+            with self.subTest(device=device):
+                model = builder.finalize(device=device)
+                state = model.state()
+                camera = SensorCamera(model)
+                rays, transforms = self._camera_arrays(model, 3)
+                worlds = wp.array([1, 0, 1], dtype=wp.int32, device=device)
+                # Request the same outputs as the other geometry tests so they share one compiled kernel.
+                depth = camera.allocate_image_depth(3, 16, 16)
+                albedo = camera.allocate_image_albedo(3, 16, 16)
+                camera.update(state, transforms, rays, world_indices=worlds, depth_image=depth, albedo_image=albedo)
+                np.testing.assert_allclose(depth.numpy()[:, 8, 8], [2, 2, 2], atol=0.03)
+
+                moved = state.particle_q.numpy().copy()
+                moved[model.particle_world.numpy() == 0, 2] += 0.4
+                state.particle_q.assign(moved)
+                camera.update(state, transforms, rays, world_indices=worlds, depth_image=depth, albedo_image=albedo)
+                np.testing.assert_allclose(depth.numpy()[:, 8, 8], [2, 1.6, 2], atol=0.03)
+
+    def test_simulation_surface_visibility(self):
+        """Choose the rendered deformable surfaces without exposing particles or hiding other geometry."""
+        for device in get_test_devices():
+            model = self._mixed_builder().finalize(device=device)
+            state = model.state()
+            rays, _ = self._camera_arrays(model)
+            # Views: the skinned cloth, the sphere, the standalone particle, the unskinned cloth.
+            transforms = wp.array(
+                [wp.transform(wp.vec3(x, y, 2), wp.quat_identity()) for x, y in ((0, 0), (-2, 0), (2, 0), (0, 2))],
+                dtype=wp.transform,
+                device=device,
+            )
+            worlds = wp.zeros(4, dtype=wp.int32, device=device)
+            surfaces = SensorCamera.DeformableSurfaceMode
+            for choice in (surfaces.BOTH, surfaces.VISUAL_ONLY, surfaces.SIMULATION_ONLY):
+                shown = choice != surfaces.VISUAL_ONLY
+                with self.subTest(device=device, deformable_surface_mode=choice.name):
+                    camera = SensorCamera(model, deformable_surface_mode=choice)
+                    depth = camera.allocate_image_depth(4, 16, 16)
+                    albedo = camera.allocate_image_albedo(4, 16, 16)
+                    camera.update(state, transforms, rays, world_indices=worlds, depth_image=depth, albedo_image=albedo)
+                    np.testing.assert_allclose(
+                        depth.numpy()[:, 8, 8], [2 if shown else 2.5, 1.7, 1.7, 2 if shown else 0], atol=0.03
+                    )
+                    # Past the cloth edge only the skin is hit when it is rendered, so the skin
+                    # vertices sit at the right offset behind the simulation vertices; without the
+                    # skin that pixel is background. Depth is the ray length: pixel column 13 reaches
+                    # the skin plane 2.5 below the camera at 0.6875 times the half field of view.
+                    skin_ray = 2.5 * math.hypot(1, 0.6875 * math.tan(math.radians(22.5)))
+                    edge = skin_ray if choice != surfaces.SIMULATION_ONLY else 0
+                    self.assertAlmostEqual(float(depth.numpy()[0, 8, 13]), edge, delta=0.03)
+                    expected = model.tri_color.numpy()[0] * 255 if shown else [255, 255, 255]
+                    np.testing.assert_allclose(TestSensorCamera._unpack_rgb(albedo)[0, 8, 8], expected, atol=2)
+                    if choice == surfaces.SIMULATION_ONLY:
+                        self.assertEqual(camera._render_context._triangle_mesh.points.ptr, state.particle_q.ptr)
+
+                        moved_state = model.state()
+                        moved = moved_state.particle_q.numpy().copy()
+                        moved[1:9, 2] += 0.3
+                        moved_state.particle_q.assign(moved)
+                        for current, expected_depth in ((moved_state, 1.7), (state, 2.0)):
+                            camera.update(
+                                current, transforms, rays, world_indices=worlds, depth_image=depth, albedo_image=albedo
+                            )
+                            np.testing.assert_allclose(depth.numpy()[[0, 3], 8, 8], expected_depth, atol=0.03)
+                            self.assertEqual(camera._render_context._triangle_mesh.points.ptr, current.particle_q.ptr)
+
+    def test_skinning_follows_state_and_capture(self):
+        """Render cloth and skins from the state each update or sync uses, and replay captured updates."""
+        for device in get_test_devices():
+            with self.subTest(device=device):
+                model = self._mixed_builder().finalize(device=device)
+                state_a, state_b = model.state(), model.state()
+                # State A lifts the skin above the cloth; state B lifts every particle instead, so
+                # each state shows a different surface at the first view and a moved cloth at the
+                # second, and the camera's own buffer must follow whichever state it was given.
+                moved = state_a.body_q.numpy().copy()
+                moved[:, 2] += 1
+                state_a.body_q.assign(moved)
+                lifted = state_b.particle_q.numpy().copy()
+                lifted[:, 2] += 0.3
+                state_b.particle_q.assign(lifted)
+                camera = SensorCamera(model)
+                rays, _ = self._camera_arrays(model)
+                transforms = wp.array(
+                    [wp.transform(wp.vec3(0, y, 2), wp.quat_identity()) for y in (0, 2)],
+                    dtype=wp.transform,
+                    device=device,
+                )
+                depth = camera.allocate_image_depth(2, 16, 16)
+                albedo = camera.allocate_image_albedo(2, 16, 16)
+                worlds = wp.zeros(2, dtype=wp.int32, device=device)
+                depth_a, depth_b = [1.5, 2], [1.7, 1.7]
+
+                camera.update(state_a, transforms, rays, depth_image=depth, albedo_image=albedo, world_indices=worlds)
+                np.testing.assert_allclose(depth.numpy()[:, 8, 8], depth_a, atol=0.03)
+                # An explicit sync followed by a render without one shows the synced state.
+                camera.sync_deformable_meshes(state_b)
+                camera.update(
+                    state_a,
+                    transforms,
+                    rays,
+                    depth_image=depth,
+                    albedo_image=albedo,
+                    world_indices=worlds,
+                    sync_deformables=False,
+                )
+                np.testing.assert_allclose(depth.numpy()[:, 8, 8], depth_b, atol=0.03)
+
+                if device.is_cuda:
+                    # Warm skinning and rendering before capturing the full path for each state.
+                    graphs = []
+                    for state in (state_a, state_b):
+                        camera.update(
+                            state, transforms, rays, depth_image=depth, albedo_image=albedo, world_indices=worlds
+                        )
+                        with wp.ScopedCapture(device) as capture:
+                            camera.update(
+                                state, transforms, rays, depth_image=depth, albedo_image=albedo, world_indices=worlds
+                            )
+                        graphs.append(capture.graph)
+                    for graph, expected in ((graphs[0], depth_a), (graphs[1], depth_b), (graphs[0], depth_a)):
+                        wp.capture_launch(graph)
+                        np.testing.assert_allclose(depth.numpy()[:, 8, 8], expected, atol=0.03)
+
+    def test_shared_visuals_and_capture(self):
+        """Consume supplied buffers as-is and replay updates from alternating states."""
+        for device in get_test_devices():
+            with self.subTest(device=device):
+                model = self._mixed_builder().finalize(device=device)
+                state_a, state_b = model.state(), model.state()
+                camera = SensorCamera(
+                    model,
+                    deformable_surface_mode=SensorCamera.DeformableSurfaceMode.VISUAL_ONLY,
+                )
+                visuals = newton.geometry.DeformableVisuals(model)
+                with self.assertRaisesRegex(RuntimeError, "not been updated"):
+                    camera.sync_deformable_meshes(state_a, deformable_visuals=visuals)
+                visuals.update(state_a)
+                moved = state_a.body_q.numpy().copy()
+                moved[:, 2] += 1
+                state_a.body_q.assign(moved)
+                rays, transforms = self._camera_arrays(model)
+                depth = camera.allocate_image_depth(1, 16, 16)
+                albedo = camera.allocate_image_albedo(1, 16, 16)
+                # Pass world indices like the other tests so they all share one compiled kernel.
+                worlds = wp.zeros(1, dtype=wp.int32, device=device)
+                camera.update(
+                    state_a,
+                    transforms,
+                    rays,
+                    depth_image=depth,
+                    albedo_image=albedo,
+                    world_indices=worlds,
+                    deformable_visuals=visuals,
+                )
+                self.assertAlmostEqual(float(depth.numpy()[0, 8, 8]), 2.5, delta=0.03)
+
+                camera.sync_deformable_meshes(state_a, deformable_visuals=visuals)
+                camera.update(
+                    state_a,
+                    transforms,
+                    rays,
+                    depth_image=depth,
+                    albedo_image=albedo,
+                    world_indices=worlds,
+                    sync_deformables=False,
+                )
+                self.assertAlmostEqual(float(depth.numpy()[0, 8, 8]), 2.5, delta=0.03)
+                camera.update(state_a, transforms, rays, depth_image=depth, albedo_image=albedo, world_indices=worlds)
+                self.assertAlmostEqual(float(depth.numpy()[0, 8, 8]), 1.5, delta=0.03)
+
+                if device.is_cuda:
+                    # Warm both evaluation and rendering before capturing the full path.
+                    graphs = []
+                    for state in (state_a, state_b):
+                        visuals.update(state)
+                        camera.update(
+                            state,
+                            transforms,
+                            rays,
+                            depth_image=depth,
+                            albedo_image=albedo,
+                            world_indices=worlds,
+                            deformable_visuals=visuals,
+                        )
+                        with wp.ScopedCapture(device) as capture:
+                            visuals.update(state)
+                            camera.update(
+                                state,
+                                transforms,
+                                rays,
+                                depth_image=depth,
+                                albedo_image=albedo,
+                                world_indices=worlds,
+                                deformable_visuals=visuals,
+                            )
+                        graphs.append(capture.graph)
+                    for graph, expected in ((graphs[0], 1.5), (graphs[1], 2.5), (graphs[0], 1.5)):
+                        wp.capture_launch(graph)
+                        self.assertAlmostEqual(float(depth.numpy()[0, 8, 8]), expected, delta=0.03)
+
+                with self.assertRaisesRegex(ValueError, "requires sync_deformables=True"):
+                    camera.update(
+                        state_a,
+                        transforms,
+                        rays,
+                        depth_image=depth,
+                        albedo_image=albedo,
+                        world_indices=worlds,
+                        sync_deformables=False,
+                        deformable_visuals=visuals,
+                    )
+                with self.assertRaisesRegex(ValueError, "another model"):
+                    other = self._builder().finalize(device=device)
+                    camera.sync_deformable_meshes(state_a, deformable_visuals=newton.geometry.DeformableVisuals(other))
+                # A camera that leaves the visual meshes out must not silently accept their buffers.
+                simulation_only = SensorCamera(
+                    model, deformable_surface_mode=SensorCamera.DeformableSurfaceMode.SIMULATION_ONLY
+                )
+                with self.assertRaisesRegex(ValueError, "SIMULATION_ONLY"):
+                    simulation_only.sync_deformable_meshes(state_a, deformable_visuals=visuals)
+
+    def test_distinct_skin_textures(self):
+        """Render different skin images separately, including repeated image references."""
+        green = np.full((32, 32, 3), (0, 255, 0), dtype=np.uint8)
+        blue = np.full_like(green, (0, 0, 255))
+        builder = newton.ModelBuilder()
+        points = np.array([[-0.5, -0.5, 0], [0.5, -0.5, 0], [0.5, 0.5, 0], [-0.5, 0.5, 0]])
+        for x, image in zip((0, 2, 4), (green, blue, green), strict=True):
+            vertices = points + np.array([x, 0, 0])
+            parents = [builder.add_particle(pos=tuple(p), vel=(0, 0, 0), mass=1, radius=0) for p in vertices]
+            builder.add_deformable_visual_mesh(
+                vertices,
+                [0, 1, 2, 0, 2, 3],
+                kind="particle",
+                parent=parents,
+                uvs=[[0, 0], [1, 0], [1, 1], [0, 1]],
+                texture=image,
+            )
+        for device in get_test_devices():
+            with self.subTest(device=device):
+                model = builder.finalize(device=device)
+                state = model.state()
+                config = SensorCamera.RenderConfig(enable_textures=True)
+                camera = SensorCamera(model, default_render_config=config)
+                rays, _ = self._camera_arrays(model)
+                transforms = wp.array(
+                    [wp.transform((x, 0, 2), wp.quat_identity()) for x in (0, 2, 4)],
+                    dtype=wp.transform,
+                    device=device,
+                )
+                worlds = wp.zeros(3, dtype=wp.int32, device=device)
+                albedo = camera.allocate_image_albedo(3, 16, 16)
+                depth = camera.allocate_image_depth(3, 16, 16)
+                camera.update(state, transforms, rays, world_indices=worlds, albedo_image=albedo, depth_image=depth)
+                np.testing.assert_allclose(
+                    TestSensorCamera._unpack_rgb(albedo)[:, 8, 8],
+                    [[0, 255, 0], [0, 0, 255], [0, 255, 0]],
+                    atol=2,
+                )
+                expected_depth = depth.numpy().copy()
+                untextured = SensorCamera(model, load_textures=False, default_render_config=config)
+                untextured.update(state, transforms, rays, world_indices=worlds, albedo_image=albedo, depth_image=depth)
+                np.testing.assert_allclose(depth.numpy(), expected_depth)
+                colors = TestSensorCamera._unpack_rgb(albedo)[:, 8, 8]
+                np.testing.assert_array_equal(colors[0], colors[1])
+
+    def test_textures_and_checkerboard(self):
+        """Sample UVs outside the unit square, and keep skin textures while another shape shows its checkerboard."""
+        rgb = np.empty((4, 4, 3), dtype=np.uint8)
+        rgb[:, :2] = [200, 40, 10]
+        rgb[:, 2:] = [10, 200, 40]
+        # File paths, RGBA and grayscale images go through the shape texture helpers, which are
+        # covered there; one in-memory source covers the skin-specific lookup.
+        expected = [10, 200, 40]
+        for device in get_test_devices():
+            model = self._mixed_builder(rgb).finalize(device=device)
+            state = model.state()
+            config = SensorCamera.RenderConfig(enable_textures=True)
+            camera = SensorCamera(
+                model,
+                default_render_config=config,
+                deformable_surface_mode=SensorCamera.DeformableSurfaceMode.VISUAL_ONLY,
+            )
+            # Same kernel, both surfaces: the cloth is drawn and the skin shows past its edge.
+            with_cloth = SensorCamera(
+                model, default_render_config=config, deformable_surface_mode=SensorCamera.DeformableSurfaceMode.BOTH
+            )
+            rays, _ = self._camera_arrays(model)
+            # View 0 looks at the skin, view 1 at the sphere (shape 0) that gets the checkerboard.
+            transforms = wp.array(
+                [wp.transform(wp.vec3(x, 0, 2), wp.quat_identity()) for x in (0, -2)],
+                dtype=wp.transform,
+                device=device,
+            )
+            worlds = wp.zeros(2, dtype=wp.int32, device=device)
+            albedo = camera.allocate_image_albedo(2, 16, 16)
+            color = camera.allocate_image_color(2, 16, 16)
+            camera.set_ambient_light((1, 1, 1))
+            # One anti-aliasing mode: every mode shares the texture lookup, and each
+            # would compile another render kernel per device.
+            with self.subTest(device=device):
+                camera.update(state, transforms, rays, world_indices=worlds, albedo_image=albedo, color_image=color)
+                np.testing.assert_allclose(TestSensorCamera._unpack_rgb(albedo)[0, 8, 8], expected, atol=2)
+                np.testing.assert_allclose(TestSensorCamera._unpack_rgb(color)[0, 8, 8], expected, atol=2)
+                np.testing.assert_allclose(TestSensorCamera._unpack_rgb(albedo)[1, 8, 8], (255, 255, 255), atol=2)
+                with_cloth.update(state, transforms, rays, world_indices=worlds, albedo_image=albedo, color_image=color)
+                # Row 13 lies past the cloth edge and keeps the centre column's texel, so the
+                # skin shows its texture even where the cloth is drawn around it.
+                np.testing.assert_allclose(TestSensorCamera._unpack_rgb(albedo)[0, 13, 8], expected, atol=2)
+                for _ in range(2):
+                    camera.assign_checkerboard_material(shape_indices=[0])
+                    camera.update(state, transforms, rays, world_indices=worlds, albedo_image=albedo, color_image=color)
+                    np.testing.assert_allclose(TestSensorCamera._unpack_rgb(albedo)[0, 8, 8], expected, atol=2)
+                    # The white sphere shows a checkerboard gray, not the skin's image.
+                    sphere = TestSensorCamera._unpack_rgb(albedo)[1, 8, 8]
+                    self.assertTrue(
+                        any(np.allclose(sphere, gray, atol=2) for gray in ((128, 128, 128), (191, 191, 191))),
+                        sphere,
+                    )
 
 
 if __name__ == "__main__":

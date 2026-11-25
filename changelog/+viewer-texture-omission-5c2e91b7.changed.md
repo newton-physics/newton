@@ -1,0 +1,1 @@
+Change `ViewerUSD` and `ViewerRTX` `log_mesh()` to drop a texture bound by an earlier call when a later call omits `texture` or `uvs`, matching `ViewerGL`; pass `texture` and `uvs` on every call to keep a texture.

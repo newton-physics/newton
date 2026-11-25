@@ -1,0 +1,1 @@
+Deprecate `physics:masses` on USD points with `NewtonPointsDeformableSimAPI` in favor of `newton:masses`. `ModelBuilder.add_usd()` still reads the old name with a `NewtonDeprecationWarning` through Newton 1.8. Rename the attribute to `newton:masses`.

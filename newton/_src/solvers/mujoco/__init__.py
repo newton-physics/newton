@@ -4,7 +4,7 @@
 """Programmatic model-authoring helpers for :class:`~newton.solvers.SolverMuJoCo`.
 
 The module-level helpers create MuJoCo-specific actuators, tendons, contact
-pairs, and equality constraints on a :class:`~newton.ModelBuilder` without
+pairs, equality constraints, and flexes on a :class:`~newton.ModelBuilder` without
 exposing custom-frequency storage details. Use
 :class:`~newton.solvers.SolverMuJoCo` as the canonical public solver class.
 
@@ -28,7 +28,9 @@ from .actuators import (
     add_actuator_velocity,
 )
 from .contacts import add_contact_pair
+from .dcmotor import add_actuator_dcmotor
 from .equality import add_equality_connect, add_equality_joint, add_equality_tendon, add_equality_weld
+from .flex import add_flex
 from .tendons import (
     TendonWrapGeom,
     TendonWrapPulley,
@@ -42,6 +44,7 @@ __all__ = [
     "TendonWrapGeom",
     "TendonWrapPulley",
     "TendonWrapSite",
+    "add_actuator_dcmotor",
     "add_actuator_general",
     "add_actuator_motor",
     "add_actuator_position",
@@ -51,6 +54,7 @@ __all__ = [
     "add_equality_joint",
     "add_equality_tendon",
     "add_equality_weld",
+    "add_flex",
     "add_tendon_fixed",
     "add_tendon_spatial",
 ]

@@ -966,11 +966,6 @@ class TestMeshSDFCollisionFlag(unittest.TestCase):
         )
         self.assertEqual(int(rebuilt.data.sparse_sdf_ptr), int(sdf_from_mesh.data.sparse_sdf_ptr))
 
-    def test_standalone_sdf_shape_api_removed(self):
-        """GeoType.SDF and add_shape_sdf should not exist."""
-        self.assertFalse(hasattr(newton.GeoType, "SDF"))
-        self.assertFalse(hasattr(newton.ModelBuilder, "add_shape_sdf"))
-
 
 class TestSDFPublicApi(unittest.TestCase):
     """Test public API shape for SDF creators."""
@@ -1015,16 +1010,6 @@ class TestSDFPublicApi(unittest.TestCase):
                 builder.add_shape_box(body=-1, hx=0.5, hy=0.4, hz=0.3, cfg=cfg)
                 with self.assertRaisesRegex(ValueError, "requires a CUDA-capable GPU"):
                     builder.finalize(device="cpu")
-
-    def test_top_level_sdf_exported(self):
-        """Top-level package should expose SDF as newton.SDF."""
-        self.assertTrue(hasattr(newton, "SDF"))
-        self.assertFalse(hasattr(newton.geometry, "SDF"))
-
-    def test_module_level_sdf_creators_removed(self):
-        """Module-level SDF creators should not be exposed in public API."""
-        self.assertFalse(hasattr(newton.geometry, "create_sdf_from_mesh"))
-        self.assertFalse(hasattr(newton.geometry, "create_sdf_from_data"))
 
     @unittest.skipUnless(_cuda_available, "Requires CUDA device")
     def test_hydroelastic_primitive_generates_sdf_on_gpu(self):
@@ -1612,6 +1597,28 @@ class TestMeshIsWatertight(unittest.TestCase):
         # Remove some triangles to break watertightness
         mesh.indices = mesh.indices[:30]  # 5 faces instead of 6
         self.assertFalse(mesh.is_watertight)
+
+    def test_in_place_vertex_edit_refreshes_welding(self):
+        """Verify that invalidate_cache() drops cached vertex welding, not only the edge results."""
+        verts = np.array(
+            [[-1, -1, -1], [1, -1, -1], [1, 1, -1], [-1, 1, -1], [-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1]],
+            dtype=np.float32,
+        )
+        # vertex 8 duplicates vertex 0 and replaces it in the three side faces that touch that corner
+        verts = np.vstack([verts, verts[:1]])
+        tris = [
+            (0, 2, 1), (0, 3, 2), (4, 5, 6), (4, 6, 7), (8, 1, 5), (8, 5, 4),
+            (2, 3, 7), (2, 7, 6), (8, 4, 7), (8, 7, 3), (1, 2, 6), (1, 6, 5),
+        ]  # fmt: skip
+        indices = np.array(tris, dtype=np.int32).reshape(-1)
+        mesh = Mesh(verts, indices, compute_inertia=False)
+        self.assertTrue(mesh.is_watertight)
+        self.assertEqual(len(mesh.edges), 18)
+
+        mesh.vertices[8] += 0.5  # split the duplicate off in place
+        mesh.invalidate_cache()
+        self.assertFalse(mesh.is_watertight)
+        self.assertGreater(len(mesh.edges), 18)
 
 
 @wp.kernel

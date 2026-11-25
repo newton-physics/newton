@@ -1,17 +1,24 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example SDF RJ45 Plug-Socket Insertion
-#
-# Use the translation gizmo to move the plug toward the socket.
-# Click an axis arrow to slide along one axis, or a plane square
-# for two-axis motion. The latch deflects on entry and locks
-# the plug once fully inserted.
-#
-# Command: uv run -m newton.examples contacts_rj45_plug
-#
-###########################################################################
+"""Example SDF RJ45 Plug-Socket Insertion
+
+Use the translation gizmo to move the plug toward the socket.
+Click an axis arrow to slide along one axis, or a plane square
+for two-axis motion. The latch deflects on entry and locks
+the plug once fully inserted.
+
+Success criteria:
+- A cable-attached RJ45 plug and matching socket appear.
+- Drag the translation gizmo along the insertion axis: the latch deflects and the plug seats in the
+  socket.
+- The seated latch prevents simply withdrawing the plug.
+- Depress the latch and withdraw the plug using the gizmo; the plug releases without passing through
+  the socket walls.
+
+Runs:
+- `python -m newton.examples contacts_rj45_plug`
+"""
 
 import dataclasses
 
@@ -473,7 +480,7 @@ class Example:
         gp = wp.transform_get_translation(self.gizmo_tf)
 
         picking = getattr(self.viewer, "picking", None)
-        picked_body = int(picking.pick_body.numpy()[0]) if picking is not None else -1
+        picked_body = picking.pick_body if picking is not None else -1
 
         self._pick_body.assign([picked_body])
         self._pick_target.assign([gp])

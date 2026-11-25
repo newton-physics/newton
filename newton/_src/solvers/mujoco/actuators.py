@@ -254,6 +254,7 @@ def _dynamics_type(value: int | str) -> int:
             "filter": int(_ActuatorDynamicsType.FILTER),
             "filterexact": int(_ActuatorDynamicsType.FILTER_EXACT),
             "muscle": int(_ActuatorDynamicsType.MUSCLE),
+            "dcmotor": int(_ActuatorDynamicsType.DCMOTOR),
             "user": int(_ActuatorDynamicsType.USER),
         },
         "dyntype",
@@ -267,6 +268,7 @@ def _gain_type(value: int | str) -> int:
             "fixed": int(_ActuatorGainType.FIXED),
             "affine": int(_ActuatorGainType.AFFINE),
             "muscle": int(_ActuatorGainType.MUSCLE),
+            "dcmotor": int(_ActuatorGainType.DCMOTOR),
             "user": int(_ActuatorGainType.USER),
         },
         "gaintype",
@@ -280,6 +282,7 @@ def _bias_type(value: int | str) -> int:
             "none": int(_ActuatorBiasType.NONE),
             "affine": int(_ActuatorBiasType.AFFINE),
             "muscle": int(_ActuatorBiasType.MUSCLE),
+            "dcmotor": int(_ActuatorBiasType.DCMOTOR),
             "user": int(_ActuatorBiasType.USER),
         },
         "biastype",
@@ -307,6 +310,9 @@ def _add_actuator(
     actdim: int | None = None,
     actearly: bool = False,
     cranklength: float | None = None,
+    ctrlspec: int | None = None,
+    damping: Sequence[float] | None = None,
+    armature: float | None = None,
     ctrl: float = 0.0,
     custom_attributes: dict[str, Any] | None = None,
 ) -> int:
@@ -363,6 +369,22 @@ def _add_actuator(
         "mujoco:ctrl_source": int(SolverMuJoCo.CtrlSource.CTRL_DIRECT),
         "mujoco:ctrl_type": int(ctrl_type),
     }
+    if ctrlspec is not None:
+        values["mujoco:actuator_ctrlspec"] = int(ctrlspec)
+    if damping is not None:
+        if not 1 <= len(damping) <= 3:
+            raise ValueError("damping requires one, two, or three coefficients.")
+        coefficients = [float(value) for value in damping] + [0.0] * (3 - len(damping))
+        values["mujoco:actuator_damping"] = coefficients[0]
+        values["mujoco:actuator_dampingpoly"] = wp.vec2(coefficients[1], coefficients[2])
+    if armature is not None:
+        values["mujoco:actuator_armature"] = float(armature)
+    # Keep mixed shortcut/general rows dense, while allowing low-level callers
+    # to author fields that this shortcut does not manage.
+    for name in ("actuator_ctrlspec", "actuator_damping", "actuator_dampingpoly", "actuator_armature"):
+        key = f"mujoco:{name}"
+        if key not in values and key not in (custom_attributes or {}):
+            values[key] = builder.custom_attributes[key].default
 
     return _add_custom_frequency_row(
         builder,

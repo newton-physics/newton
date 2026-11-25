@@ -91,20 +91,26 @@ def test_ray_intersect_box(test: TestRaycast, device: str):
     out_t = wp.zeros(1, dtype=float, device=device)
     out_n = wp.zeros(1, dtype=wp.vec3, device=device)
     size = wp.vec3(1.0, 1.0, 1.0)  # half-extents
-    direction = wp.vec3(1.0, 0.0, 0.0)
+    x = wp.vec3(1.0, 0.0, 0.0)
+    diagonal = wp.normalize(wp.vec3(1.0, 1.0, 0.0))
 
     identity = wp.transform_identity()
-    rot_45_z = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), wp.pi / 4.0)
+    rot_45_z = wp.transform(wp.vec3(0.0), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), wp.pi / 4.0))
+    rot_30_z = wp.transform(wp.vec3(0.0), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), wp.pi / 6.0))
+    c30, s30 = np.cos(np.pi / 6.0), np.sin(np.pi / 6.0)
 
-    # (name, xform, origin, expected)
+    # (name, xform, origin, direction, expected distance, expected normal or None)
     cases = [
-        ("hit", identity, wp.vec3(-2.0, 0.0, 0.0), 1.0),
-        ("miss", identity, wp.vec3(-2.0, 2.0, 0.0), -1.0),
-        ("inside", identity, wp.vec3(0.0, 0.0, 0.0), 1.0),
-        ("rotated", wp.transform(wp.vec3(0.0, 0.0, 0.0), rot_45_z), wp.vec3(-2.0, 0.0, 0.0), 2.0 - wp.sqrt(2.0)),
+        ("hit", identity, wp.vec3(-2.0, 0.0, 0.0), x, 1.0, (-1.0, 0.0, 0.0)),
+        ("miss", identity, wp.vec3(-2.0, 2.0, 0.0), x, -1.0, None),
+        ("inside", identity, wp.vec3(0.0, 0.0, 0.0), x, 1.0, (1.0, 0.0, 0.0)),
+        ("rotated_edge", rot_45_z, wp.vec3(-2.0, 0.0, 0.0), x, 2.0 - np.sqrt(2.0), None),
+        ("rotated", rot_30_z, wp.vec3(-3.0, 0.0, 0.0), x, 3.0 - 1.0 / c30, (-c30, -s30, 0.0)),
+        # An exact corner hit takes the normal of one face, not a blend of the two.
+        ("corner", identity, wp.vec3(-2.0, -2.0, 0.0), diagonal, np.sqrt(2.0), (-1.0, 0.0, 0.0)),
     ]
 
-    for name, xform, origin, expected in cases:
+    for name, xform, origin, direction, expected, normal in cases:
         with test.subTest(name):
             wp.launch(
                 kernel_test_geom,
@@ -113,6 +119,8 @@ def test_ray_intersect_box(test: TestRaycast, device: str):
                 device=device,
             )
             test.assertAlmostEqual(out_t.numpy()[0], expected, delta=1e-5)
+            if normal is not None:
+                np.testing.assert_allclose(out_n.numpy()[0], normal, atol=1e-5)
 
 
 def test_ray_intersect_capsule(test: TestRaycast, device: str):
@@ -623,7 +631,16 @@ def test_ray_intersect_heightfield_scaled(test: TestRaycast, device: str):
                 direction,
                 lock,
             ],
-            outputs=[min_dist, min_index, min_body_index, empty_world, empty_offsets, empty_mask],
+            outputs=[
+                min_dist,
+                min_index,
+                min_body_index,
+                empty_world,
+                empty_offsets,
+                empty_mask,
+                wp.array([], dtype=wp.bool, device=device),
+                wp.array([], dtype=wp.int32, device=device),
+            ],
             device=device,
         )
         dist = float(min_dist.numpy()[0])
@@ -661,8 +678,10 @@ def _make_intersection_model(device: str):
     return builder.finalize(device=device)
 
 
-def test_intersect_ray(test: TestRaycast, device: str):
+def test_intersect_ray(test: TestRaycast, device: str, backend: str = "warp"):
     model = _make_intersection_model(device)
+    if backend == "optix":
+        model.bvh_build_shapes(model.state(), backend="optix")
 
     origins = wp.array(
         np.array(
@@ -695,6 +714,7 @@ def test_intersect_ray(test: TestRaycast, device: str):
     out_normal = wp.empty(shape=3, dtype=wp.vec3, device=device)
     newton.intersect_ray(
         model,
+        backend=backend,
         ray_origins=origins,
         ray_directions=directions,
         ray_worlds=worlds,
@@ -718,6 +738,79 @@ def test_intersect_ray(test: TestRaycast, device: str):
         atol=1e-5,
     )
 
+    # Lowering the box takes effect after a refit.
+    state = model.state()
+    body_q = state.body_q.numpy()
+    body_q[1, 2] = -1.0
+    state.body_q.assign(body_q)
+    model.bvh_refit_shapes(state, backend=backend)
+    newton.intersect_ray(
+        model, backend=backend, ray_origins=origins, ray_directions=directions, ray_worlds=worlds, out_dist=out_dist
+    )
+    np.testing.assert_allclose(out_dist.numpy(), np.array([1.5, 2.5, -1.0], dtype=np.float32), atol=1e-5)
+
+    if backend == "optix":
+        # A shape that leaves its world's cell is hidden and flagged instead of reaching another world's cell.
+        test.assertEqual(model.optix_shapes.out_of_cell.numpy()[0], 0)
+        body_q[1, 0] = 100.0
+        state.body_q.assign(body_q)
+        model.bvh_refit_shapes(state, backend="optix")
+        shapes = model.optix_shapes
+        masks = shapes.instances.numpy()["visibility_mask"]
+        np.testing.assert_array_equal(masks[np.argsort(shapes.instance_shapes.numpy())], [255, 0])
+        test.assertEqual(shapes.out_of_cell.numpy()[0], 1)
+
+        # A larger extent leaves room for the move.
+        model.bvh_build_shapes(state, backend="optix", optix_extent=200.0)
+        far = wp.array([[100.0, 0.0, 2.0]], dtype=wp.vec3, device=device)
+        newton.intersect_ray(
+            model,
+            backend=backend,
+            ray_origins=far,
+            ray_directions=directions[1:2],
+            ray_worlds=worlds[:1],
+            out_dist=out_dist,
+        )
+        np.testing.assert_allclose(out_dist.numpy()[0], 2.5, atol=1e-4)
+        test.assertEqual(model.optix_shapes.out_of_cell.numpy()[0], 0)
+
+
+def test_intersect_ray_world_planes(test: TestRaycast, device: str, backend: str = "warp"):
+    rotation = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.25 * np.pi)
+
+    def cast(worlds, x, direction=(0.0, 0.0, -1.0)):
+        """Cast a ray from ``(x, 0, 1)`` in world 0 of a model with rotated planes ``(z, size)``."""
+        builder = newton.ModelBuilder()
+        for planes in worlds:
+            builder.begin_world()
+            for z, size in planes:
+                builder.add_shape_plane(xform=wp.transform(wp.vec3(0.0, 0.0, z), rotation), width=size, length=size)
+            builder.end_world()
+        model = builder.finalize(device=device)
+        if backend == "optix":
+            model.bvh_build_shapes(model.state(), backend="optix")
+        out_dist = wp.empty(1, dtype=float, device=device)
+        out_shape_id = wp.empty(1, dtype=wp.int32, device=device)
+        newton.intersect_ray(
+            model,
+            backend=backend,
+            ray_origins=wp.array([[x, 0.0, 1.0]], dtype=wp.vec3, device=device),
+            ray_directions=wp.array([direction], dtype=wp.vec3, device=device),
+            ray_worlds=wp.array([0], dtype=wp.int32, device=device),
+            out_dist=out_dist,
+            out_shape_id=out_shape_id,
+        )
+        return out_dist.numpy()[0], out_shape_id.numpy()[0]
+
+    # An off-center hit on a finite plane.
+    np.testing.assert_allclose(cast([[(0.0, 4.0)]], 1.5), (1.0, 0), atol=1e-5)
+    # World 1's infinite plane must not occlude world 0's.
+    np.testing.assert_allclose(cast([[(-0.5, 0.0)], [(0.0, 0.0)]], 0.9), (1.5, 0), atol=1e-5)
+    # A shallow ray hits an infinite per-world plane far outside the world's shapes.
+    pitch = np.radians(5.0)
+    hit = cast([[(0.0, 0.0)], [(0.0, 0.0)]], 0.0, (np.cos(pitch), 0.0, -np.sin(pitch)))
+    np.testing.assert_allclose(hit, (1.0 / np.sin(pitch), 0), rtol=1e-5)
+
 
 def _make_global_world_model(device: str):
     """Two worlds each with a sphere, plus a global-world box shared by both."""
@@ -740,8 +833,10 @@ def _make_global_world_model(device: str):
     return builder.finalize(device=device), global_box, sphere0, sphere1
 
 
-def test_intersect_ray_global_world(test: TestRaycast, device: str):
+def test_intersect_ray_global_world(test: TestRaycast, device: str, backend: str = "warp"):
     model, global_box, sphere0, sphere1 = _make_global_world_model(device)
+    if backend == "optix":
+        model.bvh_build_shapes(model.state(), backend="optix")
 
     # Rays fired along -y toward each world's sphere and the global box.
     origins = wp.array(
@@ -770,6 +865,7 @@ def test_intersect_ray_global_world(test: TestRaycast, device: str):
     out_normal = wp.empty(shape=5, dtype=wp.vec3, device=device)
     newton.intersect_ray(
         model,
+        backend=backend,
         ray_origins=origins,
         ray_directions=directions,
         ray_worlds=worlds,
@@ -785,11 +881,13 @@ def test_intersect_ray_global_world(test: TestRaycast, device: str):
     )
 
 
-def test_intersect_ray_heightfield_uses_finalize_bvh(test: TestRaycast, device: str):
+def test_intersect_ray_heightfield_uses_finalize_bvh(test: TestRaycast, device: str, backend: str = "warp"):
     builder = newton.ModelBuilder()
     heightfield = Heightfield(data=np.zeros((2, 2), dtype=np.float32), nrow=2, ncol=2, hx=1.0, hy=1.0)
     shape_id = builder.add_shape_heightfield(heightfield=heightfield)
     model = builder.finalize(device=device)
+    if backend == "optix":
+        model.bvh_build_shapes(model.state(), backend="optix")
 
     test.assertEqual(model.bvh_shape_count_enabled, 1)
 
@@ -801,6 +899,7 @@ def test_intersect_ray_heightfield_uses_finalize_bvh(test: TestRaycast, device: 
 
     newton.intersect_ray(
         model,
+        backend=backend,
         ray_origins=origins,
         ray_directions=directions,
         ray_worlds=worlds,
@@ -810,6 +909,39 @@ def test_intersect_ray_heightfield_uses_finalize_bvh(test: TestRaycast, device: 
 
     np.testing.assert_allclose(out_dist.numpy(), np.array([2.0], dtype=np.float32), atol=1e-5)
     np.testing.assert_array_equal(out_shape_id.numpy(), np.array([shape_id], dtype=np.int32))
+
+
+def test_intersect_ray_heightfield_flat_at_min_z(test: TestRaycast, device: str):
+    """Rays from above hit terrain that is flat at ``min_z`` with a +Z normal (issue #4452)."""
+    # Left half flat at min_z, right half bumpy.
+    elevation = np.zeros((8, 8), dtype=np.float32)
+    elevation[:, 4:] = np.random.default_rng(0).uniform(0.2, 1.0, (8, 4))
+    builder = newton.ModelBuilder()
+    shape_id = builder.add_shape_heightfield(
+        heightfield=Heightfield(elevation, nrow=8, ncol=8, hx=0.5, hy=0.5, min_z=0.0, max_z=0.2)
+    )
+    model = builder.finalize(device=device)
+
+    # Vertical rays onto the flat cells, x in [-0.5, -1/14].
+    xs, ys = np.meshgrid(np.linspace(-0.45, -0.1, 10), np.linspace(-0.45, 0.45, 10))
+    origins = np.stack([xs.ravel(), ys.ravel(), np.ones(xs.size)], axis=1).astype(np.float32)
+    n = len(origins)
+    out_dist = wp.empty(n, dtype=float, device=device)
+    out_shape_id = wp.empty(n, dtype=wp.int32, device=device)
+    out_normal = wp.empty(n, dtype=wp.vec3, device=device)
+    newton.intersect_ray(
+        model,
+        ray_origins=wp.array(origins, dtype=wp.vec3, device=device),
+        ray_directions=wp.array(np.tile([0.0, 0.0, -1.0], (n, 1)), dtype=wp.vec3, device=device),
+        ray_worlds=wp.full(n, -1, dtype=wp.int32, device=device),
+        out_dist=out_dist,
+        out_shape_id=out_shape_id,
+        out_normal=out_normal,
+    )
+
+    np.testing.assert_array_equal(out_shape_id.numpy(), np.full(n, shape_id, dtype=np.int32))
+    np.testing.assert_allclose(out_dist.numpy(), np.ones(n, dtype=np.float32), atol=1e-5)
+    np.testing.assert_allclose(out_normal.numpy(), np.tile([0.0, 0.0, 1.0], (n, 1)), atol=1e-5)
 
 
 def test_intersect_ray_includes_collision_shapes_on_request(test: TestRaycast, device: str):
@@ -903,7 +1035,22 @@ add_function_test(
     devices=devices,
 )
 add_function_test(TestRaycast, "test_intersect_ray", test_intersect_ray, devices=devices)
+for test_func in (
+    test_intersect_ray,
+    test_intersect_ray_global_world,
+    test_intersect_ray_heightfield_uses_finalize_bvh,
+    test_intersect_ray_world_planes,
+):
+    add_function_test(
+        TestRaycast,
+        f"{test_func.__name__}_optix",
+        test_func,
+        devices=[d for d in devices if d.is_cuda],
+        requires=("warp_optix",),
+        backend="optix",
+    )
 add_function_test(TestRaycast, "test_intersect_ray_global_world", test_intersect_ray_global_world, devices=devices)
+add_function_test(TestRaycast, "test_intersect_ray_world_planes", test_intersect_ray_world_planes, devices=devices)
 add_function_test(
     TestRaycast,
     "test_intersect_ray_includes_collision_shapes_on_request",
@@ -914,6 +1061,12 @@ add_function_test(
     TestRaycast,
     "test_intersect_ray_heightfield_uses_finalize_bvh",
     test_intersect_ray_heightfield_uses_finalize_bvh,
+    devices=devices,
+)
+add_function_test(
+    TestRaycast,
+    "test_intersect_ray_heightfield_flat_at_min_z",
+    test_intersect_ray_heightfield_flat_at_min_z,
     devices=devices,
 )
 

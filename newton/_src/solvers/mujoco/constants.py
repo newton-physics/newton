@@ -17,14 +17,18 @@ DEFAULT_LIMIT_SOLREF_TIMECONST = DEFAULT_LIMIT_SOLREF[0]
 HINGE_CONNECT_HALF_SPAN = 0.05
 """Distance [m] along the hinge axis from a revolute loop joint's anchor to each of its two CONNECT points."""
 
-KINEMATIC_ARMATURE = 1.0e10
-"""Large MuJoCo armature value used to make kinematic-body DOFs effectively immovable."""
+KINEMATIC_LOCK_INERTIA_RATIO = 1.0e4
+"""Armature, relative to a DOF's own inertia (``dof_M0``), that locks kinematic root DOFs while MuJoCo computes its
+constants.
+
+Larger ratios make kinematic roots more rigid but slow the convergence of iterative solvers on their weld and
+contact rows."""
 
 MJ_MINMU = 1.0e-5
 """MuJoCo's minimum friction coefficient clamp."""
 
-MJ_MINVAL = 2.220446049250313e-16
-"""MuJoCo's minimum positive scalar guard value."""
+FLOAT64_EPS = 2.220446049250313e-16
+"""Double-precision epsilon used by Newton's solver guards."""
 
 SOLREF_MODE_FORCE_SPACE = 0
 """Interpret joint-limit gains as Newton force-space ``joint_limit_ke``/``joint_limit_kd``."""

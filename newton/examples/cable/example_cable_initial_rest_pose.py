@@ -1,24 +1,26 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Cable Initial and Rest Poses
-#
-# Demonstrates two cables whose initial and structural-rest poses differ:
-#
-# - a helical initial pose with zero intrinsic bend and twist;
-# - a straight initial pose with a helical structural-rest pose.
-#
-# The initial and rest segment lengths match in both cases, isolating the
-# angular material response from initial stretch.
-#
-# Run interactively:
-#   uv run --extra examples python -m newton.examples.cable.example_cable_initial_rest_pose
-#
-# Run as a test:
-#   uv run --extra examples python -m newton.examples.cable.example_cable_initial_rest_pose --test --viewer null
-#
-###########################################################################
+"""Cable Initial and Rest Poses
+
+Demonstrates two cables whose initial and structural-rest poses differ:
+
+- a helical initial pose with zero intrinsic bend and twist;
+- a straight initial pose with a helical structural-rest pose.
+
+The initial and rest segment lengths match in both cases, isolating the
+angular material response from initial stretch.
+
+Success criteria:
+- Two cables start side by side: an orange helix with a straight rest pose and a blue straight cable
+  with a helical rest pose.
+- The orange cable relaxes toward a straighter shape while the blue cable bends toward its helical
+  rest shape.
+- Both cables remain connected and bounded as they respond to their different structural-rest poses.
+
+Runs:
+- `python -m newton.examples cable_initial_rest_pose`
+"""
 
 import math
 
@@ -52,10 +54,12 @@ class Example:
     def __init__(self, viewer, args):
         self.viewer = viewer
         self.args = args
+        self.solver_type = getattr(args, "solver", "vbd") if args is not None else "vbd"
+        self.kamino_backend = getattr(args, "kamino_backend", "lox") if args is not None else "lox"
 
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
-        self.sim_substeps = 5
+        self.sim_substeps = 2 if self.solver_type == "kamino" else 5
         self.sim_iterations = 5
         self.sim_dt = self.frame_dt / self.sim_substeps
         self.sim_time = 0.0
@@ -70,6 +74,8 @@ class Example:
         bend_damping = 1.0e0
 
         builder = newton.ModelBuilder()
+        if self.solver_type == "kamino":
+            newton.solvers.SolverKamino.register_custom_attributes(builder)
         cable_cfg = builder.default_shape_cfg.copy()
         cable_cfg.density = 800.0
         cable_cfg.ke = 5.0e4
@@ -97,7 +103,6 @@ class Example:
             bend_damping=bend_damping,
             label="straight_rest_helix_initial",
             color=(0.95, 0.35, 0.12),
-            body_frame_origin="com",
         )
 
         right_rest_points = _create_helix_points(
@@ -127,7 +132,6 @@ class Example:
             bend_damping=bend_damping,
             label="helix_rest_straight_initial",
             color=(0.15, 0.65, 1.0),
-            body_frame_origin="com",
         )
         self.cable_bodies = [left_bodies, right_bodies]
 
@@ -137,11 +141,29 @@ class Example:
 
         self.collision_pipeline = newton.CollisionPipeline(self.model, contact_matching="latest")
         self.contacts = self.collision_pipeline.contacts()
-        self.solver = newton.solvers.SolverVBD(
-            self.model,
-            iterations=self.sim_iterations,
-            rigid_compliant_alm=True,
-        )
+        if self.solver_type == "kamino":
+            use_scc = self.kamino_backend == "scc"
+            config = newton.solvers.SolverKamino.Config.from_model(
+                self.model, dynamics_solver=self.kamino_backend, sparse_dynamics=use_scc
+            )
+            config.use_collision_detector = False
+            if use_scc:
+                config.dynamics.preconditioning = False
+                config.dynamics.linear_solver_type = "CR"
+                config.dynamics.linear_solver_kwargs = {"maxiter": 9}
+                config.scc.bilateral_solver_type = "LLTBRCM"
+                config.scc.bilateral_solver_kwargs = {"parallel_factorization": True}
+                config.scc.tolerance = 1e-5
+                config.scc.regularization = 1e-8
+                config.scc.max_alternating_iterations = 4
+                config.scc.inequality_sweeps_per_iteration = 3
+                config.scc.bilateral_solve_interval = 1
+            self.solver = newton.solvers.SolverKamino(self.model, config=config)
+        else:
+            self.solver = newton.solvers.SolverVBD(
+                self.model,
+                iterations=self.sim_iterations,
+            )
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
@@ -167,7 +189,7 @@ class Example:
 
     def simulate(self):
         """Advance the simulation by one frame."""
-        for _ in range(self.sim_substeps):
+        for substep in range(self.sim_substeps):
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
             self.collision_pipeline.collide(self.state_0, self.contacts)
@@ -178,7 +200,12 @@ class Example:
                 self.contacts,
                 self.sim_dt,
             )
-            self.state_0, self.state_1 = self.state_1, self.state_0
+            # With an odd substep count, copy instead of swapping on the last
+            # substep so every CUDA graph replay starts from state_0.
+            if self.sim_substeps % 2 == 1 and substep == self.sim_substeps - 1:
+                self.state_0.assign(self.state_1)
+            else:
+                self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
         """Advance the example by one frame."""
@@ -206,6 +233,11 @@ class Example:
 
 
 if __name__ == "__main__":
-    viewer, args = newton.examples.init()
+    parser = newton.examples.create_parser()
+    parser.add_argument("--solver", choices=["vbd", "kamino"], default="vbd", help="Cable dynamics solver.")
+    parser.add_argument(
+        "--kamino-backend", choices=["lox", "scc", "padmm"], default="lox", help="Kamino dynamics solver backend."
+    )
+    viewer, args = newton.examples.init(parser)
     example = Example(viewer, args)
     newton.examples.run(example, args)

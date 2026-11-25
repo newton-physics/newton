@@ -65,7 +65,6 @@ def _merge_meshes(
     points: list[np.array] = (),
     indices: list[np.array] = (),
     shape_ids: np.array = (),
-    material_ids: np.array = (),
 ) -> tuple[wp.array, wp.array, wp.array, np.array]:
     """Merges the points and indices of several meshes into a single one"""
 
@@ -82,12 +81,15 @@ def _merge_meshes(
         wp.array(merged_points, dtype=wp.vec3),
         wp.array(merged_indices, dtype=int),
         wp.array(shape_ids[vertex_shape_ids], dtype=int),
-        np.array(material_ids, dtype=int)[face_shape_ids],
+        face_shape_ids,
     )
 
 
-def _get_shape_mesh(model: newton.Model, shape_id: int, geo_type: newton.GeoType, geo_scale: wp.vec3) -> newton.Mesh:
-    """Get a shape mesh from a model."""
+def _get_shape_mesh(
+    model: newton.Model, shape_id: int, geo_type: newton.GeoType, geo_scale: wp.vec3, closed_planes: bool = False
+) -> newton.Mesh:
+    """Get a shape mesh from a model. With ``closed_planes``, planes become slabs below their surface, as deep as
+    they are wide, so that winding numbers classify the half-space below them as inside."""
 
     if geo_type == newton.GeoType.MESH:
         src_mesh = model.shape_source[shape_id]
@@ -98,6 +100,14 @@ def _get_shape_mesh(model: newton.Model, shape_id: int, geo_type: newton.GeoType
         # Handle "infinite" planes encoded with non-positive scales
         width = geo_scale[0] if len(geo_scale) > 0 and geo_scale[0] > 0.0 else 1000.0
         length = geo_scale[1] if len(geo_scale) > 1 and geo_scale[1] > 0.0 else 1000.0
+        if closed_planes:
+            depth = max(width, length)
+            slab = newton.Mesh.create_box(
+                0.5 * width, 0.5 * length, 0.5 * depth, compute_normals=False, compute_uvs=False, compute_inertia=False
+            )
+            vertices = np.array(slab.vertices, copy=True)
+            vertices[:, 2] -= 0.5 * depth
+            return newton.Mesh(vertices, slab.indices, compute_inertia=False)
         mesh = newton.Mesh.create_plane(
             width,
             length,
@@ -212,26 +222,43 @@ def _get_shape_collision_materials(model: newton.Model, shape_ids: list[int]):
     thicknesses = model.shape_margin.numpy()[shape_ids]
     friction = model.shape_material_mu.numpy()[shape_ids]
 
-    return thicknesses, friction
+    # Adhesion and projection threshold are optional ``mpm:*`` shape attributes
+    mpm_attributes = getattr(model, "mpm", None)
+    shape_adhesion = getattr(mpm_attributes, "collider_adhesion", None)
+    if shape_adhesion is None:
+        adhesion = np.full(len(shape_ids), _DEFAULT_ADHESION)
+    else:
+        adhesion = shape_adhesion.numpy()[shape_ids]
+
+    # A negative value selects the solver default, which scales with the voxel size
+    shape_projection_threshold = getattr(mpm_attributes, "collider_projection_threshold", None)
+    if shape_projection_threshold is None:
+        projection_threshold = np.full(len(shape_ids), -1.0)
+    else:
+        projection_threshold = shape_projection_threshold.numpy()[shape_ids]
+
+    return thicknesses, friction, adhesion, projection_threshold
 
 
 def _create_body_collider_mesh(
     model: newton.Model,
     shape_ids: list[int],
-    material_ids: list[int],
+    winding_number: bool = False,
 ):
-    """Create a collider mesh from a body."""
+    """Create a collider mesh from a body (closed planes and winding-number support with ``winding_number``)."""
 
     shape_scale = model.shape_scale.numpy()
     shape_type = model.shape_type.numpy()
 
-    shape_meshes = [_get_shape_mesh(model, sid, newton.GeoType(shape_type[sid]), shape_scale[sid]) for sid in shape_ids]
+    shape_meshes = [
+        _get_shape_mesh(model, sid, newton.GeoType(shape_type[sid]), shape_scale[sid], closed_planes=winding_number)
+        for sid in shape_ids
+    ]
 
-    collider_points, collider_indices, vertex_shape_ids, face_material_ids = _merge_meshes(
+    collider_points, collider_indices, vertex_shape_ids, face_shape_ids = _merge_meshes(
         points=[mesh.vertices for mesh in shape_meshes],
         indices=[mesh.indices for mesh in shape_meshes],
         shape_ids=shape_ids,
-        material_ids=material_ids,
     )
 
     wp.launch(
@@ -244,7 +271,12 @@ def _create_body_collider_mesh(
         ],
     )
 
-    return wp.Mesh(collider_points, collider_indices, wp.zeros_like(collider_points)), face_material_ids
+    return (
+        wp.Mesh(
+            collider_points, collider_indices, wp.zeros_like(collider_points), support_winding_number=winding_number
+        ),
+        face_shape_ids,
+    )
 
 
 @wp.struct
@@ -308,6 +340,9 @@ class ImplicitMPMModel:
         self._separate_worlds = bool(options.separate_worlds and model.world_count > 1)
         """Whether colliders and particles are isolated by Newton world."""
 
+        self.collider_winding_number = bool(getattr(options, "collider_winding_number", False))
+        """Whether collider distances are signed with generalized winding numbers."""
+
         self.collider = Collider()
         """Collider struct"""
 
@@ -333,7 +368,8 @@ class ImplicitMPMModel:
 
         - ``particle_radius``, ``particle_volume``, and ``particle_density``,
           from ``model.particle_radius`` and ``model.particle_mass``.
-        - Cached extrema (``min_young_modulus``, ``max_hardening``) and feature
+        - Cached extrema (``min_young_modulus``, ``max_hardening``,
+          ``max_particle_radius``, ``environment_max_particle_density``) and feature
           flags (``has_viscosity``, ``has_dilatancy``) used to toggle code
           paths without rescanning every step.
         """
@@ -358,6 +394,7 @@ class ImplicitMPMModel:
         with wp.ScopedDevice(model.device):
             num_particles = model.particle_q.shape[0]
             self.particle_radius = _particle_parameter(num_particles, model.particle_radius)
+            self.max_particle_radius = float(np.max(self.particle_radius.numpy(), initial=0.0))
             self.particle_volume = _reuse_or_allocate(getattr(self, "particle_volume", None), num_particles)
             self.particle_density = _reuse_or_allocate(getattr(self, "particle_density", None), num_particles)
             wp.launch(
@@ -395,6 +432,16 @@ class ImplicitMPMModel:
         material_particle_volume = self.particle_volume.numpy().copy()
         material_particle_volume[~material_active] = 0.0
         self.material_particle_volume = wp.array(material_particle_volume, dtype=float, device=model.device)
+
+        # Densest material of each independent environment (all particles share one without separate worlds);
+        # kinematic particles have zero density and stay out of the maximum
+        material_density = self.particle_density.numpy()[material_active]
+        environment_max_density = np.zeros(model.world_count if self._separate_worlds else 1, dtype=np.float32)
+        if self._separate_worlds:
+            np.maximum.at(environment_max_density, model.particle_world.numpy()[material_active], material_density)
+        else:
+            environment_max_density[0] = np.max(material_density, initial=0.0)
+        self.environment_max_particle_density = wp.array(environment_max_density, dtype=float, device=model.device)
 
         if np.any(material_active):
             self.min_young_modulus = float(np.min(self.material_parameters.young_modulus.numpy()[material_active]))
@@ -445,6 +492,7 @@ class ImplicitMPMModel:
         body_inv_inertia: wp.array | None = None,
         body_q: wp.array | None = None,
         collider_world_ids: list[int] | None = None,
+        collider_material_counts: list[int | None] | None = None,
     ):
         """Initialize collider parameters and defaults from inputs.
 
@@ -468,6 +516,12 @@ class ImplicitMPMModel:
             collider_adhesion: Per-mesh adhesion (Pa).
             collider_projection_threshold: Per-mesh projection threshold, i.e. how far below the surface the
               particle may be before it is projected out. (m)
+            collider_material_counts: Number of materials to allocate per collider (default 1). Body colliders
+                allocate at least one material per shape, so ``max(shape count, count)`` materials; the first ones
+                are the shape materials and faces start on them. Extra materials, and all materials of mesh
+                colliders (whose faces start on the first one), start with the collider's material values. Face
+                assignments and material values can then be changed through the views returned by
+                :meth:`collider_face_materials` and :meth:`collider_materials`.
             collider_particle_ids: For deformable mesh colliders, solver-model particle IDs corresponding to each
                 mesh vertex. These IDs cannot be combined with an external ``model``. In isolated multi-world mode,
                 every ID must belong to the collider's local world; global deformable colliders are rejected.
@@ -584,6 +638,7 @@ class ImplicitMPMModel:
         collider_projection_threshold = require_aligned("collider_projection_threshold", collider_projection_threshold)
         collider_friction = require_aligned("collider_friction", collider_friction)
         collider_adhesion = require_aligned("collider_adhesion", collider_adhesion)
+        collider_material_counts = require_aligned("collider_material_counts", collider_material_counts)
         collider_particle_ids = require_aligned("collider_particle_ids", collider_particle_ids)
         supplied_world_ids = require_aligned("collider_world_ids", supplied_world_ids)
 
@@ -707,16 +762,26 @@ class ImplicitMPMModel:
         # count materials and shapes
         material_count = 1  # default material
         collider_material_ids = []
-        for body_id, shapes in zip(collider_body_ids, collider_shapes, strict=True):
+        for collider_id, (body_id, shapes) in enumerate(zip(collider_body_ids, collider_shapes, strict=True)):
+            requested_material_count = collider_material_counts[collider_id]
+            if requested_material_count is not None and (
+                not isinstance(requested_material_count, (int, np.integer)) or requested_material_count < 1
+            ):
+                raise ValueError(
+                    f"collider_material_counts[{collider_id}] must be a positive integer; "
+                    f"got {requested_material_count!r}."
+                )
             if body_id is not None:
                 if len(shapes) == 0:
                     raise ValueError(f"Body {body_id} has no collision shapes for its collider world ID")
 
-                collider_material_ids.append(list(range(material_count, material_count + len(shapes))))
-                material_count += len(shapes)
-            else:
-                collider_material_ids.append([material_count])
-                material_count += 1
+            # body colliders own at least one material per shape
+            shape_count = 0 if body_id is None else len(shapes)
+            collider_material_count = max(
+                shape_count, 1 if requested_material_count is None else requested_material_count
+            )
+            collider_material_ids.append(list(range(material_count, material_count + collider_material_count)))
+            material_count += collider_material_count
 
         # assign material values
         material_thickness = [_DEFAULT_THICKNESS * self.voxel_size] * material_count
@@ -751,18 +816,30 @@ class ImplicitMPMModel:
 
         for collider_id, body_id in enumerate(collider_body_ids):
             if body_id is not None:
-                for material_id, shape_margin, shape_friction in zip(
-                    collider_material_ids[collider_id],
+                shape_count = len(collider_shapes[collider_id])
+                for material_id, shape_margin, shape_friction, shape_adhesion, shape_projection_threshold in zip(
+                    collider_material_ids[collider_id][:shape_count],
                     *_get_shape_collision_materials(model, collider_shapes[collider_id]),
                     strict=True,
                 ):
                     # use material from shapes as default
-                    assign_material(material_id, thickness=shape_margin, friction=shape_friction)
+                    has_projection_threshold = shape_projection_threshold >= 0.0
+                    assign_material(
+                        material_id,
+                        thickness=shape_margin,
+                        friction=shape_friction,
+                        adhesion=shape_adhesion,
+                        projection_threshold=shape_projection_threshold if has_projection_threshold else None,
+                    )
                     # override with user-provided material
                     assign_collider_material(material_id, collider_id)
+                # extra materials beyond the shapes start from the user-provided values
+                for material_id in collider_material_ids[collider_id][shape_count:]:
+                    assign_collider_material(material_id, collider_id)
             else:
-                # user-provided collider, single material
-                assign_collider_material(collider_material_ids[collider_id][0], collider_id)
+                # user-provided collider, all materials start from the same values
+                for material_id in collider_material_ids[collider_id]:
+                    assign_collider_material(material_id, collider_id)
 
         collider_max_thickness = [
             max((material_thickness[material_id] for material_id in collider_material_ids[collider_id]), default=0.0)
@@ -837,6 +914,7 @@ class ImplicitMPMModel:
             packed_body_ids = []
             face_material_ids = []
             collider_face_offsets = []
+            collider_face_counts = []
             face_offset = 0
             for collider_id in range(collider_count):
                 body_index = collider_body_ids[collider_id]
@@ -847,18 +925,19 @@ class ImplicitMPMModel:
                     # are concerned, it does not matter.
 
                     packed_body_ids.append(-1)
-                    material_id = collider_material_ids[collider_id][0]
                     face_count = collider_meshes[collider_id].indices.shape[0] // 3
-                    mesh_face_material_ids = np.full(face_count, material_id, dtype=int)
+                    mesh_face_material_ids = np.zeros(face_count, dtype=int)
                 else:
+                    # faces start on their shape's material, the first ones of the collider
                     collider_meshes[collider_id], mesh_face_material_ids = _create_body_collider_mesh(
-                        model, collider_shapes[collider_id], collider_material_ids[collider_id]
+                        model, collider_shapes[collider_id], winding_number=self.collider_winding_number
                     )
                     packed_body_ids.append(body_index)
                     face_count = collider_meshes[collider_id].indices.shape[0] // 3
 
                 face_material_ids.append(mesh_face_material_ids)
                 collider_face_offsets.append(face_offset)
+                collider_face_counts.append(face_count)
                 face_offset += face_count
 
             global_collider_ids = [
@@ -879,6 +958,14 @@ class ImplicitMPMModel:
             self.collider.collider_particle_offsets = wp.array(collider_particle_offsets, dtype=int)
             self.collider.collider_particle_ids = wp.array(flat_collider_particle_ids, dtype=int)
             self.collider.collider_mesh = wp.array([collider.id for collider in collider_meshes], dtype=wp.uint64)
+            # Custom meshes keep the average-normal sign unless built with winding-number support
+            self.collider.collider_winding_number = wp.array(
+                [
+                    int(self.collider_winding_number and getattr(mesh, "support_winding_number", False))
+                    for mesh in collider_meshes
+                ],
+                dtype=int,
+            )
             self.collider.collider_max_thickness = wp.array(collider_max_thickness, dtype=float)
             self.collider.collider_world = wp.array(collider_world_ids, dtype=int)
             self.collider.collider_face_offset = wp.array(collider_face_offsets, dtype=int)
@@ -887,12 +974,16 @@ class ImplicitMPMModel:
 
             all_face_material_ids = np.concatenate(face_material_ids) if face_material_ids else np.empty(0, dtype=int)
             self.collider.face_material_index = wp.array(all_face_material_ids, dtype=int)
+            self.collider.collider_material_offset = wp.array([ids[0] for ids in collider_material_ids], dtype=int)
+            self.collider.collider_material_count = wp.array([len(ids) for ids in collider_material_ids], dtype=int)
 
             self.collider.material_thickness = wp.array(material_thickness, dtype=float)
             self.collider.material_friction = wp.array(material_friction, dtype=float)
             self.collider.material_adhesion = wp.array(material_adhesion, dtype=float)
             self.collider.material_projection_threshold = wp.array(material_projection_threshold, dtype=float)
 
+        self.collider_face_ranges = list(zip(collider_face_offsets, collider_face_counts, strict=True))
+        self.collider_material_ranges = [(ids[0], len(ids)) for ids in collider_material_ids]
         self.collider.body_com = body_com
         self.collider_body_mass = body_mass
         self.collider_body_inv_inertia = body_inv_inertia

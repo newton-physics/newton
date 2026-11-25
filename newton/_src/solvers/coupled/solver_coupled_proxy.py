@@ -14,7 +14,7 @@ import numpy as np
 import warp as wp
 
 from ...core.reset import reset_world_selected
-from ...sim import JointType, ModelFlags, StateFlags
+from ...sim import JointType, StateFlags
 from .interface import (
     CouplingEndpointKind,
 )
@@ -773,6 +773,9 @@ class SolverCoupledProxy(SolverCoupled):
                 proxy_keep.update(int(i) for i in mapping.proxy_joint_ids_global.numpy())
         return proxy_keep
 
+    def _iteration_restarts_possible(self) -> bool:
+        return int(self._coupling.iterations) > 1
+
     def _after_entries_constructed(self) -> None:
         self._refresh_proxy_view_maps()
         self._validate_in_place_proxy_entries()
@@ -1332,7 +1335,7 @@ class SolverCoupledProxy(SolverCoupled):
     def notify_model_changed(self, flags: int) -> None:
         """Refresh proxy inertia after source solvers consume model updates."""
         super().notify_model_changed(flags)
-        if int(flags) & int(ModelFlags.BODY_INERTIAL_PROPERTIES):
+        if int(flags) & self._effective_mass_refresh_flags():
             self._apply_proxy_body_effective_masses()
 
     def _step_coupled(

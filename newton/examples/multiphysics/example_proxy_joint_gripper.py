@@ -1,17 +1,23 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Proxy Joint Gripper
-#
-# A MuJoCo-driven palm and two prismatic cube fingers grip a VBD soft grid.
-# The VBD entry receives the gripper bodies as body proxies and keeps the
-# fixed/prismatic joints enabled as proxy joints whose targets track the
-# MuJoCo source joint configuration.
-#
-# Command: python -m newton.examples proxy_joint_gripper
-#
-###########################################################################
+"""Example Proxy Joint Gripper
+
+A MuJoCo-driven palm and two prismatic cube fingers grip a VBD soft grid.
+The VBD entry receives the gripper bodies as body proxies and keeps the
+fixed/prismatic joints enabled as proxy joints whose targets track the
+MuJoCo source joint configuration.
+
+Success criteria:
+- A MuJoCo-driven palm with two prismatic cube fingers appears around a VBD soft grid.
+- The gripper fingers close around the soft object.
+- The soft object deforms under the grip.
+- Proxy bodies and proxy joints make the VBD gripper view track the MuJoCo gripper configuration.
+- The soft object should stay bounded and should not drift unexpectedly from the gripper.
+
+Runs:
+- `python -m newton.examples proxy_joint_gripper`
+"""
 
 from __future__ import annotations
 
@@ -245,8 +251,8 @@ class Example:
             axis=wp.vec3(0.0, -1.0, 0.0),
             parent_xform=wp.transform(p=wp.vec3(0.07, finger_y, 0.0), q=wp.quat_identity()),
             child_xform=wp.transform(p=wp.vec3(0.0, 0.0, 0.0), q=wp.quat_identity()),
-            target_pos=0.0,
-            target_vel=0.0,
+            target_q=0.0,
+            target_qd=0.0,
             target_ke=5.0e4 if self.scenario == "harsh" else 2.0e4,
             target_kd=500.0 if self.scenario == "harsh" else 250.0,
             limit_lower=0.0,
@@ -262,8 +268,8 @@ class Example:
             axis=wp.vec3(0.0, 1.0, 0.0),
             parent_xform=wp.transform(p=wp.vec3(0.07, -finger_y, 0.0), q=wp.quat_identity()),
             child_xform=wp.transform(p=wp.vec3(0.0, 0.0, 0.0), q=wp.quat_identity()),
-            target_pos=0.0,
-            target_vel=0.0,
+            target_q=0.0,
+            target_qd=0.0,
             target_ke=5.0e4 if self.scenario == "harsh" else 2.0e4,
             target_kd=500.0 if self.scenario == "harsh" else 250.0,
             limit_lower=0.0,

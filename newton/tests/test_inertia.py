@@ -467,11 +467,130 @@ class TestInertia(unittest.TestCase):
         assert_np_equal(np.array(I), np.array(I_ref), tol=1e-2)
         assert_np_equal(np.array(I), np.array(I_box), tol=1e-2)
 
+    def test_hollow_mesh_inertia_uses_requested_thickness(self):
+        """Verify hollow mesh inertia uses the requested shell thickness and scale, not the cached shell."""
+        density = 5.0
+        box = newton.Mesh.create_box(0.5, 0.75, 1.0, duplicate_vertices=False, compute_inertia=False)
+        cached = newton.Mesh(box.vertices, box.indices, is_solid=False)
+        recomputed = newton.Mesh(box.vertices, box.indices, compute_inertia=False, is_solid=False)
+
+        for scale, thickness in ((wp.vec3(1.0), 0.05), (wp.vec3(2.0, 3.0, 4.0), 0.01)):
+            with self.subTest(scale=scale, thickness=thickness):
+                m, com, I = compute_inertia_shape(
+                    GeoType.MESH, scale, cached, density, is_solid=False, thickness=thickness
+                )
+                m_ref, com_ref, I_ref = compute_inertia_shape(
+                    GeoType.MESH, scale, recomputed, density, is_solid=False, thickness=thickness
+                )
+                self.assertAlmostEqual(m, m_ref, delta=1e-4 * m_ref)
+                assert_np_equal(np.array(com), np.array(com_ref), tol=1e-6)
+                assert_np_equal(np.array(I), np.array(I_ref), tol=1e-4 * np.abs(np.array(I_ref)).max())
+
+    def test_hollow_mesh_thickness_is_validated(self):
+        """Verify hollow meshes warn on zero thickness and reject negative or non-finite thickness."""
+        box = newton.Mesh.create_box(0.5, 0.75, 1.0, duplicate_vertices=False, compute_inertia=False)
+        hollow = newton.Mesh(box.vertices, box.indices, is_solid=False)
+
+        with self.assertWarnsRegex(UserWarning, "zero mass and inertia"):
+            m, _com, I = compute_inertia_shape(
+                GeoType.MESH, wp.vec3(1.0), hollow, 1000.0, is_solid=False, thickness=0.0
+            )
+        self.assertEqual(m, 0.0)
+        self.assertFalse(np.any(np.array(I)))
+
+        for thickness in (-0.01, float("nan")):
+            with self.subTest(thickness=thickness):
+                with self.assertRaisesRegex(ValueError, "thickness"):
+                    compute_inertia_shape(
+                        GeoType.MESH, wp.vec3(1.0), hollow, 1000.0, is_solid=False, thickness=thickness
+                    )
+
+    def test_hollow_mesh_array_thickness_is_validated(self):
+        """Verify 0-d and per-vertex hollow mesh thickness are honored or rejected, never read out of bounds."""
+        box = newton.Mesh.create_box(0.5, 0.75, 1.0, duplicate_vertices=False, compute_inertia=False)
+        hollow = newton.Mesh(box.vertices, box.indices, is_solid=False)
+        num_vertices = len(hollow.vertices)
+
+        m_ref, com_ref, I_ref = compute_inertia_shape(
+            GeoType.MESH, wp.vec3(1.0), hollow, 1000.0, is_solid=False, thickness=0.01
+        )
+        for thickness in (np.array(0.01), [0.01] * num_vertices, np.full(num_vertices, 0.01, dtype=np.float32)):
+            with self.subTest(thickness=type(thickness).__name__):
+                m, com, I = compute_inertia_shape(
+                    GeoType.MESH, wp.vec3(1.0), hollow, 1000.0, is_solid=False, thickness=thickness
+                )
+                self.assertAlmostEqual(m, m_ref, delta=1e-5 * m_ref)
+                assert_np_equal(np.array(com), np.array(com_ref), tol=1e-6)
+                assert_np_equal(np.array(I), np.array(I_ref), tol=1e-5 * np.abs(np.array(I_ref)).max())
+
+        with self.assertWarnsRegex(UserWarning, "zero mass and inertia"):
+            m, _com, _I = compute_inertia_shape(
+                GeoType.MESH, wp.vec3(1.0), hollow, 1000.0, is_solid=False, thickness=[0.0] * num_vertices
+            )
+        self.assertEqual(m, 0.0)
+
+        valid_prefix = [0.01] * (num_vertices - 1)
+        for thickness, pattern in (
+            ([0.01] * 3, "one value per vertex"),
+            ([0.01] * (num_vertices + 1), "one value per vertex"),
+            (np.full((num_vertices, 1), 0.01), "one value per vertex"),
+            ([*valid_prefix, -0.01], ">= 0"),
+            ([*valid_prefix, float("inf")], "finite"),
+        ):
+            with self.subTest(thickness=thickness):
+                with self.assertRaisesRegex(ValueError, pattern):
+                    compute_inertia_shape(
+                        GeoType.MESH, wp.vec3(1.0), hollow, 1000.0, is_solid=False, thickness=thickness
+                    )
+
+    def test_hollow_mesh_zero_thickness_warning_points_to_caller(self):
+        """Verify zero-thickness hollow mesh warnings are attributed to the calling code, not to Newton."""
+        box = newton.Mesh.create_box(0.5, 0.75, 1.0, duplicate_vertices=False, compute_inertia=False)
+        hollow = newton.Mesh(box.vertices, box.indices, is_solid=False)
+        zero_thickness = (0.0, [0.0] * len(hollow.vertices))
+
+        for thickness in zero_thickness:
+            with self.subTest(call="compute_inertia_shape", thickness=type(thickness).__name__):
+                with self.assertWarnsRegex(UserWarning, "zero mass and inertia") as caught:
+                    compute_inertia_shape(
+                        GeoType.MESH, wp.vec3(1.0), hollow, 1000.0, is_solid=False, thickness=thickness
+                    )
+                self.assertEqual(caught.filename, __file__)
+
+        builder = newton.ModelBuilder()
+        body = builder.add_body()
+        with self.assertWarnsRegex(UserWarning, "zero mass and inertia") as caught:
+            builder.add_shape_mesh(
+                body, mesh=hollow, cfg=newton.ModelBuilder.ShapeConfig(density=1000.0, is_solid=False, margin=0.0)
+            )
+        self.assertEqual(caught.filename, __file__)
+
+    def test_invalid_hollow_mesh_thickness_leaves_builder_unchanged(self):
+        """Verify a rejected hollow mesh thickness does not leave a partially added shape in the builder."""
+        box = newton.Mesh.create_box(0.5, 0.75, 1.0, duplicate_vertices=False, compute_inertia=False)
+        hollow = newton.Mesh(box.vertices, box.indices, is_solid=False)
+        builder = newton.ModelBuilder()
+        body = builder.add_body()
+        builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1, cfg=newton.ModelBuilder.ShapeConfig(density=1000.0))
+        shape_count, body_shapes = builder.shape_count, list(builder.body_shapes[body])
+        mass, inertia = builder.body_mass[body], np.array(builder.body_inertia[body])
+
+        with self.assertRaisesRegex(ValueError, ">= 0"):
+            builder.add_shape_mesh(
+                body, mesh=hollow, cfg=newton.ModelBuilder.ShapeConfig(density=1000.0, is_solid=False, margin=-0.01)
+            )
+
+        self.assertEqual(builder.shape_count, shape_count)
+        self.assertEqual(builder.body_shapes[body], body_shapes)
+        self.assertEqual(builder.body_mass[body], mass)
+        assert_np_equal(np.array(builder.body_inertia[body]), inertia)
+        builder.finalize(device="cpu")
+
     def test_hollow_primitive_thickness_must_fit_inside_shape(self):
         cases = [
             (GeoType.SPHERE, (0.5, 0.0, 0.0), 0.5, "sphere radius"),
             (GeoType.BOX, (0.5, 0.4, 0.3), 0.3, "box minimum half-extent"),
-            (GeoType.CAPSULE, (0.5, 0.2, 0.0), 0.2, "capsule half-height"),
+            (GeoType.CAPSULE, (0.5, 0.2, 0.0), 0.5, "capsule radius"),
             (GeoType.CYLINDER, (0.5, 0.2, 0.0), 0.2, "cylinder half-height"),
             (GeoType.CONE, (0.5, 0.2, 0.0), 0.2, "cone half-height"),
             (GeoType.ELLIPSOID, (0.5, 0.4, 0.3), 0.3, "ellipsoid minimum semi-axis"),
@@ -551,6 +670,87 @@ class TestInertia(unittest.TestCase):
         self.assertGreater(mass, 0.0)
         assert_np_equal(np.array(com), np.zeros(3), tol=1e-6)
         self.assertTrue(np.all(np.isfinite(np.array(inertia))))
+
+    def test_hollow_capsule_has_uniform_shell_thickness(self):
+        """Verify that a hollow capsule has the same wall thickness at the end caps as along the sides."""
+        density = 1000.0
+        radius = 0.5
+        half_height = 1.0
+        thickness = 0.1
+
+        mass, com, _ = compute_inertia_shape(
+            GeoType.CAPSULE, (radius, half_height, 0.0), None, density, is_solid=False, thickness=thickness
+        )
+
+        # Shell volume = capsule(radius, h) - capsule(radius - thickness, h): cylinder wall plus two hemispherical caps.
+        inner_radius = radius - thickness
+        volume = np.pi * 2.0 * half_height * (radius**2 - inner_radius**2) + 4.0 / 3.0 * np.pi * (
+            radius**3 - inner_radius**3
+        )
+        self.assertAlmostEqual(mass, density * volume, delta=1.0e-6 * density * volume)
+        assert_np_equal(np.array(com), np.zeros(3), tol=1.0e-6)
+
+    def test_hollow_capsule_without_cylinder_matches_hollow_sphere(self):
+        """Verify that a hollow capsule with zero half-height matches a hollow sphere."""
+        density = 1000.0
+        radius = 0.5
+        thickness = 0.1
+
+        m_cap, _, I_cap = compute_inertia_shape(
+            GeoType.CAPSULE, (radius, 0.0, 0.0), None, density, is_solid=False, thickness=thickness
+        )
+        m_sph, _, I_sph = compute_inertia_shape(
+            GeoType.SPHERE, (radius, 0.0, 0.0), None, density, is_solid=False, thickness=thickness
+        )
+
+        self.assertAlmostEqual(m_cap, m_sph, delta=1.0e-6 * m_sph)
+        assert_np_equal(np.array(I_cap), np.array(I_sph), tol=1.0e-5)
+
+    def test_hollow_capsule_inertia_matches_mesh_subtraction(self):
+        """Verify hollow capsule inertia against outer minus inner capsule meshes."""
+        density = 1000.0
+        radius = 0.5
+        half_height = 1.0
+        thickness = 0.1
+
+        m_an, _, I_an = compute_inertia_shape(
+            GeoType.CAPSULE, (radius, half_height, 0.0), None, density, is_solid=False, thickness=thickness
+        )
+
+        # Both capsules are centered at the origin, so their inertia tensors subtract directly.
+        def _mesh_inertia(r):
+            mesh = newton.Mesh.create_capsule(
+                r, half_height, up_axis=newton.Axis.Z, segments=256, compute_normals=False, compute_uvs=False
+            )
+            m, _, I, _ = compute_inertia_mesh(density, mesh.vertices, mesh.indices, is_solid=True)
+            return m, np.array(I).reshape(3, 3)
+
+        m_out, I_out = _mesh_inertia(radius)
+        m_in, I_in = _mesh_inertia(radius - thickness)
+        I_ref = I_out - I_in
+
+        tol = 0.01  # 1% relative tolerance for the tessellated reference
+        self.assertAlmostEqual(m_an, m_out - m_in, delta=tol * (m_out - m_in))
+        I_an_np = np.array(I_an).reshape(3, 3)
+        for i in range(3):
+            self.assertAlmostEqual(I_an_np[i, i], I_ref[i, i], delta=tol * I_ref[i, i])
+
+    def test_hollow_capsule_accepts_thickness_above_half_height(self):
+        """Verify that a capsule shell thicker than its half-height is accepted when it fits the radius."""
+        density = 1000.0
+        radius = 0.5
+        half_height = 0.2
+        thickness = 0.3
+
+        mass, _, _ = compute_inertia_shape(
+            GeoType.CAPSULE, (radius, half_height, 0.0), None, density, is_solid=False, thickness=thickness
+        )
+
+        inner_radius = radius - thickness
+        volume = np.pi * 2.0 * half_height * (radius**2 - inner_radius**2) + 4.0 / 3.0 * np.pi * (
+            radius**3 - inner_radius**3
+        )
+        self.assertAlmostEqual(mass, density * volume, delta=1.0e-6 * density * volume)
 
     def test_hollow_cone_inertia(self):
         """Test hollow cone inertia via compute_inertia_shape against mesh subtraction.

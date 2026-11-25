@@ -40,7 +40,8 @@ size. The Fit gates below add depth for large proposals.
    Question each new parameter, mode, alias, public symbol, and file, and
    prefer an existing mechanism. Check whether ``main`` or another open pull
    request already covers the change, and whether unrelated parts should be
-   split out.
+   split out. Unjustified public surface and new modes or options are at
+   least P1.
 #. **Principled:** Does it fix the cause at the right layer rather than a
    symptom, proxy, or workaround? Prefer designs that are correct by
    construction over detecting and reporting bad states, and upstream fixes
@@ -57,7 +58,11 @@ size. The Fit gates below add depth for large proposals.
 #. **Tests:** Would each new test fail without the change, for the failure
    mode it claims? Could an existing test, class, or fixture be extended
    instead? Are the model, step count, and device matrix as small as
-   possible?
+   possible? Could the test be flaky because of numerical sensitivity,
+   hardware or device differences, concurrency, execution order, timing, or
+   nondeterminism? For numerical assertions, are tolerances justified by the
+   quantity's scale and precision and by measurements on the relevant
+   execution paths?
 #. **Cost:** What does the change add to the default path? Setup, import,
    memory, and steady-state costs need evidence even when the change is not
    about performance.
@@ -65,9 +70,10 @@ size. The Fit gates below add depth for large proposals.
 Review feedback
 ---------------
 
-Separate discovery order from reporting order. When practical, first inspect
-the exact change and perform a correctness-first Requirements pass before
-evaluating Fit or reading existing review comments. Then use the existing
+Separate discovery order from reporting order. When practical, first sketch
+the smallest fix for the stated problem without reading the change, then
+inspect the exact change and perform a correctness-first Requirements pass
+before evaluating Fit or reading existing review comments. Then use the existing
 discussion to refine or deduplicate the independently discovered concerns.
 
 In the final review, raise project-Fit and architectural concerns before
@@ -223,6 +229,9 @@ for incompatible changes.
 Check the repository obligations relevant to the change, including:
 
 - focused regression coverage and documentation;
+- tests that need optional dependencies declare all of them with
+  ``requires()``, so they skip rather than fail where those dependencies are
+  not installed;
 - schema/importer coverage, compatible schema-package versions, and deferrals;
 - diagnostics that follow the error, warning, and logging rules, including
   Newton warning categories and module loggers instead of ``print()``;

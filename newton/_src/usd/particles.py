@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import math
 import re
+import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -14,6 +15,8 @@ from typing import Any
 import numpy as np
 import warp as wp
 
+from ..core._warnings import _external_warning_stacklevel
+from ..exceptions import NewtonDeprecationWarning
 from ..sim.builder import ModelBuilder
 from . import utils as usd
 
@@ -304,22 +307,30 @@ def _read_material_prim(
 
 def _read_particle_masses(prim, count: int, path: str, mass_unit: float) -> np.ndarray | None:
     """Read authored per-point masses and convert them to kilograms."""
-    attr = prim.GetAttribute("physics:masses")
-    if not attr or not attr.HasAuthoredValue():
+    name, value = "newton:masses", usd.get_attribute(prim, "newton:masses")
+    legacy = usd.get_attribute(prim, "physics:masses")
+    if legacy is not None:
+        warnings.warn(
+            f"{path}: 'physics:masses' on points is deprecated; use 'newton:masses' instead.",
+            NewtonDeprecationWarning,
+            stacklevel=_external_warning_stacklevel(),
+        )
+        if value is None:
+            name, value = "physics:masses", legacy
+    if value is None:
         return None
-    value = attr.Get()
     try:
         masses = np.asarray(value, dtype=np.float64).reshape(-1)
     except (TypeError, ValueError) as error:
-        raise ValueError(f"{path}: physics:masses must contain numeric values, got {value!r}.") from error
+        raise ValueError(f"{path}: {name} must contain numeric values, got {value!r}.") from error
     if masses.size != count:
-        raise ValueError(f"{path}: physics:masses must contain {count} values, got {masses.size}.")
+        raise ValueError(f"{path}: {name} must contain {count} values, got {masses.size}.")
     if not np.isfinite(masses).all() or np.any(masses <= 0.0):
-        raise ValueError(f"{path}: physics:masses must contain only finite positive values.")
+        raise ValueError(f"{path}: {name} must contain only finite positive values.")
     with np.errstate(invalid="ignore", over="ignore", under="ignore"):
         converted = masses * np.float64(mass_unit)
     if not np.isfinite(converted).all() or np.any((masses != 0.0) & (converted == 0.0)):
-        raise ValueError(f"{path}: physics:masses do not convert to finite, representable SI values.")
+        raise ValueError(f"{path}: {name} do not convert to finite, representable SI values.")
     return converted
 
 
@@ -626,7 +637,7 @@ def find_particle_prims(root_prim, ignore_paths: list[str]) -> list[Any]:
     Returns:
         Points prims carrying ``NewtonPointsDeformableSimAPI`` in traversal order.
     """
-    from pxr import Usd, UsdGeom
+    from pxr import Usd
 
     if not root_prim or not root_prim.IsValid():
         return []
@@ -635,7 +646,7 @@ def find_particle_prims(root_prim, ignore_paths: list[str]) -> list[Any]:
         path = str(prim.GetPath())
         if any(re.match(pattern, path) for pattern in ignore_paths):
             continue
-        if prim.IsA(UsdGeom.Points) and usd.has_applied_api_schema(prim, "NewtonPointsDeformableSimAPI"):
+        if usd._is_particle_sim_prim(prim):
             particle_prims.append(prim)
     return particle_prims
 

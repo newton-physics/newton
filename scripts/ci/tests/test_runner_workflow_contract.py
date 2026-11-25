@@ -11,6 +11,9 @@ Those behaviors require a live smoke test.
 """
 
 import json
+import os
+import subprocess
+import textwrap
 import unittest
 from pathlib import Path
 
@@ -40,6 +43,27 @@ SCHEDULED_CALLERS = (
 
 
 class TestRunnerWorkflowContract(unittest.TestCase):
+    def test_gpu_gate_requires_successful_tests(self):
+        """Reject failed, skipped, or cancelled GPU tests under the required check name."""
+        workflow = (ROOT / ".github/workflows/aws_gpu_tests.yml").read_text(encoding="utf-8")
+        gate = self._event_block(workflow, "gpu-unit-tests-gate", "\n  codecov-upload:")
+        self.assertIn("    name: Run GPU Unit Tests on AWS EC2\n", gate)
+        self.assertEqual(workflow.count("    name: Run GPU Unit Tests on AWS EC2\n"), 1)
+        self.assertIn("    needs: gpu-unit-tests\n", gate)
+        self.assertIn("    if: always() && github.repository == 'newton-physics/newton'\n", gate)
+        self.assertIn("          RESULT: ${{ needs.gpu-unit-tests.result }}\n", gate)
+        script = textwrap.dedent(gate.split("        run: |\n", 1)[1])
+        for result in ("success", "failure", "skipped", "cancelled"):
+            with self.subTest(result=result):
+                completed = subprocess.run(
+                    ["bash", "-e", "-c", script],
+                    env={**os.environ, "RESULT": result},
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(completed.returncode == 0, result == "success", completed.stdout + completed.stderr)
+
     def test_minimum_deps_uses_pinned_ami_without_fallback(self):
         """Keep the minimum-dependency job on a pre-R580 image."""
         workflow = (ROOT / ".github/workflows/minimum_deps_tests.yml").read_text(encoding="utf-8")

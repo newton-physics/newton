@@ -1,0 +1,1 @@
+Size the automatic `CollisionPipeline` rigid-contact capacity from the narrow phase's per-pair contact caps, so mesh, SDF and hydroelastic pairs that keep many contacts no longer overflow it. Scenes with mesh pairs allocate more contact slots; pass `rigid_contact_max` to choose the capacity.

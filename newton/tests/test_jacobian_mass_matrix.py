@@ -945,6 +945,33 @@ def test_d6_three_angular_jacobian_matches_body_qd(test, device):
     np.testing.assert_allclose(J @ qd, body_qd, atol=1.0e-5, rtol=1.0e-6)
 
 
+def test_d6_translated_angular_jacobian_matches_body_qd(test, device):
+    """`J @ joint_qd` should match `state.body_qd` for a D6 joint whose angular axes ride on its linear DOFs."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    cfg = newton.ModelBuilder.JointDofConfig.create_unlimited
+    child = builder.add_link(mass=1.0)
+    builder.add_shape_box(child, hx=0.2, hy=0.1, hz=0.15)
+    builder.body_com[child] = wp.vec3(0.3, -0.1, 0.2)
+    j = builder.add_joint_d6(
+        parent=-1,
+        child=child,
+        linear_axes=[cfg(axis=a) for a in newton.Axis],
+        angular_axes=[cfg(axis=newton.Axis.X), cfg(axis=newton.Axis.Y)],
+        parent_xform=wp.transform((0.2, -0.4, 0.5), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.6)),
+    )
+    builder.add_articulation([j])
+    model = builder.finalize(device=device)
+    state = model.state()
+    q = np.array([0.8, -0.5, 0.3, 0.5, -0.4], dtype=np.float32)
+    qd = np.array([0.2, -0.3, 0.4, 0.9, -0.6], dtype=np.float32)
+    state.joint_q.assign(q)
+    state.joint_qd.assign(qd)
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+
+    J = newton.eval_jacobian(model, state).numpy()[0, :6, : model.joint_dof_count]
+    np.testing.assert_allclose(J @ qd, state.body_qd.numpy()[child], atol=1.0e-5, rtol=1.0e-6)
+
+
 def test_mass_matrix_matches_com_kinetic_energy(test, device):
     """`0.5 * qd^T H qd` should equal kinetic energy from COM twists."""
     model, base, slider = _build_translated_prismatic_chain(device)
@@ -1149,6 +1176,12 @@ add_function_test(
     TestJacobianMassMatrix,
     "test_d6_three_angular_jacobian_matches_body_qd",
     test_d6_three_angular_jacobian_matches_body_qd,
+    devices=devices,
+)
+add_function_test(
+    TestJacobianMassMatrix,
+    "test_d6_translated_angular_jacobian_matches_body_qd",
+    test_d6_translated_angular_jacobian_matches_body_qd,
     devices=devices,
 )
 add_function_test(

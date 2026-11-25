@@ -152,15 +152,6 @@ def Xform "box_on_plane"
             float physics:dynamicFriction = 0.5
         }
     }
-
-    def PhysicsCollisionGroup "Collisions"
-    {
-        rel collection:colliders:includes = [
-            </box_on_plane/RigidBodies/box_body>,
-            </box_on_plane/StaticGeometry/plane>,
-        ]
-        rel physics:filteredGroups = </boxes_hinged/Collisions>
-    }
 }
 
 

@@ -10,7 +10,7 @@ from ...sim.joint_mimic import eval_joint_mimic, has_supported_joint_mimics
 from ..coupled.interface import CouplingInterface
 from ..semi_implicit import kernels_contact, kernels_muscle, kernels_particle
 from ..semi_implicit.kernels_contact import (
-    eval_body_contact,
+    eval_body_contact_forces,
     eval_particle_body_contact_forces,
     eval_particle_contact_forces,
 )
@@ -27,6 +27,7 @@ from ..solver import SolverBase
 from . import kernels
 from .kernels import (
     accumulate_free_distance_joint_f_to_body_force,
+    apply_kinematic_armature,
     compute_body_parent_f,
     compute_com_transforms,
     compute_spatial_inertia,
@@ -55,6 +56,9 @@ from .kernels import (
     zero_kinematic_body_forces,
     zero_kinematic_joint_qdd,
 )
+
+# armature substituted for kinematic joints so the solve leaves them unaccelerated
+_KINEMATIC_ARMATURE = 1.0e10
 
 
 def _group_view(array: wp.array, start: int, shape: tuple[int, int, int]) -> wp.array:
@@ -155,7 +159,6 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
         *,
         angular_damping: float = 0.05,
         update_mass_matrix_interval: int = 1,
-        friction_smoothing: float = 1.0,
         use_tile_gemm: bool = False,
         fuse_cholesky: bool = True,
         deterministic: wp.DeterministicMode | None = None,
@@ -164,8 +167,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
         Args:
             model: The model to be simulated.
             angular_damping: Angular damping factor. Defaults to 0.05.
-            update_mass_matrix_interval: How often to update the mass matrix (every n-th time the :meth:`step` function gets called). Defaults to 1.
-            friction_smoothing: The delta value for the Huber norm (see :func:`warp.norm_huber() <warp._src.lang.norm_huber>`) used for the friction velocity normalization. Defaults to 1.0.
+            update_mass_matrix_interval: How often to update the mass matrix (every n-th time the :meth:`step` function gets called). The update is also forced on the next step after :meth:`notify_model_changed` reports body, joint DOF or inertial changes. Both decisions are made on the host when :meth:`step` runs, so a captured CUDA graph replays the choice made at capture time; use an interval of 1 or recapture after such a notification. Defaults to 1.
             use_tile_gemm: Whether to use operators from Warp's Tile API to solve for joint accelerations. A kernel is compiled per distinct articulation size. Defaults to False.
             fuse_cholesky: Whether to fuse the Cholesky decomposition into the inertia matrix evaluation kernel when using the Tile API. Only used if `use_tile_gemm` is true. Defaults to True.
             deterministic: Opt-in determinism for this solver's atomic-emitting
@@ -224,17 +226,25 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
 
         self.angular_damping = angular_damping
         self.update_mass_matrix_interval = update_mass_matrix_interval
-        self.friction_smoothing = friction_smoothing
         self.use_tile_gemm = use_tile_gemm
         self.fuse_cholesky = fuse_cholesky
 
         self._step = 0
         self._mass_matrix_dirty = False
+        # state (or the solver itself) whose system matrices the solve reads;
+        # updated every time the mass-matrix chain runs
+        self._mass_scratch_holder = self
 
         self._update_kinematic_state()
+        # armature the latest mass-matrix factorization used (see _effective_armature)
+        self._mass_scratch_armature = self.joint_armature_effective
 
         self._compute_articulation_indices(model)
         self._allocate_model_aux_vars(model)
+        # Total particle forces for non-differentiable steps; allocated here so graph capture never allocates it.
+        self._particle_f_work = (
+            wp.empty((model.particle_count,), dtype=wp.vec3, device=model.device) if model.particle_count else None
+        )
 
         if self.use_tile_gemm and model.joint_count:
             if self.fuse_cholesky and not self._has_joint_mimics:
@@ -252,6 +262,8 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
         self.descendant_free_distance_articulation_indices = None
         self.descendant_free_distance_refresh_joint_starts = None
         self.joint_armature_effective = model.joint_armature
+        # per-DOF flag (1 = kinematic) for the differentiable armature substitution
+        self._kinematic_dof_mask = None
 
         body_flags = None
         kinematic_mask = None
@@ -304,15 +316,45 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
             if model.joint_count and self.has_kinematic_bodies:
                 joint_qd_start = model.joint_qd_start.numpy()
                 joint_armature = model.joint_armature.numpy().copy()
+                kinematic_dof = np.zeros(model.joint_dof_count, dtype=np.int32)
                 for joint_idx in range(model.joint_count):
                     if not kinematic_mask[joint_child[joint_idx]]:
                         continue
                     self.has_kinematic_joints = True
                     dof_start = int(joint_qd_start[joint_idx])
                     dof_end = int(joint_qd_start[joint_idx + 1])
-                    joint_armature[dof_start:dof_end] = 1.0e10
+                    joint_armature[dof_start:dof_end] = _KINEMATIC_ARMATURE
+                    kinematic_dof[dof_start:dof_end] = 1
                 if self.has_kinematic_joints:
+                    # detached copy for the non-differentiable path; the
+                    # differentiable path rebuilds it per step (see _effective_armature)
                     self.joint_armature_effective = wp.array(joint_armature, dtype=float, device=model.device)
+                    self._kinematic_dof_mask = wp.array(kinematic_dof, dtype=wp.int32, device=model.device)
+
+    def _effective_armature(self, target):
+        """Return the armature array the mass-matrix chain factors with this step.
+
+        Kinematic joints get a huge armature. The detached
+        ``joint_armature_effective`` copy would cut the gradient of
+        ``Model.joint_armature`` for every DOF, so on the differentiable path
+        (``target`` is the step's output state) the substitution is a taped
+        launch into a per-state array, which passes the gradient through for
+        dynamic DOFs.
+        """
+        if self._kinematic_dof_mask is None or target is self:
+            return self.joint_armature_effective
+        out = getattr(target, "_joint_armature_effective", None)
+        if out is None:
+            out = wp.empty_like(self.model.joint_armature, requires_grad=True)
+            target._joint_armature_effective = out
+        wp.launch(
+            apply_kinematic_armature,
+            dim=self.model.joint_dof_count,
+            inputs=[self.model.joint_armature, self._kinematic_dof_mask, _KINEMATIC_ARMATURE],
+            outputs=[out],
+            device=self.model.device,
+        )
+        return out
 
     @override
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
@@ -322,6 +364,18 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
         ):
             self._update_kinematic_state()
             self._mass_matrix_dirty = True
+        if flags & ModelFlags.BODY_INERTIAL_PROPERTIES and self.model.body_count:
+            # Re-derive the buffers baked from body_mass/body_inertia/body_com so runtime mass
+            # randomization reaches the mass matrix and the COM velocity transforms.
+            self._update_body_inertial_buffers()
+            self._mass_matrix_dirty = True
+
+    @override
+    def _non_graphable_model_flags(self) -> int:
+        # The kinematic-state refresh reads joint and body data on the host and reallocates buffers.
+        return int(
+            ModelFlags.BODY_PROPERTIES | ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES
+        )
 
     def _compute_articulation_indices(self, model):
         # calculate total size and offsets of Jacobian and mass matrices for entire system
@@ -342,12 +396,12 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
             def offsets(sizes):
                 start = np.empty_like(sizes)
                 start[order] = np.cumsum(sizes[order]) - sizes[order]
-                return wp.array(start, dtype=wp.int32, device=model.device), int(sizes.sum())
+                return wp.array(start, dtype=wp.int32, device=model.device), int(sizes.sum()), start
 
             # matrix offsets for batched gemm
-            self.articulation_J_start, self.J_size = offsets(6 * joint_count * dof_count)
-            self.articulation_M_start, self.M_size = offsets(36 * joint_count * joint_count)
-            self.articulation_H_start, self.H_size = offsets(dof_count * dof_count)
+            self.articulation_J_start, self.J_size, J_start_host = offsets(6 * joint_count * dof_count)
+            self.articulation_M_start, self.M_size, M_start_host = offsets(36 * joint_count * joint_count)
+            self.articulation_H_start, self.H_size, H_start_host = offsets(dof_count * dof_count)
 
             group_to_art = {}
             for art in order:
@@ -355,6 +409,17 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                     group_to_art.setdefault((int(joint_count[art]), int(dof_count[art])), []).append(art)
             self._group_to_art = {
                 size: wp.array(arts, dtype=wp.int32, device=model.device) for size, arts in group_to_art.items()
+            }
+            # host copy of each size group's J/M/H offsets and batch size, so
+            # per-state allocations need no device syncs
+            self._tile_group_meta = {
+                size: (
+                    int(J_start_host[arts[0]]),
+                    int(M_start_host[arts[0]]),
+                    int(H_start_host[arts[0]]),
+                    len(arts),
+                )
+                for size, arts in group_to_art.items()
             }
 
             self.articulation_M_rows = wp.array(6 * joint_count, dtype=wp.int32, device=model.device)
@@ -367,58 +432,84 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                 joint_q_start[articulation_start], dtype=wp.int32, device=model.device
             )
 
+    def _allocate_system_matrices(self, target, requires_grad):
+        """Allocate the per-step system matrices (J, M, P, H, L, H_mimic) plus
+        the tile-gemm per-size views on ``target``.
+
+        ``target`` is the step's output state on the differentiable path and
+        the solver itself otherwise, so every tape step keeps its own scratch:
+        solver-owned matrices would alias across the steps of one gradient
+        tape (earlier steps' adjoints would read later steps' rewritten
+        values, and later steps' covector deposits would be consumed again).
+        This requires a distinct output state for every recorded step, as
+        for the rest of the per-state data: reusing output states across the
+        steps of one tape (ping-pong) overwrites the matrices that earlier
+        steps' adjoints read and gives wrong gradients.
+
+        Memory: each gradient-recording step owns its own J/M/P/H/L (plus
+        H_mimic when mimics exist) in both primal and adjoint storage -
+        roughly 2 x 4 B x (size of J + M + P + H + L) per world per recorded
+        step. On ANYmal-D's single 13-joint articulation (J 1404 + M 6084 +
+        P 1404 + H 324 + L 324 floats) that is ~76 KB per world per step, so
+        a 1601-step tape for one world holds ~120 MB of solver scratch.
+
+        The per-size views alias the flat arrays and serve the
+        ``use_tile_gemm`` path.
+        """
+        model = self.model
+        target.J = wp.zeros((self.J_size,), dtype=wp.float32, device=model.device, requires_grad=requires_grad)
+        target.M = wp.zeros((self.M_size,), dtype=wp.float32, device=model.device, requires_grad=requires_grad)
+        target.P = wp.empty_like(target.J, requires_grad=requires_grad)
+        target.H = wp.empty((self.H_size,), dtype=wp.float32, device=model.device, requires_grad=requires_grad)
+        # zero since only the lower triangle is set which can trigger NaN detection
+        target.L = wp.zeros_like(target.H)
+        target.H_mimic = wp.zeros_like(target.H) if self._has_joint_mimics else None
+
+        if self.use_tile_gemm:
+            target._J_by_size, target._M_by_size, target._H_by_size, target._L_by_size = {}, {}, {}, {}
+            for size, (j_start, m_start, h_start, n) in self._tile_group_meta.items():
+                joint_count, dof_count = size
+                target._J_by_size[size] = _group_view(target.J, j_start, (n, 6 * joint_count, dof_count))
+                target._M_by_size[size] = _group_view(target.M, m_start, (n, 6 * joint_count, 6 * joint_count))
+                target._H_by_size[size] = _group_view(target.H, h_start, (n, dof_count, dof_count))
+                target._L_by_size[size] = _group_view(target.L, h_start, (n, dof_count, dof_count))
+
     def _allocate_model_aux_vars(self, model):
         # allocate mass, Jacobian matrices, and other auxiliary variables pertaining to the model
         if model.joint_count:
-            # system matrices
-            self.M = wp.zeros((self.M_size,), dtype=wp.float32, device=model.device, requires_grad=model.requires_grad)
-            self.J = wp.zeros((self.J_size,), dtype=wp.float32, device=model.device, requires_grad=model.requires_grad)
-            self.P = wp.empty_like(self.J, requires_grad=model.requires_grad)
-            self.H = wp.empty((self.H_size,), dtype=wp.float32, device=model.device, requires_grad=model.requires_grad)
-
-            # zero since only upper triangle is set which can trigger NaN detection
-            self.L = wp.zeros_like(self.H)
+            # solver-owned system matrices, used by the requires_grad=False path
+            self._allocate_system_matrices(self, model.requires_grad)
             if self._has_joint_mimics:
-                self.H_mimic = wp.zeros_like(self.H)
                 self.joint_armature_zero = wp.zeros_like(model.joint_armature)
             else:
-                self.H_mimic = None
                 self.joint_armature_zero = None
-
-            if self.use_tile_gemm:
-                J_start = self.articulation_J_start.numpy()
-                M_start = self.articulation_M_start.numpy()
-                H_start = self.articulation_H_start.numpy()
-                self._J_by_size, self._M_by_size, self._H_by_size, self._L_by_size = {}, {}, {}, {}
-                for size, arts in self._group_to_art.items():
-                    joint_count, dof_count = size
-                    first, n = int(arts.numpy()[0]), arts.shape[0]
-                    self._J_by_size[size] = _group_view(self.J, J_start[first], (n, 6 * joint_count, dof_count))
-                    self._M_by_size[size] = _group_view(self.M, M_start[first], (n, 6 * joint_count, 6 * joint_count))
-                    self._H_by_size[size] = _group_view(self.H, H_start[first], (n, dof_count, dof_count))
-                    self._L_by_size[size] = _group_view(self.L, H_start[first], (n, dof_count, dof_count))
 
         if model.body_count:
             self.body_I_m = wp.empty(
                 (model.body_count,), dtype=wp.spatial_matrix, device=model.device, requires_grad=model.requires_grad
             )
-            wp.launch(
-                compute_spatial_inertia,
-                model.body_count,
-                inputs=[model.body_inertia, model.body_mass],
-                outputs=[self.body_I_m],
-                device=model.device,
-            )
             self.body_X_com = wp.empty(
                 (model.body_count,), dtype=wp.transform, device=model.device, requires_grad=model.requires_grad
             )
-            wp.launch(
-                compute_com_transforms,
-                model.body_count,
-                inputs=[model.body_com],
-                outputs=[self.body_X_com],
-                device=model.device,
-            )
+            self._update_body_inertial_buffers()
+
+    def _update_body_inertial_buffers(self):
+        # derive the spatial inertia and COM transform buffers from body_mass/body_inertia/body_com in place
+        model = self.model
+        wp.launch(
+            compute_spatial_inertia,
+            model.body_count,
+            inputs=[model.body_inertia, model.body_mass],
+            outputs=[self.body_I_m],
+            device=model.device,
+        )
+        wp.launch(
+            compute_com_transforms,
+            model.body_count,
+            inputs=[model.body_com],
+            outputs=[self.body_X_com],
+            device=model.device,
+        )
 
     def _allocate_state_aux_vars(self, model, target, requires_grad):
         # allocate auxiliary variables that vary with state
@@ -477,8 +568,8 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
             target.body_f_s = wp.zeros(
                 (model.body_count,), dtype=wp.spatial_vector, device=model.device, requires_grad=requires_grad
             )
-            # External/contact body-force buffer. Before eval_rigid_tau it stores public
-            # COM/world wrenches; eval_rigid_tau shifts articulated entries to the solve frame.
+            # external/contact wrenches in the public COM/world convention;
+            # eval_rigid_tau reads but never modifies it
             target.body_f_ext = wp.empty(
                 (model.body_count,), dtype=wp.spatial_vector, device=model.device, requires_grad=requires_grad
             )
@@ -487,7 +578,16 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                 (model.body_count,), dtype=wp.spatial_vector, device=model.device, requires_grad=requires_grad
             )
 
-            target._featherstone_augmented = True
+        if model.joint_count and target is not self:
+            # Per-state scratch so each tape step keeps its own system
+            # matrices (solver-owned ones would alias across tape steps); the
+            # requires_grad=False path reuses the solver-owned matrices.
+            self._allocate_system_matrices(target, requires_grad)
+            if self._kinematic_dof_mask is not None:
+                target._joint_armature_effective = wp.empty_like(model.joint_armature, requires_grad=requires_grad)
+
+        # mark the target augmented so step() allocates only once per target
+        target._featherstone_augmented = True
 
     @override
     def step(
@@ -502,6 +602,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
     ) -> None:
         self._apply_module_options()
         self.validate_observables(observables)
+        self._require_unreduced_contacts(contacts)
         requires_grad = state_in.requires_grad
         step_in_place = state_in is state_out
 
@@ -573,8 +674,17 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
             particle_f = None
             body_f = None
 
-            if state_in.particle_count:
-                particle_f = state_in.particle_f
+            if state_in.particle_count and model.particle_count:
+                # State.particle_f is a read-only input; elastic and contact forces are added to this copy.
+                # Differentiable steps use a new buffer that the tape keeps alive for the adjoint.
+                particle_f = None if requires_grad else self._particle_f_work
+                if particle_f is None or particle_f.shape[0] != model.particle_count:
+                    particle_f = wp.empty(
+                        (model.particle_count,), dtype=wp.vec3, device=model.device, requires_grad=requires_grad
+                    )
+                    if not requires_grad:
+                        self._particle_f_work = particle_f
+                wp.copy(particle_f, state_in.particle_f, count=model.particle_count)
 
             if state_in.body_count:
                 body_f = state_aug.body_f_ext
@@ -593,25 +703,26 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                         device=model.device,
                     )
 
-            # damped springs
-            eval_spring_forces(model, state_in, particle_f)
+            if particle_f is not None:
+                # damped springs
+                eval_spring_forces(model, state_in, particle_f)
 
-            # triangle elastic and lift/drag forces
-            eval_triangle_forces(model, state_in, control, particle_f)
+                # triangle elastic and lift/drag forces
+                eval_triangle_forces(model, state_in, control, particle_f)
 
-            # triangle bending
-            eval_bending_forces(model, state_in, particle_f)
+                # triangle bending
+                eval_bending_forces(model, state_in, particle_f)
 
-            # tetrahedral FEM
-            eval_tetrahedra_forces(model, state_in, control, particle_f)
+                # tetrahedral FEM
+                eval_tetrahedra_forces(model, state_in, control, particle_f)
 
-            # particle-particle interactions
-            eval_particle_contact_forces(model, state_in, particle_f)
+                # particle-particle interactions
+                eval_particle_contact_forces(model, state_in, particle_f)
 
-            # particle shape contact for non-articulated models; articulated models run this after ID
-            # so contacts see the freshly reconstructed public COM twist.
-            if not model.joint_count:
-                eval_particle_body_contact_forces(model, state_in, contacts, particle_f, body_f)
+                # particle shape contact for non-articulated models; articulated models run this after ID
+                # so contacts see the freshly reconstructed public COM twist.
+                if not model.joint_count:
+                    eval_particle_body_contact_forces(model, state_in, contacts, particle_f, body_f)
 
             # muscles
             if False:
@@ -693,48 +804,18 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                     device=model.device,
                 )
 
-                eval_particle_body_contact_forces(
-                    model,
-                    state_in,
-                    contacts,
-                    particle_f,
-                    body_f,
-                    body_q=state_in.body_q,
-                    body_qd=state_aug.body_qd_fk,
-                )
-
-                if contacts is not None and contacts.rigid_contact_max:
-                    wp.launch(
-                        kernel=eval_body_contact,
-                        dim=contacts.rigid_contact_max,
-                        inputs=[
-                            state_in.body_q,
-                            state_aug.body_qd_fk,
-                            model.body_com,
-                            model.shape_material_ke,
-                            model.shape_material_kd,
-                            model.shape_material_kf,
-                            model.shape_material_ka,
-                            model.shape_material_mu,
-                            model.shape_body,
-                            contacts.rigid_contact_count,
-                            contacts.rigid_contact_point0,
-                            contacts.rigid_contact_point1,
-                            contacts.rigid_contact_surface_velocity,
-                            contacts.rigid_contact_normal,
-                            contacts.rigid_contact_shape0,
-                            contacts.rigid_contact_shape1,
-                            contacts.rigid_contact_margin0,
-                            contacts.rigid_contact_margin1,
-                            contacts.rigid_contact_stiffness,
-                            contacts.rigid_contact_damping,
-                            contacts.rigid_contact_friction,
-                            False,
-                            self.friction_smoothing,
-                        ],
-                        outputs=[body_f],
-                        device=model.device,
+                if particle_f is not None:
+                    eval_particle_body_contact_forces(
+                        model,
+                        state_in,
+                        contacts,
+                        particle_f,
+                        body_f,
+                        body_q=state_in.body_q,
+                        body_qd=state_aug.body_qd_fk,
                     )
+
+                eval_body_contact_forces(model, state_in, contacts, body_f_out=body_f, body_qd=state_aug.body_qd_fk)
 
                 if self.has_kinematic_bodies and body_f is not None:
                     wp.launch(
@@ -782,6 +863,8 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                             model.joint_limit_ke,
                             model.joint_limit_kd,
                             model.joint_damping,
+                            model.joint_stiffness,
+                            model.joint_rest_q,
                             state_aug.joint_S_s,
                             state_aug.body_q_com,
                             state_aug.body_solve_origin,
@@ -820,6 +903,8 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                     # print(state_in.body_qd.numpy())
 
                     if self._mass_matrix_dirty or self._step % self.update_mass_matrix_interval == 0:
+                        armature = self._effective_armature(state_aug)
+
                         # build J
                         wp.launch(
                             eval_rigid_jacobian,
@@ -832,7 +917,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                                 model.joint_qd_start,
                                 state_aug.joint_S_s,
                             ],
-                            outputs=[self.J],
+                            outputs=[state_aug.J],
                             device=model.device,
                         )
 
@@ -846,7 +931,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                                 self.articulation_M_start,
                                 state_aug.body_I_s,
                             ],
-                            outputs=[self.M],
+                            outputs=[state_aug.M],
                             device=model.device,
                         )
 
@@ -857,13 +942,13 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                                         kernel,
                                         dim=self._group_to_art[size].shape[0],
                                         inputs=[
-                                            self._J_by_size[size],
-                                            self._M_by_size[size],
+                                            state_aug._J_by_size[size],
+                                            state_aug._M_by_size[size],
                                             self._group_to_art[size],
                                             self.articulation_dof_start,
-                                            self.joint_armature_effective,
+                                            armature,
                                         ],
-                                        outputs=[self._H_by_size[size], self._L_by_size[size]],
+                                        outputs=[state_aug._H_by_size[size], state_aug._L_by_size[size]],
                                         device=model.device,
                                         block_dim=64,
                                     )
@@ -871,8 +956,8 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                                     wp.launch_tiled(
                                         kernel,
                                         dim=self._group_to_art[size].shape[0],
-                                        inputs=[self._J_by_size[size], self._M_by_size[size]],
-                                        outputs=[self._H_by_size[size]],
+                                        inputs=[state_aug._J_by_size[size], state_aug._M_by_size[size]],
+                                        outputs=[state_aug._H_by_size[size]],
                                         device=model.device,
                                         block_dim=256,
                                     )
@@ -892,10 +977,10 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                                     self.articulation_J_start,
                                     # P start is the same as J start since it has the same dims as J
                                     self.articulation_J_start,
-                                    self.M,
-                                    self.J,
+                                    state_aug.M,
+                                    state_aug.J,
                                 ],
-                                outputs=[self.P],
+                                outputs=[state_aug.P],
                                 device=model.device,
                             )
 
@@ -914,18 +999,18 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                                     # P start is the same as J start since it has the same dims as J
                                     self.articulation_J_start,
                                     self.articulation_H_start,
-                                    self.J,
-                                    self.P,
+                                    state_aug.J,
+                                    state_aug.P,
                                 ],
-                                outputs=[self.H],
+                                outputs=[state_aug.H],
                                 device=model.device,
                             )
 
                         if not (self.use_tile_gemm and self.fuse_cholesky and not self._has_joint_mimics):
-                            solve_H = self.H
-                            solve_armature = self.joint_armature_effective
+                            solve_H = state_aug.H
+                            solve_armature = armature
                             if self._has_joint_mimics:
-                                self.H_mimic.zero_()
+                                state_aug.H_mimic.zero_()
                                 wp.launch(
                                     reduce_mimic_inertia,
                                     dim=model.articulation_count,
@@ -938,13 +1023,13 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                                         model.joint_qd_start,
                                         model.joint_mimic_joint,
                                         model.joint_mimic_coeffs,
-                                        self.joint_armature_effective,
-                                        self.H,
+                                        armature,
+                                        state_aug.H,
                                     ],
-                                    outputs=[self.H_mimic],
+                                    outputs=[state_aug.H_mimic],
                                     device=model.device,
                                 )
-                                solve_H = self.H_mimic
+                                solve_H = state_aug.H_mimic
                                 solve_armature = self.joint_armature_zero
 
                             # compute decomposition
@@ -958,7 +1043,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                                     solve_H,
                                     solve_armature,
                                 ],
-                                outputs=[self.L],
+                                outputs=[state_aug.L],
                                 device=model.device,
                             )
 
@@ -967,17 +1052,25 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                         # print("joint_tau:")
                         # print(state_aug.joint_tau.numpy())
                         # print("H:")
-                        # print(self.H.numpy())
+                        # print(state_aug.H.numpy())
                         # print("L:")
-                        # print(self.L.numpy())
+                        # print(state_aug.L.numpy())
                         self._mass_matrix_dirty = False
+                        # the solve below (and any skipped-interval step) reads the
+                        # matrices this chain run produced; remember where they live
+                        self._mass_scratch_holder = state_aug
+                        self._mass_scratch_armature = armature
 
                     # solve for qdd
                     state_aug.joint_qdd.zero_()
-                    solve_H = self.H
+                    solve_H = self._mass_scratch_holder.H
+                    # the armature the factorization used; the solve adjoint
+                    # deposits its gradient here
+                    solve_armature = self._mass_scratch_armature
                     solve_tau = state_aug.joint_tau
                     if self._has_joint_mimics:
-                        solve_H = self.H_mimic
+                        solve_H = self._mass_scratch_holder.H_mimic
+                        solve_armature = self.joint_armature_zero
                         state_aug.joint_tau_mimic.zero_()
                         wp.launch(
                             reduce_mimic_forces,
@@ -1003,7 +1096,9 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                             self.articulation_H_rows,
                             self.articulation_dof_start,
                             solve_H,
-                            self.L,
+                            solve_armature,
+                            self.articulation_dof_start,
+                            self._mass_scratch_holder.L,
                             solve_tau,
                         ],
                         outputs=[
@@ -1168,6 +1263,6 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                     device=model.device,
                 )
 
-            self.integrate_particles(model, state_in, state_out, dt)
+            self.integrate_particles(model, state_in, state_out, dt, particle_f=particle_f)
 
             self._step += 1

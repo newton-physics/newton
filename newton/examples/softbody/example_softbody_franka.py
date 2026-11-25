@@ -1,18 +1,25 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Soft Body Franka
-#
-# Demonstrates a Franka Panda robot grasping a deformable rubber duck
-# on a table. The robot is positioned via Newton's GPU IK solver;
-# Featherstone is used as a kinematic integrator to produce proper
-# body velocities for VBD friction. The duck is a tetrahedral mesh
-# simulated with VBD.
-#
-# The simulation runs in meter scale.
-#
-###########################################################################
+"""Example Soft Body Franka
+
+Demonstrates a Franka Panda robot grasping a deformable rubber duck
+on a table. The robot is positioned via Newton's GPU IK solver;
+Featherstone is used as a kinematic integrator to produce proper
+body velocities for VBD friction. The duck is a tetrahedral mesh
+simulated with VBD.
+
+The simulation runs in meter scale.
+
+Success criteria:
+- A setup appears with a Franka robotic arm and a table with a rubber duck on it.
+- The Franka arm starts to move and catch the rubber duck, raise it, and then drop it nicely on the
+  table.
+- The rubber duck is behaving as a softbody.
+
+Runs:
+- `python -m newton.examples softbody_franka`
+"""
 
 from __future__ import annotations
 
@@ -93,9 +100,7 @@ class Example:
         duck_path = newton.utils.download_asset("manipulation_objects/rubber_duck")
         usd_stage = Usd.Stage.Open(str(duck_path / "model.usda"))
         prim = usd_stage.GetPrimAtPath("/root/Model/TetMesh")
-        # The duck authors no physics material; canonical-only reads avoid the
-        # legacy-default deprecation window.
-        tetmesh = newton.TetMesh.create_from_usd(prim, compat_namespaces=())
+        tetmesh = newton.TetMesh.create_from_usd(prim)
 
         # Duck USDA is in meters (metersPerUnit=1.0).
         # Table top is at z=0.2m. Duck center offset ~0.03m above table.

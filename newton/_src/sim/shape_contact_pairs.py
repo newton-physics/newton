@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
 from functools import cached_property
 from typing import TYPE_CHECKING
 
@@ -298,12 +297,6 @@ class _ShapeContactPairs:
         global_bodies = np.unique(self.shape_body[globals_])
         global_bodies = global_bodies[global_bodies >= 0]
 
-        filters_by_world = defaultdict(list)
-        first, second = self._active_filters(active)
-        for a, b in zip(first.tolist(), second.tolist(), strict=True):
-            world = max(int(self.shape_world[a]), int(self.shape_world[b]))
-            filters_by_world[world].append((a, b))
-
         written = self._write_pairs(pairs[: counts[0]], globals_, globals_, triangular=True) if counts[0] else 0
         if written == len(pairs):
             return pairs
@@ -311,8 +304,27 @@ class _ShapeContactPairs:
         # otherwise dominate setup for thousands of small replicated worlds.
         world_slot = self.shape_world + 1
         starts = np.full(self.world_count + 1, len(self.shape_body), dtype=np.int64)
-        indices = np.flatnonzero(active)
         np.minimum.at(starts, world_slot[indices], indices)
+        first, second = self._active_filters(active)
+        filter_worlds = np.maximum(self.shape_world[first], self.shape_world[second])
+        order = np.argsort(filter_worlds, kind="stable")
+        sorted_filters = np.column_stack((first[order], second[order]))
+        # Negative global IDs stay distinct from world-relative local offsets
+        # when comparing exclusion patterns for template reuse.
+        normalized_filters = np.where(
+            self.shape_world[sorted_filters] == -1,
+            -1 - sorted_filters,
+            sorted_filters - starts[filter_worlds[order] + 1, None],
+        ).astype(np.int32)
+        filter_world_ids, filter_offsets, filter_sizes = np.unique(
+            filter_worlds[order], return_index=True, return_counts=True
+        )
+        filters_by_world = {
+            world: normalized_filters[offset : offset + size]
+            for world, offset, size in zip(
+                filter_world_ids.tolist(), filter_offsets.tolist(), filter_sizes.tolist(), strict=True
+            )
+        }
         body_starts = np.full(self.world_count + 1, np.iinfo(np.int32).max, dtype=np.int64)
         dynamic = active & (self.shape_body >= 0)
         np.minimum.at(body_starts, world_slot[dynamic], self.shape_body[dynamic])
@@ -334,9 +346,7 @@ class _ShapeContactPairs:
             start = int(local[0])
             filter_key = b""
             if world in filters_by_world:
-                filters = np.asarray(filters_by_world[world], dtype=np.int32)
-                filters = np.where(self.shape_world[filters] == -1, -1 - filters, filters - start)
-                filter_key = filters.tobytes()
+                filter_key = filters_by_world[world].tobytes()
             key = (layout[local].tobytes(), filter_key)
             count = int(counts[world + 1])
             template = templates.get(key)

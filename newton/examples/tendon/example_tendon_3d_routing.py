@@ -1,19 +1,26 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Tendon 3D Routing
-#
-# Right-angle pulley drive with three cylinders.  P1 and P3 have their
-# axes along Y (wrapping in XZ) while P2 at 90 degrees has its axis
-# along X (wrapping in YZ).  The cable routes over P1, under P2, over
-# P3 with weights on both ends.  The inter-pulley cable segments run
-# approximately vertically, along the intersection of adjacent wrapping
-# planes.
-#
-# Command: python -m newton.examples tendon_3d_routing
-#
-###########################################################################
+"""Example Tendon 3D Routing
+
+Right-angle pulley drive with three cylinders.  P1 and P3 have their
+axes along Y (wrapping in XZ) while P2 at 90 degrees has its axis
+along X (wrapping in YZ).  The cable routes over P1, under P2, over
+P3 with weights on both ends.  The inter-pulley cable segments run
+approximately vertically, along the intersection of adjacent wrapping
+planes.
+
+Success criteria:
+- A cable connects a sphere and a heavier box through three pulleys, routing over the first, under
+  the middle, and over the third.
+- Adjacent pulleys route the cable in perpendicular planes, with approximately vertical spans
+  between them initially.
+- The weights move under gravity and all three pulleys rotate as the cable travels without explosive
+  stretching or disconnection.
+
+Runs:
+- `python -m newton.examples tendon_3d_routing`
+"""
 
 import numpy as np
 import warp as wp

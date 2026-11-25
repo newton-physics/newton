@@ -14,6 +14,8 @@ from newton._src.geometry.simplex_solver import create_solve_closest_distance
 from newton._src.geometry.support_function import GenericShapeData, SupportMapDataProvider, support_map
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
+_F32_EPS = float(np.finfo(np.float32).eps)
+
 
 @wp.kernel
 def _query_box_gap(gap: float, direction: float, output: wp.array[float]):
@@ -80,6 +82,25 @@ def _query_rotated_box(output: wp.array2d[float]):
     output[i, 2] = gap
     for axis in range(3):
         output[i, 3 + axis] = normal[axis]
+
+
+@wp.kernel
+def _query_box_beside_large_edge(positions: wp.array[wp.vec3], output: wp.array2d[float]):
+    """Query a small box diagonally beside the top +x edge of a 1000 m box."""
+    i = wp.tid()
+    a = GenericShapeData()
+    a.shape_type = int(GeoType.BOX)
+    a.scale = wp.vec3(500.0, 500.0, 5.0)
+    b = GenericShapeData()
+    b.shape_type = int(GeoType.BOX)
+    b.scale = wp.vec3(0.25, 0.25, 0.25)
+    separated, _, _, normal, distance = wp.static(create_solve_closest_distance(support_map).core)(
+        a, b, wp.quat_identity(), positions[i], 0.0, SupportMapDataProvider()
+    )
+    output[i, 0] = float(separated)
+    output[i, 1] = distance
+    for axis in range(3):
+        output[i, 2 + axis] = normal[axis]
 
 
 @wp.kernel(module="unique")
@@ -176,7 +197,7 @@ def _query_pairs_at_cutoffs(
 
 
 def test_positive_sub_tolerance_gap(test, device):
-    """Return positive gaps and oriented unit normals below the 0.1 mm convergence tolerance."""
+    """Return positive gaps and oriented unit normals below the 0.1 mm near-contact threshold."""
     for gap in (1e-3, 1.1e-4, 9.5e-5, 5e-5, 1e-5, 1e-6, 1e-7, 5e-9):
         for direction in (-1.0, 1.0):
             with test.subTest(gap=gap, direction=direction):
@@ -269,10 +290,35 @@ def test_rotated_box_above_large_face(test, device):
     np.testing.assert_array_equal(actual[:, 0], 1.0)
     np.testing.assert_allclose(actual[:, 1], actual[:, 2], atol=2e-7, rtol=0.0)
     np.testing.assert_allclose(np.linalg.norm(actual[:, 3:6], axis=1), 1.0, atol=1e-6)
-    np.testing.assert_allclose(actual[:900, 3:6], np.tile([0.0, 0.0, 1.0], (900, 1)), atol=1e-5)
-    # The 0.1 mm boundary can round outside the near-contact branch and
-    # keeps the witness-difference normal.
-    np.testing.assert_allclose(actual[900:, 3:6], np.tile([0.0, 0.0, 1.0], (100, 1)), atol=2e-3)
+    # Gaps up to the 0.1 mm boundary take the face normal from the projected closest point.
+    np.testing.assert_allclose(actual[:, 3:6], np.tile([0.0, 0.0, 1.0], (1000, 1)), atol=1e-5)
+
+
+def test_box_beside_large_edge(test, device):
+    """Resolve sub-millimeter gaps beside a long edge, where the closest Minkowski feature is an edge."""
+    # Offsets are multiples of the float32 spacing near 500 m, so every input and
+    # Minkowski coordinate is exact and the reference normal is known. The edge is
+    # axis-aligned in GJK's frame, where the projection removes the whole error; an
+    # edge yawed in that frame keeps rounding across the edge (see closest_segment).
+    spacing = 2.0**-15
+    offsets = np.array([(23, 23), (30, 11), (9, 31), (40, 40), (3, 5), (64, 7)], dtype=np.float64)
+    cases = [(kx, y, kz) for kx, kz in offsets for y in (0.0, 123.5, -377.25, 444.0, -2.0, 251.125)]
+    positions = np.array([(500.25 + kx * spacing, y, 5.25 + kz * spacing) for kx, y, kz in cases], dtype=np.float32)
+    output = wp.zeros((len(cases), 5), dtype=float, device=device)
+    wp.launch(
+        _query_box_beside_large_edge,
+        dim=len(cases),
+        inputs=[wp.array(positions, dtype=wp.vec3, device=device)],
+        outputs=[output],
+        device=device,
+    )
+    actual = output.numpy()
+    gaps = np.array([(kx, 0.0, kz) for kx, _, kz in cases]) * spacing
+    distances = np.linalg.norm(gaps, axis=1)
+    np.testing.assert_array_equal(actual[:, 0], 1.0)
+    # The distance comes from witness sums, which round at the float32 spacing near 500 m.
+    np.testing.assert_allclose(actual[:, 1], distances, atol=2.0 * spacing, rtol=0.0)
+    np.testing.assert_allclose(actual[:, 2:5], gaps / distances[:, None], atol=1e-3)
 
 
 def test_early_exit_preserves_separated_sphere_witnesses(test, device):
@@ -479,8 +525,8 @@ def test_separation_cutoff_matches_exact_query_at_the_boundary(test, device):
     test.assertGreater(float(np.mean(stopped)), 0.5)
 
 
-def test_separation_cutoff_keeps_contact_at_the_exact_boundary(test, device):
-    """Keep the contact of a cylinder pair whose total gap equals its exact float32 distance."""
+def test_separation_cutoff_decides_contact_near_the_boundary(test, device):
+    """Decide the contact of a cylinder pair within float32 rounding of its exact distance."""
     type_a, scale_a, type_b, scale_b, rotation, position = _BOUNDARY_PAIRS[2]
     exact = wp.zeros((1, 1, 11), dtype=float, device=device)
     wp.launch(
@@ -496,23 +542,30 @@ def test_separation_cutoff_keeps_contact_at_the_exact_boundary(test, device):
         outputs=[exact],
         device=device,
     )
-    # The exact query's distance differs by device rounding; on CPU it is 0.1076592430472374.
-    gap = float(exact.numpy()[0, 0, 1])
-    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-    cfg = builder.ShapeConfig(gap=0.5 * gap, margin=0.0)
-    body_a = builder.add_body(xform=wp.transform_identity())
-    builder.add_shape_cylinder(body_a, radius=scale_a[0], half_height=scale_a[1], cfg=cfg)
-    body_b = builder.add_body(xform=wp.transform(wp.vec3(*position), wp.quat(*rotation)))
-    builder.add_shape_cylinder(body_b, radius=scale_b[0], half_height=scale_b[1], cfg=cfg)
-    model = builder.finalize(device=device)
-    pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
-    contacts = pipeline.contacts()
-    pipeline.collide(model.state(), contacts)
-    test.assertEqual(int(contacts.rigid_contact_count.numpy()[0]), 1)
+    # On CPU this is 0.1076592430472374; separately compiled CUDA kernels round it differently.
+    distance = float(exact.numpy()[0, 0, 1])
+
+    def contact_count(gap):
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        cfg = builder.ShapeConfig(gap=0.5 * gap, margin=0.0)
+        body_a = builder.add_body(xform=wp.transform_identity())
+        builder.add_shape_cylinder(body_a, radius=scale_a[0], half_height=scale_a[1], cfg=cfg)
+        body_b = builder.add_body(xform=wp.transform(wp.vec3(*position), wp.quat(*rotation)))
+        builder.add_shape_cylinder(body_b, radius=scale_b[0], half_height=scale_b[1], cfg=cfg)
+        model = builder.finalize(device=device)
+        pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
+        contacts = pipeline.contacts()
+        pipeline.collide(model.state(), contacts)
+        return int(contacts.rigid_contact_count.numpy()[0])
+
+    # Both distances converge only to float32 rounding of the coordinates involved.
+    tolerance = 32.0 * _F32_EPS * (np.abs(position).sum() + sum(scale_a) + sum(scale_b))
+    test.assertEqual(contact_count(distance + tolerance), 1)
+    test.assertEqual(contact_count(distance - tolerance), 0)
 
 
 class TestGJKNearContact(unittest.TestCase):
-    """Preserve geometric separation independently of the convergence tolerance."""
+    """Preserve geometric separation independently of the near-contact threshold."""
 
 
 devices = get_test_devices()
@@ -522,11 +575,12 @@ for _test in (
     test_tiny_initial_center_displacement,
     test_true_overlap,
     test_rotated_box_above_large_face,
+    test_box_beside_large_edge,
     test_early_exit_preserves_separated_sphere_witnesses,
     test_separation_cutoff_matches_exact_query_within_cutoff,
     test_positional_iteration_arguments_keep_their_meaning,
     test_separation_cutoff_matches_exact_query_at_the_boundary,
-    test_separation_cutoff_keeps_contact_at_the_exact_boundary,
+    test_separation_cutoff_decides_contact_near_the_boundary,
 ):
     add_function_test(TestGJKNearContact, _test.__name__, _test, devices=devices)
 

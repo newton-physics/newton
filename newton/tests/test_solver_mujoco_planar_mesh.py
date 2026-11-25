@@ -9,15 +9,11 @@ import warp as wp
 import newton
 from newton._src.core.types import vec5
 from newton.solvers import SolverMuJoCo
+from newton.tests.unittest_utils import MUJOCO_MODULES, requires
 
 
+@requires(*MUJOCO_MODULES)
 class TestSolverMuJoCoPlanarMesh(unittest.TestCase):
-    def setUp(self):
-        try:
-            SolverMuJoCo.import_mujoco()
-        except ImportError as exc:
-            self.skipTest(str(exc))
-
     @staticmethod
     def _build_mesh_model(vertices, indices):
         builder = newton.ModelBuilder()
@@ -40,7 +36,7 @@ class TestSolverMuJoCoPlanarMesh(unittest.TestCase):
         indices = np.array([0, 1, 2, 1, 3, 2], dtype=np.int32)
         model = self._build_mesh_model(vertices, indices)
 
-        solver = SolverMuJoCo(model, use_mujoco_cpu=True, use_mujoco_contacts=False)
+        solver = SolverMuJoCo(model, use_mujoco_contacts=False)
 
         self.assertEqual(solver.mj_model.nmesh, 1)
         self.assertEqual(solver.mj_model.mesh_vertnum[0], 5)
@@ -60,7 +56,7 @@ class TestSolverMuJoCoPlanarMesh(unittest.TestCase):
         indices = np.array([0, 1, 2], dtype=np.int32)
         model = self._build_mesh_model(vertices, indices)
 
-        solver = SolverMuJoCo(model, use_mujoco_cpu=True, use_mujoco_contacts=False)
+        solver = SolverMuJoCo(model, use_mujoco_contacts=False)
 
         self.assertEqual(solver.mj_model.nmesh, 1)
         self.assertEqual(solver.mj_model.mesh_vertnum[0], 4)
@@ -81,7 +77,7 @@ class TestSolverMuJoCoPlanarMesh(unittest.TestCase):
         indices = np.array([0, 1, 2, 0, 3, 1, 1, 3, 2, 2, 3, 0], dtype=np.int32)
         model = self._build_mesh_model(vertices, indices)
 
-        solver = SolverMuJoCo(model, use_mujoco_cpu=True, use_mujoco_contacts=False)
+        solver = SolverMuJoCo(model, use_mujoco_contacts=False)
 
         self.assertEqual(solver.mj_model.nmesh, 1)
         self.assertEqual(solver.mj_model.mesh_vertnum[0], 4)

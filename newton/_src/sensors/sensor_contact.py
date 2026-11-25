@@ -76,7 +76,9 @@ def accumulate_contact_forces_kernel(
 
     shape0 = contact_shape0[contact_index]
     shape1 = contact_shape1[contact_index]
-    assert shape0 >= 0 and shape1 >= 0
+    # A side without a shape, such as a MuJoCo flex, has shape -1.
+    if shape0 < 0 or shape1 < 0:
+        return
     force = wp.spatial_top(contact_force[contact_index])
 
     # Decompose into normal and friction (tangential) components
@@ -326,7 +328,7 @@ class SensorContact:
             builder.add_shape_sphere(body, radius=0.1, label="ball")
             model = builder.finalize()
 
-            sensor = SensorContact(model, sensing_shapes="ball", request_contact_attributes=False)
+            sensor = SensorContact(model, sensing_shapes="ball")
             solver = newton.solvers.SolverMuJoCo(model)
             state = model.state()
             collision_pipeline = newton.CollisionPipeline(
@@ -405,7 +407,7 @@ class SensorContact:
         counterpart_shapes: str | list[str] | re.Pattern[str] | list[int] | None = None,
         measure_total: bool = True,
         verbose: bool | None = None,
-        request_contact_attributes: bool = True,
+        request_contact_attributes: bool = False,
     ):
         """Initialize the SensorContact.
 
@@ -429,13 +431,13 @@ class SensorContact:
             verbose: If True, log details. If False, suppress details. If None, log details when
                 ``wp.config.log_level`` is configured for debug logging.
             request_contact_attributes: If True, request the deprecated ``contacts.force`` extended attribute
-                for compatibility. Defaults to True during the deprecation period.
-                Pass False and supply solver observables to :meth:`update` instead.
+                for compatibility. If False (default), :meth:`update` must receive solver observables
+                or contacts whose ``force`` array was allocated through a separate legacy request.
 
                 .. deprecated:: 1.7
-                    Passing True is deprecated. Allocate :attr:`solver_observable_kinds`
-                    through the solver and pass :class:`~newton.solvers.SolverBase.Observables`
-                    to :meth:`update` instead.
+                    Passing True is deprecated. Omit this argument, which will be removed together
+                    with the legacy path, allocate :attr:`solver_observable_kinds` through the solver
+                    and pass :class:`~newton.solvers.SolverBase.Observables` to :meth:`update` instead.
         """
         if (sensing_bodies is None) == (sensing_shapes is None):
             raise ValueError("Exactly one of `sensing_bodies` and `sensing_shapes` must be specified")
@@ -450,8 +452,9 @@ class SensorContact:
         if request_contact_attributes:
             warnings.warn(
                 "SensorContact(request_contact_attributes=True) is deprecated in Newton 1.7; "
-                "allocate SolverBase.Observables with solver.observables(kinds=sensor.solver_observable_kinds, contacts=contacts) "
-                "and pass them to update(..., observables=...).",
+                "omit request_contact_attributes, allocate SolverBase.Observables with "
+                "solver.observables(kinds=sensor.solver_observable_kinds, contacts=contacts), "
+                "pass them to solver.step(observables=...), and pass them to update(..., observables=...).",
                 NewtonDeprecationWarning,
                 stacklevel=2,
             )
@@ -692,9 +695,12 @@ class SensorContact:
             self.position_matrix.zero_()
             self._position_weight.zero_()
         update_contact_positions = self.position_matrix is not None and state is not None and state.body_q is not None
+        contact_count = contacts.rigid_contact_max
+        if self.device.is_cpu and not self.device.is_capturing:
+            contact_count = min(contact_count, int(contacts.rigid_contact_count.numpy()[0]))
         wp.launch(
             accumulate_contact_forces_kernel,
-            dim=contacts.rigid_contact_max,
+            dim=contact_count,
             inputs=[
                 contacts.rigid_contact_count,
                 contacts.rigid_contact_shape0,

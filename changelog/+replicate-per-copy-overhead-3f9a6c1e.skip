@@ -1,0 +1,1 @@
+Performance only: trim per-copy Python overhead in ModelBuilder merges and replication; built models are unchanged.

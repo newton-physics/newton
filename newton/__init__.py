@@ -9,12 +9,15 @@ from ._src.core import (
     Axis,
     AxisType,
 )
+from ._src.exceptions import NewtonDeprecationWarning, NewtonWarning
 from ._version import __version__
 
 __all__ = [
     "MAXVAL",
     "Axis",
     "AxisType",
+    "NewtonDeprecationWarning",
+    "NewtonWarning",
     "__version__",
 ]
 
@@ -109,7 +112,6 @@ from . import (  # noqa: E402
     actuators,
     config,
     controllers,
-    exceptions,
     geometry,
     ik,
     math,
@@ -125,7 +127,6 @@ __all__ += [
     "actuators",
     "config",
     "controllers",
-    "exceptions",
     "geometry",
     "ik",
     "math",

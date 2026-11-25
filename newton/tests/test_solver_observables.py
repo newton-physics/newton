@@ -17,7 +17,7 @@ import newton
 from newton.selection import ArticulationView
 from newton.sensors import SensorContact
 from newton.solvers.experimental.coupled import SolverCoupled, SolverCoupledADMM
-from newton.tests.unittest_utils import add_function_test, get_test_devices
+from newton.tests.unittest_utils import MUJOCO_MODULES, add_function_test, get_test_devices, requires
 from newton.viewer import ViewerNull
 
 
@@ -291,6 +291,7 @@ class TestSolverObservables(unittest.TestCase):
         self.assertEqual(observables.get_attribute_frequency("body_qdd"), frequency.BODY)
         self.assertEqual(observables.get_attribute_frequency("pressure"), frequency.CONTACT_RIGID)
         self.assertEqual(observables.get_attribute_frequency("contact_f"), frequency.CONTACT)
+        self.assertEqual(observables.get_attribute_frequency("solver_residual"), frequency.WORLD)
         self.assertFalse(hasattr(ContactSolver, "CONTACT_OBSERVABLE_FLAGS"))
 
     def test_missing_observable_declaration(self):
@@ -568,6 +569,7 @@ class TestSolverObservables(unittest.TestCase):
         mujoco.mjw_data = SimpleNamespace(naconmax=3)
         kamino = object.__new__(newton.solvers.SolverKamino)
         newton.solvers.SolverBase.__init__(kamino, self.model)
+        kamino._config = newton.solvers.SolverKamino.Config()
         kamino._contact_observable_state = None
         kamino._collision_detector_kamino = object()
         kamino._contacts_kamino = SimpleNamespace(model_max_contacts_host=3)
@@ -804,6 +806,7 @@ def test_owned_and_external_pipelines(test, device):
                 np.testing.assert_array_equal(rows[soft_start + 1 :], 0.0)
 
 
+@requires(*MUJOCO_MODULES)
 def test_native_solvers_follow_step_contacts(test, device):
     """Export MuJoCo and Kamino geometry and forces to the buffer each step uses."""
     builder = newton.ModelBuilder()

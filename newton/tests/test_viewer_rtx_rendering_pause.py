@@ -10,11 +10,11 @@ from unittest import mock
 import numpy as np
 import warp as wp
 
-from newton.tests.unittest_utils import USD_AVAILABLE, patch_sys_module
+from newton.tests.unittest_utils import patch_sys_module, requires
 from newton.viewer import ViewerRTX
 
 
-@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+@requires("pxr.Usd")
 class TestRenderingPauseRTX(unittest.TestCase):
     def setUp(self):
         """Create a viewer without initializing a renderer or a window."""

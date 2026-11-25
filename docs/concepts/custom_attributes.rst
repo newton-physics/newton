@@ -42,12 +42,12 @@ Declaring Custom Attributes
 Custom attributes must be declared before use via the :meth:`newton.ModelBuilder.add_custom_attribute` method. Each declaration specifies:
 
 * **name**: Attribute name
-* **frequency**: Determines array size and indexing—either a :class:`~newton.Model.AttributeFrequency` enum value (e.g., ``BODY``, ``SHAPE``, ``JOINT``, ``JOINT_DOF``, ``JOINT_COORD``, ``ARTICULATION``, ``ONCE``) or a string for custom frequencies
+* **frequency**: Determines array size and indexing—either a :class:`~newton.Model.AttributeFrequency` enum value (e.g., ``BODY``, ``SHAPE``, ``JOINT``, ``JOINT_DOF``, ``JOINT_COORD``, ``ARTICULATION``, ``WORLD``, ``ONCE``) or a string for custom frequencies. ``WORLD`` attributes have ``world_count + 1`` entries; the final entry belongs to global world ``-1`` (see :ref:`Per-world attributes`)
 * **dtype**: Warp data type (``wp.float32``, ``wp.vec3``, ``wp.quat``, etc.) or ``str`` for string attributes stored as Python lists
 * **assignment**: Which simulation object owns the attribute (``MODEL``, ``STATE``, ``CONTROL``, ``CONTACT``)
 * **default** (optional): Default value for unspecified entities. When omitted, a sensible zero-value is derived from the dtype (``0`` for scalars, identity for quaternions, ``False`` for booleans, ``""`` for strings)
 * **namespace** (optional): Hierarchical organization for grouping related attributes
-* **references** (optional): For multi-world merging, specifies how values are transformed (e.g., ``"body"``, ``"shape"``, ``"world"``, or a custom frequency key)
+* **references** (optional): Identifies what stored integer values refer to: a :class:`~newton.Model.AttributeFrequency` for built-in entities, or a custom frequency key. Built-in string names such as ``"body"`` and ``"world"`` are also supported.
 * **values** (optional): Pre-populated values — ``dict[int, Any]`` for enum frequencies or ``list[Any]`` for custom string frequencies
 
 When **no namespace** is specified, attributes are added directly to their assignment object (e.g., ``model.temperature``). When a **namespace** is provided, Newton creates a namespace container (e.g., ``model.mujoco.damping``).
@@ -130,6 +130,18 @@ When **no namespace** is specified, attributes are added directly to their assig
        )
    )
    # → Accessible as: model.gravity_scale (array of length 1)
+
+   # WORLD frequency attributes - one value per world plus the global world
+   builder.add_custom_attribute(
+       ModelBuilder.CustomAttribute(
+           name="friction_scale",
+           frequency=Model.AttributeFrequency.WORLD,
+           dtype=wp.float32,
+           default=1.0,
+           assignment=Model.AttributeAssignment.MODEL
+       )
+   )
+   # → Accessible as: model.friction_scale (array of length world_count + 1)
 
    # String dtype attributes - stored as Python lists, not Warp arrays
    builder.add_custom_attribute(
@@ -456,6 +468,64 @@ After importing the USD file, attributes are accessible following the same patte
 
 For more information about USD integration and the schema resolver system, see :doc:`usd_parsing`.
 
+.. _usd_deformable_custom_values:
+
+Values per deformable object
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+USD imports record curves, surfaces, and volumes, but do not yet read custom
+values at ``CURVE``, ``SURFACE``, or ``VOLUME`` frequency. Unassigned rows keep
+the registered attribute's default. This limitation does not affect ordinary
+deformable material parsing or the supported per-particle, per-tetrahedron,
+and per-triangle custom arrays on a ``TetMesh``.
+
+Assign per-object values through the builder after :meth:`ModelBuilder.add_usd`
+and before :meth:`ModelBuilder.finalize`. For example, suppose ``stage`` contains
+a volume at ``/World/Soft/sim`` with an authored ``newton:volume_temperature``
+value of 310 K:
+
+.. testsetup:: custom-deformable-usd
+
+   from pxr import Sdf, Usd, UsdGeom
+
+   stage = Usd.Stage.CreateInMemory()
+   UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+   UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+   body = UsdGeom.Xform.Define(stage, "/World/Soft")
+   body.GetPrim().AddAppliedSchema("PhysicsDeformableBodyAPI")
+   volume = UsdGeom.TetMesh.Define(stage, "/World/Soft/sim")
+   volume.GetPrim().AddAppliedSchema("PhysicsVolumeDeformableSimAPI")
+   volume.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
+   volume.CreatePointsAttr([(0, 0, 1), (0.2, 0, 1), (0, 0.2, 1), (0, 0, 1.2)])
+   volume.CreateTetVertexIndicesAttr([(0, 1, 2, 3)])
+   volume.GetPrim().CreateAttribute("newton:volume_temperature", Sdf.ValueTypeNames.Float).Set(310.0)
+
+.. testcode:: custom-deformable-usd
+
+   import newton
+   import warp as wp
+
+   builder = newton.ModelBuilder()
+   builder.add_custom_attribute(newton.ModelBuilder.CustomAttribute(
+       name="volume_temperature",
+       dtype=wp.float32,
+       frequency=newton.Model.AttributeFrequency.VOLUME,
+       default=293.0,
+   ))
+   builder.add_usd(stage)
+
+   volume_path = "/World/Soft/sim"
+   volume_index = builder.volume_label.index(volume_path)
+   temperature = stage.GetPrimAtPath(volume_path).GetAttribute("newton:volume_temperature").Get()
+   builder.custom_attributes["volume_temperature"].values[volume_index] = float(temperature)
+
+   model = builder.finalize(device="cpu")
+   assert model.volume_temperature.numpy().tolist() == [310.0]
+
+This is an explicit assignment, not automatic USD import. Automatic import
+remains follow-up work. For welded graphs, it also needs a rule for combining
+values from several source curve prims.
+
 MJCF and URDF Integration
 --------------------------
 
@@ -502,7 +572,7 @@ While enum frequencies (``BODY``, ``SHAPE``, ``JOINT``, etc.) cover most use cas
 Registering Custom Frequencies
 ------------------------------
 
-Custom frequencies must be **registered before use** via :meth:`~newton.ModelBuilder.add_custom_frequency` using a :class:`~newton.ModelBuilder.CustomFrequency` object. This explicit registration ensures clarity about which entity types exist and enables optional USD parsing support.
+Register a custom frequency with :meth:`~newton.ModelBuilder.add_custom_frequency` before assigning it to an attribute's ``frequency`` field. Use a :class:`~newton.ModelBuilder.CustomFrequency` object to name the frequency and optionally configure USD parsing. An attribute's ``references`` field may name a custom frequency registered later.
 
 .. testsetup:: custom-freqs
 
@@ -866,6 +936,75 @@ Multi-World Merging
 -------------------
 
 When using ``add_builder()``, ``add_world()``, or ``replicate()`` in multi-world simulations, the :attr:`~newton.ModelBuilder.CustomAttribute.references` field specifies how attribute values should be transformed:
+
+``frequency`` determines which entities have a row. ``references`` identifies
+what each stored integer refers to. For example, a cable may be held by a
+gripper and a hose by a support. An attribute with frequency ``CURVE`` and
+references ``BODY`` can record the attachment body for each curve:
+
+.. testcode:: custom-curve-reference
+
+   import newton
+   import warp as wp
+
+   builder = newton.ModelBuilder()
+   gripper_body_id = builder.add_body(label="gripper", is_kinematic=True)
+   support_body_id = builder.add_body(label="support", is_kinematic=True)
+   for label, y in (("cable", 0.0), ("hose", 1.0)):
+       builder.add_rod(
+           rod=newton.Rod([(0.0, y, 1.0), (0.1, y, 1.0), (0.2, y, 1.0)], radius=0.02),
+           label=label,
+       )
+   hose_id = builder.curve_label.index("hose")
+   builder.add_custom_attribute(
+       newton.ModelBuilder.CustomAttribute(
+           name="attachment_body",
+           dtype=wp.int32,
+           frequency=newton.Model.AttributeFrequency.CURVE,
+           references=newton.Model.AttributeFrequency.BODY,
+           default=gripper_body_id,
+           values={hose_id: support_body_id},
+       )
+   )
+   scene = newton.ModelBuilder()
+   scene.replicate(builder, 2)
+   model = scene.finalize(device="cpu")
+   assert model.attachment_body.numpy().tolist() == [0, 1, 6, 7]
+
+This attribute only records the association. It does not create the joints or
+constraints needed to hold the cable or hose. Each copy has six bodies: the
+gripper, the support, and four rod segments. The first world's curves reference
+bodies 0 and 1; the second world's curves reference bodies 6 and 7.
+The cable uses the default gripper association; the hose overrides it with the
+support body. During copying, row indices follow the curve count and stored body
+IDs follow the body count. Default references for existing rows are copied just
+like explicit values. The source builder and its declared default stay unchanged.
+
+``ONCE`` attributes have one value for the whole model. A source default does
+not replace an existing destination value; an explicit source value does.
+``WORLD`` values and reference defaults are copied into the destination world.
+A merge places all source entities in one world, so the source's explicit values,
+including its global value (key ``-1``), must agree; different values raise
+:class:`ValueError` before any entity is copied. Adding global entities with
+``add_builder()`` writes the global-world entry instead, never world ``0``; as for
+``ONCE``, a source reference default does not replace an existing global value.
+
+For scalar and integer-vector references, copying offsets each nonnegative
+index and preserves negative ones. Vector values may be lists, tuples, NumPy
+integer arrays, or Warp integer vectors. When fixed-joint collapse changes curve
+or articulation IDs, default references for existing rows follow the same remap
+as explicit values. References to removed objects become ``-1``. These operations
+do not change the declared default for rows added later.
+
+Use ``Model.AttributeFrequency.CURVE``, ``SURFACE``, or ``VOLUME`` to reference
+built-in deformable objects. The strings ``"curve"``, ``"surface"``, and
+``"volume"`` refer to custom frequencies, regardless of registration order.
+Existing built-in strings such as ``"body"`` and ``"world"`` remain supported.
+Registering an attribute does not rewrite its ``references`` field. Finalized
+model metadata uses enum values for built-in references and strings for custom
+frequencies.
+
+The following example uses string names for shape and world references:
 
 .. testcode:: custom-merge
 

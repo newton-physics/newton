@@ -1,15 +1,25 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Robot G1
-#
-# Shows how to set up a simulation of a G1 robot articulation
-# from a USD stage using newton.ModelBuilder.add_usd().
-#
-# Command: python -m newton.examples robot_g1 --world-count 16
-#
-###########################################################################
+"""Example Robot G1
+
+Shows how to set up a simulation of a G1 robot articulation
+from a USD stage using newton.ModelBuilder.add_usd().
+
+Success criteria:
+- G1 humanoids begin upright slightly above the ground, then drop onto their feet and remain
+  supported; the displayed world count matches --world-count.
+- Right-drag individual robots: robots in separate worlds do not collide with one another but
+  interact with their ground plane.
+- Without perturbations, robots remain supported and settle without persistent visible jitter.
+
+Runs:
+- `python -m newton.examples robot_g1 --world-count 3`
+  - Three G1 robots appear.
+- `python -m newton.examples robot_g1 --world-count 2`
+  - Two G1 robots appear; use this scene for the shared viewer checklist.
+- `python -m newton.examples robot_g1 --world-count 16`
+"""
 
 import warp as wp
 
@@ -17,10 +27,12 @@ import newton
 import newton.examples
 import newton.utils
 from newton import JointTargetMode
+from newton.examples.kamino.utils.ldl import add_ldl_arguments, configure_ldl
 
 
 class Example:
     def __init__(self, viewer, args):
+        """Build the G1 robot simulation with the requested solver options."""
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
@@ -29,6 +41,8 @@ class Example:
 
         self.world_count = args.world_count
         self.solver_type = args.solver
+        if self.solver_type != "kamino":
+            configure_ldl(None, args)
 
         self.viewer = viewer
 
@@ -75,16 +89,19 @@ class Example:
         use_mujoco_contacts = self.solver_type == "mujoco" and args.use_mujoco_contacts
         if self.solver_type == "kamino":
             solver_config = newton.solvers.SolverKamino.Config.from_model(
-                self.model, dynamics_solver="dvi", sparse_dynamics=True, sparse_jacobian=True
+                self.model, dynamics_solver="scc", sparse_dynamics=True, sparse_jacobian=True
             )
-            solver_config.dvi.max_alternating_iterations = 8
-            solver_config.dvi.bilateral_solve_interval = 8
-            solver_config.dvi.bilateral_solver_type = "LLTBRCM"
-            solver_config.dvi.omega = 1.2
-            solver_config.dvi.contact_warmstart_method = (
+            # Preserve foot support when nearly touching contacts cross zero separation.
+            solver_config.dynamics.cull_speculative_contacts = False
+            solver_config.scc.max_alternating_iterations = 8
+            solver_config.scc.bilateral_solve_interval = 8
+            solver_config.scc.bilateral_solver_type = args.bilateral_solver_type or "LLTBRCM"
+            configure_ldl(solver_config, args)
+            solver_config.scc.omega = 1.2
+            solver_config.scc.contact_warmstart_method = (
                 "key_and_position_with_net_force_backup_and_tangential_net_force"
             )
-            solver_config.dvi.use_schur_complement = True
+            solver_config.scc.use_schur_complement = True
             self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
         else:
             self.solver = newton.solvers.SolverMuJoCo(
@@ -181,22 +198,28 @@ class Example:
             "all bodies are above the ground",
             lambda q, qd: q[2] > 0.0,
         )
-        # fmt: off
+        # Keep the comparison on the lambda's source line for Warp extraction.
         newton.examples.test_body_state(
             self.model,
             self.state_0,
             "all body velocities are small",
-            lambda q, qd: max(abs(qd))
-            < 0.015,  # Relaxed from 0.005 - G1 has higher residual velocities with collision pipeline
+            lambda q, qd: max(abs(qd)) < 0.015,
         )
-        # fmt: on
 
     @staticmethod
     def create_parser():
+        """Create simulation arguments, including optional Kamino LDL backend and ordering selection."""
         parser = newton.examples.create_parser()
+        add_ldl_arguments(parser)
         newton.examples.add_world_count_arg(parser)
         newton.examples.add_mujoco_contacts_arg(parser)
         parser.add_argument("--solver", choices=["mujoco", "kamino"], default="mujoco")
+        parser.add_argument(
+            "--bilateral-solver-type",
+            choices=("LDL", "LLTB", "LLTBRCM"),
+            default=None,
+            help="SCC bilateral solver (default: LLTBRCM).",
+        )
         parser.set_defaults(world_count=4)
         return parser
 

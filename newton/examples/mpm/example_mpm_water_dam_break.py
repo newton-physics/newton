@@ -1,7 +1,20 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Water-like MPM dam break rendered as an extracted surface mesh."""
+"""Water-like MPM dam break rendered as an extracted surface mesh.
+
+Success criteria:
+- The initial water column spreads horizontally through the tank after release.
+- A continuous visible water surface follows the flowing material rather than remaining at its
+  initial shape.
+- Water remains contained by the tank floor and walls without explosive particle escape.
+- With --show-particles, the extracted surface tracks the dense flowing particle volume; sparse
+  spray may remain visible outside the reconstructed surface.
+
+Runs:
+- `python -m newton.examples mpm_water_dam_break`
+- `python -m newton.examples mpm_water_dam_break --show-particles`
+"""
 
 import argparse
 import warnings
@@ -114,6 +127,8 @@ class Example:
         mpm_config.strain_basis = args.strain_basis
         mpm_config.collider_basis = args.collider_basis
         mpm_config.velocity_basis = args.velocity_basis
+        mpm_config.volume_recovery_time = args.volume_recovery_time
+        mpm_config.volume_recovery_measurement = args.volume_recovery_measurement
         mpm_config.separate_worlds = self.world_count > 1
         self.solver = SolverImplicitMPM(self.model, config=mpm_config)
 
@@ -493,6 +508,19 @@ class Example:
         parser.add_argument("--strain-basis", "-sb", type=str, default="P0")
         parser.add_argument("--collider-basis", "-cb", type=str, default="pic")
         parser.add_argument("--velocity-basis", "-vb", type=str, default="Q1")
+        parser.add_argument(
+            "--volume-recovery-time",
+            type=float,
+            default=None,
+            help="Time constant of particle overpacking recovery [s], for example 0.1; unset disables volume recovery",
+        )
+        parser.add_argument(
+            "--volume-recovery-measurement",
+            type=str,
+            default="grid",
+            choices=["grid", "particle"],
+            help="Packing measurement for volume recovery",
+        )
         parser.add_argument(
             "--projection-threshold",
             type=float,

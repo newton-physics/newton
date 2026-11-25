@@ -27,7 +27,7 @@ import numpy as np
 
 from .types import Mesh
 
-CACHE_FORMAT_VERSION = 2
+CACHE_FORMAT_VERSION = 3
 logger = logging.getLogger(__name__)
 
 

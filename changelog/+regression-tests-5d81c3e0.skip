@@ -1,0 +1,1 @@
+Tests only: extend the GJK small-triangle, USD springref and Steel capture tests, and test a kinematic free body pushing a dense articulation in SolverSteel.

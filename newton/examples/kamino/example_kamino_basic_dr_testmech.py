@@ -1,23 +1,30 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example for basic DR TestMech system
-#
-# Shows how to simulate DR TestMech with multiple worlds using SolverKamino.
-#
-# Command: python -m newton.examples kamino_basic_dr_testmech --world-count 16
-#
-###########################################################################
+"""Example for basic DR TestMech system
 
+Shows how to simulate DR TestMech with multiple worlds using SolverKamino.
+
+Success criteria:
+- A mechanism with multiple linked pieces moves back and forth.
+- Motion propagates through its joints and links without disconnection.
+
+Runs:
+- `python -m newton.examples kamino_basic_dr_testmech`
+- `python -m newton.examples kamino_basic_dr_testmech --world-count 16`
+"""
+
+import numpy as np
 import warp as wp
 
 import newton
 import newton.examples
+from newton.examples.kamino.utils.ldl import add_ldl_arguments, configure_ldl
 
 
 class Example:
     def __init__(self, viewer: newton.viewer.ViewerBase, args=None):
+        """Build the Kamino DR test mechanism with the requested solver options."""
         # Set simulation run-time configurations
         self.fps = 50
         self.sim_dt = 0.001
@@ -49,12 +56,15 @@ class Example:
         # Create the multi-world model by duplicating the single-robot
         # builder for the specified number of worlds
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
-        builder.num_rigid_contacts_per_world = 2048
         for _ in range(self.world_count):
             builder.add_world(robot_builder)
 
         # Create the model from the builder
         self.model = builder.finalize(skip_validation_joints=True)
+
+        # The mechanism is simulated without collisions, so reserve only a
+        # single contact slot per world.
+        self.model.rigid_contact_max = self.world_count
 
         # Create the Kamino solver for the given model
         self.config = newton.solvers.SolverKamino.Config.from_model(self.model)
@@ -65,6 +75,7 @@ class Example:
         self.config.padmm.dual_tolerance = 1e-6
         self.config.padmm.compl_tolerance = 1e-6
         self.config.padmm.rho_0 = 0.01
+        configure_ldl(self.config, args)
         self.solver = newton.solvers.SolverKamino(self.model, config=self.config)
 
         # Create state and control data containers
@@ -115,18 +126,56 @@ class Example:
         self.viewer.log_state(self.state_0)
         self.viewer.end_frame()
 
+    def test_post_step(self):
+        # Track each body's position range to verify the mechanism keeps swinging.
+        positions = self.state_0.body_q.numpy()[:, :3]
+        if not hasattr(self, "_position_min"):
+            self._position_min = positions.copy()
+            self._position_max = positions.copy()
+        else:
+            np.minimum(self._position_min, positions, out=self._position_min)
+            np.maximum(self._position_max, positions, out=self._position_max)
+
     def test_final(self):
-        pass  # TODO: Add some assertions here once we have a more meaningful test scenario
+        """Check finite states and the example's motion and constraint criteria."""
+        assert np.isfinite(self.state_0.body_qd.numpy()).all(), "Body velocities must remain finite"
+        poses = self.state_0.body_q.numpy()
+        assert np.isfinite(poses).all(), "Non-finite body poses"
+
+        # Mechanism must move back and forth instead of staying frozen.
+        travel = np.linalg.norm(self._position_max - self._position_min, axis=1)
+        world_travel = np.zeros(self.world_count)
+        np.maximum.at(world_travel, self.model.body_world.numpy(), travel)
+        assert np.all(world_travel > 0.01), f"Mechanism did not move: max body travel per world {world_travel}"
+
+        # Revolute, ball, and fixed joints keep their anchors coincident, so the links stay connected.
+        parent = self.model.joint_parent.numpy()
+        child = self.model.joint_child.numpy()
+        joint_type = self.model.joint_type.numpy()
+        xp = self.model.joint_X_p.numpy()
+        xc = self.model.joint_X_c.numpy()
+        anchored = (int(newton.JointType.REVOLUTE), int(newton.JointType.BALL), int(newton.JointType.FIXED))
+        for joint, label in enumerate(self.model.joint_label):
+            if joint_type[joint] not in anchored:
+                continue
+            parent_pose = wp.transform(*poses[parent[joint]]) if parent[joint] >= 0 else wp.transform_identity()
+            a = wp.transform_point(parent_pose, wp.vec3(*xp[joint, :3]))
+            b = wp.transform_point(wp.transform(*poses[child[joint]]), wp.vec3(*xc[joint, :3]))
+            gap = wp.length(a - b)
+            assert gap < 1e-3, f"Joint opened by {gap:.2e} m: {label}"
 
     @staticmethod
     def create_parser():
+        """Create simulation arguments, including optional Kamino LDL backend and ordering selection."""
         parser = newton.examples.create_parser()
+        add_ldl_arguments(parser)
         newton.examples.add_world_count_arg(parser)
         parser.set_defaults(world_count=1)
         return parser
 
 
 if __name__ == "__main__":
+    newton.utils.setup_console_logging()
     parser = Example.create_parser()
     viewer, args = newton.examples.init(parser)
     newton.examples.run(Example(viewer, args), args)

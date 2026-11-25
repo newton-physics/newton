@@ -15,6 +15,15 @@ from ..utils.onnx import load_onnx_runtime, require_onnx
 
 _METADATA_FILE = "metadata.json"
 
+_TORCH_CHECKPOINT_DEPRECATION_MSG = (
+    "Torch neural-drive checkpoints (.pt2, .pt, .pth) are deprecated in Newton 1.8 and will be removed "
+    "in a future release; export the network to ONNX (.onnx) instead."
+)
+_ALLOW_UNSAFE_TORCH_CHECKPOINTS_DEPRECATION_MSG = (
+    "allow_unsafe_torch_checkpoints is deprecated in Newton 1.8 together with Torch neural-drive checkpoints "
+    "and will be removed in a future release; export the network to ONNX (.onnx) instead."
+)
+
 
 def _looks_like_torch_checkpoint(path: str) -> bool:
     return os.path.splitext(path)[1].lower() in (".pt", ".pth", ".pt2")
@@ -42,7 +51,7 @@ def load_metadata(path: str) -> dict[str, Any]:
 
 def load_checkpoint(
     path: str,
-    device: str | wp.Device | None = None,
+    device: wp.DeviceLike = None,
     input_batch_axes: int | dict[str, int] | None = None,
     requires_grad: bool = False,
 ):
