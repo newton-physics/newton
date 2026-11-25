@@ -8,45 +8,39 @@
 Performance
 ===========
 
-This guide shows how to benchmark and profile Newton simulations, reduce GPU
-launch overhead with CUDA graphs, and keep per-step data on the device. It
-also covers sizing contact and constraint buffers, tuning collision and solver
-work while checking accuracy, and scaling to multiple worlds.
+Profile a representative Newton scene before changing execution settings or
+tuning the physics. Choose an accuracy metric, such as tracking error,
+penetration depth, or force balance, and set a tolerance before measuring.
+For solver tuning, increase substeps or iterations until the metric
+converges, then use that run as a reference. Compare runs over the same
+simulated duration and check for non-finite state and buffer overflow before
+accepting a speedup. See :ref:`Simulation Tuning` for help choosing a reference.
+
 For custom kernels, see Warp's `performance guide
 <https://nvidia.github.io/warp/stable/user_guide/execution_and_performance.html>`__.
-
-Start with a scene that represents your workload. Choose a quantity to
-preserve, such as tracking error, penetration depth, or force balance, and
-set an acceptable tolerance. For solver tuning, use a reference with enough
-substeps or iterations for that quantity to converge. Compare changes over
-the same amount of simulated time. Check for non-finite state and contact or
-constraint overflow before accepting a speedup. See :ref:`Simulation Tuning`
-for help choosing a reference.
 
 .. _performance-benchmarking:
 
 Benchmark the workload
 ----------------------
 
-Run a headless example for a quick baseline. The benchmark warms up and reports
-frames per second. This command stops at 10 measured seconds or 1000 total
-frames, including warm-up, whichever comes first.
+Run a headless example to establish a baseline. The command below reports
+frames per second after warm-up. It stops after 10 measured seconds or 1000
+total frames, including warm-up, whichever comes first.
 
 .. code-block:: console
 
     uv run -m newton.examples basic_shapes --benchmark 10 --num-frames 1000
 
-The example benchmark synchronizes after every measured frame, so its FPS
-includes per-frame synchronization and prevents overlap between successive
-frames. Timing a batch with synchronization only at its boundaries can report
-different throughput, especially for small workloads. Use the same
-synchronization policy when comparing results.
+The example synchronizes after each measured frame. That adds a host wait
+and prevents the host from submitting the next frame while the GPU finishes
+the current one. Batch timing can give different throughput, especially
+for small workloads. Use the same synchronization policy for each run.
 
 For your own loop, warm up the simulation and replay any captured graph once
 before timing. Synchronize the device before and after timing a batch of
-frames. Report startup separately from steady-state stepping. Repeat the
-measurement and report the spread. Change one setting at a time and record
-both timing and accuracy.
+frames. Report startup and steady-state timing separately. Repeat the
+measurement and report how much it varies. Change one setting at a time.
 
 See Warp's guides to `cold-start benchmarking
 <https://nvidia.github.io/warp/stable/user_guide/execution_and_performance/profiling.html#cold-start-benchmarking-approaches>`__
@@ -54,8 +48,8 @@ and `reducing compilation and startup time
 <https://nvidia.github.io/warp/stable/user_guide/execution_and_performance/reducing_compilation_and_startup_time.html>`__.
 
 Record hardware and software versions, world count, timestep, substeps,
-collision cadence, solver settings, and whether the run includes rendering,
-sensors, controls, or resets. Report the accuracy metric alongside the timings.
+collision refresh frequency, solver settings, and whether the run includes
+rendering, sensors, controls, or resets. Report the accuracy metric with the timings.
 To track regressions in Newton itself, use the ASV suite in the
 :doc:`development guide </guide/development>`.
 
@@ -83,18 +77,18 @@ features use gradients during forward simulation. See Warp's `module settings
 Find the bottleneck
 -------------------
 
-Use Nsight Systems to see where the CPU and GPU spend time. Start with the
-null viewer to isolate stepping. Enable the viewer when measuring rendering.
+Use Nsight Systems to see where the CPU and GPU spend time.
+Pass ``--viewer null`` to measure stepping without rendering.
 
 .. code-block:: console
 
     nsys profile -o h1 --trace=cuda,nvtx,osrt \
         uv run -m newton.examples robot_h1 --viewer null --num-frames 300
 
-To record only the steps after warm-up, see Warp's guide to
+Inspect the gaps in the steady-state GPU timeline and the corresponding CUDA
+API calls. To record only the steps after warm-up, see Warp's guide to
 `limiting the profiler capture range
 <https://nvidia.github.io/warp/stable/user_guide/execution_and_performance/profiling.html#limiting-the-profiler-capture-range>`__.
-Inspect the steady-state GPU timeline and the CUDA API calls around gaps.
 
 .. list-table::
    :header-rows: 1
@@ -134,11 +128,11 @@ investigate its compute and memory throughput. See Warp's `Nsight Compute guide
 Capture a simulation frame
 --------------------------
 
-A CUDA graph replays a frame's kernel launches with one host call. Capture
-the full frame with :class:`warp.ScopedCapture`, including collision, control
-updates, and any device-side metrics that run each frame. Replay it with
-:func:`warp.capture_launch`. The largest gains come when launch overhead
-leaves the GPU idle. See Warp's `CUDA graph guide
+A CUDA graph replays a frame's kernel launches with one host call. It helps
+most when launch overhead leaves the GPU idle. Capture the full frame with
+:class:`warp.ScopedCapture`, including collision detection, control updates,
+and device-side metrics. Replay it with :func:`warp.capture_launch`.
+See Warp's `CUDA graph guide
 <https://nvidia.github.io/warp/stable/user_guide/runtime.html#graphs>`__.
 
 Allocate buffers and run an eager warm-up frame before capture so first-step
@@ -191,10 +185,10 @@ the copy.
 Simulation loop
 ^^^^^^^^^^^^^^^
 
-This example accepts an already finalized :class:`Model` and uses
-:class:`~solvers.SolverSemiImplicit` to demonstrate the loop. It captures a
-full frame on CUDA and steps eagerly on CPU. The final substep copies the
-state back when the substep count is odd.
+Pass a finalized :class:`Model` to the loop below. It uses
+:class:`~solvers.SolverSemiImplicit`, captures a full frame on CUDA, and steps
+eagerly on CPU. With an odd substep count, it copies the final state back to
+the input buffer.
 
 .. testsetup:: performance-loop
 
@@ -245,11 +239,16 @@ state back when the substep count is odd.
             else:
                 self.simulate()
 
+When validating your own loop, compare eager stepping and graph replay over
+the same simulated duration. Change controls between replays and compare
+positions, velocities, and any relevant solver history. See
+:ref:`Deterministic Contacts` for repeatable contact ordering.
+
 .. dropdown:: Validate eager and captured stepping
 
-   Capture records the frame, and the warm-up already advanced the simulation
-   by one frame. Account for that frame in the comparison below. The run
-   continues until the sphere contacts the ground.
+   Capture records the frame. The eager warm-up advances the simulation by
+   one frame, so count it toward the captured run's 20 frames. The test
+   checks that the sphere reaches the ground before comparing the final states.
 
    .. testcode:: performance-loop
 
@@ -273,22 +272,18 @@ state back when the substep count is odd.
                eager.state_0.body_qd.numpy(), captured.state_0.body_qd.numpy(), atol=1e-5
            )
 
-   When validating your own loop, change controls between replays and compare
-   relevant solver history as well as positions and velocities. For
-   repeatable contact ordering, see :ref:`Deterministic Contacts`.
-
 .. _performance-host-sync:
 
 Keep per-step data on the device
 --------------------------------
 
-Device-to-host reads in the step can stall work and prevent CUDA graph
-capture. Look for ``array.numpy()``, PyTorch ``tensor.item()`` or
-``tensor.cpu()``, and host reads of contact counts used to choose a launch
-size. Launch over the buffer capacity and check the active count on the
-device. Accumulate metrics and peak counts on the device, then read them
-periodically or at the end of the run. Use host-side setters such as
-:meth:`Model.set_gravity` for setup or occasional edits.
+Device-to-host reads can stall stepping and prevent CUDA graph capture.
+Look for calls such as ``array.numpy()``, PyTorch ``tensor.item()`` and
+``tensor.cpu()``. If a kernel processes only active contacts, launch over
+the buffer capacity and check the contact count on the device. Accumulate
+metrics and peak counts on the device and read them periodically or at the
+end of the run. Use host-side setters such as :meth:`Model.set_gravity` for
+setup or occasional edits.
 
 Render once per frame. Drawing contacts with
 :meth:`~viewer.ViewerBase.log_contacts` reads the contact count on the host.
@@ -306,19 +301,21 @@ on overlapping transfers with computation.
 Size contact and constraint buffers
 -----------------------------------
 
-Use a peak-load scene at the intended world count. Run with enough capacity
-to avoid overflow, then size each buffer from the measured peak plus a
-margin. Repeat the check when the scene, world count, or contact settings
-change. Oversized buffers can cost time as well as memory because operations
-such as deterministic contact sorting can use the full capacity.
+Measure peak buffer use at the intended world count in a scene that
+exercises the expected load. Start with enough capacity to avoid overflow,
+then size each buffer for the measured peak plus a margin. Repeat the check
+when the scene, world count, or contact settings change. Oversized buffers
+can cost time as well as memory. For example, deterministic contact sorting
+can use the full capacity.
 
 Keep ``verify_buffers=True`` while testing :class:`CollisionPipeline`
 capacities. It checks rigid narrow-phase overflow, including intermediate
 buffers. Check ``soft_contact_count`` against ``soft_contact_max`` separately:
-ordinary particle soft contacts can overflow without a warning even with
-verification enabled. Check solver constraints separately using the solver's
-diagnostics. :class:`CollisionPipeline` contact capacities are totals across
-worlds. With :class:`~solvers.SolverMuJoCo` on the Warp backend, ``njmax``
+ordinary particle soft contacts can overflow without a warning. Use the
+solver's diagnostics to check constraint capacity.
+
+:class:`CollisionPipeline` contact capacities are totals across worlds.
+With :class:`~solvers.SolverMuJoCo` on the MuJoCo Warp backend, ``njmax``
 limits constraints per world and ``naconmax`` is the shared runtime contact
 capacity. Size shared buffers for the combined peak across worlds and per-world
 limits for the busiest world. See :ref:`mujoco_overflow_observable`.
@@ -332,13 +329,18 @@ To measure the memory cost of different capacities, see Warp's guide to
 Reduce collision and solver work
 --------------------------------
 
-Start by filtering pairs that should never interact, choosing a broad phase
-suited to the scene, and requesting only the contact data the application
-uses. Shared shapes (world ``-1``) can collide with every world. See the
-:ref:`collision performance notes <Performance>` for pipeline-specific
-options and their costs.
+Filter pairs that should never interact, choose a broad phase suited to the
+scene, and request only the contact data the application uses. Shared shapes
+(world ``-1``) can collide with every world. See the
+:ref:`collision performance notes <Performance>` for pipeline options.
 
-Use the baseline accuracy target to evaluate changes to the physics.
+Use the baseline accuracy metric to evaluate each change.
+:ref:`Adaptive collision detection <tuning-adaptive-collision-detection>`
+can skip collision checks when motion allows while keeping the solver
+timestep fixed. When tuning iterations or tolerances, use the
+:ref:`per-world solver residual <solver_residual_observable>` available in
+Kamino and VBD to check convergence on the device, including during graph
+replay.
 
 .. list-table::
    :header-rows: 1
@@ -347,26 +349,18 @@ Use the baseline accuracy target to evaluate changes to the physics.
    * - Change
      - What to recheck
    * - Detect collisions less often
-     - Recheck missed contacts, tunneling, and penetration, especially for
+     - Check for missed contacts, tunneling, and penetration, especially for
        fast bodies and thin geometry. See
        :ref:`collision-frequency-in-the-simulation-loop`.
-       :ref:`Adaptive collision detection <tuning-adaptive-collision-detection>`
-       can skip collision checks when motion allows while keeping the solver
-       timestep fixed.
    * - Simplify geometry or contact models
      - Check contact location and force distribution. Use
        :meth:`ModelBuilder.approximate_meshes` or adjust SDF resolution where
        the task tolerates changes to the collision surface. See
        :ref:`Collision Pipeline Details` and :ref:`Hydroelastic Contacts`.
    * - Reduce solver effort
-     - Check convergence or task error after changing iterations or
-       tolerances. Kamino and VBD can report a
-       :ref:`per-world solver residual <solver_residual_observable>` on the
-       device, including during graph replay. If you reduce substeps, also
-       recheck stability and contacts at the larger timestep. See
-       :ref:`Tuning Solver Reference`.
-       For early exit in a captured custom loop, see Warp's `conditional execution
-       <https://nvidia.github.io/warp/stable/user_guide/runtime.html#conditional-execution>`__.
+     - Check convergence and task error after changing iterations or
+       tolerances. If you reduce substeps, check stability and contacts at
+       the larger timestep. See :ref:`Tuning Solver Reference`.
    * - Enable sleeping
      - Measure the speedup in a representative scene and check that bodies
        wake when needed. See :ref:`MuJoCo sleeping <mujoco-sleeping>`.
@@ -383,7 +377,12 @@ meshes and build any needed SDFs before replication so the copies share the
 results. Batch per-world updates in device kernels and use
 :ref:`Per-world reset masks` to reset selected worlds.
 
-Measure world-steps per second, step latency, and peak memory at several
-world counts. Choose a batch size that meets the application's throughput,
-latency, and memory needs. A model and solver run on a single device. For
-multiple GPUs, run one simulation per device.
+At several world counts, measure throughput in world-steps per second,
+latency in milliseconds per frame, and peak memory. A world-step is one
+physics substep in one world. For a fixed substep count and world count,
+throughput is ``frames × substeps per frame × worlds / elapsed seconds``.
+Choose a batch size that meets the application's throughput, latency, and
+memory needs.
+
+A model and solver run on a single device. For multiple GPUs, run one
+simulation per device.
