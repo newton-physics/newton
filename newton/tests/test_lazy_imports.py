@@ -95,11 +95,13 @@ class TestLazySolverImports(unittest.TestCase):
             "prefixes = tuple(f'newton.{name}' for name in deferred) + tuple(deferred.values()); "
             "print(','.join(m for m in sys.modules if m.startswith(prefixes))); "
             "print(set(submodules) <= set(dir(newton))); "
+            "import newton.viewer; print('newton.selection' in sys.modules); "
             "print(all(getattr(newton, name) is sys.modules[f'newton.{name}'] for name in submodules))"
         )
-        loaded, listed, resolved = _run_in_fresh_interpreter(code).stdout.splitlines()
+        loaded, listed, viewer_loads_selection, resolved = _run_in_fresh_interpreter(code).stdout.splitlines()
         self.assertEqual(loaded, "", f"submodules imported eagerly: {loaded}")
         self.assertEqual(listed, "True")
+        self.assertEqual(viewer_loads_selection, "False")
         self.assertEqual(resolved, "True")
 
     def test_public_exports_match_internal_exports(self):
