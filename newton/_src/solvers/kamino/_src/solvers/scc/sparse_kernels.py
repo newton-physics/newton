@@ -1421,6 +1421,12 @@ def _solve_scc_sparse_inequalities_pgs(
                     color = num_colors - int32(1) - color_index
                 group_start = inequality_color_starts[schedule_offset + color]
                 group_end = inequality_color_starts[schedule_offset + color + int32(1)]
+                # Each color lists scalar rows before contacts, so a color whose
+                # last inequality is no contact has no tangent rows. The whole
+                # block skips it and its barrier.
+                color_slot_end = inequality_group_starts[group_schedule_offset + group_end]
+                if phase == int32(1) and inequality_ids_by_color[uio + color_slot_end - int32(1)] < nbc + nl:
+                    continue
                 group = group_start + lane
                 while group < group_end:
                     color_start = inequality_group_starts[group_schedule_offset + group]

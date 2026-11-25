@@ -952,6 +952,11 @@ def _solve_scc_inequalities_colored_pgs(
                     color = num_colors - int32(1) - color_index
                 color_start = inequality_color_starts[schedule_offset + color]
                 color_end = inequality_color_starts[schedule_offset + color + int32(1)]
+                # Colors list their inequalities by ascending id, and contacts have
+                # the highest ids. A color whose last id is no contact has no
+                # tangent rows, so the whole block skips it and both barriers.
+                if phase == int32(1) and inequality_ids_by_color[uio + color_end - int32(1)] < nbc + nl:
+                    continue
                 color_slot = color_start + lane
                 while color_slot < color_end:
                     uid = inequality_ids_by_color[uio + color_slot]
