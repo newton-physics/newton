@@ -520,9 +520,6 @@ class FastTeleopMuJoCo(_TeleopMuJoCoBenchmark):
 class TeleopMuJoCo(_TeleopMuJoCoBenchmark):
     """Nightly teleop benchmark covering GPU and CPU solver backends."""
 
-    # Bump when the task changes: ASV hashes only the method sources, not the scene helpers.
-    _workload_version = "2"
-
     def track_mean_loop_ms(self, mode: str) -> float:
         self._measure_frames()
         return self.loop.stats.summary("local_loop_ms")[0]
@@ -568,14 +565,14 @@ class TeleopMuJoCo(_TeleopMuJoCoBenchmark):
         return self.loop.stats.summary("target_error_m")[0]
 
     track_mean_target_error_m.unit = "m"
-    track_mean_target_error_m.version = _workload_version
+    track_mean_target_error_m.version = "2"
 
     def track_mean_target_rotation_error_rad(self, mode: str) -> float:
         self._measure_frames(collect_workload_state=True)
         return self.loop.stats.summary("target_rotation_error_rad")[0]
 
     track_mean_target_rotation_error_rad.unit = "rad"
-    track_mean_target_rotation_error_rad.version = _workload_version
+    track_mean_target_rotation_error_rad.version = "2"
 
     def track_hand_object_contact_frame_pct(self, mode: str) -> float:
         self._measure_frames(collect_workload_state=True)
@@ -583,7 +580,7 @@ class TeleopMuJoCo(_TeleopMuJoCoBenchmark):
         return 100.0 * self.loop.stats.summary("hand_object_contact")[0]
 
     track_hand_object_contact_frame_pct.unit = "%"
-    track_hand_object_contact_frame_pct.version = _workload_version
+    track_hand_object_contact_frame_pct.version = "2"
 
     def track_object_displacement_m(self, mode: str) -> float:
         self._measure_frames(collect_workload_state=True)
@@ -591,7 +588,7 @@ class TeleopMuJoCo(_TeleopMuJoCoBenchmark):
         return self.loop.stats.summary("object_displacement_m")[2]
 
     track_object_displacement_m.unit = "m"
-    track_object_displacement_m.version = _workload_version
+    track_object_displacement_m.version = "2"
 
 
 if __name__ == "__main__":
