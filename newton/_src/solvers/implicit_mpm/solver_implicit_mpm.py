@@ -2583,7 +2583,10 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         """Remove lagged proxy wrenches and gravity from the velocities of compliant proxy colliders.
 
         The solver adds gravity back over its steps; see :meth:`coupling_eval_gravity_acceleration`.
+        Gravity is evaluated from the current collider masses, as in the steps, rather than from the cached
+        ``body_gravity_acceleration``.
         """
+        del body_gravity_acceleration
         if state.body_q is None or state.body_qd is None or body_local_to_proxy_global.shape[0] == 0:
             return
 
@@ -2594,7 +2597,10 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 float(dt),
                 body_local_to_proxy_global,
                 coupling_forces,
-                body_gravity_acceleration,
+                int(newton.BodyFlags.PROXY),
+                self.model.body_flags,
+                self.model.gravity,
+                self.model.body_world,
                 self._mpm_model.collider_body_mass,
                 state.body_q,
                 self.model.body_inv_inertia,
@@ -5531,7 +5537,10 @@ def _rewind_mpm_proxy_bodies_kernel(
     dt: float,
     body_local_to_proxy_global: wp.array[int],
     coupling_forces: wp.array[wp.spatial_vector],
-    body_gravity_acceleration: wp.array[wp.vec3],
+    proxy_flag: int,
+    body_flags: wp.array[wp.int32],
+    gravity: wp.array[wp.vec3],
+    body_world: wp.array[wp.int32],
     collider_body_mass: wp.array[float],
     body_q: wp.array[wp.transform],
     body_inv_inertia: wp.array[wp.mat33],
@@ -5545,7 +5554,8 @@ def _rewind_mpm_proxy_bodies_kernel(
         return
 
     f = coupling_forces[proxy_global]
-    delta_v = dt * (body_inv_mass[local_body] * wp.spatial_top(f) + body_gravity_acceleration[local_body])
+    g = _mpm_proxy_body_gravity(local_body, proxy_flag, body_flags, collider_body_mass, gravity, body_world)
+    delta_v = dt * (body_inv_mass[local_body] * wp.spatial_top(f) + g)
     rot = wp.transform_get_rotation(body_q[local_body])
     delta_w = dt * wp.quat_rotate(
         rot,

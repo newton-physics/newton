@@ -2882,6 +2882,7 @@ def test_proxy_rewind_leaves_rigid_colliders_alone(test, device):
     builder.add_shape_box(dynamic, hx=0.1, hy=0.1, hz=0.1)
     builder.add_particle(pos=(0.0, 0.0, 1.0), vel=(0.0, 0.0, 0.0), mass=1.0, radius=0.01)
     model = builder.finalize(device=device)
+    model.body_flags.assign(model.body_flags.numpy() | int(newton.BodyFlags.PROXY))
 
     config = SolverImplicitMPM.Config()
     config.voxel_size = 0.1
@@ -2928,6 +2929,39 @@ def test_proxy_body_gravity_uses_global_world_entry(test, device):
     solver.coupling_eval_gravity_acceleration(body_gravity, particle_gravity)
 
     np.testing.assert_allclose(body_gravity.numpy()[body], [0.0, 0.0, -10.0], atol=1.0e-6)
+
+
+def test_proxy_rewind_gravity_follows_collider_mass_updates(test, device):
+    """Rewind the gravity MPM applies to a proxy even if its collider mass changed after gravity was evaluated."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0))
+    SolverImplicitMPM.register_custom_attributes(builder)
+    body = builder.add_body(mass=1.0)
+    builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+    builder.add_particle(pos=(0.0, 0.0, 1.0), vel=(0.0, 0.0, 0.0), mass=1.0, radius=0.01)
+    model = builder.finalize(device=device)
+    flags = model.body_flags.numpy()
+    flags[body] |= int(newton.BodyFlags.PROXY)
+    model.body_flags.assign(flags)
+
+    config = SolverImplicitMPM.Config()
+    config.voxel_size = 0.1
+    config.grid_type = "fixed"
+    config.grid_padding = 2
+    solver = SolverImplicitMPM(model, config)
+
+    # Gravity is evaluated while the collider is rigid, then the collider becomes compliant.
+    solver.setup_collider(body_mass=wp.zeros(model.body_count, dtype=float, device=device))
+    body_gravity = wp.zeros(model.body_count, dtype=wp.vec3, device=device)
+    solver.coupling_eval_gravity_acceleration(body_gravity, None)
+    solver.setup_collider()
+
+    dt = 0.1
+    state_0, state_1 = model.state(), model.state()
+    forces = wp.zeros(model.body_count, dtype=wp.spatial_vector, device=device)
+    solver.coupling_rewind_proxy_body(wp.array([0], dtype=int, device=device), state_0, forces, body_gravity, dt)
+    solver.step(state_0, state_1, control=None, contacts=None, dt=dt)
+
+    np.testing.assert_allclose(state_1.body_qd.numpy()[body][:3], [0.0, 0.0, 0.0], atol=1.0e-5)
 
 
 def _settle_proxy_box_on_sand(
@@ -3841,6 +3875,14 @@ add_function_test(
     TestImplicitMPM,
     "test_proxy_body_gravity_uses_global_world_entry",
     test_proxy_body_gravity_uses_global_world_entry,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestImplicitMPM,
+    "test_proxy_rewind_gravity_follows_collider_mass_updates",
+    test_proxy_rewind_gravity_follows_collider_mass_updates,
     devices=devices,
     check_output=False,
 )

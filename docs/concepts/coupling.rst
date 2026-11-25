@@ -444,7 +444,8 @@ The coupled-solver framework is useful today, but it is still experimental:
   stiffness, solver iterations, and lagged versus staggered scheduling strongly
   affect damping and convergence. A sub-stepped MPM destination with dynamic proxy
   bodies resolves contact within the step and needs ``iterations=2`` or more to
-  avoid lagged oscillation.
+  avoid lagged oscillation; staggered proxies also need under-relaxed feedback,
+  such as ``proxy_relaxation_mode="aitken"``, for their iterations to converge.
 - Generic momentum harvesting is only a fallback. Solver-private contact modes
   should expose custom harvest hooks where possible.
 - ADMM contact detection is internal and does not consume arbitrary caller
