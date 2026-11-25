@@ -2282,6 +2282,30 @@ The ``kh`` parameter on each shape controls area-dependent contact stiffness.
 For a pair, the material slope is the series combination
 ``k_eff = k_a * k_b / (k_a + k_b)``. Tune this for desired penetration behavior.
 
+.. _hydroelastic-contact-damping:
+
+**Hydroelastic damping:**
+
+The collision pipeline writes damping to :attr:`Contacts.rigid_contact_damping`
+for penetrating hydroelastic contacts. Each shape contributes
+``tau = max(kd, 0) / ke`` when ``ke > 0``, or zero otherwise. The two times add,
+and each contact receives its stiffness times that sum. Separated speculative
+contacts receive zero damping. This applies to all hydroelastic pairs,
+independent of the solver or MuJoCo's ``solref_mode``.
+
+The default ``ke=2500`` and ``kd=100`` give a pair time of 0.08 s. Tune ``kh``
+for stiffness and ``kd / ke`` for damping. Custom pressure laws and reduced
+contacts use their exported stiffness; this does not establish their solver
+convergence or preserve all damping moments after reduction.
+
+Previously, hydroelastic contacts used automatically selected damping in
+Newton's MuJoCo adapter, regardless of shape ``kd``. Positive ``kd`` now controls
+the generated damping through ``kd / ke``. Set ``kd=0`` on both shapes to retain
+the previous automatic damping.
+
+This restores zero generated contact damping. It also disables shape damping
+in solvers that already used it. Solver-specific overrides still apply.
+
 **Custom pressure laws:**
 
 The contact patch is the iso-pressure surface ``p_a == p_b``. ``signed_depth``

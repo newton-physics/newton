@@ -98,10 +98,11 @@ class Example:
             mu_rolling=0.0,
         )
         # meshes need explicit call to build_sdf with sdf parameters, while primitive sdf are configured directly via shape config flags
-        shape_cfg_meshes = replace(shape_cfg, is_hydroelastic=True)
+        shape_cfg_meshes = replace(shape_cfg, is_hydroelastic=True, kd=0.0)
         shape_cfg_primitives = replace(
             shape_cfg,
             is_hydroelastic=True,
+            kd=0.0,
             sdf_max_resolution=sdf_max_resolution,
             sdf_narrow_band_range=sdf_narrow_band_range,
         )
@@ -145,6 +146,7 @@ class Example:
                         margin=shape_cfg.gap,
                     )
                 builder.shape_flags[shape_idx] |= newton.ShapeFlags.HYDROELASTIC
+                builder.shape_material_kd[shape_idx] = 0.0
             elif body_idx not in finger_body_indices:
                 non_finger_shape_indices.append(shape_idx)
 

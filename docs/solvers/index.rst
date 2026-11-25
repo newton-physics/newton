@@ -207,7 +207,10 @@ formulation.
 - ``ke`` / ``kd``: :class:`~newton.solvers.SolverFeatherstone`,
   :class:`~newton.solvers.SolverSemiImplicit`,
   :class:`~newton.solvers.SolverMuJoCo`, and
-  :class:`~newton.solvers.SolverVBD`.
+  :class:`~newton.solvers.SolverVBD`. With ``contact_compliance=True``,
+  :class:`~newton.solvers.SolverSteel` also uses ``kd / ke`` through
+  :ref:`hydroelastic damping <hydroelastic-contact-damping>`; ``kh``
+  still sets hydroelastic stiffness.
 - ``kf`` / ``ka``: :class:`~newton.solvers.SolverFeatherstone` and
   :class:`~newton.solvers.SolverSemiImplicit`; ``kf`` is also used by
   :class:`~newton.solvers.SolverMuJoCo`
