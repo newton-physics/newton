@@ -369,8 +369,17 @@ def _emit_warning_for_policy_test(category_name, message):
     warnings.warn_explicit(message, getattr(builtins, category_name), __file__, 1, module=__name__)
 
 
+@wp.kernel
+def _copy_spatial_vectors(src: wp.array[wp.spatial_vector], dst: wp.array[wp.spatial_vector]):
+    tid = wp.tid()
+    dst[tid] = src[tid]
+
+
 def _check_contact_gather_backward(device):
-    """Differentiate the per-body contact gather for a body with more sides than Warp's record floor."""
+    """Differentiate the per-body contact gather for a body with more sides than Warp's record floor.
+
+    Gradients must reach both the contact-side wrenches and the body wrench accumulated before the gather.
+    """
     from newton._src.solvers.contact_gather import gather_contact_side_wrenches  # noqa: PLC0415
 
     side_count = 2000
@@ -380,29 +389,37 @@ def _check_contact_gather_backward(device):
         body_end = wp.array([side_count, side_count + 1], dtype=wp.int32)
         sides = wp.array(np.arange(side_count + 1, dtype=np.int32), dtype=wp.int32)
         side_wrench = wp.ones(side_count + 1, dtype=wp.spatial_vector, requires_grad=True)
+        # The gather adds to a body wrench that earlier kernels already wrote.
+        prior_wrench = wp.full(2, value=wp.spatial_vector(0.5, 0.5, 0.5, 0.5, 0.5, 0.5), requires_grad=True)
         body_wrench = wp.zeros(2, dtype=wp.spatial_vector, requires_grad=True)
         tape = wp.Tape()
         with tape:
+            wp.launch(_copy_spatial_vectors, dim=2, inputs=[prior_wrench], outputs=[body_wrench])
             wp.launch(
                 gather_contact_side_wrenches,
                 dim=2,
                 inputs=[body_start, body_end, sides, side_wrench],
                 outputs=[body_wrench],
             )
-        np.testing.assert_array_equal(body_wrench.numpy()[:, 0], [side_count, 1.0])
-        seed = wp.array(np.array([[1.0] * 6, [2.0] * 6], dtype=np.float32), dtype=wp.spatial_vector)
-        expected = np.ones((side_count + 1, 6), dtype=np.float32)
-        expected[side_count] = 2.0
+        np.testing.assert_array_equal(body_wrench.numpy()[:, 0], [side_count + 0.5, 1.5])
+        seed_np = np.array([[1.0] * 6, [2.0] * 6], dtype=np.float32)
+        seed = wp.array(seed_np, dtype=wp.spatial_vector)
+        expected_side = np.ones((side_count + 1, 6), dtype=np.float32)
+        expected_side[side_count] = 2.0
+
+        def check_gradients(mode):
+            np.testing.assert_array_equal(side_wrench.grad.numpy(), expected_side, err_msg=f"{mode} side gradient")
+            np.testing.assert_array_equal(prior_wrench.grad.numpy(), seed_np, err_msg=f"{mode} prior gradient")
 
         tape.backward(grads={body_wrench: seed})
-        np.testing.assert_array_equal(side_wrench.grad.numpy(), expected)
+        check_gradients("eager")
 
         tape.zero()
         with wp.ScopedCapture() as capture:
             tape.backward(grads={body_wrench: seed})
         tape.zero()
         wp.capture_launch(capture.graph)
-        np.testing.assert_array_equal(side_wrench.grad.numpy(), expected)
+        check_gradients("captured")
 
 
 def test_contact_gather_backward(test, device):
