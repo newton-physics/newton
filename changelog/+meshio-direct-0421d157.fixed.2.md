@@ -1,0 +1,1 @@
+Fix `Mesh.create_from_file(..., method="meshio")` using the first cell block of the file as triangles. It now reads all triangle cells, ignores other cell types and the vertices only they use, and raises `ValueError` when the file has no triangles.
