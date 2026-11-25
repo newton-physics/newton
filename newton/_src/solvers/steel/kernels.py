@@ -8151,6 +8151,123 @@ def build_joint_limit_rows(
 
 
 @wp.kernel
+def build_distance_limit_rows(
+    articulation_dof_start: wp.array[int],
+    art_to_world: wp.array[int],
+    group_to_art: wp.array[int],
+    articulation_active: wp.array[int],
+    distance_start: wp.array[int],
+    distance_joint: wp.array[int],
+    joint_child: wp.array[int],
+    joint_X_c: wp.array[wp.transform],
+    joint_q_start: wp.array[int],
+    joint_qd_start: wp.array[int],
+    joint_limit_lower: wp.array[float],
+    joint_limit_upper: wp.array[float],
+    body_com: wp.array[wp.vec3],
+    joint_q: wp.array[float],
+    activation_gap: float,
+    joint_qd: wp.array[float],
+    max_constraints: int,
+    # outputs
+    world_slot_counter: wp.array[int],
+    J_group: wp.array3d[float],
+    world_row_type: wp.array2d[int],
+    world_row_parent: wp.array2d[int],
+    world_row_mu: wp.array2d[float],
+    world_phi: wp.array2d[float],
+    world_target_velocity: wp.array2d[float],
+    row_slot_mode: int,
+    element_row_cursor: wp.array[int],
+):
+    """Allocate and fill the anchor-distance limit rows of the root DISTANCE joint of one articulation per thread.
+
+    A lower bound is active when positive and an upper bound when non-negative, both finite, as in
+    :class:`~newton.solvers.SolverXPBD`; a zero minimum distance is no bound. The distance is
+    ``|p|``, the child anchor's position in the parent anchor frame (the joint's linear coordinates). With the
+    joint velocity ``(v, w)`` of the child COM in that frame, its rate is ``n . v + (r x n) . w`` for ``n = p / |p|``
+    and ``r = p - p_com``, so each row spans only the joint's own six DOFs. At coincident anchors ``n`` follows the
+    anchor's predicted velocity. The row bounds a velocity projection, not the next distance, so with an offset COM
+    the transverse anchor velocity and rotation within the step can carry the anchor past a positive bound. A zero
+    maximum distance holds ``p`` at zero with two opposing rows per axis, which are always active.
+    """
+    group_idx = wp.tid()
+    art = group_to_art[group_idx]
+    if articulation_active[art] == 0:
+        return
+    world = art_to_world[art]
+    dof_start = articulation_dof_start[art]
+    for k in range(distance_start[art], distance_start[art + 1]):
+        joint = distance_joint[k]
+        dof = joint_qd_start[joint]
+        lower = joint_limit_lower[dof]
+        upper = joint_limit_upper[dof]
+        has_lower = lower > 0.0 and wp.isfinite(lower)
+        has_upper = upper >= 0.0 and wp.isfinite(upper)
+        if not has_lower and not has_upper:
+            continue
+        q = joint_q_start[joint]
+        p = wp.vec3(joint_q[q], joint_q[q + 1], joint_q[q + 2])
+        X_j = wp.transform(p, wp.quat(joint_q[q + 3], joint_q[q + 4], joint_q[q + 5], joint_q[q + 6]))
+        com = wp.transform_point(X_j * wp.transform_inverse(joint_X_c[joint]), body_com[joint_child[joint]])
+        local = dof - dof_start
+        if has_upper and upper == 0.0:
+            # The distance has no direction at coincident anchors, so bound each axis of p instead.
+            for row in range(6):
+                axis = row // 2
+                sign = 1.0 - 2.0 * float(row % 2)
+                e = wp.vec3(0.0, 0.0, 0.0)
+                e[axis] = sign
+                slot = reserve_world_rows(row_slot_mode, world_slot_counter, world, 1, element_row_cursor, art)
+                if row_slot_mode == ROW_SLOTS_COUNT or slot >= max_constraints:
+                    continue
+                e_w = wp.cross(p - com, e)
+                for i in range(3):
+                    J_group[group_idx, slot, local + i] = e[i]
+                    J_group[group_idx, slot, local + 3 + i] = e_w[i]
+                world_row_type[world, slot] = PGS_CONSTRAINT_TYPE_JOINT_LIMIT
+                world_row_parent[world, slot] = -1
+                world_row_mu[world, slot] = 0.0
+                world_phi[world, slot] = sign * p[axis]
+                world_target_velocity[world, slot] = 0.0
+            continue
+        distance = wp.length(p)
+        r = p - com
+        n = wp.vec3(1.0, 0.0, 0.0)
+        if distance > 1.0e-9:
+            n = p / distance
+        else:
+            # Coincident anchors separate along the anchor's predicted velocity, so bound that direction.
+            v = wp.vec3(joint_qd[dof], joint_qd[dof + 1], joint_qd[dof + 2])
+            w = wp.vec3(joint_qd[dof + 3], joint_qd[dof + 4], joint_qd[dof + 5])
+            u = v + wp.cross(w, r)
+            if wp.length(u) > 1.0e-9:
+                n = wp.normalize(u)
+        n_w = wp.cross(r, n)
+        for side in range(2):
+            phi = distance - lower
+            active = has_lower and distance <= lower + activation_gap
+            sign = 1.0
+            if side == 1:
+                phi = upper - distance
+                active = has_upper and distance >= upper - activation_gap
+                sign = -1.0
+            if not active:
+                continue
+            slot = reserve_world_rows(row_slot_mode, world_slot_counter, world, 1, element_row_cursor, art)
+            if row_slot_mode == ROW_SLOTS_COUNT or slot >= max_constraints:
+                continue
+            for i in range(3):
+                J_group[group_idx, slot, local + i] = sign * n[i]
+                J_group[group_idx, slot, local + 3 + i] = sign * n_w[i]
+            world_row_type[world, slot] = PGS_CONSTRAINT_TYPE_JOINT_LIMIT
+            world_row_parent[world, slot] = -1
+            world_row_mu[world, slot] = 0.0
+            world_phi[world, slot] = phi
+            world_target_velocity[world, slot] = 0.0
+
+
+@wp.kernel
 def scale_array_inplace(values: wp.array[float], scale: float):
     """Multiply every entry of ``values`` by ``scale``."""
     i = wp.tid()

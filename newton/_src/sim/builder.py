@@ -7886,7 +7886,9 @@ class ModelBuilder:
         Returns:
             The index of the added joint.
 
-        .. note:: Distance joints are currently only supported in :class:`newton.solvers.SolverXPBD`.
+        .. note:: Distance limits are currently enforced only by :class:`newton.solvers.SolverXPBD` and,
+            on a joint that roots its articulation with ``enable_joint_limits=True``,
+            :class:`newton.solvers.SolverSteel`.
 
         """
 
