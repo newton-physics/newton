@@ -34,6 +34,8 @@ class TestSensorIMU(unittest.TestCase):
         site = builder.add_site(body)
         model = builder.finalize(device="cpu")
         sensor = SensorIMU(model, sites=[site])
+        with self.assertRaisesRegex(TypeError, "observables"):
+            sensor.update(model.state())
         with self.assertRaisesRegex(ValueError, "SolverBase.Observables with BODY_QDD"):
             sensor.update(model.state(), observables=None)
 

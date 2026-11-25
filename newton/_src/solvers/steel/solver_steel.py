@@ -2326,9 +2326,9 @@ class SolverSteel(SolverBase, CouplingInterface):
                 connect them into one island; its fixed root supports that island. A
                 supported island whose bodies stay below ``sleep_linear_threshold`` and
                 ``sleep_angular_threshold`` for ``sleep_quiet_time`` falls asleep, and its
-                published state (``joint_q``, ``joint_qd``, ``body_q``, ``body_qd`` and, when
-                requested, ``body_parent_f``) is frozen until a wake event: a nonzero or nonfinite
-                external force (:attr:`~newton.State.body_f`, :attr:`~newton.Control.joint_f`),
+                published state (``joint_q``, ``joint_qd``, ``body_q``, ``body_qd``) and, when
+                requested, its ``observables.body_parent_f`` rows are frozen until a wake event:
+                a nonzero or nonfinite external force (:attr:`~newton.State.body_f`, :attr:`~newton.Control.joint_f`),
                 a changed state or gravity, a contact with an awake or moving body, lost
                 support or row capacity, a :meth:`reset` of its world, or
                 :meth:`notify_model_changed` for properties of its joints, DOFs, bodies or
@@ -7028,8 +7028,9 @@ class SolverSteel(SolverBase, CouplingInterface):
                 :meth:`notify_state_changed` first. Bodies outside every
                 articulation keep their ``body_q`` and ``body_qd``, which pass through to
                 ``state_out``; contacts treat their velocity as zero.
-            state_out: Output state receiving ``joint_q``, ``joint_qd``, ``body_q``,
-                ``body_qd`` and, when requested, ``body_parent_f``.
+            state_out: Output state receiving ``joint_q``, ``joint_qd``, ``body_q``, and
+                ``body_qd``. Parent wrenches go to ``observables.body_parent_f`` when
+                :attr:`~newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F` is requested.
             control: Control input; ``None`` uses the model's default control.
             contacts: Rigid contacts from :class:`~newton.CollisionPipeline`, or ``None``.
                 The buffer must not hold more contacts than ``model.rigid_contact_max``

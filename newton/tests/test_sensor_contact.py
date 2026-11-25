@@ -93,6 +93,8 @@ class TestSensorContact(unittest.TestCase):
         model = _make_two_world_model(device="cpu")
         contacts, _ = create_contacts(model, [(0, 1)], 1, forces=[2.0])
         sensor = SensorContact(model, sensing_bodies="*")
+        with self.assertRaisesRegex(TypeError, "observables"):
+            sensor.update(None, contacts)
         with self.assertRaisesRegex(ValueError, "SolverBase.Observables with CONTACT_F"):
             sensor.update(None, contacts, observables=None)
         np.testing.assert_array_equal(sensor.total_force.numpy(), 0.0)
