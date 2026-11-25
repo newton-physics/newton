@@ -6172,11 +6172,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self._raw_solreflimit_validated = False
         if flags & ModelFlags.SHAPE_PROPERTIES:
             self._update_geom_properties()
-            if self.use_mujoco_cpu and self._has_site_dependent_constants and self.mj_model.ngeom:
-                self.mj_model.geom_pos[:] = self.mjw_model.geom_pos[0].numpy()
-                self.mj_model.geom_quat[:] = self.mjw_model.geom_quat[0].numpy()
-                self.mj_model.geom_size[:] = self.mjw_model.geom_size[0].numpy()
-                self.mj_model.geom_sameframe[:] = self._mujoco.mjtSameFrame.mjSAMEFRAME_NONE
+            if self.use_mujoco_cpu and self._wrap_geoms.size:
+                # Other native geoms keep compiled values, such as a plane's display size.
+                geoms = self._wrap_geoms
+                for name in ("geom_pos", "geom_quat", "geom_size"):
+                    getattr(self.mj_model, name)[geoms] = getattr(self.mjw_model, name)[0].numpy()[geoms]
+                self.mj_model.geom_sameframe[geoms] = self._mujoco.mjtSameFrame.mjSAMEFRAME_NONE
             self._update_site_properties()
             self._update_pair_properties()
             self._invalidate_contact_fast_path()
@@ -9605,6 +9606,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     (mujoco.mjtTrn.mjTRN_SITE, mujoco.mjtTrn.mjTRN_SLIDERCRANK),
                 )
             )
+        )
+        self._wrap_geoms = np.unique(
+            self.mj_model.wrap_objid[
+                np.isin(self.mj_model.wrap_type, (mujoco.mjtWrap.mjWRAP_SPHERE, mujoco.mjtWrap.mjWRAP_CYLINDER))
+            ]
         )
         self._canonical_bvh_aabb = self.mj_model.bvh_aabb.copy()
         self._canonical_body_ipos = self.mj_model.body_ipos.copy()

@@ -30,6 +30,7 @@ class TestMuJoCoSiteExport(unittest.TestCase):
                 fixed = builder.add_site(
                     -1, xform=wp.transform((-1.0, 0.0, 0.0) if wrapping else (1.0, -1.0, 0.0), wp.quat_identity())
                 )
+                builder.add_ground_plane()
                 wraps = [mujoco.TendonWrapSite(moving)]
                 if wrapping:
                     sphere = builder.add_shape_sphere(
@@ -48,6 +49,9 @@ class TestMuJoCoSiteExport(unittest.TestCase):
                 model.shape_transform.assign(poses)
                 solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
                 reference = SolverMuJoCo(model, use_mujoco_cpu=cpu, disable_contacts=True)
+                if cpu:
+                    plane = solver.mj_model.geom_type == solver._mujoco.mjtGeom.mjGEOM_PLANE
+                    self.assertTrue(np.all(solver.mj_model.geom_size[plane] > 0.0))
 
                 output, expected = model.state(), model.state()
                 solver.step(model.state(), output, model.control(), None, 0.001)
