@@ -549,6 +549,7 @@ class TestSolverKaminoConfig(NewtonTestCase):
         SolverKaminoImpl.Config(dynamics_solver="lox", sparse_jacobian=True, sparse_dynamics=True)
         self.assertEqual(SolverKaminoImpl.Config(dynamics_solver="lox", integrator="moreau").integrator, "moreau")
         kamino_config.LOXSolverConfig(gauss_seidel_max_colors=4, projection_acceleration="anderson")
+        kamino_config.LOXSolverConfig(gauss_seidel_max_colors=4, projection_acceleration="nesterov")
         kamino_config.LOXSolverConfig(
             contact_compliance=True, contact_implicit_restitution=True, contact_spatial_friction=True
         )
@@ -556,7 +557,6 @@ class TestSolverKaminoConfig(NewtonTestCase):
         invalid_values = (
             ({"contact_warmstart_method": "geom_pair_net_wrench"}, "contact warmstart method is not implemented"),
             ({"projection_acceleration": "invalid"}, "projection_acceleration"),
-            ({"gauss_seidel_max_colors": 4, "projection_acceleration": "apgd"}, "requires gauss_seidel_max_colors=1"),
             ({"gauss_seidel_max_colors": True}, "gauss_seidel_max_colors"),
             ({"max_iterations": 0}, "max_iterations"),
             ({"use_graph_conditionals": 1}, "use_graph_conditionals"),
@@ -566,6 +566,9 @@ class TestSolverKaminoConfig(NewtonTestCase):
             ({"projected_twist_fraction": float("nan")}, "projected_twist_fraction"),
             ({"weight_beta": 0.5}, "weight_beta"),
             ({"max_joint_penalty_ratio": 50.0}, "max_joint_penalty_ratio"),
+            ({"contact_proximal_regularization": -0.01}, "contact_proximal_regularization"),
+            ({"contact_proximal_warmstart_scale": 1.5}, "contact_proximal_warmstart_scale"),
+            ({"contact_proximal_warmstart_window": float("nan")}, "contact_proximal_warmstart_window"),
         )
         for kwargs, message in invalid_values:
             with self.subTest(kwargs=kwargs), self.assertRaisesRegex(ValueError, message):

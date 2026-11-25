@@ -850,7 +850,7 @@ def test_penalty_friction_force_and_gradient(test, device):
 
 
 def test_penalty_friction_solver_step(test, device):
-    """Apply Coulomb-limited friction through both penalty solvers and legacy options."""
+    """Apply Coulomb-limited friction through both penalty solvers."""
     model = _make_penalty_friction_model(device)
     pipeline = newton.CollisionPipeline(model)
     contacts = pipeline.contacts()
@@ -862,26 +862,13 @@ def test_penalty_friction_solver_step(test, device):
     test.assertEqual(int(contacts.rigid_contact_count.numpy()[0]), 1)
     dt = 1.0e-4
     for solver_type in (newton.solvers.SolverSemiImplicit, newton.solvers.SolverFeatherstone):
-        for smoothing in (None, 0.1):
-            with test.subTest(solver=solver_type.__name__, friction_smoothing=smoothing):
-                if smoothing is None:
-                    solver = solver_type(model)
-                else:
-                    with test.assertWarnsRegex(newton.NewtonDeprecationWarning, "friction_smoothing"):
-                        solver = solver_type(model, friction_smoothing=smoothing)
-                with test.assertWarnsRegex(newton.NewtonDeprecationWarning, "friction_smoothing") as warning:
-                    test.assertEqual(solver.friction_smoothing, 1.0 if smoothing is None else smoothing)
-                test.assertEqual(warning.filename, __file__)
-                with test.assertWarnsRegex(newton.NewtonDeprecationWarning, "friction_smoothing") as warning:
-                    solver.friction_smoothing = 2.0
-                test.assertEqual(warning.filename, __file__)
-                with test.assertWarnsRegex(newton.NewtonDeprecationWarning, "friction_smoothing"):
-                    test.assertEqual(solver.friction_smoothing, 2.0)
-                state_in.clear_forces()
-                solver.step(state_in, state_out, None, contacts, dt)
-                delta_v = state_out.body_qd.numpy()[0, :3] - velocity[:3]
-                test.assertGreater(delta_v[2], 0.0)
-                np.testing.assert_allclose(delta_v[:2], -0.5 * delta_v[2] * np.array([0.6, 0.8]), atol=2.0e-6)
+        with test.subTest(solver=solver_type.__name__):
+            solver = solver_type(model)
+            state_in.clear_forces()
+            solver.step(state_in, state_out, None, contacts, dt)
+            delta_v = state_out.body_qd.numpy()[0, :3] - velocity[:3]
+            test.assertGreater(delta_v[2], 0.0)
+            np.testing.assert_allclose(delta_v[:2], -0.5 * delta_v[2] * np.array([0.6, 0.8]), atol=2.0e-6)
 
 
 def test_box_drop(test, device, solver_fn):

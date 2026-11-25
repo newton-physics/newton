@@ -20,9 +20,10 @@ _CPU_QR_SKIP_REASON = (
 
 
 _PROJECTION_SCHEDULES = {
-    "jacobi": {"gauss_seidel_max_colors": 1},
-    "gauss_seidel": {"gauss_seidel_max_colors": 4},
-    "apgd": {"gauss_seidel_max_colors": 1, "projection_acceleration": "apgd"},
+    "jacobi": {"gauss_seidel_max_colors": 1, "projection_acceleration": "none"},
+    "gauss_seidel": {"gauss_seidel_max_colors": 4, "projection_acceleration": "none"},
+    "nesterov": {"gauss_seidel_max_colors": 1, "projection_acceleration": "nesterov"},
+    "gauss_seidel_nesterov": {"gauss_seidel_max_colors": 4, "projection_acceleration": "nesterov"},
     "jacobi_anderson": {"gauss_seidel_max_colors": 1, "projection_acceleration": "anderson"},
     "gauss_seidel_anderson": {"gauss_seidel_max_colors": 4, "projection_acceleration": "anderson"},
 }
@@ -117,6 +118,31 @@ class TestSolverKaminoLOXContacts(NewtonTestCase):
         self.assertTrue(np.isfinite(state_out.body_qd.numpy()).all())
         return state_out
 
+    def test_proximal_contacts_preserve_hard_contact_solution(self):
+        """Damp finite contact updates while retaining the converged hard-contact velocity."""
+        for spatial in (False, True):
+            with self.subTest(spatial=spatial):
+                first_velocities = []
+                for regularization in (0.0, 1.0):
+                    for iterations in (1, 100):
+                        model = self._sphere(velocity=(0.0, 0.0, -1.0, 0.0, 0.0, 0.0), rolling=0.01)
+                        solver = self._solver(
+                            model,
+                            contact_spatial_friction=spatial,
+                            contact_proximal_regularization=regularization,
+                            contact_proximal_warmstart_scale=1.0,
+                            projected_twist_fraction=1.0,
+                            fixed_iterations=True,
+                            max_iterations=iterations,
+                            projection_sweeps_per_iteration=1,
+                        )
+                        velocity = float(self._step(model, solver).body_qd.numpy()[0, 2])
+                        if iterations == 1:
+                            first_velocities.append(velocity)
+                        else:
+                            self.assertAlmostEqual(velocity, 0.0, delta=2.0e-5)
+                self.assertLess(first_velocities[1], first_velocities[0] - 0.1)
+
     def test_compliance_static_deflection(self):
         """Maintain the analytic spring deflection under gravity."""
         compliance = 0.002
@@ -156,6 +182,61 @@ class TestSolverKaminoLOXContacts(NewtonTestCase):
                 solver = self._solver(model, contact_implicit_restitution=True)
                 state = self._step(model, solver)
                 self.assertAlmostEqual(float(state.body_qd.numpy()[0, 2]), expected, delta=2.0e-4)
+
+    def test_proximal_restitution_keeps_speculative_boundary(self):
+        """Select restitution from the mechanical trial even with a nonzero warm-start impulse."""
+        for spatial in (False, True):
+            for regularization in (0.0, 0.01):
+                model = self._sphere(
+                    gap=0.01,
+                    gravity=0.0,
+                    velocity=(0.0, 0.0, -2.0, 0.0, 0.0, 0.0),
+                    restitution=0.5,
+                    rolling=0.01,
+                )
+                solver = self._solver(
+                    model,
+                    contact_implicit_restitution=True,
+                    contact_spatial_friction=spatial,
+                    contact_proximal_regularization=regularization,
+                )
+                self._step(model, solver)
+                native = solver._solver_kamino.solver_fd
+                projection = native._projection
+                state = native._data.state
+                rows = native._problem.data.contact_rows
+                # Exercise a local projection with a frozen gap and a unit warm-start impulse.
+                # Both trials stay within 0.005 m/s of the gap-closing boundary (-1 m/s).
+                state.iteration_count.fill_(native._config.max_iterations)
+                schedules = (False, True) if self.default_device.is_cuda else (False,)
+                for by_world in schedules:
+                    projection._by_world = by_world
+                    for free_velocity in (-0.995, -1.005):
+                        with self.subTest(
+                            spatial=spatial,
+                            regularization=regularization,
+                            by_world=by_world,
+                            free_velocity=free_velocity,
+                        ):
+                            rows.reaction.fill_(wp.vec3f(0.0, 0.0, 1.0))
+                            if rows.angular_reaction is not None:
+                                rows.angular_reaction.zero_()
+                            state.world_active.fill_(True)
+                            state.world_failed.zero_()
+                            twist = wp.array(
+                                [[0.0, 0.0, free_velocity, 0.0, 0.0, 0.0]],
+                                dtype=state.projected_twist.dtype,
+                                device=model.device,
+                            )
+                            projection.project(
+                                1, False, state.world_active, state.world_failed, native._model.bodies.wid, twist
+                            )
+                            np.testing.assert_array_equal(state.world_failed.numpy(), False)
+                            velocity = float(twist.numpy()[0, 2])
+                            if free_velocity > -1.0:
+                                self.assertLess(velocity, -0.9)
+                            else:
+                                self.assertGreater(velocity, 0.9)
 
     def test_failed_world_recovers_after_reset(self):
         """Fail only the world whose twists become non-finite, and keep it failed with a finite input until a

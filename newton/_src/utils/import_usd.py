@@ -97,32 +97,6 @@ def _is_uniform_scale(scale, rel_tol: float = 1.0e-6) -> bool:
     return hi - lo <= rel_tol * max(abs(lo), abs(hi))
 
 
-def _warn_mirrored_body_transform(usd_prim, key: str, xform_cache) -> None:
-    """Warn when a rigid body prim has an improper (mirrored) world transform.
-
-    Improper transforms (negative determinant) have no unique rotation
-    decomposition: the USD physics parser's ``rotation`` and
-    ``usd.get_transform()`` may absorb the reflection on different axes, and
-    their disagreement becomes a spurious constant rotation injected into the
-    imported body and joint frames via the incoming-xform rebase.
-
-    Args:
-        usd_prim: The rigid body ``Usd.Prim``.
-        key: Prim path string used in the warning message.
-        xform_cache: ``UsdGeom.XformCache`` for world transform lookup.
-    """
-    if xform_cache.GetLocalToWorldTransform(usd_prim).GetDeterminant() < 0.0:
-        warnings.warn(
-            f"Rigid body prim {key} has a mirrored (negative-determinant) "
-            "world transform. Imported body and joint frames may acquire a "
-            "spurious rotation. Bake the reflection into the mesh geometry "
-            "(negate vertices, flip triangle winding) and re-author the body "
-            "with a proper transform before import.",
-            NewtonWarning,
-            stacklevel=_external_warning_stacklevel(),
-        )
-
-
 @dataclass(frozen=True, slots=True)
 class _CableAttachmentCandidate:
     """Cable endpoint and rigid target that may share an articulation."""
@@ -829,6 +803,7 @@ def parse_usd(
         return tetmesh_cache[prim_path]
 
     bodies_with_visual_shapes: set[int] = set()
+    body_site_frame_cache = {}
 
     def _get_prim_world_mat(prim, articulation_root_xform, incoming_world_xform):
         prim_world_mat = usd.get_transform_matrix(prim, local=False, xform_cache=xform_cache)
@@ -932,6 +907,28 @@ def parse_usd(
             rel_mat = prim_world_mat
 
         xform_pos, xform_rot, scale = wp.transform_decompose(rel_mat)
+        if is_site and body_xform is not None:
+            # Subtracting the float32 world positions above loses small site offsets
+            # far from the origin. Redo the subtraction in USD double precision and
+            # rotate it into the builder's body frame, with the incoming/rebase
+            # rotation applied to body_xform undone so both are in USD world axes.
+            cached_frame = body_site_frame_cache.get(parent_body_id)
+            if cached_frame is None:
+                body_rot = body_xform.q
+                if incoming_world_xform is not None:
+                    body_rot = wp.quat_inverse(incoming_world_xform.q) * body_rot
+                if articulation_root_xform is not None:
+                    body_rot = articulation_root_xform.q * body_rot
+                body_quat = Gf.Quatd(float(body_rot[3]), float(body_rot[0]), float(body_rot[1]), float(body_rot[2]))
+                body_prim = stage.GetPrimAtPath(_get_rigid_body_ancestor_path(prim))
+                cached_frame = (
+                    body_quat.GetNormalized().GetInverse(),
+                    xform_cache.GetLocalToWorldTransform(body_prim).ExtractTranslation(),
+                )
+                body_site_frame_cache[parent_body_id] = cached_frame
+            body_quat_inv, body_world_pos = cached_frame
+            offset = xform_cache.GetLocalToWorldTransform(prim).ExtractTranslation() - body_world_pos
+            xform_pos = wp.vec3(*body_quat_inv.Transform(offset))
         xform = wp.transform(xform_pos, xform_rot)
 
         shape_id = -1
@@ -1158,7 +1155,6 @@ def parse_usd(
             if incoming_xform is not None:
                 origin = wp.mul(incoming_xform, origin)
         path = str(prim.GetPath())
-        _warn_mirrored_body_transform(prim, path, xform_cache)
 
         is_kinematic = rigid_body_desc.kinematicBody
         linear_velocity = wp.transform_vector(origin, wp.vec3(*rigid_body_desc.linearVelocity))
@@ -2967,7 +2963,7 @@ def parse_usd(
         if not any(re.match(pattern, battery_path) for pattern in ignore_paths):
             battery = parse_battery_prim(stage.GetPrimAtPath(battery_path))
         if battery is None:
-            raise ValueError(f"Actuators reference '{battery_path}' in 'newton:battery', which is not a battery prim")
+            raise ValueError(f"Actuators reference '{battery_path}' in 'newton:supply', which is not a battery prim")
         batteries[battery_path] = battery
     for path, battery in batteries.items():
         if path in battery_actuators:
