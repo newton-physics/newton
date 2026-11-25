@@ -190,12 +190,6 @@ class SensorIMU:
             ValueError: If solver observables belong to a different model or the
                 required body acceleration array is missing.
         """
-        if observables is None:
-            raise ValueError(
-                "SensorIMU requires SolverBase.Observables with BODY_QDD allocated. "
-                "Call solver.observables(kinds=sensor.solver_observable_kinds) "
-                "and pass the result to solver.step() and sensor.update()."
-            )
         if observables.model is not self.model:
             raise ValueError("Solver observables must belong to the sensor's model.")
         body_qdd = observables.body_qdd

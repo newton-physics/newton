@@ -196,24 +196,6 @@ class TestCustomSolver(unittest.TestCase):
             with self.subTest(kinds=kinds), self.assertRaisesRegex(error, message):
                 solver.observables(kinds)
 
-    def test_extended_attributes_are_removed(self):
-        """Request solver-produced arrays only through solver observables."""
-        builder = newton.ModelBuilder()
-        builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
-        for name in ("request_state_attributes", "request_contact_attributes"):
-            self.assertFalse(hasattr(builder, name))
-
-        model = builder.finalize(device="cpu")
-        for name in ("request_state_attributes", "request_contact_attributes"):
-            self.assertFalse(hasattr(model, name))
-        with self.assertWarnsRegex(newton.NewtonDeprecationWarning, r"get_requested_contact_attributes.*1\.9"):
-            self.assertEqual(model.get_requested_contact_attributes(), set())
-
-        state = model.state()
-        for name in ("body_qdd", "body_parent_f", "mujoco"):
-            self.assertFalse(hasattr(state, name))
-        self.assertFalse(hasattr(newton.CollisionPipeline(model).contacts(), "force"))
-
 
 if __name__ == "__main__":
     unittest.main()

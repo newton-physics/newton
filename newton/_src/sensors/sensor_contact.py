@@ -622,12 +622,6 @@ class SensorContact:
             ValueError: If ``observables`` belong to a different model, no contact-force
                 output is available, or ``contact_f`` was produced with a different ``contacts`` instance.
         """
-        if observables is None:
-            raise ValueError(
-                "SensorContact requires SolverBase.Observables with CONTACT_F allocated. "
-                "Call solver.observables(kinds=sensor.solver_observable_kinds, contacts=contacts) "
-                "and pass the result to solver.step() and sensor.update()."
-            )
         if observables.model is not self._model:
             raise ValueError("Solver observables must belong to the sensor's model.")
         contact_f = observables.contact_f

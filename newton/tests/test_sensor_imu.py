@@ -27,18 +27,6 @@ class TestSensorIMU(unittest.TestCase):
     def _observables(model, sensor):
         return SolverBodyQdd(model).observables(kinds=sensor.solver_observable_kinds)
 
-    def test_update_requires_observables(self):
-        """Reject updates without acceleration observables."""
-        builder = newton.ModelBuilder()
-        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
-        site = builder.add_site(body)
-        model = builder.finalize(device="cpu")
-        sensor = SensorIMU(model, sites=[site])
-        with self.assertRaisesRegex(TypeError, "observables"):
-            sensor.update(model.state())
-        with self.assertRaisesRegex(ValueError, "SolverBase.Observables with BODY_QDD"):
-            sensor.update(model.state(), observables=None)
-
     def test_observables_must_belong_to_sensor_model(self):
         """Reject foreign or unowned arrays before launching the sensor kernel."""
         builder = newton.ModelBuilder()

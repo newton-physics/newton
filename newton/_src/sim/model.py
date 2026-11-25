@@ -3167,24 +3167,6 @@ class Model:
             )
         return self.rigid_contact_max, self.soft_contact_max
 
-    def get_requested_contact_attributes(self) -> set[str]:
-        """Return an empty set; models no longer request optional contact attributes.
-
-        .. deprecated:: 1.9
-
-            The optional ``Contacts.force`` attribute was removed. Request
-            :attr:`newton.solvers.SolverBase.ObservableKind.CONTACT_F` from the
-            solver instead.
-
-        Returns:
-            An empty set.
-        """
-        warn_deprecation(
-            "Model.get_requested_contact_attributes() is deprecated in Newton 1.9 and always returns an "
-            "empty set; request SolverBase.ObservableKind.CONTACT_F from the solver instead."
-        )
-        return set()
-
     def _add_custom_attributes(
         self,
         destination: object,

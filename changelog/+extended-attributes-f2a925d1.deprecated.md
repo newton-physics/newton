@@ -1,1 +1,0 @@
-Deprecate `Model.get_requested_contact_attributes()`. Models can no longer request optional contact attributes, so it always returns an empty set and emits a `NewtonDeprecationWarning`. Remove calls, including `Contacts(requested_attributes=model.get_requested_contact_attributes())`, and request `SolverBase.ObservableKind.CONTACT_F` from the solver for contact forces.
