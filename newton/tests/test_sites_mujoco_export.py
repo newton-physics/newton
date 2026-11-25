@@ -121,6 +121,7 @@ class TestMuJoCoSiteExport(unittest.TestCase):
         np.testing.assert_allclose(solver.mj_data.qpos, qpos + 0.001 * qvel, atol=1e-7)
 
     def test_site_edit_preserves_unnotified_connect_anchor(self):
+        """Keep staged CONNECT anchor and loop-frame edits unpublished until their own notification."""
         builder = newton.ModelBuilder()
         body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
         joint = builder.add_joint_revolute(-1, body, parent_xform=wp.transform((1.0, 2.0, 3.0), wp.quat_identity()))
