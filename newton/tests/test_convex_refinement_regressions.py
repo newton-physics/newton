@@ -374,6 +374,20 @@ def test_refinement_triangle_box_seam(test, device):
     test.assertGreater(float(np.max(np.linalg.norm(normals[:, :2], axis=1))), 0.1)
 
 
+def _bottle_heel_hull():
+    """Return the beveled bottle-heel hull of the bottling-plant products."""
+    angles = np.arange(21) * (2.0 * np.pi / 21)
+    vertices = np.array(
+        [
+            (radius * np.cos(angle), radius * np.sin(angle), z)
+            for radius, z in ((0.025605, 0.0), (0.028303897, 0.0015), (0.030505, 0.016))
+            for angle in angles
+        ],
+        dtype=np.float32,
+    )
+    return newton.Mesh(vertices, [0, 1, 2], compute_inertia=False).compute_convex_hull()
+
+
 def test_refinement_triangle_hull_seam_support(test, device):
     """Retain near-face support for a beveled hull crossing a flat mesh seam."""
     builder = newton.ModelBuilder()
@@ -399,16 +413,7 @@ def test_refinement_triangle_hull_seam_support(test, device):
         cfg=cfg,
         xform=wp.transform(wp.vec3(54.5125, 28.616438, 0.945), wp.quat(0, 0, -0.70710677, 0.70710677)),
     )
-    angles = np.arange(21) * (2.0 * np.pi / 21)
-    vertices = np.array(
-        [
-            (radius * np.cos(angle), radius * np.sin(angle), z)
-            for radius, z in ((0.025605, 0.0), (0.028303897, 0.0015), (0.030505, 0.016))
-            for angle in angles
-        ],
-        dtype=np.float32,
-    )
-    hull = newton.Mesh(vertices, [0, 1, 2], compute_inertia=False).compute_convex_hull()
+    hull = _bottle_heel_hull()
     body = builder.add_body(
         xform=wp.transform(
             wp.vec3(54.5123558, 26.8382854, 0.949995875),
@@ -431,6 +436,43 @@ def test_refinement_triangle_hull_seam_support(test, device):
             test.assertGreater(count, 0, "flat seam removed the hull's support")
             normals = contacts.rigid_contact_normal.numpy()[:count]
             test.assertTrue(np.all(normals[:, 2] > 0.9999))
+
+
+def test_refinement_triangle_hull_tilted_seam_support(test, device):
+    """Support a tilted hull whose witnesses lie on coplanar seams of every triangle.
+
+    Each triangle under the heel reports its witness on a shared internal edge,
+    with a normal a few milliradians off vertical. Rejecting those seam normals
+    removed all of the heel's contacts and let a pasteuriser bottle sink 16 mm.
+    """
+    builder = newton.ModelBuilder()
+    # Two deck strips, triangulated like the factory's process decks.
+    deck = newton.Mesh(
+        np.array(
+            [[x, y, 0.95] for x in (4.4, 4.5, 4.6) for y in (37.23, 39.57)],
+            dtype=np.float32,
+        ),
+        [0, 2, 1, 1, 2, 3, 2, 4, 3, 3, 4, 5],
+        compute_inertia=False,
+    )
+    builder.add_shape_mesh(-1, mesh=deck, cfg=builder.ShapeConfig(density=0.0, gap=0.001))
+    body = builder.add_body(
+        xform=wp.transform(
+            wp.vec3(4.4745235, 38.8095512, 0.9500155),
+            wp.quat(4.538547e-05, 6.589243e-04, -8.697915e-05, 0.99999982),
+        ),
+        mass=1.0,
+        inertia=wp.mat33(np.eye(3)),
+    )
+    builder.add_shape_convex_hull(body, mesh=_bottle_heel_hull(), cfg=builder.ShapeConfig(density=0.0, gap=0.002))
+    model = builder.finalize(device)
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    pipeline.collide(model.state(), contacts)
+    count = int(contacts.rigid_contact_count.numpy()[0])
+    test.assertGreater(count, 0, "coplanar seams removed the heel's support")
+    normals = contacts.rigid_contact_normal.numpy()[:count]
+    test.assertTrue(np.all(np.abs(normals[:, 2]) > 0.9999))
 
 
 def test_refinement_triangle_box_tilted_rest(test, device):
@@ -716,6 +758,7 @@ for function in (
     test_refinement_triangle_box_depth,
     test_refinement_triangle_box_seam,
     test_refinement_triangle_hull_seam_support,
+    test_refinement_triangle_hull_tilted_seam_support,
     test_refinement_triangle_box_tilted_rest,
     test_refinement_triangle_thin_box_face,
     test_refinement_triangle_box_tilted_face,

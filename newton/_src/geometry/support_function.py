@@ -145,22 +145,39 @@ def triangle_smooth_edges(metadata: wp.vec4i, topology: wp.array[int], triangle:
 
 
 @wp.func
-def triangle_normal_valid(geom: GenericShapeData, point: wp.vec3, normal: wp.vec3) -> bool:
-    """Reject normals supported only by an artificial coplanar triangle feature."""
+def triangle_seam_normal(
+    geom: GenericShapeData, point: wp.vec3, normal: wp.vec3, interior: wp.vec3
+) -> tuple[bool, wp.vec3]:
+    """Return the surface normal for a contact on mesh triangle ``geom``.
+
+    An internal edge between coplanar triangles is not a surface feature: the
+    surface normal on both sides is the face normal. A query against one
+    triangle can still lean its normal across that edge. Replace such a normal
+    with the face normal, oriented toward the other shape's ``interior`` point.
+    Rejecting the contact instead would leave a shape that straddles the seam
+    unsupported, because its witness lies on the shared edge for both
+    triangles. Real boundaries, creases, and vertices keep ``normal``.
+
+    Args:
+        geom: Triangle shape data in its local frame, with ``smooth_edges`` set.
+        point: Contact witness on the triangle [m], in the triangle frame.
+        normal: Unit contact normal, in the triangle frame.
+        interior: A point inside the other shape [m], in the triangle frame.
+
+    Returns:
+        Whether the normal was replaced, and the surface normal.
+    """
     mask = geom.smooth_edges
     if mask == 0:
-        return True
+        return False, normal
     ab, ac = geom.scale, geom.auxiliary
     face = wp.normalize(wp.cross(ab, ac))
-    # Portal convergence controls distance, not angle. Near a resting hull,
-    # its normal can differ from the supporting face by a fraction of a
-    # milliradian. Preserve that face support at internal triangle edges.
-    if wp.length_sq(wp.cross(normal, face)) <= 1.0e-6:
-        return True
+    if wp.dot(face, interior) < 0.0:
+        face = -face
     aa, bb, cc = wp.dot(ab, ab), wp.dot(ab, ac), wp.dot(ac, ac)
     denominator = aa * cc - bb * bb
     if denominator <= 0.0:
-        return True
+        return False, normal
     u = (cc * wp.dot(point, ab) - bb * wp.dot(point, ac)) / denominator
     v = (aa * wp.dot(point, ac) - bb * wp.dot(point, ab)) / denominator
     # Match MPR's world-distance witness accuracy, rather than using a
@@ -170,13 +187,18 @@ def triangle_normal_valid(geom: GenericShapeData, point: wp.vec3, normal: wp.vec
     edge_ab = wp.abs(v) * area <= tolerance * wp.sqrt(aa)
     edge_bc = wp.abs(1.0 - u - v) * area <= tolerance * wp.length(ac - ab)
     edge_ca = wp.abs(u) * area <= tolerance * wp.sqrt(cc)
+    smooth = False
     if edge_ab and edge_ca:
-        return (mask & 5) != 5
-    if edge_ab and edge_bc:
-        return (mask & 3) != 3
-    if edge_bc and edge_ca:
-        return (mask & 6) != 6
-    return not ((edge_ab and (mask & 1) != 0) or (edge_bc and (mask & 2) != 0) or (edge_ca and (mask & 4) != 0))
+        smooth = (mask & 5) == 5
+    elif edge_ab and edge_bc:
+        smooth = (mask & 3) == 3
+    elif edge_bc and edge_ca:
+        smooth = (mask & 6) == 6
+    else:
+        smooth = (edge_ab and (mask & 1) != 0) or (edge_bc and (mask & 2) != 0) or (edge_ca and (mask & 4) != 0)
+    if smooth:
+        return True, face
+    return False, normal
 
 
 @wp.func

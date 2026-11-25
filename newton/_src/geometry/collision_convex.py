@@ -22,7 +22,7 @@ from .mpr import create_solve_mpr, create_support_map_function
 from .multicontact import create_build_manifold
 from .penetration import create_solve_box_penetration
 from .simplex_solver import GJK_CUTOFF_TOLERANCE, coordinate_scale, create_solve_closest_distance
-from .support_function import triangle_normal_valid
+from .support_function import triangle_seam_normal
 
 
 @wp.struct
@@ -148,6 +148,27 @@ def create_write_convex_query_result(
     return write_convex_query_result
 
 
+@wp.func
+def triangle_seam_contact(
+    geom_a: Any,
+    geom_b: Any,
+    relative_orientation_b: wp.quat,
+    relative_position_b: wp.vec3,
+    point_a: wp.vec3,
+    point_b: wp.vec3,
+    normal: wp.vec3,
+    signed_distance: float,
+):
+    """Measure a contact at a coplanar mesh seam along the face normal from B's witness."""
+    interior_b = wp.quat_rotate(relative_orientation_b, geom_b.center) + relative_position_b
+    replaced, face = triangle_seam_normal(geom_a, point_a, normal, interior_b)
+    if not replaced:
+        return point_a, point_b, normal, signed_distance
+    # Triangle vertex A is the frame origin, so the face plane passes through it.
+    depth = wp.dot(face, point_b)
+    return point_b - depth * face, point_b, face, depth
+
+
 def create_solve_convex_multi_contact(
     support_func: Any,
     writer_func: Any,
@@ -255,12 +276,16 @@ def create_solve_convex_multi_contact(
                 max_dist=gjk_separation_cutoff(contact_threshold, position_a, position_b),
             )
 
-        if not triangle_normal_valid(geom_a, point_a, normal) or not triangle_normal_valid(
+        point_a, point_b, normal, signed_distance = triangle_seam_contact(
+            geom_a,
             geom_b,
-            wp.quat_rotate_inv(relative_orientation_b, point_b - relative_position_b),
-            wp.quat_rotate_inv(relative_orientation_b, -normal),
-        ):
-            return 0
+            relative_orientation_b,
+            relative_position_b,
+            point_a,
+            point_b,
+            normal,
+            signed_distance,
+        )
 
         if skip_multi_contact or signed_distance > contact_threshold:
             # Transform to world space only for the single-contact early-out.
@@ -401,12 +426,16 @@ def create_solve_convex_single_contact(
                 max_dist=gjk_separation_cutoff(contact_threshold, position_a, position_b),
             )
 
-        if not triangle_normal_valid(geom_a, point_a, normal) or not triangle_normal_valid(
+        point_a, point_b, normal, signed_distance = triangle_seam_contact(
+            geom_a,
             geom_b,
-            wp.quat_rotate_inv(relative_orientation_b, point_b - relative_position_b),
-            wp.quat_rotate_inv(relative_orientation_b, -normal),
-        ):
-            return 0
+            relative_orientation_b,
+            relative_position_b,
+            point_a,
+            point_b,
+            normal,
+            signed_distance,
+        )
 
         # Transform results back to world space (once).
         point = 0.5 * (point_a + point_b)

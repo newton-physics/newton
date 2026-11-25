@@ -91,7 +91,7 @@ from .support_function import (
     create_triangle_prism_penetration_refiner,
     extract_shape_data,
     support_map_accelerated,
-    triangle_normal_valid,
+    triangle_seam_normal,
     triangle_smooth_edges,
 )
 from .types import GeoType
@@ -3119,9 +3119,13 @@ def mesh_triangle_contacts_to_reducer_kernel(
                 contact_normal = surface_normal / wp.sqrt(normal_length_sq)
                 contact_position = pos_b - 0.5 * sphere_radius * contact_normal
 
+            on_seam, seam_normal = triangle_seam_normal(shape_data_a, closest - pos_a, contact_normal, pos_b - pos_a)
+            if on_seam:
+                # The coplanar neighbor continues the face, so measure along its normal.
+                contact_normal = seam_normal
+                contact_distance = wp.dot(pos_b - closest, contact_normal) - sphere_radius
+                contact_position = pos_b - (sphere_radius + 0.5 * contact_distance) * contact_normal
             if contact_distance < gap_sum + margin_offset_a + margin_offset_b:
-                if not triangle_normal_valid(shape_data_a, closest - pos_a, contact_normal):
-                    continue
                 contact_data = ContactData()
                 contact_data.contact_point_center = contact_position
                 contact_data.contact_normal_a_to_b = contact_normal
