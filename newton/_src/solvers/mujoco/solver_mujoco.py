@@ -6172,6 +6172,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self._raw_solreflimit_validated = False
         if flags & ModelFlags.SHAPE_PROPERTIES:
             self._update_geom_properties()
+            if self.use_mujoco_cpu and self._has_site_dependent_constants and self.mj_model.ngeom:
+                self.mj_model.geom_pos[:] = self.mjw_model.geom_pos[0].numpy()
+                self.mj_model.geom_quat[:] = self.mjw_model.geom_quat[0].numpy()
+                self.mj_model.geom_size[:] = self.mjw_model.geom_size[0].numpy()
+                self.mj_model.geom_sameframe[:] = self._mujoco.mjtSameFrame.mjSAMEFRAME_NONE
             self._update_site_properties()
             self._update_pair_properties()
             self._invalidate_contact_fast_path()

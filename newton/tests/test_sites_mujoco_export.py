@@ -20,7 +20,7 @@ class TestMuJoCoSiteExport(unittest.TestCase):
 
     def test_site_edit_refreshes_tendon_constants(self):
         """Keep a tendon equality at rest after changing its site and wrapping geometry."""
-        for cpu, wrapping in ((False, False), (True, False), (False, True)):
+        for cpu, wrapping in ((False, False), (True, False), (False, True), (True, True)):
             with self.subTest(cpu=cpu, wrapping=wrapping):
                 builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
                 body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
