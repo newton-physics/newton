@@ -76,7 +76,7 @@ class TestMuJoCoSiteExport(unittest.TestCase):
                     np.testing.assert_allclose(actual if cpu else actual.numpy(), fresh if cpu else fresh.numpy())
 
     def test_site_edit_preserves_live_cpu_state(self):
-        """Continue from the live pose after a site edit without input synchronization."""
+        """Continue from the live pose after combined edits without input synchronization."""
         import mujoco as mj
 
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
@@ -84,7 +84,8 @@ class TestMuJoCoSiteExport(unittest.TestCase):
             <geom type="plane" size="1 1 .1" pos="0 0 -.05"/>
             <site name="fixed" pos="1 -1 0"/><body><joint name="hinge" springref=".2"/>
             <geom size=".1"/><site name="moving" pos="1 0 0"/></body></worldbody>
-            <tendon><spatial><site site="fixed"/><site site="moving"/></spatial></tendon></mujoco>""")
+            <tendon><spatial><site site="fixed"/><site site="moving"/></spatial></tendon><actuator>
+            <motor joint="hinge"/><general site="moving" refsite="fixed" gear="1 0 0 0 0 0"/></actuator></mujoco>""")
         builder.joint_qd[0] = 0.5
         model = builder.finalize()
         with self.assertWarns(newton.NewtonDeprecationWarning):
@@ -98,15 +99,24 @@ class TestMuJoCoSiteExport(unittest.TestCase):
         poses = model.shape_transform.numpy().copy()
         poses[sites, 0] += 0.1
         model.shape_transform.assign(poses)
-        solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+        model.mujoco.dof_ref.fill_(0.3)
+        gear = model.mujoco.actuator_gear.numpy()
+        gear[solver.mj_model.actuator_trntype == mj.mjtTrn.mjTRN_JOINT, 0] = 3.0
+        model.mujoco.actuator_gear.assign(gear)
+        solver.notify_model_changed(
+            newton.ModelFlags.SHAPE_PROPERTIES
+            | newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES
+            | newton.ModelFlags.ACTUATOR_PROPERTIES
+        )
         np.testing.assert_array_equal(solver.mj_data.qpos, qpos)
         np.testing.assert_array_equal(solver.mj_data.qvel, qvel)
         self.assertEqual(solver.mj_data.ncon, 1)
         reference = mj.MjData(solver.mj_model)
         reference.qpos[:] = qpos
         mj.mj_forward(solver.mj_model, reference)
-        np.testing.assert_allclose(solver.mj_data.site_xpos, reference.site_xpos, atol=1e-7)
-        np.testing.assert_allclose(solver.mj_data.ten_length, reference.ten_length, atol=1e-7)
+        for field in ("site_xpos", "ten_length", "actuator_length", "actuator_moment"):
+            np.testing.assert_allclose(getattr(solver.mj_data, field), getattr(reference, field), atol=1e-7)
+        self.assertIn(3.0, solver.mj_data.actuator_moment)
         solver.step(output, state, model.control(), None, 0.001)
         np.testing.assert_allclose(solver.mj_data.qpos, qpos + 0.001 * qvel, atol=1e-7)
 

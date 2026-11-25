@@ -6277,6 +6277,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 )
             if flags & ModelFlags.CONSTRAINT_PROPERTIES:
                 self._sync_equality_properties_to_mujoco_cpu()
+            if need_const_0 or flags & ModelFlags.SHAPE_PROPERTIES:
+                self._restore_native_data()
 
         else:
             if (
@@ -10566,6 +10568,16 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self._mj_const_data = self._mujoco.MjData(self.mj_model)
         return self._mj_const_data
 
+    def _restore_native_data(self) -> None:
+        """Recompute the live position-dependent Data from the updated model, like ``mujoco_warp.set_const``."""
+        mujoco, m, d = self._mujoco, self.mj_model, self.mj_data
+        mujoco.mj_kinematics(m, d)
+        mujoco.mj_comPos(m, d)
+        mujoco.mj_tendon(m, d)
+        mujoco.mj_makeM(m, d)
+        mujoco.mj_factorM(m, d)
+        mujoco.mj_transmission(m, d)
+
     def _set_const_0(self, lock_kinematic: bool = True) -> None:
         """Recompute MuJoCo's qpos0-dependent model constants and resolve ``dampratio`` placeholders.
 
@@ -11340,10 +11352,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self.mj_model.site_size[:] = self.mjw_model.site_size.numpy()
             # Runtime edits invalidate the compiler's shared-frame shortcut.
             self.mj_model.site_sameframe[:] = self._mujoco.mjtSameFrame.mjSAMEFRAME_NONE
-            # Like mujoco_warp.set_const, keep site and tendon Data consistent with the live coordinates.
-            self._mujoco.mj_kinematics(self.mj_model, self.mj_data)
-            self._mujoco.mj_comPos(self.mj_model, self.mj_data)
-            self._mujoco.mj_tendon(self.mj_model, self.mj_data)
 
     def _publish_joint_limit_properties(self):
         """Retain notified limit parameters and promote edited MJCF-default gains."""
