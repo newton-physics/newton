@@ -5,6 +5,12 @@ import warp as wp
 
 from ...geometry import ParticleFlags
 from ...geometry.kernels import triangle_closest_point_barycentric
+from ...geometry.sdf_planar_recovery import (
+    MeshRecoveryData,
+    active_recovery_contact,
+    empty_mesh_recovery,
+    recovery_step_depth,
+)
 from ...sim import Contacts, Model, State
 
 
@@ -261,123 +267,6 @@ def eval_particle_body_contact(
             wp.atomic_add(body_f, body_index, wp.spatial_vector(f_total, wp.cross(r, f_total)))
 
 
-@wp.kernel
-def eval_triangles_body_contact(
-    num_particles: int,  # number of particles (size of contact_point)
-    x: wp.array[wp.vec3],  # position of particles
-    v: wp.array[wp.vec3],
-    indices: wp.array[int],  # triangle indices
-    body_x: wp.array[wp.vec3],  # body body positions
-    body_r: wp.array[wp.quat],
-    body_v: wp.array[wp.vec3],
-    body_w: wp.array[wp.vec3],
-    contact_body: wp.array[int],
-    contact_point: wp.array[wp.vec3],  # position of contact points relative to body
-    contact_dist: wp.array[float],
-    contact_mat: wp.array[int],
-    materials: wp.array[float],
-    #   body_f : wp.array[wp.vec3],
-    #   body_t : wp.array[wp.vec3],
-    tri_f: wp.array[wp.vec3],
-):
-    tid = wp.tid()
-
-    face_no = tid // num_particles  # which face
-    particle_no = tid % num_particles  # which particle
-
-    # -----------------------
-    # load body body point
-    c_body = contact_body[particle_no]
-    c_point = contact_point[particle_no]
-    c_dist = contact_dist[particle_no]
-    c_mat = contact_mat[particle_no]
-
-    # hard coded surface parameter tensor layout (ke, kd, kf, mu)
-    ke = materials[c_mat * 4 + 0]  # restitution coefficient
-    kd = materials[c_mat * 4 + 1]  # damping coefficient
-    kf = materials[c_mat * 4 + 2]  # contact friction gain
-    mu = materials[c_mat * 4 + 3]  # coulomb friction
-
-    x0 = body_x[c_body]  # position of colliding body
-    r0 = body_r[c_body]  # orientation of colliding body
-
-    v0 = body_v[c_body]
-    w0 = body_w[c_body]
-
-    # transform point to world space
-    pos = x0 + wp.quat_rotate(r0, c_point)
-    # use x0 as center, everything is offset from center of mass
-
-    # moment arm
-    r = pos - x0  # basically just c_point in the new coordinates
-    rhat = wp.normalize(r)
-    pos = pos + rhat * c_dist  # add on 'thickness' of shape, e.g.: radius of sphere/capsule
-
-    # contact point velocity
-    dpdt = v0 + wp.cross(w0, r)  # this is body velocity cross offset, so it's the velocity of the contact point.
-
-    # -----------------------
-    # load triangle
-    i = indices[face_no * 3 + 0]
-    j = indices[face_no * 3 + 1]
-    k = indices[face_no * 3 + 2]
-
-    p = x[i]  # point zero
-    q = x[j]  # point one
-    r = x[k]  # point two
-
-    vp = v[i]  # vel zero
-    vq = v[j]  # vel one
-    vr = v[k]  # vel two
-
-    bary = triangle_closest_point_barycentric(p, q, r, pos)
-    closest = p * bary[0] + q * bary[1] + r * bary[2]
-
-    diff = pos - closest  # vector from tri to point
-    dist = wp.dot(diff, diff)  # squared distance
-    n = wp.normalize(diff)  # points into the object
-    c = wp.min(dist - 0.05, 0.0)  # 0 unless within 0.05 of surface
-    # c = wp.leaky_min(wp.dot(n, x0)-0.01, 0.0, 0.0)
-    # fn = n * c * 1e6    # points towards cloth (both n and c are negative)
-
-    # wp.atomic_sub(tri_f, particle_no, fn)
-
-    fn = c * ke  # normal force (restitution coefficient * how far inside for ground) (negative)
-
-    vtri = vp * bary[0] + vq * bary[1] + vr * bary[2]  # bad approximation for centroid velocity
-    vrel = vtri - dpdt
-
-    vn = wp.dot(n, vrel)  # velocity component of body in negative normal direction
-    vt = vrel - n * vn  # velocity component not in normal direction
-
-    # contact damping
-    fd = -wp.max(vn, 0.0) * kd * wp.step(c)  # again, negative, into the ground
-
-    # # viscous friction
-    # ft = vt*kf
-
-    # Coulomb friction (box)
-    lower = mu * (fn + fd)
-    upper = -lower
-
-    nx = wp.cross(n, wp.vec3(0.0, 0.0, 1.0))  # basis vectors for tangent
-    nz = wp.cross(n, wp.vec3(1.0, 0.0, 0.0))
-
-    vx = wp.clamp(wp.dot(nx * kf, vt), lower, upper)
-    vz = wp.clamp(wp.dot(nz * kf, vt), lower, upper)
-
-    ft = (nx * vx + nz * vz) * (-wp.step(c))  # wp.vec3(vx, 0.0, vz)*wp.step(c)
-
-    # # Coulomb friction (smooth, but gradients are numerically unstable around |vt| = 0)
-    # #ft = wp.normalize(vt)*wp.min(kf*wp.length(vt), -mu*c*ke)
-
-    f_total = n * (fn + fd) + ft
-
-    wp.atomic_add(tri_f, i, f_total * bary[0])
-    wp.atomic_add(tri_f, j, f_total * bary[1])
-    wp.atomic_add(tri_f, k, f_total * bary[2])
-
-
 @wp.func
 def _eval_body_contact(
     body_q: wp.array[wp.transform],
@@ -401,6 +290,8 @@ def _eval_body_contact(
     rigid_contact_stiffness: wp.array[float],
     rigid_contact_damping: wp.array[float],
     rigid_contact_friction_scale: wp.array[float],
+    recovery: MeshRecoveryData,
+    contact_generation: wp.array[int],
     force_in_world_frame: bool,
     body_f: wp.array[wp.spatial_vector],
     tid: int,
@@ -464,6 +355,8 @@ def _eval_body_contact(
     bx_b = contact_point1[tid]
     r_a = wp.vec3(0.0)
     r_b = wp.vec3(0.0)
+    X_wb_a = wp.transform_identity()
+    X_wb_b = wp.transform_identity()
     if body_a >= 0:
         X_wb_a = body_q[body_a]
         X_com_a = body_com[body_a]
@@ -480,6 +373,13 @@ def _eval_body_contact(
 
     if d >= ka:
         return
+
+    if recovery.keys.shape[0] > 0:
+        slot = active_recovery_contact(recovery, contact_generation[0], shape_a, shape_b, X_wb_a, X_wb_b, -n)
+        if slot < -1:
+            return
+        if slot >= 0:
+            d = -recovery_step_depth(recovery.contacts[slot].thickness, -d)
 
     # compute contact point velocity
     bv_a = wp.vec3(0.0)
@@ -571,6 +471,8 @@ def eval_body_contact(
     rigid_contact_stiffness: wp.array[float],
     rigid_contact_damping: wp.array[float],
     rigid_contact_friction_scale: wp.array[float],
+    recovery: MeshRecoveryData,
+    contact_generation: wp.array[int],
     force_in_world_frame: bool,
     body_f: wp.array[wp.spatial_vector],
 ):
@@ -600,6 +502,8 @@ def eval_body_contact(
         rigid_contact_stiffness,
         rigid_contact_damping,
         rigid_contact_friction_scale,
+        recovery,
+        contact_generation,
         force_in_world_frame,
         body_f,
         tid,
@@ -689,6 +593,8 @@ def eval_body_contact_forces(
                 contacts.rigid_contact_stiffness,
                 contacts.rigid_contact_damping,
                 contacts.rigid_contact_friction,
+                contacts._mesh_recovery_contacts or empty_mesh_recovery(model.device.alias),
+                contacts.contact_generation,
                 force_in_world_frame,
             ],
             outputs=[body_f_out],

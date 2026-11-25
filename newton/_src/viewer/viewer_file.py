@@ -490,11 +490,7 @@ def serialize(obj, callback, _visited=None, _path="", format_type="json", cache:
                 attributes.pop("_deformable_visual_skin_batches", None)
             elif isinstance(obj, Model.AttributeNamespace):
                 # Runtime compatibility hooks are not model state; record the canonical arrays instead.
-                attributes = {
-                    name: value
-                    for name, value in attributes.items()
-                    if name not in ("_deprecated_aliases", "_removed_attributes")
-                }
+                attributes = {name: value for name, value in attributes.items() if name != "_deprecated_aliases"}
             return {
                 "__type__": obj.__class__.__name__,
                 "__module__": obj.__class__.__module__,
@@ -952,17 +948,6 @@ def deserialize(data, callback, _path="", format_type="json", cache: ArrayCache 
 
     # Unknown type - return the data as-is
     return data["value"] if isinstance(data, Mapping) and "value" in data else data
-
-
-def extract_type_path(class_str: str) -> str:
-    """
-    Extracts the fully qualified type name from a string like:
-    "<class 'warp.types.uint64'>"
-    """
-    # The format is always "<class '...'>", so we strip the prefix/suffix
-    if class_str.startswith("<class '") and class_str.endswith("'>"):
-        return class_str[len("<class '") : -len("'>")]
-    raise ValueError(f"Unexpected format: {class_str}")
 
 
 def extract_last_type_name(class_str: str) -> str:

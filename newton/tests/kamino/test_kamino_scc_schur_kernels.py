@@ -8,6 +8,7 @@ import unittest
 import numpy as np
 import warp as wp
 
+import newton
 from newton._src.solvers.kamino._src.solvers.scc.kernels import _compute_scc_status_residuals
 from newton._src.solvers.kamino._src.solvers.scc.sparse_kernels import (
     COMPACT_SCHUR_PGS_BLOCK_DIM,
@@ -22,11 +23,14 @@ from newton._src.solvers.kamino._src.solvers.scc.sparse_kernels import (
     _prepare_full_sparse_unilateral_schur as kernel,
 )
 from newton._src.solvers.kamino._src.solvers.scc.types import SCCConfigStruct, SCCStatus
+from newton.tests.kamino import setup_test_output, setup_tests
 from newton.tests.kamino.utils.make import make_row_storage
+from newton.tests.unittest_utils import NewtonTestCase
 
 
-class TestKaminoCompactSchur(unittest.TestCase):
+class TestKaminoCompactSchur(NewtonTestCase):
     def setUp(self):
+        setup_test_output(self)
         if not wp.get_cuda_device_count():
             self.skipTest("Compact tile and warp kernels require CUDA")
         self.device = wp.get_cuda_devices()[0]
@@ -196,7 +200,10 @@ class TestKaminoCompactSchur(unittest.TestCase):
                     np.testing.assert_array_equal(results[1][0][inactive], initial[inactive])
 
 
-class TestKaminoSmallBilateralInverse(unittest.TestCase):
+class TestKaminoSmallBilateralInverse(NewtonTestCase):
+    def setUp(self):
+        setup_test_output(self)
+
     def test_matches_dense_solve(self):
         """Invert partial-tile blocks and apply them, keeping the old solution for inactive worlds."""
         if not wp.get_cuda_device_count():
@@ -256,7 +263,10 @@ class TestKaminoSmallBilateralInverse(unittest.TestCase):
         np.testing.assert_allclose(lambdas.numpy(), scale * expected, rtol=1e-4, atol=1e-4)
 
 
-class TestKaminoFullSchurAssembly(unittest.TestCase):
+class TestKaminoFullSchurAssembly(NewtonTestCase):
+    def setUp(self):
+        setup_test_output(self)
+
     def test_dense_oracle(self):
         """Cover mixed row types, capacity boundaries, and inactive worlds."""
         rng = np.random.default_rng(123)
@@ -406,7 +416,10 @@ class TestKaminoFullSchurAssembly(unittest.TestCase):
                 reference_s, reference_q = actual_s, actual_q
 
 
-class TestSCCResiduals(unittest.TestCase):
+class TestSCCResiduals(NewtonTestCase):
+    def setUp(self):
+        setup_test_output(self)
+
     def test_cooperative_matches_serial(self):
         """Preserve all status fields across ragged worlds and constraint types."""
         if not wp.get_cuda_device_count():
@@ -483,3 +496,9 @@ class TestSCCResiduals(unittest.TestCase):
                 residual = abs(velocities[vector_offsets[2]])
                 self.assertEqual(outputs[1]["r_b"][2], residual)
                 self.assertEqual(outputs[1]["r_d"][2], residual)
+
+
+if __name__ == "__main__":
+    newton.utils.setup_console_logging()
+    setup_tests()
+    unittest.main()

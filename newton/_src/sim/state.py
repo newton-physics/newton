@@ -115,7 +115,11 @@ class State:
         """3D velocities of particles [m/s], shape (particle_count,), dtype :class:`vec3`."""
 
         self.particle_f: wp.array | None = None
-        """3D forces on particles [N], shape (particle_count,), dtype :class:`vec3`."""
+        """External forces on particles [N], shape (particle_count,), dtype :class:`vec3`.
+
+        This is a solver input: :meth:`SolverBase.step() <newton.solvers.SolverBase.step>` reads it from
+        ``state_in`` and never writes it, so forces written once persist across substeps until the caller
+        clears them."""
 
         self.tendon_segment_rest_length: wp.array[float] | None = None
         """Material rest lengths [m], shape (tendon_segment_count,). Initialized on the first solver step."""
@@ -153,6 +157,10 @@ class State:
         First three entries: linear force [N] in world frame applied at the body's center of mass (COM).
         Last three: torque (moment) [N·m] in world frame.
 
+        This is a solver input: :meth:`SolverBase.step() <newton.solvers.SolverBase.step>` reads it from
+        ``state_in`` and never writes it, so wrenches written once persist across substeps until the caller
+        clears them.
+
         .. note::
             :attr:`body_f` represents an external wrench in world frame with the body's center of mass (COM) as reference point.
         """
@@ -181,6 +189,9 @@ class State:
         Clear all force arrays (for particles and bodies) in the state object.
 
         Sets all entries of :attr:`particle_f` and :attr:`body_f` to zero, if present.
+        Solvers do not modify these external force inputs, so call this once per frame to
+        apply the same forces on every substep, or before each substep when the forces are
+        recomputed per substep (for example, viewer picking).
         """
         with wp.ScopedTimer("clear_forces", False):
             if self.particle_count:

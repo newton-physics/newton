@@ -16,12 +16,17 @@ from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.solvers.common import WarmStartMode
 from newton._src.solvers.kamino._src.solvers.scc import SCCSolver
 from newton._src.solvers.kamino._src.solvers.scc import sparse as sparse_scc
+from newton.tests.kamino import setup_test_output, setup_tests
 from newton.tests.kamino.test_kamino_solvers_scc import _make_sparse_dual_problem
 from newton.tests.kamino.utils.make import make_containers, update_containers
+from newton.tests.unittest_utils import NewtonTestCase
 from newton.tests.utils import basics
 
 
-class TestKaminoSCCWorldBatches(unittest.TestCase):
+class TestKaminoSCCWorldBatches(NewtonTestCase):
+    def setUp(self):
+        setup_test_output(self)
+
     def test_batch_budget_and_eligibility(self):
         """Keep unsupported paths global and bound the inverse working set."""
         path = SimpleNamespace(
@@ -147,3 +152,9 @@ class TestKaminoSCCWorldBatches(unittest.TestCase):
                 for graph in graphs:
                     wp.capture_launch(graph)
                 check_results()
+
+
+if __name__ == "__main__":
+    newton.utils.setup_console_logging()
+    setup_tests()
+    unittest.main()

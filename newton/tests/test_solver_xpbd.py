@@ -781,38 +781,43 @@ def test_particle_shape_restitution_does_not_launch_resting_particle(test, devic
     test.assertAlmostEqual(vy, 0.0, delta=1.0e-6)
 
 
-def test_compute_body_velocity_from_position_delta_legacy_path(test, device):
-    """Retain the deprecated full-step angular-velocity reconstruction."""
+def test_slow_body_velocities_are_preserved(test, device):
+    """Keep slow free and jointed rigid-body velocities instead of zeroing them.
+
+    Without gravity, contacts, or drives, a free body and a hinge spinning about
+    an axis through its center of mass must keep their initial velocities.
+    """
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-    body = builder.add_body()
-    builder.add_shape_sphere(body, radius=0.1)
+    free_body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity()))
+    builder.add_shape_box(free_body, hx=0.2, hy=0.1, hz=0.05)
+    hinge_body = builder.add_link(xform=wp.transform(wp.vec3(1.0, 0.0, 1.0), wp.quat_identity()))
+    builder.add_shape_box(hinge_body, hx=0.2, hy=0.1, hz=0.05)
+    hinge = builder.add_joint_revolute(
+        parent=-1,
+        child=hinge_body,
+        axis=newton.Axis.Z,
+        parent_xform=wp.transform(wp.vec3(1.0, 0.0, 1.0), wp.quat_identity()),
+    )
+    builder.add_articulation([hinge])
     model = builder.finalize(device=device)
 
-    solver_incremental = newton.solvers.SolverXPBD(model)
-    solver_legacy = newton.solvers.SolverXPBD(model)
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DeprecationWarning)
-        solver_legacy.compute_body_velocity_from_position_delta = True
-
-    state_incremental_in = model.state()
-    state_incremental_out = model.state()
-    state_legacy_in = model.state()
-    state_legacy_out = model.state()
+    # Speeds below 1e-4 m/s and 1e-4 rad/s, e.g. slow drift in zero gravity.
+    speed = 5.0e-5
     qd = np.zeros((model.body_count, 6), dtype=np.float32)
-    qd[body, 5] = 10.0
-    state_incremental_in.body_qd.assign(qd)
-    state_legacy_in.body_qd.assign(qd)
+    qd[free_body] = (speed, 0.0, 0.0, 0.0, 0.0, speed)
+    qd[hinge_body] = (0.0, 0.0, 0.0, 0.0, 0.0, speed)
 
-    dt = 0.1
-    state_incremental_in.clear_forces()
-    state_legacy_in.clear_forces()
-    solver_incremental.step(state_incremental_in, state_incremental_out, None, None, dt)
-    solver_legacy.step(state_legacy_in, state_legacy_out, None, None, dt)
+    state_0 = model.state()
+    state_1 = model.state()
+    state_0.body_qd.assign(qd)
+    solver = newton.solvers.SolverXPBD(model, angular_damping=0.0)
 
-    wz_incremental = float(state_incremental_out.body_qd.numpy()[body, 5])
-    wz_legacy = float(state_legacy_out.body_qd.numpy()[body, 5])
-    test.assertAlmostEqual(wz_incremental, 10.0, delta=1.0e-4)
-    test.assertAlmostEqual(wz_legacy, 8.944272, delta=1.0e-4)
+    for _ in range(10):
+        state_0.clear_forces()
+        solver.step(state_0, state_1, None, None, 1.0e-2)
+        state_0, state_1 = state_1, state_0
+
+    np.testing.assert_allclose(state_0.body_qd.numpy(), qd, rtol=0.0, atol=1.0e-3 * speed)
 
 
 def test_restitution_flag_does_not_change_body_integration(test, device):
@@ -2725,19 +2730,6 @@ class TestSolverXPBD(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "JointType.ROD"):
             newton.solvers.SolverXPBD(builder.finalize(device="cpu"))
 
-    def test_compute_body_velocity_from_position_delta_is_deprecated(self):
-        model = newton.ModelBuilder().finalize()
-        solver = newton.solvers.SolverXPBD(model)
-
-        with self.assertWarnsRegex(DeprecationWarning, "deprecated in Newton 1.6"):
-            self.assertFalse(solver.compute_body_velocity_from_position_delta)
-
-        with self.assertWarnsRegex(DeprecationWarning, "deprecated in Newton 1.6"):
-            solver.compute_body_velocity_from_position_delta = True
-
-        with self.assertWarnsRegex(DeprecationWarning, "deprecated in Newton 1.6"):
-            self.assertTrue(solver.compute_body_velocity_from_position_delta)
-
 
 add_function_test(
     TestSolverXPBD,
@@ -2854,16 +2846,16 @@ add_function_test(
 
 add_function_test(
     TestSolverXPBD,
-    "test_compute_body_velocity_from_position_delta_legacy_path",
-    test_compute_body_velocity_from_position_delta_legacy_path,
+    "test_particle_shape_restitution_does_not_launch_resting_particle",
+    test_particle_shape_restitution_does_not_launch_resting_particle,
     devices=devices,
     check_output=False,
 )
 
 add_function_test(
     TestSolverXPBD,
-    "test_particle_shape_restitution_does_not_launch_resting_particle",
-    test_particle_shape_restitution_does_not_launch_resting_particle,
+    "test_slow_body_velocities_are_preserved",
+    test_slow_body_velocities_are_preserved,
     devices=devices,
     check_output=False,
 )

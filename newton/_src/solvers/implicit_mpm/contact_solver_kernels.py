@@ -8,6 +8,39 @@ import warp.sparse as sp
 wp.set_module_options({"enable_backward": False})
 
 
+@wp.struct
+class EnvironmentGate:
+    """Node ranges of independent environments, and which environments have stopped iterating.
+
+    ``offsets`` delimits each environment's contiguous nodes and is empty for a shared solve.
+    ``status`` is nonzero for environments that keep their current iterate, and empty when
+    every environment iterates until the loop ends.
+    """
+
+    offsets: wp.array[int]
+    status: wp.array[int]
+
+
+@wp.func
+def environment_index(gate: EnvironmentGate, node: int):
+    """Environment owning ``node``; -1 for nodes past the last environment, in reserved capacity."""
+    if gate.offsets.shape[0] == 0:
+        return 0
+    environment = wp.lower_bound(gate.offsets, node + 1) - 1
+    if environment >= gate.offsets.shape[0] - 1:
+        return -1
+    return environment
+
+
+@wp.func
+def environment_stopped(gate: EnvironmentGate, node: int):
+    """Whether the environment owning ``node`` keeps its current iterate."""
+    if gate.status.shape[0] == 0 or gate.offsets.shape[0] == 0:
+        return False
+    environment = environment_index(gate, node)
+    return environment >= 0 and gate.status[environment] != 0
+
+
 @wp.kernel
 def compute_collider_inv_mass(
     J_mat_offsets: wp.array[int],
@@ -125,6 +158,7 @@ def apply_nodal_impulse_warmstart(
 
 @wp.kernel
 def solve_nodal_friction(
+    gate: EnvironmentGate,
     inv_mass: wp.array[float],
     collider_friction: wp.array[float],
     collider_adhesion: wp.array[float],
@@ -150,6 +184,10 @@ def solve_nodal_friction(
     6. Updates the total impulse, particle velocity, and collider velocity.
     """
     i = wp.tid()
+
+    if environment_stopped(gate, i):
+        delta_impulse[i] = wp.vec3(0.0)
+        return
 
     friction_coeff = collider_friction[i]
     if friction_coeff < 0.0:
@@ -245,6 +283,7 @@ def compute_collider_delassus_diagonal(
 
 @wp.kernel
 def solve_subgrid_friction(
+    gate: EnvironmentGate,
     velocity: wp.array[wp.vec3],
     collider_mat_offsets: wp.array[int],
     collider_mat_columns: wp.array[int],
@@ -258,6 +297,10 @@ def solve_subgrid_friction(
     delta_impulse: wp.array[wp.vec3],
 ):
     i = wp.tid()
+
+    if environment_stopped(gate, i):
+        delta_impulse[i] = wp.vec3(0.0)
+        return
 
     w = collider_delassus_diagonal[i]
     friction_coeff = collider_friction[i]

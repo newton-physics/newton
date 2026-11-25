@@ -7,9 +7,10 @@ KAMINO: Math Operations
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 import warp as wp
-from warp._src.types import Any
 
 from .types import (
     mat34f,

@@ -10,6 +10,7 @@ from unittest import mock
 import numpy as np
 import warp as wp
 
+import newton
 from newton._src.solvers.kamino._src.core.types import vec6f
 from newton._src.solvers.kamino._src.solvers.scc.solver import SCCSolver
 from newton._src.solvers.kamino._src.solvers.scc.sparse import _build_sparse_bilateral_row_nzb_topology
@@ -19,9 +20,14 @@ from newton._src.solvers.kamino._src.solvers.scc.sparse_kernels import (
     make_sparse_bilateral_inverse_kernel,
 )
 from newton._src.solvers.kamino._src.solvers.scc.types import SCCState
+from newton.tests.kamino import setup_test_output, setup_tests
+from newton.tests.unittest_utils import NewtonTestCase
 
 
-class TestKaminoBilateralRHS(unittest.TestCase):
+class TestKaminoBilateralRHS(NewtonTestCase):
+    def setUp(self):
+        setup_test_output(self)
+
     def test_rhs_row_group_boundaries(self):
         """Match dense products across row-group tails, empty inputs, and padded layouts."""
         if not wp.is_cuda_available():
@@ -311,3 +317,9 @@ class TestKaminoBilateralRHS(unittest.TestCase):
                                 )
                                 np.testing.assert_allclose(result.numpy()[:n], reference, atol=2e-6)
                                 np.testing.assert_array_equal(result.numpy()[n:], -123.0)
+
+
+if __name__ == "__main__":
+    newton.utils.setup_console_logging()
+    setup_tests()
+    unittest.main()

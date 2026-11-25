@@ -3,6 +3,7 @@
 
 import warp as wp
 
+from ...geometry.sdf_planar_recovery import MeshRecoveryData, find_recovery_contact
 from ...math import velocity_at_point
 from ...sim.contacts import contact_surface_point, contact_surface_separation
 
@@ -19,6 +20,8 @@ def mark_restitution_contacts(
     contact_thickness1: wp.array[float],
     contact_shape0: wp.array[int],
     contact_shape1: wp.array[int],
+    recovery: MeshRecoveryData,
+    contact_generation: wp.array[int],
     # output
     restitution_contact_active: wp.array[wp.int32],
 ):
@@ -47,6 +50,9 @@ def mark_restitution_contacts(
         X_wb_a = body_q[body_a]
     if body_b >= 0:
         X_wb_b = body_q[body_b]
+
+    if find_recovery_contact(recovery, contact_generation[0], shape_a, shape_b) >= 0:
+        return
 
     bx_a = wp.transform_point(X_wb_a, contact_point0[tid])
     bx_b = wp.transform_point(X_wb_b, contact_point1[tid])

@@ -9,11 +9,17 @@ from itertools import product
 import numpy as np
 import warp as wp
 
+import newton
 from newton._src.solvers.kamino._src.linalg import DenseLinearOperatorData, DenseSquareMultiLinearInfo
 from newton._src.solvers.kamino._src.linalg.factorize.ldl_sparse import LDLBlockSparseSolver
+from newton.tests.kamino import setup_test_output, setup_tests
+from newton.tests.unittest_utils import NewtonTestCase
 
 
-class TestLDLBlockSparseSolver(unittest.TestCase):
+class TestLDLBlockSparseSolver(NewtonTestCase):
+    def setUp(self):
+        setup_test_output(self)
+
     def test_symbolic_orderings(self):
         """Match the source MECA and RCM permutations on disconnected block graphs."""
         # A clique and a cycle distinguish MECA from minimum-degree ordering.
@@ -320,4 +326,6 @@ class TestLDLBlockSparseSolver(unittest.TestCase):
 
 
 if __name__ == "__main__":
+    newton.utils.setup_console_logging()
+    setup_tests()
     unittest.main()

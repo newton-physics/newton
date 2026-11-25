@@ -12,6 +12,7 @@ import gc
 import hashlib
 import logging
 import math
+import operator
 import warnings
 import weakref
 from bisect import bisect_left, bisect_right
@@ -28,6 +29,7 @@ import warp as wp
 from ... import config
 from ..core._warnings import _external_warning_stacklevel
 from ..core.host_transform import (
+    join_warp_values,
     pack_transforms,
     pack_warp_values,
     quat_rotate_rows,
@@ -86,7 +88,6 @@ from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_convex
 from ..math import quat_between_vectors_robust
 from ..usd.schema_resolver import SchemaResolver
 from ..utils import compute_world_offsets, tree_joint_mask
-from ..utils.deprecation import RemovedAttribute
 from ..utils.mesh import MeshAdjacency, split_mesh_components
 from .body_variants import (
     _BodyVariants,
@@ -218,11 +219,6 @@ _ACTUATOR_DELAY_STEPS_DEPRECATION_MSG = (
 _ACTUATOR_ENTRY_DELAY_ARGS_UNSET = object()
 _ACTUATOR_ENTRY_DELAY_ARGS_DEPRECATION_MSG = (
     "ModelBuilder.ActuatorEntry.delay_args is deprecated in Newton 1.9; use input_processor_args instead."
-)
-_JOINT_TWIST_LIMIT_DEPRECATION_MSG = (
-    "ModelBuilder.joint_twist_lower and ModelBuilder.joint_twist_upper are deprecated in Newton 1.7 and "
-    "will be removed in a future release. They were never used; limit joint rotations with the per-DOF "
-    "limits of ModelBuilder.JointDofConfig instead."
 )
 _ADD_MUSCLE_DEPRECATION_MSG = (
     "ModelBuilder.add_muscle() is deprecated in Newton 1.9 and will be removed in a future release. "
@@ -1266,7 +1262,7 @@ class ModelBuilder:
         :attr:`gap`, plus :attr:`margin` for hydroelastic shapes, when
         ``None``. Hydroelastic padding must cover ``margin + gap``. Rejected
         on ``MESH`` / ``CONVEX_MESH`` shapes — pass ``margin`` to
-        :meth:`~newton.geometry.Mesh.build_sdf` instead."""
+        :meth:`~newton.Mesh.build_sdf` instead."""
 
         def configure_sdf(
             self,
@@ -1660,6 +1656,18 @@ class ModelBuilder:
         default: Any = None
         """Default value for the attribute. If None, the default value is determined based on the dtype."""
 
+        update_flags: int | None = field(default=None, kw_only=True)
+        """:class:`~newton.ModelFlags` announcing an edit of a model-assigned attribute in a finalized
+        :class:`~newton.Model`, to pass to :meth:`~newton.solvers.SolverBase.notify_model_changed`, or
+        ``None`` when no flag covers it, for example because solvers read the attribute only at
+        construction. :attr:`ModelFlags.NONE <newton.ModelFlags.NONE>` declares that solvers read the
+        attribute at every step. Only attributes assigned to :attr:`Model.AttributeAssignment.MODEL`
+        declare it. Solvers set it for the custom attributes they register.
+        :meth:`Model.get_attribute_update_flags() <newton.Model.get_attribute_update_flags>` returns it.
+
+        A redeclaration of the attribute without flags, for example from an imported asset, is
+        compatible with the declared flags and keeps them; two different non-``None`` flags conflict."""
+
         values: dict[int, Any] | list[Any] | None = None
         """Storage for specific values (overrides).
 
@@ -1693,15 +1701,15 @@ class ModelBuilder:
         """Name of the attribute in the URDF definition. If None, the attribute name is used."""
 
         usd_value_transformer: Callable[[Any, dict[str, Any]], Any] | None = None
-        """Transformer function that converts a USD attribute value to a valid Warp dtype. If undefined, the generic converter from :func:`newton.usd.convert_warp_value` is used. Receives a context dict with the following keys:
+        """Transformer function that converts a USD attribute value to a valid Warp dtype. If undefined, the generic converter from :func:`newton.usd.value_to_warp` is used. Receives a context dict with the following keys:
         - ``"prim"``: The USD prim to query.
         - ``"attr"``: The :class:`~newton.ModelBuilder.CustomAttribute` object to get the value for."""
 
         mjcf_value_transformer: Callable[[str, dict[str, Any] | None], Any] | None = None
-        """Transformer function that converts a MJCF attribute value string to a valid Warp dtype. If undefined, the generic converter from :func:`newton.utils.parse_warp_value_from_string` is used. Receives an optional context dict with parsing-time information (e.g., use_degrees, joint_type)."""
+        """Transformer function that converts a MJCF attribute value string to a valid Warp dtype. If undefined, the generic converter from :func:`newton.utils.string_to_warp` is used. Receives an optional context dict with parsing-time information (e.g., use_degrees, joint_type)."""
 
         urdf_value_transformer: Callable[[str, dict[str, Any] | None], Any] | None = None
-        """Transformer function that converts a URDF attribute value string to a valid Warp dtype. If undefined, the generic converter from :func:`newton.utils.parse_warp_value_from_string` is used. Receives an optional context dict with parsing-time information."""
+        """Transformer function that converts a URDF attribute value string to a valid Warp dtype. If undefined, the generic converter from :func:`newton.utils.string_to_warp` is used. Receives an optional context dict with parsing-time information."""
 
         reference_value_transformer: Callable[[list[Any], dict[str, Any]], list[Any]] | None = None
         """Batch transformer for entity references copied by :meth:`ModelBuilder.add_builder`.
@@ -1844,7 +1852,94 @@ class ModelBuilder:
             """
             if self.values is None or len(self.values) == 0:
                 return self._build_default_array(count, device=device, requires_grad=requires_grad)
-            elif self.is_custom_frequency:
+
+            if self.dtype is not str:
+                warp_dtype = {int: wp.int32, float: wp.float32, bool: wp.bool}.get(self.dtype, self.dtype)
+                if not wp.types.type_is_struct(warp_dtype):
+                    try:
+                        elem_shape = tuple(getattr(warp_dtype, "_shape_", ()) or ())
+                        scalar_type = getattr(warp_dtype, "_wp_scalar_type_", None) or warp_dtype
+                        # wp.dtype_to_numpy(wp.bfloat16) returns np.uint16 (raw bits), so
+                        # NumPy would cast floats to integers instead of bfloat16 values.
+                        scalar_np_dtype = None if scalar_type is wp.bfloat16 else wp.dtype_to_numpy(scalar_type)
+                    except TypeError:
+                        scalar_np_dtype = None
+                        elem_shape = ()
+                    if scalar_np_dtype is not None:
+                        if count <= 0:
+                            return wp.zeros(0, dtype=self.dtype, requires_grad=requires_grad, device=device)
+
+                        def _pack_items(items: Sequence[Any]) -> np.ndarray:
+                            packed = join_warp_values(items, warp_dtype) if elem_shape else None
+                            if packed is None:
+                                packed = np.asarray(items, dtype=scalar_np_dtype)
+                            if packed.shape != (len(items), *elem_shape):
+                                raise ValueError("Custom attribute rows have mismatched shape")
+                            return packed
+
+                        try:
+                            if elem_shape:
+                                default_np = _pack_items([self.default])[0]
+                            else:
+                                default_np = np.asarray(self.default, dtype=scalar_np_dtype)
+                                if default_np.ndim != 0:
+                                    # Scalar dtypes also support array-valued rows through the general path.
+                                    raise ValueError("Scalar attribute default has trailing dimensions")
+
+                            if self.is_custom_frequency:
+                                src = self.values if len(self.values) <= count else self.values[:count]
+                                n = len(src)
+                                out = np.empty((count, *elem_shape), dtype=scalar_np_dtype)
+                                if n < count:
+                                    out[n:] = default_np
+                                if n > 0:
+                                    if not any(v is None for v in src):
+                                        out[:n] = _pack_items(src)
+                                    else:
+                                        out[:n] = default_np
+                                        present_idx = [i for i, v in enumerate(src) if v is not None]
+                                        if present_idx:
+                                            out[np.asarray(present_idx, dtype=np.intp)] = _pack_items(
+                                                [src[i] for i in present_idx]
+                                            )
+                            else:
+                                fill_default = default_np
+                                has_world_global = (
+                                    self.frequency == Model.AttributeFrequency.WORLD and -1 in self.values
+                                )
+                                global_np = None
+                                upper = count
+                                if has_world_global:
+                                    if elem_shape:
+                                        global_np = _pack_items([self.values[-1]])[0]
+                                    else:
+                                        global_np = np.asarray(self.values[-1], dtype=scalar_np_dtype)
+                                        if global_np.ndim != 0:
+                                            raise ValueError("Scalar attribute global value has trailing dimensions")
+                                    if self.references is None and self.reference_value_transformer is None:
+                                        fill_default = global_np
+                                        upper = count - 1
+                                out = np.empty((count, *elem_shape), dtype=scalar_np_dtype)
+                                out[:] = fill_default
+                                keys = np.fromiter(
+                                    map(operator.index, self.values), dtype=np.int64, count=len(self.values)
+                                )
+                                valid_mask = (keys >= 0) & (keys < upper)
+                                if np.any(valid_mask):
+                                    vals_list = list(self.values.values())
+                                    if bool(np.all(valid_mask)):
+                                        out[keys] = _pack_items(vals_list)
+                                    else:
+                                        valid_pos = np.flatnonzero(valid_mask)
+                                        out[keys[valid_pos]] = _pack_items([vals_list[p] for p in valid_pos.tolist()])
+                                if has_world_global:
+                                    out[-1] = global_np
+
+                            return wp.array(out, dtype=self.dtype, requires_grad=requires_grad, device=device)
+                        except (TypeError, ValueError, OverflowError):
+                            pass
+
+            if self.is_custom_frequency:
                 # Custom frequency: vals is a list, replace None with defaults and pad/truncate as needed
                 arr = [val if val is not None else self.default for val in self.values]
                 arr = arr + [self.default] * max(0, count - len(arr))
@@ -2472,10 +2567,6 @@ class ModelBuilder:
         self.joint_friction: list[float] = []
         """Joint friction values accumulated for :attr:`Model.joint_friction`."""
 
-        # Created on first access so a fresh builder has no merge-managed list for them.
-        self._deprecated_joint_twist_lower: list[float] | None = None
-        self._deprecated_joint_twist_upper: list[float] | None = None
-
         self.joint_enabled: list[bool] = []
         """Joint enabled flags accumulated for :attr:`Model.joint_enabled`."""
 
@@ -2840,7 +2931,19 @@ class ModelBuilder:
             and Model._normalize_attribute_reference(existing.references)
             == Model._normalize_attribute_reference(incoming.references)
             and existing.reference_value_transformer is incoming.reference_value_transformer
+            # A declaration without update flags is compatible with any flags.
+            and (
+                existing.update_flags is None
+                or incoming.update_flags is None
+                or existing.update_flags == incoming.update_flags
+            )
         )
+
+    def _adopt_custom_attribute_update_flags(self, existing: CustomAttribute, incoming: CustomAttribute) -> None:
+        """Keep the update flags of a matching redeclaration when ``existing`` declares none."""
+        if existing.update_flags is None and incoming.update_flags is not None:
+            existing.update_flags = incoming.update_flags
+            self._custom_schema_epoch += 1
 
     @staticmethod
     def _custom_frequency_specs_match(existing: CustomFrequency, incoming: CustomFrequency) -> bool:
@@ -2868,6 +2971,7 @@ class ModelBuilder:
             ValueError: If the attribute key already exists with incompatible specification,
                 if the attribute uses a custom string frequency that hasn't been registered,
                 if the attribute uses a contact frequency (reserved for solver observables),
+                if it declares ``update_flags`` without being assigned to the model,
                 or if ``usd_attribute_name`` is ``"*"`` without a ``usd_value_transformer``.
 
         Example:
@@ -2901,12 +3005,15 @@ class ModelBuilder:
             raise ValueError(
                 "Contact frequencies are only supported by SolverBase.Observables, not builder custom attributes."
             )
+        if attribute.update_flags is not None and attribute.assignment != Model.AttributeAssignment.MODEL:
+            raise ValueError(f"Custom attribute '{attribute.key}': only model-assigned attributes declare update flags")
         key = attribute.key
 
         existing = self.custom_attributes.get(key)
         if existing:
             if not self._custom_attribute_specs_match(existing, attribute):
                 raise ValueError(f"Custom attribute '{key}' already exists with incompatible spec")
+            self._adopt_custom_attribute_update_flags(existing, attribute)
             self._index_custom_world_reference_attribute(existing)
             return
 
@@ -4023,47 +4130,6 @@ class ModelBuilder:
         """
         return len(self.articulation_start)
 
-    # Tombstones so that assigning the 1.3-era names fails loudly instead of
-    # creating an unused instance attribute whose targets are never applied.
-    joint_target_pos = RemovedAttribute("joint_target_q", removed_in="1.5")
-    joint_target_vel = RemovedAttribute("joint_target_qd", removed_in="1.5")
-
-    @property
-    def joint_twist_lower(self) -> list[float]:
-        """Lower twist limits, never used by :meth:`finalize` or any solver.
-
-        .. deprecated:: 1.7
-            Limit joint rotations with the per-DOF limits of :class:`JointDofConfig` instead.
-        """
-        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-        if self._deprecated_joint_twist_lower is None:
-            self._deprecated_joint_twist_lower = []
-        return self._deprecated_joint_twist_lower
-
-    @joint_twist_lower.setter
-    def joint_twist_lower(self, value: list[float]) -> None:
-        # stacklevel skips ModelBuilder.__setattr__ to report the caller.
-        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=3)
-        self._deprecated_joint_twist_lower = value
-
-    @property
-    def joint_twist_upper(self) -> list[float]:
-        """Upper twist limits, never used by :meth:`finalize` or any solver.
-
-        .. deprecated:: 1.7
-            Limit joint rotations with the per-DOF limits of :class:`JointDofConfig` instead.
-        """
-        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-        if self._deprecated_joint_twist_upper is None:
-            self._deprecated_joint_twist_upper = []
-        return self._deprecated_joint_twist_upper
-
-    @joint_twist_upper.setter
-    def joint_twist_upper(self, value: list[float]) -> None:
-        # stacklevel skips ModelBuilder.__setattr__ to report the caller.
-        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=3)
-        self._deprecated_joint_twist_upper = value
-
     @staticmethod
     def _quat_from_axis_targets(t_x: float, t_y: float, t_z: float) -> tuple[float, float, float, float]:
         """Compose per-axis angles into a unit quaternion using extrinsic ZYX
@@ -4160,8 +4226,9 @@ class ModelBuilder:
                 copies to the current world context (see :attr:`current_world`) instead. Like
                 :meth:`add_builder`, this then also replaces the current world's gravity, or this
                 builder's gravity outside a world context, with the gravity of ``builder``.
-            xforms: Optional sequence of transforms, one per copy.
-                When provided, its length must equal ``copy_count``.
+            xforms: Optional sequence of transforms, one per copy, each applied as
+                ``xform`` in :meth:`add_builder`. When provided, its length must equal
+                ``copy_count``.
             label_prefixes: Optional prefix prepended to all labels from the source builder,
                 one per copy, applied as :meth:`add_builder` applies its
                 ``label_prefix``. Labels are joined with ``/``. A ``None`` entry leaves that
@@ -4282,6 +4349,13 @@ class ModelBuilder:
             t = 2.0 * np.cross(xyz, vectors)
             vectors += np.cross(xyz, t) + w * t
 
+        def rotate_copies(values: np.ndarray) -> None:
+            # Rotate the (..., 3) rows of each rotated copy in place, in float32 like Warp.
+            rows = values.reshape((copy_count, -1, 3))
+            rotated_copies = moved_copies[rotated]
+            rotated_rows = rows[rotated_copies].astype(np.float32, copy=False)
+            rows[rotated_copies] = quat_rotate_rows(moved_xforms[rotated, None, 3:], rotated_rows)
+
         counts = self._builder_merge_counts(builder)
         self._validate_builder_merge(builder, set(counts))
         # Values can change without a schema change, so check them before copying entities.
@@ -4392,11 +4466,34 @@ class ModelBuilder:
         if counts["particle"]:
             self.particle_max_velocity = builder.particle_max_velocity
             particle_q = np.tile(np.asarray(builder.particle_q, dtype=np.float32), (copy_count, 1))
+            if not translations_only:
+                rotate_copies(particle_q)
             particle_q += np.repeat(offsets, counts["particle"], axis=0)
             if "particle_q" in array_starts:
                 self.particle_q[array_starts["particle_q"] :] = particle_q
             else:
                 self.particle_q.extend(particle_q.tolist())
+
+        if not translations_only:
+            # tet_poses stores inverse(Dm), which becomes inverse(Dm) R^T: its rows rotate like vectors.
+            for attr, warp_type in (("particle_qd", wp.vec3f), ("tet_poses", wp.mat33f)):
+                source = getattr(builder, attr)
+                if len(source) == 0:
+                    continue
+                attribute_specs.pop(attr)
+                # Python floats stay float64 so copies that are not rotated keep them exact.
+                packed = join_warp_values(source, warp_type)
+                if packed is None:
+                    packed = np.asarray(source, dtype=np.float64).reshape((-1, *warp_type._shape_))
+                values = np.tile(packed, (copy_count, *(1,) * len(warp_type._shape_)))
+                rotate_copies(values)
+                # Keep the source element shape, e.g. Mat33 rows given as 9 flat floats.
+                values = values.reshape((-1, *np.shape(source[0])))
+                if attr in array_starts:
+                    getattr(self, attr)[array_starts[attr] :] = values
+                else:
+                    descriptor = _describe_array_backed_list(source[0])
+                    getattr(self, attr).extend(_materialize_array_backed_list(values, descriptor))
 
         shape_starts = starts("shape")
         body_starts = starts("body")
@@ -4454,6 +4551,8 @@ class ModelBuilder:
         attribute_specs.pop("joint_X_p")
         attribute_specs.pop("joint_q")
         attribute_specs.pop("joint_qd")
+        attribute_specs.pop("joint_target_q")
+        attribute_specs.pop("joint_target_qd")
         joint_X_p_start = array_starts.get("joint_X_p", int(bases["joint"]))
         if "joint_X_p" not in array_starts:
             self.joint_X_p.extend(source_list("joint_X_p") * copy_count)
@@ -4463,6 +4562,10 @@ class ModelBuilder:
         # (xform conjugated by joint_X_p). Other joint velocities are unchanged.
         joint_qd_source = np.asarray(builder.joint_qd, dtype=np.float32)
         joint_qd = np.tile(joint_qd_source, copy_count)
+        # float64 keeps the targets of joints that are not moved exact.
+        joint_target_q_source = np.asarray(builder.joint_target_q, dtype=np.float64)
+        joint_target_q = np.tile(joint_target_q_source, copy_count)
+        joint_target_qd = np.tile(np.asarray(builder.joint_target_qd, dtype=np.float64), copy_count)
         if counts["joint"] and len(moved_copies):
             joint_types = np.asarray(builder.joint_type, dtype=np.int64)
             joint_parents = np.asarray(builder.joint_parent, dtype=np.int64)
@@ -4486,20 +4589,26 @@ class ModelBuilder:
                 )
                 coord_base = moved_copies[:, None, None] * counts["joint_coord"]
                 joint_q[coord_base + q_index[None]] = transform_multiply_rows(xform_local, xform_prev[None])
+                # Targets are parent-frame poses and twists, like the state.
+                target_prev = joint_target_q_source[q_index].astype(np.float32)
+                joint_target_q[coord_base + q_index[None]] = transform_multiply_rows(xform_local, target_prev[None])
                 if np.any(rotated):
                     qd_targets = moved_copies[rotated, None, None] * len(joint_qd_source) + qd_index[None]
-                    twist = joint_qd[qd_targets].reshape((*qd_targets.shape[:2], 2, 3))
-                    rotate_vectors(xform_local[rotated, :, None, 3:], twist)
-                    joint_qd[qd_targets] = twist.reshape(qd_targets.shape)
+                    for values in (joint_qd, joint_target_qd):
+                        twist = values[qd_targets].reshape((*qd_targets.shape[:2], 2, 3))
+                        rotate_vectors(xform_local[rotated, :, None, 3:], twist)
+                        values[qd_targets] = twist.reshape(qd_targets.shape)
 
-        if "joint_q" in array_starts:
-            self.joint_q[array_starts["joint_q"] :] = joint_q
-        else:
-            self.joint_q.extend(joint_q.tolist())
-        if "joint_qd" in array_starts:
-            self.joint_qd[array_starts["joint_qd"] :] = joint_qd
-        elif len(joint_qd):
-            self.joint_qd.extend(joint_qd.tolist())
+        for attr, values in (
+            ("joint_q", joint_q),
+            ("joint_qd", joint_qd),
+            ("joint_target_q", joint_target_q),
+            ("joint_target_qd", joint_target_qd),
+        ):
+            if attr in array_starts:
+                getattr(self, attr)[array_starts[attr] :] = values
+            elif len(values):
+                getattr(self, attr).extend(values.tolist())
 
         for copy_index, joint_start in enumerate(joint_starts.tolist()):
             body_start = int(body_starts[copy_index])
@@ -4618,24 +4727,48 @@ class ModelBuilder:
         self.joint_constraint_count += copy_count * counts["joint_constraint"]
 
         custom_attributes = self._prepare_builder_custom_attributes(builder)
-        kinds = tuple(counts)
-        offset_rows = np.stack([starts(kind) for kind in kinds], axis=1).tolist()
         has_actuators = bool(builder.actuator_entries)
         has_batteries = bool(builder.battery_entries)
-        for copy_index, world in enumerate(worlds.tolist()):
-            entity_offsets = dict(zip(kinds, offset_rows[copy_index], strict=True))
-            self._merge_builder_custom_attributes(
-                builder, entity_offsets, world, label_prefixes[copy_index], custom_attributes
+        # Transformers can observe actuators and batteries merged by earlier copies.
+        needs_ordered_merge = (has_actuators or has_batteries) and any(
+            attr.values and attr.reference_value_transformer is not None for attr in custom_attributes.values()
+        )
+        if copy_count > 1 and not needs_ordered_merge:
+            self._merge_builder_custom_attributes_copies(
+                builder, counts, starts, worlds, label_prefixes, custom_attributes
             )
-            if has_actuators:
-                self._merge_builder_actuators(
-                    builder,
-                    int(joint_dof_starts[copy_index]),
-                    int(joint_coord_starts[copy_index]),
-                    entity_offsets["actuator"],
+            if has_actuators or has_batteries:
+                actuator_starts = starts("actuator").tolist()
+                joint_dof_starts_list = joint_dof_starts.tolist()
+                joint_coord_starts_list = joint_coord_starts.tolist()
+                for copy_index, world in enumerate(worlds.tolist()):
+                    act_offset = actuator_starts[copy_index]
+                    if has_actuators:
+                        self._merge_builder_actuators(
+                            builder,
+                            joint_dof_starts_list[copy_index],
+                            joint_coord_starts_list[copy_index],
+                            act_offset,
+                        )
+                    if has_batteries:
+                        self._merge_builder_batteries(builder, act_offset, world)
+        else:
+            kinds = tuple(counts)
+            offset_rows = np.stack([starts(kind) for kind in kinds], axis=1).tolist()
+            for copy_index, world in enumerate(worlds.tolist()):
+                entity_offsets = dict(zip(kinds, offset_rows[copy_index], strict=True))
+                self._merge_builder_custom_attributes(
+                    builder, entity_offsets, world, label_prefixes[copy_index], custom_attributes
                 )
-            if has_batteries:
-                self._merge_builder_batteries(builder, entity_offsets["actuator"], world)
+                if has_actuators:
+                    self._merge_builder_actuators(
+                        builder,
+                        int(joint_dof_starts[copy_index]),
+                        int(joint_coord_starts[copy_index]),
+                        entity_offsets["actuator"],
+                    )
+                if has_batteries:
+                    self._merge_builder_batteries(builder, entity_offsets["actuator"], world)
         self.actuator_count += copy_count * counts["actuator"]
 
     def _model_value_key(self, attribute: CustomAttribute) -> int:
@@ -4792,6 +4925,7 @@ class ModelBuilder:
             if merged is not None:
                 if not self._custom_attribute_specs_match(merged, attr):
                     raise ValueError(f"Custom attribute '{full_key}' already exists with incompatible spec")
+                self._adopt_custom_attribute_update_flags(merged, attr)
                 if not self._custom_attribute_defaults_match(merged.default, attr.default):
                     raise ValueError(
                         f"Custom attribute '{full_key}' default mismatch when merging builders: "
@@ -5346,6 +5480,8 @@ class ModelBuilder:
                 :attr:`~newton.JointTargetMode.POSITION` if stiffness > 0, :attr:`~newton.JointTargetMode.VELOCITY` if only
                 damping > 0, :attr:`~newton.JointTargetMode.EFFORT` if a drive is present but both gains are zero
                 (direct torque control), or :attr:`~newton.JointTargetMode.NONE` if no drive/actuation is applied.
+                A USD ``MjcActuator`` in MuJoCo's position or velocity shape on a DOF whose drive has both gains zero sets
+                the mode from its own gains instead of :attr:`~newton.JointTargetMode.EFFORT`, and a warning is logged.
             legacy_margin_gap: If True, restore pre-MuJoCo-3.9 import behavior
                 where ``shape_margin`` is computed as ``mjc_margin - mjc_gap``.
                 Use for USD files authored against MuJoCo <= 3.8. Defaults to
@@ -5560,7 +5696,7 @@ class ModelBuilder:
         """
         Parses MuJoCo XML (MJCF) file and adds the bodies and joints to the given ModelBuilder.
         MuJoCo-specific custom attributes are registered on the builder automatically.
-        Importing ``<dcmotor>`` actuators requires the optional ``mujoco`` package
+        Importing ``<dcmotor>`` actuators requires the optional ``mujoco-core`` package
         (included in ``newton[sim]``) to resolve native defaults, and raises
         :class:`ImportError` if it is unavailable. Other MJCF import remains independent of MuJoCo.
 
@@ -5571,6 +5707,9 @@ class ModelBuilder:
         MJCF textures default to a white tint. Without an MJCF color or base-color texture,
         mesh-file appearance and primitive palette colors are retained for compatibility.
         Other PBR texture layers are not imported.
+
+        A body's hinge and slide joints are merged into one Newton joint. See the
+        :ref:`limitations of merged MJCF joints <mjcf-merged-joints>` for anchor selection, warnings, and deprecations.
 
         Args:
             source: The filename of the MuJoCo file to parse, or the MJCF XML string content.
@@ -5588,7 +5727,8 @@ class ModelBuilder:
                 - ``None`` (default): Uses format-specific default (honors ``<freejoint>`` tags in MJCF,
                   otherwise creates a FIXED joint).
                 - ``True``: Creates a FREE joint with 6 DOF (3 translation + 3 rotation). Only valid when
-                  ``parent_body == -1`` since FREE joints must connect to world frame.
+                  ``parent_body == -1`` since FREE joints must connect to world frame. A root that already
+                  has an MJCF free joint keeps that joint's parameters.
                 - ``False``: Creates a FIXED joint (0 DOF).
 
                 Cannot be specified together with ``base_joint``.
@@ -5859,8 +5999,8 @@ class ModelBuilder:
 
         Args:
             builder: The builder containing entities to add as a new world.
-            xform: Optional transform to apply to all root bodies
-                in the builder. Useful for spacing out worlds visually.
+            xform: Optional transform that places the world, applied as in
+                :meth:`add_builder`. Useful for spacing out worlds visually.
             label_prefix: Optional prefix prepended to all entity labels
                 from the source builder. Useful for distinguishing multiple instances
                 of the same model (e.g., ``"left_arm"`` vs ``"right_arm"``).
@@ -5924,6 +6064,295 @@ class ModelBuilder:
             attributes[full_key] = attr
         return attributes
 
+    def _merge_builder_custom_attributes_copies(
+        self,
+        builder: ModelBuilder,
+        counts: dict[str, int],
+        starts: Callable[[str], np.ndarray],
+        worlds: np.ndarray,
+        label_prefixes: Sequence[str | None],
+        attributes: dict[str, ModelBuilder.CustomAttribute],
+    ) -> None:
+        """Bulk-merge custom attributes across ``len(worlds)`` copies of ``builder``."""
+        self._resolve_custom_frequency_articulation_owners()
+        copy_count = len(worlds)
+        base_cf_offsets = dict(self._custom_frequency_counts)
+        worlds_list = worlds.tolist()
+
+        collision_mask_domain_key = "mujoco:collision_mask_domain"
+        source_domain_attr = builder.custom_attributes.get(collision_mask_domain_key)
+        first_domain_shape: dict[int, int] = {}
+        if source_domain_attr is not None and source_domain_attr.values:
+            source_domain_items = (
+                source_domain_attr.values.items()
+                if isinstance(source_domain_attr.values, dict)
+                else enumerate(source_domain_attr.values)
+            )
+            for shape_idx, val in source_domain_items:
+                if val is None:
+                    continue
+                dom = int(val)
+                if dom >= 0:
+                    first_domain_shape.setdefault(dom, shape_idx)
+
+        cf_starts_cache: dict[str, np.ndarray] = {}
+
+        def get_starts(entity_or_key: Model.AttributeFrequency | str | None) -> np.ndarray | None:
+            if entity_or_key is None:
+                return None
+            if isinstance(entity_or_key, Model.AttributeFrequency):
+                return starts(entity_or_key.name.lower())
+            if entity_or_key in cf_starts_cache:
+                return cf_starts_cache[entity_or_key]
+            if entity_or_key in builder._custom_frequency_counts or entity_or_key in base_cf_offsets:
+                base_off = base_cf_offsets.get(entity_or_key, 0)
+                step = builder._custom_frequency_counts.get(entity_or_key, 0)
+                arr = base_off + np.arange(copy_count, dtype=np.int64) * step
+                cf_starts_cache[entity_or_key] = arr
+                return arr
+            raise ValueError(
+                f"Unknown references value '{entity_or_key}'. "
+                f"Valid values are: {list(counts.keys())} or custom frequencies."
+            )
+
+        def ensure_merged_attr(
+            full_key: str, attr: ModelBuilder.CustomAttribute, is_custom_frequency: bool
+        ) -> ModelBuilder.CustomAttribute:
+            merged = self.custom_attributes.get(full_key)
+            if merged is None:
+                merged = replace(attr, values=[] if is_custom_frequency else {})
+                self.custom_attributes[full_key] = merged
+                self._custom_schema_epoch += 1
+                self._index_custom_world_reference_attribute(merged)
+                return merged
+            if not self._custom_attribute_defaults_match(merged.default, attr.default):
+                raise ValueError(
+                    f"Custom attribute '{full_key}' default mismatch when merging builders: "
+                    f"existing={merged.default}, incoming={attr.default}"
+                )
+            if merged.values is None:
+                merged.values = [] if is_custom_frequency else {}
+            return merged
+
+        fallback_attributes: dict[str, ModelBuilder.CustomAttribute] = {}
+        max_row_key = np.iinfo(np.int64).max
+
+        for full_key, attr in attributes.items():
+            freq_key = attr.frequency
+            if (
+                attr.reference_value_transformer is not None
+                or freq_key in (Model.AttributeFrequency.ONCE, Model.AttributeFrequency.WORLD)
+                or full_key == "mujoco:equality_constraint_target"
+            ):
+                fallback_attributes[full_key] = attr
+                continue
+
+            if isinstance(attr.values, dict) and attr.values:
+                key_starts = starts(self._builder_frequency_key(freq_key))
+                try:
+                    src_keys = np.fromiter(map(operator.index, attr.values), dtype=np.int64, count=len(attr.values))
+                except (TypeError, OverflowError):
+                    fallback_attributes[full_key] = attr
+                    continue
+                # Copy starts are nonnegative and ordered. Keep Python key arithmetic
+                # when the last copy's offset would overflow the NumPy indices.
+                if int(src_keys.max()) > max_row_key - int(key_starts[-1]):
+                    fallback_attributes[full_key] = attr
+                    continue
+
+            if (
+                full_key == collision_mask_domain_key
+                and first_domain_shape
+                and freq_key == Model.AttributeFrequency.SHAPE
+                and isinstance(attr.values, dict)
+                and self._is_integer_scalar(attr.default)
+                and int(attr.default) < 0
+            ):
+                merged = ensure_merged_attr(full_key, attr, False)
+                shape_starts = starts("shape")
+                base_vals = np.asarray(
+                    [first_domain_shape.get(int(v), int(v)) for v in attr.values.values()], dtype=np.int64
+                )
+                all_keys = (shape_starts[:, None] + src_keys[None, :]).ravel().tolist()
+                shifted = np.where(
+                    base_vals[None, :] >= 0, base_vals[None, :] + shape_starts[:, None], base_vals[None, :]
+                )
+                merged.values.update(zip(all_keys, shifted.ravel().tolist(), strict=False))
+                continue
+            if full_key == collision_mask_domain_key and first_domain_shape:
+                fallback_attributes[full_key] = attr
+                continue
+
+            reference = attr.references
+            if isinstance(reference, str):
+                reference = Model._normalize_attribute_reference(reference)
+
+            is_custom_frequency = isinstance(freq_key, str)
+            if is_custom_frequency:
+                base_idx = base_cf_offsets.get(freq_key, 0)
+                src_freq_count = builder._custom_frequency_counts.get(freq_key, 0)
+                idx_starts = None
+            else:
+                freq_name = self._builder_frequency_key(freq_key)
+                idx_starts = starts(freq_name)
+                src_freq_count = counts.get(freq_name, 0)
+                base_idx = 0
+
+            use_current_world = reference == Model.AttributeFrequency.WORLD
+            val_starts = None if use_current_world else get_starts(reference)
+            has_nonzero_val_offset = val_starts is not None and bool(np.any(val_starts != 0))
+            source_values = attr.values
+
+            if is_custom_frequency and len(source_values) > src_freq_count:
+                fallback_attributes[full_key] = attr
+                continue
+
+            if not use_current_world and not has_nonzero_val_offset:
+                merged = ensure_merged_attr(full_key, attr, is_custom_frequency)
+                if is_custom_frequency:
+                    if len(merged.values) < base_idx:
+                        merged.values.extend([None] * (base_idx - len(merged.values)))
+                    src_list = list(source_values)
+                    if len(src_list) == src_freq_count:
+                        merged.values.extend(src_list * copy_count)
+                    else:
+                        padded = src_list + [None] * (src_freq_count - len(src_list))
+                        merged.values.extend(padded * (copy_count - 1))
+                        merged.values.extend(src_list)
+                elif source_values:
+                    all_keys = (idx_starts[:, None] + src_keys[None, :]).ravel().tolist()
+                    all_vals = list(source_values.values()) * copy_count
+                    merged.values.update(zip(all_keys, all_vals, strict=False))
+                continue
+
+            if use_current_world:
+                shifts_default = all(not self._custom_attribute_defaults_match(w, attr.default) for w in worlds_list)
+                if (
+                    shifts_default
+                    and len(source_values) == src_freq_count
+                    and (is_custom_frequency or all(0 <= k < src_freq_count for k in source_values))
+                ):
+                    merged = ensure_merged_attr(full_key, attr, is_custom_frequency)
+                    if is_custom_frequency:
+                        if len(merged.values) < base_idx:
+                            merged.values.extend([None] * (base_idx - len(merged.values)))
+                        if src_freq_count > 0:
+                            merged.values.extend(np.repeat(worlds, src_freq_count).tolist())
+                    elif src_freq_count > 0:
+                        all_keys = (
+                            (idx_starts[:, None] + np.arange(src_freq_count, dtype=np.int64)[None, :]).ravel().tolist()
+                        )
+                        all_vals = np.repeat(worlds, src_freq_count).tolist()
+                        merged.values.update(zip(all_keys, all_vals, strict=False))
+                    continue
+                fallback_attributes[full_key] = attr
+                continue
+
+            # has_nonzero_val_offset: integer scalar reference fast path
+            default_unchanged = self._is_integer_scalar(attr.default) and int(attr.default) < 0
+            if default_unchanged and is_custom_frequency and len(source_values) == src_freq_count:
+                if all(self._is_integer_scalar(v) for v in source_values):
+                    merged = ensure_merged_attr(full_key, attr, True)
+                    if len(merged.values) < base_idx:
+                        merged.values.extend([None] * (base_idx - len(merged.values)))
+                    if src_freq_count > 0:
+                        src_arr = np.asarray([int(v) for v in source_values], dtype=np.int64)
+                        shifted = np.where(
+                            src_arr[None, :] >= 0, src_arr[None, :] + val_starts[:, None], src_arr[None, :]
+                        )
+                        merged.values.extend(shifted.ravel().tolist())
+                    continue
+            elif default_unchanged and not is_custom_frequency:
+                if all(self._is_integer_scalar(v) for v in source_values.values()):
+                    merged = ensure_merged_attr(full_key, attr, False)
+                    if source_values:
+                        src_vals = np.asarray([int(v) for v in source_values.values()], dtype=np.int64)
+                        all_keys = (idx_starts[:, None] + src_keys[None, :]).ravel().tolist()
+                        shifted = np.where(
+                            src_vals[None, :] >= 0, src_vals[None, :] + val_starts[:, None], src_vals[None, :]
+                        )
+                        merged.values.update(zip(all_keys, shifted.ravel().tolist(), strict=False))
+                    continue
+
+            fallback_attributes[full_key] = attr
+
+        if fallback_attributes:
+            kinds = tuple(counts)
+            offset_rows = np.stack([starts(kind) for kind in kinds], axis=1).tolist()
+            for copy_index, world in enumerate(worlds_list):
+                cf_offsets_copy = dict(base_cf_offsets)
+                for cf_key, cf_count in builder._custom_frequency_counts.items():
+                    cf_offsets_copy[cf_key] = base_cf_offsets.get(cf_key, 0) + copy_index * cf_count
+                entity_offsets = dict(zip(kinds, offset_rows[copy_index], strict=True))
+                self._merge_builder_custom_attributes(
+                    builder,
+                    entity_offsets,
+                    world,
+                    label_prefixes[copy_index],
+                    fallback_attributes,
+                    _resolved_cf_offsets=cf_offsets_copy,
+                    _defer_label_prefix=True,
+                )
+
+        if any(label_prefixes):
+            eq_count = builder._equality_constraint_count
+            eq_base = base_cf_offsets.get("mujoco:equality_constraint", 0)
+            eq_label_attr = self.custom_attributes.get("mujoco:equality_constraint_label") if eq_count > 0 else None
+            freq_label_specs = []
+            for frequency_key, frequency in builder.custom_frequencies.items():
+                label_key = frequency.label_attribute
+                if label_key is None:
+                    continue
+                source_label_attribute = builder.custom_attributes.get(label_key)
+                if source_label_attribute is None or source_label_attribute.frequency != frequency_key:
+                    continue
+                label_attribute = self.custom_attributes.get(label_key)
+                if (
+                    label_attribute is None
+                    or not isinstance(label_attribute.values, list)
+                    or not label_attribute.values
+                ):
+                    continue
+                freq_label_specs.append(
+                    (
+                        label_attribute.values,
+                        base_cf_offsets.get(frequency_key, 0),
+                        builder._custom_frequency_counts.get(frequency_key, 0),
+                    )
+                )
+
+            for copy_index, label_prefix in enumerate(label_prefixes):
+                if not label_prefix:
+                    continue
+                for label_vals, cf_base, cf_count in freq_label_specs:
+                    start = cf_base + copy_index * cf_count
+                    for row in range(start, min(start + cf_count, len(label_vals))):
+                        label = label_vals[row]
+                        if label:
+                            label_vals[row] = f"{label_prefix}/{label}"
+                if eq_label_attr is not None and eq_label_attr.values:
+                    start = eq_base + copy_index * eq_count
+                    for i in range(start, min(start + eq_count, len(eq_label_attr.values))):
+                        label = eq_label_attr.values[i]
+                        if label:
+                            eq_label_attr.values[i] = f"{label_prefix}/{label}"
+
+        for freq_key, freq_obj in builder.custom_frequencies.items():
+            if freq_key not in self.custom_frequencies:
+                self.custom_frequencies[freq_key] = freq_obj
+                self._custom_schema_epoch += 1
+            self._custom_world_reference_attribute_keys.setdefault(freq_key, [])
+
+        for freq_key, builder_count in builder._custom_frequency_counts.items():
+            total = base_cf_offsets.get(freq_key, 0) + copy_count * builder_count
+            self._custom_frequency_counts[freq_key] = total
+            frequency = builder.custom_frequencies.get(freq_key)
+            if frequency is not None and frequency.articulation_owner_resolver is not None:
+                self._custom_frequency_owner_resolved_counts[freq_key] = total
+
+        for key, finalizer in builder._custom_attribute_model_finalizers.items():
+            self._add_custom_attribute_model_finalizer(key, finalizer)
+
     def _merge_builder_custom_attributes(
         self,
         builder: ModelBuilder,
@@ -5931,18 +6360,28 @@ class ModelBuilder:
         world: int,
         label_prefix: str | None,
         attributes: dict[str, ModelBuilder.CustomAttribute],
+        *,
+        _resolved_cf_offsets: dict[str, int] | None = None,
+        _defer_label_prefix: bool = False,
     ) -> None:
         # Resolve existing destination rows, since its topology may have
         # changed since the rows were first added.
-        self._resolve_custom_frequency_articulation_owners()
-        custom_frequency_offsets = dict(self._custom_frequency_counts)
+        if _resolved_cf_offsets is None:
+            self._resolve_custom_frequency_articulation_owners()
+            custom_frequency_offsets = dict(self._custom_frequency_counts)
+        else:
+            custom_frequency_offsets = _resolved_cf_offsets
 
         # Builders allocate MJCF mask-domain IDs independently. Remap every
         # incoming domain as one unit so its IDs cannot collide with domains
         # already present in the destination builder.
         collision_mask_domain_key = "mujoco:collision_mask_domain"
         collision_mask_domain_remap: dict[int, int] = {}
-        source_domain_attr = builder.custom_attributes.get(collision_mask_domain_key)
+        source_domain_attr = (
+            builder.custom_attributes.get(collision_mask_domain_key)
+            if collision_mask_domain_key in attributes
+            else None
+        )
         if source_domain_attr is not None and source_domain_attr.values:
             source_items = (
                 source_domain_attr.values.items()
@@ -6178,7 +6617,7 @@ class ModelBuilder:
             else:
                 merged.values.update(enum_values)
 
-        if label_prefix:
+        if label_prefix and not _defer_label_prefix:
             for frequency_key, frequency in builder.custom_frequencies.items():
                 label_key = frequency.label_attribute
                 if label_key is None:
@@ -6324,7 +6763,10 @@ class ModelBuilder:
 
         Args:
             builder: The model builder to copy data from.
-            xform: Optional offset transform applied to root bodies.
+            xform: Optional transform that places the copy. It moves the root bodies and
+                root joint frames, static shapes, particles, tetrahedral rest poses, and
+                free-root joint state and targets, and rotates their world-frame velocities.
+                Other world-frame data, such as custom attributes, is copied unchanged.
             label_prefix: Optional prefix prepended to all entity labels
                 from the source builder. Labels are joined with ``/``
                 (e.g., ``"left/panda/base_link"``).
@@ -6601,20 +7043,25 @@ class ModelBuilder:
             _validate_variant_builder(self, variant)
         variant_set = _snapshot_variants(variants, labels, self._shape_row_attributes())
         rows = _plan_variant_rows(variant_set, initial, self.body_label[body])
-        declarations = dict(self.custom_attributes)
+        # Merge the declarations into copies, so the variants' own declarations keep their update flags.
+        declarations: dict[str, ModelBuilder.CustomAttribute] = {}
         for row in rows:
             for candidate in row.candidates:
                 for key, declaration, _ in candidate.custom:
-                    if not self._custom_attribute_specs_match(declarations.setdefault(key, declaration), declaration):
+                    merged = declarations.get(key)
+                    if merged is None:
+                        merged = declarations[key] = copy.copy(self.custom_attributes.get(key, declaration))
+                    if not self._custom_attribute_specs_match(merged, declaration):
                         raise ValueError(
                             f"Variant shape custom attribute '{key}' is declared differently than in this "
                             "builder or another variant."
                         )
+                    if merged.update_flags is None:
+                        merged.update_flags = declaration.update_flags
         # Declare every variant's attributes now, so later declarations are checked against them and
-        # finalize() declares nothing.
-        for key, declaration in declarations.items():
-            if key not in self.custom_attributes:
-                self.add_custom_attribute(declaration)
+        # finalize() declares nothing. This also adopts flags for attributes declared without them.
+        for declaration in declarations.values():
+            self.add_custom_attribute(declaration)
 
         # A row's builder flags are the union over the shapes it can hold, which all have the row's
         # role, so contact pairs and joint filters include every one of them.
@@ -9520,6 +9967,12 @@ class ModelBuilder:
             resolved_opacity = 1.0
         resolved_opacity = _validate_opacity(resolved_opacity, "Shape opacity")
 
+        # Compute mass properties before mutating the builder so that an invalid shell
+        # thickness raises without leaving a partially added shape behind.
+        shape_mass_props = None
+        if not is_static and cfg.density > 0.0 and body >= 0 and not self.body_lock_inertia[body]:
+            shape_mass_props = compute_inertia_shape(type, scale, src, cfg.density, cfg.is_solid, cfg.margin)
+
         self.shape_body.append(body)
         shape = self.shape_count
         self.body_shapes[body].append(shape)
@@ -9571,8 +10024,8 @@ class ModelBuilder:
         if cfg.has_shape_collision and cfg.collision_filter_parent:
             self._add_joint_collision_filter_pairs(shape, body)
 
-        if not is_static and cfg.density > 0.0 and body >= 0 and not self.body_lock_inertia[body]:
-            (m, c, inertia) = compute_inertia_shape(type, scale, src, cfg.density, cfg.is_solid, cfg.margin)
+        if shape_mass_props is not None:
+            m, c, inertia = shape_mass_props
             com_body = wp.transform_point(xform, c)
             self._update_body_mass(body, m, inertia, com_body, xform.q)
 
@@ -10391,6 +10844,11 @@ class ModelBuilder:
             is decomposed separately and may produce one or more convex shapes,
             each limited to the source mesh's ``maxhullvert`` vertices.
             CoACD decompositions repeat across runs; pass CoACD's ``seed`` through ``remeshing_kwargs`` to change it.
+            CoACD searches cuts with ``mcts_nodes=20``, ``mcts_iterations=20``, ``mcts_max_depth=2``, and
+            ``merge=False`` unless overridden through ``remeshing_kwargs``. This search produces few, large parts,
+            so on dense, smooth meshes the ``maxhullvert`` cap can trim noticeable surface detail; raise the
+            source mesh's ``maxhullvert`` to keep it, or pass ``mcts_iterations=5`` and ``mcts_max_depth=1``
+            for more, smaller parts.
 
         The ``raise_on_failure`` parameter controls the behavior when the remeshing fails:
             - If `True`, an exception is raised when the remeshing fails.
@@ -10567,9 +11025,11 @@ class ModelBuilder:
                         settings = (
                             {
                                 "threshold": self.default_mesh_approximation_cfg.coacd_threshold,
+                                # A two-level cut search finds cuts that need about a third as many
+                                # parts as a greedy one-level search at similar accuracy.
                                 "mcts_nodes": 20,
-                                "mcts_iterations": 5,
-                                "mcts_max_depth": 1,
+                                "mcts_iterations": 20,
+                                "mcts_max_depth": 2,
                                 "merge": False,
                             }
                             if method == "coacd"
@@ -15806,7 +16266,6 @@ class ModelBuilder:
 
             m.shape_type = wp.array(shape_type_arr, dtype=wp.int32)
             m.shape_source_ptr = wp.array(geo_sources, dtype=wp.uint64)
-            m._shape_mesh_properties = wp.array(shape_mesh_properties, dtype=wp.int32, device=device)
             m.heightfield_meshes = heightfield_meshes
             m._mesh_keep_alive = mesh_keep_alive
 
@@ -16394,6 +16853,22 @@ class ModelBuilder:
                         wt_tex_data.subgrid_start_slots if wt_c_tex is not None else None
                     )
 
+            # A separate shell beyond the far wall face must not determine the
+            # support of the penetrating shell. Check only potential probes.
+            recovery_probe_by_source = {}
+            closed_sdf_shapes = (shape_sdf_index >= 0) & ((shape_mesh_properties & int(MeshProperties.WATERTIGHT)) != 0)
+            for i in np.flatnonzero(closed_sdf_shapes):
+                if compact_texture_sdf_coarse_textures[shape_sdf_index[i]] is None:
+                    continue
+                source = int(geo_sources[i])
+                if source not in recovery_probe_by_source:
+                    mesh = generated_shape_sources[i]
+                    recovery_probe_by_source[source] = (
+                        len(mesh.vertices) <= 4096 and len(split_mesh_components(mesh)) == 1
+                    )
+                if recovery_probe_by_source[source]:
+                    shape_mesh_properties[i] |= int(MeshProperties.RECOVERY_PROBE)
+            m._shape_mesh_properties = wp.array(shape_mesh_properties, dtype=wp.int32, device=device)
             m._shape_sdf_index = wp.array(shape_sdf_index, dtype=wp.int32, device=device)
             m._texture_sdf_data = (
                 wp.array(compact_texture_sdf_data, dtype=TextureSDFData, device=device)
@@ -17172,6 +17647,11 @@ class ModelBuilder:
                 m._set_attribute_spec(
                     custom_attr.key, replace(m.attribute_specs[custom_attr.key], default=custom_attr.default)
                 )
+            # Also covers attributes finalized by their own callback.
+            for key, custom_attr in self.custom_attributes.items():
+                spec = m.attribute_specs.get(key)
+                if spec is not None and custom_attr.update_flags is not None:
+                    m._set_attribute_spec(key, replace(spec, update_flags=custom_attr.update_flags))
 
             self._finalize_custom_frequency_metadata(m, device)
             self._variant_shape_rows.finalize(self, m, validate_inertia=validate_inertia)

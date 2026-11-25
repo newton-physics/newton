@@ -125,8 +125,12 @@ def add_flex(
             elements' Lamé parameters (springs have none, so 1D flexes stay stretch-only).
         poisson: Poisson ratio; requires ``young``.
         damping: Rayleigh damping coefficient [s].
-        edgestiffness: 1D edge stiffness [N/m]. ``None`` uses the spring stiffness.
-        edgedamping: 1D edge damping [N·s/m]. ``None`` uses the spring damping.
+        edgestiffness: 1D edge stiffness [N/m], which MuJoCo rejects with its
+            ``"discrete"`` integrator. ``None`` uses the spring stiffness, or with
+            ``"discrete"`` constrains the edge lengths of springs with stiffness.
+        edgedamping: 1D edge damping [N·s/m], which MuJoCo rejects with its
+            ``"discrete"`` integrator. ``None`` uses the spring damping, or none
+            with ``"discrete"``.
         edgeequality: Keep edge lengths at their rest values with a MuJoCo flex
             equality constraint, which the constraint solver enforces and stays
             stable for stiff cables and cloth where explicit edge stiffness would

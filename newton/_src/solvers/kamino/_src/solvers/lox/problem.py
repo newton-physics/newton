@@ -701,6 +701,7 @@ class LOXProblem:
                 data.info.vio,
                 system.inverse_permutation,
                 system.matrix,
+                system.single_body_matrix,
                 self._incidence_offset,
                 self._incidence_kind,
                 self._incidence_row,
@@ -720,6 +721,7 @@ class LOXProblem:
                 data.info.vio,
                 system.inverse_permutation,
                 system.matrix,
+                system.single_body_matrix,
                 self._data.body_weight_enabled,
                 self._diagonal_block,
                 self._diagonal_lower,
@@ -753,7 +755,13 @@ class LOXProblem:
                 sigma,
                 matrix_scale,
             ],
-            outputs=[system.matrix, data.weight, data.inverse_weight, data.single_body_inverse],
+            outputs=[
+                system.matrix,
+                system.single_body_matrix,
+                data.weight,
+                data.inverse_weight,
+                data.single_body_inverse,
+            ],
             device=self.device,
         )
 

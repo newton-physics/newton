@@ -31,7 +31,13 @@ from newton.solvers.experimental.coupled import (
     SolverCoupledProxy,
 )
 from newton.tests._deformable_test_utils import _add_curve, _add_surface, _add_test_anchored_cable, _add_volume
-from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
+from newton.tests.unittest_utils import (
+    MUJOCO_MODULES,
+    add_function_test,
+    get_cuda_test_devices,
+    get_test_devices,
+    requires,
+)
 
 
 @wp.kernel(enable_backward=False)
@@ -1944,12 +1950,9 @@ class TestSolverCoupledBasic(unittest.TestCase):
         np.testing.assert_allclose(body_q[base, :3], [0.0, 0.0, 0.0], atol=1.0e-6)
         self.assertLess(body_q[child, 2], -0.01)
 
+    @requires(*MUJOCO_MODULES)
     def test_split_articulation_mujoco_child_moves_with_parent(self):
         """Let SolverMuJoCo step a split child through its synthesized FREE root joint."""
-        try:
-            SolverMuJoCo.import_mujoco()
-        except ImportError as exc:
-            self.skipTest(str(exc))
         model, parent, child, root = self._split_pair_model()
 
         coupled = SolverCoupled(
@@ -1966,12 +1969,9 @@ class TestSolverCoupledBasic(unittest.TestCase):
         self.assertLess(body_q[parent, 2], -0.01)
         np.testing.assert_allclose(body_q[child, 2], body_q[parent, 2], atol=1.0e-4)
 
+    @requires(*MUJOCO_MODULES)
     def test_uneven_world_selection_solver_error_names_entry(self):
         """Explain uneven entry views when a solver requiring identical worlds rejects them."""
-        try:
-            SolverMuJoCo.import_mujoco()
-        except ImportError as exc:
-            self.skipTest(str(exc))
         builder = newton.ModelBuilder()
         bodies = []
         for _ in range(2):
@@ -3152,12 +3152,8 @@ class TestSolverMuJoCoCouplingHooks(unittest.TestCase):
                     atol=1.0e-6,
                 )
 
+    @requires(*MUJOCO_MODULES)
     def test_effective_inertia_preserves_anisotropic_free_body_inertia(self):
-        try:
-            SolverMuJoCo.import_mujoco()
-        except ImportError as exc:
-            self.skipTest(str(exc))
-
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         body = builder.add_link(
             mass=2.0,
@@ -3184,13 +3180,9 @@ class TestSolverMuJoCoCouplingHooks(unittest.TestCase):
         np.testing.assert_allclose(effective_mass.numpy(), model.body_mass.numpy(), rtol=1.0e-5)
         np.testing.assert_allclose(effective_inertia.numpy(), model.body_inertia.numpy(), rtol=1.0e-5)
 
+    @requires(*MUJOCO_MODULES)
     def test_proxy_effective_mass_follows_armature(self):
         """Refresh a MuJoCo source's proxy mass after an armature change."""
-        try:
-            SolverMuJoCo.import_mujoco()
-        except ImportError as exc:
-            self.skipTest(str(exc))
-
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3) * 0.01))
         joint = builder.add_joint_revolute(
@@ -3226,12 +3218,8 @@ class TestSolverMuJoCoCouplingHooks(unittest.TestCase):
         coupled.notify_model_changed(newton.ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES)
         self.assertGreater(proxy_mass(), 10.0 * before)
 
+    @requires(*MUJOCO_MODULES)
     def test_gravity_acceleration_hook_uses_body_gravcomp(self):
-        try:
-            SolverMuJoCo.import_mujoco()
-        except ImportError as exc:
-            self.skipTest(str(exc))
-
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0), up_axis=newton.Axis.Z)
         SolverMuJoCo.register_custom_attributes(builder)
 

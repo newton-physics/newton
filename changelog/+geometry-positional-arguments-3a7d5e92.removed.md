@@ -1,0 +1,1 @@
+Remove support for passing `newton.Mesh` arguments after `indices`, `newton.TetMesh` arguments after `tet_indices`, and `newton.usd.get_mesh()` arguments after `source` positionally, deprecated in Newton 1.6; pass them as keyword arguments, for example `get_mesh(prim, load_normals=True)`.

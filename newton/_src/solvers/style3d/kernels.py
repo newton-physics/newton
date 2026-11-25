@@ -248,18 +248,6 @@ def prepare_jacobi_preconditioner_no_contact_hessian_kernel(
 
 
 @wp.kernel
-def PD_jacobi_step_kernel(
-    rhs: wp.array[wp.vec3],
-    x_in: wp.array[wp.vec3],
-    inv_diags: wp.array[wp.mat33],
-    # outputs
-    x_out: wp.array[wp.vec3],
-):
-    tid = wp.tid()
-    x_out[tid] = x_in[tid] + inv_diags[tid] * rhs[tid]
-
-
-@wp.kernel
 def nonlinear_step_kernel(
     x_in: wp.array[wp.vec3],
     # outputs

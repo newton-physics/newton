@@ -11,6 +11,8 @@ See the :mod:`newton._src.solvers.kamino.solvers.padmm` module for a detailed de
 
 from __future__ import annotations
 
+import dataclasses
+
 import warp as wp
 
 from ......sim import ModelFlags
@@ -21,6 +23,7 @@ from ...core.size import SizeKamino
 from ...dynamics.dual import DualProblem
 from ...geometry.contacts import ContactsKamino
 from ...kinematics.limits import LimitsKamino
+from ...linalg import IterativeSolver, LLTBlockedRCMSolver, LLTBlockedSolver, RedundantRowShift
 from ...utils.tile import get_block_dim, get_tile_size
 from .kernels import (
     _apply_dual_preconditioner_to_solution,
@@ -31,10 +34,12 @@ from .kernels import (
     _compute_projection_argument,
     _compute_solution_vectors,
     _compute_velocity_bias,
+    _fill_rho_scale,
     _make_compute_infnorm_residuals_kernel,
     _make_project_dual_convergence_accel_kernel,
     _project_to_feasible_cone,
     _reset_solver_data,
+    _restore_uniform_regularization,
     _scale_warmstart_forces,
     _update_delassus_proximal_regularization,
     _update_delassus_proximal_regularization_sparse,
@@ -71,6 +76,51 @@ wp.set_module_options({"enable_backward": False})
 
 
 ###
+# Functions
+###
+
+
+def _has_kinematic_loops(model: ModelKamino) -> bool:
+    """
+    Returns whether the joints with kinematic constraints form a closed loop in any world of the model.
+
+    Without loops, each kinematic joint constrains a distinct body relative to the rest of its tree,
+    so the kinematic constraints are never redundant. Immovable bodies count as the world body.
+    """
+    if model.size.sum_of_num_joints == 0:
+        return False
+
+    # Union-find over the bodies, with one node per world for the world body and the immovable bodies
+    num_bodies = model.size.sum_of_num_bodies
+    root = list(range(num_bodies + model.size.num_worlds))
+    for bid, (wid, immovable) in enumerate(
+        zip(model.bodies.wid.numpy(), model.bodies.is_immovable.numpy(), strict=True)
+    ):
+        if immovable:
+            root[bid] = num_bodies + int(wid)
+
+    def find(node: int) -> int:
+        while root[node] != node:
+            root[node] = root[root[node]]
+            node = root[node]
+        return node
+
+    # Detect a loop when a joint connects two bodies that are already connected
+    joints = model.joints
+    for wid, bid_B, bid_F, num_cts in zip(
+        joints.wid.numpy(), joints.bid_B.numpy(), joints.bid_F.numpy(), joints.num_kinematic_cts.numpy(), strict=True
+    ):
+        if num_cts == 0:
+            continue
+        base = find(int(bid_B) if bid_B >= 0 else num_bodies + int(wid))
+        follower = find(int(bid_F) if bid_F >= 0 else num_bodies + int(wid))
+        if base == follower:
+            return True
+        root[follower] = base
+    return False
+
+
+###
 # Interfaces
 ###
 
@@ -99,9 +149,16 @@ class PADMMSolver:
     See :class:`PADMMSolverConfig` for the full list of configuration options and their descriptions.
     """
 
+    _redundancy_handling_with_iterative_solvers: bool = False
+    """
+    Whether to keep the Delassus dual residual, the detection of redundant kinematic constraints and the
+    unpenalized bilateral rows with iterative linear solvers, for testing and experiments.
+    """
+
     def __init__(
         self,
         model: ModelKamino | None = None,
+        problem: DualProblem | None = None,
         config: list[PADMMSolver.Config] | PADMMSolver.Config | None = None,
         warmstart: PADMMWarmStartMode = PADMMWarmStartMode.NONE,
         use_acceleration: bool = True,
@@ -116,8 +173,7 @@ class PADMMSolver:
 
         Args:
             model: The model for which to allocate the solver data.
-            limits: The limits container associated with the model.
-            contacts: The contacts container associated with the model.
+            problem: The dual problem to be solved. Required if a model is provided.
             config: The solver config to use.
             warmstart: The warm-start mode to use for the solver.
             use_acceleration: Set to `True` to enable Nesterov acceleration.
@@ -142,6 +198,15 @@ class PADMMSolver:
         # Declare the solver data container
         self._data: PADMMData | None = None
 
+        # Declare the reference to the dual problem
+        self._problem: DualProblem | None = None
+
+        # Declare the detection of redundant kinematic joint constraints
+        self._redundant_joints: RedundantRowShift | None = None
+        self._reuse_redundant_joints: bool = False
+        self._kinematic_cts_offset: wp.array[wp.int32] | None = None
+        self._num_kinematic_cts: wp.array[wp.int32] | None = None
+
         # Declare the device cache
         self._device: wp.DeviceLike = None
 
@@ -149,6 +214,7 @@ class PADMMSolver:
         if model is not None:
             self.finalize(
                 model=model,
+                problem=problem,
                 config=config,
                 warmstart=warmstart,
                 use_acceleration=use_acceleration,
@@ -198,6 +264,7 @@ class PADMMSolver:
     def finalize(
         self,
         model: ModelKamino | None = None,
+        problem: DualProblem | None = None,
         config: list[PADMMSolver.Config] | PADMMSolver.Config | None = None,
         warmstart: PADMMWarmStartMode = PADMMWarmStartMode.NONE,
         use_acceleration: bool = True,
@@ -209,8 +276,7 @@ class PADMMSolver:
 
         Args:
             model: The model for which to allocate the solver data.
-            limits: The limits container associated with the model.
-            contacts: The contacts container associated with the model.
+            problem: The dual problem to be solved, on which all subsequent solves must be performed.
             config: The solver config to use.
             warmstart: The warm-start mode to use for the solver.
             use_acceleration: Set to `True` to enable Nesterov acceleration.
@@ -221,14 +287,17 @@ class PADMMSolver:
                 will increase memory consumption and reduce wall-clock time.
         """
 
-        # Ensure the model is valid
+        # Ensure the model and the problem are valid
         if model is None:
             raise ValueError("A model of type `ModelKamino` must be provided to allocate the Delassus operator.")
         elif not isinstance(model, ModelKamino):
             raise ValueError("Invalid model provided. Must be an instance of `ModelKamino`.")
+        if not isinstance(problem, DualProblem):
+            raise ValueError("A problem of type `DualProblem` must be provided.")
 
-        # Cache a reference to the model size meta-data container
+        # Cache references to the model size meta-data container and the dual problem
         self._size = model.size
+        self._problem = problem
 
         # Use the model's device
         self._device = model.device
@@ -241,6 +310,21 @@ class PADMMSolver:
         elif len(self._config) == 0:
             self._config = self._check_config(model, None)
 
+        # Keep the standard handling of redundant constraints with iterative linear solvers
+        # NOTE: These leave the null space of the Delassus matrix mostly unresolved without affecting the motion,
+        # while the shift makes them resolve it inexactly and the Delassus dual residual misses their inaccuracy
+        iterative = problem.sparse or isinstance(problem.delassus.solver, IterativeSolver)
+        if iterative and not self._redundancy_handling_with_iterative_solvers:
+            self._config = [
+                dataclasses.replace(
+                    c,
+                    dual_residual_mode="standard",
+                    detect_redundant_kinematics=False,
+                    unpenalized_bilateral_rows=False,
+                )
+                for c in self._config
+            ]
+
         # Cache high-level solver options shared across all worlds
         self._warmstart = warmstart
         self._use_acceleration = use_acceleration
@@ -251,6 +335,9 @@ class PADMMSolver:
         self._use_adaptive_penalty = any(
             PADMMPenaltyUpdate.from_string(c.penalty_update_method) != PADMMPenaltyUpdate.FIXED for c in self._config
         )
+
+        # Check if any world scales the penalty of the bilateral joint rows
+        self._scale_joint_rho = any(c.unpenalized_bilateral_rows for c in self._config)
 
         # Compute the largest max iterations across all worlds
         # NOTE: This is needed to allocate the solver
@@ -276,12 +363,39 @@ class PADMMSolver:
         self._initialize_solver_kernel = make_initialize_solver_kernel(self._use_acceleration)
         self._collect_solver_info_kernel = make_collect_solver_info_kernel(self._use_acceleration)
         self._collect_solver_info_kernel_sparse = make_collect_solver_info_kernel_sparse(self._use_acceleration)
+        delassus_dual_residual = self._config[0].dual_residual_mode == "delassus"
         self._update_dual_variables_and_compute_primal_dual_residuals_kernel = (
-            make_update_dual_variables_and_compute_primal_dual_residuals(self._use_acceleration)
+            make_update_dual_variables_and_compute_primal_dual_residuals(self._use_acceleration, delassus_dual_residual)
         )
         tile_size = get_tile_size(self._size.max_of_max_total_cts)
         block_dim = get_block_dim(tile_size, ratio=2, min_size=1)
-        self._project_dual_convergence_accel_kernel = _make_project_dual_convergence_accel_kernel(block_dim)
+        self._project_dual_convergence_accel_kernel = _make_project_dual_convergence_accel_kernel(
+            block_dim, delassus_dual_residual
+        )
+
+        # Allocate the detection of redundant kinematic joint constraints if enabled and the model has loops
+        self._redundant_joints = None
+        if self._config[0].detect_redundant_kinematics and _has_kinematic_loops(model):
+            self._kinematic_cts_offset = model.info.joint_kinematic_cts_group_offset
+            self._num_kinematic_cts = model.info.num_joint_kinematic_cts
+            self._reuse_redundant_joints = self._config[0].reuse_redundant_kinematics_set
+
+            # Check the reused rows on the factor of the blocked Cholesky solvers, and on the joint block otherwise
+            sparse = problem.sparse
+            self._check_factor = (
+                self._reuse_redundant_joints
+                and not sparse
+                and isinstance(problem.delassus.solver, (LLTBlockedSolver, LLTBlockedRCMSolver))
+            )
+            self._redundant_joints = RedundantRowShift(
+                num_worlds=self._size.num_worlds,
+                max_rows=self._size.max_of_num_kinematic_joint_cts,
+                threshold=self._config[0].redundant_kinematics_pivot_threshold,
+                check=self._reuse_redundant_joints and not self._check_factor,
+                sparse=sparse,
+                max_dim=self._size.max_of_max_total_cts if self._check_factor else 0,
+                device=self._device,
+            )
 
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
         """Accept model changes, which need no backend-specific handling."""
@@ -299,6 +413,10 @@ class PADMMSolver:
         This does not modify the scratch solver state (`self._data.state`), since that is
         unconditionally reinitialized by `coldstart()`/`warmstart()`.
         """
+        # Detect the redundant joint rows again at the next solve
+        if self._redundant_joints is not None:
+            self._redundant_joints.reset(world_mask)
+
         # If no world mask is provided, reset the solution cache of all worlds
         if world_mask is None:
             self._data.solution.zero()
@@ -416,6 +534,9 @@ class PADMMSolver:
         Args:
             problem: The dual forward dynamics problem to be solved.
         """
+        if problem is not self._problem:
+            raise ValueError("The problem must be the one provided to `finalize()`.")
+
         # Pass the PADMM-owned tolerance array to the iterative linear solver (if present), so the
         # inexact-ADMM tolerance schedule (set in the convergence kernel) drives the inner solve.
         inner = getattr(problem._delassus._solver, "solver", None)
@@ -428,6 +549,10 @@ class PADMMSolver:
 
         # Initialize the solver status, ALM penalty, and iterative solver tolerance
         self._initialize()
+
+        # Scale the penalty of the bilateral joint rows
+        if self._scale_joint_rho:
+            self._update_rho_scale(problem)
 
         # Add the diagonal proximal regularization to the Delassus matrix
         # D_{eta,rho} := D + (eta + rho) * I_{ncts}
@@ -447,6 +572,26 @@ class PADMMSolver:
 
         # Update the final solution from the terminal PADMM state
         self._update_solution(problem)
+
+        # Restore the uniform regularization of the dense Delassus matrix, as expected by the solution metrics
+        detection = self._redundant_joints
+        if (self._scale_joint_rho or detection is not None) and not problem.sparse:
+            wp.launch(
+                kernel=_restore_uniform_regularization,
+                dim=(self._size.num_worlds, self._size.max_of_max_total_cts),
+                inputs=[
+                    problem.data.dim,
+                    problem.data.vio,
+                    self._data.config,
+                    self._data.state.sigma,
+                    self._data.state.rho_scale,
+                    self._kinematic_cts_offset,
+                    self._num_kinematic_cts,
+                    detection.shifts if detection is not None else None,
+                ],
+                outputs=[problem.data.D],
+                device=self._device,
+            )
 
         # The solution is in the variables of the current joint decoupling, which an internal
         # warm-start must know to rebase it, whichever way this solve was started
@@ -524,8 +669,32 @@ class PADMMSolver:
         # converges or reaches the maximum number of iterations
         self._data.state.done.fill_(self._size.num_worlds)
 
+    def _update_rho_scale(self, problem: DualProblem):
+        """Assign the per-row scale of the ALM penalty from the constraint groups."""
+        wp.launch(
+            kernel=_fill_rho_scale,
+            dim=(self._size.num_worlds, self._size.max_of_max_total_cts),
+            inputs=[
+                # Inputs:
+                problem.data.dim,
+                problem.data.nbc,
+                problem.data.nl,
+                problem.data.nc,
+                problem.data.bcgo,
+                problem.data.lcgo,
+                problem.data.ccgo,
+                problem.data.vio,
+                self._data.config,
+                # Outputs:
+                self._data.state.rho_scale,
+            ],
+            device=self.device,
+        )
+
     def _update_sparse_regularization(self, problem: DualProblem):
-        """Propagate eta + rho to the sparse Delassus diagonal regularization."""
+        """Propagate eta + rho, and the shifts of the redundant joint rows, to the sparse Delassus diagonal
+        regularization."""
+        detection = self._redundant_joints
         wp.launch(
             kernel=_update_delassus_proximal_regularization_sparse,
             dim=(self._size.num_worlds, self._size.max_of_max_total_cts),
@@ -535,6 +704,10 @@ class PADMMSolver:
                 self._data.config,
                 self._data.penalty,
                 self._data.status,
+                self._data.state.rho_scale,
+                self._kinematic_cts_offset,
+                self._num_kinematic_cts,
+                detection.shifts if detection is not None else None,
                 problem.delassus._eta,
             ],
             device=self.device,
@@ -566,13 +739,37 @@ class PADMMSolver:
         Args:
             problem: The dual forward dynamics problem to be solved.
         """
+        detection = self._redundant_joints
         if problem.sparse:
+            # Detect the redundant kinematic joint constraints from the assembled kinematic block
+            if detection is not None:
+                delassus = problem.delassus
+                detection.assemble(
+                    self._kinematic_cts_offset,
+                    self._num_kinematic_cts,
+                    delassus.constraint_jacobian,
+                    delassus._model.info.bodies_offset,
+                    delassus._model.bodies.inv_m_i,
+                    delassus._data.bodies.inv_I_i,
+                    problem.data.P,
+                )
+                detection.detect(self._reuse_redundant_joints)
+
             self._update_sparse_regularization(problem)
             # Let a raw-Jacobian linear solver (e.g. the fused single-kernel CR) rebuild its
             # per-step index structures here, before the (possibly graph-captured) iteration loop,
             # so that one-off work stays out of the replayed graph. No-op for other solvers.
             problem._delassus._solver.prepare_solve()
         else:
+            # Drop the redundant kinematic joint constraints from the bare Delassus matrix
+            data = problem.data
+            if detection is not None:
+                detection.load(data.dim, self._kinematic_cts_offset, self._num_kinematic_cts, data.D)
+                if self._check_factor:
+                    detection.shift()
+                else:
+                    detection.detect(self._reuse_redundant_joints)
+
             # Update the proximal regularization term in the Delassus matrix
             wp.launch(
                 kernel=_update_delassus_proximal_regularization,
@@ -580,8 +777,11 @@ class PADMMSolver:
                 inputs=[
                     # Inputs:
                     problem.data.dim,
+                    problem.data.vio,
+                    self._data.penalty,
                     self._data.status,
                     self._data.state.sigma,
+                    self._data.state.rho_scale,
                     # Outputs:
                     problem.data.D,
                 ],
@@ -590,6 +790,20 @@ class PADMMSolver:
 
             # Compute Cholesky/LDLT factorization of the Delassus matrix
             problem._delassus.compute(reset_to_zero=True)
+
+            # Drop the redundant joint constraints again where the reused ones fail the check on the factor
+            if detection is not None and self._check_factor:
+                solver = problem._delassus._solver
+                permuted = isinstance(solver, LLTBlockedRCMSolver)
+                detection.check_factor(
+                    data.vio,
+                    solver.L,
+                    solver.stride,
+                    solver.P if permuted else None,
+                    solver.inv_P if permuted else None,
+                )
+                detection.eliminate()
+                solver.refactorize(data.D, detection.refactor_dim)
 
     def _step(self, problem: DualProblem):
         """
@@ -985,6 +1199,7 @@ class PADMMSolver:
                 self._data.config,
                 self._data.penalty,
                 self._data.status,
+                self._data.state.rho_scale,
                 self._data.state.s,
                 self._data.state.x_p,
                 y,
@@ -1026,6 +1241,7 @@ class PADMMSolver:
                 self._data.config,
                 self._data.penalty,
                 self._data.status,
+                self._data.state.rho_scale,
                 self._data.state.x_p,
                 y,
                 z,
@@ -1071,6 +1287,7 @@ class PADMMSolver:
                 problem.data.vio,
                 self._data.penalty,
                 self._data.status,
+                self._data.state.rho_scale,
                 z,
                 self._data.state.x,
                 # Outputs:
@@ -1172,6 +1389,13 @@ class PADMMSolver:
                 self._data.config,
                 self._data.penalty,
                 self._data.status,
+                problem.sparse,
+                self._data.state.sigma,
+                self._data.state.rho_scale,
+                self._kinematic_cts_offset,
+                self._num_kinematic_cts,
+                self._redundant_joints.shifts if self._redundant_joints is not None else None,
+                self._data.state.v,
                 self._data.state.x,
                 self._data.state.y,
                 self._data.state.x_p,
@@ -1179,6 +1403,7 @@ class PADMMSolver:
                 self._data.state.z_p,
                 # Outputs:
                 self._data.state.z,
+                self._data.state.Dx_p,
                 self._data.residuals.r_primal,
                 self._data.residuals.r_dual,
                 self._data.residuals.r_dx,
@@ -1218,6 +1443,13 @@ class PADMMSolver:
                 self._data.config,
                 self._data.penalty,
                 self._data.state.a_p,
+                problem.sparse,
+                self._data.state.sigma,
+                self._data.state.rho_scale,
+                self._kinematic_cts_offset,
+                self._num_kinematic_cts,
+                self._redundant_joints.shifts if self._redundant_joints is not None else None,
+                self._data.state.v,
                 self._data.state.x,
                 self._data.state.x_p,
                 self._data.state.y_hat,
@@ -1227,6 +1459,7 @@ class PADMMSolver:
                 # Outputs:
                 self._data.state.y,
                 self._data.state.z,
+                self._data.state.Dx_p,
                 self._data.state.done,
                 self._data.state.a,
                 self._data.state.a_factor,
@@ -1398,7 +1631,12 @@ class PADMMSolver:
                     problem.data.P,
                     problem.data.bound_lower,
                     problem.data.bound_upper,
+                    self._data.config,
                     self._data.state.sigma,
+                    self._data.state.rho_scale,
+                    self._kinematic_cts_offset,
+                    self._num_kinematic_cts,
+                    self._redundant_joints.shifts if self._redundant_joints is not None else None,
                     self._data.state.s,
                     self._data.state.x,
                     self._data.state.x_p,

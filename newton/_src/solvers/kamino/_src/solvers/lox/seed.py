@@ -275,7 +275,7 @@ def estimate_joint_penalty_scale(
         _exclude_inertia_free_dofs,
         dim=(num_blocks, 6 * max(system.block_body_counts)),
         inputs=[info.dim, info.vio],
-        outputs=[system_data.matrix, dof_excluded],
+        outputs=[system_data.matrix, system_data.single_body_matrix, dof_excluded],
         device=device,
     )
     system.factorize()

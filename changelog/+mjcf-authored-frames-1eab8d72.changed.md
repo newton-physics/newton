@@ -1,0 +1,1 @@
+Log a warning when importing an MJCF body whose hinge axes do not meet, or are all nearly parallel without lying on one line. Such bodies are imported with all hinges rotating about the first hinge's position; give each hinge its own body to import the authored motion.

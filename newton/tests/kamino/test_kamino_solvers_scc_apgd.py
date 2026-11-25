@@ -25,6 +25,7 @@ from newton._src.solvers.kamino._src.solvers.scc.apgd import UnilateralAPGD
 from newton._src.solvers.kamino._src.solvers.scc.types import SCCConfigStruct, SCCStatus, convert_config_to_struct
 from newton._src.solvers.kamino.config import ConstrainedDynamicsConfig, SCCAPGDConfig, SCCSolverConfig
 from newton.solvers import SolverKamino
+from newton.tests.kamino import setup_test_output, setup_tests
 from newton.tests.kamino.test_kamino_solver_kamino_joint_friction import (
     _run_hold_and_breakaway_test,
     _run_spin_down_test,
@@ -33,7 +34,7 @@ from newton.tests.kamino.test_kamino_solvers_scc import _build_five_box_stack
 from newton.tests.kamino.utils.extract import get_matrix_block
 from newton.tests.kamino.utils.make import make_containers, update_containers
 from newton.tests.kamino.utils.solver_configs import make_scc_dense_config, make_scc_sparse_config
-from newton.tests.unittest_utils import requires
+from newton.tests.unittest_utils import NewtonTestCase, requires
 from newton.tests.utils import basics
 from newton.viewer import ViewerNull
 
@@ -145,8 +146,11 @@ def _model_problem(builder, device, sparse, *, schur=False, max_contacts=64, ite
     return solver, problem
 
 
-class TestSCCAPGD(unittest.TestCase):
+class TestSCCAPGD(NewtonTestCase):
     """Check Coulomb impulses rather than only the inner cone-QP residual."""
+
+    def setUp(self):
+        setup_test_output(self)
 
     def test_configuration_is_opt_in(self):
         """Retain PGS defaults and accept the APGD backend."""
@@ -921,8 +925,11 @@ class TestSCCAPGD(unittest.TestCase):
             np.testing.assert_allclose(solver.owner.data.solution.lambdas.numpy(), expected, atol=2e-5)
 
 
-class TestSCCAPGDDynamics(unittest.TestCase):
+class TestSCCAPGDDynamics(NewtonTestCase):
     """Exercise the actual integration, warmstart, and captured sparse solver paths."""
+
+    def setUp(self):
+        setup_test_output(self)
 
     def test_joint_friction_spin_down(self):
         """Reuse analytical joint-friction deceleration and stopped-pose checks for APGD."""
@@ -1065,4 +1072,5 @@ class TestSCCAPGDDynamics(unittest.TestCase):
 
 if __name__ == "__main__":
     newton.utils.setup_console_logging()
+    setup_tests()
     unittest.main()

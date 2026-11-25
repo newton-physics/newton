@@ -10,16 +10,12 @@ import warp as wp
 
 import newton
 from newton.solvers import SolverMuJoCo
+from newton.tests.unittest_utils import MUJOCO_MODULES, requires
 
 
 @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
+@requires(*MUJOCO_MODULES)
 class TestMuJoCoSpeculativeContacts(unittest.TestCase):
-    def setUp(self):
-        try:
-            SolverMuJoCo.import_mujoco()
-        except ImportError as error:
-            self.skipTest(str(error))
-
     def test_fast_thin_object(self):
         """Prevent tunneling through a thin support at 60 Hz."""
         builder = newton.ModelBuilder()

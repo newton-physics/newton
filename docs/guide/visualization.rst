@@ -769,7 +769,8 @@ for runtime scene management, and ``usd-core``, in addition to ``pyglet`` for th
 ViewerRTX has been validated with the following renderer configurations:
 
 - ``ovrtx==0.5.1.385782`` with ``ovstage==0.2.1.385922`` (minimum-dependency CI; Isaac Lab 3.0)
-- ``ovrtx==0.6.0.1791947691`` with ``ovstage==0.3.0.1791986420`` (locked GPU CI configuration)
+- ``ovrtx==0.6.0.1791947691`` with ``ovstage==0.3.0.1791986420``
+- ``ovrtx==0.7.0.1794596436`` with ``ovstage==0.4.0.1794520352`` (locked GPU CI configuration)
 
 Only the exact pairs above are part of Newton's validated matrix. Upgrade ``ovrtx`` and ``ovstage``
 together to one of these pairs. Mixed release pairs are unvalidated; OVRTX 0.5.1 fails to start with OVStage 0.2.0.
