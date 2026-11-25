@@ -2659,6 +2659,20 @@ class SolverSteel(SolverBase, CouplingInterface):
                 stacklevel=2,
             )
         configure_contact_torsion(self)
+        torsion_radius = self._contact_torsion_shape_radius
+        if model.shape_count and model.shape_material_friction_mode is not None:
+            modes = model.shape_material_friction_mode.numpy()
+            radii = torsion_radius.numpy() if torsion_radius is not None else np.zeros(model.shape_count)
+            limits = []
+            if np.any(modes & FRICTION_ROLLING_BIT):
+                limits.append("does not support rolling friction")
+            if np.any((modes & FRICTION_TORSIONAL_BIT != 0) & (radii <= 0.0)):
+                limits.append(
+                    "applies torsional friction only to contacts of shapes with a positive "
+                    "steel:min_torsional_patch_radius"
+                )
+            if limits:
+                warnings.warn(f"SolverSteel {' and '.join(limits)}.", NewtonWarning, stacklevel=2)
         self._nesterov_momentum = bool(nesterov_momentum)
         if self._nesterov_momentum and (
             articulated_contact_response != "immediate" or self._row_schedule != "interleaved"
