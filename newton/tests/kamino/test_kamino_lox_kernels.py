@@ -13,6 +13,9 @@ import newton
 from newton._src.solvers.kamino._src.core.types import mat36f, mat66f, vec6f
 from newton._src.solvers.kamino._src.solvers.lox.contact import (
     SpatialContactStatus,
+    _make_sliding_root_quartic,
+    _SlidingRootStatus,
+    _solve_sliding_root_quartic,
     compute_contact_normal_compliance,
     compute_contact_penetration_bias,
     compute_contact_recovery_fraction,
@@ -46,6 +49,46 @@ def _solve_contacts(
     residual[contact] = compute_contact_scaled_alart_curnier_residual(
         delassus[contact], reaction_i, velocity_i, friction[contact]
     )
+
+
+def _make_sliding_root_kernel(solve_sliding_root):
+    """Return a kernel that prepares each contact as ``solve_contact_coulomb_newton`` does and keeps the root status."""
+
+    @wp.kernel(module="unique")
+    def solve_sliding_roots(
+        delassus: wp.array[wp.mat33f],
+        free_velocity: wp.array[wp.vec3f],
+        friction: wp.array[wp.float32],
+        tangent_reaction: wp.array[wp.vec2f],
+        status: wp.array[wp.int32],
+    ):
+        contact = wp.tid()
+        d = delassus[contact]
+        w = free_velocity[contact]
+        inverse_normal = 1.0 / d[2, 2]
+        normal_tangent = wp.vec2f(d[0, 2], d[1, 2])
+        schur = wp.vec3f(
+            d[0, 0] - normal_tangent[0] * normal_tangent[0] * inverse_normal,
+            d[0, 1] - normal_tangent[0] * normal_tangent[1] * inverse_normal,
+            d[1, 1] - normal_tangent[1] * normal_tangent[1] * inverse_normal,
+        )
+        rhs = wp.vec2f(w[0], w[1]) - (w[2] * inverse_normal) * normal_tangent
+        friction_over_normal = friction[contact] * inverse_normal
+        scale = wp.max(wp.max(wp.abs(schur[0]), wp.abs(schur[1])), wp.max(wp.abs(schur[2]), 1.0e-20))
+        s, root_status = solve_sliding_root(
+            schur, rhs, friction_over_normal * normal_tangent, friction_over_normal * w[2], scale
+        )
+        tangent_reaction[contact] = -s
+        status[contact] = root_status
+
+    return solve_sliding_roots
+
+
+_solve_sliding_roots = _make_sliding_root_kernel(_solve_sliding_root_quartic)
+# Without a tolerance, only a bracket of adjacent floats ends the refinement as solved
+_solve_sliding_roots_to_adjacent_floats = _make_sliding_root_kernel(
+    _make_sliding_root_quartic(iterations=64, tolerance=0.0)
+)
 
 
 @wp.kernel
@@ -101,6 +144,23 @@ class TestLOXContact(NewtonTestCase):
             device=self.default_device,
         )
         return reaction_wp.numpy(), velocity_wp.numpy(), residual_wp.numpy()
+
+    def _solve_roots(self, kernel, delassus, free_velocity, friction):
+        count = len(friction)
+        tangent_reaction = wp.empty(count, dtype=wp.vec2f, device=self.default_device)
+        status = wp.empty(count, dtype=wp.int32, device=self.default_device)
+        wp.launch(
+            kernel,
+            dim=count,
+            inputs=[
+                wp.array(delassus, dtype=wp.mat33f, device=self.default_device),
+                wp.array(free_velocity, dtype=wp.vec3f, device=self.default_device),
+                wp.array(friction, dtype=wp.float32, device=self.default_device),
+            ],
+            outputs=[tangent_reaction, status],
+            device=self.default_device,
+        )
+        return tangent_reaction.numpy(), status.numpy()
 
     def test_separating_contact(self):
         """Leave a separating contact inactive."""
@@ -215,6 +275,39 @@ class TestLOXContact(NewtonTestCase):
         self.assertTrue(np.all(np.isfinite(reaction[0])))
         self.assertTrue(np.all(np.isfinite(residual[0])))
         self.assertLess(np.linalg.norm(residual[0]), 1.0e-6)
+
+    def test_unbracketed_vanishing_load(self):
+        """Return no friction when the sliding root lies beyond the bracket expansion."""
+        # The root grows like |rhs| / |offset|; a 1e-25 normal load puts it past the 2^64 bracket
+        delassus = np.asarray([np.diag([1.0, 1.0, 2.0])], dtype=np.float32)
+        free_velocity = np.asarray([[1.0, 0.0, -1.0e-25]], dtype=np.float32)
+        friction = np.asarray([0.5], dtype=np.float32)
+
+        _tangent, status = self._solve_roots(_solve_sliding_roots, delassus, free_velocity, friction)
+        reaction, _velocity, _residual = self._solve(delassus, free_velocity, friction)
+
+        self.assertEqual(status[0], _SlidingRootStatus.NOT_BRACKETED)
+        np.testing.assert_array_equal(reaction[0, :2], [0.0, 0.0])
+        self.assertEqual(reaction[0, 2], np.float32(-free_velocity[0, 2] / delassus[0, 2, 2]))
+
+    def test_root_resolved_to_adjacent_floats(self):
+        """Accept a sliding root once its bracket holds no float strictly inside."""
+        delassus = np.asarray(
+            [
+                np.diag([1.0, 1.0, 2.0]),
+                [[1.7, 0.25, 0.35], [0.25, 0.8, -0.15], [0.35, -0.15, 2.0]],
+            ],
+            dtype=np.float32,
+        )
+        reactions = np.asarray([[-0.25, 0.0, 0.5], [-0.18, -0.135, 0.45]], dtype=np.float32)
+        velocities = np.asarray([[1.75, 0.0, 0.0], [0.28, 0.21, 0.0]], dtype=np.float32)
+        free_velocity = velocities - np.einsum("nij,nj->ni", delassus, reactions)
+        friction = np.asarray([0.5, 0.5], dtype=np.float32)
+
+        tangent, status = self._solve_roots(_solve_sliding_roots_to_adjacent_floats, delassus, free_velocity, friction)
+
+        np.testing.assert_array_equal(status, [_SlidingRootStatus.SOLVED] * 2)
+        np.testing.assert_allclose(tangent, reactions[:, :2], rtol=2.0e-5, atol=2.0e-6)
 
 
 class TestLOXContactLaw(NewtonTestCase):

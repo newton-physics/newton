@@ -162,15 +162,10 @@ def get_triangle_fraction(vert_depths: wp.vec3f, num_inside: wp.int32) -> wp.flo
             d1 = vert_depths[0]
             d2 = vert_depths[1]
 
-    denom = (d0 - d1) * (d0 - d2)
-    eps = wp.float32(1e-8)
-    if wp.abs(denom) < eps:
-        if num_inside == 1:
-            return 0.0
-        else:
-            return 1.0
-
-    fraction = wp.clamp((d0 * d0) / denom, 0.0, 1.0)
+    # The distinct vertex has the opposite sign from the other two, so
+    # both denominators are nonzero. Form the edge ratios separately to
+    # preserve coverage at small scales without squaring the depths.
+    fraction = wp.clamp((d0 / (d0 - d1)) * (d0 / (d0 - d2)), 0.0, 1.0)
     if num_inside == 2:
         return 1.0 - fraction
     else:

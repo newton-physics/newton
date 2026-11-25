@@ -1344,22 +1344,25 @@ class LOXSolverConfig:
     impulses.
     """
 
-    projection_acceleration: Literal["none", "apgd", "anderson"] = "none"
+    projection_acceleration: Literal["none", "nesterov", "anderson"] = "nesterov"
     """Acceleration applied to the body-space projection map.
 
-    ``"apgd"`` applies restarted Nesterov extrapolation and requires the
-    mass-split Jacobi map, i.e. :attr:`gauss_seidel_max_colors` equal to one.
-    ``"anderson"`` applies one safeguarded Anderson direction to either the
-    Jacobi or the colored Gauss--Seidel map. Anderson acceleration retains one
-    direction and uses a delayed residual-growth safeguard.
+    Both accelerate either the Jacobi or the colored Gauss--Seidel map.
+    ``"nesterov"`` applies restarted Nesterov extrapolation after every sweep but
+    the last. ``"anderson"`` applies one safeguarded Anderson direction after
+    every sweep; it retains one direction and uses a delayed residual-growth
+    safeguard.
     """
 
-    projection_anderson_recycle: bool = True
-    """Whether Anderson retains its direction across LOX splitting iterations.
+    projection_acceleration_recycle: bool = True
+    """Whether the projection acceleration carries its state across LOX splitting iterations.
 
-    Reuse is limited to one frozen LOX solve. Raw samples always restart when
-    the projection right-hand side changes; only secants formed under a single
-    right-hand side are retained.
+    Reuse is limited to one frozen LOX solve. Nesterov keeps its momentum and
+    reaction history, and applies the extrapolation of the last sweep of a
+    splitting iteration at the start of the next projection. Anderson
+    keeps its direction: raw samples always restart when the projection
+    right-hand side changes, and only secants formed under a single right-hand
+    side are retained.
     """
 
     inertial_warmstart_fraction: float = 0.0
@@ -1477,6 +1480,36 @@ class LOXSolverConfig:
     provides per-contact stiffness only for hydroelastic contacts.
     This option requires the LOX backend. For PADMM and SCC, use
     ``constraints.contact_compliance``, which also falls back to shape materials.
+    """
+
+    contact_proximal_regularization: float = 0.01
+    """Relative proximal regularization of the local contact solves [dimensionless].
+
+    The local solve of each rigid and spatial contact uses its Delassus block with the
+    diagonal scaled by ``1 + contact_proximal_regularization``, so each local update moves by the
+    least weighted change. The contact law keeps the mechanical response, so converged solutions
+    satisfy the hard contact law. Zero disables the proximal terms, including the proximal warm start.
+    """
+
+    contact_proximal_warmstart_scale: float = 0.9
+    """Scale of the warm-start contact reactions that the first iterations are pulled toward, in [0, 1].
+
+    Applies to the rigid contacts without spatial friction, which carry a per-contact warm start.
+    The iterations start from the full contact warm start. During the first splitting iterations,
+    set by :attr:`contact_proximal_warmstart_window`, the local contact solves center their
+    proximal term on this scale times the warm-start reaction, which steers the impulses of
+    redundant contacts toward a smaller, more even distribution. The later iterations keep the
+    proximal term of :attr:`contact_proximal_regularization` centered on the current iterate, so
+    converged solutions satisfy the hard contact law.
+    """
+
+    contact_proximal_warmstart_window: float = 0.1
+    """Fraction of :attr:`max_iterations` that pulls toward the scaled warm start, in [0, 1].
+
+    The first ``ceil(contact_proximal_warmstart_window * max_iterations)`` splitting iterations
+    center the proximal term of the rigid contacts without spatial friction on
+    :attr:`contact_proximal_warmstart_scale` times their warm-start reaction. Zero disables the
+    proximal warm start.
     """
 
     contact_implicit_restitution: bool = False
@@ -1630,16 +1663,14 @@ class LOXSolverConfig:
             raise ValueError(
                 f"Invalid joint_penalty_seed_time_step: {self.joint_penalty_seed_time_step}. Must be positive."
             )
-        if self.projection_acceleration not in ("none", "apgd", "anderson"):
+        if self.projection_acceleration not in ("none", "nesterov", "anderson"):
             raise ValueError(
                 f"Invalid projection_acceleration: {self.projection_acceleration}. "
-                "Must be 'none', 'apgd', or 'anderson'."
+                "Must be 'none', 'nesterov', or 'anderson'."
             )
-        if self.projection_acceleration == "apgd" and self.gauss_seidel_max_colors != 1:
-            raise ValueError("projection_acceleration='apgd' requires gauss_seidel_max_colors=1.")
-        if not isinstance(self.projection_anderson_recycle, bool):
+        if not isinstance(self.projection_acceleration_recycle, bool):
             raise ValueError(
-                f"Invalid projection_anderson_recycle: {self.projection_anderson_recycle}. Must be a boolean."
+                f"Invalid projection_acceleration_recycle: {self.projection_acceleration_recycle}. Must be a boolean."
             )
         if (
             not np.isfinite(self.inertial_warmstart_fraction)
@@ -1665,6 +1696,28 @@ class LOXSolverConfig:
         ):
             raise ValueError(
                 f"Invalid projected_twist_fraction: {self.projected_twist_fraction}. Must be in range [0, 1]."
+            )
+        if not np.isfinite(self.contact_proximal_regularization) or self.contact_proximal_regularization < 0.0:
+            raise ValueError(
+                f"Invalid contact_proximal_regularization: {self.contact_proximal_regularization}. Must be non-negative."
+            )
+        if (
+            not np.isfinite(self.contact_proximal_warmstart_scale)
+            or self.contact_proximal_warmstart_scale < 0.0
+            or self.contact_proximal_warmstart_scale > 1.0
+        ):
+            raise ValueError(
+                f"Invalid contact_proximal_warmstart_scale: {self.contact_proximal_warmstart_scale}. "
+                "Must be in range [0, 1]."
+            )
+        if (
+            not np.isfinite(self.contact_proximal_warmstart_window)
+            or self.contact_proximal_warmstart_window < 0.0
+            or self.contact_proximal_warmstart_window > 1.0
+        ):
+            raise ValueError(
+                f"Invalid contact_proximal_warmstart_window: {self.contact_proximal_warmstart_window}. "
+                "Must be in range [0, 1]."
             )
         if (
             not np.isfinite(self.joint_warmstart_scale)

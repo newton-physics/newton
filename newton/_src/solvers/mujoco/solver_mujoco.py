@@ -56,8 +56,8 @@ from .collision_masks import (
 )
 from .constants import (
     DEFAULT_LIMIT_SOLREF,
+    FLOAT64_EPS,
     KINEMATIC_LOCK_INERTIA_RATIO,
-    MJ_MINVAL,
     SOLREF_MODE_FORCE_SPACE,
     SOLREF_MODE_MJCF_DEFAULT,
     SOLREF_MODE_RAW,
@@ -956,6 +956,19 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         )
 
     @staticmethod
+    def _warn_unsupported_usd_collision_mask(value: Any, context: dict[str, Any]) -> None:
+        """Warn that a USD collision mask is ignored and leave the shape's mask unset."""
+        warnings.warn(
+            f"Ignoring '{context['attr'].usd_attribute_name}' on {context['prim'].GetPath()}: the MjcPhysics "
+            "schema does not define it, and Newton does not read MuJoCo collision masks from USD. Express "
+            "collision filtering with newton:selfCollisionEnabled, PhysicsFilteredPairsAPI, or "
+            "PhysicsCollisionGroup.",
+            NewtonWarning,
+            stacklevel=_external_warning_stacklevel(),
+        )
+        return None
+
+    @staticmethod
     def _parse_enable_disable(value: str | bool | int, context: dict[str, Any] | None = None) -> bool:
         """Parse MuJoCo enable/disable values."""
         if isinstance(value, bool | np.bool_):
@@ -1547,7 +1560,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 dtype=wp.int64,
                 default=MUJOCO_COLLISION_MASK_UNSET,
                 namespace="mujoco",
+                # MjcPhysics does not define this name; read it only to warn that it is ignored.
                 usd_attribute_name="mjc:contype",
+                usd_value_transformer=cls._warn_unsupported_usd_collision_mask,
                 mjcf_attribute_name="contype",
             )
         )
@@ -1560,6 +1575,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 default=MUJOCO_COLLISION_MASK_UNSET,
                 namespace="mujoco",
                 usd_attribute_name="mjc:conaffinity",
+                usd_value_transformer=cls._warn_unsupported_usd_collision_mask,
                 mjcf_attribute_name="conaffinity",
             )
         )
@@ -5982,6 +5998,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             convert_newton_contacts_to_mjwarp_kernel,
             dim=(launch_dim,),
             inputs=[
+                self._mujoco.mjMINVAL,
                 state_in.body_q,
                 model.shape_body,
                 model.body_flags,
@@ -8671,7 +8688,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # welded to them has both. Such a massless body can never be dynamic,
         # so a massless kinematic root is driven like a fixed root: as a mocap
         # body without DOFs.
-        has_mass = (body_mass > MJ_MINVAL) & (np.linalg.eigvalsh(body_inertia).min(axis=1) > MJ_MINVAL)
+        has_mass = (body_mass > FLOAT64_EPS) & (np.linalg.eigvalsh(body_inertia).min(axis=1) > FLOAT64_EPS)
         has_mass = has_mass[: template_bodies * model.world_count].reshape(model.world_count, -1)
         weld_group = np.arange(template_bodies)
         for j in joint_order:
@@ -10710,7 +10727,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 moment[0, d.moment_colind[adr : adr + nnz]] = d.actuator_moment[adr : adr + nnz]
                 mujoco.mj_solveM(m, d, inv_mass_moment, moment)
                 inv_weight += float(moment[0] @ inv_mass_moment[0]) / len(outputs)
-            inertia = 1.0 / inv_weight if inv_weight > MJ_MINVAL else 0.0
+            inertia = 1.0 / inv_weight if inv_weight > FLOAT64_EPS else 0.0
             m.actuator_biasprm[actuator, 2] = (
                 -ratio[actuator] * 2.0 * np.sqrt(m.actuator_gainprm[actuator, 0] * inertia)
             )
@@ -11472,8 +11489,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 invw = float(self.mj_model.dof_invweight0[dof_idx])
                 dmax = float(self.mj_model.jnt_solimp[mjc_jnt][1])
                 factor = invw * (1.0 - dmax) if invw > 0.0 and dmax < 1.0 else 1.0
-                direct_stiffness = max(ke * factor, MJ_MINVAL)
-                direct_damping = max(kd * factor, MJ_MINVAL)
+                direct_stiffness = max(ke * factor, FLOAT64_EPS)
+                direct_damping = max(kd * factor, FLOAT64_EPS)
                 solref = convert_solref(direct_stiffness, direct_damping, 1.0, 1.0)
                 jnt_solref[mjc_jnt] = (float(solref[0]), float(solref[1]))
 

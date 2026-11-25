@@ -368,13 +368,28 @@ fully parallel Jacobi sweep, and larger values process up to that many
 approximate constraint colors sequentially. ``config.lox.projection_acceleration``
 optionally accelerates the resulting map:
 
-* ``"none"`` (default) runs plain sweeps.
-* ``"apgd"`` applies restarted Nesterov extrapolation and requires
-  ``gauss_seidel_max_colors=1``.
+* ``"none"`` runs plain sweeps.
+* ``"nesterov"`` (default) applies restarted Nesterov extrapolation after every
+  sweep but the last, for either the Jacobi or the colored map.
 * ``"anderson"`` applies one safeguarded Anderson direction
-  after every sweep, for either the Jacobi or the colored map. Set
-  ``projection_anderson_recycle=False`` to discard the direction between
-  splitting iterations.
+  after every sweep, for either the Jacobi or the colored map.
+
+Both carry their state, the Nesterov momentum and reaction history or the
+Anderson direction, across the splitting iterations of one step. Nesterov applies
+the extrapolation of the last sweep of a splitting iteration at the start of
+the next projection, so that each projection still returns a sweep output. Set
+``projection_acceleration_recycle=False`` to restart it at every splitting
+iteration.
+
+LOX regularizes the local contact solves with
+``config.lox.contact_proximal_regularization`` (default ``0.01``), scaling their
+Delassus diagonals by one plus this value. The contact law retains its mechanical
+response, so converged solutions retain the hard-contact fixed point. For rigid
+contacts without spatial friction, the first splitting iterations
+(``contact_proximal_warmstart_window``) center the proximal term on
+``contact_proximal_warmstart_scale`` (default ``0.9``) times the warm-start
+reaction. Later iterations center it on the current reaction. Set
+``contact_proximal_regularization=0.0`` to disable both terms.
 
 LOX contact extensions
 ----------------------
