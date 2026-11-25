@@ -1,6 +1,9 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import importlib as _importlib
+import typing as _typing
+
 # ==================================================================================
 # core
 # ==================================================================================
@@ -109,19 +112,31 @@ __all__ += [
 # submodule APIs
 # ==================================================================================
 from . import (  # noqa: E402
-    actuators,
     config,
-    controllers,
     geometry,
-    ik,
     math,
-    selection,
-    sensors,
     solvers,
     usd,
     utils,
     viewer,
 )
+
+# Imported on first access (PEP 562): each declares Warp kernels that most programs never use.
+_LAZY_SUBMODULES = frozenset({"actuators", "controllers", "ik", "selection", "sensors"})
+
+if _typing.TYPE_CHECKING:
+    from . import actuators, controllers, ik, selection, sensors
+else:
+
+    def __getattr__(name: str):
+        if name not in _LAZY_SUBMODULES:
+            raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+        return _importlib.import_module(f".{name}", __name__)
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | _LAZY_SUBMODULES)
+
 
 __all__ += [
     "actuators",

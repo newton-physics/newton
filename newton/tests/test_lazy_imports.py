@@ -77,6 +77,27 @@ class TestLazySolverImports(unittest.TestCase):
         result = _run_in_fresh_interpreter(code)
         self.assertEqual(result.stdout.strip(), "", f"solver modules imported eagerly: {result.stdout.strip()}")
 
+    def test_import_newton_defers_submodules(self):
+        """Verify that importing newton defers the lazy submodules until first access."""
+        modules = {
+            "actuators": "newton._src.actuators",
+            "controllers": "newton._src.controllers",
+            "ik": "newton._src.sim.ik",
+            "selection": "newton._src.utils.selection",
+            "sensors": "newton._src.sensors",
+        }
+        code = (
+            "import sys; import newton; "
+            f"modules = {modules!r}; "
+            "prefixes = tuple(f'newton.{name}' for name in modules) + tuple(modules.values()); "
+            "print(','.join(m for m in sys.modules if m.startswith(prefixes))); "
+            "print(all(getattr(newton, name) is sys.modules[f'newton.{name}'] for name in modules))"
+        )
+        loaded, resolved = _run_in_fresh_interpreter(code).stdout.splitlines()
+        self.assertEqual(loaded, "", f"submodules imported eagerly: {loaded}")
+        self.assertEqual(resolved, "True")
+        self.assertLessEqual(set(modules), set(dir(newton)))
+
     def test_public_exports_match_internal_exports(self):
         """Expose the internal solver surface through the public module."""
         self.assertEqual(set(newton.solvers.__all__), set(internal_solvers.__all__) | {"experimental"})

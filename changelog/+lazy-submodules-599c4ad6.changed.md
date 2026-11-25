@@ -1,0 +1,1 @@
+Load `newton.actuators`, `newton.controllers`, `newton.ik`, `newton.selection`, and `newton.sensors` lazily on first access to speed up `import newton`; access them through `newton` or import them as before.
