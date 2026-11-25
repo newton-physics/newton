@@ -36,6 +36,7 @@ from newton._src.math import orthonormal_basis, quat_velocity
 from newton._src.sim import JointType, ShapeFrictionMode
 from newton._src.sim.articulation import eval_angular_coordinates
 from newton._src.sim.contacts import contact_surface_point, contact_surface_separation
+from newton._src.sim.enums import FRICTION_ROLLING_BIT, FRICTION_SLIDING_BIT, FRICTION_TORSIONAL_BIT
 from newton._src.solvers.rod_kernels import (
     assemble_geometric_rod_kappa_z,
     compute_geometric_rod_kappa_cached_z,
@@ -728,11 +729,11 @@ def _average_rigid_contact_material(
     avg_ke, avg_kd, avg_mu = _average_contact_material(ke0, kd0, mu0, ke1, kd1, mu1)
     avg_mu_torsional = wp.sqrt(mu_torsional0) * wp.sqrt(mu_torsional1)
     avg_mu_rolling = wp.sqrt(mu_rolling0) * wp.sqrt(mu_rolling1)
-    if friction_mode < int(ShapeFrictionMode.SLIDING):
+    if (friction_mode & FRICTION_SLIDING_BIT) == 0:
         avg_mu = 0.0
-    if friction_mode < int(ShapeFrictionMode.TORSIONAL):
+    if (friction_mode & FRICTION_TORSIONAL_BIT) == 0:
         avg_mu_torsional = 0.0
-    if friction_mode < int(ShapeFrictionMode.TORSIONAL_ROLLING):
+    if (friction_mode & FRICTION_ROLLING_BIT) == 0:
         avg_mu_rolling = 0.0
     return avg_ke, avg_kd, avg_mu, avg_mu_torsional, avg_mu_rolling
 

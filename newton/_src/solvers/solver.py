@@ -13,6 +13,7 @@ from enum import IntEnum
 from types import MappingProxyType
 from typing import Any, ClassVar
 
+import numpy as np
 import warp as wp
 
 from ..core.reset import normalize_reset_world_mask
@@ -30,6 +31,7 @@ from ..sim import (
     State,
     StateFlags,
 )
+from ..sim.enums import FRICTION_ROLLING_BIT, FRICTION_TORSIONAL_BIT
 from ..utils.deprecation import external_stacklevel
 
 
@@ -240,29 +242,34 @@ _CONTACT_FREQUENCIES = frozenset(
 
 @wp.func
 def contact_friction_mode(shape_material_friction_mode: wp.array[wp.int32], shape_a: int, shape_b: int) -> int:
-    """Return the :class:`~newton.ShapeFrictionMode` of a rigid contact, the higher of its shapes' modes."""
+    """Return the :class:`~newton.ShapeFrictionMode` bits of a rigid contact, the union of its shapes' modes."""
     if not shape_material_friction_mode:
         return int(ShapeFrictionMode.SLIDING)
-    mode = int(-1)
+    if shape_a < 0 and shape_b < 0:
+        return int(ShapeFrictionMode.SLIDING)
+    mode = int(0)
     if shape_a >= 0:
         mode = shape_material_friction_mode[shape_a]
     if shape_b >= 0:
-        mode = wp.max(mode, shape_material_friction_mode[shape_b])
-    if mode < 0:
-        mode = int(ShapeFrictionMode.SLIDING)
+        mode = mode | shape_material_friction_mode[shape_b]
     return mode
 
 
-def warn_unsupported_friction_modes(model: Model, supported: ShapeFrictionMode, solver_name: str) -> None:
-    """Warn once when shapes enable friction components that a solver ignores."""
+def warn_unsupported_friction_modes(model: Model, solver_name: str) -> None:
+    """Warn once when shapes enable torsional or rolling friction, for solvers that apply neither."""
     if not model.shape_count or model.shape_material_friction_mode is None:
         return
-    highest = int(model.shape_material_friction_mode.numpy().max())
-    if highest <= int(supported):
+    enabled = int(np.bitwise_or.reduce(model.shape_material_friction_mode.numpy()))
+    components = [
+        name
+        for name, bit in (("torsional", FRICTION_TORSIONAL_BIT), ("rolling", FRICTION_ROLLING_BIT))
+        if enabled & bit
+    ]
+    if not components:
         return
     warnings.warn(
-        f"{solver_name} does not support {ShapeFrictionMode(highest).name} friction; contacts use "
-        f"{supported.name} friction instead.",
+        f"{solver_name} does not support {' and '.join(components)} friction; contacts of the shapes that "
+        "enable it use sliding friction only.",
         NewtonWarning,
         stacklevel=external_stacklevel(),
     )

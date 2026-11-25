@@ -1197,8 +1197,8 @@ class ModelBuilder:
         """The friction components the shape enables in rigid contacts, see :class:`~newton.ShapeFrictionMode`.
 
         :attr:`mu_torsional` and :attr:`mu_rolling` only act in contacts whose
-        mode includes them. Solvers may cache the mode when they are constructed,
-        so changing it in a finalized model is not supported."""
+        mode includes them. Solvers and the collision pipeline read the mode when
+        they are constructed; later changes are not applied."""
         margin: float = 0.0
         """Outward offset from the shape's surface [m] for collision detection.
         Extends the effective collision surface outward by this amount. When two shapes collide,

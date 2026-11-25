@@ -1467,10 +1467,15 @@ When importing MuJoCo-authored USD, opt into that mapping explicitly::
 Registering MuJoCo custom attributes alone enables the ``model.mujoco``
 namespace but does not map ``mjc:damping`` to the built-in property.
 
+.. _mujoco-friction-modes:
+
+Friction modes and ``condim``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 Geom ``condim`` maps to :attr:`~newton.ModelBuilder.ShapeConfig.friction_mode`:
 ``condim`` 1, 3, 4, and 6 import as :class:`~newton.ShapeFrictionMode`
-``NONE``, ``SLIDING``, ``TORSIONAL``, and ``TORSIONAL_ROLLING``, and the solver
-converts the modes back. USD ``mjc:condim`` maps through
+``NONE``, ``SLIDING``, ``SLIDING_TORSIONAL``, and ``SLIDING_TORSIONAL_ROLLING``,
+and the solver converts the modes back. USD ``mjc:condim`` maps through
 :class:`~newton.usd.SchemaResolverMjc`, or through the registered MuJoCo
 custom attributes. The ``mujoco:condim`` custom attribute is deprecated:
 per-shape values set in code override the friction mode at
@@ -1478,6 +1483,18 @@ per-shape values set in code override the friction mode at
 default applies to shapes left at ``SLIDING``, and
 ``model.mujoco.condim`` is a copy of the friction modes; values written to it
 are applied when it is next read or a solver is constructed.
+
+``SLIDING_ROLLING`` has no ``condim``. Its geom gets ``condim`` 6 and MuJoCo's
+minimum torsional coefficient of 1e-5 in place of ``mu_torsional``.
+MuJoCo resolves a contact between geoms of equal priority from the higher
+``condim`` and the larger coefficient of each friction component. With
+``use_mujoco_contacts=True``, a ``SLIDING_ROLLING`` shape therefore still gets
+torsional friction from the ``mu_torsional`` of the shape it touches, also when
+that shape's mode does not enable torsional friction. To avoid this, set
+``mu_torsional`` of the other shapes to zero, give the shape a higher
+``mujoco:geom_priority`` so that its own parameters apply, or use
+``use_mujoco_contacts=False``, where a contact has torsional friction only if
+one of its shapes enables it.
 
 
 Unsupported MuJoCo features

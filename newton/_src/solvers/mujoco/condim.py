@@ -101,12 +101,16 @@ def finalize_condim(builder: ModelBuilder, model: Model, attr: ModelBuilder.Cust
     model._set_attribute_spec(attr.key, Model.AttributeSpec(Model.AttributeFrequency.SHAPE, deprecated=True))
 
 
-def resolve_shape_condim(model: Model) -> np.ndarray:
-    """Return each shape's MuJoCo ``condim`` from :attr:`~newton.Model.shape_material_friction_mode`."""
+def resolve_shape_condim(model: Model) -> tuple[np.ndarray, np.ndarray]:
+    """Return each shape's MuJoCo ``condim`` and whether it is condim 6 without torsional friction.
+
+    Both follow from :attr:`~newton.Model.shape_material_friction_mode`.
+    """
     if model.shape_material_friction_mode is None:
-        return np.full(model.shape_count, 3, dtype=np.int32)
+        return np.full(model.shape_count, 3, dtype=np.int32), np.zeros(model.shape_count, dtype=bool)
     namespace = getattr(model, "mujoco", None)
     alias = namespace._deprecated_aliases.get("condim") if namespace is not None else None
     if alias is not None:
         alias[0].apply_edits()
-    return _FRICTION_MODE_CONDIM[model.shape_material_friction_mode.numpy()]
+    modes = model.shape_material_friction_mode.numpy()
+    return _FRICTION_MODE_CONDIM[modes], modes == int(ShapeFrictionMode.SLIDING_ROLLING)

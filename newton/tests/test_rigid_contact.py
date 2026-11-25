@@ -945,18 +945,32 @@ def test_shape_friction_modes(test, device, solver_fn, supports_torsion):
 
     Spheres slide and spin on a frictionless ground: the frictionless sphere keeps
     its motion, the sliding sphere starts rolling without losing its spin, and where
-    the solver supports the angular modes, the torsional sphere also stops spinning
-    and only the rolling sphere stops rolling.
+    the solver supports the angular modes, only the torsional spheres stop spinning
+    and only the rolling spheres stop rolling, whatever coefficients the ground stores.
+    A rolling sphere on a torsional box does both.
     """
     builder = newton.ModelBuilder()
     newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
     mode = newton.ShapeFrictionMode
-    builder.add_ground_plane(cfg=newton.ModelBuilder.ShapeConfig(friction_mode=mode.NONE, mu_rolling=0.05))
-    sphere_modes = (mode.NONE, mode.SLIDING, mode.TORSIONAL, mode.TORSIONAL_ROLLING)
+    ground_cfg = newton.ModelBuilder.ShapeConfig(friction_mode=mode.NONE, mu_torsional=0.05, mu_rolling=0.05)
+    builder.add_ground_plane(cfg=ground_cfg)
+    sphere_modes = (
+        mode.NONE,
+        mode.SLIDING,
+        mode.SLIDING_TORSIONAL,
+        mode.SLIDING_ROLLING,
+        mode.SLIDING_TORSIONAL_ROLLING,
+    )
     for i, sphere_mode in enumerate(sphere_modes):
         body = builder.add_body(xform=wp.transform((0.5 * i, 0.0, 0.0995), wp.quat_identity()))
         cfg = newton.ModelBuilder.ShapeConfig(friction_mode=sphere_mode, mu=0.5, mu_torsional=0.05, mu_rolling=0.05)
         builder.add_shape_sphere(body, radius=0.1, cfg=cfg)
+    x = 0.5 * len(sphere_modes)
+    cfg.friction_mode = mode.SLIDING_TORSIONAL
+    builder.add_shape_box(-1, xform=wp.transform((x, 0.0, 0.05), wp.quat_identity()), hx=0.2, hy=0.2, hz=0.05, cfg=cfg)
+    cfg.friction_mode = mode.SLIDING_ROLLING
+    body = builder.add_body(xform=wp.transform((x, 0.0, 0.1995), wp.quat_identity()))
+    builder.add_shape_sphere(body, radius=0.1, cfg=cfg)
     builder.color()
     model = builder.finalize(device=device)
     if supports_torsion:
@@ -966,7 +980,7 @@ def test_shape_friction_modes(test, device, solver_fn, supports_torsion):
             solver = solver_fn(model)
 
     state_0, state_1 = model.state(), model.state()
-    joint_qd = state_0.joint_qd.numpy().reshape(len(sphere_modes), 6)
+    joint_qd = state_0.joint_qd.numpy().reshape(model.body_count, 6)
     joint_qd[:, 0] = 0.5
     joint_qd[:, 5] = 10.0
     state_0.joint_qd.assign(joint_qd.reshape(-1))
@@ -977,17 +991,23 @@ def test_shape_friction_modes(test, device, solver_fn, supports_torsion):
     contacts = None if native_contacts else collision_pipeline.contacts()
     simulate(solver, model, state_0, state_1, None, collision_pipeline, contacts, 0.2, 100)
 
-    frictionless, sliding, torsional, rolling = state_0.body_qd.numpy()
+    frictionless, sliding, torsional, rolling, torsional_rolling, union = state_0.body_qd.numpy()
     test.assertAlmostEqual(frictionless[0], 0.5, delta=0.02)
     test.assertAlmostEqual(frictionless[5], 10.0, delta=0.2)
     test.assertLess(sliding[0], 0.45)
     test.assertAlmostEqual(sliding[5], 10.0, delta=0.5)
     if supports_torsion:
-        test.assertLess(abs(torsional[5]), 5.0)
-        test.assertLess(rolling[0], 0.5 * torsional[0])
+        for sphere in (torsional, torsional_rolling, union):
+            test.assertLess(abs(sphere[5]), 5.0)
+        for sphere in (rolling, torsional_rolling, union):
+            test.assertLess(sphere[0], 0.7 * torsional[0])
+        if not native_contacts:
+            # MuJoCo resolves its own contacts with the ground's torsional coefficient.
+            test.assertAlmostEqual(rolling[5], 10.0, delta=0.5)
     else:
-        test.assertAlmostEqual(torsional[5], 10.0, delta=0.5)
-        test.assertAlmostEqual(rolling[0], torsional[0], delta=0.02)
+        for sphere in (torsional, rolling, torsional_rolling, union):
+            test.assertAlmostEqual(sphere[5], 10.0, delta=0.5)
+            test.assertAlmostEqual(sphere[0], torsional[0], delta=0.02)
 
 
 def test_particle_friction_modes(test, device, solver_fn):

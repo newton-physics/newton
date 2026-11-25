@@ -17,9 +17,10 @@ from ...geometry.sdf_planar_recovery import (
     has_recovery_contacts,
     recovery_step_depth,
 )
-from ...sim import BodyFlags, JointTargetMode, JointType
+from ...sim import BodyFlags, JointTargetMode, JointType, ShapeFrictionMode
 from ...sim.articulation import eval_joint_motion
 from ...sim.contacts import contact_surface_point, contact_surface_separation
+from ...sim.enums import FRICTION_TORSIONAL_BIT
 from .constants import (
     DEFAULT_LIMIT_SOLREF_DAMPRATIO,
     DEFAULT_LIMIT_SOLREF_TIMECONST,
@@ -526,6 +527,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
     shape_material_ke: wp.array[float],
     shape_material_kd: wp.array[float],
     shape_mjc_solref_mode: wp.array[wp.int32],
+    shape_material_friction_mode: wp.array[wp.int32],
     # Newton contacts
     rigid_contact_count: wp.array[wp.int32],
     rigid_contact_shape0: wp.array[wp.int32],
@@ -697,6 +699,12 @@ def convert_newton_contacts_to_mjwarp_kernel(
             geoms,
             worldid,
         )
+
+        # Only SLIDING_ROLLING shapes give condim 6 to a contact in which no shape enables torsional friction.
+        if shape_material_friction_mode and condim == 6:
+            friction_mode = shape_material_friction_mode[shape_a] | shape_material_friction_mode[shape_b]
+            if (friction_mode & FRICTION_TORSIONAL_BIT) == 0:
+                friction[2] = MJ_MINMU
 
         if rigid_contact_stiffness:
             friction_scale = rigid_contact_friction[tid]
@@ -2597,6 +2605,7 @@ def update_geom_properties_kernel(
     shape_hfield_offset: wp.array[float],
     shape_mu_torsional: wp.array[float],
     shape_mu_rolling: wp.array[float],
+    shape_material_friction_mode: wp.array[wp.int32],
     shape_geom_solimp: wp.array[vec5],
     shape_geom_solmix: wp.array[float],
     shape_mjc_solref: wp.array[wp.vec2f],
@@ -2638,6 +2647,10 @@ def update_geom_properties_kernel(
     mu = shape_mu[shape_idx]
     torsional = shape_mu_torsional[shape_idx]
     rolling = shape_mu_rolling[shape_idx]
+    if shape_material_friction_mode:
+        # condim 6 without torsional friction
+        if shape_material_friction_mode[shape_idx] == int(ShapeFrictionMode.SLIDING_ROLLING):
+            torsional = MJ_MINMU
     geom_friction[world, geom_idx] = wp.vec3f(mu, torsional, rolling)
 
     # geom_solref per shape_mjc_solref_mode. See docs/solvers/mujoco.rst

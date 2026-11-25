@@ -6,7 +6,7 @@ import math
 import warp as wp
 
 from ...core.types import override
-from ...sim import Contacts, Control, JointType, Model, ShapeFrictionMode, State
+from ...sim import Contacts, Control, JointType, Model, State
 from ...sim.joint_mimic import has_supported_joint_mimics
 from ..coupled.interface import CouplingInterface
 from ..solver import SolverBase, warn_unsupported_friction_modes
@@ -110,7 +110,7 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
             raise ValueError("SolverSemiImplicit does not support JointType.ROD joints.")
 
         super().__init__(model=model)
-        warn_unsupported_friction_modes(model, ShapeFrictionMode.SLIDING, "SolverSemiImplicit")
+        warn_unsupported_friction_modes(model, "SolverSemiImplicit")
         effective_deterministic = deterministic if deterministic is not None else wp.config.deterministic
         deterministic_modules = []
         if model.joint_count > 0:

@@ -16,7 +16,7 @@ import warp as wp
 
 from ...geometry.flags import ShapeFlags
 from ...math import quat_between_vectors_robust
-from ...sim import BodyFlags, JointType, ModelFlags, ShapeFrictionMode, StateFlags
+from ...sim import BodyFlags, JointType, ModelFlags, StateFlags
 from ..solver import warn_unsupported_friction_modes
 from .admm_contact_stream import (
     AdmmContactStream,
@@ -2163,7 +2163,7 @@ class SolverCoupledADMM(SolverCoupled):
             spec for spec in rr_specs if matching_pair(spec.owner_a, spec.owner_b) is not None
         ]
         if self._admm_rigid_rigid_contact_specs:
-            warn_unsupported_friction_modes(self.model, ShapeFrictionMode.SLIDING, "SolverCoupledADMM")
+            warn_unsupported_friction_modes(self.model, "SolverCoupledADMM")
         self._admm_particle_particle_contact_specs = [
             spec for spec in pp_specs if matching_pair(spec.owner_a, spec.owner_b) is not None
         ]

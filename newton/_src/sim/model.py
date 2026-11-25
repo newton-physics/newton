@@ -1107,8 +1107,8 @@ class Model:
         self.shape_material_friction_mode: wp.array[wp.int32] | None = None
         """Shape friction mode, shape [shape_count], int.
 
-        Values are :class:`~newton.ShapeFrictionMode`. Solvers may cache the mode
-        when they are constructed, so changing it is not supported."""
+        Values are :class:`~newton.ShapeFrictionMode`. Solvers and the collision
+        pipeline read the mode when they are constructed; later changes are not applied."""
         self.shape_material_kh: wp.array[wp.float32] | None = None
         """Shape hydroelastic stiffness coefficient [N/m^3], shape [shape_count], float.
         Under the default linear pressure law, contact force scales with

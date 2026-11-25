@@ -14,6 +14,7 @@ from ...math import (
 from ...sim import BodyFlags, JointType, Model, ShapeFrictionMode
 from ...sim.articulation import eval_angular_coordinates
 from ...sim.contacts import contact_surface_point, contact_surface_separation
+from ...sim.enums import FRICTION_ROLLING_BIT, FRICTION_SLIDING_BIT, FRICTION_TORSIONAL_BIT
 from ...sim.joint_mimic import eval_joint_mimic_coordinate
 from ..solver import contact_friction_mode
 
@@ -2077,11 +2078,11 @@ def _solve_body_contact_positions(
         mu_torsional /= float(mat_nonzero)
         mu_rolling /= float(mat_nonzero)
     friction_mode = contact_friction_mode(shape_material_friction_mode, shape_a, shape_b)
-    if friction_mode < int(ShapeFrictionMode.SLIDING):
+    if (friction_mode & FRICTION_SLIDING_BIT) == 0:
         mu = 0.0
-    if friction_mode < int(ShapeFrictionMode.TORSIONAL):
+    if (friction_mode & FRICTION_TORSIONAL_BIT) == 0:
         mu_torsional = 0.0
-    if friction_mode < int(ShapeFrictionMode.TORSIONAL_ROLLING):
+    if (friction_mode & FRICTION_ROLLING_BIT) == 0:
         mu_rolling = 0.0
 
     r_a = bx_a - wp.transform_point(X_wb_a, com_a)

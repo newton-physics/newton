@@ -28,13 +28,13 @@ from ...sim import (
     Model,
     ModelBuilder,
     ModelFlags,
-    ShapeFrictionMode,
     State,
     StateFlags,
 )
 from ...sim.articulation import eval_fk, eval_jacobian, eval_mass_matrix
+from ...sim.enums import FRICTION_ROLLING_BIT, FRICTION_TORSIONAL_BIT
 from ..coupled.interface import CouplingInterface
-from ..solver import SolverBase, warn_unsupported_friction_modes
+from ..solver import SolverBase
 from . import contact_compliance as _contact_compliance
 from ._testing import current_kernel_overrides
 from .contact_torsion import (
@@ -1734,7 +1734,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         - ``steel:min_torsional_patch_radius`` [m] is the effective spin radius of the
           shape's contacts (``physxCollision:minTorsionalPatchRadius``, default 0, no
           torsion). A positive radius needs a :attr:`~newton.ModelBuilder.ShapeConfig.friction_mode`
-          of ``TORSIONAL`` or ``TORSIONAL_ROLLING``, which the USD importer selects with it. PhysX also
+          with torsional friction, which the USD importer selects with it. PhysX also
           scales a radius with the penetration depth through
           ``physxCollision:torsionalPatchRadius``; this solver does not. Set it before
           constructing the solver, which enables torsion only when a radius is positive.
@@ -2631,19 +2631,20 @@ class SolverSteel(SolverBase, CouplingInterface):
                 stacklevel=2,
             )
         configure_contact_torsion(self)
-        warn_unsupported_friction_modes(model, ShapeFrictionMode.TORSIONAL, "SolverSteel")
         torsion_radius = self._contact_torsion_shape_radius
         if model.shape_count and model.shape_material_friction_mode is not None:
+            modes = model.shape_material_friction_mode.numpy()
             radii = torsion_radius.numpy() if torsion_radius is not None else np.zeros(model.shape_count)
-            if np.any(
-                (model.shape_material_friction_mode.numpy() >= int(ShapeFrictionMode.TORSIONAL)) & (radii <= 0.0)
-            ):
-                warnings.warn(
-                    "SolverSteel applies torsional friction only to contacts of shapes with a positive "
-                    "steel:min_torsional_patch_radius; the other contacts use sliding friction.",
-                    NewtonWarning,
-                    stacklevel=2,
+            limits = []
+            if np.any(modes & FRICTION_ROLLING_BIT):
+                limits.append("does not support rolling friction")
+            if np.any((modes & FRICTION_TORSIONAL_BIT != 0) & (radii <= 0.0)):
+                limits.append(
+                    "applies torsional friction only to contacts of shapes with a positive "
+                    "steel:min_torsional_patch_radius"
                 )
+            if limits:
+                warnings.warn(f"SolverSteel {' and '.join(limits)}.", NewtonWarning, stacklevel=2)
         self._nesterov_momentum = bool(nesterov_momentum)
         if self._nesterov_momentum and (
             articulated_contact_response != "immediate" or self._row_schedule != "interleaved"
