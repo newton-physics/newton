@@ -470,6 +470,10 @@ class TestUsdMeshHelpers(unittest.TestCase):
         np.testing.assert_array_equal(mesh.uvs, uvs[used])
         np.testing.assert_array_equal(uv_indices, mesh.indices)
 
+        source.GetFaceVertexIndicesAttr().Set([0, 2, 3, -1])
+        with self.assertRaisesRegex(ValueError, "negative index -1"):
+            newton.usd.get_mesh(source.GetPrim(), compute_inertia=False)
+
         source.GetFaceVertexCountsAttr().Set([])
         source.GetFaceVertexIndicesAttr().Set([])
         mesh = newton.usd.get_mesh(source.GetPrim(), compute_inertia=False)

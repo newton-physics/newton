@@ -315,7 +315,7 @@ def get_mesh(
     Use ``load_normals=False`` for geometry-only loading without normal-driven
     vertex splitting.
 
-    Points that no face references are dropped, unless the mesh has no faces.
+    When the mesh has faces, points that no face references are dropped.
 
     Example:
 
@@ -402,9 +402,9 @@ def get_mesh(
             ``source_point_indices`` is an int32 array with one entry per output
             vertex, indexing the original USD ``points`` array. Split vertices
             repeat their source point index; an unchanged vertex layout returns
-            ``arange(point_count)`` without the points no face references. This lets
-            callers map other per-point data, such as bind poses, to the loaded
-            mesh. Only supported for a single ``UsdGeom.Mesh`` prim with no
+            ``arange(point_count)`` without the points that no face references.
+            This lets callers map other per-point data, such as bind poses, to
+            the loaded mesh. Only supported for a single ``UsdGeom.Mesh`` prim with no
             ``root_path``.
 
             .. experimental::
