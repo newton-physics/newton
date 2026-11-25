@@ -2037,8 +2037,9 @@ class SolverSteel(SolverBase, CouplingInterface):
                 mimic and loop-closing rows) and three rows (four with contact torsion) per contact of
                 the collision pipeline's per-world estimate over the shape pairs that stay dense: with
                 the ``"immediate"`` response the pairs that touch an articulated body other than a free
-                body, with ``"propagation"`` the pairs of two such bodies (none when
-                ``propagation_same_articulation_rows`` is set). The result is
+                body. With ``"propagation"`` only pairs of two links of one articulation stay dense,
+                and the estimate counts every pair of two such articulated bodies as an upper bound
+                (none when ``propagation_same_articulation_rows`` is set). The result is
                 at least 32 and at most 256 unless the joint rows alone need more; the attribute reads
                 the resolved capacity. An explicit value is used as given.
             free_body_constraint_max: Capacity of free-body rows per world: free-body contact rows

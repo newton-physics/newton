@@ -323,12 +323,16 @@ repository examples spend tuning effort, not a shared solver API.
        driven DOF then uses one row of ``articulation_constraint_max``. By default
        ``articulation_constraint_max`` is sized from the model: the joint rows of the
        busiest world plus three rows (four with contact torsion) per contact of the
-       collision pipeline's per-world estimate for the contacts that stay dense, which
-       are those of articulated bodies with the ``"immediate"`` response and those
-       between two articulated bodies with ``"propagation"`` (none when
-       ``propagation_same_articulation_rows`` is set), between 32 and 256 rows unless
-       the joint rows alone need more. Rows beyond ``articulation_constraint_max``
-       (articulated bodies), ``free_body_constraint_max`` (free bodies) or
+       collision pipeline's per-world estimate for the contacts that stay dense,
+       between 32 and 256 rows unless the joint rows alone need more. With the
+       ``"immediate"`` response these are the contacts of articulated bodies. With
+       ``"propagation"`` only contacts between two links of the same articulation stay
+       dense, and contacts between different articulations use propagation rows; the
+       estimate counts every contact between two articulated bodies, an upper bound
+       when a world holds several articulations, and none when
+       ``propagation_same_articulation_rows`` is set. Rows beyond
+       ``articulation_constraint_max`` (articulated bodies),
+       ``free_body_constraint_max`` (free bodies) or
        ``propagation_constraint_max`` (propagation rows, see below) per world
        are dropped and flagged in ``constraint_overflow`` (one entry per world
        and a final entry for global articulations). A later eager ``step()``
