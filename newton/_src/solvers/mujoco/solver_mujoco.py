@@ -54,10 +54,12 @@ from .collision_masks import (
     compile_newton_collision_graph,
     mujoco_mask_to_signed,
 )
+from .condim import finalize_condim, resolve_shape_condim, shapes_rolling_without_torsion, skip_imported_condim
 from .constants import (
     DEFAULT_LIMIT_SOLREF,
     FLOAT64_EPS,
     KINEMATIC_LOCK_INERTIA_RATIO,
+    MJ_MINMU,
     SOLREF_MODE_FORCE_SPACE,
     SOLREF_MODE_MJCF_DEFAULT,
     SOLREF_MODE_RAW,
@@ -1592,6 +1594,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 namespace="mujoco",
             )
         )
+        # Deprecated alias of ShapeConfig.friction_mode. Importers set the friction mode instead; values
+        # set in code are folded into it at finalize().
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="condim",
@@ -1601,8 +1605,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 default=3,
                 namespace="mujoco",
                 usd_attribute_name="mjc:condim",
+                mjcf_value_transformer=skip_imported_condim,
             )
         )
+        builder._add_custom_attribute_model_finalizer("mujoco:condim", finalize_condim)
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="geom_group",
@@ -6019,6 +6025,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 model.shape_material_ke,
                 model.shape_material_kd,
                 shape_mjc_solref_mode,
+                model.shape_material_friction_mode,
                 # Newton contacts
                 contacts.rigid_contact_count,
                 contacts.rigid_contact_shape0,
@@ -7689,7 +7696,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         shape_mjc_contype = get_custom_attribute("contype")
         shape_mjc_conaffinity = get_custom_attribute("conaffinity")
         shape_mjc_collision_mask_domain = get_custom_attribute("collision_mask_domain")
-        shape_condim = get_custom_attribute("condim")
+        shape_condim = resolve_shape_condim(model)
+        shape_rolling_without_torsion = shapes_rolling_without_torsion(model)
         shape_geom_group = get_custom_attribute("geom_group")
         shape_hfield_base = get_custom_attribute("hfield_base")
         shape_priority = get_custom_attribute("geom_priority")
@@ -8474,6 +8482,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 mu = shape_mu[shape]
                 torsional = shape_mu_torsional[shape]
                 rolling = shape_mu_rolling[shape]
+                if shape_rolling_without_torsion[shape]:
+                    torsional = MJ_MINMU
                 geom_params["friction"] = [
                     mu,
                     torsional,
@@ -8491,8 +8501,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 else:
                     geom_params["solref"] = convert_solref(float(shape_ke[shape]), float(shape_kd[shape]), 1.0, 1.0)
 
-                if shape_condim is not None:
-                    geom_params["condim"] = shape_condim[shape]
+                geom_params["condim"] = int(shape_condim[shape])
                 if shape_geom_group is not None:
                     geom_params["group"] = shape_geom_group[shape]
                 if shape_priority is not None:
@@ -11302,6 +11311,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self._shape_hfield_offset,
                 self.model.shape_material_mu_torsional,
                 self.model.shape_material_mu_rolling,
+                self.model.shape_material_friction_mode,
                 shape_geom_solimp,
                 shape_geom_solmix,
                 shape_mjc_solref,

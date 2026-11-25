@@ -781,6 +781,11 @@ class SolverCoupled(SolverBase, CouplingInterface):
     def _build_entries(self) -> None:
         model = self.model
         device = model.device
+        # A deprecated alias may hold edits that reading it applies to the model, as mujoco:condim does.
+        for namespace in vars(model).values():
+            if isinstance(namespace, Model.AttributeNamespace):
+                for getter, _message in namespace._deprecated_aliases.values():
+                    getter()
         any_body_owner = any(owner >= 0 for owner in self._body_owner)
         any_particle_owner = any(owner >= 0 for owner in self._particle_owner)
         any_joint_owner = any(owner >= 0 for owner in self._joint_owner)
