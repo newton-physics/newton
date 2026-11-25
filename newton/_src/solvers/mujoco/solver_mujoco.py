@@ -6260,11 +6260,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 ):
                     getattr(self.mj_model, name)[ctrl_direct] = getattr(self.mjw_model, name).numpy()[0, ctrl_direct]
             if need_const_fixed or need_const_0:
-                # mj_setConst leaves qpos at the spring reference pose.
-                qpos = self.mj_data.qpos.copy()
                 self._set_const_0()
-                self.mj_data.qpos[:] = qpos
-                self._mujoco.mj_kinematics(self.mj_model, self.mj_data)
             if need_solref_update:
                 self._update_solref_from_invweight0()
             if need_const_0:
@@ -9619,6 +9615,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self._canonical_body_ipos = self.mj_model.body_ipos.copy()
         self._canonical_body_iquat = self.mj_model.body_iquat.copy()
         self.mj_data = mujoco.MjData(self.mj_model)
+        self._mj_const_data = None
 
         # Build MuJoCo qpos/qvel start index arrays for coordinate conversion kernels.
         # These map Newton template joint index → MuJoCo qpos/qvel start.
@@ -10563,6 +10560,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             device=self.model.device,
         )
 
+    def _native_const_data(self):
+        """Return scratch Data for ``mj_setConst``, which clears contacts and moves ``qpos`` to the reference pose."""
+        if self._mj_const_data is None:
+            self._mj_const_data = self._mujoco.MjData(self.mj_model)
+        return self._mj_const_data
+
     def _set_const_0(self, lock_kinematic: bool = True) -> None:
         """Recompute MuJoCo's qpos0-dependent model constants and resolve ``dampratio`` placeholders.
 
@@ -10587,7 +10590,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self._update_dof_armature(lock=True)
         if self.use_mujoco_cpu:
             self.mj_model.dof_armature[:] = self.mjw_model.dof_armature.numpy()[0]
-            self._mujoco.mj_setConst(self.mj_model, self.mj_data)
+            self._mujoco.mj_setConst(self.mj_model, self._native_const_data())
         else:
             m = self.mjw_model
             groups = self._mujoco_warp.SetConstGroup
@@ -10681,7 +10684,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self._resolve_dampratio_cpu(dampratio_actuators)
             if lock:
                 # Native MuJoCo's constants are cheap.
-                self._mujoco.mj_setConst(self.mj_model, self.mj_data)
+                self._mujoco.mj_setConst(self.mj_model, self._native_const_data())
                 self._physical_dof_M0.assign(np.broadcast_to(self.mj_model.dof_M0, self._physical_dof_M0.shape))
             return
 
@@ -10730,12 +10733,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
     def _resolve_dampratio_cpu(self, actuators: list[int]) -> None:
         """CPU counterpart of the ``dampratio`` resolution in :meth:`_update_physical_qpos0_inertia`."""
         mujoco = self._mujoco
-        m, d = self.mj_model, self.mj_data
+        m, d = self.mj_model, self._native_const_data()
         ratio = self._actuator_dampratio.numpy()[0]
         actuators = [a for a in actuators if ratio[a] > 0.0]
         if not actuators:
             return
-        qpos = d.qpos.copy()
         d.qpos[:] = m.qpos0
         mujoco.mj_kinematics(m, d)
         mujoco.mj_comPos(m, d)
@@ -10759,7 +10761,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             m.actuator_biasprm[actuator, 2] = (
                 -ratio[actuator] * 2.0 * np.sqrt(m.actuator_gainprm[actuator, 0] * inertia)
             )
-        d.qpos[:] = qpos
 
     def _update_dof_armature(self, lock: bool = False):
         """Publish Newton ``joint_armature`` to MuJoCo ``dof_armature``, optionally locking kinematic roots."""
@@ -11338,7 +11339,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self.mj_model.site_size[:] = self.mjw_model.site_size.numpy()
             # Runtime edits invalidate the compiler's shared-frame shortcut.
             self.mj_model.site_sameframe[:] = self._mujoco.mjtSameFrame.mjSAMEFRAME_NONE
+            # Like mujoco_warp.set_const, keep site and tendon Data consistent with the live coordinates.
             self._mujoco.mj_kinematics(self.mj_model, self.mj_data)
+            self._mujoco.mj_comPos(self.mj_model, self.mj_data)
+            self._mujoco.mj_tendon(self.mj_model, self.mj_data)
 
     def _publish_joint_limit_properties(self):
         """Retain notified limit parameters and promote edited MJCF-default gains."""

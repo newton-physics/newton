@@ -81,17 +81,19 @@ class TestMuJoCoSiteExport(unittest.TestCase):
 
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         builder.add_mjcf("""<mujoco><option gravity="0 0 0"/><worldbody>
+            <geom type="plane" size="1 1 .1" pos="0 0 -.05"/>
             <site name="fixed" pos="1 -1 0"/><body><joint name="hinge" springref=".2"/>
             <geom size=".1"/><site name="moving" pos="1 0 0"/></body></worldbody>
             <tendon><spatial><site site="fixed"/><site site="moving"/></spatial></tendon></mujoco>""")
         builder.joint_qd[0] = 0.5
         model = builder.finalize()
         with self.assertWarns(newton.NewtonDeprecationWarning):
-            solver = SolverMuJoCo(model, use_mujoco_cpu=True, update_data_interval=0, disable_contacts=True)
+            solver = SolverMuJoCo(model, use_mujoco_cpu=True, update_data_interval=0)
         solver.mj_data.qpos[:] = 0.4
         state, output = model.state(), model.state()
         solver.step(state, output, model.control(), None, 0.001)
         qpos, qvel = solver.mj_data.qpos.copy(), solver.mj_data.qvel.copy()
+        self.assertEqual(solver.mj_data.ncon, 1)
         sites = np.flatnonzero(model.shape_flags.numpy() & int(newton.ShapeFlags.SITE))
         poses = model.shape_transform.numpy().copy()
         poses[sites, 0] += 0.1
@@ -99,10 +101,12 @@ class TestMuJoCoSiteExport(unittest.TestCase):
         solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
         np.testing.assert_array_equal(solver.mj_data.qpos, qpos)
         np.testing.assert_array_equal(solver.mj_data.qvel, qvel)
+        self.assertEqual(solver.mj_data.ncon, 1)
         reference = mj.MjData(solver.mj_model)
         reference.qpos[:] = qpos
-        mj.mj_kinematics(solver.mj_model, reference)
+        mj.mj_forward(solver.mj_model, reference)
         np.testing.assert_allclose(solver.mj_data.site_xpos, reference.site_xpos, atol=1e-7)
+        np.testing.assert_allclose(solver.mj_data.ten_length, reference.ten_length, atol=1e-7)
         solver.step(output, state, model.control(), None, 0.001)
         np.testing.assert_allclose(solver.mj_data.qpos, qpos + 0.001 * qvel, atol=1e-7)
 
