@@ -201,6 +201,30 @@ def triangle_seam_normal(
         smooth = (mask & 6) == 6
     else:
         smooth = (edge_ab and (mask & 1) != 0) or (edge_bc and (mask & 2) != 0) or (edge_ca and (mask & 4) != 0)
+    if not smooth:
+        # A shape overlapping the triangle by a sliver along a seam leaves the
+        # penetration witness anywhere inside that sliver, beyond the tolerance.
+        # The feature the normal leans out of is exact: the triangle's support
+        # along it. A lean out of a seam, or out of a vertex between seams, is
+        # still on the continued face.
+        top = wp.max(0.0, wp.max(wp.dot(ab, normal), wp.dot(ac, normal)))
+        on_a = top <= tolerance
+        on_b = top - wp.dot(ab, normal) <= tolerance
+        on_c = top - wp.dot(ac, normal) <= tolerance
+        if on_a and on_b and on_c:
+            smooth = False
+        elif on_a and on_b:
+            smooth = (mask & 1) != 0
+        elif on_b and on_c:
+            smooth = (mask & 2) != 0
+        elif on_c and on_a:
+            smooth = (mask & 4) != 0
+        elif on_a:
+            smooth = (mask & 5) == 5
+        elif on_b:
+            smooth = (mask & 3) == 3
+        else:
+            smooth = (mask & 6) == 6
     if smooth:
         return True, face
     return False, normal

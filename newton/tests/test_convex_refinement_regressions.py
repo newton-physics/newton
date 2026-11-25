@@ -517,6 +517,41 @@ def test_refinement_triangle_hull_chamfer_seam(test, device):
             test.assertTrue(np.all(np.abs(normals[:, 2]) > 0.9999), f"chamfer normals {normals.round(3).tolist()}")
 
 
+def test_refinement_triangle_hull_rim_on_seam(test, device):
+    """Keep the face normal where a heel's rim just crosses a coplanar seam.
+
+    The triangle past the seam overlaps the rim by a 0.1 mm sliver. The witness
+    of its leaning normal lies inside that sliver, beyond the on-edge tolerance,
+    so the lean along the belt survived and pushed the heel back.
+    """
+    builder = newton.ModelBuilder()
+    cfg = builder.ShapeConfig(density=0.0, gap=0.001)
+    # Two flat belt sections meeting at x = 0, across the heel's travel.
+    top = newton.Mesh(
+        np.array([(x, y, 0.005) for x in (-0.748, 0.0, 0.748) for y in (-0.04005, 0.04005)], dtype=np.float32),
+        [1, 2, 3, 1, 0, 2, 3, 2, 4, 3, 4, 5],
+        compute_inertia=False,
+    )
+    origin = wp.vec3(43.4605, 38.3575, 0.945)
+    builder.add_shape_mesh(-1, mesh=top, cfg=cfg, xform=wp.transform(origin, wp.quat_identity()))
+    body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+    builder.add_shape_convex_hull(body, mesh=_bottle_heel_hull(), cfg=cfg)
+    model = builder.finalize(device)
+    pipeline = newton.CollisionPipeline(model)
+    contacts, state = pipeline.contacts(), model.state()
+    poses = state.body_q.numpy()
+    for dx, yaw in ((-0.0255, 0.1), (-0.0255, 0.2), (0.0255, 0.0)):
+        with test.subTest(dx=dx, yaw=yaw):
+            q = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), yaw)
+            poses[body] = (origin[0] + dx, origin[1], origin[2] + 0.005 - 1.0e-5, *q)
+            state.body_q.assign(poses)
+            pipeline.collide(state, contacts)
+            count = int(contacts.rigid_contact_count.numpy()[0])
+            test.assertGreater(count, 0)
+            normals = contacts.rigid_contact_normal.numpy()[:count]
+            test.assertGreater(float(np.min(normals[:, 2])), 0.9999, normals)
+
+
 def test_refinement_triangle_box_tilted_rest(test, device):
     """Keep a slightly tilted mesh resting on a wide box at its true depth.
 
@@ -802,6 +837,7 @@ for function in (
     test_refinement_triangle_hull_seam_support,
     test_refinement_triangle_hull_tilted_seam_support,
     test_refinement_triangle_hull_chamfer_seam,
+    test_refinement_triangle_hull_rim_on_seam,
     test_refinement_triangle_box_tilted_rest,
     test_refinement_triangle_thin_box_face,
     test_refinement_triangle_box_tilted_face,
