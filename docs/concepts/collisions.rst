@@ -2298,7 +2298,7 @@ for stiffness and ``kd / ke`` for damping. Custom pressure laws and reduced
 contacts use their exported stiffness; this does not establish their solver
 convergence or preserve all damping moments after reduction.
 
-With MuJoCo's Euler, implicit, or implicitfast integration, the ``refsafe``
+With MuJoCo's Euler, RK4, implicit, or implicitfast integration, the ``refsafe``
 guard limits the contact time constant to at least twice the timestep.
 Once this limit is active, increasing ``kh`` at fixed ``kd / ke`` can soften
 contacts and increase penetration. Use a smaller solver timestep to resolve
