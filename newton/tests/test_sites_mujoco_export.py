@@ -114,7 +114,13 @@ class TestMuJoCoSiteExport(unittest.TestCase):
         builder = newton.ModelBuilder()
         body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
         joint = builder.add_joint_revolute(-1, body, parent_xform=wp.transform((1.0, 2.0, 3.0), wp.quat_identity()))
-        builder.add_articulation([joint])
+        joints, parent = [joint], body
+        for _ in range(2):
+            child = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+            joints.append(builder.add_joint_revolute(parent, child))
+            parent = child
+        builder.add_articulation(joints)
+        loop = builder.add_joint_ball(parent, body)
         moving = builder.add_site(body)
         fixed = builder.add_site(-1)
         mujoco.add_tendon_spatial(builder, [mujoco.TendonWrapSite(moving), mujoco.TendonWrapSite(fixed)])
@@ -124,18 +130,26 @@ class TestMuJoCoSiteExport(unittest.TestCase):
             with self.subTest(cpu=cpu):
                 model = builder.finalize()
                 solver = SolverMuJoCo(model, use_mujoco_cpu=cpu, disable_contacts=True)
-                published = solver.mjw_model.eq_data.numpy()[0, 0, :6].copy()
+                published = solver.mjw_model.eq_data.numpy()[0, :, :6].copy()
                 anchor = np.array([0.4, 0.5, 0.6])
                 model.mujoco.equality_constraint_anchor.assign(anchor[None, :])
+                frames = model.joint_X_p.numpy().copy()
+                frames[loop, 0] += 0.25
+                model.joint_X_p.assign(frames)
                 poses = model.shape_transform.numpy().copy()
                 poses[moving, 0] += 0.1
                 model.shape_transform.assign(poses)
-                solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
-                actual = solver.mj_model.eq_data if cpu else solver.mjw_model.eq_data.numpy()[0]
-                np.testing.assert_allclose(actual[0, :6], published, atol=1e-7)
+                for flags in (newton.ModelFlags.SHAPE_PROPERTIES, newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES):
+                    solver.notify_model_changed(flags)
+                    actual = solver.mj_model.eq_data if cpu else solver.mjw_model.eq_data.numpy()[0]
+                    np.testing.assert_allclose(actual[:, :6], published, atol=1e-7)
                 solver.notify_model_changed(newton.ModelFlags.CONSTRAINT_PROPERTIES)
                 actual = solver.mj_model.eq_data if cpu else solver.mjw_model.eq_data.numpy()[0]
                 np.testing.assert_allclose(actual[0, :6], [0.4, 0.5, 0.6, 1.4, 2.5, 3.6], atol=1e-7)
+                solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES)
+                actual = solver.mj_model.eq_data if cpu else solver.mjw_model.eq_data.numpy()[0]
+                loop_eq = solver.mjc_eq_to_newton_jnt.numpy()[0] == loop
+                np.testing.assert_allclose(actual[loop_eq, :6], [[0.25, 0.0, 0.0, 0.0, 0.0, 0.0]], atol=1e-7)
 
     def test_worldbody_site_poses_across_worlds(self):
         """Keep batched worldbody site poses synchronized with Newton."""

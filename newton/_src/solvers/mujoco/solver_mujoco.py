@@ -11213,6 +11213,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     model.joint_X_p,
                     model.joint_X_c,
                     ref_body_q,
+                    update_joint_anchors,
                 ],
                 outputs=[self.connect_constraint_X_rel],
                 **launch_args,
