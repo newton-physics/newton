@@ -88,9 +88,8 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
         Floating-base systems require an explicit free joint with which the body is connected to the world,
         see :meth:`newton.ModelBuilder.add_joint_free`.
 
-    Semi-implicit time integration is a variational integrator that
-    preserves energy, however it not unconditionally stable, and requires a time-step
-    small enough to support the required stiffness and damping forces.
+    Semi-implicit time integration requires a time step small enough for the
+    stiffness and damping forces in the model.
 
     See: https://en.wikipedia.org/wiki/Semi-implicit_Euler_method
 
@@ -99,6 +98,8 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
     Joint limitations:
         - Supported joint types: PRISMATIC, REVOLUTE, BALL, FIXED, FREE, DISTANCE (treated as FREE), D6.
           ROD joints are not supported.
+        - FREE and DISTANCE joints ignore :attr:`~newton.Model.joint_damping` on all six degrees of freedom
+          (three linear and three angular).
         - :attr:`~newton.Model.joint_armature`, :attr:`~newton.Model.joint_limit_ke`/:attr:`~newton.Model.joint_limit_kd`,
           :attr:`~newton.Model.joint_target_ke`/:attr:`~newton.Model.joint_target_kd`, and :attr:`~newton.Control.joint_f`
           are supported.
@@ -166,7 +167,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
         """
         Args:
             model: The model to be simulated.
-            angular_damping: Angular damping factor. Defaults to 0.05.
+            angular_damping: Accepted for compatibility and unused by this solver.
             update_mass_matrix_interval: How often to update the mass matrix (every n-th time the :meth:`step` function gets called). The update is also forced on the next step after :meth:`notify_model_changed` reports body, joint DOF or inertial changes. Both decisions are made on the host when :meth:`step` runs, so a captured CUDA graph replays the choice made at capture time; use an interval of 1 or recapture after such a notification. Defaults to 1.
             use_tile_gemm: Whether to use operators from Warp's Tile API to solve for joint accelerations. A kernel is compiled per distinct articulation size. Defaults to False.
             fuse_cholesky: Whether to fuse the Cholesky decomposition into the inertia matrix evaluation kernel when using the Tile API. Only used if `use_tile_gemm` is true. Defaults to True.
