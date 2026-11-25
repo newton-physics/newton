@@ -13,6 +13,7 @@ Success criteria:
 Runs:
 - `python -m newton.examples kamino_robot_dr_legs`
 - `python -m newton.examples kamino_robot_dr_legs --world-count 16`
+- `python -m newton.examples kamino_robot_dr_legs --no-use-kamino-contacts --integrator moreau`
 """
 
 import numpy as np
@@ -50,6 +51,11 @@ class Example:
         self.use_kamino_contacts = args.use_kamino_contacts if args else False
         self.dynamics_solver = getattr(args, "dynamics_solver", "padmm") if args else "padmm"
         _reject_ignored_options(args, self.dynamics_solver)
+        self.integrator = getattr(args, "integrator", None) if args else None
+        if self.integrator is None:
+            self.integrator = "moreau" if self.dynamics_solver == "scc" and self.use_kamino_contacts else "euler"
+        # Moreau-Jean detects Newton contacts at the step midpoint, inside the solver
+        self.solver_owns_pipeline = self.integrator == "moreau" and not self.use_kamino_contacts
         self.linear_solver_type = getattr(args, "linear_solver_type", None) or "LLTB"
         self.linear_solver_kwargs = getattr(args, "linear_solver_kwargs", {}) if args else {}
         target_sim_dt = self.frame_dt / 12 if self.dynamics_solver == "scc" else 0.01
@@ -136,6 +142,7 @@ class Example:
         )
         self.config.use_fk_solver = True
         self.config.use_collision_detector = self.use_kamino_contacts
+        self.config.integrator = self.integrator
         self.config.dynamics.linear_solver_type = self.linear_solver_type
         self.config.dynamics.linear_solver_kwargs = self.linear_solver_kwargs
         self.config.constraints.delta = 1e-3
@@ -146,8 +153,6 @@ class Example:
         self.config.padmm.use_graph_conditionals = getattr(args, "use_graph_conditionals", None) is not False
         if self.dynamics_solver == "scc":
             self.config.use_fk_solver = False
-            if self.use_kamino_contacts:
-                self.config.integrator = "moreau"
             self.config.constraints.alpha = 0.1
             self.config.constraints.beta = 0.011
             self.config.constraints.gamma = 0.015
@@ -166,20 +171,23 @@ class Example:
             self.config.scc.unilateral_solver = getattr(args, "unilateral_solver", None) or "pgs"
             self.config.scc.use_schur_complement = getattr(args, "use_schur_complement", None)
         configure_ldl(self.config, args)
-        self.solver = newton.solvers.SolverKamino(self.model, config=self.config)
+        owned_pipeline = newton.CollisionPipeline(self.model) if self.solver_owns_pipeline else None
+        self.solver = newton.solvers.SolverKamino(self.model, config=self.config, collision_pipeline=owned_pipeline)
 
         # Create state and control data containers
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
 
-        # Configure CD components based on whether we want to use Kamino's
-        # internal contact solver or Newton's collision pipeline
-        if not self.use_kamino_contacts:
+        # Configure CD components based on whether we want to use Kamino's internal contact
+        # solver, or Newton's collision pipeline run by the example or by the solver
+        self.collision_pipeline = None
+        if self.solver_owns_pipeline:
+            self.contacts = self.solver.contacts
+        elif not self.use_kamino_contacts:
             self.collision_pipeline = newton.CollisionPipeline(self.model)
             self.contacts = self.collision_pipeline.contacts()
         else:
-            self.collision_pipeline = None
             self.contacts = newton.CollisionPipeline(self.model).contacts()
         self.solver_observables = self.solver.observables(
             contacts=self.contacts, kinds={self.solver.ObservableKind.CONTACT_F}
@@ -231,25 +239,16 @@ class Example:
                 self._advance_time()
                 self._update_animation()
             self.viewer.apply_forces(self.state_0)
-            if not self.use_kamino_contacts:
+            if self.collision_pipeline is not None:
                 self.collision_pipeline.collide(self.state_0, self.contacts)
-                self.solver.step(
-                    self.state_0,
-                    self.state_1,
-                    self.control,
-                    self.contacts,
-                    self.sim_dt,
-                    observables=self.solver_observables,
-                )
-            else:
-                self.solver.step(
-                    self.state_0,
-                    self.state_1,
-                    self.control,
-                    self.contacts,
-                    self.sim_dt,
-                    observables=self.solver_observables,
-                )
+            self.solver.step(
+                self.state_0,
+                self.state_1,
+                self.control,
+                None if self.solver_owns_pipeline else self.contacts,
+                self.sim_dt,
+                observables=self.solver_observables,
+            )
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
@@ -385,6 +384,13 @@ class Example:
             choices=("padmm", "scc", "lox"),
             default="padmm",
             help="Kamino dynamics solver to use.",
+        )
+        parser.add_argument(
+            "--integrator",
+            choices=("euler", "moreau"),
+            default=None,
+            help="Kamino time integrator (default: moreau for SCC with Kamino contacts, euler otherwise). "
+            "With Newton contacts, moreau lets the solver run the collision pipeline at the step midpoint.",
         )
         parser.add_argument(
             "--unilateral-solver",
