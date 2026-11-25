@@ -3464,7 +3464,7 @@ class Model:
 
                 print(model.get_attribute_update_flags("shape_material_mu").name)
                 print(model.get_attribute_update_flags("mujoco:solref").name)
-                print(model.get_attribute_update_flags("mujoco:condim"))
+                print(model.get_attribute_update_flags("shape_material_friction_mode"))
 
             .. testoutput::
 

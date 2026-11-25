@@ -207,7 +207,7 @@ class TestModelAttributeSpecs(unittest.TestCase):
             ("joint_target_q", flags.NONE),
             # Read only at construction: no flag refreshes them.
             ("shape_type", None),
-            ("mujoco:condim", None),
+            ("shape_material_friction_mode", None),
             ("user:label_id", None),
         ):
             with self.subTest(attribute=name):
