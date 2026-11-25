@@ -2472,6 +2472,37 @@ class TestSteelFrictionGraspHistory(unittest.TestCase):
         valid = patches.previous.valid.numpy()[:2]
         np.testing.assert_array_equal(valid, (worlds != 0).astype(np.int32))
 
+    def test_separated_region_leaves_touching_anchor_history(self):
+        """Carry a touching anchor's displacement past a separated region of the same pair that is seeded first."""
+        builder = newton.ModelBuilder()
+        ground = builder.add_ground_plane()
+        body = builder.add_body()
+        box = builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+        model = builder.finalize(device=_DEVICE)
+        solver = newton.solvers.SolverSteel(model, friction_anchor_beta=0.2)
+        contacts = newton.CollisionPipeline(model, rigid_contact_max=2).contacts()
+        contacts.rigid_contact_shape0.assign([box] * 2)
+        contacts.rigid_contact_shape1.assign([ground] * 2)
+        contacts.rigid_contact_normal.assign([[0, 0, -1]] * 2)
+        contacts.rigid_contact_count.assign([1])
+        contacts.rigid_contact_point0.zero_()
+        contacts.rigid_contact_point1.zero_()
+        s0, s1 = model.state(), model.state()
+        solver.step(s0, s1, model.control(), contacts, 0.005)
+        patches = solver._friction_patches
+        anchor = int(np.flatnonzero(patches.previous.valid.numpy())[0])
+        displacement = patches.previous.displacement.numpy()
+        displacement[anchor] = [1.0e-3, 0.0, 0.0]
+        patches.previous.displacement.assign(displacement)
+
+        # Contact 0 is 10 mm off the ground: a region of its own, seeded before the touching contact 1.
+        contacts.rigid_contact_count.assign([2])
+        contacts.rigid_contact_point0.assign([[0.05, 0, 0.01], [0, 0, 0]])
+        contacts.rigid_contact_point1.assign([[0.05, 0, 0], [0, 0, 0]])
+        patches.build(model, s1, contacts, shape_material_mu=model.shape_material_mu)
+        np.testing.assert_array_equal(patches.current.source.numpy()[:2], [-1, anchor])
+        np.testing.assert_allclose(patches.current.displacement.numpy()[1, :2], [1.0e-3, 0.0], atol=1.0e-6)
+
     def test_shape_updates_refresh_geometry_and_keep_history(self):
         """Refresh broadphase bounds without discarding anchors on unchanged geometry."""
         builder = newton.ModelBuilder()
