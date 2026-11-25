@@ -519,6 +519,7 @@ class Model:
         "particle_q": AttributeSpec(AttributeFrequency.PARTICLE),
         "particle_qd": AttributeSpec(AttributeFrequency.PARTICLE),
         "particle_f": AttributeSpec(AttributeFrequency.PARTICLE),
+        "particle_target_q": AttributeSpec(AttributeFrequency.PARTICLE),
         "particle_mass": AttributeSpec(AttributeFrequency.PARTICLE, update_flags=ModelFlags.MODEL_PROPERTIES),
         "particle_inv_mass": AttributeSpec(AttributeFrequency.PARTICLE),
         "particle_radius": AttributeSpec(AttributeFrequency.PARTICLE, update_flags=ModelFlags.MODEL_PROPERTIES),
@@ -599,6 +600,7 @@ class Model:
             AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES
         ),
         "shape_material_mu_rolling": AttributeSpec(AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES),
+        "shape_material_friction_mode": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_material_kh": AttributeSpec(AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES),
         "shape_gap": AttributeSpec(AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES),
         "shape_type": AttributeSpec(AttributeFrequency.SHAPE),
@@ -1040,7 +1042,7 @@ class Model:
         self.particle_grid: wp.HashGrid | None = None
         """HashGrid instance for accelerated simulation of particle interactions."""
         self.particle_flags: wp.array[wp.int32] | None = None
-        """Particle enabled state, shape [particle_count], int."""
+        """Particle flags (:class:`~newton.ParticleFlags`), shape [particle_count], int."""
         self.particle_max_velocity: float = 1e5
         """Maximum particle velocity [m/s] (to prevent instability)."""
         self.particle_world: wp.array[wp.int32] | None = None
@@ -1103,6 +1105,12 @@ class Model:
         """Shape torsional friction coefficient [m] (resistance to spinning at contact point), shape [shape_count], float."""
         self.shape_material_mu_rolling: wp.array[wp.float32] | None = None
         """Shape rolling friction coefficient [m] (resistance to rolling motion), shape [shape_count], float."""
+        self.shape_material_friction_mode: wp.array[wp.int32] | None = None
+        """Shape friction mode, shape [shape_count], int.
+
+        Values are :class:`~newton.ShapeFrictionMode`. Solvers and the collision
+        pipeline may read the mode only when they are constructed: set it before
+        constructing them; changing it afterwards is not supported."""
         self.shape_material_kh: wp.array[wp.float32] | None = None
         """Shape hydroelastic stiffness coefficient [N/m^3], shape [shape_count], float.
         Under the default linear pressure law, contact force scales with
@@ -2883,6 +2891,7 @@ class Model:
             requires_grad: Whether the control variables should have `requires_grad` enabled.
                 If None, uses the model's :attr:`requires_grad` setting.
             clone_variables: If True, clone the control input arrays; if False, use references.
+                With ``False``, :attr:`Control.particle_target_q` is ``None``.
 
         Returns:
             The initialized control object.
@@ -2904,6 +2913,8 @@ class Model:
                 c.tet_activations = wp.clone(self.tet_activations, requires_grad=requires_grad)
             if self.muscle_count:
                 c.muscle_activations = wp.clone(self.muscle_activations, requires_grad=requires_grad)
+            if self.particle_count:
+                c.particle_target_q = wp.clone(self.particle_q, requires_grad=requires_grad)
         else:
             c.joint_target_q = self.joint_target_q
             c.joint_target_qd = self.joint_target_qd
@@ -3458,7 +3469,7 @@ class Model:
 
                 print(model.get_attribute_update_flags("shape_material_mu").name)
                 print(model.get_attribute_update_flags("mujoco:solref").name)
-                print(model.get_attribute_update_flags("mujoco:condim"))
+                print(model.get_attribute_update_flags("shape_material_friction_mode"))
 
             .. testoutput::
 

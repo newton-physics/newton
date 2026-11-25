@@ -11,7 +11,8 @@ from ...geometry.sdf_planar_recovery import (
     empty_mesh_recovery,
     recovery_step_depth,
 )
-from ...sim import Contacts, Model, State
+from ...sim import Contacts, Model, ShapeFrictionMode, State
+from ..solver import contact_friction_mode
 
 
 @wp.func
@@ -160,6 +161,7 @@ def eval_particle_body_contact(
     shape_material_kd: wp.array[float],
     shape_material_kf: wp.array[float],
     shape_material_mu: wp.array[float],
+    shape_material_friction_mode: wp.array[wp.int32],
     shape_material_ka: wp.array[float],
     particle_ke: float,
     particle_kd: float,
@@ -217,6 +219,8 @@ def eval_particle_body_contact(
     kd = 0.5 * (particle_kd + shape_material_kd[shape_index])
     kf = 0.5 * (particle_kf + shape_material_kf[shape_index])
     mu = 0.5 * (particle_mu + shape_material_mu[shape_index])
+    if contact_friction_mode(shape_material_friction_mode, shape_index, -1) == int(ShapeFrictionMode.NONE):
+        mu = 0.0
 
     body_w = wp.spatial_bottom(body_v_s)
     body_v = wp.spatial_top(body_v_s)
@@ -277,6 +281,7 @@ def _eval_body_contact(
     shape_material_kf: wp.array[float],
     shape_material_ka: wp.array[float],
     shape_material_mu: wp.array[float],
+    shape_material_friction_mode: wp.array[wp.int32],
     shape_body: wp.array[int],
     contact_count: wp.array[int],
     contact_point0: wp.array[wp.vec3],
@@ -338,6 +343,8 @@ def _eval_body_contact(
         kf /= float(mat_nonzero)
         ka /= float(mat_nonzero)
         mu /= float(mat_nonzero)
+    if contact_friction_mode(shape_material_friction_mode, shape_a, shape_b) == int(ShapeFrictionMode.NONE):
+        mu = 0.0
 
     # per-contact stiffness/damping/friction
     if rigid_contact_stiffness:
@@ -458,6 +465,7 @@ def eval_body_contact(
     shape_material_kf: wp.array[float],
     shape_material_ka: wp.array[float],
     shape_material_mu: wp.array[float],
+    shape_material_friction_mode: wp.array[wp.int32],
     shape_body: wp.array[int],
     contact_count: wp.array[int],
     contact_point0: wp.array[wp.vec3],
@@ -489,6 +497,7 @@ def eval_body_contact(
         shape_material_kf,
         shape_material_ka,
         shape_material_mu,
+        shape_material_friction_mode,
         shape_body,
         contact_count,
         contact_point0,
@@ -580,6 +589,7 @@ def eval_body_contact_forces(
                 model.shape_material_kf,
                 model.shape_material_ka,
                 model.shape_material_mu,
+                model.shape_material_friction_mode,
                 model.shape_body,
                 contacts.rigid_contact_count,
                 contacts.rigid_contact_point0,
@@ -634,6 +644,7 @@ def eval_particle_body_contact_forces(
                 model.shape_material_kd,
                 model.shape_material_kf,
                 model.shape_material_mu,
+                model.shape_material_friction_mode,
                 model.shape_material_ka,
                 model.soft_contact_ke,
                 model.soft_contact_kd,

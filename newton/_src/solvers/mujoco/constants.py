@@ -27,8 +27,8 @@ contact rows."""
 MJ_MINMU = 1.0e-5
 """MuJoCo's minimum friction coefficient clamp."""
 
-MJ_MINVAL = 2.220446049250313e-16
-"""MuJoCo's minimum positive scalar guard value."""
+FLOAT64_EPS = 2.220446049250313e-16
+"""Double-precision epsilon used by Newton's solver guards."""
 
 SOLREF_MODE_FORCE_SPACE = 0
 """Interpret joint-limit gains as Newton force-space ``joint_limit_ke``/``joint_limit_kd``."""
