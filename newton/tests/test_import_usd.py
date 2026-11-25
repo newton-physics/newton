@@ -9837,6 +9837,28 @@ def Xform "Articulation" (
         self.assertEqual(result["scene_attributes"]["physics:gravityMagnitude"], 2.0)
 
     @requires("pxr.Usd")
+    def test_scene_honors_ignore_paths(self):
+        """Skip an ignored scene, whether or not the pattern is a plain path."""
+        from pxr import Usd, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdPhysics.Scene.Define(stage, "/Ignored/Scene").CreateGravityMagnitudeAttr(2.0)
+        UsdPhysics.Scene.Define(stage, "/Kept").CreateGravityMagnitudeAttr(3.0)
+
+        for ignore_paths in (["/Ignored"], ["/Ignored.*"], [".*/Scene$"]):
+            with self.subTest(ignore_paths=ignore_paths):
+                builder = newton.ModelBuilder()
+                result = builder.add_usd(stage, ignore_paths=ignore_paths)
+                self.assertEqual(result["physics_scene_path"], "/Kept")
+                self.assertAlmostEqual(float(wp.length(builder.gravity)), 3.0, places=5)
+
+        builder = newton.ModelBuilder()
+        default_gravity = builder.gravity
+        result = builder.add_usd(stage, ignore_paths=[".*Scene", "/Kept.*"])
+        self.assertIsNone(result["physics_scene_path"])
+        self.assertEqual(builder.gravity, default_gravity)
+
+    @requires("pxr.Usd")
     def test_scene_gravity_enabled_parsing(self):
         """Test that gravity_enabled is parsed correctly from USD scene."""
         from pxr import Usd, UsdGeom, UsdPhysics

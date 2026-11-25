@@ -536,7 +536,12 @@ def parse_usd(
         dict.fromkeys([*non_regex_ignore_paths, *_deformable_prims.native_physics_exclude_paths])
     )
     ret_dict = usd.load_physics_from_range(stage, [root_path], native_exclude_paths)
-    physics_scenes = usd._get_physics_scenes_from_results(stage, ret_dict)
+    # The parser only skips scenes below ignore paths without ".*".
+    physics_scenes = [
+        scene
+        for scene in usd._get_physics_scenes_from_results(stage, ret_dict)
+        if not any(re.match(pattern, str(scene.GetPath())) for pattern in ignore_paths)
+    ]
     physics_scene_prim = physics_scenes[0].GetPrim() if physics_scenes else None
 
     legacy_rigid_object_types = (
