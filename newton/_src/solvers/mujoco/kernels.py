@@ -23,9 +23,9 @@ from ...sim.contacts import contact_surface_point, contact_surface_separation
 from .constants import (
     DEFAULT_LIMIT_SOLREF_DAMPRATIO,
     DEFAULT_LIMIT_SOLREF_TIMECONST,
+    FLOAT64_EPS,
     HINGE_CONNECT_HALF_SPAN,
     MJ_MINMU,
-    MJ_MINVAL,
     SOLREF_MODE_FORCE_SPACE,
     SOLREF_MODE_MJCF_DEFAULT,
     SOLREF_MODE_RAW,
@@ -47,7 +47,7 @@ vec12 = wp.types.vector(length=12, dtype=wp.float32)
 # Utility functions
 @wp.func
 def safe_div(x: float, y: float) -> float:
-    return x / wp.where(y != 0.0, y, MJ_MINVAL)
+    return x / wp.where(y != 0.0, y, FLOAT64_EPS)
 
 
 @wp.func
@@ -130,6 +130,7 @@ def write_contact(
 
 @wp.func
 def contact_params(
+    mj_minval: float,
     geom_condim: wp.array[int],
     geom_priority: wp.array[int],
     geom_solmix: wp.array2d[float],
@@ -164,9 +165,9 @@ def contact_params(
         solmix1 = geom_solmix[worldid, g1]
         solmix2 = geom_solmix[worldid, g2]
         mix = safe_div(solmix1, solmix1 + solmix2)
-        mix = wp.where((solmix1 < MJ_MINVAL) and (solmix2 < MJ_MINVAL), 0.5, mix)
-        mix = wp.where((solmix1 < MJ_MINVAL) and (solmix2 >= MJ_MINVAL), 0.0, mix)
-        mix = wp.where((solmix1 >= MJ_MINVAL) and (solmix2 < MJ_MINVAL), 1.0, mix)
+        mix = wp.where((solmix1 < mj_minval) and (solmix2 < mj_minval), 0.5, mix)
+        mix = wp.where((solmix1 < mj_minval) and (solmix2 >= mj_minval), 0.0, mix)
+        mix = wp.where((solmix1 >= mj_minval) and (solmix2 < mj_minval), 1.0, mix)
         condim = wp.max(condim1, condim2)
         resolved_friction = wp.max(geom_friction[worldid, g1], geom_friction[worldid, g2])
 
@@ -504,6 +505,7 @@ def _recovery_solref(thickness: float, depth: float, dt: float, solimp: vec5) ->
 # fast math only approximates div/sqrt here; keep transcendentals out of this kernel
 @wp.kernel(module="unique", module_options={"fast_math": True})
 def convert_newton_contacts_to_mjwarp_kernel(
+    mj_minval: float,
     body_q: wp.array[wp.transform],
     shape_body: wp.array[int],
     body_flags: wp.array[int],
@@ -683,6 +685,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
             worldid = body_b // bodies_per_world
 
         margin, _gap, condim, friction, solref, solreffriction, solimp, mix = contact_params(
+            mj_minval,
             geom_condim,
             geom_priority,
             geom_solmix,
@@ -761,8 +764,8 @@ def convert_newton_contacts_to_mjwarp_kernel(
                         is_elliptic,
                     )
                     solref = convert_solref(
-                        wp.max(ke * factor, MJ_MINVAL),
-                        wp.max(kd * factor, MJ_MINVAL),
+                        wp.max(ke * factor, FLOAT64_EPS),
+                        wp.max(kd * factor, FLOAT64_EPS),
                         1.0,
                         1.0,
                     )
@@ -787,10 +790,10 @@ def convert_newton_contacts_to_mjwarp_kernel(
                     is_elliptic,
                 )
                 solimp = vec5(imp, imp, 0.001, 1.0, 0.5)
-                contact_ke = wp.max(contact_ke * factor, MJ_MINVAL)
+                contact_ke = wp.max(contact_ke * factor, FLOAT64_EPS)
                 kd = rigid_contact_damping[tid]
                 if kd > 0.0:
-                    timeconst = 2.0 / wp.max(kd * factor, MJ_MINVAL)
+                    timeconst = 2.0 / wp.max(kd * factor, FLOAT64_EPS)
                     dampratio = wp.sqrt(1.0 / (timeconst * timeconst * contact_ke))
                 else:
                     timeconst = wp.sqrt(1.0 / contact_ke)
@@ -2924,8 +2927,8 @@ def update_jnt_solref_from_invweight0_kernel(
     if invw > 0.0 and dmax < 1.0:
         factor = invw * (1.0 - dmax)
 
-    direct_stiffness = wp.max(ke * factor, MJ_MINVAL)
-    direct_damping = wp.max(kd * factor, MJ_MINVAL)
+    direct_stiffness = wp.max(ke * factor, FLOAT64_EPS)
+    direct_damping = wp.max(kd * factor, FLOAT64_EPS)
     jnt_solref[world, mjc_jnt] = convert_solref(direct_stiffness, direct_damping, 1.0, 1.0)
 
 
@@ -2961,7 +2964,7 @@ def capture_actuator_dampratio_kernel(
     kp = actuator_gainprm[world % actuator_gainprm.shape[0], actuator][0]
     bias = actuator_biasprm[world, actuator]
     ratio = float(0.0)
-    if bias[2] > 0.0 and wp.abs(kp + bias[1]) <= MJ_MINVAL:
+    if bias[2] > 0.0 and wp.abs(kp + bias[1]) <= FLOAT64_EPS:
         ratio = bias[2]
     dampratio_out[world, actuator] = ratio
 
@@ -2970,7 +2973,7 @@ def capture_actuator_dampratio_kernel(
 def _dampratio_damping(ratio: float, kp: float, inv_weight: float):
     """Return the damping for a ``dampratio`` given the inverse reflected inertia ``J M^-1 J^T``, as MuJoCo's compiler."""
     inertia = float(0.0)
-    if inv_weight > MJ_MINVAL:
+    if inv_weight > FLOAT64_EPS:
         inertia = 1.0 / inv_weight
     return ratio * 2.0 * wp.sqrt(kp * inertia)
 
@@ -3517,7 +3520,7 @@ def convert_qfrc_from_mj_kernel(
 
 @wp.kernel
 def update_pair_properties_kernel(
-    pairs_per_world: int,
+    mjc_pair_to_newton_pair: wp.array2d[wp.int32],
     pair_solref_in: wp.array[wp.vec2],
     pair_solreffriction_in: wp.array[wp.vec2],
     pair_solimp_in: wp.array[vec5],
@@ -3536,9 +3539,17 @@ def update_pair_properties_kernel(
 
     Iterates over MuJoCo pairs [world, pair] and copies solver properties
     (solref, solimp, margin, gap, friction) from Newton custom attributes.
+    ``mjc_pair_to_newton_pair`` resolves each slot to the Newton row that produced
+    it, so a slot is read by the world that authored it: template-world rows are
+    resolved by rank within each world, global rows are read by every world at
+    their absolute index.
+    An unmapped slot is -1 and is left at MuJoCo's own value.
     """
     world, mjc_pair = wp.tid()
-    newton_pair = world * pairs_per_world + mjc_pair
+    newton_pair = mjc_pair_to_newton_pair[world, mjc_pair]
+
+    if newton_pair < 0:
+        return
 
     if pair_solref_in:
         pair_solref_out[world, mjc_pair] = pair_solref_in[newton_pair]
