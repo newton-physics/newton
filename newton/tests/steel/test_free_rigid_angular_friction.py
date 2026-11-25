@@ -10,6 +10,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.solvers.steel.friction_mode_bits import contact_friction_bits, shape_friction_bits_host
 from newton._src.solvers.steel.friction_patches import FrictionPatches
 from newton._src.solvers.steel.kernels import (
     PGS_CONSTRAINT_TYPE_CONTACT,
@@ -662,7 +663,7 @@ class TestFreeRigidAngularFriction(unittest.TestCase):
                 np.testing.assert_allclose(seen["parent_f"], 0.0, atol=1.0e-5)
 
     def test_pair_takes_the_higher_mode_and_the_larger_coefficient(self):
-        """Enable the rows by the higher mode of the pair, and bound them by the larger coefficient of both shapes.
+        """Enable a row when either shape's mode enables it, and bound it by the larger coefficient of both shapes.
 
         The sliding table's coefficients count once the sphere's mode enables a row, and a rolling table gives a
         sliding sphere the rows too.
@@ -870,6 +871,42 @@ def test_linear_row_builder_leaves_the_angular_rows(test, device):
         np.testing.assert_array_equal(output.numpy()[0, 3:], sentinel)
 
 
+@wp.kernel(enable_backward=False)
+def _contact_friction_bits_kernel(
+    modes: wp.array[wp.int32], shape_a: wp.array[int], shape_b: wp.array[int], bits: wp.array[int]
+):
+    i = wp.tid()
+    bits[i] = contact_friction_bits(modes, shape_a[i], shape_b[i])
+
+
+def test_contact_friction_bits_or_the_shapes(test, device):
+    """Map each mode to its sliding, torsional and rolling bits, and OR the bits of a contact's two shapes."""
+    modes = [int(mode) for mode in newton.ShapeFrictionMode]
+    expected = {
+        newton.ShapeFrictionMode.NONE: 0,
+        newton.ShapeFrictionMode.SLIDING: 1,
+        newton.ShapeFrictionMode.TORSIONAL: 3,
+        newton.ShapeFrictionMode.TORSIONAL_ROLLING: 7,
+    }
+    np.testing.assert_array_equal(shape_friction_bits_host(modes), [expected[mode] for mode in modes])
+    pairs = [(a, b) for a in range(-1, len(modes)) for b in range(-1, len(modes))]
+    bits = wp.zeros(len(pairs), dtype=int, device=device)
+    wp.launch(
+        _contact_friction_bits_kernel,
+        dim=len(pairs),
+        inputs=[
+            wp.array(modes, dtype=wp.int32, device=device),
+            wp.array([a for a, _ in pairs], dtype=int, device=device),
+            wp.array([b for _, b in pairs], dtype=int, device=device),
+        ],
+        outputs=[bits],
+        device=device,
+    )
+    host = shape_friction_bits_host(modes)
+    want = [(host[a] if a >= 0 else 0) | (host[b] if b >= 0 else 0) for a, b in pairs]
+    np.testing.assert_array_equal(bits.numpy(), want)
+
+
 class TestFreeRigidAngularRowBuilder(unittest.TestCase):
     pass
 
@@ -878,6 +915,12 @@ add_function_test(
     TestFreeRigidAngularRowBuilder,
     "test_linear_row_builder_leaves_the_angular_rows",
     test_linear_row_builder_leaves_the_angular_rows,
+    devices=get_test_devices(),
+)
+add_function_test(
+    TestFreeRigidAngularRowBuilder,
+    "test_contact_friction_bits_or_the_shapes",
+    test_contact_friction_bits_or_the_shapes,
     devices=get_test_devices(),
 )
 

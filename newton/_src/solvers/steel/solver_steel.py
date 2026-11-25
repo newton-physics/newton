@@ -56,6 +56,7 @@ from .contact_torsion import (
 )
 from .cpu_fallback import pgs_solve_mf_gs_cpu, pgs_solve_propagation_contact_cpu, reject_cpu_unsupported_features
 from .friction import FRICTION_PAIR_CUDA, coupled_contact_cuda
+from .friction_mode_bits import FRICTION_BIT_TORSIONAL, shape_friction_bits_host
 from .friction_patches import _FrictionPatchState, finish_patch_impulses, link_patch_rows, seed_patch_impulses
 from .kernels import (
     CONTACT_GENERATION_NONE,
@@ -1491,10 +1492,10 @@ class SolverSteel(SolverBase, CouplingInterface):
       compliance of hydroelastic contacts is opt-in (``contact_compliance``).
 
       The free-body angular rows act on contacts between free bodies, and of free bodies with static
-      or kinematic geometry, whose :class:`~newton.ShapeFrictionMode` (the higher of the two shapes')
-      is ``TORSIONAL`` or ``TORSIONAL_ROLLING``. ``TORSIONAL`` adds a spin row about the normal bounded by
-      :attr:`~newton.Model.shape_material_mu_torsional` [m] times the normal load; ``TORSIONAL_ROLLING`` also
-      adds a rolling pair bounded by :attr:`~newton.Model.shape_material_mu_rolling` [m]. Each coefficient is
+      or kinematic geometry. A contact gets a row when either shape's :class:`~newton.ShapeFrictionMode`
+      enables its component: torsional friction adds a spin row about the normal bounded by
+      :attr:`~newton.Model.shape_material_mu_torsional` [m] times the normal load, and rolling friction
+      a rolling pair bounded by :attr:`~newton.Model.shape_material_mu_rolling` [m]. Each coefficient is
       the larger of the two shapes' values. Under friction patches, contacts share a patch only if their
       angular coefficients match. A contact with angular rows takes up to 6 free-body rows instead of 3;
       raise ``free_body_constraint_max`` if :attr:`constraint_overflow` reports dropped rows. The rows
@@ -3451,7 +3452,8 @@ class SolverSteel(SolverBase, CouplingInterface):
             return
         torsion_radius = self._contact_torsion_shape_radius
         radii = torsion_radius.numpy() if torsion_radius is not None else np.zeros(model.shape_count)
-        missing = (model.shape_material_friction_mode.numpy() >= int(ShapeFrictionMode.TORSIONAL)) & (radii <= 0.0)
+        modes = model.shape_material_friction_mode.numpy()
+        missing = ((shape_friction_bits_host(modes) & int(FRICTION_BIT_TORSIONAL)) != 0) & (radii <= 0.0)
         if rows:
             # The free-body angular rows cover the shapes whose contacts take the free-body route.
             shape_body = model.shape_body.numpy()

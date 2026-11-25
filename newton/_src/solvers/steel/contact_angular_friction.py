@@ -2,10 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """Experimental rolling and spin friction rows for free-body contacts.
 
-A contact's :attr:`~newton.Model.shape_material_friction_mode`, the higher mode of its two shapes, enables them:
-``TORSIONAL`` adds a spin row about the contact normal bounded by
-:attr:`~newton.Model.shape_material_mu_torsional` [m], ``TORSIONAL_ROLLING`` also a rolling pair about the contact
-tangents bounded by :attr:`~newton.Model.shape_material_mu_rolling` [m]. Each coefficient is the larger of the
+A contact gets a row when either of its shapes' :attr:`~newton.Model.shape_material_friction_mode` enables its
+component: torsional friction adds a spin row about the contact normal bounded by
+:attr:`~newton.Model.shape_material_mu_torsional` [m], rolling friction a rolling pair about the contact tangents
+bounded by :attr:`~newton.Model.shape_material_mu_rolling` [m]. Each coefficient is the larger of the
 two shapes' values. The rows follow the contact's sliding pair, ``[normal, t1, t2, roll1, roll2, spin]``,
 and are bounded by their coefficient times the pooled normal load of the contact's patch: the
 rolling pair on a disk, the spin row on a box. Only contacts on the free-body route (free bodies
@@ -16,6 +16,12 @@ import numpy as np
 import warp as wp
 
 from ...sim import ShapeFrictionMode
+from .friction_mode_bits import (
+    FRICTION_BIT_ROLLING,
+    FRICTION_BIT_TORSIONAL,
+    FRICTION_BITS_ANGULAR,
+    shape_friction_bits_host,
+)
 from .kernels import (
     PGS_CONSTRAINT_TYPE_CONTACT_ROLLING,
     PGS_CONSTRAINT_TYPE_CONTACT_SPIN,
@@ -41,7 +47,7 @@ def configure_free_rigid_angular_friction(solver, model) -> None:
     route_body = _free_rigid_route_body_mask(solver, model)
     shape_body = model.shape_body.numpy()
     route_shape = (shape_body < 0) | (route_body[np.maximum(shape_body, 0)] != 0)
-    if not np.any(route_shape & (values >= int(ShapeFrictionMode.TORSIONAL))):
+    if not np.any(route_shape & ((shape_friction_bits_host(values) & int(FRICTION_BITS_ANGULAR)) != 0)):
         return
     if (
         not model.device.is_cuda
@@ -245,14 +251,15 @@ def _check_mode_values(values: np.ndarray) -> None:
 def _check_coefficients(model, modes: np.ndarray) -> None:
     """Reject a negative or non-finite coefficient that a contact's friction mode can enable.
 
-    A contact takes the higher mode of its shapes, so with any shape at a mode, every shape's coefficient counts.
+    A contact gets a component when either shape enables it, so then every shape's coefficient counts.
     """
-    for name, array, mode in (
-        ("shape_material_mu_torsional", model.shape_material_mu_torsional, ShapeFrictionMode.TORSIONAL),
-        ("shape_material_mu_rolling", model.shape_material_mu_rolling, ShapeFrictionMode.TORSIONAL_ROLLING),
+    bits = shape_friction_bits_host(modes)
+    for name, array, bit in (
+        ("shape_material_mu_torsional", model.shape_material_mu_torsional, FRICTION_BIT_TORSIONAL),
+        ("shape_material_mu_rolling", model.shape_material_mu_rolling, FRICTION_BIT_ROLLING),
     ):
-        if not np.any(modes >= int(mode)):
+        if not np.any(bits & int(bit)):
             continue
         values = array.numpy()
         if not np.all(np.isfinite(values)) or np.any(values < 0.0):
-            raise ValueError(f"{name} must be finite and non-negative with a shape at ShapeFrictionMode.{mode.name}")
+            raise ValueError(f"{name} must be finite and non-negative when a shape's friction mode enables it")

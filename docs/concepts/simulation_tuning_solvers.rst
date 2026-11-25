@@ -312,9 +312,9 @@ repository examples spend tuning effort, not a shared solver API.
        only a linear surface velocity per point, so the torsion rows treat a
        spinning surface as still and resist bodies co-rotating with it.
        Free-body contacts get experimental spin and rolling friction rows
-       when their ``ShapeFrictionMode`` is ``TORSIONAL`` (spin, bounded by
-       ``mu_torsional`` times the normal load) or ``TORSIONAL_ROLLING`` (also rolling,
-       bounded by ``mu_rolling`` times the normal load).
+       when either shape's ``ShapeFrictionMode`` enables torsional friction
+       (spin, bounded by ``mu_torsional`` times the normal load) or rolling
+       friction (bounded by ``mu_rolling`` times the normal load).
        The experimental ``contact_compliance`` option solves hydroelastic
        contacts with positive stiffness as implicit spring-dampers instead; it
        uses point friction and prepares its rows on the device, so a compliant
