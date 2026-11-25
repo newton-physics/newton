@@ -119,8 +119,19 @@ adds overhead. To measure regions within a captured frame, see Warp's guide to
 `timing within CUDA graphs
 <https://nvidia.github.io/warp/stable/user_guide/execution_and_performance/profiling.html#timing-in-cuda-graphs>`__.
 
-Once the timeline identifies an expensive kernel, use Nsight Compute to
-investigate its compute and memory throughput. See Warp's `Nsight Compute guide
+Once the timeline identifies an expensive kernel, use Nsight Compute to profile
+a matching CUDA graph node. Replace ``KERNEL_NAME`` with the name from the
+Nsight Systems trace and adjust ``--launch-skip`` to sample a steady-state launch.
+
+.. code-block:: console
+
+    ncu --target-processes all --graph-profiling node -k 'regex:KERNEL_NAME' \
+        --launch-skip 10 --launch-count 1 -o h1-kernel \
+        uv run -m newton.examples robot_h1 --viewer null --num-frames 300
+
+Open ``h1-kernel.ncu-rep`` and check the compute and memory throughput in
+GPU Speed of Light Throughput to see which resource is closer to saturation.
+See Warp's `Nsight Compute guide
 <https://nvidia.github.io/warp/stable/user_guide/execution_and_performance/profiling.html#nsight-compute-profiling>`__.
 
 .. _performance-graph-capture:
@@ -157,6 +168,12 @@ Python decisions recorded during capture.
   query checks whether the notification can run inside capture. If you update
   the model separately from stepping, recapture the stepping graph
   unless the solver documents that reuse is safe. See :ref:`Runtime model updates`.
+
+For example, :class:`~solvers.SolverFeatherstone` can capture a step that skips
+the mass matrix update when ``update_mass_matrix_interval`` is greater than 1.
+Replay repeats that choice even after notification marks the matrix dirty.
+For forward simulations with kinematic joints, an armature edit and notification
+can also replace a captured buffer, so recapture even with an interval of 1.
 
 See the capture requirements for :ref:`solver_observables`,
 :ref:`actuators <stateful-actuators>`, :ref:`deformable-selection`, and
@@ -211,6 +228,7 @@ the input buffer.
 
             self.state_0 = model.state()
             self.state_1 = model.state()
+            newton.eval_fk(model, model.joint_q, model.joint_qd, self.state_0)
             self.control = model.control()
             self.pipeline = newton.CollisionPipeline(model)
             self.contacts = self.pipeline.contacts()
@@ -271,6 +289,23 @@ positions, velocities, and any relevant solver history. See
            np.testing.assert_allclose(
                eager.state_0.body_qd.numpy(), captured.state_0.body_qd.numpy(), atol=1e-5
            )
+
+   A joint frame can place a body away from its default pose. Check that the
+   loop starts from the pose defined by the joint before taking any steps.
+
+   .. testcode:: performance-loop
+
+       builder = newton.ModelBuilder()
+       link = builder.add_link()
+       builder.add_shape_box(link, hx=0.1, hy=0.1, hz=0.1)
+       joint = builder.add_joint_revolute(
+           parent=-1,
+           child=link,
+           parent_xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()),
+       )
+       builder.add_articulation([joint])
+       articulated = Simulation(builder.finalize(), sim_substeps=4, use_graph=False)
+       np.testing.assert_allclose(articulated.state_0.body_q.numpy()[link, :3], [0.0, 0.0, 1.0])
 
 .. _performance-host-sync:
 
@@ -364,6 +399,11 @@ replay.
    * - Enable sleeping
      - Measure the speedup in a representative scene and check that bodies
        wake when needed. See :ref:`MuJoCo sleeping <mujoco-sleeping>`.
+
+Set task-specific physical limits, such as actuator loads or impact forces the
+real robot can withstand. End an episode when it exceeds those limits and
+record it as a failure. A smaller timestep can improve numerical stability
+without bringing the trajectory within the robot's operating limits.
 
 For the order in which to change these settings, see :ref:`Simulation Tuning`.
 
