@@ -9,8 +9,9 @@ Locations sit at the footprint's axial extremes along its principal axis, with
 the transverse offset and height of the members near each end, avoiding a
 diagonal friction couple on symmetric narrow footprints. Isotropic footprints
 retain a canonical farthest pair because they have no unique axis.
-Only touching contacts of a touching body pair are eligible as friction
-locations, so a separated member never carries the region's pooled load.
+On a touching body pair, only contacts separated by at most ``_TOUCH_TOLERANCE``
+times the smaller body's radius are eligible as friction locations, so a
+separated member never carries the region's pooled load.
 Regions require matching friction materials, nearly aligned normals, nearby
 contact planes, and connected shape bounding spheres on each body. The latter
 is a conservative test across convex seams, not an exact surface-connectivity
