@@ -15001,10 +15001,15 @@ class TestMuJoCoSolverForceSpaceContactSolref(unittest.TestCase):
         self.assertAlmostEqual(float(actual_solref[1]), expected_damp, delta=abs(expected_damp) * rel_tol)
 
     def test_per_contact_force_gains_use_body_mass_and_impedance(self):
-        """Convert per-contact force gains and retain critical damping when damping is zero."""
-        mass, stiffness = 5.0, 1.0e4
-        for damping in (100.0, 0.0):
-            with self.subTest(damping=damping):
+        """Convert per-contact gains and limit the fallback to overdamped contacts."""
+        mass = 5.0
+        for stiffness, damping, automatic in (
+            (1.0e4, 100.0, False),
+            (1.0e4, 0.0, True),
+            (1.0e4, 1.0e6, True),
+            (2.5e7, 2.5e4, False),  # Underdamped, even though timeconst is below 2*dt.
+        ):
+            with self.subTest(stiffness=stiffness, damping=damping):
                 model, _ = self._build_box_on_plane(mass=mass, ke=3.0e4, kd=300.0)
                 solver = SolverMuJoCo(model, use_mujoco_contacts=False, njmax=20, nconmax=20, iterations=10)
                 pipeline = newton.CollisionPipeline(model)
@@ -15023,7 +15028,7 @@ class TestMuJoCoSolverForceSpaceContactSolref(unittest.TestCase):
                 solref = solver.mjw_data.contact.solref.numpy()[:count]
                 # The free box's translational inverse weight is 1 / mass; the fixed plane contributes zero.
                 for impedance, (timeconst, dampratio) in zip(solimp[:, 1], solref, strict=True):
-                    if damping > 0.0:
+                    if not automatic:
                         expected_timeconst = 2.0 * mass / (damping * (1.0 - impedance))
                         expected_dampratio = damping / 2.0 * math.sqrt((1.0 - impedance) / (mass * stiffness))
                     else:

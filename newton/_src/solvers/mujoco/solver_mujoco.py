@@ -6063,6 +6063,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self._contact_tid_to_cid,
                 recovery,
                 self.mjw_model.opt.timestep,
+                self.mjw_model.opt.integrator != self._mujoco.mjtIntegrator.mjINT_DISCRETE
+                and not self.mjw_model.opt.disableflags & self._mujoco.mjtDisableBit.mjDSBL_REFSAFE,
                 compact_stale,
             ],
             device=model.device,
