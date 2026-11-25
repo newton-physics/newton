@@ -1,0 +1,1 @@
+Speed up `CollisionPipeline.collide()` with `broad_phase="explicit"` (the default) for models without particles by updating collision bounds only for shapes in the pair list. In that case, `CollisionPipeline.narrow_phase.shape_aabb_lower` and `shape_aabb_upper` are no longer updated for shapes outside the pair list. No migration is required.
