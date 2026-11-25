@@ -255,14 +255,15 @@ class ProjectionSchedule:
             return
 
         if self.nesterov is not None:
-            self.nesterov.begin(world_active, recycle=recycle)
+            self.nesterov.begin(world_active, iterations - 1 + int(recycle), recycle=recycle)
         self._warmstart(world_active, self._weights, world_failed)
         self._apply(body_world, world_active, world_failed, projected_twist)
-        if self.nesterov is not None and recycle:
-            # The extrapolation deferred from the last sweep of the previous splitting iteration;
-            # a world without row history restarts its momentum here and stays at its warm start
-            self.nesterov.extrapolate(world_active, world_failed, self._weights, self._data.twist_delta)
-            self._apply(body_world, world_active, world_failed, projected_twist)
+        if self.nesterov is not None:
+            self.nesterov.begin_twists(body_world, world_active, world_failed, recycle, projected_twist)
+            if recycle:
+                # The extrapolation deferred from the last sweep of the previous splitting iteration;
+                # a world without row history restarts its momentum here and stays at its warm start
+                self.nesterov.extrapolate(body_world, world_active, world_failed, projected_twist)
 
         if self.anderson is not None:
             self.anderson.begin_map(world_active, world_failed)
@@ -274,12 +275,13 @@ class ProjectionSchedule:
                 self.anderson.finish_map(world_active, world_failed, self._weights, self._data.twist_delta)
                 self._apply(body_world, world_active, world_failed, projected_twist)
             if self.nesterov is not None and iteration + 1 < iterations:
-                self.nesterov.extrapolate(world_active, world_failed, self._weights, self._data.twist_delta)
-                self._apply(body_world, world_active, world_failed, projected_twist)
+                self.nesterov.extrapolate(body_world, world_active, world_failed, projected_twist)
         if self.coloring is not None:
             # An order-independent Jacobi sweep restores the symmetry lost to the color ordering.
             self._sweep(0, world_active, self._weights, projected_twist, world_failed, smoothing=True)
             self._apply(body_world, world_active, world_failed, projected_twist)
+        if self.nesterov is not None and recycle:
+            self.nesterov.end_twists(body_world, world_active, world_failed, projected_twist)
 
     ###
     # Internals

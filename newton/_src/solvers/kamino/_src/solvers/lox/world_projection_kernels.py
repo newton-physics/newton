@@ -36,6 +36,7 @@ from .nesterov import (
     NesterovRowState,
     box_restart_dot,
     contact_restart_dot,
+    extrapolate_body_twist,
     extrapolate_box_nesterov_row,
     extrapolate_contact_nesterov_row,
     initialize_box_nesterov_row,
@@ -770,31 +771,24 @@ def make_project_by_world_kernel(
         wid: wp.int32,
         tid: wp.int32,
         theta: wp.float32,
+        world_body_offset: wp.array[wp.int32],
+        world_body_count: wp.array[wp.int32],
         world_box_offset: wp.array[wp.int32],
         world_box_count: wp.array[wp.int32],
         world_contact_offset: wp.array[wp.int32],
         world_contact_count: wp.array[wp.int32],
-        box_body_a: wp.array[wp.int32],
-        box_body_b: wp.array[wp.int32],
-        box_jacobian_a: wp.array[vec6f],
-        box_jacobian_b: wp.array[vec6f],
-        contact_body_a: wp.array[wp.int32],
-        contact_body_b: wp.array[wp.int32],
-        contact_jacobian_a: wp.array[mat36f],
-        contact_jacobian_b: wp.array[mat36f],
-        contact_frame: wp.array[wp.mat33f],
         contact_friction: wp.array[wp.float32],
         angular_friction: wp.array[wp.vec2f],
         box_reaction: wp.array[wp.float32],
         contact_reaction: wp.array[wp.vec3f],
         angular_reaction: wp.array[wp.vec3f],
         state: NesterovRowState,
-        weights: ProjectionWeights,
-        twist_delta: wp.array[vec6f],
+        world_twist: wp.array[vec6f],
     ) -> wp.float32:
-        """Update the momentum of one world, extrapolate its rows, and return the next ``theta``.
+        """Update the momentum of one world, extrapolate its rows and body twists, and return the next ``theta``.
 
-        Every thread of the block must call this function, which reduces the restart test over the block.
+        Every thread of the block must call this function, which reduces the restart test over the block. Each
+        thread extrapolates the bodies that it updates in :func:`_apply_world_delta`.
         """
         dot = wp.float32(0.0)
         local, stride = _first_box_row(tid, world_box_count[wid], world_contact_count[wid], contact_row_cost)
@@ -820,17 +814,7 @@ def make_project_by_world_kernel(
         local, stride = _first_box_row(tid, world_box_count[wid], world_contact_count[wid], contact_row_cost)
         while local < world_box_count[wid]:
             extrapolate_box_nesterov_row(
-                world_box_offset[wid] + local,
-                beta,
-                box_body_a,
-                box_body_b,
-                box_jacobian_a,
-                box_jacobian_b,
-                weights,
-                box_reaction,
-                state.box_trial,
-                state.box_previous,
-                twist_delta,
+                world_box_offset[wid] + local, beta, box_reaction, state.box_trial, state.box_previous
             )
             local += stride
         local, stride = _first_contact(tid, world_box_count[wid], world_contact_count[wid], contact_row_cost)
@@ -838,21 +822,19 @@ def make_project_by_world_kernel(
             extrapolate_contact_nesterov_row(
                 world_contact_offset[wid] + local,
                 beta,
-                contact_body_a,
-                contact_body_b,
-                contact_jacobian_a,
-                contact_jacobian_b,
-                contact_frame,
-                weights,
                 contact_reaction,
                 state.contact_trial,
                 state.contact_previous,
                 angular_reaction,
                 state.angular_trial,
                 state.angular_previous,
-                twist_delta,
             )
             local += stride
+        local = tid
+        while local < world_body_count[wid]:
+            extrapolate_body_twist(world_body_offset[wid] + local, beta, world_twist, state.twist_previous)
+            local += wp.block_dim()
+        _sync_threads()
         return next_theta
 
     @wp.kernel(module="unique", enable_backward=False)
@@ -1028,6 +1010,16 @@ def make_project_by_world_kernel(
 
         theta = wp.float32(1.0)
         if wp.static(nesterov):
+            # The previous twists match the warm-started reactions; a kept history holds the twist change of the
+            # last sweep of the previous splitting iteration
+            local = tid
+            while local < world_body_count[wid]:
+                bid = world_body_offset[wid] + local
+                if keep_history:
+                    acceleration_state.twist_previous[bid] = world_twist[bid] - acceleration_state.twist_previous[bid]
+                else:
+                    acceleration_state.twist_previous[bid] = world_twist[bid]
+                local += wp.block_dim()
             if recycle:
                 theta = acceleration_state.theta[wid]
             if keep_history:
@@ -1036,30 +1028,19 @@ def make_project_by_world_kernel(
                     wid,
                     tid,
                     theta,
+                    world_body_offset,
+                    world_body_count,
                     world_box_offset,
                     world_box_count,
                     world_contact_offset,
                     world_contact_count,
-                    box_body_a,
-                    box_body_b,
-                    box_jacobian_a,
-                    box_jacobian_b,
-                    contact_body_a,
-                    contact_body_b,
-                    contact_jacobian_a,
-                    contact_jacobian_b,
-                    contact_frame,
                     contact_friction,
                     angular_friction,
                     box_reaction,
                     contact_reaction,
                     angular_reaction,
                     acceleration_state,
-                    weights,
-                    twist_delta,
-                )
-                _apply_world_delta(
-                    wid, tid, world_body_offset, world_body_count, world_failed, twist_delta, world_twist
+                    world_twist,
                 )
         for iteration in range(iterations):
             if wp.static(colored):
@@ -1210,30 +1191,19 @@ def make_project_by_world_kernel(
                         wid,
                         tid,
                         theta,
+                        world_body_offset,
+                        world_body_count,
                         world_box_offset,
                         world_box_count,
                         world_contact_offset,
                         world_contact_count,
-                        box_body_a,
-                        box_body_b,
-                        box_jacobian_a,
-                        box_jacobian_b,
-                        contact_body_a,
-                        contact_body_b,
-                        contact_jacobian_a,
-                        contact_jacobian_b,
-                        contact_frame,
                         contact_friction,
                         angular_friction,
                         box_reaction,
                         contact_reaction,
                         angular_reaction,
                         acceleration_state,
-                        weights,
-                        twist_delta,
-                    )
-                    _apply_world_delta(
-                        wid, tid, world_body_offset, world_body_count, world_failed, twist_delta, world_twist
+                        world_twist,
                     )
 
         if wp.static(colored):
@@ -1296,6 +1266,12 @@ def make_project_by_world_kernel(
             if tid == 0:
                 acceleration_state.theta[wid] = theta
                 acceleration_state.history[wid] = wp.int32(recycle)
+            # The twist change of the last sweep, for the deferred extrapolation of the next splitting iteration
+            local = tid
+            while local < world_body_count[wid]:
+                bid = world_body_offset[wid] + local
+                acceleration_state.twist_previous[bid] = world_twist[bid] - acceleration_state.twist_previous[bid]
+                local += wp.block_dim()
         _store_world_twists(wid, tid, world_body_offset, world_body_count, world_twist, projected_twist)
 
     return project_by_world

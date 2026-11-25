@@ -826,14 +826,13 @@ class NesterovData:
         box_capacity = problem_data.box_rows.capacity
         rows = problem_data.contact_rows
         spatial = rows.angular_reaction is not None
-        self.theta = wp.ones(world_count, dtype=wp.float32, device=device)
-        """Momentum parameter of each world."""
+        self.theta = wp.ones((2, world_count), dtype=wp.float32, device=device)
+        """Momentum parameter of each world, read and written alternately by the row-parallel extrapolations;
+        the first row holds it between projections."""
         self.history = wp.zeros(world_count, dtype=wp.int32, device=device)
         """Whether each world holds the row history of the previous splitting iteration."""
-        self.beta = wp.zeros(world_count, dtype=wp.float32, device=device)
-        """Extrapolation factor of each world."""
-        self.restart_dot = wp.zeros(world_count, dtype=wp.float32, device=device)
-        """Restart criterion of each world."""
+        self.restart_dot = wp.zeros((2, world_count), dtype=wp.float32, device=device)
+        """Restart criterion of each world, accumulated and cleared alternately."""
         self.box_trial = wp.zeros(box_capacity, dtype=wp.float32, device=device)
         """Extrapolated trial reaction of each box row."""
         self.box_previous = wp.zeros(box_capacity, dtype=wp.float32, device=device)
@@ -846,6 +845,8 @@ class NesterovData:
         """Extrapolated trial angular reaction of each contact, with spatial friction."""
         self.angular_previous = wp.zeros(rows.capacity, dtype=wp.vec3f, device=device) if spatial else None
         """Angular reaction of each contact at the previous sweep, with spatial friction."""
+        self.twist_previous = wp.zeros(problem_data.num_bodies, dtype=vec6f, device=device)
+        """Projected twist of each body at the previous sweep."""
 
 
 class ProjectionData:
