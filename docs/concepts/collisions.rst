@@ -2417,6 +2417,11 @@ Shape material properties control contact resolution. Configure via :class:`~Mod
      - 0.0
      - :attr:`~ModelBuilder.ShapeConfig.restitution`
      - :attr:`~Model.shape_material_restitution`
+   * - ``friction_mode``
+     - Friction components the shape's contacts enable
+     - ``SLIDING``
+     - :attr:`~ModelBuilder.ShapeConfig.friction_mode`
+     - :attr:`~Model.shape_material_friction_mode`
    * - ``mu_torsional``
      - Resistance to spinning at contact
      - 0.005
@@ -2442,6 +2447,32 @@ Shape material properties control contact resolution. Configure via :class:`~Mod
 .. note::
    :class:`~newton.solvers.SolverXPBD` requires ``enable_restitution=True`` on
    the solver constructor before ``restitution`` takes effect.
+
+:class:`~newton.ShapeFrictionMode` selects which friction components a
+contact applies: ``NONE`` (frictionless), ``SLIDING`` (``mu`` only),
+``SLIDING_TORSIONAL`` (adds ``mu_torsional``), ``SLIDING_ROLLING`` (adds
+``mu_rolling``), or ``SLIDING_TORSIONAL_ROLLING`` (adds both).
+A contact enables the components that either of its shapes enables (in
+:class:`~newton.solvers.SolverMuJoCo`, a higher ``mujoco:geom_priority`` or an
+explicit contact pair decides instead) and then combines the coefficients of
+both shapes by the solver's usual rule, so torsional and rolling coefficients
+take effect only in contacts where a shape's mode enables them. A
+``SLIDING_ROLLING`` ball on a ``SLIDING`` ground, for example, gets rolling
+resistance but no torsional friction, whatever the ground's ``mu_torsional``
+(for :class:`~newton.solvers.SolverMuJoCo`, see :ref:`mujoco-friction-modes`).
+A rigid contact is only frictionless
+when both shapes are ``NONE``. Particles have no mode and count as ``NONE``,
+so particle contacts follow the shape's mode, and torsional and rolling
+friction do not act on them because particles do not rotate
+(:class:`~newton.solvers.SolverMuJoCo` flexes keep sliding friction, see
+:ref:`mujoco-flexes`). Solvers and the collision pipeline may read the modes
+only when they are constructed, so changing a mode afterwards is not supported. See :ref:`Contact material support` for the modes each solver
+supports.
+
+Torsional friction matters most for contacts that touch at a single point,
+such as spheres, capsules, and edges, for example on fingertips. Contacts
+with several points or a hydroelastic patch already resist spinning through
+their distributed sliding friction.
 
 Example:
 
@@ -2497,13 +2528,6 @@ The viscous branch evaluates :math:`k_f v_t` directly, so its velocity
 derivative remains well-defined at rest without a separate smoothing
 parameter. The force is continuous at the Coulomb limit, where its derivative
 changes between the viscous and capped branches.
-
-The solver argument and attribute ``friction_smoothing`` are deprecated in
-Newton 1.8 and have no effect on friction. Explicit constructor values and
-attribute reads or assignments emit a deprecation warning. Constructor calls
-and attribute access remain supported, and the attribute retains its last
-assigned value; all values use the corrected force law above. Remove its use
-and configure ``kf`` for the low-speed slope and ``mu`` for the Coulomb limit.
 
 - Larger ``kf`` gives less creep but stiffens the friction force. With these
   explicit solvers, keep :math:`N k_f \, \Delta t / m_\text{eff}` well below 1,
@@ -2562,7 +2586,15 @@ respectively.
 
 Extends ``PhysicsMaterialAPI`` with torsional/rolling friction
 (``newton:torsionalFriction``, ``newton:rollingFriction``) and contact response
-attributes. The contact response attributes map to :class:`~ModelBuilder.ShapeConfig`
+attributes. Authoring a torsional or rolling coefficient raises the
+:attr:`~ModelBuilder.ShapeConfig.friction_mode` of the shapes bound to the
+material to enable that component (``SLIDING_TORSIONAL``, ``SLIDING_ROLLING``,
+or ``SLIDING_TORSIONAL_ROLLING``). Colliders that apply
+``MjcCollisionAPI`` select friction components through ``mjc:condim`` alone.
+A positive PhysX ``physxCollision:minTorsionalPatchRadius`` ``r`` [m] enables
+torsional friction with ``mu_torsional = mu * r``, unless the material authors
+Newton torsional friction; Newton does not model PhysX's depth-scaled
+``physxCollision:torsionalPatchRadius``. The contact response attributes map to :class:`~ModelBuilder.ShapeConfig`
 fields as follows: ``newton:contactStiffness`` → ``ke``,
 ``newton:contactDamping`` → ``kd``, ``newton:contactFrictionGain`` → ``kf``,
 ``newton:contactAdhesion`` → ``ka``. A value of ``-inf`` means "use the engine's

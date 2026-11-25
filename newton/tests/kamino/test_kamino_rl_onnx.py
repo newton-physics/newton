@@ -17,7 +17,7 @@ from newton._src.solvers.kamino.examples.rl.example_rl_drlegs import _build_obse
 from newton._src.solvers.kamino.examples.rl.joystick import JoystickConfig, JoystickController
 from newton._src.solvers.kamino.examples.rl.simulation import RigidBodySim
 from newton.tests.kamino import setup_test_output, setup_tests
-from newton.tests.unittest_utils import NewtonTestCase, has_module, requires
+from newton.tests.unittest_utils import PXR_WORK_THREAD_LIMIT_OUTPUT_RE, NewtonTestCase, has_module, requires
 
 if has_module("onnx") and has_module("warp_nn"):
     import onnx
@@ -34,6 +34,7 @@ class TestKaminoRlDrlegsWarp(NewtonTestCase):
 
     def test_module_imports_without_torch(self):
         """Import the DR Legs example when PyTorch is unavailable."""
+        self.allowOutputRegex(PXR_WORK_THREAD_LIMIT_OUTPUT_RE, stream="stderr")
         code = """
 import builtins
 

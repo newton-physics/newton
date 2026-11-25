@@ -35,6 +35,7 @@ from .kernels import (
     solve_particle_shape_contacts,
     solve_springs,
     solve_tetrahedra,
+    update_particle_inv_mass_effective,
 )
 from .restitution_kernels import (
     RESTITUTION_MANIFOLD_MAX_CONTACTS,
@@ -234,6 +235,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
             self._set_module_options(module_options, module=solve_joint_mimics.module)
 
         self._init_kinematic_state()
+        self._particle_inv_mass_eff = wp.empty_like(model.particle_inv_mass) if model.particle_count else None
 
         # helper variables to track constraint resolution vars
         self._particle_delta_counter = 0
@@ -287,6 +289,11 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
         if self.enable_restitution and flags & ModelFlags.SHAPE_PROPERTIES:
             self._refresh_rigid_restitution_enabled()
 
+    @override
+    def _non_graphable_model_flags(self) -> int:
+        # The tendon refresh validates on the host and rebuilds the tendon reset state.
+        return int(ModelFlags.TENDON_PROPERTIES) if self.model.tendon_count > 0 else 0
+
     def _refresh_rigid_restitution_enabled(self) -> None:
         restitution = self.model.shape_material_restitution
         self._rigid_restitution_enabled = restitution is not None and restitution.size > 0
@@ -324,6 +331,19 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
             outputs=[state_out.body_q, state_out.body_qd],
             device=model.device,
         )
+
+    def _particle_inv_mass_effective(self, requires_grad: bool) -> wp.array[float]:
+        """Return per-step inverse particle masses with kinematic particles zeroed."""
+        model = self.model
+        inv_mass_eff = wp.empty_like(model.particle_inv_mass) if requires_grad else self._particle_inv_mass_eff
+        wp.launch(
+            kernel=update_particle_inv_mass_effective,
+            dim=model.particle_count,
+            inputs=[model.particle_flags, model.particle_inv_mass],
+            outputs=[inv_mass_eff],
+            device=model.device,
+        )
+        return inv_mass_eff
 
     def _apply_particle_deltas(
         self,
@@ -555,7 +575,8 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                 self.particle_q_init = wp.clone(state_in.particle_q)
                 particle_deltas = wp.empty_like(state_out.particle_qd)
 
-                self.integrate_particles(model, state_in, state_out, dt)
+                self.integrate_particles(model, state_in, state_out, dt, control=control)
+                particle_inv_mass = self._particle_inv_mass_effective(requires_grad)
                 if self.enable_restitution:
                     self.particle_qd_init = wp.clone(state_out.particle_qd)
 
@@ -659,7 +680,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                                 inputs=[
                                     particle_q,
                                     particle_qd,
-                                    model.particle_inv_mass,
+                                    particle_inv_mass,
                                     model.particle_radius,
                                     model.particle_flags,
                                     body_q,
@@ -670,6 +691,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                                     model.body_flags,
                                     model.shape_body,
                                     model.shape_material_mu,
+                                    model.shape_material_friction_mode,
                                     model.soft_contact_mu,
                                     model.particle_adhesion,
                                     contacts.soft_contact_count,
@@ -697,7 +719,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                                     model.particle_grid.id,
                                     particle_q,
                                     particle_qd,
-                                    model.particle_inv_mass,
+                                    particle_inv_mass,
                                     model.particle_radius,
                                     model.particle_flags,
                                     model.particle_mu,
@@ -721,7 +743,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                                 inputs=[
                                     particle_q,
                                     particle_qd,
-                                    model.particle_inv_mass,
+                                    particle_inv_mass,
                                     model.spring_indices,
                                     model.spring_rest_length,
                                     model.spring_stiffness,
@@ -745,7 +767,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                                 inputs=[
                                     particle_q,
                                     particle_qd,
-                                    model.particle_inv_mass,
+                                    particle_inv_mass,
                                     model.edge_indices,
                                     model.edge_rest_angle,
                                     model.edge_bending_properties,
@@ -768,7 +790,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                                 inputs=[
                                     particle_q,
                                     particle_qd,
-                                    model.particle_inv_mass,
+                                    particle_inv_mass,
                                     model.tet_indices,
                                     model.tet_poses,
                                     control.tet_activations,
@@ -844,6 +866,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                                 model.shape_material_mu,
                                 model.shape_material_mu_torsional,
                                 model.shape_material_mu_rolling,
+                                model.shape_material_friction_mode,
                                 self.rigid_contact_relaxation,
                                 dt,
                                 contact_recovery,

@@ -101,6 +101,7 @@ from .enums import (
     BodyFlags,
     JointTargetMode,
     JointType,
+    ShapeFrictionMode,
 )
 from .graph_coloring import (
     ColoringAlgorithm,
@@ -1192,6 +1193,13 @@ class ModelBuilder:
         """The coefficient of torsional friction [m] (resistance to spinning at contact point)."""
         mu_rolling: float = 0.0001
         """The coefficient of rolling friction [m] (resistance to rolling motion)."""
+        friction_mode: ShapeFrictionMode = ShapeFrictionMode.SLIDING
+        """The friction components the shape enables in rigid contacts, see :class:`~newton.ShapeFrictionMode`.
+
+        :attr:`mu_torsional` and :attr:`mu_rolling` only act in contacts whose
+        mode includes them. Solvers and the collision pipeline may read the mode
+        only when they are constructed: in a finalized model, set it before
+        constructing them; changing it afterwards is not supported."""
         margin: float = 0.0
         """Outward offset from the shape's surface [m] for collision detection.
         Extends the effective collision surface outward by this amount. When two shapes collide,
@@ -1339,6 +1347,12 @@ class ModelBuilder:
                         f"mu_static must be >= mu (got mu_static={self.mu_static}, mu={self.mu}). "
                         "Leave mu_static as None for a single friction coefficient."
                     )
+            try:
+                ShapeFrictionMode(self.friction_mode)
+            except ValueError:
+                raise ValueError(
+                    f"friction_mode must be a ShapeFrictionMode value (got {self.friction_mode!r})."
+                ) from None
 
             if self.sdf_target_voxel_size is not None and (
                 not math.isfinite(self.sdf_target_voxel_size) or self.sdf_target_voxel_size <= 0.0
@@ -1655,6 +1669,18 @@ class ModelBuilder:
 
         default: Any = None
         """Default value for the attribute. If None, the default value is determined based on the dtype."""
+
+        update_flags: int | None = field(default=None, kw_only=True)
+        """:class:`~newton.ModelFlags` announcing an edit of a model-assigned attribute in a finalized
+        :class:`~newton.Model`, to pass to :meth:`~newton.solvers.SolverBase.notify_model_changed`, or
+        ``None`` when no flag covers it, for example because solvers read the attribute only at
+        construction. :attr:`ModelFlags.NONE <newton.ModelFlags.NONE>` declares that solvers read the
+        attribute at every step. Only attributes assigned to :attr:`Model.AttributeAssignment.MODEL`
+        declare it. Solvers set it for the custom attributes they register.
+        :meth:`Model.get_attribute_update_flags() <newton.Model.get_attribute_update_flags>` returns it.
+
+        A redeclaration of the attribute without flags, for example from an imported asset, is
+        compatible with the declared flags and keeps them; two different non-``None`` flags conflict."""
 
         values: dict[int, Any] | list[Any] | None = None
         """Storage for specific values (overrides).
@@ -2289,6 +2315,8 @@ class ModelBuilder:
         """Torsional friction coefficients accumulated for :attr:`Model.shape_material_mu_torsional`."""
         self.shape_material_mu_rolling: list[float] = []
         """Rolling friction coefficients accumulated for :attr:`Model.shape_material_mu_rolling`."""
+        self.shape_material_friction_mode: list[int] = []
+        """Friction modes accumulated for :attr:`Model.shape_material_friction_mode`."""
         self.shape_material_kh: list[float] = []
         """Hydroelastic stiffness values accumulated for :attr:`Model.shape_material_kh`."""
         self.shape_gap: list[float] = []
@@ -2919,7 +2947,19 @@ class ModelBuilder:
             and Model._normalize_attribute_reference(existing.references)
             == Model._normalize_attribute_reference(incoming.references)
             and existing.reference_value_transformer is incoming.reference_value_transformer
+            # A declaration without update flags is compatible with any flags.
+            and (
+                existing.update_flags is None
+                or incoming.update_flags is None
+                or existing.update_flags == incoming.update_flags
+            )
         )
+
+    def _adopt_custom_attribute_update_flags(self, existing: CustomAttribute, incoming: CustomAttribute) -> None:
+        """Keep the update flags of a matching redeclaration when ``existing`` declares none."""
+        if existing.update_flags is None and incoming.update_flags is not None:
+            existing.update_flags = incoming.update_flags
+            self._custom_schema_epoch += 1
 
     @staticmethod
     def _custom_frequency_specs_match(existing: CustomFrequency, incoming: CustomFrequency) -> bool:
@@ -2947,6 +2987,7 @@ class ModelBuilder:
             ValueError: If the attribute key already exists with incompatible specification,
                 if the attribute uses a custom string frequency that hasn't been registered,
                 if the attribute uses a contact frequency (reserved for solver observables),
+                if it declares ``update_flags`` without being assigned to the model,
                 or if ``usd_attribute_name`` is ``"*"`` without a ``usd_value_transformer``.
 
         Example:
@@ -2980,12 +3021,15 @@ class ModelBuilder:
             raise ValueError(
                 "Contact frequencies are only supported by SolverBase.Observables, not builder custom attributes."
             )
+        if attribute.update_flags is not None and attribute.assignment != Model.AttributeAssignment.MODEL:
+            raise ValueError(f"Custom attribute '{attribute.key}': only model-assigned attributes declare update flags")
         key = attribute.key
 
         existing = self.custom_attributes.get(key)
         if existing:
             if not self._custom_attribute_specs_match(existing, attribute):
                 raise ValueError(f"Custom attribute '{key}' already exists with incompatible spec")
+            self._adopt_custom_attribute_update_flags(existing, attribute)
             self._index_custom_world_reference_attribute(existing)
             return
 
@@ -4198,8 +4242,9 @@ class ModelBuilder:
                 copies to the current world context (see :attr:`current_world`) instead. Like
                 :meth:`add_builder`, this then also replaces the current world's gravity, or this
                 builder's gravity outside a world context, with the gravity of ``builder``.
-            xforms: Optional sequence of transforms, one per copy.
-                When provided, its length must equal ``copy_count``.
+            xforms: Optional sequence of transforms, one per copy, each applied as
+                ``xform`` in :meth:`add_builder`. When provided, its length must equal
+                ``copy_count``.
             label_prefixes: Optional prefix prepended to all labels from the source builder,
                 one per copy, applied as :meth:`add_builder` applies its
                 ``label_prefix``. Labels are joined with ``/``. A ``None`` entry leaves that
@@ -4320,6 +4365,13 @@ class ModelBuilder:
             t = 2.0 * np.cross(xyz, vectors)
             vectors += np.cross(xyz, t) + w * t
 
+        def rotate_copies(values: np.ndarray) -> None:
+            # Rotate the (..., 3) rows of each rotated copy in place, in float32 like Warp.
+            rows = values.reshape((copy_count, -1, 3))
+            rotated_copies = moved_copies[rotated]
+            rotated_rows = rows[rotated_copies].astype(np.float32, copy=False)
+            rows[rotated_copies] = quat_rotate_rows(moved_xforms[rotated, None, 3:], rotated_rows)
+
         counts = self._builder_merge_counts(builder)
         self._validate_builder_merge(builder, set(counts))
         # Values can change without a schema change, so check them before copying entities.
@@ -4430,11 +4482,34 @@ class ModelBuilder:
         if counts["particle"]:
             self.particle_max_velocity = builder.particle_max_velocity
             particle_q = np.tile(np.asarray(builder.particle_q, dtype=np.float32), (copy_count, 1))
+            if not translations_only:
+                rotate_copies(particle_q)
             particle_q += np.repeat(offsets, counts["particle"], axis=0)
             if "particle_q" in array_starts:
                 self.particle_q[array_starts["particle_q"] :] = particle_q
             else:
                 self.particle_q.extend(particle_q.tolist())
+
+        if not translations_only:
+            # tet_poses stores inverse(Dm), which becomes inverse(Dm) R^T: its rows rotate like vectors.
+            for attr, warp_type in (("particle_qd", wp.vec3f), ("tet_poses", wp.mat33f)):
+                source = getattr(builder, attr)
+                if len(source) == 0:
+                    continue
+                attribute_specs.pop(attr)
+                # Python floats stay float64 so copies that are not rotated keep them exact.
+                packed = join_warp_values(source, warp_type)
+                if packed is None:
+                    packed = np.asarray(source, dtype=np.float64).reshape((-1, *warp_type._shape_))
+                values = np.tile(packed, (copy_count, *(1,) * len(warp_type._shape_)))
+                rotate_copies(values)
+                # Keep the source element shape, e.g. Mat33 rows given as 9 flat floats.
+                values = values.reshape((-1, *np.shape(source[0])))
+                if attr in array_starts:
+                    getattr(self, attr)[array_starts[attr] :] = values
+                else:
+                    descriptor = _describe_array_backed_list(source[0])
+                    getattr(self, attr).extend(_materialize_array_backed_list(values, descriptor))
 
         shape_starts = starts("shape")
         body_starts = starts("body")
@@ -4492,6 +4567,8 @@ class ModelBuilder:
         attribute_specs.pop("joint_X_p")
         attribute_specs.pop("joint_q")
         attribute_specs.pop("joint_qd")
+        attribute_specs.pop("joint_target_q")
+        attribute_specs.pop("joint_target_qd")
         joint_X_p_start = array_starts.get("joint_X_p", int(bases["joint"]))
         if "joint_X_p" not in array_starts:
             self.joint_X_p.extend(source_list("joint_X_p") * copy_count)
@@ -4501,6 +4578,10 @@ class ModelBuilder:
         # (xform conjugated by joint_X_p). Other joint velocities are unchanged.
         joint_qd_source = np.asarray(builder.joint_qd, dtype=np.float32)
         joint_qd = np.tile(joint_qd_source, copy_count)
+        # float64 keeps the targets of joints that are not moved exact.
+        joint_target_q_source = np.asarray(builder.joint_target_q, dtype=np.float64)
+        joint_target_q = np.tile(joint_target_q_source, copy_count)
+        joint_target_qd = np.tile(np.asarray(builder.joint_target_qd, dtype=np.float64), copy_count)
         if counts["joint"] and len(moved_copies):
             joint_types = np.asarray(builder.joint_type, dtype=np.int64)
             joint_parents = np.asarray(builder.joint_parent, dtype=np.int64)
@@ -4524,20 +4605,26 @@ class ModelBuilder:
                 )
                 coord_base = moved_copies[:, None, None] * counts["joint_coord"]
                 joint_q[coord_base + q_index[None]] = transform_multiply_rows(xform_local, xform_prev[None])
+                # Targets are parent-frame poses and twists, like the state.
+                target_prev = joint_target_q_source[q_index].astype(np.float32)
+                joint_target_q[coord_base + q_index[None]] = transform_multiply_rows(xform_local, target_prev[None])
                 if np.any(rotated):
                     qd_targets = moved_copies[rotated, None, None] * len(joint_qd_source) + qd_index[None]
-                    twist = joint_qd[qd_targets].reshape((*qd_targets.shape[:2], 2, 3))
-                    rotate_vectors(xform_local[rotated, :, None, 3:], twist)
-                    joint_qd[qd_targets] = twist.reshape(qd_targets.shape)
+                    for values in (joint_qd, joint_target_qd):
+                        twist = values[qd_targets].reshape((*qd_targets.shape[:2], 2, 3))
+                        rotate_vectors(xform_local[rotated, :, None, 3:], twist)
+                        values[qd_targets] = twist.reshape(qd_targets.shape)
 
-        if "joint_q" in array_starts:
-            self.joint_q[array_starts["joint_q"] :] = joint_q
-        else:
-            self.joint_q.extend(joint_q.tolist())
-        if "joint_qd" in array_starts:
-            self.joint_qd[array_starts["joint_qd"] :] = joint_qd
-        elif len(joint_qd):
-            self.joint_qd.extend(joint_qd.tolist())
+        for attr, values in (
+            ("joint_q", joint_q),
+            ("joint_qd", joint_qd),
+            ("joint_target_q", joint_target_q),
+            ("joint_target_qd", joint_target_qd),
+        ):
+            if attr in array_starts:
+                getattr(self, attr)[array_starts[attr] :] = values
+            elif len(values):
+                getattr(self, attr).extend(values.tolist())
 
         for copy_index, joint_start in enumerate(joint_starts.tolist()):
             body_start = int(body_starts[copy_index])
@@ -4854,6 +4941,7 @@ class ModelBuilder:
             if merged is not None:
                 if not self._custom_attribute_specs_match(merged, attr):
                     raise ValueError(f"Custom attribute '{full_key}' already exists with incompatible spec")
+                self._adopt_custom_attribute_update_flags(merged, attr)
                 if not self._custom_attribute_defaults_match(merged.default, attr.default):
                     raise ValueError(
                         f"Custom attribute '{full_key}' default mismatch when merging builders: "
@@ -5636,6 +5724,9 @@ class ModelBuilder:
         mesh-file appearance and primitive palette colors are retained for compatibility.
         Other PBR texture layers are not imported.
 
+        A body's hinge and slide joints are merged into one Newton joint. See the
+        :ref:`limitations of merged MJCF joints <mjcf-merged-joints>` for anchor selection, warnings, and deprecations.
+
         Args:
             source: The filename of the MuJoCo file to parse, or the MJCF XML string content.
             xform: The transform to apply to the imported mechanism.
@@ -5652,7 +5743,8 @@ class ModelBuilder:
                 - ``None`` (default): Uses format-specific default (honors ``<freejoint>`` tags in MJCF,
                   otherwise creates a FIXED joint).
                 - ``True``: Creates a FREE joint with 6 DOF (3 translation + 3 rotation). Only valid when
-                  ``parent_body == -1`` since FREE joints must connect to world frame.
+                  ``parent_body == -1`` since FREE joints must connect to world frame. A root that already
+                  has an MJCF free joint keeps that joint's parameters.
                 - ``False``: Creates a FIXED joint (0 DOF).
 
                 Cannot be specified together with ``base_joint``.
@@ -5923,8 +6015,8 @@ class ModelBuilder:
 
         Args:
             builder: The builder containing entities to add as a new world.
-            xform: Optional transform to apply to all root bodies
-                in the builder. Useful for spacing out worlds visually.
+            xform: Optional transform that places the world, applied as in
+                :meth:`add_builder`. Useful for spacing out worlds visually.
             label_prefix: Optional prefix prepended to all entity labels
                 from the source builder. Useful for distinguishing multiple instances
                 of the same model (e.g., ``"left_arm"`` vs ``"right_arm"``).
@@ -6687,7 +6779,10 @@ class ModelBuilder:
 
         Args:
             builder: The model builder to copy data from.
-            xform: Optional offset transform applied to root bodies.
+            xform: Optional transform that places the copy. It moves the root bodies and
+                root joint frames, static shapes, particles, tetrahedral rest poses, and
+                free-root joint state and targets, and rotates their world-frame velocities.
+                Other world-frame data, such as custom attributes, is copied unchanged.
             label_prefix: Optional prefix prepended to all entity labels
                 from the source builder. Labels are joined with ``/``
                 (e.g., ``"left/panda/base_link"``).
@@ -6901,8 +6996,9 @@ class ModelBuilder:
 
         A row takes everything authored on the variant shape it holds: geometry, flags, color,
         opacity, materials, and model-assigned shape custom attributes. It keeps its label, world,
-        collision group, and filter pairs, so the i-th colliders of all variants must share a
-        collision group. An
+        collision group, friction mode, and filter pairs, so the i-th colliders of all variants must
+        share a collision group and a :attr:`~ShapeConfig.friction_mode`, as must shapes that
+        collide with particles only. An
         empty row has its collision and visibility flags cleared, so it neither collides nor
         renders. Variant shapes are expressed in the variant body's frame, which maps onto
         ``body``'s frame; the variant body's pose, joints, and other entities are ignored, as are
@@ -6928,7 +7024,7 @@ class ModelBuilder:
         Raises:
             IndexError: If ``body`` or ``initial`` is out of range.
             ValueError: If ``body`` already has variants, ``labels`` does not match ``variants``,
-                colliders held by the same row have different collision groups, a shape custom
+                colliders held by the same row have different collision groups or friction modes, a shape custom
                 attribute is declared differently than here or in another variant, shapes of a later
                 world or trailing global shapes were added after ``body``'s world, or a variant
                 builder is this builder, declares variants itself, uses a different up axis, does
@@ -6964,20 +7060,25 @@ class ModelBuilder:
             _validate_variant_builder(self, variant)
         variant_set = _snapshot_variants(variants, labels, self._shape_row_attributes())
         rows = _plan_variant_rows(variant_set, initial, self.body_label[body])
-        declarations = dict(self.custom_attributes)
+        # Merge the declarations into copies, so the variants' own declarations keep their update flags.
+        declarations: dict[str, ModelBuilder.CustomAttribute] = {}
         for row in rows:
             for candidate in row.candidates:
                 for key, declaration, _ in candidate.custom:
-                    if not self._custom_attribute_specs_match(declarations.setdefault(key, declaration), declaration):
+                    merged = declarations.get(key)
+                    if merged is None:
+                        merged = declarations[key] = copy.copy(self.custom_attributes.get(key, declaration))
+                    if not self._custom_attribute_specs_match(merged, declaration):
                         raise ValueError(
                             f"Variant shape custom attribute '{key}' is declared differently than in this "
                             "builder or another variant."
                         )
+                    if merged.update_flags is None:
+                        merged.update_flags = declaration.update_flags
         # Declare every variant's attributes now, so later declarations are checked against them and
-        # finalize() declares nothing.
-        for key, declaration in declarations.items():
-            if key not in self.custom_attributes:
-                self.add_custom_attribute(declaration)
+        # finalize() declares nothing. This also adopts flags for attributes declared without them.
+        for declaration in declarations.values():
+            self.add_custom_attribute(declaration)
 
         # A row's builder flags are the union over the shapes it can hold, which all have the row's
         # role, so contact pairs and joint filters include every one of them.
@@ -6988,6 +7089,7 @@ class ModelBuilder:
             for candidate in row.candidates:
                 flags |= int(candidate.values["shape_flags"])
             self.shape_flags[shape] = flags
+            self.shape_material_friction_mode[shape] = row.friction_mode
             self.body_shapes[body].append(shape)
             if flags & ShapeFlags.COLLIDE_SHAPES:
                 self._add_joint_collision_filter_pairs(shape, body)
@@ -9883,6 +9985,12 @@ class ModelBuilder:
             resolved_opacity = 1.0
         resolved_opacity = _validate_opacity(resolved_opacity, "Shape opacity")
 
+        # Compute mass properties before mutating the builder so that an invalid shell
+        # thickness raises without leaving a partially added shape behind.
+        shape_mass_props = None
+        if not is_static and cfg.density > 0.0 and body >= 0 and not self.body_lock_inertia[body]:
+            shape_mass_props = compute_inertia_shape(type, scale, src, cfg.density, cfg.is_solid, cfg.margin)
+
         self.shape_body.append(body)
         shape = self.shape_count
         self.body_shapes[body].append(shape)
@@ -9918,6 +10026,7 @@ class ModelBuilder:
         self.shape_material_restitution.append(cfg.restitution)
         self.shape_material_mu_torsional.append(cfg.mu_torsional)
         self.shape_material_mu_rolling.append(cfg.mu_rolling)
+        self.shape_material_friction_mode.append(int(cfg.friction_mode))
         self.shape_material_kh.append(cfg.kh)
         self.shape_gap.append(cfg.gap if cfg.gap is not None else self.rigid_gap)
         self.shape_collision_group.append(cfg.collision_group)
@@ -9934,8 +10043,8 @@ class ModelBuilder:
         if cfg.has_shape_collision and cfg.collision_filter_parent:
             self._add_joint_collision_filter_pairs(shape, body)
 
-        if not is_static and cfg.density > 0.0 and body >= 0 and not self.body_lock_inertia[body]:
-            (m, c, inertia) = compute_inertia_shape(type, scale, src, cfg.density, cfg.is_solid, cfg.margin)
+        if shape_mass_props is not None:
+            m, c, inertia = shape_mass_props
             com_body = wp.transform_point(xform, c)
             self._update_body_mass(body, m, inertia, com_body, xform.q)
 
@@ -10754,6 +10863,11 @@ class ModelBuilder:
             is decomposed separately and may produce one or more convex shapes,
             each limited to the source mesh's ``maxhullvert`` vertices.
             CoACD decompositions repeat across runs; pass CoACD's ``seed`` through ``remeshing_kwargs`` to change it.
+            CoACD searches cuts with ``mcts_nodes=20``, ``mcts_iterations=20``, ``mcts_max_depth=2``, and
+            ``merge=False`` unless overridden through ``remeshing_kwargs``. This search produces few, large parts,
+            so on dense, smooth meshes the ``maxhullvert`` cap can trim noticeable surface detail; raise the
+            source mesh's ``maxhullvert`` to keep it, or pass ``mcts_iterations=5`` and ``mcts_max_depth=1``
+            for more, smaller parts.
 
         The ``raise_on_failure`` parameter controls the behavior when the remeshing fails:
             - If `True`, an exception is raised when the remeshing fails.
@@ -10930,9 +11044,11 @@ class ModelBuilder:
                         settings = (
                             {
                                 "threshold": self.default_mesh_approximation_cfg.coacd_threshold,
+                                # A two-level cut search finds cuts that need about a third as many
+                                # parts as a greedy one-level search at similar accuracy.
                                 "mcts_nodes": 20,
-                                "mcts_iterations": 5,
-                                "mcts_max_depth": 1,
+                                "mcts_iterations": 20,
+                                "mcts_max_depth": 2,
                                 "merge": False,
                             }
                             if method == "coacd"
@@ -11009,6 +11125,7 @@ class ModelBuilder:
                             restitution=self.shape_material_restitution[shape],
                             mu_torsional=self.shape_material_mu_torsional[shape],
                             mu_rolling=self.shape_material_mu_rolling[shape],
+                            friction_mode=ShapeFrictionMode(self.shape_material_friction_mode[shape]),
                             kh=self.shape_material_kh[shape],
                             margin=self.shape_margin[shape],
                             is_solid=self.shape_is_solid[shape],
@@ -12176,7 +12293,9 @@ class ModelBuilder:
             custom_attributes: Dictionary of custom attribute names to values.
 
         Note:
-            Set the mass equal to zero to create a 'kinematic' particle that is not subject to dynamics.
+            Set the mass equal to zero to create a fixed particle that is not subject to dynamics.
+            To drive a particle to prescribed positions, set :attr:`~newton.ParticleFlags.KINEMATIC`
+            in ``flags`` and write :attr:`~newton.Control.particle_target_q`.
 
         Returns:
             The index of the particle in the system.
@@ -12222,7 +12341,9 @@ class ModelBuilder:
             custom_attributes: Dictionary of custom attribute names to lists of values (one value for each particle).
 
         Note:
-            Set the mass equal to zero to create a 'kinematic' particle that is not subject to dynamics.
+            Set the mass equal to zero to create a fixed particle that is not subject to dynamics.
+            To drive a particle to prescribed positions, set :attr:`~newton.ParticleFlags.KINEMATIC`
+            in ``flags`` and write :attr:`~newton.Control.particle_target_q`.
 
         Raises:
             ValueError: If a particle input or custom attribute list has a mismatched length.
@@ -12932,10 +13053,10 @@ class ModelBuilder:
             cell_y: The width of each cell in the y-direction
             mass: The mass of each particle
             reverse_winding: Flip the winding of the mesh
-            fix_left: Make the left-most edge of particles kinematic (fixed in place)
-            fix_right: Make the right-most edge of particles kinematic
-            fix_top: Make the top-most edge of particles kinematic
-            fix_bottom: Make the bottom-most edge of particles kinematic
+            fix_left: Fix the left-most edge of particles in place (zero mass)
+            fix_right: Fix the right-most edge of particles in place (zero mass)
+            fix_top: Fix the top-most edge of particles in place (zero mass)
+            fix_bottom: Fix the bottom-most edge of particles in place (zero mass)
             label: Optional name forwarded to :func:`newton.utils.validate_triangle_mesh`
                 via :meth:`add_cloth_mesh` so a mesh-quality warning can identify this cloth.
                 The same name is appended to :attr:`surface_label` for this cloth; if None,
@@ -13343,10 +13464,10 @@ class ModelBuilder:
             k_mu: The first elastic Lame parameter
             k_lambda: The second elastic Lame parameter
             k_damp: The viscous damping coefficient [Pa·s].
-            fix_left: Make the left-most edge of particles kinematic (fixed in place)
-            fix_right: Make the right-most edge of particles kinematic
-            fix_top: Make the top-most edge of particles kinematic
-            fix_bottom: Make the bottom-most edge of particles kinematic
+            fix_left: Fix the left-most edge of particles in place (zero mass)
+            fix_right: Fix the right-most edge of particles in place (zero mass)
+            fix_top: Fix the top-most edge of particles in place (zero mass)
+            fix_bottom: Fix the bottom-most edge of particles in place (zero mass)
             tri_ke: Stiffness for surface mesh triangles. Defaults to 0.0.
             tri_ka: Area stiffness for surface mesh triangles. Defaults to 0.0.
             tri_kd: Damping for surface mesh triangles. Defaults to 0.0.
@@ -16305,6 +16426,7 @@ class ModelBuilder:
             m.shape_material_mu_rolling = wp.array(
                 self.shape_material_mu_rolling, dtype=wp.float32, requires_grad=requires_grad
             )
+            m.shape_material_friction_mode = wp.array(self.shape_material_friction_mode, dtype=wp.int32)
             m.shape_material_kh = wp.array(self.shape_material_kh, dtype=wp.float32, requires_grad=requires_grad)
             m.shape_gap = wp.array(self.shape_gap, dtype=wp.float32, requires_grad=requires_grad)
 
@@ -17550,6 +17672,11 @@ class ModelBuilder:
                 m._set_attribute_spec(
                     custom_attr.key, replace(m.attribute_specs[custom_attr.key], default=custom_attr.default)
                 )
+            # Also covers attributes finalized by their own callback.
+            for key, custom_attr in self.custom_attributes.items():
+                spec = m.attribute_specs.get(key)
+                if spec is not None and custom_attr.update_flags is not None:
+                    m._set_attribute_spec(key, replace(spec, update_flags=custom_attr.update_flags))
 
             self._finalize_custom_frequency_metadata(m, device)
             self._variant_shape_rows.finalize(self, m, validate_inertia=validate_inertia)
@@ -17824,6 +17951,7 @@ _ARRAY_BACKED_ATTRIBUTE_DTYPES: dict[str, Any] = {
     "shape_material_restitution": wp.float32,
     "shape_material_mu_torsional": wp.float32,
     "shape_material_mu_rolling": wp.float32,
+    "shape_material_friction_mode": wp.int32,
     "shape_material_kh": wp.float32,
     "shape_gap": wp.float32,
     "shape_is_solid": wp.bool,
