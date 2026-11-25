@@ -744,8 +744,8 @@ class PADMMSolverConfig:
     which make the Delassus matrix singular and can prevent convergence.
 
     The dropped rows carry no impulse, while the kept rows still enforce all joint constraints, so the motion
-    is unchanged. The detection only runs for models with closed kinematic loops, and is turned off with
-    iterative linear solvers. See :class:`RedundantRowShift` for details.
+    is unchanged, and the dual residual excludes them. The detection only runs for models with closed kinematic
+    loops, and is turned off with iterative linear solvers. See :class:`RedundantRowShift` for details.
 
     The setting of the first world applies to all worlds. Defaults to `True`.
     """

@@ -1237,7 +1237,8 @@ class TestPADMMNullspaceRobustness(NewtonTestCase):
             for unpenalized in ((False, True) if name == "fourbar" and not sparse else (False,))
         ]
 
-        # Drop the redundant rows, whose residual dominates the maximum only after several accelerated iterations
+        # Drop the redundant rows, which the residual excludes, and whose product would otherwise dominate the
+        # maximum after several accelerated iterations
         cases += [("fourbar", sparse, False, "fixed", False, True, 5) for sparse in (False, True)]
         cases += [("fourbar", False, True, "fixed", False, True, 30)]
 
@@ -1281,8 +1282,14 @@ class TestPADMMNullspaceRobustness(NewtonTestCase):
                     solver.coldstart()
                     solver.solve(problem=test.problem)
                     np.testing.assert_array_equal(solver.data.status.numpy()["iterations"], max_iterations)
+                    dropped = [np.zeros(len(D_w), dtype=bool) for D_w in D]
                     if detect:
-                        self.assertGreater(int(solver._redundant_joints.shifted.numpy().sum()), 0)
+                        shifted = solver._redundant_joints.shifted.numpy().astype(bool)
+                        offsets = solver._kinematic_cts_offset.numpy()
+                        counts = solver._num_kinematic_cts.numpy()
+                        for w in range(len(D)):
+                            dropped[w][offsets[w] : offsets[w] + counts[w]] = shifted[w, : counts[w]]
+                        self.assertGreater(sum(int(mask.sum()) for mask in dropped), 0)
                     x.append(
                         extract_problem_vector(
                             test.problem.delassus, solver.data.state.x.numpy(), only_active_dims=True
@@ -1299,12 +1306,13 @@ class TestPADMMNullspaceRobustness(NewtonTestCase):
                 # NOTE: The product is recovered from the linear system with the float32 rounding of `D x`
                 for w in range(len(D)):
                     dx = (x[1][w].astype(np.float64) - x[0][w]) / P[w]
-                    r_dual_ref = (D[w] @ dx) / P[w]
+                    r_dual_ref = np.where(dropped[w], 0.0, (D[w] @ dx) / P[w])
                     atol = max(1e-6, 4e-6 * np.abs(D[w] @ (x[1][w] / P[w]) / P[w]).max())
                     np.testing.assert_allclose(r_d[1][w], np.abs(r_dual_ref).max(), rtol=1e-2, atol=atol)
 
-                    # Compare each row, which the non-accelerated solve stores
+                    # Compare each row, which the non-accelerated solve stores, with zeros on the dropped rows
                     if detect and not use_acceleration:
+                        np.testing.assert_array_equal(r_dual[1][w][dropped[w]], 0.0)
                         atol = 1e-4 * np.abs(r_dual_ref).max()
                         np.testing.assert_allclose(r_dual[1][w], r_dual_ref, rtol=1e-2, atol=atol)
 
