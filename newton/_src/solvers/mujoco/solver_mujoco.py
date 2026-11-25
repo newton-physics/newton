@@ -8240,6 +8240,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 compiled_collision_type[colliding_shapes] = compiled_masks.collision_type
                 compiled_collision_affinity[colliding_shapes] = compiled_masks.collision_affinity
             else:
+                if self._use_mujoco_contacts and not disable_contacts:
+                    raise ValueError(
+                        "Newton collision filters cannot be represented exactly by MuJoCo collision masks; "
+                        "use Newton contacts or simplify the collision filtering."
+                    )
                 shape_color = self._color_collision_shapes(
                     model,
                     colliding_shapes,
