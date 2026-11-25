@@ -145,6 +145,8 @@ jobs:
       - name: Run Tests
         env:
           PYTHONFAULTHANDLER: "1"
+          # GPU hosts skip CPU example variants by default; keep them against the minimum versions.
+          NEWTON_TEST_CPU_EXAMPLES: "1"
         run: uv run --no-sync -m newton.tests --strict-warnings --parallel-timeout 4500 --junit-report-xml rspec.xml
 
       - name: Test Summary

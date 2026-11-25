@@ -212,6 +212,21 @@ class TestShapeContactPairs(unittest.TestCase):
                 )
                 np.testing.assert_array_equal(_sorted_pairs(data.build_pairs()), expected)
 
+    def test_filter_templates_with_interleaved_worlds(self):
+        """Keep distinct templates when global exclusions precede local exclusions."""
+        world_count, size = 4, 3
+        bodies = np.append(-1, np.arange(world_count * size))
+        worlds = np.append(-1, np.repeat(np.arange(world_count), size))
+        groups = np.append(-1, np.ones(world_count * size, dtype=np.int32))
+        flags = np.full(len(bodies), newton.ShapeFlags.COLLIDE_SHAPES)
+        firsts = 1 + np.arange(world_count) * size
+        # Packed order is by shape index; pairs with global shape 0 interleave worlds.
+        filters = np.vstack((np.column_stack((np.zeros(world_count, dtype=int), firsts)), [[1, 2], [7, 9]]))
+        packed = np.unique(_pack_shape_pair_codes(filters[:, 0], filters[:, 1]))
+        data = _ShapeContactPairs(bodies, worlds, groups, flags, packed, world_count)
+        expected = _reference_pairs(bodies, worlds, groups, flags, filters)
+        np.testing.assert_array_equal(_sorted_pairs(data.build_pairs()), expected)
+
     def test_many_worlds_with_compound_bodies(self):
         """Keep mixed-group counting and replay sparse across thousands of worlds."""
         world_count = 10000

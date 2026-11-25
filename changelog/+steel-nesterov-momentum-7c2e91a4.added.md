@@ -1,0 +1,1 @@
+Add the `nesterov_momentum` option of `newton.solvers.SolverSteel`, which accelerates the matrix-free Gauss-Seidel sweep with Nesterov momentum and gradient restart so that stacks, large mass ratios and long chains converge in fewer iterations. It requires `solve_mode="serial"`, `articulated_contact_response="immediate"`, `row_schedule="interleaved"` and a CUDA device.

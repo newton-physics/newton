@@ -4,7 +4,7 @@
 
 A contact's :attr:`~newton.Model.shape_material_friction_mode`, the higher mode of its two shapes, enables them:
 ``TORSIONAL`` adds a spin row about the contact normal bounded by
-:attr:`~newton.Model.shape_material_mu_torsional` [m], ``ROLLING`` also a rolling pair about the contact
+:attr:`~newton.Model.shape_material_mu_torsional` [m], ``TORSIONAL_ROLLING`` also a rolling pair about the contact
 tangents bounded by :attr:`~newton.Model.shape_material_mu_rolling` [m]. Each coefficient is the larger of the
 two shapes' values. The rows follow the contact's sliding pair, ``[normal, t1, t2, roll1, roll2, spin]``,
 and are bounded by their coefficient times the pooled normal load of the contact's patch: the
@@ -44,7 +44,8 @@ def configure_free_rigid_angular_friction(solver, model) -> None:
     if not np.any(route_shape & (values >= int(ShapeFrictionMode.TORSIONAL))):
         return
     if (
-        solver._solve_mode != "matrix_free"
+        not model.device.is_cuda
+        or solver._solve_mode != "serial"
         or solver._articulated_contact_response != "immediate"
         or solver._row_schedule != "interleaved"
         or solver._friction_mode != "fixed_normal"
@@ -248,7 +249,7 @@ def _check_coefficients(model, modes: np.ndarray) -> None:
     """
     for name, array, mode in (
         ("shape_material_mu_torsional", model.shape_material_mu_torsional, ShapeFrictionMode.TORSIONAL),
-        ("shape_material_mu_rolling", model.shape_material_mu_rolling, ShapeFrictionMode.ROLLING),
+        ("shape_material_mu_rolling", model.shape_material_mu_rolling, ShapeFrictionMode.TORSIONAL_ROLLING),
     ):
         if not np.any(modes >= int(mode)):
             continue

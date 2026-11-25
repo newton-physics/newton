@@ -17,6 +17,7 @@ from collections.abc import Sequence
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any
 
+import numpy as np
 import warp as wp
 
 from ...core.types import Transform, Vec3, axis_to_vec3, vec5
@@ -33,6 +34,28 @@ class MjcEqualityTargetKind(IntEnum):
     NONE = 0  # Pure equality row; no projected Newton object, target is -1.
     JOINT = 1  # Target is a Newton joint, used by converted CONNECT/WELD loop joints.
     MIMIC = 2  # Target is a Newton mimic constraint, used by converted JOINT equalities.
+
+
+def equality_loop_joint_mask(target_kind: Any, target: Any, joint_count: int) -> np.ndarray:
+    """Mask of the Newton joints that equality rows target, one entry per joint.
+
+    These are the loop joints that converted CONNECT and WELD equalities created
+    (:attr:`MjcEqualityTargetKind.JOINT`); they never place a body, so
+    :class:`~newton.ModelBuilder` keeps them out of its weld groups and
+    :class:`~newton.solvers.SolverMuJoCo` out of its standalone world roots, both through
+    :func:`~newton._src.utils.topology.tree_joint_mask`.
+
+    Args:
+        target_kind: ``equality_constraint_target_kind`` of the rows to consider.
+        target: ``equality_constraint_target`` of the same rows.
+        joint_count: Number of joints the mask covers.
+    """
+    target_kind = np.asarray(target_kind, dtype=np.int64).reshape(-1)
+    target = np.asarray(target, dtype=np.int64).reshape(-1)
+    joints = target[(target_kind == int(MjcEqualityTargetKind.JOINT)) & (target >= 0) & (target < joint_count)]
+    mask = np.zeros(joint_count, dtype=bool)
+    mask[joints] = True
+    return mask
 
 
 # Object kinds an equality row references (mjtObj-aligned).
@@ -145,6 +168,20 @@ def _register_equality_constraint_attributes(builder: ModelBuilder) -> None:
             namespace="mujoco",
         )
     )
+    # Importers set these when an endpoint is one DoF of a Newton joint that
+    # combines several MuJoCo scalar joints; -1 means the whole joint.
+    for endpoint in (1, 2):
+        builder.add_custom_attribute(
+            ca(
+                name=f"equality_constraint_joint{endpoint}_dof",
+                frequency=eq_freq,
+                assignment=model_assignment,
+                dtype=wp.int32,
+                default=-1,
+                references="joint_dof",
+                namespace="mujoco",
+            )
+        )
     # polycoef is materialized as ``wp.array2d[wp.float32]`` with shape
     # ``[equality_constraint_count, 5]``; the value stored per entry is a
     # 5-element list of floats so the standard pipeline yields the expected 2D layout.
@@ -294,10 +331,11 @@ def _add_equality_constraint(
             ``EqType.WELD``, ``EqType.JOINT``, or ``EqType.TENDON``).
         body1: Index of the first body (-1 for world).
         body2: Index of the second body (-1 for world).
-        anchor: Anchor point on body1. Defaults to the origin.
+        anchor: Anchor point on body1 for connect, or on body2 for weld. Defaults to the origin.
         torquescale: Angular residual scale for weld. Defaults to ``1.0`` for
             ``EqType.WELD`` and ``0.0`` otherwise.
-        relpose: Relative pose of body2 for weld. Defaults to the identity transform.
+        relpose: For weld, the position in body1's frame where the anchor is held, and body2's
+            orientation in body1's frame. Defaults to the identity transform.
         joint1: Index of the first joint for joint coupling.
         joint2: Index of the second joint for joint coupling.
         polycoef: Five polynomial coefficients for ``EqType.JOINT`` and
@@ -501,8 +539,9 @@ def add_equality_weld(
         builder: Model builder receiving the constraint.
         body1: First body index, or ``-1`` for the world.
         body2: Second body index, or ``-1`` for the world.
-        relpose: Relative pose of the second body in the first body's frame.
-            If omitted, preserve the bodies' initial relative pose.
+        relpose: The position in the first body's frame where the second body's origin is held,
+            and the second body's orientation in the first body's frame. If omitted, preserve the
+            bodies' initial relative pose.
         torquescale: Angular residual length scale [m].
         label: Optional constraint label.
         enabled: Whether the constraint is active.
@@ -557,7 +596,8 @@ def add_equality_joint(
         builder: Model builder receiving the constraint.
         joint1: Dependent Newton joint index.
         joint2: Reference Newton joint index.
-        polycoef: Up to five polynomial coefficients.
+        polycoef: Up to five polynomial coefficients. Omitted higher-order terms are zero, whereas MJCF
+            ``polycoef`` fills omitted terms from MuJoCo's ``0 1 0 0 0`` default.
         label: Optional constraint label.
         enabled: Whether the constraint is active.
         solref: Optional MuJoCo constraint reference parameters.
@@ -608,7 +648,8 @@ def add_equality_tendon(
         builder: Model builder receiving the constraint.
         tendon1: Dependent ``mujoco:tendon`` index.
         tendon2: Reference ``mujoco:tendon`` index, or ``-1`` for none.
-        polycoef: Up to five polynomial coefficients.
+        polycoef: Up to five polynomial coefficients. Omitted higher-order terms are zero, whereas MJCF
+            ``polycoef`` fills omitted terms from MuJoCo's ``0 1 0 0 0`` default.
         label: Optional constraint label.
         enabled: Whether the constraint is active.
         solref: Optional MuJoCo constraint reference parameters.

@@ -302,8 +302,6 @@ def main(argv=None):
         parser.error("--shard-index must be in the range [0, --shard-count)")
     if args.max_tasks_per_child is not None and args.max_tasks_per_child < 1:
         parser.error("--max-tasks-per-child must be at least 1")
-    if args.max_tasks_per_child is not None and sys.version_info < (3, 11) and not args.disable_concurrent_futures:
-        parser.error("--max-tasks-per-child requires Python 3.11+ or --disable-concurrent-futures")
     if args.deprecation_allowlist and not args.strict_warnings:
         parser.error("--deprecation-allowlist requires --strict-warnings")
     try:
@@ -426,7 +424,7 @@ def main(argv=None):
                     # ProcessPoolExecutor deadlocks with max_tasks_per_child > 1 (Python 3.12-3.14),
                     # so hand each single-use worker a chunk of that many suites instead.
                     chunksize = 1
-                    if sys.version_info >= (3, 11) and max_tasks_per_child is not None:
+                    if max_tasks_per_child is not None:
                         executor_kwargs["max_tasks_per_child"] = 1
                         chunksize = max_tasks_per_child
                     executor = concurrent.futures.ProcessPoolExecutor(**executor_kwargs)

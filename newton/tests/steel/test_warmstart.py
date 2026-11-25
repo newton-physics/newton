@@ -53,7 +53,7 @@ def _run_press(device, steps: int, warm_kwargs: dict, contact_matching: str | No
     Returns ``(impulse_sum_per_step, |joint_qd|_per_step, final_state)``.
     """
     model = _build_press(device)
-    solver = newton.solvers.SolverSteel(model, solve_mode="matrix_free", iterations=8, baumgarte=0.1, **warm_kwargs)
+    solver = newton.solvers.SolverSteel(model, iterations=8, baumgarte=0.1, **warm_kwargs)
     pipeline_kwargs = {} if contact_matching is None else {"contact_matching": contact_matching}
     pipeline = newton.CollisionPipeline(model, **pipeline_kwargs)
     contacts = pipeline.contacts()
@@ -252,10 +252,8 @@ def test_constructor_layout_and_decay_validation(test, device):
     model = _build_press(device)
     for value in (-1.0, float("inf"), float("nan")):
         with test.subTest(value=value), test.assertRaises(ValueError):
-            newton.solvers.SolverSteel(model, solve_mode="matrix_free", contact_warmstart_decay=value)
-    solver = newton.solvers.SolverSteel(
-        model, solve_mode="matrix_free", contact_warmstart=True, contact_warmstart_decay=0.25
-    )
+            newton.solvers.SolverSteel(model, contact_warmstart_decay=value)
+    solver = newton.solvers.SolverSteel(model, contact_warmstart=True, contact_warmstart_decay=0.25)
     test.assertTrue(solver.contact_warmstart)
     test.assertEqual(solver.contact_warmstart_decay, 0.25)
 
@@ -263,7 +261,7 @@ def test_constructor_layout_and_decay_validation(test, device):
 def test_contacts_none_is_valid(test, device):
     """Step a warm-started solver without a contact buffer, carrying nothing."""
     model = _build_press(device)
-    solver = newton.solvers.SolverSteel(model, solve_mode="matrix_free", contact_warmstart=True)
+    solver = newton.solvers.SolverSteel(model, contact_warmstart=True)
     state_0, state_1 = model.state(), model.state()
     solver.step(state_0, state_1, model.control(), None, 1.0 / 60.0)
     solver.step(state_1, state_0, model.control(), None, 1.0 / 60.0)
@@ -281,7 +279,7 @@ def test_real_contact_insertion_moves_slots_without_cross_seeding(test, device):
     model = builder.finalize(device=device)
     pipeline = newton.CollisionPipeline(model, broad_phase="nxn", contact_matching="sticky")
     contacts = pipeline.contacts()
-    solver = newton.solvers.SolverSteel(model, solve_mode="matrix_free", iterations=8, contact_warmstart=True)
+    solver = newton.solvers.SolverSteel(model, iterations=8, contact_warmstart=True)
     state_0, state_1 = model.state(), model.state()
     control = model.control()
 
@@ -344,7 +342,7 @@ def _insertion_after_solved_single_contact(device, articulated: bool = False):
     model = builder.finalize(device=device)
     pipeline = newton.CollisionPipeline(model, broad_phase="nxn", contact_matching="sticky")
     contacts = pipeline.contacts()
-    solver = newton.solvers.SolverSteel(model, solve_mode="matrix_free", iterations=8, contact_warmstart=True)
+    solver = newton.solvers.SolverSteel(model, iterations=8, contact_warmstart=True)
     state_0, state_1 = model.state(), model.state()
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
     pipeline.collide(state_0, contacts)
@@ -514,7 +512,7 @@ def test_substeps_reuse_contacts_with_their_own_history(test, device):
     model = builder.finalize(device=device)
     pipeline = newton.CollisionPipeline(model, broad_phase="nxn", contact_matching="sticky")
     contacts = pipeline.contacts()
-    solver = newton.solvers.SolverSteel(model, solve_mode="matrix_free", iterations=8, contact_warmstart=True)
+    solver = newton.solvers.SolverSteel(model, iterations=8, contact_warmstart=True)
     states = [model.state(), model.state()]
     control = model.control()
     dt = 1.0 / 240.0
@@ -657,7 +655,7 @@ def test_identity_warmstart_requires_contact_matching(test, device):
 def test_single_flag_enables_dense_and_mf_carry(test, device):
     """Enable the single all-contact warm-start mode with ``contact_warmstart=True``."""
     model = _build_press(device)
-    solver = newton.solvers.SolverSteel(model, solve_mode="matrix_free", contact_warmstart=True, iterations=4)
+    solver = newton.solvers.SolverSteel(model, contact_warmstart=True, iterations=4)
     test.assertTrue(solver.contact_warmstart)
     # Both row families keep a carry.
     test.assertEqual(solver._ws_prev_impulses.shape, solver._impulses.shape)
@@ -684,7 +682,7 @@ def _resting_box_rows(device, articulated: bool):
     model = builder.finalize(device=device)
     pipeline = newton.CollisionPipeline(model, contact_matching="latest", deterministic=True)
     contacts = pipeline.contacts()
-    solver = newton.solvers.SolverSteel(model, solve_mode="matrix_free", contact_warmstart=True, iterations=12)
+    solver = newton.solvers.SolverSteel(model, contact_warmstart=True, iterations=12)
     state_0, state_1 = model.state(), model.state()
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
     control = model.control()
@@ -778,9 +776,7 @@ def _stack(device, restitution=0.0, drop=False):
         deterministic=True,
         contact_matching="latest",
     )
-    solver = newton.solvers.SolverSteel(
-        model, solve_mode="matrix_free", iterations=8, velocity_iterations=2, contact_warmstart=True
-    )
+    solver = newton.solvers.SolverSteel(model, iterations=8, velocity_iterations=2, contact_warmstart=True)
     return model, pipeline, solver
 
 
@@ -955,9 +951,7 @@ def test_warm_carry_no_kick_after_dt_change_on_impact(test: unittest.TestCase, d
                 contact_matching="latest",
             )
             contacts = pipeline.contacts()
-            solver = newton.solvers.SolverSteel(
-                model, solve_mode="matrix_free", iterations=8, velocity_iterations=2, contact_warmstart=True
-            )
+            solver = newton.solvers.SolverSteel(model, iterations=8, velocity_iterations=2, contact_warmstart=True)
             s0, s1 = model.state(), model.state()
             control = model.control()
             newton.eval_fk(model, model.joint_q, model.joint_qd, s0)

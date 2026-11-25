@@ -449,9 +449,7 @@ result to linear light once per ray. Pass
 ``sh_color_space=newton.utils.ColorSpace.LINEAR`` for scene-linear radiance,
 which is blended in linear light and not decoded. :class:`~newton.sensors.SensorCamera`
 clamps negative radiance to zero in both cases before blending, while values
-above one are kept as HDR. The deprecated
-:class:`~newton.sensors.SensorTiledCamera` ignores ``sh_color_space``; only
-:class:`~newton.sensors.SensorCamera` honors it.
+above one are kept as HDR.
 
 .. note::
 

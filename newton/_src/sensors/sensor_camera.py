@@ -6,15 +6,15 @@ from __future__ import annotations
 import math
 import os
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 import warp as wp
 
 from ..core.types import Devicelike
 from ..geometry.deformable_visual import DeformableVisuals
-from .sensor_camera_render import Utils
-from .sensor_camera_render.types import (
+from ..render import Utils
+from ..render.types import (
     AntiAliasing,
     ClearData,
     DeformableSurfaceMode,
@@ -91,6 +91,18 @@ class SensorCamera:
     :attr:`RenderConfig.enable_backface_culling` to ``False`` to render both
     sides with camera-facing normals.
 
+    The scene is lit by the light from :meth:`create_default_light`, if any,
+    plus hemispheric ambient light (see :meth:`set_ambient_light`) when
+    :attr:`RenderConfig.enable_ambient_lighting` is set.
+
+    .. experimental::
+
+        Rendering of lights authored on the model, and how they combine with
+        the sensor's own lights, may change without a formal deprecation
+        cycle. Future releases are expected to import lights authored in USD
+        and MJCF into the model and render them, which changes the color
+        output of scenes that author lights.
+
     The render configuration types are exposed as nested attributes (e.g.
     ``SensorCamera.RenderConfig``, ``SensorCamera.ClearData``,
     ``SensorCamera.WorldRenderFlag``); they are not part of the top-level
@@ -130,6 +142,7 @@ class SensorCamera:
         default_clear_data: ClearData | None = None,
         default_render_config: RenderConfig | None = None,
         load_textures: bool = True,
+        backend: Literal["warp", "optix"] = "warp",
         deformable_surface_mode: DeformableSurfaceMode = DeformableSurfaceMode.BOTH,
     ):
         """Construct a camera sensor for a model.
@@ -141,12 +154,19 @@ class SensorCamera:
                 ``clear_data`` argument is ``None``. Defaults to ``ClearData()``.
             default_render_config: Render settings used by :meth:`update` when
                 its ``render_config`` argument is ``None``. Defaults to
-                ``RenderConfig()``.
+                ``RenderConfig()``, with ``render_order=RenderOrder.TILED`` for the OptiX backend.
             load_textures: Load the textures of shape meshes and deformable visual
                 meshes from file paths or in-memory images. A texture that cannot
                 be loaded raises ``ValueError`` here, so pass ``False`` for
                 depth-only use, for example when replaying a recording whose
                 texture files are elsewhere; it leaves all of them untextured.
+            backend: ``"warp"`` traverses :attr:`~newton.Model.bvh_shapes`; ``"optix"``
+                traverses :attr:`~newton.Model.optix_shapes` (experimental). OptiX requires the
+                ``newton[optix]`` extra (Python 3.12 on x86-64 Linux or Windows) and a CUDA device,
+                cannot be recorded in CUDA graphs, and does not support particles, deformable
+                surfaces, Gaussians or shape variants; unsupported models raise
+                :class:`RuntimeError`. OptiX does not render shapes that have left the region
+                set when the OptiX shapes were built (see :meth:`~newton.Model.bvh_build_shapes`).
             deformable_surface_mode: Which deformable surfaces the sensor uploads
                 and renders: :attr:`DeformableSurfaceMode.BOTH` renders the
                 simulation triangles and the visual meshes, as the viewers do;
@@ -165,16 +185,18 @@ class SensorCamera:
         """
         self.default_clear_data: ClearData = default_clear_data if default_clear_data is not None else ClearData()
         """Clear values used by :meth:`update` when its ``clear_data`` argument is ``None``."""
-        self.default_render_config: RenderConfig = (
-            default_render_config if default_render_config is not None else RenderConfig()
-        )
+        if default_render_config is None:
+            order = RenderOrder.TILED if backend == "optix" else RenderOrder.PIXEL_PRIORITY
+            default_render_config = RenderConfig(render_order=order)
+        self.default_render_config: RenderConfig = default_render_config
         """Render settings used by :meth:`update` when its ``render_config`` argument is ``None``."""
 
-        from .sensor_camera_render.render_context import RenderContext  # noqa: PLC0415
+        from ..render.render_context import RenderContext  # noqa: PLC0415
 
         self._render_context = RenderContext(
             model,
             load_textures=load_textures,
+            backend=backend,
             deformable_surface_mode=DeformableSurfaceMode(deformable_surface_mode),
         )
 
@@ -182,6 +204,11 @@ class SensorCamera:
     def device(self) -> wp.Device:
         """Device of the model this sensor renders."""
         return self._render_context.model.device
+
+    @property
+    def backend(self) -> Literal["warp", "optix"]:
+        """Shape traversal backend, ``"warp"`` or ``"optix"``."""
+        return self._render_context.backend
 
     def allocate_image(self, view_count: int, width: int, height: int, dtype: Any) -> wp.array[Any]:
         """Allocate a zeroed output image array on the model device.
@@ -332,7 +359,7 @@ class SensorCamera:
             Ray origins and directions, shape
             ``(height, width, sample_count, 2)`` of ``vec3f``.
         """
-        from .sensor_camera_render import camera_utils  # noqa: PLC0415
+        from ..render import camera_utils  # noqa: PLC0415
 
         width, height, sample_count, out_rays, device = _validate_camera_ray_output(
             width, height, out_rays, device, sample_count=sample_count
@@ -419,7 +446,7 @@ class SensorCamera:
             Ray origins (``[..., 0]``) and directions (``[..., 1]``), shape
             ``(height, width, sample_count, 2)`` of ``vec3f``.
         """
-        from .sensor_camera_render import camera_utils  # noqa: PLC0415
+        from ..render import camera_utils  # noqa: PLC0415
 
         width, height, sample_count, out_rays, device = _validate_camera_ray_output(
             width, height, out_rays, device, sample_count=sample_count
@@ -506,7 +533,7 @@ class SensorCamera:
             ValueError: If any focal length or calibration image dimension is
                 non-positive, or if any calibration value is non-finite.
         """
-        from .sensor_camera_render import camera_utils  # noqa: PLC0415
+        from ..render import camera_utils  # noqa: PLC0415
 
         width, height, sample_count, out_rays, device = _validate_camera_ray_output(
             width, height, out_rays, device, sample_count=sample_count
@@ -606,7 +633,7 @@ class SensorCamera:
             Ray origins (``[..., 0]``) and directions (``[..., 1]``), shape
             ``(height, width, sample_count, 2)`` of ``vec3f``.
         """
-        from .sensor_camera_render import camera_utils  # noqa: PLC0415
+        from ..render import camera_utils  # noqa: PLC0415
 
         width, height, sample_count, out_rays, device = _validate_camera_ray_output(
             width, height, out_rays, device, sample_count=sample_count
@@ -690,7 +717,7 @@ class SensorCamera:
             Ray origins (``[..., 0]``) and directions (``[..., 1]``), shape
             ``(height, width, sample_count, 2)`` of ``vec3f``.
         """
-        from .sensor_camera_render import camera_utils  # noqa: PLC0415
+        from ..render import camera_utils  # noqa: PLC0415
 
         width, height, sample_count, out_rays, device = _validate_camera_ray_output(
             width, height, out_rays, device, sample_count=sample_count
@@ -770,7 +797,7 @@ class SensorCamera:
             Ray origins (``[..., 0]``) and directions (``[..., 1]``), shape
             ``(height, width, sample_count, 2)`` of ``vec3f``.
         """
-        from .sensor_camera_render import camera_utils  # noqa: PLC0415
+        from ..render import camera_utils  # noqa: PLC0415
 
         width, height, sample_count, out_rays, device = _validate_camera_ray_output(
             width, height, out_rays, device, sample_count=sample_count
@@ -829,7 +856,7 @@ class SensorCamera:
             ``transformf``, on the model device.
         """
         from ..core import Axis  # noqa: PLC0415
-        from .sensor_camera_render import camera_utils  # noqa: PLC0415
+        from ..render import camera_utils  # noqa: PLC0415
 
         model = self._render_context.model
         return camera_utils.compute_camera_transforms_usd(
@@ -849,6 +876,8 @@ class SensorCamera:
     ) -> None:
         """Create a default directional light for the rendered scene.
 
+        This light replaces any light created before.
+
         Args:
             enable_shadows: Enable shadow casting for this light. Shadows are
                 only rendered when the render config also enables them, i.e.
@@ -861,6 +890,16 @@ class SensorCamera:
             color: Linear RGB radiance of the light. If ``None``, defaults to
                 white ``(1, 1, 1)``. Changing it does not recompile the render
                 kernel.
+
+                .. experimental::
+
+                    The ``color`` argument may change, for example to separate
+                    color from intensity, without a formal deprecation cycle.
+
+        .. experimental::
+
+            How this light combines with lights authored on the model may
+            change without a formal deprecation cycle.
         """
         self._render_context.create_default_light(enable_shadows=enable_shadows, direction=direction, color=color)
 
@@ -880,6 +919,12 @@ class SensorCamera:
             sky_color: Linear RGB ambient radiance from above.
             ground_color: Linear RGB ambient radiance from below. If ``None``,
                 *sky_color* is used, which gives uniform ambient light.
+
+        .. experimental::
+
+            This method, its defaults, and how it combines with ambient light
+            authored on the model may change without a formal deprecation
+            cycle.
         """
         self._render_context.set_ambient_light(sky_color, ground_color)
 
@@ -983,7 +1028,9 @@ class SensorCamera:
         BVHs with :meth:`~newton.Model.bvh_refit_shapes` and
         :meth:`~newton.Model.bvh_refit_particles` (both are built initially by
         :meth:`~newton.ModelBuilder.finalize`) before calling this; otherwise the
-        render reads stale bounds. Deformable triangle-mesh points are synced from
+        render reads stale bounds. With the OptiX backend, build
+        :attr:`~newton.Model.optix_shapes` once with ``bvh_build_shapes(state, backend="optix")``
+        and refit them with ``bvh_refit_shapes(state, backend="optix")`` instead. Deformable triangle-mesh points are synced from
         *state* automatically (see ``sync_deformables``).
 
         The camera looks along its local ``-Z`` axis with ``+Y`` up and ``+X``

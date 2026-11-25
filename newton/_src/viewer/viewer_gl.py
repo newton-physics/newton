@@ -7,7 +7,6 @@ import ctypes
 import enum
 import re
 import time
-import warnings
 from collections.abc import Callable, Sequence
 from importlib import metadata
 from typing import Any, Literal
@@ -18,8 +17,6 @@ import warp as wp
 import newton as nt
 
 from ..core.types import Axis, override
-from ..exceptions import NewtonDeprecationWarning
-from ..utils.deprecation import deprecate_nonkeyword_arguments
 from ..utils.render import copy_rgb_frame_uint8
 from .camera import Camera
 from .gl.frame_cache import FrameCache
@@ -555,7 +552,6 @@ class ViewerGL(ViewerBase):
         self.wind = None
 
         # State caching for selection panel
-        self._last_state = None
         self._last_control = None
 
         # Packed GPU arrays for batched shape transform computation
@@ -701,7 +697,7 @@ class ViewerGL(ViewerBase):
 
         for key, shapes in self._shape_instances.items():
             n = shapes.xforms.shape[0] if isinstance(shapes.xforms, wp.array) else len(shapes.xforms)
-            if n == 0:
+            if n == 0 and shapes.name not in self.objects:
                 continue
             if shapes.geo_type == nt.GeoType.CAPSULE:
                 capsule_keys.add(key)
@@ -732,9 +728,13 @@ class ViewerGL(ViewerBase):
                 mesh = self.objects.get(shapes.mesh)
                 instancer = self.objects.get(shapes.name)
                 # Visibility changes can reuse a batch name for a different geometry.
-                if isinstance(mesh, MeshGL) and (instancer is None or instancer.mesh is not mesh):
+                if isinstance(mesh, MeshGL) and (
+                    instancer is None or instancer.mesh is not mesh or instancer.num_instances < n
+                ):
+                    # Variant rows change batch sizes on selection; grow geometrically.
+                    grown = 2 * instancer.num_instances if instancer is not None and instancer.mesh is mesh else 0
                     instancer = MeshInstancerGL(
-                        max(n, 1),
+                        max(n, grown, 1),
                         mesh,
                         enable_cuda_interop=self._cuda_interop_enabled(self.CudaInterop.INSTANCES),
                     )
@@ -820,7 +820,8 @@ class ViewerGL(ViewerBase):
         current_mask = np.zeros_like(self._shape_transparent_mask, dtype=bool)
         rendered_shapes = self._shape_to_slot >= 0
         current_mask[rendered_shapes] = opacities[rendered_shapes] < OPAQUE_OPACITY_THRESHOLD
-        return bool(np.any(current_mask != self._shape_transparent_mask))
+        # Inactive body-variant shapes are not rendered and must not count as changed.
+        return bool(np.any(current_mask[rendered_shapes] != self._shape_transparent_mask[rendered_shapes]))
 
     def _rebuild_shape_batches_for_opacity_groups(self):
         """Rebuild shape batches after opacity changes move shapes between render passes."""
@@ -851,6 +852,12 @@ class ViewerGL(ViewerBase):
         self._populate_shapes()
         self._rebuild_gl_shape_caches()
         self.model_changed = True
+
+    @override
+    def notify_model_changed(self, flags: nt.ModelFlags | int) -> None:
+        super().notify_model_changed(flags)
+        if self.model is not None and flags & nt.ModelFlags.SHAPE_TYPE_AND_SOURCE:
+            self._rebuild_gl_shape_caches()
 
     @override
     def set_visible_worlds(self, worlds: Sequence[int] | None) -> None:
@@ -1868,7 +1875,11 @@ class ViewerGL(ViewerBase):
 
             layer_hidden = self._layer_force_hidden()
             for key, shapes, offset, count in self._packed_groups:
-                visible = self._should_show_shape(shapes.flags, shapes.static, shapes.geo_type) and not layer_hidden
+                visible = (
+                    self._should_show_shape(shapes.flags, shapes.static, shapes.geo_type)
+                    and not layer_hidden
+                    and count > 0
+                )
                 colors = shapes.colors if self.model_changed or shapes.colors_changed else None
                 opacities = (
                     shapes.opacities
@@ -2052,13 +2063,11 @@ class ViewerGL(ViewerBase):
                 self.gui.on_rendering_paused()
 
     @override
-    @deprecate_nonkeyword_arguments
     def get_frame(
         self,
         *,
         output: wp.array3d[wp.uint8] | None = None,
         render_ui: bool = False,
-        target_image: wp.array3d[wp.uint8] | None = None,
     ) -> wp.array3d[wp.uint8]:
         """
         Retrieve the last rendered frame.
@@ -2067,16 +2076,11 @@ class ViewerGL(ViewerBase):
         CUDA-OpenGL interoperability, while CPU viewers read the PBO into host
         memory.
 
-        .. deprecated:: 1.7
-            ``target_image`` and passing optional arguments positionally are
-            deprecated. Use ``get_frame(output=..., render_ui=...)`` instead.
-
         Args:
             output:
                 Optional pre-allocated Warp array with shape `(height, width, 3)`
                 and dtype `wp.uint8`. If `None`, a new array will be created.
             render_ui: Whether to render the UI.
-            target_image: Deprecated alias for ``output``.
 
         Returns:
             wp.array: RGB image data on the viewer device with shape
@@ -2085,19 +2089,8 @@ class ViewerGL(ViewerBase):
                 If supplied, returns ``output``.
 
         Raises:
-            TypeError: Both ``output`` and ``target_image`` are supplied.
             RuntimeError: Rendering is paused before an image has been displayed.
         """
-        if target_image is not None:
-            if output is not None:
-                raise TypeError("Specify only one of `output` and `target_image`")
-            warnings.warn(
-                "ViewerGL.get_frame(target_image=...) is deprecated as of Newton 1.7; use output=... instead.",
-                NewtonDeprecationWarning,
-                stacklevel=3,
-            )
-            output = target_image
-
         if self.is_rendering_paused() and not self._has_rendered_frame:
             raise RuntimeError("Frame capture requires at least one displayed frame")
 
@@ -2243,6 +2236,8 @@ class ViewerGL(ViewerBase):
         if self._image_logger is not None:
             self._image_logger.clear()
         self._destroy_render_geometry()
+        if self.ui is not None:
+            self.ui.shutdown()
         self.renderer.close()
 
     @property

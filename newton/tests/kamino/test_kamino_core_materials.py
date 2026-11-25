@@ -3,10 +3,13 @@
 
 """Unit tests for the `core/materials.py` module."""
 
+import logging
 import unittest
 
 import numpy as np
 import warp as wp
+
+import newton
 
 # Module to be tested
 from newton._src.solvers.kamino._src.core.materials import (
@@ -20,7 +23,10 @@ from newton._src.solvers.kamino._src.core.materials import (
 )
 
 # Test utilities
-from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino import setup_test_output, setup_tests, test_context
+from newton.tests.unittest_utils import NewtonTestCase
+
+logger = logging.getLogger(__name__)
 
 ###
 # Utilities
@@ -53,11 +59,13 @@ def make_mix_kernel(mixmode: MaterialMixMode):
 ###
 
 
-class TestMaterials(unittest.TestCase):
+class TestMaterials(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.verbose = test_context.verbose  # Set to True for verbose output
+
+        setup_test_output(self, verbose=self.verbose)
 
     def test_00_default_material_properties(self):
         # Create a default-constructed surface material
@@ -342,12 +350,10 @@ class TestMaterials(unittest.TestCase):
         self.assertEqual(dym[tril_index(2, 0)], 0.9)
         self.assertEqual(dym[tril_index(2, 1)], 0.5)
         self.assertEqual(dym[tril_index(2, 2)], 0.3)
-
         # Optional verbose output
-        if self.verbose:
-            print(f"\nRestitution Matrix:\n{rm}")
-            print(f"\nStatic Friction Matrix:\n{fm}")
-            print(f"\nDynamic Friction Matrix:\n{dym}")
+        logger.debug("\nRestitution Matrix:\n%s", rm)
+        logger.debug("\nStatic Friction Matrix:\n%s", fm)
+        logger.debug("\nDynamic Friction Matrix:\n%s", dym)
 
     def test_04_material_manager_merge(self):
         # Create a two material managers
@@ -579,6 +585,7 @@ class TestMaterials(unittest.TestCase):
 
 if __name__ == "__main__":
     # Test setup
+    newton.utils.setup_console_logging()
     setup_tests()
 
     # Run all tests

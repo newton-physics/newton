@@ -29,6 +29,7 @@ __all__ = [
     "_store_dual_wrench",
     "_update_splitting_dual",
     "_write_integrator_body_inputs",
+    "_write_lox_world_residual",
     "_write_world_status",
     "atomic_max_nonnegative",
     "compute_body_iteration_residuals",
@@ -226,6 +227,7 @@ def _initialize_world_convergence(
     residual_cross_iterate: wp.array[wp.float32],
     residual_unilateral: wp.array[wp.float32],
     residual_lagged: wp.array[wp.float32],
+    residual_total: wp.array[wp.float32],
     primal_residual: wp.array[wp.float32],
     dual_residual: wp.array[wp.float32],
     box_residual_max: wp.array[wp.float32],
@@ -251,6 +253,7 @@ def _initialize_world_convergence(
     residual_cross_iterate[wid] = 0.0
     residual_unilateral[wid] = 0.0
     residual_lagged[wid] = 0.0
+    residual_total[wid] = 0.0
     primal_residual[wid] = 0.0
     dual_residual[wid] = 0.0
     box_residual_max[wid] = 0.0
@@ -417,6 +420,7 @@ def _finalize_world_iteration(
     world_active: wp.array[wp.bool],
     world_converged: wp.array[wp.bool],
     iteration_condition: wp.array[wp.int32],
+    residual_total: wp.array[wp.float32],
 ):
     """Count the iteration, deactivate the converged and failed worlds, and request another iteration for the others.
 
@@ -443,6 +447,7 @@ def _finalize_world_iteration(
         total = wp.max(total, effort_residual[wid])
         effort_residual[wid] = 0.0
     total = wp.max(total, unilateral_residual[wid])
+    residual_total[wid] = total
     if total <= 1.0:
         world_active[wid] = False
         world_converged[wid] = True
@@ -510,6 +515,22 @@ def _write_world_status(
         unilateral_residual = wp.max(box_residual_max[wid], contact_residual_max[wid])
         status.r_c = unilateral_residual * unilateral_residual
     solver_status[wid] = status
+
+
+@wp.kernel
+def _write_lox_world_residual(
+    # Inputs:
+    solver_status: wp.array[LOXStatus],
+    residual_total: wp.array[wp.float32],
+    # Outputs:
+    world_residual: wp.array[wp.float32],
+):
+    """Write the scaled convergence residual of each world, or infinity for a failed world."""
+    wid = wp.tid()
+    if solver_status[wid].failed:
+        world_residual[wid] = wp.inf
+    else:
+        world_residual[wid] = residual_total[wid]
 
 
 @wp.kernel

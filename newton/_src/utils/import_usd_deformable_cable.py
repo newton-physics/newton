@@ -18,14 +18,14 @@ import warnings
 from dataclasses import dataclass, replace
 from functools import partial
 from itertools import pairwise
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import warp as wp
 
 from ..exceptions import NewtonDeprecationWarning, NewtonWarning
 from ..sim.rod import _CIRCULAR_SECTION_TRANSVERSE_SHEAR_CORRECTION, Rod
 from ..usd import utils as usd
-from ..usd._resolution_policy import _resolve_shape_contact
+from ..usd._resolution_policy import _resolve_shape_contact, _resolve_shape_friction_mode
 from ..usd.schema_resolver import PrimType
 
 if TYPE_CHECKING:
@@ -64,12 +64,17 @@ from .import_usd_deformable_visual import _record_cable_visual_bind_poses
 logger = logging.getLogger(__name__)
 
 
-def _resolve_cable_contact(ctx: _DeformableImportContext, prim: Usd.Prim) -> dict[str, float]:
-    """Resolve capsule contact properties through the rigid collider material policy."""
+def _resolve_cable_contact(ctx: _DeformableImportContext, prim: Usd.Prim) -> dict[str, Any]:
+    """Resolve capsule contact properties and friction mode through the rigid collider material policy."""
     material_prim = usd._find_physics_material_prim(prim)
     material_path = str(material_prim.GetPath()) if material_prim is not None else ""
     material = ctx.material_specs.get(material_path, ctx.material_specs[""])
-    return _resolve_shape_contact(prim, ctx.resolver, material, ctx.builder.default_shape_cfg, verbose=ctx.verbose)
+    defaults = ctx.builder.default_shape_cfg
+    contact = _resolve_shape_contact(prim, ctx.resolver, material, defaults, verbose=ctx.verbose)
+    contact["friction_mode"] = _resolve_shape_friction_mode(
+        prim, ctx.resolver, material, defaults, contact, {}, verbose=ctx.verbose
+    )
+    return contact
 
 
 def _authored_cable_self_collision(ctx: _DeformableImportContext, prim: Usd.Prim) -> bool | None:
@@ -1027,17 +1032,13 @@ def _deformable_prepare_cable_topology(
                 NewtonWarning,
                 stacklevel=2,
             )
-        # A zero representative density still needs geometric weights when any member
-        # curve authors a body mass total (the per-curve rescale distributes it).
-        graph_weight_density = rep.density
-        if graph_weight_density <= 0.0 and any(
-            usd._get_deformable_body_overrides(curve_recs[p].prim, deformable_read)[0] is not None for p in comp_paths
-        ):
-            graph_weight_density = 1.0
+        # The curve schema defines a solid circular section, whatever the builder default.
+        # Segment masses are resolved per source curve by _apply_cable_masses below.
         cfg = replace(
             builder.default_shape_cfg,
             **contact_properties[comp_paths[0]],
-            density=graph_weight_density,
+            density=0.0,
+            is_solid=True,
             has_shape_collision=collision_enabled,
             has_particle_collision=collision_enabled,
         )
@@ -1326,10 +1327,13 @@ def _deformable_import_cable(
         resolved_cable_density = cable_density
         collision_enabled, approximated_from = _deformable_collision_enabled(prim, ctx.ignore_paths)
         _warn_collision_approximated(path, approximated_from)
+        # The curve schema defines a solid circular section, whatever the builder default.
+        # Segment masses are resolved from the stage by _apply_cable_masses below.
         cable_cfg = replace(
             builder.default_shape_cfg,
             **_resolve_cable_contact(ctx, prim),
-            density=resolved_cable_density,
+            density=0.0,
+            is_solid=True,
             has_shape_collision=collision_enabled,
             has_particle_collision=collision_enabled,
         )
@@ -1442,7 +1446,6 @@ def _deformable_import_cable(
                     twist_damping=None,
                     label=label,
                     wrap_in_articulation=True,
-                    body_frame_origin="com",
                     junction_collision_filter=True,
                     color=None,
                     articulation_root_node=articulation_root.cable_point,

@@ -9,21 +9,12 @@ import numpy as np
 
 from ...geometry import GeoType, ShapeFlags
 from ...sim import Model
-from ...sim.enums import FRICTION_MODE_CONDIM
 from .collision_masks import (
     NEWTON_COLLISION_MASK_MAX_SHAPE_COUNT,
     CollisionGraphCompileResult,
     compile_newton_collision_graph,
 )
-
-_FRICTION_MODE_CONDIM = np.array(FRICTION_MODE_CONDIM, dtype=np.int32)
-
-
-def resolve_shape_condim(model: Model) -> np.ndarray:
-    """Return each shape's MuJoCo ``condim`` from :attr:`~newton.Model.shape_material_friction_mode`."""
-    if model.shape_material_friction_mode is None:
-        return np.full(model.shape_count, 3, dtype=np.int32)
-    return _FRICTION_MODE_CONDIM[model.shape_material_friction_mode.numpy()]
+from .condim import resolve_shape_condim
 
 
 @dataclass(frozen=True)
@@ -71,7 +62,9 @@ def build_shape_layout(
     worlds = model.shape_world.numpy()
     bodies = model.shape_body.numpy()
     types = model.shape_type.numpy()
-    flags = model.shape_flags.numpy()
+    # A variant row keeps its role (collider, visual, or site) for every variant it can hold, but
+    # may be empty when the solver is built.
+    flags = model._shape_option_flags() if model._has_variant_rows else model.shape_flags.numpy()
     body_count = model.body_count // model.world_count
     local_bodies = bodies.copy()
     local_bodies[bodies >= 0] %= body_count
@@ -127,6 +120,11 @@ def build_shape_layout(
         shape = representatives[column]
         if types[shape] not in mesh_types or sites[shape]:
             missing_world = int(np.flatnonzero(mapping[:, column] < 0)[0])
+            if model._has_variant_rows and model._shape_variant_row.numpy()[shape]:
+                raise ValueError(
+                    f"SolverMuJoCo found different body variants in world 0 and world {missing_world} for "
+                    f"{model.shape_label[shape]!r}; construct it before selecting different variants per world."
+                )
             raise ValueError(
                 f"SolverMuJoCo shape types mismatch at position {column}: "
                 f"world {missing_world} has no matching shape for {model.shape_label[shape]!r}. "

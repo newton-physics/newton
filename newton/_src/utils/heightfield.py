@@ -589,8 +589,10 @@ def heightfield_vs_convex_midphase(
         for c in range(col_min, col_max + 1):
             if can_reject and _heightfield_cell_below_query(aabb_lower[2], padding, hfd, elevation_data, r, c):
                 continue
+            # Reserve both triangles together, retaining partial writes at odd capacities.
+            base_idx = wp.atomic_add(triangle_pairs_count, 0, 2)
             for tri_sub in range(2):
                 tri_idx = (r * cols + c) * 2 + tri_sub
-                out_idx = wp.atomic_add(triangle_pairs_count, 0, 1)
+                out_idx = base_idx + tri_sub
                 if out_idx < triangle_pairs.shape[0]:
                     triangle_pairs[out_idx] = wp.vec3i(hfield_shape, other_shape, tri_idx)

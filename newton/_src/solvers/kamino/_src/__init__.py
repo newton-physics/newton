@@ -33,7 +33,6 @@ from .geometry.contacts import (
 )
 from .geometry.detector import CollisionDetector
 from .solver_kamino_impl import SolverKaminoImpl
-from .utils import logger as msg
 
 ###
 # Kamino API
@@ -62,7 +61,6 @@ __all__ = [
     "convert_model_joint_actuation",
     "convert_model_joint_transforms",
     "convert_model_materials",
-    "msg",
     "refresh_masked_body_inertia",
     "reset_body_acceleration",
     "validate_model_structural_updates",

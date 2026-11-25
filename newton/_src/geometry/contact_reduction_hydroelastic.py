@@ -157,21 +157,18 @@ def _max_abs_component(v: wp.vec3) -> float:
     return wp.max(wp.max(wp.abs(v[0]), wp.abs(v[1])), wp.abs(v[2]))
 
 
-@wp.func
+@wp.func_native(f"""
+if (exp_ref == {int(FIXED_EXP_NONE)}) return 0.0;
+return ::ldexp(1.0, mantissa_bits - exp_ref);
+""")
 def _fixed_shift(exp_ref: int, mantissa_bits: int) -> wp.float64:
     """Power-of-two factor mapping an entry's grid onto the fixed-point range.
 
     Returns zero for the sentinel exponent so that quantization collapses to
-    zero without a branch at every call site.  This is a double-precision
-    ``pow``, so callers hoist it out of per-component loops: computing it once
-    per entry instead of once per scalar is ~10x cheaper on consumer GPUs.
+    zero without a branch at every call site. Native ``ldexp`` constructs the
+    exact binary scale; CUDA's general double-precision ``pow`` can round an
+    integer power of two down by one ULP. Warp does not expose ``ldexp`` yet.
     """
-    if exp_ref == FIXED_EXP_NONE:
-        return wp.float64(0.0)
-    # Every non-sentinel exponent comes from a finite float32 contribution, so
-    # forming the exact shift in float64 covers its full exponent range while
-    # preserving the int64 overflow proof in ``_fixed_mantissa_bits``.
-    return wp.pow(wp.float64(2.0), wp.float64(mantissa_bits - exp_ref))
 
 
 @wp.func

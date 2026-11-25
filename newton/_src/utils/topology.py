@@ -7,6 +7,8 @@ from collections import defaultdict, deque
 from collections.abc import Sequence
 from typing import TypeVar, cast
 
+import numpy as np
+
 NodeT = TypeVar("NodeT", int, str)
 """A generic type variable for nodes in a topology, which can be either integers or strings."""
 
@@ -214,3 +216,49 @@ def topological_sort_undirected(
         joint_order = [custom_indices[i] for i in joint_order]
         reversed_joints = [custom_indices[i] for i in reversed_joints]
     return joint_order, reversed_joints
+
+
+def tree_joint_mask(
+    joint_parent: np.ndarray,
+    joint_child: np.ndarray,
+    joint_articulation: np.ndarray,
+    body_count: int,
+    loop_joints: np.ndarray | None = None,
+) -> np.ndarray:
+    """Mark the joints that place bodies in the kinematic tree.
+
+    Tree joints are the joints of articulations and, for every body outside articulations,
+    its first joint to the world in array order. Every other joint closes a loop: later world
+    joints of a body, joints between bodies outside articulations, and the joints marked in
+    ``loop_joints`` (imported MuJoCo equality constraints, which never place a body).
+    :class:`~newton.ModelBuilder` forms the weld groups of its parent-child collision filter
+    from this mask and :class:`~newton.solvers.SolverMuJoCo` picks its standalone world roots
+    from it, so both see one tree.
+
+    Args:
+        joint_parent: Parent body of each joint, -1 for the world.
+        joint_child: Child body of each joint.
+        joint_articulation: Articulation of each joint, -1 outside articulations.
+        body_count: Number of bodies the joints refer to.
+        loop_joints: Mask of joints that must not become tree joints, if any.
+
+    Returns:
+        Boolean mask with one entry per joint. The inputs may cover a subset of the model's
+        joints, such as one world's, as long as they are sliced alike.
+    """
+    joint_parent = np.asarray(joint_parent, dtype=np.int64)
+    joint_child = np.asarray(joint_child, dtype=np.int64)
+    articulated = np.asarray(joint_articulation, dtype=np.int64) >= 0
+    articulated_bodies = np.zeros(body_count, dtype=bool)
+    articulated_bodies[joint_child[articulated]] = True
+    articulated_parents = joint_parent[articulated]
+    articulated_bodies[articulated_parents[articulated_parents >= 0]] = True
+    is_tree = articulated.copy()
+    eligible = ~articulated & (joint_parent < 0) & ~articulated_bodies[joint_child]
+    if loop_joints is not None:
+        eligible &= ~np.asarray(loop_joints, dtype=bool)
+    world_joints = np.flatnonzero(eligible)
+    if world_joints.shape[0]:
+        first = np.unique(joint_child[world_joints], return_index=True)[1]
+        is_tree[world_joints[first]] = True
+    return is_tree

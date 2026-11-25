@@ -201,6 +201,13 @@ class RigidBodiesData:
     w_a_i: wp.array[wp.spatial_vectorf] | None = None
     """
     Joint actuation wrench applied to each body (in world coordinates).
+
+    When the dual problem decouples effort-limit rows from the joint dynamics
+    (see :class:`DynamicJointDecoupling`), this holds the
+    part of the effort-limited actuation that acts on the bodies directly, and
+    :attr:`w_j_i` the part that acts through the joint dynamics row of the same
+    DoF.
+
     Shape of ``(num_bodies,)``.
     """
 
@@ -213,6 +220,12 @@ class RigidBodiesData:
     w_f_i: wp.array[wp.spatial_vectorf] | None = None
     """
     Joint friction wrench applied to each body (in world coordinates) [N, N·m].
+
+    When the dual problem decouples joint friction from the joint dynamics (see
+    :class:`DynamicJointDecoupling`), this holds the part of
+    the friction that acts on the bodies directly, and :attr:`w_j_i` the part
+    that acts through the joint dynamics row of the same DoF.
+
     Shape of ``(num_bodies,)``.
     """
 

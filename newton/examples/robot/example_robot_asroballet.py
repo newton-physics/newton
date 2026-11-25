@@ -33,7 +33,6 @@ from pathlib import Path
 
 import numpy as np
 import warp as wp
-from scipy import linalg, signal
 
 import newton
 import newton.examples
@@ -376,6 +375,8 @@ def solve_discrete_lqr(
     control_cost: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Discretize a continuous model and solve its infinite-horizon LQR."""
+    from scipy import linalg, signal  # noqa: PLC0415 (only the LQR controller needs SciPy)
+
     state_count = continuous_a.shape[0]
     discrete_a, discrete_b, _, _, _ = signal.cont2discrete(
         (

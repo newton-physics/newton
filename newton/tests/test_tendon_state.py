@@ -23,6 +23,80 @@ from newton.tests.test_tendon_capstan import (
 
 
 class TestTendonState(unittest.TestCase):
+    def test_stationary_roller_preserves_material(self):
+        """Avoid phantom rolling transfer on an offset, rotated stationary roller.
+
+        Moving-route tests do not isolate the repeatable world/local round-trip
+        error. Hold the geometry still and check its per-step transfer, so this
+        regression does not need thousands of steps to accumulate visible drift.
+        """
+
+        def step_pair(solver, state, output, control):
+            solver.step(state, output, control, None, 1.0 / 1200.0)
+            solver.step(output, state, control, None, 1.0 / 1200.0)
+
+        radius = 0.012
+        pose = wp.transform(wp.vec3(0.31, -0.27, 0.12), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.83))
+        offset = wp.vec3(0.1, 0.0, 0.0)
+        center = wp.transform_point(pose, offset)
+        rest = float(np.sqrt(0.04**2 + 0.02**2 - radius**2)) - 0.001
+
+        for world_attached in (False, True):
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+            body = -1 if world_attached else builder.add_body(xform=pose, mass=0.0, is_kinematic=True)
+            builder.add_tendon(
+                [
+                    newton.TendonGuide(body=-1, offset=center + wp.vec3(-0.04, 0.02, 0.0)),
+                    newton.TendonGuide(
+                        body=body,
+                        guide_type=newton.TendonGuideType.ROLLER,
+                        offset=center if world_attached else offset,
+                        axis=(0.0, 0.0, 1.0),
+                        radius=radius,
+                        orientation=1,
+                        mu=0.25,
+                        compliance=2.0e-5,
+                        damping=5.0,
+                        rest_length=rest,
+                    ),
+                    newton.TendonGuide(
+                        body=-1,
+                        offset=center + wp.vec3(0.04, 0.02, 0.0),
+                        compliance=2.0e-5,
+                        damping=5.0,
+                        rest_length=rest,
+                    ),
+                ]
+            )
+            builder.color()
+            for device in wp.get_devices():
+                model = builder.finalize(device=device)
+                for solver_type in (newton.solvers.SolverXPBD, newton.solvers.SolverVBD):
+                    with self.subTest(device=device, solver=solver_type.__name__, world_attached=world_attached):
+                        solver = solver_type(model, iterations=2)
+                        state, output = model.state(), model.state()
+                        control = model.control()
+                        advance = partial(step_pair, solver, state, output, control)
+                        advance()
+                        initial_rest = state.tendon_segment_rest_length.numpy().copy()
+                        if device.is_cuda:
+                            with wp.ScopedCapture(device=device) as capture:
+                                advance()
+                            advance = partial(wp.capture_launch, capture.graph)
+                        for _ in range(16):
+                            advance()
+                        for delta in (solver.tendon_segment_rolling_delta_l, solver.tendon_segment_rolling_delta_r):
+                            np.testing.assert_allclose(
+                                delta.numpy(),
+                                0.0,
+                                atol=2.0e-10,
+                                rtol=0.0,
+                                err_msg="Stationary roller must not accumulate rolling transfer",
+                            )
+                        np.testing.assert_allclose(
+                            state.tendon_segment_rest_length.numpy(), initial_rest, atol=1.0e-7, rtol=0.0
+                        )
+
     def test_world_guides_without_bodies(self):
         """Equilibrate and replay world-only tendons without requiring an unrelated rigid body."""
 
@@ -389,7 +463,9 @@ class TestTendonState(unittest.TestCase):
         for device in wp.get_devices():
             for solver_type in (newton.solvers.SolverXPBD, newton.solvers.SolverVBD):
                 with self.subTest(device=device, solver=solver_type.__name__), wp.ScopedDevice(device):
-                    model, roller = build_kinematic_rolling_transport(mu=10.0)
+                    # Preload both spans so prescribed spin changes material
+                    # history through sticking, rather than free unloaded slip.
+                    model, roller = build_kinematic_rolling_transport(mu=10.0, pre_stretch=0.08)
                     model.body_color_groups = [wp.array([i], dtype=int) for i in range(model.body_count)]
                     solver = solver_type(model, iterations=4)
                     control = model.control()

@@ -732,47 +732,6 @@ def eval_fk(
     )
 
 
-@wp.kernel
-def compute_shape_world_transforms(
-    shape_transform: wp.array[wp.transform],
-    shape_body: wp.array[int],
-    body_q: wp.array[wp.transform],
-    # outputs
-    shape_world_transform: wp.array[wp.transform],
-):
-    """Compute world-space transforms for shapes by concatenating local shape
-    transforms with body transforms.
-
-    Args:
-        shape_transform: Local shape transforms in body frame,
-            shape [shape_count, 7]
-        shape_body: Body index for each shape, shape [shape_count]
-        body_q: Body transforms in world frame, shape [body_count, 7]
-        shape_world_transform: Output world transforms for shapes,
-            shape [shape_count, 7]
-    """
-    shape_idx = wp.tid()
-
-    # Get the local shape transform
-    X_bs = shape_transform[shape_idx]
-
-    # Get the body index for this shape
-    body_idx = shape_body[shape_idx]
-
-    # If shape is attached to a body (body_idx >= 0), concatenate transforms
-    if body_idx >= 0:
-        # Get the body transform in world space
-        X_wb = body_q[body_idx]
-
-        # Concatenate: world_transform = body_transform * shape_transform
-        X_ws = wp.transform_multiply(X_wb, X_bs)
-        shape_world_transform[shape_idx] = X_ws
-    else:
-        # Shape is not attached to a body (static shape), use local
-        # transform as world transform
-        shape_world_transform[shape_idx] = X_bs
-
-
 @wp.func
 def reconstruct_angular_q_qd(q_pc: wp.quat, w_err: wp.vec3, X_wp: wp.transform, axis: wp.vec3):
     """
@@ -1436,38 +1395,6 @@ def eval_jacobian(
     return J
 
 
-@wp.func
-def transform_spatial_inertia(t: wp.transform, I: wp.spatial_matrix):
-    """Transform a spatial inertia tensor to a new coordinate frame.
-
-    Note: This is duplicated from featherstone/kernels.py to avoid circular imports.
-    """
-    t_inv = wp.transform_inverse(t)
-
-    q = wp.transform_get_rotation(t_inv)
-    p = wp.transform_get_translation(t_inv)
-
-    r1 = wp.quat_rotate(q, wp.vec3(1.0, 0.0, 0.0))
-    r2 = wp.quat_rotate(q, wp.vec3(0.0, 1.0, 0.0))
-    r3 = wp.quat_rotate(q, wp.vec3(0.0, 0.0, 1.0))
-
-    R = wp.matrix_from_cols(r1, r2, r3)
-    S = wp.skew(p) @ R
-
-    # fmt: off
-    T = wp.spatial_matrix(
-        R[0, 0], R[0, 1], R[0, 2], S[0, 0], S[0, 1], S[0, 2],
-        R[1, 0], R[1, 1], R[1, 2], S[1, 0], S[1, 1], S[1, 2],
-        R[2, 0], R[2, 1], R[2, 2], S[2, 0], S[2, 1], S[2, 2],
-        0.0, 0.0, 0.0, R[0, 0], R[0, 1], R[0, 2],
-        0.0, 0.0, 0.0, R[1, 0], R[1, 1], R[1, 2],
-        0.0, 0.0, 0.0, R[2, 0], R[2, 1], R[2, 2],
-    )
-    # fmt: on
-
-    return wp.mul(wp.mul(wp.transpose(T), I), T)
-
-
 @wp.kernel
 def compute_body_spatial_inertia(
     body_inertia: wp.array[wp.mat33],
@@ -1659,7 +1586,7 @@ def eval_articulation_body_inertia_about_root(
 
 
 @wp.kernel(enable_backward=False)
-def eval_articulation_composite_inertia(
+def eval_articulation_subtree_sum(
     articulation_level_start: wp.array[wp.int32],
     level_joint_start: wp.array[wp.int32],
     level_joints: wp.array[wp.int32],
@@ -1667,22 +1594,20 @@ def eval_articulation_composite_inertia(
     joint_parent: wp.array[int],
     joint_child: wp.array[int],
     # outputs
-    body_I_c: wp.array3d[float],
+    body_x: wp.array2d[float],
 ):
-    """Add each body's inertia into its parent's, deepest tree level first, one thread per (articulation, element).
+    """Add each body's row into its parent's, deepest tree level first, one thread per (articulation, element).
 
-    On return ``body_I_c[b]`` is the composite inertia of the subtree rooted at
-    ``b``. One thread sums one of the 36 matrix elements over the whole tree in a
-    fixed order, so the result is deterministic. ``body_I_c`` is a float view of
-    the spatial matrices, so each thread loads only its own element.
+    On return ``body_x[b]`` is the sum over the subtree rooted at ``b``. One
+    thread sums one element over the whole tree in a fixed order, so the result
+    is deterministic. ``body_x`` is a flat float view of per-body quantities,
+    such as spatial inertias or wrenches.
     """
     art_idx, element = wp.tid()
     if articulation_mask:
         if not articulation_mask[art_idx]:
             return
 
-    row = element // 6
-    col = element % 6
     level_begin = articulation_level_start[art_idx]
     level_end = articulation_level_start[art_idx + 1]
     # Level 0 holds the roots, whose parents are outside the articulation.
@@ -1691,7 +1616,7 @@ def eval_articulation_composite_inertia(
         for i in range(level_joint_start[level], level_joint_start[level + 1]):
             j = level_joints[i]
             parent = joint_parent[j]
-            body_I_c[parent, row, col] = body_I_c[parent, row, col] + body_I_c[joint_child[j], row, col]
+            body_x[parent, element] = body_x[parent, element] + body_x[joint_child[j], element]
 
 
 @wp.kernel(enable_backward=False)
@@ -2140,7 +2065,7 @@ def _eval_mass_matrix(
             device=model.device,
         )
         wp.launch(
-            kernel=eval_articulation_composite_inertia,
+            kernel=eval_articulation_subtree_sum,
             dim=(model.articulation_count, 36),
             inputs=[
                 model._fk_articulation_level_start,
@@ -2150,7 +2075,7 @@ def _eval_mass_matrix(
                 model.joint_parent,
                 model.joint_child,
             ],
-            outputs=[body_I_s.view(float)],
+            outputs=[body_I_s.view(float).reshape((model.body_count, 36))],
             device=model.device,
         )
         wp.launch(

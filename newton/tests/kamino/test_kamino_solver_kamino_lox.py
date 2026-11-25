@@ -17,7 +17,8 @@ from newton._src.solvers.kamino._src.integrators.euler import _integrate_semi_im
 from newton._src.solvers.kamino._src.integrators.moreau import _integrate_moreau_jean_second_inplace
 from newton._src.solvers.kamino._src.solver_kamino_impl import SolverKaminoImpl
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
-from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino import setup_test_output, setup_tests, test_context
+from newton.tests.unittest_utils import NewtonTestCase
 from newton.tests.utils.basics import (
     build_box_on_plane,
     build_boxes_fourbar,
@@ -430,8 +431,9 @@ def _joint_angular_error(
     return float(np.linalg.norm(np.cross(np.asarray((1.0, 0.0, 0.0)), follower_axis)))
 
 
-class _LOXTestCase(unittest.TestCase):
+class _LOXTestCase(NewtonTestCase):
     def setUp(self):
+        setup_test_output(self)
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
@@ -448,6 +450,29 @@ class _LOXTestCase(unittest.TestCase):
 
 
 class TestSolverKaminoLOX(_LOXTestCase):
+    def test_solver_residual_requires_adaptive_iterations(self):
+        """Support the residual observable only when LOX runs its convergence check."""
+        builder = newton.ModelBuilder()
+        SolverKamino.register_custom_attributes(builder)
+        builder.begin_world()
+        inertia = wp.mat33f(0.2, 0.0, 0.0, 0.0, 0.2, 0.0, 0.0, 0.0, 0.2)
+        body = builder.add_link(mass=1.0, inertia=inertia, lock_inertia=True)
+        builder.add_articulation([builder.add_joint_free(parent=-1, child=body)])
+        builder.end_world()
+        model = builder.finalize(device=self.default_device)
+
+        kind = SolverKamino.ObservableKind.SOLVER_RESIDUAL
+        for fixed_iterations in (False, True):
+            with self.subTest(fixed_iterations=fixed_iterations):
+                config = self.make_config()
+                config.lox.fixed_iterations = fixed_iterations
+                solver = SolverKamino(model, config=config)
+                self.assertEqual(kind in solver.supported_observables, not fixed_iterations)
+                if fixed_iterations:
+                    # Fixed iterations skip the convergence check that the observable reports.
+                    with self.assertRaisesRegex(ValueError, "solver_residual"):
+                        solver.observables({kind})
+
     def test_integrators_keep_prescribed_twist_of_rotated_singular_body(self):
         """Keep the LOX twist of a rotated body with mass and a rank-deficient inverse inertia."""
         rotation = np.array(wp.quat_to_matrix(wp.quat_rpy(0.3, -0.7, 1.1)), dtype=np.float32).reshape(3, 3)
@@ -505,7 +530,7 @@ class TestSolverKaminoLOX(_LOXTestCase):
 
         solver.step(state_previous, state_next, model.control(), dt=None)
 
-        gravity = model.gravity.vector.numpy()[: model.size.num_worlds]
+        gravity = model.gravity.numpy()[: model.size.num_worlds]
         body_world = model.bodies.wid.numpy()
         expected_velocity = time_step[body_world, None] * gravity[body_world]
         np.testing.assert_allclose(state_next.u_i.numpy()[:, :3], expected_velocity, rtol=0.0, atol=5.0e-4)
@@ -1457,6 +1482,7 @@ class TestSolverKaminoLOXConstraints(_LOXTestCase):
 
 if __name__ == "__main__":
     # Test setup
+    newton.utils.setup_console_logging()
     setup_tests()
 
     # Run all tests

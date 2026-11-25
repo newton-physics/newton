@@ -20,7 +20,7 @@ class ModelFlags(IntEnum):
     """Indicates joint property updates: joint_q, joint_X_p, joint_X_c, joint_axis."""
 
     JOINT_DOF_PROPERTIES = 1 << 1
-    """Indicates all joint DOF updates, including force, armature, and reference-pose properties: joint_target_ke, joint_target_kd, joint_damping, joint_effort_limit, joint_armature, joint_friction, joint_limit_ke, joint_limit_kd, joint_limit_lower, joint_limit_upper."""
+    """Indicates all joint DOF updates, including force, armature, and reference-pose properties: joint_target_ke, joint_target_kd, joint_stiffness, joint_rest_q, joint_damping, joint_effort_limit, joint_armature, joint_friction, joint_limit_ke, joint_limit_kd, joint_limit_lower, joint_limit_upper."""
 
     BODY_PROPERTIES = 1 << 2
     """Indicates body property updates: body_q, body_qd, body_flags."""
@@ -29,7 +29,7 @@ class ModelFlags(IntEnum):
     """Indicates body inertial property updates: body_com, body_inertia, body_inv_inertia, body_mass, body_inv_mass."""
 
     SHAPE_PROPERTIES = 1 << 4
-    """Indicates shape property updates: shape_transform, shape_scale, shape_collision_radius, shape_material_mu, shape_material_restitution, shape_material_ke, shape_material_kd, rigid_contact_mu_torsional, rigid_contact_mu_rolling."""
+    """Indicates shape property updates: shape_transform, shape_scale, shape_collision_radius, shape_material_mu, shape_material_mu_static, shape_material_restitution, shape_material_ke, shape_material_kd, rigid_contact_mu_torsional, rigid_contact_mu_rolling."""
 
     MODEL_PROPERTIES = 1 << 5
     """Indicates model property updates: gravity and other global parameters."""
@@ -50,7 +50,15 @@ class ModelFlags(IntEnum):
     """Indicates joint_armature updates. MuJoCo recomputes constants; use at reset or for domain randomization rather than every step."""
 
     JOINT_REFERENCE_POSE_PROPERTIES = 1 << 11
-    """Indicates joint reference-pose and spring-reference updates, including Rod rest rotations in joint_target_q. Excludes joint transforms, force parameters, and armature. MuJoCo recomputes constants; use at reset or for domain randomization rather than every step."""
+    """Indicates joint reference-pose and spring-reference updates, including joint_rest_q for passive springs and Rod rest configurations. Excludes joint transforms, force parameters, and armature. MuJoCo recomputes constants; use at reset or for domain randomization rather than every step."""
+
+    SHAPE_TYPE_AND_SOURCE = 1 << 12
+    """Indicates that shapes changed type or source (shape_type, shape_source_ptr) together with the collision data derived from them, or were emptied: variant rows took other variant shapes in :meth:`~newton.Model.select_body_variants`. Viewers and solvers that cache shape geometry must refresh it. Edits of shape_transform or shape_scale alone are :attr:`SHAPE_PROPERTIES`. Use at reset rather than every step.
+
+    .. experimental::
+
+        Body variants, including this flag, may change without a deprecation period.
+    """
 
     ALL = (
         JOINT_PROPERTIES
@@ -65,6 +73,7 @@ class ModelFlags(IntEnum):
         | JOINT_DOF_FORCE_PROPERTIES
         | JOINT_DOF_INERTIAL_PROPERTIES
         | JOINT_REFERENCE_POSE_PROPERTIES
+        | SHAPE_TYPE_AND_SOURCE
     )
     """Indicates all property updates."""
 
@@ -166,17 +175,19 @@ class ShapeFrictionMode(IntEnum):
 
     The modes follow the contact models of grasping: frictionless point contact,
     point contact with sliding friction, and soft-finger contact that adds
-    torsional friction about the normal; ``ROLLING`` adds rolling resistance.
+    torsional friction about the normal; ``TORSIONAL_ROLLING`` adds rolling resistance.
     They correspond to MuJoCo's ``condim`` 1, 3, 4, and 6.
 
     Each mode includes the components of the lower modes. To leave out a lower
-    component, set its coefficient to zero; for example, ``ROLLING`` with
+    component, set its coefficient to zero; for example, ``TORSIONAL_ROLLING`` with
     :attr:`~newton.ModelBuilder.ShapeConfig.mu_torsional` of zero gives rolling
     resistance without torsional friction. A contact uses the higher mode of its
-    two shapes (:class:`~newton.solvers.SolverMuJoCo` lets a higher
-    ``mujoco:geom_priority`` decide instead) and combines the coefficients of
+    two shapes (in :class:`~newton.solvers.SolverMuJoCo`, a higher
+    ``mujoco:geom_priority`` or an explicit contact pair decides instead) and
+    combines the coefficients of
     both shapes by the solver's usual rule, so disabling a component for a
-    contact pair takes a zero coefficient on both shapes.
+    contact pair takes a zero coefficient on both shapes
+    (:class:`~newton.solvers.SolverMuJoCo` keeps its minimum coefficient of 1e-5).
 
     The mode fixes which friction constraints a solver creates when it is
     constructed; the coefficients :attr:`~newton.Model.shape_material_mu`,
@@ -187,6 +198,8 @@ class ShapeFrictionMode(IntEnum):
     Particles have no friction mode, so they count as ``NONE`` and a contact
     between a particle and a shape follows the shape's mode. Because particles
     do not rotate, the modes above ``SLIDING`` act as sliding friction for them.
+    :class:`~newton.solvers.SolverMuJoCo` flexes keep sliding friction against
+    every shape.
     A rigid contact is only frictionless when both shapes are ``NONE``.
     """
 
@@ -199,7 +212,7 @@ class ShapeFrictionMode(IntEnum):
     TORSIONAL = 2
     """Sliding friction and torsional friction about the contact normal."""
 
-    ROLLING = 3
+    TORSIONAL_ROLLING = 3
     """Sliding, torsional, and rolling friction."""
 
 

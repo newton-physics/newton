@@ -1,9 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-import sys as _sys
-import warnings as _warnings
-
 # ==================================================================================
 # core
 # ==================================================================================
@@ -12,12 +9,15 @@ from ._src.core import (
     Axis,
     AxisType,
 )
+from ._src.exceptions import NewtonDeprecationWarning, NewtonWarning
 from ._version import __version__
 
 __all__ = [
     "MAXVAL",
     "Axis",
     "AxisType",
+    "NewtonDeprecationWarning",
+    "NewtonWarning",
     "__version__",
 ]
 
@@ -114,7 +114,6 @@ from . import (  # noqa: E402
     actuators,
     config,
     controllers,
-    exceptions,
     geometry,
     ik,
     math,
@@ -130,7 +129,6 @@ __all__ += [
     "actuators",
     "config",
     "controllers",
-    "exceptions",
     "geometry",
     "ik",
     "math",
@@ -146,15 +144,3 @@ from ._src.diagnostics import install_console_fallback as _install_console_fallb
 
 _install_console_fallback()
 del _install_console_fallback
-
-if _sys.version_info < (3, 11):
-    # Show the interpreter migration notice even under Python's default filters.
-    with _warnings.catch_warnings():
-        if not _sys.warnoptions:
-            _warnings.simplefilter("default", exceptions.NewtonDeprecationWarning)
-        _warnings.warn(
-            "Support for Python 3.10 is deprecated and will be removed in Newton 1.9. "
-            "Please upgrade to Python 3.11 or newer.",
-            exceptions.NewtonDeprecationWarning,
-            stacklevel=2,
-        )

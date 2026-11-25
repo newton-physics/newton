@@ -489,13 +489,18 @@ class Example:
         )
         wp.copy(dest=self.control_joint_target_q[:, : self.n_coords], src=self.ik_joint_q)
 
-        for _ in range(self.sim_substeps):
+        # A captured frame must end on the buffer it started from, so an odd count copies its last substep back.
+        need_state_copy = self.use_graph and self.sim_substeps % 2 == 1
+        for substep in range(self.sim_substeps):
             self.state_0.clear_forces()
             newton.examples.apply_coupled_viewer_forces(self, self.state_0)
             self.collision_pipeline.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             newton.eval_ik(self.model, self.state_1, self.state_1.joint_q, self.state_1.joint_qd)
-            self.state_0, self.state_1 = self.state_1, self.state_0
+            if need_state_copy and substep == self.sim_substeps - 1:
+                self.state_0.assign(self.state_1)
+            else:
+                self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
         self.update_ik_targets()
@@ -552,7 +557,7 @@ class Example:
         parser.add_argument("--payload-radius", type=float, default=0.005, help="Cable radius [m].")
         parser.add_argument("--vbd-iterations", type=int, default=20, help="VBD iterations per coupled substep.")
         parser.add_argument("--mujoco-iterations", type=int, default=100, help="MuJoCo solver iterations.")
-        parser.add_argument("--mujoco-ls-iterations", type=int, default=20, help="MuJoCo line-search iterations.")
+        parser.add_argument("--mujoco-ls-iterations", type=int, default=50, help="MuJoCo line-search iterations.")
         parser.add_argument(
             "--no-graph-capture",
             action="store_false",

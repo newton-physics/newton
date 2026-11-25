@@ -966,11 +966,6 @@ class TestMeshSDFCollisionFlag(unittest.TestCase):
         )
         self.assertEqual(int(rebuilt.data.sparse_sdf_ptr), int(sdf_from_mesh.data.sparse_sdf_ptr))
 
-    def test_standalone_sdf_shape_api_removed(self):
-        """GeoType.SDF and add_shape_sdf should not exist."""
-        self.assertFalse(hasattr(newton.GeoType, "SDF"))
-        self.assertFalse(hasattr(newton.ModelBuilder, "add_shape_sdf"))
-
 
 class TestSDFPublicApi(unittest.TestCase):
     """Test public API shape for SDF creators."""
@@ -1015,16 +1010,6 @@ class TestSDFPublicApi(unittest.TestCase):
                 builder.add_shape_box(body=-1, hx=0.5, hy=0.4, hz=0.3, cfg=cfg)
                 with self.assertRaisesRegex(ValueError, "requires a CUDA-capable GPU"):
                     builder.finalize(device="cpu")
-
-    def test_top_level_sdf_exported(self):
-        """Top-level package should expose SDF as newton.SDF."""
-        self.assertTrue(hasattr(newton, "SDF"))
-        self.assertFalse(hasattr(newton.geometry, "SDF"))
-
-    def test_module_level_sdf_creators_removed(self):
-        """Module-level SDF creators should not be exposed in public API."""
-        self.assertFalse(hasattr(newton.geometry, "create_sdf_from_mesh"))
-        self.assertFalse(hasattr(newton.geometry, "create_sdf_from_data"))
 
     @unittest.skipUnless(_cuda_available, "Requires CUDA device")
     def test_hydroelastic_primitive_generates_sdf_on_gpu(self):

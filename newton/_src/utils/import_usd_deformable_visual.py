@@ -26,7 +26,12 @@ import logging
 import numpy as np
 import warp as wp
 
-from .import_usd_deformable_utils import _DeformableImportContext, _world_matrix_reflects, _world_points
+from .import_usd_deformable_utils import (
+    _DeformableImportContext,
+    _has_graphics_material_subsets,
+    _world_matrix_reflects,
+    _world_points,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -123,8 +128,6 @@ def _record_cable_visual_bind_poses(ctx, rod, bodies, point_sources):
 
 def _deformable_import_visual(ctx: _DeformableImportContext) -> None:
     """Import graphics payloads for every imported deformable body and embed them."""
-    from pxr import UsdShade
-
     from ..geometry.flags import ShapeFlags  # noqa: PLC0415
     from ..usd import utils as usd  # noqa: PLC0415
 
@@ -165,14 +168,7 @@ def _deformable_import_visual(ctx: _DeformableImportContext) -> None:
             if len(mesh.vertices) == 0 or len(mesh.indices) == 0:
                 logger.warning("%s: graphics mesh has no geometry; skipping visual mesh.", path)
                 continue
-            if any(
-                subset.GetIndicesAttr().Get()
-                and any(
-                    rel.GetName().startswith("material:binding") and rel.GetTargets()
-                    for rel in subset.GetPrim().GetRelationships()
-                )
-                for subset in UsdShade.MaterialBindingAPI(prim).GetMaterialBindSubsets()
-            ):
+            if _has_graphics_material_subsets(prim):
                 logger.warning(
                     "%s: graphics material subsets are not supported; using only the mesh-level material.", path
                 )

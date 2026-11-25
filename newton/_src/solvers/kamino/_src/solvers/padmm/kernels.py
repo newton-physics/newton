@@ -14,6 +14,7 @@ from ...core.math import FLOAT32_EPS, FLOAT32_MAX
 from ..common import (
     apply_dual_preconditioner_to_solution as _apply_dual_preconditioner_to_solution,
 )
+from ..common import tolerance_scaled_residual
 from ..common import (
     warmstart_contact_constraints as _warmstart_contact_constraints,
 )
@@ -67,6 +68,7 @@ __all__ = [
     "_warmstart_desaxce_correction",
     "_warmstart_joint_constraints",
     "_warmstart_limit_constraints",
+    "_write_padmm_world_residual",
     "make_collect_solver_info_kernel",
     "make_collect_solver_info_kernel_sparse",
     "make_desaxce_correction_and_velocity_bias_kernel",
@@ -326,14 +328,14 @@ def make_update_proximal_regularization_kernel(method: PADMMPenaltyUpdate):
 def _update_delassus_proximal_regularization(
     # Inputs:
     problem_dim: wp.array[wp.int32],
-    problem_mio: wp.array[wp.int32],
     solver_status: wp.array[PADMMStatus],
     solver_state_sigma: wp.array[wp.vec2f],
     # Outputs:
-    D: wp.array[wp.float32],
+    D_storage: wp.array2d[wp.float32],
 ):
     # Retrieve the thread index
     wid, tid = wp.tid()
+    D = D_storage[wid]
 
     # Retrieve the number of active constraints in the world
     ncts = problem_dim[wid]
@@ -345,14 +347,11 @@ def _update_delassus_proximal_regularization(
     if tid >= ncts or status.converged > 0:
         return
 
-    # Retrieve the matrix index offset of the world
-    mio = problem_mio[wid]
-
     # Retrieve the (current, previous) proximal regularization pair
     sigma = solver_state_sigma[wid]
 
     # Add the proximal regularization to the diagonal of the Delassus matrix
-    D[mio + ncts * tid + tid] += sigma[0] - sigma[1]
+    D[ncts * tid + tid] += sigma[0] - sigma[1]
 
 
 @wp.kernel
@@ -1396,10 +1395,9 @@ def make_collect_solver_info_kernel(use_acceleration: bool):
         problem_ccgo: wp.array[wp.int32],
         problem_dim: wp.array[wp.int32],
         problem_vio: wp.array[wp.int32],
-        problem_mio: wp.array[wp.int32],
         problem_mu: wp.array[wp.float32],
         problem_v_f: wp.array[wp.float32],
-        problem_D: wp.array[wp.float32],
+        problem_D_storage: wp.array2d[wp.float32],
         problem_P: wp.array[wp.float32],
         problem_bound_lower: wp.array[wp.float32],
         problem_bound_upper: wp.array[wp.float32],
@@ -1446,6 +1444,7 @@ def make_collect_solver_info_kernel(use_acceleration: bool):
     ):
         # Retrieve the thread index as the world index
         wid = wp.tid()
+        problem_D = problem_D_storage[wid]
 
         # Retrieve the world-specific data
         nbc = problem_nbc[wid]
@@ -1458,7 +1457,6 @@ def make_collect_solver_info_kernel(use_acceleration: bool):
         lcgo = problem_lcgo[wid]
         ccgo = problem_ccgo[wid]
         vio = problem_vio[wid]
-        mio = problem_mio[wid]
         rio = solver_info_offset[wid]
         penalty = solver_penalty[wid]
         status = solver_status[wid]
@@ -1484,7 +1482,7 @@ def make_collect_solver_info_kernel(use_acceleration: bool):
         compute_cwise_vec_mul(ncts, vio, problem_P, solver_state_y, solver_info_lambdas)
 
         # Compute the post-event constraint-space velocity from the current solution: v_plus = v_f + D @ lambda
-        compute_gemv(ncts, vio, mio, sigma[0], problem_P, problem_D, solver_state_y, problem_v_f, solver_info_v_plus)
+        compute_gemv(ncts, vio, sigma[0], problem_P, problem_D, solver_state_y, problem_v_f, solver_info_v_plus)
 
         # Compute the De Saxce correction for each contact as: s = G(v_plus)
         compute_desaxce_corrections(nc, cio, vio, ccgo, problem_mu, solver_info_v_plus, solver_info_s)
@@ -1960,3 +1958,24 @@ def _compute_solution_vectors(
 
     # Update constraint reactions: lambda = y
     solver_lambdas[thread_offset] = y
+
+
+@wp.kernel
+def _write_padmm_world_residual(
+    # Inputs:
+    solver_config: wp.array[PADMMConfigStruct],
+    solver_status: wp.array[PADMMStatus],
+    # Outputs:
+    world_residual: wp.array[wp.float32],
+):
+    """Write the largest terminal residual of each world relative to its stopping tolerance."""
+    wid = wp.tid()
+    config = solver_config[wid]
+    status = solver_status[wid]
+    world_residual[wid] = wp.max(
+        wp.max(
+            tolerance_scaled_residual(status.r_p, config.primal_tolerance),
+            tolerance_scaled_residual(status.r_d, config.dual_tolerance),
+        ),
+        tolerance_scaled_residual(status.r_c, config.compl_tolerance),
+    )

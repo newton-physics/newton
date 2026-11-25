@@ -9,7 +9,7 @@ See the :mod:`newton._src.solvers.kamino._src.solvers.fk` module for a detailed 
 
 from __future__ import annotations
 
-import sys
+import logging
 
 import numpy as np
 import warp as wp
@@ -29,7 +29,6 @@ from ...linalg.conjugate import BatchedLinearOperator, CGSolver
 from ...linalg.factorize.llt_blocked_semi_sparse import SemiSparseBlockCholeskySolverBatched
 from ...linalg.sparse_matrix import BlockDType, BlockSparseMatrices
 from ...linalg.sparse_operator import BlockSparseLinearOperators
-from ...utils import logger as msg
 from ...utils.tile import get_block_dim, get_num_tiles, get_tile_size
 from ...utils.world_equivalence import DiscreteSignature, compute_equivalence_classes
 from .kernels import (
@@ -74,6 +73,8 @@ from .types import (
     ForwardKinematicsPreconditionerType,
     ForwardKinematicsStatus,
 )
+
+logger = logging.getLogger(__name__)
 
 ###
 # Module interface
@@ -2560,7 +2561,7 @@ class ForwardKinematicsSolver:
 
         # Warn if any world does not have an assigned base body when base attributes are provided.
         if (base_q is not None or base_u is not None) and self.model.info.has_world_without_base_body:
-            msg.warning(
+            logger.warning(
                 "Some worlds have no free-floating base body assigned, possibly due to a non-free articulation root (fixed-base system). "
                 "Base pose/velocity updates for forward kinematics will have no effect for those worlds."
             )
@@ -2582,9 +2583,13 @@ class ForwardKinematicsSolver:
             max_residual = self.data.gauss_newton.max_residual.numpy().copy()
             num_active_worlds = self.model.size.num_worlds if world_mask is None else world_mask.numpy().sum()
             if verbose:
-                sys.__stdout__.write(f"Newton success for {success.sum()}/{num_active_worlds} worlds; ")
-                sys.__stdout__.write(f"num iterations={iterations.max()}; ")
-                sys.__stdout__.write(f"max residual={max_residual.max()}\n")
+                logger.info(
+                    "Newton success for %s/%s worlds; num iterations=%s; max residual=%s",
+                    success.sum(),
+                    num_active_worlds,
+                    iterations.max(),
+                    max_residual.max(),
+                )
 
         # Return solver status
         if return_status:

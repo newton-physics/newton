@@ -13,17 +13,21 @@ dtype=wp.int32)`` and ``wp_int32_array.assign(np_int64_arr)`` silently
 truncate; the helpers raise :class:`OverflowError` instead.
 """
 
+import logging
 import unittest
 
 import numpy as np
 import warp as wp
 
+import newton
 from newton._src.solvers.kamino._src.core.types import (
     assign_to_warp_int32_array,
     to_warp_int32_array,
 )
-from newton._src.solvers.kamino._src.utils import logger as msg
-from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino import setup_test_output, setup_tests, test_context
+from newton.tests.unittest_utils import NewtonTestCase
+
+logger = logging.getLogger(__name__)
 
 ###
 # Constants
@@ -38,23 +42,14 @@ INT32_MIN = np.iinfo(np.int32).min
 ###
 
 
-class TestToWarpInt32Array(unittest.TestCase):
+class TestToWarpInt32Array(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose
 
-        if self.verbose:
-            print("\n")
-            msg.set_log_level(msg.LogLevel.DEBUG)
-        else:
-            msg.reset_log_level()
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            msg.reset_log_level()
+        setup_test_output(self, verbose=self.verbose)
 
     # --- Happy paths ------------------------------------------------------
 
@@ -155,23 +150,14 @@ class TestToWarpInt32Array(unittest.TestCase):
             to_warp_int32_array(src, device=self.default_device)
 
 
-class TestAssignToWarpInt32Array(unittest.TestCase):
+class TestAssignToWarpInt32Array(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose
 
-        if self.verbose:
-            print("\n")
-            msg.set_log_level(msg.LogLevel.DEBUG)
-        else:
-            msg.reset_log_level()
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            msg.reset_log_level()
+        setup_test_output(self, verbose=self.verbose)
 
     def _make_dst(self, size: int, dtype=wp.int32) -> wp.array:
         return wp.zeros(size, dtype=dtype, device=self.default_device)
@@ -286,5 +272,6 @@ class TestAssignToWarpInt32Array(unittest.TestCase):
 ###
 
 if __name__ == "__main__":
+    newton.utils.setup_console_logging()
     setup_tests()
     unittest.main(verbosity=2)

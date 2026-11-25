@@ -9,9 +9,9 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton import StateFlags
-from newton.exceptions import NewtonDeprecationWarning
+from newton import NewtonDeprecationWarning, StateFlags
 from newton.solvers import SolverMuJoCo
+from newton.tests.unittest_utils import MUJOCO_MODULES, requires
 
 
 def _build_two_world_model(world_count: int = 2) -> newton.Model:
@@ -39,6 +39,7 @@ def _build_two_world_model(world_count: int = 2) -> newton.Model:
     return builder.finalize()
 
 
+@requires(*MUJOCO_MODULES)
 class TestMuJoCoReset(unittest.TestCase):
     def _setup_stepped_solver(self):
         self.model = _build_two_world_model(world_count=2)

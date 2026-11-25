@@ -33,7 +33,7 @@ _ROLLING = {"linear": (0.0, -0.3, 0.0), "angular": (10.0, 0.0, 0.0)}
 _ANISOTROPIC = np.array([[1.0, 0.0, 0.4], [0.0, 1.0, 0.0], [0.4, 0.0, 1.0]])
 _SLIDING = newton.ShapeFrictionMode.SLIDING
 _TORSIONAL = newton.ShapeFrictionMode.TORSIONAL
-_ROLLING_MODE = newton.ShapeFrictionMode.ROLLING
+_ROLLING_MODE = newton.ShapeFrictionMode.TORSIONAL_ROLLING
 
 
 def _rows(rolling: float = 0.0, torsional: float = 0.0) -> dict:
@@ -119,7 +119,7 @@ def _simulate(
         # One mode for every shape, or one per shape (table first).
         modes = np.broadcast_to(np.asarray(friction_mode, dtype=np.int32), (model.shape_count,))
         model.shape_material_friction_mode.assign(np.ascontiguousarray(modes))
-    options = {"solve_mode": "matrix_free", "iterations": 32, "deterministic": _RUN_TO_RUN, **solver_kwargs}
+    options = {"iterations": 32, "deterministic": _RUN_TO_RUN, **solver_kwargs}
     solver = SolverSteel(model, **options)
     if on_solver is not None:
         on_solver(solver)
@@ -225,7 +225,7 @@ class TestFreeRigidAngularFriction(unittest.TestCase):
             builder.add_shape_sphere(body, radius=_RADIUS, cfg=cfg)
         model = builder.finalize()
         model.steel.rigid_body_angular_damping.fill_(0.0)
-        solver = SolverSteel(model, solve_mode="matrix_free", iterations=32, deterministic=_RUN_TO_RUN)
+        solver = SolverSteel(model, iterations=32, deterministic=_RUN_TO_RUN)
         pipeline = newton.CollisionPipeline(model, deterministic=True)
         contacts = pipeline.contacts()
         state_0, state_1, control = model.state(), model.state(), model.control()
@@ -365,7 +365,7 @@ class TestFreeRigidAngularFriction(unittest.TestCase):
                     ),
                 )
             model = builder.finalize()
-            solver = SolverSteel(model, solve_mode="matrix_free", iterations=32, friction_anchor_beta=0.2)
+            solver = SolverSteel(model, iterations=32, friction_anchor_beta=0.2)
             pipeline = newton.CollisionPipeline(model)
             contacts = pipeline.contacts()
             state_0, state_1, control = model.state(), model.state(), model.control()
@@ -426,7 +426,7 @@ class TestFreeRigidAngularFriction(unittest.TestCase):
                     ),
                 )
             model = builder.finalize()
-            options = {"solve_mode": "matrix_free", "iterations": 32, "friction_anchor_beta": 0.2}
+            options = {"iterations": 32, "friction_anchor_beta": 0.2}
             if mixed:
                 # The link's rolling shape has no torsion radius, which leaves its contacts with sliding friction.
                 with self.assertWarnsRegex(NewtonWarning, "articulated contacts"):
@@ -545,7 +545,7 @@ class TestFreeRigidAngularFriction(unittest.TestCase):
         model, _ = _scene("sphere")
         model.shape_material_friction_mode.fill_(int(_ROLLING_MODE))
         model.shape_material_mu_rolling.fill_(0.001)
-        solver = SolverSteel(model, solve_mode="matrix_free")
+        solver = SolverSteel(model)
         with wp.ScopedCapture(device=model.device) as capture:
             solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
         model.shape_material_mu_rolling.fill_(0.003)
@@ -566,9 +566,7 @@ class TestFreeRigidAngularFriction(unittest.TestCase):
         model.shape_material_friction_mode.fill_(int(_ROLLING_MODE))
         model.shape_material_mu_rolling.fill_(0.002)
         model.shape_material_mu_torsional.fill_(0.0)
-        solver = SolverSteel(
-            model, solve_mode="matrix_free", iterations=32, deterministic=_RUN_TO_RUN, contact_warmstart=True
-        )
+        solver = SolverSteel(model, iterations=32, deterministic=_RUN_TO_RUN, contact_warmstart=True)
         pipeline = newton.CollisionPipeline(model, deterministic=True, contact_matching="sticky")
         contacts = pipeline.contacts()
         states = [model.state(), model.state()]
@@ -722,36 +720,43 @@ class TestFreeRigidAngularFriction(unittest.TestCase):
         builder.add_shape_sphere(free, radius=_RADIUS, cfg=newton.ModelBuilder.ShapeConfig(density=0.0))
         model = builder.finalize()
         with self.assertWarns(NewtonWarning):
-            solver = SolverSteel(model, solve_mode="matrix_free")
+            solver = SolverSteel(model)
         self.assertFalse(solver._free_rigid_angular_rows)
         # A rolling ground reaches the free sphere's contacts; the link's contacts still have no torsion radius.
         modes = model.shape_material_friction_mode.numpy()
         modes[0] = int(_ROLLING_MODE)
         model.shape_material_friction_mode.assign(modes)
         with self.assertWarnsRegex(NewtonWarning, "articulated contacts"):
-            solver = SolverSteel(model, solve_mode="matrix_free")
+            solver = SolverSteel(model)
         self.assertTrue(solver._free_rigid_angular_rows)
 
     def test_invalid_values_raise_and_unsupported_options_warn(self):
-        """Reject invalid modes and coefficients; leave the rows off, warning for ROLLING, for unsupported options."""
+        """Reject invalid modes and coefficients; leave the rows off, warning for TORSIONAL_ROLLING, for unsupported options."""
         model, _ = _scene("sphere")
         model.shape_material_friction_mode.fill_(int(_ROLLING_MODE))
         for options, option in (
-            ({"solve_mode": "split"}, "solve_mode='split'"),
             # Point friction: bisection with persistent patches would warn about the patches as well.
             ({"friction_mode": "bisection", "friction_anchor_beta": 0.0}, "friction_mode='bisection'"),
             ({"articulated_contact_response": "propagation"}, "articulated_contact_response='propagation'"),
         ):
             with self.subTest(option=option):
-                with self.assertWarnsRegex(NewtonWarning, "does not support ROLLING friction"):
-                    solver = SolverSteel(model, **{"solve_mode": "matrix_free", **options})
+                with self.assertWarnsRegex(NewtonWarning, "does not support TORSIONAL_ROLLING friction"):
+                    solver = SolverSteel(model, **options)
                 self.assertFalse(solver._free_rigid_angular_rows)
+        # The CPU solve has no angular rows.
+        cpu_builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        rolling_cfg = newton.ModelBuilder.ShapeConfig(friction_mode=_ROLLING_MODE)
+        cpu_builder.add_shape_sphere(cpu_builder.add_body(), radius=_RADIUS, cfg=rolling_cfg)
+        cpu_builder.add_ground_plane(cfg=rolling_cfg)
+        with self.subTest(option="cpu"), self.assertWarnsRegex(NewtonWarning, "does not support TORSIONAL_ROLLING"):
+            solver = SolverSteel(cpu_builder.finalize(device="cpu"))
+        self.assertFalse(solver._free_rigid_angular_rows)
         for mode in (-1, 4):
             model.shape_material_friction_mode.fill_(mode)
             with self.subTest(mode=mode), self.assertRaisesRegex(ValueError, "ShapeFrictionMode value"):
-                SolverSteel(model, solve_mode="matrix_free")
+                SolverSteel(model)
         model.shape_material_friction_mode.fill_(int(_ROLLING_MODE))
-        solver = SolverSteel(model, solve_mode="matrix_free")
+        solver = SolverSteel(model)
         model.shape_material_friction_mode.fill_(4)
         spatial_inertia = solver._body_I_m.numpy()
         model.body_mass.assign(2.0 * model.body_mass.numpy())
@@ -768,9 +773,9 @@ class TestFreeRigidAngularFriction(unittest.TestCase):
                 model.shape_material_friction_mode.fill_(int(mode))
                 array.fill_(value)
                 with self.subTest(name=name, value=value), self.assertRaisesRegex(ValueError, name):
-                    SolverSteel(model, solve_mode="matrix_free")
+                    SolverSteel(model)
                 array.assign(original)
-                solver = SolverSteel(model, solve_mode="matrix_free")
+                solver = SolverSteel(model)
                 array.fill_(value)
                 with self.subTest(name=name, value=value, notify=True), self.assertRaisesRegex(ValueError, name):
                     solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
@@ -778,11 +783,11 @@ class TestFreeRigidAngularFriction(unittest.TestCase):
         # A coefficient that no mode enables is not read.
         model.shape_material_friction_mode.fill_(int(_TORSIONAL))
         model.shape_material_mu_rolling.fill_(-1.0)
-        SolverSteel(model, solve_mode="matrix_free")
+        SolverSteel(model)
         model.shape_material_mu_rolling.fill_(0.0)
         # A solver built without the rows ignores later mode edits.
         model.shape_material_friction_mode.fill_(int(_SLIDING))
-        solver = SolverSteel(model, solve_mode="matrix_free")
+        solver = SolverSteel(model)
         for mode in (4, int(_ROLLING_MODE)):
             model.shape_material_friction_mode.fill_(mode)
             solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
@@ -895,7 +900,7 @@ class TestFreeRigidAngularFrictionImport(unittest.TestCase):
                 SolverSteel.register_custom_attributes(builder)
                 builder.add_mjcf(mjcf)
                 model = builder.finalize()
-                solver = SolverSteel(model, solve_mode="matrix_free")
+                solver = SolverSteel(model)
                 pipeline = newton.CollisionPipeline(model)
                 contacts = pipeline.contacts()
                 state_0, state_1 = model.state(), model.state()

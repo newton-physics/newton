@@ -49,6 +49,33 @@ def gjk_separation_cutoff(contact_threshold: float, position_a: wp.vec3, positio
     return contact_threshold + GJK_CUTOFF_TOLERANCE * world_scale
 
 
+def create_plane_convex_query(support_func: Any):
+    """Create an analytic infinite-plane query in the plane proxy's local frame."""
+
+    @wp.func
+    def plane_convex_query(
+        geom_b: Any,
+        orientation_a: wp.quat,
+        orientation_b: wp.quat,
+        position_a: wp.vec3,
+        position_b: wp.vec3,
+        plane_position: wp.vec3,
+        data_provider: Any,
+    ) -> ConvexQueryResult:
+        normal = wp.quat_rotate(orientation_a, wp.vec3(0.0, 0.0, 1.0))
+        support = wp.static(support_func)(geom_b, wp.quat_rotate_inv(orientation_b, -normal), data_provider)
+        point_b_world = wp.quat_rotate(orientation_b, support) + position_b
+        result = ConvexQueryResult()
+        # Use the authored plane position, avoiding cancellation against the deep box proxy.
+        result.signed_distance = wp.dot(point_b_world - plane_position, normal)
+        result.normal = wp.vec3(0.0, 0.0, 1.0)
+        result.point_b = wp.quat_rotate_inv(orientation_a, point_b_world - position_a)
+        result.point_a = result.point_b - result.normal * result.signed_distance
+        return result
+
+    return plane_convex_query
+
+
 def create_write_convex_query_result(
     support_func: Any,
     writer_func: Any,

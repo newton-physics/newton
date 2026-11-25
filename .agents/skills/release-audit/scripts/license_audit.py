@@ -23,17 +23,12 @@ import json
 import re
 import subprocess
 import sys
+import tomllib
 import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-
-try:
-    import tomllib
-except ModuleNotFoundError:  # pragma: no cover - exercised only on Python < 3.11
-    tomllib = None
-
 
 _REQ_NAME_RE = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9_.-]*)")
 _PYPI_REGISTRY = "https://pypi.org/simple"
@@ -101,12 +96,6 @@ def _git(repo: Path, *args: str, required: bool = True) -> str:
 
 
 def _load_toml(text: str, label: str) -> dict:
-    if tomllib is None:
-        sys.exit(
-            "license_audit: Python 3.11+ is required because this helper uses "
-            f"stdlib tomllib to parse {label}. Run the release audit with "
-            "Python 3.11 or newer."
-        )
     try:
         return tomllib.loads(text)
     except tomllib.TOMLDecodeError as exc:

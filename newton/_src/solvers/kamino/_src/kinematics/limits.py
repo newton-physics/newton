@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -21,7 +22,8 @@ from ..core.types import (
     vec7f,
 )
 from ..geometry.keying import build_pair_key2, make_bitmask
-from ..utils import logger as msg
+
+logger = logging.getLogger(__name__)
 
 ###
 # Module interface
@@ -528,7 +530,12 @@ def _detect_active_joint_configuration_limits(
     #   a structurally-singular row; mirrors joint-bilateral and contact culling).
     #   ``bid_B < 0`` (joint against world) is treated as immovable, matching the
     #   joint-conversion culling predicate.
-    if dof_type_j == JointDoFType.FIXED or world_max_limits == 0 or model_max_limits == 0:
+    if (
+        dof_type_j == JointDoFType.FIXED
+        or dof_type_j == JointDoFType.ROD
+        or world_max_limits == 0
+        or model_max_limits == 0
+    ):
         return
     parent_immovable = bid_B_j < 0 or model_body_is_immovable[bid_B_j] != 0
     child_immovable = model_body_is_immovable[bid_F_j] != 0
@@ -834,7 +841,7 @@ class LimitsKamino:
 
         # Skip allocation if there are no limits to allocate
         if model_max_limits == 0:
-            msg.debug("LimitsKamino: Skipping joint-limit data allocations since total requested capacity was `0`.")
+            logger.debug("LimitsKamino: Skipping joint-limit data allocations since total requested capacity was `0`.")
             return
 
         # Allocate the limits data on the specified device

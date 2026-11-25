@@ -1,1 +1,0 @@
-Add experimental USD graphics-mesh import for deformable cables, cloth, and volumes, with bind poses, UV textures and their transforms, and a `path_deformable_visual_map` import result that maps graphics prim paths to visual-mesh indices.

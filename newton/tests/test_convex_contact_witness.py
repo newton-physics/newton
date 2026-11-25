@@ -19,7 +19,7 @@ from newton._src.geometry.support_function import (
     support_map,
     support_map_lean,
 )
-from newton.tests.unittest_utils import add_function_test, get_test_devices
+from newton.tests.unittest_utils import add_function_test, get_test_devices, requires
 
 
 def _surface_error(vertices, indices, point):
@@ -360,6 +360,7 @@ def test_convex_contact_sampled_line(test, device):
                 test.assertAlmostEqual(abs(float(normal[2])), 1.0, delta=1.0e-6)
 
 
+@requires("scipy")
 def test_convex_contact_near_planar_face(test, device):
     """Report every corner of a resting face that is not planar to EPS, at its exact depth."""
     # A sole-sized box hull whose first bottom corner sits 20 um above the

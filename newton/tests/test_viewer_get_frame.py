@@ -16,7 +16,7 @@ from newton._src.viewer import viewer_gl
 from newton._src.viewer.gl import opengl
 from newton._src.viewer.gl.opengl import RendererGL
 from newton._src.viewer.viewer_gl import ViewerGL
-from newton.tests.unittest_utils import import_pyglet_window
+from newton.tests.unittest_utils import import_pyglet_window, requires
 
 
 def _viewer_gl_unavailable_error_types(test: unittest.TestCase) -> tuple[type[BaseException], ...]:
@@ -182,12 +182,10 @@ class _FakeGL:
 
 
 class TestViewerGLGetFrame(unittest.TestCase):
+    @requires("pyglet")
     def test_backend_error_types_do_not_force_window_import(self):
         """Verify backend error discovery does not import pyglet.window."""
-        try:
-            import pyglet
-        except ImportError as exc:
-            self.skipTest(f"ViewerGL dependencies not available: {exc}")
+        import pyglet
 
         class _WindowProxy:
             _module = None
@@ -628,15 +626,6 @@ class TestViewerGLGetFrame(unittest.TestCase):
             self.assertIs(viewer.get_frame(output=output), output)
             np.testing.assert_array_equal(output.numpy(), frame.numpy())
 
-            with self.assertWarnsRegex(DeprecationWarning, "target_image.*output"):
-                self.assertIs(viewer.get_frame(target_image=output), output)
-            with self.assertWarnsRegex(DeprecationWarning, "Passing 'output' positionally"):
-                self.assertIs(viewer.get_frame(output), output)
-            with self.assertWarnsRegex(DeprecationWarning, "Passing 'output', 'render_ui' positionally"):
-                self.assertIs(viewer.get_frame(output, False), output)
-            with self.assertRaisesRegex(TypeError, "output.*target_image"):
-                viewer.get_frame(output=output, target_image=output)
-
         np.testing.assert_array_equal(
             frame.numpy(),
             np.array(
@@ -648,7 +637,7 @@ class TestViewerGLGetFrame(unittest.TestCase):
             ),
         )
         self.assertEqual(frame.device, wp.get_device("cpu"))
-        self.assertEqual(fake_gl.readback_count, 5)
+        self.assertEqual(fake_gl.readback_count, 2)
 
     def test_texture_affine_transform_matches_authored_coordinates(self):
         """Apply a UsdTransform2d affine mapping exactly once before GL sampling."""
@@ -761,6 +750,8 @@ class TestViewerGLMinimumVersion(unittest.TestCase):
                 raise
             self.skipTest(f"pyglet window backend not available: {exc}")
         self.pyglet = pyglet
+        # RendererGL caches its GL module, which is not pyglet.gl after a failed pyglet import.
+        RendererGL.initialize_gl()
 
     @staticmethod
     def _gl_1_1_context():
@@ -774,7 +765,7 @@ class TestViewerGLMinimumVersion(unittest.TestCase):
         """Verify a driver below the minimum OpenGL version is rejected without opening a window."""
         pyglet = self.pyglet
         with (
-            mock.patch.object(pyglet.gl, "current_context", self._gl_1_1_context()),
+            mock.patch.object(RendererGL.gl, "current_context", self._gl_1_1_context()),
             mock.patch.object(pyglet.window, "Window") as window,
             self.assertRaisesRegex(pyglet.gl.ContextException, r"OpenGL 3\.3 .*OpenGL 1\.1\.0 \(GDI Generic\)"),
         ):
@@ -786,7 +777,7 @@ class TestViewerGLMinimumVersion(unittest.TestCase):
         pyglet = self.pyglet
         window = mock.Mock(context=self._gl_1_1_context())
         with (
-            mock.patch.object(pyglet.gl, "current_context", None),
+            mock.patch.object(RendererGL.gl, "current_context", None),
             mock.patch.object(pyglet.window, "Window", return_value=window),
             self.assertRaises(pyglet.gl.ContextException),
         ):

@@ -7,8 +7,6 @@ from typing import TYPE_CHECKING
 
 import warp as wp
 
-from ..utils.deprecation import RemovedAttribute
-
 if TYPE_CHECKING:
     from .model import Model
 
@@ -23,9 +21,6 @@ class Control:
     :attr:`joint_target_qd`, matching the coordinate layout of
     :attr:`State.joint_q` and DOF layout of :attr:`State.joint_qd`, respectively.
     """
-
-    joint_target_pos = RemovedAttribute("joint_target_q", removed_in="1.5")
-    joint_target_vel = RemovedAttribute("joint_target_qd", removed_in="1.5")
 
     def __init__(self):
         self.joint_f: wp.array | None = None
@@ -68,9 +63,30 @@ class Control:
         """
         Array of muscle activations [dimensionless, 0 to 1] with shape ``(muscle_count,)`` and type ``float``.
 
-        .. note::
-            Support for muscle dynamics is not yet implemented.
+        .. deprecated:: 1.9
+            Legacy muscles are deprecated; see :meth:`newton.ModelBuilder.add_muscle`.
         """
+
+        self._attribute_frequency: dict[str, Model.AttributeFrequency | str] = {}
+
+    def get_attribute_frequency(self, name: str) -> Model.AttributeFrequency | str:
+        """
+        Get the frequency of an attribute.
+
+        Args:
+            name: Name of the attribute.
+
+        Returns:
+            The frequency of the attribute.
+                Either a Model.AttributeFrequency enum value or a string for custom frequencies.
+
+        Raises:
+            KeyError: If the attribute frequency is not known, e.g. on a
+                Control that was not created by :meth:`Model.control() <newton.Model.control>`.
+        """
+        if name not in self._attribute_frequency:
+            raise KeyError(f"Attribute frequency of '{name}' is not known")
+        return self._attribute_frequency[name]
 
     def clear(self, model: Model | None = None) -> None:
         """Reset all control inputs to zero.
