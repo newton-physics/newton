@@ -375,10 +375,11 @@ def _copy_spatial_vectors(src: wp.array[wp.spatial_vector], dst: wp.array[wp.spa
     dst[tid] = src[tid]
 
 
-def _check_contact_gather_backward(device):
-    """Differentiate the per-body contact gather for a body with more sides than Warp's record floor.
+def _check_contact_gather_backward(device, gather_name):
+    """Differentiate a per-body contact gather for a body with more sides than Warp's record floor.
 
-    Gradients must reach both the contact-side wrenches and the body wrench accumulated before the gather.
+    Gradients must reach both the contact-side values and the body values accumulated before the gather.
+    ``gather_name`` selects the SemiImplicit/Featherstone wrench gather or the XPBD delta gather.
     """
     from newton._src.solvers.contact_gather import gather_contact_side_wrenches  # noqa: PLC0415
 
@@ -395,12 +396,22 @@ def _check_contact_gather_backward(device):
         tape = wp.Tape()
         with tape:
             wp.launch(_copy_spatial_vectors, dim=2, inputs=[prior_wrench], outputs=[body_wrench])
-            wp.launch(
-                gather_contact_side_wrenches,
-                dim=2,
-                inputs=[body_start, body_end, sides, side_wrench],
-                outputs=[body_wrench],
-            )
+            if gather_name == "wrench":
+                wp.launch(
+                    gather_contact_side_wrenches,
+                    dim=2,
+                    inputs=[body_start, body_end, sides, side_wrench],
+                    outputs=[body_wrench],
+                )
+            else:
+                contact_active = wp.ones((side_count + 2) // 2, dtype=wp.int32)
+                contact_inv_weight = wp.zeros(2, dtype=float)
+                wp.launch(
+                    xpbd_kernels.gather_body_contact_deltas,
+                    dim=2,
+                    inputs=[body_start, body_end, sides, side_wrench, contact_active],
+                    outputs=[body_wrench, contact_inv_weight],
+                )
         np.testing.assert_array_equal(body_wrench.numpy()[:, 0], [side_count + 0.5, 1.5])
         seed_np = np.array([[1.0] * 6, [2.0] * 6], dtype=np.float32)
         seed = wp.array(seed_np, dtype=wp.spatial_vector)
@@ -422,8 +433,10 @@ def _check_contact_gather_backward(device):
         check_gradients("captured")
 
 
-def test_contact_gather_backward(test, device):
-    _run_isolated(test, "_check_contact_gather_backward", str(device), deterministic_mode=DETERMINISTIC_MODE)
+def test_contact_gather_backward(test, device, gather_name):
+    _run_isolated(
+        test, "_check_contact_gather_backward", str(device), gather_name, deterministic_mode=DETERMINISTIC_MODE
+    )
 
 
 @wp.kernel
@@ -667,13 +680,15 @@ for solver_name in ("xpbd", "semi_implicit", "featherstone"):
             check_output=False,
         )
 
-add_function_test(
-    TestSolverDeterminism,
-    "test_contact_gather_backward",
-    test_contact_gather_backward,
-    devices=devices,
-    check_output=False,
-)
+for gather_name in ("wrench", "xpbd_delta"):
+    add_function_test(
+        TestSolverDeterminism,
+        f"test_contact_gather_backward_{gather_name}",
+        test_contact_gather_backward,
+        devices=devices,
+        gather_name=gather_name,
+        check_output=False,
+    )
 
 for solver_name in ("xpbd", "semi_implicit"):
     add_function_test(
