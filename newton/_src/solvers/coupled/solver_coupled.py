@@ -448,8 +448,6 @@ _RESET_FORCE_INPUT_FREQUENCIES = {
 _RESET_TRANSIENT_FIELDS = (
     ("body_f", Model.AttributeFrequency.BODY),
     ("particle_f", Model.AttributeFrequency.PARTICLE),
-    ("body_qdd", Model.AttributeFrequency.BODY),
-    ("body_parent_f", Model.AttributeFrequency.BODY),
 )
 _RESET_RECONCILABLE_FREQUENCIES = frozenset(
     {
@@ -3579,8 +3577,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
 
         if filtered.rigid_contact_force is not None:
             filtered.rigid_contact_force.zero_()
-        if filtered.force is not None:
-            filtered.force.zero_()
 
         contact_update_dim = max(
             contacts.rigid_contact_max, contacts.soft_contact_max, filtered.contact_counters.shape[0]
@@ -3743,14 +3739,12 @@ class SolverCoupled(SolverBase, CouplingInterface):
         if filtered is None or not self._entry_contact_buffer_matches(filtered, contacts):
             from ...sim import Contacts  # noqa: PLC0415
 
-            requested = {"force"} if contacts.force is not None else None
             filtered = Contacts(
                 contacts.rigid_contact_max,
                 contacts.soft_contact_max,
                 requires_grad=contacts.requires_grad,
                 device=contacts.device,
                 per_contact_shape_properties=contacts.per_contact_shape_properties,
-                requested_attributes=requested,
                 contact_matching=contacts.rigid_contact_match_index is not None,
                 rigid_contact_surface_velocity=contacts.rigid_contact_surface_velocity is not None,
             )
@@ -3832,7 +3826,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
             and filtered.soft_contact_max == contacts.soft_contact_max
             and filtered.requires_grad == contacts.requires_grad
             and filtered.per_contact_shape_properties == contacts.per_contact_shape_properties
-            and (filtered.force is not None) == (contacts.force is not None)
             and (filtered.rigid_contact_match_index is not None) == (contacts.rigid_contact_match_index is not None)
             and (filtered.rigid_contact_surface_velocity is None) == (contacts.rigid_contact_surface_velocity is None)
         )

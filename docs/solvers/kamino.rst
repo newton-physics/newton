@@ -28,14 +28,14 @@ and configuration details. Runnable workflows are available in the
 Body acceleration
 -----------------
 
-Kamino populates :attr:`~newton.State.body_qdd` when the extended state
-attribute is requested. Values are center-of-mass spatial accelerations in the
-world frame, with linear acceleration followed by angular acceleration. For a
-step of duration ``dt``, Kamino reports the discrete step average
-``(body_qd_out - body_qd_in) / dt``. Consequently, a contact impact reports its
-velocity impulse divided by ``dt`` rather than a continuous midpoint
-acceleration. Resetting a state clears the requested acceleration in each reset
-world.
+Kamino populates :attr:`~newton.solvers.SolverBase.Observables.body_qdd` when
+:attr:`~newton.solvers.SolverBase.ObservableKind.BODY_QDD` is requested
+through :meth:`~newton.solvers.SolverBase.observables`. Values are
+center-of-mass spatial accelerations in the world frame, with linear
+acceleration followed by angular acceleration. For a step of duration ``dt``,
+Kamino reports the discrete step average ``(body_qd_out - body_qd_in) / dt``.
+Consequently, a contact impact reports its velocity impulse divided by ``dt``
+rather than a continuous midpoint acceleration.
 
 Choosing a dynamics solver
 --------------------------

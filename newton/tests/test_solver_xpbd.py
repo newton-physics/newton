@@ -1791,8 +1791,8 @@ def test_xpbd_contact_force_zero_when_not_touching(test, device):
     )
 
 
-def test_xpbd_update_contacts_requires_force_attribute(test, device):
-    """update_contacts should raise ValueError when contacts.force is not allocated."""
+def test_xpbd_update_contacts_not_implemented(test, device):
+    """XPBD has no native contact detection and does not implement update_contacts()."""
     builder = newton.ModelBuilder()
     builder.add_ground_plane()
     body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.25), wp.quat_identity()))
@@ -1810,8 +1810,7 @@ def test_xpbd_update_contacts_requires_force_attribute(test, device):
     collision_pipeline.collide(state_in, contacts)
     solver.step(state_in, state_out, control, contacts, 1.0 / 60.0)
 
-    test.assertIsNone(contacts.force)
-    with test.assertWarns(DeprecationWarning), test.assertRaises(ValueError):
+    with test.assertRaises(NotImplementedError):
         solver.update_contacts(contacts)
 
 
@@ -2974,8 +2973,8 @@ add_function_test(
 
 add_function_test(
     TestSolverXPBD,
-    "test_xpbd_update_contacts_requires_force_attribute",
-    test_xpbd_update_contacts_requires_force_attribute,
+    "test_xpbd_update_contacts_not_implemented",
+    test_xpbd_update_contacts_not_implemented,
     devices=devices,
     check_output=False,
 )

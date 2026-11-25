@@ -24,7 +24,6 @@ from ..geometry.flags import ShapeFlags
 from ..geometry.inertia import _inverse_inertia_wp
 from ..utils.deprecation import warn_deprecation
 from ..utils.mesh import MeshAdjacency, MeshAdjacencyData
-from .contacts import Contacts
 from .control import Control
 from .enums import ModelFlags
 from .shape_contact_pairs import _ShapeContactPairs
@@ -1950,20 +1949,12 @@ class Model:
         self.custom_frequency_label_attributes: dict[str, str] = {}
         """Attribute keys containing labels for custom-frequency rows."""
 
-        self._requested_state_attributes: set[str] = set()
-        self._requested_contact_attributes: set[str] = set()
-
         self.attribute_specs: dict[str, Model.AttributeSpec] = dict(Model._CORE_ATTRIBUTE_SPECS)
         """Semantic metadata keyed by built-in or custom attribute name.
 
         Attribute values remain normal Python attributes on the model. This
         registry describes their indexing, ownership, and reference semantics.
         """
-
-        # Deprecated solver-produced State attributes remain registered for
-        # compatibility with request_state_attributes().
-        for full_name, template in State.EXTENDED_ATTRIBUTE_TEMPLATES.items():
-            self.attribute_specs[full_name] = Model.AttributeSpec(getattr(Model.AttributeFrequency, template.frequency))
 
         self.attribute_frequency: dict[str, Model.AttributeFrequency | str] = {
             name: spec.frequency for name, spec in self.attribute_specs.items()
@@ -2786,8 +2777,6 @@ class Model:
             The state object.
         """
 
-        requested = self.get_requested_state_attributes()
-
         s = State()
         if requires_grad is None:
             requires_grad = self.requires_grad
@@ -2817,41 +2806,10 @@ class Model:
             s._tendon_initialized = wp.zeros(self.tendon_count, dtype=wp.bool, device=self.device)
             s._tendon_rebaseline = wp.zeros(self.world_count + 1, dtype=wp.bool, device=self.device)
 
-        self._add_requested_state_attributes(s, requested, requires_grad=requires_grad)
-
         # attach custom attributes with assignment==STATE
         self._add_custom_attributes(s, Model.AttributeAssignment.STATE, requires_grad=requires_grad)
 
         return s
-
-    def _add_requested_state_attributes(
-        self,
-        state: State,
-        requested: list[str],
-        requires_grad: bool = False,
-    ) -> None:
-        """Allocate optional built-in state attributes requested by name."""
-        for full_name in requested:
-            template = State.EXTENDED_ATTRIBUTE_TEMPLATES.get(full_name)
-            if template is None:
-                continue
-
-            frequency = getattr(Model.AttributeFrequency, template.frequency)
-            value = wp.zeros(
-                self._attribute_frequency_count(frequency),
-                dtype=template.dtype,
-                device=self.device,
-                requires_grad=requires_grad,
-            )
-            if ":" in full_name:
-                namespace_name, attr_name = full_name.split(":", 1)
-                namespace = getattr(state, namespace_name, None)
-                if namespace is None:
-                    namespace = Model.AttributeNamespace(namespace_name)
-                    setattr(state, namespace_name, namespace)
-                setattr(namespace, attr_name, value)
-            else:
-                setattr(state, full_name, value)
 
     def _attribute_frequency_count(self, frequency: Model.AttributeFrequency | str) -> int:
         if isinstance(frequency, str):
@@ -3209,64 +3167,23 @@ class Model:
             )
         return self.rigid_contact_max, self.soft_contact_max
 
-    def request_state_attributes(self, *attributes: str) -> None:
-        """Request optional solver-produced state attributes.
-
-        .. deprecated:: 1.7
-
-            Request :class:`newton.solvers.SolverBase.Observables` from the solver
-            instead.
-
-        See :doc:`Solver Observables </concepts/solver_observables>` for migration details.
-
-        Args:
-            *attributes: Variable number of attribute names (strings).
-        """
-        warnings.warn(
-            "Model.request_state_attributes() is deprecated in Newton 1.7; "
-            "request SolverBase.Observables from the solver instead.",
-            NewtonDeprecationWarning,
-            stacklevel=2,
-        )
-        self._request_state_attributes(*attributes)
-
-    def _request_state_attributes(self, *attributes: str) -> None:
-        """Register legacy state fields after the entry point emits its warning."""
-        State.validate_extended_attributes(attributes)
-        self._requested_state_attributes.update(attributes)
-
-    def request_contact_attributes(self, *attributes: str) -> None:
-        """Request optional solver-produced contact attributes.
-
-        .. deprecated:: 1.7
-
-            Request :attr:`newton.solvers.SolverBase.ObservableKind.CONTACT_F` from
-            the solver instead.
-
-        Args:
-            *attributes: Variable number of attribute names (strings).
-        """
-        warnings.warn(
-            "Model.request_contact_attributes() is deprecated in Newton 1.7; "
-            "request SolverBase.Observables from the solver instead.",
-            NewtonDeprecationWarning,
-            stacklevel=2,
-        )
-        self._request_contact_attributes(*attributes)
-
-    def _request_contact_attributes(self, *attributes: str) -> None:
-        """Register legacy contact fields after the entry point emits its warning."""
-        Contacts.validate_extended_attributes(attributes)
-        self._requested_contact_attributes.update(attributes)
-
     def get_requested_contact_attributes(self) -> set[str]:
-        """
-        Get the set of requested contact attribute names.
+        """Return an empty set; models no longer request optional contact attributes.
+
+        .. deprecated:: 1.9
+
+            The optional ``Contacts.force`` attribute was removed. Request
+            :attr:`newton.solvers.SolverBase.ObservableKind.CONTACT_F` from the
+            solver instead.
 
         Returns:
-            The set of requested contact attributes.
+            An empty set.
         """
-        return self._requested_contact_attributes
+        warn_deprecation(
+            "Model.get_requested_contact_attributes() is deprecated in Newton 1.9 and always returns an "
+            "empty set; request SolverBase.ObservableKind.CONTACT_F from the solver instead."
+        )
+        return set()
 
     def _add_custom_attributes(
         self,
@@ -3549,5 +3466,4 @@ class Model:
         if self.joint_count:
             attributes.extend(("joint_q", "joint_qd"))
 
-        attributes.extend(self._requested_state_attributes.difference(attributes))
         return attributes
