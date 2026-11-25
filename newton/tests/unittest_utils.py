@@ -625,7 +625,7 @@ class _OutputCapture:
         return self._check_output()
 
     def _check_output(self) -> str | None:
-        output_by_stream = {stream: "".join(chunks) for stream, chunks in self.output.items()}
+        output_by_stream = {stream: "".join(chunks).replace("\r\n", "\n") for stream, chunks in self.output.items()}
         unmatched_by_stream = output_by_stream.copy()
         missing = []
         reported = []

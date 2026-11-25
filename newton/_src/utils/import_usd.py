@@ -2963,7 +2963,7 @@ def parse_usd(
         if not any(re.match(pattern, battery_path) for pattern in ignore_paths):
             battery = parse_battery_prim(stage.GetPrimAtPath(battery_path))
         if battery is None:
-            raise ValueError(f"Actuators reference '{battery_path}' in 'newton:battery', which is not a battery prim")
+            raise ValueError(f"Actuators reference '{battery_path}' in 'newton:supply', which is not a battery prim")
         batteries[battery_path] = battery
     for path, battery in batteries.items():
         if path in battery_actuators:

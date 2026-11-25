@@ -1754,6 +1754,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         enable_timers: bool = False,
     ):
         super().__init__(model)
+        self._raise_if_kinematic_particles()
         if model._has_body_variants:
             # The collider merges every particle-colliding shape of a body at setup.
             raise NotImplementedError("SolverImplicitMPM does not support body variants.")
@@ -1938,7 +1939,8 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             collider_meshes: Warp triangular meshes used as colliders.
             collider_body_ids: For dynamic colliders, per-mesh body ids.
             collider_margins: Per-mesh signed distance offsets (m).
-            collider_friction: Per-mesh Coulomb friction coefficients.
+            collider_friction: Per-mesh Coulomb friction coefficients. They replace the shapes' values,
+                also for shapes whose friction mode is :attr:`~newton.ShapeFrictionMode.NONE`.
             collider_adhesion: Per-mesh adhesion (Pa).
             collider_projection_threshold: Per-mesh projection threshold (m).
             collider_particle_ids: For deformable mesh colliders, model particle ids corresponding to each mesh vertex.
