@@ -111,31 +111,36 @@ __all__ += [
 # ==================================================================================
 # submodule APIs
 # ==================================================================================
-from . import (  # noqa: E402
-    config,
-    geometry,
-    math,
-    solvers,
-    usd,
-    utils,
-    viewer,
+# Imported on first access (PEP 562), so that `import newton` loads only what the core needs.
+_SUBMODULES = frozenset(
+    {
+        "actuators",
+        "config",
+        "controllers",
+        "geometry",
+        "ik",
+        "math",
+        "selection",
+        "sensors",
+        "solvers",
+        "usd",
+        "utils",
+        "viewer",
+    }
 )
 
-# Imported on first access (PEP 562): each declares Warp kernels that most programs never use.
-_LAZY_SUBMODULES = frozenset({"actuators", "controllers", "ik", "selection", "sensors"})
-
 if _typing.TYPE_CHECKING:
-    from . import actuators, controllers, ik, selection, sensors
+    from . import actuators, config, controllers, geometry, ik, math, selection, sensors, solvers, usd, utils, viewer
 else:
 
     def __getattr__(name: str):
-        if name not in _LAZY_SUBMODULES:
+        if name not in _SUBMODULES:
             raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
         return _importlib.import_module(f".{name}", __name__)
 
 
 def __dir__() -> list[str]:
-    return sorted(set(globals()) | _LAZY_SUBMODULES)
+    return sorted(set(globals()) | _SUBMODULES)
 
 
 __all__ += [
