@@ -3,6 +3,7 @@
 
 import unittest
 from dataclasses import replace
+from pathlib import Path
 from unittest import mock
 
 import numpy as np
@@ -10,6 +11,7 @@ import warp as wp
 
 import newton
 from newton import NewtonDeprecationWarning
+from newton._src.solvers.style3d.affine_body import AffineBody
 from newton._src.solvers.style3d.builder import PDMatrixBuilder, _compute_max_neighbors
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
@@ -17,30 +19,44 @@ from newton.tests.unittest_utils import add_function_test, get_test_devices
 def _assert_pd_matrix(test, model, solver):
     """Compare the stored matrix with independently assembled dense element contributions."""
     expected = np.zeros((model.particle_count, model.particle_count), dtype=np.float64)
-    for face, pose, area, stiffness in zip(
-        model.tri_indices.numpy(),
-        model.tri_poses.numpy(),
-        model.tri_areas.numpy(),
-        model.style3d.tri_aniso_ke.numpy(),
-        strict=True,
-    ):
+    tri_data = ()
+    if model.tri_count > 0:
+        tri_data = zip(
+            model.tri_indices.numpy(),
+            model.tri_poses.numpy(),
+            model.tri_areas.numpy(),
+            model.style3d.tri_aniso_ke.numpy(),
+            strict=True,
+        )
+    for face, pose, area, stiffness in tri_data:
         gradients = np.vstack((-pose.sum(axis=0), pose)).astype(np.float64)
         weights = stiffness[:2] + stiffness[2]
         expected[np.ix_(face, face)] += area * (gradients * weights) @ gradients.T
-    for edge, prop, area, cot in zip(
-        model.edge_indices.numpy(),
-        model.edge_bending_properties.numpy(),
-        model.style3d.edge_rest_area.numpy(),
-        model.style3d.edge_bending_cot.numpy(),
-        strict=True,
-    ):
+    edge_data = ()
+    if model.edge_count > 0:
+        edge_data = zip(
+            model.edge_indices.numpy(),
+            model.edge_bending_properties.numpy(),
+            model.style3d.edge_rest_area.numpy(),
+            model.style3d.edge_bending_cot.numpy(),
+            strict=True,
+        )
+    for edge, prop, area, cot in edge_data:
         if edge[0] < 0 or edge[1] < 0:
             continue
         weights = np.array([-cot[0] - cot[2], -cot[1] - cot[3], cot[2] + cot[3], cot[0] + cot[1]])
         expected[np.ix_(edge, edge)] += prop[0] * (3.0 / area) * np.outer(weights, weights)
-    actual = np.diag(solver.pd_diags.numpy())
-    counts = solver.pd_non_diags.num_nz.numpy()
-    entries = solver.pd_non_diags.nz_ell.numpy()
+    if model.tet_count > 0:
+        for tet, pose, material in zip(
+            model.tet_indices.numpy(), model.tet_poses.numpy(), model.tet_materials.numpy(), strict=True
+        ):
+            gradients = np.vstack((-pose.sum(axis=0), pose)).astype(np.float64)
+            volume = 1.0 / (6.0 * np.linalg.det(pose))
+            weight = 2.0 * material[0] + 3.0 * material[1]
+            expected[np.ix_(tet, tet)] += volume * weight * (gradients @ gradients.T)
+    actual = np.diag(solver._pd_diag.numpy())
+    counts = solver._pd_off_diag.num_nz.numpy()
+    entries = solver._pd_off_diag.nz_ell.numpy()
     for row, count in enumerate(counts):
         columns = entries["column_index"][:count, row]
         test.assertEqual(len(set(columns.tolist())), count)
@@ -51,7 +67,7 @@ def _assert_pd_matrix(test, model, solver):
 
 
 def test_constructor_precomputes_fixed_pd_matrix(test, device):
-    """Preserve the ordinary grid's assembled PD stiffness matrix."""
+    """Preserve the grid's PD matrix and deprecated read access to solver data."""
     builder = newton.ModelBuilder()
     newton.solvers.SolverStyle3D.register_custom_attributes(builder)
     newton.solvers.style3d.add_cloth_grid(
@@ -67,6 +83,7 @@ def test_constructor_precomputes_fixed_pd_matrix(test, device):
         tri_aniso_ke=wp.vec3(1.0e2, 1.0e2, 1.0e1),
         edge_aniso_ke=wp.vec3(2.0e-4, 1.0e-4, 5.0e-5),
     )
+    builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
     model = builder.finalize(device=device)
 
     solver = newton.solvers.SolverStyle3D(model)
@@ -74,9 +91,211 @@ def test_constructor_precomputes_fixed_pd_matrix(test, device):
 
     test.assertEqual(solver.config, config)
 
-    test.assertGreater(float(solver.pd_diags.numpy().sum()), 0.0)
-    test.assertGreater(int(solver.pd_non_diags.num_nz.numpy().sum()), 0)
+    test.assertGreater(float(solver._pd_diag.numpy().sum()), 0.0)
+    test.assertGreater(int(solver._pd_off_diag.num_nz.numpy().sum()), 0)
     _assert_pd_matrix(test, model, solver)
+
+    aliases = (
+        ("style3d", "_style3d_attr"),
+        ("linear_solver", "_linear_solver"),
+        ("pd_non_diags", "_pd_off_diag"),
+        ("pd_diags", "_pd_diag"),
+        ("dx", "_dx"),
+        ("rhs", "_rhs"),
+        ("x_prev", "_x_prev"),
+        ("x_inertia", "_x_inertia"),
+        ("static_A_diags", "_A_diag_base"),
+        ("inv_A_diags", "_inv_A_diag"),
+        ("A_diags", "_A_diag"),
+        ("drag_pos", "_drag_pos"),
+        ("drag_index", "_drag_index"),
+        ("drag_bary_coord", "_drag_bary_coord"),
+    )
+    dynamics = newton.solvers.SolverStyle3D.Dynamics
+    # Include affine blocks and an empty particle range without running extra simulations.
+    solvers = [solver] + [
+        newton.solvers.SolverStyle3D(model, dynamics=mode) for mode in (dynamics.ALL, dynamics.AFFINE_BODY)
+    ]
+    for current_solver in solvers:
+        selected_dynamics = current_solver.dynamics
+        with test.assertRaises(AttributeError):
+            current_solver.dynamics = dynamics.NONE
+        test.assertEqual(current_solver.dynamics, selected_dynamics)
+        particle_count = model.particle_count if current_solver.dynamics & dynamics.DEFORMABLE else 0
+        for legacy_name, internal_name in aliases:
+            with test.subTest(dynamics=current_solver.dynamics, attribute=legacy_name):
+                with test.assertWarnsRegex(
+                    NewtonDeprecationWarning, f"SolverStyle3D.{legacy_name} is deprecated"
+                ) as warning:
+                    legacy_value = getattr(current_solver, legacy_name)
+                test.assertEqual(warning.filename, __file__)
+                test.assertNotIn("solver.config", str(warning.warning))
+                internal_value = getattr(current_solver, internal_name)
+                if legacy_name == "pd_non_diags":
+                    test.assertEqual(legacy_value.num_nz.shape, (particle_count,))
+                    test.assertEqual(legacy_value.nz_ell.shape, (internal_value.nz_ell.shape[0], particle_count))
+                    test.assertEqual(legacy_value.num_nz.ptr, internal_value.num_nz.ptr)
+                    test.assertEqual(legacy_value.nz_ell.ptr, internal_value.nz_ell.ptr)
+                    test.assertEqual(legacy_value.nz_ell.strides, internal_value.nz_ell.strides)
+                elif isinstance(legacy_value, wp.array) and not legacy_name.startswith("drag_"):
+                    test.assertEqual(legacy_value.shape, (particle_count,))
+                    test.assertEqual(legacy_value.dtype, internal_value.dtype)
+                    test.assertEqual(legacy_value.ptr, internal_value.ptr)
+                else:
+                    test.assertIs(legacy_value, internal_value)
+                with test.assertRaises(AttributeError):
+                    setattr(current_solver, legacy_name, None)
+                test.assertIs(internal_value, getattr(current_solver, internal_name))
+
+        # Writing through a legacy array must leave all affine blocks untouched.
+        current_solver._dx.fill_(wp.vec3(7.0))
+        with test.assertWarns(NewtonDeprecationWarning):
+            current_solver.dx.zero_()
+        actual = current_solver._dx.numpy()
+        np.testing.assert_array_equal(actual[:particle_count], 0.0)
+        np.testing.assert_array_equal(actual[particle_count:], 7.0)
+
+
+def test_tet_constraint_assembles_float_psd_matrix(test, device):
+    """Assemble a co-rotational tetrahedral constraint in the scalar PD matrix."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    newton.solvers.SolverStyle3D.register_custom_attributes(builder)
+    newton.solvers.style3d.add_cloth_mesh(
+        builder,
+        pos=(0.0, 0.0, 0.0),
+        rot=wp.quat_identity(),
+        vel=(0.0, 0.0, 0.0),
+        vertices=((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
+        indices=(0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3),
+        panel_verts=((0.0, 0.0), (1.0, 0.0), (0.0, 1.0)) * 4,
+        panel_indices=tuple(range(12)),
+        density=1.0,
+        tri_aniso_ke=wp.vec3(0.0),
+        edge_aniso_ke=wp.vec3(0.0),
+    )
+    builder.particle_mass[:] = [1.0] * 4
+    builder.add_tetrahedron(0, 1, 2, 3, 100.0, 200.0, 0.0)
+    model = builder.finalize(device=device)
+    solver = newton.solvers.SolverStyle3D(
+        model,
+        config=newton.solvers.SolverStyle3D.Config(iterations=2, linear_iterations=8),
+    )
+
+    _assert_pd_matrix(test, model, solver)
+    matrix = np.diag(solver._pd_diag.numpy())
+    counts = solver._pd_off_diag.num_nz.numpy()
+    entries = solver._pd_off_diag.nz_ell.numpy()
+    for row, count in enumerate(counts):
+        matrix[row, entries["column_index"][:count, row]] += entries["value"][:count, row]
+    test.assertEqual(solver._pd_diag.dtype, wp.float32)
+    test.assertGreaterEqual(float(np.linalg.eigvalsh(matrix).min()), -2.0e-4)
+
+    state_in, state_out = model.state(), model.state()
+    contacts = newton.CollisionPipeline(model).contacts()
+    solver.step(state_in, state_out, model.control(), contacts, 0.01)
+    np.testing.assert_allclose(state_out.particle_q.numpy(), state_in.particle_q.numpy(), atol=2.0e-6)
+
+    # A stretched element must respond elastically while preserving its center of mass.
+    rest = state_in.particle_q.numpy().copy()
+    stretched = rest.copy()
+    stretched[1, 0] = 1.2
+    state_in.particle_q.assign(stretched)
+    solver.step(state_in, state_out, model.control(), contacts, 0.01)
+    result = state_out.particle_q.numpy().copy()
+    test.assertTrue(np.isfinite(result).all())
+    test.assertLess(np.linalg.norm(result[1] - result[0]), 1.2)
+    np.testing.assert_allclose(result.mean(axis=0), stretched.mean(axis=0), atol=2.0e-6)
+    test.assertGreater(np.linalg.norm(state_out.particle_qd.numpy()), 0.0)
+
+    # Reset projection history after restoring particle state, without replacing
+    # buffers that may already be referenced by a captured graph.
+    velocity = state_out.particle_qd.numpy().copy()
+    history = solver._tet_volume_targets.numpy().copy()
+    test.assertGreater(np.linalg.norm(history[0] - np.eye(3)), 1.0e-4)
+    target_ptr = solver._tet_volume_targets.ptr
+    solver.reset(state_in, flags=newton.StateFlags.BODY_Q)
+    np.testing.assert_array_equal(solver._tet_volume_targets.numpy(), history)
+    mask = wp.zeros(model.world_count + 1, dtype=wp.bool, device=device)
+    solver.reset(state_in, world_mask=mask)
+    np.testing.assert_array_equal(solver._tet_volume_targets.numpy(), history)
+    # Select a world belonging to a vertex other than the first one.
+    original_worlds = model.particle_world.numpy()
+    model.particle_world.assign(np.array([-1, 0, 0, 0], dtype=np.int32))
+    mask.assign(np.array([True, False], dtype=np.bool_))
+    solver.reset(state_in, world_mask=mask)
+    np.testing.assert_array_equal(solver._tet_volume_targets.numpy(), np.eye(3)[None])
+    model.particle_world.assign(original_worlds)
+    mask.fill_(True)
+    solver.reset(state_in, world_mask=mask, flags=newton.StateFlags.PARTICLE_Q)
+    np.testing.assert_array_equal(solver._tet_volume_targets.numpy(), np.eye(3)[None])
+    test.assertEqual(solver._tet_volume_targets.ptr, target_ptr)
+    np.testing.assert_array_equal(state_in.particle_q.numpy(), stretched)
+    solver.step(state_in, state_out, model.control(), contacts, 0.01)
+    np.testing.assert_allclose(state_out.particle_q.numpy(), result, atol=2.0e-6)
+    np.testing.assert_allclose(state_out.particle_qd.numpy(), velocity, atol=2.0e-6)
+
+    solver.reset(state_in)
+    np.testing.assert_array_equal(solver._tet_volume_targets.numpy(), np.eye(3)[None])
+    fresh_solver = newton.solvers.SolverStyle3D(model, config=solver.config)
+    fresh_out = model.state()
+    fresh_solver.step(state_in, fresh_out, model.control(), contacts, 0.01)
+    solver.step(state_in, state_out, model.control(), contacts, 0.01)
+    np.testing.assert_allclose(state_out.particle_q.numpy(), fresh_out.particle_q.numpy(), atol=2.0e-6)
+    np.testing.assert_allclose(state_out.particle_qd.numpy(), fresh_out.particle_qd.numpy(), atol=2.0e-6)
+
+    if wp.get_device(device).is_cuda:
+        with wp.ScopedCapture(device=device) as capture:
+            solver.reset(state_in)
+        for _ in range(2):
+            solver._tet_volume_targets.assign(history)
+            wp.capture_launch(capture.graph)
+            np.testing.assert_array_equal(solver._tet_volume_targets.numpy(), np.eye(3)[None])
+            test.assertEqual(solver._tet_volume_targets.ptr, target_ptr)
+
+
+def test_usd_tet_matches_builder(test, device):
+    """A USD volume and its builder equivalent produce the same Style3D step."""
+    try:
+        import pxr.Usd  # noqa: F401
+    except ImportError:
+        test.skipTest("USD is not installed")
+
+    usd_builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Y)
+    direct_builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Y)
+    for builder in (usd_builder, direct_builder):
+        newton.solvers.SolverStyle3D.register_custom_attributes(builder)
+
+    usd_builder.add_usd(str(Path(__file__).parent / "assets" / "tetmesh_with_material.usda"))
+    direct_builder.add_soft_mesh(
+        pos=wp.vec3(0.0),
+        rot=wp.quat_identity(),
+        scale=1.0,
+        vel=wp.vec3(0.0),
+        vertices=[(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)],
+        indices=[0, 1, 2, 3],
+        density=40.0,
+        k_mu=300000.0 / (2.0 * 1.3),
+        k_lambda=300000.0 * 0.3 / (1.3 * 0.4),
+    )
+    models = [builder.finalize(device=device) for builder in (usd_builder, direct_builder)]
+    for name in ("tet_indices", "tet_poses", "tet_materials", "tri_indices", "edge_indices"):
+        np.testing.assert_allclose(getattr(models[0], name).numpy(), getattr(models[1], name).numpy(), rtol=1.0e-6)
+    for name in ("tri_aniso_ke", "edge_rest_area", "edge_bending_cot"):
+        np.testing.assert_allclose(
+            getattr(models[0].style3d, name).numpy(), getattr(models[1].style3d, name).numpy(), rtol=1.0e-6
+        )
+
+    outputs = []
+    for model in models:
+        solver = newton.solvers.SolverStyle3D(model)
+        state_in, state_out = model.state(), model.state()
+        positions = state_in.particle_q.numpy()
+        positions[1, 0] *= 1.1
+        state_in.particle_q.assign(positions)
+        solver.step(state_in, state_out, model.control(), None, 0.01)
+        outputs.append((state_out.particle_q.numpy(), state_out.particle_qd.numpy()))
+    for actual, expected in zip(outputs[0], outputs[1], strict=True):
+        np.testing.assert_allclose(actual, expected, atol=1.0e-4, rtol=1.0e-5)
 
 
 def test_config_constructor_options(test, device):
@@ -240,7 +459,7 @@ def test_high_valence_pd_matrix(test, device):
             solver = newton.solvers.SolverStyle3D(
                 model, config=newton.solvers.SolverStyle3D.Config(iterations=1, linear_iterations=1)
             )
-            test.assertEqual(int(solver.pd_non_diags.num_nz.numpy()[0]), n * (2 if outer_ring else 1))
+            test.assertEqual(int(solver._pd_off_diag.num_nz.numpy()[0]), n * (2 if outer_ring else 1))
             _assert_pd_matrix(test, model, solver)
 
 
@@ -283,6 +502,31 @@ class TestSolverStyle3D(unittest.TestCase):
                         builder.add_bend_constraints([[0, 1, 2, 3]], [[1.0, 0.0]], [1.0], [[1.0, 1.0, 1.0, 1.0]])
                 with self.assertRaisesRegex(ValueError, "PD matrix capacity"):
                     builder.finalize("cpu")
+
+    def test_tet_overflow_does_not_modify_existing_diagonal(self):
+        """A rejected tetrahedron leaves previously assembled matrix data intact."""
+        builder = PDMatrixBuilder(7, max_neighbor=3)
+        builder.add_tet_constraints(
+            [[0, 1, 2, 3]],
+            [[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]],
+            [[1.0, 1.0, 0.0]],
+        )
+        before_diags = builder.diags.numpy().copy()
+        before_counts = builder.counts.numpy().copy()
+        before_neighbors = builder.neighbors.numpy().copy()
+        before_values = builder.values.numpy().copy()
+
+        with self.assertRaisesRegex(ValueError, "PD matrix capacity 3 exceeded at vertex"):
+            builder.add_tet_constraints(
+                [[0, 4, 5, 6]],
+                [[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]],
+                [[2.0, 3.0, 0.0]],
+            )
+
+        np.testing.assert_array_equal(builder.diags.numpy(), before_diags)
+        np.testing.assert_array_equal(builder.counts.numpy(), before_counts)
+        np.testing.assert_array_equal(builder.neighbors.numpy(), before_neighbors)
+        np.testing.assert_array_equal(builder.values.numpy(), before_values)
 
 
 def test_invalid_topology_is_rejected_before_precompute(test, device):
@@ -368,6 +612,10 @@ def test_solver_flags_deactivate_zero_mass_without_mutating_model(test, device):
     solver = newton.solvers.SolverStyle3D(
         model, config=newton.solvers.SolverStyle3D.Config(iterations=1, linear_iterations=1)
     )
+    state_0 = model.state()
+    state_1 = model.state()
+    contacts = newton.CollisionPipeline(model).contacts()
+    solver.step(state_0, state_1, model.control(), contacts, 0.01)
 
     np.testing.assert_array_equal(model.particle_flags.numpy(), model_flags)
     solver_flags = solver._particle_flags.numpy()
@@ -379,7 +627,7 @@ def test_solver_flags_deactivate_zero_mass_without_mutating_model(test, device):
 
 
 def test_solver_flags_track_runtime_model_changes(test, device):
-    """Refresh solver activity after model masses and flags change."""
+    """Refresh particle and affine block flags after model masses and flags change."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     newton.solvers.SolverStyle3D.register_custom_attributes(builder)
     newton.solvers.style3d.add_cloth_grid(
@@ -393,6 +641,12 @@ def test_solver_flags_track_runtime_model_changes(test, device):
         cell_y=0.1,
         mass=0.1,
     )
+    for body in range(4):
+        builder.add_link(
+            mass=0.0 if body == 2 else 1.0,
+            inertia=wp.mat33(0.0) if body == 2 else wp.mat33(np.eye(3)),
+            is_kinematic=body == 1,
+        )
     model = builder.finalize(device=device)
     solver = newton.solvers.SolverStyle3D(
         model, config=newton.solvers.SolverStyle3D.Config(iterations=1, linear_iterations=1)
@@ -417,6 +671,59 @@ def test_solver_flags_track_runtime_model_changes(test, device):
     test.assertEqual(int(solver_flags[1]), 0)
     test.assertNotEqual(int(solver_flags[2]) & active, 0)
     np.testing.assert_array_equal(model.particle_flags.numpy(), model_flags)
+
+    # Reuse the same model to check the shared flag buffer at both possible body offsets.
+    dynamics = newton.solvers.SolverStyle3D.Dynamics
+    solvers = [solver] + [
+        newton.solvers.SolverStyle3D(model, dynamics=mode) for mode in (dynamics.ALL, dynamics.AFFINE_BODY)
+    ]
+    dynamic = int(newton.BodyFlags.DYNAMIC)
+    kinematic = int(newton.BodyFlags.KINEMATIC)
+    body_proxy = int(newton.BodyFlags.PROXY)
+    proxy = int(newton.ParticleFlags.PROXY)
+    graphs = {}
+    cases = (
+        ([dynamic, kinematic, dynamic, dynamic | body_proxy], [1.0, 1.0, 0.0, 1.0], [active, 0, 0, active | proxy]),
+        ([kinematic, dynamic, dynamic, kinematic | body_proxy], [1.0, 1.0, 1.0, 1.0], [0, active, active, proxy]),
+        ([dynamic, kinematic, dynamic, dynamic], [1.0, 1.0, -1.0, 1.0], [active, 0, 0, active]),
+    )
+    for frame, (source_body_flags, source_body_masses, expected_body_flags) in enumerate(cases):
+        body_flags = np.array(source_body_flags, dtype=np.int32)
+        body_masses = np.array(source_body_masses, dtype=np.float32)
+        model.body_flags.assign(body_flags)
+        model.body_mass.assign(body_masses)
+        if frame == 1:
+            masses[0] = 0.1
+            model_flags[1] = active | proxy
+        elif frame == 2:
+            model_flags[2] = 0
+        model.particle_mass.assign(masses)
+        model.particle_flags.assign(model_flags)
+        expected_particle_flags = model_flags.copy()
+        expected_particle_flags[masses <= 0.0] &= ~active
+
+        for current in solvers:
+            with test.subTest(frame=frame, dynamics=current.dynamics):
+                if current in graphs:
+                    wp.capture_launch(graphs[current])
+                else:
+                    current._to_internal_state(state_0, 0.01)
+                    if wp.get_device(device).is_cuda:
+                        with wp.ScopedCapture(device=device) as capture:
+                            current._to_internal_state(state_0, 0.01)
+                        graphs[current] = capture.graph
+                expected = np.concatenate(
+                    (
+                        expected_particle_flags[: current._particle_count],
+                        np.repeat(expected_body_flags[: current._affine_body_count], 4),
+                    )
+                )
+                np.testing.assert_array_equal(current._particle_flags.numpy(), expected)
+
+        np.testing.assert_array_equal(model.particle_flags.numpy(), model_flags)
+        np.testing.assert_array_equal(model.particle_mass.numpy(), masses)
+        np.testing.assert_array_equal(model.body_flags.numpy(), body_flags)
+        np.testing.assert_array_equal(model.body_mass.numpy(), body_masses)
 
 
 def test_global_particles_use_global_gravity(test, device):
@@ -448,7 +755,922 @@ def test_global_particles_use_global_gravity(test, device):
     test.assertTrue(np.all(state_1.particle_qd.numpy()[:, 2] < -1.0e-6))
 
 
+@wp.kernel
+def _advance_affine_coordinates(x: wp.array[wp.vec3], x_inertia: wp.array[wp.vec3], v: wp.array[wp.vec3], dt: float):
+    coordinate = wp.tid()
+    v[coordinate] = (x_inertia[coordinate] - x[coordinate]) / dt
+    x[coordinate] = x_inertia[coordinate]
+
+
+def test_affine_body_linear_system(test, device):
+    """Verify affine inertia, fixed-configuration rigidity, and matrix-free coupling."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -2.0))
+    newton.solvers.SolverStyle3D.register_custom_attributes(builder)
+    newton.solvers.style3d.add_cloth_grid(
+        builder,
+        pos=(0.0, 0.0, 3.0),
+        rot=wp.quat_identity(),
+        vel=(0.0, 0.0, 0.0),
+        dim_x=1,
+        dim_y=1,
+        cell_x=0.1,
+        cell_y=0.1,
+        mass=0.1,
+    )
+    moment = np.array([[0.12, 0.02, -0.01], [0.02, 0.3, 0.025], [-0.01, 0.025, 0.6]])
+    builder.begin_world(gravity=(1.0, -2.0, 0.5))
+    for body in range(3):
+        builder.add_link(
+            xform=wp.transform(
+                wp.vec3(0.4 * body, -0.2, 1.0),
+                wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 2.0, -1.0)), 0.7),
+            ),
+            com=wp.vec3(0.2, -0.4, 0.1),
+            mass=2.0 if body < 2 else 0.0,
+            inertia=wp.mat33(np.trace(moment) * np.eye(3) - moment) if body < 2 else wp.mat33(0.0),
+            is_kinematic=body == 1,
+        )
+        if body < 2:
+            builder.body_qd[body] = wp.spatial_vector(0.3, -0.1, 0.2, 0.4, -0.7, 1.2)
+    builder.end_world()
+    model = builder.finalize(device=device)
+    contacts = newton.CollisionPipeline(model).contacts()
+    control = model.control()
+    rigid_solver = newton.solvers.SolverBase(model)
+    initial_inertia = model.body_inertia.numpy().copy()
+    initial_inv_inertia = model.body_inv_inertia.numpy().copy()
+    initial_flags = model.body_flags.numpy().copy()
+    forces = np.zeros((3, 6), dtype=np.float32)
+    forces[:2] = (0.7, -0.3, 0.5, -0.2, 0.4, 0.3)
+
+    # The second mode also exercises the contact Hessian callback on the shared system.
+    for dynamics in (newton.solvers.SolverStyle3D.Dynamics.AFFINE_BODY, newton.solvers.SolverStyle3D.Dynamics.ALL):
+        with test.subTest(dynamics=dynamics):
+            model.body_mass.assign(np.array([2.0, 2.0, 0.0], dtype=np.float32))
+            model.body_inv_mass.assign(np.array([0.5, 0.5, 0.0], dtype=np.float32))
+            model.body_inertia.assign(initial_inertia)
+            model.body_inv_inertia.assign(initial_inv_inertia)
+            model.body_flags.assign(initial_flags)
+            config = newton.solvers.SolverStyle3D.Config(iterations=1, linear_iterations=0, affine_rigidity_ratio=0.0)
+            solver = newton.solvers.SolverStyle3D(model, config=config, dynamics=dynamics)
+            state_in, state_out, state_ref = model.state(), model.state(), model.state()
+            state_in.body_f.assign(forces)
+            for ratio in (-1.0, float("nan"), float("inf"), -float("inf")):
+                with test.subTest(invalid_rigidity_ratio=ratio):
+                    config.affine_rigidity_ratio = ratio
+                    with test.assertRaisesRegex(
+                        ValueError, "Config.affine_rigidity_ratio must be finite and nonnegative"
+                    ):
+                        solver.step(state_in, state_out, control, contacts, 0.02)
+            config.affine_rigidity_ratio = 0.0
+            offset = solver._particle_count
+            test.assertEqual(len(solver._matrix_free_Ax), solver._dof_block_count)
+            if offset:
+                test.assertEqual(len(solver.collision.contact_hessian_diagonal()), offset)
+            counts = solver._pd_off_diag.num_nz.numpy().copy()
+            np.testing.assert_array_equal(counts[offset:], 0)
+            columns = solver._pd_off_diag.nz_ell.numpy()["column_index"].copy()
+            cloth_values = solver._pd_off_diag.nz_ell.numpy()["value"][:, :offset].copy()
+            probe = np.random.default_rng(123).standard_normal((solver._dof_block_count, 3)).astype(np.float32)
+            probe_wp = wp.array(probe, dtype=wp.vec3, device=device)
+
+            for frame, dt in enumerate((0.02, 0.07)):
+                # Refresh the mass diagonal on the next frame without adding ELL entries.
+                if frame == 1:
+                    model.body_mass.assign(np.array([3.0, 2.0, 0.0], dtype=np.float32))
+                    model.body_inv_mass.assign(np.array([1.0 / 3.0, 0.5, 0.0], dtype=np.float32))
+                    inertias = initial_inertia.copy()
+                    inertias[0] = np.diag([1.1, 0.9, 0.6])
+                    inverse = initial_inv_inertia.copy()
+                    inverse[0] = np.linalg.inv(inertias[0])
+                    model.body_inertia.assign(inertias)
+                    model.body_inv_inertia.assign(inverse)
+                input_poses = state_in.body_q.numpy().copy()
+                input_velocities = state_in.body_qd.numpy().copy()
+                rigid_solver.integrate_bodies(model, state_in, state_ref, dt)
+                # Kinematic output must be copied from input, not left stale after a swap.
+                state_out.body_q[1:2].fill_(wp.transform_identity())
+                state_out.body_qd[1:2].fill_(wp.spatial_vector(17.0))
+
+                # With no PCG iterations, the nonzero inertia RHS must not advance the body.
+                config.linear_iterations = 0
+                solver.step(state_in, state_out, control, contacts, dt)
+                np.testing.assert_allclose(solver._x.numpy()[offset:], solver._x_prev.numpy()[offset:], atol=1e-7)
+                test.assertGreater(np.linalg.norm(solver._rhs.numpy()[offset : offset + 4]), 0.0)
+
+                matrix = np.diag(solver._A_diag_base.numpy())
+                entries = solver._pd_off_diag.nz_ell.numpy()
+                np.testing.assert_array_equal(solver._pd_off_diag.num_nz.numpy(), counts)
+                np.testing.assert_array_equal(entries["column_index"], columns)
+                np.testing.assert_array_equal(entries["value"][:, :offset], cloth_values)
+                for row, count in enumerate(counts):
+                    matrix[row, entries["column_index"][:count, row]] += entries["value"][:count, row]
+                mass = np.zeros((12, 12))
+                for body, (source_mass, source_inertia, _flags) in enumerate(
+                    zip(
+                        model.body_mass.numpy(),
+                        model.body_inertia.numpy(),
+                        model.body_flags.numpy(),
+                        strict=True,
+                    )
+                ):
+                    effective_mass = source_mass
+                    effective_inertia = source_inertia.copy()
+                    if effective_mass <= 0.0:
+                        continue
+                    start = 4 * body
+                    mass[start, start] = effective_mass
+                    mass[start + 1 : start + 4, start + 1 : start + 4] = (
+                        0.5 * np.trace(effective_inertia) * np.eye(3) - effective_inertia
+                    )
+                np.testing.assert_allclose(
+                    matrix[offset:, offset:], np.diag(np.diag(mass)) / dt**2, rtol=2e-6, atol=2e-5
+                )
+                delta = solver._x_inertia.numpy()[offset:] - solver._x.numpy()[offset:]
+                np.testing.assert_allclose(solver._rhs.numpy()[offset:], mass @ delta / dt**2, rtol=2e-6, atol=2e-5)
+                test.assertGreater(np.linalg.norm(delta[4:8]), 0.0)
+                np.testing.assert_array_equal(solver._inv_A_diag.numpy()[offset + 4 :], 0.0)
+
+                # The assembled diagonal and matrix-free coupling must recover M / dt^2.
+                mass_off_diagonal = (mass - np.diag(np.diag(mass))) / dt**2
+                expected_mass_product = mass_off_diagonal @ probe[offset:]
+                solver._matrix_free_Ax.fill_(wp.vec3(17.0))
+                product = solver._matrix_free_multiply(probe_wp)
+                test.assertIs(product, solver._matrix_free_Ax)
+                np.testing.assert_allclose(product.numpy()[offset:], expected_mass_product, rtol=2e-6, atol=2e-5)
+                np.testing.assert_allclose(
+                    (matrix @ probe + product.numpy())[offset:], mass @ probe[offset:] / dt**2, rtol=2e-6, atol=2e-4
+                )
+
+                config.linear_iterations = 12
+                config.iterations = 2
+                solver.step(state_in, state_out, control, contacts, dt)
+                if wp.get_device(device).is_cuda and frame == 1:
+                    with wp.ScopedCapture(device=device) as capture:
+                        solver.step(state_in, state_out, control, contacts, dt)
+                    # Both dynamic and kinematic outputs must be written during replay.
+                    state_out.body_q[:2].fill_(wp.transform_identity())
+                    state_out.body_qd[:2].zero_()
+                    wp.capture_launch(capture.graph)
+                np.testing.assert_allclose(
+                    solver._x.numpy()[offset : offset + 4], solver._x_inertia.numpy()[offset : offset + 4], atol=2e-6
+                )
+                np.testing.assert_array_equal(solver._x.numpy()[offset + 4 :], solver._x_prev.numpy()[offset + 4 :])
+                for actual, expected in zip(state_out.body_q.numpy(), state_ref.body_q.numpy(), strict=True):
+                    np.testing.assert_allclose(actual[:3], expected[:3], atol=2e-5)
+                    np.testing.assert_allclose(
+                        wp.quat_to_matrix(wp.quat(*actual[3:])), wp.quat_to_matrix(wp.quat(*expected[3:])), atol=2e-5
+                    )
+                np.testing.assert_allclose(state_out.body_qd.numpy(), state_ref.body_qd.numpy(), atol=1e-4, rtol=2e-5)
+                np.testing.assert_array_equal(state_out.body_q.numpy()[1:], input_poses[1:])
+                np.testing.assert_array_equal(state_out.body_qd.numpy()[1:], input_velocities[1:])
+                np.testing.assert_array_equal(state_in.body_q.numpy(), input_poses)
+                np.testing.assert_array_equal(state_in.body_qd.numpy(), input_velocities)
+                if offset:
+                    test.assertTrue(np.isfinite(state_out.particle_q.numpy()).all())
+                    test.assertTrue(np.all(state_out.particle_qd.numpy()[:, 2] < 0.0))
+                if frame == 1:
+                    # Prescribed bodies must also survive reconstruction into the input state.
+                    solver.step(state_in, state_in, control, contacts, dt)
+                    np.testing.assert_allclose(state_in.body_q.numpy(), state_out.body_q.numpy(), atol=2e-6)
+                    np.testing.assert_allclose(state_in.body_qd.numpy(), state_out.body_qd.numpy(), atol=2e-5)
+                state_in, state_out = state_out, state_in
+                state_in.body_f.assign(forces)
+                config.iterations = 1
+
+            if offset:
+                # Cloth contact and affine mass products occupy separate portions of Ax.
+                hessian = np.tile(np.diag([2.0, 3.0, 4.0]), (offset, 1, 1)).astype(np.float32)
+                solver.collision.contact_hessian_diags.assign(hessian)
+                product = solver._matrix_free_multiply(probe_wp)
+                test.assertIs(product, solver._matrix_free_Ax)
+                np.testing.assert_allclose(product.numpy()[offset:], expected_mass_product, rtol=2e-6, atol=2e-5)
+                expected = matrix @ probe
+                expected[offset:] += expected_mass_product
+                expected[:offset] += np.einsum("ijk,ik->ij", hessian, probe[:offset])
+                solver._linear_solver.step1_update_r(
+                    solver._pd_off_diag, solver._A_diag, solver._rhs, probe_wp, product
+                )
+                np.testing.assert_allclose(
+                    solver._linear_solver.r.numpy(), solver._rhs.numpy() - expected, rtol=2e-6, atol=2e-4
+                )
+                solver._linear_solver.p.assign(probe_wp)
+                solver._linear_solver.step5_update_Ap(solver._pd_off_diag, solver._A_diag, product)
+                np.testing.assert_allclose(solver._linear_solver.Ap.numpy(), expected, rtol=2e-6, atol=2e-4)
+
+                # Collision writes only the caller's particle view, and the
+                # shared callback overwrites stale results on the next product.
+                storage = wp.full(offset + 2, wp.vec3(17.0), dtype=wp.vec3, device=device)
+                solver.collision.hessian_multiply(probe_wp[:offset], storage[1:-1])
+                np.testing.assert_allclose(storage.numpy()[1:-1], product.numpy()[:offset], atol=1e-6)
+                np.testing.assert_array_equal(storage.numpy()[[0, -1]], 17.0)
+
+                collision = solver.collision
+                solver.collision = None
+                solver._matrix_free_multiply(probe_wp)
+                np.testing.assert_array_equal(product.numpy()[:offset], 0.0)
+                np.testing.assert_allclose(product.numpy()[offset:], expected_mass_product, rtol=2e-6, atol=2e-5)
+                solver.collision = collision
+
+            # Check rigidity at identical float32 coordinates, without comparing nonlinear trajectories.
+            coordinates = solver._x.numpy()
+            coordinates[offset + 1 : offset + 4] = ((1.15, 0.12, 0.0), (0.0, 0.92, 0.08), (0.03, 0.0, 1.08))
+            solver._x.assign(coordinates)
+            affine = coordinates[offset + 1 : offset + 4].T.astype(np.float64)
+            u, _, vt = np.linalg.svd(affine)
+            rotation = u @ np.diag([1.0, 1.0, np.linalg.det(u @ vt)]) @ vt
+            unit_force = np.zeros((4, 3))
+            unit_force[1:] = -(affine - rotation).T
+            test.assertGreater(np.linalg.norm(unit_force), 0.1)
+            # The PSD tangent is the normal-space projector, not the energy's Hessian away from SO(3).
+            unit_tangent = np.zeros((12, 12))
+            for column, basis in enumerate(np.eye(9)):
+                local = rotation.T @ basis.reshape(3, 3).T
+                normal = rotation @ (0.5 * (local + local.T))
+                unit_tangent[3:, 3 + column] = normal.T.reshape(-1)
+            unit_diagonal = np.stack([unit_tangent[3 * i : 3 * i + 3, 3 * i : 3 * i + 3] for i in range(4)])
+            body_probe = probe[offset : offset + 4].astype(np.float64)
+            unit_product = (unit_tangent @ body_probe.reshape(-1)).reshape(4, 3)
+            unit_off_diag_product = unit_product - np.einsum("ijk,ik->ij", unit_diagonal, body_probe)
+            default_ratio = newton.solvers.SolverStyle3D.Config().affine_rigidity_ratio
+            test.assertGreater(default_ratio, 0.0)
+            rhs_seed = np.full((solver._dof_block_count, 3), 0.5, dtype=np.float32)
+            solver._A_diag.fill_(wp.mat33(17.0))
+            for ratio, rigidity_dt in ((default_ratio, dt), (0.25, dt), (0.25, 2.0 * dt), (0.0, dt)):
+                with test.subTest(rigidity_ratio=ratio, rigidity_dt=rigidity_dt):
+                    config.affine_rigidity_ratio = ratio
+                    solver._rhs.assign(rhs_seed)
+                    solver._affine_body.eval_orthogonality(
+                        solver._x[offset:], solver._rhs[offset:], solver._A_diag[offset:], ratio, rigidity_dt
+                    )
+                    solver._matrix_free_Ax.fill_(wp.vec3(17.0))
+                    product = solver._matrix_free_multiply(probe_wp)
+                    if ratio == 0.0:
+                        # Do not clear the diagonal/cache in the test: evaluation must remove stale rigidity.
+                        np.testing.assert_array_equal(solver._rhs.numpy(), rhs_seed)
+                        np.testing.assert_array_equal(solver._A_diag.numpy()[offset:], 0.0)
+                        np.testing.assert_allclose(
+                            product.numpy()[offset:], expected_mass_product, rtol=2e-6, atol=2e-5
+                        )
+                    else:
+                        stiffness = ratio * np.trace(mass[1:4, 1:4]) / (3.0 * rigidity_dt**2)
+                        # Normalize out stiffness so tolerances cover only float32 SVD/assembly roundoff.
+                        np.testing.assert_allclose(
+                            (solver._rhs.numpy()[offset : offset + 4] - rhs_seed[offset : offset + 4]) / stiffness,
+                            unit_force,
+                            rtol=2e-5,
+                            atol=2e-6,
+                        )
+                        np.testing.assert_allclose(
+                            solver._A_diag.numpy()[offset : offset + 4] / stiffness,
+                            unit_diagonal,
+                            rtol=2e-5,
+                            atol=2e-6,
+                        )
+                        np.testing.assert_allclose(
+                            (product.numpy()[offset : offset + 4] - expected_mass_product[:4]) / stiffness,
+                            unit_off_diag_product,
+                            rtol=2e-5,
+                            atol=2e-6,
+                        )
+
+            config.linear_iterations = 0
+            graph = None
+            if wp.get_device(device).is_cuda:
+                with wp.ScopedCapture(device=device) as capture:
+                    solver.step(state_in, state_out, control, contacts, dt)
+                    solver._matrix_free_multiply(probe_wp)
+                graph = capture.graph
+            if offset:
+                solver.collision.contact_hessian_diags.zero_()
+            # Mass coefficients remain fixed during a solve and refresh at the next step.
+            model.body_inertia.assign(initial_inertia)
+            for disable_mass in (False, True):
+                if disable_mass:
+                    model.body_flags.assign(initial_flags)
+                    model.body_mass.zero_()
+                else:
+                    model.body_flags.zero_()
+                    solver._matrix_free_multiply(probe_wp)
+                    np.testing.assert_allclose(product.numpy()[offset:], expected_mass_product, rtol=2e-6, atol=2e-5)
+                solver._matrix_free_Ax.fill_(wp.vec3(17.0))
+                if graph is None:
+                    solver.step(state_in, state_out, control, contacts, dt)
+                    solver._matrix_free_multiply(probe_wp)
+                else:
+                    wp.capture_launch(graph)
+                np.testing.assert_array_equal(product.numpy(), 0.0)
+
+
+def test_rigid_contact_linear_system(test, device):
+    """Match contact forces and the split tangent against a dense affine Jacobian."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    rotation = wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 2.0, -1.0)), 0.4)
+    for i in range(2):
+        body = builder.add_link(
+            xform=wp.transform(wp.vec3(0.0, 0.0, 0.8 * i), rotation),
+            com=wp.vec3(0.1, -0.2, 0.05),
+            mass=2.0,
+            inertia=wp.mat33(np.eye(3) * 0.4),
+        )
+        builder.add_shape_sphere(
+            body, radius=0.5, cfg=newton.ModelBuilder.ShapeConfig(density=0.0, ke=200.0, kd=4.0, kf=40.0, mu=0.5)
+        )
+    model = builder.finalize(device=device)
+    config = newton.solvers.SolverStyle3D.Config(iterations=1, linear_iterations=0, affine_rigidity_ratio=0.0)
+    solver = newton.solvers.SolverStyle3D(
+        model, config=config, dynamics=newton.solvers.SolverStyle3D.Dynamics.AFFINE_BODY
+    )
+    state_in, state_out = model.state(), model.state()
+    contacts = newton.Contacts(
+        2, 0, device=device, per_contact_shape_properties=True, rigid_contact_surface_velocity=True
+    )
+    contacts.rigid_contact_count.fill_(2)
+    contacts.rigid_contact_shape0.fill_(0)
+    contacts.rigid_contact_shape1.fill_(1)
+    contacts.rigid_contact_normal.fill_(wp.vec3(0.0, 0.0, 1.0))
+    contacts.rigid_contact_margin0.fill_(0.03)
+    contacts.rigid_contact_margin1.fill_(0.02)
+    points = []
+    for body in range(2):
+        inverse = wp.transform_inverse(builder.body_q[body])
+        points.append(
+            np.array(
+                [wp.transform_point(inverse, wp.vec3(0.2 + 0.1 * i, -0.1, 0.45 - 0.1 * body)) for i in range(2)],
+                dtype=np.float32,
+            )
+        )
+    contacts.rigid_contact_point0.assign(points[0])
+    contacts.rigid_contact_point1.assign(points[1])
+    offsets = (np.array([0.0, 0.03, 0.02]), np.array([0.01, 0.0, -0.02]))
+    contacts.rigid_contact_offset0.fill_(wp.vec3(*offsets[0]))
+    contacts.rigid_contact_offset1.fill_(wp.vec3(*offsets[1]))
+    com = model.body_com.numpy()
+    probe = np.random.default_rng(427).standard_normal((8, 3)).astype(np.float32)
+    probe_wp = wp.array(probe, dtype=wp.vec3, device=device)
+    dt = 0.05
+    mass = np.kron(np.diag([2.0, 0.2, 0.2, 0.2] * 2), np.eye(3)) / dt**2
+    n = np.array([0.0, 0.0, 1.0])
+    projector = np.eye(3) - np.outer(n, n)
+
+    # Exercise both stationary and rotating kinematic boundaries under applied loads.
+    for mode in ("normal", "stick", "slip", "prescribed_rest", "prescribed"):
+        with test.subTest(mode=mode):
+            prescribed = mode.startswith("prescribed")
+            model.shape_material_mu.fill_(0.0 if mode == "normal" else 0.5)
+            ke, kd, mu = 200.0, 4.0, 0.0 if mode == "normal" else 0.5
+            if mode == "slip":
+                contacts.rigid_contact_stiffness.fill_(320.0)
+                contacts.rigid_contact_damping.fill_(7.0)
+                contacts.rigid_contact_friction.fill_(2.0)
+                ke, kd, mu = 320.0, 7.0, 1.0
+            else:
+                contacts.rigid_contact_stiffness.zero_()
+                contacts.rigid_contact_damping.zero_()
+                contacts.rigid_contact_friction.zero_()
+            surface = np.array([5.0 if mode == "slip" else 0.01, 0.0, -0.2])
+            contacts.rigid_contact_surface_velocity.fill_(wp.vec3(*surface))
+            if prescribed:
+                flags = newton.BodyFlags.KINEMATIC
+                if mode == "prescribed":
+                    flags |= newton.BodyFlags.PROXY
+                model.body_flags.assign(np.array([newton.BodyFlags.DYNAMIC, flags], dtype=np.int32))
+                velocity = np.zeros(6) if mode == "prescribed_rest" else np.array([0.1, 0.0, -0.3, 0.4, -0.7, 1.2])
+                state_in.body_qd.assign(np.array([[0.0] * 6, velocity], dtype=np.float32))
+                model.gravity.fill_(wp.vec3(1.0, -2.0, -3.0))
+                state_in.body_f.fill_(wp.spatial_vector(0.7, -0.3, 0.5, -0.2, 0.4, 0.3))
+                state_out.body_q.fill_(wp.transform_identity())
+                state_out.body_qd.fill_(wp.spatial_vector(17.0))
+            config.linear_iterations = 0
+            solver.step(state_in, state_out, None, contacts, dt)
+            initial = solver._x.numpy().astype(np.float64)
+            target = solver._x_inertia.numpy().astype(np.float64)
+            current = initial.copy()
+            if prescribed:
+                # The contact target depends only on the input twist, even with nonzero COM.
+                next_rotation = wp.normalize(rotation + wp.quat(*velocity[3:], 0.0) * rotation * (0.5 * dt))
+                predicted = np.vstack(
+                    (initial[4] + dt * velocity[:3], np.array(wp.quat_to_matrix(next_rotation)).reshape(3, 3).T)
+                )
+                np.testing.assert_allclose(target[4:], predicted, atol=2e-6)
+                current[4:] = predicted
+            expected_rhs = (mass @ (target - initial).reshape(-1)).reshape(8, 3)
+            hessian = np.zeros((24, 24))
+            for contact in range(2):
+                weights = [np.r_[1.0, points[b][contact] - com[b]] for b in range(2)]
+                anchors = [np.r_[1.0, points[b][contact] + offsets[b] - com[b]] for b in range(2)]
+                w = np.r_[-weights[0], weights[1]]
+                t = np.r_[-anchors[0], anchors[1]]
+                gap = n @ (w @ current) - 0.05
+                vn = n @ (w @ (current - initial) / dt)
+                gn = (ke * gap + kd * min(vn, 0.0)) * n
+                hn = (ke + (kd / dt if vn < 0.0 else 0.0)) * np.outer(n, n)
+                vt = projector @ (t @ (current - initial) / dt + surface)
+                speed = np.linalg.norm(vt)
+                limit = mu * -gn[2]
+                gt, ht = np.zeros(3), np.zeros((3, 3))
+                if limit > 0.0:
+                    if 40.0 * speed <= limit:
+                        gt, ht = 40.0 * vt, 40.0 / dt * projector
+                    else:
+                        direction = vt / speed
+                        gt = limit * direction
+                        ht = limit / (dt * speed) * projector
+                expected_rhs -= w[:, None] * gn + t[:, None] * gt
+                hessian += np.kron(np.outer(w, w), hn) + np.kron(np.outer(t, t), ht)
+            matrix = mass + hessian
+            np.testing.assert_allclose(solver._rhs.numpy(), expected_rhs, rtol=3e-6, atol=5e-5)
+            for row in range(8):
+                block = matrix[3 * row : 3 * row + 3, 3 * row : 3 * row + 3]
+                np.testing.assert_allclose(solver._A_diag.numpy()[row], block, rtol=3e-6, atol=5e-5)
+            solver._matrix_free_Ax.fill_(wp.vec3(17.0))
+            product = solver._matrix_free_multiply(probe_wp)
+            solver._linear_solver.p.assign(probe_wp)
+            solver._linear_solver.step5_update_Ap(solver._pd_off_diag, solver._A_diag, product)
+            np.testing.assert_allclose(
+                solver._linear_solver.Ap.numpy().reshape(-1), matrix @ probe.reshape(-1), rtol=3e-6, atol=5e-4
+            )
+            # One Newton solve verifies that the same tangent reaches the actual PCG solve.
+            config.linear_iterations = 32
+            solver.step(state_in, state_out, None, contacts, dt)
+            active_size = 12 if prescribed else 24
+            expected = initial.reshape(-1).copy()
+            expected[:active_size] += np.linalg.solve(
+                matrix[:active_size, :active_size], expected_rhs.reshape(-1)[:active_size]
+            )
+            np.testing.assert_allclose(solver._x.numpy().reshape(-1), expected, atol=3e-6)
+            if prescribed:
+                np.testing.assert_array_equal(state_out.body_q.numpy()[1], state_in.body_q.numpy()[1])
+                np.testing.assert_array_equal(state_out.body_qd.numpy()[1], state_in.body_qd.numpy()[1])
+                np.testing.assert_array_equal(solver._inv_A_diag.numpy()[4:], 0.0)
+
+    # Captured contact counts are device data: removing contacts must clear every cached tangent.
+    config.linear_iterations = 0
+    graph = None
+    if wp.get_device(device).is_cuda:
+        with wp.ScopedCapture(device=device) as capture:
+            solver.step(state_in, state_out, None, contacts, dt)
+            solver._matrix_free_multiply(probe_wp)
+        graph = capture.graph
+    contacts.rigid_contact_count.zero_()
+    if graph is None:
+        solver.step(state_in, state_out, None, contacts, dt)
+        solver._matrix_free_multiply(probe_wp)
+    else:
+        wp.capture_launch(graph)
+    np.testing.assert_array_equal(solver._matrix_free_Ax.numpy(), 0.0)
+    np.testing.assert_allclose(
+        solver._A_diag.numpy(), solver._A_diag_base.numpy()[:, None, None] * np.eye(3), atol=1e-5
+    )
+    contacts.rigid_contact_count.fill_(2)
+    solver.step(state_in, state_out, None, contacts, dt)
+    test.assertGreater(np.linalg.norm(solver._matrix_free_multiply(probe_wp).numpy()), 1.0)
+    contacts.rigid_contact_point1.assign(points[1] + np.array([0.0, 0.0, 2.0], dtype=np.float32))
+    solver.step(state_in, state_out, None, contacts, dt)
+    np.testing.assert_array_equal(solver._matrix_free_multiply(probe_wp).numpy(), 0.0)
+    contacts.rigid_contact_point1.assign(points[1])
+    solver.step(state_in, state_out, None, contacts, dt)
+    test.assertGreater(np.linalg.norm(solver._matrix_free_multiply(probe_wp).numpy()), 1.0)
+    solver.step(state_in, state_out, None, None, dt)
+    np.testing.assert_array_equal(solver._matrix_free_multiply(probe_wp).numpy(), 0.0)
+    solver.step(state_in, state_out, None, contacts, dt)
+    # A smaller buffer must also clear tangents outside the new capacity.
+    solver.step(state_in, state_out, None, newton.Contacts(1, 0, device=device), dt)
+    np.testing.assert_array_equal(solver._matrix_free_multiply(probe_wp).numpy(), 0.0)
+
+
+def test_soft_contact_linear_system(test, device):
+    """Couple particle and affine contact forces, diagonals, and PCG products."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    newton.solvers.SolverStyle3D.register_custom_attributes(builder)
+    newton.solvers.style3d.add_cloth_grid(
+        builder,
+        pos=(0.2, -0.1, 0.08),
+        rot=wp.quat_identity(),
+        vel=(0.0, 0.0, 0.0),
+        dim_x=1,
+        dim_y=1,
+        cell_x=0.5,
+        cell_y=0.5,
+        mass=0.5,
+        particle_radius=0.1,
+        tri_aniso_ke=wp.vec3(0.0),
+        edge_aniso_ke=wp.vec3(0.0),
+    )
+    pose = wp.transform(wp.vec3(0.1, 0.05, -0.1), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.4))
+    body = builder.add_link(xform=pose, com=(0.03, -0.02, 0.01), mass=2.0, inertia=wp.mat33(np.eye(3) * 0.4))
+    cfg = newton.ModelBuilder.ShapeConfig(density=0.0, margin=0.02, mu=0.8)
+    builder.add_shape_box(body, hx=0.3, hy=0.3, hz=0.1, cfg=cfg)
+    builder.add_ground_plane(cfg=cfg)
+    model = builder.finalize(device=device)
+    model.soft_contact_ke = 400.0
+    model.soft_contact_kd = 3.0
+    model.soft_contact_kf = 20.0
+    model.soft_contact_mu = 0.2
+    config = newton.solvers.SolverStyle3D.Config(iterations=1, linear_iterations=0, affine_rigidity_ratio=0.0)
+    solver = newton.solvers.SolverStyle3D(model, config=config, dynamics=newton.solvers.SolverStyle3D.Dynamics.ALL)
+    state_in, state_out = model.state(), model.state()
+    contacts = newton.Contacts(0, 2, device=device)
+    contacts.soft_contact_count.fill_(1)
+    contacts.soft_contact_particle.fill_(0)
+    contacts.soft_contact_shape.fill_(0)
+    contacts.soft_contact_normal.fill_(wp.vec3(0.0, 0.0, 1.0))
+    point_world = wp.vec3(0.2, -0.1, 0.0)
+    local_point = np.array(wp.transform_point(wp.transform_inverse(pose), point_world))
+    com = model.body_com.numpy()[0]
+    dt = 0.05
+    mass = np.kron(np.diag(np.r_[model.particle_mass.numpy(), 2.0, 0.2, 0.2, 0.2]), np.eye(3)) / dt**2
+    probe = np.random.default_rng(627).standard_normal((8, 3)).astype(np.float32)
+    probe_wp = wp.array(probe, dtype=wp.vec3, device=device)
+    # A zero-mass kinematic body must retain its velocity-based contact prediction.
+    for mode in ("dynamic", "slip", "separating", "kinematic", "kinematic_zero_mass", "pinned", "static"):
+        with test.subTest(mode=mode):
+            kinematic = mode.startswith("kinematic")
+            config.linear_iterations = 0
+            model.body_flags.fill_(int(newton.BodyFlags.KINEMATIC if kinematic else newton.BodyFlags.DYNAMIC))
+            model.body_mass.fill_(0.0 if mode == "kinematic_zero_mass" else 2.0)
+            model.body_inv_mass.fill_(0.0 if mode == "kinematic_zero_mass" else 0.5)
+            mass[12:, 12:] = (
+                0.0 if mode == "kinematic_zero_mass" else np.kron(np.diag([2.0, 0.2, 0.2, 0.2]), np.eye(3)) / dt**2
+            )
+            model.particle_flags.fill_(0 if mode == "pinned" else int(newton.ParticleFlags.ACTIVE))
+            state_in.body_qd.fill_(wp.spatial_vector(0.0, 0.0, 0.2 if kinematic else 0.0, 0.0, 0.0, 0.0))
+            state_out.body_q.fill_(wp.transform_identity())
+            state_out.body_qd.fill_(wp.spatial_vector(17.0))
+            contacts.soft_contact_shape.fill_(1 if mode == "static" else 0)
+            contacts.soft_contact_body_pos.fill_(point_world if mode == "static" else wp.vec3(local_point))
+            surface = wp.vec3(5.0 if mode == "slip" else 0.01, 0.0, -0.03 if mode == "separating" else 0.03)
+            contacts.soft_contact_body_vel.fill_(surface)
+            solver.step(state_in, state_out, None, contacts, dt)
+            initial = solver._x_prev.numpy().astype(float)
+            target = solver._x_inertia.numpy().astype(float)
+            current = initial.copy()
+            weights = np.r_[1.0, local_point - com]
+            w = np.r_[1.0, 0.0, 0.0, 0.0, -weights]
+            if kinematic:
+                current[4, 2] += 0.2 * dt
+                np.testing.assert_allclose(target[4:], current[4:], atol=2e-6)
+                np.testing.assert_array_equal(state_out.body_q.numpy(), state_in.body_q.numpy())
+                np.testing.assert_array_equal(state_out.body_qd.numpy(), state_in.body_qd.numpy())
+            if mode == "static":
+                w[1:] = 0.0
+                relative = current[0] - np.array(point_world)
+                surface_world = np.array(surface)
+            else:
+                relative = w @ current
+                surface_world = current[5:].T @ np.array(surface)
+            gap = relative[2] - 0.12
+            velocity = w @ (current - initial) / dt - surface_world
+            gn = 400.0 * gap + 3.0 * min(velocity[2], 0.0)
+            ht = np.diag([1.0, 1.0, 0.0])
+            vt = ht @ velocity
+            gain = min(20.0, 0.4 * -gn / np.linalg.norm(vt))
+            gradient = np.array([0.0, 0.0, gn]) + gain * vt
+            tangent = np.diag([0.0, 0.0, 400.0 + (3.0 / dt if velocity[2] < 0.0 else 0.0)]) + gain / dt * ht
+            contact_rhs = -w[:, None] * gradient
+            expected_rhs = (mass @ (target - initial).reshape(-1)).reshape(8, 3) + contact_rhs
+            matrix = mass + np.kron(np.outer(w, w), tangent)
+            if mode == "pinned":
+                matrix[:12, :12] -= mass[:12, :12]
+            np.testing.assert_allclose(solver._rhs.numpy(), expected_rhs, rtol=3e-6, atol=5e-5)
+            np.testing.assert_array_equal(solver.collision.contact_hessian_diags.numpy(), 0.0)
+            for row in range(8):
+                np.testing.assert_allclose(
+                    solver._A_diag.numpy()[row], matrix[3 * row : 3 * row + 3, 3 * row : 3 * row + 3], atol=5e-5
+                )
+            product = solver._matrix_free_multiply(probe_wp)
+            solver._linear_solver.p.assign(probe_wp)
+            solver._linear_solver.step5_update_Ap(solver._pd_off_diag, solver._A_diag, product)
+            np.testing.assert_allclose(
+                solver._linear_solver.Ap.numpy().reshape(-1), matrix @ probe.reshape(-1), rtol=3e-6, atol=3e-4
+            )
+            if mode != "static":
+                np.testing.assert_allclose(contact_rhs[0] + contact_rhs[4], 0.0, atol=1e-7)
+                lever = current[5:].T @ weights[1:]
+                torque = sum(np.cross(current[5 + i], contact_rhs[5 + i]) for i in range(3))
+                np.testing.assert_allclose(torque, np.cross(lever, -contact_rhs[0]), atol=1e-7)
+            active = np.ones(24, dtype=bool)
+            if kinematic:
+                active[12:] = False
+            if mode == "pinned":
+                active[:12] = False
+            expected = initial.reshape(-1).copy()
+            expected[active] += np.linalg.solve(matrix[np.ix_(active, active)], expected_rhs.reshape(-1)[active])
+            config.linear_iterations = 32
+            solver.step(state_in, state_out, None, contacts, dt)
+            np.testing.assert_allclose(solver._x.numpy().reshape(-1), expected, atol=3e-6)
+            if kinematic:
+                np.testing.assert_array_equal(state_out.body_q.numpy(), state_in.body_q.numpy())
+                np.testing.assert_array_equal(state_out.body_qd.numpy(), state_in.body_qd.numpy())
+            if mode == "pinned":
+                np.testing.assert_array_equal(state_out.particle_q.numpy(), state_in.particle_q.numpy())
+
+    contacts.soft_contact_shape.fill_(0)
+    contacts.soft_contact_body_pos.fill_(wp.vec3(local_point))
+    config.linear_iterations = 0
+    graph = None
+    if wp.get_device(device).is_cuda:
+        with wp.ScopedCapture(device=device) as capture:
+            solver.step(state_in, state_out, None, contacts, dt)
+            solver._matrix_free_multiply(probe_wp)
+        graph = capture.graph
+    for count in (2, 0, 1):
+        contacts.soft_contact_count.fill_(count)
+        if graph is None:
+            solver.step(state_in, state_out, None, contacts, dt)
+            solver._matrix_free_multiply(probe_wp)
+        else:
+            wp.capture_launch(graph)
+        if count:
+            test.assertGreater(np.linalg.norm(solver._matrix_free_Ax.numpy()), 1.0)
+        else:
+            np.testing.assert_array_equal(solver._matrix_free_Ax.numpy(), 0.0)
+    solver.step(state_in, state_out, None, None, dt)
+    np.testing.assert_array_equal(solver._matrix_free_multiply(probe_wp).numpy(), 0.0)
+    np.testing.assert_allclose(
+        solver._A_diag.numpy(), solver._A_diag_base.numpy()[:, None, None] * np.eye(3), atol=1e-5
+    )
+
+
+def test_rigid_contact_stacking(test, device):
+    """Support two spheres through generated body-body and body-ground contacts."""
+    builder = newton.ModelBuilder()
+    cfg = newton.ModelBuilder.ShapeConfig(density=0.0, ke=5.0e5, kd=500.0, kf=0.0, mu=0.0)
+    for height in (0.5, 1.5):
+        body = builder.add_link(
+            xform=wp.transform(wp.vec3(0.0, 0.0, height), wp.quat_identity()),
+            mass=2.0,
+            inertia=wp.mat33(np.eye(3) * 0.2),
+        )
+        builder.add_shape_sphere(body, radius=0.5, cfg=cfg)
+    builder.add_ground_plane(cfg=cfg)
+    model = builder.finalize(device=device)
+    solver = newton.solvers.SolverStyle3D(
+        model,
+        config=newton.solvers.SolverStyle3D.Config(iterations=4, linear_iterations=16),
+        dynamics=newton.solvers.SolverStyle3D.Dynamics.AFFINE_BODY,
+    )
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    state_in, state_out = model.state(), model.state()
+    for frame in range(40):
+        if frame == 0 and wp.get_device(device).is_cuda:
+            # The first captured step must be able to allocate the contact cache.
+            with wp.ScopedCapture(device=device) as capture:
+                pipeline.collide(state_in, contacts)
+                solver.step(state_in, state_out, None, contacts, 0.01)
+            wp.capture_launch(capture.graph)
+        else:
+            pipeline.collide(state_in, contacts)
+            solver.step(state_in, state_out, None, contacts, 0.01)
+        state_in, state_out = state_out, state_in
+    np.testing.assert_allclose(state_in.body_q.numpy()[:, 2], [0.5, 1.5], atol=1e-3)
+    np.testing.assert_allclose(state_in.body_qd.numpy(), 0.0, atol=2e-3)
+
+
+def test_rigid_contact_friction_stability(test, device):
+    """Topple thin boxes without injecting energy when contact slip reverses."""
+    builder = newton.ModelBuilder()
+    builder.rigid_gap = 0.001
+    cfg = newton.ModelBuilder.ShapeConfig(density=580.0, ke=1.0e5, kd=0.0, kf=1.0e3, mu=1.0)
+    builder.add_ground_plane(cfg=cfg)
+    for i in range(3):
+        rotation = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -np.pi / 12.0 if i == 0 else 0.0)
+        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.12 * i, 0.18), rotation))
+        builder.add_shape_box(body, hx=0.06, hy=0.016, hz=0.18, cfg=cfg)
+    model = builder.finalize(device=device)
+    solver = newton.solvers.SolverStyle3D(model, dynamics=newton.solvers.SolverStyle3D.Dynamics.AFFINE_BODY)
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    state_in, state_out = model.state(), model.state()
+    mass = model.body_mass.numpy()
+    inertia = model.body_inertia.numpy()
+    initial_energy = float(np.sum(mass * 9.81 * 0.18))
+
+    def advance():
+        """Advance a frame with the same two substeps used by domino_spiral."""
+        pipeline.collide(state_in, contacts)
+        solver.step(state_in, state_out, None, contacts, 1.0 / 120.0)
+        pipeline.collide(state_out, contacts)
+        solver.step(state_out, state_in, None, contacts, 1.0 / 120.0)
+
+    graph = None
+    if wp.get_device(device).is_cuda:
+        with wp.ScopedCapture(device=device) as capture:
+            advance()
+        graph = capture.graph
+    for frame in range(60):
+        if graph is None:
+            advance()
+        else:
+            wp.capture_launch(graph)
+        poses, velocities = state_in.body_q.numpy(), state_in.body_qd.numpy()
+        test.assertTrue(np.isfinite(poses).all() and np.isfinite(velocities).all(), msg=f"frame {frame}")
+        energy = float(np.sum(mass * (0.5 * np.sum(velocities[:, :3] ** 2, axis=1) + 9.81 * poses[:, 2])))
+        for body in range(3):
+            omega = np.array(wp.quat_rotate_inv(wp.quat(*poses[body, 3:]), wp.vec3(*velocities[body, 3:])))
+            energy += 0.5 * omega @ inertia[body] @ omega
+        test.assertLess(energy, initial_energy * 1.1, msg=f"frame {frame}")
+        test.assertGreater(float(poses[:, 2].min()), 0.0, msg=f"frame {frame}")
+    # Stability must still allow contact-driven motion to reach the last box.
+    test.assertLess(float(poses[-1, 2]), 0.12)
+
+
+def test_affine_body_state_conversion(test, device):
+    """Recover integrated rigid states and fit deformed affine configurations."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    moments = (
+        np.array([[0.12, 0.02, -0.01], [0.02, 0.3, 0.025], [-0.01, 0.025, 0.6]]),
+        np.eye(3) * 0.25,
+        np.zeros((3, 3)),
+        np.eye(3) * 0.25,
+    )
+    for i, moment in enumerate(moments):
+        if i == 1:
+            builder.begin_world(gravity=(1.0, -2.0, 0.5))
+        builder.add_link(
+            xform=wp.transform(
+                wp.vec3(0.4 * i, -0.2, 1.0),
+                wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 2.0, -1.0)), 0.7 + i),
+            ),
+            com=wp.vec3(0.2, -0.4, 0.1),
+            mass=0.0 if i == 2 else 2.0,
+            inertia=wp.mat33(np.trace(moment) * np.eye(3) - moment),
+        )
+        if i == 1:
+            builder.end_world()
+        builder.body_qd[i] = wp.spatial_vector(0.3, -0.1, 0.2, 0.4, -0.7, 1.2)
+    builder.body_qd[1] = wp.spatial_vector(-0.4, 0.2, 0.7, 8.0, -10.0, 12.0)
+    builder.body_qd[3] = wp.spatial_vector(0.0)
+    model = builder.finalize(device=device)
+    affine_body = AffineBody(model)
+    rigid_solver = newton.solvers.SolverBase(model)
+    state_in, state_ref, state_out = model.state(), model.state(), model.state()
+    inactive_pose = state_out.body_q.numpy()[2].copy()
+    inactive_velocity = state_out.body_qd.numpy()[2].copy()
+    forces = np.zeros((model.body_count, 6), dtype=np.float32)
+    forces[0] = (0.7, -0.3, 0.5, -0.2, 0.4, 0.3)
+    state_in.body_f.assign(forces)
+    poses = state_in.body_q.numpy().copy()
+    velocities = state_in.body_qd.numpy().copy()
+    centers = model.body_com.numpy()
+    inertias = model.body_inertia.numpy()
+
+    # Views leave particle entries and trailing storage outside the component.
+    storage_x = wp.full(4 * model.body_count + 5, wp.vec3(17.0), dtype=wp.vec3, device=device)
+    storage_x_inertia = wp.clone(storage_x)
+    storage_v = wp.clone(storage_x)
+    x, x_inertia, v = storage_x[2:-3], storage_x_inertia[2:-3], storage_v[2:-3]
+    for dt in (0.02, 0.15):
+        with test.subTest(dt=dt):
+            rigid_solver.integrate_bodies(model, state_in, state_ref, dt)
+            affine_body.to_internal_state(state_in, x, x_inertia, dt)
+            coordinates = x.numpy().reshape(-1, 4, 3)
+            inertial_coordinates = x_inertia.numpy().reshape(-1, 4, 3)
+            for i, (pose, next_pose) in enumerate(zip(poses, state_ref.body_q.numpy(), strict=True)):
+                rotation = np.array(wp.quat_to_matrix(wp.quat(*pose[3:]))).reshape(3, 3)
+                next_rotation = np.array(wp.quat_to_matrix(wp.quat(*next_pose[3:]))).reshape(3, 3)
+                expected_coordinates = np.vstack((pose[:3] + rotation @ centers[i], rotation.T))
+                next_coordinates = np.vstack((next_pose[:3] + next_rotation @ centers[i], next_rotation.T))
+                np.testing.assert_allclose(coordinates[i], expected_coordinates, atol=2e-6)
+                np.testing.assert_allclose(inertial_coordinates[i], next_coordinates, atol=2e-6)
+
+            wp.launch(_advance_affine_coordinates, dim=len(x), inputs=[x, x_inertia, v, dt], device=device)
+            affine_body.from_internal_state(state_in, state_out, x, v, dt)
+            if wp.get_device(device).is_cuda:
+                with wp.ScopedCapture(device=device) as capture:
+                    affine_body.to_internal_state(state_in, x, x_inertia, dt)
+                    wp.launch(_advance_affine_coordinates, dim=len(x), inputs=[x, x_inertia, v, dt], device=device)
+                    affine_body.from_internal_state(state_in, state_out, x, v, dt)
+                state_out.body_q.fill_(wp.transform_identity())
+                state_out.body_qd.fill_(wp.spatial_vector(0.0))
+                inactive_pose = state_out.body_q.numpy()[2].copy()
+                inactive_velocity = state_out.body_qd.numpy()[2].copy()
+                wp.capture_launch(capture.graph)
+
+            for i, (expected, actual) in enumerate(
+                zip(state_ref.body_q.numpy(), state_out.body_q.numpy(), strict=True)
+            ):
+                if i == 2:
+                    np.testing.assert_array_equal(actual, inactive_pose)
+                else:
+                    np.testing.assert_allclose(actual[:3], expected[:3], atol=2e-5)
+                    np.testing.assert_allclose(
+                        wp.quat_to_matrix(wp.quat(*actual[3:])),
+                        wp.quat_to_matrix(wp.quat(*expected[3:])),
+                        atol=2e-5,
+                    )
+            np.testing.assert_allclose(
+                state_out.body_qd.numpy()[:2], state_ref.body_qd.numpy()[:2], atol=1e-4, rtol=2e-5
+            )
+            np.testing.assert_array_equal(state_out.body_qd.numpy()[2], inactive_velocity)
+
+    # Stretch, shear, and reflection require fitting beyond a rigid round trip.
+    deformations = (
+        np.array([[1.1, 0.15, 0.0], [-0.05, 0.9, 0.12], [0.03, 0.0, 1.2]]),
+        np.diag([1.2, 0.8, -0.6]),
+        np.diag([1.1, 0.9, 1.2]),
+        np.eye(3),
+    )
+    velocity_gradient = np.array([[0.1, -0.6, 0.3], [0.8, -0.2, 0.1], [-0.4, 0.5, 0.2]])
+    coordinate_velocities = v.numpy().reshape(-1, 4, 3)
+    expected_poses, expected_velocities = [], []
+    for i, deformation in enumerate(deformations):
+        rotation = np.array(wp.quat_to_matrix(wp.quat(*poses[i, 3:]))).reshape(3, 3)
+        affine = rotation @ deformation
+        center = coordinates[i, 0].copy()
+        coordinates[i, 1:] = affine.T
+        coordinate_velocities[i, 0] = velocities[i, :3]
+        coordinate_velocities[i, 1:] = velocity_gradient.T
+        moment = 0.5 * np.trace(inertias[i]) * np.eye(3) - inertias[i]
+        if not np.any(moment):
+            moment = np.eye(3)
+
+        # Six mass samples reproduce the second moment for independent
+        # NumPy Procrustes fits of the current and previous configurations.
+        factor = np.linalg.cholesky(moment)
+        samples = np.vstack((factor.T, -factor.T))
+        fits = []
+        for configuration in (affine, affine - dt * velocity_gradient):
+            target_points = samples @ configuration.T
+            u, _, vt = np.linalg.svd(target_points.T @ samples)
+            fits.append(u @ np.diag([1.0, 1.0, np.linalg.det(u @ vt)]) @ vt)
+        fit, previous_fit = fits
+        expected_poses.append((center - fit @ centers[i], fit))
+        # The inverse Cayley transform independently recovers the angular velocity.
+        delta = fit @ previous_fit.T
+        skew = (2.0 / dt) * np.linalg.solve((delta + np.eye(3)).T, (delta - np.eye(3)).T).T
+        omega = np.array([skew[2, 1], skew[0, 2], skew[1, 0]])
+        expected_velocities.append(np.concatenate((velocities[i, :3], omega)))
+    x.assign(coordinates.reshape(-1, 3))
+    v.assign(coordinate_velocities.reshape(-1, 3))
+    inactive_pose = state_out.body_q.numpy()[2].copy()
+    inactive_velocity = state_out.body_qd.numpy()[2].copy()
+    affine_body.from_internal_state(state_in, state_out, x, v, dt)
+    for i, (actual, (position, rotation)) in enumerate(zip(state_out.body_q.numpy(), expected_poses, strict=True)):
+        if i == 2:
+            np.testing.assert_array_equal(actual, inactive_pose)
+        else:
+            np.testing.assert_allclose(actual[:3], position, atol=2e-5)
+            actual_rotation = np.array(wp.quat_to_matrix(wp.quat(*actual[3:]))).reshape(3, 3)
+            np.testing.assert_allclose(actual_rotation, rotation, atol=2e-5)
+            test.assertAlmostEqual(float(np.linalg.det(actual_rotation)), 1.0, places=5)
+    np.testing.assert_allclose(state_out.body_qd.numpy()[:2], expected_velocities[:2], atol=2e-5)
+    np.testing.assert_array_equal(state_out.body_qd.numpy()[2], inactive_velocity)
+    np.testing.assert_array_equal(state_in.body_q.numpy(), poses)
+    np.testing.assert_array_equal(state_in.body_qd.numpy(), velocities)
+    np.testing.assert_array_equal(state_in.body_f.numpy(), forces)
+    for storage in (storage_x, storage_x_inertia, storage_v):
+        np.testing.assert_array_equal(storage.numpy()[[0, 1, -3, -2, -1]], np.full((5, 3), 17.0))
+
+
 devices = get_test_devices()
+
+
+add_function_test(
+    TestSolverStyle3D,
+    "test_soft_contact_linear_system",
+    test_soft_contact_linear_system,
+    devices=devices,
+    check_output=False,
+)
+
+
+add_function_test(
+    TestSolverStyle3D,
+    "test_rigid_contact_linear_system",
+    test_rigid_contact_linear_system,
+    devices=devices,
+    check_output=False,
+)
+add_function_test(
+    TestSolverStyle3D, "test_rigid_contact_stacking", test_rigid_contact_stacking, devices=devices, check_output=False
+)
+add_function_test(
+    TestSolverStyle3D,
+    "test_rigid_contact_friction_stability",
+    test_rigid_contact_friction_stability,
+    devices=devices,
+    check_output=False,
+)
+
+
+add_function_test(
+    TestSolverStyle3D,
+    "test_affine_body_linear_system",
+    test_affine_body_linear_system,
+    devices=devices,
+    check_output=False,
+)
+
+
+add_function_test(
+    TestSolverStyle3D,
+    "test_affine_body_state_conversion",
+    test_affine_body_state_conversion,
+    devices=devices,
+    check_output=False,
+)
 
 
 add_function_test(
@@ -513,6 +1735,18 @@ add_function_test(
     test_global_particles_use_global_gravity,
     devices=devices,
     check_output=False,
+)
+
+add_function_test(
+    TestSolverStyle3D,
+    "test_tet_constraint_assembles_float_psd_matrix",
+    test_tet_constraint_assembles_float_psd_matrix,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverStyle3D, "test_usd_tet_matches_builder", test_usd_tet_matches_builder, devices=devices, check_output=False
 )
 
 if __name__ == "__main__":

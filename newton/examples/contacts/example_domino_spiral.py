@@ -39,8 +39,9 @@ SUBSTEPS = {
     "mujoco": 10,
     "featherstone": 100,
     "kamino": 5,
+    "style3d": 2,
 }
-SOLVER_CHOICES = ("xpbd", "vbd", "mujoco", "featherstone", "kamino")
+SOLVER_CHOICES = ("xpbd", "vbd", "mujoco", "featherstone", "kamino", "style3d")
 NATIVE_CONTACT_SOLVERS = {"mujoco", "kamino"}
 
 
@@ -81,7 +82,7 @@ class Example:
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, GRAVITY))
         builder.rigid_gap = 0.001
         builder.default_shape_cfg.ke = 1.0e4
-        if self.solver_name == "vbd":
+        if self.solver_name in ("vbd", "style3d"):
             builder.default_shape_cfg.ke = 1.0e5
         builder.default_shape_cfg.kd = 0.0
         builder.default_shape_cfg.kf = 1.0e3
@@ -126,6 +127,10 @@ class Example:
             self.solver = newton.solvers.SolverVBD(
                 self.model,
                 iterations=10,
+            )
+        elif self.solver_name == "style3d":
+            self.solver = newton.solvers.SolverStyle3D(
+                self.model, dynamics=newton.solvers.SolverStyle3D.Dynamics.AFFINE_BODY
             )
         elif self.solver_name == "mujoco":
             self.solver = newton.solvers.SolverMuJoCo(self.model, njmax=2048, nconmax=1024, cone="elliptic")

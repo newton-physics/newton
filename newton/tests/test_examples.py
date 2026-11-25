@@ -70,6 +70,7 @@ _ISAACGYM_ASSET_DOWNLOAD_OUTPUT_RE = (
 _NUT_BOLT_DOWNLOAD_START_OUTPUT_RE = r"Downloading nut/bolt assets\.\.\.\n?"
 _NUT_BOLT_DOWNLOAD_DONE_OUTPUT_RE = r"Assets downloaded to: [^\n]+\n?"
 _PYRAMID_BUILD_OUTPUT_RE = r"Built 3 pyramids x 5 rows = 45 boxes\n?"
+_STYLE3D_PRECOMPUTE_OUTPUT_RE = r"^SolverStyle3D::precompute\(\) took [\d.]+ ms$"
 _MATPLOTLIB_FONT_CACHE_OUTPUT_RE = r"Matplotlib is building the font cache; this may take a moment\.\n?"
 _DIFFSIM_BALL_GRADIENT_OUTPUT_RE = r"(?:numeric grad: \[[^\n]+\]\nanalytic grad: \[[^\n]+\]\n?){2}"
 _DIFFSIM_DRONE_LOSS_LINE_RE = r"\[\s*\d{1,3}/360\] loss=-?\d+\.\d{8}\n?"
@@ -631,6 +632,15 @@ add_example_batch(
             "test_suffix": "vbd",
             "allow_output_regexes": [(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
         },
+        {
+            "devices": test_devices,
+            "test_options": {"requires": ("pxr.Usd",), "num-frames": 150, "solver": "style3d"},
+            "test_suffix": "style3d",
+            "allow_output_regexes": [
+                (_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr"),
+                (_STYLE3D_PRECOMPUTE_OUTPUT_RE, "stdout"),
+            ],
+        },
     ],
 )
 
@@ -656,6 +666,17 @@ add_basic_example_test(
     test_options={"num-frames": 100, "solver": "kamino"},
     test_suffix="kamino",
     allow_output_regexes=[(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
+)
+add_basic_example_test(
+    name="basic.example_basic_conveyor",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 100, "solver": "style3d"},
+    test_suffix="style3d",
+    allow_output_regexes=[
+        (_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr"),
+        (_STYLE3D_PRECOMPUTE_OUTPUT_RE, "stdout"),
+    ],
 )
 add_example_batch(
     TestBasicExamples,
@@ -703,6 +724,12 @@ add_example_batch(
             "devices": cuda_test_devices,
             "test_options": {"num-frames": 230, "solver": "kamino"},
             "test_suffix": "kamino",
+        },
+        {
+            "devices": test_devices,
+            "test_options": {"num-frames": 230, "solver": "style3d"},
+            "test_suffix": "style3d",
+            "allow_output_regexes": [(_STYLE3D_PRECOMPUTE_OUTPUT_RE, "stdout")],
         },
     ],
 )
@@ -1728,6 +1755,17 @@ for example_name in (
         )
 
 
+for example_name in ("contacts.example_balance_bird", "contacts.example_domino_spiral"):
+    add_contact_example_test(
+        name=example_name,
+        devices=cuda_test_devices,
+        test_options={"num-frames": 60, "solver": "style3d"},
+        use_viewer=True,
+        test_suffix="style3d",
+        allow_output_regexes=[(_STYLE3D_PRECOMPUTE_OUTPUT_RE, "stdout")],
+    )
+
+
 add_contact_example_test(
     name="contacts.example_adaptive_collision",
     devices=cuda_test_devices,
@@ -1810,10 +1848,39 @@ add_contact_example_test(
     test_suffix="kamino",
     expect_output_regexes=[(_PYRAMID_BUILD_OUTPUT_RE, "stdout")],
 )
+add_contact_example_test(
+    name="contacts.example_pyramid",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 120, "num-pyramids": 3, "pyramid-size": 5, "solver": "style3d"},
+    use_viewer=True,
+    test_suffix="style3d",
+    expect_output_regexes=[(_PYRAMID_BUILD_OUTPUT_RE, "stdout")],
+    allow_output_regexes=[(_STYLE3D_PRECOMPUTE_OUTPUT_RE, "stdout")],
+)
 
 
 class TestMultiphysicsExamples(NewtonTestCase):
     pass
+
+
+add_example_test(
+    TestMultiphysicsExamples,
+    name="multiphysics.example_style3d_parcel_sorting_conveyor",
+    devices=test_devices,
+    use_viewer=True,
+    # By frame 8 the flat parcel has contacted the belt and started moving.
+    test_options={"num-frames": 8, "seed": 0},
+    allow_output_regexes=[(_STYLE3D_PRECOMPUTE_OUTPUT_RE, "stdout")],
+)
+add_example_test(
+    TestMultiphysicsExamples,
+    name="multiphysics.example_style3d_balls_dropped_into_bag",
+    devices=test_devices,
+    test_options={"num-frames": 180},
+    test_options_cpu={"num-frames": 60},
+    use_viewer=True,
+    allow_output_regexes=[(_STYLE3D_PRECOMPUTE_OUTPUT_RE, "stdout")],
+)
 
 
 add_example_test(
@@ -1844,6 +1911,16 @@ add_example_test(
     TestMultiphysicsExamples,
     name="multiphysics.example_softbody_dropping_to_cloth",
     devices=test_devices,
+    test_options={"num-frames": 200, "solver": "style3d"},
+    test_options_cpu={"num-frames": 2},
+    use_viewer=True,
+    test_suffix="style3d",
+    allow_output_regexes=[(_STYLE3D_PRECOMPUTE_OUTPUT_RE, "stdout")],
+)
+add_example_test(
+    TestMultiphysicsExamples,
+    name="multiphysics.example_softbody_dropping_to_cloth",
+    devices=test_devices,
     test_options={"num-frames": 2, "solver": "coupled", "vbd-iterations": 2},
     use_viewer=True,
     test_suffix="coupled",
@@ -1869,6 +1946,13 @@ add_example_batch(
             "test_options": {"num-frames": 180, "solver": "vbd"},
             "test_options_cpu": {"num-frames": 2},
             "test_suffix": "vbd",
+        },
+        {
+            "devices": test_devices,
+            "test_options": {"num-frames": 180, "solver": "style3d"},
+            "test_options_cpu": {"num-frames": 2},
+            "test_suffix": "style3d",
+            "allow_output_regexes": [(_STYLE3D_PRECOMPUTE_OUTPUT_RE, "stdout")],
         },
         {
             "devices": test_devices,
@@ -2007,6 +2091,17 @@ add_example_test(
     test_options={"num-frames": 120},
     test_options_cpu={"num-frames": 2},
     use_viewer=True,
+)
+
+add_example_test(
+    TestSoftbodyExamples,
+    name="softbody.example_softbody_hanging",
+    devices=test_devices,
+    test_options={"num-frames": 120, "solver": "style3d"},
+    test_options_cpu={"num-frames": 2},
+    use_viewer=True,
+    test_suffix="style3d",
+    allow_output_regexes=[(_STYLE3D_PRECOMPUTE_OUTPUT_RE, "stdout")],
 )
 
 
@@ -2150,6 +2245,14 @@ add_example_test(
     devices=cuda_test_devices,
     test_options={"requires": ("pxr.Usd", "trimesh", "collada")},
     use_viewer=True,
+)
+add_example_test(
+    TestUSDDependentExamples,
+    name="softbody.example_softbody_franka",
+    devices=cuda_test_devices,
+    test_options={"requires": ("pxr.Usd", "trimesh", "collada"), "solver": "style3d"},
+    use_viewer=True,
+    test_suffix="style3d",
 )
 # 120 frames reaches the first engagement (~1.0 s) and holds the panel well past the seal settling,
 # so test_final can assert that the pads latched and the seal quality stayed healthy. test_final is valid
