@@ -452,7 +452,7 @@ class JointSpaceResponse:
         call resizes the scratch buffers.
 
         With :class:`~newton.solvers.SolverMuJoCo`, which factorizes its inertia
-        each step::
+        each step when constructed with ``run_qacc_smooth=True``::
 
             def solve_inverse(x, y):
                 mujoco_warp.solve_m(solver.mjw_model, solver.mjw_data, x, y)

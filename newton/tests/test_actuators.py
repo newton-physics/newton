@@ -512,10 +512,11 @@ def _mujoco_solver(test_case: unittest.TestCase, model: newton.Model) -> newton.
     That is what makes MuJoCo reorder the DOFs, and the solver says so on
     conversion.
     """
+    # run_qacc_smooth=True keeps the per-step factorization that _mujoco_solve reads.
     if model.articulation_count and len(_arm_dofs(model)) != model.joint_dof_count:
         with test_case.assertWarnsRegex(UserWarning, "standalone world roots"):
-            return newton.solvers.SolverMuJoCo(model, disable_contacts=True)
-    return newton.solvers.SolverMuJoCo(model, disable_contacts=True)
+            return newton.solvers.SolverMuJoCo(model, disable_contacts=True, run_qacc_smooth=True)
+    return newton.solvers.SolverMuJoCo(model, disable_contacts=True, run_qacc_smooth=True)
 
 
 def _mujoco_solve(

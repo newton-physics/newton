@@ -175,6 +175,29 @@ class TestMuJoCoSolver(unittest.TestCase):
             msg=f"ls_tolerance should be {custom_ls_tolerance}",
         )
 
+    def test_run_qacc_smooth(self):
+        """Verify that skipping ``qacc_smooth`` by default leaves it stale without changing the motion."""
+        builder = newton.ModelBuilder()
+        link = builder.add_link(mass=1.0, com=wp.vec3(0.5, 0.0, 0.0), inertia=wp.mat33(0.1 * np.eye(3)))
+        joint = builder.add_joint_revolute(-1, link, axis=wp.vec3(0.0, 1.0, 0.0))
+        builder.add_articulation([joint])
+        model = builder.finalize()
+
+        joint_q, qacc_smooth_changed = [], []
+        for kwargs in ({}, {"run_qacc_smooth": True}):
+            solver = SolverMuJoCo(model, **kwargs)
+            initial = solver.mjw_data.qacc_smooth.numpy().copy()
+            state_0, state_1, control = model.state(), model.state(), model.control()
+            for _ in range(20):
+                solver.step(state_0, state_1, control, None, 0.005)
+                state_0, state_1 = state_1, state_0
+            joint_q.append(state_0.joint_q.numpy().copy())
+            qacc_smooth_changed.append(not np.array_equal(solver.mjw_data.qacc_smooth.numpy(), initial))
+
+        self.assertEqual(qacc_smooth_changed, [False, True])
+        self.assertGreater(abs(joint_q[1][0]), 0.05)
+        np.testing.assert_allclose(joint_q[0], joint_q[1], rtol=1e-5)
+
 
 class _MuJoCoSolverPropertiesFixture:
     """Multi-world scene shared by the MuJoCo solver property tests."""

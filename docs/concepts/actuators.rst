@@ -697,9 +697,12 @@ computes ``x = M^-1 y``. The response recovers the matrix one column at a time,
 by passing unit vectors through that callable. MuJoCo is currently the only
 Newton solver that provides one. MuJoCo's free and ball joints use different
 coordinates from Newton's, so pass the state as well; the response then
-converts them at that pose.
+converts them at that pose. Construct the solver with ``run_qacc_smooth=True``:
+by default its step skips the factorization that ``mujoco_warp.solve_m`` reads.
 
 .. code-block:: python
+
+   solver = newton.solvers.SolverMuJoCo(model, run_qacc_smooth=True)
 
    def solve_inverse(x, y):
        # x = M^-1 y, using the factorization the solver already built

@@ -70,7 +70,14 @@ class _ActuatorBenchmark:
             model, dofs_per_world = _build_g1(world_count)
             self.model = model
             self.solver = newton.solvers.SolverMuJoCo(
-                model, solver="newton", integrator="implicitfast", njmax=210, nconmax=35, cone="pyramidal"
+                model,
+                solver="newton",
+                integrator="implicitfast",
+                njmax=210,
+                nconmax=35,
+                cone="pyramidal",
+                # solve_m reads the factorization that the step skips by default.
+                run_qacc_smooth=drive == "implicit_from_solve",
             )
             self.state_0, self.state_1 = model.state(), model.state()
             self.control = model.control()
