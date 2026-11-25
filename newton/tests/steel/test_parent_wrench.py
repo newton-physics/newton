@@ -767,7 +767,10 @@ def test_parent_wrench_of_a_near_redundant_closure(test, device):
 
 
 def test_parent_wrench_warns_without_preeliminated_closures(test, device):
-    """Pre-eliminated loop closures have no stored impulses, so requesting the wrench warns once."""
+    """Warn once when the wrench is requested while a pre-eliminated loop closure is enabled.
+
+    Pre-eliminated closures have no stored impulses. The enabled state follows eager JOINT_PROPERTIES notifications.
+    """
     model = _build_four_bar().finalize(device=device)
     solver = SolverSteel(model, enable_bilateral_preelimination=True)
     observables = solver.observables(FLAGS)
@@ -779,6 +782,27 @@ def test_parent_wrench_warns_without_preeliminated_closures(test, device):
     with warnings.catch_warnings():
         warnings.simplefilter("error", NewtonWarning)
         sleeping.step(state_0, state_1, None, None, 1.0 / 240.0)
+    # A disabled closure has no reaction to leave out, until a notification enables it again.
+    closure = int(np.flatnonzero(model.joint_articulation.numpy() < 0)[0])
+    enabled = model.joint_enabled.numpy()
+    enabled[closure] = False
+    model.joint_enabled.assign(enabled)
+    solver = SolverSteel(model, enable_bilateral_preelimination=True)
+    observables = solver.observables(FLAGS)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", NewtonWarning)
+        solver.step(state_0, state_1, None, None, 1.0 / 240.0, observables=observables)
+        with wp.ScopedCapture(device) as capture:
+            solver.step(state_0, state_1, None, None, 1.0 / 240.0, observables=observables)
+        wp.capture_launch(capture.graph)
+        # A captured notification keeps the closures as the last eager one saw them.
+        model.joint_enabled.fill_(True)
+        with wp.ScopedCapture(device):
+            solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES)
+        solver.step(state_0, state_1, None, None, 1.0 / 240.0, observables=observables)
+    solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES)
+    with test.assertWarnsRegex(NewtonWarning, "pre-eliminated loop-closure"):
+        solver.step(state_0, state_1, None, None, 1.0 / 240.0, observables=observables)
 
 
 def test_unattached_body_reports_zero(test, device):
