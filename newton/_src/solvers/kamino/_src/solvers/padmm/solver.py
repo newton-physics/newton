@@ -28,7 +28,6 @@ from ...utils.tile import get_block_dim, get_tile_size
 from .kernels import (
     _apply_dual_preconditioner_to_solution,
     _apply_dual_preconditioner_to_state,
-    _compute_complementarity_residuals,
     _compute_desaxce_correction,
     _compute_final_desaxce_correction,
     _compute_projection_argument,
@@ -365,7 +364,9 @@ class PADMMSolver:
         self._collect_solver_info_kernel_sparse = make_collect_solver_info_kernel_sparse(self._use_acceleration)
         delassus_dual_residual = self._config[0].dual_residual_mode == "delassus"
         self._update_dual_variables_and_compute_primal_dual_residuals_kernel = (
-            make_update_dual_variables_and_compute_primal_dual_residuals(self._use_acceleration, delassus_dual_residual)
+            make_update_dual_variables_and_compute_primal_dual_residuals(
+                self._use_acceleration, delassus_dual_residual, self._config[0].contact_primal_relative_tolerance
+            )
         )
         tile_size = get_tile_size(self._size.max_of_max_total_cts)
         block_dim = get_block_dim(tile_size, ratio=2, min_size=1)
@@ -512,7 +513,7 @@ class PADMMSolver:
     def write_world_residual(self, world_residual: wp.array[wp.float32]) -> None:
         """Write the terminal residual of each world relative to its stopping tolerances.
 
-        The value is ``max(r_p / primal_tolerance, r_d / dual_tolerance, r_c / compl_tolerance)``
+        The value is ``max(r_p / primal_tolerance, r_d / dual_tolerance)``
         of the latest solve, so values at most one satisfy every tolerance. With a
         zero tolerance, a zero residual contributes zero and any other infinity.
 
@@ -1332,40 +1333,6 @@ class PADMMSolver:
             device=self.device,
         )
 
-    def _update_complementarity_residuals(self, problem: DualProblem):
-        """
-        Launches a kernel to compute the complementarity residuals from the current state variables.
-        The kernel is parallelized over the number of worlds and the maximum number of inequality constraints.
-
-        Args:
-            problem: The dual forward dynamics problem to be solved.
-        """
-        # Compute complementarity residual from the current state.
-        wp.launch(
-            kernel=_compute_complementarity_residuals,
-            dim=(self._size.num_worlds, self._size.max_of_max_inequalities),
-            inputs=[
-                # Inputs:
-                problem.data.nbc,
-                problem.data.nl,
-                problem.data.nc,
-                problem.data.vio,
-                problem.data.bcio,
-                problem.data.iio,
-                problem.data.bcgo,
-                problem.data.lcgo,
-                problem.data.ccgo,
-                self._data.status,
-                self._data.state.x,
-                self._data.state.z,
-                problem.data.bound_lower,
-                problem.data.bound_upper,
-                # Outputs:
-                self._data.residuals.r_compl,
-            ],
-            device=self.device,
-        )
-
     def _update_dual_variables_and_residuals(self, problem: DualProblem):
         """
         Launches a kernel to update the dual variables and compute the
@@ -1385,6 +1352,8 @@ class PADMMSolver:
                 # Inputs:
                 problem.data.dim,
                 problem.data.vio,
+                problem.data.nc,
+                problem.data.ccgo,
                 problem.data.P,
                 self._data.config,
                 self._data.penalty,
@@ -1412,9 +1381,6 @@ class PADMMSolver:
             ],
             device=self.device,
         )
-
-        # Compute complementarity residual from the current state.
-        self._update_complementarity_residuals(problem)
 
     def _update_projection_dual_convergence_accel(self, problem: DualProblem):
         """Advance accelerated PADMM projection, residual status, and state cache."""
@@ -1490,25 +1456,16 @@ class PADMMSolver:
         tile_size = get_tile_size(self._size.max_of_max_total_cts)
         block_dim = get_block_dim(tile_size, min_size=1)
         wp.launch_tiled(
-            kernel=_make_compute_infnorm_residuals_kernel(
-                tile_size,
-                self._size.max_of_max_total_cts,
-                self._size.max_of_max_inequalities,
-            ),
+            kernel=_make_compute_infnorm_residuals_kernel(tile_size, self._size.max_of_max_total_cts),
             dim=self._size.num_worlds,
             block_dim=block_dim,
             inputs=[
                 # Inputs:
-                problem.data.nbc,
-                problem.data.nl,
-                problem.data.nc,
-                problem.data.iio,
                 problem.data.dim,
                 problem.data.vio,
                 self._data.config,
                 self._data.residuals.r_primal,
                 self._data.residuals.r_dual,
-                self._data.residuals.r_compl,
                 # Outputs:
                 self._data.state.done,
                 self._data.status,
@@ -1597,7 +1554,6 @@ class PADMMSolver:
                     self._data.info.r_dz,
                     self._data.info.r_primal,
                     self._data.info.r_dual,
-                    self._data.info.r_compl,
                     self._data.info.r_pd,
                     self._data.info.r_dp,
                     self._data.info.r_comb,
@@ -1667,7 +1623,6 @@ class PADMMSolver:
                     self._data.info.r_dz,
                     self._data.info.r_primal,
                     self._data.info.r_dual,
-                    self._data.info.r_compl,
                     self._data.info.r_pd,
                     self._data.info.r_dp,
                     self._data.info.r_comb,

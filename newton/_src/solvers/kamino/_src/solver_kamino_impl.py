@@ -453,13 +453,13 @@ class SolverKaminoImpl(SolverBase):
         return self._metrics
 
     @property
-    def cull_speculative_contacts(self) -> bool:
+    def cull_unreachable_contacts(self) -> bool:
         """
-        Returns whether external contacts with a positive gap are culled before the dynamics solve.
+        Returns whether the speculative contacts that cannot close their gap within the step are culled.
 
         LOX keeps them, since its contact law lets a separated contact close its gap within the step.
         """
-        return self._config.dynamics_solver != "lox" and self._config.dynamics.cull_speculative_contacts
+        return self._config.dynamics_solver != "lox" and self._config.dynamics.cull_unreachable_contacts
 
     ###
     # Configurations

@@ -66,7 +66,6 @@ class TestKaminoConstraintCompliance(NewtonTestCase):
         preconditioning=False,
         unilateral_solver="pgs",
         linear_solver=None,
-        speculative=False,
         internal=False,
         collect_solver_info=False,
         compute_solution_metrics=True,
@@ -83,7 +82,6 @@ class TestKaminoConstraintCompliance(NewtonTestCase):
             dynamics=ConstrainedDynamicsConfig(
                 preconditioning=preconditioning,
                 linear_solver_type=linear_solver or ("CR" if sparse else "LLTB"),
-                cull_speculative_contacts=not speculative,
             ),
             compute_solution_metrics=compute_solution_metrics,
             collect_solver_info=collect_solver_info,
@@ -97,7 +95,6 @@ class TestKaminoConstraintCompliance(NewtonTestCase):
         config.padmm.max_iterations = 300
         config.padmm.primal_tolerance = 1.0e-7
         config.padmm.dual_tolerance = 1.0e-7
-        config.padmm.compl_tolerance = 1.0e-7
         return SolverKamino(model, config=config)
 
     def _step(self, model, solver, *, dt=0.01, state_in=None, contacts=None):
@@ -298,7 +295,7 @@ class TestKaminoConstraintCompliance(NewtonTestCase):
         """Keep gap closing and hard-contact restitution independent of the positional speed cap."""
         constraints = ConstraintStabilizationConfig(contact_recovery_time=0.1, contact_recovery_speed=0.0, delta=0.0)
         model = self._sphere(gap=0.005, gravity=0.0, velocity=-0.2)
-        solver = self._solver(model, constraints, speculative=True)
+        solver = self._solver(model, constraints)
         state = self._step(model, solver)
         # The body can close the gap without an impulse; damping or capping the
         # positive gap would stop it prematurely.

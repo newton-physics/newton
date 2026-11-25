@@ -345,7 +345,7 @@ also keeps the bodies welded to the world at their pose.
 
 LOX keeps speculative contacts, whose shapes are still separated, and lets each
 close its gap within the step. It ignores
-``config.dynamics.cull_speculative_contacts``.
+``config.dynamics.cull_unreachable_contacts``.
 
 LOX bounds joint drift with ``config.lox.joint_max_correction``,
 ``config.lox.position_tolerance`` and ``config.lox.rotation_tolerance``, so it
@@ -478,8 +478,8 @@ Inspecting terminal status
 
 After each step, :attr:`~newton.solvers.SolverKamino.status` provides one
 device-resident terminal status record per world. PADMM and SCC both provide
-``converged``, ``iterations``, ``r_p``, ``r_d``, and ``r_c`` fields. Their
-residual definitions are backend-specific:
+``converged``, ``iterations``, ``r_p``, and ``r_d`` fields, and SCC also
+provides ``r_c``. Their residual definitions are backend-specific:
 
 * **PADMM:** Let ``x`` and ``y`` be the current preconditioned impulse iterates,
   ``x_prev`` and ``y_prev`` their previous values, ``P`` the diagonal dual
@@ -492,10 +492,11 @@ residual definitions are backend-specific:
   it is instead the ADMM dual
   residual ``r_d = ||P^-1 (eta (x - x_prev) + rho_i (y - y_prev))||_inf``, with
   ``rho_i`` the penalty of each row, which is zero on unpenalized bilateral
-  joint rows. ``r_c`` is the maximum absolute impulse-velocity
-  inner product over inequality blocks [J]. The ``P`` factors
-  convert the first two residuals from solver scaling to physical constraint
-  units.
+  joint rows. The ``P`` factors convert both residuals from solver scaling to
+  physical constraint units. The ``r_p`` entries of contact rows are scaled
+  down by the contact's dual variable, as described in
+  ``config.padmm.contact_primal_relative_tolerance``, so that PADMM converges
+  when ``r_p <= primal_tolerance`` and ``r_d <= dual_tolerance``.
 * **SCC:** With physical impulse ``lambda`` and augmented constraint velocity
   ``v``, ``r_p`` is the maximum infinity-norm projection distance of unilateral
   impulses from the nonnegative limit cone or Coulomb contact cone

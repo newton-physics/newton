@@ -321,7 +321,6 @@ def _fast_solver_config() -> SolverKaminoImpl.Config:
     config.constraints.alpha = 0.1
     config.padmm.primal_tolerance = 1e-3
     config.padmm.dual_tolerance = 1e-3
-    config.padmm.compl_tolerance = 1e-3
     config.padmm.max_iterations = 50
     config.padmm.rho_0 = 0.05
     config.padmm.use_acceleration = True

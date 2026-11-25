@@ -16,6 +16,7 @@ import warp as wp
 
 from ...core.types import override
 from ...sim import Model, ModelBuilder
+from ...utils.deprecation import warn_deprecation
 
 ###
 # Module interface
@@ -37,6 +38,21 @@ __all__ = [
 ###
 # Types
 ###
+
+
+def _warn_cull_speculative_contacts_deprecated() -> None:
+    warn_deprecation(
+        "ConstrainedDynamicsConfig.cull_speculative_contacts is deprecated in Newton 1.9 and has no effect; "
+        "use cull_unreachable_contacts, or set the contact gap of the shapes to zero to ignore all "
+        "speculative contacts."
+    )
+
+
+def _warn_compl_tolerance_deprecated() -> None:
+    warn_deprecation(
+        "PADMMSolverConfig.compl_tolerance is deprecated in Newton 1.9 and has no effect; "
+        "PADMM converges on its primal and dual residuals only."
+    )
 
 
 @dataclass
@@ -491,24 +507,32 @@ class ConstrainedDynamicsConfig(ConfigBase):
     Defaults to an empty dictionary.
     """
 
-    cull_speculative_contacts: bool = True
+    cull_unreachable_contacts: bool = True
     """
-    Whether to cull speculative contacts, i.e. external contacts separated by more than
-    :attr:`ConstraintStabilizationConfig.delta`, in the dynamics solve.
-    These contacts have occasionally led to numerical instabilities, and
-    can yield inaccurate restitutive impacts.
+    Whether to cull the speculative contacts, i.e. the external contacts separated by more than
+    :attr:`ConstraintStabilizationConfig.delta`, that cannot close their gap within the step.
 
-    The LOX backend keeps speculative contacts independently of this setting:
-    its contact law lets a separated contact close its gap within the step.
+    A contact is kept if its gap beyond :attr:`ConstraintStabilizationConfig.delta` is at most
+    ``dt * (2 * v_a + 1 m/s)``, where ``v_a`` is the normal approach velocity of its points at the start
+    of the step. The others would carry no impulse, but their large gap-closing velocity can prevent
+    PADMM from converging. To ignore all speculative contacts instead, set the contact gap of the shapes
+    to zero.
+
+    The LOX backend keeps all speculative contacts independently of this setting.
+    Defaults to `True`.
     """
 
-    cull_unreachable_speculative_contacts: bool = field(default=False, kw_only=True)
-    """
-    Whether to cull only the speculative contacts that cannot close their gap within the step, when
-    :attr:`cull_speculative_contacts` is `False`. A contact is kept if its gap beyond
-    :attr:`ConstraintStabilizationConfig.delta` is at most `dt * (2 * v_a + 1 m/s)`, where `v_a` is the
-    normal approach velocity of its points at the start of the step. Defaults to `False`.
-    """
+    @property
+    def cull_speculative_contacts(self) -> bool:
+        """
+        Deprecated, has no effect; see :attr:`cull_unreachable_contacts`.
+        """
+        _warn_cull_speculative_contacts_deprecated()
+        return False
+
+    @cull_speculative_contacts.setter
+    def cull_speculative_contacts(self, value: bool) -> None:
+        _warn_cull_speculative_contacts_deprecated()
 
     @override
     @staticmethod
@@ -611,16 +635,6 @@ class PADMMSolverConfig:
 
     Both are scaled by the inverse preconditioner. The setting of the first world applies to all worlds.
     The `"standard"` residual is always used with iterative linear solvers. Defaults to `"delassus"`.
-    """
-
-    compl_tolerance: float = 1e-6
-    """
-    The target tolerance on the complementarity residual `r_compl`.\n
-    Must be non-negative. Defaults to `1e-6`.
-
-    Set to `float("inf")` to ignore `r_compl` in the convergence test. The projection makes the slack and dual
-    variables exactly complementary, so `r_compl = (x - y) . z` vanishes with the primal residual, while its
-    rounding floor grows with the square of the dual variable, e.g. on separated speculative contacts.
     """
 
     restart_tolerance: float = 0.999
@@ -750,14 +764,19 @@ class PADMMSolverConfig:
     Defaults to `key_and_position`.
     """
 
-    contact_primal_relative_tolerance: float = field(default=0.0, kw_only=True)
+    contact_primal_relative_tolerance: float = field(default=3e-7, kw_only=True)
     """
     Relative primal tolerance of the contact constraints. The primal residual of each contact is tested
     against ``primal_tolerance + contact_primal_relative_tolerance * |z|``, where ``|z|`` is the largest
-    component of its dual variable, i.e. of its augmented velocity in preconditioned units.
+    component of its dual variable, i.e. of its augmented velocity in preconditioned units. To keep the
+    reported primal residual comparable to ``primal_tolerance``, the residual of each contact is scaled by
+    ``primal_tolerance / (primal_tolerance + contact_primal_relative_tolerance * |z|)``. The balanced
+    penalty update also uses this scaled residual.
 
-    The rounding of the dual variable bounds the primal residual from below, which matters for separated
-    speculative contacts at small time steps. Only applies to the accelerated solver. Defaults to `0.0`.
+    The float32 rounding of the dual variable bounds the primal residual from below by a few ulps of ``|z|``,
+    e.g. on speculative contacts at small time steps. The default of about ``2.5`` float32 epsilons should not
+    need to be changed. Ignored with a zero `primal_tolerance`. The setting of the first world applies to all
+    worlds. Must be non-negative. Defaults to `3e-7`.
     """
 
     detect_redundant_kinematics: bool = field(default=True, kw_only=True)
@@ -802,6 +821,21 @@ class PADMMSolverConfig:
     constraints, i.e. a system without redundant kinematic constraints, or `detect_redundant_kinematics`.
     Turned off with iterative linear solvers. Defaults to `True`.
     """
+
+    @property
+    def compl_tolerance(self) -> float:
+        """
+        Deprecated, has no effect.
+
+        The convergence test no longer checks the complementarity of the slack and dual variables, which the
+        projection makes exactly complementary, so that it only vanishes with the primal residual.
+        """
+        _warn_compl_tolerance_deprecated()
+        return float("inf")
+
+    @compl_tolerance.setter
+    def compl_tolerance(self, value: float) -> None:
+        _warn_compl_tolerance_deprecated()
 
     @override
     @staticmethod
@@ -856,13 +890,14 @@ class PADMMSolverConfig:
                 usd_attribute_name="newton:kamino:padmm:dualTolerance",
             )
         )
+        # Deprecated: a negative value marks the attribute as not authored
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="padmm_complementarity_tolerance",
                 frequency=Model.AttributeFrequency.ONCE,
                 assignment=Model.AttributeAssignment.MODEL,
                 dtype=wp.float32,
-                default=1e-6,
+                default=-1.0,
                 namespace="kamino",
                 usd_attribute_name="newton:kamino:padmm:complementarityTolerance",
             )
@@ -915,7 +950,11 @@ class PADMMSolverConfig:
             if hasattr(kamino_attrs, "padmm_dual_tolerance"):
                 cfg.dual_tolerance = float(kamino_attrs.padmm_dual_tolerance.numpy()[0])
             if hasattr(kamino_attrs, "padmm_complementarity_tolerance"):
-                cfg.compl_tolerance = float(kamino_attrs.padmm_complementarity_tolerance.numpy()[0])
+                if kamino_attrs.padmm_complementarity_tolerance.numpy()[0] >= 0.0:
+                    warn_deprecation(
+                        "The newton:kamino:padmm:complementarityTolerance attribute is deprecated in Newton 1.9 "
+                        "and ignored; PADMM converges on its primal and dual residuals only."
+                    )
             if hasattr(kamino_attrs, "padmm_warmstarting"):
                 cfg.warmstart_mode = kamino_attrs.padmm_warmstarting[0]
             if hasattr(kamino_attrs, "padmm_use_acceleration"):
@@ -940,8 +979,6 @@ class PADMMSolverConfig:
             raise ValueError(f"Invalid primal tolerance: {self.primal_tolerance}. Must be non-negative.")
         if self.dual_tolerance < 0.0:
             raise ValueError(f"Invalid dual tolerance: {self.dual_tolerance}. Must be non-negative.")
-        if self.compl_tolerance < 0.0:
-            raise ValueError(f"Invalid complementarity tolerance: {self.compl_tolerance}. Must be non-negative.")
         if self.contact_primal_relative_tolerance < 0.0:
             raise ValueError(
                 f"Invalid contact primal relative tolerance: {self.contact_primal_relative_tolerance}. "
@@ -1323,7 +1360,7 @@ class LOXSolverConfig:
     Unlike the PADMM and SCC backends, LOX advances kinematic bodies, and massless bodies
     whose only joints are free joints to the world, with their velocity in ``state_in.body_qd``.
     Bodies welded to a kinematic body move rigidly with it. LOX keeps speculative contacts
-    regardless of :attr:`ConstrainedDynamicsConfig.cull_speculative_contacts`.
+    regardless of :attr:`ConstrainedDynamicsConfig.cull_unreachable_contacts`.
     It solves its own primal problem, so ``sparse_dynamics`` and the linear solver and
     preconditioning settings of :class:`ConstrainedDynamicsConfig` only affect the dual
     problem of the optional solution metrics, and it always warm-starts from its containers.

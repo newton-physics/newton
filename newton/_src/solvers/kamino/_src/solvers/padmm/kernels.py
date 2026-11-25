@@ -25,7 +25,6 @@ from ..common import (
     warmstart_limit_constraints as _warmstart_limit_constraints,
 )
 from .math import (
-    compute_box_complementarity_residual,
     compute_cwise_vec_div,
     compute_cwise_vec_mul,
     compute_desaxce_corrections,
@@ -51,7 +50,6 @@ from .types import PADMMConfigStruct, PADMMPenalty, PADMMPenaltyUpdate, PADMMSta
 __all__ = [
     "_apply_dual_preconditioner_to_solution",
     "_apply_dual_preconditioner_to_state",
-    "_compute_complementarity_residuals",
     "_compute_desaxce_correction",
     "_compute_final_desaxce_correction",
     "_compute_projection_argument",
@@ -275,7 +273,6 @@ def make_initialize_solver_kernel(use_acceleration: bool = False):
         status.converged = wp.int32(0)
         status.r_p = wp.float32(0.0)
         status.r_d = wp.float32(0.0)
-        status.r_c = wp.float32(0.0)
         # NOTE: We initialize acceleration-related
         # entries only if acceleration is enabled
         if wp.static(use_acceleration):
@@ -859,7 +856,9 @@ def _compute_delassus_dual_residual(
 
 
 def make_update_dual_variables_and_compute_primal_dual_residuals(
-    use_acceleration: bool = False, delassus_dual_residual: bool = False
+    use_acceleration: bool = False,
+    delassus_dual_residual: bool = False,
+    contact_primal_relative_tolerance: float = 0.0,
 ):
     """
     Creates a kernel to update the dual variables and compute the primal and dual residuals.
@@ -870,6 +869,8 @@ def make_update_dual_variables_and_compute_primal_dual_residuals(
         use_acceleration: Flag indicating whether acceleration is enabled. Defaults to False.
         delassus_dual_residual: Flag indicating whether the dual residual is weighted by
             the Delassus matrix instead of the proximal parameters. Defaults to False.
+        contact_primal_relative_tolerance: Relative primal tolerance of the contacts, see
+            :func:`_make_project_dual_convergence_accel_kernel`. Defaults to 0.0.
 
     Returns:
         The kernel function to update dual variables and compute residuals.
@@ -880,6 +881,8 @@ def make_update_dual_variables_and_compute_primal_dual_residuals(
         # Inputs:
         problem_dim: wp.array[wp.int32],
         problem_vio: wp.array[wp.int32],
+        problem_nc: wp.array[wp.int32],
+        problem_ccgo: wp.array[wp.int32],
         problem_P: wp.array[wp.float32],
         solver_config: wp.array[PADMMConfigStruct],
         solver_penalty: wp.array[PADMMPenalty],
@@ -944,7 +947,23 @@ def make_update_dual_variables_and_compute_primal_dual_residuals(
         solver_z[thread_offset] = z
 
         # Compute the primal residual as the consensus of the primal and slack variable
-        solver_r_prim[thread_offset] = P_i * (x - y)
+        r_p = P_i * (x - y)
+
+        # Relax the primal tolerance of contact rows by the dual variable of their contact
+        if wp.static(contact_primal_relative_tolerance > 0.0):
+            tol_p = solver_config[wid].primal_tolerance
+            ccgo = problem_ccgo[wid]
+            if tol_p > 0.0 and tid >= ccgo and tid < ccgo + 3 * problem_nc[wid]:
+                ccio_j = vio + ccgo + 3 * ((tid - ccgo) // 3)
+                z_max = wp.float32(0.0)
+                for comp in range(3):
+                    idx = ccio_j + comp
+                    z_k = _compute_dual_variable_row(
+                        solver_x[idx], solver_y[idx], solver_z_p[idx], rho_w * solver_rho_scale[idx]
+                    )
+                    z_max = wp.max(z_max, wp.abs(z_k))
+                r_p *= tol_p / (tol_p + wp.static(contact_primal_relative_tolerance) * z_max)
+        solver_r_prim[thread_offset] = r_p
 
         # Compute the dual residual using the ADMM-specific shortcut
         r_d = (1.0 / P_i) * (eta * (x - x_p) + rho * (y - y_p))
@@ -1079,7 +1098,6 @@ def _make_project_dual_convergence_accel_kernel(
 
         r_p_local = wp.float32(0.0)
         r_d_local = wp.float32(0.0)
-        r_c_local = wp.float32(0.0)
         r_dx_local = wp.float32(0.0)
         r_dy_local = wp.float32(0.0)
         r_dz_local = wp.float32(0.0)
@@ -1102,11 +1120,6 @@ def _make_project_dual_convergence_accel_kernel(
                         y1 = solver_state_x[ccio_j + 1] - inv_rho * solver_state_z_hat_in[ccio_j + 1]
                         y2 = solver_state_x[ccio_j + 2] - inv_rho * solver_state_z_hat_in[ccio_j + 2]
                         y_proj = project_to_coulomb_cone(wp.vec3f(y0, y1, y2), problem_mu[cio + cid])
-                        x_c = wp.vec3f(
-                            solver_state_x[ccio_j],
-                            solver_state_x[ccio_j + 1],
-                            solver_state_x[ccio_j + 2],
-                        )
                         z_c = wp.vec3f(0.0, 0.0, 0.0)
                         r_p_c = wp.float32(0.0)
 
@@ -1143,11 +1156,11 @@ def _make_project_dual_convergence_accel_kernel(
                         # Relax the primal tolerance by the contact velocity, whose rounding bounds it from below,
                         # i.e. test `r_p_c <= tol + rel * |z_c|` against the absolute tolerance `tol`
                         if wp.static(contact_primal_relative_tolerance > 0.0):
-                            z_max = wp.max(wp.abs(z_c[0]), wp.max(wp.abs(z_c[1]), wp.abs(z_c[2])))
                             tol_p = config.primal_tolerance
-                            r_p_c *= tol_p / (tol_p + wp.static(contact_primal_relative_tolerance) * z_max)
+                            if tol_p > 0.0:
+                                z_max = wp.max(wp.abs(z_c[0]), wp.max(wp.abs(z_c[1]), wp.abs(z_c[2])))
+                                r_p_c *= tol_p / (tol_p + wp.static(contact_primal_relative_tolerance) * z_max)
                         r_p_local = wp.max(r_p_local, r_p_c)
-                        r_c_local = wp.max(r_c_local, wp.abs(wp.dot(x_c, z_c)))
                 else:
                     rho_i = rho * solver_state_rho_scale[thread_offset]
                     x = solver_state_x[thread_offset]
@@ -1203,21 +1216,9 @@ def _make_project_dual_convergence_accel_kernel(
                     r_dy_local += r_dy * r_dy
                     r_dz_local += r_dz * r_dz
 
-                    if is_bounded:
-                        r_box = compute_box_complementarity_residual(
-                            x,
-                            z,
-                            problem_bound_lower[bio],
-                            problem_bound_upper[bio],
-                        )
-                        r_c_local = wp.max(r_c_local, wp.abs(r_box))
-                    elif nl > 0 and local_id >= lcgo and local_id < lcgo + nl:
-                        r_c_local = wp.max(r_c_local, wp.abs(x * z))
-
         # Reduce per-thread residual contributions to world-level metrics.
         r_p_tile = wp.tile_zeros(shape=reduction_size, dtype=wp.float32, storage="shared")
         r_d_tile = wp.tile_zeros(shape=reduction_size, dtype=wp.float32, storage="shared")
-        r_c_tile = wp.tile_zeros(shape=reduction_size, dtype=wp.float32, storage="shared")
         r_dx_tile = wp.tile_zeros(shape=reduction_size, dtype=wp.float32, storage="shared")
         r_dy_tile = wp.tile_zeros(shape=reduction_size, dtype=wp.float32, storage="shared")
         r_dz_tile = wp.tile_zeros(shape=reduction_size, dtype=wp.float32, storage="shared")
@@ -1225,14 +1226,12 @@ def _make_project_dual_convergence_accel_kernel(
         active_thread = tid < num_threads_per_block
         wp.tile_scatter_masked(r_p_tile, tid, r_p_local, active_thread)
         wp.tile_scatter_masked(r_d_tile, tid, r_d_local, active_thread)
-        wp.tile_scatter_masked(r_c_tile, tid, r_c_local, active_thread)
         wp.tile_scatter_masked(r_dx_tile, tid, r_dx_local, active_thread)
         wp.tile_scatter_masked(r_dy_tile, tid, r_dy_local, active_thread)
         wp.tile_scatter_masked(r_dz_tile, tid, r_dz_local, active_thread)
 
         r_p_max = wp.tile_max(r_p_tile)[0]
         r_d_max = wp.tile_max(r_d_tile)[0]
-        r_c_max = wp.tile_max(r_c_tile)[0]
         r_dx_l2_sum = wp.tile_sum(r_dx_tile)[0]
         r_dy_l2_sum = wp.tile_sum(r_dy_tile)[0]
         r_dz_l2_sum = wp.tile_sum(r_dz_tile)[0]
@@ -1242,7 +1241,6 @@ def _make_project_dual_convergence_accel_kernel(
             status.iterations += 1
             status.r_p = r_p_max
             status.r_d = r_d_max
-            status.r_c = r_c_max
 
             # Inexact-ADMM: schedule the inner linear-solver tolerance from the primal residual
             # (looser early, tighter as PADMM converges). A 0 ratio keeps the fixed inner tolerance.
@@ -1254,12 +1252,7 @@ def _make_project_dual_convergence_accel_kernel(
             status.r_dz = wp.sqrt(r_dz_l2_sum)
             status.r_a = rho * r_dy_l2_sum + (1.0 / rho) * r_dz_l2_sum
 
-            if (
-                status.iterations > 1
-                and r_p_max <= config.primal_tolerance
-                and r_d_max <= config.dual_tolerance
-                and r_c_max <= config.compl_tolerance
-            ):
+            if status.iterations > 1 and r_p_max <= config.primal_tolerance and r_d_max <= config.dual_tolerance:
                 status.converged = 1
 
             if status.converged or status.iterations >= config.max_iterations:
@@ -1337,89 +1330,6 @@ def _make_project_dual_convergence_accel_kernel(
     return _project_dual_convergence_accel
 
 
-@wp.kernel
-def _compute_complementarity_residuals(
-    # Inputs:
-    problem_nbc: wp.array[wp.int32],
-    problem_nl: wp.array[wp.int32],
-    problem_nc: wp.array[wp.int32],
-    problem_vio: wp.array[wp.int32],
-    problem_bcio: wp.array[wp.int32],
-    problem_iio: wp.array[wp.int32],
-    problem_bcgo: wp.array[wp.int32],
-    problem_lcgo: wp.array[wp.int32],
-    problem_ccgo: wp.array[wp.int32],
-    solver_status: wp.array[PADMMStatus],
-    solver_x: wp.array[wp.float32],
-    solver_z: wp.array[wp.float32],
-    problem_bound_lower: wp.array[wp.float32],
-    problem_bound_upper: wp.array[wp.float32],
-    # Outputs:
-    solver_r_c: wp.array[wp.float32],
-):
-    # Retrieve the thread index as the inequality entity index
-    wid, iid = wp.tid()
-
-    # Retrieve the solver status
-    status = solver_status[wid]
-
-    # Retrieve the number of active inequality entities in the world
-    nbc = problem_nbc[wid]
-    nl = problem_nl[wid]
-    nc = problem_nc[wid]
-
-    # Skip if row index exceed the problem size or if the solver has already converged
-    if iid >= (nbc + nl + nc) or status.converged > 0:
-        return
-
-    # Retrieve the index offsets of the inequality elements
-    iio = problem_iio[wid]
-
-    # Retrieve the index offset of the vector block of the world
-    vio = problem_vio[wid]
-
-    # Compute the index offset of the vector block of the world
-    iio_i = iio + iid
-
-    # Check if the thread should handle a bounded-multiplier constraint.
-    if nbc > 0 and iid < nbc:
-        # Retrieve the bound constraint group offset of the world
-        bcgo = problem_bcgo[wid]
-        # Compute the constraint index offset of the bound element
-        bcio_j = vio + bcgo + iid
-        # Compute the bound index offset
-        bio = problem_bcio[wid] + iid
-        # Compute directional complementarity with the lower and upper box faces
-        solver_r_c[iio_i] = compute_box_complementarity_residual(
-            solver_x[bcio_j],
-            solver_z[bcio_j],
-            problem_bound_lower[bio],
-            problem_bound_upper[bio],
-        )
-    # Check if the thread should handle a limit
-    elif nl > 0 and iid < nbc + nl:
-        # Retrieve the limit constraint group offset of the world
-        lcgo = problem_lcgo[wid]
-        # Compute the constraint index offset of the limit element
-        lcio_j = vio + lcgo + iid - nbc
-        # Compute the scalar product of the primal and dual variables
-        solver_r_c[iio_i] = solver_x[lcio_j] * solver_z[lcio_j]
-
-    # Check if the thread should handle a contact
-    elif nc > 0 and iid >= nbc + nl:
-        # Retrieve the limit constraint group offset of the world
-        ccgo = problem_ccgo[wid]
-        # Compute the index of the contact element in the inequalities array
-        cid = iid - nbc - nl
-        # Compute the index offset of the contact constraint
-        ccio_j = vio + ccgo + 3 * cid
-        # Capture 3D vectors
-        x_c = wp.vec3f(solver_x[ccio_j], solver_x[ccio_j + 1], solver_x[ccio_j + 2])
-        z_c = wp.vec3f(solver_z[ccio_j], solver_z[ccio_j + 1], solver_z[ccio_j + 2])
-        # Compute the inner product of the primal and dual variables
-        solver_r_c[iio_i] = wp.dot(x_c, z_c)
-
-
 @wp.func
 def _update_penalty(
     config: PADMMConfigStruct, pen: PADMMPenalty, iterations: wp.int32, r_p: wp.float32, r_d: wp.float32
@@ -1455,23 +1365,17 @@ def mul_mask(mask: Any, value: Any):
 
 
 @functools.cache
-def _make_compute_infnorm_residuals_kernel(tile_size: int, n_cts_max: int, n_compl_max: int):
+def _make_compute_infnorm_residuals_kernel(tile_size: int, n_cts_max: int):
     num_tiles_cts = (n_cts_max + tile_size - 1) // tile_size
-    num_tiles_i = (n_compl_max + tile_size - 1) // tile_size
 
     @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def _compute_infnorm_residuals(
         # Inputs:
-        problem_nbc: wp.array[wp.int32],
-        problem_nl: wp.array[wp.int32],
-        problem_nc: wp.array[wp.int32],
-        problem_iio: wp.array[wp.int32],
         problem_dim: wp.array[wp.int32],
         problem_vio: wp.array[wp.int32],
         solver_config: wp.array[PADMMConfigStruct],
         solver_r_p: wp.array[wp.float32],
         solver_r_d: wp.array[wp.float32],
-        solver_r_c: wp.array[wp.float32],
         # Outputs:
         solver_state_done: wp.array[wp.int32],
         solver_status: wp.array[PADMMStatus],
@@ -1492,22 +1396,17 @@ def _make_compute_infnorm_residuals_kernel(tile_size: int, n_cts_max: int, n_com
         status.iterations += 1
 
         # Capture the size of the residuals arrays
-        nbc = problem_nbc[wid]
-        nl = problem_nl[wid]
-        nc = problem_nc[wid]
         ncts = problem_dim[wid]
 
         # Retrieve the solver configurations
         config = solver_config[wid]
 
-        # Retrieve the index offsets of the vector block and inequality elements
+        # Retrieve the index offset of the vector block
         vio = problem_vio[wid]
-        iio = problem_iio[wid]
 
         # Extract the solver tolerances
         eps_p = config.primal_tolerance
         eps_d = config.dual_tolerance
-        eps_c = config.compl_tolerance
 
         # Extract the maximum number of iterations
         maxiters = config.max_iterations
@@ -1550,38 +1449,10 @@ def _make_compute_infnorm_residuals_kernel(tile_size: int, n_cts_max: int, n_com
             r_p_max = wp.tile_max(r_p_max_acc)[0]
             r_d_max = wp.tile_max(r_d_max_acc)[0]
 
-        # Compute the infinity-norm of the complementarity residuals.
-        ni = nbc + nl + nc
-        r_c_max = wp.float32(0.0)
-        if wp.static(num_tiles_i > 1):
-            r_c_max_acc = wp.tile_zeros(num_tiles_i, dtype=wp.float32, storage="shared")
-        for tile_id in range(num_tiles_i):
-            i_id_tile = tile_id * tile_size
-            if i_id_tile >= ni:
-                break
-            iio_tile = iio + i_id_tile
-
-            # Mask out extra entries in case of heterogenous worlds
-            need_mask = i_id_tile > ni - tile_size
-            if need_mask:
-                mask = wp.tile_map(less_than_op, wp.tile_arange(tile_size, dtype=wp.int32), ni - i_id_tile)
-
-            tile = wp.tile_load(solver_r_c, shape=tile_size, offset=iio_tile)
-            tile = wp.tile_map(wp.abs, tile)
-            if need_mask:
-                tile = wp.tile_map(mul_mask, mask, tile)
-            if wp.static(num_tiles_i > 1):
-                r_c_max_acc[tile_id] = wp.tile_max(tile)[0]
-            else:
-                r_c_max = wp.tile_max(tile)[0]
-        if wp.static(num_tiles_i > 1):
-            r_c_max = wp.tile_max(r_c_max_acc)[0]
-
         if tid == 0:
             # Store the scalar metric residuals in the solver status
             status.r_p = r_p_max
             status.r_d = r_d_max
-            status.r_c = r_c_max
 
             # Inexact-ADMM: schedule the inner linear-solver tolerance from the primal residual
             # (looser early, tighter as PADMM converges). A 0 ratio keeps the fixed inner tolerance.
@@ -1589,7 +1460,7 @@ def _make_compute_infnorm_residuals_kernel(tile_size: int, n_cts_max: int, n_com
                 linear_solver_atol[wid] = wp.max(config.linear_solver_tolerance_ratio * r_p_max, FLOAT32_EPS)
 
             # Check and store convergence state
-            if status.iterations > 1 and r_p_max <= eps_p and r_d_max <= eps_d and r_c_max <= eps_c:
+            if status.iterations > 1 and r_p_max <= eps_p and r_d_max <= eps_d:
                 status.converged = 1
 
             # If converged or reached max iterations, decrement the number of active worlds
@@ -1673,7 +1544,6 @@ def make_collect_solver_info_kernel(use_acceleration: bool):
         solver_info_r_dz: wp.array[wp.float32],
         solver_info_r_primal: wp.array[wp.float32],
         solver_info_r_dual: wp.array[wp.float32],
-        solver_info_r_compl: wp.array[wp.float32],
         solver_info_r_pd: wp.array[wp.float32],
         solver_info_r_dp: wp.array[wp.float32],
         solver_info_r_comb: wp.array[wp.float32],
@@ -1831,7 +1701,6 @@ def make_collect_solver_info_kernel(use_acceleration: bool):
         solver_info_r_dz[iio] = r_dz
         solver_info_r_primal[iio] = status.r_p
         solver_info_r_dual[iio] = status.r_d
-        solver_info_r_compl[iio] = status.r_c
         solver_info_r_pd[iio] = r_pd
         solver_info_r_dp[iio] = r_dp
         solver_info_r_ncp_primal[iio] = r_ncp_p
@@ -1914,7 +1783,6 @@ def make_collect_solver_info_kernel_sparse(use_acceleration: bool):
         solver_info_r_dz: wp.array[wp.float32],
         solver_info_r_primal: wp.array[wp.float32],
         solver_info_r_dual: wp.array[wp.float32],
-        solver_info_r_compl: wp.array[wp.float32],
         solver_info_r_pd: wp.array[wp.float32],
         solver_info_r_dp: wp.array[wp.float32],
         solver_info_r_comb: wp.array[wp.float32],
@@ -2062,7 +1930,6 @@ def make_collect_solver_info_kernel_sparse(use_acceleration: bool):
         solver_info_r_dz[iio] = r_dz
         solver_info_r_primal[iio] = status.r_p
         solver_info_r_dual[iio] = status.r_d
-        solver_info_r_compl[iio] = status.r_c
         solver_info_r_pd[iio] = r_pd
         solver_info_r_dp[iio] = r_dp
         solver_info_r_ncp_primal[iio] = r_ncp_p
@@ -2222,9 +2089,6 @@ def _write_padmm_world_residual(
     config = solver_config[wid]
     status = solver_status[wid]
     world_residual[wid] = wp.max(
-        wp.max(
-            tolerance_scaled_residual(status.r_p, config.primal_tolerance),
-            tolerance_scaled_residual(status.r_d, config.dual_tolerance),
-        ),
-        tolerance_scaled_residual(status.r_c, config.compl_tolerance),
+        tolerance_scaled_residual(status.r_p, config.primal_tolerance),
+        tolerance_scaled_residual(status.r_d, config.dual_tolerance),
     )

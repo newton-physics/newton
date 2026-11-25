@@ -138,7 +138,6 @@ class Example:
         self.config.constraints.alpha = 0.1
         self.config.padmm.primal_tolerance = 1e-4
         self.config.padmm.dual_tolerance = 1e-4
-        self.config.padmm.compl_tolerance = 1e-4
         self.config.padmm.max_iterations = 100
         self.config.padmm.eta = 1e-5
         self.config.padmm.rho_0 = 0.02

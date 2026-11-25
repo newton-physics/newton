@@ -73,7 +73,6 @@ class Example:
         self.config.padmm.max_iterations = 200
         self.config.padmm.primal_tolerance = 1e-6
         self.config.padmm.dual_tolerance = 1e-6
-        self.config.padmm.compl_tolerance = 1e-6
         self.config.padmm.rho_0 = 0.01
         configure_ldl(self.config, args)
         self.solver = newton.solvers.SolverKamino(self.model, config=self.config)

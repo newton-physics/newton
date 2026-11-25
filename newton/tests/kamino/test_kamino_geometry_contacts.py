@@ -1597,7 +1597,7 @@ class TestGeometryContactConversions(NewtonTestCase):
         self.assertTrue(np.all(bid_AB[:, 1] >= 0))
 
     def test_10_speculative_contacts_culled(self):
-        """Speculative box-plane contacts are dropped by default.
+        """Speculative box-plane contacts of a box at rest are dropped by the unreachable cull.
 
         Both configurations use a non-zero gap so that the collision detector
         reports contacts while the box still hovers above the rest offset.
@@ -1618,21 +1618,23 @@ class TestGeometryContactConversions(NewtonTestCase):
                 nc = int(contacts.rigid_contact_count.numpy()[0])
                 self.assertGreater(nc, 0, "Detector must report the hovering box as a (speculative) contact")
 
-                # Sanity: with culling disabled every converted contact is speculative.
+                # Sanity: without culling every converted contact is speculative.
                 kamino_off = ContactsKamino(capacity=contacts.rigid_contact_max, device=self.default_device)
-                convert_contacts_newton_to_kamino(model, state, contacts, kamino_off, cull_speculative_contacts=False)
+                convert_contacts_newton_to_kamino(model, state, contacts, kamino_off)
                 n_off = int(kamino_off.model_active_contacts.numpy()[0])
                 self.assertEqual(n_off, nc, "Disabling culling must keep every detected contact")
                 w = kamino_off.gapfunc.numpy()[:n_off, 3]
                 self.assertTrue(np.all(w > 0.0), f"Expected speculative contacts (w > 0), got {w}")
 
-                # Default conversion culls all of them.
+                # The box cannot close its gap within the step, so all contacts are culled.
                 kamino_on = ContactsKamino(capacity=contacts.rigid_contact_max, device=self.default_device)
-                convert_contacts_newton_to_kamino(model, state, contacts, kamino_on)
+                convert_contacts_newton_to_kamino(
+                    model, state, contacts, kamino_on, cull_unreachable_contacts=True, dt=1.0e-3
+                )
                 self.assertEqual(
                     int(kamino_on.model_active_contacts.numpy()[0]),
                     0,
-                    "Speculative contacts must be culled by default",
+                    "Unreachable speculative contacts must be culled",
                 )
 
     def test_11_genuine_contacts_kept(self):
@@ -1662,7 +1664,9 @@ class TestGeometryContactConversions(NewtonTestCase):
                 self.assertGreater(nc, 0, "Detector must report the penetrating box as a contact")
 
                 kamino = ContactsKamino(capacity=contacts.rigid_contact_max, device=self.default_device)
-                convert_contacts_newton_to_kamino(model, state, contacts, kamino)
+                convert_contacts_newton_to_kamino(
+                    model, state, contacts, kamino, cull_unreachable_contacts=True, dt=1.0e-3
+                )
                 n_kamino = int(kamino.model_active_contacts.numpy()[0])
                 self.assertEqual(n_kamino, nc, "Genuine contacts must not be culled")
                 w = kamino.gapfunc.numpy()[:n_kamino, 3]
@@ -1699,7 +1703,16 @@ class TestGeometryContactConversions(NewtonTestCase):
             device=self.default_device,
             remappable=True,
         )
-        convert_contacts_newton_to_kamino(model, state, contacts, kamino, convert_forces=True, contact_f=contact_f)
+        convert_contacts_newton_to_kamino(
+            model,
+            state,
+            contacts,
+            kamino,
+            convert_forces=True,
+            contact_f=contact_f,
+            cull_unreachable_contacts=True,
+            dt=1.0e-3,
+        )
         self.assertEqual(int(kamino.model_active_contacts.numpy()[0]), 0, "All contacts should be culled")
 
         # K->N existing path must not leave stale force on the culled contacts.
@@ -1740,12 +1753,52 @@ class TestGeometryContactConversions(NewtonTestCase):
                     state,
                     contacts,
                     kamino,
-                    cull_speculative_contacts=False,
-                    cull_unreachable_speculative_contacts=True,
+                    cull_unreachable_contacts=True,
                     dt=dt,
                 )
                 n_kamino = int(kamino.model_active_contacts.numpy()[0])
                 self.assertEqual(n_kamino, nc if reachable else 0)
+
+    def test_13b_unreachable_contact_cull_preserves_impacts(self):
+        """Culling unreachable contacts keeps the trajectory of a fast impact unchanged and free of penetration."""
+        radius, speed, dt, num_steps = 0.1, 4.0, 0.01, 12
+
+        def drop_sphere(gap: float, cull_unreachable_contacts: bool) -> tuple[np.ndarray, np.ndarray]:
+            # Drop a sphere at a speed covering a third of its radius per step
+            builder = newton.ModelBuilder()
+            shape_cfg = newton.ModelBuilder.ShapeConfig(margin=0.0, gap=gap, mu=0.5, restitution=0.0)
+            body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, radius + 0.15), wp.quat_identity()))
+            builder.body_qd[body] = wp.spatial_vector(0.0, 0.0, -speed, 0.0, 0.0, 0.0)
+            builder.add_shape_sphere(body, radius=radius, cfg=shape_cfg)
+            builder.add_ground_plane(cfg=shape_cfg)
+            model = builder.finalize(device=self.default_device)
+
+            # Simulate the impact and record the height and vertical velocity of the sphere
+            config = newton.solvers.SolverKamino.Config(dynamics_solver="padmm")
+            config.dynamics.cull_unreachable_contacts = cull_unreachable_contacts
+            solver = newton.solvers.SolverKamino(model, config=config)
+            pipeline = newton.CollisionPipeline(model, rigid_contact_max=_NEWTON_CONTACT_CAPACITY)
+            contacts = pipeline.contacts()
+            state_0, state_1 = model.state(), model.state()
+            heights, velocities = [], []
+            for _ in range(num_steps):
+                pipeline.collide(state_0, contacts)
+                solver.step(state_0, state_1, model.control(), contacts, dt)
+                state_0, state_1 = state_1, state_0
+                heights.append(float(state_0.body_q.numpy()[0, 2]))
+                velocities.append(float(state_0.body_qd.numpy()[0, 2]))
+            return np.array(heights), np.array(velocities)
+
+        # Detect contacts far beyond the per-step travel, so that unreachable ones exist before the impact
+        heights_keep, velocities_keep = drop_sphere(gap=0.5, cull_unreachable_contacts=False)
+        heights_cull, velocities_cull = drop_sphere(gap=0.5, cull_unreachable_contacts=True)
+        self.assertGreater(np.min(heights_keep), radius - 1.0e-3, "Speculative contacts must prevent penetration")
+        np.testing.assert_allclose(heights_cull, heights_keep, atol=1.0e-5)
+        np.testing.assert_allclose(velocities_cull, velocities_keep, atol=1.0e-4)
+
+        # Without speculative contacts, the sphere penetrates the ground on impact
+        heights_touch, _ = drop_sphere(gap=0.0, cull_unreachable_contacts=True)
+        self.assertLess(np.min(heights_touch), radius - 1.0e-2)
 
     def test_14_angular_friction_transport(self):
         """Transport angular friction through the unified and external paths, ignoring it in the primitive path."""

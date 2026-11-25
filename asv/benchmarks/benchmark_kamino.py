@@ -520,7 +520,6 @@ class DRLegsBenchmarkWorkload:
         config.constraints.alpha = 0.1
         config.padmm.primal_tolerance = 1e-4
         config.padmm.dual_tolerance = 1e-4
-        config.padmm.compl_tolerance = 1e-4
         config.padmm.max_iterations = 200
         config.padmm.eta = 1e-5
         config.padmm.rho_0 = 0.05

@@ -167,7 +167,6 @@ def _make_solver(backend: str, model: newton.Model, *, limit_compliance: bool = 
         config.padmm.max_iterations = 200
         config.padmm.primal_tolerance = 1.0e-6
         config.padmm.dual_tolerance = 1.0e-6
-        config.padmm.compl_tolerance = 1.0e-6
         return SolverKamino(model, config)
     if backend == "mjwarp":
         return SolverMuJoCo(

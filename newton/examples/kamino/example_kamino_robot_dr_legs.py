@@ -142,7 +142,6 @@ class Example:
         self.config.padmm.max_iterations = 200
         self.config.padmm.primal_tolerance = 1e-4
         self.config.padmm.dual_tolerance = 1e-4
-        self.config.padmm.compl_tolerance = 1e-4
         self.config.padmm.use_graph_conditionals = getattr(args, "use_graph_conditionals", None) is not False
         if self.dynamics_solver == "scc":
             self.config.use_fk_solver = False

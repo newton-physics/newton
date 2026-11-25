@@ -166,6 +166,9 @@ class SimulatorFromNewton:
             self._newton_state,
             self._newton_contacts,
             self._contacts,
+            contact_dead_zone=self._config.solver.constraints.delta,
+            cull_unreachable_contacts=self._solver.cull_unreachable_contacts,
+            dt=self._config.dt if isinstance(self._config.dt, float) else 0.0,
         )
 
     def step(self):
@@ -1136,7 +1139,6 @@ class RigidBodySim:
         settings.solver.constraints.alpha = 0.1
         settings.solver.padmm.primal_tolerance = 1e-4
         settings.solver.padmm.dual_tolerance = 1e-4
-        settings.solver.padmm.compl_tolerance = 1e-4
         settings.solver.padmm.max_iterations = 200
         settings.solver.padmm.eta = 1e-5
         settings.solver.padmm.rho_0 = 0.05

@@ -215,7 +215,7 @@ host synchronization, including during graph replay. Other steps and
 each world relative to its stopping tolerance, so the value is dimensionless
 and at most one when the world satisfies every tolerance:
 
-- PADMM: ``max(r_p / primal_tolerance, r_d / dual_tolerance, r_c / compl_tolerance)``.
+- PADMM: ``max(r_p / primal_tolerance, r_d / dual_tolerance)``.
   PADMM additionally requires more than one iteration before it reports
   ``converged``.
 - SCC: ``max(r_p, r_d, r_c) / tolerance``, where ``r_d`` includes the bilateral
@@ -230,8 +230,8 @@ residual infinity. Non-finite residuals in
 :attr:`~newton.solvers.SolverKamino.status` report infinity. Kamino does not simulate global
 dynamic entities, so the global entry stays zero.
 
-The residual components ``r_p``, ``r_d``, and ``r_c`` and the iteration counts
-remain available through :attr:`~newton.solvers.SolverKamino.status`.
+The residual components (``r_p`` and ``r_d``, and ``r_c`` for SCC and LOX) and
+the iteration counts remain available through :attr:`~newton.solvers.SolverKamino.status`.
 
 For :class:`~newton.solvers.SolverVBD`, each particle or rigid body is one block
 of the implicit Euler equations. A block's residual is

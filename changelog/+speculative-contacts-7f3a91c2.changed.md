@@ -1,0 +1,1 @@
+Keep the speculative contacts that can close their gap within the step in the PADMM and SCC backends of `SolverKamino`, instead of culling all speculative contacts, so that fast impacts no longer penetrate. Set the contact gap of the shapes to `0` to keep only touching contacts, or `ConstrainedDynamicsConfig.cull_unreachable_contacts` to `False` to keep all detected contacts.

@@ -34,7 +34,6 @@ def make_single_iteration_config(
             max_iterations=1,
             primal_tolerance=0.0,
             dual_tolerance=0.0,
-            compl_tolerance=0.0,
             use_acceleration=use_acceleration,
             warmstart_mode=warmstart_mode,
         )
