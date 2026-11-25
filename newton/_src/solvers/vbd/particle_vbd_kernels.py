@@ -382,16 +382,6 @@ def _evaluate_membrane_from_vertices(
     f0 = x01 * DmInv00 + x02 * DmInv10
     f1 = x01 * DmInv01 + x02 * DmInv11
 
-    f0_prev = wp.vec3(0.0)
-    f1_prev = wp.vec3(0.0)
-    if damping > 0.0:
-        x0_prev = pos_anchor[v0]
-        x01_prev = pos_anchor[v1] - x0_prev
-        x02_prev = pos_anchor[v2] - x0_prev
-
-        f0_prev = x01_prev * DmInv00 + x02_prev * DmInv10
-        f1_prev = x01_prev * DmInv01 + x02_prev * DmInv11
-
     # The Gram determinant subtracts nearly equal large values for stretched,
     # almost collinear columns. Use the equivalent cross-product area instead.
     area_vector = wp.cross(f0, f1)
@@ -457,6 +447,16 @@ def _evaluate_membrane_from_vertices(
         f0_dot_f0 = wp.dot(f0, f0)
         f1_dot_f1 = wp.dot(f1, f1)
         f0_dot_f1 = wp.dot(f0, f1)
+
+        # Keep the anchor gather next to its only use. Hoisting it lets the CUDA
+        # backend contract these terms differently per tiled kernel variant (seen
+        # on sm_89), breaking the packed tile's bit-for-bit match with the legacy tile.
+        x0_prev = pos_anchor[v0]
+        x01_prev = pos_anchor[v1] - x0_prev
+        x02_prev = pos_anchor[v2] - x0_prev
+
+        f0_prev = x01_prev * DmInv00 + x02_prev * DmInv10
+        f1_prev = x01_prev * DmInv01 + x02_prev * DmInv11
 
         c00_rate = (f0_dot_f0 - wp.dot(f0_prev, f0_prev)) * inv_dt
         c01_rate = (f0_dot_f1 - wp.dot(f0_prev, f1_prev)) * inv_dt

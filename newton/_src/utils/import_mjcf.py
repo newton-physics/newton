@@ -42,6 +42,7 @@ from ..solvers.mujoco.utils import (
     solref_invalid_mask,
 )
 from ..usd.schemas import solref_to_stiffness_damping
+from .deprecation import warn_deprecation
 from .heightfield import load_heightfield_elevation
 from .import_utils import (
     clamp_imported_opacity,
@@ -502,6 +503,56 @@ def _load_and_expand_mjcf(
 AttributeFrequency = Model.AttributeFrequency
 
 
+_HINGE_ANCHOR_TOLERANCE = 1.0e-4
+"""Largest distance from a hinge axis line, in MJCF length units, at which a point counts as lying on it."""
+
+
+_AXIS_PARALLEL_TOLERANCE = 1.0e-3
+"""Sine of the angle below which two joint axes of a body count as parallel.
+
+No meeting point is computed for parallel hinge axes: it is sensitive to small changes in the axes.
+"""
+
+
+def _unit_vector(vector: Any) -> np.ndarray:
+    vector = np.array(vector, dtype=np.float64)
+    norm = np.linalg.norm(vector)
+    return vector / norm if norm > 0.0 else vector
+
+
+def _common_hinge_anchor(positions: Sequence[Any], axes: Sequence[np.ndarray], tolerance: float) -> wp.vec3 | None:
+    """Find a point shared by a body's hinge axis lines.
+
+    Args:
+        positions: Hinge positions [m] in the body frame.
+        axes: Unit hinge axes in the body frame.
+        tolerance: Largest distance [m] from an axis line at which a point counts as lying on it.
+
+    Returns:
+        The first position if it lies on every axis line, otherwise the point where the axis lines meet. ``None`` if
+        they do not meet or all axes are parallel within :data:`_AXIS_PARALLEL_TOLERANCE`.
+    """
+    points = np.array(positions, dtype=np.float64)
+    if len(points) == 1:
+        return wp.vec3(*points[0])
+    directions = np.array(axes, dtype=np.float64)
+    # Each projector removes the component along its axis, leaving the offset from that axis line.
+    projectors = np.eye(3) - directions[:, :, None] * directions[:, None, :]
+
+    def on_all_axis_lines(point: np.ndarray) -> bool:
+        distances = np.linalg.norm(np.einsum("nij,nj->ni", projectors, point - points), axis=1)
+        return bool(distances.max() <= tolerance)
+
+    if on_all_axis_lines(points[0]):
+        return wp.vec3(*points[0])
+    # Axis lines that are all parallel have no single closest point, and nearly parallel ones meet far from the hinges.
+    if np.linalg.norm(np.cross(directions, directions[0]), axis=1).max() <= _AXIS_PARALLEL_TOLERANCE:
+        return None
+    # Least-squares point closest to all axis lines.
+    anchor = np.linalg.lstsq(projectors.sum(axis=0), np.einsum("nij,nj->i", projectors, points), rcond=None)[0]
+    return wp.vec3(*anchor) if on_all_axis_lines(anchor) else None
+
+
 def parse_mjcf(
     builder: ModelBuilder,
     source: str,
@@ -553,6 +604,9 @@ def parse_mjcf(
     MJCF textures default to a white tint. Without an MJCF color or base-color texture,
     mesh-file appearance and primitive palette colors are retained for compatibility.
     Other PBR texture layers are not imported.
+
+    A body's hinge and slide joints are merged into one Newton joint. See the
+    :ref:`limitations of merged MJCF joints <mjcf-merged-joints>` for anchor selection, warnings, and deprecations.
 
     Args:
         builder: The :class:`ModelBuilder` to add the bodies and joints to.
@@ -2630,6 +2684,12 @@ def parse_mjcf(
 
         linear_axes = []
         angular_axes = []
+        # Hinge names, positions, and unit axes in MJCF order, to decide whether one Newton joint can represent them.
+        hinge_names = []
+        hinge_positions = []
+        hinge_axes = []
+        # (slide name, hinge name) of the first slide that is not parallel to a hinge listed before it.
+        rotated_slide: tuple[str, str] | None = None
         joint_type = None
         # Builder DOF array -> value for an MJCF free joint.
         free_dof_values: dict[str, float] = {}
@@ -2838,10 +2898,19 @@ def parse_mjcf(
 
             # Keep each DOF's attributes next to its axis so both share Newton's DOF order.
             if is_angular:
+                hinge_names.append(joint_name[-1])
+                hinge_positions.append(joint_pos[-1])
+                hinge_axes.append(_unit_vector(axis_vec))
                 mjcf_joint_dof_slots.append((joint_name[-1], False, len(angular_dof_attrs), inert_range))
                 angular_axes.append(ax)
                 angular_dof_attrs.append(dof_attr)
             else:
+                if rotated_slide is None:
+                    slide_axis = _unit_vector(axis_vec)
+                    for hinge_name, hinge_axis in zip(hinge_names, hinge_axes, strict=True):
+                        if np.linalg.norm(np.cross(slide_axis, hinge_axis)) > _AXIS_PARALLEL_TOLERANCE:
+                            rotated_slide = (joint_name[-1], hinge_name)
+                            break
                 mjcf_joint_dof_slots.append((joint_name[-1], True, len(linear_dof_attrs), inert_range))
                 linear_axes.append(ax)
                 linear_dof_attrs.append(dof_attr)
@@ -2959,8 +3028,32 @@ def parse_mjcf(
                 )
 
         else:
-            # Extract joint position for non-root bodies
-            joint_pos = joint_pos[0] if len(joint_pos) > 0 else wp.vec3(0.0, 0.0, 0.0)
+            # The body's MJCF joints become one Newton joint, which applies slides in the parent frame before hinges
+            # about a single anchor. Warn about joints that this cannot represent. Hinges rotate about the anchor, so
+            # it must lie on every hinge axis line; a slide's position does not affect its motion.
+            if hinge_positions:
+                # Hinge positions are scaled, so scale the tolerance with them.
+                hinge_anchor = _common_hinge_anchor(hinge_positions, hinge_axes, _HINGE_ANCHOR_TOLERANCE * scale)
+                if hinge_anchor is None:
+                    hinge_anchor = wp.vec3(*hinge_positions[0])
+                    logger.warning(
+                        "MJCF body '%s': hinge joints %s cannot be merged about a common point: their axes are "
+                        "nearly parallel or do not meet. The imported Newton joint rotates all of them about the "
+                        "position of '%s', which changes the body's motion.",
+                        body_label_path,
+                        hinge_names,
+                        hinge_names[0],
+                    )
+                joint_pos = hinge_anchor
+            else:
+                joint_pos = joint_pos[0] if len(joint_pos) > 0 else wp.vec3(0.0, 0.0, 0.0)
+            if rotated_slide is not None:
+                warn_deprecation(
+                    f"MJCF body '{body_label_path}': slide joint '{rotated_slide[0]}' is listed after hinge joint "
+                    f"'{rotated_slide[1]}' and is not parallel to its axis. The imported Newton joint applies the "
+                    "slide before the hinge, which changes the body's motion. Importing such bodies is deprecated "
+                    "and will raise an error in a future release."
+                )
             if len(joint_name) == 0:
                 joint_name = [f"{body_name}_joint"]
             joint_label_name = "_".join(joint_name)
