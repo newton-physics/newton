@@ -29,12 +29,18 @@ Benchmark the workload
 ----------------------
 
 Run a headless example for a quick baseline. The benchmark warms up and reports
-frames per second. This command stops at 10 measured seconds or 1000 frames,
-whichever comes first.
+frames per second. This command stops at 10 measured seconds or 1000 total
+frames, including warm-up, whichever comes first.
 
 .. code-block:: console
 
     uv run -m newton.examples basic_shapes --benchmark 10 --num-frames 1000
+
+The example benchmark synchronizes after every measured frame, so its FPS
+includes per-frame synchronization and prevents overlap between successive
+frames. Timing a batch with synchronization only at its boundaries can report
+different throughput, especially for small workloads. Use the same
+synchronization policy when comparing results.
 
 For your own loop, warm up the simulation and replay any captured graph once
 before timing. Synchronize the device before and after timing a batch of
@@ -303,11 +309,13 @@ change. Oversized buffers can cost time as well as memory because operations
 such as deterministic contact sorting can use the full capacity.
 
 Keep ``verify_buffers=True`` while testing :class:`CollisionPipeline`
-capacities. It checks collision-pipeline overflow, including intermediate
-buffers. Check solver constraints separately using the solver's diagnostics.
-Confirm how each capacity is defined. For example, :class:`CollisionPipeline`
-capacities are totals across worlds, while :class:`~solvers.SolverMuJoCo`
-has per-world capacities.
+capacities. It checks rigid narrow-phase overflow, including intermediate
+buffers. Check ``soft_contact_count`` against ``soft_contact_max`` separately:
+ordinary particle soft contacts can overflow without a warning even with
+verification enabled. Check solver constraints separately using the solver's
+diagnostics. Confirm how each capacity is defined. For example,
+:class:`CollisionPipeline` capacities are totals across worlds, while
+:class:`~solvers.SolverMuJoCo` has per-world capacities.
 
 To measure the memory cost of different capacities, see Warp's guide to
 `measuring memory usage
