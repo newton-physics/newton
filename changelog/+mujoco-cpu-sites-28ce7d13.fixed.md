@@ -1,0 +1,1 @@
+Fix CPU `SolverMuJoCo` site poses and sizes remaining stale after `SHAPE_PROPERTIES` notifications, and refresh the reference lengths and inverse weights of spatial tendons after site or wrapping-geometry edits on both backends.
