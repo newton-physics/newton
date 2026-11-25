@@ -569,6 +569,59 @@ def test_global_particles_use_global_gravity(test, device):
     test.assertTrue(np.all(state_1.particle_qd.numpy()[:, 2] < -1.0e-6))
 
 
+def test_dynamics_with_empty_ranges(test, device):
+    """Advance the selected entities even when a solver range is empty."""
+    solver_type = newton.solvers.SolverStyle3D
+    dynamics = solver_type.Dynamics
+    dt = 0.01
+    gravity = -2.0
+    for scene in ("cloth", "rigid", "empty"):
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, gravity))
+        if scene == "cloth":
+            solver_type.register_custom_attributes(builder)
+            newton.solvers.style3d.add_cloth_grid(
+                builder,
+                pos=(0.0, 0.0, 1.0),
+                rot=wp.quat_identity(),
+                vel=(0.0, 0.0, 0.0),
+                dim_x=2,
+                dim_y=2,
+                cell_x=0.1,
+                cell_y=0.1,
+                mass=0.1,
+            )
+        elif scene == "rigid":
+            builder.add_body(
+                xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()), mass=1.0, inertia=wp.mat33(np.eye(3))
+            )
+        model = builder.finalize(device=device)
+        state_in, state_out = model.state(), model.state()
+        for mode in (dynamics.DEFORMABLE, dynamics.AFFINE_BODY, dynamics.ALL, dynamics.NONE):
+            with test.subTest(scene=scene, dynamics=mode.name):
+                solver = solver_type(model, dynamics=mode, config=solver_type.Config(iterations=2, linear_iterations=4))
+                state_out.assign(state_in)
+                if scene == "cloth":
+                    state_out.particle_qd.fill_(wp.vec3(7.0))
+                elif scene == "rigid":
+                    state_out.body_qd.fill_(wp.spatial_vector(7.0))
+                solver.step(state_in, state_out, None, None, dt)
+
+                if scene == "cloth":
+                    advance = bool(mode & dynamics.DEFORMABLE)
+                    z = state_out.particle_q.numpy()[:, 2]
+                    vz = state_out.particle_qd.numpy()[:, 2]
+                    expected_vz = 0.998 * gravity * dt if advance else 7.0
+                elif scene == "rigid":
+                    advance = bool(mode & dynamics.AFFINE_BODY)
+                    z = state_out.body_q.numpy()[:, 2]
+                    vz = state_out.body_qd.numpy()[:, 2]
+                    expected_vz = gravity * dt if advance else 7.0
+                else:
+                    continue
+                np.testing.assert_allclose(z, 1.0 + (gravity * dt**2 if advance else 0.0), atol=1e-6)
+                np.testing.assert_allclose(vz, expected_vz, atol=1e-5)
+
+
 @wp.kernel
 def _advance_affine_coordinates(x: wp.array[wp.vec3], x_inertia: wp.array[wp.vec3], v: wp.array[wp.vec3], dt: float):
     coordinate = wp.tid()
@@ -1537,6 +1590,14 @@ add_function_test(
     TestSolverStyle3D,
     "test_global_particles_use_global_gravity",
     test_global_particles_use_global_gravity,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverStyle3D,
+    "test_dynamics_with_empty_ranges",
+    test_dynamics_with_empty_ranges,
     devices=devices,
     check_output=False,
 )

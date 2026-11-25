@@ -462,13 +462,13 @@ class SolverStyle3D(SolverBase):
                 :attr:`Dynamics.DEFORMABLE` for deformable particles, including cloth.
                 Use :attr:`Dynamics.AFFINE_BODY` to advance rigid bodies using affine
                 body dynamics, :attr:`Dynamics.ALL` to select all dynamics,
-                or :attr:`Dynamics.NONE` to select none.
+                or :attr:`Dynamics.NONE` to select none. A selected range can be empty.
 
         Raises:
             TypeError: If ``config`` is not a :class:`Config` or ``None``, or if
                 a configuration is combined with legacy keyword options.
-            AttributeError: If ``dynamics`` is :attr:`Dynamics.DEFORMABLE` and the
-                model is missing Style3D custom attributes.
+            AttributeError: If deformable dynamics are selected for a model with
+                particles and the model is missing Style3D custom attributes.
             ValueError: If ``dynamics`` contains unsupported flags.
         """
 
@@ -498,12 +498,7 @@ class SolverStyle3D(SolverBase):
                 stacklevel=2,
             )
 
-        if dynamics == SolverStyle3D.Dynamics.DEFORMABLE and not hasattr(model, "style3d"):
-            raise AttributeError(
-                "Style3D custom attributes are missing from the model. "
-                "Call SolverStyle3D.register_custom_attributes() before building the model."
-            )
-        elif int(dynamics) & ~int(SolverStyle3D.Dynamics.ALL):
+        if int(dynamics) & ~int(SolverStyle3D.Dynamics.ALL):
             raise ValueError(f"Unsupported dynamics flags: {dynamics!r}.")
 
         enable_deformable = bool(dynamics & SolverStyle3D.Dynamics.DEFORMABLE)
@@ -511,7 +506,6 @@ class SolverStyle3D(SolverBase):
 
         super().__init__(model)
         self._style3d_attr = getattr(model, "style3d", None)
-        self.collision = Collision(model) if enable_deformable else None  # set None to disable
         self.dynamics = dynamics
         self.config = config
 
@@ -519,9 +513,10 @@ class SolverStyle3D(SolverBase):
         self._particle_count = model.particle_count if enable_deformable else 0
         self._affine_body_count = model.body_count if enable_affine_body else 0
         self._dof_block_count = self._particle_count + self._affine_body_count * 4
-        self._affine_body = AffineBody(model) if enable_affine_body else None
+        self._contact = Contact(model, self._particle_count) if self._affine_body_count else None
+        self._affine_body = AffineBody(model) if self._affine_body_count else None
         self._linear_solver = PcgSolver(self._dof_block_count, self.device)
-        self._contact = Contact(model, self._particle_count) if enable_affine_body else None
+        self.collision = Collision(model) if self._particle_count else None
 
         # ParticleFlags for every particle and affine block, separate from model flags.
         self._particle_flags = wp.zeros(self._dof_block_count, dtype=int, device=self.device)
@@ -570,8 +565,9 @@ class SolverStyle3D(SolverBase):
 
         The solver performs non-linear projective dynamics iterations in internal
         buffers with optional collision handling. Final positions and velocities
-        for the selected dynamics are written to ``state_out``. With affine body
-        dynamics enabled, kinematic body poses and velocities are copied unchanged
+        for the selected dynamics are written to ``state_out``. If no selected
+        particles or bodies are present, the step leaves ``state_out`` untouched.
+        With affine body dynamics enabled, kinematic body poses and velocities are copied unchanged
         from ``state_in``, including zero-mass kinematic bodies. Other zero-mass
         body outputs and bodies outside the selected dynamics remain caller-owned.
 
@@ -604,10 +600,12 @@ class SolverStyle3D(SolverBase):
             return
         elif self.config.iterations < 1:
             raise ValueError(f"Config.iterations must be at least 1, got {self.config.iterations}.")
+        if self._dof_block_count == 0:
+            return
 
         self._to_internal_state(state_in, dt)
-        particle_q = self._x[: self._particle_count]
-        particle_qd = self._v[: self._particle_count]
+        particle_q = self._x[: self._particle_count] if self._particle_count else None
+        particle_qd = self._v[: self._particle_count] if self._particle_count else None
 
         if self.collision is not None:
             self.collision.frame_begin(particle_q, particle_qd, dt)
@@ -620,8 +618,8 @@ class SolverStyle3D(SolverBase):
                 dt,
                 self.model.gravity,
                 self.model.particle_world,
-                state_in.particle_f if self._particle_count > 0 else self._x[:0],
-                particle_qd,
+                state_in.particle_f,
+                self._v,
                 self._x,
                 self._x_prev,
                 self._pd_diag,
@@ -727,7 +725,8 @@ class SolverStyle3D(SolverBase):
                     include_body_contacts=self._contact is None,
                 )
 
-            self._A_diag[: self._particle_count].zero_()
+            if self._particle_count:
+                self._A_diag[: self._particle_count].zero_()
             if self._affine_body is not None:
                 self._affine_body.eval_orthogonality(
                     self._x[self._particle_count :],
@@ -755,7 +754,7 @@ class SolverStyle3D(SolverBase):
                 inputs=[
                     self._particle_count,
                     self._A_diag_base,
-                    self.collision.contact_hessian_diagonal() if self.collision is not None else self._A_diag[:0],
+                    self.collision.contact_hessian_diagonal() if self.collision is not None else None,
                     self._particle_flags,
                 ],
                 outputs=[self._A_diag, self._inv_A_diag],
@@ -801,7 +800,7 @@ class SolverStyle3D(SolverBase):
         """Return the matrix-free contribution to A x, excluding the assembled base matrix."""
         if self.collision is not None:
             self.collision.hessian_multiply(x[: self._particle_count], self._matrix_free_Ax[: self._particle_count])
-        else:
+        elif self._particle_count:
             self._matrix_free_Ax[: self._particle_count].zero_()
         if self._affine_body is not None:
             self._affine_body.off_diag_multiply(
