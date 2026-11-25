@@ -3020,7 +3020,7 @@ class NarrowPhase:
             # Global contact reducer uses hardcoded BETA_THRESHOLD (0.1mm) same as shared-memory reduction
             # Slot layout: NUM_SPATIAL_DIRECTIONS spatial + 1 max-depth = VALUES_PER_KEY slots per key
             self.export_reduced_contacts_kernel = create_export_reduced_contacts_kernel(writer_func)
-            self.export_marked_contacts_kernel = (
+            self._export_marked_contacts_kernel = (
                 create_export_marked_contacts_kernel(writer_func) if deterministic else None
             )
             # Global contact reducer for all mesh contact types
@@ -3033,7 +3033,7 @@ class NarrowPhase:
             )
         else:
             self.export_reduced_contacts_kernel = None
-            self.export_marked_contacts_kernel = None
+            self._export_marked_contacts_kernel = None
             self.global_contact_reducer = None
 
         self.hydroelastic_sdf = hydroelastic_sdf
@@ -4167,7 +4167,7 @@ class NarrowPhase:
                 )
                 if self.global_contact_reducer.deterministic:
                     wp.launch(
-                        kernel=self.export_marked_contacts_kernel,
+                        kernel=self._export_marked_contacts_kernel,
                         dim=self.total_num_threads,
                         inputs=[
                             reducer_data,
