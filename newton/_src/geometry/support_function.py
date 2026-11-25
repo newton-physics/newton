@@ -145,18 +145,23 @@ def triangle_smooth_edges(metadata: wp.vec4i, topology: wp.array[int], triangle:
 
 
 @wp.func
+def triangle_witness_tolerance(point: wp.vec3) -> float:
+    """Return the world-distance accuracy [m] of a convex-query witness at ``point``."""
+    return 1.0e-5 * wp.max(1.0, wp.length(point))
+
+
+@wp.func
 def triangle_seam_normal(
     geom: GenericShapeData, point: wp.vec3, normal: wp.vec3, interior: wp.vec3
 ) -> tuple[bool, wp.vec3]:
-    """Return the surface normal for a contact on mesh triangle ``geom``.
+    """Return the face normal for a contact at a coplanar seam of mesh triangle ``geom``.
 
-    An internal edge between coplanar triangles is not a surface feature: the
-    surface normal on both sides is the face normal. A query against one
-    triangle can still lean its normal across that edge. Replace such a normal
-    with the face normal, oriented toward the other shape's ``interior`` point.
-    Rejecting the contact instead would leave a shape that straddles the seam
-    unsupported, because its witness lies on the shared edge for both
-    triangles. Real boundaries, creases, and vertices keep ``normal``.
+    An internal edge between coplanar triangles is not a surface feature, but a
+    query against one triangle can lean its normal across that edge. Callers
+    replace such a normal with the face normal, oriented toward the other
+    shape's ``interior``, when the face supports the other shape there, and
+    reject the contact otherwise. Real boundaries, creases, and vertices keep
+    ``normal``.
 
     Args:
         geom: Triangle shape data in its local frame, with ``smooth_edges`` set.
@@ -165,24 +170,24 @@ def triangle_seam_normal(
         interior: A point inside the other shape [m], in the triangle frame.
 
     Returns:
-        Whether the normal was replaced, and the surface normal.
+        Whether the witness lies on a coplanar seam, and the face normal if so.
     """
     mask = geom.smooth_edges
     if mask == 0:
         return False, normal
     ab, ac = geom.scale, geom.auxiliary
-    face = wp.normalize(wp.cross(ab, ac))
-    if wp.dot(face, interior) < 0.0:
-        face = -face
     aa, bb, cc = wp.dot(ab, ab), wp.dot(ab, ac), wp.dot(ac, ac)
     denominator = aa * cc - bb * bb
     if denominator <= 0.0:
         return False, normal
+    face = wp.normalize(wp.cross(ab, ac))
+    if wp.dot(face, interior) < 0.0:
+        face = -face
     u = (cc * wp.dot(point, ab) - bb * wp.dot(point, ac)) / denominator
     v = (aa * wp.dot(point, ac) - bb * wp.dot(point, ab)) / denominator
     # Match MPR's world-distance witness accuracy, rather than using a
     # dimensionless barycentric tolerance that varies with triangle size.
-    tolerance = 1.0e-5 * wp.max(1.0, wp.length(point))
+    tolerance = triangle_witness_tolerance(point)
     area = wp.sqrt(denominator)
     edge_ab = wp.abs(v) * area <= tolerance * wp.sqrt(aa)
     edge_bc = wp.abs(1.0 - u - v) * area <= tolerance * wp.length(ac - ab)

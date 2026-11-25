@@ -475,6 +475,48 @@ def test_refinement_triangle_hull_tilted_seam_support(test, device):
     test.assertTrue(np.all(np.abs(normals[:, 2]) > 0.9999))
 
 
+def test_refinement_triangle_hull_chamfer_seam(test, device):
+    """Keep a heel straddling two chamfered belts on their top faces.
+
+    The heel's witness on a chamfer strip's internal diagonal lies at the
+    strip's crease with the top face. The chamfer plane does not continue
+    past that crease, so the contact must not take the chamfer's normal.
+    """
+    builder = newton.ModelBuilder()
+    profile = [(-0.0413, -0.005), (-0.0413, 0.0038), (-0.04, 0.005), (0.04, 0.005), (0.0413, 0.0038), (0.0413, -0.005)]
+    bar = newton.Mesh(
+        np.array([(x, y, z) for x in (0.0, 0.748) for y, z in profile], dtype=np.float32),
+        [0, 1, 2],
+        compute_inertia=False,
+    ).compute_convex_hull()
+    for y in (38.3575, 38.4425):
+        builder.add_shape_mesh(
+            -1,
+            mesh=bar,
+            xform=wp.transform(wp.vec3(43.4605, y, 0.945), wp.quat_identity()),
+            cfg=builder.ShapeConfig(density=0.0, gap=0.002),
+        )
+    body = builder.add_body(
+        xform=wp.transform(wp.vec3(43.80, 38.4, 0.94999), wp.quat_identity()),
+        mass=1.0,
+        inertia=wp.mat33(np.eye(3)),
+    )
+    builder.add_shape_convex_hull(body, mesh=_bottle_heel_hull(), cfg=builder.ShapeConfig(density=0.0, gap=0.002))
+    model = builder.finalize(device)
+    pipeline = newton.CollisionPipeline(model)
+    contacts, state = pipeline.contacts(), model.state()
+    poses = state.body_q.numpy()
+    for offset in (-0.012, -0.004, 0.0, 0.004, 0.012):
+        with test.subTest(offset=offset):
+            poses[body, 1] = 38.4 + offset
+            state.body_q.assign(poses)
+            pipeline.collide(state, contacts)
+            count = int(contacts.rigid_contact_count.numpy()[0])
+            test.assertGreater(count, 0, "belt tops lost the heel's support")
+            normals = contacts.rigid_contact_normal.numpy()[:count]
+            test.assertTrue(np.all(np.abs(normals[:, 2]) > 0.9999), f"chamfer normals {normals.round(3).tolist()}")
+
+
 def test_refinement_triangle_box_tilted_rest(test, device):
     """Keep a slightly tilted mesh resting on a wide box at its true depth.
 
@@ -759,6 +801,7 @@ for function in (
     test_refinement_triangle_box_seam,
     test_refinement_triangle_hull_seam_support,
     test_refinement_triangle_hull_tilted_seam_support,
+    test_refinement_triangle_hull_chamfer_seam,
     test_refinement_triangle_box_tilted_rest,
     test_refinement_triangle_thin_box_face,
     test_refinement_triangle_box_tilted_face,

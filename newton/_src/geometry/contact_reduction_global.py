@@ -93,6 +93,7 @@ from .support_function import (
     support_map_accelerated,
     triangle_seam_normal,
     triangle_smooth_edges,
+    triangle_witness_tolerance,
 )
 from .types import GeoType
 
@@ -3119,11 +3120,14 @@ def mesh_triangle_contacts_to_reducer_kernel(
                 contact_normal = surface_normal / wp.sqrt(normal_length_sq)
                 contact_position = pos_b - 0.5 * sphere_radius * contact_normal
 
-            on_seam, seam_normal = triangle_seam_normal(shape_data_a, closest - pos_a, contact_normal, pos_b - pos_a)
+            on_seam, face = triangle_seam_normal(shape_data_a, closest - pos_a, contact_normal, pos_b - pos_a)
             if on_seam:
-                # The coplanar neighbor continues the face, so measure along its normal.
-                contact_normal = seam_normal
-                contact_distance = wp.dot(pos_b - closest, contact_normal) - sphere_radius
+                # The face supports the sphere unless the sphere reaches deeper below it.
+                face_distance = wp.dot(pos_b - closest, face) - sphere_radius
+                if face_distance < contact_distance - triangle_witness_tolerance(closest - pos_a):
+                    continue
+                contact_normal = face
+                contact_distance = face_distance
                 contact_position = pos_b - (sphere_radius + 0.5 * contact_distance) * contact_normal
             if contact_distance < gap_sum + margin_offset_a + margin_offset_b:
                 contact_data = ContactData()
