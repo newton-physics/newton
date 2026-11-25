@@ -19,11 +19,13 @@ from .builder import PDMatrixBuilder, _compute_max_neighbors
 from .collision import Collision
 from .contact import Contact
 from .kernels import (
+    accept_friction_correction,
     accumulate_dragging_pd_diag_kernel,
     compute_solver_flags_kernel,
     eval_bend_kernel,
     eval_drag_force_kernel,
     eval_stretch_kernel,
+    form_friction_correction_candidate,
     init_rhs_kernel,
     init_step_kernel,
     nonlinear_step_kernel,
@@ -80,10 +82,11 @@ class SolverStyle3D(SolverBase):
 
     With affine body dynamics enabled, rigid-rigid and particle-rigid contacts
     use a normal penalty, closing-only damping, and Coulomb-limited viscous friction.
-    The contact tangent holds the normal load and friction gain fixed to remain symmetric
-    positive semidefinite and resist slip reversal overshoot. Contact candidates
-    and normals come from the supplied :class:`~newton.Contacts` and remain
-    fixed during each step.
+    The PCG matrix holds the normal load and friction gain fixed to remain symmetric
+    positive semidefinite and resist slip reversal overshoot. For sliding rigid contacts,
+    a residual correction accounts for the change in friction due to the normal load.
+    Contact candidates and normals come from the supplied :class:`~newton.Contacts`
+    and remain fixed during each step.
 
     :attr:`Dynamics.ALL` couples particles and affine bodies in one linear
     system. Particle-rigid contacts use :attr:`Model.soft_contact_ke`,
@@ -197,8 +200,9 @@ class SolverStyle3D(SolverBase):
         """Number of non-linear iterations per step. Must be at least 1."""
 
         linear_iterations: int = 10
-        """Number of PCG iterations per non-linear iteration, capped by PCG capacity (999 by default).
+        """Number of iterations per PCG solve, capped by PCG capacity (999 by default).
 
+        A nonlinear iteration can use a second PCG solve to correct sliding rigid contact.
         With :attr:`Dynamics.ALL`, coupled particle-rigid contacts may need more than
         the default 10 iterations. Increase this count until the contact response converges;
         insufficient PCG convergence can cause artificial momentum gain during impacts.
@@ -546,6 +550,11 @@ class SolverStyle3D(SolverBase):
         # Matrix-free contribution to A x beyond the assembled base matrix.
         self._matrix_free_Ax = wp.zeros(self._dof_block_count, dtype=wp.vec3, device=self.device)
 
+        if self._affine_body_count:
+            self._friction_correction_rhs = wp.empty_like(self._rhs)
+            self._friction_correction_candidate = wp.empty_like(self._dx)
+            self._friction_residual_norms_sq = wp.empty(2, dtype=float, device=self.device)
+
         # Drag info
         self._drag_pos = wp.zeros(1, dtype=wp.vec3, device=self.device)
         self._drag_index = wp.array([-1], dtype=int, device=self.device)
@@ -649,6 +658,12 @@ class SolverStyle3D(SolverBase):
                 device=self.device,
             )
 
+        correct_rigid_friction = (
+            self._affine_body_count > 0
+            and contacts is not None
+            and contacts.rigid_contact_max > 0
+            and self.config.linear_iterations > 0
+        )
         for _iter in range(self.config.iterations):
             wp.launch(
                 init_rhs_kernel,
@@ -773,6 +788,13 @@ class SolverStyle3D(SolverBase):
                 self._matrix_free_multiply,
             )
 
+            if correct_rigid_friction:
+                if self.device.is_cpu:
+                    wp.capture_if(self._contact.has_friction_coupling, on_true=self._solve_friction_correction)
+                else:
+                    # CUDA reductions allocate scratch storage, which conditional graph nodes cannot capture.
+                    self._solve_friction_correction()
+
             if self.collision is not None:
                 self.collision.linear_iteration_end(self._dx[: self._particle_count])
 
@@ -796,6 +818,48 @@ class SolverStyle3D(SolverBase):
             self.collision.frame_end(particle_q, particle_qd, dt)
 
         self._from_internal_state(state_in, state_out, dt)
+
+    def _solve_friction_correction(self) -> None:
+        """Apply one defect correction using the symmetric PCG operator."""
+        linear_solver = self._linear_solver
+        norms_sq = self._friction_residual_norms_sq
+        candidate = self._friction_correction_candidate
+        self._eval_friction_residual(self._dx, norms_sq[:1])
+        self._friction_correction_rhs.assign(linear_solver.r)
+        linear_solver.solve(
+            self._pd_off_diag,
+            self._A_diag,
+            None,
+            self._friction_correction_rhs,
+            self._inv_A_diag,
+            candidate,
+            self.config.linear_iterations,
+            self._matrix_free_multiply,
+        )
+        wp.launch(
+            form_friction_correction_candidate,
+            dim=self._dof_block_count,
+            inputs=[self._dx, candidate],
+            device=self.device,
+        )
+        self._eval_friction_residual(candidate, norms_sq[1:])
+        wp.launch(
+            accept_friction_correction,
+            dim=self._dof_block_count,
+            inputs=[self._contact.has_friction_coupling, norms_sq, candidate],
+            outputs=[self._dx],
+            device=self.device,
+        )
+
+    def _eval_friction_residual(self, dx: wp.array[wp.vec3], norm_sq: wp.array[float]) -> None:
+        """Evaluate b - (A + C) dx and its preconditioned squared norm."""
+        product = self._matrix_free_multiply(dx)
+        self._contact.friction_load_multiply(dx, product)
+        linear_solver = self._linear_solver
+        linear_solver.step1_update_r(self._pd_off_diag, self._A_diag, self._rhs, dx, product)
+        # The preconditioner scales different coordinate blocks and masks prescribed rows.
+        linear_solver.step2_update_z(self._inv_A_diag)
+        wp.utils.array_inner(linear_solver.r, linear_solver.z, out=norm_sq)
 
     def _matrix_free_multiply(self, x: wp.array[wp.vec3]) -> wp.array[wp.vec3]:
         """Return the matrix-free contribution to A x, excluding the assembled base matrix."""

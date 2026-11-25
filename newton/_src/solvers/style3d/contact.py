@@ -21,6 +21,8 @@ class ContactTangent:
     friction_weights1: wp.vec4
     normal_hessian: wp.mat33
     friction_hessian: wp.mat33
+    normal: wp.vec3
+    friction_load_derivative: wp.vec3
 
 
 @wp.struct
@@ -45,8 +47,8 @@ def contact_response(
     kf: float,
     mu: float,
     dt: float,
-) -> tuple[wp.vec3, wp.mat33, wp.vec3, wp.mat33]:
-    """Return normal/friction gradients and PSD tangents for a penetrating contact."""
+) -> tuple[wp.vec3, wp.mat33, wp.vec3, wp.mat33, wp.vec3]:
+    """Return contact gradients, PSD tangents, and the friction gradient's gap derivative."""
     normal_gradient = ke * gap + kd * wp.min(vn, 0.0)
     normal_stiffness = ke
     if vn < 0.0:
@@ -57,18 +59,21 @@ def contact_response(
     limit = mu * (-normal_gradient)
     gt = wp.vec3(0.0)
     Ht = wp.mat33(0.0)
+    friction_load_derivative = wp.vec3(0.0)
     if limit > 0.0 and kf > 0.0:
         projector = wp.identity(3, float) - wp.outer(n, n)
         if kf * speed <= limit:
             gt = kf * vt
             Ht = (kf / dt) * projector
         else:
-            gt = limit * (vt / speed)
+            direction = vt / speed
+            gt = limit * direction
             # Freeze the secant gain, retaining stiffness along the slip direction.
             # The exact sliding Hessian has zero curvature there: an unrestricted
             # Newton step can reverse slip, repeatedly overshoot, and inject energy.
             Ht = (limit / (dt * speed)) * projector
-    return gn, Hn, gt, Ht
+            friction_load_derivative = (-mu * normal_stiffness) * direction
+    return gn, Hn, gt, Ht, friction_load_derivative
 
 
 @wp.func
@@ -136,6 +141,7 @@ def eval_contact_kernel(
     rhs: wp.array[wp.vec3],
     diag: wp.array[wp.mat33],
     tangents: wp.array[ContactTangent],
+    has_friction_coupling: wp.array[int],
 ):
     """Accumulate penalty contact forces and block diagonals, and cache the tangent.
 
@@ -195,7 +201,7 @@ def eval_contact_kernel(
     previous1 = contact_point(b1, t1, anchor1, x_prev)
     velocity = ((current1 - previous1) - (current0 - previous0)) / dt + surface
     vt = velocity - wp.dot(n, velocity) * n
-    gn, Hn, gt, Ht = contact_response(gap, n, vn, vt, ke, kd, kf, mu, dt)
+    gn, Hn, gt, Ht, friction_load_derivative = contact_response(gap, n, vn, vt, ke, kd, kf, mu, dt)
 
     for side in range(2):
         body = b0
@@ -222,7 +228,11 @@ def eval_contact_kernel(
     tangent.friction_weights1 = t1
     tangent.normal_hessian = Hn
     tangent.friction_hessian = Ht
+    tangent.normal = n
+    tangent.friction_load_derivative = friction_load_derivative
     tangents[tid] = tangent
+    if wp.length_sq(friction_load_derivative) > 0.0:
+        wp.atomic_max(has_friction_coupling, 0, 1)
 
 
 @wp.kernel
@@ -259,6 +269,28 @@ def contact_off_diag_multiply_kernel(
                     tangent.friction_hessian * (dt - friction_weights[i] * x[row])
                 )
                 wp.atomic_add(Ax, row, normal_product + friction_product)
+
+
+@wp.kernel
+def friction_load_multiply_kernel(
+    x: wp.array[wp.vec3],
+    tangents: wp.array[ContactTangent],
+    # outputs
+    Ax: wp.array[wp.vec3],
+):
+    """Add the full product of the normal-load derivative of sliding friction."""
+    tangent = tangents[wp.tid()]
+    if tangent.active == 0 or wp.length_sq(tangent.friction_load_derivative) == 0.0:
+        return
+    normal_dx = contact_point(tangent.body1, tangent.weights1, wp.vec3(0.0), x) - contact_point(
+        tangent.body0, tangent.weights0, wp.vec3(0.0), x
+    )
+    friction_product = tangent.friction_load_derivative * wp.dot(tangent.normal, normal_dx)
+    for i in range(4):
+        if tangent.body0 >= 0:
+            wp.atomic_sub(Ax, 4 * tangent.body0 + i, tangent.friction_weights0[i] * friction_product)
+        if tangent.body1 >= 0:
+            wp.atomic_add(Ax, 4 * tangent.body1 + i, tangent.friction_weights1[i] * friction_product)
 
 
 @wp.kernel
@@ -335,7 +367,7 @@ def eval_soft_contact_kernel(
     velocity = ((x[particle] - x_prev[particle]) - (current - previous)) / dt - surface
     vn = wp.dot(n, velocity)
     vt = velocity - vn * n
-    gn, Hn, gt, Ht = contact_response(
+    gn, Hn, gt, Ht, _ = contact_response(
         gap,
         n,
         vn,
@@ -400,6 +432,7 @@ class Contact:
         rigid_contact_max = (model.rigid_contact_max or 0) if model.body_count else 0
         self._tangents = wp.zeros(rigid_contact_max, dtype=ContactTangent, device=model.device)
         self._soft_tangents = wp.zeros(0, dtype=SoftContactTangent, device=model.device)
+        self.has_friction_coupling = wp.zeros(1, dtype=int, device=model.device)
 
     def eval_contacts(
         self,
@@ -413,6 +446,8 @@ class Contact:
         dt: float,
     ) -> None:
         """Accumulate forces and diagonal blocks after orthogonality evaluation."""
+        if self.model.body_count:
+            self.has_friction_coupling.zero_()
         if contacts is None:
             self._tangents.zero_()
             self._soft_tangents.zero_()
@@ -459,7 +494,7 @@ class Contact:
                     contacts.rigid_contact_surface_velocity,
                     dt,
                 ],
-                outputs=[rhs[offset:], diag[offset:], self._tangents],
+                outputs=[rhs[offset:], diag[offset:], self._tangents, self.has_friction_coupling],
                 device=self.model.device,
             )
 
@@ -521,3 +556,13 @@ class Contact:
                 outputs=[Ax],
                 device=self.model.device,
             )
+
+    def friction_load_multiply(self, x: wp.array[wp.vec3], Ax: wp.array[wp.vec3]) -> None:
+        """Add the nonsymmetric rigid friction coupling to the caller's product."""
+        wp.launch(
+            friction_load_multiply_kernel,
+            dim=len(self._tangents),
+            inputs=[x[self.particle_count :], self._tangents],
+            outputs=[Ax[self.particle_count :]],
+            device=self.model.device,
+        )

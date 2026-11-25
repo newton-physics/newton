@@ -164,8 +164,8 @@ The solve uses a positive-semidefinite normal-space tangent that is exact at
 a rotation and approximate away from SO(3).
 
 ``Config.iterations`` controls nonlinear iterations and
-``Config.linear_iterations`` controls PCG iterations within each nonlinear
-iteration. Edit ``solver.config`` between steps to change these settings.
+``Config.linear_iterations`` controls the iterations in each PCG solve.
+Edit ``solver.config`` between steps to change these settings.
 Captured CUDA graphs must be recaptured after configuration changes.
 
 Contact parameters
@@ -185,10 +185,13 @@ closing-only damping, and Coulomb-limited viscous friction:
   ``mu``.
 
 The contact candidates and normals supplied through :class:`~newton.Contacts`
-remain fixed within each solver step. Contact forces are reevaluated during
-nonlinear iterations; the contact tangent remains fixed during each PCG
-solve. Finite contact stiffness permits penetration. Tune the contact
-material separately from ``affine_rigidity_ratio``.
+remain fixed within each solver step. The solver reevaluates contact forces
+every nonlinear iteration and holds the contact tangent fixed during PCG.
+For rigid contacts at the Coulomb limit, a second PCG solve corrects the
+linear residual for the dependence of friction on normal load. The solver
+accepts the correction when it reduces the preconditioned residual norm.
+Finite contact stiffness permits penetration. Tune the contact material
+separately from ``affine_rigidity_ratio``.
 
 Examples
 --------

@@ -347,6 +347,29 @@ def prepare_jacobi_preconditioner_kernel(
 
 
 @wp.kernel
+def form_friction_correction_candidate(
+    dx: wp.array[wp.vec3],
+    candidate: wp.array[wp.vec3],
+):
+    row = wp.tid()
+    candidate[row] += dx[row]
+
+
+@wp.kernel
+def accept_friction_correction(
+    has_friction_coupling: wp.array[int],
+    residual_norms_sq: wp.array[float],
+    candidate: wp.array[wp.vec3],
+    # outputs
+    dx: wp.array[wp.vec3],
+):
+    row = wp.tid()
+    corrected_norm_sq = residual_norms_sq[1]
+    if has_friction_coupling[0] != 0 and corrected_norm_sq >= 0.0 and corrected_norm_sq < residual_norms_sq[0]:
+        dx[row] = candidate[row]
+
+
+@wp.kernel
 def nonlinear_step_kernel(
     x_in: wp.array[wp.vec3],
     # outputs

@@ -973,12 +973,13 @@ def test_rigid_contact_linear_system(test, device):
     projector = np.eye(3) - np.outer(n, n)
 
     # Exercise both stationary and rotating kinematic boundaries under applied loads.
-    for mode in ("normal", "stick", "slip", "prescribed_rest", "prescribed"):
+    for mode in ("normal", "stick", "slip", "prescribed_rest", "prescribed", "prescribed_slip"):
         with test.subTest(mode=mode):
             prescribed = mode.startswith("prescribed")
+            slipping = mode.endswith("slip")
             model.shape_material_mu.fill_(0.0 if mode == "normal" else 0.5)
             ke, kd, mu = 200.0, 4.0, 0.0 if mode == "normal" else 0.5
-            if mode == "slip":
+            if slipping:
                 contacts.rigid_contact_stiffness.fill_(320.0)
                 contacts.rigid_contact_damping.fill_(7.0)
                 contacts.rigid_contact_friction.fill_(2.0)
@@ -987,7 +988,7 @@ def test_rigid_contact_linear_system(test, device):
                 contacts.rigid_contact_stiffness.zero_()
                 contacts.rigid_contact_damping.zero_()
                 contacts.rigid_contact_friction.zero_()
-            surface = np.array([5.0 if mode == "slip" else 0.01, 0.0, -0.2])
+            surface = np.array([5.0 if slipping else 0.01, 0.0, -0.2])
             contacts.rigid_contact_surface_velocity.fill_(wp.vec3(*surface))
             if prescribed:
                 flags = newton.BodyFlags.KINEMATIC
@@ -1015,6 +1016,7 @@ def test_rigid_contact_linear_system(test, device):
                 current[4:] = predicted
             expected_rhs = (mass @ (target - initial).reshape(-1)).reshape(8, 3)
             hessian = np.zeros((24, 24))
+            coupling = np.zeros_like(hessian)
             for contact in range(2):
                 weights = [np.r_[1.0, points[b][contact] - com[b]] for b in range(2)]
                 anchors = [np.r_[1.0, points[b][contact] + offsets[b] - com[b]] for b in range(2)]
@@ -1023,7 +1025,8 @@ def test_rigid_contact_linear_system(test, device):
                 gap = n @ (w @ current) - 0.05
                 vn = n @ (w @ (current - initial) / dt)
                 gn = (ke * gap + kd * min(vn, 0.0)) * n
-                hn = (ke + (kd / dt if vn < 0.0 else 0.0)) * np.outer(n, n)
+                normal_stiffness = ke + (kd / dt if vn < 0.0 else 0.0)
+                hn = normal_stiffness * np.outer(n, n)
                 vt = projector @ (t @ (current - initial) / dt + surface)
                 speed = np.linalg.norm(vt)
                 limit = mu * -gn[2]
@@ -1035,6 +1038,7 @@ def test_rigid_contact_linear_system(test, device):
                         direction = vt / speed
                         gt = limit * direction
                         ht = limit / (dt * speed) * projector
+                        coupling -= mu * normal_stiffness * np.kron(np.outer(t, w), np.outer(direction, n))
                 expected_rhs -= w[:, None] * gn + t[:, None] * gt
                 hessian += np.kron(np.outer(w, w), hn) + np.kron(np.outer(t, t), ht)
             matrix = mass + hessian
@@ -1049,14 +1053,19 @@ def test_rigid_contact_linear_system(test, device):
             np.testing.assert_allclose(
                 solver._linear_solver.Ap.numpy().reshape(-1), matrix @ probe.reshape(-1), rtol=3e-6, atol=5e-4
             )
-            # One Newton solve verifies that the same tangent reaches the actual PCG solve.
+            # Compare the PCG step and its one full-residual correction with dense solves.
             config.linear_iterations = 32
             solver.step(state_in, state_out, None, contacts, dt)
             active_size = 12 if prescribed else 24
             expected = initial.reshape(-1).copy()
-            expected[:active_size] += np.linalg.solve(
-                matrix[:active_size, :active_size], expected_rhs.reshape(-1)[:active_size]
-            )
+            active_matrix = matrix[:active_size, :active_size]
+            full_matrix = active_matrix + coupling[:active_size, :active_size]
+            rhs = expected_rhs.reshape(-1)[:active_size]
+            increment = np.linalg.solve(active_matrix, rhs)
+            residual = rhs - full_matrix @ increment
+            corrected = increment + np.linalg.solve(active_matrix, residual)
+            test.assertLessEqual(np.linalg.norm(rhs - full_matrix @ corrected), np.linalg.norm(residual) + 1e-12)
+            expected[:active_size] += corrected
             np.testing.assert_allclose(solver._x.numpy().reshape(-1), expected, atol=3e-6)
             if prescribed:
                 np.testing.assert_array_equal(state_out.body_q.numpy()[1], state_in.body_q.numpy()[1])
@@ -1362,6 +1371,52 @@ def test_rigid_contact_friction_stability(test, device):
     test.assertLess(float(poses[-1, 2]), 0.12)
 
 
+def test_rigid_contact_sliding_box(test, device):
+    """Match the Coulomb stopping distance and impulse bound for a stiff four-point contact."""
+    gravity, mu, initial_speed, dt = 9.81, 0.5, 2.0, 0.005
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -gravity))
+    material = newton.ModelBuilder.ShapeConfig(density=1000.0, ke=1.0e7, kd=1.0e3, kf=1.0e4, mu=mu)
+    builder.add_ground_plane(cfg=material)
+    body = builder.add_link(xform=wp.transform((0.0, 0.0, 0.1), wp.quat_identity()))
+    builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1, cfg=material)
+    model = builder.finalize(device=device)
+    solver = newton.solvers.SolverStyle3D(
+        model,
+        config=newton.solvers.SolverStyle3D.Config(iterations=10, linear_iterations=20, affine_rigidity_ratio=1.0e4),
+        dynamics=newton.solvers.SolverStyle3D.Dynamics.AFFINE_BODY,
+    )
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    state_in, state_out = model.state(), model.state()
+    state_in.body_qd.fill_(wp.spatial_vector(initial_speed, 0.0, 0.0, 0.0, 0.0, 0.0))
+
+    def advance():
+        pipeline.collide(state_in, contacts)
+        solver.step(state_in, state_out, None, contacts, dt)
+        state_in.assign(state_out)
+
+    graph = None
+    if wp.get_device(device).is_cuda:
+        with wp.ScopedCapture(device=device) as capture:
+            advance()
+        graph = capture.graph
+    velocities = []
+    for _ in range(85):
+        if graph is None:
+            advance()
+        else:
+            wp.capture_launch(graph)
+        velocities.append(state_in.body_qd.numpy()[body, :3].copy())
+
+    vx, _, vz = np.asarray(velocities, dtype=np.float64).T
+    times = dt * np.arange(1, len(vx) + 1)
+    reference_x = dt * np.maximum(initial_speed - mu * gravity * times, 0.0).sum()
+    test.assertAlmostEqual(float(state_in.body_q.numpy()[body, 0]), reference_x, delta=1e-3)
+    test.assertAlmostEqual(float(vx[-1]), 0.0, delta=0.03)
+    test.assertLess(float(np.max(initial_speed - vx - mu * (gravity * times + vz))), 0.01)
+    test.assertAlmostEqual(float(-np.polyfit(times[4:34], vx[4:34], 1)[0]), mu * gravity, delta=0.03)
+
+
 def test_affine_body_state_conversion(test, device):
     """Recover integrated rigid states and fit deformed affine configurations."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
@@ -1536,6 +1591,13 @@ add_function_test(
     TestSolverStyle3D,
     "test_rigid_contact_friction_stability",
     test_rigid_contact_friction_stability,
+    devices=devices,
+    check_output=False,
+)
+add_function_test(
+    TestSolverStyle3D,
+    "test_rigid_contact_sliding_box",
+    test_rigid_contact_sliding_box,
     devices=devices,
     check_output=False,
 )
