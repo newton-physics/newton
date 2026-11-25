@@ -279,7 +279,10 @@ repository examples spend tuning effort, not a shared solver API.
        constraints solved by projected Gauss-Seidel, so contact ``ke`` / ``kd``
        are not used; more ``iterations`` reduce residual penetration and
        slip, and ``baumgarte`` sets how much position error is corrected per
-       step. Friction acts through persistent patches by
+       step. A per-body ``steel:rigid_body_max_depenetration_velocity`` bounds
+       that correction velocity only for penetrating non-compliant contacts on
+       free bodies and articulation links; joint limits and compliant contacts
+       remain unbounded. Friction acts through persistent patches by
        default (``friction_anchor_beta``), which hold static loads without creep;
        ``friction_anchor_beta=0`` selects point friction. A small
        ``contact_regularization`` (for example ``0.02``) makes the
