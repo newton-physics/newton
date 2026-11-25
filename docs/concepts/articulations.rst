@@ -1141,7 +1141,7 @@ An **orphan joint** is a joint that is not part of any articulation **and** whos
 
 A joint that is excluded from every :meth:`~newton.ModelBuilder.add_articulation` call but whose two bodies are already reachable through the articulation tree is **not** an orphan joint; it is a **loop-closing joint** (see :ref:`Loop closure`) and is handled separately.
 
-During USD import, a world-connected joint outside every authored articulation is wrapped in a single-joint articulation (unless its child is already owned by an articulation, or another loose joint touches the same child, in which case the joint stays loose and is rejected by validation). Other orphan joints are preserved without an articulation warning, and the model's validation determines whether the resulting topology is supported.
+During USD import, a world-connected joint outside every authored articulation is wrapped in a single-joint articulation labelled with the path of its child body. Two kinds of world joints stay unwrapped: one whose child already belongs to an articulation is a loop-closing joint, and one whose child has further loose joints (a chain without an articulation root) stays an orphan joint, which validation rejects. Other orphan joints are preserved without an articulation warning, and the model's validation determines whether the resulting topology is supported.
 
 **Validation and finalization**
 

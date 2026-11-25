@@ -5149,6 +5149,40 @@ class TestJointSpaceResponse(unittest.TestCase):
         )
 
     @requires(*MUJOCO_MODULES)
+    def test_response_from_mujoco_permuted_dofs(self):
+        """Remap MuJoCo's inertia when its DOF order differs from Newton's."""
+        device = wp.get_device()
+        builder = newton.ModelBuilder(gravity=_NO_GRAVITY)
+        links = [
+            builder.add_link(com=wp.vec3(0.2 + 0.1 * i, 0.0, 0.0), inertia=_POINT_MASS_INERTIA, mass=1.0 + i)
+            for i in range(4)
+        ]
+        offset = wp.transform(wp.vec3(0.5, 0.0, 0.0), wp.quat_identity())
+        # Breadth-first joint order: MuJoCo lists the last joint before the third one.
+        joints = [
+            builder.add_joint_revolute(parent=-1, child=links[0], axis=newton.Axis.Z),
+            builder.add_joint_revolute(parent=links[0], child=links[1], axis=newton.Axis.Z, parent_xform=offset),
+            builder.add_joint_revolute(parent=links[0], child=links[2], axis=newton.Axis.Z),
+            builder.add_joint_revolute(parent=links[1], child=links[3], axis=newton.Axis.Z, parent_xform=offset),
+        ]
+        builder.add_articulation(joints)
+        model = builder.finalize(device=device)
+        state = model.state()
+        state.joint_q.assign(np.array([0.3, -0.8, 0.5, 0.2], dtype=np.float32))
+
+        with self.assertWarnsRegex(UserWarning, "depth-first topological order"):
+            solver = newton.solvers.SolverMuJoCo(model, disable_contacts=True)
+        solver.step(state, model.state(), model.control(), None, 0.01)
+        dof_map = solver.mjc_dof_to_newton_dof
+        self.assertEqual(dof_map.numpy()[0].tolist(), [0, 1, 3, 2])
+
+        response = JointSpaceResponse(model)
+        response.refresh_from_solve(_mujoco_solve(solver), dof_map=dof_map)
+        reference = JointSpaceResponse(model)
+        reference.refresh(state)
+        np.testing.assert_allclose(response.inverse_blocks.numpy(), reference.inverse_blocks.numpy(), rtol=1e-4)
+
+    @requires(*MUJOCO_MODULES)
     def test_response_from_mujoco_factorization(self):
         """Fill the response from MuJoCo's per-step factorized inertia.
 
