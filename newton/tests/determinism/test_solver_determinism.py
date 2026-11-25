@@ -88,10 +88,16 @@ def _snapshot(state, fields):
 
 
 def _assert_snapshots_equal(first, second):
+    """Compare snapshots bitwise, so signed zeros and NaN payloads must match too."""
     if first.keys() != second.keys():
         raise AssertionError(f"snapshot fields differ: {first.keys()} != {second.keys()}")
     for field in first:
-        np.testing.assert_array_equal(first[field], second[field], err_msg=f"non-deterministic {field}")
+        a, b = first[field], second[field]
+        if a.dtype != b.dtype or a.shape != b.shape:
+            raise AssertionError(f"{field} layout differs: {a.dtype}{a.shape} != {b.dtype}{b.shape}")
+        if a.tobytes() != b.tobytes():
+            np.testing.assert_array_equal(a, b, err_msg=f"non-deterministic {field}")
+            raise AssertionError(f"non-deterministic {field}: values match but bit patterns differ")
 
 
 def _build_soft_body(device):
@@ -285,7 +291,6 @@ def _build_rigid_pile(device):
                     builder.add_shape_box(body, hx=half, hy=half, hz=half)
                 else:
                     builder.add_shape_sphere(body, radius=half)
-    builder.request_contact_attributes("force")
     return builder.finalize(device=device)
 
 
@@ -304,6 +309,10 @@ def _run_rigid_pile_rollout(device, solver_name, use_graph):
     solver = _make_rigid_solver(model, solver_name)
     pipeline = newton.CollisionPipeline(model, deterministic=True)
     contacts = pipeline.contacts()
+    observables = None
+    if solver_name == "xpbd":
+        # Cover XPBD's per-contact impulse accumulation through its contact-force output.
+        observables = solver.observables({newton.solvers.SolverBase.ObservableKind.CONTACT_F}, contacts=contacts)
     state_0, state_1 = model.state(), model.state()
     control = model.control()
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
@@ -314,7 +323,7 @@ def _run_rigid_pile_rollout(device, solver_name, use_graph):
         for _ in range(2):
             state_0.clear_forces()
             pipeline.collide(state_0, contacts)
-            solver.step(state_0, state_1, control, contacts, dt)
+            solver.step(state_0, state_1, control, contacts, dt, observables=observables)
             state_0, state_1 = state_1, state_0
 
     # Step eagerly first so Warp checks its deterministic record buffers for overflow.
@@ -331,8 +340,11 @@ def _run_rigid_pile_rollout(device, solver_name, use_graph):
     if contacts.rigid_contact_count.numpy()[0] == 0:
         raise AssertionError("rigid pile produced no contacts")
     snapshot = _snapshot(state_0, ("body_q", "body_qd"))
-    if solver_name == "xpbd":
-        snapshot["contact_force"] = np.array(contacts.force.numpy(), copy=True)
+    if observables is not None:
+        contact_f = np.array(observables.contact_f.numpy(), copy=True)
+        if not np.any(contact_f):
+            raise AssertionError("rigid pile produced no XPBD contact forces")
+        snapshot["contact_f"] = contact_f
     return snapshot
 
 
@@ -355,6 +367,15 @@ class TestSolverDeterminism(unittest.TestCase):
 
 def _emit_warning_for_policy_test(category_name, message):
     warnings.warn_explicit(message, getattr(builtins, category_name), __file__, 1, module=__name__)
+
+
+class TestSnapshotComparison(unittest.TestCase):
+    def test_snapshots_compare_bitwise(self):
+        """Values that compare equal but differ in bits, such as signed zeros, count as divergence."""
+        snapshot = {"x": np.array([0.0, 1.0], dtype=np.float32)}
+        _assert_snapshots_equal(snapshot, {"x": snapshot["x"].copy()})
+        with self.assertRaisesRegex(AssertionError, "bit patterns differ"):
+            _assert_snapshots_equal(snapshot, {"x": np.array([-0.0, 1.0], dtype=np.float32)})
 
 
 class TestSolverDeterminismWarnings(unittest.TestCase):

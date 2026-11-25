@@ -785,8 +785,11 @@ def _make_penalty_friction_model(device, *, requires_grad=False):
     return builder.finalize(device=device, requires_grad=requires_grad)
 
 
-def test_penalty_friction_force_and_gradient(test, device):
-    """Bound rigid friction by Coulomb and differentiate the viscous response at rest."""
+def test_penalty_friction_force_and_gradient(test, device, deterministic):
+    """Bound rigid friction by Coulomb and differentiate the viscous response at rest.
+
+    ``deterministic`` selects the per-body contact gather instead of atomics.
+    """
     model = _make_penalty_friction_model(device, requires_grad=True)
     state = model.state()
     pipeline = newton.CollisionPipeline(model)
@@ -810,7 +813,7 @@ def test_penalty_friction_force_and_gradient(test, device):
             state.body_qd.assign(velocity)
             state.clear_forces()
             with wp.Tape() as tape:
-                eval_body_contact_forces(model, state, contacts)
+                eval_body_contact_forces(model, state, contacts, deterministic=deterministic)
             force = state.body_f.numpy()[0].copy()
             limit = mu * force[2]
             test.assertGreater(force[2], 0.0)
@@ -843,7 +846,7 @@ def test_penalty_friction_force_and_gradient(test, device):
                     perturbed[0, axis] += sign * epsilon
                     state.body_qd.assign(perturbed)
                     state.clear_forces()
-                    eval_body_contact_forces(model, state, contacts)
+                    eval_body_contact_forces(model, state, contacts, deterministic=deterministic)
                     forces.append(float(state.body_f.numpy()[0, 0]))
                 finite_difference[axis] = (forces[1] - forces[0]) / (2.0 * epsilon)
             np.testing.assert_allclose(gradient, finite_difference, atol=0.1, rtol=3.0e-3)
@@ -1045,12 +1048,14 @@ class TestRigidContact(unittest.TestCase):
                 np.testing.assert_allclose(local, np.broadcast_to(local[:1], local.shape), rtol=0, atol=1e-7)
 
 
-add_function_test(
-    TestRigidContact,
-    "test_penalty_friction_force_and_gradient",
-    test_penalty_friction_force_and_gradient,
-    devices=devices,
-)
+for deterministic in (False, True):
+    add_function_test(
+        TestRigidContact,
+        f"test_penalty_friction_force_and_gradient{'_deterministic' if deterministic else ''}",
+        test_penalty_friction_force_and_gradient,
+        devices=devices,
+        deterministic=deterministic,
+    )
 add_function_test(
     TestRigidContact, "test_penalty_friction_solver_step", test_penalty_friction_solver_step, devices=devices
 )

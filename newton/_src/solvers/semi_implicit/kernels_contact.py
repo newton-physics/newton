@@ -692,7 +692,13 @@ def eval_body_contact_forces(
         )
         return
 
-    contact_wrench = wp.empty(2 * contacts.rigid_contact_max, dtype=wp.spatial_vector, device=model.device)
+    # Keep gradient storage so the gather propagates body_f adjoints back to each contact.
+    contact_wrench = wp.empty(
+        2 * contacts.rigid_contact_max,
+        dtype=wp.spatial_vector,
+        device=model.device,
+        requires_grad=body_f_out.requires_grad,
+    )
     wp.launch(
         kernel=eval_body_contact_per_contact,
         dim=contacts.rigid_contact_max,

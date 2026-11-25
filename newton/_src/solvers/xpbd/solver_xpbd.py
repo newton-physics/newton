@@ -555,7 +555,13 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
 
             if self._gather_contact_deltas and model.body_count and contacts.rigid_contact_max:
                 contact_sides = sort_contact_sides_by_body(model, contacts)
-                contact_delta = wp.empty(2 * contacts.rigid_contact_max, dtype=wp.spatial_vector, device=model.device)
+                # Per-iteration reallocations under autodiff inherit requires_grad via empty_like.
+                contact_delta = wp.empty(
+                    2 * contacts.rigid_contact_max,
+                    dtype=wp.spatial_vector,
+                    device=model.device,
+                    requires_grad=requires_grad,
+                )
                 contact_active = wp.empty(contacts.rigid_contact_max, dtype=wp.int32, device=model.device)
 
         # Optional per-joint accumulated child-side spatial impulse, used to
