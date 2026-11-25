@@ -11,8 +11,7 @@ import warp as wp
 
 import newton
 from newton import NewtonWarning
-from newton._src.solvers.steel.friction_mode_bits import contact_friction_bits, shape_friction_bits_host
-from newton._src.solvers.steel.friction_patches import FrictionPatches
+from newton._src.solvers.steel.friction_patches import FrictionPatches, free_rigid_angular_friction_coefficients
 from newton._src.solvers.steel.kernels import (
     PGS_CONSTRAINT_TYPE_CONTACT,
     PGS_CONSTRAINT_TYPE_CONTACT_ROLLING,
@@ -33,8 +32,9 @@ _ROLLING = {"linear": (0.0, -0.3, 0.0), "angular": (10.0, 0.0, 0.0)}
 # Principal moments 0.6, 1 and 1.4 with an x-z product: a physically valid anisotropic inertia.
 _ANISOTROPIC = np.array([[1.0, 0.0, 0.4], [0.0, 1.0, 0.0], [0.4, 0.0, 1.0]])
 _SLIDING = newton.ShapeFrictionMode.SLIDING
-_TORSIONAL = newton.ShapeFrictionMode.TORSIONAL
-_ROLLING_MODE = newton.ShapeFrictionMode.TORSIONAL_ROLLING
+_TORSIONAL = newton.ShapeFrictionMode.SLIDING_TORSIONAL
+_ROLLING_ONLY = newton.ShapeFrictionMode.SLIDING_ROLLING
+_ROLLING_MODE = newton.ShapeFrictionMode.SLIDING_TORSIONAL_ROLLING
 
 
 def _rows(rolling: float = 0.0, torsional: float = 0.0) -> dict:
@@ -196,8 +196,8 @@ class TestFreeRigidAngularFriction(unittest.TestCase):
                 self.assertAlmostEqual(travel, expected, delta=0.05 * expected)
 
     def test_friction_mode_selects_the_rows(self):
-        """Add a spin row for the torsional mode and a rolling pair for rolling, from the default coefficients."""
-        for mode, expected in ((_SLIDING, 3), (_TORSIONAL, 4), (_ROLLING_MODE, 6)):
+        """Add a spin row for torsional friction and a rolling pair for rolling friction, from the default coefficients."""
+        for mode, expected in ((_SLIDING, 3), (_TORSIONAL, 4), (_ROLLING_ONLY, 5), (_ROLLING_MODE, 6)):
             seen = {}
 
             def observe(solver, contacts, observables, seen=seen):
@@ -260,6 +260,27 @@ class TestFreeRigidAngularFriction(unittest.TestCase):
                 self.assertAlmostEqual(twist[5], 6.0 - rate * 0.2, delta=0.1)
                 _, twist, _ = _simulate("sphere", 0.6, angular=(0.0, 0.0, 6.0), **options)
                 self.assertLess(abs(twist[5]), 1.0e-3)
+
+    def test_rolling_only_sphere_on_a_default_table_keeps_its_spin(self):
+        """Give a rolling-only sphere on a default table the rolling pair and no spin row, so it keeps spinning.
+
+        The table stays SLIDING with the builder's default mu_torsional; with torsional friction on the sphere too,
+        the same spin stops.
+        """
+        seen = {}
+
+        def observe(solver, contacts, observables):
+            slot = int(solver._contact_slot.numpy()[0])
+            seen["slots"] = int(solver._contact_slots_needed.numpy()[0])
+            seen["types"] = solver._mf_row_type.numpy()[0][slot + 3 : slot + seen["slots"]].tolist()
+
+        spin = (0.0, 0.0, 6.0)
+        _, twist, _ = _simulate("sphere", 0.3, angular=spin, friction_mode=(_SLIDING, _ROLLING_ONLY), observe=observe)
+        self.assertEqual(seen["slots"], 5)
+        self.assertEqual(seen["types"], [PGS_CONSTRAINT_TYPE_CONTACT_ROLLING] * 2)
+        self.assertGreater(twist[5], 5.9)
+        _, twist, _ = _simulate("sphere", 0.3, angular=spin, friction_mode=(_SLIDING, _ROLLING_MODE))
+        self.assertLess(abs(twist[5]), 1.0e-3)
 
     def test_patch_spin_row_takes_the_pooled_load(self):
         """Decelerate a spinning cube at mu_s m g / I with one patch spin row, as with a spin row per contact.
@@ -662,11 +683,11 @@ class TestFreeRigidAngularFriction(unittest.TestCase):
                 self.assertLess(np.linalg.norm(twist[3:6]), 0.99 * np.linalg.norm(angular))
                 np.testing.assert_allclose(seen["parent_f"], 0.0, atol=1.0e-5)
 
-    def test_pair_takes_the_higher_mode_and_the_larger_coefficient(self):
+    def test_pair_takes_either_shapes_components_and_the_larger_coefficient(self):
         """Enable a row when either shape's mode enables it, and bound it by the larger coefficient of both shapes.
 
-        The sliding table's coefficients count once the sphere's mode enables a row, and a rolling table gives a
-        sliding sphere the rows too.
+        The sliding table's coefficients count once the sphere's mode enables a row, a rolling table gives a
+        sliding sphere the rows too, and a rolling-only sphere on a torsional table gets both.
         """
         torsional = np.array([0.004, 0.002], dtype=np.float32)
         rolling = np.array([0.003, 0.001], dtype=np.float32)
@@ -674,6 +695,8 @@ class TestFreeRigidAngularFriction(unittest.TestCase):
             ((_SLIDING, _ROLLING_MODE), 6),
             ((_ROLLING_MODE, _SLIDING), 6),
             ((_SLIDING, _TORSIONAL), 4),
+            ((_SLIDING, _ROLLING_ONLY), 5),
+            ((_TORSIONAL, _ROLLING_ONLY), 6),
         ):
             seen = {}
 
@@ -690,10 +713,12 @@ class TestFreeRigidAngularFriction(unittest.TestCase):
             with self.subTest(table=modes[0].name, sphere=modes[1].name):
                 _simulate("sphere", 0.0, steps=1, friction_mode=modes, on_solver=on_solver, observe=observe)
                 self.assertEqual(seen["slots"], expected)
-                if expected == 6:
-                    np.testing.assert_array_equal(seen["mu"], [rolling.max(), rolling.max(), torsional.max()])
-                else:
-                    np.testing.assert_array_equal(seen["mu"], [torsional.max()])
+                want = {
+                    6: [rolling.max(), rolling.max(), torsional.max()],
+                    5: [rolling.max()] * 2,
+                    4: [torsional.max()],
+                }
+                np.testing.assert_array_equal(seen["mu"], want[expected])
 
     def test_rows_need_a_free_body_route_shape_above_sliding(self):
         """Build no rows for torsional shapes only on articulated bodies, and for a model without free bodies."""
@@ -732,7 +757,7 @@ class TestFreeRigidAngularFriction(unittest.TestCase):
         self.assertTrue(solver._free_rigid_angular_rows)
 
     def test_invalid_values_raise_and_unsupported_options_warn(self):
-        """Reject invalid modes and coefficients; leave the rows off, warning for TORSIONAL_ROLLING, for unsupported options."""
+        """Reject invalid modes and coefficients; leave the rows off, warning for rolling friction, for unsupported options."""
         model, _ = _scene("sphere")
         model.shape_material_friction_mode.fill_(int(_ROLLING_MODE))
         for options, option in (
@@ -741,7 +766,7 @@ class TestFreeRigidAngularFriction(unittest.TestCase):
             ({"articulated_contact_response": "propagation"}, "articulated_contact_response='propagation'"),
         ):
             with self.subTest(option=option):
-                with self.assertWarnsRegex(NewtonWarning, "does not support TORSIONAL_ROLLING friction"):
+                with self.assertWarnsRegex(NewtonWarning, "does not support rolling friction"):
                     solver = SolverSteel(model, **options)
                 self.assertFalse(solver._free_rigid_angular_rows)
         # The CPU solve has no angular rows.
@@ -749,7 +774,7 @@ class TestFreeRigidAngularFriction(unittest.TestCase):
         rolling_cfg = newton.ModelBuilder.ShapeConfig(friction_mode=_ROLLING_MODE)
         cpu_builder.add_shape_sphere(cpu_builder.add_body(), radius=_RADIUS, cfg=rolling_cfg)
         cpu_builder.add_ground_plane(cfg=rolling_cfg)
-        with self.subTest(option="cpu"), self.assertWarnsRegex(NewtonWarning, "does not support TORSIONAL_ROLLING"):
+        with self.subTest(option="cpu"), self.assertWarnsRegex(NewtonWarning, "does not support rolling friction"):
             solver = SolverSteel(cpu_builder.finalize(device="cpu"))
         self.assertFalse(solver._free_rigid_angular_rows)
         for mode in (-1, 4):
@@ -874,39 +899,47 @@ def test_linear_row_builder_leaves_the_angular_rows(test, device):
 
 
 @wp.kernel(enable_backward=False)
-def _contact_friction_bits_kernel(
-    modes: wp.array[wp.int32], shape_a: wp.array[int], shape_b: wp.array[int], bits: wp.array[int]
+def _pair_coefficients_kernel(
+    modes: wp.array[wp.int32],
+    mu_torsional: wp.array[float],
+    mu_rolling: wp.array[float],
+    shape_b: wp.array[int],
+    out: wp.array[wp.vec2],
 ):
     i = wp.tid()
-    bits[i] = contact_friction_bits(modes, shape_a[i], shape_b[i])
+    torsional, rolling = free_rigid_angular_friction_coefficients(0, shape_b[i], modes, mu_torsional, mu_rolling)
+    out[i] = wp.vec2(torsional, rolling)
 
 
-def test_contact_friction_bits_or_the_shapes(test, device):
-    """Map each mode to its sliding, torsional and rolling bits, and OR the bits of a contact's two shapes."""
-    modes = [int(mode) for mode in newton.ShapeFrictionMode]
-    expected = {
-        newton.ShapeFrictionMode.NONE: 0,
-        newton.ShapeFrictionMode.SLIDING: 1,
-        newton.ShapeFrictionMode.TORSIONAL: 3,
-        newton.ShapeFrictionMode.TORSIONAL_ROLLING: 7,
-    }
-    np.testing.assert_array_equal(shape_friction_bits_host(modes), [expected[mode] for mode in modes])
-    pairs = [(a, b) for a in range(-1, len(modes)) for b in range(-1, len(modes))]
-    bits = wp.zeros(len(pairs), dtype=int, device=device)
+def test_rolling_only_shape_takes_no_torsion_from_a_default_ground(test, device):
+    """Give a rolling-only peg on a default ground rolling friction and no torsion, whatever the ground stores.
+
+    Shape 0 is a default ground (SLIDING, the builder's default mu_torsional). Torsion needs one of the two shapes to
+    enable it; the coefficient is then the larger of the two.
+    """
+    defaults = newton.ModelBuilder.ShapeConfig()
+    ground = (int(_SLIDING), defaults.mu_torsional, defaults.mu_rolling)
+    pegs = ((int(_ROLLING_ONLY), 0.0, 1.0e-3), (int(_ROLLING_MODE), 0.0, 1.0e-3), (int(_TORSIONAL), 2.0e-3, 1.0e-3))
+    shapes = (ground, *pegs)
+    out = wp.zeros(len(pegs), dtype=wp.vec2, device=device)
     wp.launch(
-        _contact_friction_bits_kernel,
-        dim=len(pairs),
+        _pair_coefficients_kernel,
+        dim=len(pegs),
         inputs=[
-            wp.array(modes, dtype=wp.int32, device=device),
-            wp.array([a for a, _ in pairs], dtype=int, device=device),
-            wp.array([b for _, b in pairs], dtype=int, device=device),
+            wp.array([s[0] for s in shapes], dtype=wp.int32, device=device),
+            wp.array([s[1] for s in shapes], dtype=float, device=device),
+            wp.array([s[2] for s in shapes], dtype=float, device=device),
+            wp.array(np.arange(1, len(shapes)), dtype=int, device=device),
         ],
-        outputs=[bits],
+        outputs=[out],
         device=device,
     )
-    host = shape_friction_bits_host(modes)
-    want = [(host[a] if a >= 0 else 0) | (host[b] if b >= 0 else 0) for a, b in pairs]
-    np.testing.assert_array_equal(bits.numpy(), want)
+    expected = [
+        (0.0, max(1.0e-3, defaults.mu_rolling)),
+        (max(0.0, defaults.mu_torsional), max(1.0e-3, defaults.mu_rolling)),
+        (max(2.0e-3, defaults.mu_torsional), 0.0),
+    ]
+    np.testing.assert_allclose(out.numpy(), expected, rtol=1.0e-6)
 
 
 class TestFreeRigidAngularRowBuilder(unittest.TestCase):
@@ -921,8 +954,8 @@ add_function_test(
 )
 add_function_test(
     TestFreeRigidAngularRowBuilder,
-    "test_contact_friction_bits_or_the_shapes",
-    test_contact_friction_bits_or_the_shapes,
+    "test_rolling_only_shape_takes_no_torsion_from_a_default_ground",
+    test_rolling_only_shape_takes_no_torsion_from_a_default_ground,
     devices=get_test_devices(),
 )
 

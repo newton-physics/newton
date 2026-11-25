@@ -56,7 +56,6 @@ from .contact_torsion import (
 )
 from .cpu_fallback import pgs_solve_mf_gs_cpu, pgs_solve_propagation_contact_cpu, reject_cpu_unsupported_features
 from .friction import FRICTION_PAIR_CUDA, coupled_contact_cuda
-from .friction_mode_bits import FRICTION_BIT_TORSIONAL, shape_friction_bits_host
 from .friction_patches import _FrictionPatchState, finish_patch_impulses, link_patch_rows, seed_patch_impulses
 from .kernels import (
     CONTACT_GENERATION_NONE,
@@ -1501,8 +1500,8 @@ class SolverSteel(SolverBase, CouplingInterface):
       raise ``free_body_constraint_max`` if :attr:`constraint_overflow` reports dropped rows. The rows
       need a CUDA device, ``solve_mode="serial"`` with ``articulated_contact_response="immediate"``,
       ``row_schedule="interleaved"``, ``friction_mode="fixed_normal"`` and no contact compliance; otherwise
-      free-body contacts keep sliding friction, and ``TORSIONAL_ROLLING`` shapes warn as an unsupported
-      mode. The solver decides at construction whether to build the rows, so a solver built without them
+      free-body contacts keep sliding friction, and shapes with rolling friction warn that it is
+      unsupported. The solver decides at construction whether to build the rows, so a solver built without them
       must be rebuilt to gain them. On a solver with the rows, construction
       and an eager ``SHAPE_PROPERTIES`` notification raise :class:`ValueError` for a mode outside
       :class:`~newton.ShapeFrictionMode` or a negative or non-finite coefficient that a mode enables.
@@ -3445,17 +3444,21 @@ class SolverSteel(SolverBase, CouplingInterface):
         return int(flags)
 
     def _warn_unsupported_friction_modes(self, model) -> None:
-        """Warn once for friction modes this configuration leaves as sliding friction."""
-        rows = self._free_rigid_angular_rows
-        warn_unsupported_friction_modes(
-            model, ShapeFrictionMode.TORSIONAL_ROLLING if rows else ShapeFrictionMode.TORSIONAL, "SolverSteel"
-        )
+        """Warn once for friction components this configuration leaves as sliding friction."""
         if not model.shape_count or model.shape_material_friction_mode is None:
             return
+        rows = self._free_rigid_angular_rows
+        modes = model.shape_material_friction_mode.numpy()
+        if not rows and np.any(modes & FRICTION_ROLLING_BIT):
+            warnings.warn(
+                "SolverSteel does not support rolling friction in this configuration; contacts of the shapes that "
+                "enable it use sliding friction only.",
+                NewtonWarning,
+                stacklevel=3,
+            )
         torsion_radius = self._contact_torsion_shape_radius
         radii = torsion_radius.numpy() if torsion_radius is not None else np.zeros(model.shape_count)
-        modes = model.shape_material_friction_mode.numpy()
-        missing = ((shape_friction_bits_host(modes) & int(FRICTION_BIT_TORSIONAL)) != 0) & (radii <= 0.0)
+        missing = ((modes & FRICTION_TORSIONAL_BIT) != 0) & (radii <= 0.0)
         if rows:
             # The free-body angular rows cover the shapes whose contacts take the free-body route.
             shape_body = model.shape_body.numpy()
@@ -15469,7 +15472,7 @@ def _get_pgs_solve_mf_gs_kernel(
         contact_compliance: Add ``gamma * lambda`` to every contact-normal residual in each
             sweep (``contact_compliance``); ``gamma`` is zero on rigid rows.
         free_rigid_angular_friction: Solve the rolling pair and spin row that follow free-body
-            contacts' sliding pairs (``ShapeFrictionMode.TORSIONAL`` and above); requires
+            contacts' sliding pairs (a shape mode with torsional or rolling friction); requires
             ``"fixed_normal"`` and no factor coordinates.
     """
     if free_rigid_angular_friction and (friction_mode != "fixed_normal" or factor_coordinates):

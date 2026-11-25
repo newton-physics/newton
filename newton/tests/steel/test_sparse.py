@@ -2659,7 +2659,7 @@ class TestSteelSparseSolver(unittest.TestCase):
 
     def test_free_body_angular_rows_keep_dense_factors(self):
         """Keep dense factors, and solve the angular rows, when a free body has the rolling friction mode."""
-        model = _build_model(free_count=1, friction_mode=newton.ShapeFrictionMode.TORSIONAL_ROLLING)
+        model = _build_model(free_count=1, friction_mode=newton.ShapeFrictionMode.SLIDING_TORSIONAL_ROLLING)
         # The tripod's rolling shapes have no torsion radius, which leaves their contacts with sliding friction.
         with self.assertWarnsRegex(NewtonWarning, "articulated contacts"):
             solver = SolverSteel(model, friction_anchor_beta=0.0)

@@ -16,12 +16,7 @@ import numpy as np
 import warp as wp
 
 from ...sim import ShapeFrictionMode
-from .friction_mode_bits import (
-    FRICTION_BIT_ROLLING,
-    FRICTION_BIT_TORSIONAL,
-    FRICTION_BITS_ANGULAR,
-    shape_friction_bits_host,
-)
+from ...sim.enums import FRICTION_ROLLING_BIT, FRICTION_TORSIONAL_BIT
 from .kernels import (
     PGS_CONSTRAINT_TYPE_CONTACT_ROLLING,
     PGS_CONSTRAINT_TYPE_CONTACT_SPIN,
@@ -47,7 +42,7 @@ def configure_free_rigid_angular_friction(solver, model) -> None:
     route_body = _free_rigid_route_body_mask(solver, model)
     shape_body = model.shape_body.numpy()
     route_shape = (shape_body < 0) | (route_body[np.maximum(shape_body, 0)] != 0)
-    if not np.any(route_shape & ((shape_friction_bits_host(values) & int(FRICTION_BITS_ANGULAR)) != 0)):
+    if not np.any(route_shape & ((values & (FRICTION_TORSIONAL_BIT | FRICTION_ROLLING_BIT)) != 0)):
         return
     if (
         not model.device.is_cuda
@@ -253,12 +248,11 @@ def _check_coefficients(model, modes: np.ndarray) -> None:
 
     A contact gets a component when either shape enables it, so then every shape's coefficient counts.
     """
-    bits = shape_friction_bits_host(modes)
     for name, array, bit in (
-        ("shape_material_mu_torsional", model.shape_material_mu_torsional, FRICTION_BIT_TORSIONAL),
-        ("shape_material_mu_rolling", model.shape_material_mu_rolling, FRICTION_BIT_ROLLING),
+        ("shape_material_mu_torsional", model.shape_material_mu_torsional, FRICTION_TORSIONAL_BIT),
+        ("shape_material_mu_rolling", model.shape_material_mu_rolling, FRICTION_ROLLING_BIT),
     ):
-        if not np.any(bits & int(bit)):
+        if not np.any(modes & bit):
             continue
         values = array.numpy()
         if not np.all(np.isfinite(values)) or np.any(values < 0.0):

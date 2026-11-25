@@ -35,15 +35,9 @@ import warp as wp
 
 from ...core.reset import reset_world_selected
 from ...math.spatial import velocity_at_point
-from ...sim.enums import ShapeFrictionMode
+from ...sim.enums import FRICTION_ROLLING_BIT, FRICTION_TORSIONAL_BIT, ShapeFrictionMode
 from ..solver import contact_friction_mode
 from .friction import contact_tangent_basis
-from .friction_mode_bits import (
-    FRICTION_BIT_ROLLING,
-    FRICTION_BIT_TORSIONAL,
-    FRICTION_BITS_ANGULAR,
-    contact_friction_bits,
-)
 
 # Steel orders its own order-dependent atomics; Warp's deterministic lowering would overflow on its loops.
 # Every Steel kernel module sets this option.
@@ -130,19 +124,19 @@ def free_rigid_angular_friction_coefficients(
 
     Each enabled coefficient is the larger of the two shapes' values; a disabled one is zero.
     """
-    bits = contact_friction_bits(shape_material_friction_mode, shape_a, shape_b)
+    mode = contact_friction_mode(shape_material_friction_mode, shape_a, shape_b)
     torsional = float(0.0)
     rolling = float(0.0)
-    if (bits & FRICTION_BITS_ANGULAR) != 0:
+    if (mode & (FRICTION_TORSIONAL_BIT | FRICTION_ROLLING_BIT)) != 0:
         if shape_a >= 0:
             torsional = wp.max(torsional, free_rigid_mu_torsional[shape_a])
             rolling = wp.max(rolling, free_rigid_mu_rolling[shape_a])
         if shape_b >= 0:
             torsional = wp.max(torsional, free_rigid_mu_torsional[shape_b])
             rolling = wp.max(rolling, free_rigid_mu_rolling[shape_b])
-    if (bits & FRICTION_BIT_TORSIONAL) == 0:
+    if (mode & FRICTION_TORSIONAL_BIT) == 0:
         torsional = 0.0
-    if (bits & FRICTION_BIT_ROLLING) == 0:
+    if (mode & FRICTION_ROLLING_BIT) == 0:
         rolling = 0.0
     return torsional, rolling
 
