@@ -1463,9 +1463,6 @@ For hydroelastic and SDF-based contacts, use :class:`~geometry.HydroelasticSDF.C
    * - ``anchor_contact``
      - Adds an anchor contact at the center of pressure for each normal bin to better preserve moments.
        Default: False.
-   * - ``margin_contact_area``
-     - Deprecated area used for speculative-contact activation stiffness.
-       It remains effective during the deprecation period. Default: 0.01.
 
 .. _Shape Configuration:
 
@@ -2264,8 +2261,8 @@ Hydroelastic contacts use the same three margin-and-gap bands described in
 
 Contacts in the gap region are speculative. Their separation is nonnegative,
 so they do not produce force in the current state. Newton assigns them a contact
-stiffness using the two materials' hydroelastic stiffness and the deprecated
-``margin_contact_area`` compatibility setting.
+stiffness from the two materials' hydroelastic stiffness and a fixed
+activation area of 0.01 m\ :sup:`2`.
 
 To recover the closest equivalent of the earlier geometric-surface behavior,
 set both ``margin=0.0`` and ``gap=0.0`` on the participating shapes. This is a
@@ -2337,8 +2334,8 @@ same pressure law on the hydroelastic faces; no separate linear stiffness law is
 applied to reduced penetrating contacts. The evaluated pressure is stored once
 per buffered face because the pair separation does not contain either shape's
 individual SDF depth. Speculative contacts do not use this stored pressure;
-their activation stiffness uses the declared ``kh`` values and the deprecated
-``margin_contact_area`` compatibility setting.
+their activation stiffness uses the declared ``kh`` values and a fixed
+activation area of 0.01 m\ :sup:`2`.
 
 See :github:`newton/examples/contacts/example_nut_bolt_hydro.py` for a worked
 example.
@@ -2530,13 +2527,6 @@ derivative remains well-defined at rest without a separate smoothing
 parameter. The force is continuous at the Coulomb limit, where its derivative
 changes between the viscous and capped branches.
 
-The solver argument and attribute ``friction_smoothing`` are deprecated in
-Newton 1.8 and have no effect on friction. Explicit constructor values and
-attribute reads or assignments emit a deprecation warning. Constructor calls
-and attribute access remain supported, and the attribute retains its last
-assigned value; all values use the corrected force law above. Remove its use
-and configure ``kf`` for the low-speed slope and ``mu`` for the Coulomb limit.
-
 - Larger ``kf`` gives less creep but stiffens the friction force. With these
   explicit solvers, keep :math:`N k_f \, \Delta t / m_\text{eff}` well below 1,
   where :math:`m_\text{eff}` is the effective mass of the lightest contact pair,
@@ -2685,12 +2675,15 @@ The key keeps bit 63 clear, so the two shape indices and the sub-key share 63
 bits.  Models with only primitive and convex shapes use a 3-bit sub-key, which
 leaves room for ``2**30`` shapes.  Models with meshes, heightfields,
 hydroelastic shapes or primitive shapes with an SDF use a 23-bit sub-key and
-fit at most ``2**20`` shapes;
-above that, deterministic mode and contact matching raise ``ValueError`` at
-construction.  A deterministic :class:`~newton.geometry.NarrowPhase` built
-without ``shape_aabb_lower``/``shape_aabb_upper`` doesn't know the shape count,
-so it uses 20-bit shape fields and raises at launch for more than ``2**20``
-shapes.
+fit at most ``2**20`` shapes in one key.  Above that, the key holds only the
+sub-key and the sort adds a second stable radix pass on a ``(shape_a, shape_b)``
+pair key, which gives the same contact order for one more radix sort per
+frame; contact matching then searches pair ranges on the pair key and breaks
+ties by sorted row index, following sub-key order within each pair. A
+deterministic :class:`~newton.geometry.NarrowPhase`
+built without ``shape_aabb_lower``/``shape_aabb_upper`` doesn't know the shape
+count, so it uses 20-bit shape fields and raises at launch for more than
+``2**20`` shapes.
 
 Hydroelastic contacts are covered by the same two mechanisms, using the
 marching-cubes voxel and face index as the fingerprint.  They additionally need

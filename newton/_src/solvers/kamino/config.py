@@ -593,6 +593,18 @@ class PADMMSolverConfig:
     Must be greater than zero. Defaults to `1e-6`.
     """
 
+    dual_residual_mode: Literal["standard", "delassus"] = field(default="delassus", kw_only=True)
+    """
+    The definition of the dual residual `r_dual` between consecutive iterates.
+
+    - `"standard"`: The ADMM residual `eta * (x - x_p) + rho * (y - y_p)`, with the penalty `rho` of each row.
+    - `"delassus"`: The change `D @ (x - x_p)` of the constraint-space velocity, which ignores the drift of
+      the impulses along the null space of the Delassus matrix, e.g. due to redundant constraints.
+
+    Both are scaled by the inverse preconditioner. The setting of the first world applies to all worlds.
+    The `"standard"` residual is always used with iterative linear solvers. Defaults to `"delassus"`.
+    """
+
     compl_tolerance: float = 1e-6
     """
     The target tolerance on the complementarity residual `r_compl`.\n
@@ -708,7 +720,9 @@ class PADMMSolverConfig:
 
     PADMM converges to a minimum-norm deviation from its initial guess. Scaling
     the warm-start forces makes null-space forces converge to the overall
-    minimum-norm solution.
+    minimum-norm solution. This does not apply to the redundant kinematic joint
+    rows dropped by `detect_redundant_kinematics`, whose internal stress is
+    carried by the kept rows.
     """
 
     contact_warmstart_method: Literal[
@@ -722,6 +736,49 @@ class PADMMSolverConfig:
     Method to be used for warm-starting contacts.\n
     See :class:`WarmstarterContacts.Method` for available options.\n
     Defaults to `key_and_position`.
+    """
+
+    detect_redundant_kinematics: bool = field(default=True, kw_only=True)
+    """
+    Whether to drop the numerically redundant kinematic joint constraints, e.g. of closed kinematic loops,
+    which make the Delassus matrix singular and can prevent convergence.
+
+    The dropped rows carry no impulse, while the kept rows still enforce all joint constraints, so the motion
+    is unchanged. The detection only runs for models with closed kinematic loops, and is turned off with
+    iterative linear solvers. See :class:`RedundantRowShift` for details.
+
+    The setting of the first world applies to all worlds. Defaults to `True`.
+    """
+
+    redundant_kinematics_pivot_threshold: float = field(default=1e-5, kw_only=True)
+    """
+    The relative pivot below which `detect_redundant_kinematics` drops a kinematic joint constraint.
+
+    The relative pivot does not depend on the units or the scaling of the rows, and the default should not
+    need to be changed. The setting of the first world applies to all worlds. Must be in the range (0, 1).
+    Defaults to `1e-5`.
+    """
+
+    reuse_redundant_kinematics_set: bool = field(default=True, kw_only=True)
+    """
+    Whether to keep the kinematic joint constraints dropped at the previous step while they remain valid.
+
+    The dropped rows are checked at every step, and only the worlds that fail the check repeat the detection,
+    which avoids most of its cost. Disabling the reuse is mostly useful for debugging. With the `LLTB` and
+    `LLTBRCM` linear solvers, the check reads the Cholesky factor of the Delassus matrix, which can keep a row
+    dropped for a few steps after it became independent. See :class:`RedundantRowShift` for details.
+
+    The setting of the first world applies to all worlds. Defaults to `True`.
+    """
+
+    unpenalized_bilateral_rows: bool = field(default=True, kw_only=True)
+    """
+    Whether to remove the ALM penalty from the bilateral joint constraints, i.e. the joint dynamics and
+    kinematic rows, which are then solved exactly at each iteration up to the proximal regularization `eta`.
+
+    This speeds up convergence, but requires a Delassus matrix that is well-conditioned on the joint
+    constraints, i.e. a system without redundant kinematic constraints, or `detect_redundant_kinematics`.
+    Turned off with iterative linear solvers. Defaults to `True`.
     """
 
     @override
@@ -889,6 +946,15 @@ class PADMMSolverConfig:
             )
         if not 0.0 <= self.warmstart_scale <= 1.0:
             raise ValueError(f"Invalid warmstart scale: {self.warmstart_scale}. Must be in the range [0, 1].")
+        if not 0.0 < self.redundant_kinematics_pivot_threshold < 1.0:
+            raise ValueError(
+                f"Invalid redundant kinematics pivot threshold: {self.redundant_kinematics_pivot_threshold}. "
+                "Must be in the range (0, 1)."
+            )
+        if self.dual_residual_mode not in ("standard", "delassus"):
+            raise ValueError(
+                f"Invalid dual residual mode: {self.dual_residual_mode}. Must be either 'standard' or 'delassus'."
+            )
 
         # Ensure that the enum-valued parameters are valid options
         # Conversion to enum-type configs will raise an error
