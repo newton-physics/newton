@@ -13117,7 +13117,7 @@ class TestOverrideRootXform(unittest.TestCase):
         loop_idx = builder.joint_label.index("/World/env/Robot/LoopJoint")
         self.assertEqual(builder.joint_articulation[loop_idx], -1)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @requires("pxr.Usd")
     def test_world_joint_on_floating_articulation_root_stays_loose(self):
         """An excludeFromArticulation world joint targeting a floating articulation's
         root body stays a loose loop closure instead of being wrapped: at wrap time

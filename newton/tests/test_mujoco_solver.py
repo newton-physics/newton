@@ -8073,7 +8073,7 @@ class TestMuJoCoAttributes(unittest.TestCase):
         newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
         builder.add_usd(stage)
         model = builder.finalize()
-        solver = SolverMuJoCo(model, separate_worlds=False)
+        solver = SolverMuJoCo(model)
         assert hasattr(model, "mujoco")
         assert hasattr(model.mujoco, "condim")
         assert np.allclose(model.mujoco.condim.numpy(), [6])
@@ -9208,7 +9208,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
                 builder.add_articulation([joint])
 
                 model = builder.finalize()
-                solver = SolverMuJoCo(model, disable_contacts=True)
+                solver = SolverMuJoCo(model, disable_contacts=True, kinematic_switchable_roots=False)
 
                 self.assertEqual(model.articulation_count, 1)
                 self.assertEqual(solver.mj_model.nbody, 2)
@@ -9232,7 +9232,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         builder = newton.ModelBuilder()
         builder.replicate(template, world_count)
         model = builder.finalize()
-        solver = SolverMuJoCo(model, separate_worlds=True, disable_contacts=True)
+        solver = SolverMuJoCo(model, disable_contacts=True, kinematic_switchable_roots=False)
 
         self.assertEqual(model.world_count, world_count)
         self.assertEqual(solver.mj_model.nbody, 3)
@@ -9255,7 +9255,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         self.assertEqual(builder.joint_articulation[loop_joint], -1)
 
         model = builder.finalize()
-        solver = SolverMuJoCo(model, disable_contacts=True)
+        solver = SolverMuJoCo(model, disable_contacts=True, kinematic_switchable_roots=False)
 
         self.assertEqual(solver.mj_model.nbody, 3)
         self.assertEqual(solver.mj_model.njnt, 1)

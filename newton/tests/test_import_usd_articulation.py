@@ -15,7 +15,7 @@ from newton import JointType
 from newton._src.usd.utils import get_transform
 from newton._src.utils.import_usd import _is_uniform_scale
 from newton.tests._usd_import_test_utils import _expect_jointless_articulation_warning
-from newton.tests.unittest_utils import assert_np_equal, requires
+from newton.tests.unittest_utils import MUJOCO_MODULES, assert_np_equal, requires
 
 
 class TestImportUsdArticulation(unittest.TestCase):
@@ -328,21 +328,50 @@ def Xform "Root" (
         return stage
 
     @requires("pxr.Usd")
-    def test_body_to_world_fixed_joint_without_articulation_root_stays_orphan(self):
-        """Keep a fixed joint to world rootless and finalize normally."""
+    def test_body_to_world_fixed_joint_without_articulation_root_is_wrapped(self):
+        """Wrap a rootless fixed joint to world in an articulation named after its body."""
         stage = self._make_rootless_fixed_stage(with_child_joint=False)
         builder = newton.ModelBuilder()
         builder.add_usd(stage, load_visual_shapes=False)
 
-        self.assertEqual(builder.articulation_count, 0)
+        self.assertEqual(builder.articulation_label, ["/World/Base"])
         self.assertEqual(builder.joint_count, 1)
         root_joint_idx = builder.joint_label.index("/World/RootJoint")
         self.assertEqual(builder.joint_parent[root_joint_idx], -1)
-        self.assertEqual(builder.joint_articulation[root_joint_idx], -1)
+        self.assertEqual(builder.joint_articulation[root_joint_idx], 0)
 
         model = builder.finalize()
-        self.assertEqual(model.articulation_count, 0)
-        self.assertEqual(model.joint_articulation.numpy()[root_joint_idx], -1)
+        self.assertEqual(model.articulation_count, 1)
+
+    @requires("pxr.Usd", *MUJOCO_MODULES)
+    def test_rootless_world_joint_body_state_follows_joint(self):
+        """Keep the body state of a rootless world joint in sync with its coordinates (issue #4544)."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        prim = UsdGeom.Cube.Define(stage, "/body").GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(prim)
+        UsdPhysics.CollisionAPI.Apply(prim)
+        UsdPhysics.MassAPI.Apply(prim).CreateMassAttr().Set(1.0)
+        joint = UsdPhysics.PrismaticJoint.Define(stage, "/joint")
+        joint.CreateAxisAttr().Set("Z")
+        joint.CreateBody1Rel().SetTargets(["/body"])
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+        model = builder.finalize()
+        self.assertEqual(model.articulation_count, 1)
+
+        solver = newton.solvers.SolverMuJoCo(model, disable_contacts=True)
+        state_0, state_1, control = model.state(), model.state(), model.control()
+        for _ in range(50):
+            solver.step(state_0, state_1, control, None, 0.005)
+            state_0, state_1 = state_1, state_0
+
+        joint_z = float(state_0.joint_q.numpy()[0])
+        self.assertLess(joint_z, -0.1)
+        self.assertAlmostEqual(float(state_0.body_q.numpy()[0][2]), joint_z, places=4)
 
     @requires("pxr.Usd")
     def test_rootless_mechanism_root_and_child_joints_stay_orphan(self):
@@ -397,16 +426,16 @@ def Xform "Root" (
 
         builder = newton.ModelBuilder()
         result = builder.add_usd(stage, load_visual_shapes=False)
-        self.assertEqual(builder.articulation_count, 0)
+        self.assertEqual(builder.articulation_count, 1)
         self.assertEqual(builder.joint_count, 1)
         self.assertEqual(builder.joint_type, [newton.JointType.D6])
         self.assertEqual(builder.joint_dof_dim, [(1, 1)])
-        self.assertEqual(builder.joint_articulation, [-1])
+        self.assertEqual(builder.joint_articulation, [0])
         self.assertEqual(result["path_joint_map"][slide.GetPath().pathString], 0)
         self.assertEqual(result["path_joint_map"][hinge.GetPath().pathString], 0)
 
         model = builder.finalize()
-        self.assertEqual(model.articulation_count, 0)
+        self.assertEqual(model.articulation_count, 1)
         self.assertEqual(model.joint_dof_count, 2)
 
     @requires("pxr.Usd")
@@ -612,7 +641,9 @@ def Xform "Root" (
         root_slide_idx = builder.joint_label.index("/World/RootSlide")
         self.assertEqual(builder.joint_type[root_slide_idx], newton.JointType.PRISMATIC)
         self.assertEqual(builder.joint_parent[root_slide_idx], -1)
-        self.assertEqual(builder.joint_articulation[root_slide_idx], -1)
+        # a world joint of a body outside the authored articulation gets its own articulation
+        root_slide_articulation = builder.joint_articulation[root_slide_idx]
+        self.assertNotIn(root_slide_articulation, (-1, builder.joint_articulation[art_idx]))
 
         model = builder.finalize(skip_validation_joints=True)
         self.assertEqual(model.body_count, 5)
@@ -718,7 +749,7 @@ def Xform "Root" (
 
         # 3 bodies: Base, Link1, WorldLink.
         self.assertEqual(builder.body_count, 3)
-        self.assertEqual(builder.articulation_count, 1)
+        self.assertEqual(builder.articulation_count, 2)
 
         wl_body_idx = builder.body_label.index("/World/WorldLink")
         wl_joint_idx = next(i for i in range(builder.joint_count) if builder.joint_child[i] == wl_body_idx)
@@ -727,13 +758,11 @@ def Xform "Root" (
         self.assertEqual(builder.joint_type[wl_joint_idx], newton.JointType.FIXED)
         # Parent is -1 (world).
         self.assertEqual(builder.joint_parent[wl_joint_idx], -1)
-        # The world-fixed joint pins a standalone body without generalized
-        # coordinates, so it stays outside the authored arm articulation.
-        self.assertEqual(builder.joint_articulation[wl_joint_idx], -1)
-
         rev_joint_idx = builder.joint_label.index("/World/Arm/RevJoint")
         arm_art = builder.joint_articulation[rev_joint_idx]
         self.assertNotEqual(arm_art, -1)
+        # The world-fixed joint gets its own articulation next to the authored arm.
+        self.assertNotIn(builder.joint_articulation[wl_joint_idx], (-1, arm_art))
 
         # Model must finalize without errors (no orphan joint issues).
         model = builder.finalize()
@@ -776,10 +805,10 @@ def Xform "Root" (
 
                 link_idx = builder.body_label.index("/World/env/PinnedLink")
                 joint_idx = builder.joint_label.index("/World/env/PinnedLink/FixedJoint")
-                self.assertEqual(builder.articulation_count, 0)
+                self.assertEqual(builder.articulation_label, ["/World/env/PinnedLink"])
                 self.assertEqual(builder.joint_type[joint_idx], newton.JointType.FIXED)
                 self.assertEqual(builder.joint_parent[joint_idx], -1)
-                self.assertEqual(builder.joint_articulation[joint_idx], -1)
+                self.assertEqual(builder.joint_articulation[joint_idx], 0)
 
                 # Check the fixed joint frame by validating the joint_X_c.
                 expected_X_c = local_pose0 if side == "body0" else local_pose1
@@ -797,7 +826,7 @@ def Xform "Root" (
                 self.assertLessEqual(2.0 * math.acos(min(1.0, abs(q_err[3]))), 1e-4)
 
                 model = builder.finalize()
-                self.assertEqual(model.articulation_count, 0)
+                self.assertEqual(model.articulation_count, 1)
 
     @requires("pxr.Usd")
     def test_collapse_fixed_joints_preserves_orphan_joints(self):

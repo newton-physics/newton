@@ -2735,6 +2735,7 @@ class TestMotorDC(unittest.TestCase):
                     builder = newton.ModelBuilder()
                     link = builder.add_link(mass=1.0, inertia=_POINT_MASS_INERTIA)
                     joint = builder.add_joint_revolute(-1, link)
+                    builder.add_articulation([joint])
                     clamps = [(ClampingCurrentDuty, {"max_duty": 0.5})] if with_clamp else []
                     slot = builder.add_actuator(
                         DrivePD,
@@ -3388,6 +3389,7 @@ class TestClampingCurrentDuty(unittest.TestCase):
         builder = newton.ModelBuilder()
         link = builder.add_link()
         joint = builder.add_joint_revolute(parent=-1, child=link, axis=newton.Axis.Z)
+        builder.add_articulation([joint])
         clamping = [
             (
                 ClampingCurrentDuty,
@@ -5353,6 +5355,7 @@ class TestActuatorBuilder(unittest.TestCase):
         builder = newton.ModelBuilder()
         link = builder.add_link(mass=1.0, inertia=_POINT_MASS_INERTIA)
         joint = builder.add_joint_revolute(-1, link)
+        builder.add_articulation([joint])
         index = builder.joint_qd_start[joint]
         motor = (MotorDC, {"kt": 0.5, "resistance": 2.0, "vin": 12.0})
         invalid = [
@@ -5622,6 +5625,7 @@ class TestActuatorBuilder(unittest.TestCase):
         template = newton.ModelBuilder()
         link = template.add_link()
         joint = template.add_joint_revolute(parent=-1, child=link, axis=newton.Axis.Z)
+        template.add_articulation([joint])
         template.add_actuator(
             DrivePD,
             output_space=DriveOutputSpace.DUTY,

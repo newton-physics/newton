@@ -426,7 +426,6 @@ class TestJointSprings(unittest.TestCase):
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
         builder.add_usd(stage)
-        builder.add_articulation([0])
         with warnings.catch_warnings():
             warnings.simplefilter("error", DeprecationWarning)
             model = builder.finalize(device="cpu")

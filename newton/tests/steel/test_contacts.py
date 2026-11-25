@@ -3975,7 +3975,7 @@ class TestSteelJointlessKinematicBody(unittest.TestCase):
         builder.add_joint_fixed(parent=-1, child=root)
         body = builder.add_link(xform=wp.transform(wp.vec3(0.0, 0.0, 0.69)), is_kinematic=True)
         builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
-        model = builder.finalize(device="cpu")
+        model = builder.finalize(device="cpu", skip_validation_joints=True)
         self.assertEqual((model.joint_count, model.articulation_count), (1, 0))
         with self.assertWarns(DeprecationWarning):
             model.request_state_attributes("body_parent_f")
@@ -4007,7 +4007,7 @@ class TestSteelJointlessKinematicBody(unittest.TestCase):
         body = builder.add_link()
         builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
         builder.add_joint_revolute(parent=-1, child=body, axis=(0.0, 1.0, 0.0))
-        model = builder.finalize(device="cpu")
+        model = builder.finalize(device="cpu", skip_validation_joints=True)
         self.assertEqual((model.joint_dof_count, model.articulation_count), (1, 0))
         solver = SolverSteel(model)
         state_in, state_out = model.state(), model.state()
