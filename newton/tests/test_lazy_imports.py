@@ -91,12 +91,13 @@ class TestLazySolverImports(unittest.TestCase):
             f"modules = {modules!r}; "
             "prefixes = tuple(f'newton.{name}' for name in modules) + tuple(modules.values()); "
             "print(','.join(m for m in sys.modules if m.startswith(prefixes))); "
+            "print(set(modules) <= set(dir(newton))); "
             "print(all(getattr(newton, name) is sys.modules[f'newton.{name}'] for name in modules))"
         )
-        loaded, resolved = _run_in_fresh_interpreter(code).stdout.splitlines()
+        loaded, listed, resolved = _run_in_fresh_interpreter(code).stdout.splitlines()
         self.assertEqual(loaded, "", f"submodules imported eagerly: {loaded}")
+        self.assertEqual(listed, "True")
         self.assertEqual(resolved, "True")
-        self.assertLessEqual(set(modules), set(dir(newton)))
 
     def test_public_exports_match_internal_exports(self):
         """Expose the internal solver surface through the public module."""
