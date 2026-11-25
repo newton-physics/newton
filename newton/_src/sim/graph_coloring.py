@@ -413,27 +413,6 @@ def combine_independent_coloring_plan(sized_groups_1, sized_groups_2) -> list:
     return combined
 
 
-def combine_independent_particle_coloring(color_groups_1, color_groups_2) -> list:
-    """
-    A function that combines 2 independent coloring groups. Note that color_groups_1 and color_groups_2 must be from 2 independent
-    graphs so that there is no connection between them. This algorithm will sort color_groups_1 in ascending order and
-    sort color_groups_2 in descending order, and combine each group with the same index, this way we are always combining
-    the smaller group with the larger group.
-
-    Args:
-        color_groups_1: A list of `np.array` with `dtype`=`int`. The length of the list is the number of colors
-            and each `np.array` contains the indices of vertices with this color.
-        color_groups_2: A list of `np.array` with `dtype`=`int`. The length of the list is the number of colors
-            and each `np.array` contains the indices of vertices with this color.
-
-    """
-    plan = combine_independent_coloring_plan(
-        [(len(group), [group]) for group in color_groups_1],
-        [(len(group), [group]) for group in color_groups_2],
-    )
-    return [chunks[0] if len(chunks) == 1 else np.concatenate(chunks) for _, chunks in plan]
-
-
 def color_rigid_bodies(
     num_bodies: int,
     joint_parent: list[int],
