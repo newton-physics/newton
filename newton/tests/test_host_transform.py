@@ -138,6 +138,11 @@ class TestHostTransform(unittest.TestCase):
         array = warp_array_from_values(matrices, wp.mat33, device="cpu")
         np.testing.assert_array_equal(array.numpy(), wp.array(matrices, dtype=wp.mat33, device="cpu").numpy())
 
+        # Scalar Warp values have no shape to join and fall back to wp.array.
+        scalars = [wp.float32(1.5), wp.float32(2.0)]
+        self.assertIsNone(join_warp_values(scalars, wp.float32))
+        np.testing.assert_array_equal(warp_array_from_values(scalars, wp.float32, device="cpu").numpy(), [1.5, 2.0])
+
         pair = (wp.vec3(1.0, 2.0, 3.0), wp.quat_identity())
         np.testing.assert_array_equal(pack_transforms([self.transform, pair]), [self.transform, wp.transform(*pair)])
 

@@ -24,6 +24,7 @@ import newton
 import newton.utils
 from newton import ModelBuilder, NewtonDeprecationWarning
 from newton._src.geometry.utils import transform_points
+from newton._src.sim.builder import _ARRAY_BACKED_ATTRIBUTE_DTYPES, _ARRAY_BACKED_ATTRIBUTES_BY_FREQUENCY
 from newton._src.solvers.coupled.model_view import ModelView
 from newton._src.solvers.mujoco.equality import _add_equality_constraint
 from newton._src.viewer.viewer_file import depointer_as_key, pointer_as_key, transfer_to_model
@@ -337,6 +338,62 @@ class TestModelAttributeSpecs(unittest.TestCase):
         ):
             with self.subTest(attribute=name):
                 self.assertEqual(model.get_attribute_frequency(name), expected_frequency)
+
+    def test_finalize_converts_array_backed_attributes(self):
+        """Finalize array-backed attributes to their dtypes, with gradients only for differentiable ones."""
+        builder = ModelBuilder()
+        builder.add_cloth_grid(
+            pos=wp.vec3(0.0, 0.0, 1.0),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0),
+            dim_x=2,
+            dim_y=2,
+            cell_x=0.1,
+            cell_y=0.1,
+            mass=0.1,
+            add_springs=True,
+        )
+        builder.add_soft_grid(
+            pos=wp.vec3(1.0, 0.0, 1.0),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0),
+            dim_x=1,
+            dim_y=1,
+            dim_z=1,
+            cell_x=0.1,
+            cell_y=0.1,
+            cell_z=0.1,
+            density=100.0,
+            k_mu=1.0e3,
+            k_lambda=1.0e3,
+            k_damp=0.0,
+        )
+        body = builder.add_link()
+        builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+        joint = builder.add_joint_revolute(-1, body, axis=(0.0, 1.0, 0.0))
+        builder.add_articulation([joint])
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", NewtonDeprecationWarning)
+            builder.add_constraint_mimic(joint, joint, coef0=0.1, coef1=0.5)
+        model = builder.finalize(device="cpu", requires_grad=True)
+
+        conversions = {
+            name: (dtype, differentiable)
+            for entries in _ARRAY_BACKED_ATTRIBUTES_BY_FREQUENCY.values()
+            for name, dtype, differentiable in entries
+        }
+        self.assertEqual(set(conversions), set(_ARRAY_BACKED_ATTRIBUTE_DTYPES))
+        for name, (dtype, differentiable) in conversions.items():
+            with self.subTest(attribute=name):
+                array = getattr(model, name)
+                self.assertIsNotNone(array)
+                self.assertEqual(array.dtype, dtype)
+                self.assertEqual(array.requires_grad, differentiable)
+        # Display colors and the deprecated mimic coefficients opt out of gradients.
+        for name in ("shape_color", "tri_opacity", "constraint_mimic_coef0"):
+            self.assertFalse(getattr(model, name).requires_grad)
+        self.assertTrue(model.body_q.requires_grad)
+        self.assertFalse(model.joint_parent.requires_grad)
 
 
 class TestParallelJointWarning(unittest.TestCase):
