@@ -430,6 +430,11 @@ class TestShapeContactPairs(unittest.TestCase):
                 shape_mask = np.array(mask)
                 self.assertEqual(_estimate_rigid_contact_max_per_world(model, 100, shape_mask=shape_mask), estimate)
         self.assertEqual(_estimate_rigid_contact_max_per_world(model, 12, shape_mask=np.ones(4, dtype=bool)), 12)
+        # Pairs whose two shapes are selected: the three sphere pairs, without the ground.
+        spheres = np.array([True, True, True, False])
+        self.assertEqual(_estimate_rigid_contact_max_per_world(model, 100, shape_mask=spheres, both_selected=True), 15)
+        one = np.array([True, False, False, False])
+        self.assertEqual(_estimate_rigid_contact_max_per_world(model, 100, shape_mask=one, both_selected=True), 0)
 
     def test_empty_models_and_filtered_scenes(self):
         """Return empty arrays for empty and fully excluded scenes."""

@@ -322,8 +322,11 @@ repository examples spend tuning effort, not a shared solver API.
        them as PGS rows together with contacts and limits instead, and each
        driven DOF then uses one row of ``articulation_constraint_max``. By default
        ``articulation_constraint_max`` is sized from the model: the joint rows of the
-       busiest world plus three rows per contact of the collision pipeline's per-world
-       estimate for the shapes of articulated bodies, between 32 and 256 rows unless
+       busiest world plus three rows (four with contact torsion) per contact of the
+       collision pipeline's per-world estimate for the contacts that stay dense, which
+       are those of articulated bodies with the ``"immediate"`` response and those
+       between two articulated bodies with ``"propagation"`` (none when
+       ``propagation_same_articulation_rows`` is set), between 32 and 256 rows unless
        the joint rows alone need more. Rows beyond ``articulation_constraint_max``
        (articulated bodies), ``free_body_constraint_max`` (free bodies) or
        ``propagation_constraint_max`` (propagation rows, see below) per world

@@ -513,7 +513,7 @@ def _clear_dense_row_state(
         dropped[family, world] = 0
 
 
-# Entries of SolverSteel._overflow_causes, one per kind of loss.
+# Columns of SolverSteel._overflow_causes, one per kind of loss.
 _OVERFLOW_CAUSE_DENSE = wp.constant(0)
 _OVERFLOW_CAUSE_FREE_BODY = wp.constant(1)
 _OVERFLOW_CAUSE_PROPAGATION = wp.constant(2)
@@ -538,9 +538,9 @@ def _finalize_constraint_status(
     contact_capacity: int,
     has_responding_global: int,
     overflow: wp.array[wp.bool],
-    overflow_causes: wp.array[int],
+    overflow_causes: wp.array2d[int],
 ):
-    """Latch invalid-world status and the kinds of loss until reset; counts come from the per-family finalize kernels.
+    """Latch invalid-world status and its kinds of loss until reset; counts come from the per-family finalize kernels.
 
     ``overflow`` has one entry per world plus a final entry for global (world ``-1``)
     articulations. Global articulations are solved in world 0's row storage, so a row
@@ -551,13 +551,13 @@ def _finalize_constraint_status(
     global_slot = overflow.shape[0] - 1
     lost = False
     if contact_count[0] > contact_capacity:
-        wp.atomic_max(overflow_causes, _OVERFLOW_CAUSE_CONTACTS, 1)
+        overflow_causes[slot, _OVERFLOW_CAUSE_CONTACTS] = 1
         lost = True
     if reduction_overflow[0] != 0:
-        wp.atomic_max(overflow_causes, _OVERFLOW_CAUSE_REDUCTION, 1)
+        overflow_causes[slot, _OVERFLOW_CAUSE_REDUCTION] = 1
         lost = True
     if cross_world_contacts[slot] > 0:
-        wp.atomic_max(overflow_causes, _OVERFLOW_CAUSE_CROSS_WORLD, 1)
+        overflow_causes[slot, _OVERFLOW_CAUSE_CROSS_WORLD] = 1
         lost = True
     world = slot
     if slot == global_slot:
@@ -566,13 +566,13 @@ def _finalize_constraint_status(
             world = 0
     if world >= 0:
         if dense_count[world] > dense_capacity or dropped[0, world] > 0:
-            wp.atomic_max(overflow_causes, _OVERFLOW_CAUSE_DENSE, 1)
+            overflow_causes[slot, _OVERFLOW_CAUSE_DENSE] = 1
             lost = True
         if mf_count[world] > mf_capacity or dropped[1, world] > 0:
-            wp.atomic_max(overflow_causes, _OVERFLOW_CAUSE_FREE_BODY, 1)
+            overflow_causes[slot, _OVERFLOW_CAUSE_FREE_BODY] = 1
             lost = True
         if propagation_count[world] > propagation_capacity or dropped[2, world] > 0:
-            wp.atomic_max(overflow_causes, _OVERFLOW_CAUSE_PROPAGATION, 1)
+            overflow_causes[slot, _OVERFLOW_CAUSE_PROPAGATION] = 1
             lost = True
     if lost:
         overflow[slot] = True
@@ -594,12 +594,13 @@ def _reset_solver_status(
     overflow: wp.array[wp.bool],
     disabled_tree_joint: wp.array[wp.bool],
     joint_friction_invalid: wp.array[wp.bool],
+    overflow_causes: wp.array2d[int],
     fk_id_valid: wp.array[int],
 ):
     """Clear the status of selected worlds, request a mass refresh of their articulations and drop their carried kinematics.
 
-    ``overflow``, ``disabled_tree_joint``, ``joint_friction_invalid`` and ``world_mask`` share the
-    ``(world_count + 1,)`` layout. ``articulation_world`` holds the model's articulation worlds, so
+    ``overflow``, ``disabled_tree_joint``, ``joint_friction_invalid``, the rows of ``overflow_causes`` and
+    ``world_mask`` share the ``(world_count + 1,)`` layout. ``articulation_world`` holds the model's articulation worlds, so
     global articulations (world ``-1``) are selected by the final mask entry.
     """
     tid = wp.tid()
@@ -608,6 +609,8 @@ def _reset_solver_status(
             overflow[tid] = False
             disabled_tree_joint[tid] = False
             joint_friction_invalid[tid] = False
+            for cause in range(overflow_causes.shape[1]):
+                overflow_causes[tid, cause] = 0
     if tid < mass_update_requested.shape[0]:
         if not world_mask or reset_world_selected(articulation_world[tid], world_mask, world_count):
             mass_update_requested[tid] = 1
@@ -2030,10 +2033,12 @@ class SolverSteel(SolverBase, CouplingInterface):
                 and, with ``drive_mode="rows"``, joint drives) per world. Rows beyond it are
                 dropped and reported, see :attr:`constraint_overflow`. ``None`` (default) sizes it
                 at construction for the busiest world: the rows its joints can take (per DOF, two
-                limit rows, a velocity-limit row, a friction row and a drive row, as enabled, plus
-                mimic and loop-closing rows) and, with the ``"immediate"`` response, three rows (four
-                with contact torsion) per contact of the collision pipeline's per-world estimate over
-                the shape pairs that touch an articulated body other than a free body. The result is
+                limit rows, two velocity-limit rows, a friction row and a drive row, as enabled, plus
+                mimic and loop-closing rows) and three rows (four with contact torsion) per contact of
+                the collision pipeline's per-world estimate over the shape pairs that stay dense: with
+                the ``"immediate"`` response the pairs that touch an articulated body other than a free
+                body, with ``"propagation"`` the pairs of two such bodies (none when
+                ``propagation_same_articulation_rows`` is set). The result is
                 at least 32 and at most 256 unless the joint rows alone need more; the attribute reads
                 the resolved capacity. An explicit value is used as given.
             free_body_constraint_max: Capacity of free-body rows per world: free-body contact rows
@@ -3086,7 +3091,9 @@ class SolverSteel(SolverBase, CouplingInterface):
         # Worlds whose step read invalid joint friction; allocated after the step's buffers to keep their layout.
         self._joint_friction_invalid = wp.zeros(int(model.world_count) + 1, dtype=wp.bool, device=model.device)
         # Kinds of loss latched with constraint_overflow, and the flagged count an eager step reads back on the next one.
-        self._overflow_causes = wp.zeros(_OVERFLOW_CAUSE_COUNT, dtype=wp.int32, device=model.device)
+        self._overflow_causes = wp.zeros(
+            (int(model.world_count) + 1, _OVERFLOW_CAUSE_COUNT), dtype=wp.int32, device=model.device
+        )
         self._overflow_report = wp.zeros(1, dtype=wp.int32, device=model.device)
         self._overflow_report_host = wp.zeros(1, dtype=wp.int32, device="cpu")
         self._overflow_report_event = wp.Event(model.device) if model.device.is_cuda else None
@@ -3658,14 +3665,15 @@ class SolverSteel(SolverBase, CouplingInterface):
                 self.constraint_overflow,
                 self._disabled_tree_joint,
                 self._joint_friction_invalid,
+                self._overflow_causes,
                 self._fk_id_valid,
             ],
             device=self.model.device,
         )
-        # The kinds of loss are solver-wide; a loss that persists latches again on the next step.
-        self._overflow_causes.zero_()
-        self._overflow_report_pending = False
-        self._overflow_raised = False
+        if world_mask is None:
+            # A masked reset keeps both: the live status decides whether the unselected worlds still raise.
+            self._overflow_report_pending = False
+            self._overflow_raised = False
         if self._friction_anchors_enabled:
             self._friction_patches.reset(world_mask, int(self.model.world_count))
         self._clear_warmstart_history(world_mask)
@@ -4110,7 +4118,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         dense = (plan.is_free_rigid == 0) & (plan.response_dof_count > 0)
         rows_per_dof = (
             2 * int(self._enable_joint_limits)
-            + int(self._enable_joint_velocity_limits)
+            + 2 * int(self._enable_joint_velocity_limits)
             + int(self._enable_joint_friction)
             + int(self._has_drive_rows)
         )
@@ -4129,7 +4137,10 @@ class SolverSteel(SolverBase, CouplingInterface):
         joint_rows_max = int(joint_rows.max())
 
         contact_rows = 0
-        if self._articulated_contact_response == "immediate" and model.shape_count and np.any(dense):
+        # The immediate response keeps every contact of an articulated body dense; the propagation response keeps only
+        # contacts between two of its links, unless propagation_same_articulation_rows moves them too.
+        immediate = self._articulated_contact_response == "immediate"
+        if (immediate or not self._propagation_same_articulation_rows) and model.shape_count and np.any(dense):
             # Shared with the collision pipeline's capacity estimate and SolverMuJoCo's njmax.
             from ...sim.collide import (  # noqa: PLC0415
                 _estimate_rigid_contact_max,
@@ -4143,7 +4154,10 @@ class SolverSteel(SolverBase, CouplingInterface):
             contact_max = model.rigid_contact_max
             if contact_max is None:
                 contact_max = _estimate_rigid_contact_max(model)
-            contacts = _estimate_rigid_contact_max_per_world(model, int(contact_max), shape_mask=dense_shape)
+            # Under propagation, pairs of two articulated shapes bound the same-articulation pairs.
+            contacts = _estimate_rigid_contact_max_per_world(
+                model, int(contact_max), shape_mask=dense_shape, both_selected=not immediate
+            )
             contact_rows = contacts * (_DENSE_ROWS_PER_CONTACT + int(self._contact_torsion_enabled))
         rows = min(joint_rows_max + contact_rows, max(_AUTO_ARTICULATION_CONSTRAINT_MAX, joint_rows_max))
         return min(max(rows, _AUTO_ARTICULATION_CONSTRAINT_MIN), self._dense_max_constraints_limit)
@@ -7232,7 +7246,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._overflow_raised = flagged > 0
         if not flagged:
             return
-        causes = self._overflow_causes.numpy()
+        causes = self._overflow_causes.numpy()[self.constraint_overflow.numpy()].any(axis=0)
         remedies = [
             remedy
             for cause, remedy in (

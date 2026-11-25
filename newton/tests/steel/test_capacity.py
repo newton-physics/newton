@@ -274,17 +274,24 @@ add_function_test(
 )
 
 
-def _pad_slider(device, worlds=1, response="immediate"):
-    """A slider plate with 72 sphere pads on the ground (issue #5592): 216 dense contact rows per world."""
+def _pad_template(height=0.0):
+    """A slider plate with 72 sphere pads at ``height`` above the ground (issue #5592)."""
     template = newton.ModelBuilder()
     plate = template.add_link()
     template.add_articulation([template.add_joint_prismatic(-1, plate, axis=newton.Axis.Z)])
     for i in range(9):
         for j in range(8):
-            xform = wp.transform(wp.vec3(0.06 * (i - 4), 0.06 * (j - 3.5), 0.019), wp.quat_identity())
+            xform = wp.transform(wp.vec3(0.06 * (i - 4), 0.06 * (j - 3.5), 0.019 + height), wp.quat_identity())
             template.add_shape_sphere(plate, xform=xform, radius=0.02)
+    return template
+
+
+def _pad_slider(device, worlds=1, lifted_worlds=0):
+    """Pad sliders on the ground, 216 dense contact rows per world, followed by ``lifted_worlds`` without contacts."""
     builder = newton.ModelBuilder()
-    builder.replicate(template, worlds, spacing=(1.0, 0.0, 0.0))
+    builder.replicate(_pad_template(), worlds, spacing=(1.0, 0.0, 0.0))
+    for _ in range(lifted_worlds):
+        builder.add_world(_pad_template(height=2.0))
     builder.add_ground_plane()
     model = builder.finalize(device=device)
     pipeline = newton.CollisionPipeline(model)
@@ -436,6 +443,45 @@ def test_auto_capacity_counts_joint_rows(test, device):
         SolverSteel(chain(40), enable_joint_limits=True, drive_mode="rows").articulation_constraint_max, 120
     )
     test.assertEqual(SolverSteel(chain(300), enable_joint_limits=True).articulation_constraint_max, 600)
+    # A velocity-limited DOF can take a lower and an upper row.
+    test.assertEqual(SolverSteel(chain(40), enable_joint_velocity_limits=True).articulation_constraint_max, 80)
+
+
+def test_auto_capacity_counts_dense_self_contacts_under_propagation(test, device):
+    """Size the dense rows for contacts between links of one articulation, which stay dense under propagation."""
+    builder = newton.ModelBuilder()
+    parent, joints = -1, []
+    for _ in range(6):
+        link = builder.add_link()
+        builder.add_shape_sphere(link, radius=0.1)
+        joints.append(builder.add_joint_revolute(parent, link, axis=newton.Axis.Y))
+        parent = link
+    builder.add_articulation(joints)
+    model = builder.finalize(device=device)
+    # Ten pairs of non-adjacent links, five contacts per primitive pair, three rows per contact.
+    test.assertEqual(SolverSteel(model).articulation_constraint_max, 150)
+    test.assertEqual(SolverSteel(model, articulated_contact_response="propagation").articulation_constraint_max, 150)
+    moved = SolverSteel(model, articulated_contact_response="propagation", propagation_same_articulation_rows=True)
+    test.assertEqual(moved.articulation_constraint_max, 32)
+
+
+def test_overflow_raise_survives_masked_resets_of_other_worlds(test, device):
+    """Keep raising, with the flagged world's remedy, while every step first resets only another world."""
+    model, pipeline, contacts = _pad_slider(device, lifted_worlds=1)
+    solver = SolverSteel(model, articulation_constraint_max=32, warn_constraint_overflow=False)
+    states = (model.state(), model.state())
+    other_world = wp.array([False, True, False], dtype=wp.bool, device=device)
+    raised_at = None
+    for step in range(6):
+        solver.reset(states[0], other_world)
+        try:
+            _step(solver, model, pipeline, contacts, states)
+        except RuntimeError as error:
+            test.assertIn("raise articulation_constraint_max, or pass", str(error))
+            raised_at = step
+            break
+    test.assertEqual(raised_at, 1)
+    np.testing.assert_array_equal(solver.constraint_overflow.numpy(), [True, False, False])
 
 
 def test_auto_capacity_follows_the_contact_response(test, device):
@@ -455,6 +501,14 @@ for name, function in (
     ("test_overflow_raise_opt_out_keeps_stepping", test_overflow_raise_opt_out_keeps_stepping),
     ("test_auto_capacity_counts_joint_rows", test_auto_capacity_counts_joint_rows),
     ("test_auto_capacity_follows_the_contact_response", test_auto_capacity_follows_the_contact_response),
+    (
+        "test_auto_capacity_counts_dense_self_contacts_under_propagation",
+        test_auto_capacity_counts_dense_self_contacts_under_propagation,
+    ),
+    (
+        "test_overflow_raise_survives_masked_resets_of_other_worlds",
+        test_overflow_raise_survives_masked_resets_of_other_worlds,
+    ),
 ):
     add_function_test(TestSteelCapacityStatus, name, function, devices=get_test_devices())
 
