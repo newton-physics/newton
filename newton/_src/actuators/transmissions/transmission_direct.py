@@ -37,6 +37,16 @@ class TransmissionDirect(TransmissionBase):
     def resolve_arguments(cls, args: dict[str, Any]) -> dict[str, Any]:
         return {}
 
+    def _first_row(self, rows: wp.array2d[wp.uint32]) -> wp.array[wp.uint32]:
+        """Return ``rows[0]``, reusing the view built for the same array in an earlier step."""
+        cache = self.__dict__.setdefault("_first_rows", {})
+        cached = cache.get(id(rows))
+        if cached is None or cached[0] is not rows:
+            if len(cache) >= 8:
+                cache.clear()
+            cached = cache[id(rows)] = (rows, rows[0])
+        return cached[1]
+
     def finalize(self, device: wp.Device, num_actuators: int, num_joints: int, requires_grad: bool = False) -> None:
         if num_joints != 1:
             raise ValueError(f"TransmissionDirect takes one joint per actuator, got {num_joints}")
@@ -57,7 +67,7 @@ class TransmissionDirect(TransmissionBase):
         wp.launch(
             kernel=_scatter_add_kernel,
             dim=forces.shape[0],
-            inputs=[forces, computed_forces, effort_indices[0]],
+            inputs=[forces, computed_forces, self._first_row(effort_indices)],
             outputs=[output, computed_output],
             device=device,
         )
@@ -70,7 +80,7 @@ class TransmissionDirect(TransmissionBase):
         dof_indices: wp.array2d[wp.uint32],
         device: wp.Device | None = None,
     ) -> tuple[wp.array[float], wp.array[wp.uint32], wp.array[float], wp.array[wp.uint32]]:
-        return positions, pos_indices[0], velocities, dof_indices[0]
+        return positions, self._first_row(pos_indices), velocities, self._first_row(dof_indices)
 
     def compute_velocity(
         self,
@@ -80,4 +90,4 @@ class TransmissionDirect(TransmissionBase):
         dof_indices: wp.array2d[wp.uint32],
         device: wp.Device | None = None,
     ) -> tuple[wp.array[float], wp.array[wp.uint32]]:
-        return velocities, dof_indices[0]
+        return velocities, self._first_row(dof_indices)

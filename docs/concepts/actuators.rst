@@ -187,7 +187,9 @@ pluggable: implement the :class:`DriveBase`, :class:`ClampingBase`,
    :attr:`Actuator.State.delay_state`, ``ModelBuilder.ActuatorEntry.delay_args``
    and ``ComponentKind.DELAY`` are deprecated.  Pass the delay as
    ``interface`` and read its state from
-   :attr:`Actuator.State.interface_state`.
+   :attr:`Actuator.State.interface_state`.  In a
+   ``ModelBuilder.ActuatorEntry``, set ``interface_class=InterfaceDelay``
+   and ``interface_args``.
 
 .. note::
 
@@ -809,6 +811,8 @@ Limitations of the implicit mode.  In the cases marked *error*,
   :class:`~newton.actuators.TransmissionDirect`, e.g.
   :class:`~newton.actuators.TransmissionFixed`; the solve works per DOF and
   does not model the gear.
+* **Effort on other DOFs** (error): ``effort_indices`` that differ from
+  ``indices``; the solve predicts the velocity of the DOF the effort acts on.
 * **Custom inputs without** :meth:`~newton.actuators.DriveBase.prepare_implicit`
   (error): a drive that declares
   :attr:`~newton.actuators.DriveBase.custom_inputs` must pass them to the

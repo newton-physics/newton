@@ -287,6 +287,12 @@ class Actuator:
         @delay_state.setter
         def delay_state(self, value: InterfaceDelay.State | None) -> None:
             warnings.warn(_DELAY_STATE_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
+            if self.interface_state is not None and not isinstance(self.interface_state, InterfaceDelay.State):
+                if value is None:
+                    return
+                raise ValueError(
+                    f"delay_state cannot replace the {type(self.interface_state).__qualname__} of this state"
+                )
             self.interface_state = value
 
         def reset(self, mask: wp.array[wp.bool] | None = None) -> None:
@@ -707,6 +713,10 @@ class Actuator:
     @delay.setter
     def delay(self, value: InterfaceDelay | None) -> None:
         warnings.warn(_DELAY_ATTRIBUTE_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
+        if self.interface is not None and not isinstance(self.interface, InterfaceDelay):
+            if value is None:
+                return
+            raise ValueError(f"delay cannot replace the interface {type(self.interface).__name__} of this actuator")
         if value is not None:
             value.finalize(self.device, self.num_actuators, requires_grad=self.requires_grad)
         self.interface = value
@@ -737,7 +747,8 @@ class Actuator:
                 as the implicit solve is not differentiable, or has a motor or
                 a transmission other than
                 :class:`~newton.actuators.TransmissionDirect`, which the
-                implicit solve does not model.
+                implicit solve does not model, or :attr:`effort_indices`
+                that differ from :attr:`indices`.
 
         Warns:
             NewtonWarning: The actuator has a :attr:`sensor`. The drive
@@ -758,6 +769,11 @@ class Actuator:
         if not isinstance(self.transmission, TransmissionDirect):
             raise NotImplementedError(
                 f"Implicit actuation does not support the transmission {type(self.transmission).__name__}."
+            )
+        if not np.array_equal(self._effort_indices.numpy(), self._indices.numpy()):
+            raise NotImplementedError(
+                "Implicit actuation requires effort_indices equal to indices: the solve predicts the "
+                "velocity of the DOF the effort acts on."
             )
         if self.drive.custom_inputs and type(self.drive).prepare_implicit is DriveBase.prepare_implicit:
             raise NotImplementedError(

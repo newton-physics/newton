@@ -223,6 +223,15 @@ for _dtype in [float, wp.transform, wp.spatial_vector]:
 # Actuator scatter/gather kernels
 
 
+def _check_actuator_parameter_shape(actuator: Any, component: Any, name: str, values: Any) -> None:
+    """Raise ValueError unless *values* is a 1-D array with one entry per actuator."""
+    if values.ndim != 1 or values.shape[0] != actuator.num_actuators:
+        raise ValueError(
+            f"{type(component).__name__}.{name} has shape {values.shape}; only parameters with one entry per "
+            f"actuator ({actuator.num_actuators},) are supported"
+        )
+
+
 @wp.kernel
 def _build_actuator_dof_lookup_kernel(actuator_dofs: wp.array[wp.uint32], lookup: wp.array[int]):
     """Scatter ``lookup[actuator_dofs[i]] = i``, skipping DOFs beyond the lookup range.
@@ -2584,12 +2593,18 @@ class ArticulationView:
             Parameter values shaped ``(world_count, dofs_per_world)`` where
             ``dofs_per_world`` is the total number of DOFs in the view (not
             just the actuated subset).
+
+        Raises:
+            ValueError: The parameter does not hold one entry per actuator,
+                e.g. the per-joint ``gear`` of a
+                :class:`~newton.actuators.TransmissionFixed`.
         """
         mapping = self._get_actuator_dof_mapping(actuator)
         if len(mapping) == 0:
             return wp.empty((self.world_count, 0), dtype=float, device=self.device)
 
         src = getattr(component, name)
+        _check_actuator_parameter_shape(actuator, component, name, src)
         dofs_per_world = len(mapping) // self.world_count
 
         dst = wp.zeros(len(mapping), dtype=src.dtype, device=self.device)
@@ -2638,6 +2653,11 @@ class ArticulationView:
             values: New parameter values shaped ``(world_count, dofs_per_world)``
                 where ``dofs_per_world`` is the total number of DOFs in the view.
             mask: Per-world mask ``(world_count,)``. Only masked worlds are updated.
+
+        Raises:
+            ValueError: The parameter does not hold one entry per actuator,
+                e.g. the per-joint ``gear`` of a
+                :class:`~newton.actuators.TransmissionFixed`.
         """
         mask = self._resolve_world_mask(mask)
         mapping = self._get_actuator_dof_mapping(actuator)
@@ -2645,6 +2665,7 @@ class ArticulationView:
             return
 
         dst = getattr(component, name)
+        _check_actuator_parameter_shape(actuator, component, name, dst)
         dofs_per_world = len(mapping) // self.world_count
         expected_shape = (self.world_count, dofs_per_world, *dst.shape[1:])
 

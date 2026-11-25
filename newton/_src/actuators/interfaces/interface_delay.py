@@ -83,7 +83,7 @@ def _delay_read_kernel(
     out_vel: wp.array[float],
     out_act: wp.array[float],
 ):
-    """Read per-DOF delayed command inputs, falling back to current inputs when buffer is empty or delay is zero."""
+    """Read per-actuator delayed command inputs, falling back to current inputs when buffer is empty or delay is zero."""
     i = wp.tid()
     n = num_pushes[i]
     if n == 0 or delays[i] == 0:
@@ -124,16 +124,16 @@ def _delay_masked_reset_kernel(
 
 
 class InterfaceDelay(InterfaceBase):
-    """Per-DOF command input delay for actuators.
+    """Per-actuator command input delay.
 
     Delays command inputs (control targets and feedforward terms) using a
-    circular buffer of depth ``max_delay``.  Each DOF has its own lag
+    circular buffer of depth ``max_delay``.  Each actuator has its own lag
     stored in :attr:`delay_steps` (shape ``(N,)``).  The buffer is sized
-    for the maximum lag across all DOFs so that DOFs with different delay
-    steps can share the same actuator group.
+    for the maximum lag across all actuators so that actuators with
+    different delay steps can share the same actuator group.
 
     The delay always produces output.  When the buffer is empty
-    (e.g. right after reset) or a DOF has ``delay_steps == 0``, the
+    (e.g. right after reset) or an actuator has ``delay_steps == 0``, the
     current command inputs are used directly.  When underfilled, the lag
     is clamped to the available history so the oldest available entry is
     returned.
@@ -150,7 +150,7 @@ class InterfaceDelay(InterfaceBase):
         buffer_act: wp.array2d[float] | None = None
         """Delayed feedforward inputs [N or N·m], shape (buf_depth, N)."""
         num_pushes: wp.array[int] | None = None
-        """Per-DOF count of writes since last reset, shape (N,)."""
+        """Per-actuator count of writes since last reset, shape (N,)."""
         write_idx: wp.array[int] | None = None
         """Current write position in the circular buffer, shape (1,). Device-side for graph capture."""
 
@@ -199,8 +199,8 @@ class InterfaceDelay(InterfaceBase):
         """Initialize delay.
 
         Args:
-            delay_steps: Per-DOF delay values [actuator timesteps], shape ``(N,)``.
-            max_delay: Maximum delay across all DOFs.  Determines the
+            delay_steps: Per-actuator delay values [actuator timesteps], shape ``(N,)``.
+            max_delay: Maximum delay across all actuators.  Determines the
                 circular-buffer depth. ``None`` uses the largest entry of
                 *delay_steps*.
 
@@ -214,7 +214,7 @@ class InterfaceDelay(InterfaceBase):
         self.buf_depth = max_delay
         """Circular-buffer depth (equals ``max_delay``)."""
         self.delay_steps = delay_steps
-        """Per-DOF delay values [actuator timesteps], shape (N,)."""
+        """Per-actuator delay values [actuator timesteps], shape (N,)."""
         self._num_actuators: int = 0
         self._device: wp.Device | None = None
         self._requires_grad: bool = False
@@ -227,9 +227,14 @@ class InterfaceDelay(InterfaceBase):
 
         Args:
             device: Warp device to use.
-            num_actuators: Number of actuators (DOFs).
+            num_actuators: Number of actuators.
             requires_grad: Allocate output arrays with gradient support.
+
+        Raises:
+            ValueError: *delay_steps* does not have one entry per actuator.
         """
+        if self.delay_steps.shape[0] != num_actuators:
+            raise ValueError(f"delay_steps has {self.delay_steps.shape[0]} entries for {num_actuators} actuators")
         self._device = device
         self._num_actuators = num_actuators
         self._requires_grad = requires_grad
@@ -269,10 +274,10 @@ class InterfaceDelay(InterfaceBase):
         vel_indices: wp.array[wp.uint32],
         current_state: InterfaceDelay.State,
     ) -> tuple[wp.array[float], wp.array[float], wp.array[float]]:
-        """Read per-DOF delayed command inputs from the circular buffer.
+        """Read per-actuator delayed command inputs from the circular buffer.
 
-        Each DOF reads from its own lag offset stored in :attr:`delay_steps`,
-        clamped to available history (per-DOF ``num_pushes``).  When the
+        Each actuator reads from its own lag offset stored in :attr:`delay_steps`,
+        clamped to available history (per-actuator ``num_pushes``).  When the
         buffer is empty, falls back to the current command inputs; when
         underfilled, the lag is clamped to the oldest available entry.
 
@@ -280,8 +285,8 @@ class InterfaceDelay(InterfaceBase):
             target_pos: Current target positions [m or rad].
             target_vel: Current target velocities [m/s or rad/s].
             feedforward: Feedforward control input [N or N·m] (may be ``None``).
-            pos_indices: Indices into *target_pos* for each DOF.
-            vel_indices: Indices into *target_vel* and *feedforward* for each DOF.
+            pos_indices: Index of each actuator into *target_pos*.
+            vel_indices: Index of each actuator into *target_vel* and *feedforward*.
             current_state: InterfaceDelay state to read from.
 
         Returns:
@@ -344,8 +349,8 @@ class InterfaceDelay(InterfaceBase):
             target_pos: Current target positions [m or rad].
             target_vel: Current target velocities [m/s or rad/s].
             feedforward: Current feedforward input [N or N·m] (may be ``None``).
-            pos_indices: Indices into *target_pos* for each DOF.
-            vel_indices: Indices into *target_vel* and *feedforward* for each DOF.
+            pos_indices: Index of each actuator into *target_pos*.
+            vel_indices: Index of each actuator into *target_vel* and *feedforward*.
             current_state: InterfaceDelay state to read from.
             next_state: InterfaceDelay state to write into.
         """

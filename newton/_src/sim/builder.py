@@ -226,12 +226,55 @@ _ACTUATOR_ENTRY_DELAY_ARGS_DEPRECATION_MSG = (
 
 def _joint_tuple(index: Any) -> tuple[int, ...]:
     """Return an actuator's joint indices as a tuple: one index, or one per driven joint."""
+    if isinstance(index, (int, np.integer)):
+        return (int(index),)
     return (int(index),) if np.ndim(index) == 0 else tuple(int(i) for i in index)
 
 
 def _entry_index(indices: tuple[int, ...]) -> int | tuple[int, ...]:
     """Return an actuator's joint indices as stored in an ActuatorEntry: an int for a single joint."""
     return indices[0] if len(indices) == 1 else indices
+
+
+def _all_int(values: list[Any]) -> bool:
+    """Return whether every entry is a Python int, i.e. each actuator drives one joint."""
+    return set(map(type, values)) <= {int}
+
+
+def _offset_entry_indices(values: list[Any], offset: int) -> list[int | tuple[int, ...]]:
+    """Return the joint indices of an ActuatorEntry shifted by *offset*."""
+    if _all_int(values):
+        return [value + offset for value in values]
+    return [_entry_index(tuple(i + offset for i in _joint_tuple(value))) for value in values]
+
+
+def _effort_entry_indices(entry: Any) -> list[Any]:
+    """Return the effort indices of an ActuatorEntry.
+
+    An empty list means each actuator acts on the DOFs in ``indices``; actuators
+    appended to ``indices`` alone also act on their own DOFs.
+    """
+    if not entry.effort_indices:
+        return entry.indices
+    if len(entry.effort_indices) >= len(entry.indices):
+        return entry.effort_indices
+    return entry.effort_indices + entry.indices[len(entry.effort_indices) :]
+
+
+def _check_actuator_index_range(
+    name: str, values: list[Any], count: int, kind: str, actuator_indices: list[int]
+) -> None:
+    """Raise ValueError when an index of an ActuatorEntry lies outside ``[0, count)``."""
+    if not values:
+        return
+    flat = values if _all_int(values) else [i for value in values for i in _joint_tuple(value)]
+    if min(flat) >= 0 and max(flat) < count:
+        return
+    for k, row in enumerate(values):
+        for value in _joint_tuple(row):
+            if not 0 <= value < count:
+                actuator = actuator_indices[k] if k < len(actuator_indices) else k
+                raise ValueError(f"Actuator {actuator}: {name} {value} is out of range, the model has {count} {kind}")
 
 
 _ADD_MUSCLE_DEPRECATION_MSG = (
@@ -1021,7 +1064,9 @@ class ModelBuilder:
         transmission_class: type | None = None  # Transmission class (e.g. TransmissionFixed), or None
         transmission_shared_kwargs: dict = field(default_factory=dict)  # Shared transmission kwargs
         transmission_args: list[dict[str, list]] = field(default_factory=list)  # Per-actuator per-joint params
-        effort_indices: list[int | tuple[int, ...]] = field(default_factory=list)  # Per-actuator effort DOF indices
+        effort_indices: list[int | tuple[int, ...]] = field(
+            default_factory=list
+        )  # Per-actuator effort DOFs; empty: indices
 
         def __init__(
             self,
@@ -1068,7 +1113,8 @@ class ModelBuilder:
                     and ``<name>_pos_indices``.
                 transmission_args: Per-actuator dicts of per-joint
                     transmission params, one list of values per param.
-                effort_indices: Defaults to *indices*.
+                effort_indices: Empty (the default) means each actuator
+                    acts on the DOFs in *indices*.
             """
             self.drive_class = drive_class
             self.clamping_classes = clamping_classes
@@ -1091,9 +1137,7 @@ class ModelBuilder:
             )
             self.transmission_args = transmission_args if transmission_args is not None else []
             self.effort_indices = (
-                [_entry_index(_joint_tuple(i)) for i in effort_indices]
-                if effort_indices is not None
-                else list(self.indices)
+                [_entry_index(_joint_tuple(i)) for i in effort_indices] if effort_indices is not None else []
             )
             self.sensor_class = sensor_class
             self.sensor_shared_kwargs = sensor_shared_kwargs if sensor_shared_kwargs is not None else {}
@@ -1114,9 +1158,12 @@ class ModelBuilder:
         def delay_args(self) -> list[dict[str, Any]]:
             """Deprecated alias for :attr:`interface_args` when the interface is a delay.
 
-            The returned list is the entry's :attr:`interface_args`, or an
-            empty list without a delay. Assign a new list to replace the delay
-            entries.
+            The returned list is the entry's :attr:`interface_args`; reading
+            it on an entry without an interface makes the interface an
+            :class:`~newton.actuators.InterfaceDelay`, so appending to it adds
+            delays, as in Newton 1.8. A delay without entries means no delay.
+            Assign a new list to replace the delay entries, or an empty list
+            to remove the delay.
 
             .. deprecated:: 1.9
                 Use :attr:`interface_args` instead.
@@ -1124,7 +1171,9 @@ class ModelBuilder:
             from ..actuators.interfaces.interface_delay import InterfaceDelay  # noqa: PLC0415
 
             warnings.warn(_ACTUATOR_ENTRY_DELAY_ARGS_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-            if self.interface_class is None or not issubclass(self.interface_class, InterfaceDelay):
+            if self.interface_class is None:
+                self.interface_class = InterfaceDelay
+            elif not issubclass(self.interface_class, InterfaceDelay):
                 return []
             return self.interface_args
 
@@ -1137,7 +1186,15 @@ class ModelBuilder:
                 raise ValueError(
                     f"delay_args cannot replace the interface {self.interface_class.__name__} of this entry"
                 )
-            self.interface_class = InterfaceDelay
+            if not value:
+                self.interface_class = None
+                self.interface_shared_kwargs = {}
+                self.interface_args = []
+                return
+            if self.indices and len(value) != len(self.indices):
+                raise ValueError(f"delay_args has {len(value)} entries for {len(self.indices)} actuators")
+            if self.interface_class is None:
+                self.interface_class = InterfaceDelay
             self.interface_args = [dict(delay) for delay in value]
 
     @dataclass
@@ -3972,9 +4029,12 @@ class ModelBuilder:
 
         actuator = self.actuator_count
         self.actuator_count += 1
+        if entry.effort_indices or output_dofs != input_dofs:
+            if len(entry.effort_indices) != len(entry.indices):
+                entry.effort_indices = list(_effort_entry_indices(entry))
+            entry.effort_indices.append(_entry_index(output_dofs))
         entry.indices.append(_entry_index(input_dofs))
         entry.pos_indices.append(_entry_index(input_pos))
-        entry.effort_indices.append(_entry_index(output_dofs))
         entry.drive_args.append(drive_array_params)
         entry.clamping_args.append(clamping_array_params_list)
         if interface_class is not None:
@@ -4138,6 +4198,8 @@ class ModelBuilder:
     @staticmethod
     def _build_joint_index_array(indices: list[int | tuple[int, ...]], device: Devicelike) -> wp.array2d[wp.uint32]:
         """Build a ``(joints, N)`` warp index array from the DOF indices of each actuator."""
+        if _all_int(indices):
+            return wp.array(np.asarray(indices, dtype=np.uint32).reshape(1, -1), device=device)
         rows = [_joint_tuple(i) for i in indices]
         return wp.array(np.asarray(rows, dtype=np.uint32).reshape(len(rows), -1).T.copy(), device=device)
 
@@ -6846,18 +6908,20 @@ class ModelBuilder:
                     sensor_shared_kwargs=sub_entry.sensor_shared_kwargs,
                 ),
             )
-            entry.indices.extend(
-                _entry_index(tuple(idx + joint_dof_offset for idx in _joint_tuple(dofs))) for dofs in sub_entry.indices
-            )
-            entry.effort_indices.extend(
-                _entry_index(tuple(idx + joint_dof_offset for idx in _joint_tuple(dofs)))
-                for dofs in sub_entry.effort_indices
-            )
+            sub_effort_indices = _effort_entry_indices(sub_entry)
+            for name, values, count, kind in (
+                ("index", sub_entry.indices, builder.joint_dof_count, "DOFs"),
+                ("effort_index", sub_effort_indices, builder.joint_dof_count, "DOFs"),
+                ("pos_index", sub_entry.pos_indices, builder.joint_coord_count, "joint coordinates"),
+            ):
+                _check_actuator_index_range(name, values, count, kind, sub_entry.actuator_indices)
+            if entry.effort_indices or sub_entry.effort_indices:
+                if len(entry.effort_indices) != len(entry.indices):
+                    entry.effort_indices = list(_effort_entry_indices(entry))
+                entry.effort_indices.extend(_offset_entry_indices(sub_effort_indices, joint_dof_offset))
+            entry.indices.extend(_offset_entry_indices(sub_entry.indices, joint_dof_offset))
             entry.actuator_indices.extend(idx + actuator_offset for idx in sub_entry.actuator_indices)
-            entry.pos_indices.extend(
-                _entry_index(tuple(idx + joint_coord_offset for idx in _joint_tuple(dofs)))
-                for dofs in sub_entry.pos_indices
-            )
+            entry.pos_indices.extend(_offset_entry_indices(sub_entry.pos_indices, joint_coord_offset))
             entry.drive_args.extend(sub_entry.drive_args)
             entry.clamping_args.extend(sub_entry.clamping_args)
             entry.motor_args.extend(sub_entry.motor_args)
@@ -17623,30 +17687,40 @@ class ModelBuilder:
             # Create actuators from accumulated entries
             from ..actuators.actuator import Actuator  # noqa: PLC0415
             from ..actuators.clamping.clamping_current_duty import ClampingCurrentDuty  # noqa: PLC0415
+            from ..actuators.interfaces.interface_delay import InterfaceDelay  # noqa: PLC0415
 
             m.actuators = []
             with_battery = self._actuators_with_battery()
             for entry in self.actuator_entries.values():
+                num_entry_actuators = len(entry.indices)
+                effort_entry_indices = _effort_entry_indices(entry)
+                for name, values in (
+                    ("pos_indices", entry.pos_indices),
+                    ("effort_indices", effort_entry_indices),
+                    ("interface_args", entry.interface_args),
+                    ("motor_args", entry.motor_args),
+                    ("sensor_args", entry.sensor_args),
+                    ("transmission_args", entry.transmission_args),
+                ):
+                    if values and len(values) != num_entry_actuators:
+                        raise ValueError(
+                            f"ActuatorEntry of {entry.drive_class.__name__}: {name} has {len(values)} entries "
+                            f"for {num_entry_actuators} actuators"
+                        )
                 for name, values, count, kind in (
                     ("index", entry.indices, self.joint_dof_count, "DOFs"),
-                    ("effort_index", entry.effort_indices, self.joint_dof_count, "DOFs"),
+                    ("effort_index", effort_entry_indices, self.joint_dof_count, "DOFs"),
                     ("pos_index", entry.pos_indices, self.joint_coord_count, "joint coordinates"),
                 ):
-                    for k, row in enumerate(values):
-                        for value in _joint_tuple(row):
-                            if not 0 <= value < count:
-                                actuator = entry.actuator_indices[k] if k < len(entry.actuator_indices) else k
-                                raise ValueError(
-                                    f"Actuator {actuator}: {name} {value} is out of range, the model has {count} {kind}"
-                                )
+                    _check_actuator_index_range(name, values, count, kind, entry.actuator_indices)
                 indices = self._build_joint_index_array(entry.indices, device)
 
                 pos_indices_arg = None
                 if entry.pos_indices != entry.indices:
                     pos_indices_arg = self._build_joint_index_array(entry.pos_indices, device)
                 effort_indices_arg = None
-                if entry.effort_indices != entry.indices:
-                    effort_indices_arg = self._build_joint_index_array(entry.effort_indices, device)
+                if effort_entry_indices != entry.indices:
+                    effort_indices_arg = self._build_joint_index_array(effort_entry_indices, device)
 
                 # Build drive from stacked per-DOF arrays + shared kwargs
                 drive_arrays = self._stack_args_to_arrays(entry.drive_args, device=device, requires_grad=requires_grad)
@@ -17654,7 +17728,11 @@ class ModelBuilder:
 
                 # Build the interface from per-DOF arrays + shared kwargs
                 interface_obj = None
-                if entry.interface_class is not None:
+                if entry.interface_class is not None and not (
+                    not entry.interface_args
+                    and not entry.interface_shared_kwargs
+                    and issubclass(entry.interface_class, InterfaceDelay)
+                ):
                     interface_arrays = self._stack_args_to_arrays(
                         [dict(args) for args in entry.interface_args],
                         device=device,
@@ -17717,7 +17795,7 @@ class ModelBuilder:
                         key: self._stack_joint_args_to_array(
                             [args[key] for args in entry.transmission_args], device, requires_grad
                         )
-                        for key in entry.transmission_args[0]
+                        for key in (entry.transmission_args[0] if entry.transmission_args else ())
                     }
                     transmission_obj = entry.transmission_class(
                         **transmission_arrays, **entry.transmission_shared_kwargs
