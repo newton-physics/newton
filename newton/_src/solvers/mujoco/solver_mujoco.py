@@ -4805,8 +4805,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 and the factorization of the inertia matrix, which makes the step faster. Pass ``True``
                 when reading ``mjw_data.qacc_smooth`` or that factorization (``mujoco_warp.solve_m``)
                 after a step; both are stale otherwise. MuJoCo Warp computes both regardless with the
-                CG solver, noslip iterations, warmstart disabled, or no solver iterations, and native
-                MuJoCo (``use_mujoco_cpu=True``) always does.
+                CG solver, noslip iterations, warmstart disabled, no solver iterations, or ``njmax=0``,
+                and native MuJoCo (``use_mujoco_cpu=True``) always does.
 
         """
         if update_data_interval is not None:
