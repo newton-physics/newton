@@ -4425,14 +4425,20 @@ class TestModelWorld(unittest.TestCase):
         scene = newton.ModelBuilder()
         scene.add_builder(template)
         template.set_material_pair(material, material, mu=0.75)
-        scene.add_builder(template)
-        scene.add_builder(template)
+        # Different values for a merged named pair usually indicate a name clash.
+        with self.assertWarnsRegex(newton.NewtonWarning, r"\('surface', 'surface'\)"):
+            scene.add_builder(template)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", newton.NewtonWarning)
+            scene.add_builder(template)
         other = newton.ModelBuilder()
         other.add_material("unused")
         other_material = other.add_material("surface")
         other.set_material_pair("surface", "surface", mu=0.75)
         other.add_shape_sphere(-1, radius=0.1, cfg=other.ShapeConfig(material_id=other_material))
-        scene.add_builder(other)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", newton.NewtonWarning)
+            scene.add_builder(other)
         model = scene.finalize(device="cpu")
         np.testing.assert_array_equal(model.shape_material_id.numpy(), [0, 0, 0, 0])
         np.testing.assert_array_equal(model.material_pair_values.numpy()["mu"], [[0.75]])

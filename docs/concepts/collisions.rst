@@ -2497,9 +2497,13 @@ over individual shape coefficients. Materials are identified by name across
 :meth:`~ModelBuilder.replicate`, and :meth:`~ModelBuilder.add_body_variants`.
 Registering an existing name returns its existing ID. This also shares identities
 when each world is constructed from a fresh builder, keeping the pair count
-independent of the number of copies. Use distinct names for distinct materials.
-Incoming configured pairs replace existing settings for the same named pair;
-unmentioned pairs keep their settings. Configure scene-wide overrides after merging.
+independent of the number of copies. Material names are global identities, so
+qualify names that could clash across assets; the USD importer uses material
+prim paths. Incoming configured pairs replace existing settings for the same
+named pair, with a :class:`~newton.NewtonWarning` when the coefficients differ;
+unmentioned pairs keep their settings. A shape whose material name matches a
+pair configured only by another asset also receives that pair's overrides.
+Configure scene-wide overrides after merging.
 
 Integer IDs are local to their builder or finalized model and may change on merge.
 Use names to configure pairs across builders or to look up a finalized pair:

@@ -6789,12 +6789,25 @@ class ModelBuilder:
             raise ValueError(f"Invalid contact material ID {material_id!r}. Use an ID returned by add_material().")
 
     def _merge_material_registry(self, source: ModelBuilder) -> tuple[int, ...]:
-        """Merge identities by name; the incoming builder replaces configured pairs."""
+        """Merge identities by name; the incoming builder replaces configured pairs.
+
+        Warn when a named pair arrives with different coefficients, which usually means
+        that unrelated materials share a name.
+        """
         materials = tuple(self.add_material(name) for name in tuple(source._material_names.values()))
         for key, properties in tuple(source._material_pairs.items()):
-            self._material_pairs[material_pair_key(materials[key >> 32], materials[key & 0xFFFFFFFF])] = (
-                properties.copy()
-            )
+            target_key = material_pair_key(materials[key >> 32], materials[key & 0xFFFFFFFF])
+            existing = self._material_pairs.get(target_key)
+            if existing is not None and existing != properties:
+                name_a = self._material_names[target_key >> 32]
+                name_b = self._material_names[target_key & 0xFFFFFFFF]
+                warnings.warn(
+                    f"Merged material pair ({name_a!r}, {name_b!r}) replaces {existing} with {properties}. "
+                    "Use distinct material names for unrelated materials.",
+                    NewtonWarning,
+                    stacklevel=_external_warning_stacklevel(),
+                )
+            self._material_pairs[target_key] = properties.copy()
         return materials
 
     def set_material_pair(
@@ -6879,7 +6892,8 @@ class ModelBuilder:
         a loop; it merges all copies in one batched pass.
 
         Material names identify the same material across builders. Incoming pair
-        settings replace existing settings for the same named pair.
+        settings replace existing settings for the same named pair and emit a
+        :class:`~newton.NewtonWarning` when the coefficients differ.
 
         The source builder acts as a template: merged entries may share objects
         with it (and across copies when replicating). Mutating such entries in
