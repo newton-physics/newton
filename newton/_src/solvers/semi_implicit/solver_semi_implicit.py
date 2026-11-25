@@ -9,7 +9,7 @@ from ...core.types import override
 from ...sim import Contacts, Control, JointType, Model, ModelFlags, State
 from ...sim.joint_mimic import has_supported_joint_mimics
 from ..coupled.interface import CouplingInterface
-from ..solver import SolverBase
+from ..solver import SolverBase, warn_unsupported_friction_modes
 from . import kernels_body, kernels_contact, kernels_muscle, kernels_particle
 from .kernels_body import (
     eval_body_joint_forces,
@@ -111,6 +111,7 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
 
         super().__init__(model=model)
         self._validate_body_gravity_scale(applies_scale=False)
+        warn_unsupported_friction_modes(model, "SolverSemiImplicit")
         effective_deterministic = deterministic if deterministic is not None else wp.config.deterministic
         deterministic_modules = []
         if model.joint_count > 0:
@@ -280,5 +281,5 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
             # particle shape contact
             eval_particle_body_contact_forces(model, state_in, contacts, particle_f, body_f)
 
-            self.integrate_particles(model, state_in, state_out, dt, particle_f=particle_f)
+            self.integrate_particles(model, state_in, state_out, dt, control=control, particle_f=particle_f)
             self.integrate_bodies(model, state_in, state_out, dt, self.angular_damping, body_f=body_f)
