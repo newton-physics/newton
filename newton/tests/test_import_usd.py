@@ -48,9 +48,6 @@ from newton.tests.unittest_utils import (
 devices = get_test_devices()
 
 
-_MIRRORED_BODY_WARNING = (
-    r"Rigid body prim /World/Negative/Complete has a mirrored \(negative-determinant\) world transform\."
-)
 _PARTIAL_EQ_SOLREF_WARNING = r"Custom attribute 'mujoco:eq_solref' has \d+ values but frequency"
 
 
@@ -1844,6 +1841,53 @@ def Xform "Articulation" (
         self.assertAlmostEqual(float(model.joint_limit_ke.numpy()[dof]), builder.default_joint_cfg.limit_ke, places=4)
         self.assertAlmostEqual(float(model.joint_limit_kd.numpy()[dof]), builder.default_joint_cfg.limit_kd, places=4)
         self.assertEqual(int(model.mujoco.solreflimit_mode.numpy()[dof]), SOLREF_MODE_MJCF_DEFAULT)
+
+    @requires("pxr.Usd")
+    def test_physics_scene_declaration_keeps_solver_update_flags(self):
+        """Merge a PhysicsScene declaration of a solver attribute with its registration, in either order."""
+        from pxr import Usd
+
+        usd_content = """#usda 1.0
+(
+    upAxis = "Z"
+)
+
+def PhysicsScene "physicsScene"
+{
+    custom float newton:mujoco:gravcomp = 0 (
+        customData = {
+            string assignment = "model"
+            string frequency = "body"
+        }
+    )
+}
+
+def Xform "Body" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+)
+{
+    def Sphere "Collision" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double radius = 0.1
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+        for register_first in (True, False):
+            with self.subTest(register_first=register_first):
+                builder = newton.ModelBuilder()
+                if register_first:
+                    SolverMuJoCo.register_custom_attributes(builder)
+                builder.add_usd(stage)
+                if not register_first:
+                    SolverMuJoCo.register_custom_attributes(builder)
+                model = builder.finalize(device="cpu")
+                self.assertEqual(
+                    model.get_attribute_update_flags("mujoco:gravcomp"), newton.ModelFlags.BODY_INERTIAL_PROPERTIES
+                )
 
     @requires("pxr.Usd", *MUJOCO_MODULES)
     def test_unauthored_usd_solreflimit_uses_mujoco_default(self):
@@ -4402,6 +4446,55 @@ def Xform "NotPSD" (
         self.assertTrue(any("negative diagonal" in m and "NegativeDiag" in m for m in warning_messages))
         self.assertTrue(any("expected 6" in m and "WrongLength" in m for m in warning_messages))
         self.assertTrue(any("not positive semidefinite" in m and "NotPSD" in m for m in warning_messages))
+
+    @requires("pxr.Usd")
+    def test_newton_inertia_empty_is_no_opinion(self):
+        """An authored empty newton:inertia defers to physics:diagonalInertia without a warning."""
+        from pxr import Usd
+
+        usd_content = """#usda 1.0
+(
+    upAxis = "Z"
+)
+
+def PhysicsScene "physicsScene"
+{
+}
+
+def Xform "EmptyTensor" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI", "NewtonMassAPI"]
+)
+{
+    double3 xformOp:translate = (0, 0, 1)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    float physics:mass = 3.0
+    float3 physics:diagonalInertia = (0.5, 1.0, 1.5)
+    double[] newton:inertia = []
+
+    def Sphere "Collider" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double radius = 0.5
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            builder = newton.ModelBuilder()
+            builder.add_usd(stage)
+
+        warning_messages = [str(w.message) for w in caught]
+        self.assertFalse(any("newton:inertia" in m for m in warning_messages), warning_messages)
+
+        body_id = builder.body_label.index("/EmptyTensor")
+        self.assertAlmostEqual(builder.body_mass[body_id], 3.0, places=5)
+        inertia = np.array(builder.body_inertia[body_id]).reshape(3, 3)
+        np.testing.assert_allclose(inertia, np.diag([0.5, 1.0, 1.5]), atol=1e-5)
 
     @requires("pxr.Usd")
     def test_import_usd_gravcomp(self):
@@ -7378,15 +7471,7 @@ def Xform "Articulation" (
                 UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
 
         builder = newton.ModelBuilder()
-        with warnings.catch_warnings(record=True) as caught:
-            # This fixture deliberately covers negative scale. Record only its
-            # expected diagnostic while preserving the ambient warning policy.
-            warnings.filterwarnings("always", message=_MIRRORED_BODY_WARNING, category=UserWarning)
-            result = builder.add_usd(stage)
-
-        self.assertEqual(len(caught), 1)
-        self.assertEqual(caught[0].category, newton.NewtonWarning)
-        self.assertRegex(str(caught[0].message), _MIRRORED_BODY_WARNING)
+        result = builder.add_usd(stage)
 
         for case_name, _scale, _angle, _com, include_partial in cases:
             for mass_name, _author_all_mass_properties in mass_cases if include_partial else mass_cases[:1]:
