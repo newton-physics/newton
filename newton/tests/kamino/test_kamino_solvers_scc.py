@@ -3408,6 +3408,36 @@ class TestSCCSolver(NewtonTestCase):
                 expected_speed = initial_speed - expected_friction * 9.81 * dt * steps
                 np.testing.assert_allclose(state_in.body_qd.numpy()[:, 0], expected_speed, rtol=0.0, atol=1.5e-3)
 
+    def test_material_pair_without_assigned_shapes_uses_shape_friction(self):
+        """Fall back to shape friction when pairs are configured but no shape uses a material."""
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        SolverKamino.register_custom_attributes(builder)
+        material = builder.add_material("unused")
+        builder.set_material_pair(material, material, mu=0.0)
+        shape_cfg = builder.ShapeConfig(mu=0.5, gap=0.0, margin=0.0)
+        body = builder.add_link(xform=wp.transformf((0.0, 0.0, 0.1), wp.quat_identity()), mass=1.0)
+        builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1, cfg=shape_cfg)
+        joint = builder.add_joint_free(parent=-1, child=body)
+        builder.add_articulation([joint])
+        ground_pose = wp.transformf((0.0, 0.0, -0.1), wp.quat_identity())
+        builder.add_shape_box(-1, xform=ground_pose, hx=1.0, hy=1.0, hz=0.1, cfg=shape_cfg)
+        model = builder.finalize(device=self.device)
+
+        for pipeline in ("primitive", "unified"):
+            with self.subTest(pipeline=pipeline):
+                config = SolverKamino.Config(dynamics_solver="scc", use_collision_detector=True)
+                config.collision_detector = kamino_config.CollisionDetectorConfig(
+                    pipeline=pipeline, max_contacts_per_world=16, max_contacts_per_pair=8
+                )
+                solver = SolverKamino(model, config=config)
+                state_in, state_out = model.state(), model.state()
+                solver.step(state_in, state_out, control=None, contacts=None, dt=2.0e-3)
+
+                resolved = solver._contacts_kamino
+                count = int(resolved.model_active_contacts.numpy()[0])
+                self.assertGreater(count, 0)
+                np.testing.assert_array_equal(resolved.material.numpy()[:count, 0], 0.5)
+
     def test_08d3_scc_friction_propagates_through_fixed_joint(self):
         """Converge articulated contact friction at a 2 kHz step rate."""
         friction = 0.2

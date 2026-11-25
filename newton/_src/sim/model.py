@@ -1117,7 +1117,8 @@ class Model:
         self.shape_material_id: wp.array[wp.int32] | None = None
         """Indices into :attr:`material_names`, or -1 for unassigned shapes, shape [shape_count].
 
-        None when no shape or variant is assigned a material and the builder has no material ID data.
+        None when no material pair is configured, no shape or variant is assigned a material, and the
+        builder has no material ID data.
         """
         self.material_names: tuple[str, ...] = ()
         """Builder-assigned contact material names, indexed by material ID."""
@@ -1134,8 +1135,7 @@ class Model:
         :attr:`shape_material_mu` at finalize. The two arrays are independent afterwards: code that edits
         ``shape_material_mu`` at runtime and wants a single coefficient updates this array as well. Set via
         :attr:`ModelBuilder.ShapeConfig.mu_static` or a USD ``physics:staticFriction`` above
-        ``physics:dynamicFriction``. :class:`~newton.solvers.SolverKamino` carries this value into its material
-        tables. Built-in solvers use :attr:`shape_material_mu` for per-shape friction.
+        ``physics:dynamicFriction``. Built-in solvers use :attr:`shape_material_mu` for per-shape friction.
         XPBD supports a separate static coefficient through :ref:`Material pair friction`."""
         self.shape_material_restitution: wp.array[wp.float32] | None = None
         """Shape coefficient of restitution [dimensionless], shape [shape_count], float."""

@@ -25,6 +25,7 @@ supporting both a Z-up and X-up convention.
 
 from __future__ import annotations
 
+import functools
 import logging
 from dataclasses import dataclass, field
 from enum import IntEnum
@@ -983,6 +984,7 @@ class ContactsKamino:
 ###
 
 
+@functools.cache
 def make_convert_contacts_newton_to_kamino(
     friction_mix_mode: MaterialMixMode = MaterialMixMode.AVERAGE,
     restitution_mix_mode: MaterialMixMode = MaterialMixMode.MIN,

@@ -4375,6 +4375,11 @@ class TestModelWorld(unittest.TestCase):
         self.assertIsNone(template._shape_material_id)
         self.assertIsNone(scene._shape_material_id)
         self.assertIsNone(scene.finalize(device="cpu").shape_material_id)
+        # Configured pairs allocate IDs so that solver pair lookups have an array to read.
+        paired = newton.ModelBuilder()
+        paired.add_builder(scene)
+        paired.set_material_pair("surface", "surface", mu=0.1)
+        np.testing.assert_array_equal(paired.finalize(device="cpu").shape_material_id.numpy(), [-1, -1, -1])
 
         scene.add_shape_sphere(-1, radius=0.1, cfg=scene.ShapeConfig(material_id=material))
         scene.add_shape_sphere(-1, radius=0.1)

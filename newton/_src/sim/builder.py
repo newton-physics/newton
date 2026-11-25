@@ -16564,8 +16564,12 @@ class ModelBuilder:
             m.shape_material_kf = wp.array(self.shape_material_kf, dtype=wp.float32, requires_grad=requires_grad)
             m.shape_material_ka = wp.array(self.shape_material_ka, dtype=wp.float32, requires_grad=requires_grad)
             m.material_names = tuple(self._material_names.values())
-            if self._material_names and self._shape_material_id is not None:
-                m.shape_material_id = wp.array(self._shape_material_id, dtype=wp.int32)
+            # Configured pairs always come with shape IDs, so pair lookups never read a missing array.
+            if self._material_names and (self._shape_material_id is not None or self._material_pairs):
+                shape_material_id = self._shape_material_id
+                if shape_material_id is None:
+                    shape_material_id = [-1] * self.shape_count
+                m.shape_material_id = wp.array(shape_material_id, dtype=wp.int32)
             if self._material_pairs:
                 pair_keys = sorted(self._material_pairs)
                 row_count = m.world_count if material_pairs_per_world else 1
