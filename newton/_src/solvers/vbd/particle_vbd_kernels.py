@@ -2405,10 +2405,8 @@ def make_solve_elasticity_tile(include_triangles: bool, include_tets: bool, two_
         if wp.static(use_cloth_tile):
             particle_index = particle_ids_in_color[wp.min(particle_slot, particle_ids_in_color.shape[0] - 1)]
             vertex_mass = mass[particle_index]
-            particle_is_dynamic = (
-                particle_slot_valid
-                and (particle_flags[particle_index] & ParticleFlags.ACTIVE) != 0
-                and vertex_mass != 0.0
+            particle_is_dynamic = particle_slot_valid and not vbd_particle_is_fixed(
+                particle_flags[particle_index], vertex_mass
             )
         elif particle_slot_valid:
             particle_index = particle_ids_in_color[particle_slot]
