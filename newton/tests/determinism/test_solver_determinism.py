@@ -273,7 +273,7 @@ def test_articulation_determinism(test, device, solver_name):
     _run_isolated(test, "_check_articulation_determinism", str(device), solver_name)
 
 
-def _build_rigid_pile(device):
+def _build_rigid_pile(device, requires_grad=False):
     builder = newton.ModelBuilder()
     builder.add_ground_plane()
     rng = np.random.default_rng(42)
@@ -291,7 +291,7 @@ def _build_rigid_pile(device):
                     builder.add_shape_box(body, hx=half, hy=half, hz=half)
                 else:
                     builder.add_shape_sphere(body, radius=half)
-    return builder.finalize(device=device)
+    return builder.finalize(device=device, requires_grad=requires_grad)
 
 
 def _make_rigid_solver(model, solver_name):
@@ -367,6 +367,79 @@ class TestSolverDeterminism(unittest.TestCase):
 
 def _emit_warning_for_policy_test(category_name, message):
     warnings.warn_explicit(message, getattr(builtins, category_name), __file__, 1, module=__name__)
+
+
+def _check_contact_gather_backward(device):
+    """Differentiate the per-body contact gather for a body with more sides than Warp's record floor."""
+    from newton._src.solvers.contact_gather import gather_contact_side_wrenches  # noqa: PLC0415
+
+    side_count = 2000
+    with wp.ScopedDevice(device):
+        # Body 0 owns sides [0, side_count), body 1 owns the last side.
+        body_start = wp.array([0, side_count], dtype=wp.int32)
+        body_end = wp.array([side_count, side_count + 1], dtype=wp.int32)
+        sides = wp.array(np.arange(side_count + 1, dtype=np.int32), dtype=wp.int32)
+        side_wrench = wp.ones(side_count + 1, dtype=wp.spatial_vector, requires_grad=True)
+        body_wrench = wp.zeros(2, dtype=wp.spatial_vector, requires_grad=True)
+        tape = wp.Tape()
+        with tape:
+            wp.launch(
+                gather_contact_side_wrenches,
+                dim=2,
+                inputs=[body_start, body_end, sides, side_wrench],
+                outputs=[body_wrench],
+            )
+        np.testing.assert_array_equal(body_wrench.numpy()[:, 0], [side_count, 1.0])
+        seed = wp.array(np.array([[1.0] * 6, [2.0] * 6], dtype=np.float32), dtype=wp.spatial_vector)
+        expected = np.ones((side_count + 1, 6), dtype=np.float32)
+        expected[side_count] = 2.0
+
+        tape.backward(grads={body_wrench: seed})
+        np.testing.assert_array_equal(side_wrench.grad.numpy(), expected)
+
+        tape.zero()
+        with wp.ScopedCapture() as capture:
+            tape.backward(grads={body_wrench: seed})
+        tape.zero()
+        wp.capture_launch(capture.graph)
+        np.testing.assert_array_equal(side_wrench.grad.numpy(), expected)
+
+
+def test_contact_gather_backward(test, device):
+    _run_isolated(test, "_check_contact_gather_backward", str(device), deterministic_mode=DETERMINISTIC_MODE)
+
+
+@wp.kernel
+def _body_height_loss(body_q: wp.array[wp.transform], loss: wp.array[float]):
+    tid = wp.tid()
+    wp.atomic_add(loss, 0, wp.transform_get_translation(body_q[tid])[2])
+
+
+def _check_rigid_contact_backward(device, solver_name):
+    """Differentiate a deterministic step through the rigid-contact gather."""
+    with wp.ScopedDevice(device):
+        model = _build_rigid_pile(device, requires_grad=True)
+        solver = _make_rigid_solver(model, solver_name)
+        pipeline = newton.CollisionPipeline(model, deterministic=True)
+        contacts = pipeline.contacts()
+        state_0, state_1 = model.state(), model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+        pipeline.collide(state_0, contacts)
+        if contacts.rigid_contact_count.numpy()[0] == 0:
+            raise AssertionError("rigid pile produced no contacts")
+        loss = wp.zeros(1, dtype=float, requires_grad=True)
+        tape = wp.Tape()
+        with tape:
+            solver.step(state_0, state_1, model.control(), contacts, 1.0 / 600.0)
+            wp.launch(_body_height_loss, dim=model.body_count, inputs=[state_1.body_q], outputs=[loss])
+        tape.backward(loss)
+        grad = state_0.body_qd.grad.numpy()
+        if not np.all(np.isfinite(grad)) or not np.any(grad):
+            raise AssertionError(f"invalid body velocity gradient: {grad}")
+
+
+def test_rigid_contact_backward(test, device, solver_name):
+    _run_isolated(test, "_check_rigid_contact_backward", str(device), solver_name)
 
 
 class TestSnapshotComparison(unittest.TestCase):
@@ -576,6 +649,24 @@ for solver_name in ("xpbd", "semi_implicit", "featherstone"):
             use_graph=use_graph,
             check_output=False,
         )
+
+add_function_test(
+    TestSolverDeterminism,
+    "test_contact_gather_backward",
+    test_contact_gather_backward,
+    devices=devices,
+    check_output=False,
+)
+
+for solver_name in ("xpbd", "semi_implicit"):
+    add_function_test(
+        TestSolverDeterminism,
+        f"test_rigid_contact_backward_{solver_name}",
+        test_rigid_contact_backward,
+        devices=devices,
+        solver_name=solver_name,
+        check_output=False,
+    )
 
 for solver_name in ("featherstone", "mujoco"):
     add_function_test(

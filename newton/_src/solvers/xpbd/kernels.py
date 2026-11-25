@@ -2395,7 +2395,10 @@ def solve_body_contact_positions_per_contact(
         contact_impulse[tid] = delta_a
 
 
-@wp.kernel
+# Its own module, outside Warp's deterministic lowering: the forward pass has no atomics, and in the
+# backward pass every gradient element has a single writer (each contact side belongs to one body),
+# while recorded lowering cannot differentiate the read-modify-write of the body output.
+@wp.kernel(module="unique", module_options={"deterministic": wp.DeterministicMode.NOT_GUARANTEED})
 def gather_body_contact_deltas(
     body_start: wp.array[wp.int32],
     body_end: wp.array[wp.int32],

@@ -126,7 +126,10 @@ def sort_contact_sides_by_body(model: Model, contacts: Contacts) -> ContactSides
     return ContactSidesByBody(body_start, body_end, sides)
 
 
-@wp.kernel
+# Its own module, outside Warp's deterministic lowering: the forward pass has no atomics, and in the
+# backward pass every gradient element has a single writer (each contact side belongs to one body),
+# while recorded lowering cannot differentiate the read-modify-write of the body output.
+@wp.kernel(module="unique", module_options={"deterministic": wp.DeterministicMode.NOT_GUARANTEED})
 def gather_contact_side_wrenches(
     body_start: wp.array[wp.int32],
     body_end: wp.array[wp.int32],
