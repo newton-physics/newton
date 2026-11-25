@@ -1264,6 +1264,6 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                     device=model.device,
                 )
 
-            self.integrate_particles(model, state_in, state_out, dt, particle_f=particle_f)
+            self.integrate_particles(model, state_in, state_out, dt, control=control, particle_f=particle_f)
 
             self._step += 1
