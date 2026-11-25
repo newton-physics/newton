@@ -10566,6 +10566,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         """Return scratch Data for ``mj_setConst``, which clears contacts and moves ``qpos`` to the reference pose."""
         if self._mj_const_data is None:
             self._mj_const_data = self._mujoco.MjData(self.mj_model)
+        # Fixed roots are posed through the live mocap poses, not the model.
+        self._mj_const_data.mocap_pos[:] = self.mj_data.mocap_pos
+        self._mj_const_data.mocap_quat[:] = self.mj_data.mocap_quat
         return self._mj_const_data
 
     def _restore_native_data(self) -> None:

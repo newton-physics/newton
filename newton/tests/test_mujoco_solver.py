@@ -12702,6 +12702,28 @@ class TestActuatorDampratio(unittest.TestCase):
                     np.testing.assert_allclose(actual, expected, rtol=1.0e-4)
                     solver.notify_model_changed(ModelFlags.ACTUATOR_PROPERTIES)
 
+    def test_dampratio_follows_moved_fixed_root(self):
+        """Resolve native damping at the published pose of a fixed root."""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(
+            """<mujoco><worldbody><site name="anchor" pos="1 -1 0"/>
+            <body><geom size=".1"/><body><joint axis="0 0 1"/><geom size=".1" pos="1 0 0"/>
+            <site name="tip" pos="1 0 0"/></body></body></worldbody>
+            <tendon><spatial name="t"><site site="anchor"/><site site="tip"/></spatial></tendon>
+            <actuator><position tendon="t" kp="100" dampratio="1"/></actuator></mujoco>""",
+            ctrl_direct=True,
+        )
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
+        initial = solver.mj_model.actuator_biasprm[0, 2]
+        frames = model.joint_X_p.numpy()
+        frames[0, 0] += 1.0
+        model.joint_X_p.assign(frames)
+        solver.notify_model_changed(ModelFlags.JOINT_PROPERTIES | ModelFlags.ACTUATOR_PROPERTIES)
+        expected = SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True).mj_model.actuator_biasprm[0, 2]
+        self.assertAlmostEqual(expected, np.sqrt(2.0) * initial, delta=1e-5 * abs(expected))
+        self.assertAlmostEqual(solver.mj_model.actuator_biasprm[0, 2], expected, delta=1e-5 * abs(expected))
+
 
 @requires(*MUJOCO_MODULES)
 class TestActuatorDampratioMultiWorld(unittest.TestCase):
