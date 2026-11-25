@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import itertools
 import os
 import struct
 import tempfile
@@ -1385,6 +1386,145 @@ class TestImportMjcfBasic(unittest.TestCase):
         np.testing.assert_allclose(body_pos, expected_pos, atol=1e-6)
         np.testing.assert_allclose(body_quat, expected_quat, atol=1e-6)
 
+    _MERGED_JOINTS_MJCF = """
+<mujoco>
+    <worldbody><body name="link">
+        {joints}
+        <inertial pos="0 0 0" mass="2" diaginertia="0.2 0.3 0.4"/>
+    </body></worldbody>
+</mujoco>
+"""
+
+    def test_hinge_anchor_is_where_axes_meet(self):
+        """Anchor merged hinges where their axis lines meet; warn and use the first hinge's pos if none is found."""
+        # The x hinge's axis line is the x-axis. Every second hinge except "same pos" places its pos off that line.
+        x_hinge = '<joint name="x" axis="1 0 0" pos="0.2 0 0"/>'
+        warning = r"link.*hinge joints \['x', 'other'\] cannot be merged about a common point"
+        # (case, joints, expected anchor, warning pattern or None)
+        cases = (
+            ("single hinge", x_hinge, [0.2, 0, 0], None),
+            ("same pos", x_hinge + '<joint name="other" axis="0 1 0" pos="0.2 0 0"/>', [0.2, 0, 0], None),
+            ("orthogonal axes meet", x_hinge + '<joint name="other" axis="0 0 1" pos="0 0 0.5"/>', [0, 0, 0], None),
+            ("oblique axes meet", x_hinge + '<joint name="other" axis="1 1 0" pos="0.5 0.5 0"/>', [0, 0, 0], None),
+            (
+                "axes miss by 0.05 mm",
+                x_hinge + '<joint name="other" axis="0 0 1" pos="0 0.00005 0.5"/>',
+                [0, 0.000025, 0],
+                None,
+            ),
+            ("axes meet far away", x_hinge + '<joint name="other" axis="0 1 0" pos="-20 1 0"/>', [-20, 0, 0], None),
+            (
+                "nearly parallel axes",
+                x_hinge + '<joint name="other" axis="1 0.0005 0" pos="0 1 0"/>',
+                [0.2, 0, 0],
+                warning,
+            ),
+            ("axes do not meet", x_hinge + '<joint name="other" axis="0 0 1" pos="0 1 0"/>', [0.2, 0, 0], warning),
+        )
+        for name, joints, expected, warning in cases:
+            with self.subTest(case=name):
+                builder = newton.ModelBuilder()
+                mjcf = self._MERGED_JOINTS_MJCF.format(joints=joints)
+                if warning is None:
+                    with self.assertNoLogs("newton", level="WARNING"):
+                        builder.add_mjcf(mjcf)
+                else:
+                    with self.assertLogs("newton", level="WARNING") as logs:
+                        builder.add_mjcf(mjcf)
+                    self.assertRegex("\n".join(logs.output), warning)
+                self.assertEqual(builder.joint_dof_count, joints.count("<joint "))
+                np.testing.assert_allclose(builder.joint_X_p[0].p, expected, atol=1e-7)
+                np.testing.assert_allclose(builder.joint_X_c[0].p, expected, atol=1e-7)
+
+    def test_hinge_anchor_tolerance_follows_scale(self):
+        """Accept the same gap between hinge axis lines at every import scale."""
+        # The axis lines miss each other by 0.05 mm in MJCF units.
+        joints = '<joint axis="1 0 0" pos="0.2 0 0"/><joint axis="0 0 1" pos="0 0.00005 0.5"/>'
+        for scale in (0.001, 1000.0):
+            with self.subTest(scale=scale):
+                builder = newton.ModelBuilder()
+                with self.assertNoLogs("newton", level="WARNING"):
+                    builder.add_mjcf(self._MERGED_JOINTS_MJCF.format(joints=joints), scale=scale)
+                np.testing.assert_allclose(builder.joint_X_c[0].p, [0, 0.000025 * scale, 0], atol=1e-7 * scale)
+
+    def test_slide_after_non_parallel_hinge_is_deprecated(self):
+        """Warn about a slide that a preceding hinge would rotate; Newton joints apply slides before hinges."""
+        hinge = '<joint name="hinge" axis="0 0 1" pos="0.2 0 0"/>'
+        x_slide = '<joint name="slide" type="slide" axis="1 0 0" pos="-0.2 0 0"/>'
+        z_slide = '<joint name="slide" type="slide" axis="0 0 1" pos="-0.2 0 0"/>'
+        # (case, joints, deprecation pattern or None)
+        cases = (
+            ("slide before hinge", x_slide + hinge, None),
+            ("parallel slide after hinge", hinge + z_slide, None),
+            ("nearly parallel slide after hinge", hinge + z_slide.replace("0 0 1", "0 0.0005 1"), None),
+            ("non-parallel slide after hinge", hinge + x_slide, "link.*slide joint 'slide' is listed after hinge"),
+        )
+        for name, joints, deprecation in cases:
+            with self.subTest(case=name):
+                builder = newton.ModelBuilder()
+                mjcf = self._MERGED_JOINTS_MJCF.format(joints=joints)
+                if deprecation is None:
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("error", newton.NewtonDeprecationWarning)
+                        builder.add_mjcf(mjcf)
+                else:
+                    with self.assertWarnsRegex(newton.NewtonDeprecationWarning, deprecation):
+                        builder.add_mjcf(mjcf)
+                self.assertEqual(builder.joint_dof_count, 2)
+                np.testing.assert_allclose(builder.joint_X_c[0].p, [0.2, 0, 0], atol=1e-7)
+
+    def test_base_joint_ignores_hinge_anchor(self):
+        """Anchor kept MJCF joints where hinge axes meet; place a base joint replacing them at the first joint."""
+        # The hinge axes meet at (0.3, 0, 0); the first joint's pos is the body origin.
+        mjcf = self._MERGED_JOINTS_MJCF.format(joints='<joint axis="1 0 0"/><joint axis="0 0 1" pos="0.3 0 0.5"/>')
+        xform = wp.transform((1.0, 2.0, 3.0), wp.quat_identity())
+        # (case, add_mjcf options, expected joint position in the parent frame)
+        cases = (("joints kept", {}, [1.3, 2, 3]), ("base joint", {"floating": False}, [1, 2, 3]))
+        for name, options, expected in cases:
+            with self.subTest(case=name):
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(mjcf, xform=xform, **options)
+                np.testing.assert_allclose(builder.joint_X_p[0].p, expected, atol=1e-6)
+
+    @requires("mujoco")
+    def test_merged_joints_preserve_hinge_anchor(self):
+        """Match native MuJoCo body poses for intersecting hinges and a slide preceding an offset hinge."""
+        import mujoco
+
+        cases = (
+            # The axes meet at (0.4, -0.2, 0.3), away from both hinge positions.
+            (
+                "intersecting hinges",
+                '<joint axis="1 0 0" pos="0.6 -0.2 0.3"/><joint axis="0 0 1" pos="0.4 -0.2 0.8"/>',
+            ),
+            (
+                "slide before offset hinge",
+                '<joint type="slide" axis="0 1 0" pos="-0.2 0 0"/><joint axis="0 1 0" pos="0.2 0 0"/>',
+            ),
+            (
+                "slide before intersecting hinges",
+                '<joint type="slide" axis="0 1 0" pos="-0.5 0 0"/>'
+                '<joint axis="1 0 0" pos="0.6 -0.2 0.3"/><joint axis="0 0 1" pos="0.4 -0.2 0.8"/>',
+            ),
+        )
+        for name, joints in cases:
+            with self.subTest(case=name):
+                mjcf = self._MERGED_JOINTS_MJCF.format(joints=joints)
+                native = mujoco.MjModel.from_xml_string(mjcf)
+                data = mujoco.MjData(native)
+                data.qpos[:] = (0.3, -0.4, 0.5)[: native.nq]
+                mujoco.mj_forward(native, data)
+
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(mjcf)
+                model = builder.finalize(device="cpu")
+                model.joint_q.assign(data.qpos)
+                state = model.state()
+                newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+                pose = state.body_q.numpy()[0]
+                np.testing.assert_allclose(pose[:3], data.xpos[1], atol=1e-6)
+                np.testing.assert_allclose(pose[3:], data.xquat[1, [1, 2, 3, 0]], atol=1e-6)
+
     def test_multiple_bodies_hierarchy(self):
         """Test 1: Multiple bodies in hierarchy → verify child transforms are correctly composed."""
         # Root is translated and rotated (45 deg around Z)
@@ -1794,7 +1934,7 @@ class TestImportMjcfBasic(unittest.TestCase):
     <worldbody>
         <body name="b">
             <joint name="h1" type="hinge" axis="0 0 1" range="-60 60" ref="10" margin="0.05" stiffness="3"/>
-            <joint name="s1" type="slide" axis="1 0 0" range="-0.3 0.3" ref="0.1" margin="0.01" stiffness="7"/>
+            <joint name="s1" type="slide" axis="0 0 1" range="-0.3 0.3" ref="0.1" margin="0.01" stiffness="7"/>
             <joint name="h2" type="hinge" axis="0 1 0" range="-30 45" ref="-5" margin="0.02" stiffness="11"/>
             <geom type="sphere" size="0.1" mass="1"/>
         </body>
@@ -1847,7 +1987,7 @@ class TestMjcfSlideCoordinateScale(unittest.TestCase):
                 <body>
                     <joint name="hinge" type="hinge" axis="0 0 1" range="-60 60"
                            ref="10" springref="15" margin="0.05"/>
-                    <joint name="slide" type="slide" axis="1 0 0" range="-0.3 0.5"
+                    <joint name="slide" type="slide" axis="0 0 1" range="-0.3 0.5"
                            ref="0.1" springref="0.15" margin="0.01"/>
                     <geom type="sphere" size="0.1" mass="1"/>
                 </body>
@@ -7254,6 +7394,128 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
         self.assertAlmostEqual(geom_xform[1], 5.0, places=5)
         self.assertAlmostEqual(geom_xform[2], 0.0, places=5)
 
+    @requires(*MUJOCO_MODULES)
+    def test_geom_fromto_box_ellipsoid_matches_native_mujoco(self):
+        """Verify box and ellipsoid geoms with fromto span the segment like native MuJoCo."""
+        import mujoco
+
+        # The second segment points within 0.08 degrees of -Z, where the axis must keep its tilt.
+        for geom_type, fromto in itertools.product(
+            ("box", "ellipsoid"), ("0.1 0.2 0.3  0.4 0.6 0.8", "0.0006 0.0008 -1  0 0 0")
+        ):
+            for size in ("0.05", "0.05 0.07"):
+                with self.subTest(geom_type=geom_type, fromto=fromto, size=size):
+                    mjcf = f"""<mujoco model="fromto_shape">
+    <worldbody>
+        <geom name="g" type="{geom_type}" fromto="{fromto}" size="{size}"/>
+    </worldbody>
+</mujoco>"""
+                    mj_model = mujoco.MjModel.from_xml_string(mjcf)
+
+                    builder = newton.ModelBuilder()
+                    builder.add_mjcf(mjcf)
+                    idx = builder.shape_label.index("fromto_shape/worldbody/g")
+
+                    xform = builder.shape_transform[idx]
+                    quat = wp.quat(*xform[3:7])
+                    mj_quat = wp.quat(*mj_model.geom_quat[0][[1, 2, 3, 0]])
+                    np.testing.assert_allclose(xform[:3], mj_model.geom_pos[0], atol=1e-6)
+                    np.testing.assert_allclose(
+                        np.array(wp.quat_to_matrix(quat)), np.array(wp.quat_to_matrix(mj_quat)), atol=1e-5
+                    )
+                    np.testing.assert_allclose(builder.shape_scale[idx], mj_model.geom_size[0], atol=1e-6)
+
+        # A slanted segment inside a frame with both a position and a rotation checks the composition order.
+        for geom_type in ("box", "ellipsoid"):
+            with self.subTest(geom_type=geom_type, frame=True):
+                mjcf = f"""<mujoco model="fromto_slanted">
+    <worldbody>
+        <frame pos="0.1 0.2 0" euler="20 0 45">
+            <geom name="g" type="{geom_type}" fromto="0.1 0.2 0.3  0.4 0.6 0.8" size="0.05 0.07"/>
+        </frame>
+    </worldbody>
+</mujoco>"""
+                mj_model = mujoco.MjModel.from_xml_string(mjcf)
+                mj_data = mujoco.MjData(mj_model)
+                mujoco.mj_forward(mj_model, mj_data)
+
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(mjcf)
+                xform = builder.shape_transform[builder.shape_label.index("fromto_slanted/worldbody/g")]
+                np.testing.assert_allclose(xform[:3], mj_data.geom_xpos[0], atol=1e-6)
+                np.testing.assert_allclose(
+                    np.array(wp.quat_to_matrix(wp.quat(*xform[3:7]))).reshape(3, 3),
+                    mj_data.geom_xmat[0].reshape(3, 3),
+                    atol=1e-5,
+                )
+
+    @requires(*MUJOCO_MODULES)
+    def test_geom_fromto_box_keeps_frame_rotation_like_native_mujoco(self):
+        """Verify a box with fromto inside a rotated frame keeps the frame's roll about the segment."""
+        import mujoco
+
+        mjcf = """<mujoco model="fromto_frame">
+    <worldbody>
+        <frame euler="0 0 45">
+            <geom name="g" type="box" fromto="0 0 0.5  0 0 -0.5" size="0.05 0.05"/>
+        </frame>
+    </worldbody>
+</mujoco>"""
+        mj_model = mujoco.MjModel.from_xml_string(mjcf)
+        mj_data = mujoco.MjData(mj_model)
+        mujoco.mj_forward(mj_model, mj_data)
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        idx = builder.shape_label.index("fromto_frame/worldbody/g")
+        xform = builder.shape_transform[idx]
+        np.testing.assert_allclose(xform[:3], mj_data.geom_xpos[0], atol=1e-6)
+        np.testing.assert_allclose(
+            np.array(wp.quat_to_matrix(wp.quat(*xform[3:7]))).reshape(3, 3),
+            mj_data.geom_xmat[0].reshape(3, 3),
+            atol=1e-5,
+        )
+
+    @requires(*MUJOCO_MODULES)
+    def test_geom_fromto_box_keeps_import_xform_rotation(self):
+        """Verify a rotated import xform rotates a box with fromto about the segment axis."""
+        import mujoco
+
+        framed = """<mujoco model="m"><worldbody><frame euler="0 0 45">
+            <geom name="g" type="box" fromto="0 0 0.5  0 0 -0.5" size="0.05 0.05"/>
+        </frame></worldbody></mujoco>"""
+        plain = framed.replace('<frame euler="0 0 45">', "<frame>")
+        mj_model = mujoco.MjModel.from_xml_string(framed)
+        mj_data = mujoco.MjData(mj_model)
+        mujoco.mj_forward(mj_model, mj_data)
+
+        rot = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), wp.pi / 4.0)
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(plain, xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), rot))
+        idx = builder.shape_label.index("m/worldbody/g")
+        xform = builder.shape_transform[idx]
+        np.testing.assert_allclose(
+            np.array(wp.quat_to_matrix(wp.quat(*xform[3:7]))).reshape(3, 3),
+            mj_data.geom_xmat[0].reshape(3, 3),
+            atol=1e-5,
+        )
+
+    @requires(*MUJOCO_MODULES)
+    def test_geom_fromto_short_segment_keeps_length(self):
+        """Verify a short but nonzero fromto segment keeps its half-length."""
+        mjcf = """<mujoco model="fromto_short">
+    <worldbody>
+        <geom name="g" type="box" fromto="0 0 2.5e-7  0 0 -2.5e-7" size="0.05"/>
+    </worldbody>
+</mujoco>"""
+        for scale in (1.0, 0.1):
+            with self.subTest(scale=scale):
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(mjcf, scale=scale)
+                idx = builder.shape_label.index("fromto_short/worldbody/g")
+                # The 1e-7 cutoff applies to the authored segment, before the import scale.
+                self.assertAlmostEqual(float(builder.shape_scale[idx][2]), 2.5e-7 * scale, delta=1e-10 * scale)
+
     def test_actuator_mode_inference_from_actuator_type(self):
         """Test that JointTargetMode is correctly inferred from MJCF actuator types."""
         from newton._src.sim.enums import JointTargetMode  # noqa: PLC0415
@@ -7893,7 +8155,7 @@ class TestMjcfJointEqualityEndpoints(unittest.TestCase):
         damping = float(np.round(mj_model.dof_damping[mj_model.jnt_dofadr[joint]], 6))
         return int(mj_model.jnt_type[joint]), tuple(np.round(mj_model.jnt_axis[joint], 6)), damping
 
-    def _assert_matches_native(self, native, converted, steps: int = 300, dynamics: bool = True):
+    def _assert_matches_native(self, native, converted, steps: int = 300):
         import mujoco
 
         self.assertEqual(converted.neq, native.neq)
@@ -7908,8 +8170,6 @@ class TestMjcfJointEqualityEndpoints(unittest.TestCase):
                 [self._joint_key(native, j) for j in getattr(native, field)],
                 field,
             )
-        if not dynamics:
-            return
 
         # Newton orders combined DoFs linear-first, so match coordinates by joint identity.
         converted_joint = {self._joint_key(converted, j): j for j in range(converted.njnt)}
@@ -7942,17 +8202,22 @@ class TestMjcfJointEqualityEndpoints(unittest.TestCase):
             for joints in ((first, second), (second, first)):
                 for joint1, joint2 in ((first, second), (second, first)):
                     with self.subTest(joints=joints, joint1=joint1, joint2=joint2):
+                        joint_xml = "".join(_EQUALITY_TEST_JOINTS[name] for name in joints)
+                        if joints[1] == "s1":
+                            # A slide listed after a hinge keeps its motion only when parallel to it.
+                            hinge_axis = {"h1": "1 0 0", "h2": "0 1 0"}[joints[0]]
+                            joint_xml = (
+                                _EQUALITY_TEST_JOINTS[joints[0]]
+                                + f'<joint name="s1" type="slide" axis="{hinge_axis}" damping="0.4"/>'
+                            )
                         mjcf = self._mjcf(
-                            "".join(_EQUALITY_TEST_JOINTS[name] for name in joints),
+                            joint_xml,
                             f'<joint joint1="{joint1}" joint2="{joint2}" polycoef="0.05 0.5 0 0 0"/>',
                         )
                         with self.assertWarnsRegex(newton.NewtonWarning, f"joint1={joint1}"):
                             native, converted, model = self._convert(mjcf)
                         self.assertEqual(model.constraint_mimic_count, 0)
-                        # Combined joints apply slides before hinges, so a hinge declared
-                        # before a slide changes the kinematics independently of the equality.
-                        slide_after_hinge = joints.index("s1") > 0 if "s1" in joints else False
-                        self._assert_matches_native(native, converted, dynamics=not slide_after_hinge)
+                        self._assert_matches_native(native, converted)
 
     @requires(*MUJOCO_MODULES)
     def test_partial_polycoef_keeps_mujoco_defaults(self):
@@ -8113,7 +8378,7 @@ class TestMjcfJointEqualityEndpoints(unittest.TestCase):
     @requires(*MUJOCO_MODULES)
     def test_reject_heterogeneous_dof_selectors(self):
         """Reject separate worlds whose joint equalities select different DoFs of the same joint."""
-        joints = _EQUALITY_TEST_JOINTS["h1"] + _EQUALITY_TEST_JOINTS["h2"] + _EQUALITY_TEST_JOINTS["s1"]
+        joints = _EQUALITY_TEST_JOINTS["s1"] + _EQUALITY_TEST_JOINTS["h1"] + _EQUALITY_TEST_JOINTS["h2"]
         cases = (
             (("h1", "h2"), None),
             (("h2", "h1"), "joint1_dof mismatch at position 0"),
@@ -11717,6 +11982,48 @@ class TestJointFrictionloss(unittest.TestCase):
         builder.add_mjcf(mjcf)
         model = builder.finalize()
         np.testing.assert_allclose(model.joint_friction.numpy()[-1], 3.3, atol=1e-5)
+
+    @requires(*MUJOCO_MODULES)
+    def test_free_joint_parameters_match_mujoco(self):
+        """Verify <joint type="free"> takes its per-DOF attributes like native MuJoCo."""
+        import mujoco
+
+        mjcf = """<mujoco>
+            <default>
+                <joint damping="0.4" armature="0.3" frictionloss="0.2" stiffness="2" actuatorgravcomp="true"
+                    solreffriction="0.03 1" solimpfriction="0.8 0.9 0.002 0.4 3"/>
+            </default>
+            <worldbody>
+                <body name="inherits"><joint type="free"/><geom type="sphere" size="0.1"/></body>
+                <body name="overrides" pos="1 0 0">
+                    <joint type="free" damping="0" armature="0.05" actuatorgravcomp="false"/>
+                    <geom type="sphere" size="0.1"/>
+                </body>
+                <body name="ignores" pos="2 0 0"><freejoint/><geom type="sphere" size="0.1"/></body>
+            </worldbody>
+        </mujoco>"""
+        native = mujoco.MjModel.from_xml_string(mjcf)
+        fields = (
+            "dof_damping",
+            "dof_armature",
+            "dof_frictionloss",
+            "dof_solref",
+            "dof_solimp",
+            "jnt_stiffness",
+            "jnt_actgravcomp",
+        )
+        # floating=True keeps the parameters of a root that is already a free joint.
+        for floating in (None, True):
+            with self.subTest(floating=floating):
+                builder = newton.ModelBuilder()
+                SolverMuJoCo.register_custom_attributes(builder)
+                builder.add_mjcf(mjcf, floating=floating)
+                solver = SolverMuJoCo(builder.finalize())
+                for name in fields:
+                    expected = getattr(native, name)
+                    simulated = getattr(solver.mjw_model, name).numpy().reshape(expected.shape)
+                    np.testing.assert_allclose(simulated, expected, atol=1e-6, err_msg=name)
+                    np.testing.assert_allclose(getattr(solver.mj_model, name), expected, atol=1e-6, err_msg=name)
 
 
 class TestZeroMassBodies(unittest.TestCase):

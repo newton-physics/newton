@@ -15,16 +15,6 @@ GENERATION_SENTINEL = -1
 
 
 @wp.kernel(enable_backward=False)
-def _increment_contact_generation(generation: wp.array[wp.int32]):
-    g = generation[0]
-    if g == 2147483647:
-        g = 0
-    else:
-        g = g + 1
-    generation[0] = g
-
-
-@wp.kernel(enable_backward=False)
 def _clear_counters_and_bump_generation(
     counters: wp.array[wp.int32],
     generation: wp.array[wp.int32],
