@@ -453,8 +453,14 @@ def _resolve_shape_contact(
     defaults: ModelBuilder.ShapeConfig,
     *,
     verbose: bool,
+    solref_keys: set[str] | None = None,
 ) -> dict[str, float | None]:
-    """Select contact response values from shape, material, and builder settings."""
+    """Select contact response values from shape, material, and builder settings.
+
+    If ``solref_keys`` is given, it receives the keys (``"ke"``, ``"kd"``) whose value was
+    taken from the shape's own ``mjc:solref``. Those values are per-unit-mass gains
+    [1/s^2, 1/s], not force-space gains.
+    """
     # Contact response precedence:
     #   per-shape mjc:solref (non-legacy) > material > legacy per-shape > default
     mjc_has_priority = False
@@ -477,19 +483,29 @@ def _resolve_shape_contact(
         "mu_rolling": material.rollingFriction,
     }
     for _ck in ("ke", "kd", "kf", "ka"):
-        per_shape_val = resolver.get_value(prim, prim_type=PrimType.SHAPE, key=_ck, verbose=verbose)
+        per_shape_val, per_shape_resolver = resolver.get_value_with_resolver(
+            prim, prim_type=PrimType.SHAPE, key=_ck, verbose=verbose
+        )
         has_shape = per_shape_val is not None and math.isfinite(float(per_shape_val))
         mat_val = getattr(material, _ck)
         has_mat = mat_val is not None and math.isfinite(mat_val)
 
+        from_shape = False
         if has_solref and _ck in ("ke", "kd") and has_shape:
             shape_contact[_ck] = float(per_shape_val)
+            from_shape = True
         elif has_mat:
             shape_contact[_ck] = mat_val
         elif has_shape:
             shape_contact[_ck] = float(per_shape_val)
+            from_shape = True
         else:
             shape_contact[_ck] = getattr(defaults, _ck)
+
+        # The Mjc resolver's only per-shape source for ke/kd is mjc:solref.
+        if solref_keys is not None and from_shape and _ck in ("ke", "kd") and per_shape_resolver is not None:
+            if per_shape_resolver.name == "mjc":
+                solref_keys.add(_ck)
 
     return shape_contact
 
