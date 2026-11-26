@@ -46,6 +46,7 @@ from .rasterized_collisions import (
     PicContactMotion,
     build_rigidity_operator,
     collider_distance_reflect,
+    collider_query_distance,
     interpolate_collider_normals,
     particle_collider_penetration,
     particle_contact_gap,
@@ -2820,9 +2821,13 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
         collider = self._mpm_model.collider
         prev_gap = collider.query_max_dist
+        prev_max_radius = collider.max_particle_radius
+        prev_reach = collider.query_reach
         # Particle contacts measure distances from the particle surface, one radius closer than its center
         query_gap = gap if gap is not None else self._default_query_distance()
-        collider.query_max_dist = query_gap + self._contact_radius_reach()
+        collider.query_max_dist = query_gap
+        collider.max_particle_radius = self._contact_max_particle_radius()
+        collider.query_reach = query_gap
 
         self._last_step_data.require_collider_previous_position(state_in.body_q)
         try:
@@ -2853,6 +2858,8 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             )
         finally:
             collider.query_max_dist = prev_gap
+            collider.max_particle_radius = prev_max_radius
+            collider.query_reach = prev_reach
 
     def update_particle_frames(
         self,
@@ -3787,6 +3794,8 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         with self._timer("Rasterize collider"):
             # Rasterization, the rigidity operator, and force harvesting share this distance during the step
             self._mpm_model.collider.query_max_dist = self._collider_query_distance()
+            self._mpm_model.collider.max_particle_radius = self._contact_max_particle_radius()
+            self._mpm_model.collider.query_reach = self._collider_contact_reach()
             # volume associated to each collider node
             fem.integrate(
                 integrate_fraction,
@@ -4298,26 +4307,31 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             )
             scratch.strain_yield_parameters_field.dof_values = parameters.view(YieldParamVec)
 
-    def _contact_radius_reach(self) -> float:
-        """Largest particle radius, which particle collider bases subtract from collider distances."""
+    def _contact_max_particle_radius(self) -> wp.array | None:
+        """Largest particle radius on the device, which particle collider bases subtract from collider distances.
+
+        Collider queries add it to their distance on the device, so captured graphs follow radius changes.
+        """
         if self.collider_basis[:3] != "pic":
-            return 0.0
+            return None
         return self._mpm_model.max_particle_radius
 
     def _default_query_distance(self) -> float:
         """Default closest-point query distance [m] from particle centers or surfaces: one cell diagonal."""
         return self._mpm_model.voxel_size * math.sqrt(3.0)
 
-    def _collider_query_distance(self) -> float:
-        """Closest-point query distance [m] for collider rasterization.
+    def _collider_contact_reach(self) -> float:
+        """Predictive contact gap or contact band [m], whichever is larger, measured from particle surfaces."""
+        return max(self._collider_contact_gap, speculative_stop_distance(self._mpm_model.voxel_size))
 
-        Covers one cell diagonal, and for particle collider bases the largest
-        particle radius plus the predictive contact gap or the contact band.
+    def _collider_query_distance(self) -> float:
+        """Closest-point query distance [m] for collider rasterization, without the particle radius.
+
+        Covers one cell diagonal and the contact reach. Particle collider bases also reach the
+        largest particle radius plus the contact reach, evaluated on the device, see
+        :meth:`_contact_max_particle_radius`.
         """
-        contact_reach = self._contact_radius_reach() + max(
-            self._collider_contact_gap, speculative_stop_distance(self._mpm_model.voxel_size)
-        )
-        return max(self._default_query_distance(), contact_reach)
+        return max(self._default_query_distance(), self._collider_contact_reach())
 
     def _measures_density(self) -> bool:
         """Whether critical packing or density feedback needs a density measurement."""
@@ -5455,7 +5469,7 @@ def _harvest_mpm_proxy_particle_forces_kernel(
         return
 
     mesh = collider.collider_mesh[cid]
-    max_dist = collider.query_max_dist + collider.collider_max_thickness[cid]
+    max_dist = collider_query_distance(collider, cid)
     query = wp.mesh_query_point_no_sign(mesh, collider_impulse_pos[i], max_dist)
     if not query.result:
         return

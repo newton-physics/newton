@@ -553,8 +553,12 @@ def test_particle_properties_notify_refreshes_masks_in_place(test, device):
     model = builder.finalize(device=device)
     solver = _make_sparse_solver(model, max_active_cell_count=8)
     mpm_model = solver._mpm_model
-    masks = (mpm_model.particle_flags, mpm_model.material_particle_flags, mpm_model.material_particle_volume)
-    pointers = [array.ptr for array in masks]
+    masks = ("particle_flags", "material_particle_flags", "material_particle_volume")
+
+    def mask_pointers():
+        return [getattr(mpm_model, name).ptr for name in masks]
+
+    pointers = mask_pointers()
     volume = mpm_model.particle_volume.numpy()
 
     def check_masks(flags):
@@ -564,7 +568,7 @@ def test_particle_properties_notify_refreshes_masks_in_place(test, device):
         np.testing.assert_array_equal(
             mpm_model.material_particle_volume.numpy(), np.where(material & active, volume, 0.0)
         )
-        test.assertEqual([array.ptr for array in masks], pointers)
+        test.assertEqual(mask_pointers(), pointers)
 
     check_masks(model.particle_flags.numpy())
 
@@ -696,8 +700,12 @@ def test_particle_properties_notify_refreshes_volumes(test, device):
     model = _make_material_block_model(device)
     solver = _make_sparse_solver(model, max_active_cell_count=64)
     mpm_model = solver._mpm_model
-    arrays = (mpm_model.particle_volume, mpm_model.particle_density)
-    pointers = [array.ptr for array in arrays]
+    arrays = ("particle_volume", "particle_density", "max_particle_radius")
+
+    def array_pointers():
+        return [getattr(mpm_model, name).ptr for name in arrays]
+
+    pointers = array_pointers()
 
     model.particle_radius.fill_(0.02)
     model.particle_mass.fill_(2.0)
@@ -705,7 +713,8 @@ def test_particle_properties_notify_refreshes_volumes(test, device):
 
     np.testing.assert_allclose(mpm_model.particle_volume.numpy(), 8.0 * 0.02**3, rtol=1.0e-5)
     np.testing.assert_allclose(mpm_model.particle_density.numpy(), 2.0 / (8.0 * 0.02**3), rtol=1.0e-5)
-    test.assertEqual([array.ptr for array in arrays], pointers)
+    np.testing.assert_allclose(mpm_model.max_particle_radius.numpy(), [0.02], rtol=1.0e-6)
+    test.assertEqual(array_pointers(), pointers)
 
 
 def _run_material_block(device, *, capture, change=None, initial=None, steps=4, **config_kwargs):

@@ -200,12 +200,14 @@ def _compute_particle_volume_density(
     particle_mass: wp.array[float],
     particle_volume: wp.array[float],
     particle_density: wp.array[float],
+    max_particle_radius: wp.array[float],
 ):
     i = wp.tid()
     r = particle_radius[i]
     v = 8.0 * r * r * r
     particle_volume[i] = v
     particle_density[i] = particle_mass[i] / v
+    wp.atomic_max(max_particle_radius, 0, r)
 
 
 @wp.kernel
@@ -420,10 +422,10 @@ class ImplicitMPMModel:
           flag, and ``environment_max_particle_density`` (see
           :meth:`refresh_particle_flags`).
 
-        :attr:`max_particle_radius` is read back from the device lazily, on
-        its next use outside a graph capture. After the first call, this only
-        launches kernels that write existing arrays, so it may be recorded in
-        a CUDA graph.
+        - ``max_particle_radius``, the largest particle radius.
+
+        After the first call, this only launches kernels that write existing
+        arrays, so it may be recorded in a CUDA graph.
         """
         model = self.model
 
@@ -446,36 +448,19 @@ class ImplicitMPMModel:
         with wp.ScopedDevice(model.device):
             num_particles = model.particle_q.shape[0]
             self.particle_radius = _particle_parameter(num_particles, model.particle_radius)
-            if getattr(self, "_max_particle_radius", None) is None:
-                # Read eagerly at construction so a capture right afterwards has a value.
-                self._max_particle_radius = float(np.max(self.particle_radius.numpy(), initial=0.0))
-                self._max_particle_radius_stale = False
-            else:
-                # Later notifications may be recorded in a graph: defer the readback.
-                self._max_particle_radius_stale = True
             self.particle_volume = _reuse_or_allocate(getattr(self, "particle_volume", None), num_particles)
             self.particle_density = _reuse_or_allocate(getattr(self, "particle_density", None), num_particles)
+            self.max_particle_radius = _reuse_or_allocate(getattr(self, "max_particle_radius", None), 1)
+            self.max_particle_radius.zero_()
             wp.launch(
                 _compute_particle_volume_density,
                 dim=num_particles,
                 inputs=[self.particle_radius, model.particle_mass],
-                outputs=[self.particle_volume, self.particle_density],
+                outputs=[self.particle_volume, self.particle_density, self.max_particle_radius],
             )
 
         self._require_particle_arrays()
         self.refresh_particle_flags()
-
-    @property
-    def max_particle_radius(self) -> float:
-        """Largest particle radius [m], read back from the device after a notification.
-
-        The readback is deferred to the first use outside a graph capture;
-        during a capture, the value from the last readback is used.
-        """
-        if self._max_particle_radius_stale and not wp.get_device(self.model.device).is_capturing:
-            self._max_particle_radius = float(np.max(self.particle_radius.numpy(), initial=0.0))
-            self._max_particle_radius_stale = False
-        return self._max_particle_radius
 
     def refresh_particle_flags(self):
         """Refresh the transfer and material particle masks from ``model.particle_flags``.
