@@ -1579,7 +1579,9 @@ class SolverSteel(SolverBase, CouplingInterface):
         - With ``enable_bilateral_preelimination`` the loop-closure reactions are left out;
           requesting the wrench warns once while a loop closure is enabled in
           :attr:`~newton.Model.joint_enabled` as of construction or the last
-          ``JOINT_PROPERTIES`` notification outside graph capture.
+          ``JOINT_PROPERTIES`` notification outside graph capture. Editing ``joint_enabled``
+          in place without that notification, or notifying during capture, changes the
+          closure rows but not this warning.
         - A body whose inbound joint is FREE reports the residual of its discrete momentum
           balance, its FREE ``joint_f`` less ``armature * qdd``; with neither, its force part is
           zero up to solver tolerance. The stabilized gyroscopic update of single-body FREE
