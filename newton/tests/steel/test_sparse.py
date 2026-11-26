@@ -2270,9 +2270,12 @@ class TestSteelSparseSolver(unittest.TestCase):
         """
         # Compare factor representations with the same contact and constraint row order.
         # Atomic row allocation can change a finite Gauss-Seidel sweep's result.
-        options = dict(
-            free_count=1, boxes=True, friction_anchor_beta=0.2, deterministic=wp.DeterministicMode.RUN_TO_RUN
-        )
+        options = {
+            "free_count": 1,
+            "boxes": True,
+            "friction_anchor_beta": 0.2,
+            "deterministic": wp.DeterministicMode.RUN_TO_RUN,
+        }
         dense = _case(False, **options)
         sparse = _case(True, **options)
         self.assertIsNone(dense[1]._sparse_mass_matrix_size)
