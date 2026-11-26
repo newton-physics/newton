@@ -1,0 +1,1 @@
+Make `ViewerBase.log_contacts()` draw contact-force arrows only from the `observables` argument. Without it, only contact geometry is drawn. Pass `observables=observables` containing `SolverBase.ObservableKind.CONTACT_F` to draw forces.

@@ -151,7 +151,6 @@ class TestLogContacts(unittest.TestCase):
         observables = solver.observables(contacts=contacts, kinds={newton.solvers.SolverBase.ObservableKind.CONTACT_F})
         solver.validate_observables(observables, contacts)
         observables.contact_f.assign([wp.spatial_vector(0.0, 0.0, 1.0, 0.0, 0.0, 0.0)] * 2)
-        self.assertIsNone(contacts.force)
         viewer.show_contact_forces = True
         viewer.log_contacts(contacts, model.state(), observables=observables)
         assert_np_equal(viewer._contact_disk_scales.numpy()[:, 0], np.array([0.02, 0.1]), tol=1.0e-6)

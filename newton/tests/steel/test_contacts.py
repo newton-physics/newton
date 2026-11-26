@@ -498,6 +498,7 @@ def _launch_dense_contact_builders(
             wp.zeros((1,), dtype=wp.int32, device=device),
             articulation_origin,
             wp.array([0.6, 0.8], dtype=wp.float32, device=device),
+            None,
             wp.array([0.2, 0.4], dtype=wp.float32, device=device),
             patches,
             *anchors,
@@ -3977,8 +3978,6 @@ class TestSteelJointlessKinematicBody(unittest.TestCase):
         builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
         model = builder.finalize(device="cpu")
         self.assertEqual((model.joint_count, model.articulation_count), (1, 0))
-        with self.assertWarns(DeprecationWarning):
-            model.request_state_attributes("body_parent_f")
         solver = SolverSteel(model)
         pipeline = newton.CollisionPipeline(model)
         contacts = pipeline.contacts()
@@ -3991,7 +3990,6 @@ class TestSteelJointlessKinematicBody(unittest.TestCase):
         state_in.body_qd.assign(body_qd)
         # Stale nonzero outputs, so a step that skips the parent wrenches would leave them.
         observables.body_parent_f.fill_(wp.spatial_vector(42.0, 42.0, 42.0, 42.0, 42.0, 42.0))
-        state_out.body_parent_f.fill_(wp.spatial_vector(42.0, 42.0, 42.0, 42.0, 42.0, 42.0))
         pipeline.collide(state_in, contacts)
         self.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
         solver.step(state_in, state_out, None, contacts, DEFAULT_DT, observables=observables)
@@ -3999,7 +3997,6 @@ class TestSteelJointlessKinematicBody(unittest.TestCase):
         np.testing.assert_array_equal(state_out.body_qd.numpy(), body_qd)
         np.testing.assert_array_equal(observables.contact_f.numpy(), 0.0)
         np.testing.assert_array_equal(observables.body_parent_f.numpy(), 0.0)
-        np.testing.assert_array_equal(state_out.body_parent_f.numpy(), 0.0)
 
     def test_model_without_articulations_publishes_its_joint_state(self):
         """Pass a standalone revolute joint's coordinates through a step of a model without articulations."""
