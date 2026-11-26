@@ -1934,6 +1934,30 @@ class TestFrictionPatchHistory(unittest.TestCase):
         for flooded, serial in zip(*results, strict=True):
             np.testing.assert_array_equal(flooded, serial)
 
+    def test_separated_carry_region_ignores_nearer_partner_history(self):
+        """Carry a separated region's own anchor history without interpolating a nearer partner anchor's."""
+        model, state, contacts, patches = _patch_fixture([[-0.1, 0, 0], [0.1, 0, 0]])
+        patches.store(state)
+        displacement = patches.previous.displacement.numpy()
+        displacement[:2] = [[1.0e-3, 0, 0], [-1.0e-3, 0, 0]]
+        patches.previous.displacement.assign(displacement)
+        # Tilt the body about the touching end, lifting the other end 10 mm beyond the friction gap limit.
+        angle = math.asin(0.05)
+        pivot = wp.vec3(0.1, 0, 0)
+        rotation = wp.quat_from_axis_angle(wp.vec3(0, 1, 0), angle)
+        lifted = wp.quat_rotate(rotation, wp.vec3(-0.2, 0, 0)) + pivot
+        state.body_q.assign([wp.transform(pivot - wp.quat_rotate(rotation, pivot), rotation), wp.transform_identity()])
+        contacts.rigid_contact_point1.assign([[lifted[0], 0, 0], [0.1, 0, 0]])
+        displacements = []
+        for partner_valid in (1, 0):
+            valid = patches.previous.valid.numpy()
+            valid[1] = partner_valid
+            patches.previous.valid.assign(valid)
+            patches.build(model, state, contacts, shape_material_mu=model.shape_material_mu, friction_gap_limit=0.005)
+            self.assertEqual(int(patches.current.source.numpy()[0]), 0)
+            displacements.append(patches.current.displacement.numpy()[0])
+        np.testing.assert_allclose(displacements[0], displacements[1], atol=1.0e-9)
+
     def test_contact_churn_preserves_error_at_current_points(self):
         """Preserve a sticking region's history even when every contact sample changes."""
         points = np.array([[-0.1, -0.1, 0], [0.1, -0.1, 0], [-0.1, 0.1, 0], [0.1, 0.1, 0]], dtype=np.float32)

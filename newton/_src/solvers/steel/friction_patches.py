@@ -1007,6 +1007,11 @@ def _build(
                         if (
                             wp.dot(other_normal, n) < 0.995
                             or other_gap > wp.max(current_gap, frame.support_gap_limit[c]) + 1.0e-5 * r
+                            or (
+                                frame.eligible[c] == 0
+                                and current_gap > _TOUCH_TOLERANCE * r
+                                and other_gap < current_gap - 1.0e-5 * r
+                            )
                         ):
                             break
                         other_center = 0.5 * (
