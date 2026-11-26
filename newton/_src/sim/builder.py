@@ -11520,16 +11520,21 @@ class ModelBuilder:
                 method = "bounding_box"
 
         if method == "bounding_box":
+            # Shapes sharing a source mesh and scale, e.g. USD instances, share one box.
+            boxes: dict[tuple, tuple[Mesh, wp.transform, wp.vec3]] = {}
             for shape in shape_indices:
                 if shape in remeshed_shapes:
                     continue
                 mesh: Mesh = self.shape_source[shape]
                 scale = self.shape_scale[shape]
-                vertices = mesh.vertices * np.array([*scale])
-                tf, scale = compute_inertia_obb(vertices)
+                key = (id(mesh), *(float(s) for s in scale))
+                if key not in boxes:
+                    # The cache holds the mesh, so its id stays unique.
+                    boxes[key] = (mesh, *compute_inertia_obb(mesh.vertices * np.array([*scale])))
+                _, tf, scale = boxes[key]
                 self.shape_type[shape] = GeoType.BOX
                 self.shape_source[shape] = None
-                self.shape_scale[shape] = scale
+                self.shape_scale[shape] = wp.vec3(scale)
                 shape_tf = self.shape_transform[shape]
                 self.shape_transform[shape] = shape_tf * tf
                 remeshed_shapes.add(shape)

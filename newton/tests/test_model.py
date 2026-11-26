@@ -1607,6 +1607,31 @@ class TestModelMesh(unittest.TestCase):
         self.assertEqual(builder.shape_type[mesh_shape], newton.GeoType.BOX)
 
     @requires("scipy")
+    def test_bounding_box_approximation_of_shared_meshes(self):
+        """Shapes sharing a mesh get the same boxes as shapes approximated one at a time."""
+        mesh = newton.Mesh.create_cylinder(0.2, 0.5, compute_inertia=False)
+        scales = ((1.0, 1.0, 1.0), (1.0, 2.0, 0.5), (1.0, 1.0, 1.0), (1.0, 2.0, 0.5))
+        xforms = [wp.transform(wp.vec3(float(i), 0.0, 0.0), wp.quat_rpy(0.1 * i, 0.2, 0.3)) for i in range(4)]
+
+        def build():
+            builder = ModelBuilder()
+            return builder, [
+                builder.add_shape_mesh(body=-1, mesh=mesh, xform=xform, scale=scale)
+                for xform, scale in zip(xforms, scales, strict=True)
+            ]
+
+        shared, shapes = build()
+        self.assertEqual(shared.approximate_meshes(method="bounding_box", shape_indices=shapes), set(shapes))
+        separate, _ = build()
+        for shape in shapes:
+            separate.approximate_meshes(method="bounding_box", shape_indices=[shape])
+        for shape in shapes:
+            self.assertEqual(shared.shape_type[shape], newton.GeoType.BOX)
+            np.testing.assert_array_equal(np.asarray(shared.shape_scale[shape]), separate.shape_scale[shape])
+            np.testing.assert_array_equal(np.asarray(shared.shape_transform[shape]), separate.shape_transform[shape])
+        self.assertIsNot(shared.shape_scale[0], shared.shape_scale[2])
+
+    @requires("scipy")
     def test_mesh_approximation_convex_hull_failure_falls_back_to_bounding_box(self):
         builder = ModelBuilder()
         box = newton.Mesh.create_box(
