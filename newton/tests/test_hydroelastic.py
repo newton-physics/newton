@@ -2326,7 +2326,6 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
             sdf_narrow_band_range=(-0.1, 0.1),
             gap=0.01,
             kh=kh_val,
-            kd=0.0,  # Preserve the previous MuJoCo response for the stiffness check.
             density=0.0,
         )
 
