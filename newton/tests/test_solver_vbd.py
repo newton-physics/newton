@@ -42,6 +42,7 @@ from newton._src.solvers.vbd.particle_vbd_kernels import (
 from newton._src.solvers.vbd.rigid_vbd_kernels import (
     RigidContactHistory,
     _alm_relaxed_ascent,
+    _anchor_hinge_angle,
     _angular_compliance_from_hessian,
     _compliant_alm_coefficients,
     _compute_body_particle_contact_force,
@@ -394,6 +395,12 @@ def _eval_compliant_alm_coefficients_kernel(
     s, k_eff, a = _compliant_alm_coefficients(material_k[i], rho[i])
     lambda_next = _alm_relaxed_ascent(2.0, 0.25, material_k[i], rho[i])
     result[i] = wp.vec4(s, k_eff, a, lambda_next)
+
+
+@wp.kernel
+def _eval_anchor_hinge_angle_kernel(cases: wp.array2d[float], result: wp.array[float]):
+    i = wp.tid()
+    result[i] = _anchor_hinge_angle(cases[i, 0], cases[i, 1], cases[i, 2], cases[i, 3], cases[i, 4])
 
 
 @wp.kernel
@@ -7460,6 +7467,65 @@ def _rigid_hinge_multiturn_limits(test, device):
         test.assertLess(np.max(np.abs(state_in.body_qd.numpy()[:, 5])), 1.0e-2)
 
 
+def _rigid_hinge_bounded_reset_hold(test, device):
+    """Verify an in-range bounded hinge holds a satisfied target after construction and reset."""
+    model, target_indices, _ = _build_rigid_hinge_winding_model(
+        device,
+        limit_lower=0.0,
+        limit_upper=1.5 * math.pi,
+        limit_ke=1.0e4,
+        limit_kd=200.0,
+        target_ke=100.0,
+        target_kd=20.0,
+    )
+    # The pose is a full turn from its nearest-rest equivalent, -0.75 pi, which is out of range.
+    angle = 1.25 * math.pi
+    coord_indices = model.joint_q_start.numpy()[:2] + model.joint_dof_dim.numpy()[:2, 0]
+
+    solver = newton.solvers.SolverVBD(model, iterations=10)
+    state_in, state_out = model.state(), model.state()
+    control = model.control()
+    target_values = control.joint_target_q.numpy()
+    target_values[target_indices] = angle
+    control.joint_target_q.assign(target_values)
+
+    for reset in (False, True):
+        if reset:
+            solver.reset(state_in)
+        joint_q = state_in.joint_q.numpy()
+        joint_q[coord_indices] = angle
+        state_in.joint_q.assign(joint_q)
+        newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
+
+        angles = np.full(model.body_count, angle)
+        for _ in range(100):
+            solver.step(state_in, state_out, control, None, 0.01)
+            state_in, state_out = state_out, state_in
+            angles = _accumulate_body_z_angles(state_in, angles)
+
+        np.testing.assert_allclose(angles, angle, rtol=0.0, atol=1.0e-3)
+
+
+def _rigid_hinge_anchor_angle_selection(test, device):
+    """Verify the reset winding anchor prefers active limits without flipping at-bound poses."""
+    pi = math.pi
+    # angle, rest, lower, upper, limit_ke -> expected anchored angle
+    cases = [
+        # Nearest rest (-0.75 pi) is out of range; the in-range turn wins.
+        ((-0.75 * pi, 0.0, 0.0, 1.5 * pi, 1.0e4), 1.25 * pi),
+        # Without an active limit row, the documented nearest-rest turn is kept.
+        ((-0.75 * pi, 0.0, 0.0, 1.5 * pi, 0.0), -0.75 * pi),
+        # No turn is in range; the one with the smaller violation wins.
+        ((-0.2, 0.0, 0.0, 1.5 * pi, 1.0e4), -0.2),
+        # A pose on a bound but read just past it by float32 rounding keeps its turn.
+        ((-pi - 2.4e-7, -1.25, -pi, pi, 1.0e4), -pi),
+    ]
+    inputs = wp.array([case for case, _ in cases], dtype=float, device=device)
+    result = wp.empty(len(cases), dtype=float, device=device)
+    wp.launch(_eval_anchor_hinge_angle_kernel, dim=len(cases), inputs=[inputs], outputs=[result], device=device)
+    np.testing.assert_allclose(result.numpy(), [expected for _, expected in cases], rtol=0.0, atol=1.0e-5)
+
+
 class TestSolverVBD(unittest.TestCase):
     def test_contact_kernel_modules_follow_deterministic_mode(self):
         """Apply VBD deterministic options to the separately compiled rigid kernels."""
@@ -7542,6 +7608,12 @@ add_function_test(TestSolverVBD, "test_rigid_constraint_adjacency", _rigid_const
 
 add_function_test(TestSolverVBD, "test_rigid_hinge_multiturn_drive", _rigid_hinge_multiturn_drive, devices=devices)
 add_function_test(TestSolverVBD, "test_rigid_hinge_multiturn_limits", _rigid_hinge_multiturn_limits, devices=devices)
+add_function_test(
+    TestSolverVBD, "test_rigid_hinge_bounded_reset_hold", _rigid_hinge_bounded_reset_hold, devices=devices
+)
+add_function_test(
+    TestSolverVBD, "test_rigid_hinge_anchor_angle_selection", _rigid_hinge_anchor_angle_selection, devices=devices
+)
 add_function_test(
     TestSolverVBD,
     "test_body_particle_attachment_is_native_vbd",

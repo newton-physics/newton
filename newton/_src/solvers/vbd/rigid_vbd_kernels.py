@@ -62,6 +62,9 @@ wp.set_module_options({"enable_backward": False})
 _SMALL_ANGLE_EPS = wp.constant(1.0e-7)
 """Small-angle threshold [rad] for guards and series expansions"""
 
+_HINGE_ANCHOR_BOUND_SLACK = wp.constant(1.0e-4)
+"""Rounding slack [rad] within which a re-anchored hinge angle still counts as on a limit bound"""
+
 _DRIVE_LIMIT_MODE_NONE = wp.constant(0)
 _DRIVE_LIMIT_MODE_LIMIT_LOWER = wp.constant(1)
 _DRIVE_LIMIT_MODE_LIMIT_UPPER = wp.constant(2)
@@ -2908,6 +2911,31 @@ def _unwrap_hinge_angle(angle: float, reference: float) -> float:
 
 
 @wp.func
+def _anchor_hinge_angle(angle: float, rest: float, lower: float, upper: float, limit_ke: float) -> float:
+    """Select the equivalent hinge angle with the least active-limit violation, then nearest ``rest``."""
+    theta = _unwrap_hinge_angle(angle, rest)
+    if not _limit_row_exists(limit_ke, lower, upper):
+        return theta
+    two_pi = 2.0 * wp.pi
+    # Step to the in-range equivalent nearest rest; if the range has none, theta
+    # lands just past the opposite bound and competes with the branch before it.
+    other = theta
+    if theta < lower:
+        theta = theta + two_pi * wp.ceil((lower - theta) / two_pi)
+        other = theta - two_pi
+    elif theta > upper:
+        theta = theta - two_pi * wp.ceil((theta - upper) / two_pi)
+        other = theta + two_pi
+    # A pose on a bound but read just past it by rounding ties, so it keeps the turn nearest rest.
+    slack = _HINGE_ANCHOR_BOUND_SLACK
+    violation = wp.max(wp.max(lower - theta, theta - upper) - slack, 0.0)
+    other_violation = wp.max(wp.max(lower - other, other - upper) - slack, 0.0)
+    if other_violation < violation or (other_violation == violation and wp.abs(other - rest) < wp.abs(theta - rest)):
+        return other
+    return theta
+
+
+@wp.func
 def evaluate_joint_force_hessian(
     body_index: int,
     joint_index: int,
@@ -4252,7 +4280,7 @@ def step_joint_C0_lambda_rho(
 
     Sole owner of hinge-angle history and all per-step joint maintenance:
       0. revolute and one-axis-D6 winding history (enabled or not; reset-selected
-         worlds re-anchor to the rest coordinate);
+         worlds re-anchor near the rest coordinate, inside active limits when possible);
       1. compliant-ALM auto-``rho`` refresh for structural rows;
       2. directional support + multiplier retention for drive/limit rows;
       3. C0 snapshot + lambda retention for stabilized structural rows.
@@ -4288,11 +4316,17 @@ def step_joint_C0_lambda_rho(
             dof = dof + joint_dof_dim[j, 0]
         kappa = compute_kappa(X_wp.q, X_wc.q, X_wp_rest.q, X_wc_rest.q)
         angle = wp.dot(kappa, wp.normalize(joint_axis[dof])) + joint_rest_angle[dof]
-        reference = joint_angle_prev[dof]
         # Re-anchor winding after construction or reset instead of retaining old turns.
         if _world_selected(joint_world[j], pose_rebaseline_mask):
-            reference = joint_rest_angle[dof]
-        joint_angle_prev[dof] = _unwrap_hinge_angle(angle, reference)
+            joint_angle_prev[dof] = _anchor_hinge_angle(
+                angle,
+                joint_rest_angle[dof],
+                joint_limit_lower[dof],
+                joint_limit_upper[dof],
+                joint_limit_ke[dof],
+            )
+        else:
+            joint_angle_prev[dof] = _unwrap_hinge_angle(angle, joint_angle_prev[dof])
 
     # Auto-rho refresh has no enabled gate; a disabled joint's rho is unused.
     if c_dim > 0 and child >= 0:
