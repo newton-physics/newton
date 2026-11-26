@@ -1322,6 +1322,7 @@ class TestSteelExamples(NewtonTestCase):
 
 
 def test_steel_determinism_contact_capacity(test, device):
+    """Check that every arm copy uses the example's contact budget and the default uses automatic sizing."""
     from newton._src.sim.collide import _estimate_rigid_contact_max  # noqa: PLC0415
     from newton.examples.steel import example_steel_determinism_arms as arms  # noqa: PLC0415
     from newton.examples.steel._determinism import DeterminismExample  # noqa: PLC0415
