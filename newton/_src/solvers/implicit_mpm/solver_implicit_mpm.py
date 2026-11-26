@@ -1576,7 +1576,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             newton.ModelBuilder.CustomAttribute(
                 name="young_modulus",
-                update_flags=newton.ModelFlags.MODEL_PROPERTIES,
+                update_flags=newton.ModelFlags.PARTICLE_PROPERTIES,
                 frequency=newton.Model.AttributeFrequency.PARTICLE,
                 assignment=newton.Model.AttributeAssignment.MODEL,
                 dtype=wp.float32,
@@ -1587,7 +1587,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             newton.ModelBuilder.CustomAttribute(
                 name="poisson_ratio",
-                update_flags=newton.ModelFlags.MODEL_PROPERTIES,
+                update_flags=newton.ModelFlags.PARTICLE_PROPERTIES,
                 frequency=newton.Model.AttributeFrequency.PARTICLE,
                 assignment=newton.Model.AttributeAssignment.MODEL,
                 dtype=wp.float32,
@@ -1598,7 +1598,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             newton.ModelBuilder.CustomAttribute(
                 name="damping",
-                update_flags=newton.ModelFlags.MODEL_PROPERTIES,
+                update_flags=newton.ModelFlags.PARTICLE_PROPERTIES,
                 frequency=newton.Model.AttributeFrequency.PARTICLE,
                 assignment=newton.Model.AttributeAssignment.MODEL,
                 dtype=wp.float32,
@@ -1609,7 +1609,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             newton.ModelBuilder.CustomAttribute(
                 name="hardening",
-                update_flags=newton.ModelFlags.MODEL_PROPERTIES,
+                update_flags=newton.ModelFlags.PARTICLE_PROPERTIES,
                 frequency=newton.Model.AttributeFrequency.PARTICLE,
                 assignment=newton.Model.AttributeAssignment.MODEL,
                 dtype=wp.float32,
@@ -1620,7 +1620,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             newton.ModelBuilder.CustomAttribute(
                 name="friction",
-                update_flags=newton.ModelFlags.MODEL_PROPERTIES,
+                update_flags=newton.ModelFlags.PARTICLE_PROPERTIES,
                 frequency=newton.Model.AttributeFrequency.PARTICLE,
                 assignment=newton.Model.AttributeAssignment.MODEL,
                 dtype=wp.float32,
@@ -1631,7 +1631,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             newton.ModelBuilder.CustomAttribute(
                 name="yield_pressure",
-                update_flags=newton.ModelFlags.MODEL_PROPERTIES,
+                update_flags=newton.ModelFlags.PARTICLE_PROPERTIES,
                 frequency=newton.Model.AttributeFrequency.PARTICLE,
                 assignment=newton.Model.AttributeAssignment.MODEL,
                 dtype=wp.float32,
@@ -1642,7 +1642,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             newton.ModelBuilder.CustomAttribute(
                 name="tensile_yield_ratio",
-                update_flags=newton.ModelFlags.MODEL_PROPERTIES,
+                update_flags=newton.ModelFlags.PARTICLE_PROPERTIES,
                 frequency=newton.Model.AttributeFrequency.PARTICLE,
                 assignment=newton.Model.AttributeAssignment.MODEL,
                 dtype=wp.float32,
@@ -1653,7 +1653,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             newton.ModelBuilder.CustomAttribute(
                 name="yield_stress",
-                update_flags=newton.ModelFlags.MODEL_PROPERTIES,
+                update_flags=newton.ModelFlags.PARTICLE_PROPERTIES,
                 frequency=newton.Model.AttributeFrequency.PARTICLE,
                 assignment=newton.Model.AttributeAssignment.MODEL,
                 dtype=wp.float32,
@@ -1664,7 +1664,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             newton.ModelBuilder.CustomAttribute(
                 name="hardening_rate",
-                update_flags=newton.ModelFlags.MODEL_PROPERTIES,
+                update_flags=newton.ModelFlags.PARTICLE_PROPERTIES,
                 frequency=newton.Model.AttributeFrequency.PARTICLE,
                 assignment=newton.Model.AttributeAssignment.MODEL,
                 dtype=wp.float32,
@@ -1675,7 +1675,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             newton.ModelBuilder.CustomAttribute(
                 name="softening_rate",
-                update_flags=newton.ModelFlags.MODEL_PROPERTIES,
+                update_flags=newton.ModelFlags.PARTICLE_PROPERTIES,
                 frequency=newton.Model.AttributeFrequency.PARTICLE,
                 assignment=newton.Model.AttributeAssignment.MODEL,
                 dtype=wp.float32,
@@ -1686,7 +1686,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             newton.ModelBuilder.CustomAttribute(
                 name="dilatancy",
-                update_flags=newton.ModelFlags.MODEL_PROPERTIES,
+                update_flags=newton.ModelFlags.PARTICLE_PROPERTIES,
                 frequency=newton.Model.AttributeFrequency.PARTICLE,
                 assignment=newton.Model.AttributeAssignment.MODEL,
                 dtype=wp.float32,
@@ -1697,7 +1697,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             newton.ModelBuilder.CustomAttribute(
                 name="viscosity",
-                update_flags=newton.ModelFlags.MODEL_PROPERTIES,
+                update_flags=newton.ModelFlags.PARTICLE_PROPERTIES,
                 frequency=newton.Model.AttributeFrequency.PARTICLE,
                 assignment=newton.Model.AttributeAssignment.MODEL,
                 dtype=wp.float32,
