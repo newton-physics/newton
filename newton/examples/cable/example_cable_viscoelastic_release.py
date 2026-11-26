@@ -4,9 +4,11 @@
 ###########################################################################
 # Example Cable Viscoelastic Release
 #
-# Demonstrates standard-linear-solid (SLS) cable bending in SolverVBD. The
-# left endpoint is clamped while a temporary world joint holds the raised tip,
-# then releases it without resetting the cable material history.
+# Demonstrates generalized-Maxwell cable viscoelasticity in SolverVBD: a fast
+# and a slow relaxing branch on bending and twisting, on top of the relaxed
+# cable stiffness. The left endpoint is clamped while a temporary world joint
+# holds the raised tip, then releases it without resetting the cable material
+# history.
 #
 ###########################################################################
 
@@ -57,11 +59,19 @@ class Example:
         # Illustrative material parameters; applications should identify these
         # values from their own material data.
         relaxed_bend_stiffness = float(args.relaxed_bend_stiffness)
-        transient_bend_stiffness = 0.0 if args.no_visco else float(args.transient_bend_stiffness)
-        visco_tau = 0.0 if args.no_visco else float(args.visco_tau)
+        twist_ratio = float(args.twist_ratio)
         bend_damping = float(args.bend_damping)
         stretch_stiffness = 2.5e5
-        self.with_visco = transient_bend_stiffness > 0.0 and visco_tau > 0.0
+        # Maxwell branches (one vec4 component each): bend stiffness [N*m/rad] and relaxation time [s];
+        # twist stiffness follows the same spectrum scaled by the twist ratio.
+        branch_bend = np.zeros(4)
+        branch_tau = np.zeros(4)
+        if not args.no_visco:
+            if len(args.visco_bend_stiffness) != len(args.visco_tau) or len(args.visco_tau) > 4:
+                raise ValueError("--visco-bend-stiffness and --visco-tau need the same number of values (at most 4)")
+            branch_bend[: len(args.visco_tau)] = args.visco_bend_stiffness
+            branch_tau[: len(args.visco_tau)] = args.visco_tau
+        self.with_visco = bool(np.any((branch_bend > 0.0) & (branch_tau > 0.0)))
 
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         newton.solvers.SolverVBD.register_custom_attributes(builder)
@@ -89,6 +99,7 @@ class Example:
             total_mass=self.linear_density * self.cable_length,
             stretch_stiffness=stretch_stiffness,
             bend_stiffness=relaxed_bend_stiffness,
+            twist_stiffness=twist_ratio * relaxed_bend_stiffness,
             bend_damping=bend_damping,
             wrap_in_articulation=False,
             color=wp.vec3(0.22, 0.68, 0.95),
@@ -141,8 +152,15 @@ class Example:
         self.model = builder.finalize(device=sim_device)
         self.model.set_gravity((0.0, 0.0, -9.81))
 
-        self.model.vbd.visco_bend_ke.fill_(transient_bend_stiffness)
-        self.model.vbd.visco_bend_tau.fill_(visco_tau)
+        joints = np.asarray(self.rod_joints)
+        for name, branches in (
+            ("visco_bend_ke", branch_bend),
+            ("visco_twist_ke", twist_ratio * branch_bend),
+            ("visco_tau", branch_tau),
+        ):
+            values = np.zeros((self.model.joint_count, 4), dtype=np.float32)
+            values[joints] = branches
+            getattr(self.model.vbd, name).assign(values)
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=self.sim_iterations,
@@ -206,7 +224,7 @@ class Example:
         self.viewer.end_frame()
 
     def test_final(self):
-        """Verify release, cable mass, and a nonzero enabled SLS response."""
+        """Verify release, cable mass, and a nonzero moment in every enabled Maxwell branch."""
         if self.state_0.body_q is None or self.state_0.body_qd is None:
             raise RuntimeError("Body state is not available.")
 
@@ -228,15 +246,17 @@ class Example:
             raise ValueError(f"Cable mass {cable_mass:.6f} kg does not match the configured linear density.")
 
         if self.with_visco:
-            moments = self.solver.joint_visco_moment_prev.numpy()[self.rod_joints]
-            if np.max(np.linalg.norm(moments, axis=1)) <= 1.0e-6:
-                raise ValueError("Viscoelastic cable branch produced no bending moment.")
+            moments = self.solver.joint_visco_moment_prev.numpy()[self.rod_joints]  # (joint, branch, 3)
+            active = np.flatnonzero(self.solver.joint_visco_tau.numpy()[self.rod_joints[0]] > 0.0)
+            branch_moment = np.linalg.norm(moments[:, active], axis=-1).max(axis=0)
+            if np.any(branch_moment <= 1.0e-6):
+                raise ValueError(f"A viscoelastic cable branch produced no moment: {branch_moment}.")
 
     @staticmethod
     def create_parser():
         parser = newton.examples.create_parser()
         parser.add_argument("--release-time", type=float, default=0.5, help="Tip release time [s]")
-        parser.add_argument("--no-visco", action="store_true", help="Disable the transient SLS branch")
+        parser.add_argument("--no-visco", action="store_true", help="Disable the viscoelastic branches")
         parser.add_argument(
             "--relaxed-bend-stiffness",
             type=float,
@@ -244,10 +264,17 @@ class Example:
             help="Relaxed per-joint bending stiffness [N*m/rad]",
         )
         parser.add_argument(
-            "--transient-bend-stiffness",
+            "--twist-ratio",
             type=float,
-            default=6.3639,
-            help="Transient per-joint bending stiffness [N*m/rad]",
+            default=0.64,
+            help="Twist-to-bend stiffness ratio, for the relaxed stiffness and every branch",
+        )
+        parser.add_argument(
+            "--visco-bend-stiffness",
+            type=float,
+            nargs="+",
+            default=[1.48, 0.45],
+            help="Per-joint bending stiffness of each Maxwell branch [N*m/rad] (at most 4)",
         )
         parser.add_argument(
             "--bend-damping",
@@ -255,7 +282,13 @@ class Example:
             default=0.025,
             help="Effective per-joint bending damping [N*m*s/rad]",
         )
-        parser.add_argument("--visco-tau", type=float, default=3.5, help="SLS relaxation time [s]")
+        parser.add_argument(
+            "--visco-tau",
+            type=float,
+            nargs="+",
+            default=[0.12, 5.6],
+            help="Relaxation time of each Maxwell branch [s] (at most 4)",
+        )
         parser.set_defaults(num_frames=360)
         return parser
 

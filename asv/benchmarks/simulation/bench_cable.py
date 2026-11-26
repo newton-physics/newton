@@ -49,7 +49,7 @@ class FastExampleCablePile:
 
 
 class FastExampleCableViscoelasticRelease:
-    """Benchmark VBD cable bending with persistent SLS material state."""
+    """Benchmark VBD cable release with persistent Maxwell-branch material state."""
 
     timeout = 300
     number = 1

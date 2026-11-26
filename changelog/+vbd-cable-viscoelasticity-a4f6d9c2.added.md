@@ -1,1 +1,1 @@
-Add standard-linear-solid bending viscoelasticity to SolverVBD cable joints.
+Add generalized-Maxwell viscoelasticity (up to four relaxing branches, bending and twisting) to SolverVBD cable joints.

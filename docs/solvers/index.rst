@@ -643,62 +643,79 @@ VBD Cable Viscoelasticity
 
 .. experimental::
 
-   VBD cable bending-viscoelasticity behavior and the ``visco_bend_ke`` and
-   ``visco_bend_tau`` custom attributes may change without prior notice.
+   VBD cable viscoelasticity behavior and the ``visco_bend_ke``, ``visco_twist_ke``
+   and ``visco_tau`` custom attributes may change without prior notice.
 
-:class:`~newton.solvers.SolverVBD` optionally augments soft ROD bend slots with a
-standard-linear-solid branch. Register the VBD custom attributes before adding the
-cable, then author positive parameters before constructing the solver:
+:class:`~newton.solvers.SolverVBD` optionally augments ROD bend and twist slots
+with a generalized Maxwell (Prony series) model: up to four relaxing branches per
+joint in parallel with the relaxed stiffness. Register the VBD custom attributes
+before adding the cable, then author the branches before constructing the solver.
+Each attribute is a ``wp.vec4`` per joint; component :math:`b` belongs to branch
+:math:`b`:
 
 .. code-block:: python
 
    builder = newton.ModelBuilder()
    newton.solvers.SolverVBD.register_custom_attributes(builder)
 
-   _bodies, _joints = builder.add_rod(
+   _bodies, joints = builder.add_rod(
        rod=newton.Rod(points, radius=radius),
        bend_stiffness=relaxed_bend_stiffness,
+       twist_stiffness=relaxed_twist_stiffness,
    )
    builder.color()
    model = builder.finalize()
-   model.vbd.visco_bend_ke.fill_(transient_bend_stiffness)
-   model.vbd.visco_bend_tau.fill_(relaxation_time)
+
+   # a fast and a slow branch on every rod joint
+   bend_ke = np.zeros((model.joint_count, 4), dtype=np.float32)
+   twist_ke = np.zeros((model.joint_count, 4), dtype=np.float32)
+   tau = np.zeros((model.joint_count, 4), dtype=np.float32)
+   bend_ke[joints, :2] = (fast_bend_stiffness, slow_bend_stiffness)
+   twist_ke[joints, :2] = (fast_twist_stiffness, slow_twist_stiffness)
+   tau[joints, :2] = (fast_relaxation_time, slow_relaxation_time)
+   model.vbd.visco_bend_ke.assign(bend_ke)
+   model.vbd.visco_twist_ke.assign(twist_ke)
+   model.vbd.visco_tau.assign(tau)
    solver = newton.solvers.SolverVBD(model)
 
-``bend_stiffness`` is the relaxed per-joint stiffness :math:`K_\infty`
-[N·m/rad], ``visco_bend_ke`` is the transient branch stiffness :math:`K_1`
-[N·m/rad], and ``visco_bend_tau`` is the relaxation time :math:`\tau` [s].
-The instantaneous stiffness is :math:`K_0 = K_\infty + K_1`. For a rod segment
-of length :math:`\ell`, convert continuum bending rigidity with
-:math:`K = EI / \ell`.
+``bend_stiffness`` and ``twist_stiffness`` are the relaxed per-joint stiffnesses
+:math:`K_\infty` [N·m/rad]. Branch :math:`b` has bend and twist stiffnesses
+:math:`K_b` [N·m/rad] (``visco_bend_ke``, ``visco_twist_ke``) and relaxation time
+:math:`\tau_b` [s] (``visco_tau``) shared by both. The instantaneous stiffness is
+:math:`K_\infty + \sum_b K_b`. For a rod segment of length :math:`\ell`, convert a
+continuum rigidity :math:`C` [N·m²] (for example a Prony coefficient of
+:math:`EI`) with :math:`K = C / \ell`.
 
-For bending strain :math:`\kappa`, the transient moment :math:`m` obeys
-:math:`\dot m + m / \tau = K_1 \dot\kappa`. Each timestep uses
+For strain :math:`\kappa` (two bending components and twist), the moment
+:math:`m_b` of branch :math:`b` obeys :math:`\dot m_b + m_b / \tau_b = K_b \dot\kappa`
+per component. Each timestep uses backward Euler,
 
 .. math::
 
-   a = \frac{\tau}{\tau + \Delta t}, \qquad
-   m_{n+1} = a m_n + a K_1 (\kappa_{n+1} - \kappa_n).
+   a_b = \frac{\tau_b}{\tau_b + \Delta t}, \qquad
+   m_{b,n+1} = a_b m_{b,n} + a_b K_b (\kappa_{n+1} - \kappa_n),
 
-The history bias :math:`a(m_n-K_1\kappa_n)` and tangent :math:`a K_1` are
-frozen during VBD iterations, then the converged strain and moment are stored.
-The branch does not affect twist or hard bend constraints in legacy AVBD mode.
-Both parameters must be finite and nonnegative; zero in either disables the
-branch for that joint. Parameter activation is determined when the solver is
-constructed, so author the values before constructing it.
+so the total branch moment is :math:`\beta + T \kappa_{n+1}` with history bias
+:math:`\beta = \sum_b a_b (m_{b,n} - K_b \kappa_n)` and tangent
+:math:`T = \sum_b a_b K_b`. Bias and tangent are frozen during VBD iterations;
+the converged strain and branch moments are stored at the end of the step. A
+branch is active when its relaxation time and at least one of its stiffnesses are
+positive. All values must be finite and nonnegative. Parameter activation is
+determined when the solver is constructed, so author the values before
+constructing it. A single branch with zero twist stiffness is the
+standard-linear-solid bending model.
 
 This experimental feature currently supports Python-authored models. The USD
-cable importer does not yet map SLS parameters onto generated rod joints;
-registering the attributes alone does not enable SLS in a USD cable asset.
+cable importer does not yet map the viscoelastic parameters onto generated rod
+joints; registering the attributes alone does not enable them in a USD cable
+asset.
 
-The branch uses a backward-Euler update with a consistent tangent during VBD
-iterations. :meth:`~newton.solvers.SolverVBD.reset` clears its moment when the
-next input pose is rebaselined, treating that pose as relaxed. Disabling a
-temporary end joint to release a cable does not reset the cable's material
-history.
+:meth:`~newton.solvers.SolverVBD.reset` clears the branch moments when the next
+input pose is rebaselined, treating that pose as relaxed. Disabling a temporary
+end joint to release a cable does not reset the cable's material history.
 
-The ``cable_viscoelastic_release`` example demonstrates the model with
-illustrative parameters:
+The ``cable_viscoelastic_release`` example demonstrates a fast and a slow branch
+with illustrative parameters:
 
 .. code-block:: console
 

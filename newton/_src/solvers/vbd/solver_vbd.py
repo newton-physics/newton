@@ -77,6 +77,7 @@ from .particle_vbd_kernels import (
 from .rigid_vbd_kernels import (
     _NUM_CONTACT_THREADS_PER_BODY,
     CONTACT_HISTORY_NO_BUFFER,
+    VISCO_BRANCH_COUNT,
     RigidContactHistory,
     RigidForceElementAdjacencyInfo,
     _count_body_particle_attachments_per_body,
@@ -737,11 +738,12 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
               ``model.vbd.dahl_eps_max`` and ``model.vbd.dahl_tau``. Register them with
               ``SolverVBD.register_custom_attributes`` before building the model. Dahl friction is
               enabled only when positive Dahl parameters are authored.
-            - Standard-linear-solid cable bending is controlled by ``model.vbd.visco_bend_ke``
-              [N·m/rad] and ``model.vbd.visco_bend_tau`` [s]. The cable's bend stiffness is the
-              relaxed stiffness, while ``visco_bend_ke`` is the transient branch stiffness.
-              Register the attributes before building the model and author positive values before
-              constructing the solver. The viscoelastic branch affects bending but not twist.
+            - Cable viscoelasticity (a generalized Maxwell model with up to four branches per rod
+              joint) is controlled by ``model.vbd.visco_bend_ke`` and ``model.vbd.visco_twist_ke``
+              [N·m/rad] and ``model.vbd.visco_tau`` [s], one ``wp.vec4`` component per branch. The
+              cable's bend and twist stiffnesses are the relaxed stiffnesses; each branch adds a
+              transient stiffness that relaxes with its time constant. Register the attributes
+              before building the model and author them before constructing the solver.
 
         """
         integrates_rigid_bodies = model.body_count > 0 and not integrate_with_external_rigid_solver
@@ -1477,31 +1479,34 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 self.joint_dahl_tau = wp.zeros(model.joint_count, dtype=float, device=self.device)
                 self.enable_dahl_friction = False
 
-            # Standard-linear-solid rod bending state and frozen per-step response.
-            self.joint_visco_moment_prev = wp.zeros(model.joint_count, dtype=wp.vec3, device=self.device)
+            # Generalized-Maxwell rod state: per-branch moments and the strain at the last step,
+            # plus the response frozen for the iterations of one step.
+            self.joint_visco_moment_prev = wp.zeros(
+                (model.joint_count, VISCO_BRANCH_COUNT), dtype=wp.vec3, device=self.device
+            )
             self.joint_visco_kappa_prev = wp.zeros(model.joint_count, dtype=wp.vec3, device=self.device)
             self.joint_visco_bias = wp.zeros(model.joint_count, dtype=wp.vec3, device=self.device)
-            self.joint_visco_tangent = wp.zeros(model.joint_count, dtype=float, device=self.device)
+            self.joint_visco_tangent = wp.zeros(model.joint_count, dtype=wp.vec3, device=self.device)
 
-            has_viscoelasticity = (
-                model.joint_count > 0
-                and vbd_attrs is not None
-                and hasattr(vbd_attrs, "visco_bend_ke")
-                and hasattr(vbd_attrs, "visco_bend_tau")
-            )
-            if has_viscoelasticity:
+            visco_names = ("visco_bend_ke", "visco_twist_ke", "visco_tau")
+            if model.joint_count > 0 and vbd_attrs is not None and all(hasattr(vbd_attrs, n) for n in visco_names):
                 self.joint_visco_bend_ke = vbd_attrs.visco_bend_ke
-                self.joint_visco_bend_tau = vbd_attrs.visco_bend_tau
-                visco_bend_ke = self._to_numpy(self.joint_visco_bend_ke, dtype=float)
-                visco_bend_tau = self._to_numpy(self.joint_visco_bend_tau, dtype=float)
-                if not np.all(np.isfinite(visco_bend_ke)) or np.any(visco_bend_ke < 0.0):
-                    raise ValueError("model.vbd.visco_bend_ke values must be finite and >= 0.")
-                if not np.all(np.isfinite(visco_bend_tau)) or np.any(visco_bend_tau < 0.0):
-                    raise ValueError("model.vbd.visco_bend_tau values must be finite and >= 0.")
-                self.enable_viscoelasticity = bool(np.any((visco_bend_ke > 0.0) & (visco_bend_tau > 0.0)))
+                self.joint_visco_twist_ke = vbd_attrs.visco_twist_ke
+                self.joint_visco_tau = vbd_attrs.visco_tau
+                values = {}
+                for name in visco_names:
+                    value = self._to_numpy(getattr(vbd_attrs, name), dtype=float).reshape(model.joint_count, -1)
+                    if not np.all(np.isfinite(value)) or np.any(value < 0.0):
+                        raise ValueError(f"model.vbd.{name} values must be finite and >= 0.")
+                    values[name] = value
+                active = (values["visco_tau"] > 0.0) & (
+                    (values["visco_bend_ke"] > 0.0) | (values["visco_twist_ke"] > 0.0)
+                )
+                self.enable_viscoelasticity = bool(np.any(active))
             else:
-                self.joint_visco_bend_ke = wp.zeros(model.joint_count, dtype=float, device=self.device)
-                self.joint_visco_bend_tau = wp.zeros(model.joint_count, dtype=float, device=self.device)
+                self.joint_visco_bend_ke = wp.zeros(model.joint_count, dtype=wp.vec4, device=self.device)
+                self.joint_visco_twist_ke = wp.zeros(model.joint_count, dtype=wp.vec4, device=self.device)
+                self.joint_visco_tau = wp.zeros(model.joint_count, dtype=wp.vec4, device=self.device)
                 self.enable_viscoelasticity = False
 
             # Per-joint DER rest invariants, refreshed at init and on model change
@@ -2429,17 +2434,20 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             defaults: explicit constructor argument > ``model.vbd.*`` > built-in default. Scene-authored
             stiffness and damping must be finite and non-negative.
           - ``vbd:dahl_eps_max`` and ``vbd:dahl_tau`` for optional rod angular Dahl friction
-          - ``vbd:visco_bend_ke`` and ``vbd:visco_bend_tau`` for optional rod bending relaxation
+          - ``vbd:visco_bend_ke``, ``vbd:visco_twist_ke`` and ``vbd:visco_tau`` for optional rod
+            viscoelasticity (generalized Maxwell branches)
 
         Attributes are declared in the ``vbd`` namespace so they can be authored
         in scenes. The Dahl attributes are authored in USD as
         ``newton:vbd:<attr>``; the solver settings above use the names listed there.
 
-        The experimental ``visco_bend_ke`` [N·m/rad] and ``visco_bend_tau`` [s]
-        attributes are currently supported through Python authoring only. The
-        USD cable importer does not yet map them onto generated rod joints.
-        Set both before constructing the solver; zero in either disables the
-        transient bending branch for that joint.
+        The experimental ``visco_bend_ke`` and ``visco_twist_ke`` [N·m/rad] and
+        ``visco_tau`` [s] attributes are ``wp.vec4`` per joint: component ``b`` is
+        the bend stiffness, twist stiffness and relaxation time of Maxwell branch
+        ``b``. A branch is active when its ``visco_tau`` and at least one of its
+        stiffnesses are positive. They are currently supported through Python
+        authoring only; the USD cable importer does not yet map them onto
+        generated rod joints. Set them before constructing the solver.
 
         Dahl rod friction is enabled per joint only where both
         ``model.vbd.dahl_eps_max`` and ``model.vbd.dahl_tau`` are authored
@@ -2500,18 +2508,28 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 name="visco_bend_ke",
                 frequency=Model.AttributeFrequency.JOINT,
                 assignment=Model.AttributeAssignment.MODEL,
-                dtype=wp.float32,
-                default=0.0,
+                dtype=wp.vec4,
+                default=wp.vec4(0.0),
                 namespace="vbd",
             )
         )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
-                name="visco_bend_tau",
+                name="visco_twist_ke",
                 frequency=Model.AttributeFrequency.JOINT,
                 assignment=Model.AttributeAssignment.MODEL,
-                dtype=wp.float32,
-                default=0.0,
+                dtype=wp.vec4,
+                default=wp.vec4(0.0),
+                namespace="vbd",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="visco_tau",
+                frequency=Model.AttributeFrequency.JOINT,
+                assignment=Model.AttributeAssignment.MODEL,
+                dtype=wp.vec4,
+                default=wp.vec4(0.0),
                 namespace="vbd",
             )
         )
@@ -4188,7 +4206,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                         self.joint_visco_moment_prev,
                         self.joint_visco_kappa_prev,
                         self.joint_visco_bend_ke,
-                        self.joint_visco_bend_tau,
+                        self.joint_visco_twist_ke,
+                        self.joint_visco_tau,
                     ],
                     outputs=[
                         self.joint_visco_bias,
@@ -5332,6 +5351,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             wp.launch(
                 kernel=update_rod_viscoelastic_state,
                 inputs=[
+                    dt,
                     model.joint_type,
                     model.joint_enabled,
                     model.joint_parent,
@@ -5342,9 +5362,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     self.joint_rod_rest_twist,
                     state_out.body_q,
                     self.joint_visco_bend_ke,
-                    self.joint_visco_bend_tau,
-                    self.joint_visco_bias,
-                    self.joint_visco_tangent,
+                    self.joint_visco_twist_ke,
+                    self.joint_visco_tau,
                 ],
                 outputs=[
                     self.joint_visco_moment_prev,
