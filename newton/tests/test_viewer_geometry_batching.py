@@ -349,6 +349,136 @@ class TestViewerGeometryBatching(unittest.TestCase):
         self.assertGreaterEqual(viewer.log_capsules_calls, 1)
         self.assertGreaterEqual(viewer.log_instances_calls, 1)
 
+    def test_populate_batches_shapes_in_first_use_order(self):
+        """Batch replicated shapes by geometry, naming geometry and batches in order of first use."""
+        world = newton.ModelBuilder()
+        body = world.add_body(mass=1.0)
+        # Distinct transforms, so that instances out of shape order show in the transforms.
+        world.add_shape_box(body, xform=wp.transform((0.1, 0.0, 0.0), wp.quat_identity()), hx=0.1, hy=0.1, hz=0.1)
+        world.add_shape_sphere(body, xform=wp.transform((0.2, 0.0, 0.0), wp.quat_identity()), radius=0.2)
+        world.add_shape_box(body, xform=wp.transform((0.3, 0.0, 0.0), wp.quat_identity()), hx=0.3, hy=0.3, hz=0.3)
+        world.add_shape_box(body, xform=wp.transform((0.4, 0.0, 0.0), wp.quat_identity()), hx=0.1, hy=0.1, hz=0.1)
+        world.add_shape_box(
+            body, xform=wp.transform((0.5, 0.0, 0.0), wp.quat_identity()), hx=0.1, hy=0.1, hz=0.1, opacity=0.5
+        )
+        builder = newton.ModelBuilder()
+        builder.replicate(world, 3)
+        builder.add_ground_plane()
+        model = builder.finalize()
+        viewer = ViewerNull(num_frames=1)
+        viewer.set_model(model)
+
+        self.assertEqual(
+            list(viewer._geometry_cache.values()),
+            ["/geometry/box_0", "/geometry/sphere_1", "/geometry/box_2", "/geometry/plane_3"],
+        )
+        batches = list(viewer._shape_instances.values())
+        self.assertEqual(
+            [batch.name for batch in batches],
+            [f"/model/shapes/shape_{i}" for i in range(5)],
+        )
+        self.assertEqual(
+            [batch.mesh for batch in batches],
+            ["/geometry/box_0", "/geometry/sphere_1", "/geometry/box_2", "/geometry/box_0", "/geometry/plane_3"],
+        )
+        self.assertEqual([batch.transparent for batch in batches], [False, False, False, True, False])
+        np.testing.assert_array_equal(batches[0].model_shapes, [0, 3, 5, 8, 10, 13])
+        np.testing.assert_array_equal(batches[1].model_shapes, [1, 6, 11])
+        np.testing.assert_array_equal(batches[2].model_shapes, [2, 7, 12])
+        np.testing.assert_array_equal(batches[3].model_shapes, [4, 9, 14])
+        np.testing.assert_array_equal(batches[4].model_shapes, [15])
+        np.testing.assert_array_equal(np.flatnonzero(viewer._shape_transparent_mask), [4, 9, 14])
+
+        shapes = [0, 3, 5, 8, 10, 13]
+        np.testing.assert_array_equal(
+            batches[0].xforms.numpy()[:, 0], np.array([0.1, 0.4, 0.1, 0.4, 0.1, 0.4], dtype=np.float32)
+        )
+        np.testing.assert_array_equal(batches[0].xforms.numpy(), model.shape_transform.numpy()[shapes])
+        np.testing.assert_array_equal(batches[0].parents.numpy(), model.shape_body.numpy()[shapes])
+        np.testing.assert_array_equal(batches[0].worlds.numpy(), [0, 0, 1, 1, 2, 2])
+        np.testing.assert_array_equal(batches[0].scales.numpy(), np.ones((6, 3), dtype=np.float32))
+        np.testing.assert_array_equal(batches[0].colors.numpy(), model.shape_color.numpy()[shapes])
+        np.testing.assert_array_equal(batches[0].opacities.numpy(), np.ones(6, dtype=np.float32))
+        np.testing.assert_array_equal(batches[0].materials.numpy(), np.tile([0.5, 0.0, 0.0, 0.0], (6, 1)))
+        np.testing.assert_array_equal(batches[3].opacities.numpy(), np.full(3, 0.5, dtype=np.float32))
+        np.testing.assert_array_equal(batches[4].materials.numpy(), [[0.5, 0.0, 1.0, 0.0]])
+
+        viewer.set_visible_worlds([1])
+        batches = list(viewer._shape_instances.values())
+        np.testing.assert_array_equal(batches[0].model_shapes, [5, 8])
+        np.testing.assert_array_equal(batches[1].model_shapes, [6])
+        np.testing.assert_array_equal(batches[2].model_shapes, [7])
+        np.testing.assert_array_equal(batches[3].model_shapes, [9])
+        np.testing.assert_array_equal(batches[4].model_shapes, [15])
+        np.testing.assert_array_equal(batches[0].xforms.numpy(), model.shape_transform.numpy()[[5, 8]])
+
+    def test_populate_scales_only_mesh_instances(self):
+        """Give mesh instances their shape scale and other shapes a unit scale; mirrored meshes share a geometry."""
+        mesh = newton.Mesh([[0, 0, 0], [1, 0, 0], [0, 1, 0]], [0, 1, 2], compute_inertia=False)
+        builder = newton.ModelBuilder()
+        builder.add_shape_box(-1, hx=0.1, hy=0.2, hz=0.3)
+        builder.add_shape_mesh(-1, mesh=mesh, scale=(2.0, 3.0, 4.0))
+        builder.add_shape_mesh(-1, mesh=mesh, scale=(-1.0, 1.0, 1.0))
+        builder.add_shape_mesh(-1, mesh=mesh, scale=(-2.0, 1.0, 1.0))
+        viewer = _ViewerGeometryBatchingProbe()
+        viewer.set_model(builder.finalize())
+
+        batches = list(viewer._shape_instances.values())
+        self.assertEqual(len(batches), 3)
+        self.assertEqual(len(viewer._geometry_cache), 3)
+        self.assertNotEqual(batches[1].mesh, batches[2].mesh)
+        np.testing.assert_array_equal(batches[2].model_shapes, [2, 3])
+        np.testing.assert_array_equal(batches[0].scales.numpy(), [[1.0, 1.0, 1.0]])
+        np.testing.assert_array_equal(batches[1].scales.numpy(), [[2.0, 3.0, 4.0]])
+        np.testing.assert_array_equal(batches[2].scales.numpy(), [[-1.0, 1.0, 1.0], [-2.0, 1.0, 1.0]])
+
+    def test_populate_colors_without_model_colors(self):
+        """Derive instance colors from the shapes when the model has no shape colors."""
+        mesh = newton.Mesh([[0, 0, 0], [1, 0, 0], [0, 1, 0]], [0, 1, 2], compute_inertia=False, color=(0.2, 0.4, 0.6))
+        builder = newton.ModelBuilder()
+        # Two identical boxes share a batch but take the palette colors of their own indices.
+        builder.add_shape_box(-1, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_shape_box(-1, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_shape_box(
+            -1, hx=0.3, hy=0.3, hz=0.3, cfg=newton.ModelBuilder.ShapeConfig(has_shape_collision=False)
+        )
+        builder.add_shape_mesh(-1, mesh=mesh)
+        # A mesh's own color wins over the gray of visual-only shapes.
+        builder.add_shape_mesh(-1, mesh=mesh, cfg=newton.ModelBuilder.ShapeConfig(has_shape_collision=False))
+        builder.add_ground_plane()
+        model = builder.finalize()
+        model.shape_color = None
+        viewer = ViewerNull(num_frames=1)
+        viewer.set_model(model)
+
+        colors = viewer.model_shape_color.numpy()[viewer._shape_to_slot]
+        palette = newton.ModelBuilder._SHAPE_COLOR_PALETTE
+        np.testing.assert_allclose(colors[0], np.array(palette[0]) / 255.0, rtol=0.0, atol=1.0e-7)
+        np.testing.assert_allclose(colors[1], np.array(palette[1]) / 255.0, rtol=0.0, atol=1.0e-7)
+        np.testing.assert_array_equal(colors[2], np.full(3, 0.5, dtype=np.float32))
+        np.testing.assert_array_equal(colors[3], np.array([0.2, 0.4, 0.6], dtype=np.float32))
+        np.testing.assert_array_equal(colors[4], np.array([0.2, 0.4, 0.6], dtype=np.float32))
+        np.testing.assert_array_equal(colors[5], np.array([0.125, 0.125, 0.15], dtype=np.float32))
+
+    def test_populate_clamps_opacity(self):
+        """Clamp shape opacities to [0, 1], giving clamped and negative zero opacities a positive zero."""
+        builder = newton.ModelBuilder()
+        for _ in range(4):
+            builder.add_shape_box(-1, hx=0.1, hy=0.1, hz=0.1)
+        model = builder.finalize()
+        model.shape_opacity.assign(np.array([1.5, -0.5, -0.0, 0.5], dtype=np.float32))
+        viewer = ViewerNull(num_frames=1)
+        viewer.set_model(model)
+
+        opacities = viewer.model_shape_opacity.numpy()[viewer._shape_to_slot]
+        self.assertEqual(opacities[0], 1.0)
+        self.assertEqual(opacities[1], 0.0)
+        self.assertFalse(np.signbit(opacities[1]))
+        self.assertEqual(opacities[2], 0.0)
+        self.assertFalse(np.signbit(opacities[2]))
+        self.assertEqual(opacities[3], 0.5)
+        np.testing.assert_array_equal(viewer._shape_transparent_mask, [False, True, True, True])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
