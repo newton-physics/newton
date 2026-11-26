@@ -1,10 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-import inspect
 import types
 import unittest
-import warnings
 
 import numpy as np
 import warp as wp
@@ -38,13 +36,31 @@ def _make_two_world_model(device=None, include_ground=False):
     return builder.finalize(device=device)
 
 
-def create_contacts(device, pairs, naconmax, normals=None, forces=None):
-    """Helper to create Contacts with specified contacts.
+def contact_force_observables(model, contacts, forces):
+    """Allocate ``CONTACT_F`` observables for ``contacts`` and fill them with ``forces``.
+
+    Args:
+        model: Model the sensor under test belongs to.
+        contacts: Contacts the forces are indexed by.
+        forces: Spatial wrench per contact slot, the force on shape0 from shape1.
+    """
+    solver = newton.solvers.SolverXPBD(model)
+    observables = solver.observables(contacts=contacts, kinds={newton.solvers.SolverBase.ObservableKind.CONTACT_F})
+    observables.contact_f.assign(wp.array(forces, dtype=wp.spatial_vector, device=model.device))
+    return observables
+
+
+def create_contacts(model, pairs, naconmax, normals=None, forces=None):
+    """Create Contacts with the specified pairs and matching contact-force observables.
 
     The force spatial vectors are computed as (magnitude * normal, 0, 0, 0) to match
-    the convention that contacts.force stores the force on shape0 from shape1.
+    the convention that ``contact_f`` stores the force on shape0 from shape1.
+
+    Returns:
+        Tuple ``(contacts, observables)``.
     """
-    contacts = newton.Contacts(naconmax, 0, device=device, requested_attributes={"force"})
+    device = model.device
+    contacts = newton.Contacts(naconmax, 0, device=device)
     n_contacts = len(pairs)
 
     if normals is None:
@@ -67,52 +83,11 @@ def create_contacts(device, pairs, naconmax, normals=None, forces=None):
         contacts.rigid_contact_shape1 = wp.array(shapes1, dtype=wp.int32)
         contacts.rigid_contact_normal = wp.array(normals_padded, dtype=wp.vec3f)
         contacts.rigid_contact_count = wp.array([n_contacts], dtype=wp.int32)
-        contacts.force = wp.array(forces_spatial, dtype=wp.spatial_vector)
 
-    return contacts
+    return contacts, contact_force_observables(model, contacts, forces_spatial)
 
 
 class TestSensorContact(unittest.TestCase):
-    def test_legacy_attribute_request_warns_at_caller(self):
-        """Warn once at the caller when opting into deprecated force allocation."""
-        model = _make_two_world_model(device="cpu")
-
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            caller_line = inspect.currentframe().f_lineno + 1
-            SensorContact(model, sensing_bodies="*", request_contact_attributes=True)
-
-        self.assertEqual(len(caught), 1)
-        self.assertIs(caught[0].category, newton.NewtonDeprecationWarning)
-        self.assertRegex(
-            str(caught[0].message), r"SensorContact.*request_contact_attributes=True.*1\.7.*SolverBase.Observables"
-        )
-        self.assertEqual(caught[0].filename, __file__)
-        self.assertEqual(caught[0].lineno, caller_line)
-        self.assertIsNotNone(newton.CollisionPipeline(model).contacts().force)
-
-    def test_observable_path_does_not_request_contact_attributes(self):
-        """Keep default and explicit False construction warning-free and solver-driven."""
-        for kwargs in ({}, {"request_contact_attributes": False}):
-            with self.subTest(kwargs=kwargs):
-                model = _make_two_world_model(device="cpu")
-
-                with warnings.catch_warnings(record=True) as caught:
-                    warnings.simplefilter("always")
-                    SensorContact(model, sensing_bodies="*", **kwargs)
-                self.assertEqual(caught, [])
-                self.assertIsNone(newton.CollisionPipeline(model).contacts().force)
-
-    def test_legacy_request_preserves_force_allocation(self):
-        """Keep explicit legacy callers working throughout the deprecation period."""
-        model = _make_two_world_model(device="cpu")
-        with self.assertWarnsRegex(DeprecationWarning, r"request_contact_attributes=True.*1\.7"):
-            sensor = SensorContact(model, sensing_bodies="*", request_contact_attributes=True)
-        contacts = newton.CollisionPipeline(model).contacts()
-        self.assertIsNotNone(contacts.force)
-        sensor.update(model.state(), contacts)
-        np.testing.assert_array_equal(sensor.total_force.numpy(), 0.0)
-
     def test_initial_observables_read_and_contact_validation(self):
         """Read zeroed forces before the first step without accepting incompatible storage."""
         model = _make_two_world_model(device="cpu")
@@ -122,7 +97,7 @@ class TestSensorContact(unittest.TestCase):
         flags = newton.solvers.SolverBase.ObservableKind
         observables = solver.observables(contacts=contacts, kinds={flags.CONTACT_F, flags.BODY_PARENT_F})
         selected = observables.select({flags.CONTACT_F})
-        sensor = SensorContact(model, sensing_bodies="*", request_contact_attributes=False)
+        sensor = SensorContact(model, sensing_bodies="*")
         with self.assertRaisesRegex(ValueError, "different Contacts"):
             sensor.update(model.state(), newton.Contacts(1, 0, device="cpu"), observables=selected)
         self.assertIs(observables.contacts, contacts)
@@ -138,12 +113,12 @@ class TestSensorContact(unittest.TestCase):
         newton.CollisionPipeline(model, rigid_contact_max=1, soft_contact_max=0)
         solver = newton.solvers.SolverXPBD(model)
         flags = newton.solvers.SolverBase.ObservableKind
-        contacts = create_contacts("cpu", [(0, 1)], 1, forces=[2.0])
+        contacts, contacts_observables = create_contacts(model, [(0, 1)], 1, forces=[2.0])
         observables = solver.observables(contacts=contacts, kinds={flags.CONTACT_F, flags.BODY_PARENT_F})
         selected = observables.select({flags.CONTACT_F})
-        selected.contact_f.assign(contacts.force)
+        selected.contact_f.assign(contacts_observables.contact_f)
         solver.validate_observables(selected, contacts)
-        sensor = SensorContact(model, request_contact_attributes=False, sensing_bodies="*")
+        sensor = SensorContact(model, sensing_bodies="*")
         for source in (selected, observables):
             sensor.update(None, contacts, observables=source)
             np.testing.assert_array_equal(sensor.total_force.numpy(), [[0.0, 0.0, 2.0], [0.0, 0.0, -2.0]])
@@ -156,10 +131,10 @@ class TestSensorContact(unittest.TestCase):
         foreign_model = _make_two_world_model(device="cpu")
         newton.CollisionPipeline(foreign_model, rigid_contact_max=1, soft_contact_max=0)
         solver = newton.solvers.SolverXPBD(foreign_model)
-        contacts = create_contacts("cpu", [(0, 1)], 1, forces=[2.0])
+        contacts, _ = create_contacts(model, [(0, 1)], 1, forces=[2.0])
         observables = solver.observables(contacts=contacts, kinds={newton.solvers.SolverBase.ObservableKind.CONTACT_F})
         solver.validate_observables(observables, contacts)
-        sensor = SensorContact(model, request_contact_attributes=False, sensing_bodies="*")
+        sensor = SensorContact(model, sensing_bodies="*")
         sensing_transforms = sensor.sensing_transforms.numpy().copy()
         with self.assertRaisesRegex(ValueError, "model"):
             sensor.update(model.state(), contacts, observables=observables)
@@ -180,9 +155,7 @@ class TestSensorContact(unittest.TestCase):
         builder.add_shape_box(body=-1, hx=0.1, hy=0.1, hz=0.1)
         model = builder.finalize(device=device)
 
-        contact_sensor = SensorContact(
-            model, request_contact_attributes=False, sensing_bodies="*", counterpart_bodies="*"
-        )
+        contact_sensor = SensorContact(model, sensing_bodies="*", counterpart_bodies="*")
 
         test_contacts = [
             {"pair": (0, 2), "normal": [0.0, 0.0, -1.0], "force": 1.0},
@@ -250,15 +223,15 @@ class TestSensorContact(unittest.TestCase):
 
         for scenario in test_scenarios:
             with self.subTest(scenario=scenario["name"]):
-                contacts = create_contacts(
-                    device,
+                contacts, contacts_observables = create_contacts(
+                    model,
                     scenario["pairs"],
                     naconmax=10,
                     normals=scenario["normals"],
                     forces=scenario["forces"],
                 )
 
-                contact_sensor.update(None, contacts)
+                contact_sensor.update(None, contacts, observables=contacts_observables)
 
                 self.assertIsNotNone(contact_sensor.force_matrix)
                 self.assertIsNotNone(contact_sensor.total_force)
@@ -282,7 +255,7 @@ class TestSensorContact(unittest.TestCase):
         builder.add_shape_box(1, hx=0.1, hy=0.1, hz=0.1)
         model = builder.finalize(device=device)
 
-        sensor = SensorContact(model, request_contact_attributes=False, sensing_bodies="*")
+        sensor = SensorContact(model, sensing_bodies="*")
 
         body_pos_a = wp.vec3(1.0, 2.0, 3.0)
         body_pos_b = wp.vec3(4.0, 5.0, 6.0)
@@ -294,8 +267,8 @@ class TestSensorContact(unittest.TestCase):
         # lightweight stand-in for State
         state = types.SimpleNamespace(body_q=body_q)
 
-        contacts = create_contacts(device, [], naconmax=1)
-        sensor.update(state, contacts)
+        contacts, contacts_observables = create_contacts(model, [], naconmax=1)
+        sensor.update(state, contacts, observables=contacts_observables)
 
         transforms = sensor.sensing_transforms.numpy()
         assert_np_equal(transforms[0][:3], [1.0, 2.0, 3.0])
@@ -313,7 +286,7 @@ class TestSensorContact(unittest.TestCase):
         builder.add_shape_box(body=-1, xform=shape1_xform, hx=0.1, hy=0.1, hz=0.1, label="ground")
         model = builder.finalize(device=device)
 
-        sensor = SensorContact(model, request_contact_attributes=False, sensing_shapes="*")
+        sensor = SensorContact(model, sensing_shapes="*")
 
         body_pos = wp.vec3(1.0, 2.0, 3.0)
         body_q = wp.array(
@@ -323,8 +296,8 @@ class TestSensorContact(unittest.TestCase):
         )
         state = types.SimpleNamespace(body_q=body_q)
 
-        contacts = create_contacts(device, [], naconmax=1)
-        sensor.update(state, contacts)
+        contacts, contacts_observables = create_contacts(model, [], naconmax=1)
+        sensor.update(state, contacts, observables=contacts_observables)
 
         transforms = sensor.sensing_transforms.numpy()
         # shape on a body: body_q * shape_transform -> (1+0.5, 2+0.25, 3+0.125)
@@ -336,7 +309,7 @@ class TestSensorContact(unittest.TestCase):
         """sensing_indices and counterpart_indices are flat lists."""
         model = _make_two_world_model()
 
-        sensor = SensorContact(model, request_contact_attributes=False, sensing_bodies="*")
+        sensor = SensorContact(model, sensing_bodies="*")
 
         self.assertEqual(sensor.sensing_indices, [0, 1])
         self.assertEqual(len(sensor.counterpart_indices), 2)
@@ -348,7 +321,7 @@ class TestSensorContact(unittest.TestCase):
         """Per-world construction produces no cross-world counterpart columns."""
         model = _make_two_world_model(include_ground=True)
 
-        sensor = SensorContact(model, request_contact_attributes=False, sensing_bodies="*", counterpart_shapes="*")
+        sensor = SensorContact(model, sensing_bodies="*", counterpart_shapes="*")
 
         counterpart_col = sensor._counterpart_shape_to_col.numpy()
         # Ground (shape 2, global) should have a counterpart column
@@ -368,10 +341,10 @@ class TestSensorContact(unittest.TestCase):
         device = wp.get_device()
         model = _make_two_world_model(device=device)
 
-        sensor = SensorContact(model, request_contact_attributes=False, sensing_bodies="*")
+        sensor = SensorContact(model, sensing_bodies="*")
 
-        contacts = create_contacts(device, [(0, 1)], naconmax=4, forces=[3.0])
-        sensor.update(None, contacts)
+        contacts, contacts_observables = create_contacts(model, [(0, 1)], naconmax=4, forces=[3.0])
+        sensor.update(None, contacts, observables=contacts_observables)
 
         self.assertIsNone(sensor.force_matrix)
         total = sensor.total_force.numpy()
@@ -391,17 +364,17 @@ class TestSensorContact(unittest.TestCase):
         model = builder.finalize()
 
         with self.assertRaises(ValueError):
-            SensorContact(model, request_contact_attributes=False, sensing_shapes="*")  # "*" matches ground too
+            SensorContact(model, sensing_shapes="*")  # "*" matches ground too
 
     def test_order_preservation(self):
         """Sensing objects preserve caller's order for list[int] inputs."""
         model = _make_two_world_model()
         # Pass indices in reverse order: [1, 0]
-        sensor = SensorContact(model, request_contact_attributes=False, sensing_bodies=[1, 0])
+        sensor = SensorContact(model, sensing_bodies=[1, 0])
         self.assertEqual(sensor.sensing_indices, [1, 0])
 
-        contacts = create_contacts(model.device, [(0, 1)], naconmax=4, forces=[3.0])
-        sensor.update(None, contacts)
+        contacts, contacts_observables = create_contacts(model, [(0, 1)], naconmax=4, forces=[3.0])
+        sensor.update(None, contacts, observables=contacts_observables)
         total = sensor.total_force.numpy()
         # Row 0 is body 1, row 1 is body 0
         np.testing.assert_allclose(total[0], [0, 0, -3.0], atol=1e-5)
@@ -410,15 +383,13 @@ class TestSensorContact(unittest.TestCase):
     def test_measure_total_false(self):
         """measure_total=False produces total_force=None and populates force_matrix."""
         model = _make_two_world_model(include_ground=True)
-        sensor = SensorContact(
-            model, request_contact_attributes=False, sensing_bodies="*", counterpart_shapes="*", measure_total=False
-        )
+        sensor = SensorContact(model, sensing_bodies="*", counterpart_shapes="*", measure_total=False)
         self.assertIsNone(sensor.total_force)
         self.assertIsNotNone(sensor.position_matrix)
         self.assertEqual(sensor.position_matrix.shape, sensor.force_matrix.shape)
 
-        contacts = create_contacts(model.device, [(0, 2)], naconmax=4, forces=[5.0])
-        sensor.update(None, contacts)
+        contacts, contacts_observables = create_contacts(model, [(0, 2)], naconmax=4, forces=[5.0])
+        sensor.update(None, contacts, observables=contacts_observables)
         self.assertIsNotNone(sensor.force_matrix)
         net = sensor.force_matrix.numpy()
         ground_col = sensor.counterpart_indices[0].index(2)
@@ -440,7 +411,6 @@ class TestSensorContact(unittest.TestCase):
 
         sensor = SensorContact(
             model,
-            request_contact_attributes=False,
             sensing_bodies="*",
             counterpart_shapes="*",
             measure_total=False,
@@ -464,7 +434,7 @@ class TestSensorContact(unittest.TestCase):
 
         # Contact 4 (b vs ground) is stored with the static shape as shape0 to exercise
         # the matched1-only path with the identity transform on point0.
-        contacts = newton.Contacts(5, 0, device=device, requested_attributes={"force"})
+        contacts = newton.Contacts(5, 0, device=device)
         with wp.ScopedDevice(device):
             contacts.rigid_contact_shape0 = wp.array([shape_a, shape_a, shape_a, shape_b, ground], dtype=wp.int32)
             contacts.rigid_contact_shape1 = wp.array([shape_b, shape_b, ground, ground, shape_b], dtype=wp.int32)
@@ -492,7 +462,7 @@ class TestSensorContact(unittest.TestCase):
             contacts.rigid_contact_offset1 = wp.array([(0.0, 2.0, 0.0)] * 5, dtype=wp.vec3)
             contacts.rigid_contact_normal = wp.array([(0.0, 0.0, 1.0)] * 5, dtype=wp.vec3)
             contacts.rigid_contact_count = wp.array([5], dtype=wp.int32)
-            contacts.force = wp.array(
+            contact_f = wp.array(
                 [
                     (0.0, 0.0, 2.0, 0.0, 0.0, 0.0),
                     (3.0, 4.0, 0.0, 0.0, 0.0, 0.0),
@@ -502,8 +472,9 @@ class TestSensorContact(unittest.TestCase):
                 ],
                 dtype=wp.spatial_vector,
             )
+        contacts_observables = contact_force_observables(model, contacts, contact_f)
 
-        sensor.update(state, contacts)
+        sensor.update(state, contacts, observables=contacts_observables)
 
         row_a = sensor.sensing_indices.index(body_a)
         row_b = sensor.sensing_indices.index(body_b)
@@ -527,22 +498,26 @@ class TestSensorContact(unittest.TestCase):
 
         # a second update with the same inputs must give identical results
         # (catches stale weight accumulation across updates)
-        sensor.update(state, contacts)
+        sensor.update(state, contacts, observables=contacts_observables)
         np.testing.assert_allclose(sensor.position_matrix.numpy(), positions, rtol=1e-6)
 
         # updates without body transforms reset positions to zero so they cannot pair with the new forces
         forces_before = sensor.force_matrix.numpy().copy()
-        changed_contacts = create_contacts(device, [(shape_a, shape_b)], naconmax=4, forces=[11.0])
-        sensor.update(None, changed_contacts)
+        changed_contacts, changed_contacts_observables = create_contacts(
+            model, [(shape_a, shape_b)], naconmax=4, forces=[11.0]
+        )
+        sensor.update(None, changed_contacts, observables=changed_contacts_observables)
         np.testing.assert_array_equal(sensor.position_matrix.numpy(), 0.0)
         self.assertFalse(np.array_equal(sensor.force_matrix.numpy(), forces_before))
 
-        sensor.update(state, contacts)  # repopulate positions
-        sensor.update(types.SimpleNamespace(body_q=None), changed_contacts)
+        sensor.update(state, contacts, observables=contacts_observables)  # repopulate positions
+        sensor.update(types.SimpleNamespace(body_q=None), changed_contacts, observables=changed_contacts_observables)
         np.testing.assert_array_equal(sensor.position_matrix.numpy(), 0.0)
 
-        zero_force_contacts = create_contacts(device, [(shape_a, shape_b)], naconmax=4, forces=[0.0])
-        sensor.update(state, zero_force_contacts)
+        zero_force_contacts, zero_force_contacts_observables = create_contacts(
+            model, [(shape_a, shape_b)], naconmax=4, forces=[0.0]
+        )
+        sensor.update(state, zero_force_contacts, observables=zero_force_contacts_observables)
         positions = sensor.position_matrix.numpy()
         np.testing.assert_array_equal(positions, 0.0)
 
@@ -550,19 +525,19 @@ class TestSensorContact(unittest.TestCase):
         """Duplicate sensing object indices raise ValueError."""
         model = _make_two_world_model()
         with self.assertRaises(ValueError):
-            SensorContact(model, request_contact_attributes=False, sensing_bodies=[0, 0])
+            SensorContact(model, sensing_bodies=[0, 0])
 
     def test_unmatched_pattern_raises(self):
         """Sensing or counterpart patterns that match nothing raise ValueError."""
         model = _make_two_world_model()
         with self.assertRaises(ValueError):
-            SensorContact(model, request_contact_attributes=False, sensing_bodies="nonexistent")
+            SensorContact(model, sensing_bodies="nonexistent")
         with self.assertRaises(ValueError):
-            SensorContact(model, request_contact_attributes=False, sensing_shapes="nonexistent")
+            SensorContact(model, sensing_shapes="nonexistent")
         with self.assertRaises(ValueError):
-            SensorContact(model, request_contact_attributes=False, sensing_bodies="*", counterpart_bodies="nonexistent")
+            SensorContact(model, sensing_bodies="*", counterpart_bodies="nonexistent")
         with self.assertRaises(ValueError):
-            SensorContact(model, request_contact_attributes=False, sensing_bodies="*", counterpart_shapes="nonexistent")
+            SensorContact(model, sensing_bodies="*", counterpart_shapes="nonexistent")
 
     def test_global_counterpart_in_all_worlds(self):
         """Global counterparts (e.g., ground) appear in every sensing object's counterpart list."""
@@ -570,7 +545,6 @@ class TestSensorContact(unittest.TestCase):
 
         sensor = SensorContact(
             model,
-            request_contact_attributes=False,
             sensing_bodies="*",
             counterpart_shapes=["ground"],
             measure_total=False,
@@ -591,11 +565,11 @@ class TestSensorContact(unittest.TestCase):
         builder.add_shape_box(body_b, hx=0.1, hy=0.1, hz=0.1)
         model = builder.finalize(device=device)
 
-        sensor = SensorContact(model, request_contact_attributes=False, sensing_bodies="*")
+        sensor = SensorContact(model, sensing_bodies="*")
 
         # Force has normal component (z) and tangential component (x)
         # Normal is [0,0,1], force spatial vector is (3, 0, 5, 0, 0, 0)
-        contacts = newton.Contacts(4, 0, device=device, requested_attributes={"force"})
+        contacts = newton.Contacts(4, 0, device=device)
         with wp.ScopedDevice(device):
             contacts.rigid_contact_shape0 = wp.array([0, -1, -1, -1], dtype=wp.int32)
             contacts.rigid_contact_shape1 = wp.array([1, -1, -1, -1], dtype=wp.int32)
@@ -604,12 +578,13 @@ class TestSensorContact(unittest.TestCase):
                 dtype=wp.vec3,
             )
             contacts.rigid_contact_count = wp.array([1], dtype=wp.int32)
-            contacts.force = wp.array(
+            contact_f = wp.array(
                 [(3.0, 0.0, 5.0, 0.0, 0.0, 0.0), (0.0,) * 6, (0.0,) * 6, (0.0,) * 6],
                 dtype=wp.spatial_vector,
             )
+        contacts_observables = contact_force_observables(model, contacts, contact_f)
 
-        sensor.update(None, contacts)
+        sensor.update(None, contacts, observables=contacts_observables)
 
         friction = sensor.total_force_friction.numpy()
         # Friction on A should be (3, 0, 0) — the tangential part
@@ -632,7 +607,7 @@ class TestSensorContact(unittest.TestCase):
         builder.add_shape_box(body=-1, hx=0.1, hy=0.1, hz=0.1)
         model = builder.finalize(device=device)
 
-        sensor = SensorContact(model, request_contact_attributes=False, sensing_bodies="*")
+        sensor = SensorContact(model, sensing_bodies="*")
 
         # Contact 0: shape0=0(A), shape1=1(B), normal=[0,0,1], force=(1,2,3)
         #   normal_comp = dot((1,2,3),(0,0,1))*(0,0,1) = (0,0,3)
@@ -645,7 +620,7 @@ class TestSensorContact(unittest.TestCase):
         #   B gets +(4,0,6), ground is not sensed
         #
         # Expected friction: A = (1,2,0), B = (-1,-2,0)+(4,0,6) = (3,-2,6)
-        contacts = newton.Contacts(4, 0, device=device, requested_attributes={"force"})
+        contacts = newton.Contacts(4, 0, device=device)
         with wp.ScopedDevice(device):
             contacts.rigid_contact_shape0 = wp.array([0, 1, -1, -1], dtype=wp.int32)
             contacts.rigid_contact_shape1 = wp.array([1, 2, -1, -1], dtype=wp.int32)
@@ -654,7 +629,7 @@ class TestSensorContact(unittest.TestCase):
                 dtype=wp.vec3,
             )
             contacts.rigid_contact_count = wp.array([2], dtype=wp.int32)
-            contacts.force = wp.array(
+            contact_f = wp.array(
                 [
                     (1.0, 2.0, 3.0, 0.0, 0.0, 0.0),
                     (4.0, 5.0, 6.0, 0.0, 0.0, 0.0),
@@ -663,8 +638,9 @@ class TestSensorContact(unittest.TestCase):
                 ],
                 dtype=wp.spatial_vector,
             )
+        contacts_observables = contact_force_observables(model, contacts, contact_f)
 
-        sensor.update(None, contacts)
+        sensor.update(None, contacts, observables=contacts_observables)
 
         friction = sensor.total_force_friction.numpy()
         np.testing.assert_allclose(friction[0], [1.0, 2.0, 0.0], atol=1e-5)
@@ -681,10 +657,10 @@ class TestSensorContact(unittest.TestCase):
         builder.add_shape_box(body_b, hx=0.1, hy=0.1, hz=0.1)
         model = builder.finalize(device=device)
 
-        sensor = SensorContact(model, request_contact_attributes=False, sensing_bodies="*", counterpart_bodies="*")
+        sensor = SensorContact(model, sensing_bodies="*", counterpart_bodies="*")
 
         # Force with tangential component: normal=[0,0,1], force=(2, 3, 7, 0, 0, 0)
-        contacts = newton.Contacts(4, 0, device=device, requested_attributes={"force"})
+        contacts = newton.Contacts(4, 0, device=device)
         with wp.ScopedDevice(device):
             contacts.rigid_contact_shape0 = wp.array([0, -1, -1, -1], dtype=wp.int32)
             contacts.rigid_contact_shape1 = wp.array([1, -1, -1, -1], dtype=wp.int32)
@@ -693,12 +669,13 @@ class TestSensorContact(unittest.TestCase):
                 dtype=wp.vec3,
             )
             contacts.rigid_contact_count = wp.array([1], dtype=wp.int32)
-            contacts.force = wp.array(
+            contact_f = wp.array(
                 [(2.0, 3.0, 7.0, 0.0, 0.0, 0.0), (0.0,) * 6, (0.0,) * 6, (0.0,) * 6],
                 dtype=wp.spatial_vector,
             )
+        contacts_observables = contact_force_observables(model, contacts, contact_f)
 
-        sensor.update(None, contacts)
+        sensor.update(None, contacts, observables=contacts_observables)
 
         self.assertIsNotNone(sensor.force_matrix_friction)
         fmat = sensor.force_matrix_friction.numpy()
@@ -711,16 +688,14 @@ class TestSensorContact(unittest.TestCase):
     def test_friction_force_measure_total_false(self):
         """measure_total=False produces total_force_friction=None."""
         model = _make_two_world_model(include_ground=True)
-        sensor = SensorContact(
-            model, request_contact_attributes=False, sensing_bodies="*", counterpart_shapes="*", measure_total=False
-        )
+        sensor = SensorContact(model, sensing_bodies="*", counterpart_shapes="*", measure_total=False)
         self.assertIsNone(sensor.total_force_friction)
         self.assertIsNotNone(sensor.force_matrix_friction)
 
     def test_friction_force_no_counterparts(self):
         """No counterparts produces force_matrix_friction=None."""
         model = _make_two_world_model()
-        sensor = SensorContact(model, request_contact_attributes=False, sensing_bodies="*")
+        sensor = SensorContact(model, sensing_bodies="*")
         self.assertIsNone(sensor.force_matrix_friction)
         self.assertIsNone(sensor.position_matrix)
         self.assertIsNotNone(sensor.total_force_friction)
@@ -730,11 +705,11 @@ class TestSensorContact(unittest.TestCase):
         device = wp.get_device()
         model = _make_two_world_model(device=device)
 
-        sensor = SensorContact(model, request_contact_attributes=False, sensing_bodies="*")
+        sensor = SensorContact(model, sensing_bodies="*")
 
         # create_contacts builds force = magnitude * normal, so purely normal
-        contacts = create_contacts(device, [(0, 1)], naconmax=4, forces=[5.0])
-        sensor.update(None, contacts)
+        contacts, contacts_observables = create_contacts(model, [(0, 1)], naconmax=4, forces=[5.0])
+        sensor.update(None, contacts, observables=contacts_observables)
 
         friction = sensor.total_force_friction.numpy()
         np.testing.assert_allclose(friction[0], [0.0, 0.0, 0.0], atol=1e-5)
@@ -751,7 +726,7 @@ class TestSensorContact(unittest.TestCase):
         builder.add_shape_box(body_b, hx=0.1, hy=0.1, hz=0.1)
         model = builder.finalize(device=device)
 
-        sensor = SensorContact(model, request_contact_attributes=False, sensing_bodies="*")
+        sensor = SensorContact(model, sensing_bodies="*")
 
         # 30-degree incline normal: n = (0, -sin(30), cos(30)) = (0, -0.5, sqrt(3)/2)
         s30 = 0.5
@@ -762,7 +737,7 @@ class TestSensorContact(unittest.TestCase):
         d = float(np.dot(force_vec, n))  # 1*0 + 2*(-0.5) + 3*(sqrt(3)/2) = -1 + 2.598 = 1.598
         expected_friction = force_vec - d * n
 
-        contacts = newton.Contacts(4, 0, device=device, requested_attributes={"force"})
+        contacts = newton.Contacts(4, 0, device=device)
         with wp.ScopedDevice(device):
             contacts.rigid_contact_shape0 = wp.array([0, -1, -1, -1], dtype=wp.int32)
             contacts.rigid_contact_shape1 = wp.array([1, -1, -1, -1], dtype=wp.int32)
@@ -771,12 +746,13 @@ class TestSensorContact(unittest.TestCase):
                 dtype=wp.vec3,
             )
             contacts.rigid_contact_count = wp.array([1], dtype=wp.int32)
-            contacts.force = wp.array(
+            contact_f = wp.array(
                 [(*force_vec.tolist(), 0.0, 0.0, 0.0), (0.0,) * 6, (0.0,) * 6, (0.0,) * 6],
                 dtype=wp.spatial_vector,
             )
+        contacts_observables = contact_force_observables(model, contacts, contact_f)
 
-        sensor.update(None, contacts)
+        sensor.update(None, contacts, observables=contacts_observables)
 
         friction = sensor.total_force_friction.numpy()
         np.testing.assert_allclose(friction[0], expected_friction, atol=1e-5)
@@ -806,9 +782,7 @@ class TestSensorContactMuJoCo(unittest.TestCase):
 
         solver = SolverMuJoCo(model, njmax=200)
 
-        sensor = SensorContact(
-            model, request_contact_attributes=False, sensing_bodies=["a", "b"], counterpart_shapes="*"
-        )
+        sensor = SensorContact(model, sensing_bodies=["a", "b"], counterpart_shapes="*")
         pipeline = newton.CollisionPipeline(model, rigid_contact_max=solver.get_max_contact_count(), soft_contact_max=0)
         contacts = pipeline.contacts()
         allocated = solver.observables(contacts=contacts, kinds=sensor.solver_observable_kinds)
@@ -889,7 +863,7 @@ class TestSensorContactMuJoCo(unittest.TestCase):
 
         solver = SolverMuJoCo(model, njmax=200)
 
-        sensor = SensorContact(model, request_contact_attributes=False, sensing_bodies=["a"])
+        sensor = SensorContact(model, sensing_bodies=["a"])
         pipeline = newton.CollisionPipeline(model, rigid_contact_max=solver.get_max_contact_count(), soft_contact_max=0)
         contacts = pipeline.contacts()
         observables = solver.observables(contacts=contacts, kinds=sensor.solver_observable_kinds)
@@ -939,8 +913,8 @@ class TestSensorContactMuJoCo(unittest.TestCase):
 
         solver = SolverMuJoCo(model, njmax=200)
 
-        sensor_abc = SensorContact(model, request_contact_attributes=False, sensing_bodies=["a", "b", "c"])
-        sensor_base = SensorContact(model, request_contact_attributes=False, sensing_shapes=["base"])
+        sensor_abc = SensorContact(model, sensing_bodies=["a", "b", "c"])
+        sensor_base = SensorContact(model, sensing_shapes=["base"])
         pipeline = newton.CollisionPipeline(model, rigid_contact_max=solver.get_max_contact_count(), soft_contact_max=0)
         contacts = pipeline.contacts()
         observables = solver.observables(contacts=contacts, kinds=sensor_abc.solver_observable_kinds)
@@ -1011,9 +985,7 @@ class TestSensorContactSteel(unittest.TestCase):
 
         pipeline = newton.CollisionPipeline(model, rigid_contact_max=64)
         solver = SolverSteel(model, iterations=32)
-        sensor = SensorContact(
-            model, request_contact_attributes=False, sensing_bodies=["a", "b"], counterpart_shapes="*"
-        )
+        sensor = SensorContact(model, sensing_bodies=["a", "b"], counterpart_shapes="*")
         contacts = pipeline.contacts()
         observables = solver.observables(contacts=contacts, kinds=sensor.solver_observable_kinds)
         state_in, state_out, control = model.state(), model.state(), model.control()
@@ -1059,7 +1031,7 @@ class TestSensorContactKamino(unittest.TestCase):
         config.collision_detector.max_contacts = 200
         solver = SolverKamino(model=model, config=config)
 
-        sensor = SensorContact(model, request_contact_attributes=False, sensing_bodies=["box"])
+        sensor = SensorContact(model, sensing_bodies=["box"])
         pipeline = newton.CollisionPipeline(model)
         contacts = pipeline.contacts()
         allocated = solver.observables(contacts=contacts, kinds=sensor.solver_observable_kinds)

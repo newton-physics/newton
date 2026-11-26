@@ -52,6 +52,7 @@ from .collision_masks import (
     MUJOCO_COLLISION_MASK_UNSET,
     NEWTON_COLLISION_MASK_MAX_SHAPE_COUNT,
     compile_newton_collision_graph,
+    compile_newton_collision_groups,
     mujoco_mask_to_signed,
 )
 from .condim import finalize_condim, resolve_shape_condim, shapes_rolling_without_torsion, skip_imported_condim
@@ -4750,7 +4751,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             nvmax: Maximum number of active degrees of freedom per world when sleeping is enabled. Must accommodate every initially awake degree of freedom. If None, allocates space for every degree of freedom, which is safe but provides no compact-solver memory savings.
             sleep_tolerance: Sleep velocity tolerance. If None, uses model custom attribute or MuJoCo default (0.001).
             disable_contacts: If True, disable contact computation in MuJoCo. If False, enable it. If None, use the model custom attribute or enable it by default.
-            disable_sensors: If True, disable sensor computation in MuJoCo. If False, enable it. If None, use the model custom attribute or enable it by default. ``body_qdd`` and ``body_parent_f`` are still computed on either backend when requested through solver observables or legacy output-state fields.
+            disable_sensors: If True, disable sensor computation in MuJoCo. If False, enable it. If None, use the model custom attribute or enable it by default. ``body_qdd`` and ``body_parent_f`` are still computed on either backend when requested through solver observables.
             update_data_interval: Frequency (in simulation steps) at which to update the MuJoCo Data object from the Newton state. If 0, Data is never updated after initialization. If None, Data is updated on every step.
 
                 .. deprecated:: 1.8
@@ -5423,16 +5424,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self._update_mjc_data(self.mj_data, self.model, state_in)
             self._update_kinematic_weld_references()
             self.mj_model.opt.timestep = dt
-            needs_body_observables = (
-                state_out.body_qdd is not None
-                or state_out.body_parent_f is not None
-                or (
-                    observables is not None
-                    and (
-                        observables.is_requested(SolverBase.ObservableKind.BODY_QDD)
-                        or observables.is_requested(SolverBase.ObservableKind.BODY_PARENT_F)
-                    )
-                )
+            needs_body_observables = observables is not None and (
+                observables.is_requested(SolverBase.ObservableKind.BODY_QDD)
+                or observables.is_requested(SolverBase.ObservableKind.BODY_PARENT_F)
             )
             needs_contact_observables = observables is not None and observables.is_requested(
                 SolverBase.ObservableKind.CONTACT_F
@@ -5451,7 +5445,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self._update_newton_state(self.model, state_out, self.mj_data, state_prev=state_in, observables=observables)
         else:
             with wp.ScopedDevice(self.model.device), self._scoped_mujoco_warp_execution():
-                self._enable_rne_postconstraint(state_out, observables)
+                self._enable_rne_postconstraint(observables)
                 self._apply_mjc_control(self.model, state_in, control, self.mjw_data)
                 if self._update_data_interval > 0 and self._step % self._update_data_interval == 0:
                     self._update_mjc_data(self.mjw_data, self.model, state_in)
@@ -5792,18 +5786,15 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             device=self.model.device,
         )
 
-    def _enable_rne_postconstraint(self, state_out: State, observables: SolverBase.Observables | None = None):
-        """Request computation of RNE forces for solver observables or legacy state fields."""
+    def _enable_rne_postconstraint(self, observables: SolverBase.Observables | None = None):
+        """Request computation of RNE forces for solver observables."""
         m = self.mjw_model
         if m.opt.run_rne_postconstraint:
             return
-        needs_body_qdd = state_out.body_qdd is not None or (
-            observables is not None and observables.is_requested(SolverBase.ObservableKind.BODY_QDD)
-        )
-        needs_body_parent_f = state_out.body_parent_f is not None or (
-            observables is not None and observables.is_requested(SolverBase.ObservableKind.BODY_PARENT_F)
-        )
-        if needs_body_qdd or needs_body_parent_f:
+        if observables is not None and (
+            observables.is_requested(SolverBase.ObservableKind.BODY_QDD)
+            or observables.is_requested(SolverBase.ObservableKind.BODY_PARENT_F)
+        ):
             # Required for cacc and cfrc_int. Unlike sensor_rne_postconstraint,
             # this option also runs when sensors are disabled.
             if wp.config.log_level <= wp.LOG_DEBUG:
@@ -6080,6 +6071,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self._contact_tid_to_cid,
                 recovery,
                 self.mjw_model.opt.timestep,
+                self.mjw_model.opt.integrator != self._mujoco.mjtIntegrator.mjINT_DISCRETE
+                and not self.mjw_model.opt.disableflags & self._mujoco.mjtDisableBit.mjDSBL_REFSAFE,
                 compact_stale,
             ],
             device=model.device,
@@ -6755,17 +6748,16 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         """Export body diagnostics from a consistent MuJoCo dynamics snapshot."""
         is_mjwarp = SolverMuJoCo._data_is_mjwarp(mj_data)
         nworld = mj_data.nworld if is_mjwarp else 1
-        # Update requested rigid-body observables. Extended state attributes remain
-        # compatibility destinations during migration to SolverBase.Observables.
+        # Update requested rigid-body observables.
         body_qdd = (
             observables.body_qdd
             if observables is not None and observables.is_requested(SolverBase.ObservableKind.BODY_QDD)
-            else state.body_qdd
+            else None
         )
         body_parent_f = (
             observables.body_parent_f
             if observables is not None and observables.is_requested(SolverBase.ObservableKind.BODY_PARENT_F)
-            else state.body_parent_f
+            else None
         )
         if body_qdd is not None or body_parent_f is not None:
             # Launch over MuJoCo bodies
@@ -6800,14 +6792,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 outputs=[body_qdd, body_parent_f],
                 device=model.device,
             )
-            if state.body_qdd is not None and body_qdd is not None and state.body_qdd.ptr != body_qdd.ptr:
-                state.body_qdd.assign(body_qdd)
-            if (
-                state.body_parent_f is not None
-                and body_parent_f is not None
-                and state.body_parent_f.ptr != body_parent_f.ptr
-            ):
-                state.body_parent_f.assign(body_parent_f)
 
     def _update_newton_state(
         self,
@@ -6894,18 +6878,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self._update_body_observables(model, state, mj_data, observables)
 
         # Update actuator forces in joint DOF space.
-        legacy_qfrc_actuator = getattr(getattr(state, "mujoco", None), "qfrc_actuator", None)
         qfrc_actuator = (
             observables.qfrc_actuator
             if isinstance(observables, self.Observables) and observables.is_requested(self.ObservableKind.QFRC_ACTUATOR)
             else None
         )
-        if qfrc_actuator is None:
-            qfrc_actuator = legacy_qfrc_actuator
         if qfrc_actuator is not None:
             self._convert_mj_qfrc(model, mj_data, mj_data.qfrc_actuator, nworld, joints_per_world, qfrc_actuator)
-            if legacy_qfrc_actuator is not None and legacy_qfrc_actuator.ptr != qfrc_actuator.ptr:
-                legacy_qfrc_actuator.assign(qfrc_actuator)
 
         if not isinstance(observables, self.Observables):
             return
@@ -7033,21 +7012,46 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         return compile_newton_collision_graph(groups, excluded_pairs=local_filter_pairs)
 
     @staticmethod
-    def _preserved_masks_cover_collision_filters(
+    def _compile_group_collision_masks(
+        model: Model,
+        selected_shapes: np.ndarray,
+        body_filters: Iterable[tuple[int, int]],
+    ):
+        """Compile collision groups alone, or return ``None`` unless body excludes cover every pair filter."""
+        masks = compile_newton_collision_groups(model.shape_collision_group.numpy()[selected_shapes])
+        if masks is None:
+            return None
+        collision_type = np.zeros(model.shape_count, dtype=np.uint32)
+        collision_affinity = np.zeros(model.shape_count, dtype=np.uint32)
+        collision_type[selected_shapes] = masks.collision_type
+        collision_affinity[selected_shapes] = masks.collision_affinity
+        if not SolverMuJoCo._masks_cover_collision_filters(
+            model, selected_shapes, collision_type, collision_affinity, body_filters
+        ):
+            return None
+        return masks
+
+    @staticmethod
+    def _masks_cover_collision_filters(
         model: Model,
         selected_shapes: np.ndarray,
         collision_type: np.ndarray,
         collision_affinity: np.ndarray,
         body_filters: Iterable[tuple[int, int]],
     ) -> bool:
-        """Return whether preserved masks and body excludes cover Newton pair filters."""
-        filter_pairs = model.shape_collision_filter_pairs_array()
-        if filter_pairs.shape[0] == 0:
-            return True
-
-        selected = np.zeros(model.shape_count, dtype=bool)
-        selected[selected_shapes] = True
-        filter_pairs = filter_pairs[selected[filter_pairs[:, 0]] & selected[filter_pairs[:, 1]]]
+        """Return whether masks and body excludes cover Newton pair filters."""
+        shape_count = selected_shapes.shape[0]
+        # The sparse filter set spans every replicated world; read it only when
+        # it is smaller than the candidate pairs of the selected shapes.
+        if shape_count * (shape_count - 1) // 2 < len(model.shape_collision_filter_pairs):
+            shape_a, shape_b = np.triu_indices(shape_count, k=1)
+            filter_pairs = np.column_stack((selected_shapes[shape_a], selected_shapes[shape_b]))
+            filter_pairs = filter_pairs[model.shape_collision_filter_mask(filter_pairs)]
+        else:
+            filter_pairs = model.shape_collision_filter_pairs_array()
+            selected = np.zeros(model.shape_count, dtype=bool)
+            selected[selected_shapes] = True
+            filter_pairs = filter_pairs[selected[filter_pairs[:, 0]] & selected[filter_pairs[:, 1]]]
         if filter_pairs.shape[0] == 0:
             return True
 
@@ -7159,24 +7163,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
     @override
     def update_contacts(self, contacts: Contacts, state: State | None = None) -> None:
-        """Update contact geometry and optional legacy force storage from MuJoCo.
+        """Update contact geometry from MuJoCo.
 
-        Geometry-only export remains supported when ``contacts.force`` is ``None``.
-
-        .. deprecated:: 1.7
-            Exporting ``contacts.force`` is deprecated. Request
-            :attr:`~newton.solvers.SolverBase.ObservableKind.CONTACT_F` and pass the
-            resulting container to :meth:`step` instead. Geometry-only export
-            is not deprecated.
+        Writes the contacts detected by MuJoCo into the rigid-contact geometry arrays of
+        ``contacts``. Request :attr:`~newton.solvers.SolverBase.ObservableKind.CONTACT_F`
+        and pass the resulting container to :meth:`step` to obtain contact forces.
         """
-        if contacts.force is not None:
-            warnings.warn(
-                "SolverMuJoCo.update_contacts() force export is deprecated in Newton 1.7; request "
-                "SolverBase.ObservableKind.CONTACT_F and pass SolverBase.Observables to step().",
-                NewtonDeprecationWarning,
-                stacklevel=2,
-            )
-        self._populate_contact_observables(contacts, contacts.force)
+        self._populate_contact_observables(contacts, None)
 
     def _populate_contact_observables(
         self,
@@ -7242,15 +7235,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             )
             if not preserve_geometry:
                 contacts.n_contacts = mj_data.nacon
-
-        if contact_f is not None and contacts.force is not None and contacts.force.ptr != contact_f.ptr:
-            count = (
-                min(self.mj_data.ncon, contacts.rigid_contact_max, self.get_max_contact_count())
-                if self.use_mujoco_cpu
-                else contacts.force.shape[0]
-            )
-            if count:
-                wp.copy(contacts.force, contact_f, count=count)
 
     def _populate_mjc_contact_observables(
         self, contacts: Contacts, contact_f: wp.array[wp.spatial_vector] | None, *, warning_stacklevel: int
@@ -8243,7 +8227,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             and np.all(shape_mjc_conaffinity[colliding_shapes] != MUJOCO_COLLISION_MASK_UNSET)
             and np.all(shape_mjc_collision_mask_domain[colliding_shapes] != MUJOCO_COLLISION_MASK_DOMAIN_UNSET)
             and np.unique(shape_mjc_collision_mask_domain[colliding_shapes]).shape[0] <= 1
-            and self._preserved_masks_cover_collision_filters(
+            and self._masks_cover_collision_filters(
                 model,
                 colliding_shapes,
                 shape_mjc_contype,
@@ -8263,6 +8247,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 compiled_collision_affinity = np.ones(model.shape_count, dtype=np.uint32)
         elif not use_preserved_collision_masks:
             compiled_masks = self._compile_newton_collision_masks(model, colliding_shapes)
+            if not compiled_masks.exact:
+                # Groups alone often still fit in 32 bits; body excludes then carry the pair filters.
+                group_masks = self._compile_group_collision_masks(model, colliding_shapes, body_filters)
+                # Flexes need a mask bit of their own.
+                if group_masks is not None and (group_masks.bit_count < 32 or len(selected_particles) == 0):
+                    compiled_masks = group_masks
         if compiled_masks is not None:
             if compiled_masks.exact:
                 compiled_collision_type = np.zeros(model.shape_count, dtype=np.uint32)

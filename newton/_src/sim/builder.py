@@ -83,7 +83,7 @@ from ..geometry.inertia import (
 from ..geometry.rest_shape import _dihedral_angles, _tet_rest_geometry, _triangle_rest_geometry
 from ..geometry.sdf_utils import _resolve_paired_samples_flag
 from ..geometry.support_function import _CONVEX_HULL_VALID
-from ..geometry.types import Heightfield, _normalize_texture_input
+from ..geometry.types import Heightfield, _ConvexSupportData, _normalize_texture_input
 from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_convex_hull, remesh_mesh
 from ..math import quat_between_vectors_robust
 from ..usd.schema_resolver import SchemaResolver
@@ -460,6 +460,33 @@ def _build_convex_support_acceleration(
         neighbors.extend(sorted(values))
         offsets[vertex + 1] = len(neighbors)
     return lut, offsets, np.asarray(neighbors, dtype=np.int32)
+
+
+def _build_convex_support_data(source: Mesh) -> _ConvexSupportData | None:
+    """Pack hull certificates and acceleration tables using mesh-local offsets."""
+    topology = _convex_hull_adjacency(source)
+    adjacent = None
+    flags = 0
+    if topology is not None:
+        adjacent, edges = topology
+        flags = _CONVEX_HULL_VALID
+        # Verified hulls lead the neighbor block with their edge count and faces.
+        edge_block = np.empty(1 + edges.size, dtype=np.int32)
+        edge_block[0] = len(edges)
+        edge_block[1:] = edges.ravel()
+
+    acceleration = _build_convex_support_acceleration(source, adjacency=adjacent)
+    if acceleration is None:
+        if topology is None:
+            return None
+        empty = np.empty(0, dtype=np.int32)
+        return _ConvexSupportData(flags, empty, empty, edge_block)
+
+    lut, offsets, neighbors = acceleration
+    if topology is not None:
+        offsets += len(edge_block)
+        neighbors = np.concatenate((edge_block, neighbors))
+    return _ConvexSupportData(flags | _CONVEX_SUPPORT_LUT_RESOLUTION, lut, offsets, neighbors)
 
 
 def _build_joint_ancestor(
@@ -2354,11 +2381,6 @@ class ModelBuilder:
         """Cache backing :meth:`_materialized_filter_template`, as ``(source, length, template)``."""
         self._custom_schema_epoch: int = 0
         """Bumped whenever the custom attribute/frequency registry changes; keys the merge-validation cache."""
-
-        self._requested_contact_attributes: set[str] = set()
-        """Optional contact attributes requested via :meth:`request_contact_attributes`."""
-        self._requested_state_attributes: set[str] = set()
-        """Optional state attributes requested via :meth:`request_state_attributes`."""
 
         # particle-body attachments
         self.attachment_particle_body_body: list[int] = []
@@ -4475,9 +4497,6 @@ class ModelBuilder:
             translated = np.where(tiled >= 0, tiled + offsets, tiled)
             dst.extend(translated.tolist())
 
-        self._requested_contact_attributes.update(builder._requested_contact_attributes)
-        self._requested_state_attributes.update(builder._requested_state_attributes)
-
         attribute_specs.pop("particle_q")
         if counts["particle"]:
             self.particle_max_velocity = builder.particle_max_velocity
@@ -5358,6 +5377,7 @@ class ModelBuilder:
         convert_mjc_equality_constraints: bool = True,
         override_root_xform: bool = False,
         legacy_margin_gap: bool = False,
+        legacy_ignore_paths: bool = False,
         return_deformable_results: bool = False,
         allow_unsafe_torch_checkpoints: bool = False,
     ) -> dict[str, Any]:
@@ -5448,14 +5468,18 @@ class ModelBuilder:
             only_load_enabled_joints: If True, only joints which do not have `physics:jointEnabled` set to False are loaded.
             joint_drive_gains_scaling: The default scaling of the PD control gains (stiffness and damping), if not set in the PhysicsScene with as "newton:joint_drive_gains_scaling".
             verbose: If True, log additional information about the parsed USD file. Default is False.
-            ignore_paths: A list of regular expressions matching prim paths to ignore.
+            ignore_paths: A list of regular expressions matched against the start of each prim path (:func:`re.match`).
+                Rigid bodies and joints are imported as if the matching prims were not on the stage. A joint to an
+                ignored body is dropped, and bodies that lose their connection to the rest of an articulation stay
+                in the model with their own base joint, chosen by ``floating`` and ``base_joint`` as for any body
+                without a joint. Add their paths to ``ignore_paths`` to drop them as well.
             collapse_fixed_joints: If True, fixed joints are removed and the respective bodies are merged. Only considered if not set on the PhysicsScene as "newton:collapse_fixed_joints".
             enable_self_collisions: Default for whether self-collisions are enabled for all shapes within an articulation. Resolved via the schema resolver from ``newton:selfCollisionEnabled`` (NewtonArticulationRootAPI) or ``physxArticulation:enabledSelfCollisions`` on the articulation root, or on the cable ``BasisCurves`` prim for cable-owned articulations; if neither is authored, this value takes precedence.
             apply_up_axis_from_stage: If True, the up axis of the stage will be used to set :attr:`newton.ModelBuilder.up_axis`. Otherwise, the stage will be rotated such that its up axis aligns with the builder's up axis. Default is False.
             root_path: The USD path to import, defaults to "/". Bound physics materials
                 outside this subtree are resolved without importing unrelated bodies
                 or shapes.
-            joint_ordering: The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search, or ``None`` to keep joints in the order in which they appear in the USD. Default is "dfs".
+            joint_ordering: The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search, or ``None`` to keep joints in the order in which they appear in the USD; an articulation that is split into several parts lists its joints part by part, the part attached to the world first. Default is "dfs".
             bodies_follow_joint_ordering: If True, the bodies are added to the builder in the same order as the joints (parent then child body). Otherwise, bodies are added in the order they appear in the USD. Default is True.
             skip_mesh_approximation: If True, mesh approximation is skipped. Otherwise, meshes are approximated according to the ``physics:approximation`` attribute defined on the UsdPhysicsMeshCollisionAPI (if it is defined), using the settings from :attr:`~newton.ModelBuilder.default_mesh_approximation_cfg`. Default is False.
             load_sites: If True, sites (prims with ``NewtonSiteAPI`` or ``MjcSiteAPI``) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
@@ -5502,6 +5526,19 @@ class ModelBuilder:
                 where ``shape_margin`` is computed as ``mjc_margin - mjc_gap``.
                 Use for USD files authored against MuJoCo <= 3.8. Defaults to
                 False (identity translation matching MuJoCo 3.9 semantics).
+            legacy_ignore_paths: Temporary migration option. If True, an ``ignore_paths`` match that cuts an
+                articulation is handled as in earlier releases: a joint to a body ignored by
+                a path without ``.*`` is attached to the world instead of being dropped, and with
+                ``bodies_follow_joint_ordering=True`` a body left without joints is not imported when its
+                articulation keeps other joints. With ``bodies_follow_joint_ordering=False`` such a body is
+                imported in an articulation labeled like the articulation root, without the root's custom
+                attributes, instead of one labeled with the body path. Defaults to False.
+
+                .. deprecated:: 1.9
+                    Enabling this temporary flag emits a :class:`~newton.NewtonDeprecationWarning`. Add the bodies
+                    that should be dropped to ``ignore_paths``, and use ``floating=False`` or ``base_joint`` to
+                    attach the remaining bodies to the world.
+
             return_deformable_results: If True, include the experimental deformable entries in the
                 returned mapping (``path_cable_map`` / ``path_cloth_map`` / ``path_soft_map`` / ``path_deformable_visual_map`` /
                 ``path_attachment_map`` and the matching ``path_*_attrs``). Off by default, so the
@@ -5668,6 +5705,7 @@ class ModelBuilder:
             convert_mjc_equality_constraints=convert_mjc_equality_constraints,
             override_root_xform=override_root_xform,
             legacy_margin_gap=legacy_margin_gap,
+            legacy_ignore_paths=legacy_ignore_paths,
             return_deformable_results=return_deformable_results,
             allow_unsafe_torch_checkpoints=allow_unsafe_torch_checkpoints,
         )
@@ -5814,8 +5852,8 @@ class ModelBuilder:
             parse_visuals: Whether visual geometries (non-collision shapes) should be loaded. If False, visual shapes are not loaded (different from `hide_visuals` which loads but hides them). Default is True.
             parse_mujoco_options: Whether solver options from the MJCF `<option>` tag should be parsed. If False, solver options are not loaded and custom attributes retain their default values; the ``gravity`` and ``filterparent`` flags, which change the Newton model rather than a solver option, are then ignored as well. Default is True.
             up_axis: The up axis of the MuJoCo scene. The default is Z up.
-            ignore_names: A list of regular expressions. Bodies and joints with a name matching one of the regular expressions will be ignored.
-            ignore_classes: A list of regular expressions. Bodies and joints with a class matching one of the regular expressions will be ignored.
+            ignore_names: A list of regular expressions. Geoms and sites with a name matching one of the regular expressions will be ignored.
+            ignore_classes: A list of regular expressions. Geoms and sites with a ``class`` matching one of the regular expressions will be ignored, as will bodies with a matching ``childclass`` and everything nested in them.
             visual_classes: A list of regular expressions. Visual geometries with a class matching one of the regular expressions will be parsed.
             collider_classes: A list of regular expressions. Collision geometries with a class matching one of the regular expressions will be parsed.
             no_class_as_colliders: If True, geometries without a class are parsed as collision geometries. If False, geometries without a class are parsed as visual geometries.
@@ -14217,54 +14255,6 @@ class ModelBuilder:
             # FIXED joint (floating=False or floating=None with parent body)
             return self.add_joint_fixed(parent, child, parent_xform=parent_xform, child_xform=child_xform, label=label)
 
-    def request_contact_attributes(self, *attributes: str) -> None:
-        """Request optional contact attributes on the finalized model.
-
-        .. deprecated:: 1.7
-
-            Request :attr:`newton.solvers.SolverBase.ObservableKind.CONTACT_F` from
-            the solver instead.
-
-        Args:
-            *attributes: Variable number of attribute names (strings).
-        """
-        # Local import to avoid adding more module-level dependencies in this large file.
-        from .contacts import Contacts  # noqa: PLC0415
-
-        warnings.warn(
-            "ModelBuilder.request_contact_attributes() is deprecated in Newton 1.7; "
-            "request SolverBase.Observables from the solver instead.",
-            NewtonDeprecationWarning,
-            stacklevel=2,
-        )
-        Contacts.validate_extended_attributes(attributes)
-        self._requested_contact_attributes.update(attributes)
-
-    def request_state_attributes(self, *attributes: str) -> None:
-        """Request optional solver-produced attributes on the finalized model.
-
-        .. deprecated:: 1.7
-
-            Request :class:`newton.solvers.SolverBase.Observables` from the solver
-            instead.
-
-        See :doc:`Solver Observables </concepts/solver_observables>` for migration details.
-
-        Args:
-            *attributes: Variable number of attribute names (strings).
-        """
-        # Local import to avoid adding more module-level dependencies in this large file.
-        from .state import State  # noqa: PLC0415
-
-        warnings.warn(
-            "ModelBuilder.request_state_attributes() is deprecated in Newton 1.7; "
-            "request SolverBase.Observables from the solver instead.",
-            NewtonDeprecationWarning,
-            stacklevel=2,
-        )
-        State.validate_extended_attributes(attributes)
-        self._requested_state_attributes.update(attributes)
-
     def set_coloring(self, particle_color_groups: Iterable[Iterable[int] | np.ndarray]) -> None:
         """
         Sets coloring information with user-provided coloring.
@@ -16084,10 +16074,6 @@ class ModelBuilder:
             m._deformable_visual_meshes, m._deformable_visual_skin_batches = self._finalize_deformable_visual_meshes()
             m._sdf_texture_paired_samples = sdf_texture_paired_samples
             m._set_shape_collision_filter_packed(shape_collision_filter_packed)  # pyright: ignore[reportPrivateUsage]
-            # Preserve deprecated extended-attribute requests without emitting a
-            # second warning after the builder request already warned the caller.
-            m._requested_contact_attributes.update(self._requested_contact_attributes)
-            m._requested_state_attributes.update(self._requested_state_attributes)
             m.requires_grad = requires_grad
 
             m.world_count = self.world_count
@@ -16345,37 +16331,26 @@ class ModelBuilder:
                 if isinstance(source, Mesh):
                     source_key = hash(source)
                     if source_key not in support_cache:
-                        topology = _convex_hull_adjacency(source)
-                        adjacent = None
-                        hull_flag = 0
-                        # Verified hulls lead their neighbor block with their edge
-                        # count and faces for exact separating-axis certificates.
-                        edge_block = np.zeros(0, dtype=np.int32)
-                        if topology is not None:
-                            adjacent, edges = topology
-                            hull_flag = _CONVEX_HULL_VALID
-                            edge_block = np.concatenate(([len(edges)], edges.ravel())).astype(np.int32)
-                        cached = (-1, -1, neighbor_offset if len(edge_block) else -1, hull_flag)
-                        acceleration = _build_convex_support_acceleration(source, adjacency=adjacent)
-                        neighbors = np.zeros(0, dtype=np.int32)
-                        if acceleration is not None:
-                            lut, offsets, neighbors = acceleration
-                            cached = (
-                                lut_offset,
-                                vertex_offset,
-                                neighbor_offset,
-                                _CONVEX_SUPPORT_LUT_RESOLUTION | hull_flag,
-                            )
-                            # Neighbor offsets are relative to the block start.
-                            offsets = offsets + len(edge_block)
-                            support_lut_chunks.append(lut)
-                            support_offset_chunks.append(offsets)
-                            lut_offset += len(lut)
-                            vertex_offset += len(offsets)
-                        if len(edge_block) or len(neighbors):
-                            support_neighbor_chunks.append(np.concatenate((edge_block, neighbors)).astype(np.int32))
-                            neighbor_offset += len(support_neighbor_chunks[-1])
-                        support_cache[source_key] = cached
+                        # A deduplicated collision source can be temporary. Keep
+                        # its tables on the original mesh that owns the geometry.
+                        owner = self.shape_source[shape_idx]
+                        tables = owner._convex_support_data
+                        if tables is None:
+                            tables = _build_convex_support_data(source)
+                            owner._convex_support_data = tables
+
+                        packed = (-1, -1, -1, 0)
+                        if tables is not None:
+                            packed = (-1, -1, neighbor_offset, tables.flags)
+                            if tables.lut.size:
+                                packed = (lut_offset, vertex_offset, neighbor_offset, tables.flags)
+                                support_lut_chunks.append(tables.lut)
+                                support_offset_chunks.append(tables.vertex_offsets)
+                                lut_offset += len(tables.lut)
+                                vertex_offset += len(tables.vertex_offsets)
+                            support_neighbor_chunks.append(tables.neighbors)
+                            neighbor_offset += len(tables.neighbors)
+                        support_cache[source_key] = packed
                     shape_support_data[shape_idx] = support_cache[source_key]
 
             m._shape_support_data = wp.array(shape_support_data, dtype=wp.vec4i, device=device)

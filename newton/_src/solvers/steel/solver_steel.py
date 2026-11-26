@@ -2287,7 +2287,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 ring that does not match its group) makes an eager step raise before it applies
                 torsion rows. In a captured step the error is deferred: the failing step
                 restores its output motion arrays
-                (``joint_q``, ``joint_qd``, ``body_q``, ``body_qd``, ``body_qdd``) to the input
+                (``joint_q``, ``joint_qd``, ``body_q``, ``body_qd``) to the input
                 values, while other outputs, observables and solver history still advance,
                 and :meth:`check_constraint_capacity` raises after the replays.
                 Check before using replay results, discard failed output, fix the cause and
@@ -2341,9 +2341,9 @@ class SolverSteel(SolverBase, CouplingInterface):
                 connect them into one island; its fixed root supports that island. A
                 supported island whose bodies stay below ``sleep_linear_threshold`` and
                 ``sleep_angular_threshold`` for ``sleep_quiet_time`` falls asleep, and its
-                published state (``joint_q``, ``joint_qd``, ``body_q``, ``body_qd`` and, when
-                requested, ``body_parent_f``) is frozen until a wake event: a nonzero or nonfinite
-                external force (:attr:`~newton.State.body_f`, :attr:`~newton.Control.joint_f`),
+                published state (``joint_q``, ``joint_qd``, ``body_q``, ``body_qd``) and, when
+                requested, its ``observables.body_parent_f`` rows are frozen until a wake event:
+                a nonzero or nonfinite external force (:attr:`~newton.State.body_f`, :attr:`~newton.Control.joint_f`),
                 a changed state or gravity, a contact with an awake or moving body, lost
                 support or row capacity, a :meth:`reset` of its world, or
                 :meth:`notify_model_changed` for properties of its joints, DOFs, bodies or
@@ -7057,8 +7057,9 @@ class SolverSteel(SolverBase, CouplingInterface):
                 :meth:`notify_state_changed` first. Bodies outside every
                 articulation keep their ``body_q`` and ``body_qd``, which pass through to
                 ``state_out``; contacts treat their velocity as zero.
-            state_out: Output state receiving ``joint_q``, ``joint_qd``, ``body_q``,
-                ``body_qd`` and, when requested, ``body_parent_f``.
+            state_out: Output state receiving ``joint_q``, ``joint_qd``, ``body_q``, and
+                ``body_qd``. Parent wrenches go to ``observables.body_parent_f`` when
+                :attr:`~newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F` is requested.
             control: Control input; ``None`` uses the model's default control.
             contacts: Rigid contacts from :class:`~newton.CollisionPipeline`, or ``None``.
                 The buffer must not hold more contacts than ``model.rigid_contact_max``
@@ -7084,9 +7085,11 @@ class SolverSteel(SolverBase, CouplingInterface):
                 "contact_warmstart=True matches contacts across steps and requires a Contacts buffer created "
                 'with contact matching; create the CollisionPipeline with contact_matching="latest".'
             )
-        body_parent_f = state_out.body_parent_f
-        if observables is not None and observables.is_requested(SolverBase.ObservableKind.BODY_PARENT_F):
-            body_parent_f = observables.body_parent_f
+        body_parent_f = (
+            observables.body_parent_f
+            if observables is not None and observables.is_requested(SolverBase.ObservableKind.BODY_PARENT_F)
+            else None
+        )
         try:
             self._advance(state_in, state_out, control, contacts, dt, body_parent_f)
         except BaseException:
@@ -7153,9 +7156,8 @@ class SolverSteel(SolverBase, CouplingInterface):
                 wp.copy(state_out.joint_q, state_in.joint_q)
                 wp.copy(state_out.joint_qd, state_in.joint_qd)
             # Bodies outside every articulation carry no parent wrench.
-            for target in (body_parent_f, state_out.body_parent_f):
-                if target is not None:
-                    target.zero_()
+            if body_parent_f is not None:
+                body_parent_f.zero_()
             self._step += 1
             return state_out
         wp.launch(
@@ -7389,13 +7391,8 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._stage7_update_kinematics(state_out)
         if self._sleeping is not None:
             self._sleeping.finish(state_in, state_out, state_aug, dt)
-        if computed_parent_f is not None:
-            published = {}
-            for target in (body_parent_f, state_out.body_parent_f):
-                if target is not None and target.ptr != computed_parent_f.ptr:
-                    published[target.ptr] = target
-            for target in published.values():
-                target.assign(computed_parent_f)
+        if body_parent_f is not None and computed_parent_f is not None and body_parent_f.ptr != computed_parent_f.ptr:
+            body_parent_f.assign(computed_parent_f)
 
         if self._friction_anchors_enabled:
             if has_contacts:

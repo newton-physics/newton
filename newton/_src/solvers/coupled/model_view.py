@@ -348,17 +348,6 @@ class ModelView:
 
         return Model.get_requested_state_attributes(self)
 
-    def _add_requested_state_attributes(
-        self,
-        state: State,
-        requested: list[str],
-        requires_grad: bool = False,
-    ) -> None:
-        """Delegate requested state allocation with this view's counts."""
-        from ...sim import Model  # noqa: PLC0415
-
-        Model._add_requested_state_attributes(self, state, requested, requires_grad=requires_grad)
-
     def _attribute_frequency_count(self, frequency: Model.AttributeFrequency | str) -> int:
         """Return an attribute frequency count using this view's overrides."""
         from ...sim import Model  # noqa: PLC0415

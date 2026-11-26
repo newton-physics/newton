@@ -3,8 +3,10 @@
 
 """Tests for compact convex support-map acceleration."""
 
+import pickle
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 import warp as wp
@@ -18,6 +20,7 @@ from newton._src.geometry.support_function import (
     pack_mesh_ptr,
     support_map_accelerated,
 )
+from newton._src.sim import builder as builder_module
 from newton._src.sim.builder import (
     _build_convex_support_acceleration,
     _convex_hull_adjacency,
@@ -210,6 +213,62 @@ class TestConvexSupportAcceleration(unittest.TestCase):
             compute_inertia=False,
         )
         self.assertIsNone(_build_convex_support_acceleration(mesh))
+
+    def test_finalize_reuses_support_data_until_geometry_changes(self):
+        """Reuse packed support tables across builders and rebuild them after edits."""
+        box = newton.Mesh.create_box(1.0, 1.0, 1.0, duplicate_vertices=False, compute_inertia=False)
+        sphere = newton.Mesh.create_sphere(
+            0.5, num_latitudes=16, num_longitudes=24, compute_normals=False, compute_uvs=False, compute_inertia=False
+        )
+
+        def finalize(*meshes):
+            builder = newton.ModelBuilder()
+            for mesh in meshes:
+                builder.add_shape_convex_hull(body=-1, mesh=mesh)
+            model = builder.finalize(device="cpu")
+            return (
+                model._shape_support_data.numpy(),
+                model._convex_support_lut.numpy(),
+                model._convex_support_vertex_offsets.numpy(),
+                model._convex_support_neighbors.numpy(),
+            )
+
+        for source in (box, sphere):
+            with self.subTest(vertex_count=len(source.vertices)):
+                # Give each face its own vertices so each finalize uses a derived collision mesh.
+                mesh = newton.Mesh(
+                    source.vertices[source.indices], np.arange(len(source.indices)), compute_inertia=False
+                )
+                prefix = newton.Mesh.create_box(0.5, 0.5, 0.5, duplicate_vertices=False, compute_inertia=False)
+                cold = finalize(mesh)
+                with patch.object(builder_module, "_convex_hull_adjacency", wraps=_convex_hull_adjacency) as build:
+                    warm = finalize(prefix, mesh)
+                    self.assertEqual(build.call_count, 1)  # Only the prefix needs preprocessing.
+                self.assertGreater(warm[0][1, 2], cold[0][0, 2])
+                for actual, expected in zip(warm, finalize(prefix, mesh.copy()), strict=True):
+                    np.testing.assert_array_equal(actual, expected)
+
+                if source is box:
+                    mesh.indices = mesh.indices[3:]
+                else:
+                    mesh.vertices[:, 0] *= -1
+                    mesh.invalidate_cache()
+                edited = finalize(mesh)
+                self.assertFalse(all(np.array_equal(a, b) for a, b in zip(cold, edited, strict=True)))
+                for actual, expected in zip(edited, finalize(mesh.copy()), strict=True):
+                    np.testing.assert_array_equal(actual, expected)
+
+    def test_finalize_accepts_mesh_pickled_without_support_cache(self):
+        """Build support tables for a mesh whose serialized state predates the cache."""
+        mesh = newton.Mesh.create_box(1.0, 1.0, 1.0, duplicate_vertices=False, compute_inertia=False)
+        mesh.__dict__.pop("_convex_support_data", None)
+        restored = pickle.loads(pickle.dumps(mesh))
+
+        builder = newton.ModelBuilder()
+        builder.add_shape_convex_hull(body=-1, mesh=restored)
+        model = builder.finalize(device="cpu")
+        self.assertEqual(model._shape_support_data.numpy()[0, 2], 0)
+        self.assertGreater(model._convex_support_neighbors.numpy()[0], 0)
 
     def test_pipeline_specializes_support_map_for_available_acceleration(self):
         """Specialize support mapping only when acceleration data exists."""

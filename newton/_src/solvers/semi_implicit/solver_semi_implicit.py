@@ -126,6 +126,8 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
         options = {"deterministic": effective_deterministic, "deterministic_max_records": 0}
         for module in deterministic_modules:
             self._set_module_options(options, module=module)
+        # Gather contact wrenches per body instead of recording them as deterministic atomics.
+        self._gather_contact_wrenches = effective_deterministic != wp.DeterministicMode.NOT_GUARANTEED
         self.angular_damping = angular_damping
         self.joint_attach_ke = joint_attach_ke
         self.joint_attach_kd = joint_attach_kd
@@ -260,7 +262,9 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
                 eval_triangle_contact_forces(model, state_in, particle_f)
 
             # body contacts
-            eval_body_contact_forces(model, state_in, contacts, body_f_out=body_f)
+            eval_body_contact_forces(
+                model, state_in, contacts, body_f_out=body_f, deterministic=self._gather_contact_wrenches
+            )
 
             # particle shape contact
             eval_particle_body_contact_forces(model, state_in, contacts, particle_f, body_f)
