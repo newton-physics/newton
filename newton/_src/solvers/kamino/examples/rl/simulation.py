@@ -19,6 +19,7 @@ import os
 import threading
 
 # Thirdparty
+import numpy as np
 import warp as wp
 
 # Kamino
@@ -81,6 +82,8 @@ class SimulatorFromNewton:
         self._model: ModelKamino = ModelKamino.from_newton(newton_model)
         if isinstance(config.dt, float):
             self._model.time.set_uniform_timestep(config.dt)
+        else:
+            self._model.time.set_timesteps(np.asarray(config.dt, dtype=np.float32))
 
         # Allocate state and control
         self._state_p: StateKamino = self._model.state(device=self._device)
@@ -96,8 +99,6 @@ class SimulatorFromNewton:
             self._newton_state = newton_model.state()
             self._newton_collision_pipeline = newton.CollisionPipeline(newton_model)
             self._newton_contacts = self._newton_collision_pipeline.contacts()
-            # Largest per-world timestep, so that the contact cull keeps every contact reachable within a step
-            self._newton_contacts_dt = float(self._model.time.dt.numpy().max())
             per_world = max(1024, (newton_model.rigid_contact_max or 0) // max(newton_model.world_count, 1))
             if config.collision_detector.max_contacts_per_world is not None:
                 per_world = min(per_world, config.collision_detector.max_contacts_per_world)
@@ -172,7 +173,7 @@ class SimulatorFromNewton:
             self._contacts,
             contact_dead_zone=self._config.solver.constraints.delta,
             cull_unreachable_contacts=self._solver.cull_unreachable_contacts,
-            dt=self._newton_contacts_dt,
+            dt=self._model.time.dt,
         )
 
     def step(self):

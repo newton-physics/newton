@@ -1053,6 +1053,7 @@ def make_convert_contacts_newton_to_kamino(
         body_qd: wp.array[wp.spatial_vectorf],
         body_com: wp.array[wp.vec3f],
         dt: wp.float32,
+        world_dt: wp.array[wp.float32],
         reach_scale: wp.float32,
         reach_speed: wp.float32,
         # Outputs:
@@ -1172,7 +1173,10 @@ def make_convert_contacts_newton_to_kamino(
                     r_1 = p1_world - wp.transform_point(X_1, body_com[bid_1])
                     v_1 = wp.spatial_top(qd_1) + wp.cross(wp.spatial_bottom(qd_1), r_1)
                 approach_speed = wp.max(0.0, -wp.dot(v_1 - v_0, normal))
-                if distance - contact_dead_zone > dt * (reach_scale * approach_speed + reach_speed):
+                step = dt
+                if world_dt:
+                    step = world_dt[wid]
+                if distance - contact_dead_zone > step * (reach_scale * approach_speed + reach_speed):
                     return
 
         # Ensure static body is always Kamino A, dynamic body is Kamino B
@@ -1511,7 +1515,7 @@ def convert_contacts_newton_to_kamino(
     contact_dead_zone: float = 1.0e-6,
     geom_friction_mode: wp.array[wp.int32] | None = None,
     cull_unreachable_contacts: bool = False,
-    dt: float = 0.0,
+    dt: float | wp.array[wp.float32] = 0.0,
     reach_scale: float = UNREACHABLE_CONTACT_SPEED_SCALE,
     reach_speed: float = UNREACHABLE_CONTACT_SPEED_MARGIN,
 ):
@@ -1571,7 +1575,7 @@ def convert_contacts_newton_to_kamino(
             If ``True``, drop the speculative contacts whose gap beyond ``contact_dead_zone`` exceeds
             ``dt * (reach_scale * approach_speed + reach_speed)``, where ``approach_speed`` is the
             normal approach velocity of the contact points at ``state``. Defaults to ``False``.
-        dt: The time step [s], used by ``cull_unreachable_contacts``.
+        dt: The time step [s] used by ``cull_unreachable_contacts``, either uniform or per world.
         reach_scale: The safety factor on the approach velocity of the contact points.
         reach_speed: The approach velocity margin [m/s].
     """
@@ -1659,7 +1663,8 @@ def convert_contacts_newton_to_kamino(
             contact_dead_zone,
             state.body_qd,
             model.body_com,
-            dt,
+            0.0 if isinstance(dt, wp.array) else dt,
+            dt if isinstance(dt, wp.array) else None,
             reach_scale,
             reach_speed,
         ],

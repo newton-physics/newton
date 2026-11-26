@@ -1747,17 +1747,20 @@ class TestGeometryContactConversions(NewtonTestCase):
                 nc = int(contacts.rigid_contact_count.numpy()[0])
                 self.assertGreater(nc, 0, "Detector must report the hovering box as a (speculative) contact")
 
-                kamino = ContactsKamino(capacity=contacts.rigid_contact_max, device=self.default_device)
-                convert_contacts_newton_to_kamino(
-                    model,
-                    state,
-                    contacts,
-                    kamino,
-                    cull_unreachable_contacts=True,
-                    dt=dt,
-                )
-                n_kamino = int(kamino.model_active_contacts.numpy()[0])
-                self.assertEqual(n_kamino, nc if reachable else 0)
+                # Give the time step either uniformly or per world
+                world_dt = wp.full(model.world_count, dt, dtype=wp.float32, device=self.default_device)
+                for step in (dt, world_dt):
+                    kamino = ContactsKamino(capacity=contacts.rigid_contact_max, device=self.default_device)
+                    convert_contacts_newton_to_kamino(
+                        model,
+                        state,
+                        contacts,
+                        kamino,
+                        cull_unreachable_contacts=True,
+                        dt=step,
+                    )
+                    n_kamino = int(kamino.model_active_contacts.numpy()[0])
+                    self.assertEqual(n_kamino, nc if reachable else 0)
 
     def test_13b_unreachable_contact_cull_preserves_impacts(self):
         """Culling unreachable contacts keeps the trajectory of a fast impact unchanged and free of penetration."""
